@@ -285,7 +285,7 @@ function checkLines(check: CheckBlock, brief: boolean, repository?: string): str
  *  check with no result says so, and an issue with no Verification document says that instead of
  *  printing an empty list: Dispatch answers `verification_artifact_id` "" for such an issue, never
  *  null, so that is what is compared. */
-export function formatCheckResults(results: IssueCheckResults, brief = false, repositories?: ReadonlyMap<string, string>): string {
+export function formatCheckResults(results: IssueCheckResults, brief = false, repositories?: Readonly<Record<string, string>>): string {
   if (results.verification_artifact_id === "") {
     return `${results.issue} has no Verification document, so it has no checks. Write one (verification.md) with a check block per thing that must be proved.`;
   }
@@ -293,6 +293,6 @@ export function formatCheckResults(results: IssueCheckResults, brief = false, re
   if (checks.length === 0) {
     return `${results.issue}'s Verification document holds no check blocks.`;
   }
-  const blocks = checks.map((check) => checkLines(check, brief, repositories?.get(check.issue_key)).join("\n"));
+  const blocks = checks.map((check) => checkLines(check, brief, repositories?.[check.issue_key]).join("\n"));
   return [`Checks of ${results.issue}:`, ...blocks].join("\n\n");
 }

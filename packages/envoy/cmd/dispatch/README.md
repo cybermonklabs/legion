@@ -2780,6 +2780,14 @@ Two commits never change, so a no is kept for good as a yes is, and a read that 
 `deploys` is the record of deploys: the commit (`commit_sha`) of a repository (`repo`, lowercased) that a program (`program`, 1 to 64 characters of `a-z0-9-`) runs since `deployed_at`, with `recorded_by` naming who wrote it.
 A row's `source` is `delivery_run`, one row for each production run of the delivery timeline (`deploys_run`, unique on `source` and `run_id`), or `route`, a deploy posted to Dispatch.
 The current deploy of a program is its row of the latest `deployed_at`, then the higher `id` (`deploys_newest`).
+`delivery_runs.run_attempt` is nullable and stores GitHub's actual attempt.
+Existing rows remain unknown until a later GitHub event or listing supplies it.
+Regular reconciliation repeats its last hour (`reconcileOverlap`).
+The existing backfill progress keys do not restart for this column.
+An older row outside those reads can remain unknown indefinitely.
+A GitHub answer that omits the attempt also leaves it unknown. Dispatch never substitutes attempt 1.
+`deploys.run_completed_at` remembers the source completion already processed.
+A same-build rerun advances this marker without moving `deployed_at`, so its replay cannot replace a later build.
 `check_results` gains `check_subject` and `check_program`, not null and defaulted `''`: the check's `subject` and `program` as the record route read them.
 They decide no answer; they bound which open issues a recorded deploy is announced on, and `check_results_live` holds the rows that name a subject.
 No build of this release lets an author write either attribute, so no stored result names one and nothing is backfilled.
@@ -5245,6 +5253,28 @@ Each item below names a path with its method and identity, then its purpose.
   The bodies an edit or a delete of this message replaced, newest first: a delete writes an entry of its own, and a deleted message's entries carry no body.
   Its rules are its description in the route table (`internal/dispatch/api/routes_table.go`), which `GET /api/v1` serves and the docs site's API reference prints.
 
+- `/api/v1/deploys` (POST; cookie, trusted header, or bearer)
+
+  Record `{repo, program, commit, deployed_at?, url?}` through `dispatch deploy` or the API.
+  `repo` is lowercased `owner/repo`. `program` matches `^[a-z0-9-]{1,64}$`. `commit` is 40 lowercase hexadecimal characters.
+  An omitted `deployed_at` uses the server's clock. A time over five minutes ahead is `400 DEPLOY_INPUT`.
+  A repository proved not to hold the commit gives `400 DEPLOY_COMMIT_UNKNOWN`. An unsuccessful GitHub read proves no absence.
+  The caller needs deployment-wide write access. A project-scoped credential cannot record a deploy, even for its own project's repository.
+  `recorded_by` names the credential's writer, never an actor chosen in the body.
+  `201` carries `{deploy}` for the new build. Recording the current commit again gives `200` with that unchanged row.
+  A different build whose time precedes the current deploy gives `409 DEPLOY_NOT_NEWEST`.
+  The delivery timeline also records program `delivery` after its configured production job succeeds.
+  The run's overall conclusion alone cannot establish that job's success.
+  Each record publishes `deploy.recorded` to the affected open recording issues and check-owning issues, once per issue.
+  Its payload is `{repo, program, commit, deployed_at, source}`. It promises no check verdict.
+  Recipients have an unretracted stored live result for that repository and either that program or no named program.
+
+- `/api/v1/deploys?repo=owner/repo` (GET; cookie, trusted header, or bearer)
+
+  `dispatch deploys` reads `{repo, deploys}`, one current row per program, ordered by program.
+  Each row names its build, deploy time, source, writer and URL.
+  Delivery rows also name the run and its actual attempt, or an unknown attempt.
+
 - `/api/v1/issues/{key}/results` (GET; cookie, trusted header, or bearer)
 
   GET lists the `check` blocks of the issue's Verification document in document order:
@@ -5255,7 +5285,7 @@ Each item below names a path with its method and identity, then its purpose.
     Two results recorded in transactions that overlapped can come back in either order.
 
   - `?at=<40-hex commit>` compares every check of the issue with that one commit and nothing else.
-    The only read of GitHub it leaves is the check runs of a check CI proves, read at the issue's newest pull request head as on every read, so a derived result stands at the named commit only where that commit is that head.
+    CI checks still read each selected pull request head. A derived result counts at the named commit only where that head matches it.
 
   Each check carries `compared_with`, every commit and branch its results are compared with in the order they are asked about, `compared_nothing` where it has none, and `pass_stands`.
   Each basis is `{kind, repo?, commit?, branch?, merge_commit?, pull_request?, learned_at?}`. Its `kind` is `named`, `pull_request` or `branch`.
@@ -5319,6 +5349,14 @@ Each item below names a path with its method and identity, then its purpose.
     A newer result that could not be placed gives `unknown/not_placed` rather than reviving an older pass.
     A result known to be at another commit is skipped. With none left, the answer is `no/no_result`.
 
+    A live check (`subject` `production` or `graph`) counts only observations of its program's current build, recorded since that deploy.
+    A named `program` selects that program alone. With one deployed program, an unnamed check reads it.
+    With several programs and none named, the answer is `unknown/program_not_named`. An absent current deploy gives `unknown/no_deploy`.
+    A deploy that does not hold the required merge gives `unknown/deploy_not_merged`.
+    With no observation of the current deploy, the answer is `unknown/no_result_from_deploy`.
+    `pass_stands.deploy` names the program, commit and deploy time. `not_counted` explains why an excluded result counts for nothing.
+    A named historical read leaves today's deploy out and judges the named commit's code alone.
+
   - `currency` is a compatibility field for `dispatch` clients older than pi-envoy 17.1.0, which print it beside each result and read none of the fields above (`api/results_currency.go`).
     It is `current` where `commit_stands` is `at_basis`, `check_words_moved` is false and no retraction stands, and `older` where `commit_stands` is `other_commit` or it is `at_basis` and `check_words_moved` is true.
     It is left out everywhere else, where those clients print "unknown": a commit Dispatch cannot place, a retracted result at its basis under the check's words now, and every result of a read that names `?at=`.
@@ -5341,7 +5379,8 @@ Each item below names a path with its method and identity, then its purpose.
 
   A check CI proves is one whose `ci_check` names a GitHub check run, with `when` `before_merge`, no `run`, a `negative_control`, and no result recorded against it (`validCICheck`, `docs.CICheckRuleIn`).
   No role records its result (POST below refuses one), and nothing is stored for it:
-  each read takes the head of the issue's `open` pull request of the highest number, else the final head of its `merged` one of the highest number (`delivery.NewestPullRequestHead`), and reads that commit's check runs once, every page, under one 10-second deadline (`api/results_ci.go`, `deriveCIResults`).
+  Each read checks every open head. With none open, it checks the final head of the last pull request to merge.
+  A merged set without an order reads unknown. Each distinct head's check runs share one ten-second deadline (`deriveCIResults`).
   Of the runs named exactly as `ci_check` says, the one of the highest id decides.
   An issue holding no such check makes no read of check runs at all.
 

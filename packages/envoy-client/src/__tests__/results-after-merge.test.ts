@@ -22,7 +22,7 @@ const check: CheckBlock = {
 };
 function render(changes: Partial<CheckBlock>, brief = false): string {
   const wire: IssueCheckResults = { issue: "DSP-1", verification_artifact_id: "verification", checks: [{ ...check, ...changes }] };
-  return formatCheckResults(wire, brief);
+  return formatCheckResults(wire, brief, { "DSP-1": repo });
 }
 const cases: readonly [string, CheckPassStands, readonly CheckResult[], string][] = [
   ["yes", { answer: "yes", roles: ["tester"], results: [pass.id], commit }, [pass],
@@ -56,6 +56,11 @@ test("a branch basis names the actual merge and an unknown merge says so", () =>
   expect(render({})).toContain(`in ${repo} branch main, merged at ${merge}`);
   expect(render({ compared_with: [], compared_nothing: "not_merged", results: [] }))
     .toContain("Compared with nothing: the work has no merge that Dispatch knows.");
+});
+
+test("an answer with no basis still names its check owner's repository", () => {
+  expect(render({ compared_with: [], program: "worker", pass_stands: { answer: "unknown", reason: "no_deploy" } }))
+    .toContain(`Dispatch holds no deploy of worker in ${repo}`);
 });
 
 test("an excluded result says why it counts for nothing", () => {
