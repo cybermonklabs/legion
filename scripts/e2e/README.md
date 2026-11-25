@@ -468,6 +468,7 @@ Each item below names a script, then what it proves.
 
   the check `c-real`, word for word: the step records of each issue, read with `dispatch steps`, against their agents' transcripts and the daemon's read lines.
   For each harness it takes one step its agent ended, with both reads more than 2 s from any response.
+  The end read leaves out the response of the step's completion call, which the count includes.
   That step's set model must be the settings', and its counts known, at least 1, and the transcript's between the reads.
   No record may name a model its transcript does not hold.
   `live-at-both-reads` holds a step that another fact ended to the same four things, as a second verdict.
@@ -5608,8 +5609,19 @@ Each item below names what it reads, then how.
 - A transcript holds the model of each response, counted or not.
   It also holds the model of each `model_change` entry (Oh My Pi) and `system` `init` line (Claude Code).
 
+- A response holds a completion call where it calls the `legion` tool with the op `handoff_complete` or `sign_off`.
+  The daemon's end line says `endedBy` `agent` only for the facts these two ops make.
+  An Oh My Pi session writes the call as a `toolCall` block named `legion`.
+  A Claude Code transcript writes it as a `tool_use` block named `mcp__legion__legion`, on any line of the response.
+
+- The completion's response of a step that its agent ended is found by its call, never by its time.
+  It is the last response that holds the call after the start read and up to the end read.
+  Where there is none, it is the first response after the end read, where that one holds the call.
+  The clock of the agent's machine may run ahead of the daemon's clock, and then the completion's response ends after the end read.
+
 - Each read has two gaps: the seconds since the last response before it, and the seconds to the next response after it.
   Every response counts here, error and synthetic ones too.
+  At the end read of a step that its agent ended, both gaps leave out the completion's response.
   A read is within 2 s of a response where either gap is under 2 s.
 
 Each item below names a comparison, then what it takes and judges.
@@ -5617,16 +5629,21 @@ Each item below names a comparison, then what it takes and judges.
 - `c-real` takes, for each harness of the agents file, the first step that its agent ended, in `--issue` order and then in printed order.
   Its agent ended it where the daemon's end line of the step says `endedBy` `agent`.
   The step needs one start read and one end read of one launch, neither final totals, and neither within 2 s of a response.
+  It needs a completion's response. The 2 s test of its end read leaves that response out, and every other response keeps the test at both reads.
   Its set model must be the agent's `setModel`, and its counts must be known and total at least 1.
-  Its counts must equal, model by model, the transcript's counted responses after the start read and up to the end read.
+  Its counts must equal, model by model, the transcript's counted responses after the start read and up to the end read, with the completion's response.
+  That response counts where its time lies after the end read too.
   No record of the issues may name a set, answering or last model that its agent's transcript does not hold.
   A harness with no such step prints `c-real: UNKNOWN: took no step of harness <harness>`, and no other kind of step stands in for it.
 
 - `live-at-both-reads` is no part of `c-real`.
   For each harness, it takes the first step that another fact ended, on the same two reads, and holds it to the same four things.
+  Its end read leaves out no response, and its count holds no response after the end read.
 
 - For each step that its agent ended, taken or not, it prints one `GAP:` line.
   That line gives each read's two gaps, or says why the read is missing or final.
+  It names the completion's response that the end read leaves out, and how far before or after the read that response ended.
+  Where no response holds the completion call, it says so.
   A harness with no such step prints `GAP: harness <harness>: saw no step that its agent ended`.
 
 | exit | printed | when |
