@@ -390,6 +390,7 @@ describe("every committed recording answers the display tree of every stored tex
       "AskOptionWithTrees.description",
       "AskOptionWithTrees.label",
       "AskResolutionWithTrees.reason",
+      "AskThreadRow.question",
       "AskWithTrees.question",
       "BlockPinRead.text",
       "BroadcastCreated.body",
