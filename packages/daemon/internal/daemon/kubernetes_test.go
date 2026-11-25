@@ -591,7 +591,7 @@ func TestEveryReservationReachesTheSandboxRuntimeAsRequestAndLimit(t *testing.T)
 		Issue:      config.Reservation{CPU: "4", CPURequest: "2", Memory: "32Gi", MemoryRequest: "8Gi", EphemeralStorage: "20Gi", EphemeralStorageRequest: "1Gi"},
 		Controller: config.Reservation{CPU: "1500m", CPURequest: "1500m", Memory: "8Gi", MemoryRequest: "8Gi", EphemeralStorage: "40Gi", EphemeralStorageRequest: "2Gi"},
 	}
-	opts, err := sandboxOptions(cfg, *cfg.Runtime.Kubernetes, "test", "", lookup(nil), quietLogger())
+	opts, err := sandboxOptions(cfg, *cfg.Runtime.Kubernetes, "test", sandbox.DispatchCredential{}, lookup(nil), quietLogger())
 	if err != nil {
 		t.Fatalf("sandboxOptions: %v", err)
 	}
@@ -661,7 +661,7 @@ func TestKubernetesSetupReachesTheSandboxRuntime(t *testing.T) {
 	}
 	want := []string{"/bin/sh", "-c", "omp plugin install agent-skills"}
 	k.Setup = want
-	opts, err := sandboxOptions(cfg, k, "test", "", lookup(nil), quietLogger())
+	opts, err := sandboxOptions(cfg, k, "test", sandbox.DispatchCredential{}, lookup(nil), quietLogger())
 	if err != nil {
 		t.Fatalf("sandboxOptions: %v", err)
 	}
@@ -670,7 +670,7 @@ func TestKubernetesSetupReachesTheSandboxRuntime(t *testing.T) {
 	}
 
 	k.Setup = nil
-	opts, err = sandboxOptions(cfg, k, "test", "", lookup(nil), quietLogger())
+	opts, err = sandboxOptions(cfg, k, "test", sandbox.DispatchCredential{}, lookup(nil), quietLogger())
 	if err != nil {
 		t.Fatalf("sandboxOptions without setup: %v", err)
 	}
@@ -697,7 +697,7 @@ func TestKubernetesSandboxReachesTheSandboxRuntime(t *testing.T) {
 			IdentityProvider: "https://container.googleapis.com/v1/projects/example-project/locations/us-central1/clusters/example-cluster",
 		}},
 	}
-	opts, err := sandboxOptions(cfg, k, "test", "", lookup(nil), quietLogger())
+	opts, err := sandboxOptions(cfg, k, "test", sandbox.DispatchCredential{}, lookup(nil), quietLogger())
 	if err != nil {
 		t.Fatalf("sandboxOptions: %v", err)
 	}
@@ -717,7 +717,7 @@ func TestKubernetesSandboxReachesTheSandboxRuntime(t *testing.T) {
 	}
 
 	k.Sandbox = config.SandboxConfig{}
-	opts, err = sandboxOptions(cfg, k, "test", "", lookup(nil), quietLogger())
+	opts, err = sandboxOptions(cfg, k, "test", sandbox.DispatchCredential{}, lookup(nil), quietLogger())
 	if err != nil {
 		t.Fatalf("sandboxOptions without a sandbox block: %v", err)
 	}
@@ -733,7 +733,7 @@ func TestTheRepositoryCacheReachesTheSandboxRuntime(t *testing.T) {
 	cfg := kubernetesConfig(t, "https://127.0.0.1:1")
 	reservation := config.Reservation{CPU: "2", CPURequest: "2", Memory: "8Gi", MemoryRequest: "4Gi", EphemeralStorage: "2Gi", EphemeralStorageRequest: "1Gi"}
 	cfg.Runtime.Kubernetes.RepositoryCache = config.RepositoryCacheConfig{Volume: "50Gi", RefreshMinutes: 5, RetainHours: 24, Resources: reservation}
-	opts, err := sandboxOptions(cfg, *cfg.Runtime.Kubernetes, "test", "", lookup(nil), quietLogger())
+	opts, err := sandboxOptions(cfg, *cfg.Runtime.Kubernetes, "test", sandbox.DispatchCredential{}, lookup(nil), quietLogger())
 	if err != nil {
 		t.Fatalf("sandboxOptions: %v", err)
 	}
@@ -761,7 +761,7 @@ func TestTheVolumeTrimReachesTheSandboxRuntime(t *testing.T) {
 	t.Parallel()
 	cfg := kubernetesConfig(t, "https://127.0.0.1:1")
 	cfg.Runtime.Kubernetes.VolumeTrim = config.VolumeTrimConfig{Enabled: true, HighPercent: 90, LowPercent: 60, MinAgeMinutes: 45, IntervalSeconds: 30}
-	opts, err := sandboxOptions(cfg, *cfg.Runtime.Kubernetes, "test", "", lookup(nil), quietLogger())
+	opts, err := sandboxOptions(cfg, *cfg.Runtime.Kubernetes, "test", sandbox.DispatchCredential{}, lookup(nil), quietLogger())
 	if err != nil {
 		t.Fatalf("sandboxOptions: %v", err)
 	}
@@ -771,7 +771,7 @@ func TestTheVolumeTrimReachesTheSandboxRuntime(t *testing.T) {
 	}
 
 	cfg.Runtime.Kubernetes.VolumeTrim.Enabled = false
-	opts, err = sandboxOptions(cfg, *cfg.Runtime.Kubernetes, "test", "", lookup(nil), quietLogger())
+	opts, err = sandboxOptions(cfg, *cfg.Runtime.Kubernetes, "test", sandbox.DispatchCredential{}, lookup(nil), quietLogger())
 	if err != nil {
 		t.Fatalf("sandboxOptions with the trimmer off: %v", err)
 	}
@@ -842,7 +842,7 @@ current-context: legion-daemon
 	if err != nil {
 		t.Fatalf("load the liveness checkpoint's configuration: %v", err)
 	}
-	opts, err := sandboxOptions(cfg, *cfg.Runtime.Kubernetes, "demo", "", lookup(nil), quietLogger())
+	opts, err := sandboxOptions(cfg, *cfg.Runtime.Kubernetes, "demo", sandbox.DispatchCredential{}, lookup(nil), quietLogger())
 	if err != nil {
 		t.Fatalf("sandboxOptions: %v", err)
 	}
@@ -867,9 +867,10 @@ current-context: legion-daemon
 }
 
 // A Kubernetes daemon refuses, before its boot, an operator pod that collides with Legion's own —
-// a mount at Legion's launcher token projection (the LEGION-270 plan's negative control), and a provider key
-// or pod variable a launch secret's pointer names (the Envoy bearer's, the NATS nkey seed's) — so
-// no pod is ever built with it.
+// a mount at Legion's launcher token projection (the LEGION-270 plan's negative control), a provider key
+// or pod variable a launch secret's pointer names (the Envoy bearer's, the NATS nkey seed's), and,
+// under dispatch_token_broker, a provider key named for the Dispatch token — so no pod is ever
+// built with it.
 func TestAKubernetesDaemonRefusesAnOperatorPodCollidingWithLegionsBeforeItsBoot(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -914,6 +915,18 @@ func TestAKubernetesDaemonRefusesAnOperatorPodCollidingWithLegionsBeforeItsBoot(
 				cfg.ProviderKeys = []config.ProviderKey{{Env: "FOO", Secret: "NATS_NKEY_SEED"}}
 			},
 			want: "provider_keys names FOO from the providers Secret's key NATS_NKEY_SEED, which the pod mounts as the launch secret NATS_NKEY_SEED: the shim would export that secret into Oh My Pi's environment as FOO",
+		},
+		{
+			// The boot refuses this key with or without dispatch_token_broker, since the runtime
+			// owns its pointer, DISPATCH_TOKEN_FILE. Under the setting it gives the broker's own
+			// reason: each role trades its pod's identity for its own Dispatch token.
+			name: "a provider key for the Dispatch token under dispatch_token_broker",
+			change: func(cfg *config.Config) {
+				cfg.DispatchTokenBroker = true
+				cfg.Runtime.Kubernetes.AgentSecrets = &config.AgentSecretsConfig{URL: "https://secrets.internal.example", Audience: "agent-secrets", TokenExpirySeconds: 3600, ExchangeAudience: "legion-broker-exchange"}
+				cfg.ProviderKeys = []config.ProviderKey{{Env: "DISPATCH_TOKEN", Secret: "dispatch"}}
+			},
+			want: "provider_keys names DISPATCH_TOKEN, a Dispatch credential, under dispatch_token_broker: each role trades its pod's identity for its own Dispatch token, so the providers Secret may hold no shared one; remove the key",
 		},
 		{
 			// Every agent reads it, and the dispatch command turns Dispatch off over a value that is
@@ -998,7 +1011,7 @@ func TestTheOperatorsPodReachesTheSandboxRuntime(t *testing.T) {
 		VolumeMounts:   []corev1.VolumeMount{{Name: "creds", MountPath: "/etc/legion-operator/creds", ReadOnly: true}},
 	}
 	cfg.Runtime.Kubernetes.Pod = pod
-	opts, err := sandboxOptions(cfg, *cfg.Runtime.Kubernetes, "test", "", lookup(nil), quietLogger())
+	opts, err := sandboxOptions(cfg, *cfg.Runtime.Kubernetes, "test", sandbox.DispatchCredential{}, lookup(nil), quietLogger())
 	if err != nil {
 		t.Fatalf("sandboxOptions: %v", err)
 	}
@@ -1032,7 +1045,7 @@ func TestTheNatsSeedReachesTheSandboxRuntimeAsTheProvidersSecrets(t *testing.T) 
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := kubernetesConfig(t, "https://127.0.0.1:1")
 			cfg.NatsNkeySeedFile = tc.key
-			opts, err := sandboxOptions(cfg, *cfg.Runtime.Kubernetes, "test", "", lookup(tc.env), quietLogger())
+			opts, err := sandboxOptions(cfg, *cfg.Runtime.Kubernetes, "test", sandbox.DispatchCredential{}, lookup(tc.env), quietLogger())
 			if err != nil {
 				t.Fatalf("sandboxOptions: %v", err)
 			}
@@ -1080,7 +1093,7 @@ func TestEveryDurationKeyReachesTheRuntimeOptionThatTakesIt(t *testing.T) {
 	cfg := kubernetesConfig(t, "https://127.0.0.1:1")
 	cfg.WorkerStopTimeout, cfg.WorkerBootTimeout, cfg.ProbeInterval, cfg.SlowCommandTimeout = 11*time.Second, 22*time.Second, 33*time.Second, 44*time.Second
 
-	opts, err := sandboxOptions(cfg, *cfg.Runtime.Kubernetes, "test", "", lookup(nil), quietLogger())
+	opts, err := sandboxOptions(cfg, *cfg.Runtime.Kubernetes, "test", sandbox.DispatchCredential{}, lookup(nil), quietLogger())
 	if err != nil {
 		t.Fatalf("sandboxOptions: %v", err)
 	}
@@ -1112,7 +1125,7 @@ func TestSandboxOptionsCarryTheAgentSecretsBlock(t *testing.T) {
 	cfg.Runtime.Kubernetes.AgentSecrets = &config.AgentSecretsConfig{
 		URL: "https://secrets.internal.example", Audience: "agent-secrets", TokenExpirySeconds: 1800, ExchangeAudience: "legion-broker-exchange",
 	}
-	opts, err := sandboxOptions(cfg, *cfg.Runtime.Kubernetes, "test", "", lookup(nil), quietLogger())
+	opts, err := sandboxOptions(cfg, *cfg.Runtime.Kubernetes, "test", sandbox.DispatchCredential{}, lookup(nil), quietLogger())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1124,7 +1137,7 @@ func TestSandboxOptionsCarryTheAgentSecretsBlock(t *testing.T) {
 		t.Fatalf("Tools.AgentSecrets = %q", opts.Tools.AgentSecrets)
 	}
 	cfg.Runtime.Kubernetes.AgentSecrets = nil
-	opts, _ = sandboxOptions(cfg, *cfg.Runtime.Kubernetes, "test", "", lookup(nil), quietLogger())
+	opts, _ = sandboxOptions(cfg, *cfg.Runtime.Kubernetes, "test", sandbox.DispatchCredential{}, lookup(nil), quietLogger())
 	if opts.AgentSecrets != nil {
 		t.Fatalf("AgentSecrets = %+v without the block", opts.AgentSecrets)
 	}
@@ -1139,7 +1152,7 @@ func TestSandboxOptionsCarryTheProjectsSlackChannels(t *testing.T) {
 	project := cfg.Projects[cfg.Project]
 	project.SlackChannels = []string{"C00000000", "G00000001"}
 	cfg.Projects = map[string]config.Project{cfg.Project: project}
-	opts, err := sandboxOptions(cfg, *cfg.Runtime.Kubernetes, "test", "", lookup(nil), quietLogger())
+	opts, err := sandboxOptions(cfg, *cfg.Runtime.Kubernetes, "test", sandbox.DispatchCredential{}, lookup(nil), quietLogger())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1148,7 +1161,7 @@ func TestSandboxOptionsCarryTheProjectsSlackChannels(t *testing.T) {
 	}
 	project.SlackChannels = nil
 	cfg.Projects[cfg.Project] = project
-	if opts, _ = sandboxOptions(cfg, *cfg.Runtime.Kubernetes, "test", "", lookup(nil), quietLogger()); len(opts.ControllerSlackChannels) != 0 {
+	if opts, _ = sandboxOptions(cfg, *cfg.Runtime.Kubernetes, "test", sandbox.DispatchCredential{}, lookup(nil), quietLogger()); len(opts.ControllerSlackChannels) != 0 {
 		t.Fatalf("ControllerSlackChannels = %q with no channel, want none", opts.ControllerSlackChannels)
 	}
 }
@@ -1169,7 +1182,7 @@ func TestNoCredentialMaterialReachesAPod(t *testing.T) {
 			t.Fatalf("launch secret %s: no daemon credential material may reach a pod", secret.name)
 		}
 	}
-	opts, err := sandboxOptions(cfg, *cfg.Runtime.Kubernetes, "test", "", lookup(nil), quietLogger())
+	opts, err := sandboxOptions(cfg, *cfg.Runtime.Kubernetes, "test", sandbox.DispatchCredential{}, lookup(nil), quietLogger())
 	if err != nil {
 		t.Fatal(err)
 	}

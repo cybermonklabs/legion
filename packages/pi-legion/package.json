@@ -11,9 +11,6 @@
       "dist/skills"
     ]
   },
-  "legion": {
-    "daemonApiVersion": 256
-  },
   "repository": {
     "type": "git",
     "url": "https://github.com/cybermonklabs/legion"

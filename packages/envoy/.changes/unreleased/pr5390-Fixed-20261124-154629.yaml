@@ -1,0 +1,15 @@
+kind: Fixed
+body: |-
+  The xid window rig now finds the execution tracer's memory where no mapping carries the Go
+  runtime's names: on a kernel built without CONFIG_ANON_VMA_NAME, or under
+  GODEBUG=decoratemappings=0. There the hold at each BEGIN found none of it, made none of it
+  present, and the tracer's writes inside a window's gaps could fault on fresh pages, which a gap
+  reads as the code's time; TestTheTracersEventsInAWindowTouchNoFreshPage failed in 19 to 76 of
+  100 runs on such a kernel. The hold now finds it as what was mapped since the rig started its
+  trace, less the Go heap's mapping and threads' stacks. A BEGIN at which it still finds none
+  leaves its window UNKNOWN, naming that reason, and the burst test fails as UNKNOWN on an empty
+  list. The burst test also yields before its burst and touches its thread's signal stack first,
+  so a preemption of the burst writes no signal frame onto a fresh page.
+time: 2026-11-24T15:46:29Z
+custom:
+    Issue: pr5390
