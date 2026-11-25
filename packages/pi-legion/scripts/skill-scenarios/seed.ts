@@ -92,6 +92,10 @@
 //                                          events go out on the NATS DISPATCH_E2E_NATS_URLS names,
 //                                          and the case's results and handoff records are recorded;
 //                                          adds the records and each body's line of k1 to <file>
+//   seed.ts heads-settle <file> <heads file> <scenario> [<case>]
+//                                          once a world's job ran once more: the stand-in serves
+//                                          its second attempt at #702's head as it concluded, and
+//                                          the settlement of #702's checks goes out on the NATS
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type {
@@ -126,8 +130,7 @@ import {
 } from "../../../dispatch/e2e/api";
 import { ENTRY_HEADER } from "./fetch-spec-sources";
 import { HEADS_SCENARIOS, headsCases } from "./heads-scenarios";
-import { headsEvents, headsIssue, headsWorld } from "./heads-world";
-import { parseInstant } from "./production-dispatch";
+import { headsEvents, headsIssue, headsSettle, headsWorld } from "./heads-world";
 import { agentGet, agentPost, IMPLEMENTER } from "./seed-requests";
 import { CREATED, session, sessionId, toolResults } from "./transcript";
 
@@ -892,7 +895,7 @@ const HEADS_USAGE = HEADS_SCENARIOS.map((scenario) => {
   if (named === "") return scenario;
   return cases.includes("") ? `${scenario} [${named}]` : `${scenario} <${named}>`;
 }).join("|");
-const USAGE = `usage: seed.ts project | ask-on-message <file> | measure-before-ask <file> | capture <file> <run dir> | brainstorm | capture-brainstorm <file> <run dir> | spec-writing <file> <source dir> | spec-rewrite <file> <source dir> | state <file> <turn> <run dir> | answer <file> <answers file> | approve <file> | capture-spec <file> <run dir> | askgate <file> | capture-askgate <file> <run dir> | tester-proof <file> | implement-handoff <file> <body file> <commit> | capture-handoffs <file> <run dir> | heads-issue <file> <${HEADS_USAGE}> | heads-events <file> <heads file> <the same scenario>`;
+const USAGE = `usage: seed.ts project | ask-on-message <file> | measure-before-ask <file> | capture <file> <run dir> | brainstorm | capture-brainstorm <file> <run dir> | spec-writing <file> <source dir> | spec-rewrite <file> <source dir> | state <file> <turn> <run dir> | answer <file> <answers file> | approve <file> | capture-spec <file> <run dir> | askgate <file> | capture-askgate <file> <run dir> | tester-proof <file> | implement-handoff <file> <body file> <commit> | capture-handoffs <file> <run dir> | heads-issue <file> <${HEADS_USAGE}> | heads-events <file> <heads file> <the same scenario> | heads-settle <file> <heads file> <the same scenario>`;
 
 /** Runs the mode `argv` names; false when argv names no mode, with its arguments. The first six
  * modes take extra arguments and ignore them, as they always did; each new mode takes exactly its
@@ -939,10 +942,15 @@ async function main(argv: string[]): Promise<boolean> {
     const world = headsWorld(second, third);
     if (world === undefined) return false;
     await headsIssue(file, world);
-  } else if (command === "heads-events" && file !== undefined && third !== undefined && n <= 5) {
+  } else if (
+    (command === "heads-events" || command === "heads-settle") &&
+    file !== undefined &&
+    third !== undefined &&
+    n <= 5
+  ) {
     const world = headsWorld(third, argv[4]);
     if (world === undefined || second === undefined) return false;
-    await headsEvents(file, second, world);
+    await (command === "heads-events" ? headsEvents : headsSettle)(file, second, world);
   } else return false;
   return true;
 }

@@ -14,7 +14,7 @@ import {
 } from "../../../dispatch/e2e/api";
 import { harnessPorts } from "../../../dispatch/e2e/harness-ports";
 import { headsCases } from "./heads-scenarios";
-import { RIG_WORLD } from "./rig-world";
+import { RIG_WORLD, type RigCIJob } from "./rig-world";
 import { agentPost, IMPLEMENTER } from "./seed-requests";
 
 /** The repository of the heads scenarios' world and its default branch, rig-world.json's. */
@@ -34,6 +34,23 @@ const CI_PASS_JOB = RIG_WORLD.ciJobs["ci-check-pass"];
 /** Whether a world is one of a failed CI check: of reviewer-own-head, named by its case alone, or
  * of architect-pass-and-fail, by the scenario's name and the case. */
 const ciCheckWorld = (world: string) => /(^|-)ci-check-fail(-other-head)?$/.test(world);
+/** The job of k-ci, the check a CI job runs, in a world of fix-judge (rig-world.json's entry of
+ * that world's name): failed at #702's head, the head a fix of k-ci started at; undefined for any
+ * other world. */
+const fixJob = (world: string) =>
+  world.startsWith("fix-judge-")
+    ? Object.entries(RIG_WORLD.ciJobs).find(([name]) => name === world)?.[1]
+    : undefined;
+/** The run of k1 in the worlds of fix-judge, whose change adds greet() and its CLI under
+ * packages/greet: the check that no CI job runs, which the implementer's pass at #702's head
+ * proves. Its words are plain words of the pull-request line, as K1_RUN's are. */
+const FIX_K1_RUN = "bun packages/greet/greet.ts Ada";
+/** k1's negative control in the worlds of fix-judge. */
+const FIX_K1_CONTROL = "Make greet() print another greeting and the run prints it.";
+/** The files the change of a world of fix-judge holds over the base. */
+const FIX_FILES = ["packages/greet/greet.ts", "packages/greet/greet.test.ts"];
+/** The title of a world of fix-judge's issue. */
+const FIX_TITLE = "greet(): a greeting helper for the widgets CLI";
 /** The run of k1 with no `ci_check`, which every recorded result names: it proves R1, the line of
  * docs/usage.md that names `widgets --help` and says it lists every command (the `.` stands for the
  * backquote the page writes). A check that served no requirement, or whose run matched any line
@@ -122,7 +139,9 @@ async function agentPut(route: string, input: Record<string, unknown>): Promise<
  * delivery settings are written, as scripts/e2e/verification-results.ts writes them, since the
  * intake takes an event only while a settings row exists; then the issue, its spec, and its
  * Verification document, whose one check k1 carries `ci_check` in the case ci-only and in
- * ci-pass-and-fail. The fixture names that document, whose block k1 rig.sh's ci_job_results reads. */
+ * ci-pass-and-fail. The fixture names that document, whose block k1 rig.sh's ci_job_results reads.
+ * A world of fix-judge has an issue of its own: greet() and its CLI under packages/greet, whose
+ * one requirement k1 proves by a run and k-ci by its CI job (fixJob), the check a fix runs for. */
 export async function headsIssue(file: string, world: string): Promise<void> {
   await seedGithub({});
   await agentPut("/api/v1/projects/LWEVAL/default-repository", { repo: HEADS_REPO });
@@ -134,7 +153,12 @@ export async function headsIssue(file: string, world: string): Promise<void> {
     pr_checks_workflow_path: ".github/workflows/pr-checks.yml",
     production_job_names: ["deploy / deploy"],
   });
-  const title = "A usage page for the widgets CLI";
+  const fix = fixJob(world);
+  const title = fix === undefined ? "A usage page for the widgets CLI" : FIX_TITLE;
+  const requirement =
+    fix === undefined
+      ? "**R1.** `docs/usage.md` names `widgets --help`, which lists every command. From: the issue."
+      : "**R1.** `bun packages/greet/greet.ts <name>` prints `Hello, <name>!`, the name trimmed of the spaces at either end. From: the issue.";
   const issue = await createIssue(
     {
       project: "LWEVAL",
@@ -143,12 +167,14 @@ export async function headsIssue(file: string, world: string): Promise<void> {
       spec: [
         "## Goal",
         "",
-        "`docs/usage.md` tells a reader how to list the widgets CLI's commands.",
+        fix === undefined
+          ? "`docs/usage.md` tells a reader how to list the widgets CLI's commands."
+          : "The widgets CLI greets a person by name.",
         "",
         "## Requirements",
         "",
         ":::requirement{#r1}",
-        "**R1.** `docs/usage.md` names `widgets --help`, which lists every command. From: the issue.",
+        requirement,
         ":::",
       ].join("\n"),
     },
@@ -165,17 +191,27 @@ export async function headsIssue(file: string, world: string): Promise<void> {
   const attributes =
     ciJob !== ""
       ? `${serves} ci_check="${ciJob}" when="before_merge" negative_control="Drop the line from docs/usage.md and the ${ciJob} job fails."`
-      : `${serves} run="${K1_RUN}" when="before_merge" negative_control="Drop the line from docs/usage.md and grep prints 0 and exits 1."`;
+      : fix !== undefined
+        ? `${serves} run="${FIX_K1_RUN}" when="before_merge" negative_control="${FIX_K1_CONTROL}"`
+        : `${serves} run="${K1_RUN}" when="before_merge" negative_control="Drop the line from docs/usage.md and grep prints 0 and exits 1."`;
   // In the worlds of a failed CI check the document holds k2 beside k1: a check of R1 that a CI
-  // job runs, the test of the page against the commands the CLI lists.
-  const k2 = ciCheckWorld(world)
+  // job runs, the test of the page against the commands the CLI lists. In a world of fix-judge it
+  // holds k-ci, the check its CI job runs, whose failure at #702's head started the fix.
+  const second = ciCheckWorld(world)
     ? [
         "",
         `:::check{#k2 surface="cli" ${serves} ci_check="${CI_FAIL_JOB.name}" when="before_merge" negative_control="Drop a command from the list docs/usage.md gives and the ${CI_FAIL_JOB.name} job fails."}`,
         "The page `docs/usage.md` lists each command that `widgets --help` lists.",
         ":::",
       ]
-    : [];
+    : fix !== undefined
+      ? [
+          "",
+          `:::check{#k-ci surface="cli" ${serves} ci_check="${fix.name}" when="before_merge" negative_control="Break what the ${fix.name} job checks and the ${fix.name} job fails."}`,
+          `The ${fix.name} job of the repository's CI passes at the head.`,
+          ":::",
+        ]
+      : [];
   const verification = await createIssueArtifact(
     issue.key,
     {
@@ -184,9 +220,11 @@ export async function headsIssue(file: string, world: string): Promise<void> {
         "# Verification",
         "",
         `:::check{#k1 surface="cli" ${attributes}}`,
-        "`docs/usage.md` names `widgets --help`, which lists every command.",
+        fix === undefined
+          ? "`docs/usage.md` names `widgets --help`, which lists every command."
+          : "`bun packages/greet/greet.ts <name>` prints `Hello, <name>!`, the name trimmed of the spaces at either end.",
         ":::",
-        ...k2,
+        ...second,
       ].join("\n"),
     },
     { as: "agent" }
@@ -252,6 +290,10 @@ const TESTER_PASS: HeadsResult = { ...IMPLEMENTER_PASS, role: "tester" };
  *     a pass of the implementer and one of the tester of k1 at the head of each open pull request,
  *     then the `test` record, and for the architect the `review` record. k2, the check a CI job
  *     runs, holds no result of a role: its state is its job's.
+ *   - fix-judge's worlds: #702 alone, on the issue's own branch legion/<issue>, at whose head
+ *     k-ci's job failed (its first attempt); a pass of the implementer of k1 there and the
+ *     `implement` record, then, but in tester-beside, whose tester is the one that runs, a pass of
+ *     the tester and the `test` record.
  * Each record is written as its role's session (IMPLEMENTER, TESTER, REVIEWER), with the fields its
  * role's prompt names (roles/tester.md, roles/reviewer.md) and no other: the tester's holds no
  * `implementerProof`, `failures` or `failed`, since each failure is a fail result on its check and
@@ -265,8 +307,9 @@ export async function headsEvents(file: string, headsFile: string, world: string
   const ciRunning = world.startsWith("ci-pass-and-fail-");
   const ciCheck = ciCheckWorld(world);
   const otherHead = ciCheck && world.endsWith("-other-head");
+  const fix = fixJob(world);
   const prs =
-    (world.startsWith("architect-pass-and-fail") && !otherHead) || ciRunning
+    (world.startsWith("architect-pass-and-fail") && !otherHead) || ciRunning || fix !== undefined
       ? ["702"]
       : ["702", "703"];
   const headOf = (pr: string): string => {
@@ -278,19 +321,7 @@ export async function headsEvents(file: string, headsFile: string, world: string
   await seedGithub({
     commits: prs.map(headOf),
     pulls: Object.fromEntries(
-      prs.map((pr) => [
-        pr,
-        {
-          head_sha: headOf(pr),
-          state: "open",
-          merged: false,
-          title,
-          body: `Dispatch: ${fixture.issue}`,
-          head_ref: `legion/${fixture.issue}-${pr}`,
-          head_repo: HEADS_REPO,
-          base_ref: HEADS_BASE,
-        },
-      ])
+      prs.map((pr) => [pr, pullSeed(fixture, pr, headOf(pr), fix !== undefined)])
     ),
     ...(world === "ci-only"
       ? {
@@ -364,55 +395,30 @@ export async function headsEvents(file: string, headsFile: string, world: string
               ),
             }
           : {}),
+    // k-ci's job in a world of fix-judge: its first attempt, failed at #702's head.
+    ...(fix === undefined ? {} : { check_runs: { [headOf("702")]: [fixCheckRun(fix, false)] } }),
   });
-
-  const natsServers = (process.env.DISPATCH_E2E_NATS_URLS ?? "")
-    .split(",")
-    .map((server) => server.trim())
-    .filter((server) => server !== "");
-  if (natsServers.length === 0)
-    throw new Error("DISPATCH_E2E_NATS_URLS names no NATS (rig.sh own_github)");
-  const nats = await connect({ name: "skill-scenarios-seed", servers: natsServers });
-  const codec = StringCodec();
-  const [owner, name] = HEADS_REPO.split("/");
-  for (const pr of prs) {
-    const subject = `notifications.github.${String(owner).replaceAll(".", "_")}.${String(name).replaceAll(".", "_")}.pr.${pr}`;
-    const eventID = `skill-scenarios-pr-${pr}-opened-${headOf(pr).slice(0, 7)}`;
-    const payload = {
-      action: "opened",
-      base_ref: HEADS_BASE,
-      body: `Dispatch: ${fixture.issue}`,
-      head_ref: `legion/${fixture.issue}-${pr}`,
-      head_repo: HEADS_REPO,
-      head_sha: headOf(pr),
-      kind: "pr",
-      merged: "false",
-      number: pr,
-      repo: HEADS_REPO,
-      title,
-      updated_at: new Date(Date.now() - 60_000).toISOString(),
-      url: `https://github.com/${HEADS_REPO}/pull/${pr}`,
-    };
-    nats.publish(
-      subject,
-      codec.encode(
-        JSON.stringify({
-          dedupe_key: eventID,
-          event_id: eventID,
-          issued_at: Date.now(),
-          payload: JSON.stringify(payload),
-          payload_summary: subject,
-          source: "github",
-          source_event_id: eventID,
-          topic: subject,
-          trace_id: eventID,
-        })
-      )
-    );
-    console.log(`published the opened envelope of #${pr} on ${subject}`);
-  }
-  await nats.flush();
-  await nats.close();
+  await publishEnvelopes(
+    prs.map((pr) => ({
+      pr,
+      event: `skill-scenarios-pr-${pr}-opened-${headOf(pr).slice(0, 7)}`,
+      payload: {
+        action: "opened",
+        base_ref: HEADS_BASE,
+        body: `Dispatch: ${fixture.issue}`,
+        head_ref: pullSeed(fixture, pr, headOf(pr), fix !== undefined).head_ref,
+        head_repo: HEADS_REPO,
+        head_sha: headOf(pr),
+        kind: "pr",
+        merged: "false",
+        number: pr,
+        repo: HEADS_REPO,
+        title,
+        updated_at: new Date(Date.now() - 60_000).toISOString(),
+        url: `https://github.com/${HEADS_REPO}/pull/${pr}`,
+      },
+    }))
+  );
 
   const lines: Record<string, string> = {};
   const record = async (result: HeadsResult): Promise<void> => {
@@ -424,9 +430,12 @@ export async function headsEvents(file: string, headsFile: string, world: string
         verdict: result.verdict,
         commit: headOf(result.pr),
         surface: "cli",
-        run: K1_RUN,
+        run: fix === undefined ? K1_RUN : FIX_K1_RUN,
         observed: result.observed,
-        negative_control: "Drop the line from docs/usage.md and grep prints 0 and exits 1.",
+        negative_control:
+          fix === undefined
+            ? "Drop the line from docs/usage.md and grep prints 0 and exits 1."
+            : FIX_K1_CONTROL,
         actor: result.role === "implementer" ? IMPLEMENTER : TESTER,
       }
     )) as { line?: unknown };
@@ -446,7 +455,7 @@ export async function headsEvents(file: string, headsFile: string, world: string
             phase,
             issue: fixture.issue,
             head,
-            filesChanged: ["docs/usage.md"],
+            filesChanged: fix === undefined ? ["docs/usage.md"] : FIX_FILES,
           }
         : phase === "test"
           ? {
@@ -541,6 +550,16 @@ export async function headsEvents(file: string, headsFile: string, world: string
     test = await handoff("test");
     await record(laterFail);
     if (world === "architect-pass-and-fail") review = await handoff("review");
+  } else if (fix !== undefined) {
+    // The fix's worlds: the implementer's pass of k1, its record, and where the tester's step has
+    // passed before the fix started (each world but the tester's own), the tester's pass and record.
+    const observed = `${FIX_K1_RUN} printed Hello, Ada! and exited 0.`;
+    await record({ ...IMPLEMENTER_PASS, observed });
+    implement = await handoff("implement");
+    if (world !== "fix-judge-tester-beside") {
+      await record({ ...TESTER_PASS, observed });
+      test = await handoff("test");
+    }
   } else {
     // A world the catalog lists and this function records nothing for would leave its run's issue
     // without the results its agent is to judge.
@@ -554,4 +573,113 @@ export async function headsEvents(file: string, headsFile: string, world: string
     lines,
   };
   writeFileSync(file, `${JSON.stringify(written)}\n`);
+}
+
+/** The pull request `pr` of the run's issue as the GitHub stand-in serves it, at `head`: on the
+ * branch legion/<issue>-<pr>, or in a world of fix-judge (`fix`) on the issue's own branch
+ * legion/<issue>, the branch of the task a fix pushes once at its end. */
+function pullSeed(
+  fixture: z.infer<typeof HeadsFixture>,
+  pr: string,
+  head: string,
+  fix: boolean
+) {
+  return {
+    head_sha: head,
+    state: "open",
+    merged: false,
+    title: `${fixture.title} (${fixture.issue})`,
+    body: `Dispatch: ${fixture.issue}`,
+    head_ref: fix ? `legion/${fixture.issue}` : `legion/${fixture.issue}-${pr}`,
+    head_repo: HEADS_REPO,
+    base_ref: HEADS_BASE,
+  };
+}
+
+/** k-ci's job in a world of fix-judge as the GitHub stand-in serves its check run: its first
+ * attempt, which failed, or (`settled`) the second attempt a re-run made, as it concluded. */
+function fixCheckRun(job: RigCIJob, settled: boolean) {
+  const id = settled ? (job.rerun?.checkRun ?? job.checkRun) : job.checkRun;
+  const conclusion = settled ? (job.rerun?.conclusion ?? "failure") : (job.conclusion ?? "success");
+  return {
+    id,
+    name: job.name,
+    check_suite_id: job.suite,
+    status: "completed",
+    conclusion,
+    completed_at: new Date(Date.now() - 60_000).toISOString(),
+    html_url: `https://github.com/${HEADS_REPO}/actions/runs/${job.run}/job/${id}`,
+    output: {
+      title: `${job.name} ${conclusion}`,
+      summary: `The ${job.name} job concluded ${conclusion}.`,
+    },
+  };
+}
+
+/** Publishes one envelope of the GitHub listener for each of `envelopes` on the NATS
+ * DISPATCH_E2E_NATS_URLS names, on the subject of its pull request, with the body of
+ * `publishPullRequest` (scripts/e2e/verification-results.ts): `payload` is the listener's own,
+ * `event` its id. */
+async function publishEnvelopes(
+  envelopes: { pr: string; event: string; payload: Record<string, unknown> }[]
+): Promise<void> {
+  const natsServers = (process.env.DISPATCH_E2E_NATS_URLS ?? "")
+    .split(",")
+    .map((server) => server.trim())
+    .filter((server) => server !== "");
+  if (natsServers.length === 0)
+    throw new Error("DISPATCH_E2E_NATS_URLS names no NATS (rig.sh own_github)");
+  const nats = await connect({ name: "skill-scenarios-seed", servers: natsServers });
+  const codec = StringCodec();
+  const [owner, name] = HEADS_REPO.split("/");
+  for (const { pr, event, payload } of envelopes) {
+    const subject = `notifications.github.${String(owner).replaceAll(".", "_")}.${String(name).replaceAll(".", "_")}.pr.${pr}`;
+    nats.publish(
+      subject,
+      codec.encode(
+        JSON.stringify({
+          dedupe_key: event,
+          event_id: event,
+          issued_at: Date.now(),
+          payload: JSON.stringify(payload),
+          payload_summary: subject,
+          source: "github",
+          source_event_id: event,
+          topic: subject,
+          trace_id: event,
+        })
+      )
+    );
+    console.log(`published the ${String(payload.kind)} envelope of #${pr} on ${subject}`);
+  }
+  await nats.flush();
+  await nats.close();
+}
+
+/** `heads-settle <file> <heads file> fix-judge <case>`, once the agent's turn that ran k-ci's job
+ * once more has ended: the GitHub stand-in, seeded again whole as heads-events seeded it, now
+ * serves that job's second attempt at #702's head as it concluded (rig-world.json's `rerun`), and
+ * the settlement of #702's checks (`kind: checks`, which the listener publishes once every check
+ * run of a head has ended) goes out on the NATS, so the run's Dispatch reads the check runs at the
+ * head again and publishes k-ci's new state. A world with no job that runs once more is refused. */
+export async function headsSettle(file: string, headsFile: string, world: string): Promise<void> {
+  const fixture = HeadsFixture.parse(JSON.parse(readFileSync(file, "utf8")));
+  const head = z
+    .record(z.string(), z.string().regex(/^[0-9a-f]{40}$/))
+    .parse(JSON.parse(readFileSync(headsFile, "utf8")))["702"];
+  const fix = fixJob(world);
+  if (fix?.rerun === undefined) throw new Error(`the world ${world} runs no job once more`);
+  if (head === undefined) throw new Error(`${headsFile} names no head of #702`);
+  await seedGithub({
+    commits: [head],
+    pulls: { "702": pullSeed(fixture, "702", head, true) },
+    check_runs: { [head]: [fixCheckRun(fix, true)] },
+  });
+  await publishEnvelopes([
+    {
+      pr: "702",
+      event: `skill-scenarios-pr-702-checks-${head.slice(0, 7)}-2`,
+      payload: { kind: "checks", repo: HEADS_REPO, number: "702", sha: head },
+    },
+  ]);
 }

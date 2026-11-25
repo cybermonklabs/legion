@@ -26,6 +26,36 @@
       "suite": 43,
       "status": "completed",
       "conclusion": "success"
+    },
+    "fix-judge-unrelated-test": {
+      "name": "unit-tests",
+      "checkRun": 9301,
+      "run": 44,
+      "suite": 44,
+      "status": "completed",
+      "conclusion": "failure",
+      "log": "unit-tests\tRun bun test\tbun test v1.3.3\nunit-tests\tRun bun test\t\nunit-tests\tRun bun test\tpackages/greet/greet.test.ts:\nunit-tests\tRun bun test\t(pass) greet > greets by name [0.12ms]\nunit-tests\tRun bun test\t(pass) greet > trims the name [0.05ms]\nunit-tests\tRun bun test\t\nunit-tests\tRun bun test\tpackages/notify/notify.test.ts:\nunit-tests\tRun bun test\t(pass) notify > sends a message [0.31ms]\nunit-tests\tRun bun test\t(fail) notify > retries a refused send [5001.12ms]\nunit-tests\tRun bun test\t  ^ this test timed out after 5000ms.\nunit-tests\tRun bun test\t\nunit-tests\tRun bun test\t 3 pass\nunit-tests\tRun bun test\t 1 fail\nunit-tests\tRun bun test\tRan 4 tests across 2 files. [5.04s]\nunit-tests\tRun bun test\t##[error]Process completed with exit code 1.\n",
+      "rerun": { "checkRun": 9302, "conclusion": "success" }
+    },
+    "fix-judge-touched-test": {
+      "name": "unit-tests",
+      "checkRun": 9311,
+      "run": 45,
+      "suite": 45,
+      "status": "completed",
+      "conclusion": "failure",
+      "log": "unit-tests\tRun bun test\tbun test v1.3.3\nunit-tests\tRun bun test\t\nunit-tests\tRun bun test\tpackages/greet/greet.test.ts:\nunit-tests\tRun bun test\t(pass) greet > greets by name [0.12ms]\nunit-tests\tRun bun test\t 8 | \nunit-tests\tRun bun test\t 9 |   test(\"trims the name\", () => {\nunit-tests\tRun bun test\t10 |     expect(greet(\"  Ada  \")).toBe(\"Hello, Ada!\");\nunit-tests\tRun bun test\t                                 ^\nunit-tests\tRun bun test\terror: expect(received).toBe(expected)\nunit-tests\tRun bun test\t\nunit-tests\tRun bun test\tExpected: \"Hello, Ada!\"\nunit-tests\tRun bun test\tReceived: \"Hello,   Ada  !\"\nunit-tests\tRun bun test\t\nunit-tests\tRun bun test\t      at <anonymous> (packages/greet/greet.test.ts:10:30)\nunit-tests\tRun bun test\t(fail) greet > trims the name [0.31ms]\nunit-tests\tRun bun test\t\nunit-tests\tRun bun test\tpackages/notify/notify.test.ts:\nunit-tests\tRun bun test\t(pass) notify > sends a message [0.31ms]\nunit-tests\tRun bun test\t(pass) notify > retries a refused send [12.40ms]\nunit-tests\tRun bun test\t\nunit-tests\tRun bun test\t 3 pass\nunit-tests\tRun bun test\t 1 fail\nunit-tests\tRun bun test\tRan 4 tests across 2 files. [41.00ms]\nunit-tests\tRun bun test\t##[error]Process completed with exit code 1.\n",
+      "rerun": { "checkRun": 9312, "conclusion": "failure" }
+    },
+    "fix-judge-tester-beside": {
+      "name": "lint",
+      "checkRun": 9321,
+      "run": 46,
+      "suite": 46,
+      "status": "completed",
+      "conclusion": "failure",
+      "log": "lint\tRun bunx biome ci .\tpackages/greet/greet.ts format ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\nlint\tRun bunx biome ci .\t\nlint\tRun bunx biome ci .\t  × File content differs from formatting output\nlint\tRun bunx biome ci .\t\nlint\tRun bunx biome ci .\t    2 2 │   export function greet(name: string): string {\nlint\tRun bunx biome ci .\t    3   │ - → return `Hello, ${name}!`\nlint\tRun bunx biome ci .\t      3 │ + → return `Hello, ${name}!`;\nlint\tRun bunx biome ci .\t    4 4 │   }\nlint\tRun bunx biome ci .\t\nlint\tRun bunx biome ci .\tChecked 4 files in 3ms. No fixes applied.\nlint\tRun bunx biome ci .\tFound 1 error.\nlint\tRun bunx biome ci .\t##[error]Process completed with exit code 1.\n",
+      "rerun": { "checkRun": 9322, "conclusion": "failure" }
     }
   }
 }

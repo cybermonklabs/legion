@@ -12,7 +12,8 @@ import { z } from "zod";
 
 /** A heads world's named CI job: its check run, the workflow run and suite it is in, its status,
  * and for one that ended, how it concluded (`success` where none is named) and the log GitHub
- * keeps of it. */
+ * keeps of it. A job a world lets its agent run once more names `rerun`: the check run of that
+ * second attempt and how it concludes. */
 const CIJob = z.strictObject({
   name: z.string().min(1),
   checkRun: z.number().int(),
@@ -21,10 +22,18 @@ const CIJob = z.strictObject({
   status: z.enum(["completed", "in_progress"]),
   conclusion: z.enum(["success", "failure"]).optional(),
   log: z.string().optional(),
+  rerun: z
+    .strictObject({ checkRun: z.number().int(), conclusion: z.enum(["success", "failure"]) })
+    .optional(),
 });
+/** One named CI job of a heads world, as rig-world.json writes it. */
+export type RigCIJob = z.infer<typeof CIJob>;
 
-/** The worlds' named jobs: ci-only's and ci-pass-and-fail's, and the job of k2, the check a CI job
- * runs, in the ci-check-fail worlds: failed at the head whose case says so, passed at the other. */
+/** The worlds' named jobs: ci-only's and ci-pass-and-fail's, the job of k2, the check a CI job
+ * runs, in the ci-check-fail worlds: failed at the head whose case says so, passed at the other,
+ * and the job of k-ci in each world of fix-judge, failed at #702's head: a test of a package the
+ * change does not touch, which passes on its second attempt; a test of the package the change
+ * touches, which fails again; and the lint job beside which a tester works. */
 const World = z.strictObject({
   repository: z.string().regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/),
   defaultBranch: z.string().min(1),
@@ -33,6 +42,9 @@ const World = z.strictObject({
     "ci-pass-and-fail": CIJob,
     "ci-check-fail": CIJob,
     "ci-check-pass": CIJob,
+    "fix-judge-unrelated-test": CIJob,
+    "fix-judge-touched-test": CIJob,
+    "fix-judge-tester-beside": CIJob,
   }),
 });
 
