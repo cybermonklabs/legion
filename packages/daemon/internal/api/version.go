@@ -3650,7 +3650,7 @@ package api
 // base's own number and every open pull request again at the next merge rather than from this
 // line.)
 //
-// 258: dispatch://INFRA-3931 -- the daemon block of `GET /legion/v1/state` gains `stateSeq`
+// 273: dispatch://INFRA-3931 -- the daemon block of `GET /legion/v1/state` gains `stateSeq`
 // (api.DaemonInfo.StateSeq), the sequence of the newest state event the project's daemon
 // committed (state_publication.last_seq, record.Store.StatePublication), read in the route's own
 // repeatable-read snapshot: every state event at or below it is in the body and every one above
@@ -3665,13 +3665,13 @@ package api
 // `stateSeq` is one the body already holds and not a daemon whose sequence went back. The route
 // writes `stateSeq` on every body, 0 while the project has no state row, `stateId` once the
 // project has one, and `stateRun` from a daemon whose state events are on (one with a workflow),
-// and a caller whose contract is below 258, whether it states it (`Legion-Plugin-Contract`) or
+// and a caller whose contract is below 273, whether it states it (`Legion-Plugin-Contract`) or
 // the claims of its pod record it, is served the daemon block without any of the three
 // (shaping.go's stateSeqContract and withoutStateSeq): one built before sjawhar/legion#2788 reads
 // the state with a strict schema and would refuse the whole body for a key it does not name, and
 // one built after strips the keys instead.
 // `packages/contracts/src/legion-api.ts` reads the three keys as optional, so a reader of this
-// contract served such a body, or the body of a daemon before 258, takes them as absent rather
+// contract served such a body, or the body of a daemon before 273, takes them as absent rather
 // than as 0.
 // The same contract adds the observed view of the route, `GET /legion/v1/state?view=observed`
 // (api.ObservedState, StateSource.ObservedState): what Dispatch observes of a daemon and nothing
@@ -3683,7 +3683,7 @@ package api
 // shaping.go's answer AnswerObservedState, which is no row of Answers, and observedFor shapes it:
 // it is served at the caller's contract by the whole state's own bands and value strips, so at
 // every contract this daemon serves, each member of the view is the whole state's member at that
-// contract: a caller below 258 reads no `stateSeq`, `stateId` or `stateRun` in either body, and a
+// contract: a caller below 273 reads no `stateSeq`, `stateId` or `stateRun` in either body, and a
 // caller below 51 no `admission.trees` and no issue's `tree`. A request with no `view` gets the
 // whole state, whose body does not change. A request with any other `view` gets the whole state
 // too, and the daemon logs a warning that names the values given and the one view the route
@@ -3759,11 +3759,15 @@ package api
 // `const DaemonAPIVersion` at the head of each of the 141 of the 491 open pull requests that
 // change this file or whose file list GitHub cut short, made between 2026-11-24T20:23:31Z and
 // 20:26:26Z, found above main's 256 only 257 (#4580), 261 (#5332), 262 (#5204), 265 (#5285), 268
-// (#5384) and 271 (#4173), so this entry takes 258, the lowest number above main's 256 that no
-// open pull request declares.
-// A caller from 256 to 257 is served 256's keys and none of the three.
+// (#5384) and 271 (#4173). So 258 was the lowest number above main's 256 that no open pull
+// request declared, and this entry took 258.
+// Then #5164 pushed 258 first, at about 21:06Z on 2026-11-24. INFRA-3118's architect allocates
+// the numbers until dispatch://INFRA-1569's #5399 merges, and gave this entry 273
+// (dispatch://INFRA-3931/comment/62f173fd-f15d-4edc-94b3-d3aa4b4d8a9d), so the number moved a
+// twelfth time.
+// A caller from 256 to 272 is served 256's keys and none of the three.
 // stateSeqContract follows causeTimesContract, 256, as the last number of answers.go's
 // SupportedContracts.
 // That is a reading and never the rule: read main's own number and every open head again at the
 // next forward merge rather than from this line.)
-const DaemonAPIVersion = 258
+const DaemonAPIVersion = 273

@@ -2012,7 +2012,7 @@ func WakesWaitingOf(held []supervise.WaitingWake, queued []WakeWaiting) []WakeWa
 }
 
 // ObservedState is the observed view of the state route, the body of
-// `GET /legion/v1/state?view=observed` (contract 258): what Dispatch reads of a daemon and nothing
+// `GET /legion/v1/state?view=observed` (contract 273): what Dispatch reads of a daemon and nothing
 // more. Daemon, Settings and Admission are the full state's own blocks, read in the same kind of
 // repeatable-read snapshot: the same DaemonInfo, stateSeq, stateId and stateRun included, the same
 // settings, and the same admission block, unfiltered and in the same order. Issues lists every issue

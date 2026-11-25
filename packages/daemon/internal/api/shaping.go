@@ -1146,7 +1146,7 @@ const causeTimesContract = 256
 // stateSeqContract is the daemon contract that added `daemon.stateSeq`, the sequence of the newest
 // state event the project's daemon committed, read in the body's own snapshot, and beside it
 // `daemon.stateId`, the id of the store that count is kept in, and `daemon.stateRun`, the id of the
-// daemon run that serves the body (version.go's 258, DaemonInfo.StateSeq, StateID and
+// daemon run that serves the body (version.go's 273, DaemonInfo.StateSeq, StateID and
 // StateRun). A plugin before it is served the daemon block without the three keys
 // (withoutStateSeq, its row of stateNarrowings): one built before sjawhar/legion#2788 reads the
 // state with a strict schema and would refuse the whole body for a key it does not name, and one
@@ -1162,7 +1162,7 @@ const causeTimesContract = 256
 // that constant, and the contract these keys arrived at stays where it is. It is the last number
 // of answers.go's SupportedContracts, which names the constant rather than its number for that
 // reason.
-const stateSeqContract = 258
+const stateSeqContract = 273
 
 // withoutGatedSteps is the issue with no `gatedSteps`, the field gatedStepsContract added to the
 // state; nothing else of that contract is on the route. The field is `omitempty`, and a root of a

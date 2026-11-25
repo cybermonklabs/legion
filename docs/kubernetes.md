@@ -2570,9 +2570,9 @@ Roll out the three parts in this order:
    A project whose daemon does not run the daemon release gets one read, recorded as a failed `legion_reads` row whose error names why (`the daemon serves no daemon.stateSeq, so it publishes no state events`), and its board's header shows that failure.
    The read still records that daemon's state, and nothing reads the project again until its daemon publishes an event, a Legion setting is written, or the durable is taken over again.
    During the roll, a process of the earlier Dispatch release goes on reading each daemon once a minute, and its `legion_reads` rows take the new columns' defaults.
-   Each whole read is `GET /legion/v1/state?view=observed`, the observed view of the daemon's state (daemon API contract 258).
+   Each whole read is `GET /legion/v1/state?view=observed`, the observed view of the daemon's state (daemon API contract 273).
    The view has the daemon block, `settings` and `admission` of the whole state, and each issue of the whole state with only its `key`, `phase`, `tree`, `slot.index`, `waitingOn`, `architect.state` and `workers.<role>.claim.state`.
-   The daemon serves the view at the caller's contract with the same rule as the whole state, so at each contract every member of the view is the member the whole state serves there: a caller below 258 gets no `stateSeq`, `stateId` or `stateRun` in either answer.
+   The daemon serves the view at the caller's contract with the same rule as the whole state, so at each contract every member of the view is the member the whole state serves there: a caller below 273 gets no `stateSeq`, `stateId` or `stateRun` in either answer.
    Dispatch states no contract and asks from no pod, so it gets the view at the daemon's own contract.
    The daemon reads the view in the same repeatable-read snapshot as the whole state, under the same 60-second bound, and reads the phase rows of all issues in one statement.
    On 2026-11-20 the INFRA daemon's whole state was 7,307,929 bytes, and the part of it that the view serves was 665,962 bytes.

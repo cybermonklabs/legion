@@ -164,7 +164,7 @@ const schemas: Record<string, z.ZodType> = {
   // state of a paused project and carries the other key.
   "state-last-pause.json": LegionStateResponse,
   // Written beside state.json by internal/api's TestStateGolden: the observed view of the state
-  // state.json holds, the body of `GET /legion/v1/state?view=observed` (contract 258).
+  // state.json holds, the body of `GET /legion/v1/state?view=observed` (contract 273).
   "observed-state.json": LegionObservedStateResponse,
   "register.json": LegionRegisterResponse,
   // The claim wire's `claim.ReadyRequest` with a capability report: what a session posts on
@@ -2906,7 +2906,7 @@ test("a reader at contract 152 parses the repositories block served below 202", 
   // `intakeGiveUps` off; the pod hold's at 246, which leaves `podHold` off every issue
   // (`withoutPodHold`); contract 250's, which takes `priority` off each issue and off its
   // `waitingLine`; contract 256's, which takes `lastDeathAt` and `lastStartFailureAt` off each
-  // claim view; and contract 258's, which takes `stateSeq`, `stateId` and `stateRun` off the
+  // claim view; and contract 273's, which takes `stateSeq`, `stateId` and `stateRun` off the
   // daemon block (dispatch://INFRA-3931); so the golden's issues, rows, claim views and daemon
   // block are compared without them. One value strip stands above 199 as well: `caches`, the
   // source of the repository-cache-room row, arrived at contract 213, so that row is served here
