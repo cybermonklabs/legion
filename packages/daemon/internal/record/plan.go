@@ -81,7 +81,8 @@ type PlanVersion struct {
 	EarlierGivers []claim.Token
 }
 
-// Givers is every owner that gave v, the last of them (GivenBy) first, and none for a default plan.
+// Givers is every owner that gave v, the giver the store added last (GivenBy) first, and none for a
+// default plan.
 func (v PlanVersion) Givers() []claim.Token {
 	if v.GivenBy == "" {
 		return v.EarlierGivers

@@ -259,8 +259,13 @@ func namedOnce(versions []record.PlanVersion) string {
 		if slices.ContainsFunc(versions[:i], func(earlier record.PlanVersion) bool { return sameDocumentVersion(earlier, version) }) {
 			continue
 		}
-		// The copies are passed over in the order they were given (record.Store's PlansInForce), so
-		// read backward they name the last to give the version first, as one copy's givers do.
+		// The copies of one version come in the order the store gave them: one PlansInForce read
+		// orders by given_at, then generation. tellNotTaken's list joins two such reads, the earlier
+		// owners' and then its owner's, and the join keeps that order for the copies of one version.
+		// A carry copies every giver, and a give adds a giver to its own generation's copy alone, so
+		// a copy that no owner gave is of an earlier generation, and given no later, than every copy
+		// an owner gave. Read backward, the copies name the giver the store added last first, as one
+		// copy's givers do.
 		var givers []claim.Token
 		for _, copied := range slices.Backward(versions) {
 			if !sameDocumentVersion(copied, version) {
@@ -288,8 +293,8 @@ func describeVersion(version record.PlanVersion, givers []claim.Token) string {
 	return fmt.Sprintf("version %d of document %s, given by %s", version.Version, version.ArtifactID, namedGivers(givers))
 }
 
-// giversOf names every giver of version (record.PlanVersion.Givers), the last to give it first
-// (namedGivers). Each log line of a version names its givers so, under the key giver.
+// giversOf names every giver of version (record.PlanVersion.Givers), the giver the store added
+// last first (namedGivers). Each log line of a version names its givers so, under the key giver.
 func giversOf(version record.PlanVersion) string {
 	return namedGivers(version.Givers())
 }

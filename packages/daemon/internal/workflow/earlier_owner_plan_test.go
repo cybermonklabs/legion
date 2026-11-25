@@ -218,8 +218,8 @@ func TestAnEarlierOwnersPlanCarriedToSeveralGenerationsIsNamedOnce(t *testing.T)
 // passes over can name different givers: a sub-architect gives version 1 at generation 1, a rerun
 // carries it to generation 2, the root's architect gives it again there, and the issue then leaves
 // its tree. Its one notice names the version once, with the givers of both copies together, the
-// last to give it first. The fault caught is a notice that tells the copies apart by their givers
-// and names the version once for each.
+// giver the store added last first. The fault caught is a notice that tells the copies apart by
+// their givers and names the version once for each.
 func TestAVersionWhoseCopiesNameDifferentGiversIsNamedOnceWithEveryGiver(t *testing.T) {
 	t.Parallel()
 	sub, root := claim.Token(treeRoleToken(t, "LEGION-210", claim.RoleArchitect)), architectOf(t)

@@ -32,12 +32,12 @@ func addGiver(t *testing.T, tx pgx.Tx, issue string, generation uint64, version 
 	}
 }
 
-// The givers of a version are a set. AddPlanGiver adds an owner that gave the version again: the
-// version names it as the giver that gave it last, at the time of that give, and names the giver
-// before it among its earlier givers, so a release before this column, which reads given_by
-// alone, reads the last giver. A giver the version names already changes nothing, the earlier
-// one or the last, and AddPlanGiver answers so. A carry copies every giver with the version
-// (CarryPlan).
+// The givers of a version are a set. AddPlanGiver adds an owner that gives the version and is not
+// yet one of its givers: the version names it in given_by, the giver the store added last, at the
+// time of that give, and names the giver before it among its earlier givers, so a release before
+// this column, which reads given_by alone, reads the new giver. A giver the version names already
+// changes nothing, whether given_by names it or the earlier givers do, and AddPlanGiver answers
+// so. A carry copies every giver with the version (CarryPlan).
 //
 // The faults it catches: an add that loses a giver (its control: AddPlanGiver writing given_by
 // alone), an add of a giver the version names already (its control: AddPlanGiver without its

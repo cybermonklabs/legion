@@ -21,14 +21,14 @@ body: |-
     names each version it passed over once, with every giver of its copies. A second delivery of
     a give writes nothing.
 
-  The store gains `issue_plans.earlier_givers`. An earlier release reads only the giver that
-  gave a version last, so after a rollback its first step sets a version aside when that giver no
-  longer owns the issue, though an earlier giver still does. A rollback onto a release that has
-  the plan tables needs no statement. A rollback past the plan tables also runs the way back in
-  the header of `20261124033010_plan_earlier_givers.up.sql`, before or after the plan tables' own,
-  in the session of each project that rolls back, as `docs/kubernetes.md` says under "Rolling back
-  the release whose owner's plan picks the steps"; each of its statements runs again with no
-  error once the table is gone.
+  The store gains `issue_plans.earlier_givers`. An earlier release reads only `given_by`, the
+  giver the store added last, so after a rollback its first step sets a version aside when that
+  giver no longer owns the issue, though an earlier giver still does. A rollback onto a release
+  that has the plan tables needs no statement. A rollback past the plan tables also runs the way
+  back in the header of `20261124033010_plan_earlier_givers.up.sql`, before or after the plan
+  tables' own, in the session of each project that rolls back, as `docs/kubernetes.md` says under
+  "Rolling back the release whose owner's plan picks the steps"; each of its statements runs again
+  with no error once the table is gone.
 time: 2026-11-24T01:14:46Z
 custom:
     Issue: plan-give-duplicate
