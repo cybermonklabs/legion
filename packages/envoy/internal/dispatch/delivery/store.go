@@ -1032,10 +1032,10 @@ func ListPullRequestsInWindow(ctx context.Context, pool *store.Pool, from, to ti
 	return prs, rows.Err()
 }
 
-// openP0KeysQuery is OpenP0Keys' read. Its clauses are issues_open_p0's predicate (migration
-// 20261117100010), so the planner proves the index from them and reads the whole of that index,
+// openP0KeysQuery is OpenP0Keys' read. Its clauses are issues_open_p0's predicate
+// (openP0Predicate), so the planner proves the index from them and reads the whole of that index,
 // which holds the open P0 issues alone, rather than scanning every issue of every project.
-const openP0KeysQuery = `select key from issues where priority = 0 and status <> 'done'`
+const openP0KeysQuery = `select key from issues where ` + openP0Predicate
 
 // OpenP0Keys is every open P0 issue's key, across every project: the issues whose change can move
 // the measures' unowned_p0 list. The delivery live hub (api/delivery_live_hub.go) loads it at start

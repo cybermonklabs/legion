@@ -68,7 +68,7 @@ func (s *server) listComments(w http.ResponseWriter, r *http.Request) {
 // name is the owner as the request spells it: the key the kept answer is filed under beside its
 // ETag, and the subject the display tree read is logged against.
 func (s *server) answerCommentList(w http.ResponseWriter, r *http.Request, owner owner, artifactFilter, name string) {
-	basis, err := s.commentListWatermark(r.Context(), owner)
+	basis, err := s.readCommentListBasis(r.Context(), owner)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -110,7 +110,7 @@ type commentListBasis struct {
 	ownerHeld bool
 }
 
-// commentListWatermark reads a comment list's basis in one statement. Each counter reads 0 and
+// readCommentListBasis reads a comment list's basis in one statement. Each counter reads 0 and
 // the stamp the zero time where no row answers - an owner nothing has written carries no counter,
 // a document has no stamp, and a key no issue holds answers the empty list rather than a refusal,
 // as this route has always done - so a list never written and one whose owner does not exist are
@@ -118,7 +118,7 @@ type commentListBasis struct {
 // row holds is kept under no key, since that key is the path the caller spelled
 // (writeListAnswer). The issue's row is read once, joined to a one-row table so that a key no
 // issue holds still answers a row.
-func (s *server) commentListWatermark(ctx context.Context, owner owner) (commentListBasis, error) {
+func (s *server) readCommentListBasis(ctx context.Context, owner owner) (commentListBasis, error) {
 	var query, value string
 	switch {
 	case owner.IssueKey != nil:

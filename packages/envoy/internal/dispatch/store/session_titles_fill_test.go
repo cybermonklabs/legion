@@ -38,7 +38,7 @@ const titlesBulkSessions = 2*SessionTitlesFillBatch + 500
 // migratedTitlesStore is a store carrying every migration, with titlesIssue in it.
 func migratedTitlesStore(t *testing.T) *Store {
 	t.Helper()
-	store := migratedEmptyStore(t)
+	store := openMigratedTestStore(t, latestVersion)
 	ctx := context.Background()
 	if _, err := store.Pool.Exec(ctx, `insert into projects (key, name, default_assignee) values ('TITLES', 'Titles', 'alice')`); err != nil {
 		t.Fatalf("seed the project: %v", err)

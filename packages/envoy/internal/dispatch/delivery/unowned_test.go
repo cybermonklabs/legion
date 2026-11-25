@@ -120,21 +120,12 @@ func TestOfFourP0IssuesOnlyTheOneNeitherDoneClaimedNorRoutedIsUnowned(t *testing
 // `EXPLAIN (ANALYZE, BUFFERS)` of each statement as it is sent. A project's read is keyed by the
 // index's project_key; the read of every project is the whole of an index that holds the open P0
 // issues alone. The fixture's project holds 200 issues, one of them an unowned P0, and issues is
-// analyzed before the plans: unanalyzed, the planner takes the table for a few rows, and reads one
-// project's in number order through issues_project_key_number_key, filtering each, as cheaply as
-// it reads the partial index and sorts, which says nothing about the statement.
+// analyzed before the plans (seedP0PlanProject says why).
 func TestTheUnownedP0ReadsReadTheirPartialIndex(t *testing.T) {
 	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
-	p0, p2 := 0, 2
-	seeds := []unownedSeed{{key: "PINDEX-1", number: 1, title: "unowned", status: "todo", priority: &p0}}
-	for number := 2; number <= 200; number++ {
-		seeds = append(seeds, unownedSeed{key: "PINDEX-" + strconv.Itoa(number), number: number, title: "not a P0", status: "todo", priority: &p2})
-	}
-	seedUnownedIssueProject(t, ctx, pool, "PINDEX", seeds)
-	if _, err := pool.Exec(ctx, `analyze issues`); err != nil {
-		t.Fatalf("analyze issues: %v", err)
-	}
+	p0 := 0
+	seedP0PlanProject(t, ctx, pool, "PINDEX", []unownedSeed{{key: "PINDEX-1", number: 1, title: "unowned", status: "todo", priority: &p0}})
 
 	for _, read := range []struct {
 		name      string
@@ -143,16 +134,34 @@ func TestTheUnownedP0ReadsReadTheirPartialIndex(t *testing.T) {
 	}{
 		{"every project's", unownedP0Query, nil},
 		{"one project's", projectUnownedP0Query, []any{"PINDEX"}},
-		{"one project's count", projectUnownedP0Count, []any{"PINDEX"}},
+		{"one project's count", projectUnownedP0CountQuery, []any{"PINDEX"}},
 	} {
 		plan, raw := explaintest.AnalyzedPlan(t, ctx, pool, read.statement, read.arguments...)
 		if explaintest.SeqScansRelation(t, plan, "issues") {
 			t.Fatalf("%s unowned P0 read scans issues sequentially; want a read of issues_open_p0:\n%s", read.name, raw)
 		}
-		scan := indexScanOf(t, plan, raw, "issues", "issues_open_p0")
+		scan := indexScanOf(t, plan, raw, "issues_open_p0")
 		if read.arguments != nil && !strings.Contains(scan.Cond, "project_key") {
 			t.Fatalf("%s unowned P0 read's index condition %q does not key the project; want one range of issues_open_p0:\n%s", read.name, scan.Cond, raw)
 		}
+	}
+}
+
+// seedP0PlanProject writes project with head, its first issues numbered from 1, then P2 issues up
+// to 200 in all, and analyzes issues, the fixture of a plan test of a read of issues_open_p0.
+// Unanalyzed, the planner takes the table for a few rows, and reads one project's in number order
+// through issues_project_key_number_key, filtering each, as cheaply as it reads the partial index
+// and sorts, which says nothing about the statement.
+func seedP0PlanProject(t *testing.T, ctx context.Context, pool *store.Pool, project string, head []unownedSeed) {
+	t.Helper()
+	p2 := 2
+	seeds := head
+	for number := len(head) + 1; number <= 200; number++ {
+		seeds = append(seeds, unownedSeed{key: project + "-" + strconv.Itoa(number), number: number, title: "not a P0", status: "todo", priority: &p2})
+	}
+	seedUnownedIssueProject(t, ctx, pool, project, seeds)
+	if _, err := pool.Exec(ctx, `analyze issues`); err != nil {
+		t.Fatalf("analyze issues: %v", err)
 	}
 }
 
@@ -160,24 +169,17 @@ func TestTheUnownedP0ReadsReadTheirPartialIndex(t *testing.T) {
 // time it stands up its event feed, reads issues through issues_open_p0 (migration 20261117100010),
 // the partial index of the open P0 issues, and never scans issues: `EXPLAIN (ANALYZE, BUFFERS)` of
 // the statement as OpenP0Keys sends it. The fixture's project holds 200 issues, two open P0 issues
-// and a done one among them, and issues is analyzed first, as TestTheUnownedP0ReadsReadTheirPartialIndex
-// says why. The keys it answers are the two open ones.
+// and a done one among them, and issues is analyzed first (seedP0PlanProject says why). The keys
+// it answers are the two open ones.
 func TestTheOpenP0KeysReadReadsTheOpenP0Index(t *testing.T) {
 	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
-	p0, p2 := 0, 2
-	seeds := []unownedSeed{
+	p0 := 0
+	seedP0PlanProject(t, ctx, pool, "POPEN", []unownedSeed{
 		{key: "POPEN-1", number: 1, title: "open", status: "todo", priority: &p0},
 		{key: "POPEN-2", number: 2, title: "open and claimed", status: "in_progress", priority: &p0, claimedBy: new(`{"kind":"session","id":"ses_claimer"}`)},
 		{key: "POPEN-3", number: 3, title: "done", status: "done", priority: &p0},
-	}
-	for number := 4; number <= 200; number++ {
-		seeds = append(seeds, unownedSeed{key: "POPEN-" + strconv.Itoa(number), number: number, title: "not a P0", status: "todo", priority: &p2})
-	}
-	seedUnownedIssueProject(t, ctx, pool, "POPEN", seeds)
-	if _, err := pool.Exec(ctx, `analyze issues`); err != nil {
-		t.Fatalf("analyze issues: %v", err)
-	}
+	})
 	keys, err := OpenP0Keys(ctx, pool)
 	if err != nil {
 		t.Fatalf("OpenP0Keys: %v", err)
@@ -194,6 +196,6 @@ func TestTheOpenP0KeysReadReadsTheOpenP0Index(t *testing.T) {
 	if explaintest.SeqScansRelation(t, plan, "issues") {
 		t.Fatalf("the open P0 keys read scans issues sequentially; want a read of issues_open_p0:\n%s", raw)
 	}
-	indexScanOf(t, plan, raw, "issues", "issues_open_p0")
+	indexScanOf(t, plan, raw, "issues_open_p0")
 	t.Logf("the open P0 keys read plans as:\n%s", raw)
 }
