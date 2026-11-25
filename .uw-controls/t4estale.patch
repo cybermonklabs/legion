@@ -1,0 +1,13 @@
+diff --git a/packages/daemon/internal/workflow/close_wait.go b/packages/daemon/internal/workflow/close_wait.go
+index f94209744eae..9764aa824e72 100644
+--- a/packages/daemon/internal/workflow/close_wait.go
++++ b/packages/daemon/internal/workflow/close_wait.go
+@@ -475,7 +475,7 @@ func (e *Engine) storeWait(ctx context.Context, tx pgx.Tx, issue record.Issue, v
+ 		return err
+ 	}
+ 	if stale := stored.Unread; stale != nil && view.facts.Read != nil && view.facts.Read.Failure == "" && view.facts.Read.ReadAt.After(view.facts.Entered) {
+-		if err := e.askCloseReadAt(ctx, tx, issue, closeReadAgain(now, stale.Since)); err != nil {
++		if err := error(nil); err != nil {
+ 			return err
+ 		}
+ 	}

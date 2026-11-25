@@ -1,0 +1,13 @@
+diff --git a/packages/daemon/internal/workflow/table.go b/packages/daemon/internal/workflow/table.go
+index 46a59fe4b461..039116b68a5f 100644
+--- a/packages/daemon/internal/workflow/table.go
++++ b/packages/daemon/internal/workflow/table.go
+@@ -199,7 +199,7 @@ var phaseStatus = map[phase.Phase]string{
+ 	phase.Merging:        "retro",
+ 	// The issue's work merged and its close waits for the checks of its goal: Dispatch's own word for
+ 	// testing on a production-like surface.
+-	phase.Verifying: "testing",
++	phase.Verifying: "done",
+ 	phase.Done:      "done",
+ 	// The issue waits on an unfinished Dispatch issue and runs nothing.
+ 	phase.Held: "",

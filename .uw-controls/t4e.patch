@@ -1,0 +1,14 @@
+diff --git a/packages/daemon/internal/workflow/close_wait.go b/packages/daemon/internal/workflow/close_wait.go
+index f94209744eae..07264a04cd88 100644
+--- a/packages/daemon/internal/workflow/close_wait.go
++++ b/packages/daemon/internal/workflow/close_wait.go
+@@ -494,6 +494,9 @@ func (e *Engine) storeWait(ctx context.Context, tx pgx.Tx, issue record.Issue, v
+ 	if err := e.WriteIssue(ctx, tx, issue); err != nil {
+ 		return err
+ 	}
++	if err := e.enqueue(ctx, tx, issue.Key, record.MessagePost{Body: "The close of " + issue.Key + " waits."}); err != nil {
++		return err
++	}
+ 	return e.publishWait(ctx, tx, issue)
+ }
+ 

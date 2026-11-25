@@ -1,0 +1,13 @@
+diff --git a/packages/daemon/internal/workflow/close_wait.go b/packages/daemon/internal/workflow/close_wait.go
+index f94209744eae..226495b20577 100644
+--- a/packages/daemon/internal/workflow/close_wait.go
++++ b/packages/daemon/internal/workflow/close_wait.go
+@@ -757,7 +757,7 @@ func (e *Engine) personClosedPast(ctx context.Context, tx pgx.Tx, issue *record.
+ // closesByChecks says whether issue, a child, closes by its checks and not by its owning
+ // architect's done: its work merged (Issue.Merge), so its checks or a person close it (D16, door 7).
+ func closesByChecks(issue record.Issue) bool {
+-	return issue.Merge.Merged() && !claim.IsTreeRoot(issue.Key, issue.Tree)
++	return false
+ }
+ 
+ // architectsDoneSetBack tells the owning architect that its done on issue, a merged child, was set

@@ -1,0 +1,13 @@
+diff --git a/packages/daemon/internal/workflow/engine.go b/packages/daemon/internal/workflow/engine.go
+index ab08e792af7e..e1790a7f3cc3 100644
+--- a/packages/daemon/internal/workflow/engine.go
++++ b/packages/daemon/internal/workflow/engine.go
+@@ -315,7 +315,7 @@ func (e *Engine) apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake
+ 	case intake.CloseChecksRead:
+ 		return e.closeChecksRead(ctx, tx, fact)
+ 	case intake.DispatchResultChanged:
+-		return e.resultChanged(ctx, tx, fact)
++		return intake.Result{}, nil
+ 	case intake.ConflictConfirmDone:
+ 		return e.conflictConfirmDone(ctx, tx, fact)
+ 	case intake.PullRequestMissing:

@@ -1,0 +1,13 @@
+diff --git a/packages/daemon/internal/workflow/engine.go b/packages/daemon/internal/workflow/engine.go
+index ab08e792af7e..2a7bfb49c89b 100644
+--- a/packages/daemon/internal/workflow/engine.go
++++ b/packages/daemon/internal/workflow/engine.go
+@@ -521,7 +521,7 @@ func (e *Engine) dispatchIssue(ctx context.Context, tx pgx.Tx, fact intake.Dispa
+ 			return intake.Result{}, err
+ 		}
+ 		if issue.Phase == phase.Verifying && fact.Status == record.DoneStatus {
+-			if err := e.personClosedPast(ctx, tx, issue); err != nil {
++			if err := error(nil); err != nil {
+ 				return intake.Result{}, err
+ 			}
+ 		}

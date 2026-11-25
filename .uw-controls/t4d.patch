@@ -1,0 +1,13 @@
+diff --git a/packages/daemon/internal/workflow/close_wait.go b/packages/daemon/internal/workflow/close_wait.go
+index f94209744eae..a3c00bfd2cf1 100644
+--- a/packages/daemon/internal/workflow/close_wait.go
++++ b/packages/daemon/internal/workflow/close_wait.go
+@@ -605,7 +605,7 @@ func (e *Engine) closeOnChecks(ctx context.Context, tx pgx.Tx, issue record.Issu
+ // closed issue. A project that runs no production check has its child's leave queue the one
+ // suspension, so nothing is queued here for it.
+ func (e *Engine) suspendCheckedChild(ctx context.Context, tx pgx.Tx, issue record.Issue, view closeView) error {
+-	if claim.IsTreeRoot(issue.Key, issue.Tree) || !view.facts.ProductionOn {
++	if true || claim.IsTreeRoot(issue.Key, issue.Tree) || !view.facts.ProductionOn {
+ 		return nil
+ 	}
+ 	check := view.facts.Production
