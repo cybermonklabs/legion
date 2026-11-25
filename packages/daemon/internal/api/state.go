@@ -1961,12 +1961,13 @@ func StrandedByMove(stranded []StrandedClaim, suspended Suspenders) map[Stranded
 
 // WakeWaiting is one wake the daemon's pacing holds until its turn, as the state names it
 // (State.WakesWaiting): the claim it will wake, that claim's issue and role, what kind of wake it
-// is, and the earliest moment the pacing lets it out, as its queues stand at the read. A waiting
-// wake holds a place in a queue and no moment of its own, so the wake runs at that moment or
-// later, since each turn ahead of it waits a random part of an interval more, and two reads can
-// name two moments. The kinds are the three lanes the daemon paces, declared once where the
-// machines take their places (supervise.WakeKind) and each named on the wire as the line that wake
-// writes names it (supervise's wakeRan, the outbox's):
+// is, and the pacing's estimate, at the read, of the moment it lets the wake out, as its queues
+// stand. A waiting wake holds a place in a queue and no moment of its own: a wake ahead of it that
+// leaves moves that moment earlier, and the jitter of the turns ahead of it, or a message wake that
+// goes ahead of it, moves it later, so two reads can name two moments. The kinds are the three
+// lanes the daemon paces, declared once where the machines take their places (supervise.WakeKind)
+// and each named on the wire as the line that wake writes names it (supervise's wakeRan, the
+// outbox's):
 //
 //   - `launch`, a role process the daemon is about to start, held by the claim's machine;
 //   - `plugin-refresh`, the relaunch of a process whose plugin speaks an earlier contract than
@@ -2012,12 +2013,12 @@ func WakesWaitingOf(held []supervise.WaitingWake, queued []WakeWaiting) []WakeWa
 }
 
 // WakeView is the wake the pacing holds for one claim, as that claim's view names it
-// (ClaimView.Wake): what kind of wake it is and the earliest moment the pacing lets it out, as the
-// queues stand at the read (WakeWaiting says why that moment can move, and why the wake runs then
-// or later). The claim, its issue and its role are the view's own, so the entry here is the rest of
-// the state's own `wakesWaiting` row (WakeWaiting) and reports the same wake. A claim view that
-// carries this and whose state is `queued` or `suspended` is a process the daemon has still to
-// start, which is the reading a reader of `updateState` alone cannot reach.
+// (ClaimView.Wake): what kind of wake it is and the pacing's estimate, at the read, of the moment
+// it lets the wake out (WakeWaiting says how that moment moves). The claim, its issue and its role
+// are the view's own, so the entry here is the rest of the state's own `wakesWaiting` row
+// (WakeWaiting) and reports the same wake. A claim view that carries this and whose state is
+// `queued` or `suspended` is a process the daemon has still to start, which is the reading a
+// reader of `updateState` alone cannot reach.
 type WakeView struct {
 	Kind  supervise.WakeKind `json:"kind"`
 	DueAt time.Time          `json:"dueAt"`

@@ -614,7 +614,7 @@ func (m *Machine) adoptPodLoad() {
 // worker.
 //
 // A parked try is a wake whose turn is the grant rather than a moment of the pacing's (wake.park):
-// it waits on the machine as a wake the pacing parks over no process does (parkWake), holding the
+// it waits on the machine as a paced wake over no process does (waitOnMachine), holding the
 // rest of the launch from that grant on (launchTries with the grant), and the decision ends where
 // launchTries returns at the park, so nothing waits under the machine's lock. The claim is written
 // launching at this try's generation with no process already: the try wrote it before its backoff

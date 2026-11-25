@@ -161,11 +161,11 @@ func holdSuspension(m *Machine, ctx context.Context, ev Event) error {
 //
 // One claim here does not wait: the one whose paced wake is still waiting over no process at all,
 // which the gate wrote launching and parked before it had launched anything (reserveWake,
-// parkWake). A hold protects a turn and a process, and this claim has neither — the launch its
-// wake holds has not been made — so the suspension has nothing to wait for, and the wait is dear.
-// A wave's queue is hundreds of claims let out at a few wakes a minute, so a claim far down it
-// waits tens of minutes, and for that long both halves of R2 of dispatch://INFRA-976/spec fail: the
-// claim does not "still decide" the suspend, since an operator's drain, a park or a tree close
+// waitOnMachine). A hold protects a turn and a process, and this claim has neither — the launch
+// its wake holds has not been made — so the suspension has nothing to wait for, and the wait is
+// dear. A wave's queue is hundreds of claims let out at a few wakes a minute, so a claim far down
+// it waits tens of minutes, and for that long both halves of R2 of dispatch://INFRA-976/spec fail:
+// the claim does not "still decide" the suspend, since an operator's drain, a park or a tree close
 // lands only at the wake's turn (wakeNow), and it loses it as well, since the hold lives in memory
 // alone (holdSuspension) and an operator's suspend writes no outbox row — a restart inside those
 // minutes forgets the drain while the claim stands persisted launching, and the boot relaunches
@@ -187,9 +187,9 @@ func holdSuspension(m *Machine, ctx context.Context, ev Event) error {
 // (suspended, endPodPark), where the launch writes that it was cut short.
 //
 // A claim whose process still runs is untouched by any of this. The gate left such a claim exactly
-// as it stood (parkWake), so its suspend is decided by the row of the state it still holds — and a
-// launch that did start a process reaches the hold here as it always did, since that process is
-// what the hold is for.
+// as it stood (waitOnMachine), so its suspend is decided by the row of the state it still holds —
+// and a launch that did start a process reaches the hold here as it always did, since that process
+// is what the hold is for.
 //
 // A project pause's stop of a claim whose relaunch waits parked over the process it still records
 // — one that died and whose relaunch the pacing parked before letting it go (the gate sits before

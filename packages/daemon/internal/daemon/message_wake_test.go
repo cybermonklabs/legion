@@ -105,19 +105,31 @@ func (r *priorityWakeRig) seed(state supervise.ClaimState) supervise.Claim {
 }
 
 // start seeds a released implementer and runs the start row a wake of kind queues for it
-// (workflow's wakeRow), which resumes it by rule: a paced launch that waits in the queue its
-// class names. The row is created at the rig's clock, as the wake's own transaction creates it
-// (record.OutboxRow.CreatedAt), which is the moment the executor marks a message wake at.
+// (runStart), which resumes it by rule: a paced launch that waits in the queue its class names.
 func (r *priorityWakeRig) start(kind string) supervise.Claim {
 	r.t.Helper()
 	c := r.seed(supervise.StateSuspended)
+	r.runStart(c, kind)
+	return c
+}
+
+// runStart builds the start row a wake of kind queues for c (workflow's wakeRow) and runs it, and
+// returns the row for a test that runs it again. The row is created at the rig's clock, as the
+// wake's own transaction creates it (record.OutboxRow.CreatedAt), which is the moment the executor
+// marks a message wake at, and its id is the number of c's issue.
+func (r *priorityWakeRig) runStart(c supervise.Claim, kind string) record.OutboxRow {
+	r.t.Helper()
+	var id int64
+	if _, err := fmt.Sscanf(c.Issue, "LEGION-%d", &id); err != nil {
+		r.t.Fatalf("read the number of issue %s: %v", c.Issue, err)
+	}
 	row := mustOutboxRow(r.t, c.Issue, record.SuperviseRequest{Op: "start", Tree: c.Tree, Role: c.Role,
 		Generation: 1, WakeKind: kind}, r.clock.Now())
-	row.ID, row.CreatedAt = int64(r.issue), r.clock.Now()
+	row.ID, row.CreatedAt = id, r.clock.Now()
 	if err := r.runner.execute(r.t.Context(), row); err != nil {
 		r.t.Fatalf("execute %s start of %s: %v", kind, c.Token, err)
 	}
-	return c
+	return row
 }
 
 // wave is n such starts, in order, and the claims they resumed.
@@ -314,12 +326,7 @@ func TestARestartKeepsTheMessageMark(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	row := mustOutboxRow(t, message.Issue, record.SuperviseRequest{Op: "start", Tree: message.Tree, Role: message.Role,
-		Generation: 1, WakeKind: pods.WakeRoleMessage}, r.clock.Now())
-	row.ID, row.CreatedAt = int64(r.issue), r.clock.Now()
-	if err := r.runner.execute(t.Context(), row); err != nil {
-		t.Fatal(err)
-	}
+	r.runStart(message, pods.WakeRoleMessage)
 	r.restart(older.Token, message.Token)
 }
 
@@ -346,12 +353,7 @@ func TestARestartKeepsAReportedMark(t *testing.T) {
 func TestARetriedMessageStartAfterATurnMarksNothingThatStands(t *testing.T) {
 	r := newPriorityWakeRig(t)
 	c := r.seed(supervise.StateIdle)
-	row := mustOutboxRow(t, c.Issue, record.SuperviseRequest{Op: "start", Tree: c.Tree, Role: c.Role,
-		Generation: 1, WakeKind: pods.WakeRoleMessage}, r.clock.Now())
-	row.ID, row.CreatedAt = int64(r.issue), r.clock.Now()
-	if err := r.runner.execute(t.Context(), row); err != nil {
-		t.Fatal(err)
-	}
+	row := r.runStart(c, pods.WakeRoleMessage)
 	m, _ := r.sup.Machine(c.Token)
 	if got := m.Claim(); !got.MessageMarked() {
 		t.Fatalf("the start left %s marked at %s; want a mark that stands before the role's turn", c.Token, got.MessageMarkAt)

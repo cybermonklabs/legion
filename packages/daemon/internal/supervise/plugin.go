@@ -440,7 +440,7 @@ func (m *Machine) refreshOverturned() bool {
 // from relaunches nothing and is charged nothing. PluginRelaunchFor is written where the
 // relaunch starts the process that replaces the stale one (launchNow, commitPluginRelaunch),
 // never where that relaunch is decided, so a relaunch the pacing holds over the live old
-// process for tens of minutes (reserveWake, parkWake) has marked nothing yet, and the charged
+// process for tens of minutes (reserveWake, waitOnMachine) has marked nothing yet, and the charged
 // branch below reads a mark that names a relaunch that did run. What the guard adds is the rest
 // of the answer: without it a process that reconnects and re-registers on the old contract
 // inside that wait would be relaunched here, which raises a second relaunch over the one still

@@ -80,7 +80,7 @@ func (m *Machine) checkLaunch(ctx context.Context) error {
 // the credit of a refused launch of this lane is one nothing is left waiting for: a credit is
 // taken over a claim that holds no wake at all (refreshPlugin's own guard), the turn of a parked
 // wake takes it off the machine before anything is rechecked (wakeNow, runParkedLaunchNow), and
-// no decision of this package raises a launch over one still waiting (parkWake lists them).
+// no decision of this package raises a launch over one still waiting (endRefreshLane lists them).
 //
 // Why the retry such a refusal may arm carries the intent, and what it costs the gate, is where
 // retryHolding and the gate state it (retryHolding, RefreshGate, Correct): the launch that retry
@@ -144,7 +144,7 @@ func (m *Machine) relaunchRefused(ctx context.Context, relaunch func(context.Con
 // turn on. Its one caller is the refusal a parked launch's turn meets (runWake), over a claim
 // that keeps its process with the launch that was to replace it gone: the park disarmed the boot
 // interval, the registration deadline, the probe interval and the turn bound of that process
-// (parkWake), the claim keeps it and the wake is spent, so a booting process whose agent never
+// (waitOnMachine), the claim keeps it and the wake is spent, so a booting process whose agent never
 // registers would meet no deadline and a prompt the agent acknowledged would wait for its turn
 // on nothing.
 //

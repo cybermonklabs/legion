@@ -929,12 +929,13 @@ Each entry names the `claim`, its `issue` and `role`, the `kind` of wake (`launc
 process about to start; `plugin-refresh`, the relaunch of a session whose plugin speaks an
 earlier daemon contract, which the daemon replaces at that one wake and asks nothing of first;
 `catch-up`, the notice a start writes to an architect that is already running)
-and `dueAt`, the earliest moment the pacing lets that wake out. The wake runs then or later: each
-turn ahead of it waits a random part of up to one interval more, so a wake with n wakes ahead of
-it can run up to n intervals after its `dueAt`. The estimate also moves earlier when a wake ahead
-of it leaves, and later when a wake for a role with a message waiting goes ahead of it.
+and `dueAt`, the pacing's estimate, at the read, of the moment it lets that wake out, as the
+queues stand. A wake ahead of it that leaves moves that moment earlier, and a wake for a role with
+a message waiting that goes ahead of it moves it later, as does each turn ahead of it, which waits
+a random part of up to one interval more: a wake with n wakes ahead of it can run up to n
+intervals after its `dueAt`. Two reads can name two moments.
 An empty array says the wave has
-gone out; the last `dueAt` in it is the earliest the last of the wave goes.
+gone out; the latest `dueAt` in it is the pacing's estimate of when the last of the wave goes.
 A claim on that list needs
 nothing from you: its wake holds a place and it runs when the pacing lets that place out.
 To run one now: `legion claims retry --claim <token>` runs the launch of a claim that runs no
@@ -953,9 +954,9 @@ its `wake` (the claim's entry under `.issues` of the same `legion state --json` 
 launch it waits for.
 The controller's `fresh_session` refuses such a claim with `CLAIM_UNSETTLED` while it reads
 `working`, `launching` or `shim_connected`: its launch is already in flight, and runs when the
-pacing lets it out, no earlier than the `dueAt` the list names unless a wake ahead of it leaves.
-That `dueAt` is the pacing's estimate at the read, and it can move: a later read can name an
-earlier or a later one.
+pacing lets it out.
+The `dueAt` the list names is the pacing's estimate of that moment at the read, and it can move:
+a later read can name an earlier or a later one.
 A claim that reads `registered`, `ready` or `idle` it suspends and starts again in a fresh session
 at once.
 A project pause's stop of such a claim records the relaunch as owed for the pause's end, even when

@@ -9265,8 +9265,8 @@ each issue's pod (every role of it alike) and the image probe's.
   The daemon stores that mark on the claim (`claims.message_mark_at`) in the transaction that set it, and the mark stands until the role's next turn, so a restart keeps it and the boot places that claim's relaunch in the first queue.
   Envoy keeps a role's message for one hour, and with one queue a wake that was raised behind a restart's backlog could wait longer than that, so the role came back to nothing (dispatch://INFRA-5682).
   A first-queue wake with k first-queue wakes ahead of it runs within k + 2 + ⌊k/3⌋ turns of its mark.
-  A waiting wake holds a place in its queue and no moment of its own, so each `dueAt` of `wakesWaiting` is the earliest moment the pacing lets that place out, as the queues stand at the read.
-  The wake runs at that moment or later, since each turn ahead of it waits a random part of up to one interval more; the estimate moves earlier when a wake ahead of it leaves, and later when a message wake goes ahead of it.
+  A waiting wake holds a place in its queue and no moment of its own, so each `dueAt` of `wakesWaiting` is the pacing's estimate, at the read, of the moment it lets that place out, as the queues stand.
+  A wake ahead of it that leaves moves that moment earlier, and each turn ahead of it, which waits a random part of up to one interval more, or a message wake that goes ahead of it, moves it later, so two reads can name two moments.
   The line `supervise: wake ran` names the `queue` that a paced wake came from, `message` for the first and `other` for the second, and `turnsWaited`, the turns the pacing ran from the wake's join to its let-out.
   A message wake that the pacing lets out more than 45 minutes after its mark writes that line as a warning, with `lateForMessage`.
 

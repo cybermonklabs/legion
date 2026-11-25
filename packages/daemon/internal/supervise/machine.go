@@ -4343,9 +4343,9 @@ func (a AbandonedSession) Tells() bool { return a.Session != "" && !a.Told }
 // it ends is one stop. Nothing else tells it: a failure (fail), a worker's exit (release, retire)
 // and the registration deadline's retirement end a process and send no stop. A death whose
 // relaunch the wake pacing parked keeps the dead process's locator until the wake's turn
-// (parkWake), so a suspension that arrives meanwhile stops that process again and sends a second
-// stop. The first runs on a goroutine nothing in the decision waits for (Deps.SessionGone), so it
-// may still be in flight or may have failed, and the second can find the dead process's
+// (waitOnMachine), so a suspension that arrives meanwhile stops that process again and sends a
+// second stop. The first runs on a goroutine nothing in the decision waits for (Deps.SessionGone),
+// so it may still be in flight or may have failed, and the second can find the dead process's
 // registration still there. The second is told, as every stop is, once the process has ended,
 // and before any relaunch has registered, since the relaunch was still parked when the
 // suspension came. The delete's two conditions then guard a relaunch's registration as they do
@@ -4824,7 +4824,7 @@ func (m *Machine) reportedProcess(observation runtime.Observation) (clearedCharg
 // What becomes of that process is already decided — the turn lets it go and starts the next
 // (wakeNow, launchNow) — so every answer the runtime could give decides nothing (judge), and
 // the one that reaches no judgement at all, a runtime that cannot answer, would arm the probe
-// interval the park disarmed (parkWake) and ask again at every interval of a wait that is tens
+// interval the park disarmed (waitOnMachine) and ask again at every interval of a wait that is tens
 // of minutes long in a wave. The callers' own timers are not armed again here for the same
 // reason: the launch's turn arms the new process's (armBoot).
 func (m *Machine) probe(ctx context.Context, alive func(context.Context) error, again TimerKind, after time.Duration) error {

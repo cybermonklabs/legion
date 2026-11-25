@@ -236,10 +236,10 @@ func pauseStopDue(m *Machine, ctx context.Context, _ Event) error {
 // letOutHeldLaunch takes the launch the pause's gate holds into the wake pacing once the pause it
 // was held for has ended (decision 7): it joins the queue its claim's class names (WakeQueue) and
 // its TimerWake is bound to that place, exactly as the wake gate parks a launch (reserveWake,
-// bindWake, parkWake). A launch the pacer lets out at once runs now, and the daemon is told that
-// let-out (wakeLetOut, decision 14); one that waits is told to the daemon as waiting when this
-// decision ends (tellWakeQueue) and of its let-out at its turn (wakeNow). A daemon whose pacing
-// is off runs it now, unpaced. A
+// bindWake, waitOnMachine). A launch the pacer lets out at once runs now, and the daemon is told
+// that let-out (wakeLetOut, decision 14); one that waits is told to the daemon as waiting when
+// this decision ends (tellWakeQueue) and of its let-out at its turn (wakeNow). A daemon whose
+// pacing is off runs it now, unpaced. A
 // launch that had its turn from the pacing before the pause's gate held it (wake.paid) runs now
 // with no place of its own: a wake the pacing let out, whose turn met the pause, writes its one
 // wake line now, reporting the whole of its hold from its join (runWake), and one that passed the
@@ -265,7 +265,7 @@ func (m *Machine) letOutHeldLaunch(ctx context.Context) error {
 		m.wakeLetOut(let.At)
 		return m.runWake(ctx, waiting, true)
 	}
-	return m.parkWake(ctx, waiting)
+	return m.waitOnMachine(ctx, waiting)
 }
 
 // resumePause is the resume's event (ResumePause): what this claim holds of the pause that ended

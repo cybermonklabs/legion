@@ -881,7 +881,7 @@ func TestTheStallBackstopCountsALaunchFailureChargedBeforeAPendingRelaunch(t *te
 
 // A replacement the wake pacing parked is the one end whose turn was not ended: the take-back
 // has run, so the task is owed again, and the claim goes on recording the stalled process
-// until the launch comes due (supervise's reserveWake, parkWake). The notice says exactly that
+// until the launch comes due (supervise's reserveWake, waitOnMachine). The notice says exactly that
 // much and no more. Its opening never says the turn was ended, because it was not — the
 // opening cannot say it, since the daemon derives that clause from the end's own record of the
 // process (stallTurnClause), and the kept process is the daemon's own sentence too, which says

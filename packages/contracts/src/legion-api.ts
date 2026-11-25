@@ -193,13 +193,14 @@ const legionStepView = z.object({
 });
 
 /** The two fields a wake the daemon's pacing holds carries: what kind of wake it is, and
- * `dueAt`, the earliest moment the pacing lets it out, by its place in the pacing's queues as they
- * stand at the read (contract 193; entry 20261125211005): the wake runs then or later. The claim
- * view's `wake` and `legionWakeWaiting` below carry the same wake, so both spread this one object
- * and cannot drift apart in type. Both fields are optional here, since no plugin code reads the
- * claim view's `wake`; `legionWakeWaiting` requires `dueAt` over the spread, because the
- * controller's `read_state` summary reads it (LEGION_ANSWER_READS). The kind is read as a plain
- * string, so a lane a later daemon adds is read rather than refused. */
+ * `dueAt`, the pacing's estimate at the read of the moment it lets the wake out, as its queues
+ * stand (contract 193; entry 20261125211005): a wake ahead of it that leaves moves that moment
+ * earlier, and the jitter of the turns ahead of it, or a message wake that goes ahead of it, moves
+ * it later. The claim view's `wake` and `legionWakeWaiting` below carry the same wake, so both
+ * spread this one object and cannot drift apart in type. Both fields are optional here, since no
+ * plugin code reads the claim view's `wake`; `legionWakeWaiting` requires `dueAt` over the
+ * spread, because the controller's `read_state` summary reads it (LEGION_ANSWER_READS). The kind
+ * is read as a plain string, so a lane a later daemon adds is read rather than refused. */
 const legionPacedWake = {
   kind: nonEmptyString.optional(),
   dueAt: timestamp.optional(),
@@ -716,15 +717,15 @@ const legionHeldOutboxRow = z.object({
 
 /** `api.WakeWaiting` — one wake the daemon's pacing is holding until its turn
  * (`worker_wakes_per_minute`, `worker_wake_burst`, contract 53): the claim it will wake, that
- * claim's issue and role, what kind of wake it is, and `dueAt`, the earliest moment the pacing
- * lets it out, by its place in the pacing's queues as they stand at the read (entry
- * 20261125211005). A waiting wake holds a place and no moment of its own, so the wake runs at
- * `dueAt` or later (each turn ahead of it waits a random part of up to one interval more), and two
- * reads can name two moments. The kinds are the daemon's three paced lanes: `launch`, a role
- * process it is about to start, and `plugin-refresh`, the relaunch of a process whose plugin
- * speaks an earlier contract than the daemon's, which the stale-plugin lane's own gate admits
- * (contract 73), both held in the claim's machine and lost with a restart, which raises the wave
- * again through its own paths; and
+ * claim's issue and role, what kind of wake it is, and `dueAt`, the pacing's estimate at the read
+ * of the moment it lets the wake out, as its queues stand (entry 20261125211005). A waiting wake
+ * holds a place and no moment of its own: a wake ahead of it that leaves moves that moment
+ * earlier, and the jitter of the turns ahead of it, or a message wake that goes ahead of it, moves
+ * it later, so two reads can name two moments. The kinds are the daemon's three paced lanes:
+ * `launch`, a role process it is about to start, and `plugin-refresh`, the relaunch of a process
+ * whose plugin speaks an earlier contract than the daemon's, which the stale-plugin lane's own
+ * gate admits (contract 73), both held in the claim's machine and lost with a restart, which
+ * raises the wave again through its own paths; and
  * `catch-up`, the notice a start writes to an architect already running in place of a launch,
  * whose outbox row stands held while its place waits in the queue. `kind` is an unconstrained
  * string, so a lane a later daemon names is read rather than refused. `dueAt` is required: the

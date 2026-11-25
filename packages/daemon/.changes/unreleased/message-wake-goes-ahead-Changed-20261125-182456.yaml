@@ -8,10 +8,12 @@ body: |-
     rate does not change, and no two wakes run in one turn.
 
     The daemon stores the mark of a waiting message on the claim, so a restart keeps it. A waiting
-    wake holds a place and no moment: each `dueAt` of the state's `wakesWaiting` is the earliest
-    moment the pacing lets that place out, and the wake runs then or later. A resume's stuck clock
-    stops while its launch waits, and a paced catch-up waits in the outbox with no due moment
-    until the pacing lets it out. The line
+    wake holds a place and no moment: each `dueAt` of the state's `wakesWaiting` is the pacing's
+    estimate, at the read, of the moment it lets that place out. A wake ahead of it that leaves
+    moves that moment earlier, and the jitter of the turns ahead of it, or a message wake that goes
+    ahead of it, moves it later, so two reads can name two moments. A resume's stuck clock stops
+    while its launch waits, and a paced catch-up waits in the outbox with no due moment until the
+    pacing lets it out. The line
     `supervise: wake ran` names the `queue` a paced wake came from and its `turnsWaited`, and is a
     warning with `lateForMessage` for a message wake let out more than 45 minutes after its mark.
 

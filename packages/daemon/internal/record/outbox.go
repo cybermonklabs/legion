@@ -938,9 +938,13 @@ func (n Notice) Published(id int64) (Notice, string) {
 var CatchUpHeldAt = time.Date(2100, 1, 1, 0, 0, 0, 0, time.UTC)
 
 // CatchUpIsHeld is whether at, a row's next_at or a notice's PacedAt, is CatchUpHeldAt: the
-// moment of a catch-up the wake pacing still holds in its queue, which is no due moment. It is the
-// one test of that moment the daemon's readers make, so none of them takes the moment for a
-// deadline (the daemon's earlierNoticeFor, pacedCatchUps and catchUpPacing.restore).
+// moment of a catch-up the wake pacing still holds in its queue, which is no due moment. The
+// daemon's earlierNoticeFor, catchUpPacing.restore and pacedCatchUps, where it names a row's moment
+// in the state's wakesWaiting, test the moment with it, so none of them takes it for a deadline.
+// Two statements of the store compare next_at with CatchUpHeldAt itself (ReleaseHeldCatchUp,
+// CatchUpHeld), and the other readers rely on the held moment sorting after any now: the outbox
+// runs a row only once its next_at has come, and the daemon's releaseWaiting and pacedCatchUps
+// tell a held notice by a PacedAt still ahead of now.
 func CatchUpIsHeld(at time.Time) bool {
 	return at.Equal(CatchUpHeldAt)
 }

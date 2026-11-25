@@ -1098,9 +1098,9 @@ func TestATaskDeliveredWhileALaunchWaitsItsTurnWaitsForTheProcessThatLaunchStart
 // marked interrupted, and the resumed agent is told to carry on from where the turn stopped.
 //
 // A prompt acknowledged before the park is not one of those turns any more: the park disarms the
-// wait for it with the rest of the dead-or-replaced process's timers (parkWake), so a bare start
-// in that window is attributed to no delivery and nothing is confirmed for the launch to take
-// back.
+// wait for it with the rest of the dead-or-replaced process's timers (waitOnMachine), so a bare
+// start in that window is attributed to no delivery and nothing is confirmed for the launch to
+// take back.
 //
 // The negative control is that take-back reverted (wakeNow's interrupted): the task is then gone
 // from the claim at its turn, which this test reads where it asks for the pending task.
@@ -1347,13 +1347,13 @@ func TestAClosedConnectionAfterTheSweepsDeathChargesNothingMore(t *testing.T) {
 }
 
 // A process that dies while it is booting is the common failure of a restart wave, and the park
-// keeps that dead process recorded until the launch's turn (parkWake). Its boot interval goes
+// keeps that dead process recorded until the launch's turn (waitOnMachine). Its boot interval goes
 // with the rest of that process's timers at the park, so nothing of it falls inside the wait:
 // the probe a boot interval makes would be about a process whose fate the waiting relaunch has
 // already decided, and the turn is what replaces it and arms the new process's own (armBoot).
 // The test reads the timer gone for the whole of the wait and no probe made inside it.
 //
-// The negative control is the disarm reverted (parkWake's timers): the boot interval is then
+// The negative control is the disarm reverted (waitOnMachine's timers): the boot interval is then
 // armed over the dead process and fires inside the wait, which this test reads where it asks
 // the machine for that timer. Nothing else of the test moves with that one revert — the probe
 // such a timer makes is stopped by probe's own guard, and what a probe reported would be
@@ -1406,7 +1406,7 @@ func TestTheBootIntervalOfADeadProcessIsNotFiredWhileItsRelaunchWaits(t *testing
 // (armRegistration). The test reads the timer gone for the whole of the wait and no probe made
 // inside it.
 //
-// The negative control is the disarm reverted (parkWake's timers): the deadline is then armed
+// The negative control is the disarm reverted (waitOnMachine's timers): the deadline is then armed
 // over the dead process and fires inside the wait, which this test reads where it asks the
 // machine for that timer. Nothing else of the test moves with that one revert — the probe the
 // deadline makes is stopped by probe's own guard, and what a probe reported would be stopped by
@@ -1768,9 +1768,9 @@ func TestTheBootsReplayMovesNoRelaunchOutsideItsRule(t *testing.T) {
 
 // Nothing probes the process a waiting launch replaces, so no probe interval ever falls inside
 // the wait. The probe interval was the one of the four timers that could still be armed there:
-// the park disarms the others (parkWake), and a closed connection whose probe the runtime could
-// not answer arms this one again (probe), which would ask the runtime about a process whose fate
-// the launch has already decided, every interval of a wait that is tens of minutes long in a
+// the park disarms the others (waitOnMachine), and a closed connection whose probe the runtime
+// could not answer arms this one again (probe), which would ask the runtime about a process whose
+// fate the launch has already decided, every interval of a wait that is tens of minutes long in a
 // wave. So the probe makes no call and arms nothing while the launch waits, and the report that
 // does arrive — the sweep's own — is the one judge answers (launchWaits).
 //
@@ -1910,7 +1910,7 @@ func (s *unansweredCheckLaunchStore) CheckLaunch(ctx context.Context, c Claim) e
 
 // A launch refused at its turn over a process the claim still records leaves that process
 // watched. The park disarmed the boot interval and the registration deadline of the process the
-// launch was to replace (parkWake), the wake is spent by the time the recheck refuses, and the
+// launch was to replace (waitOnMachine), the wake is spent by the time the recheck refuses, and the
 // refusal keeps the claim exactly as it stands (runWake, relaunchRefused): without the timers
 // armed again (watchAgain) a process still booting would have nothing left to retire it, and a
 // pod whose agent never registers would sit in shim_connected for the rest of the tree's life.
@@ -1967,7 +1967,7 @@ func TestALaunchRefusedAtItsTurnLeavesItsBootingProcessWatched(t *testing.T) {
 }
 
 // The third timer the same refusal hands back: the bound a prompt the agent acknowledged waits
-// for its turn on (acked). The park takes it with the rest of the process's timers (parkWake)
+// for its turn on (acked). The park takes it with the rest of the process's timers (waitOnMachine)
 // because the turn would be cut off by the launch anyway, and a refusal at that turn keeps both
 // the process and the prompt — so without the bound armed again (watchAgain) an agent that
 // acknowledged a task and started no turn on it would leave that task pending for ever, where
@@ -2679,8 +2679,8 @@ func TestAnOperatorsDeliveryOverAParkedRelaunchNeverReachesTheDeadProcess(t *tes
 }
 
 // The park over a process that is still booting, which the launch at its turn would retire: the
-// park disarms that process's boot interval and registration deadline (parkWake), so nothing but
-// the launch retires it. Running the launch where the operator's task arrives arms the new
+// park disarms that process's boot interval and registration deadline (waitOnMachine), so nothing
+// but the launch retires it. Running the launch where the operator's task arrives arms the new
 // process's own timers (launchTries, armBoot), and the claim goes on being watched: the agent that
 // never registers has its deadline, and the deadline retires its process and relaunches.
 //

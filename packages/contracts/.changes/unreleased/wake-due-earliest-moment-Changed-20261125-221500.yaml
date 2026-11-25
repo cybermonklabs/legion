@@ -2,9 +2,11 @@ kind: Changed
 body: |-
   The daemon API schemas say what the daemon API entry 20261125211005 (`wake-due-earliest-moment`)
   changes: the `dueAt` of each wake of the state's `wakesWaiting`, and of a claim view's `wake`, is
-  the earliest moment the daemon's wake pacing lets that wake out, as its queues stand at the read.
-  A waiting wake holds a place in a queue and no moment of its own, so the wake runs at `dueAt` or
-  later, and two reads can name two moments. No field is added, removed or retyped.
+  the daemon's wake pacing's estimate, at the read, of the moment it lets that wake out, as its
+  queues stand. A waiting wake holds a place in a queue and no moment of its own: a wake ahead of
+  it that leaves moves that moment earlier, and the jitter of the turns ahead of it, or a message
+  wake that goes ahead of it, moves it later, so two reads can name two moments. No field is
+  added, removed or retyped.
 time: 2026-11-25T22:15:00Z
 custom:
     Issue: wake-due-earliest-moment

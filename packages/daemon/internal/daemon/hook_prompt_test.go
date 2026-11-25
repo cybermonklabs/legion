@@ -141,7 +141,7 @@ func TestAHookPromptForAReleasedPodIsKeptForItsWokenSession(t *testing.T) {
 
 // A released role's resume can wait for its turn in the wake pacing, which over a wave is more
 // than an hour away, and meanwhile the claim reads launching with no process (supervise's
-// parkWake): it is released no more, and no session of it can hold the role before that turn.
+// waitOnMachine): it is released no more, and no session of it can hold the role before that turn.
 // The row publishes nothing while the wake waits, since a kept publish then would start the
 // listener's hour long before the pod comes back. It waits as a routine wait, to the turn or to
 // parkedWakeBound on, whichever comes first, and reads the claim again then: the attempt that
@@ -202,7 +202,7 @@ func TestAHookPromptRetriesEveryFailureButNoHolder(t *testing.T) {
 }
 
 // A relaunch the wake pacing parks over a process the claim still records holds no row: the
-// machine leaves that claim as it stands, idle on its process (supervise's parkWake), and its
+// machine leaves that claim as it stands, idle on its process (supervise's waitOnMachine), and its
 // live session can take a publish now, so the row's first attempt publishes. The claim is one of
 // the wave TestARelaunchKeepsTheRunningProcessUntilItsTurnAndNoSweepReapsIt reads, a process on an
 // earlier plugin contract whose stale-plugin relaunch waits its turn (parkedOverItsProcess). A row
