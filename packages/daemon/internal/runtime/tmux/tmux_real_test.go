@@ -2143,15 +2143,12 @@ func TestRealTmuxPaneResolvesThisDaemonsLegionCLI(t *testing.T) {
 	// workspace is not (this test's own directory is a clone of sjawhar's). PUBLIC_LEAK_CHECK is
 	// copied with the rest because the guard resolves the shared check from the environment the
 	// `legion gh` this shell starts was handed, and a call that resolves none is refused.
-	shell := exec.Command("/bin/sh", "-c", "command -v legion; legion version; command -v gh; gh api repos/sjawhar/legion-smoke --jq .full_name; gh pr list")
-	shell.Dir = t.TempDir()
+	shellEnv := make([]string, 0, 6)
 	for _, name := range []string{"PATH", "HOME", "GH_CONFIG_DIR", "LEGION_GH_OWNERS_DIR", "LEGION_GH_PATH", "PUBLIC_LEAK_CHECK"} {
-		shell.Env = append(shell.Env, name+"="+env[name])
+		shellEnv = append(shellEnv, name+"="+env[name])
 	}
-	out, err := shell.CombinedOutput()
-	if err != nil {
-		t.Fatalf("legion and gh in the pane environment: %v: %s", err, out)
-	}
+	out := paneShell(t, "legion and gh in the pane environment", t.TempDir(),
+		"command -v legion; legion version; command -v gh; gh api repos/sjawhar/legion-smoke --jq .full_name; gh pr list", shellEnv)
 	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
 	root := runtime.GHConfigDir(r.stateDir, spec.Claim)
 	if len(lines) != 5 || lines[0] != launcher || !strings.HasPrefix(lines[1], "legion ") || lines[2] != filepath.Join(bin, "gh") ||
@@ -2195,23 +2192,46 @@ func TestRealTmuxAPanesGitWrapperTrailsACommit(t *testing.T) {
 	repo := filepath.Join(t.TempDir(), "repo")
 	fixturegit.Isolated(t, t.TempDir()).Run(t.TempDir(), append([]string{git}, fixturegit.InitWorkTree(repo, "")[1:]...)...)
 	session := "tmux-pane-" + randomHex(t, 4)
-	shell := exec.Command("/bin/sh", "-c", "command -v git && git commit --allow-empty -q -m pane && git log -1 --format=%B")
-	shell.Dir = repo
+	shellEnv := make([]string, 0, 10)
 	for _, name := range []string{"PATH", "HOME", "XDG_CONFIG_HOME", "LEGION_ROLE"} {
-		shell.Env = append(shell.Env, name+"="+env[name])
+		shellEnv = append(shellEnv, name+"="+env[name])
 	}
-	shell.Env = append(shell.Env, "DISPATCH_HOST=omp", "DISPATCH_SESSION_ID="+session,
+	shellEnv = append(shellEnv, "DISPATCH_HOST=omp", "DISPATCH_SESSION_ID="+session,
 		"GIT_AUTHOR_NAME=Pane test", "GIT_AUTHOR_EMAIL=pane-test@example.invalid",
 		"GIT_COMMITTER_NAME=Pane test", "GIT_COMMITTER_EMAIL=pane-test@example.invalid")
-	out, err := shell.CombinedOutput()
-	if err != nil {
-		t.Fatalf("git in the pane environment: %v: %s", err, out)
-	}
+	out := paneShell(t, "git in the pane environment", repo, "command -v git && git commit --allow-empty -q -m pane && git log -1 --format=%B", shellEnv)
 	got := strings.Split(strings.TrimRight(string(out), "\n"), "\n")
 	want := []string{filepath.Join(bin, "git"), "pane", "", "Omp-Session: " + session, "Legion-Role: architect"}
 	if !slices.Equal(got, want) {
 		t.Fatalf("the pane's git and its commit = %q, want %q", got, want)
 	}
+}
+
+// paneShell runs script under /bin/sh in dir with env alone, as the agent's bash tool runs a
+// command in a pane, and answers what it printed. what names the call in a failure. The shell and
+// every process it starts run in a process group of their own, which is killed once the test's
+// waits give up (testwait.Context: the test binary's deadline less testwait's margin), so a call
+// that never returns fails the test by name instead of holding the package until go test's alarm,
+// which names nothing: one such call ran 17 minutes under load and was killed with no stack.
+func paneShell(t *testing.T, what, dir, script string, env []string) []byte {
+	t.Helper()
+	ctx := testwait.Context(t)
+	shell := exec.CommandContext(ctx, "/bin/sh", "-c", script)
+	shell.Dir, shell.Env = dir, env
+	shell.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	shell.Cancel = func() error { return syscall.Kill(-shell.Process.Pid, syscall.SIGKILL) }
+	// A process that left the group and still holds the output pipe would keep the read open after
+	// the kill; the wait for it ends here, once the test has already failed.
+	shell.WaitDelay = 5 * time.Second
+	started := time.Now()
+	out, err := shell.CombinedOutput()
+	if ctx.Err() != nil {
+		t.Fatalf("%s did not return within %s, the test binary's deadline less testwait's margin, and its process group was killed: `%s` in %s printed %q", what, time.Since(started).Round(time.Millisecond), script, dir, out)
+	}
+	if err != nil {
+		t.Fatalf("%s: %v: %s", what, err, out)
+	}
+	return out
 }
 
 // Releasing a claim lets go of everything the runtime watches for it, whether or not its process
