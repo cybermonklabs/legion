@@ -328,6 +328,22 @@ before it saved, so a common run deletes one, and the step's DECLARED_LOOPS entr
 whose first attempt landed and whose answer was lost is refused on its retry as an entry that is
 gone, and fails the step by name; the next fill deletes nothing more.
 
+## The envoy and envoy-test jobs' budgets
+
+Main's #5334 split the go-envoy-test fill out of the envoy job into a job of its own, envoy-test,
+and keyed both from measurements. The envoy job: warm, on its newest entry, 37 s a leg (jobs
+138290290861 and 138290290676); cold, from an empty module and build cache, 61 s and 48 s before
+a save of about 0.5 GB (probe run 45375660275, jobs 138381154486 and 138381153841). Main gave it
+10 minutes, about nine times the cold. The envoy-test job: warm, 5.5 and 4.1 min a leg, save
+included (jobs 138290290807 and 138290290989); cold, 6.2 and 4.0 min before a save of 3.5 GB,
+which took up to 1.9 min warm (probe run 45375660275, jobs 138381154602 and 138381154546). Main
+gave it 30 minutes, about four times the cold job with its save.
+
+Each job's first term is main's figure, and the Budgets note of `.github/ci-budgets.md` adds its
+slowest retried step alone, its Go module download, 5 x 180 + 150 = 1050 s
+(#the-go-module-downloads-before-each-fills-builds). The envoy job: 600 + 1050 = 1650 s -> 28
+min. The envoy-test job: 1800 + 1050 = 2850 s -> 48 min.
+
 ## The elan job's budget
 
 The job's measured term is 1800 s, the 30 minutes it was written with: one toolchain download and

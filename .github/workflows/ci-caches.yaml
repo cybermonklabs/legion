@@ -269,11 +269,8 @@ jobs:
       matrix:
         runner: [ubuntu-24.04, ubuntu-24.04-arm]
     runs-on: ${{ matrix.runner }}
-    # Budget (the Budgets note of .github/ci-budgets.md): 600 s, the 10 minutes main's #5334 gave
-    # this job from its measurement (warm, on its newest entry, 37 s a leg, jobs 138290290861 and
-    # 138290290676; cold, from an empty module and build cache, 61 s and 48 s before a save of about
-    # 0.5 GB, probe run 45375660275), plus its slowest retried step alone: the Go module download
-    # below, 5 x 180 + 150 = 1050 s. 600 + 1050 = 1650 s -> 28 min.
+    # why: .github/ci-notes/ci-caches.md#the-envoy-and-envoy-test-jobs-budgets
+    # 600 + 1050 = 1650 s -> 28 min.
     timeout-minutes: 28
     outputs:
       # The key each leg saved, named by family and architecture as the daemon job's are.
@@ -361,11 +358,8 @@ jobs:
       matrix:
         runner: [ubuntu-24.04, ubuntu-24.04-arm]
     runs-on: ${{ matrix.runner }}
-    # Budget (the Budgets note of .github/ci-budgets.md): 1800 s, the 30 minutes main's #5334 gave
-    # this job from its measurement (warm, 5.5 and 4.1 min a leg, save included, jobs 138290290807
-    # and 138290290989; cold, 6.2 and 4.0 min before a save of 3.5 GB, which took up to 1.9 min
-    # warm, probe run 45375660275), plus its slowest retried step alone: the Go module download
-    # below, 5 x 180 + 150 = 1050 s. 1800 + 1050 = 2850 s -> 48 min.
+    # why: .github/ci-notes/ci-caches.md#the-envoy-and-envoy-test-jobs-budgets
+    # 1800 + 1050 = 2850 s -> 48 min.
     timeout-minutes: 48
     outputs:
       # The key each leg saved, named by family and architecture as the daemon job's are.
