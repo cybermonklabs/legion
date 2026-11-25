@@ -252,7 +252,13 @@ func IsStatementOutcomeUnknown(err error) bool { return errors.Is(err, ErrStatem
 // connectionLost's; and any other error that is no timeout - a statement Postgres refused - stays
 // the error it is, so a fault the server should be alarmed over is not hidden behind a refusal.
 func stalled(ctx context.Context, err error) bool {
-	return err != nil && ctx.Err() == nil && !errors.Is(err, context.DeadlineExceeded) &&
+	return err != nil && stalledWhile(ctx.Err() == nil, err)
+}
+
+// stalledWhile is stalled for a caller whose context is still live (live), where the caller has
+// read that already.
+func stalledWhile(live bool, err error) bool {
+	return err != nil && live && !errors.Is(err, context.DeadlineExceeded) &&
 		!errors.Is(err, context.Canceled) && pgconn.Timeout(err)
 }
 
@@ -404,10 +410,20 @@ const (
 // refusal is logged on says which bound passed and what it left behind. A caller whose own
 // deadline came first gets its own error back.
 func poolBusy(ctx context.Context, pool string, err error, commits outcome) error {
+	if err == nil {
+		return nil
+	}
+	return poolBusyUntil(ctx.Done(), pool, err, commits)
+}
+
+// poolBusyUntil is poolBusy for a caller whose context ends when ends closes (its Done): a row or
+// a batch's results map their deferred error once they are read, and keep only that channel of
+// the caller's context, which says whether the context has ended as its Err does.
+func poolBusyUntil(ends <-chan struct{}, pool string, err error, commits outcome) error {
 	switch {
 	case err == nil || errors.Is(err, ErrPoolBusy) || errors.Is(err, ErrStatementOutcomeUnknown):
 		return err
-	case stalled(ctx, err):
+	case stalledWhile(!closed(ends), err):
 		switch {
 		case pgconn.SafeToRetry(err):
 			return fmt.Errorf("%s pool: %w: the database stopped answering before the call reached it: %w", pool, ErrPoolBusy, err)
@@ -417,10 +433,21 @@ func poolBusy(ctx context.Context, pool string, err error, commits outcome) erro
 		return fmt.Errorf("%s pool: %w: %w", pool, ErrStatementOutcomeUnknown, err)
 	case commits == commitsItself && lostAfterSent(err):
 		return fmt.Errorf("%s pool: %w: the connection ended under it: %w", pool, ErrStatementOutcomeUnknown, err)
-	case ctx.Err() != nil || !errors.Is(err, context.DeadlineExceeded):
+	case closed(ends) || !errors.Is(err, context.DeadlineExceeded):
 		return err
 	}
 	return fmt.Errorf("%s pool: %w: no connection came free within the pool's acquire bound: %w", pool, ErrPoolBusy, err)
+}
+
+// closed reports whether ends, a context's Done, is closed: whether that context has ended. A
+// nil ends, the Done of a context that never ends, is never closed.
+func closed(ends <-chan struct{}) bool {
+	select {
+	case <-ends:
+		return true
+	default:
+		return false
+	}
 }
 
 // acquireBuckets are the upper bounds of the acquire-wait histogram's buckets, from a

@@ -78,7 +78,7 @@ func (r *RawPool) Query(ctx context.Context, sql string, args ...any) (pgx.Rows,
 // QueryRow runs a single-row query on a connection of the pool. pgxpool defers an acquire's error
 // to the row's Scan, so the row maps it there.
 func (r *RawPool) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
-	return busyRow{Row: r.Pool.QueryRow(ctx, sql, args...), ctx: ctx, pool: r.name}
+	return busyRow{Row: r.Pool.QueryRow(ctx, sql, args...), ends: ctx.Done(), pool: r.name}
 }
 
 // Exec runs a statement on a connection of the pool.
@@ -90,7 +90,7 @@ func (r *RawPool) Exec(ctx context.Context, sql string, args ...any) (pgconn.Com
 // SendBatch runs a batch on a connection of the pool. pgxpool defers an acquire's error to the
 // results, so the results map it there.
 func (r *RawPool) SendBatch(ctx context.Context, batch *pgx.Batch) pgx.BatchResults {
-	return busyBatchResults{BatchResults: r.Pool.SendBatch(ctx, batch), ctx: ctx, pool: r.name}
+	return busyBatchResults{BatchResults: r.Pool.SendBatch(ctx, batch), ends: ctx.Done(), pool: r.name}
 }
 
 // CopyFrom streams rows into a table on a connection of the pool.

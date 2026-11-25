@@ -442,7 +442,7 @@ func (p *Pool) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
 	if err != nil {
 		return errRow{err: err}
 	}
-	return busyRow{Row: on.QueryRow(ctx, sql, args...), ctx: ctx, pool: p.name, done: done}
+	return busyRow{Row: on.QueryRow(ctx, sql, args...), ends: ctx.Done(), pool: p.name, done: done}
 }
 
 // Exec runs a statement on a pooled connection.
@@ -539,7 +539,7 @@ func (p *Pool) SendBatch(ctx context.Context, batch *pgx.Batch) pgx.BatchResults
 	if err != nil {
 		return errBatchResults{err: err}
 	}
-	return busyBatchResults{BatchResults: on.SendBatch(ctx, batch), ctx: ctx, pool: p.name, done: done}
+	return busyBatchResults{BatchResults: on.SendBatch(ctx, batch), ends: ctx.Done(), pool: p.name, done: done}
 }
 
 // QueueExec queues sql with args into b; its error, wrapped in what as a statement sent alone
@@ -1044,7 +1044,7 @@ func (b errBatchResults) Tx() pgx.Tx                       { return nil }
 // the statement itself, which runs outside any transaction (commitsItself).
 type busyRow struct {
 	pgx.Row
-	ctx  context.Context
+	ends <-chan struct{}
 	pool string
 	done func()
 }
@@ -1052,7 +1052,7 @@ type busyRow struct {
 func (r busyRow) Scan(dest ...any) error {
 	err := r.Row.Scan(dest...)
 	finished(r.done)
-	return poolBusy(r.ctx, r.pool, err, commitsItself)
+	return poolBusyUntil(r.ends, r.pool, err, commitsItself)
 }
 
 // busyBatchResults maps a deferred acquire error to ErrPoolBusy in every result the caller reads,
@@ -1060,27 +1060,27 @@ func (r busyRow) Scan(dest ...any) error {
 // run outside any transaction, as a single statement's do (commitsItself).
 type busyBatchResults struct {
 	pgx.BatchResults
-	ctx  context.Context
+	ends <-chan struct{}
 	pool string
 	done func()
 }
 
 func (b busyBatchResults) Exec() (pgconn.CommandTag, error) {
 	tag, err := b.BatchResults.Exec()
-	return tag, poolBusy(b.ctx, b.pool, err, commitsItself)
+	return tag, poolBusyUntil(b.ends, b.pool, err, commitsItself)
 }
 
 func (b busyBatchResults) Query() (pgx.Rows, error) {
 	rows, err := b.BatchResults.Query()
-	return rows, poolBusy(b.ctx, b.pool, err, commitsItself)
+	return rows, poolBusyUntil(b.ends, b.pool, err, commitsItself)
 }
 
 func (b busyBatchResults) QueryRow() pgx.Row {
-	return busyRow{Row: b.BatchResults.QueryRow(), ctx: b.ctx, pool: b.pool}
+	return busyRow{Row: b.BatchResults.QueryRow(), ends: b.ends, pool: b.pool}
 }
 
 func (b busyBatchResults) Close() error {
 	err := b.BatchResults.Close()
 	finished(b.done)
-	return poolBusy(b.ctx, b.pool, err, commitsItself)
+	return poolBusyUntil(b.ends, b.pool, err, commitsItself)
 }
