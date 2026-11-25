@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/execfile"
+	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
@@ -173,9 +174,11 @@ func (d *passedDeadline) Err() error {
 // held work's group the same way, and `legion gh` ends with 129.
 //
 // Every row runs with the role's state directory set, so `legion gh` keeps the helps gh prints
-// (ghHelpKeep). The help read's stand-in prints gh's whole help before it holds the read, and the
-// read the signal stopped leaves no copy: a stopped read is an error, whatever gh printed before
-// the stop, so it is never kept and no later call is answered with it.
+// (ghHelpKeep), and with the fixture's rule file named, since the guard reads the destination's
+// visibility only where the deployment names one. The help read's stand-in prints gh's whole
+// help before it holds the read, and the read the signal stopped leaves no copy: a stopped read
+// is an error, whatever gh printed before the stop, so it is never kept and no later call is
+// answered with it.
 //
 // On main the help read shared `legion gh`'s own process group, so the group's signal reached the
 // stand-in itself: a SIGINT ended it and `legion gh` refused the command with a help error, exit 2,
@@ -271,8 +274,9 @@ func TestASignalToLegionGhsGroupStopsWhatItStartedBeforeGh(t *testing.T) {
 				state := t.TempDir()
 				env := map[string]string{
 					"LEGION_GH_PATH": stub, "GH_CONFIG_DIR": defaultDir, "LEGION_GH_OWNERS_DIR": root,
-					"PUBLIC_LEAK_CHECK": leakguardtest.Write(t, t.TempDir(), held.check(pidFile, held.seconds)),
-					"XDG_STATE_HOME":    state,
+					"PUBLIC_LEAK_CHECK":    leakguardtest.Write(t, t.TempDir(), held.check(pidFile, held.seconds)),
+					"XDG_STATE_HOME":       state,
+					leakguard.RulesFileVar: leakguardtest.WriteRules(t, t.TempDir()),
 				}
 				if held.git != nil {
 					bin := t.TempDir()
