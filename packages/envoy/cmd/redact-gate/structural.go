@@ -297,15 +297,7 @@ func (w *walker) storage(sel *ast.SelectorExpr, parents []ast.Node, function str
 		f.Kind, f.Why = "outside", "a read of the box's storage outside package "+w.boxPkg
 		return
 	}
-	up := func(i int) (ast.Node, int) {
-		for ; i >= 0; i-- {
-			if _, paren := parents[i].(*ast.ParenExpr); !paren {
-				return parents[i], i
-			}
-		}
-		return nil, -1
-	}
-	parent, i := up(len(parents) - 1)
+	parent, i := lastNonParen(parents)
 	var child ast.Expr = sel
 	switch p := parent.(type) {
 	case *ast.BinaryExpr:
@@ -325,7 +317,7 @@ func (w *walker) storage(sel *ast.SelectorExpr, parents []ast.Node, function str
 		// The text behind the pointer, as the box holds it; a box that held it by value is read
 		// without the star, and the same operations classify it.
 		child = p
-		parent, i = up(i - 1)
+		parent, i = lastNonParen(parents[:i])
 	}
 	switch q := parent.(type) {
 	case *ast.BinaryExpr:
@@ -365,13 +357,7 @@ func (w *walker) storage(sel *ast.SelectorExpr, parents []ast.Node, function str
 // or a local every use of which, in the function around it, is an operand of == or != with nil.
 // above is the path from the file down to the call's parent.
 func (w *walker) parseErrorKept(call *ast.CallExpr, above []ast.Node) string {
-	var parent ast.Node
-	for j := len(above) - 1; j >= 0; j-- {
-		if _, paren := above[j].(*ast.ParenExpr); !paren {
-			parent = above[j]
-			break
-		}
-	}
+	parent, _ := lastNonParen(above)
 	assign, ok := parent.(*ast.AssignStmt)
 	if !ok || len(assign.Rhs) != 1 || ast.Unparen(assign.Rhs[0]) != call || len(assign.Lhs) < 2 {
 		return "whose error is not assigned apart"
@@ -400,13 +386,7 @@ func (w *walker) parseErrorKept(call *ast.CallExpr, above []ast.Node) string {
 		if !ok || use == id || w.info.Uses[use] != obj || why != "" {
 			return true
 		}
-		var user ast.Node
-		for j := len(stack) - 2; j >= 0; j-- {
-			if _, paren := stack[j].(*ast.ParenExpr); !paren {
-				user = stack[j]
-				break
-			}
-		}
+		user, _ := lastNonParen(stack[:len(stack)-1])
 		if b, ok := user.(*ast.BinaryExpr); ok && (b.Op == token.EQL || b.Op == token.NEQ) && (isNil(b.X) || isNil(b.Y)) {
 			return true
 		}
@@ -429,6 +409,18 @@ func (w *walker) callee(call *ast.CallExpr) string {
 func isNil(e ast.Expr) bool {
 	id, ok := ast.Unparen(e).(*ast.Ident)
 	return ok && id.Name == "nil"
+}
+
+// lastNonParen is the last node of nodes that is no parenthesis, with its index, so a walk up a
+// path reads the expression a value is written inside whatever parentheses are around it; nil and
+// -1 where every node is one.
+func lastNonParen(nodes []ast.Node) (ast.Node, int) {
+	for i := len(nodes) - 1; i >= 0; i-- {
+		if _, paren := nodes[i].(*ast.ParenExpr); !paren {
+			return nodes[i], i
+		}
+	}
+	return nil, -1
 }
 
 func orName(name, otherwise string) string {
