@@ -311,12 +311,12 @@ func TestAnEvictedPodsEndIsObservedFromItsConditionOrItsReason(t *testing.T) {
 // of its ends reaches the pod as a deletion timestamp it did not write. Four acts are driven here
 // as the daemon makes them — an issue's close or idle release through SuspendIssue, a launch
 // that cannot use the pod it found through the relaunch that replaces it, whose roles are reported
-// displaced as they always were, the bare suspending patch every other suspension of the daemon's
-// makes (setMode), and the relabel of a Sandbox an issue's old tree left Running, which suspends
-// it in the relabel's own patch (ensureSandbox). A launch whose pod is not live enough to
-// displace, the suspension of a failed launch and a repository cache's own end their pod through
-// the patch setMode sends, the first two under the act they pass (suspendOver); it and the relabel
-// take their suspending operation from one place (suspending), which writes the record, so that
+// displaced as they always were, the bare JSON patch of the mode that a suspension naming nothing
+// beside the mode sends (suspend), and the relabel of a Sandbox an issue's old tree left Running,
+// which suspends it in the relabel's own patch and records its end beside it (ensureSandbox). A
+// launch whose pod is not live enough to displace and the suspension of a failed launch, which
+// name nothing beside the mode (suspendOver), and a repository cache's own end their pod through
+// that patch, whose sender writes the record under daemonSuspendedAct and takes no act, so that
 // none of them can end a pod without one. The record is consumed by the end it was written for, so
 // the runtime holds none afterwards.
 func TestTheDaemonsOwnEndOfAPodIsObservedAsItsOwn(t *testing.T) {
@@ -324,7 +324,7 @@ func TestTheDaemonsOwnEndOfAPodIsObservedAsItsOwn(t *testing.T) {
 		g := runningIssuePod(t)
 		name := SandboxName(workerToken)
 
-		if err := g.r.setMode(g.ctx, g.sandbox(name), modeSuspended); err != nil {
+		if err := g.r.suspend(g.ctx, g.sandbox(name)); err != nil {
 			t.Fatalf("suspend the sandbox: %v", err)
 		}
 		// The Agent Sandbox controller answers the patch by deleting the pod, which is how every
@@ -414,37 +414,6 @@ func TestTheDaemonsOwnEndOfAPodIsObservedAsItsOwn(t *testing.T) {
 			t.Errorf("the runtime holds %d records of an intended end, want none: the record goes with the pod it names", held)
 		}
 	})
-}
-
-// A suspension of a Sandbox not yet Suspended that names no act and gives no annotation is refused,
-// and nothing is written or recorded (suspendOver). Its patch would be the JSON patch setMode
-// sends, whose operation records the daemon's end of the pod (suspending), and under an empty act
-// that record would make the pod's next end read as the daemon's own in no words at all. No caller
-// makes such a call; the refusal keeps a later one from passing silently.
-func TestASuspensionNamingNoActAndNoAnnotationIsRefusedAndWritesNothing(t *testing.T) {
-	g := runningIssuePod(t)
-	name := SandboxName(workerToken)
-	g.clearActions()
-
-	_, err := g.r.suspendOver(g.ctx, g.sandbox(name), g.pod(name), "", nil)
-	const refusal = "no act to record the daemon's end of its pod under and no annotation to write"
-	if err == nil || !strings.Contains(err.Error(), refusal) {
-		t.Errorf("suspendOver with no act and no annotation answered %v, want the refusal %q", err, refusal)
-	}
-	if s := g.sandbox(name); s == nil {
-		t.Errorf("the Sandbox is gone after the refused suspension, want it there and not Suspended")
-	} else if s.mode() == modeSuspended {
-		t.Errorf("the Sandbox is %s after the refused suspension, want it not Suspended", s.mode())
-	}
-	if writes := g.writes(); len(writes) != 0 {
-		t.Errorf("the refused suspension wrote %+v, want nothing", writes)
-	}
-	g.r.mu.Lock()
-	intended, held := g.r.intendedEnds[recorded]
-	g.r.mu.Unlock()
-	if held {
-		t.Errorf("the refused suspension recorded the intended end %+v of pod %s, want none", intended, recorded)
-	}
 }
 
 // A pod already terminal is read from its status alone, whatever deletion timestamp the event that

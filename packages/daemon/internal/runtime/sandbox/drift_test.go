@@ -890,7 +890,7 @@ func TestPodDriftReadsASuspendedSandboxAsItsOwnReplacementOrAsAGonePod(t *testin
 		}
 	}
 
-	if err := g.r.setMode(g.ctx, g.sandbox(name), modeSuspended); err != nil {
+	if err := g.r.suspend(g.ctx, g.sandbox(name)); err != nil {
 		t.Fatalf("suspend the sandbox: %v", err)
 	}
 	suspended("it suspended naming no replaced pod", func(s *sandbox) bool { return s.Annotations[displacedAnnotation] == "" })

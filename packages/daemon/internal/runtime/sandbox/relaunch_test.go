@@ -1031,7 +1031,7 @@ func suspendSandbox(t *testing.T, g *rig, r *Runtime, name string) {
 	if err != nil || s == nil {
 		t.Fatalf("read sandbox %s: %+v, %v", name, s, err)
 	}
-	if err := r.setMode(g.ctx, s, modeSuspended); err != nil {
+	if err := r.suspend(g.ctx, s); err != nil {
 		t.Fatalf("suspend sandbox %s: %v", name, err)
 	}
 	g.eventually("the sandbox store to see "+name+" suspended", func() bool {
@@ -1260,7 +1260,7 @@ func TestAPatchIsFencedToTheSandboxItRead(t *testing.T) {
 	if err := g.dyn.Tracker().Update(sandboxGVR, u, testNamespace); err != nil {
 		t.Fatal(err)
 	}
-	if err := g.r.setMode(g.ctx, read, modeSuspended); err == nil {
+	if err := g.r.suspend(g.ctx, read); err == nil {
 		t.Fatal("a patch fenced to another uid was applied")
 	}
 	if g.sandbox(name).mode() != modeRunning {

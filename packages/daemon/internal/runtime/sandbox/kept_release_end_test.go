@@ -11,11 +11,11 @@ import (
 // A release of an issue whose pod failed on its kept volume ends that pod as the daemon's own end.
 // The release suspends the Sandbox, and the reset mark the pod's failed init container calls for
 // (volumeFault) makes that suspension one merge patch of the mode and the mark rather than the JSON
-// patch setMode sends. The record of the daemon's end comes from the act the release passes
-// (daemonSuspendedAct, suspendOver), not from the patch's shape, so the end reads as the daemon's
-// own here as it does for a release of a pod whose volume is sound. With no record the end would
-// read as one from outside the pod (deletedByAnother), logged as a warning that something outside
-// the pod ended it, which nothing did.
+// patch suspend sends. The record of the daemon's end comes from what the release names, nothing
+// beside the mode (daemonSuspendedAct, suspendOver), not from the patch's shape, so the end reads
+// as the daemon's own here as it does for a release of a pod whose volume is sound. With no record
+// the end would read as one from outside the pod (deletedByAnother), logged as a warning that
+// something outside the pod ended it, which nothing did.
 func TestAReleaseEndsAPodWhoseInitFailedOnItsKeptVolumeAsTheDaemonsOwn(t *testing.T) {
 	name := SandboxName(workerToken)
 	g := newRig(t, nil, withOptions(keptVolumes(SandboxMicroVM)))

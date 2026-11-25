@@ -401,7 +401,7 @@ func TestAKeptVolumeWhoseInitContainerFailedIsReplaced(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			log := &logBuffer{}
 			g, _, _ := launched(t, kept, log)
-			if err := g.r.setMode(g.ctx, g.sandbox(name), modeSuspended); err != nil {
+			if err := g.r.suspend(g.ctx, g.sandbox(name)); err != nil {
 				t.Fatal(err)
 			}
 			g.eventually("the pod of the Suspended Sandbox to go", func() bool { return g.pod(name) == nil && g.r.storedPod(name) == nil })

@@ -457,7 +457,7 @@ func (r *Runtime) reconcileCachePod(ctx context.Context, s *sandbox, repo ghrepo
 		}
 	}
 	if s.mode() != modeSuspended {
-		if err := r.setMode(ctx, s, modeSuspended); err != nil {
+		if err := r.suspend(ctx, s); err != nil {
 			return fmt.Errorf("suspend sandbox %s: %w", s.Name, err)
 		}
 	}
