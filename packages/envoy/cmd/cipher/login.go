@@ -26,7 +26,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/sjawhar/envoy/cipheraddr"
+	"github.com/sjawhar/envoy/configaddr"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipherclient"
 	"github.com/sjawhar/envoy/internal/redact"
@@ -127,7 +127,7 @@ func login(ctx context.Context, stdout, stderr io.Writer) error {
 		return err
 	}
 	// The enrollment is the broker's, so it prints as the broker's address lets its answer print
-	// (cipheraddr.Address.Words); the record keeps it as it came. The person is the one Google's
+	// (configaddr.Address.Words); the record keeps it as it came. The person is the one Google's
 	// identity token names.
 	fmt.Fprintf(stdout, "%s is signed in on this machine (enrollment %s)\n", record.Person, idWords(base, record.EnrollmentID))
 	return nil
@@ -183,7 +183,7 @@ func (l *launcherKeySigner) Sign(method, url string) (string, error) {
 // request's record, and answered only as RemoteText.SendBack answers it: every later call signs
 // with it and a sign-in's record keeps it, so an id the rule does not print as it came is refused
 // here, not printed, and kept nowhere.
-func enrollUnderCredential(ctx context.Context, base cipheraddr.Address, key *ecdsa.PrivateKey, thumbprint, credentialID, who string) (string, error) {
+func enrollUnderCredential(ctx context.Context, base configaddr.Address, key *ecdsa.PrivateKey, thumbprint, credentialID, who string) (string, error) {
 	hostname, err := os.Hostname()
 	if err != nil {
 		return "", err

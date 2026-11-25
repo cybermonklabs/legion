@@ -143,18 +143,14 @@ export const RECORD_READ_BOUND_MS = 5_000;
  * listener keeps nothing for.
  *
  * It stays a debug line rather than a warning because an architect that is away is not this
- * worker's doing, and the retry is already in hand.
+ * worker's doing, and the retry is already in hand. The reason is the listener's word, compared
+ * through its box (`EnvoyApiError.reason`).
  */
 function roleUnheld(error: unknown): boolean {
   if (!(error instanceof EnvoyApiError) || error.details.status !== 404) return false;
-  let body: unknown;
-  try {
-    body = JSON.parse(error.details.responseBody);
-  } catch {
-    return false;
-  }
-  if (typeof body !== "object" || body === null || !("reason" in body)) return false;
-  return body.reason === "unclaimed" || body.reason === "holder_lapsed";
+  return (
+    error.reason?.equals("unclaimed") === true || error.reason?.equals("holder_lapsed") === true
+  );
 }
 
 /** `work`'s answer, or a rejection once `ms` have passed without one, when the signal `work` was

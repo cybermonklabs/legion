@@ -6,7 +6,7 @@
 // a broker answer, cannot be read: the flag that names the file, never its path, since a flag
 // meant for a credential's path is where a person who pasted the credential itself puts it; the
 // system's reason, never the parser's words about the file's content; and a broker answer's
-// decoder error as cipheraddr.Address.Words lets it print. Every secret here is made up.
+// decoder error as configaddr.Address.Words lets it print. Every secret here is made up.
 package main
 
 import (

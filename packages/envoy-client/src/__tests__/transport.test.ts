@@ -8,6 +8,7 @@ import {
 } from "@legion/contracts";
 import { URL_NOT_PRINTED } from "@legion/contracts/log-text";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
+import { remoteText } from "@legion/test-fixtures/remote-text-matcher";
 import envelopeWithoutRole from "../../../contracts/fixtures/envelope-without-role.json";
 import noInterestsFixture from "../../../contracts/fixtures/envoy-session-no-interests.json";
 import { delivered } from "../../test/delivered";
@@ -1188,6 +1189,50 @@ describe("EnvoyClient", () => {
     ).rejects.toBeInstanceOf(EnvoyApiError);
   });
 
+  // The listener's soft-claim 409 names the role and its holder (RoleHeldWireSchema); a 409 that
+  // names a holder and no role is no such answer, and stays the refusal, as it always did.
+  test("a 409 naming a holder and no role stays a typed API error", async () => {
+    const recorded = recordFetch([
+      Response.json({ error: "held by ses_live", holder: "ses_live" }, { status: 409 }),
+    ]);
+    const client = createEnvoyClient({ baseUrl: "http://listener", fetch: recorded.fetch });
+
+    await expect(
+      client.setRole({ sessionID: "ses_x", role: "controller", soft: true })
+    ).rejects.toBeInstanceOf(EnvoyApiError);
+  });
+
+  // The holder a 409 names is the listener's word, which setRole hands back as an id its callers
+  // compare and print: kept only where a print of it shows it whole, as Dispatch's client keeps a
+  // holder's (keptSessionID). One that quotes a credential's URL, or echoes the bearer the claim
+  // carried, names no holder this client can read, so the 409 stays the refusal.
+  test("a 409 naming a holder the rule does not print as it came stays a typed API error", async () => {
+    const listenerToken = fixtureSecret("listener");
+    for (const holder of [
+      "ses_x https://user:pass@elsewhere.test/?token=abc",
+      `ses_${listenerToken}`,
+    ]) {
+      const client = createEnvoyClient({
+        baseUrl: "http://listener",
+        credential: bearerCredential(listenerToken),
+        fetch: recordFetch([
+          Response.json(
+            { error: "role controller is held", role: "controller", holder },
+            {
+              status: 409,
+            }
+          ),
+        ]).fetch,
+      });
+      const error = await client
+        .setRole({ sessionID: "ses_x", role: "controller", soft: true })
+        .catch((thrown: unknown) => thrown);
+      expect(error).toBeInstanceOf(EnvoyApiError);
+      expect(String(error)).not.toContain("pass@");
+      expect(String(error)).not.toContain(listenerToken);
+    }
+  });
+
   test("a 409 whose body does not arrive stays a typed API error, sent once", async () => {
     let calls = 0;
     const client = createEnvoyClient({
@@ -1552,7 +1597,7 @@ describe("EnvoyClient", () => {
         `or until ${GRACE_MINUTES} minutes have passed since its last_seen, the time of its last registration.`
     );
     expect(unresponsive.sessionState).toBe("unresponsive");
-    expect(unresponsive.holder).toBe("ses_stalled");
+    expect(unresponsive.holder).toEqual(remoteText("ses_stalled"));
     expect(unresponsive.lastSeen).toBe(1_700_000_000_000);
     expect(unresponsive.claimReleased).toBe(false);
 
@@ -1596,9 +1641,11 @@ describe("EnvoyClient", () => {
     const recorded = recordFetch([new Response("invalid role", { status: 400 })]);
     const client = createEnvoyClient({ baseUrl: "http://listener", fetch: recorded.fetch });
 
-    const request = client.setRole({ sessionID: "ses_sender", role: "invalid role" });
+    const error = await client
+      .setRole({ sessionID: "ses_sender", role: "invalid role" })
+      .catch((thrown: unknown) => thrown);
 
-    await expect(request).rejects.toEqual(
+    expect(error).toEqual(
       new EnvoyApiError({
         method: "POST",
         url: "http://listener/v1/roles/set",
@@ -1606,6 +1653,15 @@ describe("EnvoyClient", () => {
         responseBody: "invalid role",
       })
     );
+    // Two boxes compare equal under toEqual whatever they hold, so the body is matched by its text.
+    expect(error).toMatchObject({
+      details: {
+        method: "POST",
+        url: "http://listener/v1/roles/set",
+        status: 400,
+        responseBody: remoteText("invalid role"),
+      },
+    });
   });
 
   test("retries one 503 response and keeps the direct-send recipient", async () => {
@@ -2036,7 +2092,10 @@ describe("EnvoyClient", () => {
     expect(recorded.requests).toHaveLength(1);
     expect(error).toBeInstanceOf(EnvoyApiError);
     expect(error).not.toBeInstanceOf(EnvoySendUnconfirmedError);
-    expect(error).toMatchObject({ reason: "sender_rate_limited", retryAfterSeconds: 15 });
+    expect(error).toMatchObject({
+      reason: remoteText("sender_rate_limited"),
+      retryAfterSeconds: 15,
+    });
     expect((error as Error).message).toBe(`${RATE_LIMITED_SENTENCE} (reason: sender_rate_limited)`);
   });
 
@@ -2053,7 +2112,10 @@ describe("EnvoyClient", () => {
 
     expect(recorded.requests).toHaveLength(1);
     expect(error).toBeInstanceOf(EnvoyApiError);
-    expect(error).toMatchObject({ reason: "sender_rate_limited", retryAfterSeconds: 15 });
+    expect(error).toMatchObject({
+      reason: remoteText("sender_rate_limited"),
+      retryAfterSeconds: 15,
+    });
     expect((error as Error).message).toBe(`${RATE_LIMITED_SENTENCE} (reason: sender_rate_limited)`);
   });
 

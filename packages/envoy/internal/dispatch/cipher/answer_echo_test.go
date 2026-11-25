@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/sjawhar/envoy/configaddr"
 	"github.com/sjawhar/envoy/internal/redact/redacttest"
 )
 
@@ -23,7 +24,7 @@ func TestARelayedRefusalCarriesNoTokenItsAnswerEchoes(t *testing.T) {
 		fmt.Fprintf(w, `{"code":"UNAUTHORIZED","error":"the bearer %s is not one this broker holds"}`, r.Header.Get("Authorization"))
 	}))
 	defer server.Close()
-	_, err := New(server.URL, tokenFile(t, redacttest.Token)).Pending(context.Background(), "sjawhar")
+	_, err := New(configaddr.New("DISPATCH_AGENT_SECRETS_URL", server.URL), tokenFile(t, redacttest.Token)).Pending(context.Background(), "sjawhar")
 	var refused *Error
 	if !errors.As(err, &refused) {
 		t.Fatalf("Pending = %v, want the broker's refusal", err)

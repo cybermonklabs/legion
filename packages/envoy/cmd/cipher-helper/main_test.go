@@ -24,7 +24,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/cipheraddr"
+	"github.com/sjawhar/envoy/configaddr"
 	"github.com/sjawhar/envoy/internal/cipher/helper"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cmdtest"
@@ -152,7 +152,7 @@ func TestServeRefusesAMachineFileThatDoesNotParse(t *testing.T) {
 	if err := os.WriteFile(machineFile, []byte("not a login"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	cfg := config{URL: cipheraddr.New("https://s"), Socket: dir + "/h.sock", OperatorFile: dir + "/none", MachineFile: machineFile, StatePath: dir + "/s.json"}
+	cfg := config{URL: configaddr.New("AGENT_SECRETS_URL", "https://s"), Socket: dir + "/h.sock", OperatorFile: dir + "/none", MachineFile: machineFile, StatePath: dir + "/s.json"}
 	if err := serve(cfg); err == nil || !strings.Contains(err.Error(), "AGENT_SECRETS_MACHINE_FILE") || strings.Contains(err.Error(), machineFile) {
 		t.Fatalf("serve on an unreadable machine file: %v; want an error naming AGENT_SECRETS_MACHINE_FILE, not %s", err, machineFile)
 	}
@@ -166,7 +166,7 @@ func TestServeRefusesAMachineFileThatDoesNotParse(t *testing.T) {
 // OperatorFile does not stop it from listening and answering `sessions` either.
 func TestServeStartsWithoutCredentialAndAnswersSessions(t *testing.T) {
 	dir := shortTempDir(t)
-	cfg := config{URL: cipheraddr.New("https://s"), Socket: dir + "/h.sock", OperatorFile: dir + "/none", MachineFile: dir + "/machine.json", StatePath: dir + "/s.json"}
+	cfg := config{URL: configaddr.New("AGENT_SECRETS_URL", "https://s"), Socket: dir + "/h.sock", OperatorFile: dir + "/none", MachineFile: dir + "/machine.json", StatePath: dir + "/s.json"}
 	done := make(chan error, 1)
 	go func() { done <- serve(cfg) }()
 	t.Cleanup(func() {
@@ -518,7 +518,7 @@ func TestASecondServeNeverSpendsTheRefreshToken(t *testing.T) {
 	if err := kept.Save(machineFile); err != nil {
 		t.Fatal(err)
 	}
-	cfg := config{URL: cipheraddr.New(srv.URL), Socket: dir + "/h.sock", OperatorFile: dir + "/none", MachineFile: machineFile, StatePath: dir + "/s.json"}
+	cfg := config{URL: configaddr.New("AGENT_SECRETS_URL", srv.URL), Socket: dir + "/h.sock", OperatorFile: dir + "/none", MachineFile: machineFile, StatePath: dir + "/s.json"}
 	first, err := claimSocket(cfg.Socket)
 	if err != nil {
 		t.Fatal(err)
@@ -558,7 +558,7 @@ func TestASecondServeOnTheSameMachineFileNeverSpendsItsRefreshToken(t *testing.T
 		t.Fatal(err)
 	}
 	defer first.Close()
-	cfg := config{URL: cipheraddr.New(srv.URL), Socket: dir + "/other.sock", OperatorFile: dir + "/none", MachineFile: machineFile, StatePath: dir + "/s.json"}
+	cfg := config{URL: configaddr.New("AGENT_SECRETS_URL", srv.URL), Socket: dir + "/other.sock", OperatorFile: dir + "/none", MachineFile: machineFile, StatePath: dir + "/s.json"}
 	if err := serve(cfg); err == nil || !strings.Contains(err.Error(), "AGENT_SECRETS_MACHINE_FILE") || strings.Contains(err.Error(), machineFile) {
 		t.Fatalf("a serve on a claimed machine file: %v; want an error naming AGENT_SECRETS_MACHINE_FILE, not %s", err, machineFile)
 	}

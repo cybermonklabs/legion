@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/cipheraddr"
+	"github.com/sjawhar/envoy/configaddr"
 	"github.com/sjawhar/envoy/internal/cipherclient"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
@@ -83,7 +83,7 @@ func TestAFailedRequestIsKnownOrUnknownByWhetherTheBrokerGotIt(t *testing.T) {
 				r.login(t)
 			}
 			if tc.refuse {
-				r.srv.Broker.URL = cipheraddr.New("http://127.0.0.1:1")
+				r.srv.Broker.URL = configaddr.New("AGENT_SECRETS_URL", "http://127.0.0.1:1")
 			}
 			if tc.fail != nil {
 				r.fake.mu.Lock()

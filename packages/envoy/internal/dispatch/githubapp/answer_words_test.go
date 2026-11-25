@@ -19,12 +19,12 @@ func TestABlobInAnotherEncodingNamesNoEncodingItWrote(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprintf(w, `{"content":"","encoding":%q}`, redacttest.Code)
 	})
-	_, err := client.DirFiles(context.Background(), "ghs_test", "acme", "web", Dir{SHA: "t1", Files: []DirFile{{Name: "a.md", Path: "docs/a.md", SHA: "b1", Size: 1}}})
+	_, err := client.DirFiles(context.Background(), "ghs_test", "acme", "web", Dir{SHA: "t1", Files: []DirFile{{Name: "a.md", Path: "docs/a.md", SHA: mainCommit, Size: 1}}})
 	if err == nil {
 		t.Fatal("DirFiles answered no error")
 	}
 	redacttest.RequireNone(t, "githubapp.answer-words/blob-encoding", err.Error())
-	if want := "blob b1 (docs/a.md) is in an encoding that is not base64"; !strings.Contains(err.Error(), want) {
+	if want := "blob " + mainCommit + " (docs/a.md) is in an encoding that is not base64"; !strings.Contains(err.Error(), want) {
 		t.Errorf("DirFiles' error is %q, want %q in it", err, want)
 	}
 }

@@ -9,7 +9,7 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/sjawhar/envoy/cipheraddr"
+	"github.com/sjawhar/envoy/configaddr"
 )
 
 // TestALoginPollSettlesOnTheBrokersRefusal: a poll the broker answers access_denied settles the
@@ -28,7 +28,7 @@ func TestALoginPollSettlesOnTheBrokersRefusal(t *testing.T) {
 	} {
 		t.Run(fmt.Sprintf("%d %s", c.status, c.outcome), func(t *testing.T) {
 			f := newFakeBroker(t)
-			b := &Broker{URL: cipheraddr.New(f.srv.URL), OperatorFile: operatorFile(t, "ada@example.com"), MachineFile: machineFilePath(t), HTTP: f.srv.Client()}
+			b := &Broker{URL: configaddr.New("AGENT_SECRETS_URL", f.srv.URL), OperatorFile: operatorFile(t, "ada@example.com"), MachineFile: machineFilePath(t), HTTP: f.srv.Client()}
 			t.Cleanup(b.Close)
 			f.mu.Lock()
 			f.loginOutcome, f.oauthErrorStatus = c.outcome, c.status
@@ -58,7 +58,7 @@ func TestALoginPollTheBrokerCouldNotAnswerSettlesNothing(t *testing.T) {
 	} {
 		t.Run(fmt.Sprintf("%d %s", c.status, c.outcome), func(t *testing.T) {
 			f := newFakeBroker(t)
-			b := &Broker{URL: cipheraddr.New(f.srv.URL), OperatorFile: operatorFile(t, "ada@example.com"), MachineFile: machineFilePath(t), HTTP: f.srv.Client()}
+			b := &Broker{URL: configaddr.New("AGENT_SECRETS_URL", f.srv.URL), OperatorFile: operatorFile(t, "ada@example.com"), MachineFile: machineFilePath(t), HTTP: f.srv.Client()}
 			t.Cleanup(b.Close)
 			f.mu.Lock()
 			f.loginOutcome, f.oauthErrorStatus = c.outcome, c.status

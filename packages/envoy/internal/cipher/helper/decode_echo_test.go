@@ -11,7 +11,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/sjawhar/envoy/cipheraddr"
+	"github.com/sjawhar/envoy/configaddr"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipherclient"
 	"github.com/sjawhar/envoy/internal/redact/redacttest"
@@ -39,7 +39,7 @@ func TestAnAcceptedAnswerThatDoesNotDecodePrintsNoProofItEchoes(t *testing.T) {
 		t.Fatal(err)
 	}
 	signIns := &stubSignIns{authority: &cipherclient.Authority{Key: key, CredentialID: "credential-1", Operator: "ada@example.com"}}
-	b := &Broker{URL: cipheraddr.New(srv.URL), HTTP: srv.Client(), SignIns: signIns}
+	b := &Broker{URL: configaddr.New("AGENT_SECRETS_URL", srv.URL), HTTP: srv.Client(), SignIns: signIns}
 	t.Cleanup(b.Close)
 	sess, err := newSession(os.Getpid(), 1, "example-host:1234:77", "", nil, nil)
 	if err != nil {

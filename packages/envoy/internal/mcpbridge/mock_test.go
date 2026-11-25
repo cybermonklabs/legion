@@ -34,6 +34,13 @@ type response struct {
 }
 
 func main() {
+	// The words a test sets MOCK_MCP_STDERR to, written on standard error, then a line that tells
+	// the test the words are written.
+	if words := os.Getenv("MOCK_MCP_STDERR"); words != "" {
+		fmt.Fprintln(os.Stderr, words)
+		fmt.Fprintln(os.Stderr, "mock: stderr done")
+	}
+
 	scanner := bufio.NewScanner(os.Stdin)
 	scanner.Buffer(make([]byte, 1<<20), 1<<20)
 
@@ -45,6 +52,12 @@ func main() {
 
 		switch req.Method {
 		case "initialize":
+			// A test that sets MOCK_MCP_INITIALIZE_ERROR has the handshake refused with those words.
+			if message := os.Getenv("MOCK_MCP_INITIALIZE_ERROR"); message != "" {
+				refusal, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": req.ID, "error": map[string]any{"code": -32600, "message": message}})
+				fmt.Fprintln(os.Stdout, string(refusal))
+				continue
+			}
 			resp := response{JSONRPC: "2.0", ID: &req.ID, Result: json.RawMessage(` + "`" + `{"protocolVersion":"2024-11-05","capabilities":{"resources":{"subscribe":true}},"serverInfo":{"name":"mock","version":"1.0.0"}}` + "`" + `)}
 			data, _ := json.Marshal(resp)
 			fmt.Fprintln(os.Stdout, string(data))

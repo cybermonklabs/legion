@@ -13,7 +13,7 @@ import (
 
 	"golang.org/x/oauth2"
 
-	"github.com/sjawhar/envoy/cipheraddr"
+	"github.com/sjawhar/envoy/configaddr"
 )
 
 // TestAnOAuthRefusalSettlesAsTheBrokersRefusalWhereverItsWordsPrint: oauthBrokerError makes a
@@ -54,7 +54,7 @@ func TestAnOAuthRefusalSettlesAsTheBrokersRefusalWhereverItsWordsPrint(t *testin
 			ErrorCode: "invalid_request", ErrorDescription: "LOGIN_PENDING: a login is already pending", ErrorURI: "https://docs.example.test/login"}, false},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			got := oauthBrokerError(row.err, cipheraddr.New(row.base))
+			got := oauthBrokerError(row.err, configaddr.New("AGENT_SECRETS_URL", row.base))
 			var be *BrokerError
 			isBrokerError := errors.As(got, &be)
 			switch {

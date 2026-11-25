@@ -32,8 +32,9 @@ printed form of the broker's URL, and no refusal or error that `agent-secrets`,
 carries: the URL prints only when it is provably a plain http(s) URL (no user info, query, fragment,
 escape or control byte), and as `(not printed: the value carries a credential or is not a plain
 http(s) URL)` otherwise. Beside a URL that does not print, a refusal the broker answers prints its
-status and `(not printed: the broker's address is not clean)`: a machine login's device
-authorization prints `LOGIN_FAILED: broker <n>: (not printed: the broker's address is not clean)`,
+status and `(not printed: the address AGENT_SECRETS_URL names is not clean)` (`agent-secrets-devrelay`
+names `--broker` there when that flag gave the URL): a machine login's device authorization prints
+`LOGIN_FAILED: broker <n>: (not printed: the address AGENT_SECRETS_URL names is not clean)`,
 and an OAuth refusal of a trade or of a machine login's refresh prints `the broker answered HTTP
 <n>`, with no marker. None prints the refusal's words, its answer id or its
 code, which whoever answers at that URL could fill with the credential it carries. A

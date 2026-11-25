@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sjawhar/envoy/cipheraddr"
+	"github.com/sjawhar/envoy/configaddr"
 	"github.com/sjawhar/envoy/internal/cipher/helper"
 	"github.com/sjawhar/envoy/internal/redact"
 )
@@ -108,13 +108,13 @@ func TestMachineLoginStatusPrintsTheBrokersCodeOnOneLine(t *testing.T) {
 func TestAPendingRequestNamesTheBrokersPageOnOneLine(t *testing.T) {
 	const page = "https://broker.example/approve/req-1"
 	approver := redact.NewRemoteText("ada@example.com")
-	if got, want := waitingOn(cipheraddr.New("https://broker.example"), &approver, redact.NewRemoteText(page), false), "waiting for ada@example.com to approve it on the secrets broker: "+page; got != want {
+	if got, want := waitingOn(configaddr.New("AGENT_SECRETS_URL", "https://broker.example"), &approver, redact.NewRemoteText(page), false), "waiting for ada@example.com to approve it on the secrets broker: "+page; got != want {
 		t.Errorf("waitingOn = %q, want %q", got, want)
 	}
 	for _, forged := range forgedValues {
 		brokerPage := page + "\n" + forged
 		for _, who := range []*redact.RemoteText{&approver, nil} {
-			got := waitingOn(cipheraddr.New("https://broker.example"), who, redact.NewRemoteText(brokerPage), false)
+			got := waitingOn(configaddr.New("AGENT_SECRETS_URL", "https://broker.example"), who, redact.NewRemoteText(brokerPage), false)
 			if !strings.Contains(got, ": "+strconv.Quote(brokerPage)) {
 				t.Errorf("waitingOn(%v, %q) = %q, want it to name the page Go-quoted", who, brokerPage, got)
 			}

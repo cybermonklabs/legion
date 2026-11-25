@@ -3624,8 +3624,9 @@ func assertDerived(t *testing.T, check model.CheckBlock, id int64, run, conclusi
 // A check CI proves is answered by the run its ci_check names at the issue's open head, for every
 // case R3 names: success is a pass with its one derived result; neutral, skipped, cancelled, a
 // run not completed and a head carrying no run of that name are no result, each naming its case;
-// timed_out and a conclusion the list does not name are a fail. The named run on page two of a
-// head carrying 101 runs is read, because the read pages.
+// timed_out and a conclusion the list does not name are a fail, the second named by its phrase,
+// since GitHub's documentation does not name it. The named run on page two of a head carrying 101
+// runs is read, because the read pages.
 func TestCIResultReadsEachOutcomeOfTheNamedRun(t *testing.T) {
 	t.Parallel()
 	handler, database, fake := resultsGitHubCheckRuns(t)
@@ -3650,7 +3651,7 @@ func TestCIResultReadsEachOutcomeOfTheNamedRun(t *testing.T) {
 		{"absent", []map[string]any{completedRun(16, "lint", "success")}, model.CIStateNoResult, "absent", 0, 1},
 		{"on page two of 101 runs", append(slices.Clone(others), completedRun(17, ciCheckRun, "success")), model.CIStatePass, "success", 17, 2},
 		{"timed out", []map[string]any{completedRun(18, ciCheckRun, "timed_out")}, model.CIStateFail, "timed_out", 18, 1},
-		{"an unnamed conclusion", []map[string]any{completedRun(19, ciCheckRun, "frobnicated")}, model.CIStateFail, "frobnicated", 19, 1},
+		{"an unnamed conclusion", []map[string]any{completedRun(19, ciCheckRun, "frobnicated")}, model.CIStateFail, ciConclusionUndocumented, 19, 1},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			key := issueOfProject(t, handler, "RESCO", test.name, ciCheckBlock("c1", ciCheckKept))

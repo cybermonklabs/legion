@@ -7,6 +7,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // session manages JSON-RPC request/response correlation and MCP handshake.
@@ -15,17 +17,31 @@ type session struct {
 	serverName string
 	nextID     atomic.Int32
 	mu         sync.Mutex
-	pending    map[int]chan jsonrpcResponse
+	pending    map[int]chan reply
 	sendFn     func([]byte) error
-	onNotify   func(uri string)
-	stopCh     chan struct{}
+	// words holds text the server wrote as its words (Server.Words), which print only as the rule
+	// for remote text reads them.
+	words    func(text string) redact.RemoteText
+	onNotify func(uri string)
+	stopCh   chan struct{}
 }
 
-func newSession(serverName string, sendFn func([]byte) error, onNotify func(uri string), stopCh chan struct{}) *session {
+// reply is a response as the session hands it to the call that waits for its id: its result, or,
+// where the server answered an error (failed), the error's code and its message held as the
+// server's words (session.words).
+type reply struct {
+	result  json.RawMessage
+	failed  bool
+	code    int
+	message redact.RemoteText
+}
+
+func newSession(serverName string, sendFn func([]byte) error, words func(text string) redact.RemoteText, onNotify func(uri string), stopCh chan struct{}) *session {
 	return &session{
 		serverName: serverName,
-		pending:    make(map[int]chan jsonrpcResponse),
+		pending:    make(map[int]chan reply),
 		sendFn:     sendFn,
+		words:      words,
 		onNotify:   onNotify,
 		stopCh:     stopCh,
 	}
@@ -56,7 +72,7 @@ func (s *session) sendNotification(method string) error {
 
 func (s *session) call(method string, params any) (json.RawMessage, error) {
 	id := s.nextRequestID()
-	ch := make(chan jsonrpcResponse, 1)
+	ch := make(chan reply, 1)
 	s.mu.Lock()
 	s.pending[id] = ch
 	s.mu.Unlock()
@@ -86,11 +102,11 @@ func (s *session) call(method string, params any) (json.RawMessage, error) {
 	}
 
 	select {
-	case resp := <-ch:
-		if resp.Error != nil {
-			return nil, fmt.Errorf("rpc error %d: %s", resp.Error.Code, resp.Error.Message)
+	case r := <-ch:
+		if r.failed {
+			return nil, fmt.Errorf("rpc error %d: %s", r.code, r.message)
 		}
-		return resp.Result, nil
+		return r.result, nil
 	case <-time.After(30 * time.Second):
 		return nil, fmt.Errorf("timeout waiting for response to %s (id=%d)", method, id)
 	case <-s.stopCh:
@@ -98,11 +114,13 @@ func (s *session) call(method string, params any) (json.RawMessage, error) {
 	}
 }
 
-// handleMessage processes an incoming JSON-RPC message (response or notification).
+// handleMessage processes an incoming JSON-RPC message (response or notification). An error's
+// message is held as the server's words (session.words) before it leaves here, and a message that
+// does not decode is named by the member that did not (redact.DecodeError), never by its value.
 func (s *session) handleMessage(data []byte) {
 	var resp jsonrpcResponse
 	if err := json.Unmarshal(data, &resp); err != nil {
-		log.Printf("mcp-bridge: %s: invalid JSON from server: %v", s.serverName, err)
+		log.Printf("mcp-bridge: %s: invalid JSON from server: %v", s.serverName, redact.DecodeError(err, data, &resp))
 		return
 	}
 
@@ -118,7 +136,11 @@ func (s *session) handleMessage(data []byte) {
 		ch, ok := s.pending[*resp.ID]
 		s.mu.Unlock()
 		if ok {
-			ch <- resp
+			r := reply{result: resp.Result}
+			if resp.Error != nil {
+				r.failed, r.code, r.message = true, resp.Error.Code, s.words(resp.Error.Message)
+			}
+			ch <- r
 		}
 	}
 }
@@ -129,7 +151,7 @@ func (s *session) handleNotification(resp jsonrpcResponse) {
 	}
 	var params notificationParams
 	if err := json.Unmarshal(resp.Params, &params); err != nil {
-		log.Printf("mcp-bridge: %s: invalid notification params: %v", s.serverName, err)
+		log.Printf("mcp-bridge: %s: invalid notification params: %v", s.serverName, redact.DecodeError(err, resp.Params, &params))
 		return
 	}
 	if params.URI == "" {
@@ -170,7 +192,7 @@ func (s *session) readResource(uri string) ([]resourceContent, error) {
 	}
 	var result readResult
 	if err := json.Unmarshal(raw, &result); err != nil {
-		return nil, fmt.Errorf("parse read result: %w", err)
+		return nil, fmt.Errorf("parse read result: %w", redact.DecodeError(err, raw, &result))
 	}
 	return result.Contents, nil
 }

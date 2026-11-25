@@ -13,6 +13,7 @@ import (
 
 	"github.com/google/uuid"
 	natsgo "github.com/nats-io/nats.go"
+	"github.com/sjawhar/envoy/configaddr"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	dispatchenvoy "github.com/sjawhar/envoy/internal/dispatch/envoy"
@@ -117,7 +118,7 @@ func sendThroughDispatch(t *testing.T, mux http.Handler, target string) (int, st
 	t.Cleanup(listener.Close)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	_, err := dispatchenvoy.New(listener.URL, dispatchenvoy.WithTimeout(20*time.Second)).Send(ctx, dispatchenvoy.SendInput{
+	_, err := dispatchenvoy.New(configaddr.New("ENVOY_URL", listener.URL), dispatchenvoy.WithTimeout(20*time.Second)).Send(ctx, dispatchenvoy.SendInput{
 		TargetSession: target, Message: "may be stored", Payload: json.RawMessage(`{}`), IdempotencyKey: "maybe-stored-" + target,
 	})
 	mu.Lock()

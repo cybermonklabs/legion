@@ -591,7 +591,9 @@ func (r *Runtime) startInformers(ctx context.Context, c runtimeClients) error {
 // informer is a shared informer of the namespace's objects, those selector selects when it is set,
 // listed and watched through list and watch, with the outcome of every request recorded in f:
 // client-go's reflector retries a refused watch itself without calling the watch-error handler, so
-// only the requests themselves say whether the store is still being fed.
+// only the requests themselves say whether the store is still being fed. Each error a list or a
+// watch answers, and each a watch delivers (projectWatch), reaches the feed and the reflector as
+// its projection (projectKubeError), which keeps every decision the reflector takes from it.
 func (r *Runtime) informer(f *feed, client any, example k8sruntime.Object, selector string, list cache.ListWithContextFunc,
 	watchFn cache.WatchFuncWithContext,
 ) cache.SharedIndexInformer {
@@ -602,13 +604,18 @@ func (r *Runtime) informer(f *feed, client any, example k8sruntime.Object, selec
 	lw := &cache.ListWatch{
 		ListWithContextFunc: func(ctx context.Context, o metav1.ListOptions) (k8sruntime.Object, error) {
 			object, err := list(ctx, selected(o))
+			err = projectKubeError("list "+f.resource, err)
 			f.record(err, r.now())
 			return object, err
 		},
 		WatchFuncWithContext: func(ctx context.Context, o metav1.ListOptions) (watch.Interface, error) {
 			w, err := watchFn(ctx, selected(o))
+			err = projectKubeError("watch "+f.resource, err)
 			f.record(err, r.now())
-			return w, err
+			if err != nil || w == nil {
+				return w, err
+			}
+			return projectWatch("watch "+f.resource, w), nil
 		},
 	}
 	return cache.NewSharedIndexInformerWithOptions(cache.ToListWatcherWithWatchListSemantics(lw, client), example,

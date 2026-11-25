@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { type Envelope, legacyDispatchIssueSubject } from "@legion/contracts";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
+import { remoteText } from "@legion/test-fixtures/remote-text-matcher";
 import { decode } from "@toon-format/toon";
 import { bearerCredential } from "../bearer";
 import {
@@ -574,7 +575,7 @@ describe("renderInbound dispatch events", () => {
       expect(keys[1]).toBe(keys[0] as string);
 
       await expect(postDeliveryReply(config, reader, delivery, { body: "again" })).rejects.toThrow(
-        expect.objectContaining({ code: "ATTEMPT_ANSWERED", status: 409 })
+        expect.objectContaining({ code: remoteText("ATTEMPT_ANSWERED"), status: 409 })
       );
       expect(keys).toHaveLength(3);
       expect(keys[2]).not.toBe(keys[0] as string);

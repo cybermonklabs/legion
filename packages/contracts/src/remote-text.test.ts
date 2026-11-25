@@ -174,6 +174,21 @@ test("a RemoteText compares ignoring case, by its ends and parses a time, and an
   expect(new RemoteText(probe.field).equalsIgnoringCase(probe.field.toUpperCase())).toBe(true);
 });
 
+// Go's RemoteText.SendBack: an id another party named, kept to send back to it, only where the
+// rule prints the field as it came, each credential the request carried redacted first.
+test("a RemoteText sends a field back only where the rule prints it as it came", () => {
+  const probe = corpus.rows.find((row) => row.id === "probe");
+  if (probe === undefined) throw new Error("the fixture has no probe row");
+  expect(new RemoteText("ses_holder-1").sendBack()).toBe("ses_holder-1");
+  expect(new RemoteText("").sendBack()).toBeUndefined();
+  // The rule removes the probe's credentials, so the field is not what a print of it shows.
+  expect(new RemoteText(probe.field).sendBack()).toBeUndefined();
+  // A field that echoes a credential its request carried is one the rule changes.
+  const carried = "carried-credential-0123456789";
+  expect(new RemoteText(`ses_${carried}`, [carried]).sendBack()).toBeUndefined();
+  expect(new RemoteText("ses_holder-1", [carried]).sendBack()).toBe("ses_holder-1");
+});
+
 test("callLibrary turns what a library throws or rejects with into a LibraryError that keeps no words", async () => {
   const probe = corpus.rows.find((row) => row.id === "probe");
   if (probe === undefined) throw new Error("the fixture has no probe row");

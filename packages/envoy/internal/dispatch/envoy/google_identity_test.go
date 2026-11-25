@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/configaddr"
 	"github.com/sjawhar/envoy/internal/googleidentity"
 )
 
@@ -101,7 +102,7 @@ func TestDispatchsGoogleIdentityMarksARoleSendAndFailsClosedWithoutOne(t *testin
 		if err := CheckGoogleIdentity(context.Background()); err != nil {
 			t.Fatalf("control: the start-time check on a machine with a metadata server: %v", err)
 		}
-		client := New(listener.URL, WithGoogleIdentity("envoy-listener"), WithToken("shared"))
+		client := New(configaddr.New("ENVOY_URL", listener.URL), WithGoogleIdentity("envoy-listener"), WithToken("shared"))
 		for range 2 {
 			if _, err := client.Send(context.Background(), marked); err != nil {
 				t.Fatalf("a send for a role on the Google identity: %v", err)
@@ -119,7 +120,7 @@ func TestDispatchsGoogleIdentityMarksARoleSendAndFailsClosedWithoutOne(t *testin
 	t.Run("a metadata server that does not answer for a moment: the send for a role fails as ErrAccountToken, never as no identity, and is not made on the shared token", func(t *testing.T) {
 		t.Setenv(googleidentity.MetadataHostVar, closedHost(t))
 		var logs bytes.Buffer
-		client := New(listener.URL, WithGoogleIdentity("envoy-listener"), WithToken("shared"), WithLogger(slog.New(slog.NewJSONHandler(&logs, nil))))
+		client := New(configaddr.New("ENVOY_URL", listener.URL), WithGoogleIdentity("envoy-listener"), WithToken("shared"), WithLogger(slog.New(slog.NewJSONHandler(&logs, nil))))
 		_, err := client.Send(context.Background(), marked)
 		if !errors.Is(err, ErrAccountToken) || !errors.Is(err, ErrUnavailable) || errors.Is(err, ErrNoListenerIdentity) {
 			t.Fatalf("a send for a role while the metadata server does not answer = %v, want ErrAccountToken (retried), not ErrNoListenerIdentity", err)
@@ -178,7 +179,7 @@ func TestAGoogleIdentityTokenTheListenerRefusedIsMintedAgainAndMintsAreShared(t 
 			_, _ = w.Write([]byte(`{"event_id":"envelope-1","recipient":"s1","state":"connected"}`))
 		}))
 		defer listener.Close()
-		client := New(listener.URL, WithGoogleIdentity("envoy-listener"))
+		client := New(configaddr.New("ENVOY_URL", listener.URL), WithGoogleIdentity("envoy-listener"))
 		if _, err := client.Send(context.Background(), SendInput{TargetSession: "s1", Message: "m", IdempotencyKey: "k", Role: "reviewer"}); err != nil {
 			t.Fatalf("a send whose first Google token the listener refused: %v", err)
 		}

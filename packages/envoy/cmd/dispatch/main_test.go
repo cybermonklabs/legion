@@ -418,7 +418,7 @@ func TestResolveBootConfigDefaultsAndValidatesEnvoyURL(t *testing.T) {
 	}
 
 	boot, err := resolveBootConfig(envGetter(base))
-	if err != nil || boot.EnvoyURL != "http://127.0.0.1:9020" {
+	if err != nil || boot.EnvoyURL.Raw() != "http://127.0.0.1:9020" || boot.EnvoyURL.Setting() != "ENVOY_URL" {
 		t.Fatalf("default: boot=%#v err=%v", boot, err)
 	}
 
@@ -427,7 +427,7 @@ func TestResolveBootConfigDefaultsAndValidatesEnvoyURL(t *testing.T) {
 		withURL[key] = value
 	}
 	withURL["ENVOY_URL"] = "http://envoy.internal:9020/"
-	if boot, err := resolveBootConfig(envGetter(withURL)); err != nil || boot.EnvoyURL != "http://envoy.internal:9020" {
+	if boot, err := resolveBootConfig(envGetter(withURL)); err != nil || boot.EnvoyURL.Raw() != "http://envoy.internal:9020" {
 		t.Fatalf("explicit: boot=%#v err=%v", boot, err)
 	}
 
@@ -446,7 +446,7 @@ func TestResolveBootConfigLeavesAgentSecretsOffByDefault(t *testing.T) {
 		"DISPATCH_IDENTITY":                "header:X-Dispatch-User",
 		"DISPATCH_IDENTITY_HEADER_TRUSTED": "1",
 	}))
-	if err != nil || boot.AgentSecretsURL != "" || boot.AgentSecretsTokenFile != "" {
+	if err != nil || !boot.AgentSecretsURL.Empty() || boot.AgentSecretsTokenFile != "" {
 		t.Fatalf("boot=%#v err=%v, want the feature off", boot, err)
 	}
 }
@@ -463,8 +463,8 @@ func TestResolveBootConfigAcceptsAgentSecretsURLAndTokenFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolve boot config: %v", err)
 	}
-	if boot.AgentSecretsURL != "https://broker.internal" {
-		t.Fatalf("AgentSecretsURL = %q, want the trailing slash trimmed", boot.AgentSecretsURL)
+	if boot.AgentSecretsURL.Raw() != "https://broker.internal" || boot.AgentSecretsURL.Setting() != "DISPATCH_AGENT_SECRETS_URL" {
+		t.Fatalf("AgentSecretsURL = %q (read from %s), want the trailing slash trimmed", boot.AgentSecretsURL, boot.AgentSecretsURL.Setting())
 	}
 	// The path is not read at boot: the client reads it on each call, since a projected token
 	// rotates, and in the cluster the file is there before the first call either way.
@@ -1790,7 +1790,7 @@ func TestDevSignInRefusesAnAppKeyThatReachesGitHub(t *testing.T) {
 	// Unset, the App calls https://api.github.com.
 	for _, base := range []string{"", "https://api.github.com", "http://10.0.0.5:9022", "http://127.0.0.1@api.github.com"} {
 		err := devSignInLoadedFence(devSignInBoot(t, map[string]string{"DISPATCH_GITHUB_API_BASE": base}), devSignInOrigin, withKey, fromEnv)
-		if err == nil || !strings.Contains(err.Error(), "DISPATCH_GITHUB_API_BASE="+strconv.Quote(base)) || !strings.Contains(err.Error(), "DISPATCH_APP_PEM_B64") {
+		if err == nil || !strings.Contains(err.Error(), "DISPATCH_GITHUB_API_BASE="+strconv.Quote(redact.URL(base))) || !strings.Contains(err.Error(), "DISPATCH_APP_PEM_B64") {
 			t.Errorf("DISPATCH_GITHUB_API_BASE=%q: err = %v, want a refusal naming DISPATCH_GITHUB_API_BASE and DISPATCH_APP_PEM_B64", base, err)
 		}
 	}

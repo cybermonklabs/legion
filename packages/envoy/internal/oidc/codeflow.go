@@ -108,11 +108,11 @@ func discoverCodeFlow(ctx context.Context, issuer, clientID, clientSecret string
 	s := redact.Scope[*gooidc.Provider](ctx)
 	provider, err := redact.OAuth2(s.Read(gooidc.NewProvider(s.Context(), issuer)))
 	if err != nil {
-		return nil, fmt.Errorf("oidc: discovering issuer %s: %w", issuer, err)
+		return nil, fmt.Errorf("oidc: discovering issuer %s: %w", redact.URL(issuer), err)
 	}
 	endpoint := provider.Endpoint()
 	if endpoint.AuthURL == "" || endpoint.TokenURL == "" {
-		return nil, fmt.Errorf("oidc: issuer %s names no authorization_endpoint or token_endpoint in its discovery document, so it offers no sign-in", issuer)
+		return nil, fmt.Errorf("oidc: issuer %s names no authorization_endpoint or token_endpoint in its discovery document, so it offers no sign-in", redact.URL(issuer))
 	}
 	var metadata struct {
 		RevocationEndpoint endpointString `json:"revocation_endpoint"`
@@ -120,7 +120,7 @@ func discoverCodeFlow(ctx context.Context, issuer, clientID, clientSecret string
 	}
 	claims := redact.Scope[struct{}](ctx)
 	if _, err := redact.OAuth2(claims.Read(struct{}{}, provider.Claims(&metadata))); err != nil {
-		return nil, fmt.Errorf("oidc: read issuer %s's revocation_endpoint and token_endpoint_auth_methods_supported: %w", issuer, err)
+		return nil, fmt.Errorf("oidc: read issuer %s's revocation_endpoint and token_endpoint_auth_methods_supported: %w", redact.URL(issuer), err)
 	}
 	endpoint.AuthStyle = tokenAuthStyle(metadata.TokenAuthMethods)
 	return &codeFlowIssuer{
@@ -444,7 +444,10 @@ func (f *CodeFlow) Revoke(ctx context.Context, refreshToken string) error {
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, issuer.revocationURL, strings.NewReader(url.Values{"token": {refreshToken}}.Encode()))
 	if err != nil {
-		return fmt.Errorf("oidc: revoke: %w", err)
+		// The endpoint is the issuer's own text and can carry a credential, which net/http's parse
+		// error quotes whole; redact.Cause prints, for an endpoint that is no clean URL, the
+		// failure's class alone.
+		return fmt.Errorf("oidc: revoke: the issuer's revocation_endpoint: %w", redact.Cause(err, issuer.revocationURL))
 	}
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	// The token endpoint's encoding (oauth2's AuthStyleInHeader): RFC 6749 section 2.3.1.

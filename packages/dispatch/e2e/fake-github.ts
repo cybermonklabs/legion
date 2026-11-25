@@ -114,6 +114,14 @@ function commitFor(repo: FakeRepo): string {
   return hasher.digest("hex");
 }
 
+/** Deterministic blob sha for a file of the architecture directory, by its name: 40 hex digits, the
+ *  shape the client requires of every blob id a tree answer lists. */
+function blobFor(name: string): string {
+  const hasher = new Bun.CryptoHasher("sha1");
+  hasher.update(`blob ${name}`);
+  return hasher.digest("hex");
+}
+
 /** Every commit a repository holds, which the commits read answers 200 for: each commit the
  *  fixture attaches something to — the pull requests GitHub names for a commit, each pull
  *  request's head, the commits a branch holds, and the commits check runs and workflow runs
@@ -425,15 +433,19 @@ const server = Bun.serve({
           path: name,
           mode: "100644",
           type: "blob",
-          sha: `blob-${name}`,
+          sha: blobFor(name),
           size: Buffer.byteLength(files[name] ?? ""),
         })),
       });
     }
 
-    const blob = url.pathname.match(/^\/repos\/([^/]+)\/([^/]+)\/git\/blobs\/blob-(.+)$/);
+    // A blob by the sha the tree listed for it: a 40-hex id, as GitHub's are, since the client
+    // refuses to build a blob's target from a value that is not a SHA.
+    const blob = url.pathname.match(/^\/repos\/([^/]+)\/([^/]+)\/git\/blobs\/([0-9a-f]{40})$/);
     if (request.method === "GET" && blob !== null) {
-      const content = repos.get(`${blob[1]}/${blob[2]}`)?.files?.[blob[3] ?? ""];
+      const files = repos.get(`${blob[1]}/${blob[2]}`)?.files ?? {};
+      const name = Object.keys(files).find((candidate) => blobFor(candidate) === blob[3]);
+      const content = name === undefined ? undefined : files[name];
       if (content === undefined) {
         return Response.json({ message: "Not Found" }, { status: 404 });
       }

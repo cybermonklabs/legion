@@ -6,6 +6,8 @@ import (
 	"errors"
 	"net/url"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // Kind is the wire protocol an endpoint speaks. It picks the provider a call is made through
@@ -285,16 +287,48 @@ type Step struct {
 // read only when the call finishes.
 type Result struct {
 	// Text is the last reply's prose, and Value the object that reply was required to be
-	// when Request.Final asked for one.
+	// when Request.Final asked for one, each as the model wrote it: a caller that prints
+	// either, or keeps it, reads it through Words or WithoutTokens.
 	Text  string
 	Value json.RawMessage
 	// Steps are the run's model calls, in order, and Usage is their total.
 	Steps []Step
 	Usage Usage
 	// Fault is why the run ended short of an answer, and is empty on a run that answered.
-	// Detail says what happened, for a log rather than for a wire.
+	// Detail says what happened, for a log rather than for a wire; the model's own words in
+	// it - a refusal, a reply that is no object of Request.Final and the SDK's error about it
+	// - are read as Words reads them.
 	Fault  Fault
 	Detail string
+
+	// carried answers every credential the run's requests carried (modelTransport.credentials),
+	// nil for a run that made none. It is a func for the reason redact.RemoteText's is: fmt
+	// prints a func as an address under every verb, so a Result printed whole prints no
+	// credential, and encoding/json reaches no unexported field.
+	carried func() []string
+}
+
+// WithoutTokens is text with every run of a credential the run itself put on its requests - the
+// token it read for each attempt, the credential azure-anthropic's middleware signed a request
+// with, and each query value the endpoint adds under a name no contract declares public -
+// redacted (redact.Tokens). Whatever answers in the endpoint's place can echo any of them, so a
+// caller that keeps the model's reply as data, as the judge keeps its raw answer, keeps it this
+// way. Nothing else of a request counts: the prompt, the data and the schema are the caller's
+// own words, which a reply quotes as a matter of course.
+func (r Result) WithoutTokens(text string) string {
+	var carried []string
+	if r.carried != nil {
+		carried = r.carried()
+	}
+	return redact.Tokens(text, -1, carried...)
+}
+
+// Words is text, the model's own words, as a message may print them: WithoutTokens of it, read by
+// the rule for remote text (redact.Field), so a URL in it prints with no user information and no
+// query or fragment value, and words the rule cannot read as clean print as
+// redact.WordsNotReadable.
+func (r Result) Words(text string) string {
+	return redact.Field(r.WithoutTokens(text))
 }
 
 // Fault is why a run ended short of an answer. A caller that publishes a reason of its own maps

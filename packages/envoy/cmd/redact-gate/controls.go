@@ -180,12 +180,12 @@ var controls = []control{
 		return c.edit(boxTSFile, "    if (pass === REFERENCE_PASSES) return undefined;\n", "    if (pass === REFERENCE_PASSES) return field;\n")
 	}},
 	{id: "2", what: "a new call of the rule, written as a receiver call through a type alias and a method value, at a site no row names", stage: 2,
-		expect: []string{"call census", "cmd/cipher-devrelay/main.go", "(github.com/sjawhar/envoy/cipheraddr.Address).Words", "controlAlias"},
+		expect: []string{"call census", "cmd/cipher-devrelay/main.go", "(github.com/sjawhar/envoy/configaddr.Address).Words", "controlAlias"},
 		plant: func(c *controlRun) error {
 			return c.appendTo("packages/envoy/cmd/cipher-devrelay/main.go", `
 // controlAlias is the control's planted call of the rule.
 func controlAlias(words string) string {
-	type address = cipheraddr.Address
+	type address = configaddr.Address
 	var a address
 	w := a.Words
 	return w(words)

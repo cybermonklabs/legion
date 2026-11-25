@@ -8,6 +8,9 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/redact"
@@ -16,18 +19,48 @@ import (
 
 // modelTransport carries every model call of a run. It puts the endpoint's token, read again for
 // the attempt, on each request; adds the endpoint's own query parameters to it; and makes the
-// run's one retry, on a 429, a 5xx or a transport error, within the run's time.
+// run's one retry, on a 429, a 5xx or a transport error, within the run's time. It keeps the
+// credentials it puts on a request, and the one azure-anthropic's middleware signed a request with
+// above it, across every attempt of every call (credentials), since whatever answers in the
+// endpoint's place can write any of them back into its reply.
 type modelTransport struct {
 	base  http.RoundTripper
 	kind  Kind
 	token func(context.Context) (string, error)
 	query url.Values
+
+	// mu guards carried, which every attempt adds to and a Result reads after the run.
+	mu      sync.Mutex
+	carried []string
 }
 
 // newModelTransport is the transport one Run or one Decide makes its model calls through, over
 // the default transport, for the endpoint whose protocol, token and query parameters it carries.
 func newModelTransport(endpoint Endpoint) *modelTransport {
 	return &modelTransport{base: http.DefaultTransport, kind: endpoint.Kind, token: endpoint.Token, query: endpoint.Query}
+}
+
+// keep adds each of credentials the transport has not kept already to the ones the run's requests
+// carried. An empty one is no credential.
+func (t *modelTransport) keep(credentials ...string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for _, c := range credentials {
+		if c != "" && !slices.Contains(t.carried, c) {
+			t.carried = append(t.carried, c)
+		}
+	}
+}
+
+// credentials is every credential the run's requests carried so far (keep): the token the
+// transport read for each attempt, the credential azure-anthropic's middleware signed a request
+// with, and each of the endpoint's query values under a name no contract declares public on the
+// request's route. It holds nothing else of a request, so the prompt, the data and the schema a
+// reply quotes as a matter of course are no credential of the run's.
+func (t *modelTransport) credentials() []string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return slices.Clone(t.carried)
 }
 
 // client is the HTTP client one Run or one Decide makes its model calls with: this transport,
@@ -70,6 +103,7 @@ func (t *modelTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 			if key, err = t.token(ctx); err != nil {
 				return nil, fmt.Errorf("reading the %s token: %w", t.kind, err)
 			}
+			t.keep(key)
 		}
 		r := req.Clone(ctx)
 		r.Body = io.NopCloser(bytes.NewReader(body))
@@ -79,16 +113,23 @@ func (t *modelTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 			r.Header.Set("X-Api-Key", key)
 		case OpenAIResponses, OpenAIChat, SystemOne:
 			r.Header.Set("Authorization", "Bearer "+key)
+		case AzureAnthropic:
+			// The middleware's header names a scheme, which is no credential; what follows it is.
+			if _, signed, ok := strings.Cut(r.Header.Get("Authorization"), " "); ok {
+				t.keep(signed)
+			}
 		}
 		if len(t.query) > 0 {
 			q := r.URL.Query()
+			added := url.Values{}
 			for name, values := range t.query {
 				// A parameter the provider itself put there is the provider's.
 				if _, ok := q[name]; !ok {
-					q[name] = values
+					q[name], added[name] = values, values
 				}
 			}
 			r.URL.RawQuery = q.Encode()
+			t.keep(redact.QueryTokens(r, added)...)
 		}
 		resp, err := t.base.RoundTrip(r)
 		if wait, retry := retryable(resp, err); retry && attempt == 0 && waitable(ctx, wait) {

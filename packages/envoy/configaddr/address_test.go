@@ -1,4 +1,4 @@
-package cipheraddr_test
+package configaddr_test
 
 import (
 	"bytes"
@@ -14,9 +14,12 @@ import (
 	"testing"
 	"unicode/utf8"
 
-	"github.com/sjawhar/envoy/cipheraddr"
+	"github.com/sjawhar/envoy/configaddr"
 	"github.com/sjawhar/envoy/internal/redact"
 )
+
+// brokerSetting is the setting these tests' addresses are read from.
+const brokerSetting = "AGENT_SECRETS_URL"
 
 // markers stand for each part of a configured address that can carry a credential: its user
 // name, its password, its query and its fragment. No output of an Address holding one may contain
@@ -77,7 +80,7 @@ func leaked(printed string) string {
 // pointer to it too) and as a slog value, and none of those outputs holds a marker.
 func TestAnAddressCarryingACredentialPrintsNoPartOfIt(t *testing.T) {
 	for _, raw := range credentialed {
-		a := cipheraddr.New(raw)
+		a := configaddr.New(brokerSetting, raw)
 		if got := a.String(); got != redact.NotPrinted || leaked(got) != "" {
 			t.Errorf("New(%q).String() = %q, want redact.NotPrinted", raw, got)
 		}
@@ -104,7 +107,7 @@ func TestAnAddressCarryingACredentialPrintsNoPartOfIt(t *testing.T) {
 // log line as useful as it was.
 func TestACleanAddressPrintsAsWritten(t *testing.T) {
 	for _, raw := range cleanAddresses {
-		a := cipheraddr.New(raw)
+		a := configaddr.New(brokerSetting, raw)
 		if got := a.String(); got != raw {
 			t.Errorf("New(%q).String() = %q, want it as written", raw, got)
 		}
@@ -134,46 +137,44 @@ func TestFormatKeepsTheFlagsWidthAndPrecision(t *testing.T) {
 		"%.4x":   "68747470",
 		"% .2X":  "68 74",
 	}
-	clean := cipheraddr.New("https://broker.example.com")
+	clean := configaddr.New(brokerSetting, "https://broker.example.com")
 	for format, want := range formats {
 		if got := fmt.Sprintf(format, clean); got != want {
 			t.Errorf("Sprintf(%q) of %q = %q, want %q", format, clean.Raw(), got, want)
 		}
 		for _, raw := range credentialed {
-			if got := fmt.Sprintf(format, cipheraddr.New(raw)); leaked(got) != "" {
+			if got := fmt.Sprintf(format, configaddr.New(brokerSetting, raw)); leaked(got) != "" {
 				t.Errorf("Sprintf(%q) of an Address holding %q prints %q: %q", format, raw, leaked(got), got)
 			}
 		}
 	}
 }
 
-// TestTheZeroAddressPrintsEmpty: an Address nobody set, which New of the empty string is too,
-// prints as the empty string does under String, every verb and slog rather than panicking, holds
-// no raw value, and reports itself empty and not clean.
+// TestTheZeroAddressPrintsEmpty: an Address nobody set, and New of the empty string, which differs
+// from it only in the setting it names, print as the empty string does under String, every verb
+// and slog rather than panicking, hold no raw value, and report themselves empty and not clean.
 func TestTheZeroAddressPrintsEmpty(t *testing.T) {
-	if cipheraddr.New("") != (cipheraddr.Address{}) {
-		t.Error(`New("") is not the zero Address`)
-	}
-	var a cipheraddr.Address
-	if got := a.String(); got != "" {
-		t.Errorf("the zero Address's String() = %q, want empty", got)
-	}
-	for _, v := range verbs {
-		want := v.want("")
-		for _, arg := range []any{a, &a} {
-			if got := fmt.Sprintf(v.format, arg); got != want {
-				t.Errorf("Sprintf(%q) of the zero %T = %q, want %q", v.format, arg, got, want)
+	for name, a := range map[string]configaddr.Address{"the zero Address": {}, `New(setting, "")`: configaddr.New(brokerSetting, "")} {
+		if got := a.String(); got != "" {
+			t.Errorf("%s's String() = %q, want empty", name, got)
+		}
+		for _, v := range verbs {
+			want := v.want("")
+			for _, arg := range []any{a, &a} {
+				if got := fmt.Sprintf(v.format, arg); got != want {
+					t.Errorf("Sprintf(%q) of %s, as a %T, = %q, want %q", v.format, name, arg, got, want)
+				}
 			}
 		}
-	}
-	if got := a.LogValue(); got.Kind() != slog.KindString || got.String() != "" {
-		t.Errorf("the zero Address's LogValue() = %v %q, want the empty string", got.Kind(), got.String())
-	}
-	if got := a.Raw(); got != "" {
-		t.Errorf("the zero Address's Raw() = %q, want empty", got)
-	}
-	if !a.Empty() || a.Clean() {
-		t.Errorf("the zero Address reports Empty() %v and Clean() %v, want true and false", a.Empty(), a.Clean())
+		if got := a.LogValue(); got.Kind() != slog.KindString || got.String() != "" {
+			t.Errorf("%s's LogValue() = %v %q, want the empty string", name, got.Kind(), got.String())
+		}
+		if got := a.Raw(); got != "" {
+			t.Errorf("%s's Raw() = %q, want empty", name, got)
+		}
+		if !a.Empty() || a.Clean() {
+			t.Errorf("%s reports Empty() %v and Clean() %v, want true and false", name, a.Empty(), a.Clean())
+		}
 	}
 }
 
@@ -188,12 +189,12 @@ func TestASlogFieldPrintsTheAddressAsAMessageMay(t *testing.T) {
 	for name, handler := range handlers {
 		for _, raw := range slices.Concat(credentialed, cleanAddresses) {
 			var out bytes.Buffer
-			slog.New(handler(&out)).Info("traded this machine's identity", "broker", cipheraddr.New(raw))
+			slog.New(handler(&out)).Info("traded this machine's identity", "broker", configaddr.New(brokerSetting, raw))
 			line := out.String()
 			if m := leaked(line); m != "" {
 				t.Errorf("the %s handler logs an Address holding %q with %q: %s", name, raw, m, line)
 			}
-			if want := cipheraddr.New(raw).String(); !strings.Contains(line, want) {
+			if want := configaddr.New(brokerSetting, raw).String(); !strings.Contains(line, want) {
 				t.Errorf("the %s handler logs an Address holding %q without %q: %s", name, raw, want, line)
 			}
 		}
@@ -205,13 +206,13 @@ func TestASlogFieldPrintsTheAddressAsAMessageMay(t *testing.T) {
 // %p - and an Address prints no marker there either.
 func TestAnAddressFmtReadsByReflectionPrintsNoCredential(t *testing.T) {
 	type holder struct {
-		Broker  cipheraddr.Address
-		broker  cipheraddr.Address
-		brokers []cipheraddr.Address
+		Broker  configaddr.Address
+		broker  configaddr.Address
+		brokers []configaddr.Address
 	}
 	for _, raw := range credentialed {
-		a := cipheraddr.New(raw)
-		h := holder{a, a, []cipheraddr.Address{a}}
+		a := configaddr.New(brokerSetting, raw)
+		h := holder{a, a, []configaddr.Address{a}}
 		for _, v := range verbs {
 			if got := fmt.Sprintf(v.format, h); leaked(got) != "" {
 				t.Errorf("Sprintf(%q) of a struct holding an Address of %q prints %q: %q", v.format, raw, leaked(got), got)
@@ -260,7 +261,7 @@ func TestRawEmptyAndClean(t *testing.T) {
 		{"https://broker.example.com/#demofrag8w", false, false},
 		{"not a url", false, false},
 	} {
-		a := cipheraddr.New(tc.raw)
+		a := configaddr.New(brokerSetting, tc.raw)
 		if got := a.Raw(); got != tc.raw {
 			t.Errorf("New(%q).Raw() = %q, want it as configured", tc.raw, got)
 		}
@@ -276,14 +277,15 @@ func TestRawEmptyAndClean(t *testing.T) {
 func TestAnAnswersWordsPrintOnlyBesideACleanAddress(t *testing.T) {
 	for _, raw := range cleanAddresses {
 		const words = "the request object names another broker"
-		if got := cipheraddr.New(raw).Words(words); got != words {
+		if got := configaddr.New(brokerSetting, raw).Words(words); got != words {
 			t.Errorf("New(%q).Words(%q) = %q, want the text as it came", raw, words, got)
 		}
 	}
 	for _, raw := range append(slices.Clone(credentialed), "not a url", "") {
 		words := "the request object names " + raw
-		if got := cipheraddr.New(raw).Words(words); got != cipheraddr.WordsNotPrinted || leaked(got) != "" {
-			t.Errorf("New(%q).Words(%q) = %q, want %q", raw, words, got, cipheraddr.WordsNotPrinted)
+		a := configaddr.New(brokerSetting, raw)
+		if got := a.Words(words); got != a.WordsNotPrinted() || leaked(got) != "" {
+			t.Errorf("New(%q).Words(%q) = %q, want %q", raw, words, got, a.WordsNotPrinted())
 		}
 	}
 }
@@ -295,7 +297,7 @@ func TestAnAnswersWordsPrintOnlyBesideACleanAddress(t *testing.T) {
 // cursor in the message that prints it. Beside an address that is not clean they still print as
 // WordsNotPrinted.
 func TestAnAnswersWordsPrintOnOneLineBesideACleanAddress(t *testing.T) {
-	clean := cipheraddr.New("http://127.0.0.1:1")
+	clean := configaddr.New(brokerSetting, "http://127.0.0.1:1")
 	for _, words := range []string{"the request object names another broker", "naïve — café, 東京: ok", ""} {
 		if got := clean.Words(words); got != words {
 			t.Errorf("Words(%q) = %q, want the words as they came", words, got)
@@ -320,8 +322,9 @@ func TestAnAnswersWordsPrintOnOneLineBesideACleanAddress(t *testing.T) {
 		if again := clean.Words(got); again != got {
 			t.Errorf("Words of its own answer %q = %q, want it unchanged", got, again)
 		}
-		if dirty := cipheraddr.New(credentialed[0]).Words(words); dirty != cipheraddr.WordsNotPrinted {
-			t.Errorf("Words(%q) beside a credential = %q, want %q", words, dirty, cipheraddr.WordsNotPrinted)
+		dirty := configaddr.New(brokerSetting, credentialed[0])
+		if got := dirty.Words(words); got != dirty.WordsNotPrinted() {
+			t.Errorf("Words(%q) beside a credential = %q, want %q", words, got, dirty.WordsNotPrinted())
 		}
 	}
 }
@@ -340,7 +343,7 @@ func TestARequestsURLAndErrorPrintAsTheRedactorPrintsThem(t *testing.T) {
 		{credentialedBase, redact.NotPrinted, "Post " + strconv.Quote(redact.NotPrinted) + ": connection refused", "connection refused"},
 		{cleanBase, cleanBase + "/v1/oauth/token", `Post "` + cleanBase + `/v1/oauth/token": connection refused`, "connection refused"},
 	} {
-		a := cipheraddr.New(tc.base)
+		a := configaddr.New(brokerSetting, tc.base)
 		callURL := tc.base + "/v1/oauth/token"
 		failure := &url.Error{Op: "Post", URL: callURL, Err: syscall.ECONNREFUSED}
 		if got := a.Call(callURL); got != tc.call {

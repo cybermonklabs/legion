@@ -24,7 +24,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/cipheraddr"
+	"github.com/sjawhar/envoy/configaddr"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipherclient"
 )
@@ -84,14 +84,14 @@ func TestADroppedCredentialInIdentityModeIsTradedAgainAtOnce(t *testing.T) {
 	// machine, not identity: identity is the type one reading of a session's broker identity
 	// has (Session.identity), which this test's enrol below names.
 	machine, err := cipherclient.New(cipherclient.Config{
-		BrokerURL: cipheraddr.New(f.srv.URL), Key: key, HTTP: f.srv.Client(),
+		BrokerURL: configaddr.New("AGENT_SECRETS_URL", f.srv.URL), Key: key, HTTP: f.srv.Client(),
 		Subject: cipherclient.NewProjectedToken(tokenFile),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	b := &Broker{
-		URL: cipheraddr.New(f.srv.URL), Identity: machine, HTTP: f.srv.Client(),
+		URL: configaddr.New("AGENT_SECRETS_URL", f.srv.URL), Identity: machine, HTTP: f.srv.Client(),
 		OperatorFile: filepath.Join(t.TempDir(), "no-operator-here"),
 	}
 	t.Cleanup(b.Close)

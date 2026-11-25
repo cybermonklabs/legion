@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/cipheraddr"
+	"github.com/sjawhar/envoy/configaddr"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 )
 
@@ -199,7 +199,7 @@ func TestExecLearnsOfAGrantAfterAFullHold(t *testing.T) {
 // held read, which the exec form reads as a failed read and answers with its backoff, so R1's
 // second would become up to ten.
 func TestTheWaitLimitEndsInsideTheClientsCallTimeout(t *testing.T) {
-	timeout := newClient(cipheraddr.New("http://broker.invalid")).http.Timeout
+	timeout := newClient(configaddr.New("AGENT_SECRETS_URL", "http://broker.invalid")).http.Timeout
 	if limit := time.Duration(record.MaxRequestWaitSeconds) * time.Second; timeout <= limit {
 		t.Fatalf("record.MaxRequestWaitSeconds is %s, want under the client's whole-call timeout (%s)", limit, timeout)
 	}

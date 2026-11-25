@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"authelia.com/provider/oauth2/handler/rfc9449"
+	"github.com/sjawhar/envoy/configaddr"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
 	"github.com/sjawhar/envoy/internal/config"
@@ -83,7 +84,7 @@ func listenerBrokerTokensOver(t *testing.T, brokerURL string, replay rfc9449.DPo
 		Origin:           listenerBrokerOrigin,
 	})
 	options := ciphertoken.Options{
-		BrokerURL: brokerURL,
+		BrokerURL: configaddr.New(EnvBrokerURL, brokerURL),
 		Account:   listenerBrokerAccount("listener-account-token"),
 		Origin:    listenerBrokerOrigin,
 		Replay:    replay,

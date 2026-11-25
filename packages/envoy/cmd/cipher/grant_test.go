@@ -16,7 +16,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/sjawhar/envoy/cipheraddr"
+	"github.com/sjawhar/envoy/configaddr"
 	"github.com/sjawhar/envoy/internal/cipher/helper"
 )
 
@@ -68,7 +68,7 @@ func TestGrantListNamesTheApproverAndTheDecider(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			row := grantRow(cipheraddr.New("https://broker.example"), tc.grant)
+			row := grantRow(configaddr.New("AGENT_SECRETS_URL", "https://broker.example"), tc.grant)
 			if len(row) != len(grantColumns) {
 				t.Fatalf("the row has %d cells for %d columns: %v under %v", len(row), len(grantColumns), row, grantColumns)
 			}
@@ -184,7 +184,7 @@ func TestGrantRevokeOutsideASessionBesideAnOldMachineSession(t *testing.T) {
 
 	grantID := uuid.NewString()
 	code, stdout, stderr := r.run("grant", "revoke", grantID)
-	want := "revoked " + grantID + " at " + brokerSource(cipheraddr.New(broker.URL())).String() + "\n"
+	want := "revoked " + grantID + " at " + brokerSource(configaddr.New("AGENT_SECRETS_URL", broker.URL())).String() + "\n"
 	if code != 0 || stdout != want || stderr != "" {
 		t.Fatalf("grant revoke beside an old machine session: exit %d, stdout %q, stderr %q; want 0 and %q", code, stdout, stderr, want)
 	}
@@ -244,7 +244,7 @@ func TestGrantRevokeInsideASessionIsASessionCommand(t *testing.T) {
 		c := startCall(t, r.command("grant", "revoke", grantID))
 		playTheLauncher(t, c, r.keyDir(), named, fixture, "24h0m0s")
 		code := c.end(t)
-		want := "revoked " + grantID + " at " + brokerSource(cipheraddr.New(broker.URL())).String() + "\n"
+		want := "revoked " + grantID + " at " + brokerSource(configaddr.New("AGENT_SECRETS_URL", broker.URL())).String() + "\n"
 		waited := launcherPlayLines(named, "24h0m0s")
 		if stdout, stderr := c.stdout.String(), c.stderr.String(); code != 0 || stdout != want || stderr != waited {
 			t.Fatalf("grant revoke while the launcher enrolls: exit %d, stdout %q, stderr %q; want 0, %q once it has, and the wait's lines %q",

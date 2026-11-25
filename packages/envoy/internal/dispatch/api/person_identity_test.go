@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/configaddr"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
@@ -318,7 +319,7 @@ func newIdentityRigOn(t *testing.T, envoyURL string) *identityRig {
 		envoyURL: envoyURL,
 		brokerTokens: func(database *store.Store) *ciphertoken.Verifier {
 			verifier, err := ciphertoken.New(ciphertoken.Options{
-				BrokerURL: broker.Server.URL,
+				BrokerURL: configaddr.New("DISPATCH_AGENT_SECRETS_URL", broker.Server.URL),
 				Account:   ciphertoken.NewAccountToken(accountTokenFile(t, credentialTestAccountToken)),
 				Origin:    testServerURL,
 				Replay:    store.NewDPoPProofs(database.Pool),

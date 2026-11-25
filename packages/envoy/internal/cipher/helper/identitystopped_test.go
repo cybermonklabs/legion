@@ -13,7 +13,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/sjawhar/envoy/cipheraddr"
+	"github.com/sjawhar/envoy/configaddr"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipherclient"
 )
@@ -85,7 +85,7 @@ func newStoppedLoopRig(t *testing.T, first *stopAnswer) *stoppedLoopRig {
 	}
 	r.waits = &tradeWaits{}
 	machine, err := cipherclient.New(cipherclient.Config{
-		BrokerURL: cipheraddr.New(r.broker.srv.URL), Key: key, HTTP: r.broker.srv.Client(),
+		BrokerURL: configaddr.New("AGENT_SECRETS_URL", r.broker.srv.URL), Key: key, HTTP: r.broker.srv.Client(),
 		Subject: cipherclient.NewProjectedToken(tokenFile), After: r.waits.after,
 	})
 	if err != nil {
@@ -93,7 +93,7 @@ func newStoppedLoopRig(t *testing.T, first *stopAnswer) *stoppedLoopRig {
 	}
 	r.out = &syncBuffer{}
 	r.helper = &Broker{
-		URL: cipheraddr.New(r.broker.srv.URL), Identity: machine, HTTP: r.broker.srv.Client(),
+		URL: configaddr.New("AGENT_SECRETS_URL", r.broker.srv.URL), Identity: machine, HTTP: r.broker.srv.Client(),
 		OperatorFile: filepath.Join(t.TempDir(), "no-operator-here"),
 		Log:          slog.New(slog.NewJSONHandler(r.out, nil)),
 	}

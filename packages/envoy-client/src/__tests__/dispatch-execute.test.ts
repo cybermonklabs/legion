@@ -26,6 +26,7 @@ import {
   DISPATCH_ITEM_BLOCKS,
 } from "@legion/contracts/dispatch-tools";
 import { URL_NOT_PRINTED } from "@legion/contracts/log-text";
+import { remoteText, remoteTexts } from "@legion/test-fixtures/remote-text-matcher";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { z } from "zod";
 import { bearerCredential } from "../bearer";
@@ -2144,7 +2145,7 @@ describe("executeDispatchTool", () => {
   ] as const)("dispatch_architecture_sync %j exits with the server's %s", async (args, code, status, error) => {
     const { result } = runArchitectureSync(args, () => response({ code, error }, status));
 
-    await expect(result).rejects.toMatchObject({ code, status, message: error });
+    await expect(result).rejects.toMatchObject({ code: remoteText(code), status, message: error });
   });
 
   test("dispatch_architecture_sync refuses a repo that is not owner/name before any request", async () => {
@@ -2502,7 +2503,7 @@ describe("executeDispatchTool", () => {
       })
     ).rejects.toMatchObject({
       name: "DispatchServiceError",
-      code: "SERVICE_UNAVAILABLE",
+      code: remoteText("SERVICE_UNAVAILABLE"),
       status: 503,
     });
   });
@@ -2805,11 +2806,11 @@ describe("executeDispatchTool", () => {
     ).rejects.toEqual(
       expect.objectContaining({
         name: "DispatchServiceError",
-        code: "PRECONDITION_FAILED",
+        code: remoteText("PRECONDITION_FAILED"),
         status: 409,
         message: "PRECONDITION_FAILED: stale",
-        current,
-        mismatches,
+        current: remoteTexts(current),
+        mismatches: remoteTexts(mismatches),
       })
     );
   });
@@ -3838,7 +3839,7 @@ describe("executeDispatchTool", () => {
         "Read each issue above. If one is the same work, fold this into it by the duplicate rule of skill://dispatch-first.",
         "If none is, run dispatch issue again with --force, and write in the new issue's spec why it is not each issue named here.",
       ].join("\n"),
-      details: { duplicates: candidates },
+      details: { duplicates: remoteTexts(candidates) },
       refused: true,
     });
   });
@@ -5328,7 +5329,7 @@ describe("executeDispatchTool", () => {
 
     expect(refused).toMatchObject({
       name: "DispatchServiceError",
-      code: "ISSUE_CLOSED",
+      code: remoteText("ISSUE_CLOSED"),
       status: 409,
     });
     expect((refused as Error).message).toBe(
@@ -11527,10 +11528,10 @@ describe("executeDispatchTool", () => {
     ).rejects.toEqual(
       expect.objectContaining({
         name: "DispatchServiceError",
-        code: "PRECONDITION_FAILED",
+        code: remoteText("PRECONDITION_FAILED"),
         status: 409,
         message: error,
-        current: { document: "sha256:live-spec", blocks: [], version: 7 },
+        current: remoteTexts({ document: "sha256:live-spec", blocks: [], version: 7 }),
       })
     );
     expect(uploads).toEqual([expect.stringMatching(/\/api\/v1\/issues\/DSP-42\/artifacts$/)]);
@@ -15811,7 +15812,7 @@ describe("executeDispatchTool", () => {
       const { error } = await outcome;
       expect(error).toMatchObject({
         name: "DispatchServiceError",
-        code: "EVENTS_FAILED",
+        code: remoteText("EVENTS_FAILED"),
         status: 500,
         message: "event read failed",
       });

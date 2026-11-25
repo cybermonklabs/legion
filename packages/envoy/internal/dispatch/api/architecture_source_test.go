@@ -174,7 +174,7 @@ func (f *fakeGitHubApp) handler(t *testing.T) http.Handler {
 		for _, name := range names {
 			fmt.Fprintf(digest, "%s\x00%s\x00", name, repo.files[name])
 			entries = append(entries, map[string]any{
-				"path": name, "mode": "100644", "type": "blob", "sha": "blob-" + name, "size": len(repo.files[name]),
+				"path": name, "mode": "100644", "type": "blob", "sha": fakeTreeBlobSHA(name), "size": len(repo.files[name]),
 			})
 		}
 		if err := json.NewEncoder(w).Encode(map[string]any{
@@ -189,7 +189,12 @@ func (f *fakeGitHubApp) handler(t *testing.T) http.Handler {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
-		content, ok := repo.files[strings.TrimPrefix(r.PathValue("sha"), "blob-")]
+		content, ok := "", false
+		for name, file := range repo.files {
+			if fakeTreeBlobSHA(name) == r.PathValue("sha") {
+				content, ok = file, true
+			}
+		}
 		if !ok {
 			w.WriteHeader(http.StatusNotFound)
 			return
@@ -202,6 +207,11 @@ func (f *fakeGitHubApp) handler(t *testing.T) http.Handler {
 	})
 	return mux
 }
+
+// fakeTreeBlobSHA is the SHA the fake names name's blob by in its trees and reads it back by:
+// forty lowercase hex digits, as GitHub's own blob SHAs are, which githubapp's blob read refuses
+// any other value than.
+func fakeTreeBlobSHA(name string) string { return fmt.Sprintf("%x", sha256.Sum256([]byte(name)))[:40] }
 
 func newArchitectureSourceServer(t *testing.T, fake *fakeGitHubApp) (http.Handler, *store.Store) {
 	t.Helper()

@@ -37,6 +37,10 @@
       "types": "./src/print-test.ts",
       "bun": "./src/print-test.ts"
     },
+    "./remote-text-matcher": {
+      "types": "./src/remote-text-matcher.ts",
+      "bun": "./src/remote-text-matcher.ts"
+    },
     "./standin-body": {
       "types": "./src/standin-body.ts",
       "bun": "./src/standin-body.ts"

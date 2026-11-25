@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/githubtest"
 )
@@ -87,7 +88,7 @@ func TestAStoredNameGitHubDoesNotAllowMakesNoGitHubRequest(t *testing.T) {
 		refused("PullRequestOpenOrMerged", name, err)
 		_, err = repositoryDefaultBranch(ctx, client, name)
 		refused("repositoryDefaultBranch", name, err)
-		_, err = askGitHubCommitOnBranch(ctx, client, name, "main", sha)
+		_, err = askGitHubCommitOnBranch(ctx, client, name, githubapp.NamedBranch("main"), sha)
 		refused("askGitHubCommitOnBranch", name, err)
 	}
 

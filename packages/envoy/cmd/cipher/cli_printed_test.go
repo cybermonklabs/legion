@@ -25,7 +25,7 @@ import (
 	"syscall"
 	"testing"
 
-	"github.com/sjawhar/envoy/cipheraddr"
+	"github.com/sjawhar/envoy/configaddr"
 	"github.com/sjawhar/envoy/internal/cipher/helper"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 )
@@ -389,7 +389,7 @@ func TestAnIdAPersonTypedIsLeftOutOfAFailedCallsRoute(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		c := newClient(cipheraddr.New("http://127.0.0.1:1"))
+		c := newClient(configaddr.New("AGENT_SECRETS_URL", "http://127.0.0.1:1"))
 		signer := &fileSigner{key: key, enrollmentID: "enr-test"}
 		for route, err := range map[string]error{
 			"POST http://127.0.0.1:1/v1/operator/machines/(the machine id, not printed)/revoke": c.RevokeOperatorMachine(context.Background(), signer, secret),

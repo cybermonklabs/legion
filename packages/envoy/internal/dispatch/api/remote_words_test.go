@@ -20,7 +20,8 @@ import (
 // remote text reads it, a body that names no message drops from the detail as it did before, and
 // no credential prints.
 func TestACheckRunsReadRefusalPrintsGitHubsMessageAsTheRuleReadsIt(t *testing.T) {
-	const prefix = "GitHub could not be read for the check runs of acme/widgets at abc123: read check runs: status 422"
+	const head = "abc123abc123abc123abc123abc123abc123abc1"
+	const prefix = "GitHub could not be read for the check runs of acme/widgets at " + head + ": read check runs: status 422"
 	rows := map[string]struct{ body, want string }{
 		"a body that is not JSON": {redacttest.Words, prefix + "."},
 	}
@@ -42,7 +43,7 @@ func TestACheckRunsReadRefusalPrintsGitHubsMessageAsTheRuleReadsIt(t *testing.T)
 			if !errors.As(refused, &status) {
 				t.Fatalf("CheckResponse = %v, want a StatusError", refused)
 			}
-			detail := ciUnreadDetail(delivery.NewestHead{Repo: "acme/widgets", HeadSHA: "abc123"}, fmt.Errorf("read check runs: %w", refused))
+			detail := ciUnreadDetail(delivery.NewestHead{Repo: "acme/widgets", HeadSHA: head}, fmt.Errorf("read check runs: %w", refused))
 			redacttest.RequireNone(t, "api.ci-detail", detail)
 			if detail != row.want {
 				t.Errorf("the detail is %q, want %q", detail, row.want)

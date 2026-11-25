@@ -8,6 +8,8 @@ import (
 	"os/exec"
 	"regexp"
 	"strings"
+
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 type ServerConfig struct {
@@ -142,10 +144,12 @@ func extractPlaceholders(tmpl string) []string {
 	return out
 }
 
+// RenderTopic is the topic uri's captures fill the template with. uri is the server's words, so an
+// error names it as the rule for remote text reads it (redact.Field).
 func (s *ServerConfig) RenderTopic(uri string) (string, error) {
 	match := s.compiled.FindStringSubmatch(uri)
 	if match == nil {
-		return "", fmt.Errorf("uri %q does not match pattern %s", uri, s.URIPattern)
+		return "", fmt.Errorf("uri %q does not match pattern %s", redact.Field(uri), s.URIPattern)
 	}
 	result := s.TopicTemplate
 	for i, name := range s.compiled.SubexpNames() {

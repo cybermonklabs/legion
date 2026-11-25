@@ -854,7 +854,8 @@ func TestProbeImageRefusesAProbeThatExits1AfterOneAttempt(t *testing.T) {
 
 // The API refusing what the probe sent — RBAC, credentials, a manifest it rejects, a namespace
 // that does not exist — refuses it again, so the probe stops naming it; anything else is the
-// cluster's moment, retried.
+// cluster's moment, retried. Each answer is named by its status, as the runtime keeps a
+// Kubernetes error (projectKubeError), never by the words the server wrote.
 func TestProbeImageClassifiesTheAPIsAnswers(t *testing.T) {
 	for _, testCase := range []struct {
 		name       string
@@ -871,15 +872,15 @@ func TestProbeImageClassifiesTheAPIsAnswers(t *testing.T) {
 			g.with(func() {
 				g.createErr = apierrors.NewNotFound(schema.GroupResource{Resource: "namespaces"}, testNamespace)
 			})
-		}, true, "not found"},
+		}, true, "the API server answered 404 NotFound"},
 		{"create invalid", func(g *probeRig) {
 			g.with(func() {
 				g.createErr = apierrors.NewInvalid(schema.GroupKind{Group: "agents.x-k8s.io", Kind: "Sandbox"}, probeSandboxName, nil)
 			})
-		}, true, "is invalid"},
+		}, true, "the API server answered 422 Invalid"},
 		{"create failing on the server", func(g *probeRig) {
 			g.with(func() { g.createErr = apierrors.NewInternalError(errors.New("etcd leader changed")) })
-		}, false, "etcd leader changed"},
+		}, false, "the API server answered 500 InternalError"},
 		{"the log forbidden", func(g *probeRig) {
 			g.succeeds(okLine(3))
 			g.with(func() {
@@ -889,7 +890,7 @@ func TestProbeImageClassifiesTheAPIsAnswers(t *testing.T) {
 		{"the log failing on the server", func(g *probeRig) {
 			g.succeeds(okLine(3))
 			g.with(func() { g.logErr = apierrors.NewServiceUnavailable("kubelet unreachable") })
-		}, false, "kubelet unreachable"},
+		}, false, "the API server answered 503 ServiceUnavailable"},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			g := newProbeRig(t, nil)

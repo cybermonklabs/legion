@@ -16,7 +16,7 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/sjawhar/envoy/cipheraddr"
+	"github.com/sjawhar/envoy/configaddr"
 	"github.com/sjawhar/envoy/internal/cipher/helper"
 	"github.com/sjawhar/envoy/internal/redact"
 )
@@ -81,7 +81,7 @@ var grantColumns = []string{"GRANT_ID", "SECRETS", "GRANTED", "APPROVER", "DECID
 
 // grantRow is one grant's cells, in grantColumns' order, each "-" where the grant carries no
 // such value. Each cell is the broker's, so it prints as the broker's address base lets its answer
-// print (cipheraddr.Address.Words): as the rule reads it on one line, with the credentials the
+// print (configaddr.Address.Words): as the rule reads it on one line, with the credentials the
 // list's request carried redacted (each field is held as redact.RemoteText with the answer's
 // record), Go-quoted where a control character in it, a tab among them, would start a line of its
 // own or split the cell, and not at all beside an address that carries a credential; the grant
@@ -94,7 +94,7 @@ var grantColumns = []string{"GRANT_ID", "SECRETS", "GRANTED", "APPROVER", "DECID
 // for a shared secret — and the judge as its decider, "judge:<model id>". APPROVER alone read as
 // the owner's own approval of a request that owner never saw. An automatic grant nobody decided
 // prints "-" under both.
-func grantRow(base cipheraddr.Address, g OperatorGrant) []string {
+func grantRow(base configaddr.Address, g OperatorGrant) []string {
 	session := g.Enrollment.Kind.String() + "/" + g.Enrollment.RuntimeID.String()
 	if g.Enrollment.Slot != nil {
 		session += "/" + g.Enrollment.Slot.String()

@@ -99,6 +99,7 @@ import {
 } from "@legion/contracts";
 import { holdUrlUserinfo } from "@legion/contracts/held-secrets";
 import { errorClass, isCleanUrl, requestForText, urlForText } from "@legion/contracts/log-text";
+import { RemoteText, redactRemoteText } from "@legion/contracts/remote-text";
 import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
 import { credentialDeadline, type RequestCredential } from "./bearer";
 import { reachedNothing } from "./errors";
@@ -123,6 +124,44 @@ export interface ArtifactFileVersion {
   readonly bytes: Uint8Array;
 }
 
+/** `T` with every string in it, at any depth, held as a {@link RemoteText}: data another party
+ *  wrote, which prints only as the rule reads it and is read through the box. */
+export type Held<T> = T extends string
+  ? RemoteText
+  : T extends readonly (infer E)[]
+    ? readonly Held<E>[]
+    : T extends object
+      ? { readonly [K in keyof T]: Held<T[K]> }
+      : T;
+
+/**
+ * `value`, a refusal's data as Dispatch's JSON parsed, with each string in it held as a
+ * {@link RemoteText} carrying `carried`, the tokens the request carried. A member is kept under a
+ * name only where a print of that name shows it whole (`sendBack`), so a name Dispatch wrote prints
+ * no more of its words than the rule does. Numbers, booleans and null are closed values.
+ */
+function heldData(value: unknown, carried: readonly string[]): unknown {
+  if (typeof value === "string") return new RemoteText(value, carried);
+  if (Array.isArray(value)) return value.map((item) => heldData(item, carried));
+  if (typeof value !== "object" || value === null) return value;
+  const kept: Record<string, unknown> = {};
+  for (const [name, item] of Object.entries(value)) {
+    const shown = new RemoteText(name, carried).sendBack();
+    if (shown !== undefined) kept[shown] = heldData(item, carried);
+  }
+  return kept;
+}
+
+/**
+ * A refusal Dispatch decided: its status, its `code` and its words as the message. The code is
+ * Dispatch's word, held as a {@link RemoteText} (with the credentials the request carried, where
+ * Dispatch wrote it), so it prints only as the rule reads it; code that branches on a code compares
+ * through the box (`code.equals`). The message is the rule's reading of Dispatch's words
+ * (`#payloadOf`), or the client's own sentence for a refusal it makes itself, whose code it names
+ * as a string. `candidates`, `current` and `mismatches` are the refusal's data, which a caller reads
+ * to act on it, each string in them held the same way (`Held`), since an error printed whole prints
+ * them and the `dispatch issue` command lists a near copy's candidates.
+ */
 export class DispatchServiceError extends Error {
   override readonly name = "DispatchServiceError";
   /**
@@ -130,16 +169,19 @@ export class DispatchServiceError extends Error {
    * false for an answer something in Dispatch's place wrote (`DispatchGatewayError`).
    */
   readonly fromDispatch: boolean = true;
+  /** The code of the first rule the call broke, or `HTTP_<status>` where the answer names none. */
+  readonly code: RemoteText;
 
   constructor(
-    readonly code: string,
+    code: RemoteText | string,
     readonly status: number,
     message: string,
-    readonly candidates?: DispatchServiceErrorShape["candidates"],
-    readonly current?: DispatchServiceErrorShape["current"],
-    readonly mismatches?: DispatchServiceErrorShape["mismatches"]
+    readonly candidates?: Held<NonNullable<DispatchServiceErrorShape["candidates"]>>,
+    readonly current?: Held<NonNullable<DispatchServiceErrorShape["current"]>>,
+    readonly mismatches?: Held<NonNullable<DispatchServiceErrorShape["mismatches"]>>
   ) {
     super(message);
+    this.code = code instanceof RemoteText ? code : new RemoteText(code);
   }
 }
 
@@ -223,10 +265,13 @@ export class DispatchWriteUnsettledError extends Error {
         : "an earlier attempt of the write may have reached Dispatch";
     if (last instanceof DispatchGatewayError) {
       answer = last.answer;
-    } else if (last instanceof DispatchServiceError && last.code === IDEMPOTENCY_KEY_IN_FLIGHT) {
+    } else if (
+      last instanceof DispatchServiceError &&
+      last.code.equals(IDEMPOTENCY_KEY_IN_FLIGHT)
+    ) {
       // Dispatch's own text tells the caller to ask again under the same key, which the client
       // already did and a person or agent reading this cannot: the code alone names the answer.
-      answer = last.code;
+      answer = IDEMPOTENCY_KEY_IN_FLIGHT;
       why = "Dispatch was still running an earlier attempt of the write";
     } else if (last instanceof DispatchServiceError) {
       answer = `${last.code}: ${last.message}`;
@@ -301,7 +346,7 @@ export function isNoRoute(error: unknown): boolean {
   return (
     error instanceof DispatchServiceError &&
     error.status === 404 &&
-    error.code === "NOT_FOUND" &&
+    error.code.equals("NOT_FOUND") &&
     error.message.startsWith(NO_ROUTE_MESSAGE_PREFIX)
   );
 }
@@ -1387,7 +1432,7 @@ export class DispatchClient {
       if (
         error instanceof DispatchServiceError &&
         error.status === 404 &&
-        error.code === "SOURCE_NOT_FOUND"
+        error.code.equals("SOURCE_NOT_FOUND")
       ) {
         return [];
       }
@@ -2650,13 +2695,22 @@ export class DispatchClient {
             requestForText(this.#baseUrl, url, DISPATCH_URL_SETTING)
           );
         }
+        // Dispatch's code and words are its own, each held or printed as the rule reads it, the
+        // tokens this client presented redacted from them: a Dispatch at the wrong URL can echo
+        // the bearer it was sent.
+        const carried = this.#sent.with(this.token);
         throw new DispatchServiceError(
-          error.code ?? `HTTP_${response.status}`,
+          new RemoteText(
+            typeof error.code === "string" ? error.code : `HTTP_${response.status}`,
+            carried
+          ),
           response.status,
-          error.error,
-          error.candidates,
-          error.current,
-          error.mismatches
+          redactRemoteText(error.error, carried),
+          // `asErrorShape` types Dispatch's JSON as its shape; `heldData` keeps that shape, each
+          // string a box, so the shape's held type is what it answers.
+          heldData(error.candidates, carried) as DispatchServiceError["candidates"],
+          heldData(error.current, carried) as DispatchServiceError["current"],
+          heldData(error.mismatches, carried) as DispatchServiceError["mismatches"]
         );
       }
       throw this.#gatewayError(method, url, response, text, "Dispatch's error JSON");

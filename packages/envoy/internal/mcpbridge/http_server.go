@@ -78,12 +78,13 @@ func (s *HTTPServer) Start() error {
 
 	// 2. Read the first SSE event (type "endpoint") to get the message POST URL. The event stream
 	// is data the session reads for its whole life (redact.StreamAnswer), bounded by that life
-	// and not by its size.
+	// and not by its size. A read of it can fail with the server's own words - net/http's error
+	// for an HTTP/2 GOAWAY quotes its debug data - so the failure prints through redact.Cause.
 	scanner := bufio.NewScanner(redact.StreamAnswer(resp, math.MaxInt64))
 	messageURL, err := readEndpointEvent(scanner)
 	if err != nil {
 		resp.Body.Close()
-		return fmt.Errorf("read endpoint event: %w", err)
+		return fmt.Errorf("read endpoint event: %w", redact.Cause(err, s.cfg.URL))
 	}
 	s.messageURL = messageURL
 
@@ -103,7 +104,7 @@ func (s *HTTPServer) Start() error {
 			return fmt.Errorf("POST to %s: status %d: %s", redact.Field(s.messageURL), postResp.StatusCode, refused.Words())
 		}
 		return nil
-	}, s.onNotify, s.stopCh)
+	}, s.Words, s.onNotify, s.stopCh)
 
 	// 4. Start read loop for SSE events.
 	go s.readLoop(scanner)
@@ -145,12 +146,23 @@ func (s *HTTPServer) ReadResource(uri string) ([]resourceContent, error) {
 	return s.session.readResource(uri)
 }
 
+// Words is text the server wrote on its event stream, as its words: held with the record of the
+// stream's request (redact.StreamedWords), whose configured URL can carry a user name and password
+// that net/http sends as Basic Authorization, so whatever echoes those prints none of them.
+func (s *HTTPServer) Words(text string) redact.RemoteText {
+	return redact.StreamedWords(s.sseResp, text)
+}
+
 func (s *HTTPServer) closeSSE() {
 	if s.sseResp != nil {
 		s.sseResp.Body.Close()
 	}
 }
 
+// readLoop hands each message event to the session until the stream ends. The read's error, which
+// WaitForExit answers and the bridge logs, can quote the server's own words - net/http's error for
+// an HTTP/2 GOAWAY quotes its debug data - so it prints through redact.Cause: the transport's own
+// failure beside a configured URL the allow-list passes, and its class otherwise.
 func (s *HTTPServer) readLoop(scanner *bufio.Scanner) {
 	for {
 		eventType, data, err := readSSEEvent(scanner)
@@ -159,7 +171,7 @@ func (s *HTTPServer) readLoop(scanner *bufio.Scanner) {
 			if s.stopped.Load() {
 				s.exitCh <- nil
 			} else {
-				s.exitCh <- err
+				s.exitCh <- redact.Cause(err, s.cfg.URL)
 			}
 			return
 		}

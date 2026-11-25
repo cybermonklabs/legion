@@ -28,7 +28,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sjawhar/envoy/cipheraddr"
+	"github.com/sjawhar/envoy/configaddr"
 	"github.com/sjawhar/envoy/internal/cipher/helper"
 	"github.com/sjawhar/envoy/internal/cipherclient"
 )
@@ -106,9 +106,9 @@ func keyDirFile(name string) string { return name + " in " + keyDirName() }
 // else the settings file), without the slashes it ends in (cipherclient.WithoutTrailingSlashes,
 // the rule both halves of this client read an address by), and the empty Address when neither
 // gives one or it holds nothing but slashes: the one place every form reads it, and as a
-// cipheraddr.Address, so no form holds it as a string it could print.
-func brokerBaseURL() cipheraddr.Address {
-	return cipheraddr.New(cipherclient.WithoutTrailingSlashes(clientGetenv(brokerURLVar)))
+// configaddr.Address, so no form holds it as a string it could print.
+func brokerBaseURL() configaddr.Address {
+	return configaddr.New(brokerURLVar, cipherclient.WithoutTrailingSlashes(clientGetenv(brokerURLVar)))
 }
 
 // helperSocket is AGENT_SECRETS_HELPER_SOCK, else the helper's default socket; named reports

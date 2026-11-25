@@ -17,7 +17,7 @@ type apiErrorTwin struct {
 	code     string
 	said     string
 	answerID string
-	withheld bool
+	withheld string
 }
 
 func (e *apiErrorTwin) Error() string {
@@ -29,7 +29,7 @@ type apiErrorExported struct {
 	Code     string
 	Said     string
 	AnswerID string
-	Withheld bool
+	Withheld string
 }
 
 // The twins of the decoded answers: each answer's shape with a string where it holds the box.
@@ -169,9 +169,9 @@ func TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement(t *testing.T) {
 		{
 			Name:     "agent-secrets.apiError",
 			Kind:     "error",
-			Boxed:    newAPIError(403, code, words, answerID, false),
-			Same:     &apiErrorTwin{403, redacttest.Code, redacttest.Words, redacttest.FragmentWords, false},
-			Exported: &apiErrorExported{403, redacttest.Code, redacttest.Words, redacttest.FragmentWords, false},
+			Boxed:    newAPIError(403, code, words, answerID, ""),
+			Same:     &apiErrorTwin{403, redacttest.Code, redacttest.Words, redacttest.FragmentWords, ""},
+			Exported: &apiErrorExported{403, redacttest.Code, redacttest.Words, redacttest.FragmentWords, ""},
 		},
 		{
 			Name: "agent-secrets.client.doStatus.envelope",

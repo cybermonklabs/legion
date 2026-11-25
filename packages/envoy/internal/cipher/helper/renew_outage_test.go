@@ -17,7 +17,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/cipheraddr"
+	"github.com/sjawhar/envoy/configaddr"
 	"github.com/sjawhar/envoy/internal/cipher/leasetime"
 )
 
@@ -156,7 +156,7 @@ func TestRenewLoopOutlivesAnOutageOnlyAboveTheLeaseBound(t *testing.T) {
 			start := time.Now()
 			broker := &outageBroker{start: start, gapStart: want.GapStart, gapEnd: want.GapEnd + margin, delays: delays, timeout: model.ClientTimeout, lease: c.lease}
 			srv := &Server{
-				Broker:   &Broker{URL: cipheraddr.New("http://broker.invalid"), HTTP: &http.Client{Transport: broker}},
+				Broker:   &Broker{URL: configaddr.New("AGENT_SECRETS_URL", "http://broker.invalid"), HTTP: &http.Client{Transport: broker}},
 				Log:      slog.New(slog.NewTextHandler(io.Discard, nil)),
 				MinRenew: model.HelperMinRenew,
 			}

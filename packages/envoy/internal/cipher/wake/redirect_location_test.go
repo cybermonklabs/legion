@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/envoy/configaddr"
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/redact/redacttest"
 )
@@ -63,7 +64,7 @@ func TestANoticeRedirectLogsNoLocationOfIt(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			var logged bytes.Buffer
 			logtest.SetDefault(t, slog.NewTextHandler(&logged, nil))
-			Envoy{URL: echo(c.location), Account: staticAccount(token), HTTP: &http.Client{}}.Notify(context.Background(), "sess-123", "req-456", "approved")
+			Envoy{URL: configaddr.New("BROKER_ENVOY_URL", echo(c.location)), Account: staticAccount(token), HTTP: &http.Client{}}.Notify(context.Background(), "sess-123", "req-456", "approved")
 			if !strings.Contains(logged.String(), "wake envoy: send") {
 				t.Fatalf("Notify logged no failed send: %q", logged.String())
 			}

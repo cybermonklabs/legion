@@ -17,7 +17,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/cipheraddr"
+	"github.com/sjawhar/envoy/configaddr"
 	"github.com/sjawhar/envoy/internal/redact/redacttest"
 )
 
@@ -62,7 +62,7 @@ func TestARenewalRefusalPrintsNoCredentialItsAnswerEchoes(t *testing.T) {
 				fmt.Fprint(w, c.answer(body, proof))
 			}))
 			defer server.Close()
-			base := cipheraddr.New(server.URL)
+			base := configaddr.New("AGENT_SECRETS_URL", server.URL)
 			signer := &fileSigner{key: key, enrollmentID: "enr-echo"}
 			_, renewErr := newClient(base).RenewEnrollment(context.Background(), signer, "enr-echo", redacttest.Token)
 			if renewErr == nil {
@@ -127,7 +127,7 @@ func TestARenewalRefusalPrintsNoCredentialItsPagesReferencesHide(t *testing.T) {
 				fmt.Fprint(w, c.page)
 			}))
 			defer server.Close()
-			base := cipheraddr.New(server.URL)
+			base := configaddr.New("AGENT_SECRETS_URL", server.URL)
 			signer := &fileSigner{key: key, enrollmentID: "enr-page"}
 			_, renewErr := newClient(base).RenewEnrollment(context.Background(), signer, "enr-page", "")
 			if renewErr == nil {
@@ -168,7 +168,7 @@ func TestARenewalAnswerThatDoesNotDecodePrintsNoPodTokenItEchoes(t *testing.T) {
 		fmt.Fprintf(w, `{"lease_expires_at":%q}`, "renewed with "+string(body))
 	}))
 	defer server.Close()
-	base := cipheraddr.New(server.URL)
+	base := configaddr.New("AGENT_SECRETS_URL", server.URL)
 	signer := &fileSigner{key: key, enrollmentID: "enr-decode"}
 	_, renewErr := newClient(base).RenewEnrollment(context.Background(), signer, "enr-decode", redacttest.Token)
 	if renewErr == nil {

@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/configaddr"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
 	dispatchapi "github.com/sjawhar/envoy/internal/dispatch/api"
@@ -226,7 +227,7 @@ func roleRouteDispatchMux(
 	})
 	input := dispatchapi.DepsInput{
 		Store: database, Identity: caller, AgentTokens: tokens, ServerURL: "https://dispatch.example",
-		EnvoyURL: envoyURL, Docs: documents, Events: broker, AgentPublisher: publisher,
+		EnvoyURL: configaddr.New("ENVOY_URL", envoyURL), Docs: documents, Events: broker, AgentPublisher: publisher,
 	}
 	configure(&input)
 	deps, err := dispatchapi.NewDeps(input)

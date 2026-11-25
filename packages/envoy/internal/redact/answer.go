@@ -154,11 +154,12 @@ func (a Answer) Words() RemoteText {
 	return NewRemoteText(strings.TrimSpace(string(a.bytes()))).WithoutTokens(a.a.carried()...)
 }
 
-// Said is text a caller read from this answer's bytes (StreamTo) - a key or a value of a body it
-// reads by its own grammar - as another party's words with the record of the answer's requests: a
-// RemoteText that prints only as the rule reads it, every credential those requests carried
-// redacted first, and compares as it came. Text the answer does not hold is no answer's words, and
-// a caller hands Said none.
+// Said is text a caller read from this answer - a key or a value of a body it reads by its own
+// grammar (StreamTo), or the value of a header the answer came with, which a caller hands on
+// beside the answer (githubapp's limit wording) - as another party's words with the record of the
+// answer's requests: a RemoteText that prints only as the rule reads it, every credential those
+// requests carried redacted first, and compares as it came. Text the answer does not hold is no
+// answer's words, and a caller hands Said none.
 func (a Answer) Said(text string) RemoteText {
 	if a.a == nil {
 		return NewRemoteText(text)

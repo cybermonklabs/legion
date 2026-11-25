@@ -42,14 +42,15 @@ func TestAGitHubCheckRunsRefusalReachesTheDetailAsTheRuleReadsIt(t *testing.T) {
 	if err != nil || client == nil {
 		t.Fatalf("githubapp.New = %v, %v", client, err)
 	}
-	_, err = client.CommitCheckRuns(context.Background(), "installation-token", "acme", "widgets", "abc123", 1, "")
+	const head = "abc123abc123abc123abc123abc123abc123abc1"
+	_, err = client.CommitCheckRuns(context.Background(), "installation-token", "acme", "widgets", head, 1, "")
 	if err == nil {
 		t.Fatal("CommitCheckRuns read GitHub's refusal as a page of check runs")
 	}
-	detail := ciUnreadDetail(delivery.NewestHead{Repo: "acme/widgets", HeadSHA: "abc123"}, fmt.Errorf("read check runs: %w", err))
+	detail := ciUnreadDetail(delivery.NewestHead{Repo: "acme/widgets", HeadSHA: head}, fmt.Errorf("read check runs: %w", err))
 	redacttest.RequireNone(t, "api.ci-detail", detail)
-	want := "GitHub could not be read for the check runs of acme/widgets at abc123: read check runs: GET " + github.URL +
-		"/repos/acme/widgets/commits/abc123/check-runs?filter=all&per_page=100&page=1: status 422: " + redact.Field(redacttest.Words) + "."
+	want := "GitHub could not be read for the check runs of acme/widgets at " + head + ": read check runs: GET " + github.URL +
+		"/repos/acme/widgets/commits/" + head + "/check-runs?filter=all&per_page=100&page=1: status 422: " + redact.Field(redacttest.Words) + "."
 	if detail != want {
 		t.Errorf("the detail is %q, want %q", detail, want)
 	}

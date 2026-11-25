@@ -26,6 +26,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/sjawhar/envoy/configaddr"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/dispatch/agentstream"
@@ -93,8 +94,11 @@ type bootConfig struct {
 	// conversation is started on it.
 	NewIssueLabel   string
 	NewIssueSession string
-	EnvoyURL        string
-	GitHubAPIBase   string
+	// EnvoyURL is ENVOY_URL, the Envoy listener Dispatch delivers through, held as a
+	// configaddr.Address from its read to the listener client, so that no refusal, log line or
+	// error prints a credential it carries.
+	EnvoyURL      configaddr.Address
+	GitHubAPIBase string
 	// ReviewerAppID is DISPATCH_REVIEWER_APP_ID, the id of the App whose `tester` and `architect`
 	// check runs are Legion's verdicts, as the text of the number GitHub's own objects carry it
 	// as. Empty means the CI reconcile pass records no verdict check at all.
@@ -196,12 +200,14 @@ type bootConfig struct {
 	// service-account tokens. Both set or neither; empty means no verifier.
 	OIDCIssuer   string
 	OIDCAudience string
-	// AgentSecretsURL is DISPATCH_AGENT_SECRETS_URL, the secrets broker's API; empty means the
-	// credential-request feature is off. AgentSecretsTokenFile is
-	// DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE, the file holding Dispatch's own projected
-	// Kubernetes ServiceAccount token (required when AgentSecretsURL is set). The file is read
-	// by the broker client on each call, never here: a projected token rotates.
-	AgentSecretsURL       string
+	// AgentSecretsURL is DISPATCH_AGENT_SECRETS_URL, the secrets broker's API, held as a
+	// configaddr.Address from its read to the broker client and the token check, so that nothing
+	// prints a credential it carries; empty means the credential-request feature is off.
+	// AgentSecretsTokenFile is DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE, the file holding
+	// Dispatch's own projected Kubernetes ServiceAccount token (required when AgentSecretsURL is
+	// set). The file is read by the broker client on each call, never here: a projected token
+	// rotates.
+	AgentSecretsURL       configaddr.Address
 	AgentSecretsTokenFile string
 	// FileStoreBucket is DISPATCH_FILE_STORE_BUCKET: the bucket uploaded files are stored in,
 	// gs://<bucket> for Cloud Storage or an S3 bucket's name (files.Open). Empty keeps them in
@@ -619,7 +625,7 @@ func main() {
 	met := metrics.New()
 	built.Metrics = met
 	if brokerTokens != nil {
-		slog.Info("dispatch: deciding access tokens the secrets broker issued", "broker", redact.URL(boot.AgentSecretsURL))
+		slog.Info("dispatch: deciding access tokens the secrets broker issued", "broker", boot.AgentSecretsURL)
 	}
 	appCtx, err := routes.BuildAppContext(appContextOptions(boot, built))
 
@@ -1589,15 +1595,18 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 	if iapAudience != "" && boot.IAPAudience == "" {
 		return bootConfig{}, errors.New("DISPATCH_IAP_AUDIENCE is read only with DISPATCH_IDENTITY=iap; unset it, or set DISPATCH_IDENTITY=iap")
 	}
-	envoyURL := strings.TrimSpace(env.get("ENVOY_URL"))
-	if envoyURL == "" {
-		envoyURL = defaultEnvoyURL
+	// ENVOY_URL is held as an Address from its read: the refusal below names it, and a URL that
+	// is not an absolute http(s) URL can still carry a credential in its user information, a
+	// query or a fragment, which the Address prints as nothing.
+	envoyURL := configaddr.New("ENVOY_URL", strings.TrimSpace(env.get("ENVOY_URL")))
+	if envoyURL.Empty() {
+		envoyURL = configaddr.New("ENVOY_URL", defaultEnvoyURL)
 	}
-	parsed, err := url.Parse(envoyURL)
+	parsed, err := url.Parse(envoyURL.Raw())
 	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
 		return bootConfig{}, fmt.Errorf("ENVOY_URL=%q (expected an absolute http(s) URL)", envoyURL)
 	}
-	boot.EnvoyURL = strings.TrimSuffix(envoyURL, "/")
+	boot.EnvoyURL = configaddr.New("ENVOY_URL", strings.TrimSuffix(envoyURL.Raw(), "/"))
 
 	// The pair's both-or-neither rule lives in internal/oidc so the listener
 	// applies the same one; oidc.New stays out of this function, which reads
@@ -1608,17 +1617,32 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		return bootConfig{}, err
 	}
 
-	agentSecretsURL := strings.TrimSuffix(strings.TrimSpace(env.get("DISPATCH_AGENT_SECRETS_URL")), "/")
-	if agentSecretsURL != "" {
-		parsed, err := url.Parse(agentSecretsURL)
+	agentSecretsURL := configaddr.New("DISPATCH_AGENT_SECRETS_URL", strings.TrimSuffix(strings.TrimSpace(env.get("DISPATCH_AGENT_SECRETS_URL")), "/"))
+	if !agentSecretsURL.Empty() {
+		parsed, err := url.Parse(agentSecretsURL.Raw())
 		if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" || parsed.Path != "" {
-			return bootConfig{}, fmt.Errorf("DISPATCH_AGENT_SECRETS_URL=%q (expected an absolute http(s) URL with no path)", redact.URL(agentSecretsURL))
+			return bootConfig{}, fmt.Errorf("DISPATCH_AGENT_SECRETS_URL=%q (expected an absolute http(s) URL with no path)", agentSecretsURL)
 		}
 		boot.AgentSecretsURL = agentSecretsURL
 		boot.AgentSecretsTokenFile = strings.TrimSpace(env.get("DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE"))
 		if boot.AgentSecretsTokenFile == "" {
 			return bootConfig{}, errors.New("DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE is required when DISPATCH_AGENT_SECRETS_URL is set: Dispatch calls the broker with its own projected Kubernetes ServiceAccount token")
 		}
+	}
+	// DISPATCH_GITHUB_API_BASE is an origin, and the table of the request names a contract
+	// declares public names GitHub's GraphQL endpoint on it as `POST /graphql`
+	// (packages/contracts/src/public-request-names.ts): that is the one route the merged pull
+	// request search's cursor is public on, and the table's routes cannot name `/graphql` under
+	// a prefix. Under a base with a path the cursor would read as a credential the request
+	// carried, the search would refuse to send it back, and the reading would end at its second
+	// page. The refusal names the setting, and the base prints as the rule reads it, since a
+	// configured origin can carry a credential in its user information, query or fragment.
+	if base := strings.TrimSuffix(boot.GitHubAPIBase, "/"); base != "" {
+		parsed, err := url.Parse(base)
+		if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" || parsed.Path != "" {
+			return bootConfig{}, fmt.Errorf("DISPATCH_GITHUB_API_BASE=%q (expected an absolute http(s) URL with no path)", redact.URL(base))
+		}
+		boot.GitHubAPIBase = base
 	}
 	boot.Embedder, err = resolveEmbedder(env)
 	if err != nil {
@@ -1672,12 +1696,12 @@ func devSignInFence(boot bootConfig, env settingValues) error {
 	if !boot.NATSDisabled && env.get(bus.AllowRemoteEnvVar) == "1" {
 		return fmt.Errorf("DISPATCH_DEV_SIGNIN=1 publishes to this machine's NATS only: unset %s, or set DISPATCH_NATS_DISABLED=1", bus.AllowRemoteEnvVar)
 	}
-	if boot.AgentSecretsURL != "" {
-		if !routes.LoopbackURL(boot.AgentSecretsURL) {
-			return fmt.Errorf("DISPATCH_DEV_SIGNIN=1 decides credential requests on this machine's secrets broker only: DISPATCH_AGENT_SECRETS_URL=%q must name 127.0.0.1, [::1] or localhost", redact.URL(boot.AgentSecretsURL))
+	if !boot.AgentSecretsURL.Empty() {
+		if !routes.LoopbackURL(boot.AgentSecretsURL.Raw()) {
+			return fmt.Errorf("DISPATCH_DEV_SIGNIN=1 decides credential requests on this machine's secrets broker only: DISPATCH_AGENT_SECRETS_URL=%q must name 127.0.0.1, [::1] or localhost", boot.AgentSecretsURL)
 		}
 	}
-	if !routes.LoopbackURL(boot.EnvoyURL) {
+	if !routes.LoopbackURL(boot.EnvoyURL.Raw()) {
 		return fmt.Errorf("DISPATCH_DEV_SIGNIN=1 delivers through this machine's Envoy listener only: ENVOY_URL=%q must name 127.0.0.1, [::1] or localhost", boot.EnvoyURL)
 	}
 	return nil
@@ -1708,7 +1732,7 @@ func devSignInLoadedFence(boot bootConfig, serverURL string, app *auth.AppConfig
 		return fmt.Errorf("DISPATCH_DEV_SIGNIN=1 refuses the App private key in %s, whatever DISPATCH_GITHUB_API_BASE names: that file is where the real App's key is kept, and with the flag any loopback client can have the App sign calls. Pass a throwaway App in the environment instead (DISPATCH_APP_CLIENT_ID and a generated DISPATCH_APP_PEM_B64, which take precedence over app.json), with DISPATCH_GITHUB_API_BASE naming a GitHub fake on a loopback host, as packages/dispatch/e2e/run-server.sh does", source.Path)
 	}
 	if !routes.LoopbackURL(boot.GitHubAPIBase) {
-		return fmt.Errorf("DISPATCH_DEV_SIGNIN=1 lets the App private key (DISPATCH_APP_PEM_B64) sign calls only to a loopback host: DISPATCH_GITHUB_API_BASE=%q (empty is https://api.github.com) must name 127.0.0.1, [::1] or localhost. Use a throwaway key: every App call hands a signed App JWT to whatever listens there", boot.GitHubAPIBase)
+		return fmt.Errorf("DISPATCH_DEV_SIGNIN=1 lets the App private key (DISPATCH_APP_PEM_B64) sign calls only to a loopback host: DISPATCH_GITHUB_API_BASE=%q (empty is https://api.github.com) must name 127.0.0.1, [::1] or localhost. Use a throwaway key: every App call hands a signed App JWT to whatever listens there", redact.URL(boot.GitHubAPIBase))
 	}
 	return nil
 }
@@ -2299,7 +2323,7 @@ func serviceTokenVerifier(boot bootConfig) *oidc.LazyVerifier {
 // presentation is refused as any non-bearer Authorization header has always been
 // (401 UNAUTHORIZED).
 func brokerTokenVerifier(boot bootConfig, database *store.Store, serverURL string) (*ciphertoken.Verifier, error) {
-	if boot.AgentSecretsURL == "" {
+	if boot.AgentSecretsURL.Empty() {
 		return nil, nil
 	}
 	return ciphertoken.New(ciphertoken.Options{

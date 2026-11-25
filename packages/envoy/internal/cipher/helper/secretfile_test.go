@@ -18,10 +18,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/cipheraddr"
+	"github.com/sjawhar/envoy/configaddr"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipherclient"
 )
+
+// brokerWordsNotPrinted is what the helper prints in place of an answer's text beside a broker
+// address AGENT_SECRETS_URL names that is not clean (configaddr.Address.WordsNotPrinted).
+var brokerWordsNotPrinted = configaddr.New(cipherclient.BrokerURLVar, "").WordsNotPrinted()
 
 // wantNamedNotPrinted fails t unless text names each of named and holds none of secrets.
 func wantNamedNotPrinted(t *testing.T, what, text string, named []string, secrets ...string) {
@@ -151,7 +155,7 @@ func TestTheMachineFileIsNamedBySettingNeverByPath(t *testing.T) {
 		if err := os.WriteFile(bad, []byte("{"), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		b := &Broker{URL: cipheraddr.New("http://127.0.0.1:1"), MachineFile: bad}
+		b := &Broker{URL: configaddr.New("AGENT_SECRETS_URL", "http://127.0.0.1:1"), MachineFile: bad}
 		t.Cleanup(b.Close)
 		err := b.Start(context.Background())
 		if err == nil {
@@ -180,7 +184,7 @@ func TestTheBrokersMachineFileLogLinesNameTheSettingNeverThePath(t *testing.T) {
 	f := newFakeBroker(t)
 	dir := filepath.Join(t.TempDir(), secret)
 	path := filepath.Join(dir, "machine.json")
-	first := &Broker{URL: cipheraddr.New(f.srv.URL), OperatorFile: operatorFile(t, "ada@example.com"), MachineFile: path, HTTP: f.srv.Client()}
+	first := &Broker{URL: configaddr.New("AGENT_SECRETS_URL", f.srv.URL), OperatorFile: operatorFile(t, "ada@example.com"), MachineFile: path, HTTP: f.srv.Client()}
 	t.Cleanup(first.Close)
 	if _, err := first.Login(context.Background(), "helper-host"); err != nil {
 		t.Fatalf("login: %v", err)
@@ -192,7 +196,7 @@ func TestTheBrokersMachineFileLogLinesNameTheSettingNeverThePath(t *testing.T) {
 	unwritable(t, path)
 
 	var out syncBuffer
-	resumed := &Broker{URL: cipheraddr.New(f.srv.URL), OperatorFile: first.OperatorFile, MachineFile: path, HTTP: f.srv.Client(),
+	resumed := &Broker{URL: configaddr.New("AGENT_SECRETS_URL", f.srv.URL), OperatorFile: first.OperatorFile, MachineFile: path, HTTP: f.srv.Client(),
 		Log: slog.New(slog.NewJSONHandler(&out, nil)), refreshRetry: time.Hour}
 	t.Cleanup(resumed.Close)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -238,7 +242,7 @@ func TestTheOperatorFileIsNamedBySettingNeverByPath(t *testing.T) {
 		"an empty file":            {empty, "is empty"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			b := &Broker{URL: cipheraddr.New(f.srv.URL), OperatorFile: c.file, MachineFile: machineFilePath(t), HTTP: f.srv.Client()}
+			b := &Broker{URL: configaddr.New("AGENT_SECRETS_URL", f.srv.URL), OperatorFile: c.file, MachineFile: machineFilePath(t), HTTP: f.srv.Client()}
 			t.Cleanup(b.Close)
 			_, err := b.Login(context.Background(), "helper-host")
 			if err == nil {
@@ -248,7 +252,7 @@ func TestTheOperatorFileIsNamedBySettingNeverByPath(t *testing.T) {
 		})
 	}
 	// The control: an operator file with a login in it, in the same directory, lets the login start.
-	b := &Broker{URL: cipheraddr.New(f.srv.URL), OperatorFile: filepath.Join(dir, "operator"), MachineFile: machineFilePath(t), HTTP: f.srv.Client()}
+	b := &Broker{URL: configaddr.New("AGENT_SECRETS_URL", f.srv.URL), OperatorFile: filepath.Join(dir, "operator"), MachineFile: machineFilePath(t), HTTP: f.srv.Client()}
 	t.Cleanup(b.Close)
 	if err := os.WriteFile(b.OperatorFile, []byte("ada@example.com\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -343,7 +347,7 @@ func TestTheSessionRecordsAreNamedBySettingNeverByPath(t *testing.T) {
 	wantNamedNotPrinted(t, "the decode error", err.Error(), named, secret, goneSecret)
 
 	var out syncBuffer
-	s := &Server{Registry: NewRegistry(bad), Broker: &Broker{URL: cipheraddr.New("http://127.0.0.1:1")},
+	s := &Server{Registry: NewRegistry(bad), Broker: &Broker{URL: configaddr.New("AGENT_SECRETS_URL", "http://127.0.0.1:1")},
 		Hostname: "testhost", PeerOf: PeerOf, Log: slog.New(slog.NewJSONHandler(&out, nil)), MinRenew: time.Second}
 	t.Cleanup(s.Broker.Close)
 	s.Recover(context.Background())
@@ -431,7 +435,7 @@ func TestABrokerAnswerTheHelperCannotDecodeQuotesNoneOfIt(t *testing.T) {
 	signIns := &stubSignIns{authority: &cipherclient.Authority{Key: key, CredentialID: "credential-1", Operator: "ada@example.com"}}
 	calls := func(t *testing.T, address string) map[string]error {
 		t.Helper()
-		b := &Broker{URL: cipheraddr.New(address), HTTP: srv.Client(), SignIns: signIns}
+		b := &Broker{URL: configaddr.New("AGENT_SECRETS_URL", address), HTTP: srv.Client(), SignIns: signIns}
 		t.Cleanup(b.Close)
 		sess, err := newSession(os.Getpid(), 1, "example-host:1234:77", "", nil, nil)
 		if err != nil {

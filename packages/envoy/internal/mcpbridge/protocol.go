@@ -18,6 +18,9 @@ type jsonrpcNotification struct {
 	Params  json.RawMessage `json:"params,omitempty"`
 }
 
+// jsonrpcResponse is a JSON-RPC message as it decodes off the wire, a response or a notification.
+// It and its error are never printed: the session holds the error's message as the server's
+// words (session.words, reply) as soon as it is decoded.
 type jsonrpcResponse struct {
 	JSONRPC string          `json:"jsonrpc"`
 	ID      *int            `json:"id,omitempty"`

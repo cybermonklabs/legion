@@ -8013,7 +8013,7 @@ func startArchitectureGitHub(t *testing.T, head string, commits map[string]map[s
 		entries := []map[string]any{}
 		for _, name := range slices.Sorted(maps.Keys(files)) {
 			entries = append(entries, map[string]any{
-				"path": name, "mode": "100644", "type": "blob", "sha": commit + "." + name, "size": len(files[name]),
+				"path": name, "mode": "100644", "type": "blob", "sha": fakeTreeBlobSHA(commit + "." + name), "size": len(files[name]),
 			})
 		}
 		if err := json.NewEncoder(w).Encode(map[string]any{"sha": "tree-" + commit, "truncated": false, "tree": entries}); err != nil {
@@ -8021,10 +8021,16 @@ func startArchitectureGitHub(t *testing.T, head string, commits map[string]map[s
 		}
 	})
 	mux.HandleFunc("GET /repos/{owner}/{repo}/git/blobs/{sha}", func(w http.ResponseWriter, r *http.Request) {
-		commit, name, _ := strings.Cut(r.PathValue("sha"), ".")
+		commit, content, ok := "", "", false
 		fake.mu.Lock()
-		content, ok := fake.commits[commit][name]
-		hold := commit == fake.holdBlobsOf
+		for at, files := range fake.commits {
+			for name, file := range files {
+				if fakeTreeBlobSHA(at+"."+name) == r.PathValue("sha") {
+					commit, content, ok = at, file, true
+				}
+			}
+		}
+		hold := ok && commit == fake.holdBlobsOf
 		fake.mu.Unlock()
 		if hold {
 			fake.heldOnce.Do(func() { close(fake.held) })
@@ -8052,6 +8058,11 @@ func startArchitectureGitHub(t *testing.T, head string, commits map[string]map[s
 	t.Cleanup(fake.releaseHeld)
 	return fake
 }
+
+// fakeTreeBlobSHA is the SHA the fake names a commit's file's blob by, key "<commit>.<name>", in
+// its trees and reads it back by: forty lowercase hex digits, as GitHub's own blob SHAs are, which
+// githubapp's blob read refuses any other value than.
+func fakeTreeBlobSHA(key string) string { return fmt.Sprintf("%x", sha256.Sum256([]byte(key)))[:40] }
 
 // holdBlobs holds every blob read of commit; moveHead pushes commit as the branch's new head.
 func (f *architectureGitHub) holdBlobs(commit string) {

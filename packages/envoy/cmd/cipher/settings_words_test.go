@@ -6,7 +6,7 @@
 // carries a credential that text can repeat it, in a shape the checks admit: twelve digits for an
 // account (checkSettingsKeyARN), letters, digits, hyphens and underscores for a secret-id prefix
 // (checkSettingsKMSKeyName). So each prints as the broker's address lets its answer print
-// (Settings.words): beside such an address, as cipheraddr.WordsNotPrinted.
+// (Settings.words): beside such an address, as configaddr.Address.WordsNotPrinted.
 package main
 
 import (
@@ -16,7 +16,6 @@ import (
 
 	"google.golang.org/grpc/codes"
 
-	"github.com/sjawhar/envoy/cipheraddr"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
 )
@@ -37,7 +36,7 @@ func useCredentialedBroker(t *testing.T, secret string) {
 // broker's settings name is refused, naming that account; beside an AGENT_SECRETS_URL whose
 // address's password is twelve digits, an answer that names that password as its account (and its
 // key ARN's) passes checkSettingsKeyARN, and the refusal prints no run of it: the account prints as
-// cipheraddr.WordsNotPrinted. Control: beside a clean address the refusal names the account.
+// configaddr.Address.WordsNotPrinted. Control: beside a clean address the refusal names the account.
 // Captures agent-secrets.answer-words/settings-account.
 func TestTheBrokersAccountPrintsOnlyAsItsAddressLetsIt(t *testing.T) {
 	const echoed = "731942586015"
@@ -66,7 +65,7 @@ func TestTheBrokersAccountPrintsOnlyAsItsAddressLetsIt(t *testing.T) {
 				return
 			}
 			requireNoneEchoed(t, "settings-account", out, []string{echoed},
-				"your AWS sign-in "+adaSignIn+" is in account "+testAccount+", but the agent secrets are in account "+cipheraddr.WordsNotPrinted)
+				"your AWS sign-in "+adaSignIn+" is in account "+testAccount+", but the agent secrets are in account "+brokerWordsNotPrinted)
 		})
 	}
 }
@@ -77,7 +76,7 @@ func TestTheBrokersAccountPrintsOnlyAsItsAddressLetsIt(t *testing.T) {
 // leaves an empty secret behind - its delete refused, or its own answer lost and the read back
 // refused - says what it left and the gcloud commands that settle it, and prints no run of the
 // password: the whole name, and the id and the project in each command, print as
-// cipheraddr.WordsNotPrinted. Control: beside a clean address each prints as the broker wrote it.
+// configaddr.Address.WordsNotPrinted. Control: beside a clean address each prints as the broker wrote it.
 // Captures agent-secrets.answer-words/gcp-create-<row>.
 func TestAGCPCreatesSecretPrintsOnlyAsTheBrokersAddressLetsIt(t *testing.T) {
 	const echoed = "demopass9zQx7k2Lw"
@@ -122,7 +121,7 @@ func TestAGCPCreatesSecretPrintsOnlyAsTheBrokersAddressLetsIt(t *testing.T) {
 					}
 					return
 				}
-				requireNoneEchoed(t, row.capture, out, []string{echoed}, row.says+cipheraddr.WordsNotPrinted)
+				requireNoneEchoed(t, row.capture, out, []string{echoed}, row.says+brokerWordsNotPrinted)
 			})
 		}
 	}

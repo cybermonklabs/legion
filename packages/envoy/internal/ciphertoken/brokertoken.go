@@ -27,6 +27,7 @@ import (
 	"authelia.com/provider/oauth2/token/jose"
 	"golang.org/x/sync/singleflight"
 
+	"github.com/sjawhar/envoy/configaddr"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/ratelimit"
 )
@@ -199,8 +200,9 @@ type Caller struct {
 // Options is what a Verifier needs. BrokerURL, Account, Origin, Replay and Address are required.
 type Options struct {
 	// BrokerURL is the secrets broker's base URL (DISPATCH_AGENT_SECRETS_URL for Dispatch,
-	// ENVOY_AGENT_SECRETS_URL for a listener), the origin IntrospectPath is asked on.
-	BrokerURL string
+	// ENVOY_AGENT_SECRETS_URL for a listener), the origin IntrospectPath is asked on, held so that
+	// an introspection's error names it only as the Address prints it.
+	BrokerURL configaddr.Address
 	// Account reads the caller's own platform identity, the bearer each introspection presents:
 	// a projected Kubernetes ServiceAccount token (AccountToken) or a machine's Google identity
 	// token (GoogleAccount).
@@ -247,7 +249,7 @@ type Options struct {
 // Verifier decides callers presenting a broker-issued DPoP token. It is safe for concurrent use
 // and is built once per process.
 type Verifier struct {
-	brokerURL string
+	brokerURL configaddr.Address
 	account   Account
 	origin    *url.URL
 	// originTLS is the TLS state atOrigin puts on the request it rewrites: one empty state for
@@ -270,7 +272,7 @@ type Verifier struct {
 // failing one request at a time: a missing dependency and an Origin that is not an absolute
 // http(s) origin are both deployment errors.
 func New(options Options) (*Verifier, error) {
-	if options.BrokerURL == "" {
+	if options.BrokerURL.Empty() {
 		return nil, errors.New("brokertoken: the broker URL is required")
 	}
 	if options.Account == nil {
@@ -310,7 +312,7 @@ func New(options Options) (*Verifier, error) {
 	return &Verifier{
 		// The trailing slash goes so BrokerURL + IntrospectPath is one path, as cipher.New
 		// trims it for the same reason.
-		brokerURL: strings.TrimRight(options.BrokerURL, "/"),
+		brokerURL: configaddr.New(options.BrokerURL.Setting(), strings.TrimRight(options.BrokerURL.Raw(), "/")),
 		account:   options.Account,
 		origin:    origin,
 		originTLS: originTLS,

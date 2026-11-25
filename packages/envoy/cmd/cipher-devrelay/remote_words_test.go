@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sjawhar/envoy/cipheraddr"
+	"github.com/sjawhar/envoy/configaddr"
 	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/internal/redact/redacttest"
 )
@@ -43,7 +43,7 @@ func TestABrokerRefusalPrintsItsWordsAsTheRuleReadsThem(t *testing.T) {
 			if !strings.Contains(out, row.want) {
 				t.Errorf("machine-approve printed %q, want %q in it", out, row.want)
 			}
-			redacttest.RequireNoneFormatted(t, "devrelay.apiError", &apiError{Status: http.StatusForbidden, base: cipheraddr.New(srv.URL), code: redact.NewRemoteText(row.code), reason: redact.NewRemoteText(row.words)})
+			redacttest.RequireNoneFormatted(t, "devrelay.apiError", &apiError{Status: http.StatusForbidden, base: configaddr.New("AGENT_SECRETS_URL", srv.URL), code: redact.NewRemoteText(row.code), reason: redact.NewRemoteText(row.words)})
 		})
 	}
 }

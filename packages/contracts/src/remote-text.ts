@@ -377,8 +377,9 @@ function withheldRemoteText(text: string): RemoteText {
  * comparison or a parse whose answer is a boolean or a parsed value, or in the one assignment the
  * constructor makes. Code that tells fields apart compares through {@link equals},
  * {@link equalsIgnoringCase}, {@link startsWith}, {@link endsWith} and {@link isEmpty}, which read
- * the field as it came, and reads a time through {@link date}; none answers the text. Go's
- * `redact.RemoteText`.
+ * the field as it came, and reads a time through {@link date}; none answers the text. An id the
+ * party named, which the next request to it carries, comes back through {@link sendBack} only
+ * where a print of it shows it whole. Go's `redact.RemoteText`.
  */
 export class RemoteText {
   readonly #text: string;
@@ -440,6 +441,17 @@ export class RemoteText {
   date(): Date | undefined {
     const at = new Date(this.#text);
     return Number.isNaN(at.getTime()) ? undefined : at;
+  }
+
+  /** The field to send back to the party that wrote it, an id it named, where the rule prints the
+   *  field as it came, each credential it was given redacted first ({@link redactRemoteText});
+   *  `undefined` for an empty field and for one the rule changes or cannot read. What it answers
+   *  is what {@link toString} prints, so it answers no more of the field than a print of it
+   *  shows. Go's `RemoteText.SendBack`. */
+  sendBack(): string | undefined {
+    if (this.#text === "" || withheldBoxes.has(this)) return undefined;
+    const shown = redactRemoteText(this.#text, carriedOf.get(this));
+    return shown === this.#text ? shown : undefined;
   }
 
   /** The rule's reading of the field ({@link redactRemoteText}) where `isKnown` accepts it, after

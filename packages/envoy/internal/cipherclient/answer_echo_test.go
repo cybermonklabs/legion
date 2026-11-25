@@ -13,9 +13,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/cipheraddr"
+	"github.com/sjawhar/envoy/configaddr"
 	"github.com/sjawhar/envoy/internal/redact/redacttest"
 )
+
+// brokerWordsNotPrinted is what the token client prints in place of an answer's text beside a
+// broker address BrokerURLVar names that is not clean (configaddr.Address.WordsNotPrinted).
+var brokerWordsNotPrinted = configaddr.New(BrokerURLVar, "").WordsNotPrinted()
 
 // TestATradeAnswerPrintsNoSubjectTokenItEchoes: something in the broker's place answers the trade
 // and echoes the subject token its form carried, in a status's words that are no OAuth refusal (a
@@ -72,7 +76,7 @@ func TestATradeAnswerPrintsNoSubjectTokenItEchoes(t *testing.T) {
 // carries a credential in its fragment, which no request sends and so no request record names,
 // and whatever answers at that address refuses the trade with an OAuth error whose description
 // repeats it. The trade's error prints the refusal's status and none of its words: post wraps the
-// refusal in the address's Error (cipheraddr.Address.Error), which beside an address that is not
+// refusal in the address's Error (configaddr.Address.Error), which beside an address that is not
 // clean withholds every word of the answer (R4). Captures brokerclient.refusal-beside-credential.
 func TestARefusalBesideACredentialedAddressPrintsNoneOfItsWords(t *testing.T) {
 	base := newRawServer(t, func(w http.ResponseWriter, _ *http.Request) {
@@ -80,7 +84,7 @@ func TestARefusalBesideACredentialedAddressPrintsNoneOfItsWords(t *testing.T) {
 		w.WriteHeader(http.StatusBadRequest)
 		_, _ = w.Write([]byte(`{"error":"invalid_grant","error_description":"the address ` + redacttest.Token + ` names no broker"}`))
 	})
-	client, err := New(Config{BrokerURL: cipheraddr.New(base + "#" + redacttest.Token), Key: testKey(t),
+	client, err := New(Config{BrokerURL: configaddr.New("AGENT_SECRETS_URL", base+"#"+redacttest.Token), Key: testKey(t),
 		Subject: &scriptedSource{token: "probe-subject", tokenType: "urn:envoy:params:oauth:token-type:kubernetes-service-account", describe: "probe subject"}})
 	if err != nil {
 		t.Fatal(err)
@@ -103,9 +107,9 @@ func TestARefusalBesideACredentialedAddressPrintsNoneOfItsWords(t *testing.T) {
 // address refuses two trades with a 429, which the client retries, and its code and description
 // repeat a credential. Each line the client logs of a retried trade - Token's while the token in
 // hand is live, and Run's before it asks again - prints the refusal's status, and its code as the
-// address lets the answer's text print (cipheraddr.Address.WordsOf), as the trade's error prints
+// address lets the answer's text print (configaddr.Address.WordsOf), as the trade's error prints
 // it: beside an address that carries a credential in its user information, its query or its
-// fragment, cipheraddr.WordsNotPrinted, since whoever answers there can repeat that credential in
+// fragment, configaddr.Address.WordsNotPrinted, since whoever answers there can repeat that credential in
 // any text of its answer, and a fragment, which no request sends, is a credential the request's
 // record cannot redact; beside a clean address, the code as the rule reads it. Captures
 // brokerclient.retried-trade/<case>.
@@ -114,9 +118,9 @@ func TestARetriedRefusalLogsItsCodeAsTheAddressLetsItPrint(t *testing.T) {
 		name, suffix, code, want string
 		credentialed             bool
 	}{
-		{"user-information", "", redacttest.Password, cipheraddr.WordsNotPrinted, true},
-		{"query", "/?access_token=" + redacttest.Token, redacttest.Token, cipheraddr.WordsNotPrinted, true},
-		{"fragment", "#access_token=" + redacttest.Token, redacttest.Token, cipheraddr.WordsNotPrinted, true},
+		{"user-information", "", redacttest.Password, brokerWordsNotPrinted, true},
+		{"query", "/?access_token=" + redacttest.Token, redacttest.Token, brokerWordsNotPrinted, true},
+		{"fragment", "#access_token=" + redacttest.Token, redacttest.Token, brokerWordsNotPrinted, true},
 		{"clean", "", redacttest.Code, redacttest.CodeShown, false},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -138,7 +142,7 @@ func TestARetriedRefusalLogsItsCodeAsTheAddressLetsItPrint(t *testing.T) {
 				address = strings.Replace(base, "://", "://"+redacttest.User+":"+redacttest.Password+"@", 1)
 			}
 			var logged bytes.Buffer
-			client, err := New(Config{BrokerURL: cipheraddr.New(address), Key: testKey(t), Subject: projectedStub(), RenewBefore: time.Minute,
+			client, err := New(Config{BrokerURL: configaddr.New("AGENT_SECRETS_URL", address), Key: testKey(t), Subject: projectedStub(), RenewBefore: time.Minute,
 				Log: slog.New(slog.NewJSONHandler(&logged, nil)),
 				After: func(time.Duration) <-chan time.Time {
 					now := make(chan time.Time, 1)
@@ -148,7 +152,7 @@ func TestARetriedRefusalLogsItsCodeAsTheAddressLetsItPrint(t *testing.T) {
 			if err != nil {
 				t.Fatalf("New: %v", err)
 			}
-			if cipheraddr.New(address).Clean() == c.credentialed {
+			if configaddr.New("AGENT_SECRETS_URL", address).Clean() == c.credentialed {
 				t.Fatalf("the address of case %s reads as clean %t, want %t", c.name, c.credentialed, !c.credentialed)
 			}
 			ctx := context.Background()

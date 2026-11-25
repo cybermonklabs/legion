@@ -374,8 +374,9 @@ So redelivering a delivery that did reach the stream adds nothing to the stream.
   A time parse error, a JSON type error or a transport error whose text is still longer after the cuts above is cut whole, and `<n>` is the size of that text.
   A time value past ASCII can make such a text, since package time writes each of its bytes past ASCII as `\xNN`.
   The sweep's errors and lines therefore carry that text the same way.
-  A next page link longer than 2048 bytes is refused rather than followed, and shown as `githubapp.ShownBody` shows it.
-  The refusal of a shorter link that cannot be parsed, or that leaves GitHub's API origin, shows the link the same way, and so does an error that names a next page GitHub answered with a status other than 200.
+  A next page link longer than 2048 bytes is refused rather than followed.
+  Every link a line or an error names passes through `answeredTarget`: the rule for remote text, with the credentials of the request whose answer carried the link redacted, and then `githubapp.ShownBody`.
+  A shorter link that cannot be parsed, that leaves GitHub's API origin or that carries user information is refused, and an error that names a next page GitHub answered with a status other than 200 names it the same way.
 
 - The running sweep lists the last hour and six minutes (`redeliver.Lookback`, the longest backoff plus three sweep intervals), long enough that a delivery coming due still sees GitHub's answer to its last request in the listing.
   To that it adds the open deliveries the listing no longer returns that its index says are due, one still owed a request and one whose claim has run out alike.
@@ -508,6 +509,7 @@ It runs under the lease `ci-reconcile` with that 5 minutes as its period, so one
   The record keeps the newest status of each context (`recordStatus`, `packages/envoy/internal/cistore/cistore.go`), and a query's statuses are part of the head's fingerprint, so a pass in which only a status changed records it.
   A failed status read costs the head its statuses alone: any `errors` entry at or under the head commit's `status` field of a query's answer, whatever its type, or any failure of the REST status read but a rate limit and the pass's own end, leaves the head's check runs and suites recorded and sends no further status request for that head in that pass.
   Either failure is named at WARN, `ci reconcile read no commit status of a head`, with the repository, the pull request, the head's sha and the error, and a rate limit stops the pass, as at any read.
+  Every line and note of the pass about a head names its sha only where it is one (`redact.ShapedSHA`), and `(the head is not a SHA)` otherwise: the sha is the one GitHub's answer gave, and a read of a commit that is no full sha is refused before any request (`githubapp.ErrNotASHA`), which the verify loop takes as a failure no later read mends.
   Deploy the listener first, then each Legion daemon, then Dispatch.
   A rollback of the listener below the release that records commit statuses goes with a rollback of Dispatch: an earlier listener drops the statuses of each record it writes, and nothing writes them back while GitHub's answer for that head stays the same.
 
@@ -4394,8 +4396,9 @@ Each item below names a path with its method and identity, then its purpose.
     The `githubapp.RateLimitError` the query's caller is given carries that wording in its text too, and never the data, since its text prints `Body` at no 2xx status whoever built the error, so a loop that notes that error in words of its own before the client's note is noted carries none of the data either.
 
   - Two loops' notes carry other text of a 200 answer, and each carries GitHub's own wording of an error in its `errors`, never the body's `data`.
-    The CI reconcile's note of a head whose commit statuses it read none of (`statusesUnread`, below) reads `ci reconcile read no commit status of <owner>/<repo>#<n> at <sha>: <error>`, where `<error>` is the REST status read's error, or, for a query, each `errors` entry at or under the head commit's `status` field as `<TYPE> <message>`, joined by `; ` (`errorText`).
-    The delivery reconcile's note of its merged pull request search (`recordRead` of `reconcile merged pull requests`) holds `page after "<cursor>": <message>` where a 200 search answer carries `errors`, `<message>` being the first entry's (`fetchSearchPage`).
+    The CI reconcile's note of a head whose commit statuses it read none of (`statusesUnread`, below) reads `ci reconcile read no commit status of <owner>/<repo>#<n> at <sha>: <error>`, where `<sha>` is the head's sha where it is one and `(the head is not a SHA)` otherwise, and `<error>` is the REST status read's error, or, for a query, each `errors` entry at or under the head commit's `status` field as `<TYPE> <message>`, joined by `; ` (`errorText`).
+    The delivery reconcile's note of its merged pull request search (`recordRead` of `reconcile merged pull requests`) holds `page after "<cursor>": <message>` where a 200 search answer carries `errors`, `<message>` being the first entry's (`fetchSearchPage`), and `<cursor>` GitHub's `endCursor` as the rule reads it.
+    The search sends that cursor back only where the rule prints it as it came (`redact.RemoteText.SendBack`); a cursor it refuses ends the search with an error that names the `endCursor`, and no request is sent.
 
   - A failure of the second kind is noted by each loop at each point where it gives up part of the GitHub read the deployment configured it to make, each a point where it already logs or records that failure;
     it counts whatever failed there, since a database error inside such a step ends that read too, and its cause is the loop's own error, which names the repository where there is one:
@@ -5219,9 +5222,10 @@ Each item below names a path with its method and identity, then its purpose.
 
   - Such a check carries `ci`, `{run, state, case, detail, line}`.
     `state` is `pass`, `fail`, `no_result` or `unread`.
-    `case` is the conclusion that decided it — `success` passes, and `failure`, `timed_out`, `action_required`, `startup_failure`, `stale` and a conclusion this list does not name, as GitHub wrote it, fail — or one of the cases of no result:
+    `case` is the conclusion that decided it — `success` passes, and `failure`, `timed_out`, `action_required`, `startup_failure`, `stale` and a conclusion this list does not name fail — or one of the cases of no result:
     `neutral`, `skipped`, `cancelled`, `not_completed`, `absent` (no run of that name at the head) and `no_head` (Dispatch holds no open or merged pull request head of the issue), each `no_result`, and `github_unreadable` (`unread`: no App key, a token GitHub would not mint, an HTTP error, a rate limit or the deadline).
-    `detail` is one sentence naming the case, at most 2,000 runes; for `github_unreadable` it names GitHub's own answer, a refusal by its status and the `message` of its JSON body, never the body itself and never a token.
+    A conclusion GitHub's documentation does not name prints as `(the conclusion is not one GitHub documents)` in `case`, `detail` and the result's `observed`, and a status it does not name as `(the status is not one GitHub documents)` in `detail`: such a word is the text of whatever answered, which can quote anything.
+    `detail` is one sentence naming the case, at most 2,000 runes; for `github_unreadable` it names GitHub's own answer, a refusal by its status and the `message` of its JSON body, never the body itself and never a token, and the head by its SHA, or by `(the head is not a SHA)` where what Dispatch holds for it is not one.
     `line` is the pull-request body line for the check: `- Check <id> (before_merge): <verdict> at <sha>, from CI run <name>. <the check's words>` for a pass or a fail, and `- Check <id> (before_merge): CI run <name> has no result (<case>)` for every other state; the check's words are kept, and the words cut, as a recorded line's reading is (POST below), so `text` keeps an issue key the line leaves out.
     The run's name is written word for word, its blanks as one, only when the line keeps every word of it; a name holding a word the line drops, such as an issue key or a word holding `_`, reads `the CI run the check names`, and `ci_check` and `run` keep it whole.
 

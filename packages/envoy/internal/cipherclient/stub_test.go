@@ -20,7 +20,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/sjawhar/envoy/cipheraddr"
+	"github.com/sjawhar/envoy/configaddr"
 )
 
 // stubRequest is one trade as the stub broker received it.
@@ -84,7 +84,7 @@ func newStubBroker(t *testing.T, answer func(n int, form url.Values) (int, map[s
 func (b *stubBroker) URL() string { return b.server.URL }
 
 // Address is the broker's base URL as a Config's BrokerURL takes it.
-func (b *stubBroker) Address() cipheraddr.Address { return cipheraddr.New(b.server.URL) }
+func (b *stubBroker) Address() configaddr.Address { return configaddr.New(BrokerURLVar, b.server.URL) }
 
 // Requests is every trade the stub has received, in order.
 func (b *stubBroker) Requests() []stubRequest {

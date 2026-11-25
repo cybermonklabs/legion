@@ -1,0 +1,10 @@
+kind: Changed
+body: |-
+  The controller's start reads the secrets broker's address (`AGENT_SECRETS_URL`) into the neutral
+  address type that names the setting it was read from (`configaddr.Address`, which replaces
+  `cipheraddr.Address`), so its refusal and its lines on standard error print no user name,
+  password, query value or fragment the address carries. Nothing the daemon reads or does
+  changes.
+time: 2026-11-24T20:44:37.515474419Z
+custom:
+    Issue: redact-remote-words-second

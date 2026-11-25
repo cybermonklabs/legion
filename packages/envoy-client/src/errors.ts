@@ -1,20 +1,23 @@
 import { scrub } from "@legion/contracts/held-secrets";
 import { errorClass } from "@legion/contracts/log-text";
+import { RemoteText } from "@legion/contracts/remote-text";
 
 /**
- * The code of the refusal `error` carries, or undefined for an error carrying none.
+ * The code of the refusal `error` carries, as the rule reads it, or undefined for an error carrying
+ * none.
  *
  * A refusal Dispatch decided (`DispatchServiceError`, and the gateway answer that stands in for
  * one) carries the code of the first rule the call broke beside its message, and `fromDispatch`
  * is what tells such an error from a Node errno error, which carries a `code` of its own (ENOENT,
  * EPERM, …) that says nothing about what Dispatch decided. The check is structural rather than an
  * `instanceof`, because those classes live in `dispatch-http.ts`, which reads this module's
- * neighbours.
+ * neighbours. The code is Dispatch's word, held as a `RemoteText`, so it prints as the rule reads
+ * it.
  */
 function dispatchCode(error: Error): string | undefined {
   if (!("fromDispatch" in error) || !("code" in error)) return undefined;
   const code = error.code;
-  return typeof code === "string" && code !== "" ? code : undefined;
+  return code instanceof RemoteText && !code.isEmpty ? String(code) : undefined;
 }
 
 /**

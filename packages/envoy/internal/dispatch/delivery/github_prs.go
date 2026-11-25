@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -194,8 +193,15 @@ func fetchPullRequestPayload(ctx context.Context, client *githubapp.Client, toke
 // A commit the repository does not have answers an empty list, as GitHub's own 422 for it
 // does. Every other answer is githubapp.CheckRepositoryResponse's, so a 403 or 404 is
 // githubapp.ErrRepositoryUnreadable, which the results read takes as unknown, never as a
-// commit it placed elsewhere.
+// commit it placed elsewhere. A sha that is no full sha is refused before any request with
+// githubapp.ErrNotASHA, as the App client's reads of a commit refuse one, and named by
+// redact.ShapedSHA's phrase alone: url.PathEscape keeps ':' and '@', so such a value would print
+// as written in every error and note of the request. Every caller passes a result's commit,
+// which its column holds to a full sha.
 func fetchCommitPullPayloads(ctx context.Context, client *githubapp.Client, token, owner, repo, sha string) ([]pullRequestPayload, error) {
+	if shown := redact.ShapedSHA("commit", sha); shown != sha {
+		return nil, fmt.Errorf("fetch the pull requests of %s/%s@%s: %w", owner, repo, shown, githubapp.ErrNotASHA)
+	}
 	pullsPath := fmt.Sprintf("/repos/%s/%s/commits/%s/pulls", url.PathEscape(owner), url.PathEscape(repo), url.PathEscape(sha))
 	body, status, header, err := readGitHubPage(ctx, client, token, pullsPath)
 	if err != nil {
@@ -245,7 +251,7 @@ func fetchAttributionFacts(ctx context.Context, client *githubapp.Client, owner,
 // commitDate reads one commit's authored time: commit.author.date, or commit.committer.date when
 // GitHub reports no author for the commit (an unlinked email still carries a committer date).
 // Neither present is a malformed answer, whose error names the commit by its sha only where the
-// sha is one, forty hex digits (commitSHA): the sha is GitHub's words, or a stand-in's.
+// sha is one (redact.ShapedSHA): the sha is GitHub's words, or a stand-in's.
 func commitDate(c commitPayload) (time.Time, error) {
 	if c.Commit.Author != nil {
 		return c.Commit.Author.Date, nil
@@ -253,15 +259,8 @@ func commitDate(c commitPayload) (time.Time, error) {
 	if c.Commit.Committer != nil {
 		return c.Commit.Committer.Date, nil
 	}
-	shown := "(a sha that is not a commit's)"
-	if commitSHA.MatchString(c.SHA) {
-		shown = c.SHA
-	}
-	return time.Time{}, fmt.Errorf("commit %s carries neither an author nor a committer date", shown)
+	return time.Time{}, fmt.Errorf("commit %s carries neither an author nor a committer date", redact.ShapedSHA("commit", c.SHA))
 }
-
-// commitSHA is a commit's sha as GitHub writes one: forty lowercase hex digits.
-var commitSHA = regexp.MustCompile(`^[0-9a-f]{40}$`)
 
 func labelNames(labels []githubLabel) []string {
 	names := make([]string, len(labels))
@@ -280,16 +279,25 @@ func labelNames(labels []githubLabel) []string {
 // despite otherwise mirroring REST search's query string syntax (`repo:`/`is:pr`/`is:merged`/
 // `merged:`/`author:`, built by mergedPullRequestQuery below) and its 1,000-result cap.
 type searchPullRequestsResponse struct {
-	Data struct {
-		Search struct {
-			IssueCount int                     `json:"issueCount"`
-			PageInfo   searchPullRequestsPage  `json:"pageInfo"`
-			Nodes      []searchPullRequestNode `json:"nodes"`
-		} `json:"search"`
-	} `json:"data"`
+	Data searchPullRequestsData `json:"data"`
 	// Errors are GitHub's words beside the data, held with the request's record
 	// (redact.Answer.Decode): an answer in GitHub's place can echo the token there.
 	Errors []searchError `json:"errors"`
+}
+
+// searchPullRequestsData is a search answer's data. It and the connection under it are named
+// types, each a holder of the search cursor (searchPullRequestsPage), so the box print test names
+// each.
+type searchPullRequestsData struct {
+	Search searchPullRequestsConnection `json:"search"`
+}
+
+// searchPullRequestsConnection is the search connection: the total it matches, the page's
+// pageInfo, and its nodes.
+type searchPullRequestsConnection struct {
+	IssueCount int                     `json:"issueCount"`
+	PageInfo   searchPullRequestsPage  `json:"pageInfo"`
+	Nodes      []searchPullRequestNode `json:"nodes"`
 }
 
 // searchError is one entry of a search answer's errors.
@@ -297,9 +305,13 @@ type searchError struct {
 	Message redact.RemoteText `json:"message"`
 }
 
+// searchPullRequestsPage is a search answer's pageInfo. EndCursor is GitHub's position after the
+// page, which the request for the next page sends back to it (fetchSearchPage): GitHub's words,
+// held with the request's record (redact.Answer.Decode), since an answer in GitHub's place can
+// echo the token there.
 type searchPullRequestsPage struct {
-	HasNextPage bool   `json:"hasNextPage"`
-	EndCursor   string `json:"endCursor"`
+	HasNextPage bool              `json:"hasNextPage"`
+	EndCursor   redact.RemoteText `json:"endCursor"`
 }
 
 // searchPullRequestNode is one `... on PullRequest` search result, limited to the fields
@@ -448,7 +460,7 @@ func SearchMergedPullRequestsAcrossInstallation(
 		windowStart, err := since(installation.ID)
 		if err != nil {
 			mu.Lock()
-			failures = append(failures, fmt.Sprintf("installation %d (%s): %s", installation.ID, installation.AccountLogin, err))
+			failures = append(failures, fmt.Sprintf("%s: %s", installationName(installation), err))
 			mu.Unlock()
 			return nil
 		}
@@ -461,7 +473,7 @@ func SearchMergedPullRequestsAcrossInstallation(
 				return limited
 			}
 			mu.Lock()
-			failures = append(failures, fmt.Sprintf("installation %d (%s): %s", installation.ID, installation.AccountLogin, err))
+			failures = append(failures, fmt.Sprintf("%s: %s", installationName(installation), err))
 			mu.Unlock()
 		}
 		return nil
@@ -473,6 +485,12 @@ func SearchMergedPullRequestsAcrossInstallation(
 		return fmt.Errorf("%d of %d installations failed: %s", len(failures), len(installations), strings.Join(failures, "; "))
 	}
 	return nil
+}
+
+// installationName is how a failure names installation: by its id, and by its account's login,
+// GitHub's words, where that is a login GitHub allows (redact.ShapedLogin).
+func installationName(installation githubapp.Installation) string {
+	return fmt.Sprintf("installation %d of %s", installation.ID, redact.ShapedLogin("installation login", installation.AccountLogin))
 }
 
 // searchOneInstallation is SearchMergedPullRequestsAcrossInstallation's per-installation body.
@@ -497,25 +515,28 @@ const searchMergedPullRequestsWindow = githubResultCap
 
 // searchMergedPullRequests walks a GraphQL search query over [since, until] through walkWindowed
 // (windowed.go), handing each completed window to visit. newFetcher builds a fresh query string
-// and a fresh (nil) cursor for every window walkWindowed asks for -- the original call and each
-// recursive half -- so GitHub's own cursor, not a REST page number, is this fetcher's only
-// pagination state. Each page asks token for its own installation token, by readGitHubPage's
-// rule; walkWindowed's error names the scope and the window, and each page's names its cursor.
+// and a fresh fetcher, which asks for the first page, for every window walkWindowed asks for --
+// the original call and each recursive half -- so GitHub's own cursor, not a REST page number, is
+// this fetcher's only pagination state: each page after the first is the page after the cursor
+// GitHub answered for the one before. Each page asks token for its own installation token, by
+// readGitHubPage's rule; walkWindowed's error names the scope and the window, and each page's
+// names its cursor as the rule reads it.
 func searchMergedPullRequests(ctx context.Context, client *githubapp.Client, token func() (string, error), repos, authors []string, since, until time.Time, visit func(time.Time, []FetchedPullRequest) error) error {
 	scope := searchScopeLabel(repos)
 	newFetcher := func(since, until time.Time) func() ([]FetchedPullRequest, int, error) {
 		query := mergedPullRequestQuery(repos, authors, since, until)
-		var cursor string
+		var cursor redact.RemoteText
+		first := true
 		return func() ([]FetchedPullRequest, int, error) {
 			current, err := token()
 			if err != nil {
 				return nil, 0, fmt.Errorf("page after %q: mint installation token: %w", cursor, err)
 			}
-			result, err := fetchSearchPage(ctx, client, current, query, cursor)
+			result, err := fetchSearchPage(ctx, client, current, query, first, cursor)
 			if err != nil {
 				return nil, 0, err
 			}
-			cursor = result.endCursor
+			cursor, first = result.endCursor, false
 			return result.items, result.issueCount, nil
 		}
 	}
@@ -562,21 +583,33 @@ const searchPullRequestsQuery = `query($q: String!, $after: String) {
   }
 }`
 
+// searchPage is one page of the search: its pull requests, GitHub's cursor after it (held as
+// searchPullRequestsPage holds it), and the connection's total issueCount.
 type searchPage struct {
 	items      []FetchedPullRequest
-	endCursor  string
+	endCursor  redact.RemoteText
 	issueCount int
 }
 
-// fetchSearchPage runs one page of query, after cursor ("" for the first page), returning the
-// page's pull requests, its own pagination cursor, and the connection's total issueCount (the
-// 1,000-result cap walkWindowed checks).
-func fetchSearchPage(ctx context.Context, client *githubapp.Client, token, query, after string) (searchPage, error) {
-	var variables map[string]any
-	if after == "" {
-		variables = map[string]any{"q": query, "after": nil}
-	} else {
-		variables = map[string]any{"q": query, "after": after}
+// errCursorNotSentBack is a search cursor the next page's request would send back to GitHub that
+// SendBack refuses: an empty one, which would ask for the first page again, one the rule does not
+// print as it came, and one that echoes a credential the request before carried.
+var errCursorNotSentBack = errors.New("GitHub's endCursor for the page before is not one the search sends back as it came")
+
+// fetchSearchPage runs one page of query: the first where first is true, and otherwise the page
+// after the cursor after, GitHub's endCursor for the page before, which the request sends back to
+// it (redact.RemoteText.SendBack). A cursor SendBack refuses ends the search with
+// errCursorNotSentBack before any request, since sending none would ask for the first page again.
+// It returns the page's pull requests, its own pagination cursor, and the connection's total
+// issueCount (the 1,000-result cap walkWindowed checks).
+func fetchSearchPage(ctx context.Context, client *githubapp.Client, token, query string, first bool, after redact.RemoteText) (searchPage, error) {
+	variables := map[string]any{"q": query, "after": nil}
+	if !first {
+		sent, ok := after.SendBack()
+		if !ok {
+			return searchPage{}, fmt.Errorf("page after %q: %w", after, errCursorNotSentBack)
+		}
+		variables["after"] = sent
 	}
 	body, status, header, err := queryGitHubPage(ctx, client, token, searchPullRequestsQuery, variables)
 	if err != nil {

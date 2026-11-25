@@ -18,7 +18,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/cipheraddr"
+	"github.com/sjawhar/envoy/configaddr"
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/redact"
 )
@@ -80,7 +80,7 @@ func waitForRegistration(t *testing.T, refusals int) (*Token, error, []stubReque
 	clock := &waitingClock{now: time.Date(2026, 11, 16, 4, 0, 0, 0, time.UTC), stop: ctx}
 	logged := &logtest.Recorder{}
 	client, err := New(Config{
-		BrokerURL: cipheraddr.New(broker.URL()), Key: testKey(t), Subject: projectedStub(), Session: registeredSession,
+		BrokerURL: configaddr.New("AGENT_SECRETS_URL", broker.URL()), Key: testKey(t), Subject: projectedStub(), Session: registeredSession,
 		Log: slog.New(logged), Now: clock.Now, After: clock.After,
 	})
 	if err != nil {

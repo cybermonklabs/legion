@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/envoy/configaddr"
 	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/internal/redact/redacttest"
 )
@@ -39,7 +40,7 @@ func TestTheListenersRefusalPrintsItsWordsAsTheRuleReadsThem(t *testing.T) {
 					_ = json.NewEncoder(w).Encode(map[string]string{"code": code, "error": row.reason})
 				}
 			}
-			client := New(srv.URL)
+			client := New(configaddr.New("ENVOY_URL", srv.URL))
 
 			refuse(http.StatusServiceUnavailable, listenerRefillingCode)
 			_, refilling := client.Sessions(context.Background())
@@ -83,7 +84,7 @@ func TestAListenerCallNamesNoCredentialTheConfiguredURLCarries(t *testing.T) {
 			"GET /v1/sessions: connection refused", "POST /v1/interests/unsubscribe: dial tcp 127.0.0.1:1: connect: connection refused"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			client := New(row.base)
+			client := New(configaddr.New("ENVOY_URL", row.base))
 			_, sessionsErr := client.Sessions(context.Background())
 			_, unsubscribeErr := client.Unsubscribe(context.Background(), "session-1", []string{"agent.session-1"})
 			_, sendErr := client.Send(context.Background(), SendInput{TargetSession: "session-1", Message: "hello"})
@@ -112,7 +113,8 @@ func TestAListenerCallNamesNoCredentialTheConfiguredURLCarries(t *testing.T) {
 // and net/url's error quotes the URL whole; each call's error names its route and the failure's
 // class, and none of the credentials.
 func TestARequestTheClientCannotBuildNamesNoCredentialTheConfiguredURLCarries(t *testing.T) {
-	client := New("http://" + redacttest.User + ":" + redacttest.Password + "@127.0.0.1:1/%zz")
+	unbuildable := "http://" + redacttest.User + ":" + redacttest.Password + "@127.0.0.1:1/%zz"
+	client := New(configaddr.New("ENVOY_URL", unbuildable))
 	_, sessionsErr := client.Sessions(context.Background())
 	_, unsubscribeErr := client.Unsubscribe(context.Background(), "session-1", []string{"agent.session-1"})
 	_, sendErr := client.Send(context.Background(), SendInput{TargetSession: "session-1", Message: "hello"})
@@ -142,7 +144,7 @@ func TestAReadsRefusalPrintsTheListenersWordsAsTheRuleReadsThem(t *testing.T) {
 				_ = json.NewEncoder(w).Encode(map[string]string{"error": row.reason})
 			}))
 			t.Cleanup(srv.Close)
-			_, err := New(srv.URL).Session(context.Background(), "session-1")
+			_, err := New(configaddr.New("ENVOY_URL", srv.URL)).Session(context.Background(), "session-1")
 			if err == nil {
 				t.Fatal("Session answered no error")
 			}

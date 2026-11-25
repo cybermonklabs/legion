@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/configaddr"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/envoy"
 )
@@ -65,7 +66,7 @@ func TestSendResolvedDeliveryReportsNoEnvelopeWithAnyFailure(t *testing.T) {
 				t.Cleanup(listener.Close)
 				url = listener.URL
 			}
-			s := &server{deps: Deps{Envoy: envoy.New(url, envoy.WithTimeout(150*time.Millisecond))}}
+			s := &server{deps: Deps{Envoy: envoy.New(configaddr.New("ENVOY_URL", url), envoy.WithTimeout(150*time.Millisecond))}}
 			outcome := s.sendResolvedDelivery(
 				context.Background(), tc.target, "session:s1", "body", "m1:steer", nil, contracts.ExpectsReplyOptional, []byte(`{}`), false)
 			if (outcome.envelopeID != nil) != tc.wantEnvelope || outcome.duplicate != tc.wantDup ||
@@ -93,7 +94,7 @@ func TestASendTheListenerCouldNotConfirmStoredIsRecordedAsPossiblyDelivered(t *t
 			_, _ = w.Write([]byte(body))
 		}))
 		t.Cleanup(listener.Close)
-		s := &server{deps: Deps{Envoy: envoy.New(listener.URL)}}
+		s := &server{deps: Deps{Envoy: envoy.New(configaddr.New("ENVOY_URL", listener.URL))}}
 		return s.sendResolvedDelivery(
 			context.Background(), live, "session:s1", "body", "m1:steer", nil, contracts.ExpectsReplyOptional, []byte(`{}`), false)
 	}

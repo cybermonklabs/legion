@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/envoy/configaddr"
 	dispatchenvoy "github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/session"
 )
@@ -28,7 +29,7 @@ func TestDispatchClientReadsTheLegionAgentRegistry(t *testing.T) {
 	if err := l.deps.sessions.Put("ses-new-reviewer", session.SessionEntry{Port: 1, MachineID: "test-machine"}); err != nil {
 		t.Fatalf("register ses-new-reviewer: %v", err)
 	}
-	client := dispatchenvoy.New(server.URL)
+	client := dispatchenvoy.New(configaddr.New("ENVOY_URL", server.URL))
 	ctx := context.Background()
 
 	old, err := client.Agent(ctx, "ses-old-reviewer")

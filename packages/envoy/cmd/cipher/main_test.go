@@ -27,7 +27,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/cipheraddr"
+	"github.com/sjawhar/envoy/configaddr"
 	"github.com/sjawhar/envoy/internal/cipher/helper"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
@@ -464,7 +464,7 @@ var fakeSettings = Settings{
 // what each of these lines must carry is the source, not one spelling of it; source_test.go pins
 // what the renderer puts in a source.
 func fakeSourceText(broker *httptest.Server) string {
-	return brokerSource(cipheraddr.New(broker.URL)).withSettings(fakeSettings).String()
+	return brokerSource(configaddr.New("AGENT_SECRETS_URL", broker.URL)).withSettings(fakeSettings).String()
 }
 
 func writeJSON(w http.ResponseWriter, v any) {
@@ -732,7 +732,7 @@ func TestAPendingRequestWithoutABrokerPageNamesItsApproverAlone(t *testing.T) {
 				held := redact.NewRemoteText(*row.approver)
 				approver = &held
 			}
-			if got := waitingOn(cipheraddr.New("https://broker.example"), approver, redact.RemoteText{}, false); got != row.want {
+			if got := waitingOn(configaddr.New("AGENT_SECRETS_URL", "https://broker.example"), approver, redact.RemoteText{}, false); got != row.want {
 				t.Errorf("waitingOn = %q, want %q", got, row.want)
 			}
 		})

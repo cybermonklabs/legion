@@ -18,6 +18,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/configaddr"
 )
 
 // accountToken is a compact token whose payload carries exp, signed by nobody: the client reads
@@ -79,7 +81,7 @@ func TestEachCallPresentsTheAccountTokenTheFileHoldsWhenTheCallIsMade(t *testing
 	listener := httptest.NewServer(http.HandlerFunc(stand.serve))
 	defer listener.Close()
 	path := filepath.Join(t.TempDir(), "listener-account-token")
-	client := New(listener.URL, WithAccountTokenFile(path))
+	client := New(configaddr.New("ENVOY_URL", listener.URL), WithAccountTokenFile(path))
 	send := func() error {
 		_, err := client.Send(context.Background(), SendInput{TargetSession: "s1", Message: "m", IdempotencyKey: "k"})
 		return err
@@ -147,7 +149,7 @@ func TestASendForARoleIsMadeOnlyOnDispatchsOwnIdentity(t *testing.T) {
 	var logs bytes.Buffer
 	logger := WithLogger(slog.New(slog.NewJSONHandler(&logs, nil)))
 
-	for i, client := range []*Client{New(listener.URL, WithAccountTokenFile(path), logger), New(listener.URL, WithToken("shared"), logger), New(listener.URL, logger)} {
+	for i, client := range []*Client{New(configaddr.New("ENVOY_URL", listener.URL), WithAccountTokenFile(path), logger), New(configaddr.New("ENVOY_URL", listener.URL), WithToken("shared"), logger), New(configaddr.New("ENVOY_URL", listener.URL), logger)} {
 		_, err := client.Send(context.Background(), SendInput{TargetSession: "s1", Message: "m", IdempotencyKey: "k", Role: "reviewer"})
 		if identity := i == 0; identity && err != nil {
 			t.Fatalf("the identity client's send for a role: %v", err)
@@ -208,7 +210,7 @@ func TestASendTheListenerKeptForTheRoleNamesTheKeptCopy(t *testing.T) {
 		_, _ = w.Write([]byte(`{"event_id":"kept-envelope","recipient":"s1","kept":true,"kept_until":1800000000000}`))
 	}))
 	defer listener.Close()
-	result, err := New(listener.URL).Send(context.Background(), SendInput{TargetSession: "s1", Message: "m", IdempotencyKey: "k"})
+	result, err := New(configaddr.New("ENVOY_URL", listener.URL)).Send(context.Background(), SendInput{TargetSession: "s1", Message: "m", IdempotencyKey: "k"})
 	if err != nil {
 		t.Fatalf("a kept send: %v", err)
 	}
@@ -279,7 +281,7 @@ func TestACallTheListenerRefusesOnTheAccountTokenIsMadeAgainOnAFreshToken(t *tes
 	const sharedLine = "dispatch: the Envoy listener did not take Dispatch's identity token on two tries, so the call is made again on the shared token"
 	const refusedLine = "dispatch: the Envoy listener did not take Dispatch's identity token on two tries, so the call is not made on any other credential"
 	client := func(logs *bytes.Buffer, options ...Option) *Client {
-		return New(listener.URL, append(options, WithAccountTokenFile(path), WithLogger(slog.New(slog.NewJSONHandler(logs, nil))))...)
+		return New(configaddr.New("ENVOY_URL", listener.URL), append(options, WithAccountTokenFile(path), WithLogger(slog.New(slog.NewJSONHandler(logs, nil))))...)
 	}
 
 	t.Run("a token rotated after a 401 is taken on the second try, with its role mark", func(t *testing.T) {
@@ -399,7 +401,7 @@ func TestASecondTryThatWasNeverWrittenIsNoReceiptTimeout(t *testing.T) {
 	writeAccountToken(t, path, accountToken(t, "system:serviceaccount:dispatch:example-dispatch", time.Now().Add(time.Hour)))
 	input := SendInput{TargetSession: "s1", Message: "m", IdempotencyKey: "k", Role: "reviewer"}
 
-	client := New("http://listener.invalid", WithToken("shared"), WithAccountTokenFile(path), WithLogger(slog.New(slog.NewTextHandler(io.Discard, nil))))
+	client := New(configaddr.New("ENVOY_URL", "http://listener.invalid"), WithToken("shared"), WithAccountTokenFile(path), WithLogger(slog.New(slog.NewTextHandler(io.Discard, nil))))
 	transport := &writeFailingTransport{}
 	client.httpClient.Transport = transport
 	_, err := client.Send(context.Background(), input)

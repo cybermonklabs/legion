@@ -30,6 +30,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/sjawhar/envoy/configaddr"
 	brokerapi "github.com/sjawhar/envoy/internal/cipher/api"
 	"github.com/sjawhar/envoy/internal/cipher/ciphertest"
 	"github.com/sjawhar/envoy/internal/cipher/enroll"
@@ -151,7 +152,7 @@ func newContractRig(t *testing.T) *contractRig {
 	deps, err := NewDeps(DepsInput{
 		Store: dispatchDB, Identity: headerIdentity(dispatchDB),
 		ServerURL: "https://dispatch.example", Docs: documentService, Events: events.NewBroker(),
-		AgentSecretsURL: brokerServer.URL, AgentSecretsTokenFile: accountTokenFile(t, dispatchToken),
+		AgentSecretsURL: configaddr.New("DISPATCH_AGENT_SECRETS_URL", brokerServer.URL), AgentSecretsTokenFile: accountTokenFile(t, dispatchToken),
 	})
 	if err != nil {
 		t.Fatalf("new dispatch API dependencies: %v", err)

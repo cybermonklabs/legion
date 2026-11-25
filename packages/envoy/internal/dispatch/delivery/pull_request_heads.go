@@ -245,7 +245,7 @@ func UpsertPullRequestHead(ctx context.Context, pool *store.Pool, broker *events
 		}
 	}
 	if seedsBranch {
-		if err := writeBranchCommit(ctx, tx, head.Repo, head.BaseRef, head.MergeCommitSHA, true, time.Now()); err != nil {
+		if err := writeBranchCommit(ctx, tx, head.Repo, githubapp.NamedBranch(head.BaseRef), head.MergeCommitSHA, true, time.Now()); err != nil {
 			return fmt.Errorf("%w: %w", ErrHeadNotStored, err)
 		}
 	}

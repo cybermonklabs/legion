@@ -131,12 +131,12 @@ func TestCommitCheckRunsReadsThePageWithItsETag(t *testing.T) {
 		}))
 	})
 
-	page, err := client.CommitCheckRuns(context.Background(), "installation-token", "acme", "web", "c0ffee", 2, `"runs-0"`)
+	page, err := client.CommitCheckRuns(context.Background(), "installation-token", "acme", "web", mainCommit, 2, `"runs-0"`)
 	if err != nil {
 		t.Fatalf("CommitCheckRuns: %v", err)
 	}
 	sent := fake.last(t)
-	if sent.path != "/repos/acme/web/commits/c0ffee/check-runs" || sent.query != "filter=all&per_page=100&page=2" {
+	if sent.path != "/repos/acme/web/commits/"+mainCommit+"/check-runs" || sent.query != "filter=all&per_page=100&page=2" {
 		t.Fatalf("CommitCheckRuns asked for %s?%s, want the commit's check runs, filter=all, 100 a page, page 2", sent.path, sent.query)
 	}
 	if sent.ifNoneMatch != `"runs-0"` {
@@ -156,7 +156,7 @@ func TestCommitCheckRunsAFullPageIsFull(t *testing.T) {
 		fmt.Fprint(w, checkObjects("check_runs", manyObjects(objectsPerPage)))
 	})
 
-	page, err := client.CommitCheckRuns(context.Background(), "installation-token", "acme", "web", "c0ffee", 1, "")
+	page, err := client.CommitCheckRuns(context.Background(), "installation-token", "acme", "web", mainCommit, 1, "")
 	if err != nil {
 		t.Fatalf("CommitCheckRuns: %v", err)
 	}
@@ -180,19 +180,19 @@ func TestCommitCheckSuitesReadsThePageAndA304(t *testing.T) {
 	})
 	ctx := context.Background()
 
-	page, err := client.CommitCheckSuites(ctx, "installation-token", "acme", "web", "c0ffee", 1, "")
+	page, err := client.CommitCheckSuites(ctx, "installation-token", "acme", "web", mainCommit, 1, "")
 	if err != nil {
 		t.Fatalf("CommitCheckSuites: %v", err)
 	}
 	sent := fake.last(t)
-	if sent.path != "/repos/acme/web/commits/c0ffee/check-suites" || sent.query != "per_page=100&page=1" {
+	if sent.path != "/repos/acme/web/commits/"+mainCommit+"/check-suites" || sent.query != "per_page=100&page=1" {
 		t.Fatalf("CommitCheckSuites asked for %s?%s, want the commit's check suites, 100 a page, page 1", sent.path, sent.query)
 	}
 	if len(page.Objects) != 1 || page.Objects[0]["id"] != float64(21) || page.ETag != `"suites-1"` || page.NotModified || page.Full {
 		t.Fatalf("CommitCheckSuites = %+v, want one suite with ETag \"suites-1\"", page)
 	}
 
-	unchanged, err := client.CommitCheckSuites(ctx, "installation-token", "acme", "web", "c0ffee", 1, page.ETag)
+	unchanged, err := client.CommitCheckSuites(ctx, "installation-token", "acme", "web", mainCommit, 1, page.ETag)
 	if err != nil {
 		t.Fatalf("CommitCheckSuites again: %v", err)
 	}
@@ -219,12 +219,12 @@ func TestCommitStatusesReadsThePageWithItsETag(t *testing.T) {
 	})
 	ctx := context.Background()
 
-	page, err := client.CommitStatuses(ctx, "installation-token", "acme", "web", "c0ffee", 2, `"statuses-0"`)
+	page, err := client.CommitStatuses(ctx, "installation-token", "acme", "web", mainCommit, 2, `"statuses-0"`)
 	if err != nil {
 		t.Fatalf("CommitStatuses: %v", err)
 	}
 	sent := fake.last(t)
-	if sent.path != "/repos/acme/web/commits/c0ffee/status" || sent.query != "per_page=100&page=2" {
+	if sent.path != "/repos/acme/web/commits/"+mainCommit+"/status" || sent.query != "per_page=100&page=2" {
 		t.Fatalf("CommitStatuses asked for %s?%s, want the commit's combined status, 100 a page, page 2", sent.path, sent.query)
 	}
 	if sent.ifNoneMatch != `"statuses-0"` {
@@ -237,7 +237,7 @@ func TestCommitStatusesReadsThePageWithItsETag(t *testing.T) {
 		t.Fatalf("the second status decoded as %+v, want GitHub's own object", page.Objects[1])
 	}
 
-	unchanged, err := client.CommitStatuses(ctx, "installation-token", "acme", "web", "c0ffee", 1, page.ETag)
+	unchanged, err := client.CommitStatuses(ctx, "installation-token", "acme", "web", mainCommit, 1, page.ETag)
 	if err != nil {
 		t.Fatalf("CommitStatuses again: %v", err)
 	}
@@ -250,13 +250,13 @@ func TestCommitStatusesReadsThePageWithItsETag(t *testing.T) {
 			w.WriteHeader(status)
 			fmt.Fprint(w, `{"message":"Resource not accessible by integration"}`)
 		})
-		if _, err := refusing.CommitStatuses(ctx, "installation-token", "acme", "web", "c0ffee", 1, ""); !errors.Is(err, ErrRepositoryUnreadable) {
+		if _, err := refusing.CommitStatuses(ctx, "installation-token", "acme", "web", mainCommit, 1, ""); !errors.Is(err, ErrRepositoryUnreadable) {
 			t.Fatalf("a status read GitHub answered %d: %v, want ErrRepositoryUnreadable", status, err)
 		}
 	}
 
 	var none *Client
-	if _, err := none.CommitStatuses(ctx, "installation-token", "acme", "web", "c0ffee", 1, ""); !errors.Is(err, ErrNoAppKey) {
+	if _, err := none.CommitStatuses(ctx, "installation-token", "acme", "web", mainCommit, 1, ""); !errors.Is(err, ErrNoAppKey) {
 		t.Fatalf("CommitStatuses without a client: %v, want ErrNoAppKey", err)
 	}
 }
@@ -378,7 +378,7 @@ func TestAPolledReadPastTheBoundIsTooLarge(t *testing.T) {
 		fmt.Fprint(w, strings.Repeat("x", pollResponseLimit+1))
 	})
 
-	_, err := client.CommitCheckRuns(context.Background(), "installation-token", "acme", "web", "c0ffee", 1, "")
+	_, err := client.CommitCheckRuns(context.Background(), "installation-token", "acme", "web", mainCommit, 1, "")
 	var tooLarge *ResponseTooLargeError
 	if !errors.As(err, &tooLarge) || tooLarge.Limit != pollResponseLimit {
 		t.Fatalf("a check-runs answer past the bound: %v, want a *ResponseTooLargeError at %d", err, int64(pollResponseLimit))
@@ -396,7 +396,7 @@ func TestAPolledReadReadsPastTheGenericLimit(t *testing.T) {
 		fmt.Fprint(w, checkObjects("check_runs", objects))
 	})
 
-	page, err := client.CommitCheckRuns(context.Background(), "installation-token", "acme", "web", "c0ffee", 1, "")
+	page, err := client.CommitCheckRuns(context.Background(), "installation-token", "acme", "web", mainCommit, 1, "")
 	if err != nil {
 		t.Fatalf("CommitCheckRuns of a commit with large outputs: %v", err)
 	}
@@ -418,9 +418,9 @@ func TestAPolledReadsRateLimitIsRecorded(t *testing.T) {
 	if err != nil {
 		t.Fatalf("mint a token: %v", err)
 	}
-	fake.limit("/repos/acme/web/commits/c0ffee/check-runs")
+	fake.limit("/repos/acme/web/commits/" + mainCommit + "/check-runs")
 
-	_, err = client.CommitCheckRuns(ctx, token, "acme", "web", "c0ffee", 1, "")
+	_, err = client.CommitCheckRuns(ctx, token, "acme", "web", mainCommit, 1, "")
 	var limited *RateLimitError
 	if !errors.As(err, &limited) {
 		t.Fatalf("a rate-limited check-runs read: %v, want a *RateLimitError", err)

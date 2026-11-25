@@ -394,8 +394,12 @@ first copy arrived (`DELIVERY_DUPLICATE_WINDOW_MS` names the rare cases a recipi
 still sees it twice). A send
 refused with a 4xx on every attempt stays an `EnvoyApiError`. An `EnvoyApiError` keeps the
 listener's `error` as its message, with ` (reason: <reason>)` after it where the body names one,
-and keeps the body's `code`, `reason` and `expected`, and the `retry_after_seconds` of a refusal
-for the sender's rate as `retryAfterSeconds`. A 429 is not sent again: the client throws it at
+each printed as the rule for another party's words reads it (`redactRemoteText`,
+`@legion/contracts/remote-text`), with the tokens the request carried redacted. It keeps the
+body, and its `code`, `reason`, `holder`, `expected` and `refused`, each as a `RemoteText` that
+prints the same way: code that branches on one compares through the box (`reason.equals(…)`).
+It keeps the `retry_after_seconds` of a refusal for the sender's rate as the number
+`retryAfterSeconds`. A 429 is not sent again: the client throws it at
 once, and the caller decides whether to wait `retryAfterSeconds` and send the message again. The
 listener's bearer is the `token` the client is given (`envoySettings`); without one it sends no
 `Authorization` header.
@@ -475,13 +479,14 @@ entry stayed, and the call resolves `void` because no caller acts on it: a dereg
 has nothing to retry either way.
 
 `subscribe`'s answer carries the registration's `delivery` field; a registration the listener can
-give no consumer is refused by name, and its reason is on `EnvoyApiError`, under the one canonical
-list of them (`ErrorWireSchema.reason` in `src/transport.ts`). The same list holds
+give no consumer is refused by name, and its reason is on `EnvoyApiError` (a `RemoteText`,
+compared through `reason.equals`), under the one canonical list of them (`ErrorWireSchema.reason`
+in `src/transport.ts`). The same list holds
 `sender_rate_limited`, the reason of the 429 a send or a publish gets when its agent session has
 sent faster than the listener lets one session send: the message was not stored. A listener in
 edge mode refuses a whole registration that names a topic of no project of the session's token,
 403 `topic_not_in_project` or `repository_not_in_project`, naming each refused topic as the
-registration carried it (`EnvoyApiError.refused`): `registerWithRelay`
+registration carried it (`EnvoyApiError.refused`, each a `RemoteText`): `registerWithRelay`
 (`@legion/envoy-client/relay-registration`) has the host drop exactly those and tell the session
 which, once, with the reason (`drop`, worded by `refusedTopicsNoticeText`), logs one line naming
 them, and registers the rest at once, whichever path registered. The resend names only the topics
@@ -855,7 +860,11 @@ sessions use this client; fix forward instead.
 
 A non-2xx answer is thrown as `DispatchServiceError`. Dispatch's own refusal, JSON with a string
 `error`, is the error's message under its `code` (`HTTP_<status>` when the server set none), with
-`fromDispatch` true. Any other body — a gateway's HTML page, an empty body, JSON of another shape —
+`fromDispatch` true. The message is the rule's reading of Dispatch's words (`redactRemoteText`,
+`@legion/contracts/remote-text`), with the tokens the client presented redacted; the code is a
+`RemoteText` that prints the same way, compared through `code.equals(…)`; and every string of the
+refusal's `candidates`, `current` and `mismatches` is a `RemoteText` too. Any other body — a
+gateway's HTML page, an empty body, JSON of another shape —
 did not come from Dispatch, so it is a `DispatchGatewayError` (`fromDispatch` false) whose message
 names the method, the request's URL as built where the configured URL is a plain http(s) URL and
 that URL's fixed phrase otherwise (`requestForText`, `@legion/contracts/log-text`; never the
@@ -866,7 +875,9 @@ reason phrase, has the value after `Authorization:`, `Bearer` or `DPoP` redacted
 as a JWS (`eyJ…`, a proof or a JWT) wherever it stands, escaped or in a list, and every run of 8
 or more of the characters of each token the client presented lately (its credential's now, and
 those it sent before a renewal: `SentTokens`, `excerpt.ts`; a shorter token only whole), so a copy
-cut short, split by markup or overlapping another leaves no such piece. A body none of whose read
+cut short, split by markup or overlapping another leaves no such piece. What is left then passes
+the rule, which removes a URL's user information and its query and fragment values and fails
+closed: an excerpt the rule cannot read is `WORDS_NOT_READABLE`. A body none of whose read
 part is text is named
 by its size in bytes; only a body with nothing in it is "an empty body". A status that cannot clear
 answers the same until the Dispatch URL, or whatever

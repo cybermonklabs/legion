@@ -20,6 +20,7 @@ import (
 	"unsafe"
 
 	"github.com/nats-io/nats.go"
+	"github.com/sjawhar/envoy/configaddr"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	dispatchenvoy "github.com/sjawhar/envoy/internal/dispatch/envoy"
@@ -180,7 +181,7 @@ func TestDispatchClientSendUsesListenerWireContract(t *testing.T) {
 	}
 	payload := string(payloadBytes)
 
-	result, err := dispatchenvoy.New(listener.URL).Send(context.Background(), dispatchenvoy.SendInput{
+	result, err := dispatchenvoy.New(configaddr.New("ENVOY_URL", listener.URL)).Send(context.Background(), dispatchenvoy.SendInput{
 		TargetSession:  "ses_target",
 		Message:        "Can this ship?",
 		Payload:        json.RawMessage(payload),
@@ -471,7 +472,7 @@ func TestDispatchClientSendFrameModeIsGuardedEndToEnd(t *testing.T) {
 
 	listener := httptest.NewServer(handler)
 	defer listener.Close()
-	result, sendErr := dispatchenvoy.New(listener.URL).Send(context.Background(), dispatchenvoy.SendInput{
+	result, sendErr := dispatchenvoy.New(configaddr.New("ENVOY_URL", listener.URL)).Send(context.Background(), dispatchenvoy.SendInput{
 		TargetSession: "ses_target",
 		Message:       "Can this ship?",
 		Payload:       payloadBytes,

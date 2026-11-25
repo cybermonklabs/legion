@@ -1,0 +1,35 @@
+kind: Fixed
+body: |-
+  The words another party writes, and the addresses this module is configured with, no longer
+  print a credential they carry. A configured address is held from the setting that names it to
+  the client that sends, in a neutral address type that names its own setting
+  (`configaddr.Address`, which replaces `cipheraddr.Address`): `ENVOY_URL`,
+  `DISPATCH_AGENT_SECRETS_URL` and `BROKER_ENVOY_URL` print through it in every boot refusal, log
+  line and request-build error, so a URL carrying a user name, a password, a query value or a
+  fragment prints without them, and the text names the setting rather than the broker.
+  GitHub's own text now prints only as the rule reads it: a rate limit's header values, a next
+  page's link (a link carrying user information is refused), a repository's `default_branch`, a
+  tree entry's path, a search cursor, a repository's full name, a check run's status and
+  conclusion, and the words that reach a CI check's detail. A field GitHub answers that must have
+  a fixed shape prints only in it, as a SHA, as an id in decimal digits or as a login, and
+  otherwise as a phrase that names the field: a head, a commit, a suite id, a check run id, an
+  App id and an installation login. A read that takes a SHA refuses a value that is not one
+  before it builds a target (`githubapp.ErrNotASHA`), so no such value reaches a request, and the
+  CI reconcile gives up the episode of a head whose OID is no SHA rather than retrying it.
+  A value GitHub answered keeps the record of the answer that carried it: a tree path and a
+  default branch print without the installation token the read that named them carried, even
+  where a later read carries a token minted since.
+  The merged pull request search sends GitHub's cursor back only where a print of the cursor
+  shows it whole, and ends the search with an error naming the field otherwise, rather than
+  asking for page 1 again. Boot refuses a `DISPATCH_GITHUB_API_BASE` that carries a path, naming
+  the setting: GitHub's GraphQL endpoint is public as `POST /graphql` on the origin alone, so
+  under such a base the search could not send the cursor back.
+  The OIDC code flow, client check and verifier print a configured issuer through the rule, and a
+  rejected token's issuer, audience and claims as the rule reads them. The MCP bridge prints an
+  RPC refusal, a notification's URI, a rendered topic, a decode failure, a read-loop failure and
+  each line of a managed child's standard error through the rule. Words that arrive over an HTTP
+  event stream carry the record of the request that stream answers; a stdio child's words and its
+  standard error answer no request and carry none (`mcp-bridge: <name>: stderr: <line>`).
+time: 2026-11-24T20:44:37.515474419Z
+custom:
+    Issue: redact-remote-words-second

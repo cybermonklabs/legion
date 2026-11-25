@@ -13,7 +13,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/sjawhar/envoy/cipheraddr"
+	"github.com/sjawhar/envoy/configaddr"
 )
 
 // controllerBrokerToken is the access token the stub broker mints: a value no file and no
@@ -285,7 +285,7 @@ func TestABrokerThatRefusesThisMachineRefusesTheStartBeforeTheMint(t *testing.T)
 // name, a password, a query or a fragment, and `legion controller start` names the broker it
 // traded at on stderr when the trade works and in its refusal when the broker refuses or does not
 // answer. Neither stream holds any part of such a credential: each names the address as
-// cipheraddr prints it, while the trade itself still goes to the address as configured, and an
+// configaddr prints it, while the trade itself still goes to the address as configured, and an
 // address that carries none still prints as written.
 func TestControllerStartPrintsNoPartOfTheBrokerURLCredential(t *testing.T) {
 	const user, password, query, fragment = "demouser7q", "demopass9z-not-a-secret", "demoquery4m", "demofrag8w"
@@ -335,9 +335,9 @@ func TestControllerStartPrintsNoPartOfTheBrokerURLCredential(t *testing.T) {
 			if got := broker.trades.Load(); got != row.trades {
 				t.Errorf("the stub broker saw %d trades, want %d: the trade goes to the address as configured", got, row.trades)
 			}
-			shown := cipheraddr.New(address).String()
+			shown := configaddr.New("AGENT_SECRETS_URL", address).String()
 			if address == broker.url && shown != address {
-				t.Fatalf("cipheraddr prints the clean address %q as %q", address, shown)
+				t.Fatalf("configaddr prints the clean address %q as %q", address, shown)
 			}
 			if !strings.Contains(errb, row.named+shown) {
 				t.Errorf("stderr %q does not name the broker as %q", errb, row.named+shown)

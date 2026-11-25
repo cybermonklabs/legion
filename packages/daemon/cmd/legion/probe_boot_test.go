@@ -80,9 +80,10 @@ func TestProbeBootRefusesAClusterWithoutAgentSandboxAndRunsNoKeyCommand(t *testi
 }
 
 // A cluster read that never reaches the API server fails with a *url.Error, whose text keeps the
-// server URL's user name (Go's client masks only a password). probe-boot writes its refusal to
-// stderr through the URL rule (redact.URLCredentials): the refusal names the CRD and the server's
-// address, and no part of the URL's userinfo.
+// server URL's user name (Go's client masks only a password). The Kubernetes runtime keeps such an
+// error as its class (sandbox's projectKubeError), and probe-boot writes its refusal to stderr
+// through the URL rule (redact.URLCredentials): the refusal names the CRD and the refused
+// connection, and no part of the URL.
 func TestProbeBootWritesARefusalWithNoUserNameOfTheURLItFailedToRead(t *testing.T) {
 	legionState(t)
 	closed := httptest.NewServer(http.NotFoundHandler())
@@ -103,8 +104,8 @@ func TestProbeBootWritesARefusalWithNoUserNameOfTheURLItFailedToRead(t *testing.
 	code := run(context.Background(), []string{"legion", "probe-boot", "--config", config}, &out, &errb)
 
 	if code != 1 || out.Len() != 0 || !strings.HasPrefix(errb.String(), "legion probe-boot: ") ||
-		!strings.Contains(errb.String(), "sandboxes.agents.x-k8s.io") || !strings.Contains(errb.String(), address) {
-		t.Fatalf("exit code = %d, stdout %q, stderr %q; want 1, no OK line, and a refusal naming the Sandbox CRD and %s", code, out.String(), errb.String(), address)
+		!strings.Contains(errb.String(), "sandboxes.agents.x-k8s.io") || !strings.Contains(errb.String(), "connection refused") {
+		t.Fatalf("exit code = %d, stdout %q, stderr %q; want 1, no OK line, and a refusal naming the Sandbox CRD and the refused connection", code, out.String(), errb.String())
 	}
 	if strings.Contains(errb.String(), user) {
 		t.Fatalf("stderr = %q, want no part of the API server URL's user name %q", errb.String(), user)

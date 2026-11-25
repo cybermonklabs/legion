@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/configaddr"
 	"github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -28,7 +29,7 @@ func agentsHandlerWithStore(t *testing.T, envoyURL string, database *store.Store
 		Store:       database,
 		Identity:    headerIdentity(database),
 		AgentTokens: sharedAgentTokens(t, "agent-token"),
-		Envoy:       envoy.New(envoyURL),
+		Envoy:       envoy.New(configaddr.New("ENVOY_URL", envoyURL)),
 	}
 	mux := http.NewServeMux()
 	t.Cleanup(Register(mux, t.Context(), deps).Wait)
@@ -521,7 +522,7 @@ func TestAnAgentsListDuringAShutdownDrainListsAHealthyListenersSessions(t *testi
 	// The process's lifetime has already ended: the server is draining after a shutdown.
 	lifetime, shutdown := context.WithCancel(context.Background())
 	shutdown()
-	register(mux, lifetime, Deps{Store: database, Identity: headerIdentity(database), Envoy: envoy.New(listenerURL)})
+	register(mux, lifetime, Deps{Store: database, Identity: headerIdentity(database), Envoy: envoy.New(configaddr.New("ENVOY_URL", listenerURL))})
 
 	for read := 1; read <= 2; read++ {
 		if got := agentIDs(t, mux); !reflect.DeepEqual(got, []string{"ses-live"}) {
