@@ -238,9 +238,14 @@ the sign-in every five minutes and trades again once the access token it holds i
 from its end, or the credential fifteen minutes from its, whichever comes first, so a trade that
 fails is tried twice more before the credential lapses; it logs each such failure at WARN. A
 helper that holds no such enrollment trades nothing, so the sign-in's **Last used** on Dispatch
-says whether the box is in use. Where the person can no longer be traded, the broker refuses
-those sessions' next renewal and the helper enrols each again under the machine's own
-credential: the person's access through them ends, and the sessions go on as the machine's.
+says whether the box is in use. A box renews with its own key and tells the helper nothing, so
+the helper keeps a record of the boxes it enrolled, beside its session records. Where it finds
+no record it can read, as at its first start after a release that kept none, it cannot tell which
+boxes stand under the sign-in on the box: it keeps that sign-in traded until the sign-in leaves
+the box, by a sign-out or a new `agent-secrets login`, and logs a WARN naming the person. Where
+the person can no longer be traded, the broker refuses those sessions' next renewal and the
+helper enrols each again under the machine's own credential: the person's access through them
+ends, and the sessions go on as the machine's.
 
 A renewer that is killed, with its machine or its process tree, renews nothing until a command
 starts one: the next command of the sign-in, or within a second a use command still waiting for

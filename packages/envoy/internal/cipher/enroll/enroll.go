@@ -2088,16 +2088,8 @@ func (s *Service) Renew(ctx context.Context, id, podToken string) (Renewal, erro
 	if err != nil {
 		return Renewal{}, err
 	}
-	// The row's own half of "live" is credLive, read above; what is left is the configuration's
-	// half, the account still listed for the credential's service, which no column holds. cred
-	// is one machineCredential has answered for, so its subject and its service are both set.
-	if kind == "session" && machineCredential(cred) &&
-		!(credLive && s.tokenLoginListed(*cred.Subject, *cred.Service)) {
-		return Renewal{}, ErrMachineLoginEnded
-	}
-	if kind == "session" && signInCredential(cred.Subject) &&
-		!(credLive && cred.Service != nil && s.tokenLoginListed(*cred.Subject, *cred.Service)) {
-		return Renewal{}, ErrSignInCredentialEnded
+	if err := s.heldCredentialEnded(kind, cred, credLive); err != nil {
+		return Renewal{}, err
 	}
 	switch {
 	case kind != "pod" && withToken:
@@ -2357,6 +2349,33 @@ func machineCredential(cred Credential) bool {
 		return false
 	}
 	return exchange.ReadSubject(*cred.Subject).Kind == exchange.SubjectMachine
+}
+
+// heldCredentialEnded is Renew's one rule for a session its launcher credential holds to that
+// credential: a machine's own session (machineCredential) and a person's sign-in session on a
+// machine (signInCredential). Such a session renews only while credLive, the credential's own row
+// not revoked and not past its expiry, holds and its machine's account is still listed for the
+// credential's service (tokenLoginListed). Otherwise it answers the refusal that names which,
+// ErrMachineLoginEnded or ErrSignInCredentialEnded. Every other session, a pod's and one under a
+// machine login a person approved, is held to nothing here, and is nil. A sign-in's credential
+// with no service fails the listing, since no account can be listed for none.
+func (s *Service) heldCredentialEnded(kind string, cred Credential, credLive bool) error {
+	if kind != "session" {
+		return nil
+	}
+	var ended error
+	switch {
+	case machineCredential(cred):
+		ended = ErrMachineLoginEnded
+	case signInCredential(cred.Subject):
+		ended = ErrSignInCredentialEnded
+	default:
+		return nil
+	}
+	if credLive && cred.Service != nil && s.tokenLoginListed(*cred.Subject, *cred.Service) {
+		return nil
+	}
+	return ended
 }
 
 // Revoke ends the enrollment — revoking every live grant and cancelling every pending request

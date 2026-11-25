@@ -112,19 +112,62 @@ const renewalName = "the sign-in's renewal directory in " + cipherclient.SignInS
 // signInRenewFlag is `renew --sign-in`'s usage line.
 const signInRenewFlag = "renew this machine's sign-in enrollment while it is in use; the commands that sign as the sign-in start this themselves"
 
-// renewerEnvironment is the environment a renewer keeps of the command that starts it, beside
-// every AGENT_SECRETS_ variable: where the sign-in, the settings file and the state are, what
-// reaching the broker over TLS and through a proxy needs, and where this machine's own identity
-// is found for the trade that keeps the sign-in's credential live (machineSource: a credentials
-// file, or the metadata server's host). It holds nothing the renewer does not read, so a renewer
-// that runs for hours keeps no copy of the rest of a caller's environment.
-var renewerEnvironment = map[string]bool{
-	"HOME": true, "USER": true, "LOGNAME": true, "PATH": true, "TMPDIR": true, "TZ": true,
-	"XDG_CONFIG_HOME": true, "XDG_STATE_HOME": true, "XDG_RUNTIME_DIR": true,
-	"SSL_CERT_FILE": true, "SSL_CERT_DIR": true,
-	"HTTPS_PROXY": true, "https_proxy": true, "HTTP_PROXY": true, "http_proxy": true,
-	"NO_PROXY": true, "no_proxy": true, "ALL_PROXY": true, "all_proxy": true,
-	"GOOGLE_APPLICATION_CREDENTIALS": true, googleidentity.MetadataHostVar: true,
+// renewerKeep is how a renewer keeps one variable of the environment it starts in (renewerKeepOf).
+type renewerKeep int
+
+const (
+	// renewerDrops is a variable the renewer does not read.
+	renewerDrops renewerKeep = iota
+	// renewerKeepsValue keeps a variable as it came.
+	renewerKeepsValue
+	// renewerKeepsPath keeps a variable that names one file or directory, made absolute against
+	// the directory the renewer is started from (absoluteIn), since the renewer runs in /.
+	renewerKeepsPath
+	// renewerKeepsPathList keeps a list of paths (filepath.ListSeparator) so, each entry alone.
+	renewerKeepsPathList
+)
+
+// renewerEnvironment is how a renewer keeps each variable it reads beside the AGENT_SECRETS_ ones
+// (renewerKeepOf): where the sign-in, the settings file and the state are, what reaching the
+// broker over TLS and through a proxy needs, and where this machine's own identity is found for
+// the trade that keeps the sign-in's credential live (machineSource: a credentials file, or the
+// metadata server's host). It holds nothing the renewer does not read, so a renewer that runs for
+// hours keeps no copy of the rest of a caller's environment. PATH is kept as it came: the renewer
+// starts no program by name, only itself (os.Executable).
+var renewerEnvironment = map[string]renewerKeep{
+	"HOME": renewerKeepsPath, "USER": renewerKeepsValue, "LOGNAME": renewerKeepsValue,
+	"PATH": renewerKeepsValue, "TMPDIR": renewerKeepsPath, "TZ": renewerKeepsValue,
+	"XDG_CONFIG_HOME": renewerKeepsPath, "XDG_STATE_HOME": renewerKeepsPath, "XDG_RUNTIME_DIR": renewerKeepsPath,
+	"SSL_CERT_FILE": renewerKeepsPath, "SSL_CERT_DIR": renewerKeepsPathList,
+	"HTTPS_PROXY": renewerKeepsValue, "https_proxy": renewerKeepsValue, "HTTP_PROXY": renewerKeepsValue,
+	"http_proxy": renewerKeepsValue, "NO_PROXY": renewerKeepsValue, "no_proxy": renewerKeepsValue,
+	"ALL_PROXY": renewerKeepsValue, "all_proxy": renewerKeepsValue,
+	"GOOGLE_APPLICATION_CREDENTIALS": renewerKeepsPath, googleidentity.MetadataHostVar: renewerKeepsValue,
+}
+
+// renewerPathSuffixes end the name of every AGENT_SECRETS_ variable that names a path, and of no
+// other: AGENT_SECRETS_KEY_DIR, _SIGNIN_DIR, _HELPER_SOCK, _MACHINE_FILE, _MACHINE_TOKEN_FILE,
+// _OPERATOR_FILE, _STATE_FILE, _ACCOUNT_TOKEN_FILE, _TOKEN_FILE and _SIGNIN_CLIENT_SECRET_FILE.
+var renewerPathSuffixes = []string{"_FILE", "_DIR", "_SOCK"}
+
+// renewerKeepOf is how a renewer keeps the variable name: by renewerEnvironment, and each other
+// AGENT_SECRETS_ variable as a path where its name ends as every such path's does
+// (renewerPathSuffixes), so a path variable added later is made absolute with no entry here, and
+// as it came otherwise. The person and the stage marker are dropped: renewerEnv sets the one, and
+// the other marks only the first of the two processes that start a renewer.
+func renewerKeepOf(name string) renewerKeep {
+	if keep, listed := renewerEnvironment[name]; listed {
+		return keep
+	}
+	if name == cipherclient.PersonVar || name == renewerStageVar || !strings.HasPrefix(name, "AGENT_SECRETS_") {
+		return renewerDrops
+	}
+	for _, suffix := range renewerPathSuffixes {
+		if strings.HasSuffix(name, suffix) {
+			return renewerKeepsPath
+		}
+	}
+	return renewerKeepsValue
 }
 
 // keptSignIn is the renewal of one person's sign-in on this machine: the record's path and the
@@ -328,13 +371,8 @@ func (r keptSignIn) startRenewer() error {
 	defer log.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), renewerStartBound)
 	defer cancel()
-	// The renewer runs in /, so the paths the command's environment names relative to where it
-	// runs are made absolute here (renewerEnv); a working directory this process cannot read
-	// leaves them as they came.
-	dir, _ := os.Getwd()
-	cmd := exec.CommandContext(ctx, self, "renew", "--sign-in")
-	cmd.Env = append(renewerEnv(os.Environ(), r.person, dir), renewerStageVar+"="+renewerStageDetach)
-	cmd.Stdout, cmd.Stderr, cmd.Dir = log, log, "/"
+	cmd := firstStageCommand(ctx, self, os.Environ(), r.person)
+	cmd.Stdout, cmd.Stderr = log, log
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("start the renewer: %w", err)
 	}
@@ -345,44 +383,52 @@ func (r keptSignIn) startRenewer() error {
 // takes milliseconds; one that takes longer is killed, and the command goes on without a renewer.
 const renewerStartBound = 10 * time.Second
 
-// renewerEnv is environ as a renewer of person's sign-in keeps it (renewerEnvironment), naming
-// person in cipherclient.PersonVar so the renewer renews that sign-in whoever else signed in here,
-// and with each path a kept variable names made absolute against dir, the starting command's
-// working directory (absoluteIn): the renewer runs in /, and must read the files the command
-// read. dir "" leaves every value as it came.
+// firstStageCommand is the first of the two processes that start a renewer of person's sign-in:
+// self run as `renew --sign-in` with the stage marker, in this command's own working directory, so
+// it finds the paths environ names relative to that directory where the command found them
+// (renewerCommand).
+func firstStageCommand(ctx context.Context, self string, environ []string, person string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, self, "renew", "--sign-in")
+	cmd.Env = append(renewerEnv(environ, person, ""), renewerStageVar+"="+renewerStageDetach)
+	return cmd
+}
+
+// renewerCommand is the renewer the first stage starts: self run as `renew --sign-in` in /, so it
+// holds no directory of the caller's, with environ as a renewer of person's sign-in keeps it and
+// each path in it made absolute against dir, the directory the first stage runs in, which is the
+// command's (firstStageCommand). The process that moves the renewer to / is the one that makes
+// the paths absolute, against the directory it runs in itself.
+func renewerCommand(self string, environ []string, person, dir string) *exec.Cmd {
+	cmd := exec.Command(self, "renew", "--sign-in")
+	cmd.Env = renewerEnv(environ, person, dir)
+	cmd.Dir = "/"
+	return cmd
+}
+
+// renewerEnv is environ as a renewer of person's sign-in keeps it (renewerKeepOf), naming person
+// in cipherclient.PersonVar so the renewer renews that sign-in whoever else signed in here, and
+// with each path a kept variable names made absolute against dir (absoluteIn). dir "" leaves
+// every value as it came.
 func renewerEnv(environ []string, person, dir string) []string {
 	kept := make([]string, 0, len(renewerEnvironment)+8)
 	for _, variable := range environ {
 		name, value, _ := strings.Cut(variable, "=")
-		if name == cipherclient.PersonVar || name == renewerStageVar {
-			continue
-		}
-		if renewerEnvironment[name] || strings.HasPrefix(name, "AGENT_SECRETS_") {
-			kept = append(kept, name+"="+absoluteIn(dir, name, value))
+		if keep := renewerKeepOf(name); keep != renewerDrops {
+			kept = append(kept, name+"="+absoluteIn(dir, keep, value))
 		}
 	}
 	return append(kept, cipherclient.PersonVar+"="+person)
 }
 
-// renewerPaths are the kept variables that name one file or directory: the credentials file and
-// the token file the trade proves this machine's identity with, the sign-in client's secret file,
-// the sign-in store, the TLS roots, and the home, state, configuration, runtime and temporary
-// directories every other path is found under.
-var renewerPaths = map[string]bool{
-	"HOME": true, "TMPDIR": true, "XDG_CONFIG_HOME": true, "XDG_STATE_HOME": true, "XDG_RUNTIME_DIR": true,
-	"SSL_CERT_FILE": true, "GOOGLE_APPLICATION_CREDENTIALS": true,
-	cipherclient.SignInDirVar: true, cipherclient.SignInClientSecretFileVar: true, cipherclient.MachineTokenFileVar: true,
-	"AGENT_SECRETS_KEY_DIR": true, "AGENT_SECRETS_HELPER_SOCK": true,
-}
-
-// absoluteIn is value, the value of the variable name, with each relative path it names joined to
-// dir: one path for a variable of renewerPaths, each entry of the list SSL_CERT_DIR holds, and
-// nothing of any other variable. An empty value, or an empty dir, is left as it came.
-func absoluteIn(dir, name, value string) string {
-	switch {
-	case dir == "" || value == "":
+// absoluteIn is value, kept as keep says, with each relative path it names joined to dir: the one
+// path of renewerKeepsPath, each entry of renewerKeepsPathList's list, and nothing of a value kept
+// as it came. An empty value, an empty entry, or an empty dir is left as it came.
+func absoluteIn(dir string, keep renewerKeep, value string) string {
+	if dir == "" || value == "" {
 		return value
-	case name == "SSL_CERT_DIR":
+	}
+	switch keep {
+	case renewerKeepsPathList:
 		entries := filepath.SplitList(value)
 		for i, entry := range entries {
 			if entry != "" && !filepath.IsAbs(entry) {
@@ -390,8 +436,10 @@ func absoluteIn(dir, name, value string) string {
 			}
 		}
 		return strings.Join(entries, string(filepath.ListSeparator))
-	case renewerPaths[name] && !filepath.IsAbs(value):
-		return filepath.Join(dir, value)
+	case renewerKeepsPath:
+		if !filepath.IsAbs(value) {
+			return filepath.Join(dir, value)
+		}
 	}
 	return value
 }
@@ -451,17 +499,20 @@ func tradeForRenewal(base cipheraddr.Address) func(context.Context, cipherclient
 }
 
 // startDetachedRenewer is the first stage: it starts this program again as the renewer, in a
-// session of its own (detach) with the same standard output and error, and exits. The command
-// that started it made every path its environment names absolute already (startRenewer).
+// session of its own (detach) with the same standard output and error, and exits. It runs in the
+// command's own directory (firstStageCommand) and starts the renewer in /, so it makes each path
+// the environment names relative to where it runs absolute (renewerCommand); a working directory
+// it cannot read leaves them as they came. `agent-secrets renew --sign-in` run by hand sets no
+// stage marker, and renews in the directory it is run from.
 func startDetachedRenewer(stderr io.Writer) int {
 	self, err := os.Executable()
 	if err != nil {
 		fmt.Fprintf(stderr, "agent-secrets renew --sign-in: find this program: %v\n", redact.File(err))
 		return 1
 	}
-	cmd := exec.Command(self, "renew", "--sign-in")
-	cmd.Env = renewerEnv(os.Environ(), os.Getenv(cipherclient.PersonVar), "")
-	cmd.Stdout, cmd.Stderr, cmd.Dir = os.Stdout, os.Stderr, "/"
+	dir, _ := os.Getwd()
+	cmd := renewerCommand(self, os.Environ(), os.Getenv(cipherclient.PersonVar), dir)
+	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
 	detach(cmd)
 	if err := cmd.Start(); err != nil {
 		fmt.Fprintf(stderr, "agent-secrets renew --sign-in: start the renewer: %v\n", err)

@@ -803,8 +803,9 @@ func TestRenewerEnvironmentKeepsOnlyWhatItReads(t *testing.T) {
 
 // TestARenewersPathsAreTheCommandsPaths: the renewer runs in /, so each path a kept variable names
 // relative to the command's working directory is made absolute against it, an entry of
-// SSL_CERT_DIR's list included, while an absolute path, an empty value and a variable that names
-// no path are kept as they came.
+// SSL_CERT_DIR's list and each AGENT_SECRETS_ variable whose name ends in _FILE, _DIR or _SOCK
+// included, while an absolute path, an empty value and a variable that names no path are kept as
+// they came.
 func TestARenewersPathsAreTheCommandsPaths(t *testing.T) {
 	got := renewerEnv([]string{
 		"GOOGLE_APPLICATION_CREDENTIALS=credentials.json",
@@ -813,6 +814,14 @@ func TestARenewersPathsAreTheCommandsPaths(t *testing.T) {
 		cipherclient.MachineTokenFileVar + "=",
 		"SSL_CERT_DIR=certs:/etc/ssl/certs",
 		"AGENT_SECRETS_URL=broker.example",
+		"AGENT_SECRETS_MACHINE_FILE=state/machine.json",
+		"AGENT_SECRETS_OPERATOR_FILE=state/operator",
+		"AGENT_SECRETS_STATE_FILE=state/sessions.json",
+		"AGENT_SECRETS_ACCOUNT_TOKEN_FILE=token",
+		"AGENT_SECRETS_HELPER_SOCK=run/helper.sock",
+		"AGENT_SECRETS_KEY_DIR=keys",
+		"AGENT_SECRETS_SESSION=build-7",
+		"PATH=bin:/usr/bin",
 	}, "ada@example.com", "/home/ada/work")
 	want := []string{
 		"GOOGLE_APPLICATION_CREDENTIALS=/home/ada/work/credentials.json",
@@ -821,9 +830,39 @@ func TestARenewersPathsAreTheCommandsPaths(t *testing.T) {
 		cipherclient.MachineTokenFileVar + "=",
 		"SSL_CERT_DIR=/home/ada/work/certs:/etc/ssl/certs",
 		"AGENT_SECRETS_URL=broker.example",
+		"AGENT_SECRETS_MACHINE_FILE=/home/ada/work/state/machine.json",
+		"AGENT_SECRETS_OPERATOR_FILE=/home/ada/work/state/operator",
+		"AGENT_SECRETS_STATE_FILE=/home/ada/work/state/sessions.json",
+		"AGENT_SECRETS_ACCOUNT_TOKEN_FILE=/home/ada/work/token",
+		"AGENT_SECRETS_HELPER_SOCK=/home/ada/work/run/helper.sock",
+		"AGENT_SECRETS_KEY_DIR=/home/ada/work/keys",
+		"AGENT_SECRETS_SESSION=build-7",
+		"PATH=bin:/usr/bin",
 		cipherclient.PersonVar + "=ada@example.com",
 	}
 	if !slices.Equal(got, want) {
 		t.Fatalf("renewerEnv = %q, want %q", got, want)
+	}
+}
+
+// TestTheProcessThatMovesTheRenewerToRootMakesItsPathsAbsolute: a command starts the first stage
+// in its own directory, with the paths as the command has them and the stage marker; the first
+// stage starts the renewer in /, with each path made absolute against the directory it runs in,
+// and no stage marker.
+func TestTheProcessThatMovesTheRenewerToRootMakesItsPathsAbsolute(t *testing.T) {
+	environ := []string{"GOOGLE_APPLICATION_CREDENTIALS=credentials.json", "AGENT_SECRETS_URL=https://broker.example"}
+	first := firstStageCommand(context.Background(), "/usr/bin/agent-secrets", environ, "ada@example.com")
+	if first.Dir != "" || !slices.Equal(first.Env, []string{
+		"GOOGLE_APPLICATION_CREDENTIALS=credentials.json", "AGENT_SECRETS_URL=https://broker.example",
+		cipherclient.PersonVar + "=ada@example.com", renewerStageVar + "=" + renewerStageDetach,
+	}) {
+		t.Fatalf("the first stage runs in %q with %q; want the command's own directory and its paths as they came, beside the stage marker", first.Dir, first.Env)
+	}
+	renewer := renewerCommand("/usr/bin/agent-secrets", first.Env, "ada@example.com", "/home/ada/work")
+	if renewer.Dir != "/" || !slices.Equal(renewer.Env, []string{
+		"GOOGLE_APPLICATION_CREDENTIALS=/home/ada/work/credentials.json", "AGENT_SECRETS_URL=https://broker.example",
+		cipherclient.PersonVar + "=ada@example.com",
+	}) {
+		t.Fatalf("the renewer runs in %q with %q; want / and the paths made absolute against the first stage's directory", renewer.Dir, renewer.Env)
 	}
 }

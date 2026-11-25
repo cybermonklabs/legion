@@ -128,13 +128,36 @@ func TestAHelperTradesItsSignInOnlyWhileAnEnrollmentMayStandUnderIt(t *testing.T
 		}
 		asksStop(t, asks, "after the session's enrollment was revoked")
 	})
+	t.Run("a box enrolled under this machine", func(t *testing.T) {
+		f := newEnrolBroker(t)
+		b, _, _ := machineIdentityBroker(t, f)
+		signIns := &stubSignIns{}
+		b.SignIns = signIns
+		if _, _, err := b.EnrollSessionKey(ctx, "example-host:1234:77", "thumbprint-of-the-box-key", nil, nil); err != nil {
+			t.Fatal(err)
+		}
+		signIns.mu.Lock()
+		signIns.authority = signedIn(t, f, "ada@example.com", "credential-of-adas-sign-in")
+		signIns.mu.Unlock()
+		asks, _ := startKeeping(t, b, signIns)
+		asksStop(t, asks, "for a box enrolled under this machine's own credential")
+		if n := asks(); n != 0 {
+			t.Fatalf("the helper asked for the sign-in %d times for a box enrolled under this machine; want none", n)
+		}
+	})
 	t.Run("a box enrolled under the sign-in, across a restart", func(t *testing.T) {
 		f := newEnrolBroker(t)
-		file := filepath.Join(t.TempDir(), "signin-boxes.json")
+		file := SignInBoxesPath(filepath.Join(t.TempDir(), "sessions.json"))
 		person := signedIn(t, f, "ada@example.com", "credential-of-adas-sign-in")
+		// The first helper starts with nobody signed in, so it holds no sign-in for want of a
+		// record and starts one; the person signs in, and a launcher enrols a box under them.
 		first, _, _ := machineIdentityBroker(t, f)
 		first.SignInBoxesFile = file
-		first.SignIns = &stubSignIns{authority: person}
+		signIns := &stubSignIns{}
+		_, stopFirst := startKeeping(t, first, signIns)
+		signIns.mu.Lock()
+		signIns.authority = person
+		signIns.mu.Unlock()
 		id, _, err := first.EnrollSessionKey(ctx, "example-host:1234:77", "thumbprint-of-the-box-key", nil, nil)
 		if err != nil {
 			t.Fatal(err)
@@ -142,6 +165,7 @@ func TestAHelperTradesItsSignInOnlyWhileAnEnrollmentMayStandUnderIt(t *testing.T
 		if info, err := os.Stat(file); err != nil || info.Mode().Perm() != 0o600 {
 			t.Fatalf("the record of the box: %v, %v; want a file only its owner reads", info, err)
 		}
+		stopFirst()
 
 		again, _, _ := machineIdentityBroker(t, f)
 		again.SignInBoxesFile = file
@@ -165,44 +189,58 @@ func TestAHelperTradesItsSignInOnlyWhileAnEnrollmentMayStandUnderIt(t *testing.T
 
 // TestSignInHoldsCountWhatMayStandUnderTheSignIn is the rule keepSignIns reads, on a clock of the
 // test's own: a session counts while its lease runs unless this helper enrolled it under its own
-// machine credential, one it renews without having enrolled it counts, and a box under the
-// sign-in counts until it ends, whatever the time.
+// machine credential, one it renews without having enrolled it counts, a box counts until it
+// ends, whatever the time, and a sign-in held for want of a record counts while it is the one on
+// the box, until another is.
 func TestSignInHoldsCountWhatMayStandUnderTheSignIn(t *testing.T) {
 	now := time.Date(2026, 11, 25, 9, 0, 0, 0, time.UTC)
 	var holds signInHolds
-	if holds.needed(now) {
+	if holds.needed(now, "") {
 		t.Fatal("nothing enrolled is needed")
 	}
-	if err := holds.enrolled("machine-session", now.Add(15*time.Minute), false, true, ""); err != nil {
-		t.Fatal(err)
-	}
+	holds.session("machine-session", now.Add(15*time.Minute), false)
 	holds.renewed("machine-session", now.Add(30*time.Minute))
-	if holds.needed(now) {
+	if holds.needed(now, "") {
 		t.Fatal("a session this helper enrolled under its own machine credential is needed")
 	}
 	holds.renewed("inherited-session", now.Add(15*time.Minute))
-	if !holds.needed(now) {
+	if !holds.needed(now, "") {
 		t.Fatal("a session this helper renews without having enrolled it is not needed; it may stand under the sign-in")
 	}
-	if holds.needed(now.Add(20 * time.Minute)) {
+	if holds.needed(now.Add(20*time.Minute), "") {
 		t.Fatal("a session whose lease has run out is needed")
 	}
-	if err := holds.enrolled("machine-box", time.Time{}, true, true, ""); err != nil {
+	if err := holds.box("signin-box"); err != nil {
 		t.Fatal(err)
 	}
-	if holds.needed(now.Add(20 * time.Minute)) {
-		t.Fatal("a box enrolled under this machine's own credential is needed")
-	}
-	if err := holds.enrolled("signin-box", now.Add(15*time.Minute), true, false, ""); err != nil {
-		t.Fatal(err)
-	}
-	if !holds.needed(now.Add(24 * time.Hour)) {
+	if !holds.needed(now.Add(24*time.Hour), "") {
 		t.Fatal("a box enrolled under the sign-in is not needed a day on; it renews with no word to the helper")
 	}
-	if err := holds.ended("signin-box", ""); err != nil {
+	if err := holds.ended("signin-box"); err != nil {
 		t.Fatal(err)
 	}
-	if holds.needed(now.Add(20 * time.Minute)) {
+	if holds.needed(now.Add(20*time.Minute), "") {
 		t.Fatal("a box unenrolled is still needed")
+	}
+
+	// A day on, no session's lease runs, so only the hold can make the sign-in needed.
+	later := now.Add(24 * time.Hour)
+	if err := holds.holdUnrecorded("thumbprint-of-adas-key"); err != nil {
+		t.Fatal(err)
+	}
+	if !holds.needed(later, "thumbprint-of-adas-key") {
+		t.Fatal("the sign-in on the box, held for want of a record of its boxes, is not needed")
+	}
+	if holds.needed(later, "thumbprint-of-adas-next-key") || holds.needed(later, "") {
+		t.Fatal("a sign-in held for want of a record is needed while another is on the box, or none, or while the box was not read")
+	}
+	if err := holds.keepUnrecorded("thumbprint-of-adas-key"); err != nil || !holds.holdsUnrecorded() {
+		t.Fatalf("the hold of the sign-in still on the box was dropped (%v)", err)
+	}
+	if err := holds.keepUnrecorded("thumbprint-of-adas-next-key"); err != nil {
+		t.Fatal(err)
+	}
+	if holds.holdsUnrecorded() || holds.needed(later, "thumbprint-of-adas-key") {
+		t.Fatal("a sign-in held for want of a record is still held after another took its place on the box")
 	}
 }

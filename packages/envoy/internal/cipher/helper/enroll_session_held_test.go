@@ -58,6 +58,8 @@ func (h *holderSignIns) Current(context.Context) (*cipherclient.Authority, error
 
 func (h *holderSignIns) Refused(context.Context, string) error { return nil }
 
+func (h *holderSignIns) SignedIn() (string, string, error) { return "", "", nil }
+
 func (h *holderSignIns) signIn(authority *cipherclient.Authority) {
 	h.mu.Lock()
 	defer h.mu.Unlock()

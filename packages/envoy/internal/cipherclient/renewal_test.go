@@ -200,7 +200,7 @@ func TestRenewalCorpus(t *testing.T) {
 
 // TestALaunchersCredentialThatLapsesFirstDecidesTheRenewal: a token that names its launcher
 // credential's expiry is traded again by that too, where it comes first, by the corpus's rule with
-// credentialRenewBefore as its window. Rows: an hour's token and an hour's credential, which the
+// CredentialRenewBefore as its window. Rows: an hour's token and an hour's credential, which the
 // access token alone traded again 55 minutes on, with 5 minutes of the credential left; a
 // credential of 20 minutes, inside two windows, at its half life; a credential that outlives the
 // token, which the token decides; one already past as the token lands, which the token decides

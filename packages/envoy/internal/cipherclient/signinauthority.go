@@ -221,6 +221,23 @@ func (a *SignInAuthority) Current(ctx context.Context) (*Authority, error) {
 	return &Authority{Key: a.held.Key(), CredentialID: token.CredentialID, Operator: record.Person}, nil
 }
 
+// SignedIn names the sign-in Current would act under, read from the store with no trade and no
+// wait for a trade in progress: its person, and its box key's thumbprint, which no other sign-in
+// shares, since each `agent-secrets login` makes a key of its own. Both are empty, with no error,
+// where nobody is signed in here. A store it cannot read, or two sign-ins with nothing naming
+// which, is an error, as it is for Current. A sign-in the broker has refused for good is still
+// named: it is still on the box, though Current trades it no more.
+func (a *SignInAuthority) SignedIn() (person, thumbprint string, err error) {
+	record, err := a.Store.Choose(a.Person)
+	switch {
+	case errors.Is(err, ErrNoSignIn):
+		return "", "", nil
+	case err != nil:
+		return "", "", err
+	}
+	return record.Person, record.Thumbprint, nil
+}
+
 // SignInWaitEnded says how a wait for person's sign-in on this machine, which another call holds
 // while it trades (Current, Refused), ended with err, its context's error: "timed out waiting
 // for …" when the context's deadline passed, and "wait for …" when it was cancelled. A message

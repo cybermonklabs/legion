@@ -172,9 +172,10 @@ environment:
                                records found beside this helper's socket, where they used to
                                live, are moved here once (default: sessions.json beside
                                AGENT_SECRETS_MACHINE_FILE, so ~/.config/agent-secrets/sessions.json).
-                               Beside them, signin-boxes.json names the boxes the helper enrolled
-                               under a person's sign-in, whose sign-in it keeps traded until each
-                               is unenrolled
+                               Beside them, the same name with .signin-boxes after it names the
+                               boxes the helper enrolled under a person's sign-in, whose sign-in
+                               it keeps traded until each is unenrolled; a helper that finds no
+                               such record keeps the sign-in on the box traded until it leaves
   AGENT_SECRETS_MACHINE_IDENTITY
                                the identity this machine proves at the broker's token exchange:
                                kubernetes (AGENT_SECRETS_MACHINE_TOKEN_FILE), metadata

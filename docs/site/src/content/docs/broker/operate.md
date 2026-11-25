@@ -2638,13 +2638,18 @@ before it expires; the clients from before do not:
 | --- | --- |
 | `agent-secrets` of this release | Its renewer trades the sign-in again each time a third of the credential's life has passed, so its enrollment renews on. Refused, it exits 76, and the next command registers a new enrollment. |
 | `agent-secrets` from before | It renews no sign-in enrollment, which lapses one `BROKER_LEASE_SECONDS` after the command, as before. The rule changes nothing for it. |
-| `agent-secrets-helper` of this release | It trades the sign-in while a session or box it enrolled under it may need it. Refused, it enrols the session again. |
+| `agent-secrets-helper` of this release | It trades the sign-in while a session or box it enrolled under it may need it, and keeps the boxes in a record beside its session records. A helper that finds no record it can read, as at its first start after a helper from before, which kept none, cannot tell which boxes stand under the sign-in on the machine: it trades that sign-in until it leaves the machine, and logs a WARN naming the person. So a box the helper from before enrolled renews on. Refused, it enrols the session again. |
 | `agent-secrets-helper` from before | It trades the sign-in only when it enrols a session. Once it has enrolled nothing for the credential's hour, every session it holds under the sign-in is refused its next renewal; it enrols each again, trading then. A session that names itself takes its grants and pending requests with it to the new enrollment; one that names none loses them. A box it enrolled under the sign-in (`agent-secrets enroll --helper`) renews with its own `agent-secrets renew`, which exits 76 when refused, and the box is enrolled again only by running that command again. |
 | Pods, machines' own sessions, machine logins a person approved | Not sign-in sessions: the rule changes nothing for them. |
 
 So the clients go first. Release them, and make each machine run the new helper: a release does
 not restart a helper that is running, and `agent-secrets-helper install` restarts one only while it
-has no sessions, or with `--restart-with-sessions`. On a machine, the running helper's release is
+has no sessions, or with `--restart-with-sessions`. The new helper's first start keeps the boxes
+the helper before it enrolled under the sign-in that is on the machine then. It cannot keep a box
+enrolled under a sign-in that has since left the machine (the person signed out, or signed in
+again, which makes a new box key): nothing on the machine can trade that sign-in, so this broker
+refuses the box within the hour. Enrol each such box again through the new helper
+(`agent-secrets enroll --helper`), which records it. On a machine, the running helper's release is
 the `version` of its last start line:
 
 ```sh
@@ -2675,8 +2680,12 @@ Deploy the broker once the query answers no row, and again no row an hour later.
 before that enrolled a session within the credential's hour holds a live credential and shows no
 row until that hour has passed with no enrolment; the second run, an hour on, is what catches it.
 A row whose `machine_account` `BROKER_VM_SERVICES` no longer lists, or whose person has left, is a
-session the rule is meant to end. After the deploy, the WARN line above names each enrollment the
-rule refused; the query's `enrollment_id` finds its person and machine.
+session the rule is meant to end. On a machine whose helper is of this release and whose person
+can still be traded, a row is a box enrolled under a sign-in that has left that machine, or one a
+helper from before enrolled after the new helper had started its record (a helper rolled back and
+then upgraded again): enrol it again through the running helper, as above. After the deploy, the
+WARN line above names each enrollment the rule refused; the query's `enrollment_id` finds its
+person and machine.
 
 To roll back:
 

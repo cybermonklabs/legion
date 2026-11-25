@@ -67,17 +67,21 @@ const (
 	// a renewal lands with the held token still good and nothing of the caller's restarts. The
 	// broker mints a machine's token for an hour or less.
 	DefaultRenewBefore = 5 * time.Minute
-	// credentialRenewBefore is how long before the expiry of the launcher credential a token
+	// CredentialRenewBefore is how long before the expiry of the launcher credential a token
 	// names the client trades again, beside RenewBefore for the access token: whichever comes
 	// first decides (renewalAt). The credential lives as long as the identity token it was traded
 	// from, about an hour, and the access token as long as BROKER_ACCESS_TOKEN_SECONDS, which may
 	// be an hour too, so a client that traded by the access token alone would, with a long one,
 	// trade with minutes of the credential left, and the broker renews no session of a machine or
-	// of a sign-in past its credential (enroll.Service.Renew). Fifteen minutes is three of
-	// agent-secrets-helper's asks for its sign-in (helper.Broker.keepSignIns, every five minutes)
-	// and seven of Run's tries, so a trade that fails is tried again more than once before the
-	// credential lapses.
-	credentialRenewBefore = 15 * time.Minute
+	// of a sign-in past its credential (enroll.Service.Renew). It is three SignInAskEvery and seven
+	// of Run's tries, so a trade that fails is tried again more than once before the credential
+	// lapses.
+	CredentialRenewBefore = 15 * time.Minute
+	// SignInAskEvery is how often a holder that keeps a sign-in's credential live by asking for
+	// it asks (agent-secrets-helper's helper.Broker.keepSignIns): a third of CredentialRenewBefore,
+	// so the first ask that finds the credential due finds more than two asks' worth of it left,
+	// and a trade that fails there is tried twice more before it lapses.
+	SignInAskEvery = CredentialRenewBefore / 3
 	// liveMargin is how long the held token must still be good for live to answer it, so a
 	// request that presents it reaches its server and is read there before it lapses. It is a
 	// small part of RenewBefore, so a renewal loop (Run) that waits out a broker that does not
@@ -574,24 +578,33 @@ func retriedTrade(err error) (string, []any) {
 
 // logRetried says that a trade failed with err, a failure a later trade may cure, while held is
 // the token in hand (nil for none), and what the caller does now (then, with extra beside it). It
-// says so at INFO while the launcher credential held names is not yet due for its trade, since
-// the access token alone was and it is still live; and at WARN once the credential is due, naming
-// when it expires, since the broker renews no session under a lapsed credential
-// (enroll.Service.Renew) and the sessions that hold it end one lease after it lapses unless a
-// later trade lands first.
+// says so at INFO while the launcher credential held names is not yet due for its trade
+// (credentialDueAt), since the access token alone was and it is still live; and at WARN once the
+// credential is due, naming when it expires. The broker renews no machine's own session and no
+// person's sign-in session under a lapsed credential (enroll.Service.Renew), so each such session
+// enrolled under it ends one lease after it lapses unless a later trade lands first. A pod's
+// session is not held to its credential, and the line names the two that are.
 func (c *Client) logRetried(ctx context.Context, err error, held *Token, then string, extra ...any) {
 	what, attrs := retriedTrade(err)
 	attrs = append(attrs, extra...)
-	if held == nil || held.CredentialExpiresAt.IsZero() || c.now().Before(held.CredentialExpiresAt.Add(-credentialRenewBefore)) {
+	due, named := credentialDueAt(held)
+	if !named || c.now().Before(due) {
 		c.logf(ctx, what+"; "+then, attrs...)
 		return
 	}
-	if c.log == nil {
-		return
+	c.logAt(ctx, slog.LevelWarn, what+"; "+then+", but the launcher credential in hand expires soon: once it has, the broker renews no machine's own session and no person's sign-in session enrolled under it, and each ends one lease later unless a later trade lands first",
+		append([]any{"credential_id", held.CredentialID, "credential_expires_at", held.CredentialExpiresAt.UTC().Format(time.RFC3339)}, attrs...)...)
+}
+
+// credentialDueAt is when the launcher credential token names falls due for a trade,
+// CredentialRenewBefore ahead of its expiry: the one place that window is worked out, which
+// renewalAt trades by and logRetried warns by. named is false for no token, or one that names no
+// credential expiry.
+func credentialDueAt(token *Token) (due time.Time, named bool) {
+	if token == nil || token.CredentialExpiresAt.IsZero() {
+		return time.Time{}, false
 	}
-	c.log.WarnContext(ctx, what+"; "+then+", but the launcher credential in hand expires soon, and the broker renews no session under it once it has: the sessions enrolled under it end one lease later unless a later trade lands first",
-		append([]any{"broker", c.brokerURL, "identity", c.subject.Describe(), "credential_id", held.CredentialID,
-			"credential_expires_at", held.CredentialExpiresAt.UTC().Format(time.RFC3339)}, attrs...)...)
+	return token.CredentialExpiresAt.Add(-CredentialRenewBefore), true
 }
 
 // renewalAt is when to trade again for token as of now: by its access token, the later of
@@ -605,33 +618,33 @@ func (c *Client) logRetried(ctx context.Context, err error, held *Token, then st
 // and testdata/renewal.json holds the two to it (TestRenewalCorpus).
 //
 // A token that names its launcher credential's expiry is traded again by that too, where it comes
-// first: credentialRenewBefore ahead of the credential's expiry, or at half of its life, by the
-// same rule. That part is this client's alone: a TypeScript client holds no session under the
+// first: when the credential falls due (credentialDueAt), or at half of its life, by the same
+// rule. That part is this client's alone: a TypeScript client holds no session under the
 // credential (none of them reads its id), so its credential's life decides nothing for it. A
 // credential already past its expiry as its token lands (a clock far off the broker's) is no
 // moment to trade at: the access token decides, so such an answer cannot make the client trade
 // without pause.
 func (c *Client) renewalAt(token *Token, now time.Time) time.Time {
-	at := renewalBy(token.Expiry, c.renewBefore, now)
-	if expires := token.CredentialExpiresAt; expires.After(now) {
-		if credential := renewalBy(expires, credentialRenewBefore, now); credential.Before(at) {
+	at := renewalBy(token.Expiry.Add(-c.renewBefore), token.Expiry, now)
+	if due, named := credentialDueAt(token); named && token.CredentialExpiresAt.After(now) {
+		if credential := renewalBy(due, token.CredentialExpiresAt, now); credential.Before(at) {
 			at = credential
 		}
 	}
 	return at
 }
 
-// renewalBy is when to trade again, as of now, for what lapses at end: the later of before ahead
-// of end and half of what is left, and now once end has passed.
-func renewalBy(end time.Time, before time.Duration, now time.Time) time.Time {
+// renewalBy is when to trade again, as of now, for what falls due at due and lapses at end: the
+// later of due and half of what is left, and now once end has passed.
+func renewalBy(due, end, now time.Time) time.Time {
 	left := end.Sub(now)
 	if left <= 0 {
 		return now
 	}
-	if half := now.Add(left / 2); half.After(end.Add(-before)) {
+	if half := now.Add(left / 2); half.After(due) {
 		return half
 	}
-	return end.Add(-before)
+	return due
 }
 
 // sleep waits d, reporting false when ctx ended first. A Wake cuts the wait short, so the
@@ -662,11 +675,18 @@ func (c *Client) Wake() {
 	}
 }
 
+// logf says message at INFO (logAt).
 func (c *Client) logf(ctx context.Context, message string, args ...any) {
+	c.logAt(ctx, slog.LevelInfo, message, args...)
+}
+
+// logAt says message at level, after the broker and the identity this client trades, and nothing
+// where the client has no log: every line of the client's goes through it.
+func (c *Client) logAt(ctx context.Context, level slog.Level, message string, args ...any) {
 	if c.log == nil {
 		return
 	}
-	c.log.InfoContext(ctx, message, append([]any{"broker", c.brokerURL, "identity", c.subject.Describe()}, args...)...)
+	c.log.Log(ctx, level, message, append([]any{"broker", c.brokerURL, "identity", c.subject.Describe()}, args...)...)
 }
 
 // tradeHeld is trade, leaving in c.held what the trade leaves in hand: the new token when one

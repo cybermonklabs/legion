@@ -115,6 +115,36 @@ func TestNobodySignedInLeavesTheMachinesOwnAuthority(t *testing.T) {
 	}
 }
 
+// TestSignedInNamesTheSignInCurrentWouldActUnderWithNoTrade: SignedIn reads the store alone. It
+// names nobody on a box with no sign-in; the person and the thumbprint of the one sign-in; another
+// thumbprint once the person signs in again, which makes a key of its own; the refusal Current
+// gives for two people with nothing naming which; and the one PersonVar names. None of it trades.
+func TestSignedInNamesTheSignInCurrentWouldActUnderWithNoTrade(t *testing.T) {
+	rig := newSignInRig(t, nil)
+	if person, thumbprint, err := rig.authority.SignedIn(); person != "" || thumbprint != "" || err != nil {
+		t.Fatalf("with nobody signed in SignedIn = %q, %q, %v; want nobody and no error", person, thumbprint, err)
+	}
+	first := rig.signIn(t, "ada@example.com")
+	if person, thumbprint, err := rig.authority.SignedIn(); person != first.Person || thumbprint != first.Thumbprint || err != nil {
+		t.Fatalf("SignedIn = %q, %q, %v; want %q, %q", person, thumbprint, err, first.Person, first.Thumbprint)
+	}
+	again := rig.signIn(t, "ada@example.com")
+	if _, thumbprint, err := rig.authority.SignedIn(); thumbprint != again.Thumbprint || thumbprint == first.Thumbprint || err != nil {
+		t.Fatalf("after a second sign-in SignedIn names %q, %v; want the new key's %q", thumbprint, err, again.Thumbprint)
+	}
+	grace := rig.signIn(t, "grace@example.com")
+	if _, _, err := rig.authority.SignedIn(); err == nil || !strings.Contains(err.Error(), "2 people are signed in") {
+		t.Fatalf("with two people signed in and none named SignedIn answered %v; want Current's refusal", err)
+	}
+	rig.authority.Person = grace.Person
+	if person, thumbprint, err := rig.authority.SignedIn(); person != grace.Person || thumbprint != grace.Thumbprint || err != nil {
+		t.Fatalf("with %s named SignedIn = %q, %q, %v; want %q, %q", PersonVar, person, thumbprint, err, grace.Person, grace.Thumbprint)
+	}
+	if n := len(rig.broker.Requests()); n != 0 {
+		t.Fatalf("SignedIn made %d trades; want none", n)
+	}
+}
+
 // TestASignInMadeWhileTheProcessRunsIsTakenAtTheNextEnrolment: the box's state decides, not the
 // moment the process started, so the helper needs no restart after `agent-secrets login`. The
 // credential is the person's, and the trade carried their identity token with this machine's as
@@ -504,15 +534,16 @@ func TestAnAuthorityWithNoMachineIdentityTradesNothing(t *testing.T) {
 // TestASignInsCredentialIsTradedBeforeItLapsesWhateverTheAccessTokensLife: the broker renews a
 // sign-in's session only while its launcher credential is live, and the credential lasts an hour
 // from each trade, while the access token lives BROKER_ACCESS_TOKEN_SECONDS, which may be an hour
-// too. agent-secrets-helper asks for the sign-in every five minutes (helper.Broker.keepSignIns),
+// too. agent-secrets-helper asks for the sign-in every SignInAskEvery (helper.Broker.keepSignIns),
 // as this test does on a clock of its own, with the broker minting access tokens of an hour.
 // Rows: every trade goes through, so no ask finds less than two asks' worth of the credential
 // left; and every trade after the first fails, so the asks before the credential lapses each
 // trade again, and the failure is said at WARN, naming when the credential expires. A client
 // that traded by the access token alone traded once, five minutes before the credential lapsed,
-// and said its failure at INFO.
+// and said its failure at INFO. The ask is SignInAskEvery itself, so a change of it or of
+// CredentialRenewBefore that leaves fewer than three asks inside the window fails here.
 func TestASignInsCredentialIsTradedBeforeItLapsesWhateverTheAccessTokensLife(t *testing.T) {
-	const ask = 5 * time.Minute
+	const ask = SignInAskEvery
 	for _, row := range []struct {
 		name  string
 		fails bool

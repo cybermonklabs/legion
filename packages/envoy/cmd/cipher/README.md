@@ -237,7 +237,8 @@ is live; where the person can no longer be traded, as for a suspended Google acc
 credential lapses, the broker refuses the next renewal, and the enrollment ends one lease later.
 `agent-secrets-helper` keeps the same credential live for the sessions it holds under a sign-in,
 and for the boxes it enrolled under one, while one of them may still need it, and trades nothing
-while none does.
+while none does; a helper that finds no record of its boxes keeps the sign-in on the box traded
+until that sign-in leaves the box.
 A command that cannot keep the sign-in renewed says so on stderr, for each enrollment it keeps,
 and goes on. The docs site's concepts page, "A sign-in's renewal", has the whole rule.
 

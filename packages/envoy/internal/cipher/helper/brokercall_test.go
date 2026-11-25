@@ -146,6 +146,8 @@ func (s *heldSignIns) Current(context.Context) (*cipherclient.Authority, error) 
 
 func (s *heldSignIns) Refused(context.Context, string) error { return nil }
 
+func (s *heldSignIns) SignedIn() (string, string, error) { return "", "", nil }
+
 // TestAnOpHeldOnALockAnswersUnknownAtTheBoundAndSendsNothingAfter: an enroll-session-key held on
 // a lock that does not watch the op's context is answered by the timer, ENROLL_OUTCOME_UNKNOWN,
 // at its bound plus 1 s, not left open. Once the lock is released the op goes on, but its context
