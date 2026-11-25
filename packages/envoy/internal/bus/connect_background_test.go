@@ -279,7 +279,7 @@ func TestARefusedCredentialIsLoggedOnceAMinuteAndRetried(t *testing.T) {
 	_, allowed := testnats.User(t)
 	refused, _ := testnats.User(t)
 	uri := testnats.StartNkeyAuthorized(t, allowed)
-	logs := captureBusLogs(t)
+	logs := captureBusLogs()
 	const refusal = "envoy nats authorization refused"
 	clock := &reconnectErrClock{now: time.Now()}
 	name := "refusal-test-" + t.Name()
@@ -287,7 +287,8 @@ func TestARefusedCredentialIsLoggedOnceAMinuteAndRetried(t *testing.T) {
 		bus.WithName(name),
 		bus.WithEnvironment(lookupOf(map[string]string{"NATS_NKEY_SEED": refused})),
 		bus.WithReconnectErrClock(clock.Now),
-		bus.WithConnectInBackground())
+		bus.WithConnectInBackground(),
+		bus.WithLogger(logs.logger))
 	if err != nil {
 		t.Fatalf("connect with a refused credential: %v", err)
 	}

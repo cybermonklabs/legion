@@ -1,0 +1,8 @@
+jj --ignore-working-copy --color=never config list --include-defaults -T 'if(name.starts_with("aliases.") || name == "ui.default-command", json(name) ++ " " ++ json(value) ++ "\n")'
+"aliases.b" ["bookmark"]
+"aliases.ci" ["commit"]
+"aliases.desc" ["describe"]
+"aliases.st" ["status"]
+"ui.default-command" "p"
+--- stderr
+--- exit 0
