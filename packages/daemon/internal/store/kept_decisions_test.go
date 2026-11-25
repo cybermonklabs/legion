@@ -148,6 +148,7 @@ func TestADeliveryWrittenBackUnconfirmedHoldsWhatItsConfirmationTold(t *testing.
 // before the confirmation told it (workflow.SupersedingApproval), of the document and the version
 // the person reviewed.
 func TestADecisionPutBackKeepsItsReviewsSequenceDocumentAndVersion(t *testing.T) {
+	t.Parallel()
 	r := newKeptRig(t)
 	const tree, ref = "LEGION-320", "dispatch://LEGION-320/spec"
 	r.issue(tree, tree)

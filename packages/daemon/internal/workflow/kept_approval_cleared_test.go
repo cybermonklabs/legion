@@ -14,6 +14,7 @@ import (
 // document is approved at the kept version. Asked of a gate that holds that approval, the sentence
 // stands; asked of a gate a later approval moved on, or one a changes request cleared, it goes.
 func TestAKeptApprovalALaterChangesRequestClearedIsNotNamed(t *testing.T) {
+	t.Parallel()
 	const sentence = "is approved at version 2"
 	owed := record.KeptDecisions{KeptApproval: record.KeptApproval{Step: record.DesignStepSpec, Approved: 2, Latest: 3}}
 	for _, tc := range []struct {

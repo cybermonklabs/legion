@@ -22,6 +22,7 @@ import (
 // was kept: nothing says where such a line ends but the directory itself, so leaving it is no
 // defect, and a stray path after it is.
 func TestAWorkingCopyDirectoryThatHoldsAFullStopAndASpaceIsWrittenWhole(t *testing.T) {
+	t.Parallel()
 	const (
 		root = "/srv/legion v2. state/workspaces/"
 		old  = "Working copy: branch legion/LEGION-208, directory " + root + "acme/widgets/LEGION-208."

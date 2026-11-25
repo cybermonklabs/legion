@@ -384,6 +384,7 @@ func TestTheResumeTaskNamesEveryItemStillWithThePerson(t *testing.T) {
 // revision and no registration of version 13; with no approval after it, the changes request is
 // still named, which is the control.
 func TestTheResumeTaskNamesNoReviewAnApprovalFollowed(t *testing.T) {
+	t.Parallel()
 	answered := time.Date(2026, 11, 11, 20, 0, 0, 0, time.UTC)
 	waiting := record.Awaiting{GateVersion: 13, Artifact: "artifact-208", AnsweredAt: &answered, AnsweredBy: record.AnsweredByChanges,
 		AnsweredDetail: changesDetail(13, "split it"), AnsweredDocument: &record.AnsweredDocument{Version: 13}, Since: record.EventMark{Seq: 20}}
@@ -415,6 +416,7 @@ func TestTheResumeTaskNamesNoReviewAnApprovalFollowed(t *testing.T) {
 // landed on (requestStands), so neither the resume nor the wait's start names it, while a request
 // made after the approval still stands.
 func TestAnApprovalOnALaterRequestOfOneVersionAnswersTheEarlierRequest(t *testing.T) {
+	t.Parallel()
 	answered := time.Date(2026, 11, 11, 20, 31, 58, 0, time.UTC)
 	approved := 13
 	stale := record.RootAsk{Issue: "LEGION-208", Ask: "ask-first", Kind: record.AskApproval, Artifact: "artifact-208", Open: true, WaitingOn: "human",

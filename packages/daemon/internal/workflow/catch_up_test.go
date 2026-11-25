@@ -178,6 +178,7 @@ func TestARelaunchedArchitectsCatchUpNamesTheDecisionsKeptForIt(t *testing.T) {
 // where the two times say the other thing, and a kept approval that is the gate's own approval
 // stands.
 func TestACatchUpNamesAKeptDecisionOnlyWhileNoLaterApprovalSupersededIt(t *testing.T) {
+	t.Parallel()
 	approvedAt := time.Date(2026, 10, 24, 9, 0, 0, 0, time.UTC)
 	approved := record.EventMark{Seq: 10, At: approvedAt}
 	for _, tc := range []struct {
@@ -505,6 +506,7 @@ func TestAPacedReadysCatchUpIsDueAtTheMomentTheWakePacingGivesIt(t *testing.T) {
 // as the record holds it then. Read at once after the queueing, in a read-only transaction, it is
 // the queued tree and reason exactly; the launch and the kept decisions are the queueing's alone.
 func TestTreeCatchUpIsTheQueuedCatchUpsTreeReadWithoutAWrite(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := migratedPool(t)
 	root := seedAdmittedTree(t, pool, 1)

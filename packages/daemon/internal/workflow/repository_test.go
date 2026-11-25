@@ -221,6 +221,7 @@ func TestARecordedIssueSaysNothingWhenItsResolutionIsItsRenamePartner(t *testing
 // wrote is cleared rather than written again with an empty repository beside a reason
 // (record.Issue.RepoChange). The record keeps the repository it has.
 func TestARecordedIssueResolvedToNoRepositoryIsToldAndLeavesNoChangeWaiting(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	openTree(t, pool)
 	parent := "LEGION-208"
@@ -259,6 +260,7 @@ func TestARecordedIssueResolvedToNoRepositoryIsToldAndLeavesNoChangeWaiting(t *t
 // with ApplyRepositoryChange correcting such a record, the first event fills it onto acme/widgets
 // through the correction.
 func TestACorrectionLeavesARecordWithNoRepositoryToTheBackfill(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	openTree(t, pool)
 	parent := "LEGION-208"
@@ -308,6 +310,7 @@ func TestACorrectionLeavesARecordWithNoRepositoryToTheBackfill(t *testing.T) {
 // repository. Either ends with the passes that apply the change, the issue's next event or the
 // next boot: since dispatch://INFRA-4401 nothing else reads the repository again.
 func TestARecordedIssueWhoseChangeWaitsIsToldWhatAPersonCanDo(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name, resolved, refusal, want string
 		kind                          intake.RepositoryRefusalKind
@@ -387,6 +390,7 @@ func TestARepositoryNoteTheRenamePassRewroteIsNotSaidAgain(t *testing.T) {
 // nothing is said. Control: with no pair configured, the same event moves the record back onto
 // the `from`.
 func TestAnEventNamingTheOldNameAfterTheRenamePassCorrectsNothing(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name     string
 		renames  ghrepo.Renames

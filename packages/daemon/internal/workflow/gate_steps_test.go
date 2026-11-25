@@ -398,6 +398,7 @@ func TestGatedStepsHoldEveryPhaseUntilEveryStepIsApproved(t *testing.T) {
 // step holds now, the step in question or not: no changes request cleared the approval it took the
 // place of, and the changes request of the document before it still stands (INFRA-3136 R29).
 func TestUnderTwoGatedStepsTheResumeAsksTheReviewOfTheDocumentItWasOf(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		// question says the root waits on a question of its architect's, ask-q: the registrations

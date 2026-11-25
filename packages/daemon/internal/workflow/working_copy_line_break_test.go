@@ -23,6 +23,7 @@ import (
 // directories hold no full stop followed by a space, and sends it as it was kept where the
 // directory the send would write holds one.
 func TestASendWritesTheWorkingCopyLineUpToItsLineBreak(t *testing.T) {
+	t.Parallel()
 	const (
 		key          = "LEGION-208"
 		plainRoot    = "/work/"

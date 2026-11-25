@@ -438,6 +438,7 @@ func TestAnUnsequencedChangesReadThenItsLiveEventTellsTheReviewOnce(t *testing.T
 // version 2, which is named; a review asked at no version would be asked at the approved version 1
 // instead, read as superseded by that approval, and dropped.
 func TestARewordedChangesDetailDoesNotChangeWhetherTheResumeNamesTheReview(t *testing.T) {
+	t.Parallel()
 	pool, apply := askRig(t)
 	seedIssue(t, pool, awaitingRoot(3))
 	seedQuestion(t, pool, "ask-q", 3)

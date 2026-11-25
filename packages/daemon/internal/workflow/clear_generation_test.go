@@ -48,6 +48,7 @@ func issuePhases(t *testing.T, pool *pgxpool.Pool, issue string) []record.PhaseR
 // the base forward goes with it, and a first conflicting read still waiting for its second stays:
 // that is GitHub's answer about the head and the base, which the new generation does not change.
 func TestClearGenerationResetsAnOpenPullRequestsCheckSettlement(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	issue := clearedIssue("LEGION-285")
 	seedIssue(t, pool, issue)
@@ -90,6 +91,7 @@ func TestClearGenerationResetsAnOpenPullRequestsCheckSettlement(t *testing.T) {
 // pass through a phase from the last in the handoff completion key, so the new run's completion at
 // a commit the old run already reported has to take a key of its own.
 func TestClearGenerationKeepsThePassAndResetsTheRounds(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	issue := clearedIssue("LEGION-286")
 	seedIssue(t, pool, issue)
@@ -108,6 +110,7 @@ func TestClearGenerationKeepsThePassAndResetsTheRounds(t *testing.T) {
 // It clears the implementer's counts of the moves back as well, and the cap value the row told
 // for, so the new generation counts and tells from its own first crossing.
 func TestClearGenerationClearsTheHandoffRecordAndKeepsTheLastNamed(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	issue := clearedIssue("LEGION-286")
 	seedIssue(t, pool, issue)
@@ -138,6 +141,7 @@ func TestClearGenerationClearsTheHandoffRecordAndKeepsTheLastNamed(t *testing.T)
 // promotion raises it again (StartPromotedWorker), so the entry the new work is sent under is
 // above every entry a completion still in flight could name.
 func TestClearGenerationClearsTheEntryTaskAndLeavesTheEntry(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	issue := clearedIssue("LEGION-287")
 	raised := time.Date(2026, 9, 20, 0, 0, 0, 0, time.UTC)
@@ -166,6 +170,7 @@ func TestClearGenerationClearsTheEntryTaskAndLeavesTheEntry(t *testing.T) {
 // Both clears a re-admission makes are read: of one issue (ClearGeneration) and of a whole tree
 // (ClearTreeGeneration). The entry and the moment it was raised stay, as they do for every role.
 func TestClearGenerationClearsTheWaitTheArchitectsEntryKept(t *testing.T) {
+	t.Parallel()
 	raised := time.Date(2026, 11, 2, 9, 0, 0, 0, time.UTC)
 	const resumed = "A person answered your ask ask-1; read it. Continue."
 	for _, tc := range []struct {
@@ -209,6 +214,7 @@ func TestClearGenerationClearsTheWaitTheArchitectsEntryKept(t *testing.T) {
 // person's word. The start, the clear of the tree and the clear of each issue in turn all forget
 // the first and keep the second, so a clear that asked another rule, or none, would differ.
 func TestAClearForgetsTheKeptDecisionsAStartForgets(t *testing.T) {
+	t.Parallel()
 	approvedAt := time.Date(2026, 9, 22, 9, 0, 0, 0, time.UTC)
 	approved := record.EventMark{Seq: 10, At: approvedAt}
 	superseded := record.ParkedDecision{Issue: "LEGION-1", Ref: "dispatch://LEGION-1/spec", Decision: record.DecisionDesignChangesRequested,

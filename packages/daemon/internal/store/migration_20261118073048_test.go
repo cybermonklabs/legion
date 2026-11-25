@@ -32,6 +32,7 @@ const phaseEntryAwaitingVersion = 20261118073048
 // runs this file again, and each entry the way back marked holds the empty wait: the wait itself
 // is what a rollback costs.
 func TestThePhaseEntryAwaitingMigrationKeepsAResumesEntryAndItsWayBackPutsTheMarkBack(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, phaseEntryAwaitingVersion-1)

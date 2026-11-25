@@ -24,6 +24,7 @@ const handoffLineExtract = "handoff_line_extract.txt"
 // words of the line: they assert what the line names (assertNamesTheHandoff), or read the line
 // from this copy (handoffPartOf, its second reader, through handoffSentence as this test does).
 func TestTheHandoffLineExtractIsTheSentenceTheTaskWrites(t *testing.T) {
+	t.Parallel()
 	sentence := handoffSentence(t)
 	for _, placeholder := range []string{"{word}", "{version}", "{issue}"} {
 		if !strings.Contains(sentence, placeholder) {

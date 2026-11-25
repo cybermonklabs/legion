@@ -731,6 +731,7 @@ func TestTheRoundAClaimLeftRoundTrips(t *testing.T) {
 // gone pod's message from, nor the workspace on a kept volume. The round's end clears it, and a
 // claim with no repository reads back with none.
 func TestTheRepositoryARoundsPodWasBuiltFromRoundTrips(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := migratedStore(t)
 	want := tmuxClaim("legion-LEGION-209-repositoryround")
@@ -754,6 +755,7 @@ func TestTheRepositoryARoundsPodWasBuiltFromRoundTrips(t *testing.T) {
 // recorded no repository, since read as this one's it would name a repository that the next pod
 // was not built from.
 func TestClaimsReadARoundsRepositoryForTheRoundItWasWrittenWithAlone(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := migratedStore(t)
 	want := tmuxClaim("legion-LEGION-209-earlierround")
@@ -780,6 +782,7 @@ func TestClaimsReadARoundsRepositoryForTheRoundItWasWrittenWithAlone(t *testing.
 // parsed, and read as no repository the row would send the roles of a gone pod to the issue
 // branch at origin, which is not where their work is.
 func TestClaimsRefusesAStoredRoundRepositoryThatIsNoRepository(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := migratedStore(t)
 	stored := tmuxClaim("legion-LEGION-209-badrepository")
@@ -809,6 +812,7 @@ func TestClaimsRefusesAStoredRoundRepositoryThatIsNoRepository(t *testing.T) {
 // which is not none recorded: after a restart it is what every task sent to that process names
 // in its working copy line. A claim that records no process reads back with none.
 func TestTheRepositoryAClaimsProcessWorksRoundTrips(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := migratedStore(t)
 	want := tmuxClaim("legion-LEGION-209-workingrepository")
@@ -834,6 +838,7 @@ func TestTheRepositoryAClaimsProcessWorksRoundTrips(t *testing.T) {
 // repository for, since read as its own it would name a workspace that process may not work in.
 // The same holds once that release's suspension writes no locator at all.
 func TestClaimsReadTheRepositoryAProcessWorksForTheIncarnationItWasRecordedForAlone(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := migratedStore(t)
 	stored := tmuxClaim("legion-LEGION-209-earlierrelaunch")
@@ -873,6 +878,7 @@ func TestClaimsReadTheRepositoryAProcessWorksForTheIncarnationItWasRecordedForAl
 // a name it parsed, and read as none the row would send that process the line its task was
 // composed with, which names the workspace of the record's repository.
 func TestClaimsRefusesAStoredWorkingRepositoryThatIsNoRepository(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := migratedStore(t)
 	stored := tmuxClaim("legion-LEGION-209-badworking")

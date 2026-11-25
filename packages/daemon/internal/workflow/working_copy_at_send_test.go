@@ -27,6 +27,7 @@ const earlierOpening = "Continue root. Issue: LEGION-208. Phase: reviewing. "
 // an earlier release that holds no working copy line is sent as composed, including any similar
 // text inside the owner's fence.
 func TestATaskSentToAProcessOfAnotherRepositoryNamesThatProcessesWorkingCopy(t *testing.T) {
+	t.Parallel()
 	engine := stepEngine(nil)
 	engine.cfg.WorkspaceDir = func(key string, repo ghrepo.Repository) string { return "/work/" + repo.String() + "/" + key }
 	const (
