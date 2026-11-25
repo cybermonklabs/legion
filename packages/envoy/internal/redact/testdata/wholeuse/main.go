@@ -137,6 +137,12 @@ func redactCall(info *types.Info, call *ast.CallExpr) (string, bool) {
 	return fn.Pkg().Path() + "." + fn.Name(), fn.Pkg().Path() == redactPath
 }
 
+// newRetrieveErrorCall reports whether call calls redact.NewRetrieveError.
+func newRetrieveErrorCall(info *types.Info, call *ast.CallExpr) bool {
+	name, inRedact := redactCall(info, call)
+	return inRedact && strings.HasSuffix(name, ".NewRetrieveError")
+}
+
 func calleeFunc(info *types.Info, call *ast.CallExpr) *types.Func {
 	var id *ast.Ident
 	switch f := ast.Unparen(call.Fun).(type) {
@@ -158,11 +164,7 @@ func redactMadeFields(pkgs []*packages.Package) map[*types.Var]bool {
 	made := map[*types.Var]bool{}
 	record := func(info *types.Info, field *types.Var, value ast.Expr) {
 		call, ok := ast.Unparen(value).(*ast.CallExpr)
-		safe := false
-		if ok {
-			name, inRedact := redactCall(info, call)
-			safe = inRedact && strings.HasSuffix(name, ".NewRetrieveError")
-		}
+		safe := ok && newRetrieveErrorCall(info, call)
 		earlier, seen := made[field]
 		made[field] = safe && (!seen || earlier)
 	}
@@ -268,10 +270,8 @@ func classify(info *types.Info, stack []ast.Node, e ast.Expr, madeByRedact map[*
 			return "whole value redact.NewRetrieveError made (" + describe(info, parent) + ")", false
 		}
 	}
-	if call, ok := e.(*ast.CallExpr); ok {
-		if name, inRedact := redactCall(info, call); inRedact && strings.HasSuffix(name, ".NewRetrieveError") && trustNewRetrieveError {
-			return "made by redact.NewRetrieveError", false
-		}
+	if call, ok := e.(*ast.CallExpr); ok && newRetrieveErrorCall(info, call) && trustNewRetrieveError {
+		return "made by redact.NewRetrieveError", false
 	}
 	switch p := parent.(type) {
 	case *ast.SelectorExpr:
