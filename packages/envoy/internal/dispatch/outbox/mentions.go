@@ -1407,7 +1407,15 @@ func failedFallbackCopy(held fallbackCopy) fallbackRecord {
 // good (the listener down after the restart), gives the host that mention and then the copy under
 // the mention's own dedupe key, which the host drops. The API's failed settle appends a
 // comment.delivery receipt, an event insert that wakes the holder, and the pass runs on the scan
-// that wake starts.
+// that wake starts. The author's delete of the comment marks it deleted, fails its pending
+// attempts and settles its unsettled rows with nothing published, in one commit (deleteComment in
+// internal/dispatch/api), so a pass that claimed a row before that commit and read the attempts
+// after it finds them failed, the state in which it publishes; and a batch that read the attempts
+// before the delete can hold a row after it, which the delete never settled. So the last read of
+// a decision to publish is whether the comment is deleted (fallbackCopyWithdrawn): a copy of a
+// deleted comment is withdrawn, its row settled with nothing sent (fallbackWithdrawn). Only a pass
+// that decided before the delete committed and publishes after it sends the copy as recorded, a
+// send in flight.
 //
 // It reports what the holder does next, as a batch reports it (Outbox.scan): full, the claim
 // filled its batch, so rows it did not reach are due now and the holder scans and passes again
@@ -1508,6 +1516,13 @@ func publishFallbackCopies(ctx context.Context, deps Deps, hold fence, instance 
 			sent = append(sent, sentCopy{held: held, out: out, answer: out.send(ctx, deps, sender, handed)})
 		case decision == fallbackSettles:
 			records = append(records, fallbackRecord{held: held, settled: true})
+		case decision == fallbackWithdrawn:
+			// The author deleted the comment (fallbackCopyWithdrawn): the copy is withdrawn. Its
+			// row is settled with nothing sent, so that it is not claimed again; a row the delete
+			// settled already is not written (recordFallbackCopies).
+			records = append(records, fallbackRecord{held: held, settled: true})
+			slog.Info("dispatch outbox: a fallback copy of a deleted comment is withdrawn, so nothing is sent",
+				"comment_id", held.commentID, "destination", held.destination)
 		case decision == fallbackWaitsForAnEarlierEvent:
 			// An earlier event of the comment's owner still owes a send the row's session may
 			// take: the row waits for it as for a mention still being sent, counted and, past
@@ -1592,6 +1607,9 @@ const (
 	// comment's owner still owes a send the copy's session may take (copyHolder, which the send's
 	// heldBy names); the row waits for a later pass.
 	fallbackWaitsForAnEarlierEvent
+	// fallbackWithdrawn: the copy would be published, but the author has deleted the comment
+	// (fallbackCopyWithdrawn); the row is settled with nothing sent.
+	fallbackWithdrawn
 )
 
 // fallbackSend is the copy a pass publishes for one row: the envelope, whose dedupe key is the
@@ -1758,7 +1776,40 @@ func decideFallbackCopy(
 	} else if by != nil {
 		return fallbackWaitsForAnEarlierEvent, fallbackSend{heldBy: by}, nil
 	}
+	// Last, after every read the decision made: the comment must not be deleted. The delete marks
+	// the comment deleted and fails its mention in one commit, so a decision that read the mention
+	// failed by that delete finds the comment deleted here, and publishes nothing of the text the
+	// delete withdrew (fallbackCopyWithdrawn).
+	if withdrawn, err := fallbackCopyWithdrawn(ctx, deps, held); err != nil {
+		return 0, fallbackSend{}, err
+	} else if withdrawn {
+		return fallbackWithdrawn, fallbackSend{}, nil
+	}
 	return fallbackPublishes, fallbackSend{item: item, forward: forward}, nil
+}
+
+// fallbackWithdrawnQuery is fallbackCopyWithdrawn's one statement, named as fallbackClaimQuery is.
+const fallbackWithdrawnQuery = `
+		select exists (select 1 from comments where id = $1 and deleted_at is not null)
+	`
+
+// fallbackCopyWithdrawn reports whether the author has deleted held's comment, which withdraws
+// every copy of it the outbox holds. The delete (deleteComment in internal/dispatch/api) marks the
+// comment deleted, fails its pending mention attempts and settles its unsettled rows with nothing
+// published, in one commit. A pass that claimed a row before that commit can read the attempts
+// after it, and find the mention failed: the state in which it publishes. decideFallbackCopy
+// reads this after every other read of its decision, the attempts' among them, so a delete that
+// one of those reads saw is a commit this later statement sees too. It reads the comment and not
+// the row: a batch that read the mention before the delete can hold the row after it
+// (holdFallbackCopy), a row the delete never settled. A delete that commits after this read finds
+// the pass's decision made: the copy is a send in flight and goes as recorded, while the row
+// reads published = false, since the pass's record writes no settled row (recordFallbackCopies).
+func fallbackCopyWithdrawn(ctx context.Context, deps Deps, held fallbackCopy) (bool, error) {
+	var withdrawn bool
+	if err := deps.Store.Pool.QueryRow(ctx, fallbackWithdrawnQuery, held.commentID).Scan(&withdrawn); err != nil {
+		return false, fmt.Errorf("read whether comment %q is deleted: %w", held.commentID, err)
+	}
+	return withdrawn, nil
 }
 
 // fallbackCopyKey is the key of the session a row's copy reaches, as destination.key names it for

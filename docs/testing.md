@@ -636,10 +636,11 @@ It prints `WARNING: LIKELY CLEANUP/FINALIZER ISSUES`, then one `is reachable fro
 The rule covers the cleanup's argument as well as its closure, so an argument that reaches the object is the same defect: the room load `keepInstance` passed reached a document of its own, which is the finding this job made on a head where the closure itself was already weak, and the comment on that cleanup names the path it took (dispatch://INFRA-1085).
 A run that reports nothing is no proof on its own: the check runs at a garbage collection, so a short run can pass with the path present.
 `GOGC=10` beside the detector makes a single test likelier to fire it, not certain, so repeat the run before you read a quiet one as a clean one: with this fix reversed, `TestALiveWritesAskBlockKeepsItsWriterWhenAnotherProcessSettlesIt` under `GOGC=10 GODEBUG=checkfinalizers=1` fired in 2 of 3 runs for the implementer and in 1 of 6 for the reviewer, and at the fixed head it was quiet in 9 of 9.
-CI runs that command in `envoy-go-docs-finalizers` (`.github/workflows/ci-job-envoy-go-docs-finalizers.yaml`, which holds that job's steps), which the `envoy_go_race_docs` filter in `.github/workflows/ci.yaml` selects.
-It is a slow suite: a pull request runs it only with the label `full-ci` (or `lane:envoy_go_race_docs`), and the merge queue runs it on the tree the change lands as, which is where its result normally comes from (`.github/ci-notes/ci.md`, "Which lane a job runs in: the pull request or the merge queue").
+CI runs it in `envoy-go-race-docs` (`.github/workflows/ci-job-envoy-go-race-docs.yaml`), on the same line as the race detector, so one run of the package's tests serves both detectors, and on the package's line of `envoy-go`'s step "Test what the race build cannot run at all or at full size", which runs plain the tests the race build leaves out or shrinks.
+The `envoy_go_race_docs` and `envoy_go` filters in `.github/ci-filters.yaml` select them.
+Both are slow suites: a pull request runs them only with the label `full-ci` or that suite's `lane:` label, and the merge queue runs them on the tree the change lands as, which is where their result normally comes from (`.github/ci-notes/ci.md`, "Which lane a job runs in: the pull request or the merge queue").
 
-That job runs the command with `-v` for a second check Go's detector does not make:
+The race run streams the test binary's own output (`go test -json`) and so carries a second check Go's detector does not make:
 the package's `TestMain` prints `docs: <built> services built, <alive> still alive after <duration>` once the tests have run, and the line after it names each test that built a service still alive at the end of the run.
 A test that builds a `*Service` registers a cleanup that shuts it down, with `testcleanup.Add`.
 A service a test left running holds its rooms, and their documents, for the rest of the binary's run.
@@ -649,7 +650,7 @@ A settlement timer's callback therefore holds the service and the room's state w
 
 `packages/envoy/internal/dispatch/docs` is the only package of this repository that registers a cleanup today, and no repository-wide check holds that true:
 `grep -rn "runtime.AddCleanup\|runtime.SetFinalizer" --include=*.go .` finds those two sites and nothing else.
-A `runtime.AddCleanup` or `runtime.SetFinalizer` added in another package comes with a detector job of its own, in the same pull request.
+A `runtime.AddCleanup` or `runtime.SetFinalizer` added in another package puts `GODEBUG=checkfinalizers=1` on the go test line that already runs that package's tests, in the same pull request, rather than a job that runs them again; `.github/scripts/ci_job_reads.py`'s `CLEANUP_DETECTOR_PACKAGES` names the packages whose lines carry it.
 
 ## A database a Go test creates
 
@@ -772,11 +773,11 @@ the server under test, which a loaded machine can keep open past that second.
 
 So a read that answered within `referencesSinceWait` was not held back: what it listed is what it
 owed, and a wrong answer fails the test at once. Only a read held past that wait is read again,
-for as long as the horizon says it is held back (the wait of the next section, run as a
-`horizontest.Watch`). The helper is `awaitHorizonRead`, with `awaitSinceRead` for a since read
-(`packages/envoy/internal/dispatch/api/references_test.go`); it takes the read as a function, so
-each call site keeps its own reader. The event log route answers through the same horizon
-(`sinceHorizon`), and its tests read it with the same helper (`events_log_test.go`).
+until the answer is whole (the wait of the next section, run as a watch in the test's own process,
+`horizontest.NewWatchInProcess`). The helper is `awaitHorizonRead`, with `awaitSinceRead` for a
+since read (`packages/envoy/internal/dispatch/api/references_test.go`); it takes the read as a
+function, so each call site keeps its own reader. The event log route answers through the same
+horizon (`sinceHorizon`), and its tests read it with the same helper (`events_log_test.go`).
 
 A test that takes one read as final fails under an event write held past that second:
 `TestAnAnsweredAsksPartEdgesAreListedSince` failed about one run in six on main, 7 of 40 measured
@@ -784,13 +785,16 @@ for dispatch://INFRA-592, and in this repository's own pod on 2026-11-02 it fail
 with a transaction held 2 s of every 2.5 s; under that same pulse, reading again, it passed 40 of
 40. Those runs were measured while any transaction on the server held the horizon back.
 
-Prove such a test with the horizon held: hold an event write of the test's own database open past
-`referencesSinceWait`, as `holdEventWrite` (`packages/envoy/internal/dispatch/api/event_horizon_helpers_test.go`)
-does. A transaction in another database, such as a `psql` loop that runs
-`select pg_current_xact_id(), pg_sleep(2)`, no longer holds the horizon, so it proves nothing.
-The hold must end before `horizontest.OwnHoldBound`, 5 s: the re-read's wait (`horizontest.Watch`)
-fails on a hold of the test's own database that has stood that long, as an own-database hold, and
-names it. A hold past `referencesSinceWait` that ends inside that bound is one the re-read waits out.
+Prove such a test with the horizon held: hold an event write of the test's own database open with
+`holdEventWrite` (`packages/envoy/internal/dispatch/api/event_horizon_helpers_test.go`), and call
+the `release` it returns on a timer longer than `referencesSinceWait` and shorter than
+`horizontest.OwnHoldBound`, 5 s. `holdEventWrite` ends the hold only on that release, at the
+test's first failure or at its end, never on a clock of its own. A transaction in another
+database, such as a `psql` loop that runs `select pg_current_xact_id(), pg_sleep(2)`, no longer
+holds the horizon, so it proves nothing. The re-read's wait (`horizontest.NewWatchInProcess`)
+fails on a hold of the test's own database that has stood `OwnHoldBound`, as an own-database hold,
+and names it; a hold past `referencesSinceWait` that the timer releases inside that bound is one
+the re-read waits out.
 
 ## A test that waits for the event feed's first frame
 
@@ -800,27 +804,32 @@ That frame is the last thing a new subscription sends, not the first: `feedEvent
 (`packages/envoy/internal/dispatch/api/live_events.go`, `event_stream_relay.go`), and every event write of Dispatch's database holds the horizon back until it ends, so the frame is as late as the longest event write open there: a test's own fixture, or the server's own writes on a loaded machine.
 No fixed deadline bounds that, and a deadline raised to fit the worst run anyone has seen is the same flake on the day a write is held for a minute.
 
-So the test waits on what the server says about itself.
-`events.StallWarning` is the message `Horizon.warnStall` logs, every `warnEvery`, while a pending observation is held back, naming the holder's kind, pid, database and query.
-The wait is `horizontest.Wait` (`packages/envoy/internal/dispatch/horizontest`), an ordinary package so that the three packages whose tests wait on a horizon share it: `cmd/dispatch`'s `waitEventsStart` (`live_events_wait_test.go`, which `openLiveEvents` calls) reads the warnings out of the Dispatch process's output (`horizontest.Lines`), and `internal/dispatch/api` and `internal/dispatch/routes`, whose servers run in the test's own process, read them as records (`horizontest.WaitInProcess`, `PollInProcess`, `Listen`), so `pending_for` and `database` are typed values there and are not parsed.
-The event feed's frames are read on a goroutine that sets no read deadline, because a gorilla connection is corrupt after a read timeout; while the warning keeps arriving the wait goes on, and it fails when the warning stops.
-Count the warnings, never whether one was seen: a check that latches on the first warning waits for ever.
+So no wait on the horizon has a clock of its own.
+The wait is `horizontest` (`packages/envoy/internal/dispatch/horizontest`), an ordinary package so that the three packages whose tests wait on a horizon share it.
+The event feed's frames are read on a goroutine that sets no read deadline, because a gorilla connection is corrupt after a read timeout.
 In `api` the same wait covers every other wait behind the horizon: a live event, the relay's publishing and a subscription reaching it, the delivery hub's event feed and the deltas it drives, a persisted horizon, and a pass of the suggestion outcome sweep on a log that holds events, which reads only up to the horizon and awaits it on its first pass (`suggestion_outcomes_test.go`; the sweep's own settle is waited out first, on the database's clock, so the wait is on the horizon alone).
-A sweep over an empty log has nothing above its horizon to wait for, so `sweep_runners_test.go` and the two-process sweep row in `cmd/dispatch` keep their own bounds (measured under a 45 s and a 75 s hold: they pass at once).
-`cmd/dispatch`'s `multiprocess` row that waits on another process's event, on its own process's relay, polls the same way over that process's output (`pollBehindHorizon`).
-`Listen` hands every record on to the handler it replaced, and when that is slog's own default handler it writes as that handler does through a logger of its own: slog's handler writes through the log package, and a record handed to it while `slog.SetDefault` has the log package pointed back at the new handler deadlocks every goroutine that logs (`TestListenOverSlogsOwnDefaultHandlerPassesEveryRecordOn`).
+A sweep over an empty log has nothing above its horizon to wait for, so `sweep_runners_test.go` waits for its fact with `testwait` (no horizon wait, and no bound but the test binary's deadline), and the two-process sweep row in `cmd/dispatch` keeps its own bound (measured under a 45 s and a 75 s hold: both pass at once).
 
-The wait still ends in a named failure, rather than holding the run until the package's timeout; the bound is a signal rather than a clock.
+`cmd/dispatch`'s `waitEventsStart` (`live_events_wait_test.go`, which `openLiveEvents` calls) waits on what the Dispatch process says about itself (`horizontest.Wait`).
+`events.StallWarning` is the message `Horizon.warnStall` logs, every `warnEvery`, while a pending observation is held back, naming the holder's kind, pid, database and query; the wait reads it out of the process's output (`horizontest.Lines`), and while the warning keeps arriving the wait goes on.
+Count the warnings, never whether one was seen: a check that latches on the first warning waits for ever.
+`cmd/dispatch`'s `multiprocess` row that waits on another process's event, on its own process's relay, polls the same way over that process's output (`pollBehindHorizon`).
+Such a wait still ends in a named failure, rather than holding the run until the package's timeout; the bound is a signal rather than a clock.
 It fails when no warning at all has arrived within a base bound, when no new warning has arrived within an extension window, when a warning names the test's own database for a holder that has held the horizon back at least `horizontest.OwnHoldBound` — a client of Dispatch's own database holding its readers back that long is the defect, not a stall to wait out — and a drain margin before the run's own deadline, so the failure prints rather than being cut off by the package timeout.
-Silence alone does not fail a wait: the warnings come from a goroutine of the horizon's that a loaded machine can put off while an event write still holds the horizon, so at the base bound or the end of an extension window the wait reads the database's oldest event writer itself, with the query the diagnosis runs (`events.StallHolderSQL`), through the test's own pool or, for a Dispatch process, a connection of its own (`horizontest.Dialed`), and fails only when no event write holds the horizon; a holder it finds counts as a warning.
-That read finds no holder when the machine is merely slow to run the server: a relay the CPU has not run yet has no observation pending on an event write, so the horizon logs nothing, and the base bound fails the row for the machine's speed.
-A test whose verdict is what arrives rather than how soon calls `horizontest.UntilTheDeadline(t)` first: every wait on the horizon it and its subtests make then goes on while the horizon says nothing, and ends only at an own hold past `horizontest.OwnHoldBound` (named by a warning or found by the wait's own read of the holder) or at the drain, naming what it waited for; under `go test -timeout 0` there is no drain, and such a wait has no end, as `testwait.Until`'s has none.
-`packages/envoy/internal/dispatch/api/live_events_horizon_test.go` calls it in every test that waits on the horizon (dispatch://INFRA-3904): its replaced-log row failed at the base bound on a box at load 650-860, and an event of its feed held 3.5 s with no event write open fails it the same way.
-Each failure names the newest warning, so the holder is in the output; the own-database failure also names that client's `application_name` and pid out of the warning, because a transaction in that database can be anyone's — an operator's `psql`, another test's fixture — and not only Dispatch's own.
+Silence alone does not fail it: the warnings come from a goroutine of the horizon's that a loaded machine can put off while an event write still holds the horizon, so at the base bound or the end of an extension window the wait reads the database's oldest event writer itself, with the query the diagnosis runs (`events.StallHolderSQL`), through a connection of its own (`horizontest.Dialed`), and fails only when no event write holds the horizon; a holder it finds counts as a warning.
+
+`internal/dispatch/api` and `internal/dispatch/routes`, whose servers run in the test's own process, wait with `horizontest.WaitInProcess`, `PollInProcess`, `AwaitPersisted` and `NewWatchInProcess`, which read no warning.
+Such a server's horizon logs to `slog.Default`, which every test of the process shares, and a test that changes the default logger cannot run beside the others (the rule above, "A test in `internal/dispatch/api` runs beside the others").
+Nor does silence end such a wait: when the machine is merely slow to run the server, nothing holds the horizon — a relay the CPU has not run yet has no observation pending on an event write, so the horizon logs nothing and the database shows no event writer — and beside seven other tests that silence outlasted the base bound (dispatch://INFRA-3904): `TestEventStreamRelaySubscribeRacingTheLastCancelReceivesTheNextEvent`'s next event did not arrive in 3.251 s, the horizon having stopped warning 3 s before, and the replaced-log row of `live_events_horizon_test.go` failed at the base bound on a box at load 650-860.
+So the wait reads the database's oldest event writer itself, through the server's own pool, from the base bound on, again an extension window after each holder it found, and no more often than every `horizontest.Poll`.
+It ends only when what it waits for arrives, when a holder it read is a client of the test's own database that has held the horizon back at least `horizontest.OwnHoldBound`, or at the drain, where it fails naming what it waited for and the newest holder it read.
+Under `go test -timeout 0` there is no drain, and such a wait has no end, as `testwait.Until`'s has none.
+
+Each failure names the newest warning or holder, so the holder is in the output; the own-database failure also names that client's `application_name` and pid, because a transaction in that database can be anyone's — an operator's `psql`, another test's fixture — and not only Dispatch's own.
 The base bound and the extension window are each three times a measurement taken under load or read from the server's own constants; `events/horizon.go`'s `horizonDiagnosisTimeout` is in the window between two warnings, because `warnStall` logs after its `pg_stat_activity` diagnosis.
-The other two numbers are neither: `horizontest.Poll` (250 ms) is the rate at which the wait samples the warnings, below a tenth of the extension window so it costs that window nothing, and `horizontest.Drain` (30 s) is what the wait leaves of the run's own deadline so that its failure prints instead of being cut off by the package timeout, which would name no test.
-`horizontest.OwnHoldBound` (5 s) is three times a measurement of its own: sampling `pg_stat_activity` every 100 ms over 10 runs of that test under the load below, in this repository's pod on 2026-11-10, `nproc` 2, PostgreSQL 18.6, 202 samples caught a transaction holding a transaction id in a `dispatch_test_*` database, across 27 backends, all of them carrying no `application_name` — which is what Dispatch's own pools look like and what the test's own fixtures look like too, so the samples do not say whose the transactions were — and the worst age was 1.449 s.
-The bound is read off the warning itself, so the wait needs no clock of its own: the shorter of the warning's `pending_for`, the age of the oldest pending observation, and the age of the holder it names, its `xact_start` against the warning's own time. `pending_for` alone is not the holder's: an earlier holder released since can have carried the oldest observation past the bound while the holder now named began a moment ago. A hold shorter than the bound extends the wait.
+The other two numbers are neither: `horizontest.Poll` (250 ms) is the rate at which a wait samples the warnings, and the most often a wait in the test's own process reads the holder, below a tenth of the extension window so it costs that window nothing, and `horizontest.Drain` (30 s) is what the wait leaves of the run's own deadline so that its failure prints instead of being cut off by the package timeout, which would name no test.
+`horizontest.OwnHoldBound` (5 s) is three times a measurement of its own: sampling `pg_stat_activity` every 100 ms over 10 runs of `cmd/dispatch`'s `events_start` test under the load below, in this repository's pod on 2026-11-10, `nproc` 2, PostgreSQL 18.6, 202 samples caught a transaction holding a transaction id in a `dispatch_test_*` database, across 27 backends, all of them carrying no `application_name` — which is what Dispatch's own pools look like and what the test's own fixtures look like too, so the samples do not say whose the transactions were — and the worst age was 1.449 s.
+The bound is read off the warning itself, so the wait needs no clock of its own: the shorter of the warning's `pending_for`, the age of the oldest pending observation, and the age of the holder it names, its `xact_start` against the warning's own time. `pending_for` alone is not the holder's: an earlier holder released since can have carried the oldest observation past the bound while the holder now named began a moment ago. A hold shorter than the bound extends the wait. A holder the wait read itself holds for its own age, on the database's clock.
 Short thresholds are why the Horizon runs one diagnosis at a time: at a `warnEvery` below that diagnosis bound, several scans at once would queue for the two connections of the horizon's own pool, ahead of the observation the waiting reader needs.
 
 The 2 s pulse above does not prove such a test: a hold shorter than the wait's own bound delays no `events_start` past it.

@@ -25,6 +25,7 @@ import (
 // readers take both forms before any producer moves. Its own agent subject, which the plugin adds
 // to every registration itself, is named in no warning, and is delivered in either form too.
 func TestARegistrationInTheOldFormIsToldTheNewFormAndReceivesEither(t *testing.T) {
+	t.Parallel()
 	const sessionID = "ses_old_form"
 	rig := newSessionConsumerRig(t)
 	legacy := "notifications.dispatch.issue.INFRA-12.>"
@@ -69,6 +70,7 @@ func TestARegistrationInTheOldFormIsToldTheNewFormAndReceivesEither(t *testing.T
 // A registration naming only the new form, or topics the rename leaves alone, is named in no
 // warning: the warning is for a caller still on the old form.
 func TestARegistrationInTheNewFormIsNamedInNoWarning(t *testing.T) {
+	t.Parallel()
 	const sessionID = "ses_new_form"
 	rig := newSessionConsumerRig(t)
 	body, err := json.Marshal(map[string]any{
@@ -94,6 +96,7 @@ func TestARegistrationInTheNewFormIsNamedInNoWarning(t *testing.T) {
 // role with no warning. The claim record is keyed by the name either way, so GET /v1/roles/<name>
 // reads the holder the new form's claim gave it.
 func TestARoleClaimedInEitherFormClaimsItsName(t *testing.T) {
+	t.Parallel()
 	const sessionID = "ses_role_forms"
 	const role = "legion-infra-infra-12-architect"
 	rig := newSessionConsumerRig(t)
@@ -138,6 +141,7 @@ func TestARoleClaimedInEitherFormClaimsItsName(t *testing.T) {
 // same name under no project, which keeps its bare key and its holder. The Legion role under its
 // own project, and each bare name, are claimed as before.
 func TestARoleClaimUnderAProjectItDoesNotWorkForIsRefused(t *testing.T) {
+	t.Parallel()
 	const sessionID = "ses_role_project"
 	rig := newSessionConsumerRig(t)
 	rig.register(t, sessionID, nil)
@@ -185,6 +189,7 @@ func TestARoleClaimUnderAProjectItDoesNotWorkForIsRefused(t *testing.T) {
 // plugin that followed both forms and dropped one reads from `removed` that the other is gone too,
 // rather than finding it missing at its next registration and adding it back.
 func TestAnUnsubscribeNamesEveryFormItRemoved(t *testing.T) {
+	t.Parallel()
 	rig := newInterestRig(t)
 	const old, current = "notifications.dispatch.issue.KEY-1.>", "notifications.dispatch.issue.KEY.KEY-1.>"
 	subscribeInterest(t, rig.mux, []string{old})
@@ -216,6 +221,7 @@ func TestAnUnsubscribeNamesEveryFormItRemoved(t *testing.T) {
 // no claim is keyed by, so the publish is answered 202 kept with no holder and the message
 // reaches nobody.
 func TestARoleIsFoundByEitherFormOfItsName(t *testing.T) {
+	t.Parallel()
 	client := setupPublishTestClient(t)
 	registry, sessions := setupSessionsTest(t, nil, nil)
 	state := withPublishRoute(t, &listenerDeps{client: client, registry: registry, sessions: sessions})
@@ -281,6 +287,7 @@ func TestARoleIsFoundByEitherFormOfItsName(t *testing.T) {
 // registration routes give an old form, naming the new one. The same role in its new form is
 // counted and warned nowhere.
 func TestARoleNamedInTheOldFormIsCountedWhereverItIsRead(t *testing.T) {
+	t.Parallel()
 	const role = "lead-reviewer"
 	const holder = "ses_role_read_holder"
 	harness := newListenerDeliveryHarness(t)
@@ -358,6 +365,7 @@ func TestARoleNamedInTheOldFormIsCountedWhereverItIsRead(t *testing.T) {
 // counted as an old form, and the publish names no new form of it: a mistyped name is no reader
 // the old form's refusal would stop, and the claim route refuses such a name outright.
 func TestANameThatIsNoRoleIsNotCountedAsAnOldForm(t *testing.T) {
+	t.Parallel()
 	const name = "Lead-Reviewer"
 	harness := newListenerDeliveryHarness(t)
 	counter := &legacyKinds{}
@@ -419,6 +427,7 @@ func (c *legacyKinds) counted() []string {
 // form. The session's own agent subject, which the subscribe route writes into the row itself, and
 // its role's lane, which the stream does not carry and so no filter holds, are not counted.
 func TestAStoredOldFormTopicIsCountedEachTimeTheRowIsReadIntoTheFilter(t *testing.T) {
+	t.Parallel()
 	const sessionID = "ses_stored_old_form"
 	rig := newSessionConsumerRig(t)
 	rig.register(t, sessionID, map[string]any{"topics": []string{"notifications.dispatch.issue.INFRA-12.>"}})

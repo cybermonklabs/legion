@@ -45,6 +45,7 @@ import (
 // store (testnats.Server.CutStream), and on a one-copy stream, which has no other copy for the
 // server to recover the cut block from.
 func TestASessionThatDeregisteredBeforeAWholeLossComesBackAtTheStreamsFirstSequence(t *testing.T) {
+	t.Parallel()
 	srv, url := testnats.Start(t)
 	client, err := bus.ConnectOwningStream([]string{url}, bus.WithReplicas(1))
 	if err != nil {

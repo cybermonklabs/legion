@@ -10,6 +10,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The cap on a document's queued conditional edits holds across envoy-dispatch processes (plan D9,
@@ -177,10 +178,20 @@ func TestConditionalEditAdmissionsOfADocumentWaitOnItsQueueLockThroughOneConnect
 			results <- acquired{release: release, err: err}
 		}()
 	}
-	if waiting := storetest.WaitForLockWaiters(t, holder, 1, roomWait(t)); waiting < 1 {
-		t.Fatal("no admission came to wait on the document's queue lock")
-	}
-	if waiting := storetest.WaitForLockWaiters(t, holder, storm, pileUpWindow); waiting != 1 {
+	storetest.WaitForLockWaiters(t, holder, 1)
+	// A reading, not a wait for a fact: the admissions get pileUpWindow to pile onto the lock, and
+	// a correct run never queues a second, so a loaded machine only shortens what the window sees
+	// and cannot fail it.
+	waiting := 0
+	testwait.Holds(pileUpWindow, 10*time.Millisecond, func() bool {
+		count, err := storetest.LockWaiters(context.Background(), holder)
+		if err != nil {
+			t.Fatal(err)
+		}
+		waiting = count
+		return count >= storm
+	})
+	if waiting != 1 {
 		t.Fatalf("%d of the service's connections wait on the document's queue lock, want 1", waiting)
 	}
 	if inUse := service.store.Pool.Stat().AcquiredConns(); inUse != 1 {

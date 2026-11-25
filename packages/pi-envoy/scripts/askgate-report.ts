@@ -665,7 +665,7 @@ async function main(): Promise<void> {
     process.exit(2);
   }
   if (args.mode === "dispatch") {
-    const read = await readDecisionDocuments(sessionDispatch(), args.project, args.since);
+    const read = await readDecisionDocuments(await sessionDispatch(), args.project, args.since);
     const report = computeDispatchReport(read, args.project, args.sinceText);
     for (const line of dispatchReportLines(report, args.json)) console.log(line);
     return;
