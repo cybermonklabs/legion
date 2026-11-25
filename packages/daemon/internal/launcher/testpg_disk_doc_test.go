@@ -1,6 +1,7 @@
 package launcher
 
 import (
+	"fmt"
 	"regexp"
 	"strings"
 	"testing"
@@ -21,8 +22,11 @@ const testPGDiskDocExtract = "testpg_disk_doc_extract.txt"
 // and give a `kubectl logs` command that shows it, on the `roles` container, whose log holds it: a
 // guide that names another line, or sends the agent to another container's log, leaves the agent
 // nothing to find and no cause. The command is held whole, as the one code span the agent copies:
-// the container it names with -c, and a filter after it for the line. The region is read out of
-// the committed copy (testPGDiskDocExtract) with its whitespace collapsed, since the guide wraps.
+// the container it names with -c, and a filter after it for the line. The region must also give
+// the bound on the databases the line names, at most pgDiskNamed and then `, and <n> more`, which
+// keeps the line one line where a harness left thousands: a guide that says the line names every
+// database sends the agent looking for one it does not name. The region is read out of the
+// committed copy (testPGDiskDocExtract) with its whitespace collapsed, since the guide wraps.
 func TestPGDiskTheGuideNamesTheResetLineAndTheCommandThatShowsIt(t *testing.T) {
 	_, flat := testdoc.Region(t, testPGDiskDocExtract, "the reset's line and how to read it",
 		"`legion-testpg: reset of the cluster in <data directory>", "a role reads it there or in `$LEGION_TEST_PG_LOG`.")
@@ -37,6 +41,11 @@ func TestPGDiskTheGuideNamesTheResetLineAndTheCommandThatShowsIt(t *testing.T) {
 	}
 	if !named {
 		t.Errorf("the guide's region in %s names no line starting %q, the line a reset of the test database writes", testPGDiskDocExtract, resetLine)
+	}
+	for _, bound := range []string{fmt.Sprintf("at most %d databases", pgDiskNamed), "`, and <n> more`"} {
+		if !strings.Contains(flat, bound) {
+			t.Errorf("the guide's region in %s does not say %q, the bound on the databases a reset's line names (pgDiskNamed)", testPGDiskDocExtract, bound)
+		}
 	}
 	for _, command := range commands {
 		read, filter, _ := strings.Cut(command, "|")

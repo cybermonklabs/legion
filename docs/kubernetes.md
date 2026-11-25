@@ -497,7 +497,7 @@ Then:
   a reset that waits for the lock resets the cluster that start made, and an `ensure` that waits for a reset finds the new cluster serving.
   It runs under a bound of its own, 5 minutes (`testPGResetBound`), and not under the 60 s of an `ensure`.
   Its steps run in this order.
-  It reads each database's name, owner and size where the server answers, as the cluster's superuser over the socket, which a login out of connections leaves open to it.
+  It reads the name, owner and size of the first 20 databases in name order, and how many more the cluster holds, where the server answers, as the cluster's superuser over the socket, which a login out of connections leaves open to it.
   It stops the server, fast and then immediate, and only where the pid `postmaster.pid` names is a process in the data directory, since a stale file may name any process of the container, a role's among them.
   It waits up to 60 s until no process has the data directory as its working directory;
   a process still there at that bound is named and the cluster is left where it is, so the next check under the floor tries again and a reset never moves or deletes what a process still holds.
@@ -514,7 +514,8 @@ Then:
 - **The reset's line.**
   A reset writes one line to the `roles` container's log, behind the launcher's own `legion-testpg: ` prefix, once it has read the databases and stopped the server and before its rename.
   Once the new cluster has started, it appends the same line to the server's log, after the new cluster's first lines, since the new cluster's `initdb` starts that log over:
-  `legion-testpg: reset of the cluster in <data directory>: <free> free of <size> on its disk, under the floor of 2.0 GiB; it held <database> (owner <role>, <size>), …`, each database that is no template, in name order, with the free space, the disk's size and the floor each in GiB to a tenth, or in MiB below one GiB, and each database's size as PostgreSQL's `pg_size_pretty` writes it.
+  `legion-testpg: reset of the cluster in <data directory>: <free> free of <size> on its disk, under the floor of 2.0 GiB; it held <database> (owner <role>, <size>), …`, naming at most 20 databases that are no template, the first 20 in name order, and ending `, and <n> more` where the cluster held more, with the free space, the disk's size and the floor each in GiB to a tenth, or in MiB below one GiB, and each database's size as PostgreSQL's `pg_size_pretty` writes it.
+  The launcher writes a line longer than 64 KiB to the container's log as several lines, so the list is bounded to keep the reset's line one line.
   Each control character of a database's name or of its owner's is written `?`, since a role names its own databases, and a newline in a name would otherwise split the line and could forge a second `legion-testpg: reset` line.
   Where the server did not answer, the line ends `the server did not answer, so it read no databases`, and where the list failed, `the server answered but the list of its databases failed, so it read none`.
   `kubectl logs <pod> -c roles | grep 'legion-testpg: reset'` finds it, and a role reads it there or in `$LEGION_TEST_PG_LOG`.

@@ -338,6 +338,49 @@ func assertHeld(t *testing.T, line string, names ...string) {
 	}
 }
 
+// pgDiskNamed is the most databases a reset's line names (legion-testpg's reset_locked, most).
+const pgDiskNamed = 20
+
+// A harness that makes a database at each run and never drops it can leave thousands, and the
+// launcher writes a line longer than maxLogLine as several, each after the first behind its prefix
+// again, at a byte a database's name can put there. So the reset's line names the first
+// pgDiskNamed databases that are no template, in name order, and ends `, and <n> more` for the
+// rest. With the cluster holding one more than that, the container's log holds one reset line,
+// which names the first pgDiskNamed, each with its owner and its size, and ends `, and 1 more`,
+// and the server's log holds the same line (assertReset).
+func TestPGDiskTheResetLineNamesTheFirstTwentyDatabasesAndCountsTheRest(t *testing.T) {
+	r := newPGDiskRig(t)
+	// Every cluster holds postgres and the DSN's legion_test besides the databases a case makes.
+	var names []string
+	for i := range pgDiskNamed - 1 {
+		names = append(names, fmt.Sprintf("tpg_%02d", i))
+	}
+	r.makeDatabases(t, names...)
+	out, err := r.psql("select datname || ' ' || pg_get_userbyid(datdba) from pg_database where not datistemplate", r.superuserSocket()...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	held := strings.Split(out, "\n")
+	// The order of the names' bytes, which is the order of PostgreSQL's name type, collation C.
+	slices.Sort(held)
+	if len(held) != pgDiskNamed+1 {
+		t.Fatalf("before the reset the cluster holds %d databases that are no template, want %d: %q", len(held), pgDiskNamed+1, held)
+	}
+	first := make([]string, pgDiskNamed)
+	entries := make([]string, pgDiskNamed)
+	for i, database := range held[:pgDiskNamed] {
+		name, owner, _ := strings.Cut(database, " ")
+		first[i] = name
+		entries[i] = regexp.QuoteMeta(name+" (owner "+owner+", ") + `[0-9]+ (bytes|kB|MB|GB|TB)\)`
+	}
+	r.check(pgDiskUnder)
+	line := r.assertReset(t)
+	if want := regexp.MustCompile(`; it held ` + strings.Join(entries, ", ") + `, and 1 more$`); !want.MatchString(line) {
+		t.Errorf("the reset line %q does not name the first %d databases in name order, %q, each with its owner and its size, and end %q",
+			line, pgDiskNamed, first, ", and 1 more")
+	}
+}
+
 // A server that does not answer is reset all the same, since waiting on it would let a full disk
 // crash it again and again, and the line says it read no databases.
 func TestPGDiskUnderTheFloorResetsAServerThatDoesNotAnswer(t *testing.T) {
