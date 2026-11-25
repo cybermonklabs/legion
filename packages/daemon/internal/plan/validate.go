@@ -32,11 +32,11 @@ const notYet = " This release of Legion does not carry it out yet."
 // plan's own role blocks define, refused once for each role at the first step that names it; then
 // one cycle of each set of tasks that need each other (cycles), named by its first task in id order
 // with the chain from that task; then the causes of the tasks with a sub-owner, of their parts, and
-// of each need of a part (partRefusals), a task of the top level's among them, which read the same
-// cycles, so a need on a cycle gets the cycle's reason alone. It refuses no plan for a step the plan
-// lacks. Its one error is ctx's, once ctx ends before the check of cycles is done: an owner writes
-// the plan, and register_plan checks it before the fact lock, where only the request's own end can
-// stop it.
+// of each need of a part (partRefusals), a task of the top level's among them, which read the needs
+// on those cycles from the same pass, so a need on a cycle gets the cycle's reason alone. It refuses
+// no plan for a step the plan lacks. Its one error is ctx's, once ctx ends before the checks of
+// cycles and of parts are done: an owner or a sub-owner writes the plan, and register_plan checks
+// it before the fact lock, where only the request's own end can stop it.
 func Validate(ctx context.Context, p Plan, d Deployment) ([]Refusal, error) {
 	if len(p.Tasks) == 0 {
 		return []Refusal{{Reason: noTask}}, nil
@@ -95,7 +95,11 @@ func Validate(ctx context.Context, p Plan, d Deployment) ([]Refusal, error) {
 				"step %d of task %s names the role %s, which neither the deployment nor the plan defines.", i+1, task.ID, step.Role)})
 		}
 	}
-	found, err := cycles(ctx, p.Tasks)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	ended := stepsOf(ctx)
+	found, onCycle, err := cycles(p.Tasks, ended)
 	if err != nil {
 		return nil, err
 	}
@@ -106,25 +110,33 @@ func Validate(ctx context.Context, p Plan, d Deployment) ([]Refusal, error) {
 		}
 		refusals = append(refusals, Refusal{Task: cycle[0], Reason: fmt.Sprintf("task %s needs itself: %s.", cycle[0], strings.Join(chain, ", "))})
 	}
-	return append(refusals, partRefusals(p.Tasks)...), nil
+	parts, err := partRefusals(p.Tasks, onCycle, ended)
+	if err != nil {
+		return nil, err
+	}
+	return append(refusals, parts...), nil
 }
 
 // partRefusals is Validate's causes of the tasks with a sub-owner, of their parts, and of each need
 // of a part, in task id order, a task's own causes together, one for each cause:
 //   - a task that names both steps and a sub-owner, whose work is its parts;
 //   - for each of its needs, in its block's order, the one reason the rules of parts give it
-//     (waits.needReasons, which leaves each need on a cycle of needs to its cycle's reason,
-//     cycleNeeds): a need of a part of another task, which no task needs; or a need that is done
-//     only after the task itself starts, so the task never starts and the tasks above it are never
-//     done;
+//     (waits.needReasons, which leaves each need of onCycle, the needs on a cycle of needs that
+//     cycles found, to its cycle's reason): a need of a part of another task, which no task needs;
+//     or a need that is done only after the task itself starts, so the task never starts and the
+//     tasks above it are never done;
 //   - a task whose sub-owner's agent takes the name (SubOwnerAgent) of the agent of a task before
 //     it in id order: one claim cannot be two sub-owners.
 //
 // A part may need its siblings and a task of the top level that does not wait for its own task,
-// which Legion carries out.
-func partRefusals(tasks []Task) []Refusal {
+// which Legion carries out. It reads ended as the check of cycles does (stepsOf), and answers its
+// error once it has one.
+func partRefusals(tasks []Task, onCycle map[waitEdge]bool, ended func() error) ([]Refusal, error) {
 	w := newWaits(tasks)
-	refused := w.needReasons(cycleNeeds(tasks))
+	refused, err := w.needReasons(onCycle, ended)
+	if err != nil {
+		return nil, err
+	}
 	named := map[claim.Agent]string{}
 	var refusals []Refusal
 	for _, id := range w.ids {
@@ -150,7 +162,7 @@ func partRefusals(tasks []Task) []Refusal {
 		}
 		named[agent] = id
 	}
-	return refusals
+	return refusals, nil
 }
 
 // wordList is words joined as a sentence lists them: "a", "a and b", "a, b and c".
@@ -161,9 +173,23 @@ func wordList(words []string) string {
 	return strings.Join(words[:len(words)-1], ", ") + " and " + words[len(words)-1]
 }
 
-// contextSteps is how many steps of the check of cycles pass between two reads of its context.
-// Each step is one task or one need, so a check whose request has ended stops within that many.
+// contextSteps is how many steps of the checks of cycles and of parts pass between two reads of
+// their context. Each step is one task, one need or one wait, so a check whose request has ended
+// stops within that many.
 const contextSteps = 1024
+
+// stepsOf is the read of ctx that the checks of cycles and of parts make at each step: it reads
+// ctx's error once in contextSteps calls, and answers it once ctx has ended. One count runs over
+// both checks, which Validate makes one after the other on one request.
+func stepsOf(ctx context.Context) func() error {
+	steps := 0
+	return func() error {
+		if steps++; steps%contextSteps != 0 {
+			return nil
+		}
+		return ctx.Err()
+	}
+}
 
 // cycles is one cycle of needs for each set of tasks that need each other: each strongly
 // connected component of the tasks' needs that holds a cycle, which is one of more than one task
@@ -174,20 +200,13 @@ const contextSteps = 1024
 // their needs, and a set gives one reason however many cycles run through it: a search from
 // every need, which named the shortest cycle through each one, was quadratic on a ring of tasks,
 // and Dispatch takes an owner's plan of 10,000 of them. Each cycle starts at its set's first task,
-// and the cycles are in the order of those tasks' ids. A need is a task id (FromBlocks); one that
-// names no task of tasks closes no cycle. cycles reads ctx as it goes and answers ctx's error
-// once ctx has ended.
-func cycles(ctx context.Context, tasks []Task) ([][]string, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	steps := 0
-	ended := func() error {
-		if steps++; steps%contextSteps != 0 {
-			return nil
-		}
-		return ctx.Err()
-	}
+// and the cycles are in the order of those tasks' ids. onCycle is each need that lies on a cycle,
+// from the same pass: a need between two tasks of one component, which holds a cycle through each
+// need inside it, a task's need of itself among them. The rules of parts give such a need no
+// reason of their own (partRefusals), since its cycle's reason names it. A need is a task id
+// (FromBlocks); one that names no task of tasks closes no cycle. cycles reads ended at each step
+// (stepsOf) and answers its error once it has one.
+func cycles(tasks []Task, ended func() error) (found [][]string, onCycle map[waitEdge]bool, err error) {
 	at := make(map[string]int, len(tasks))
 	for i, task := range tasks {
 		at[task.ID] = i
@@ -202,7 +221,15 @@ func cycles(ctx context.Context, tasks []Task) ([][]string, error) {
 	}
 	component, count, err := components(needs, ended)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
+	}
+	onCycle = map[waitEdge]bool{}
+	for i, of := range needs {
+		for _, needed := range of {
+			if component[needed] == component[i] {
+				onCycle[waitEdge{tasks[i].ID, tasks[needed].ID}] = true
+			}
+		}
 	}
 	// Each component's first task in id order, and whether it holds a cycle.
 	first := make([]int, count)
@@ -220,14 +247,13 @@ func cycles(ctx context.Context, tasks []Task) ([][]string, error) {
 	for i := range parent {
 		parent[i] = -1
 	}
-	var found [][]string
 	for c := range count {
 		if members[c] == 1 && !itself[c] {
 			continue
 		}
 		path, err := cycleFrom(needs, component, parent, first[c], ended)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		cycle := make([]string, len(path))
 		for i, task := range path {
@@ -236,13 +262,14 @@ func cycles(ctx context.Context, tasks []Task) ([][]string, error) {
 		found = append(found, cycle)
 	}
 	slices.SortFunc(found, slices.Compare)
-	return found, nil
+	return found, onCycle, nil
 }
 
-// components numbers the strongly connected components of the graph in which task i needs each
-// task of needs[i], by Tarjan's algorithm kept on explicit stacks, so a chain of 10,000 needs
-// costs no call stack: component[i] is task i's component, of count in all. It reads ended once
-// for each task and each need, and answers its error once it has one.
+// components numbers the strongly connected components of the graph in which node i leads to each
+// node of needs[i], a task to each task it needs (cycles), or a moment of a task to each moment it
+// waits for (waits.needReasons), by Tarjan's algorithm kept on explicit stacks, so a chain of
+// 10,000 needs costs no call stack: component[i] is node i's component, of count in all. It reads
+// ended once for each node and each edge, and answers its error once it has one.
 func components(needs [][]int, ended func() error) (component []int, count int, err error) {
 	const unvisited = -1
 	// order is the order each task was first reached in, and low the earliest order reached from
@@ -345,42 +372,16 @@ func cycleFrom(needs [][]int, component, parent []int, task int, ended func() er
 	panic(fmt.Sprintf("plan: task %d leads back to itself by no need inside its component", task))
 }
 
-// cycleNeeds is each need of tasks that lies on a cycle of needs: a need between two tasks of one
-// strongly connected component (components), which holds a cycle through each need inside it, and
-// a task's need of itself. Validate names each such need in the reason of its set's cycle
-// (cycles), so the rules of parts give it none (waits.needReasons). A need that names no task of
-// tasks lies on no cycle.
-func cycleNeeds(tasks []Task) map[waitEdge]bool {
-	at := make(map[string]int, len(tasks))
-	for i, task := range tasks {
-		at[task.ID] = i
-	}
-	needs := make([][]int, len(tasks))
-	for i, task := range tasks {
-		for _, id := range task.Needs {
-			if needed, ok := at[id]; ok {
-				needs[i] = append(needs[i], needed)
-			}
-		}
-	}
-	component, _, _ := components(needs, func() error { return nil })
-	onCycle := map[waitEdge]bool{}
-	for i, task := range tasks {
-		for _, id := range task.Needs {
-			if needed, ok := at[id]; ok && component[needed] == component[i] {
-				onCycle[waitEdge{task.ID, id}] = true
-			}
-		}
-	}
-	return onCycle
-}
-
 // shortestPath is the fewest nodes from from to to, both ends included, each step from a node to
 // one next answers for it, taken in next's order: from alone when it is to, and nil when no path
-// leads there. needReasons walks the waits of a task's start and end with it (waits.waitPath).
-func shortestPath[N comparable](from, to N, next func(N) []N) []N {
+// leads there. needReasons walks the waits of a task's start and end with it (waits.waitPath). It
+// reads ended once for each node it reaches, and answers its error once it has one.
+func shortestPath[N comparable](from, to N, next func(N) []N, ended func() error) ([]N, error) {
 	parent := map[N]N{from: from}
 	for queue := []N{from}; len(queue) > 0; queue = queue[1:] {
+		if err := ended(); err != nil {
+			return nil, err
+		}
 		at := queue[0]
 		if at == to {
 			path := []N{at}
@@ -389,7 +390,7 @@ func shortestPath[N comparable](from, to N, next func(N) []N) []N {
 				path = append(path, at)
 			}
 			slices.Reverse(path)
-			return path
+			return path, nil
 		}
 		for _, node := range next(at) {
 			if _, reached := parent[node]; !reached {
@@ -398,7 +399,7 @@ func shortestPath[N comparable](from, to N, next func(N) []N) []N {
 			}
 		}
 	}
-	return nil
+	return nil, nil
 }
 
 // Supported is what this release does not carry out yet: a role block, and, for each task,

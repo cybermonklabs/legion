@@ -46,13 +46,11 @@ func Places(blocks []Block) (map[string]Place, error) {
 			tasks[block.ID] = block
 		}
 	}
-	for _, block := range blocks {
-		switch cycle := parentCycle(block, tasks); {
-		case len(cycle) == 1:
-			return nil, fmt.Errorf("task block %s stands under itself, so it has no place in the plan", block.ID)
-		case cycle != nil:
-			return nil, fmt.Errorf("task blocks %s stand under each other, so none of them has a place in the plan", strings.Join(cycle, ", "))
-		}
+	switch cycle := firstParentCycle(blocks, tasks); {
+	case len(cycle) == 1:
+		return nil, fmt.Errorf("task block %s stands under itself, so it has no place in the plan", cycle[0])
+	case cycle != nil:
+		return nil, fmt.Errorf("task blocks %s stand under each other, so none of them has a place in the plan", strings.Join(cycle, ", "))
 	}
 	places := make(map[string]Place, len(tasks))
 	var placeOf func(id string) Place
@@ -80,25 +78,58 @@ func Places(blocks []Block) (map[string]Place, error) {
 	return places, nil
 }
 
-// parentCycle is the task blocks of the cycle that block's chain of parents closes back at block,
-// in the order of the chain from block, or nil where block is no task block or its chain closes
-// no cycle through it. tasks is the version's task blocks by id. A chain that runs into a cycle
-// it is not on answers nil: the walk from a block of that cycle finds it.
-func parentCycle(block Block, tasks map[string]Block) []string {
-	if block.Type != TaskBlockType {
-		return nil
-	}
-	chain := []string{block.ID}
-	for above, ok := tasks[block.Parent]; ok; above, ok = tasks[above.Parent] {
-		if above.ID == block.ID {
-			return chain
+// firstParentCycle is the task blocks of the cycle of parents through the first block of blocks,
+// in the document's order, that stands on one, in the order of the chain from that block, or nil
+// where no task block's chain of parents closes a cycle. tasks is the version's task blocks by id.
+// A chain that runs into a cycle it is not on is no cycle of its own. Each block is walked once:
+// a walk up from a block stops at a block an earlier walk passed, so blocks nested as deep as the
+// document holds cost one pass, and a block's parent chains meet at most one cycle, since each
+// block has one parent. A cycle a walk closes is named from its first block in the document.
+func firstParentCycle(blocks []Block, tasks map[string]Block) []string {
+	order := make(map[string]int, len(blocks))
+	for i, block := range blocks {
+		if _, seen := order[block.ID]; !seen {
+			order[block.ID] = i
 		}
-		if slices.Contains(chain, above.ID) {
-			return nil
-		}
-		chain = append(chain, above.ID)
 	}
-	return nil
+	const (
+		unwalked = iota
+		walking
+		walked
+	)
+	state := make(map[string]int, len(tasks))
+	var first []string
+	for _, block := range blocks {
+		if block.Type != TaskBlockType || state[block.ID] != unwalked {
+			continue
+		}
+		var chain []string
+		at, ok := block.ID, true
+		for ok && state[at] == unwalked {
+			state[at] = walking
+			chain = append(chain, at)
+			var above Block
+			above, ok = tasks[tasks[at].Parent]
+			at = above.ID
+		}
+		if ok && state[at] == walking {
+			cycle := chain[slices.Index(chain, at):]
+			start := 0
+			for i, id := range cycle {
+				if order[id] < order[cycle[start]] {
+					start = i
+				}
+			}
+			cycle = append(slices.Clone(cycle[start:]), cycle[:start]...)
+			if first == nil || order[cycle[0]] < order[first[0]] {
+				first = cycle
+			}
+		}
+		for _, id := range chain {
+			state[id] = walked
+		}
+	}
+	return first
 }
 
 // ParentOf reads a task block's `parent` value before Dispatch serves the tree: the id of the
