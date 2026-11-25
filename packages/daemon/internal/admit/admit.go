@@ -387,16 +387,18 @@ func (a *Admission) promoteWritten(ctx context.Context, tx pgx.Tx) (int, []strin
 	return a.promote(ctx, tx)
 }
 
-// catchUpPassOwed says whether a catch-up hold was released since the last pass committed.
+// catchUpPassOwed says whether a catch-up hold was released since the last pass that ran past the
+// pause committed.
 func (a *Admission) catchUpPassOwed() bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.catchUpReleases > a.catchUpPassed
 }
 
-// passCatchUpReleases records, once tx commits, that a pass saw every catch-up release made
-// before it began, so those releases owe no further pass (catchUpPassOwed). A pass rolled back
-// records nothing, and the release still owes one.
+// passCatchUpReleases records, once tx commits, that a pass that ran past the pause saw every
+// catch-up release made before it began, so those releases owe no further pass (catchUpPassOwed).
+// A pass rolled back records nothing, and the release still owes one; a pass a pause stops never
+// calls it (promoteHolds).
 func (a *Admission) passCatchUpReleases(ctx context.Context) {
 	a.mu.Lock()
 	seen := a.catchUpReleases

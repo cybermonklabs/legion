@@ -63,11 +63,12 @@ func slottedKey(i int) string { return fmt.Sprintf("LEGION-%d", 1000+i) }
 //
 // The count holds as well where every slotted root is stalled: each has stood at admitted past
 // the gate arm's bound with no step of its design gate registered, and an earlier fact has told
-// the project's controller so. The pass reads that arm over every root on every fact, asks once
-// whether a controller is registered to be told, and marks what it reads in one statement for the
-// whole pass (record.Store.TellArchitectsStalled), so a root that stays stalled costs no statement
-// of its own. The first root's spec is registered after it was told, for the document version,
-// so the smaller of the two stalled runs holds two roots: one that stays stalled beside it.
+// the project's controller so. The pass reads that arm over every root on every pass (the pass
+// rule, Admission.Apply), asks once whether a controller is registered to be told, and marks what
+// it reads in one statement for the whole pass (record.Store.TellArchitectsStalled), so a root
+// that stays stalled costs no statement of its own. The first root's spec is registered after it
+// was told, for the document version, so the smaller of the two stalled runs holds two roots: one
+// that stays stalled beside it.
 func TestAFactAsksAsManyStatementsWhateverNumberOfSlotsIsHeld(t *testing.T) {
 	facts := []struct {
 		name string

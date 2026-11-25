@@ -433,11 +433,10 @@ func (p *projectPause) resumeOwedSpawn(token claim.Token, pause int64) {
 
 // applyResumePass applies the resume's one admission pass as a fact of its own
 // (intake.ProjectResumed), keyed on the ended pause, through the workflow's handlers: admission's
-// pass rule runs the pass on it whatever it wrote (admit.Admission.Apply), and nothing else acts on
-// it. It is not the controller's tick, which would also queue the controller a tick notice: the
-// resume wakes nobody by itself. A failed pass is logged; the next pass the rule runs promotes
-// the line — the tick's, or a fact's that writes a record — and a fact that writes nothing runs
-// none.
+// pass rule runs the pass on it whatever it wrote (admit.Admission.Apply), and nothing else acts
+// on it. It is not the controller's tick, which would also queue the controller a tick notice:
+// the resume wakes nobody by itself. A failed pass is logged; the next pass the rule runs
+// promotes the line, the tick's at the latest, and any other fact that writes nothing runs none.
 func (p *projectPause) applyResumePass(ctx context.Context, ended store.Pause) {
 	w := p.workflow
 	eventID := fmt.Sprintf("project-resumed:%s:%d", p.project, ended.ID)

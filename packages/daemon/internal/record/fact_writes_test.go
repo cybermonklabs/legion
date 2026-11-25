@@ -54,12 +54,13 @@ func TestEachWriterOfAnEndInputKeepsItsIssue(t *testing.T) {
 
 // A fact runs the admission pass only where its transaction wrote a record of the project that
 // admission reads (RecordsWritten). Every writer of those rows keeps the mark in a ctx that keeps
-// writes when its statement changes a row, and only the writers of an issue's record, pull
-// request and hand-over fence name the issue among IssuesWritten, which the end of a step's run
-// reads: the movement and the phase rows a late handoff writes keep the mark and name no issue.
-// The controls are a write that changes no row (a fence that refuses it, a key that names none),
-// the repository backfill, which runs outside any fact, and a ctx that keeps no writes. Each case
-// runs in a transaction of its own, rolled back, after a seed of its own made without the mark.
+// writes when its statement matches a row, a row set to the value it held among them, and only
+// the writers of an issue's record, pull request and hand-over fence name the issue among
+// IssuesWritten, which the end of a step's run reads: the movement and the phase rows a late
+// handoff writes keep the mark and name no issue. The controls are a statement that matches no
+// row (a fence that refuses it, a key that names none), the repository backfill, which runs
+// outside any fact, and a ctx that keeps no writes. Each case runs in a transaction of its own,
+// rolled back, after a seed of its own made without the mark.
 func TestEachWriterOfARecordThePassReadsKeepsTheMark(t *testing.T) {
 	st := migratedStore(t)
 	store := NewStore()

@@ -565,7 +565,7 @@ func (EntrySweep) namedIssue() (string, bool) { return "", false }
 // wakes the controller as any fact's pass does (admit.Admission.wakeForFreeSlot), and nothing
 // else. The rows a re-admission freed while the pause held (admit's releaseTreeSlots) wake
 // nothing; the resume's notice tells the controller of that capacity. Where the pass fails, the
-// next pass the rule runs promotes the line, and a fact that writes nothing runs none.
+// next pass the rule runs promotes the line, and any other fact that writes nothing runs none.
 //
 // It carries nothing, as EntrySweep carries nothing: the pass reads the whole project. Its event
 // is keyed on the pause the resume ended (internal/daemon's applyResumePass), so a resume applies

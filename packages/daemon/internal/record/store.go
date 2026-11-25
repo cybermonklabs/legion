@@ -128,9 +128,9 @@ func (s *Postgres) IssuesOf(ctx context.Context, tx pgx.Tx, project string, keys
 //
 // The chain is walked in the database, in one query whatever its depth, because its callers walk
 // it under the one fact lock every fact takes (intake.ApplyFact): a read per step would cost a
-// round trip per level on every fact of every consumer. The walk carries only the key and the
-// parent, and the records are read once at the end; `union` is what ends it, since a chain that
-// loops back on itself derives nothing new on its second turn.
+// round trip per level on every pass (the pass rule on admit's Admission.Apply). The walk carries
+// only the key and the parent, and the records are read once at the end; `union` is what ends it,
+// since a chain that loops back on itself derives nothing new on its second turn.
 func (s *Postgres) AncestorsOf(ctx context.Context, tx pgx.Tx, project string, keys []string) ([]Issue, error) {
 	if len(keys) == 0 {
 		return []Issue{}, nil
@@ -178,11 +178,12 @@ func queryIssues(ctx context.Context, tx pgx.Tx, query string, args ...any) ([]I
 
 // SlottedIssues is the record of each issue of project that holds an admission slot, in slot order
 // (index, then issue), in one read: what admission judges when it releases the slots a fact has
-// finished with (admit's releaseSlots), on every fact and under the one fact lock. The slots table
-// is shared by every project's daemon, so another project's slot is left out here rather than by
-// the caller, and no issue of another project, and no issue holding no slot, is read at all. It
-// selects issueColumns itself, so it reads every column scanIssue scans: the slots join is a
-// derived table whose columns are renamed, so no column of issueColumns is ambiguous.
+// finished with (admit's releaseSlots), on every pass (the pass rule on admit's Admission.Apply)
+// and under the one fact lock. The slots table is shared by every project's daemon, so another
+// project's slot is left out here rather than by the caller, and no issue of another project, and
+// no issue holding no slot, is read at all. It selects issueColumns itself, so it reads every
+// column scanIssue scans: the slots join is a derived table whose columns are renamed, so no
+// column of issueColumns is ambiguous.
 func (s *Postgres) SlottedIssues(ctx context.Context, tx pgx.Tx, project string) ([]Issue, error) {
 	rows, err := tx.Query(ctx, `select `+issueColumns+` from issues
 		join (select index, issue from slots) slot (slot_index, slot_issue) on slot.slot_issue = issues.key

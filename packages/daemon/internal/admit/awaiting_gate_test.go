@@ -721,7 +721,8 @@ func TestAResumeKeepsItsHandBackUntilItsTaskIsTaken(t *testing.T) {
 }
 
 // Round 21 second-review P2-2, same-model P3-1: a hand-back a guard kept from starting a wait starts
-// it on whatever path clears the guard, since every fact reaches admission's pass.
+// it on whatever path clears the guard, since each such path reaches admission's pass (the pass
+// rule, Admission.Apply).
 func TestAHandedBackWaitStartsOnEveryGuardClearingPath(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
