@@ -6,7 +6,7 @@ import { MemoryRouter } from "react-router-dom";
 import { renderWithQueries as render } from "../../__tests__/query-provider";
 import type { AskAnswer, DispatchEvent } from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
-import { EventBody } from "./EventBody";
+import { EventBody, EventEditedMark } from "./EventBody";
 
 const markdownMessage: DispatchEvent = {
   actor: { id: "alice", kind: "user" },
@@ -436,4 +436,126 @@ test("EventBody links a cut comment on a project document through that document"
   } finally {
     view.unmount();
   }
+});
+
+test("the event of a deleted post reads as deleted, with no body and no whole-post link", async () => {
+  // The read of the event takes `body` and `body_truncated` out of the payload and stamps the
+  // two marks in their place (`api/events.go`). This payload keeps both beside the marks, so the
+  // heading and the whole-post link below can be drawn, and only the card's own reading of the
+  // marks keeps them off: the same body renders its heading (the first row of this file), and
+  // the same flag on a post that stands draws the link (the next row).
+  const payload = {
+    ...(markdownMessage.payload as unknown as Record<string, unknown>),
+    body_truncated: true,
+  };
+  // With the engine loaded a body paints in the same pass as the deleted line, so a heading the
+  // card drew would be on the page when the check below reads it.
+  await warmMarkdownRenderer();
+  const view = render(
+    <MemoryRouter>
+      <EventBody
+        event={
+          {
+            ...markdownMessage,
+            payload: {
+              ...payload,
+              deleted_at: "2026-09-10T00:05:00Z",
+              deleted_by: { id: "alice", kind: "user" },
+            },
+          } as DispatchEvent
+        }
+      />
+    </MemoryRouter>
+  );
+
+  try {
+    await waitFor(() => expect(screen.getByText(/Deleted by/)).toBeDefined());
+    expect(screen.queryByRole("heading", { name: "Status" })).toBeNull();
+    expect(screen.queryByRole("link", { name: /Read the whole/ })).toBeNull();
+  } finally {
+    view.unmount();
+  }
+});
+
+// The positive control of the row above: the same payload with no delete marks, a post that
+// stands, draws the heading of its body and the link to the whole post that row says are absent.
+test("the event of a standing post whose body was cut draws its body and the whole-post link", async () => {
+  const view = render(
+    <MemoryRouter>
+      <EventBody
+        event={
+          {
+            ...markdownMessage,
+            payload: { ...markdownMessage.payload, body_truncated: true },
+          } as DispatchEvent
+        }
+      />
+    </MemoryRouter>
+  );
+
+  try {
+    expect(await screen.findByRole("heading", { name: "Status" })).toBeDefined();
+    expect(screen.getByRole("link", { name: "Read the whole message" })).toBeDefined();
+  } finally {
+    view.unmount();
+  }
+});
+
+// The byline under a comment's event carries ` · edited` once its author replaced the body the
+// event holds (`EventEditedMark`): the read of the event stamps the comment's own `edited_at` on
+// it. A comment nobody edited carries nothing there, and neither does one edited and then deleted,
+// whose deleted line already says what became of its text; a session's reply to a mention
+// (`comment.answered`) reads the same way.
+test("the byline of an edited comment's event is marked edited, and a standing or deleted one's is not", () => {
+  const comment = (
+    type: "comment.created" | "comment.answered",
+    marks: Record<string, unknown>
+  ): DispatchEvent =>
+    ({
+      actor: { id: "alice", kind: "user" },
+      created_at: "2026-09-10T00:00:00Z",
+      id: 4,
+      issue_key: "CORE-1",
+      notify: true,
+      payload: {
+        anchor: null,
+        answers: null,
+        artifact_id: null,
+        artifact_name: "",
+        ask_id: null,
+        author: { id: "alice", kind: "user" },
+        body: "Ship it on Friday.",
+        created_at: "2026-09-10T00:00:00Z",
+        deliveries: [],
+        edited_at: null,
+        id: "comment-4",
+        issue_key: "CORE-1",
+        mentions: [],
+        reply_block: null,
+        reply_to: null,
+        resolved: false,
+        resolved_at: null,
+        resolved_by: null,
+        suggestion: null,
+        turn: null,
+        ...marks,
+      },
+      seq: 4,
+      type,
+    }) as DispatchEvent;
+  const byline = (event: DispatchEvent): string | null => {
+    const view = render(<EventEditedMark event={event} />);
+    try {
+      return view.container.textContent;
+    } finally {
+      view.unmount();
+    }
+  };
+  const edited = { edited_at: "2026-09-10T00:05:00Z" };
+  const deleted = { deleted_at: "2026-09-10T00:10:00Z", deleted_by: { id: "alice", kind: "user" } };
+
+  expect(byline(comment("comment.created", edited))).toBe(" · edited");
+  expect(byline(comment("comment.answered", edited))).toBe(" · edited");
+  expect(byline(comment("comment.created", {}))).toBe("");
+  expect(byline(comment("comment.created", { ...edited, ...deleted }))).toBe("");
 });

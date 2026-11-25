@@ -865,6 +865,7 @@ func playRelaySchedule(seed uint64) string {
 // and what it no longer holds is gone from both (check). The seeds that once broke that run
 // first, then as many randomized ones as scheduleCountEnv asks for.
 func TestEveryInterleavingOfARoomsAwarenessSettlesOnBothProcesses(t *testing.T) {
+	t.Parallel()
 	for _, seed := range relayScheduleRegressions {
 		if report := playRelaySchedule(seed); report != "" {
 			t.Fatalf("a schedule that once broke an invariant breaks it again:\n%s", report)
