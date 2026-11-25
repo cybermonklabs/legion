@@ -1,0 +1,41 @@
+// Package principal holds the form in which Dispatch and the infra component name a person: a
+// person's login. Each of them checks its settings and its input against this rule, so they agree
+// on what they accept. It imports nothing but the standard library, so a tool that checks this form
+// compiles nothing of Dispatch's model with it.
+package principal
+
+import (
+	"fmt"
+	"strings"
+	"unicode"
+)
+
+// CheckPersonLogin reports why login is not a person's email as Dispatch stores it, or nil when it
+// is one. Such a login is an @ with something on each side, holds no space or comma, is at most
+// 320 bytes long, and holds no control or bidi character, which would show one address and store
+// another. It is also trimmed and lowercase throughout. A stored login lowers A-Z alone
+// (model.CanonicalLogin), but the people table holds every email lowercase (email = lower(email)),
+// so a capital beyond A-Z names nobody who could sign in and is refused here rather than by a
+// column's check. A caller that takes a person as typed canonicalises it first
+// (access.PersonPrincipal); boot and the infra component hold their setting to this form as given.
+func CheckPersonLogin(login string) error {
+	at := strings.IndexByte(login, '@')
+	if at <= 0 || at == len(login)-1 || strings.ContainsAny(login, " \t\r\n,") || len(login) > 320 {
+		return fmt.Errorf("%q is no email", strings.TrimSpace(login))
+	}
+	for _, r := range login {
+		switch {
+		case unicode.IsControl(r):
+			return fmt.Errorf("%q holds a control character", login)
+		case unicode.Is(unicode.Bidi_Control, r):
+			return fmt.Errorf("%q holds a bidi control", login)
+		}
+	}
+	if strings.TrimSpace(login) != login {
+		return fmt.Errorf("%q has space around it", login)
+	}
+	if strings.ToLower(login) != login {
+		return fmt.Errorf("%q is not lowercase, so it names nobody who could sign in", login)
+	}
+	return nil
+}
