@@ -662,7 +662,7 @@ func TestTheProgressSignalStopsBeforeTheNakThatKeepsItsDelay(t *testing.T) {
 // measures is the cut itself, the redelivery the nak after it brings, and the attributes of the
 // warn line that names the cut. It says nothing about the keeper.
 func TestTheProgressSignalsHandlerIsCutAtItsLimit(t *testing.T) {
-	// Not parallel: it bounds the cut fact's redelivery at twice its 600 ms limit, a wall-clock bound the load of tests beside it can cross.
+	// Not parallel: it bounds the cut at twice its 600 ms limit, a wall-clock bound the load of tests beside it can cross.
 	pool := migratedPool(t)
 	js, _ := testJetStream(t)
 	logs := &lockedBuffer{}
@@ -681,14 +681,22 @@ func TestTheProgressSignalsHandlerIsCutAtItsLimit(t *testing.T) {
 	held := newHeldOnce()
 	var mu sync.Mutex
 	var entered []time.Time
+	var cutAt time.Time
+	var cutBy error
 	stop := runConsumers(t, consumers, handlerFunc(func(ctx context.Context, _ pgx.Tx, _ Fact) (Result, error) {
 		mu.Lock()
 		entered = append(entered, time.Now())
+		first := len(entered) == 1
 		mu.Unlock()
 		// The first delivery waits on the context consumeMessage passes and nothing releases it,
 		// so it ends when and only when the limit cuts it; a handler sleeping on the clock would
 		// ignore the cut and prove nothing. Every delivery after it returns at once.
 		held.hold(ctx)
+		if first {
+			mu.Lock()
+			cutAt, cutBy = time.Now(), ctx.Err()
+			mu.Unlock()
+		}
 		return Result{}, nil
 	}))
 	defer stop()
@@ -703,11 +711,20 @@ func TestTheProgressSignalsHandlerIsCutAtItsLimit(t *testing.T) {
 	stop()
 
 	mu.Lock()
-	cut := entered[1].Sub(entered[0])
+	cut, again, by := cutAt.Sub(entered[0]), entered[1].Sub(entered[0]), cutBy
 	mu.Unlock()
-	if cut < spec.HandlerLimit/2 || cut > 2*spec.HandlerLimit {
-		t.Errorf("the handler that never ends was cut and its fact delivered again %s after its first delivery, want about its %s handler limit plus the %s the nak after the cut asks for: the limit is the only thing that ends this handling",
-			cut, spec.HandlerLimit, spec.NakDelay)
+	// The cut is timed to the first handling's context end, which the limit alone brings. A bound
+	// on the redelivery also held what comes after the cut: the failure's record, written to
+	// Postgres, and the redelivery's own way back to the handler. A slow store crossed it, 1.227 s
+	// against 1.2 s (Job legion-ci-intakepar-ab-xnw6n, run poolfix-r2), so the redelivery is held
+	// from below alone.
+	if !errors.Is(by, context.DeadlineExceeded) || cut > 2*spec.HandlerLimit {
+		t.Errorf("the handler that never ends was cut %s after its first delivery began, by %v, want its %s handler limit's deadline within that limit: the limit is the only thing that ends this handling",
+			cut, by, spec.HandlerLimit)
+	}
+	if again < spec.HandlerLimit/2 {
+		t.Errorf("the cut fact was delivered again %s after its first delivery, want no sooner than about its %s handler limit plus the %s the nak after the cut asks for",
+			again, spec.HandlerLimit, spec.NakDelay)
 	}
 	line := logLine(logs.String(), "an intake handler outran its limit and was cut")
 	if line == "" {
