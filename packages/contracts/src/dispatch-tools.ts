@@ -975,7 +975,7 @@ const DEPLOY_TIME =
 
 function deployRepoProblem(value: unknown): string | undefined {
   const input = value as Record<string, unknown>;
-  return typeof input.repo !== "string" || !DEPLOY_REPO.test(input.repo)
+  return typeof input["repo"] !== "string" || !DEPLOY_REPO.test(input["repo"])
     ? "repo must be owner/repo"
     : undefined;
 }
@@ -984,12 +984,12 @@ function deployProblem(value: unknown): string | undefined {
   const input = value as Record<string, unknown>;
   const repo = deployRepoProblem(input);
   if (repo !== undefined) return repo;
-  if (typeof input.program !== "string" || !DEPLOY_PROGRAM.test(input.program))
+  if (typeof input["program"] !== "string" || !DEPLOY_PROGRAM.test(input["program"]))
     return "program must be 1 to 64 lowercase letters, digits or hyphens";
-  if (typeof input.commit !== "string" || !DEPLOY_COMMIT.test(input.commit))
+  if (typeof input["commit"] !== "string" || !DEPLOY_COMMIT.test(input["commit"]))
     return "commit must be 40 lowercase hexadecimal characters";
-  if (input.deployed_at !== undefined) {
-    const value = input.deployed_at;
+  if (input["deployed_at"] !== undefined) {
+    const value = input["deployed_at"];
     if (typeof value !== "string") return "deployed_at must be RFC3339";
     const parts = DEPLOY_TIME.exec(value);
     const timestamp = Date.parse(value);
