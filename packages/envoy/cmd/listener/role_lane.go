@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"sync"
 	"time"
@@ -158,9 +159,25 @@ func (f *roleForwarder) publish(sessionID string) {
 		}
 		go func() {
 			_, err := wait()
-			f.finish(forward, err)
+			f.finish(forward, lateForwardFailure(f.cfg, forward, err))
 		}()
 	}
+}
+
+// lateForwardFailure is err, or the failure of a forward the stream stored later than its
+// resolution's fence and the wait that forward ran under (roles.ForwardStoredTooLate,
+// roleForwardTimeout): a forward whose process was held between the fence check and the
+// acknowledgement. Its holder may have lost the role, and the takeover record that would copy the
+// message to the next holder may have ended (takeoverRecordLife), so the copy is no delivery: it
+// is reported failed (roles.ErrForwardStoredTooLate), which clears the attempt, and the sender's
+// next send resolves the holder again. A forward whose resolution is zero - the kept lane's walk,
+// which reads the claim before each copy - is never late.
+func lateForwardFailure(cfg listenerDeliveryHandlerConfig, forward roleForward, err error) error {
+	if err != nil || !roles.ForwardStoredTooLate(forward.resolvedAt, cfg.now(), roleForwardTimeout) {
+		return err
+	}
+	return fmt.Errorf("%w: resolved %s ago, the fence is %s and the wait %s",
+		roles.ErrForwardStoredTooLate, cfg.now().Sub(forward.resolvedAt), roles.ForwardFenceAge, roleForwardTimeout)
 }
 
 // refreshStaleRoleForward resolves the holder of forward's role again, for a forward whose

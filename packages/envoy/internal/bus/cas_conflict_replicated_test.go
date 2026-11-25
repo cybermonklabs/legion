@@ -225,14 +225,15 @@ func TestATakeoverRecordWriteThatLosesToAReplicatingWriteIsMoved(t *testing.T) {
 	ctx := testwait.Context(t)
 	subject := TakeoverSubject("replicated-takeover", "ses_previous", "attempt")
 	record := TakeoverRecord{Role: "replicated-takeover", Previous: "ses_previous", ClaimedAt: 1}
-	first, err := client.WriteTakeoverRecord(ctx, subject, record, 0)
+	first, err := client.WriteTakeoverRecordAt(ctx, StoredTakeoverRecord{Subject: subject}, record)
 	if err != nil {
 		t.Fatalf("the first takeover record write: %v", err)
 	}
 
+	read := StoredTakeoverRecord{Subject: subject, Sequence: first, Record: record}
 	record.Next = 2
 	release := cluster.HoldReplicatingWrite(t, Stream, subject)
-	_, err = client.WriteTakeoverRecord(ctx, subject, record, first)
+	_, err = client.WriteTakeoverRecordAt(ctx, read, record)
 	release()
 	if !errors.Is(err, replicatedConflict) {
 		t.Fatalf("the takeover record write = %v, want the replicated stream's wrong last sequence, 10164", err)

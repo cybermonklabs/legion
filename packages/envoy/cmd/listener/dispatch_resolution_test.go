@@ -159,6 +159,9 @@ func startListenerDelivery(t *testing.T, d *listenerDeps) *cmdtest.LockedBuffer 
 		now:               time.Now,
 		publishDeadLetter: d.client.PublishStoredAs,
 		keepPublish:       d.client.PublishStoredAck,
+		// Whether the rig's NATS user holds the session consumers' calls: the answer of the
+		// session delivery opened below, set there as main.go sets it.
+		consumerGrant: &consumerGrantAnswer{},
 	}
 	// The role lane's forwards run off the handler, as main.go wires them (wireRoleForwarder).
 	config = wireTestRoleForwarder(t, config)
@@ -171,6 +174,7 @@ func startListenerDelivery(t *testing.T, d *listenerDeps) *cmdtest.LockedBuffer 
 		t.Fatalf("the session-consumer connection did not open: %v", err)
 	}
 	t.Cleanup(delivery.close)
+	config.consumerGrant.set(delivery.holdsConsumerGrant)
 	relays, err := startSessionRelays(delivery, config)
 	if err != nil {
 		t.Fatalf("start the session relays: %v", err)

@@ -650,6 +650,10 @@ type Client struct {
 	// keeperStepGuard is withKeeperStepGuard's hang guard of each keeper step, zero for
 	// startHangGuard (keepPass). It is set before the keeper starts and never changed.
 	keeperStepGuard time.Duration
+	// finishedTakeovers holds each finished takeover record this client read, with the count of
+	// messages its subject held then, so TakeoverRecords reads none of them again while that count
+	// stands (takeover.go).
+	finishedTakeovers finishedTakeovers
 
 	// recovery state
 	recovering int32
@@ -3349,9 +3353,10 @@ func (c *Client) PublishCursorAt(ctx context.Context, subject string, data []byt
 // the send already carries, or none when extra is nil, and returns the server's acknowledgement.
 // It is the body of every raw write of the stored path: the subject check, the acknowledgement
 // bound, the connect and the send (sendStored). Its callers name their own failures, since what
-// a refusal means is theirs: PublishCursorAt, which writes under a precondition and reads a
-// refused one as ErrCursorMoved, and SessionConsumers.recordResumeFloorAt, which writes a record
-// whose one writer keeps no sequence to write against, so the newest write stands.
+// a refusal means is theirs: PublishCursorAt and Client.WriteTakeoverRecordAt, which write under a
+// precondition and read a lost one by preconditionLost; SessionConsumers.recordResumeFloorAt,
+// which writes a record whose one writer keeps no sequence to write against, so the newest write
+// stands; and Client.WriteTakeoverRecord, which writes a subject no other writer has.
 //
 // extra is one option rather than a variadic list because each caller has exactly one or none:
 // a list would have the caller build a slice and this method append to it, where the two sends
@@ -3371,19 +3376,26 @@ func (c *Client) publishStoredRaw(ctx context.Context, subject string, data []by
 	return c.sendStored(ctx, subject, data, nats.Context(ctx), extra)
 }
 
-// cursorMoved names the server's refusal of a publish whose expected last sequence per subject did
-// not match as the ErrCursorMoved it is, and returns any other error as it is. The refusal is
-// either code JetStream answers a lost conditional write with (IsCASConflict): on a stream of more
-// than one copy a write that meets another listener's cursor write still being replicated is
-// answered 10164, not 10071, and has lost the cursor all the same. A refusal that wraps
-// ErrUnacknowledged is returned as it is too: it refused a resend after a send that went
-// unanswered (sendStored), and that first send may have stored this write, so it is no proof the
-// write stored nothing.
+// cursorMoved names a cursor write's lost precondition (preconditionLost) as the ErrCursorMoved it
+// is, and returns any other error as it is.
 func cursorMoved(err error) error {
-	if IsCASConflict(err) && !errors.Is(err, ErrUnacknowledged) {
+	if preconditionLost(err) {
 		return fmt.Errorf("%w: %w", ErrCursorMoved, err)
 	}
 	return err
+}
+
+// preconditionLost reports whether err is the server's refusal of a write whose expected last
+// sequence per subject (nats.ExpectLastSequencePerSubject) did not match, and so proof that the
+// write stored nothing because another writer moved the subject. The refusal is either code
+// JetStream answers a lost conditional write with (IsCASConflict): on a stream of more than one
+// copy a write that meets another writer's write still being replicated is answered 10164, not
+// 10071, and has lost all the same. A refusal that wraps ErrUnacknowledged is no such proof: it
+// refused a resend after a send that went unanswered (sendStored), and that first send may have
+// stored this write and moved the subject itself. It is the one test both conditional writes read
+// a refusal by: PublishCursorAt (cursorMoved) and Client.WriteTakeoverRecordAt.
+func preconditionLost(err error) bool {
+	return IsCASConflict(err) && !errors.Is(err, ErrUnacknowledged)
 }
 
 // PublishCoreContext publishes item directly to subject under ctx, confirming the server accepted

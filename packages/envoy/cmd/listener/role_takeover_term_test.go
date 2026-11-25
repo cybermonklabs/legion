@@ -3,7 +3,7 @@ package main
 // The takeover passes the kept lane's sweep runs are the lease holder's: each copy and record write
 // of them is held to the receive term the sweep runs under and to the lease's loss deadline
 // (keptSweepConfig, takeoverWriteContext). And a record's write lands only over the body its pass
-// read (bus.Client.WriteTakeoverRecord), so a pass that comes late writes nothing over another
+// read (bus.Client.WriteTakeoverRecordAt), so a pass that comes late writes nothing over another
 // pass's newer body or over the record's removal.
 
 import (
@@ -44,7 +44,7 @@ func startTermTakeover(t *testing.T, harness listenerDeliveryHarness) (string, b
 		t.Fatalf("%s claims %s: %v", termTaker, termRole, err)
 	}
 	record := bus.TakeoverRecord{Role: termRole, Previous: termPrevious, ClaimedAt: time.Now().UnixMilli(), FloorMissed: true}
-	if _, err := harness.client.WriteTakeoverRecord(ctx, bus.TakeoverSubject(termRole, termPrevious, id.New()), record, 0); err != nil {
+	if err := harness.client.WriteTakeoverRecord(ctx, bus.TakeoverSubject(termRole, termPrevious, id.New()), record); err != nil {
 		t.Fatalf("write the takeover record of %s: %v", termRole, err)
 	}
 	records := termRecords(t, harness)
@@ -135,7 +135,7 @@ func TestALateTakeoverRecordWriteIsRefusedOverAWriteOrARemovalMadeAfterItsRead(t
 		{
 			name: "another pass wrote the record",
 			late: func(t *testing.T, harness listenerDeliveryHarness, stored bus.StoredTakeoverRecord) {
-				if _, err := harness.client.WriteTakeoverRecord(context.Background(), stored.Subject, newer, stored.Sequence); err != nil {
+				if _, err := harness.client.WriteTakeoverRecordAt(context.Background(), stored, newer); err != nil {
 					t.Errorf("another pass writes the record: %v", err)
 				}
 			},

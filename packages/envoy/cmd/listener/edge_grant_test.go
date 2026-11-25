@@ -105,7 +105,7 @@ func TestAnEdgeListenerKeepsNoRoleMessageAndHandsNoKeptLaneOver(t *testing.T) {
 		t.Fatalf("role %s's drain cursor after the handover of the edge's claim is %+v (%v), want none written", role, cursor, err)
 	}
 	select {
-	case <-startKeptRoleSweep(ctx, edge, time.Hour):
+	case <-startKeptRoleSweep(ctx, edge, time.Hour, 0):
 	default:
 		t.Fatal("the edge started a sweep of the kept role lanes")
 	}
