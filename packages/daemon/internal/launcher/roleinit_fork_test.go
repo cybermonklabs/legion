@@ -23,7 +23,8 @@ func TestAProgramCopiedIntoARolesConfigHomeWhileTheProcessForksRuns(t *testing.T
 	if err := os.MkdirAll(filepath.Join(shared, "bin"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(shared, "bin", "tool"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+	// The package's tests run beside each other, so another test can fork while this one writes.
+	if err := testexec.WriteFile(filepath.Join(shared, "bin", "tool"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	testexec.RunsBeside(t, 400, func(index int) error {
