@@ -52,7 +52,8 @@ func (e *Engine) ownersMergeForwardWritten(ctx context.Context, tx pgx.Tx, befor
 	was, is := record.OwnersMergeForward(before, beforePR), record.OwnersMergeForward(after, afterPR)
 	switch {
 	case was && !is:
-		return e.mergeForwardWriteBack(ctx, tx, after)
+		// Planted fault, a control of a test, never merged: an end of the ask writes nothing back.
+		return nil
 	case is && !was:
 		return e.askOwnerAgain(ctx, tx, after, *afterPR)
 	}
