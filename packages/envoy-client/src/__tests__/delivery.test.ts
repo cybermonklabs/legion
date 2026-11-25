@@ -1746,8 +1746,9 @@ describe("renderInbound dispatch events", () => {
         reply_to: "comment-1",
         turn: 0,
         anchor: { version: 0 },
-        // An empty replacement is a proposal to delete the quoted text, not an unset field.
-        suggestion: { replace_with: "" },
+        // A suggestion stays as Dispatch wrote it: an empty replacement proposes deleting the
+        // quoted text, and `accepted: null` says nobody decided it yet.
+        suggestion: { replace_with: "", accepted: null },
         // A list keeps each item in its place; an object in it still loses its empty fields.
         mentions: [null, { kind: "session" }],
         author: { kind: "session", id: "alice@example.com" },
@@ -1804,12 +1805,11 @@ describe("renderInbound dispatch events", () => {
         owner: "alice@example.com",
         proven: true,
       };
+      const render = (eventActor: Readonly<Record<string, unknown>>) =>
+        renderInbound(dispatchEvent("issue.updated", issue, eventActor), reader);
       const actorOf = (eventActor: Readonly<Record<string, unknown>>) =>
-        (
-          decode(
-            renderInbound(dispatchEvent("issue.updated", issue, eventActor), reader).content
-          ) as { envoy: { dispatch: { actor: unknown } } }
-        ).envoy.dispatch.actor;
+        (decode(render(eventActor).content) as { envoy: { dispatch: { actor: unknown } } }).envoy
+          .dispatch.actor;
 
       expect(actorOf(session)).toEqual({
         kind: "session",
@@ -1818,14 +1818,76 @@ describe("renderInbound dispatch events", () => {
         proven: true,
         origin: { session_title: "Fix the widget build" },
       });
-      // An origin with no title leaves nothing of it on the card.
+      // The host still gets the whole actor.
+      expect(render(session).dispatchActor).toEqual(session);
+      // An origin with no title, or an empty one, leaves nothing of it on the card.
       const { session_title: _title, ...untitled } = session.origin;
-      expect(actorOf({ ...session, origin: untitled })).toEqual({
-        kind: "session",
-        id: "01a06666-7777-7888-8999-aaaaaaaaaaaa",
-        owner: "alice@example.com",
-        proven: true,
+      for (const origin of [untitled, { ...untitled, session_title: "" }]) {
+        expect(actorOf({ ...session, origin })).toEqual({
+          kind: "session",
+          id: "01a06666-7777-7888-8999-aaaaaaaaaaaa",
+          owner: "alice@example.com",
+          proven: true,
+        });
+      }
+    });
+
+    // A payload no schema reads keeps every field of its author; a schema that reads a comment's
+    // author keeps only its kind and id.
+    test("an author that says more than the actor stays", () => {
+      const payloadOf = (author: object) =>
+        (
+          decode(
+            renderInbound(dispatchEvent("widget.noted", { id: "widget-1", author }), reader).content
+          ) as { envoy: { dispatch: { payload: Record<string, unknown> } } }
+        ).envoy.dispatch.payload;
+
+      expect(payloadOf(actor)["author"]).toBeUndefined();
+      const proven = { ...actor, proven: true };
+      expect(payloadOf(proven)["author"]).toEqual(proven);
+      const acting = { ...actor, act: { kind: "delegated", by: "session:01a07777" } };
+      expect(payloadOf(acting)["author"]).toEqual(acting);
+    });
+
+    test("an object left with nothing goes at any depth, and a list keeps its items' places", () => {
+      const decoded = decode(
+        renderInbound(
+          dispatchEvent("widget.updated", {
+            anchor: { quote: "", orphaned: false },
+            a: { b: { c: null } },
+            items: [{}, { x: "" }, 2],
+            kept: 1,
+          }),
+          reader
+        ).content
+      ) as { envoy: { dispatch: { payload: unknown } } };
+
+      expect(decoded.envoy.dispatch.payload).toEqual({ items: [{}, {}, 2], kept: 1 });
+    });
+
+    test("a field an update names in changed, and a create's forced, stay however empty", () => {
+      const payloadOf = (type: string, payload: object) =>
+        (
+          decode(renderInbound(dispatchEvent(type, payload), reader).content) as {
+            envoy: { dispatch: { payload: Record<string, unknown> } };
+          }
+        ).envoy.dispatch.payload;
+
+      const cleared = payloadOf("issue.updated", {
+        ...issue,
+        changed: ["route", "labels"],
+        route: null,
+        labels: [],
+        priority: null,
       });
+      expect(cleared).toMatchObject({ changed: ["route", "labels"], route: null, labels: [] });
+      expect(cleared["priority"]).toBeUndefined();
+      // `past: []` says the near-copy check did not answer; no `forced` says the create was not
+      // forced.
+      expect(payloadOf("issue.created", { ...issue, forced: { past: [] } })["forced"]).toEqual({
+        past: [],
+      });
+      expect(payloadOf("issue.created", { ...issue, forced: null })["forced"]).toBeUndefined();
     });
 
     test("a payload left with no field prints no payload", () => {

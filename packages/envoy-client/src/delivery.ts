@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import {
   ArtifactCreatedEventPayloadSchema as ArtifactCreatedPayloadSchema,
   ArtifactHumanEditedEventPayloadSchema as ArtifactHumanEditedPayloadSchema,
@@ -940,9 +941,9 @@ function dispatchPayload(event: DispatchEvent): unknown {
 /**
  * The fields of a Dispatch payload that are Dispatch's own bookkeeping, which its outbox and its
  * web clients read and an agent has no use for: the delivery attempts of a comment's mentions,
- * the routes a comment's mentions took a copy from (`model.Comment`'s route suppression), the
- * Inboxes a write moved (`thread_logins`), and the backlink counts it moved (`references_changed`
- * and its truncation marks).
+ * the routes a comment's mentions took a copy from (`model.CommentEventPayload`'s route
+ * suppression), the Inboxes a write moved (`thread_logins`), and the backlink counts it moved
+ * (`references_changed` and its truncation marks).
  */
 const DISPATCH_BOOKKEEPING: ReadonlySet<string> = new Set([
   "deliveries",
@@ -965,13 +966,18 @@ const DISPATCH_BOOKKEEPING: ReadonlySet<string> = new Set([
  * A field states nothing when it is `null`, `""`, `false` or `[]`, or an object whose every field
  * states nothing: Dispatch writes those for a field that is unset, and reads a boolean it does not
  * find as `false`. The rule holds at every depth, for each field of an object; a list keeps each
- * of its items, since an item's place in the list is part of what it says. A present suggestion
- * and its `replace_with` stay: an empty replacement proposes deleting the quoted text.
+ * of its items, since an item's place in the list is part of what it says.
+ *
+ * A field whose value is the fact even when it is empty stays as Dispatch wrote it: each field an
+ * update's `changed` names (a cleared `route: null` or `labels: []` is what it was cleared to), a
+ * present `suggestion` (an empty `replace_with` proposes deleting the quoted text), and a present
+ * `forced` (a create's `past: []` says its near-copy check did not answer, where no `forced` says
+ * it was not forced).
  *
  * A field repeats the card when the card already says it: `issue_key` is the card's `owner`,
- * `author` the card's `actor` when the two name the same actor, and `created_at` the card's `at`
- * when it is less than a second from `issuedAt`: the two differ by milliseconds, often across a
- * second's edge. On a comment, `thread_root_id` always names the comment `reply_to` names, and
+ * `author` the card's `actor` when each of its fields is the actor's, and `created_at` the card's
+ * `at` when it is less than a second from `issuedAt`: the two differ by milliseconds, often across
+ * a second's edge. On a comment, `thread_root_id` always names the comment `reply_to` names, and
  * `answers` names it on a reply to a thread's root.
  *
  * A `target` that names this session reads `you (<target>)`.
@@ -981,16 +987,25 @@ function dispatchPayloadForReader(
   sessionID: string,
   issuedAt: number | undefined
 ): unknown {
-  const payload = withoutEmptyFields(dispatchPayload(event));
+  const whole = dispatchPayload(event);
+  const changed = isObject(whole) && Array.isArray(whole["changed"]) ? whole["changed"] : [];
+  const payload = withoutEmptyFields(
+    whole,
+    (key, item) =>
+      changed.includes(key) ||
+      ((key === "suggestion" || key === "forced") && item !== null && item !== undefined)
+  );
   if (!isObject(payload) || Array.isArray(payload)) return payload;
   const { reply_to: replyTo } = payload;
+  const actor: Readonly<Record<string, unknown>> = event.actor;
   const repeatsTheCard = (key: string, value: unknown): boolean => {
     switch (key) {
       case "issue_key":
         return value === event.issue_key;
       case "author":
         return (
-          isObject(value) && value["kind"] === event.actor.kind && value["id"] === event.actor.id
+          isObject(value) &&
+          Object.entries(value).every(([field, held]) => isDeepStrictEqual(held, actor[field]))
         );
       case "created_at": {
         if (typeof value !== "string") return false;
@@ -1014,17 +1029,20 @@ function dispatchPayloadForReader(
 
 /**
  * A copy of `value` with no field that states nothing (`dispatchPayloadForReader`), at any
- * depth: an object left with no field after its own fields went states nothing too. Nothing of
- * `value` is written to. The walk keeps the objects and lists still to copy on a stack of its own,
- * so a payload too deep for the card's encoder fails in the encoder, where the card shows it as
- * text (`payloadShownAsText`), and not here. `value` is `parseFrameJSON`'s, so no key of it is
- * `__proto__` and each is set by assignment.
+ * depth: an object left with no field after its own fields went states nothing too. A field of
+ * `value` itself that `keptWhole` names stays as it is. Nothing of `value` is written to. The walk
+ * keeps the objects and lists still to copy on a stack of its own, so a payload too deep for the
+ * card's encoder fails in the encoder, where the card shows it as text (`payloadShownAsText`), and
+ * not here. `value` is `parseFrameJSON`'s, so no key of it is `__proto__` and each is set by
+ * assignment.
  */
-function withoutEmptyFields(value: unknown): unknown {
+function withoutEmptyFields(
+  value: unknown,
+  keptWhole: (key: string, item: unknown) => boolean
+): unknown {
   if (!isObject(value)) return value;
   // A list's indices are its keys, so one type holds each copy, list or object.
   const root = (Array.isArray(value) ? [] : {}) as Record<string, unknown>;
-  const suggestion = value["suggestion"];
   const pending: [from: Readonly<Record<string, unknown>>, to: Record<string, unknown>][] = [
     [value, root],
   ];
@@ -1037,23 +1055,24 @@ function withoutEmptyFields(value: unknown): unknown {
     const [from, to] = next;
     const inList = Array.isArray(from);
     for (const [key, item] of Object.entries(from)) {
+      if (from === value && !inList && keptWhole(key, item)) {
+        to[key] = item;
+        continue;
+      }
       const statesNothing =
         item === null ||
         item === undefined ||
         item === "" ||
         item === false ||
         (Array.isArray(item) && item.length === 0);
-      const preserveField =
-        (from === value && key === "suggestion" && item !== null && item !== undefined) ||
-        (from === suggestion && key === "replace_with");
-      if (!inList && !preserveField && statesNothing) continue;
+      if (!inList && statesNothing) continue;
       if (!isObject(item)) {
         to[key] = item;
         continue;
       }
       const copy = (Array.isArray(item) ? [] : {}) as Record<string, unknown>;
       pending.push([item, copy]);
-      if (!inList && !preserveField && !Array.isArray(item)) placed.push([to, key, copy]);
+      if (!inList && !Array.isArray(item)) placed.push([to, key, copy]);
       to[key] = copy;
     }
   }

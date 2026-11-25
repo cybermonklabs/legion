@@ -48,11 +48,13 @@ Malformed input is safe: a non-JSON frame becomes a TOON block naming its topic 
 (`source: "dispatch"`) render through the same TOON path as every other source, nesting the
 parsed event under `dispatch: { owner, type, actor, payload }` with `payload` typed per event
 type. The card's `payload` leaves out each field that states nothing (`null`, `""`, `false`,
-`[]`, or an object left empty; a list keeps every item, and a suggestion keeps its
-`replace_with`), each field that repeats the card (`issue_key`, an `author` that is the
-`actor`, a `created_at` less than a second from the card's time, a comment's `thread_root_id`
-and `answers` equal to its `reply_to`), and Dispatch's own outbox and client bookkeeping
-(`deliveries`, `thread_logins`, `references_changed*`, `mentions_decide_routes`, `suppress*`).
+`[]`, or an object left empty; a list keeps every item), each field that repeats the card
+(`issue_key`, an `author` each of whose fields is the `actor`'s, a `created_at` less than a
+second from the time Envoy issued the card, whose `at` is that time cut to the second, and a
+comment's `thread_root_id` and `answers` equal to its `reply_to`), and Dispatch's own outbox and
+client bookkeeping (`deliveries`, `thread_logins`, `references_changed*`,
+`mentions_decide_routes`, `suppress*`). A field whose value is the fact even when empty stays as
+written: each field an update's `changed` names, a present `suggestion`, and a present `forced`.
 A session actor's `origin` keeps only its `session_title`. A payload whose shape disagrees with
 its event type's schema keeps its raw parsed fields under the same rules, and a frame that is no
 Dispatch event is shown as its raw parsed value under `dispatch`; neither is dropped or reduced
