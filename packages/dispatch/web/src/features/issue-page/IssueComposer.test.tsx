@@ -1389,10 +1389,10 @@ test("a statement's target line names its kind, and its comment carries its word
   await waitFor(() => expect(focusedRowId()).toBe("spec#b-r1"));
 });
 
-// R11: the target line names a statement by its own author where the statement's row carries
-// one, and by its kind alone where it carries none; either way it draws none of its words, which
-// stand whole in the statement's own row.
-test("a statement's target line names its author where its row carries one, and none of its words", async () => {
+// R11: the target line names a statement by the author its node holds, where it holds one, and
+// by its kind alone where it holds none, never by the document's maker; either way it draws none
+// of its words, which stand whole in the statement's own row.
+test("a statement's target line names the first author its node lists, and no one where the list is empty", async () => {
   const user = userEvent.setup();
   const words = "The box sits at the foot of the outline.";
   const drawn = outline();
