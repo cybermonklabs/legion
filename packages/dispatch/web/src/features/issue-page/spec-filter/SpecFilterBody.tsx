@@ -531,12 +531,15 @@ export function SpecFilterBody({
   }, [addressActs, following, readsSettled, reveal, statements]);
 
   // Hold a tree item on screen until the next act, so reads that draw rows above it cannot
-  // push it out of view. A key starts a hold at keyup only if it moved focus to another item
-  // of this tree. Page Down, Space and Page Up leave focus where it was and start no hold.
-  // A press can hold the item it clicked if that item has focus. Tab and a press outside an
-  // item start no hold. The editor places its own caret, so its row starts no hold either.
-  // The hold replaces the address's landing in `landingHold` (`holdInPlaceOf`).
-  const keyInTree = useRef<{ key: string; from: HTMLElement | null } | undefined>(undefined);
+  // push it out of view. A key starts a hold at keyup only where the page answered it - its
+  // keydown's default was prevented, by the keymap or by the tree's own cell keys - so End on
+  // the last row still holds it while Page Down, Space and Page Up, which the browser answers,
+  // start no hold. The native keydown event is kept until the matching keyup because the
+  // keymap's window listener runs after React's handler, so `defaultPrevented` is final only
+  // by then. A press can hold the item it clicked if that item has focus. Tab and a press
+  // outside an item start no hold. The editor places its own caret, so its row starts no hold
+  // either. The hold replaces the address's landing in `landingHold` (`holdInPlaceOf`).
+  const keyInTree = useRef<globalThis.KeyboardEvent | undefined>(undefined);
   const holdFocusedItem = (item: HTMLElement) => {
     if (editingRow !== undefined && item.dataset.rowKey === editingRow) return;
     holdInPlaceOf(item, landingHold);
@@ -730,13 +733,10 @@ export function SpecFilterBody({
         }}
         // The keys a statement and a cell answer before the keymap does (`useTreeKeymap.ts`
         // listens on the window, after this): `w` on a statement, and `j`, `k` and the arrows
-        // on a cell, which the keymap finds no row on. Record where each key started before
-        // either handler can move the focus.
+        // on a cell, which the keymap finds no row on. Keep each non-Tab keydown's native event
+        // so `onKeyUp` can read whether the page prevented its default.
         onKeyDown={(event) => {
-          keyInTree.current =
-            event.key === "Tab"
-              ? undefined
-              : { key: event.key, from: focusedTreeItem(event.currentTarget) };
+          keyInTree.current = event.key === "Tab" ? undefined : event.nativeEvent;
           if (
             event.target instanceof HTMLElement &&
             (event.target.isContentEditable || event.target.matches("input, select, textarea"))
@@ -761,8 +761,9 @@ export function SpecFilterBody({
           const down = keyInTree.current;
           if (down?.key !== event.key) return;
           keyInTree.current = undefined;
+          if (!down.defaultPrevented) return;
           const item = focusedTreeItem(event.currentTarget);
-          if (item !== null && item !== down.from) holdFocusedItem(item);
+          if (item !== null) holdFocusedItem(item);
         }}
         // A press in the tree, whose focus a statement or a cell takes once the press is over
         // (`press`). A press on what is no item - a group's heading, the space between runs

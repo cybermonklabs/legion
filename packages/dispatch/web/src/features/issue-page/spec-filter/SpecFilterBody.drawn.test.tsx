@@ -996,7 +996,7 @@ test("the arrows move between the statements, and a key with nowhere to go repor
   }
 });
 
-test("a key holds the focused item only when it moves focus to another item of the tree", async () => {
+test("a key holds the focused item only when the page answered it", async () => {
   const user = userEvent.setup();
   const sizes = installResizeObserver();
   const { read, view } = drawBody(issueTree([statement("r1"), statement("r2")]));
@@ -1006,12 +1006,10 @@ test("a key holds the focused item only when it moves focus to another item of t
     act(() => first.focus());
     // The hold watches the page for rows drawn above the item. The row's own placing
     // watches only the row, so it cannot produce this observation.
-    for (const key of ["{PageDown}", " ", "{PageUp}", "{ArrowUp}"]) {
+    for (const key of ["{PageDown}", " ", "{PageUp}"]) {
       await user.keyboard(key);
       expect(document.activeElement).toBe(first);
-      expect(sizes.observed(), `${key} started a hold without moving focus`).not.toContain(
-        document.body
-      );
+      expect(sizes.observed(), `${key} started a hold`).not.toContain(document.body);
     }
 
     await user.keyboard("{ArrowDown}");
@@ -1019,6 +1017,14 @@ test("a key holds the focused item only when it moves focus to another item of t
     expect(sizes.observed(), "ArrowDown did not start a hold").toContain(document.body);
     await user.keyboard(" ");
     expect(sizes.observed(), "Space kept the hold from ArrowDown").not.toContain(document.body);
+
+    // End on the last row moves no focus, yet the keymap answers it and prevents its default,
+    // so it still holds the row on screen while earlier rows load above it.
+    await user.keyboard("{End}");
+    expect(document.activeElement).toBe(second);
+    expect(sizes.observed(), "End on the last row did not start a hold").toContain(document.body);
+    await user.keyboard("{PageDown}");
+    expect(sizes.observed(), "PageDown kept the hold from End").not.toContain(document.body);
   } finally {
     view.unmount();
     read.mockRestore();
