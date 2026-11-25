@@ -22,9 +22,11 @@ also refuses what an upload refuses for the text alone, such as a text that make
 one write may, or that holds markdown the parser refuses. Without `--force` that includes what
 Dispatch refuses only of a new document, such as an ask block that breaks its content rule or a
 block id written twice. With `--force`, which may replace a document Dispatch judges by looser
-rules, the dry run asks for none of those, so under a name the owner does not hold, which the call
-uploads as a new document, it passes with no warning a text that upload then refuses for one of
-them. When Dispatch cannot answer, the dry run says so on stderr and passes.
+rules, the dry run asks for none of those, so it passes with no warning a text the call can then
+refuse for one of them: under a name the owner does not hold, because the call uploads a new
+document; under a name the owner holds, because a replacement holds those rules for the blocks it
+adds or changes, and refuses a rendering that grows past the bytes one document holds over the
+version it replaces. When Dispatch cannot answer, the dry run says so on stderr and passes.
 The `dispatch` skill in this repository, `skills/dispatch/SKILL.md`, teaches the workflow. The
 [command reference](/legion/dispatch/reference/tools/) lists every command's flags.
 

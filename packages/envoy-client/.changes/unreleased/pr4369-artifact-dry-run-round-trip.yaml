@@ -23,11 +23,13 @@ body: |-
   with `--force`, which may replace a document judged by looser rules, it asks for none of them,
   and Dispatch answers as the most permissive replacement takes the text: with the rendering that
   replacement stores, whose spelling the call and its dry run check as for any text, or with a
-  refusal every replacement makes. Under a name the owner does not hold, `--force` uploads a new
-  document, so its dry run passes, with no warning, a text that upload then refuses for one of a
-  new document's checks. An answer it does not mark is no answer about the text. Blank text given
-  inline, read from `--content-file` or from stdin, other than the empty string, is asked too, for
-  a refusal alone and never for its spelling. The
+  refusal every replacement makes. So its dry run passes, with no warning, a text the call's
+  upload can then refuse for one of a new document's checks: under a name the owner does not hold,
+  because `--force` uploads a new document; under a name the owner holds, because a replacement
+  holds those rules for the blocks it adds or changes, and refuses a rendering that grows past the
+  bytes one document holds over the version it replaces. An answer it does not mark is no answer
+  about the text. Blank text given inline, read from `--content-file` or from stdin, other than
+  the empty string, is asked too, for a refusal alone and never for its spelling. The
   call and its dry run refuse a U+0000 or a byte that is not UTF-8 in such a Markdown file, and in
   a text given inline or read from `--content-file` or stdin, in the words the upload of a Markdown
   file refuses it with, in that same place, so they refuse it alike with no Dispatch configured

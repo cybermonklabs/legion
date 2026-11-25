@@ -8,17 +8,21 @@ body: |-
   character or a byte that is not UTF-8, whether it is read from content-file, from stdin or from
   a Markdown file, in the order and words of a Markdown file's upload, once the flags are read,
   before it checks the arguments and before anything that needs Dispatch, as the call does; that
-  it then asks Dispatch how it would store inline text, and refuses a text that Dispatch would
-  store under another spelling, but for typed blocks' attributes in another order, which the call
+  it then asks Dispatch how it would store text given inline, read from content-file or from
+  stdin, and refuses a text that Dispatch would store under another spelling, but for typed
+  blocks' attributes in another order, which the call
   uploads in Dispatch's order, or that the call refuses for the text alone; that it sends Dispatch
   the bytes of any other Markdown file, refusing what Dispatch refuses of them but never their
   spelling;
   that for a text it did not refuse before it asks, when Dispatch cannot answer, it says so on
   stderr and passes; and that with force it asks for none of a new document's refusals and checks
-  the spelling Dispatch answers as for any text, so under a name the owner does not hold, which the
-  call uploads as a new document, it passes with no warning a text that upload then refuses for one
-  of them. It also says that the dry run does not read whether the owner holds the name, which the
-  call reads only after it checks the text: a text the check refuses is refused alike under a held
+  the spelling Dispatch answers as for any text, so it passes with no warning a text the call can
+  then refuse for one of them: under a name the owner does not hold, because the call uploads a
+  new document; under a name the owner holds, because a replacement holds those rules for the
+  blocks it adds or changes, and refuses a rendering that grows past the bytes one document holds
+  over the version it replaces. It also says that the dry run does not read whether the owner
+  holds the name, which the call reads only after it checks the text: a text the check refuses is
+  refused alike under a held
   name, and a text it passes the call without force still refuses under a held name, though the
   dry run passes it. The spec's description says that a text past the document limit, or holding a
   NUL character or a byte that is not UTF-8, read from content-file, from stdin or from a Markdown

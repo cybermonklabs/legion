@@ -1337,10 +1337,13 @@ stores, or with a refusal every replacement makes, the parse's own, the ask refu
 instead and a render that fails. The check asks for them where the call makes a new document,
 without `--force`; with `--force` the upload may replace a document, judged by those looser
 rules, so the check asks for none of them and compares the rendering Dispatch answers as for any
-text, and every marked refusal it gets is the call's. Under a name the owner does not hold,
-`--force` uploads a new document, so its dry run passes, with no warning, a text that upload then
-refuses for one of a new document's checks. A check Dispatch adds to the upload reaches the dry
-run with no change here. An unmarked answer says nothing of the text, whatever its status. A
+text, and every marked refusal it gets is the call's. So its dry run passes, with no warning, a
+text the call's upload can then refuse for one of a new document's checks: under a name the owner
+does not hold, because `--force` uploads a new document; under a name the owner holds, because a
+replacement holds those rules for the blocks it adds or changes, and refuses a rendering that
+grows past the bytes one document holds over the version it replaces. A check Dispatch adds to
+the upload reaches the dry run with no change here. An unmarked answer says nothing of the text,
+whatever its status. A
 `--path` file Dispatch stores as a Markdown document (a path ending in .md or .markdown, which the
 upload carries as `text/markdown`) is held to the same checks, in the same place: once the flags
 are read, before the argument check and before anything that needs Dispatch, the command reads it
@@ -1381,10 +1384,11 @@ refuses under a held name, and the dry run, which cannot know the name, passes i
 Dispatch configured, the dry run and the call alike still refuse, with exit 1, once the flags are
 read and before the argument check (above), a document's text past 1 MiB, and one holding a
 U+0000 or a byte that is not UTF-8, whether it is given inline, read from `--content-file` or from
-stdin, or in a Markdown `--path` file. Any other text given inline, read from `--content-file` or
-from stdin, and any other Markdown file the command reads, the dry run passes with a warning that
-the call is refused for the same reason, and
-the call is refused for Dispatch being off, exit 2. The
+stdin, or in a Markdown `--path` file. Any other text that is not empty, given inline, read from
+`--content-file` or from stdin, and any other Markdown file the command reads, the dry run passes
+with a warning that the call is refused for the same reason; the empty string, which it asks
+Dispatch nothing about, it passes with no warning; and the call is refused for Dispatch being off,
+exit 2. The
 step waits at most 5 s. For a text it does not refuse before it asks, when it gets no answer (no
 Dispatch configured, any other failure, no answer in time, or a Dispatch without the route), the
 dry run passes, and one `dispatch: warning:` line on stderr says why and what the call does then,

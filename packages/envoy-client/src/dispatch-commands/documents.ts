@@ -756,9 +756,9 @@ export async function artifactCommand(context: CommandContext): Promise<Dispatch
   // The check of the text alone, the one the dry run makes (artifactTextCheck chooses it for both),
   // so the call and its dry run refuse a text alike. It comes before the read of the held name
   // below, which the dry run does not make, so a text it refuses is refused for the text under a
-  // held name too, and so is a text that is not blank, given inline, in --content-file or on stdin,
-  // whose check got no answer (`failed`, storedTextCheckFailed), which the dry run passes with a
-  // warning. The held name refuses only a text the check passes.
+  // held name too, and so is inline text that is not blank whose check got no answer (`failed`,
+  // storedTextCheckFailed), which the dry run passes with a warning. The held name refuses only a
+  // text the check passes.
   //
   // Inline text takes storedTextCheck, which decides what each answer means for the call: text past
   // the bytes one document may hold is refused without asking, as the server refuses such an upload
@@ -774,11 +774,14 @@ export async function artifactCommand(context: CommandContext): Promise<Dispatch
   // makes; with it, the upload may replace a document, which is judged by looser rules, so it
   // asks for none of them, and Dispatch answers as the most permissive replacement
   // takes the text: with the rendering it stores, which the inline check compares as any other, or
-  // with a refusal every replacement makes. Under a name the owner does not hold, --force uploads a
-  // new document, and its upload makes the refusals the check did not ask for. A text the check
-  // leaves unchecked - a Dispatch without the route, or a file or blank text whose check got no
-  // answer - goes up, and the upload makes its own refusal. A file documentFileRead passes with no
-  // bytes (one Dispatch stores as its bytes, or a FIFO, a device or a socket) is asked nothing.
+  // with a refusal every replacement makes. So the upload can refuse what the check did not ask
+  // for: under a name the owner does not hold, --force uploads a new document, which makes those
+  // refusals; under a name the owner holds, the replacement holds those rules for the blocks it
+  // adds or changes, and refuses a rendering that grows past the bytes one document holds over the
+  // version it replaces. A text the check leaves unchecked - a Dispatch without the route, or a
+  // file or blank text whose check got no answer - goes up, and the upload makes its own refusal.
+  // A file documentFileRead passes with no bytes (one Dispatch stores as its bytes, or a FIFO, a
+  // device or a socket) is asked nothing.
   //
   // Inline text is asked through the call's own client, which asks again after a failed attempt,
   // since a failed check of text that is not blank refuses the upload. A file goes up whatever its
@@ -913,10 +916,13 @@ function endedSentence(text: string): string {
  * uploads the file itself; such a file, and a name alone, is asked nothing, by the call as by the
  * dry run. Both checks ask for a new document's refusals only without
  * `--force`, as the call's do, so every refusal the dry run gets is the call's. With `--force` they
- * ask for none of them, so a dry run under a name the owner does not hold passes, with no warning,
- * a text the call's upload, which makes a new document, refuses for one of them. It reads nothing
- * else the call reads: not whether the owner holds the name, and none of the server's other
- * refusals. The call makes its check before it reads the held name, so a text the check refuses
+ * ask for none of them, so a dry run passes, with no warning, a text the call's upload can then
+ * refuse for one of them: under a name the owner does not hold, because that upload makes a new
+ * document; under a name the owner holds, because a replacement holds those rules for the blocks
+ * it adds or changes, and refuses a rendering that grows past the bytes one document holds over
+ * the version it replaces. It reads nothing else the call reads: not whether the owner holds the
+ * name, and none of the server's other refusals. The call makes its check before it reads the
+ * held name, so a text the check refuses
  * gets the same refusal from both under a held name too; a text the check passes the call still
  * refuses under a name the owner holds, without `--force`, and the dry run passes it. A check that
  * cannot run passes, with a warning that says why and what the call does, as the check's kind

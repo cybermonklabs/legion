@@ -846,6 +846,10 @@ const UNREADABLE_RENDERING_REFUSED = {
 const textRefusal = (answer: { code: string; error: string }, status: number): Response =>
   Response.json(answer, { status, headers: { [TEXT_REFUSAL_HEADER]: "text" } });
 
+/** The `hint` Dispatch's answer to a path no route serves carries (routes/router.go's
+ *  staticHandler), which the CLI prints after the message (`messageFor`). */
+const NO_ROUTE_HINT = "GET /api/v1 lists every route";
+
 /** The stderr line of an upload's dry run against a Dispatch with no round-trip route. */
 const routeAbsent = (answer: string): string =>
   `dispatch: warning: this Dispatch cannot check the text: POST ${ROUND_TRIP} failed with ${answer}. The call uploads the text unchecked.\n`;
@@ -2059,13 +2063,14 @@ describe("the dispatch CLI", () => {
     ).toEqual([expect.objectContaining({ content: stored })]);
   });
 
-  // A Dispatch older than the round trip answers no route for it, and the call then uploads the
-  // text unchecked. The dry run asks the route once, with no waits before asking again, so that
-  // answer reaches it well inside its 5 s bound.
+  // A Dispatch older than the round trip answers no route for it, as the server answers every path
+  // no route serves, with its hint (routes/router.go's staticHandler), and the call then uploads
+  // the text unchecked. The dry run asks the route once, with no waits before asking again, so
+  // that answer reaches it well inside its 5 s bound, and its warning carries Dispatch's hint.
   test("an upload's dry run against a Dispatch with no round-trip route passes within its bound, saying the call uploads unchecked", async () => {
     roundTrip = () =>
       Response.json(
-        { code: "NOT_FOUND", error: `no route for POST ${ROUND_TRIP}` },
+        { code: "NOT_FOUND", error: `no route for POST ${ROUND_TRIP}`, hint: NO_ROUTE_HINT },
         { status: 404 }
       );
     const started = performance.now();
@@ -2074,22 +2079,22 @@ describe("the dispatch CLI", () => {
     expect(dry).toEqual({
       code: 0,
       stdout: NOTES_JSON,
-      stderr: routeAbsent(`NOT_FOUND: no route for POST ${ROUND_TRIP}`),
+      stderr: routeAbsent(`NOT_FOUND: no route for POST ${ROUND_TRIP}; ${NO_ROUTE_HINT}`),
     });
     expect(requests).toEqual([{ method: "POST", path: ROUND_TRIP, body: markdownBody(NOTES) }]);
   });
 
   // A Dispatch that has the inline round trip and not the file one - main's server, and the old
-  // pods of a rolling deploy - answers the file's check 404, as its own JSON. The dry run of a
-  // markdown --path file then passes, saying this Dispatch cannot check the file and that the call
-  // asks once more. The call asks the same route as its dry run asks it - once, with no wait before
-  // asking a route again - and uploads the file once that route is absent too: one file round
-  // trip, then the upload, inside the dry run's 5 s bound.
+  // pods of a rolling deploy - answers the file's check 404, as its own JSON with its hint. The
+  // dry run of a markdown --path file then passes, saying this Dispatch cannot check the file and
+  // that the call asks once more. The call asks the same route as its dry run asks it - once, with
+  // no wait before asking a route again - and uploads the file once that route is absent too: one
+  // file round trip, then the upload, inside the dry run's 5 s bound.
   test("a markdown --path file's dry run against a Dispatch with no file round trip passes, saying it cannot check the file, and the call asks once and uploads", async () => {
     roundTrip = (markdown, body) =>
       "file" in body
         ? Response.json(
-            { code: "NOT_FOUND", error: `no route for POST ${FILE_ROUND_TRIP}` },
+            { code: "NOT_FOUND", error: `no route for POST ${FILE_ROUND_TRIP}`, hint: NO_ROUTE_HINT },
             { status: 404 }
           )
         : keptText(markdown);
@@ -2101,7 +2106,7 @@ describe("the dispatch CLI", () => {
     expect(dry).toEqual({
       code: 0,
       stdout: `${JSON.stringify({ issue: "DSP-1", name: "notes.md", path: "notes.md" }, null, 2)}\n`,
-      stderr: `dispatch: warning: this Dispatch cannot check the file: POST ${FILE_ROUND_TRIP} failed with NOT_FOUND: no route for POST ${FILE_ROUND_TRIP}. The call asks once more, and uploads the file unchecked if it gets no answer either.\n`,
+      stderr: `dispatch: warning: this Dispatch cannot check the file: POST ${FILE_ROUND_TRIP} failed with NOT_FOUND: no route for POST ${FILE_ROUND_TRIP}; ${NO_ROUTE_HINT}. The call asks once more, and uploads the file unchecked if it gets no answer either.\n`,
     });
     expect(requests).toEqual([asked]);
     requests.length = 0;
