@@ -74,6 +74,7 @@ func vectorsByModel(t *testing.T, database *store.Store) map[string]int {
 // and its pass drops the first identity's vectors and its queue embeds them again. When the first
 // process is live again, its identity stays inactive: the active one is still carried.
 func TestOnlyTheActiveEmbedderIdentityDropsAndEmbeds(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	second := storetest.SecondProcess(t, database)
 	seeded := seedEveryKind(t, database.Pool, "ACTV")
@@ -140,6 +141,7 @@ func TestOnlyTheActiveEmbedderIdentityDropsAndEmbeds(t *testing.T) {
 // process of another identity. The active identity is carried throughout, so it stays active: the
 // other process drops nothing, and the restarted process embeds.
 func TestARestartKeepsItsIdentityActive(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	second := storetest.SecondProcess(t, database)
 	seedIssue(t, database, "RSTR", "RSTR-1", "Embedded before the restart")
@@ -180,6 +182,7 @@ func TestARestartKeepsItsIdentityActive(t *testing.T) {
 // its debt at its own, so together they never take more than the larger ceiling per minute, and
 // neither stops the other. The ceilings are small, so a "minute" of tokens passes in seconds.
 func TestTwoCeilingsTogetherNeverPassTheLargerOne(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	second := storetest.SecondProcess(t, database)
 	ctx := context.Background()

@@ -84,6 +84,43 @@ func TestAWokenLoopRunsOnceAtStartAndThenNothingWhileIdle(t *testing.T) {
 	})
 }
 
+// Idle is called each time the loop is about to wait with nothing owed and nothing due, and at no
+// other time: not while a pass's due time is armed, and not while a wake is waiting, which the
+// loop takes first and runs its pass for. Here the boot pass asks to run again 10 s on, so the
+// loop is first idle after that pass; and a wake signalled while a later pass runs earns one more
+// pass before the loop is idle again.
+func TestAWokenLoopReportsIdleOnlyWithNothingOwedDueOrWaiting(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		var passes, idles passClock
+		wake := make(chan struct{}, 1)
+		booted := time.Now()
+		calls := 0
+		cancel, done := runLoop(duty.WokenLoop{
+			Wake:   wake,
+			MinGap: 5 * time.Second,
+			Pass: func(context.Context) time.Time {
+				passes.record()
+				calls++
+				switch calls {
+				case 1:
+					return booted.Add(10 * time.Second)
+				case 3:
+					signal(wake) // a change lands while this pass runs
+				}
+				return time.Time{}
+			},
+			Idle: idles.record,
+		}, noLease(t))
+		time.Sleep(time.Minute)
+		signal(wake)
+		time.Sleep(time.Minute)
+		stop(cancel, done)
+		wantPassesAt(t, &passes, booted, 0, 10*time.Second, time.Minute, time.Minute+5*time.Second)
+		wantPassesAt(t, &idles, booted, 10*time.Second, time.Minute+5*time.Second)
+	})
+}
+
 // Wakes that arrive inside MinGap of a pass's start collapse into one pass at the end of the gap,
 // so a loop under load runs no more often than the timer it replaced; a wake after the gap runs at
 // once.
