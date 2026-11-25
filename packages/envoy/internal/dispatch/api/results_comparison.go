@@ -740,11 +740,13 @@ func (c *comparisonReader) measuredBranches(
 //
 //   - The commit heads an open or merged pull request Dispatch holds (headStoredAt), whatever
 //     issue that row is attributed to and whether it is attributed at all. Such a commit is one
-//     Dispatch's own passes keep reading — the reconcile re-reads an open row at every pass of
-//     one process that tries its whole batch while no more than a batch is due, each starting at
-//     most five minutes after the one before it ended (delivery.PullRequestHeadStaleAfter),
-//     within the bound delivery.ListStalePullRequestHeads states past that or after a pass a rate
-//     limit stopped, and offers a merged one once per attribution rule
+//     Dispatch's own passes keep reading — the reconcile takes an open row again at every pass
+//     of one process that tries its whole batch while no more than a batch is due, each starting
+//     at most five minutes after the one before it ended, and within the bound
+//     delivery.ListStalePullRequestHeads states past that or after a pass a rate limit stopped;
+//     a pass that takes the row reads it from GitHub only once its stamp of the try succeeds,
+//     and while such stamps fail nothing bounds the time between two reads
+//     (delivery.PullRequestHeadStaleAfter); and it offers a merged one once per attribution rule
 //     (delivery.ListStalePullRequestHeads) —
 //     so a read from here repairs nothing. This is a child's result on its parent's tab: the row
 //     is the child's own pull request, attributed to the child, and no answer of GitHub's puts
