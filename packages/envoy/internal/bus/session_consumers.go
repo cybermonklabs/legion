@@ -1034,7 +1034,7 @@ func SessionConsumerReduction(subjects []string) []ReducedSessionFilter {
 	if len(forms) == 0 {
 		return nil
 	}
-	reduced, _ := reduceFilters(forms, fedBy)
+	reduced := reduceFilters(forms, fedBy)
 	filters := make([]ReducedSessionFilter, len(reduced))
 	for index, filter := range reduced {
 		slices.Sort(filter.fed)

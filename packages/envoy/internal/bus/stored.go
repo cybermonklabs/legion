@@ -432,7 +432,7 @@ func ReduceFilterSubjects(subjects []string) []string {
 	if len(subjects) == 0 {
 		return slices.Clone(subjects)
 	}
-	reduced, _ := reduceFilters(subjects, nil)
+	reduced := reduceFilters(subjects, nil)
 	filters := make([]string, len(reduced))
 	for index, filter := range reduced {
 		filters[index] = filter.subject
@@ -448,13 +448,7 @@ func ReduceFilterSubjects(subjects []string) []string {
 // filter that contains it, and two equal subjects are kept once with the provenance of both
 // (compactFilters). With a nil fedBy every fed stays nil, and the reduction allocates nothing for
 // it.
-//
-// It reports beside the filters how many pairs of subjects it weighed, which ReduceFilterSubjects
-// and SessionConsumerReduction drop and TestReducingTheLargestRegistrationInProductionWeighsEachPairOnce
-// reads. That number is the reduction's work counted the same way on every machine: a clock reads
-// the machine the test ran on as much as the reduction, and a count of allocations misses a scan
-// that weighs pairs again on tokens already split, which allocates nothing.
-func reduceFilters(subjects []string, fedBy []int) ([]filterSubject, int) {
+func reduceFilters(subjects []string, fedBy []int) []filterSubject {
 	reduced := make([]filterSubject, 0, len(subjects))
 	for index, subject := range subjects {
 		filter := filterSubject{subject: subject, tokens: strings.Split(subject, ".")}
@@ -463,15 +457,12 @@ func reduceFilters(subjects []string, fedBy []int) ([]filterSubject, int) {
 		}
 		reduced = append(reduced, filter)
 	}
-	weighed := 0
 	for merged := true; merged; {
 		slices.SortFunc(reduced, func(a, b filterSubject) int { return strings.Compare(a.subject, b.subject) })
 		reduced = compactFilters(reduced)
-		var pairs int
-		reduced, merged, pairs = reduceFilterPairs(reduced)
-		weighed += pairs
+		reduced, merged, _ = reduceFilterPairs(reduced)
 	}
-	return reduced, weighed
+	return reduced
 }
 
 // filterSubject is one subject ReduceFilterSubjects weighs, with its tokens and, where its caller
@@ -503,8 +494,13 @@ func compactFilters(subjects []filterSubject) []filterSubject {
 // reduceFilterPairs weighs the pairs of subjects, which are sorted and each held once, in order:
 // it drops each subject another contains, and at the first pair that overlaps without either
 // containing the other it merges that pair, with the provenance of both, and reports true, or
-// reports false when it reaches the last pair with no merge. It changes subjects in place, and
-// reports beside them how many pairs it weighed (reduceFilters).
+// reports false when it reaches the last pair with no merge. It changes subjects in place.
+//
+// It reports beside them how many pairs it weighed, which reduceFilters drops and
+// TestReducingTheLargestRegistrationInProductionWeighsEachPairOnce reads. That number is the
+// pass's work counted the same way on every machine: a clock reads the machine the test ran on as
+// much as the reduction, and a count of allocations misses a scan that weighs pairs again on tokens
+// already split, which allocates nothing.
 //
 // A pair that does not overlap is weighed by that test alone, which settles most pairs: a subject
 // that contains another overlaps it, so such a pair is neither a drop nor a merge.

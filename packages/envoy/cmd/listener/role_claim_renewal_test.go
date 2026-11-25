@@ -187,9 +187,11 @@ const largestShapeHolder = "ses_largest_holder"
 // filter subjects in them, held to largestShapeServerFilterCeiling. Those are the only inputs the
 // listener gives the server's check of a consumer's filters (checkConsumerCfg), which under the
 // race detector is the largest cost that grows with the topics. So the ceiling bounds what the
-// listener asks the server to check, and says nothing about how the server checks it. No count
-// sees the server's own algorithm, the size of the KV records the registration writes, or the
-// listener's topic work outside the reductions.
+// listener asks the server to check, and says nothing about how the server checks it. The
+// allocation count sees the allocations of the listener's own filter rules (sessionConsumerFilter),
+// and not their work that allocates nothing. No count sees the listener's topic work outside its
+// consumer filter (the plan's merge, the answer's warnings, the record's encoding), the server's
+// own algorithm, or the size of the KV records the registration writes.
 func TestARegistrationOfTheLargestShapeInProductionStillRenewsItsClaim(t *testing.T) {
 	t.Parallel()
 	const role = "legion-controller"
@@ -362,8 +364,11 @@ const consumerFilterAllocsPerTopic = 36
 
 // reduceAllocsPerTopic is how many allocations the consumer's own reduction of that filter
 // (bus.SessionConsumerFilters) may make for each topic of shapetest.Planned: half again the 2.01 a
-// topic it makes now, the forms of each subject and one split of each form into its tokens. It
-// refuses a second split of each form.
+// topic it makes now, the forms of each subject and one split of each form into its tokens, a
+// ceiling of 4,830 against 3,229. It is set to refuse a split of the subjects of every pair
+// weighed, which the reduction INFRA-1555 replaced made, about 30,300 a topic. A second split of
+// each form (1,612 allocations more, 4,841) is refused only by 11 allocations, so a saving of 12
+// elsewhere would let it through: the ceiling is no guard against a change that small.
 const reduceAllocsPerTopic = 3
 
 // A registration's consumer call computes its consumer's filter (sessionConsumerFilter: the
@@ -374,8 +379,10 @@ const reduceAllocsPerTopic = 3
 // what is left of it. This case counts the allocations of each of those two calls, as the
 // registration makes them, over shapetest.Planned, the topics a registration of the largest shape
 // plans. So the list the second call reduces is the one the registration computes, and not a list
-// built to stand for it: 1,610 subjects in 1,612 forms, the role lane left out by the same code
-// that leaves it out of a registration, reduced to the 1,602 filters
+// built to stand for it. sessionConsumerFilter leaves the role lane out by the same code that
+// leaves it out of a registration, and puts the session's agent subject first, so the agent subject
+// is in the list twice: 1,610 subjects in 1,612 forms, the agent subject's two forms counted twice,
+// which are 1,609 topics in 1,610 forms held once each. They reduce to the 1,602 filters
 // TestARegistrationOfTheLargestShapeInProductionStillRenewsItsClaim counts on the server. A
 // registration makes this computation more than once (planWithoutLeftOut does it on the plan as
 // well), each time at this cost.
