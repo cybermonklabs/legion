@@ -120,20 +120,22 @@ func (f loopSessionFlags) check(loopSeed bool) ([]string, error) {
 	return eps, nil
 }
 
-// parseLoopListeners reads -loop-listeners: the listener endpoints, comma separated, the unit
-// sessions over all but the last and the driver session on the last. Fewer than two is refused,
-// since then one endpoint would carry both.
+// parseLoopListeners reads -loop-listeners: the listener endpoints, comma separated, each as
+// joinTrimPath leaves it, the unit sessions over all but the last and the driver session on the
+// last. Fewer than two is refused, since then one endpoint would carry both.
 func parseLoopListeners(v string) ([]string, error) {
 	if strings.TrimSpace(v) == "" {
 		return nil, nil
 	}
 	var out []string
-	for _, ep := range strings.Split(v, ",") {
+	for i, ep := range strings.Split(v, ",") {
 		ep = strings.TrimSpace(ep)
 		if !isEndpointURL("-loop-listeners", ep) {
-			return nil, fmt.Errorf("-loop-listeners %q is not a URL with a scheme and a host", ep)
+			// The value can carry a credential, and one that does not parse cannot be told apart
+			// from it, so the refusal names the endpoint by its place in the list.
+			return nil, fmt.Errorf("-loop-listeners endpoint %d is not a URL with a scheme and a host (it is not printed)", i+1)
 		}
-		out = append(out, strings.TrimSuffix(ep, "/"))
+		out = append(out, joinTrimPath(ep))
 	}
 	if len(out) < 2 {
 		return nil, fmt.Errorf("-loop-listeners needs at least two endpoints: the unit sessions take all but the last, and the driver session the last")
@@ -528,7 +530,7 @@ func (st *step) startLoopSessions(ctx context.Context, ns *natsSessions) *loopSe
 	lp := newLoopSessions(st.cfg, st.lg, st.nonce, natsBus{conns: ns.conns}, ns.receipts)
 	lp.startDriver(ctx)
 	st.lg.Printf("loop sessions: driver on %s following %d topics, units starting at %g/s over %d listeners, each living %s (cap %d a proposal), exit topic %s",
-		lp.cfg.loopListeners[len(lp.cfg.loopListeners)-1], lp.driverTopics, lp.cfg.unitStarts,
+		redactURL(lp.cfg.loopListeners[len(lp.cfg.loopListeners)-1]), lp.driverTopics, lp.cfg.unitStarts,
 		len(lp.cfg.loopListeners)-1, lp.cfg.unitLife, unitCapPerProposal, lp.exit)
 	return lp
 }

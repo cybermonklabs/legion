@@ -119,14 +119,14 @@ func readWindow(ctx context.Context, ep endpoints) windowReading {
 		r.proxyErr = "no proxy wire counts to read: -allow-foreign, or a stack.json from before proxy_stats"
 	default:
 		var s proxyStats
-		if err := getJSON(ep.proxyStats+"/stats", &s); err != nil {
+		if err := getJSON(ep.proxyStats, "/stats", &s); err != nil {
 			r.proxyErr = "the proxy serves no wire counts: " + err.Error()
 		} else {
 			r.proxy = &s
 		}
 	}
 	var vars map[string]json.RawMessage
-	if err := getJSON(ep.pprof+"/debug/vars", &vars); err != nil {
+	if err := getJSON(ep.pprof, "/debug/vars", &vars); err != nil {
 		r.roomsErr = notServed + " (" + err.Error() + ")"
 	} else if raw, ok := vars["dispatch_rooms"]; !ok {
 		r.roomsErr = notServed
@@ -153,10 +153,15 @@ func readWindow(ctx context.Context, ep endpoints) windowReading {
 	return r
 }
 
-// getJSON decodes the body of a GET of url (getOK) into v. The body is the server's words, or the
-// words of whatever answers in its place, and a decoder's error can quote a value it could not read
-// (time.Time's does), so an answer that does not decode is named as such and none of it printed.
-func getJSON(url string, v any) error {
+// getJSON decodes into v the body of a GET (getOK) of route joined onto base, an endpoint's URL
+// (routeURL). The body is the server's words, or the words of whatever answers in its place, and a
+// decoder's error can quote a value it could not read (time.Time's does), so an answer that does
+// not decode is named as such and none of it printed.
+func getJSON(base, route string, v any) error {
+	url, err := routeURL(base, route)
+	if err != nil {
+		return err
+	}
 	body, err := getOK(context.Background(), shortClient, url)
 	if err != nil {
 		return err

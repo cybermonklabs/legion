@@ -23,7 +23,7 @@ import (
 // Dispatch's place can name one that climbs out of the bundle with "..", or one longer than a file
 // name may be, whose error printed the path; each echoes the fetch's bearer
 // (answer_members_test.go), so a file named after it, or an error that prints it, holds the bearer.
-// replay-fetch refuses such an id or key where it decodes the answer naming it (listingInShape,
+// replay-fetch refuses such an id or key where it decodes the answer naming it (dispatchID,
 // eventInShape), before it names a file after it, and names every file after an id or key in
 // Dispatch's shape as it is.
 
@@ -140,7 +140,7 @@ func (run *namedFetch) requireNamesNone(t *testing.T, capture string) {
 	if outside > 0 {
 		t.Errorf("replay-fetch wrote %d files outside the bundle %s", outside, run.out)
 	}
-	if msg := errorText(run.err); !strings.Contains(msg, "PRJ-1 artifacts: the listing names an artifact by an id that is not in Dispatch's shape") &&
+	if msg := errorText(run.err); !strings.Contains(msg, shapeKey("1")+" artifacts: the listing is not the shape replay-fetch reads") &&
 		!strings.Contains(msg, "PRJ-1 events after 0: event ") {
 		t.Errorf("replay-fetch = %v, want the refusal of the answer naming the member", run.err)
 	}

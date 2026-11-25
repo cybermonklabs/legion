@@ -324,7 +324,7 @@ func checkSizesAndAnchors(ctx context.Context, conn *pgx.Conn, b *replayBundle, 
 }
 
 // seedDifference is one difference replay-check-seed prints and writes. Artifact is the document's
-// id, which the bundle keeps only in Dispatch's shape (eventInShape, listingInShape), and never its
+// id, which the bundle keeps only in Dispatch's shape (eventInShape, readListing), and never its
 // name: a name is Dispatch's words, which have no shape, and the bundle outlives the record of the
 // answer that named it. So is sizeMismatch's.
 type seedDifference struct {

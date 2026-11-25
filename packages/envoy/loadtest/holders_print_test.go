@@ -108,10 +108,10 @@ func TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement(t *testing.T) {
 			Name: "loadtest.dispatchCoverage.readCoverage.embedder",
 			Kind: "fields",
 			Boxed: struct {
-				Identity redact.RemoteText `json:"identity"`
-				Place    redact.RemoteText `json:"place"`
-				Model    redact.RemoteText `json:"model"`
-			}{code, code, code},
+				Identity *redact.RemoteText `json:"identity"`
+				Place    *redact.RemoteText `json:"place"`
+				Model    *redact.RemoteText `json:"model"`
+			}{&code, &code, &code},
 			Same:     embedderTwin{redacttest.Code, redacttest.Code, redacttest.Code},
 			Exported: embedderTwin{redacttest.Code, redacttest.Code, redacttest.Code},
 		},

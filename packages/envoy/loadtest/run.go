@@ -1290,7 +1290,7 @@ func (st *step) profile(ctx context.Context) {
 	}
 	pprof, out := st.cfg.ep.pprof, st.cfg.out
 	if secs := int(math.Ceil(st.winEnd.Sub(from).Seconds())); secs > 0 {
-		fetchTo(pprof+"/debug/pprof/profile?seconds="+strconv.Itoa(secs), filepath.Join(out, "cpu.pprof"), st.winEnd.Sub(from)+60*time.Second, st.lg)
+		fetchTo(pprof, "/debug/pprof/profile?seconds="+strconv.Itoa(secs), filepath.Join(out, "cpu.pprof"), st.winEnd.Sub(from)+60*time.Second, st.lg)
 	} else {
 		st.lg.Printf("cpu profile: none, the restart ended after the window")
 	}
@@ -1301,9 +1301,9 @@ func (st *step) profile(ctx context.Context) {
 			return
 		}
 	}
-	fetchTo(pprof+"/debug/pprof/goroutine?debug=2", filepath.Join(out, "goroutines.txt"), 120*time.Second, st.lg)
-	fetchTo(pprof+"/debug/pprof/heap", filepath.Join(out, "heap.pprof"), 60*time.Second, st.lg)
-	fetchTo(pprof+"/debug/pprof/heap?debug=1", filepath.Join(out, "heap.txt"), 10*time.Minute, st.lg)
+	fetchTo(pprof, "/debug/pprof/goroutine?debug=2", filepath.Join(out, "goroutines.txt"), 120*time.Second, st.lg)
+	fetchTo(pprof, "/debug/pprof/heap", filepath.Join(out, "heap.pprof"), 60*time.Second, st.lg)
+	fetchTo(pprof, "/debug/pprof/heap?debug=1", filepath.Join(out, "heap.txt"), 10*time.Minute, st.lg)
 }
 
 // buildSummary joins what the phases recorded into summary.json, and writes samples.json and,

@@ -21,11 +21,12 @@ import (
 // still prints its transport text (refused). The twin shows net/http's own error holds the
 // password. Captures loadtest.fetch-words/unparsed.
 func TestAFetchPrintsNoCredentialOfItsURL(t *testing.T) {
-	address := userinfoEcho(t) + "/debug/pprof/heap"
-	fetch := func(t *testing.T, url string) string {
+	base := userinfoEcho(t)
+	address := base + "/debug/pprof/heap"
+	fetch := func(t *testing.T, endpoint string) string {
 		t.Helper()
 		var logged strings.Builder
-		fetchTo(url, filepath.Join(t.TempDir(), "heap.pprof"), 10*time.Second, log.New(&logged, "", 0))
+		fetchTo(endpoint, "/debug/pprof/heap", filepath.Join(t.TempDir(), "heap.pprof"), 10*time.Second, log.New(&logged, "", 0))
 		return logged.String()
 	}
 	t.Run("twin", func(t *testing.T) {
@@ -36,14 +37,14 @@ func TestAFetchPrintsNoCredentialOfItsURL(t *testing.T) {
 		redirectstest.RequireEcho(t, request, redacttest.Password)
 	})
 	t.Run("unparsed", func(t *testing.T) {
-		logged := fetch(t, address)
+		logged := fetch(t, base)
 		redacttest.RequireNoPiece(t, "loadtest.fetch-words/unparsed", logged, redacttest.Password)
 		if !strings.HasSuffix(logged, "/debug/pprof/heap: "+redact.ClassRequestFailed+"\n") {
 			t.Errorf("fetchTo logged %q, want the failure by its class", logged)
 		}
 	})
 	t.Run("refused", func(t *testing.T) {
-		if logged := fetch(t, "http://"+redirectstest.Dead(t)+"/debug/pprof/heap"); !strings.Contains(logged, "connect: connection refused") {
+		if logged := fetch(t, "http://"+redirectstest.Dead(t)); !strings.Contains(logged, "connect: connection refused") {
 			t.Errorf("fetchTo logged %q, want the refused connection's own words", logged)
 		}
 	})

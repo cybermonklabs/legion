@@ -23,6 +23,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/envoy/internal/redact"
+	"github.com/sjawhar/envoy/internal/urljoin"
 	"github.com/sjawhar/envoy/loadtest/listenerclient"
 	"github.com/sjawhar/envoy/redirects"
 )
@@ -586,6 +587,19 @@ func isEndpointURL(flag, v string) bool {
 	}
 }
 
+// joinTrimPath is raw, an endpoint flag's URL, without the slashes that end it when it has no
+// query and no fragment, so a value that differs from the stack's by a trailing slash alone is the
+// stack's own. A value with a query or a fragment is as it came: the slashes that end its text are
+// the query's or the fragment's, which a trim would change (http://host/p?next=/ would ask with
+// next empty), and urljoin.Join, which joins a route onto an endpoint's URL, reads a path that ends
+// in a slash as one that does not.
+func joinTrimPath(raw string) string {
+	if strings.ContainsAny(raw, "?#") {
+		return raw
+	}
+	return strings.TrimRight(raw, "/")
+}
+
 // foreignFlagError refuses an endpoint flag that names something other than the stack's own.
 type foreignFlagError struct {
 	Flag string
@@ -655,11 +669,11 @@ func resolveEndpoints(f endpointFlags, st *stackFile) (endpoints, error) {
 		flag, given, stack string
 		dst                *string
 	}{
-		{"-url", strings.TrimRight(f.url, "/"), local("http", sv.Ports.Dispatch), &e.dispatch},
-		{"-listener", strings.TrimRight(f.listener, "/"), local("http", sv.Ports.Listener), &e.listener},
+		{"-url", joinTrimPath(f.url), local("http", sv.Ports.Dispatch), &e.dispatch},
+		{"-listener", joinTrimPath(f.listener), local("http", sv.Ports.Listener), &e.listener},
 		{"-nats", f.nats, local("nats", sv.Ports.NATS), &e.nats},
-		{"-nats-mon", strings.TrimRight(f.natsMon, "/"), local("http", sv.Ports.NATSMonitor), &e.natsMon},
-		{"-pprof", strings.TrimRight(f.pprof, "/"), local("http", sv.Ports.Pprof), &e.pprof},
+		{"-nats-mon", joinTrimPath(f.natsMon), local("http", sv.Ports.NATSMonitor), &e.natsMon},
+		{"-pprof", joinTrimPath(f.pprof), local("http", sv.Ports.Pprof), &e.pprof},
 		{"-pg", f.pg, fmt.Sprintf("postgres://postgres@127.0.0.1:%d/dispatch?sslmode=disable", sv.Ports.Postgres), &e.pg},
 		{"-token-file", f.token, sv.DispatchToken, &e.token},
 		{"-listener-token-file", f.listenerToken, sv.ListenerToken, &e.listenerToken},
@@ -712,25 +726,32 @@ func resolveEndpoints(f endpointFlags, st *stackFile) (endpoints, error) {
 // /varz names the stack, Dispatch answers an authenticated read with the stack's agent token, and
 // the listener answers /v1/sessions with the stack's API token and refuses any other token (a
 // listener with no token configured would answer every caller). The pod's live listener and
-// production Dispatch hold other tokens, so a mistaken target fails here.
+// production Dispatch hold other tokens, so a mistaken target fails here. Each route is joined
+// onto its endpoint's URL (urljoin.Join; the listener client joins its own), and a refusal names
+// the URL it asked without its credentials (redactURL).
 func checkStack(ctx context.Context, e endpoints) error {
 	client := redirects.Refused(shortClient)
 	if err := checkNATSServerName(ctx, client, e.natsMon, e.natsServerName); err != nil {
 		return err
 	}
-	status, body, err := guardGet(ctx, client, e.dispatch+"/api/v1/projects", e.token)
+	joined, err := urljoin.Join(e.dispatch, "/api/v1/projects")
+	if err != nil {
+		return errors.New("guard: dispatch check failed: the Dispatch URL is not an absolute URL with a host (it is not printed)")
+	}
+	projects := joined.String()
+	status, body, err := guardGet(ctx, client, projects, e.token)
 	if err != nil {
 		return fmt.Errorf("guard: dispatch check failed: %w", err)
 	}
 	if status != http.StatusOK {
-		return fmt.Errorf("guard: dispatch check failed: GET %s/api/v1/projects with the stack's agent token answered %d %s", redactURL(e.dispatch), status, answerWords(body))
+		return fmt.Errorf("guard: dispatch check failed: GET %s with the stack's agent token answered %d %s", redactURL(projects), status, answerWords(body))
 	}
 	status, body, err = (&listenerclient.Client{URL: e.listener, Token: e.listenerToken, HTTP: client}).Sessions(ctx)
 	if err != nil {
 		return fmt.Errorf("guard: listener check failed: %w", err)
 	}
 	if status != http.StatusOK {
-		return fmt.Errorf("guard: listener check failed: GET %s%s with the stack's listener token answered %d %s", redactURL(e.listener), listenerclient.SessionsRoute, status, answerWords(body))
+		return fmt.Errorf("guard: listener check failed: GET %s with the stack's listener token answered %d %s", joinRedacted(e.listener, listenerclient.SessionsRoute), status, answerWords(body))
 	}
 	other := make([]byte, 16)
 	_, _ = rand.Read(other)
@@ -739,26 +760,42 @@ func checkStack(ctx context.Context, e endpoints) error {
 		return fmt.Errorf("guard: listener check failed: %w", err)
 	}
 	if status/100 == 2 {
-		return fmt.Errorf("guard: listener check failed: %s%s answers %d to a token that is not the stack's, so it does not hold the stack's token", redactURL(e.listener), listenerclient.SessionsRoute, status)
+		return fmt.Errorf("guard: listener check failed: %s answers %d to a token that is not the stack's, so it does not hold the stack's token", joinRedacted(e.listener, listenerclient.SessionsRoute), status)
 	}
 	return nil
 }
 
+// joinRedacted is route joined onto base, an endpoint's URL (urljoin.Join), as a message names it
+// (redactURL), and redacted for a base that does not join.
+func joinRedacted(base, route string) string {
+	joined, err := urljoin.Join(base, route)
+	if err != nil {
+		return redacted
+	}
+	return redactURL(joined.String())
+}
+
 // checkNATSServerName confirms that the NATS server monitored at monURL names itself name, so a
 // command that publishes (a step, a backlog run) reaches the stack's own NATS and no other. An
-// empty name skips the check.
+// empty name skips the check. /varz is joined onto monURL (urljoin.Join), and a monitor URL that
+// does not join is refused in fixed words.
 func checkNATSServerName(ctx context.Context, client *http.Client, monURL, name string) error {
 	if name == "" {
 		return nil
 	}
+	joined, err := urljoin.Join(monURL, "/varz")
+	if err != nil {
+		return errors.New("guard: nats check failed: the NATS monitor URL is not an absolute URL with a host (it is not printed)")
+	}
+	varzURL := joined.String()
 	// The server name is the monitor's words, so it is compared as it came and printed as the rule
 	// reads it.
 	var varz struct {
 		ServerName redact.RemoteText `json:"server_name"`
 	}
-	status, body, err := guardGet(ctx, client, monURL+"/varz", "")
+	status, body, err := guardGet(ctx, client, varzURL, "")
 	if err == nil && status != http.StatusOK {
-		err = fmt.Errorf("GET %s/varz answered %d", redactURL(monURL), status)
+		err = fmt.Errorf("GET %s answered %d", redactURL(varzURL), status)
 	}
 	if err == nil {
 		err = body.Decode(&varz)
@@ -767,15 +804,17 @@ func checkNATSServerName(ctx context.Context, client *http.Client, monURL, name 
 		return fmt.Errorf("guard: nats check failed: %w", err)
 	}
 	if !varz.ServerName.Equal(name) {
-		return fmt.Errorf("guard: nats check failed: %s/varz server_name is %q, want %q", redactURL(monURL), varz.ServerName, name)
+		return fmt.Errorf("guard: nats check failed: %s server_name is %q, want %q", redactURL(varzURL), varz.ServerName, name)
 	}
 	return nil
 }
 
+// guardGet is one GET of url, a route joined onto an endpoint's URL, with bearer when it is not
+// empty. A url that does not parse is refused (errJoinedURLUnparsed).
 func guardGet(ctx context.Context, client *http.Client, url, bearer string) (int, redact.Answer, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return 0, redact.Answer{}, err
+		return 0, redact.Answer{}, errJoinedURLUnparsed
 	}
 	req.Header.Set("Accept", "application/json")
 	if bearer != "" {
