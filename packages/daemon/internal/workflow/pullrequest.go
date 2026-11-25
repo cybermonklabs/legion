@@ -40,20 +40,26 @@ import (
 // that only records a read belongs with those two; every write that changes what the record knows
 // of the pull request belongs here.
 //
-// The row the write replaces is read first, by its own key in the caller's transaction
-// (replacedPullRequest), so the test has both sides. That read is the cost of never mistaking a
-// repeat for news: GitHub redelivers a webhook, and the daemon's own passes rebuild a push or a
+// The row the write replaces is read first, by its own key in the caller's transaction: the
+// issue's row on pr's branch, so the test has both sides. That read is the cost of never mistaking
+// a repeat for news: GitHub redelivers a webhook, and the daemon's own passes rebuild a push or a
 // settlement whose webhook was lost, so the same fact reaches this code twice as a matter of
-// course.
+// course. It is read as rows alone (record.Store.TaskPullRequestRows), with none of what the pull
+// request remembers of its settled heads: the test reads none of that, and the record written is
+// pr, never this one.
 //
 // The issue and its branch are the row's own (record.PullRequest.Issue and Branch, the table's
 // key), so the helper needs no second argument and cannot be handed the wrong key. The moment is
 // the engine's clock, as every other site's is: the fact is being applied now, whatever clock
 // GitHub stamped it with, and the mark says when the daemon saw the issue move.
 func (e *Engine) putPullRequest(ctx context.Context, tx pgx.Tx, pr record.PullRequest) error {
-	recorded, err := e.replacedPullRequest(ctx, tx, pr.Issue, pr.Branch)
+	rows, err := e.store.TaskPullRequestRows(ctx, tx, pr.Issue)
 	if err != nil {
 		return err
+	}
+	var recorded *record.PullRequest
+	if at := slices.IndexFunc(rows, func(row record.PullRequest) bool { return row.Branch == pr.Branch }); at >= 0 {
+		recorded = &rows[at]
 	}
 	if err := e.store.PutPullRequest(ctx, tx, pr); err != nil {
 		return err
@@ -66,7 +72,9 @@ func (e *Engine) putPullRequest(ctx context.Context, tx pgx.Tx, pr record.PullRe
 
 // replacedPullRequest is the row a write of the pull request of issue on branch replaces
 // (record.Store.PutPullRequest, keyed by the issue and the branch): the issue's row on branch, nil
-// for none.
+// for none. It reads the row whole (record.Store.TaskPullRequests), with what it remembers of its
+// settled heads: its caller, the open of a pull request, carries that memory and the head run's
+// into the record a reopen writes (classify.Reopen).
 func (e *Engine) replacedPullRequest(ctx context.Context, tx pgx.Tx, issue, branch string) (*record.PullRequest, error) {
 	rows, err := e.store.TaskPullRequests(ctx, tx, issue)
 	if err != nil {
@@ -528,7 +536,7 @@ func (e *Engine) closeHeldPullRequests(ctx context.Context, tx pgx.Tx, s TaskSco
 	if stored != nil {
 		held = stored.HeldBy(s.walk.Task)
 	}
-	prs, err := e.store.TaskPullRequests(ctx, tx, s.issue.Key)
+	prs, err := e.store.TaskPullRequestRows(ctx, tx, s.issue.Key)
 	if err != nil {
 		return err
 	}
@@ -788,17 +796,19 @@ func (e *Engine) mergeQueueReadDone(ctx context.Context, tx pgx.Tx, fact intake.
 
 // MergingAt reads in tx what the merging rule judges issue key by: the issue, whether its tree
 // lingers (record.TreeLingers) and the pull request whose merge is judged. For an issue with plan
-// rows that is the issue's pull request number (record.Store.TaskPullRequests), the pull request of
-// a task, judged by the place of that task (record.PullRequest.Task, record.StoredPlan.TaskOf): with
-// several tasks the issue's phase is its least finished task's, so a task stands at its merge while
-// the issue stands in another phase. For an issue with no plan rows it is the pull request of its
-// work's merge (record.Store.MergePullRequest), judged by the issue's phase. It returns the issue
-// and that pull request, with why the workflow no longer works that merge at head of pull request
-// number (leftMergingAt), "" while it does. An issue the record does not hold is a nil issue, no
-// pull request and no reason. The facts that write the read and the merger's message (dequeued,
-// mergeQueueReadDone) and the daemon's outbox rows that read the pull request and deliver the
-// message read the issue through this one read, so all four judge it from the same records. It is
-// exported for those outbox rows (the daemon's mergingAt).
+// rows that is the issue's pull request number (record.Store.TaskPullRequestRows), the pull
+// request of a task, judged by the place of that task (record.PullRequest.Task,
+// record.StoredPlan.TaskOf): with several tasks the issue's phase is its least finished task's, so
+// a task stands at its merge while the issue stands in another phase. For an issue with no plan
+// rows it is the pull request of its work's merge (record.Store.MergePullRequestRow), judged by the
+// issue's phase. It returns the issue and that pull request, with why the workflow no longer works
+// that merge at head of pull request number (leftMergingAt), "" while it does. An issue the record
+// does not hold is a nil issue, no pull request and no reason. The facts that write the read and
+// the merger's message (dequeued, mergeQueueReadDone) and the daemon's outbox rows that read the
+// pull request and deliver the message read the issue through this one read, so all four judge it
+// from the same records. It is exported for those outbox rows (the daemon's mergingAt). The pull
+// request is read as rows alone, with none of what it remembers of its settled heads: no caller
+// writes it back, and none reads that memory.
 func MergingAt(ctx context.Context, store record.Store, tx pgx.Tx, key string, number int, head string) (*record.Issue, *record.PullRequest, string, error) {
 	issue, err := store.Issue(ctx, tx, key)
 	if err != nil || issue == nil {
@@ -813,7 +823,7 @@ func MergingAt(ctx context.Context, store record.Store, tx pgx.Tx, key string, n
 		return nil, nil, "", err
 	}
 	if stored == nil {
-		pr, err := store.MergePullRequest(ctx, tx, key)
+		pr, err := store.MergePullRequestRow(ctx, tx, key)
 		if err != nil {
 			return nil, nil, "", err
 		}
@@ -823,7 +833,7 @@ func MergingAt(ctx context.Context, store record.Store, tx pgx.Tx, key string, n
 		}
 		return issue, pr, leftMergingAt(*issue, stands, lingers, pr, number, head), nil
 	}
-	prs, err := store.TaskPullRequests(ctx, tx, key)
+	prs, err := store.TaskPullRequestRows(ctx, tx, key)
 	if err != nil {
 		return nil, nil, "", err
 	}
@@ -913,7 +923,7 @@ func (e *Engine) pullRequestMissing(ctx context.Context, tx pgx.Tx, fact intake.
 	if err != nil || row.HandoffCommit != fact.HandoffCommit {
 		return intake.Result{}, err
 	}
-	pr, err := e.taskPullRequest(ctx, tx, ms)
+	pr, err := e.taskPullRequestRow(ctx, tx, ms)
 	if err != nil || record.LetsImplementationMove(pr) {
 		return intake.Result{}, err
 	}

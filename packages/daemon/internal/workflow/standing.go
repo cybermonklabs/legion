@@ -107,7 +107,8 @@ func ownersText(text string) string {
 // read the pull request on legion/<KEY>, which is another task's wherever that task holds the
 // issue's own branch. pull is that row as the start's handler has it (taskPull): the row it read to
 // judge its move, which the standing names with no read of its own, so the transaction reads the
-// row once; or none read, which is read here.
+// row once; or none read, which is read here as its row alone (taskPullRequestRow), since the
+// standing names its number and its merge forward and writes nothing of it.
 //
 // The phase the worker starts in is the phase of s's copy, which each caller has put there before
 // it composes the task, and s's walk is the walk of its task as the caller read it, after any move
@@ -131,7 +132,7 @@ func (e *Engine) standingPart(ctx context.Context, tx pgx.Tx, s TaskScope, pull 
 	pr := pull.row
 	if !pull.read {
 		var err error
-		if pr, err = e.taskPullRequest(ctx, tx, s); err != nil {
+		if pr, err = e.taskPullRequestRow(ctx, tx, s); err != nil {
 			return Standing{}, err
 		}
 	}

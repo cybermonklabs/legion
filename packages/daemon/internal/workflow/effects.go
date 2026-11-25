@@ -525,9 +525,10 @@ func (e *Engine) start(ctx context.Context, tx pgx.Tx, s TaskScope, role claim.R
 
 // mergeWaitsForBase says whether the merge of s's task waits for the base of its pull request to
 // move to the issue's default branch, and queues that move: at the task's merge place, of an issue
-// with plan rows, where its pull request (record.Store.PullRequestOfTask) is open and recorded
-// against another branch than the default one. That is the base its start fixed (a need's branch or
-// its join branch) where a later version made the task merge, and a stack a person or the
+// with plan rows, where its pull request (record.Store.PullRequestRowOfTask, its row alone: its
+// state and base are all this reads) is open and recorded against another branch than the default
+// one. That is the base its start fixed (a need's branch or its join branch) where a later version
+// made the task merge, and a stack a person or the
 // implementer made. The merge waits for the join (record.StepWaitJoin) and the task's task_branch
 // row is queued (record.TaskBranch), whose executor sets the base and applies the end of the join
 // with it (intake.TaskJoined.Base): taskJoined records it and starts the merge, which finds the base
@@ -539,7 +540,7 @@ func (e *Engine) mergeWaitsForBase(ctx context.Context, tx pgx.Tx, s *TaskScope)
 	if s.plan == nil || w.Place != (record.TaskPlace{Kind: record.PlaceMerge}) {
 		return false, nil
 	}
-	pr, err := e.store.PullRequestOfTask(ctx, tx, issue.Key, w.Task)
+	pr, err := e.store.PullRequestRowOfTask(ctx, tx, issue.Key, w.Task)
 	if err != nil || pr == nil || pr.State != record.PullRequestOpen || pr.Base == "" || pr.Base == issue.DefaultBranch {
 		return false, err
 	}

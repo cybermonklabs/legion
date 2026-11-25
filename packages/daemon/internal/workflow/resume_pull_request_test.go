@@ -166,9 +166,12 @@ func TestAResumedStepNamesItsTasksPullRequest(t *testing.T) {
 	})
 }
 
-// pullReads is the real store, counting the reads of the pull request of task of key: the task's
-// own row (record.Store.PullRequestOfTask), and for task "", an issue with no plan rows, the row
-// of its merge (record.Store.MergePullRequest). Every other read and write is the real store's.
+// pullReads is the real store, counting the reads of the pull request of task of key, whole or as
+// its row alone: the task's own row (record.Store.PullRequestOfTask, PullRequestRowOfTask), and for
+// task "", an issue with no plan rows, the row of its merge (record.Store.MergePullRequest,
+// MergePullRequestRow). A handler reads the row whole to judge its move, and a start with no row
+// handed on reads it alone (standingPart, taskPullRequestRow), so a start that read the row again
+// is counted whichever read it made. Every other read and write is the real store's.
 type pullReads struct {
 	record.Store
 	key, task string
@@ -187,6 +190,20 @@ func (s *pullReads) MergePullRequest(ctx context.Context, tx pgx.Tx, issue strin
 		s.reads++
 	}
 	return s.Store.MergePullRequest(ctx, tx, issue)
+}
+
+func (s *pullReads) PullRequestRowOfTask(ctx context.Context, tx pgx.Tx, issue, task string) (*record.PullRequest, error) {
+	if issue == s.key && task == s.task {
+		s.reads++
+	}
+	return s.Store.PullRequestRowOfTask(ctx, tx, issue, task)
+}
+
+func (s *pullReads) MergePullRequestRow(ctx context.Context, tx pgx.Tx, issue string) (*record.PullRequest, error) {
+	if issue == s.key && s.task == "" {
+		s.reads++
+	}
+	return s.Store.MergePullRequestRow(ctx, tx, issue)
 }
 
 // countsPullReads makes engine count, from now on, the reads of the pull request of task of key

@@ -598,13 +598,14 @@ func (e *Engine) generationStarted(ctx context.Context, tx pgx.Tx, issue record.
 
 // mergeCanLand says whether the merge of s's task, which awaits its landing in the tree root
 // lingers, can still land there: while the linger runs and no fact has closed it, while the pull
-// request of s's task is open (taskPullRequest), or where the close of root's linger handed s's
-// issue over, whose re-admission ends the merge's run instead.
+// request of s's task is open (taskPullRequestRow, its row alone: its state is all this reads), or
+// where the close of root's linger handed s's issue over, whose re-admission ends the merge's run
+// instead.
 func (e *Engine) mergeCanLand(ctx context.Context, tx pgx.Tx, runs *factRuns, s TaskScope, root record.Issue) (bool, error) {
 	if record.Lingering(root, e.now()) && !runs.closed[root.Tree] {
 		return true, nil
 	}
-	pr, err := e.taskPullRequest(ctx, tx, s)
+	pr, err := e.taskPullRequestRow(ctx, tx, s)
 	if err != nil {
 		return false, err
 	}

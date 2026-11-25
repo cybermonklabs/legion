@@ -638,12 +638,25 @@ func heldBeforeOver(tasks []Walk) bool {
 
 // taskPullRequest is the pull request of s's task: a planned task's own row
 // (record.Store.PullRequestOfTask), nil where it has none, and for a run with no plan rows the row
-// of its merge (record.Store.MergePullRequest).
+// of its merge (record.Store.MergePullRequest). It reads the record whole, with what it remembers
+// of its settled heads, for a handler that writes it back or hands it to a move that may
+// (transition, whose mergeForwardOnEntry writes the merge forward).
 func (e *Engine) taskPullRequest(ctx context.Context, tx pgx.Tx, s TaskScope) (*record.PullRequest, error) {
 	if s.plan == nil {
 		return e.store.MergePullRequest(ctx, tx, s.issue.Key)
 	}
 	return e.store.PullRequestOfTask(ctx, tx, s.issue.Key, s.walk.Task)
+}
+
+// taskPullRequestRow is the pull request taskPullRequest answers, by the same rule, as its row
+// alone (record.Store.PullRequestRowOfTask, MergePullRequestRow): with none of what it remembers
+// of its settled heads, for a reader that never writes the record back, hands it to no move, and
+// reads neither its SettledHeads nor its head run's Settled.
+func (e *Engine) taskPullRequestRow(ctx context.Context, tx pgx.Tx, s TaskScope) (*record.PullRequest, error) {
+	if s.plan == nil {
+		return e.store.MergePullRequestRow(ctx, tx, s.issue.Key)
+	}
+	return e.store.PullRequestRowOfTask(ctx, tx, s.issue.Key, s.walk.Task)
 }
 
 // stepRow is the phases row of role's step of s, the one read of it in a step handler: the row of

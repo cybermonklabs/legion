@@ -222,8 +222,9 @@ func (e *Engine) startHeldRetro(ctx context.Context, tx pgx.Tx, parent record.Is
 	if err := e.clearHandoff(ctx, tx, held.Key, role); err != nil {
 		return err
 	}
-	// The pull request of the parent's task: the start's task names it (readPull).
-	pr, err := e.taskPullRequest(ctx, tx, s)
+	// The pull request of the parent's task: the start's task names it (readPull), and nothing
+	// writes it, so it is read as its row alone (taskPullRequestRow).
+	pr, err := e.taskPullRequestRow(ctx, tx, s)
 	if err != nil {
 		return err
 	}

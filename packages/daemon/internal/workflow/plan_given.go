@@ -386,7 +386,7 @@ func (e *Engine) writeVersion(ctx context.Context, tx pgx.Tx, fact intake.PlanGi
 // generation alone (givenVersion.recorded): a row's task is read at that generation, and a plan
 // waiting at generation 0 has no task that started.
 func (e *Engine) closeRemovedPullRequests(ctx context.Context, tx pgx.Tx, fact intake.PlanGiven, removed []string) error {
-	prs, err := e.store.TaskPullRequests(ctx, tx, fact.Issue)
+	prs, err := e.store.TaskPullRequestRows(ctx, tx, fact.Issue)
 	if err != nil {
 		return err
 	}

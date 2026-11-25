@@ -316,11 +316,11 @@ func (e *Engine) mergeForwardLanded(ctx context.Context, tx pgx.Tx, s TaskScope,
 // MergeForwardAt reads in tx what a merge-forward message (record.MergeForwardMessage) of issue
 // key is judged by: the issue, whether its tree lingers (record.TreeLingers) and the pull request
 // the message is about: the issue's pull request that holds a merge forward of head, whichever
-// task's it is, and the issue's merge pull request where none does (record.Store.MergePullRequest:
-// the first task with a merge still to come, else the last merge). It returns the issue and that
-// pull request, with why a message of step to role about the merge forward asked of head is no
-// longer to be delivered (leftMergeForwardAt), "" while it is. An issue the record does not hold is
-// a nil issue, no pull request and no reason.
+// task's it is, and the issue's merge pull request where none does
+// (record.Store.MergePullRequestRow: the first task with a merge still to come, else the last
+// merge). It returns the issue and that pull request, with why a message of step to role about the
+// merge forward asked of head is no longer to be delivered (leftMergeForwardAt), "" while it is. An
+// issue the record does not hold is a nil issue, no pull request and no reason.
 // The daemon's executor is its one caller: it reads the rule in one transaction at each attempt of
 // a row, just before it delivers (the daemon's mergeForwardMessage), so the executor judges each
 // queued row by this rule, and no row outlives the state it was written for. The workflow calls
@@ -328,7 +328,8 @@ func (e *Engine) mergeForwardLanded(ctx context.Context, tx pgx.Tx, s TaskScope,
 // rule is kept beside mergeForward and mergeForwardLanded, which write the rows, and
 // clearTaskMergeForward and clearMergeForwards, which drop the ask they are about, since it
 // restates their states for a row already queued. It is exported for that executor, which names
-// the pull request's repository and writes nothing of it.
+// the pull request's repository and writes nothing of it, so the pull requests are read as rows
+// alone (record.Store.TaskPullRequestRows), with none of what each remembers of its settled heads.
 func MergeForwardAt(ctx context.Context, store record.Store, tx pgx.Tx, key string, role claim.Role, step record.MergeForwardStep, head string) (*record.Issue, *record.PullRequest, string, error) {
 	issue, err := store.Issue(ctx, tx, key)
 	if err != nil || issue == nil {
@@ -338,7 +339,7 @@ func MergeForwardAt(ctx context.Context, store record.Store, tx pgx.Tx, key stri
 	if err != nil {
 		return nil, nil, "", err
 	}
-	prs, err := store.TaskPullRequests(ctx, tx, key)
+	prs, err := store.TaskPullRequestRows(ctx, tx, key)
 	if err != nil {
 		return nil, nil, "", err
 	}
@@ -346,7 +347,7 @@ func MergeForwardAt(ctx context.Context, store record.Store, tx pgx.Tx, key stri
 	if at >= 0 {
 		return issue, &prs[at], leftMergeForwardAt(*issue, lingers, &prs[at], role, step, head), nil
 	}
-	pr, err := store.MergePullRequest(ctx, tx, key)
+	pr, err := store.MergePullRequestRow(ctx, tx, key)
 	if err != nil {
 		return nil, nil, "", err
 	}

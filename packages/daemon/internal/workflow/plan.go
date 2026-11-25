@@ -182,7 +182,7 @@ func (e *Engine) closeEarlierPullRequests(ctx context.Context, tx pgx.Tx, issue 
 	if err != nil || !ran {
 		return err
 	}
-	prs, err := e.store.TaskPullRequests(ctx, tx, issue.Key)
+	prs, err := e.store.TaskPullRequestRows(ctx, tx, issue.Key)
 	if err != nil {
 		return err
 	}

@@ -294,9 +294,11 @@ func (e *Engine) leaveMerges(ctx context.Context, tx pgx.Tx, issue record.Issue,
 // what the notice of a child's leave names (leftNotice). A merge that ends the issue queues the
 // close of each other open pull request in its own transaction, before its leave, so that leave
 // names none of them; a close that keeps failing keeps its row, and its pull requests are not
-// named while it retries.
+// named while it retries. The pull requests are read as rows alone
+// (record.Store.TaskPullRequestRows): their numbers and states are all this reads, and nothing of
+// them is written.
 func (e *Engine) toldPullRequests(ctx context.Context, tx pgx.Tx, issue record.Issue) ([]int, error) {
-	prs, err := e.store.TaskPullRequests(ctx, tx, issue.Key)
+	prs, err := e.store.TaskPullRequestRows(ctx, tx, issue.Key)
 	if err != nil {
 		return nil, err
 	}
