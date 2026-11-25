@@ -118,6 +118,7 @@ interface ErrorPayload {
   candidates?: readonly ErrorCandidate[];
   issues?: readonly ParentStatusConflictIssue[] | null;
   changed?: readonly StatusChangeEntry[] | null;
+  count?: number;
 }
 
 export class ApiError extends Error {
@@ -136,6 +137,9 @@ export class ApiError extends Error {
    *  entry of each step that committed, in the order the steps ran. Empty when no step did, and
    *  undefined for a refusal of any other route. */
   readonly changed: readonly StatusChangeEntry[] | undefined;
+  /** How many nodes the delete of a node takes now, as a `409 DELETE_COUNT_MOVED` counts them:
+   *  the count the page's confirm names when it opens again. Undefined for every other refusal. */
+  readonly count: number | undefined;
   /** How long the server asked the caller to wait before trying again (`Retry-After` in
    *  delta-seconds, as Dispatch sends with a 503 refusing excess load), in milliseconds;
    *  undefined when the response carried none. */
@@ -150,6 +154,7 @@ export class ApiError extends Error {
     this.candidates = payload.candidates;
     this.issues = payload.issues ?? undefined;
     this.changed = payload.changed ?? undefined;
+    this.count = typeof payload.count === "number" ? payload.count : undefined;
     this.retryAfterMs = retryAfterMs;
   }
 }
@@ -278,6 +283,9 @@ export interface WriteRequest<T = unknown> {
   readonly method: WriteMethod;
   readonly path: string;
   readonly body?: unknown;
+  /** The precondition the write goes under, `If-Match` (`withIfMatch`), which `send` sets as it
+   *  is; absent on a write that names none. */
+  readonly headers?: { readonly "If-Match": string };
   readonly [answeredWith]?: T;
 }
 
@@ -572,6 +580,17 @@ export function writeRequest<M extends WriteVerb, P extends PathsOf<M>>(
     method: verb.toUpperCase() as WriteMethod,
     path: routeUrl(pattern, params),
   };
+}
+
+/** `request` under its precondition: `If-Match` set to `placementSeq`, a node's `placement_seq`,
+ *  as a quoted entity tag (`"<placementSeq>"`, RFC 9110 section 13.1.1), which the `PATCH` and
+ *  the `DELETE` of `/api/v1/issues/{key}/nodes/{id}` are refused without. A precondition the
+ *  request carried already is replaced. */
+export function withIfMatch<T>(
+  request: WriteRequest<T>,
+  placementSeq: number | string
+): WriteRequest<T> {
+  return { ...request, headers: { "If-Match": `"${placementSeq}"` } };
 }
 
 /** The same-origin URL of one GET route, for a reader that makes no request of its own (an
@@ -1002,6 +1021,7 @@ export class DispatchApiClient {
    * as the request's builder names it (`WriteRequest`), or rejects with its refusal; a 2xx whose
    * body is not JSON rejects with `UnreadableAnswerError`, a 2xx whose body stops part way with
    * `NetworkError`, and a replay of an answer Dispatch did not keep with `AnswerNotKeptError`.
+   * A precondition the request carries (`If-Match`, `withIfMatch`) goes with it as it is.
    */
   send<T>(
     request: WriteRequest<T>,
@@ -1020,6 +1040,7 @@ export class DispatchApiClient {
         ...(keyed ? { [IDEMPOTENCY_KEY_HEADER]: key } : {}),
         ...(login === undefined ? {} : { [DISPATCH_LOGIN_HEADER]: login }),
         ...(json === undefined ? {} : { "Content-Type": "application/json" }),
+        ...request.headers,
       },
       ...(keepalive ? { keepalive: true } : {}),
       method,

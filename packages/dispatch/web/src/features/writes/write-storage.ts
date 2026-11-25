@@ -78,7 +78,12 @@ export type KeptField =
 
 /** A request as it is kept: its method, its path and its JSON body, or an upload's form. */
 export type KeptRequest =
-  | { readonly method: WriteMethod; readonly path: string; readonly body?: unknown }
+  | {
+      readonly method: WriteMethod;
+      readonly path: string;
+      readonly body?: unknown;
+      readonly headers?: WriteRequest["headers"];
+    }
   | { readonly method: WriteMethod; readonly path: string; readonly form: readonly KeptField[] };
 
 /** One write as it is kept: everything a reload needs to make it again, show it and order it. */
@@ -222,9 +227,14 @@ export function refusalFrom(
 }
 
 /** `request` as it is kept: an upload's form by its fields, its file's place among them. */
-export function keptRequest({ body, method, path }: WriteRequest): KeptRequest {
+export function keptRequest({ body, headers, method, path }: WriteRequest): KeptRequest {
   if (!(body instanceof FormData))
-    return body === undefined ? { method, path } : { body, method, path };
+    return {
+      ...(body === undefined ? {} : { body }),
+      ...(headers === undefined ? {} : { headers }),
+      method,
+      path,
+    };
   const form: KeptField[] = [];
   for (const [name, value] of body) {
     form.push(typeof value === "string" ? { name, value } : { file: true, name });
