@@ -7,9 +7,9 @@ import type { ReactNode } from "react";
 import { quietConsoleError } from "../../__tests__/act-warnings";
 import { failingChunkComponent } from "../../__tests__/failing-chunk";
 import { keepWrite, keyMinted } from "../../__tests__/kept-sends-harness";
-import { ApiError, api } from "../../api/client";
+import { ApiError, api, type WriteRequest } from "../../api/client";
 import { chunkLoadsOut } from "../shell/chunk-loads";
-import { KeptWritesHost, PendingWritesHost } from "./write-hosts";
+import { KeptWritesHost, loadWriteKinds, PendingWritesHost } from "./write-hosts";
 import type { KeptWrite } from "./write-storage";
 import { kindsRegistered, plainWrite, type Writes, writesOf } from "./write-store";
 
@@ -102,6 +102,44 @@ test("the writes host's fetch of the kinds of write ends a take-up whose own ask
 test("a take-up whose own ask failed ends with the writes host's fetch also when another load brought the kinds in before it began", async () => {
   await import("./kinds");
   await takeUpEndsWithTheHost();
+});
+
+// The kinds of write are a chunk of their own (`kinds.ts`), so a write a reload kept finds its
+// kind there, whichever page the reader reloads on. The priorities page's kinds are in that chunk
+// too (`priority-writes.ts`). This file imports no priorities module, so only the chunk registers
+// them here. A new priority that was out as the page went away is taken up once the host's load of
+// the chunk answers (`loadWriteKinds`), and goes out again under its key. Without its kind, the
+// take-up would drop it unsent (`Writes.resume`). `kindsRegistered` in `finally` ends a take-up
+// that a failed run left waiting, and the send is restored some turns after it, as above.
+test("a new priority a reload kept goes out through the kinds chunk the host loads, on a page that imports no priorities module", async () => {
+  const kept = keyMinted(Date.now());
+  const request: WriteRequest = {
+    body: { title: "Quarterly goals" },
+    method: "POST",
+    path: "/api/v1/priorities",
+  };
+  keepWrite(window.sessionStorage, kept, {
+    detail: "Quarterly goals",
+    kind: "priority-new",
+    label: "New priority “Quarterly goals”",
+    request,
+  });
+  const client = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
+  client.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
+  const send = spyOn(api, "send").mockResolvedValue(null as never);
+  const writes = writesOf(client);
+  try {
+    writes.resume("alice", loadWriteKinds);
+    await waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+    expect(send.mock.calls[0]?.[0]).toMatchObject(request);
+    expect(send.mock.calls[0]?.[1]?.key).toBe(kept);
+    await waitFor(() => expect(writes.rows()).toEqual([]));
+    expect(writes.notTakenUp()).toEqual([]);
+  } finally {
+    kindsRegistered();
+    for (let turn = 0; turn < 20; turn += 1) await Promise.resolve();
+    send.mockRestore();
+  }
 });
 
 // The sign-in page's kept list asks for the kinds of write again when the browser comes back
@@ -281,6 +319,56 @@ test("a pending-writes indicator whose chunk fails to download online draws a li
     expect(screen.queryByRole("button", { name: "Reload" })).not.toBeInTheDocument();
   } finally {
     reload.mockRestore();
+    logged.mockRestore();
+    view.unmount();
+  }
+});
+
+// A conflict a page mounted now settles with the reader is that page's (`Writes.claim`), and the
+// indicator leaves it out (`indicatorWrites`). The line that stands in the indicator's place while
+// its chunk cannot load reads the same writes (`ChangesNotSent`), so it leaves that conflict out
+// too: it does not count it, and it does not say "Not saved" for it. Once the page hands the
+// conflict back (`unclaim`), the line counts it and says "Not saved". The conflict here is a text
+// the page claims with no write of it sent (`Writes.claimUnsent`), so nothing goes out. Alice's
+// other write waits for her sign-out in another tab (`Writes.holdFor`), so it stays out, and the
+// part that stands for the indicator's chunk draws in its label, and fails.
+test("the line in a pending-writes indicator's place leaves out a conflict a page holds, and counts it once the page hands it back", async () => {
+  const client = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
+  client.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
+  const writes = writesOf(client);
+  writes.holdFor("alice");
+  const logged = quietConsoleError();
+  const view = render(
+    <QueryClientProvider client={client}>
+      <PendingWritesHost />
+    </QueryClientProvider>
+  );
+  try {
+    pressARefusedWrite(writes, <NotLoaded />);
+    const line = await screen.findByRole("status");
+    expect(line).toHaveTextContent(/^1 change not sent$/u);
+
+    let claimed = -1;
+    act(() => {
+      claimed = writes.claimUnsent({
+        detail: null,
+        kind: plainWrite,
+        label: "Rename the priority “P1”",
+        refusal: new ApiError(409, { code: "PRIORITY_CHANGED", error: "the title was written" }),
+        request: { body: { title: "My title" }, method: "PATCH", path: "/api/v1/priorities/P1" },
+      });
+    });
+    expect(writes.rows().map((row) => row.status)).toEqual(["queued", "refused"]);
+    await waitFor(() =>
+      expect(screen.getByRole("status")).toHaveTextContent(/^1 change not sent$/u)
+    );
+
+    act(() => writes.unclaim(claimed));
+    await waitFor(() =>
+      expect(screen.getByRole("status")).toHaveTextContent(/^2 changes not sent — Not saved$/u)
+    );
+    expect(screen.queryByRole("region", { name: "Pending changes" })).not.toBeInTheDocument();
+  } finally {
     logged.mockRestore();
     view.unmount();
   }

@@ -3478,6 +3478,44 @@ test("a refused write that went out takes the place of the unsent claim of the s
   });
 });
 
+// The take-up of what a reload kept waits for the kinds of write (`resume`), and a kind says which
+// unsent claim a refused write of its own carries (`WriteKind.supersedes`). So the refused write
+// that went out takes the place of the unsent claim of its text in the take-up, once the kinds are
+// in, as the row above does with no wait. Until then the store holds neither write, and the tab
+// keeps both.
+test("a take-up that waits for the kinds of write lets a kept refused write take the place of the unsent claim of its text once they are in", async () => {
+  await onFakeClock(async () => {
+    const tab = keptTab();
+    const kinds = Promise.withResolvers<void>();
+    try {
+      const kept = { ...keptClaimed, label: "Rename the priority", state: keptConflict };
+      keepWrite(tab.storage, "sent-key", { ...kept, pressedAt: Date.now() });
+      keepWrite(tab.storage, "claim-key", { ...kept, pressedAt: Date.now() + 1, sent: false });
+      const writes = new Writes(signedIn(), tab.page(), memoryFiles());
+      writes.resume("alice", () => kinds.promise);
+      await settle();
+      expect(writes.rows(), "the take-up took a write up before the kinds were in").toEqual([]);
+      expect(writes.notTakenUp().map((write) => write.key)).toEqual(["sent-key", "claim-key"]);
+      expect(tab.kept("claim-key")).toMatchObject({ sent: false, state: keptConflict });
+
+      kinds.resolve();
+      await settle();
+      expect(writes.rows()).toMatchObject([
+        { detail: { text: "Mine" }, key: "sent-key", sent: true, status: "refused" },
+      ]);
+      expect(writes.notTakenUp()).toEqual([]);
+      expect(tab.kept("sent-key")).toMatchObject({ sent: true, state: keptConflict });
+      expect(tab.kept("claim-key"), "the tab still keeps the unsent claim").toBeUndefined();
+    } finally {
+      // Let in whichever step failed, so no take-up is left in the module's `takeUpsWaiting`
+      // for a later row's `kindsRegistered` to end.
+      kinds.resolve();
+      await settle();
+      tab.close();
+    }
+  });
+});
+
 // Whether a write goes under its key is its press's to say (`WriteSpec.method`), and a reload
 // reads it back from what was kept (`KeptWrite.keyed`), not from a request: a write its kind
 // makes again from its own record, kept before any attempt of it went out, holds none. So the
