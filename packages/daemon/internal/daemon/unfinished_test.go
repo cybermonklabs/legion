@@ -274,6 +274,13 @@ func (r *stopsEarlierRuntime) Spawn(ctx context.Context, spec runtime.SpawnSpec)
 // has read its previous connection's close.
 func dialShimUntilAcked(t *testing.T, address, bootToken string) *shim {
 	t.Helper()
+	return dialHelloUntilAcked(t, address, shimwire.Hello2{BootToken: bootToken})
+}
+
+// dialHelloUntilAcked dials the worker stream at address and sends hello, again after a refused
+// hello until one is acked, and returns the acknowledged connection (dialShimUntilAcked).
+func dialHelloUntilAcked(t *testing.T, address string, hello shimwire.Hello2) *shim {
+	t.Helper()
 	var last error
 	var acked *shim
 	if !testwait.Holds(10*time.Second, 50*time.Millisecond, func() bool {
@@ -283,7 +290,7 @@ func dialShimUntilAcked(t *testing.T, address, bootToken string) *shim {
 			return false
 		}
 		s := newTestShim(t, conn)
-		if err := s.writer.WriteFrame(shimwire.Hello2{BootToken: bootToken}); err != nil {
+		if err := s.writer.WriteFrame(hello); err != nil {
 			conn.Close()
 			last = err
 			return false
@@ -302,7 +309,7 @@ func dialShimUntilAcked(t *testing.T, address, bootToken string) *shim {
 		last = fmt.Errorf("hello refused: %v", err)
 		return false
 	}) {
-		t.Fatalf("no hello with %s was acked: %v", bootToken, last)
+		t.Fatalf("no hello with %s was acked: %v", hello.BootToken, last)
 	}
 	return acked
 }
