@@ -119,6 +119,47 @@ test("registries and deploymentImages are optional; a host with its token comman
   ).toContain("deploymentImages[0].dockerfile:");
 });
 
+// Catches: a reading of a deployment image's RUN step stated in a shape rule 4 cannot match (a
+// hash that is not a step text's SHA-256 as 64 lower-case hex digits, no reason a person gave)
+// loaded as if it could, or one step listed twice in an entry, so with two reasons.
+test("a deploymentImages entry's readSteps is optional; a step's SHA-256 as 64 lower-case hex digits with a reason loads, once in the entry, and any other is refused by name", () => {
+  const deployed = {
+    repository: "registry.example.test/acme/deploy/worker-lean",
+    dockerfile: "images/worker-lean.Dockerfile",
+  };
+  const step = {
+    sha256: "0a".repeat(32),
+    reason:
+      "RUN tar -xzf sdk.tar.gz -C /opt unpacks into /opt/sdk alone, no path under /opt/legion",
+  };
+  const readSteps = [step, { ...step, sha256: "1b".repeat(32) }];
+  const entry = (steps: unknown) => ({
+    ...valid(),
+    deploymentImages: [{ ...deployed, readSteps: steps }],
+  });
+  expect(
+    parseConfig({ ...valid(), deploymentImages: [deployed] }).deploymentImages?.[0]?.readSteps
+  ).toBeUndefined();
+  expect(parseConfig(entry(readSteps)).deploymentImages).toEqual([{ ...deployed, readSteps }]);
+  for (const sha256 of ["0A".repeat(32), "0a".repeat(31), `${"0a".repeat(32)}0`, "g".repeat(64)]) {
+    expect(refusal(entry([{ ...step, sha256 }]))).toContain(
+      "deploymentImages[0].readSteps[0].sha256: the SHA-256 of a step's text as 64 lower-case hex digits"
+    );
+  }
+  expect(refusal(entry([{ ...step, reason: "" }]))).toContain(
+    "deploymentImages[0].readSteps[0].reason: what a person read in the step, not empty"
+  );
+  expect(refusal(entry([{ sha256: step.sha256 }]))).toContain(
+    "deploymentImages[0].readSteps[0].reason: missing"
+  );
+  expect(refusal(entry([...readSteps, { ...step, reason: "another reading" }]))).toContain(
+    "deploymentImages[0].readSteps[2].sha256: a step hash listed twice"
+  );
+  expect(refusal(entry([{ ...step, text: "RUN tar -xzf sdk.tar.gz -C /opt" }]))).toContain(
+    'deploymentImages[0].readSteps[0]: unknown key "text"'
+  );
+});
+
 // Catches: a dev box's Oh My Pi pin the pool version rule cannot read (a file outside the
 // repository, no key, a first pool-loading build that is no version) loaded as if it could.
 test("ompPin is optional; a repository file, a key path and a first pool-loading version load, and any other is refused by name", () => {

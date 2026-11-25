@@ -66,13 +66,24 @@
  *                  program runs once per process, ended past a minute
  *                  (REGISTRY_TOKEN_TIMEOUT_MS), and the token is kept in memory alone, never
  *                  printed.
- *   deploymentImages  (optional) `{repository, dockerfile}`: an image the deployment repository
- *                  builds on a worker image: `repository` the image's reference without tag or
- *                  digest, `dockerfile` the path in the deployment repository of the Dockerfile it
- *                  is built from. build.ts takes such an image's worker commit from the stage
- *                  that Dockerfile's final stage copies the worker's packages from, once the
- *                  image's version label names that stage's commit, else, where it copies none,
+ *   deploymentImages  (optional) `{repository, dockerfile, readSteps}`: an image the deployment
+ *                  repository builds on a worker image: `repository` the image's reference without
+ *                  tag or digest, `dockerfile` the path in the deployment repository of the
+ *                  Dockerfile it is built from. build.ts takes such an image's worker commit from
+ *                  the stage that Dockerfile's final stage copies the worker's packages from, once
+ *                  the image's version label names that stage's commit, else, where it copies none,
  *                  from the base it names, once the images confirm it (LEGION_IMAGE_RULE).
+ *                  `readSteps` (optional) `{sha256, reason}`: a RUN step of that final stage that a
+ *                  person read and found to write no copied package: `sha256` the SHA-256, as 64
+ *                  lower-case hex digits, of the step's text in UTF-8 as pod-image.ts's
+ *                  `dockerfileStages` gives it in `steps` (the instruction from its `RUN` on, its
+ *                  comment lines left out, a line continued with `\` joined to the next, a
+ *                  heredoc's lines read with it, each run of white space one space, none at its
+ *                  ends), at the Dockerfile revision the image's label names; `reason` what the
+ *                  person read in the step and why it writes no copied package. A RUN after a
+ *                  package's last COPY that names a path of it is not taken as a write of it where
+ *                  its hash is listed; a step whose text changed has another hash. Each hash is
+ *                  listed once in an entry.
  *
  * A file that is not JSON, or that misses a key, holds a key not above or holds a value of the
  * wrong shape, is refused with one line per fault, each naming the key.
@@ -145,13 +156,26 @@ export const Registry = z.strictObject({
 });
 export type Registry = z.infer<typeof Registry>;
 
+/** A RUN step of a deployment image's final stage that a person read and found to write no copied
+ *  package (the key `readSteps` of a `deploymentImages` entry): the SHA-256 of its text, as 64
+ *  lower-case hex digits, and what the person read in it. */
+export const ReadStep = z.strictObject({
+  sha256: z.string().regex(/^[0-9a-f]{64}$/, {
+    error: "the SHA-256 of a step's text as 64 lower-case hex digits",
+  }),
+  reason: z.string().min(1, { error: "what a person read in the step, not empty" }),
+});
+export type ReadStep = z.infer<typeof ReadStep>;
+
 /** An image the deployment repository builds on a worker image (the key `deploymentImages`): its
- *  reference without tag or digest, and its Dockerfile's path in the deployment repository. */
+ *  reference without tag or digest, its Dockerfile's path in the deployment repository, and the
+ *  RUN steps of its final stage that a person read (`ReadStep`). */
 export const DeploymentImage = z.strictObject({
   repository: z.string().regex(/^[a-z0-9.-]+(?::\d+)?(?:\/[a-z0-9._-]+)+$/, {
     error: "an image reference without tag or digest, such as registry.example.test/acme/worker",
   }),
   dockerfile: RepositoryFile,
+  readSteps: z.array(ReadStep).optional(),
 });
 export type DeploymentImage = z.infer<typeof DeploymentImage>;
 
@@ -252,6 +276,19 @@ export const SkillCutsConfig = z
           message: `${clone[key]} is not a repository of an owner in owners`,
           path: ["clones", index, key],
         });
+      }
+    }
+    for (const [image, { readSteps }] of (config.deploymentImages ?? []).entries()) {
+      const hashes = new Set<string>();
+      for (const [index, { sha256 }] of (readSteps ?? []).entries()) {
+        if (hashes.has(sha256)) {
+          context.addIssue({
+            code: "custom",
+            message: "a step hash listed twice",
+            path: ["deploymentImages", image, "readSteps", index, "sha256"],
+          });
+        }
+        hashes.add(sha256);
       }
     }
   });

@@ -5758,13 +5758,14 @@ test("build-tasks with no bound writes the pinned bytes: the tasks, the summary,
   // profile is built (sessionQueries 2); one query of their store after both was counted before.
   // The profiles summary quotes LEGION_IMAGE_RULE, which now states the deployment-built image's
   // steps: the stage its final stage copies the worker's packages from (by COPY, an ADD into one
-  // a write of it too), else the base it is on.
+  // a write of it too, a later RUN that names one too unless readSteps lists its text's hash),
+  // else the base it is on.
   expect(digests).toEqual({
     "model tasks": "7065771b7768b39f531ae513e501837a0837349affe5672950558cdaf8230f9e",
     "model summary": "830ba5a3c2d161a489386c91ee25396de33d21df9deabfb10e8e915059c49c48",
     "model printed": "8d8a65fe70015b199ecc51a86a5803ef39c5cacbddbe124b22460e6d36a2971b",
     "profiles tasks": "c29cedaadf7a508a1449548b98da93ab14b079a002eb834365c81cc2f70e79f6",
-    "profiles summary": "d6e16579467c56a74bd8d04d3fbb19db0a1858cba24f75ab84e2964594a7ab25",
+    "profiles summary": "47cf5c6c5585c8600223b79b06433b3caa9a33e88abc4479af6a0bcbbabde44b",
     "profiles printed": "9ceae9fd265f889f404904ada8fe26a18ca2cbde3e9141337bd67b87b1aa1b0b",
     "profiles profiles": "26bf1079e50926d2c9e1bdc9482bca041b0a71392fb091f4352c437ab81932c4",
   });
@@ -7259,6 +7260,7 @@ async function reprofiledLegion(
     readonly deploymentImages?: readonly {
       readonly repository: string;
       readonly dockerfile: string;
+      readonly readSteps?: readonly { readonly sha256: string; readonly reason: string }[];
     }[];
     readonly copies?: string;
     readonly gh?: (route: string, args: readonly string[]) => GhResult | undefined;
@@ -7693,7 +7695,7 @@ describe("build-cases --reprofile of a Legion pane whose image the deployment bu
    *  with the image's first 3 diff ids, and refusing TOOLCHAIN's read; WORKER's digest's build
    *  provenance naming IMAGE_SHA and OLDER's SHA; acme/infra holding REVISION and at it the
    *  Dockerfile whose final stage is FROM `final` and holds `copyLines`, then `later`; and the
-   *  configuration's deploymentImages naming REPOSITORY. */
+   *  configuration's deploymentImages naming REPOSITORY, with `readSteps` where given. */
   const copied = (
     name: string,
     {
@@ -7701,12 +7703,14 @@ describe("build-cases --reprofile of a Legion pane whose image the deployment bu
       final = `\${TOOLCHAIN}`,
       copyLines = COPIES,
       later = [],
+      readSteps,
       refused,
     }: {
       version?: string;
       final?: string;
       copyLines?: readonly string[];
       later?: readonly string[];
+      readSteps?: readonly { readonly sha256: string; readonly reason: string }[];
       refused?: true;
     }
   ) =>
@@ -7727,7 +7731,13 @@ describe("build-cases --reprofile of a Legion pane whose image the deployment bu
         [OLDER]: { env: [], labels: {}, diffIds: LAYERS.slice(0, 3) },
       },
       refusing: [TOOLCHAIN],
-      deploymentImages: [{ repository: REPOSITORY, dockerfile: DOCKERFILE }],
+      deploymentImages: [
+        {
+          repository: REPOSITORY,
+          dockerfile: DOCKERFILE,
+          ...(readSteps === undefined ? {} : { readSteps }),
+        },
+      ],
       copies,
       gh: (route, args) => {
         const ok = (stdout: string): GhResult => ({ code: 0, stdout, stderr: "" });
@@ -7890,6 +7900,12 @@ describe("build-cases --reprofile of a Legion pane whose image the deployment bu
     );
   }, 120_000);
 
+  /** The hash a `readSteps` entry lists for a step of the text `text`: its SHA-256 in hex. */
+  const stepSha = (text: string) => createHash("sha256").update(text).digest("hex");
+  /** The COPY step's words where the RUN whose text is `text` (`shown` in the evidence), after the
+   *  final stage's last COPY of `pkg`, names a path of it and leaves the case out. */
+  const laterRefusal = (text: string, shown: string, pkg: string) =>
+    `${copying()}${fromStage}, but its step "${shown}", after its last COPY of ${pkg}, names it, a path in it or a directory above it, so the image's ${pkg} need not be the stage's; the SHA-256 of the step's text is ${stepSha(text)}, which the readSteps of the image's deploymentImages entry do not list${rule}`;
   /** A RUN longer than the evidence shows of a step. */
   const LONG_RUN =
     "RUN set -eux; apt-get update; apt-get install -y --no-install-recommends jq ripgrep; rm -rf /var/lib/apt/lists/* /opt/legion/pi-legion/dist/skills/alpha";
@@ -7919,7 +7935,7 @@ describe("build-cases --reprofile of a Legion pane whose image the deployment bu
       "/opt/legion/pi-acme",
     ],
   ] as const)(
-    "%s after the final stage's COPY lines leaves the case out, naming the step, cut short, and the package",
+    "%s after the final stage's COPY lines leaves the case out, naming the step, cut short, the package and the step's hash",
     async (name, step, shown, pkg) => {
       const result = await copied(`later-${name.replaceAll(" ", "-")}`, {
         version: "20.25.1",
@@ -7931,9 +7947,7 @@ describe("build-cases --reprofile of a Legion pane whose image the deployment bu
         written: false,
       });
       expect(result.said).toContain(`${notKnown}${own("20.25.1")}; ${labelled}`);
-      expect(result.said).toContain(
-        `${copying()}${fromStage}, but its step "${shown}", after its last COPY of ${pkg}, names it, a path in it or a directory above it, so the image's ${pkg} need not be the stage's${rule}`
-      );
+      expect(result.said).toContain(laterRefusal(step, shown, pkg));
     },
     120_000
   );
@@ -7951,6 +7965,60 @@ describe("build-cases --reprofile of a Legion pane whose image the deployment bu
       ` is ${IMAGE_SHA}, so the label confirms the stage's commit: ${BY_LABEL}, so the image's units of acme/skills are read at ${IMAGE_SHA}${rule}`
     );
   }, 120_000);
+
+  /** A RUN that unpacks an archive into /opt, a directory above the copied packages, continued on
+   *  a second line, and its text as pod-image.ts's dockerfileStages gives it, the one a
+   *  `readSteps` hash is of: the lines joined, each run of white space one space. */
+  const UNPACK = "RUN tar -xzf sdk.tar.gz \\\n    -C /opt";
+  const UNPACKED = "RUN tar -xzf sdk.tar.gz -C /opt";
+  const READ =
+    "unpacks sdk.tar.gz into /opt/sdk, a directory of its own; it writes no path under /opt/legion";
+
+  // Catches: a RUN a person read and found to write no copied package (one that unpacks an
+  // archive into a directory above the packages) leaving out the image even once the
+  // configuration lists its text's hash, or a case kept by such a listing whose evidence does not
+  // say which step the listing cleared and why.
+  test("a RUN after the final stage's COPY lines that names a directory above the copied packages, whose text's SHA-256 the image's deploymentImages entry lists in readSteps, changes nothing: the case takes the stage's commit, and the evidence names the step, its hash and the reason", async () => {
+    const result = await copied("read-step-listed", {
+      version: "20.25.1",
+      later: [UNPACK],
+      readSteps: [{ sha256: stepSha(UNPACKED), reason: READ }],
+    });
+    expect(result.skills).toEqual(imaged);
+    expect(result.worker).toContain(
+      `${copying()}${fromStage}; its step "${UNPACKED}", after its last COPY of /opt/legion/pi-acme and /opt/legion/pi-legion, names a path of each, but a person read it: the readSteps of the image's deploymentImages entry list the SHA-256 of the step's text, ${stepSha(UNPACKED)}, with the reason "${READ}"; gh api repos/acme/skills/attestations/sha256:${B} names git+https://github.com/acme/skills@refs/heads/main at ${IMAGE_SHA}; ${release("skills-v20.25.1")}`
+    );
+    expect(result.worker).toContain(
+      ` is ${IMAGE_SHA}, so the label confirms the stage's commit: ${BY_LABEL}, so the image's units of acme/skills are read at ${IMAGE_SHA}${rule}`
+    );
+  }, 120_000);
+
+  // Catches: a listed hash taken for a step it is not of (a step edited since a person read it),
+  // or a refusal that does not print the hash a person would list once they read the step.
+  test.each([
+    ["lists no hash", undefined],
+    [
+      "lists the hash of the step edited by one character",
+      [{ sha256: stepSha("RUN tar -xzf sdk.tar.xz -C /opt"), reason: READ }],
+    ],
+  ] as const)(
+    "a RUN after the final stage's COPY lines that names a directory above the copied packages leaves the case out where readSteps %s, naming the step, the package and the step's hash",
+    async (name, readSteps) => {
+      const result = await copied(`read-step-${name.replaceAll(" ", "-")}`, {
+        version: "20.25.1",
+        later: [UNPACK],
+        ...(readSteps === undefined ? {} : { readSteps }),
+        refused: true,
+      });
+      expect({ code: result.code, written: result.written }).toEqual({
+        code: EXIT.failed,
+        written: false,
+      });
+      expect(result.said).toContain(`${notKnown}${own("20.25.1")}; ${labelled}`);
+      expect(result.said).toContain(laterRefusal(UNPACKED, UNPACKED, "/opt/legion/pi-acme"));
+    },
+    120_000
+  );
 
   test.each([
     [
