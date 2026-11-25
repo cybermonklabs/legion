@@ -248,17 +248,18 @@ function mainReports(
 ): { run: number; commit: string; rows: Map<string, number> }[] {
   const runs: Artifact[] = [];
   for (let page = 1; page <= pagesAtMost && runs.length < count; page += 1) {
+    const listing = `listing of the ${artifactName} artifacts, page ${page}`;
     const listed = json<{ artifacts?: unknown }>(
-      `gh's listing of the ${artifactName} artifacts, page ${page}`,
+      `gh's ${listing}`,
       `listing-${page}.answer`,
-      gh(`listing of the ${artifactName} artifacts, page ${page}`, `listing-${page}`, [
+      gh(listing, `listing-${page}`, [
         "api",
         `repos/{owner}/{repo}/actions/artifacts?name=${artifactName}&per_page=100&page=${page}`,
       ])
     );
     if (!Array.isArray(listed.artifacts)) {
       console.error(
-        `gh's listing of the ${artifactName} artifacts, page ${page}, holds no list of artifacts; ` +
+        `gh's ${listing}, holds no list of artifacts; ` +
           `it is kept in ${keep(`listing-${page}.answer`, JSON.stringify(listed))}`
       );
       process.exit(1);
