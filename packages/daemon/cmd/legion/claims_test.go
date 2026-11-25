@@ -1173,7 +1173,7 @@ func TestClaimLineNamesAReleasedClaimApartFromASuspendedAndAFailedOne(t *testing
 		{
 			name: "held by the work hold",
 			claim: api.OperatorClaim{Token: "legion-legion-legion-211-merger", Role: "merger", Issue: "LEGION-211",
-				State: "suspended", SuspendedBy: "hold", Generation: 4, PluginContract: api.DaemonAPIVersion},
+				State: "suspended", SuspendedBy: "hold", Generation: 4, PluginContract: api.DaemonAPIVersion()},
 			want: "legion-legion-legion-211-merger merger LEGION-211 suspended:hold - 4 " + thisBinarysContract + " - - - -\n",
 		},
 		{
