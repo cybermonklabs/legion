@@ -1711,21 +1711,31 @@ func (s *server) withResolvedCaller(r *http.Request) *http.Request {
 // token carries a cut, and decideBrokerToken resolves it before the read-only gate. For every
 // other caller:
 //
-//   - A request with no as_of runs next as it always did. The layer reads no database and puts
-//     nothing on the context.
+//   - A request sends as_of when a pair of its query names as_of: the pair's key, as sent or
+//     decoded, is as_of. That holds for a pair that url.ParseQuery cannot decode, which it and
+//     r.URL.Query() drop: a % that escapes nothing, an escape that is no hex, a semicolon. If the
+//     layer read only what r.URL.Query() keeps, such an as_of would read as no as_of, and the row
+//     would answer the present with no Dispatch-As-Of, or serve the present where it holds no
+//     history.
+//   - A request with no as_of runs next as it always did, whatever else in its query does not
+//     decode. The layer reads no database and puts nothing on the context.
 //   - A request that sends as_of to a row that does not answer it (asOfNoHistory, asOfCaller, and
 //     every row that is not a GET row) is answered 400 AS_OF_NOT_SERVED, naming the row, and next
-//     does not run.
-//   - On a row that answers as_of (asOfAnswers), asof.ParseCut reads the value and rounds it down
-//     to the microsecond. A value it cannot read, an as_of sent more than once, and a cut later
-//     than the database's now() are answered 400 INVALID_AS_OF, and next does not run. Any other
-//     cut goes on the context (asof.WithCut), and next runs under it (serveAtCut): the store
-//     binds every statement that next sends under that context to the cut, and refuses every
-//     write (store.Pool, asof.Bind), and every answer next writes names the cut and the members
-//     it leaves out (pastAnswer). So the layer first resolves the caller, with no cut on the
-//     context, where nothing has resolved it yet: a resolution can write the caller's own
-//     bookkeeping (the people row a sign-in records, a membership's confirmation), which is no
-//     write of the read. It carries the result on the context, its refusal included
+//     does not run. An as_of whose query does not decode gets the same answer: the row refuses
+//     every as_of whatever its value, and the answer tells the caller what to change, to send it
+//     no as_of.
+//   - On a row that answers as_of (asOfAnswers), a query that names as_of and does not decode is
+//     answered 400 INVALID_AS_OF: the pair that url.ParseQuery drops can be the as_of, or a second
+//     one, so the layer cannot know which cut the caller asks for. Otherwise asof.ParseCut reads
+//     the value and rounds it down to the microsecond. A value it cannot read, an as_of sent more
+//     than once, and a cut later than the database's now() are answered 400 INVALID_AS_OF, and
+//     next does not run. Any other cut goes on the context (asof.WithCut), and next runs under it
+//     (serveAtCut): the store binds every statement that next sends under that context to the
+//     cut, and refuses every write (store.Pool, asof.Bind), and every answer next writes names the
+//     cut and the members it leaves out (pastAnswer). So the layer first resolves the caller, with
+//     no cut on the context, where nothing has resolved it yet: a resolution can write the
+//     caller's own bookkeeping (the people row a sign-in records, a membership's confirmation),
+//     which is no write of the read. It carries the result on the context, its refusal included
 //     (resolvedCallerKey), as resolvePersonalToken does, and every layer behind it and the
 //     handler read that result (optionalActor).
 func (s *server) asOfGate(name string, entry readEntry, next http.HandlerFunc) http.HandlerFunc {
@@ -1740,19 +1750,28 @@ func (s *server) asOfGate(name string, entry readEntry, next http.HandlerFunc) h
 			next(w, r)
 			return
 		}
-		// A query key reads as_of only where the raw query holds as_of, or a percent-escape that
-		// decodes to it, so a query that holds neither is not parsed here.
+		// A pair names as_of only where the raw query holds as_of, or a percent-escape that can
+		// decode to it, so a query that holds neither is not parsed here.
 		if raw := r.URL.RawQuery; !strings.Contains(raw, asOfParameter) && !strings.Contains(raw, "%") {
 			next(w, r)
 			return
 		}
-		values, sent := r.URL.Query()[asOfParameter]
+		query, undecodable := url.ParseQuery(r.URL.RawQuery)
+		values, sent := query[asOfParameter]
+		if undecodable != nil && !sent {
+			sent = queryNamesAsOf(r.URL.RawQuery)
+		}
 		if !sent {
 			next(w, r)
 			return
 		}
 		if !answers {
 			writeError(w, contracts.DispatchAsOfNotServed, http.StatusBadRequest, notServed)
+			return
+		}
+		if undecodable != nil {
+			writeError(w, contracts.DispatchInvalidAsOf, http.StatusBadRequest, fmt.Sprintf(
+				"as_of: the query names as_of and does not decode (%v): send a query in which each pair decodes", undecodable))
 			return
 		}
 		if len(values) > 1 {
@@ -1787,6 +1806,25 @@ func (s *server) asOfGate(name string, entry readEntry, next http.HandlerFunc) h
 
 // asOfParameter is the query parameter that asks a read for what existed at a past time.
 const asOfParameter = "as_of"
+
+// queryNamesAsOf reports whether a pair of the raw query raw names as_of: its key, as sent or
+// decoded, is as_of. It reads the pairs that url.ParseQuery drops too. url.ParseQuery splits the
+// pairs at & and drops each pair that holds a semicolon, so each part of such a pair between its
+// semicolons is read as a pair here.
+func queryNamesAsOf(raw string) bool {
+	for pair := range strings.SplitSeq(raw, "&") {
+		for part := range strings.SplitSeq(pair, ";") {
+			key, _, _ := strings.Cut(part, "=")
+			if key == asOfParameter {
+				return true
+			}
+			if decoded, err := url.QueryUnescape(key); err == nil && decoded == asOfParameter {
+				return true
+			}
+		}
+	}
+	return false
+}
 
 // actingPerson answers the person a request acts for, on a route gateRouteScopes has already
 // held to the `person` scope. It names no scope of the route's own: the table decides those, and

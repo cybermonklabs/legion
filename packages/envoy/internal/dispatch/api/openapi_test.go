@@ -273,7 +273,7 @@ func committedOpenAPI(t testing.TB) []byte {
 // answers one, or offer a cut to a route that refuses it 400 AS_OF_NOT_SERVED. The read class
 // gives each row its kind, so a row that later joins the routes that answer as_of fails here until
 // its query struct declares the parameter. Each such operation's description also holds the
-// sentence asOfAtACut gives the route, and asOfAtACut gives no sentence to a row of another kind.
+// sentence its read entry gives the route (readEntry.AtACut), and no row of another kind has one.
 //
 // GET /api/v1/search answers as_of and does not declare it, on purpose: searchRouteQuery names
 // only the four members every build has served. A build released before GET /api/v1/search/results
@@ -313,13 +313,13 @@ func TestEveryAnswersRouteDeclaresAsOfInTheOpenAPIDocument(t *testing.T) {
 		}
 		declared := slices.Contains(read.Parameters, asOf)
 		kind := readClasses[name].AsOf
-		note, noted := asOfAtACut[name]
+		note := readClasses[name].AtACut
 		switch {
-		case kind == asOfAnswers && (!noted || !strings.Contains(read.Description, note)):
-			t.Errorf("%s answers as_of, and its description in the document does not say what it answers at a cut: write it in asOfAtACut (routes_table.go)",
+		case kind == asOfAnswers && (note == "" || !strings.Contains(read.Description, note)):
+			t.Errorf("%s answers as_of, and its description in the document does not say what it answers at a cut: write it in its read entry's AtACut (read_classes.go)",
 				name)
-		case kind != asOfAnswers && noted:
-			t.Errorf("asOfAtACut says what %s answers at a cut, and the row refuses as_of", name)
+		case kind != asOfAnswers && note != "":
+			t.Errorf("the read entry of %s says what it answers at a cut (AtACut), and the row refuses as_of", name)
 		}
 		if kind == asOfAnswers {
 			answers++
@@ -341,11 +341,6 @@ func TestEveryAnswersRouteDeclaresAsOfInTheOpenAPIDocument(t *testing.T) {
 		case kind != asOfAnswers && declared:
 			t.Errorf("%s refuses as_of 400 %s, and its operation declares the query parameter %s",
 				name, contracts.DispatchAsOfNotServed, asOfParameter)
-		}
-	}
-	for name := range asOfAtACut {
-		if _, classed := readClasses[name]; !classed {
-			t.Errorf("asOfAtACut names %s, which is no GET row of the read class", name)
 		}
 	}
 	if answers == 0 {

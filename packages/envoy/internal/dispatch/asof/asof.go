@@ -13,7 +13,9 @@ package asof
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -31,15 +33,34 @@ type Cut struct {
 // ParseCut reads raw as RFC 3339, with or without a fraction of a second, and gives the cut in
 // UTC, rounded down to the microsecond. A cut rounded up would read events written after the
 // time the caller named. A value that is not an RFC 3339 time with a date, a time and an offset
-// (a date alone, an empty value, a month 13) is an *InvalidError. The gate refuses a cut later
-// than the database's now() and an as_of given twice; ParseCut does not.
+// (a date alone, an empty value, a month 13) is an *InvalidError. So are two values that
+// time.Parse takes. One is a comma before the fraction of a second, which RFC 3339 does not
+// allow. The other is a time before the year 1 in UTC, such as 0000-06-01T00:00:00Z or
+// 0001-01-01T00:00:00+01:00: PostgreSQL refuses its literal (Literal), so a read at it would
+// answer 500. The gate refuses a cut later than the database's now() and an as_of given twice;
+// ParseCut does not.
 func ParseCut(raw string) (Cut, error) {
+	// time.Parse reads a comma before a fraction of a second as it reads a period. An RFC 3339
+	// time holds no comma at all, so a value that holds one is refused.
+	if strings.Contains(raw, ",") {
+		return Cut{}, &InvalidError{Value: raw, Err: errCommaFraction}
+	}
 	parsed, err := time.Parse(time.RFC3339Nano, raw)
 	if err != nil {
 		return Cut{}, &InvalidError{Value: raw, Err: err}
 	}
-	return CutAt(parsed), nil
+	cut := CutAt(parsed)
+	if cut.t.Year() < 1 {
+		return Cut{}, &InvalidError{Value: raw, Err: errYearBeforeOne}
+	}
+	return cut, nil
 }
+
+// errCommaFraction and errYearBeforeOne are why ParseCut refuses a value that time.Parse takes.
+var (
+	errCommaFraction = errors.New("a comma comes before the fraction of a second, and RFC 3339 allows only a period")
+	errYearBeforeOne = errors.New("the time in UTC is before the year 1, which PostgreSQL does not read as a timestamptz literal")
+)
 
 // CutAt is the cut at instant: instant in UTC, rounded down to the microsecond, as ParseCut
 // rounds a parsed as_of. The gate makes the cut of a read-only token's cut with it
@@ -66,12 +87,14 @@ func (c Cut) Literal() string { return "'" + c.String() + "'::timestamptz" }
 type InvalidError struct {
 	// Value is the as_of as the request sent it.
 	Value string
-	// Err is why time.Parse refused Value.
+	// Err is why ParseCut refused Value: the error of time.Parse, errCommaFraction or
+	// errYearBeforeOne.
 	Err error
 }
 
 func (e *InvalidError) Error() string {
-	return fmt.Sprintf("as_of %q is not an RFC 3339 time with a date, a time and an offset, such as 2026-11-10T00:00:00Z", e.Value)
+	return fmt.Sprintf("as_of %q is not an RFC 3339 time with a date, a time and an offset, such as 2026-11-10T00:00:00Z: "+
+		"a period comes before a fraction of a second, and the time in UTC is in the year 0001 or later", e.Value)
 }
 
 func (e *InvalidError) Unwrap() error { return e.Err }

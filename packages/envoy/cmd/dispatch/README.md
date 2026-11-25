@@ -4413,13 +4413,16 @@ The line is one synchronous write to stderr per request, so a log pipe that bloc
 
 A read route of kind *answers* takes `as_of`, a past time, and answers what existed at that time, the cut, from the records that Dispatch keeps.
 `as_of` is an RFC 3339 time with a date, a time and an offset, with or without a fraction of a second, such as `2026-11-10T12:00:00Z`.
+A fraction of a second follows a period: RFC 3339 does not allow a comma there, though Go's `time.Parse` reads one.
+The time in UTC is in the year 1 or later: PostgreSQL does not read an earlier year in a `timestamptz` literal.
 Dispatch rounds it down to the microsecond, the precision of PostgreSQL (`asof.ParseCut`).
-The description of each GET row in `GET /api/v1` and in the OpenAPI document says how the route answers `as_of` and a token that carries a cut (`asOfDescription`, `internal/dispatch/api/routes_table.go`).
-For a route of kind answers it also says what the route answers at a cut, and names each member that its answer can leave out (`asOfAtACut`).
+The description of each GET row in `GET /api/v1` and in the OpenAPI document says how the route answers `as_of` and a token that carries a cut (`asOfDescription`, `internal/dispatch/api/read_classes.go`).
+For a route of kind answers it also says what the route answers at a cut (`readEntry.AtACut`), and names each member that its answer can leave out.
 A route that is not a GET row says nothing of `as_of`, and refuses it (below).
 
 **Each GET row has one of three kinds** (`readEntry.AsOf`, `internal/dispatch/api/read_classes.go`).
 `register` refuses to mount a GET row whose entry leaves the kind unset, as it refuses a row with no read class.
+It also refuses `asOfCaller` on each row but `GET /api/v1/whoami`, a row of kind answers whose entry has no `AtACut`, and a row of another kind whose entry has one.
 
 - *Answers* (`asOfAnswers`): the route answers `as_of` and the cut of a read-only token.
   These are the routes that the list "The members an answer can leave out at a cut" names, below.
@@ -4468,7 +4471,12 @@ A member whose payload key an older event does not have, because its column held
 
 **The members an answer can leave out at a cut**, by route.
 `asof.AbsentFields` (`internal/dispatch/asof/absent.go`) holds them, each with its reason.
-A route names no other member: `asof.WriteHeaders` finds the pointer of each member that a handler leaves out (`asof.AbsentPointer`), and a member that the table does not hold for the route is a programming error, which a test fails on and a server logs, sending the answer whole with no `Dispatch-As-Of-Absent` (`misnamedAbsent`, `internal/dispatch/api/as_of_answer.go`).
+A route names no other member: `asof.WriteHeaders` finds the pointer of each member that a handler leaves out (`asof.AbsentPointer`).
+A member that the table does not hold for the route is a programming error (`misnamedAbsent`, `internal/dispatch/api/as_of_answer.go`).
+So is an answer whose members `asof.OmitAbsent` cannot take out of its body, and a member that the handler names after the answer's status was decided.
+A test fails on each of them.
+A server logs each of them, and answers `500 INTERNAL` with none of the handler's body, because that body can hold the present value of a member that the records at the cut do not give.
+Where the answer's status already went out, the server sends no more of the body and drops the connection, so that the client cannot read a part of the answer as the whole answer.
 `TestTheGuideNamesTheMembersEachAnswersRouteCanLeaveOut` holds this list to that table.
 An answer names a member only when it leaves that member out.
 
@@ -4546,7 +4554,11 @@ A route outside the read class answers the token `403 READ_ONLY_TOKEN`, as it an
 
 **The errors and their codes**, each generated from `packages/contracts`:
 
-- `400 INVALID_AS_OF` (`contracts.DispatchInvalidAsOf`): an `as_of` that is not an RFC 3339 time with a date, a time and an offset, a cut later than the database's `now()`, or an `as_of` that the request sends more than once.
+- `400 INVALID_AS_OF` (`contracts.DispatchInvalidAsOf`): an `as_of` that is not an RFC 3339 time with a date, a time and an offset, a comma before the fraction of a second, a time before the year 1 in UTC, a cut later than the database's `now()`, or an `as_of` that the request sends more than once.
+  A query that names `as_of` (a pair whose key, as sent or decoded, is `as_of`) and does not decode is refused the same, because the pair that `url.ParseQuery` drops can be the `as_of`.
+  Examples are `as_of=%zz`, an `as_of` whose value ends in a `%` that escapes nothing, and an `as_of` pair that holds a semicolon.
+  A route that does not answer `as_of` refuses such a query with `400 AS_OF_NOT_SERVED`, as it refuses every `as_of`.
+  A query that names no `as_of` is served as before, whatever else in it does not decode.
 
 - `400 AS_OF_NOT_SERVED` (`contracts.DispatchAsOfNotServed`): an `as_of` sent to a route that does not answer it, with the message `as_of: <route> holds no history; it answers the present only`.
   A route of kind answers gives the same code for a filter that the records at the cut cannot evaluate, and names that filter: `route_status` and `pinned` on `GET /api/v1/issues`, whatever their value, and `at` on `GET /api/v1/issues/{key}/results`.

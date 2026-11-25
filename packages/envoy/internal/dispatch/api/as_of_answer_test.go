@@ -156,6 +156,115 @@ func TestAPastTimeAnswerNamesItsCutAndItsAbsentFields(t *testing.T) {
 	})
 }
 
+// TestAPastTimeAnswerThatNamesWhatItMayNotLeaveOutFailsClosed drives the writer of a past-time
+// answer as a server runs it, where misnamedAbsent logs and does not panic: the test replaces the
+// writer's report of a misnamed member (pastAnswer.misnamed) with one that records each problem.
+// The handler's body holds the present value of /route_status, which the records at a cut do not
+// give. Each answer below names a member it may not leave out, and each is refused 500 INTERNAL
+// with none of the handler's body, with no Dispatch-As-Of and no Dispatch-As-Of-Absent, and with
+// no ETag of the refused answer: a member that AbsentFields does not hold for the route
+// (asof.WriteHeaders), a body that the members cannot be taken out of (asof.OmitAbsent), and a
+// member named after the status was decided, while the status is held. A member named after the
+// status went out cannot be answered 500: the writer sends none of the body written after it,
+// and aborts the response (http.ErrAbortHandler), so that net/http drops the connection.
+func TestAPastTimeAnswerThatNamesWhatItMayNotLeaveOutFailsClosed(t *testing.T) {
+	t.Parallel()
+	const (
+		route    = "GET /api/v1/issues/{key}"
+		present  = "the route as it stands now"
+		internal = `{"code":"INTERNAL","error":"internal server error"}` + "\n"
+	)
+	cut := asof.CutAt(time.Date(2026, 11, 10, 0, 0, 0, 0, time.UTC))
+	presentBody := `{"route_status":"` + present + `","title":"Name the cut","design_gates":[]}`
+	// serve runs handler behind the writer of a past-time answer of route at cut, as serveAtCut
+	// does, with each misnamed member recorded in place of the panic. aborted is what the end of
+	// the response panics with, and nil when it does not panic.
+	serve := func(handler http.HandlerFunc) (response *httptest.ResponseRecorder, problems []string, aborted any) {
+		response = httptest.NewRecorder()
+		answer := &pastAnswer{ResponseWriter: response, route: route, cut: cut, misnamed: func(_, problem string) {
+			problems = append(problems, problem)
+		}}
+		defer func() { aborted = recover() }()
+		answer.serve(httptest.NewRequest(http.MethodGet, "/api/v1/issues/ASOA-1", nil), handler)
+		return response, problems, nil
+	}
+	writeHeaders := func(w http.ResponseWriter) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("ETag", `"the present answer"`)
+		w.WriteHeader(http.StatusOK)
+	}
+	for _, row := range []struct {
+		name    string
+		handler http.HandlerFunc
+		problem string
+	}{
+		{
+			name: "a member AbsentFields does not hold for the route",
+			handler: func(w http.ResponseWriter, r *http.Request) {
+				leaveOut(r.Context(), "/route_status", "/title")
+				writeHeaders(w)
+				_, _ = w.Write([]byte(presentBody))
+			},
+			problem: "/title",
+		},
+		{
+			name: "a body the members cannot be taken out of",
+			handler: func(w http.ResponseWriter, r *http.Request) {
+				leaveOut(r.Context(), "/route_status")
+				writeHeaders(w)
+				// The object never closes, so it is no JSON value.
+				_, _ = w.Write([]byte(strings.TrimSuffix(presentBody, "}")))
+			},
+			problem: "asof: ",
+		},
+		{
+			name: "a member named after the status was decided, with the status held",
+			handler: func(w http.ResponseWriter, r *http.Request) {
+				leaveOut(r.Context(), "/route_status")
+				writeHeaders(w)
+				leaveOut(r.Context(), "/design_gates")
+				_, _ = w.Write([]byte(presentBody))
+			},
+			problem: "/design_gates",
+		},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			response, problems, aborted := serve(row.handler)
+			if aborted != nil {
+				t.Fatalf("the answer panicked with %v, want a 500", aborted)
+			}
+			if len(problems) != 1 || !strings.Contains(problems[0], row.problem) {
+				t.Errorf("the writer reported %q, want one problem naming %q", problems, row.problem)
+			}
+			if response.Code != http.StatusInternalServerError || response.Body.String() != internal {
+				t.Errorf("the answer is %d %q, want 500 %q with none of the handler's body", response.Code, response.Body.String(), internal)
+			}
+			for _, header := range []string{contracts.DispatchAsOfHeader, contracts.DispatchAsOfAbsentHeader, "ETag"} {
+				if value := response.Header().Get(header); value != "" {
+					t.Errorf("the 500 carries %s %q, which describes the refused answer", header, value)
+				}
+			}
+		})
+	}
+
+	t.Run("a member named after the status went out", func(t *testing.T) {
+		response, problems, aborted := serve(func(w http.ResponseWriter, r *http.Request) {
+			writeHeaders(w)
+			leaveOut(r.Context(), "/route_status")
+			_, _ = w.Write([]byte(presentBody))
+		})
+		if aborted != http.ErrAbortHandler {
+			t.Errorf("the end of the response panicked with %v, want http.ErrAbortHandler, which drops the connection", aborted)
+		}
+		if len(problems) != 1 || !strings.Contains(problems[0], "/route_status") {
+			t.Errorf("the writer reported %q, want one problem naming /route_status", problems)
+		}
+		if response.Body.Len() != 0 {
+			t.Errorf("the writer sent %q after the refusal, want none of the handler's body", response.Body.String())
+		}
+	})
+}
+
 // TestAPastTimeReadStoresNoDisplayTrees: a read at a cut with Dispatch-Trees draws the tree of
 // each text it answers that no row stores, as the present read does, but it stores none of them.
 // The store binds each statement under a cut and refuses a write (asof.Bind), so a store of the

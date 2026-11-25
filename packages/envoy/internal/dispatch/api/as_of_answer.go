@@ -28,33 +28,52 @@ type pastAnswerKey struct{}
 // the headers of a past-time answer (asof.WriteHeaders) on an answer, a 2xx or a 304, and on no
 // refusal: a refusal answers no question about the past. When the handler left out members
 // (leaveOut), it holds the body until the handler returns (finish), takes the members out of it
-// (asof.OmitAbsent) and then writes the status and the body.
+// (asof.OmitAbsent) and then writes the status and the body. An answer that names a member it may
+// not leave out is a programming error (misnamedAbsent), and the writer then fails closed: it
+// sends none of the handler's body, and answers 500 in its place (refuse). That body can hold the
+// present value of a member that the records at the cut do not give, and a reader at the cut must
+// never read it.
 type pastAnswer struct {
 	http.ResponseWriter
 	route string
 	cut   asof.Cut
+	// misnamed reports an answer that names a member it may not leave out. It is misnamedAbsent,
+	// which panics in a test. TestAPastTimeAnswerThatNamesWhatItMayNotLeaveOutFailsClosed
+	// replaces it, so that it sees the answer the writer gives in a server.
+	misnamed func(route, problem string)
 
-	// mu guards members and decided, which a handler's own goroutines can reach through leaveOut.
+	// mu guards members, decided and refused, which a handler's own goroutines can reach through
+	// leaveOut.
 	mu sync.Mutex
 	// members is each member the handler left out, by its place in the answer.
 	members []string
 	// decided is set once the answer's status is decided: the headers are then written, and a
 	// member left out after it is a programming error.
 	decided bool
+	// refused is set once the answer is refused: the writer then drops every byte the handler
+	// writes.
+	refused bool
 	// held holds the body while members are to be taken out of it, and status is the answer's
 	// status, written at finish. held is nil for an answer written as it goes.
 	held   *bytes.Buffer
 	status int
+	// answeredInternal is set once refuse has written the 500 in place of the answer.
+	answeredInternal bool
 }
 
 // serveAtCut runs next under cut as the answer of the route named route ("<method> <pattern>"):
 // the store binds every statement next sends to the cut (asof.WithCut), and every answer next
 // writes carries the headers of a past-time answer with the members it left out taken out.
 func serveAtCut(w http.ResponseWriter, r *http.Request, route string, cut asof.Cut, next http.HandlerFunc) {
-	answer := &pastAnswer{ResponseWriter: w, route: route, cut: cut}
-	ctx := context.WithValue(asof.WithCut(r.Context(), cut), pastAnswerKey{}, answer)
-	next(answer, r.WithContext(ctx))
-	answer.finish()
+	(&pastAnswer{ResponseWriter: w, route: route, cut: cut, misnamed: misnamedAbsent}).serve(r, next)
+}
+
+// serve runs next under the answer's cut, behind the answer, and ends the answer once next
+// returns (finish).
+func (a *pastAnswer) serve(r *http.Request, next http.HandlerFunc) {
+	ctx := context.WithValue(asof.WithCut(r.Context(), a.cut), pastAnswerKey{}, a)
+	next(a, r.WithContext(ctx))
+	a.finish()
 }
 
 // leaveOut names members that the answer of the request ctx serves leaves out, because the
@@ -73,30 +92,67 @@ func leaveOut(ctx context.Context, members ...string) {
 }
 
 // leave takes members into the members the answer leaves out (leaveOut). A member named after
-// the answer's status went out is a programming error (misnamedAbsent): the header is written.
+// the answer's status was decided is a programming error (misnamed). The headers are written by
+// then, and the body can be too, so the answer is refused: finish answers it 500 where its status
+// is still held, and drops the connection where its status went out.
 func (a *pastAnswer) leave(members []string) {
 	a.mu.Lock()
 	decided := a.decided
-	if !decided {
+	if decided {
+		a.refused = true
+	} else {
 		a.members = append(a.members, members...)
 	}
 	a.mu.Unlock()
 	if decided {
-		misnamedAbsent(a.route, "it leaves out "+strings.Join(members, ", ")+" after it wrote the answer's status")
+		a.misnamed(a.route, "it leaves out "+strings.Join(members, ", ")+" after it wrote the answer's status")
 	}
 }
 
-// misnamedAbsent is a past-time answer that names a member asof.AbsentFields does not hold for
-// its route, or that cannot be taken out of the answer: a programming error. In a test it fails
-// the test, by a panic in the handler. In a server it is logged, and the answer goes out with no
-// Dispatch-As-Of-Absent and every member as the handler wrote it, rather than name a member the
-// contract does not hold.
+// misnamedAbsent reports a past-time answer that names a member asof.AbsentFields does not hold
+// for its route, that cannot be taken out of the answer, or that the handler names after the
+// answer's status was decided: a programming error. In a test it fails the test, by a panic in
+// the handler. In a server it is logged, and the writer refuses the answer (refuse, finish): it
+// sends none of the handler's body, which can hold the present value of a member that the
+// records at the cut do not give.
 func misnamedAbsent(route, problem string) {
 	if testing.Testing() {
 		panic("dispatch: the past-time answer of " + route + " is wrong: " + problem)
 	}
-	slog.Error("dispatch: a past-time answer names what it may not leave out; it goes out with no "+contracts.DispatchAsOfAbsentHeader,
+	slog.Error("dispatch: a past-time answer names what it may not leave out; it is refused 500 with none of its body",
 		"route", route, "problem", problem)
+}
+
+// refusedAnswerHeaders are the headers of the answer that refuse replaces with its 500: the cut
+// and the members left out, which only an answer names, and the headers that the handler sets to
+// describe its body, which the 500 does not carry.
+var refusedAnswerHeaders = []string{
+	contracts.DispatchAsOfHeader, contracts.DispatchAsOfAbsentHeader,
+	"Cache-Control", "Content-Disposition", "Content-Encoding", "Content-Length", "ETag",
+}
+
+// refuse answers 500 INTERNAL, as writeHandlerError answers a failure it does not know, in place
+// of the answer, whose status has not gone out. The writer then drops every byte the handler
+// writes (refused). It calls the server's own writer, so that the 500 does not pass through this
+// writer's own decision.
+func (a *pastAnswer) refuse() {
+	a.mu.Lock()
+	a.refused = true
+	a.mu.Unlock()
+	a.answeredInternal = true
+	header := a.Header()
+	for _, name := range refusedAnswerHeaders {
+		header.Del(name)
+	}
+	writeError(a.ResponseWriter, codeInternal, http.StatusInternalServerError, "internal server error")
+}
+
+// isRefused reports whether the answer is refused, so that the writer drops what the handler
+// writes.
+func (a *pastAnswer) isRefused() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.refused
 }
 
 // isAnswer reports whether status is an answer, which a past-time read marks with the cut: a
@@ -107,7 +163,8 @@ func isAnswer(status int) bool {
 
 // WriteHeader decides the answer: for an answer it writes the headers of a past-time answer and,
 // when members are left out, holds the status until finish; a refusal and an informational status
-// go out as they are.
+// go out as they are. An answer that leaves out a member asof.AbsentFields does not hold for the
+// route is refused 500 (refuse).
 func (a *pastAnswer) WriteHeader(status int) {
 	if status < http.StatusOK {
 		a.ResponseWriter.WriteHeader(status)
@@ -115,8 +172,9 @@ func (a *pastAnswer) WriteHeader(status int) {
 	}
 	a.mu.Lock()
 	if a.decided {
+		refused := a.refused
 		a.mu.Unlock()
-		if a.held == nil {
+		if a.held == nil && !refused {
 			// A second status is net/http's to complain about, as it would without this writer.
 			a.ResponseWriter.WriteHeader(status)
 		}
@@ -130,8 +188,9 @@ func (a *pastAnswer) WriteHeader(status int) {
 		return
 	}
 	if err := asof.WriteHeaders(a.Header(), a.route, a.cut, members); err != nil {
-		misnamedAbsent(a.route, err.Error())
-		members = nil
+		a.misnamed(a.route, err.Error())
+		a.refuse()
+		return
 	}
 	if len(members) == 0 || status == http.StatusNotModified || status == http.StatusNoContent {
 		a.ResponseWriter.WriteHeader(status)
@@ -150,11 +209,14 @@ func (a *pastAnswer) start() {
 	}
 }
 
-// Write writes the body, or holds it while members are to be taken out of it. The media type is
-// named here, on this writer, where the handler named none (answerNamesNoType says why in this
-// function and not in a helper).
+// Write writes the body, or holds it while members are to be taken out of it, or drops it once
+// the answer is refused. The media type is named here, on this writer, where the handler named
+// none (answerNamesNoType says why in this function and not in a helper).
 func (a *pastAnswer) Write(body []byte) (int, error) {
 	a.start()
+	if a.isRefused() {
+		return len(body), nil
+	}
 	if a.held != nil {
 		return a.held.Write(body)
 	}
@@ -165,9 +227,12 @@ func (a *pastAnswer) Write(body []byte) (int, error) {
 }
 
 // ReadFrom keeps the server's own copy for a body written as it goes (a document version's bytes,
-// which leave out no member).
+// which leave out no member). Once the answer is refused it reads the body and drops it.
 func (a *pastAnswer) ReadFrom(body io.Reader) (int64, error) {
 	a.start()
+	if a.isRefused() {
+		return io.Copy(io.Discard, body)
+	}
 	if a.held != nil {
 		return a.held.ReadFrom(body)
 	}
@@ -177,11 +242,11 @@ func (a *pastAnswer) ReadFrom(body io.Reader) (int64, error) {
 	return io.Copy(writeOnly{a.ResponseWriter}, body)
 }
 
-// Flush sends what the answer has so far, unless it is held: a held body goes out whole, once
-// its members are taken out.
+// Flush sends what the answer has so far, unless it is held or refused: a held body goes out
+// whole, once its members are taken out, and a refused answer sends none of the handler's body.
 func (a *pastAnswer) Flush() {
 	a.start()
-	if a.held != nil {
+	if a.held != nil || a.isRefused() {
 		return
 	}
 	_ = http.NewResponseController(a.ResponseWriter).Flush()
@@ -192,18 +257,36 @@ func (a *pastAnswer) Unwrap() http.ResponseWriter { return a.ResponseWriter }
 
 // finish ends the answer once the handler returns. A handler that wrote nothing is answered 200,
 // as net/http answers it, with the headers of a past-time answer. A held body goes out with the
-// members it left out taken out; a body they cannot be taken out of is a programming error
-// (misnamedAbsent), and goes out as the handler wrote it, with no Dispatch-As-Of-Absent.
+// members it left out taken out. A body they cannot be taken out of is a programming error
+// (misnamed), and the answer is refused 500 with none of the held body (refuse).
+//
+// finish also ends an answer that leave refused, for a member named after the status was
+// decided. Where the status is still held, the answer is refused 500 with none of the held body.
+// Where the status went out, no 500 can replace it. The writer dropped every byte the handler
+// wrote after the refusal, but the bytes before it went out, and a body that ends early can read
+// as whole: a document's bytes with no Content-Length, for one. So finish aborts the response
+// (http.ErrAbortHandler), as a download whose store fails while it streams does
+// (artifact_files.go): net/http drops the connection, and the client reads a broken answer, not
+// a part of one.
 func (a *pastAnswer) finish() {
 	a.start()
-	if a.held == nil {
+	switch {
+	case a.answeredInternal:
+		return
+	case a.isRefused():
+		if a.held == nil {
+			panic(http.ErrAbortHandler)
+		}
+		a.refuse()
+		return
+	case a.held == nil:
 		return
 	}
 	body, err := asof.OmitAbsent(a.held.Bytes(), a.members)
 	if err != nil {
-		misnamedAbsent(a.route, err.Error())
-		body = a.held.Bytes()
-		a.Header().Del(contracts.DispatchAsOfAbsentHeader)
+		a.misnamed(a.route, err.Error())
+		a.refuse()
+		return
 	}
 	a.Header().Del("Content-Length")
 	if answerNamesNoType(a.Header(), a.status) {
