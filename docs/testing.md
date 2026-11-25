@@ -2,6 +2,60 @@
 
 Rules for this repository's tests that the code under test does not show.
 
+## Where a test lives
+
+Each test of this repository has one of three homes.
+
+- A CI job that `ci-ok` needs runs it, before each merge that changes a file the test reads.
+
+- It is a measurement tool, which a person or a role runs for a decision.
+
+- It is deleted.
+
+A test in CI runs with stand-ins for what is outside the machine: the fake runtime, model stand-ins for Oh My Pi and Claude Code, test containers for Postgres and NATS, a fake GitHub, or a kind cluster on the runner.
+It is an ordinary test of `go test`, `bun test` or Playwright, or a script that is itself the test and that the job runs as a step.
+No script wraps one test, and the job prints the result of each test by name.
+
+Some checks have a home outside this repository's CI.
+A release workflow's check of an artifact that the same workflow builds, and that no merge builds, runs in that workflow and stops the release when it fails.
+A test of real infrastructure that no stand-in can make runs in the deployment's pipeline, after each apply of what it checks.
+A check of the operator's own grants and configuration belongs to the deployment's repository, not to this one.
+A check that production already makes at each use, where a failure reaches a role, is not repeated as a test.
+
+### What a test needs to stay in CI
+
+A test stays in a CI job only when all three of these hold:
+
+1. No faster test in CI checks the behavior that it checks.
+
+2. It passed in every recorded run, or the cause of each failure was found and fixed.
+
+3. Where it takes more than 2 minutes, or needs a kind cluster, a real Oh My Pi or Claude Code session, or a rig of several processes, it guards a failure that a plausible change can cause and that would reach a role, an operator or production, on recorded evidence.
+
+A test that fails one of them is a measurement tool, a release workflow's check (above), or deleted.
+A deleted test names what covers it: a faster test, the production code where a failure reaches a role, or the deployment's own record of the finding.
+A test that checks nothing a change can break (a one-time proof, a script with no caller, a test that never ran or asserts nothing) is deleted with no cover.
+So is a test of code that no deployment uses or calls; the unit tests of that code stay.
+A merge of two tests into one keeps every check of both.
+
+### A measurement is not a test
+
+A measurement or a reading is a tool.
+A person or a role runs it for a decision, and it prints what it found.
+It may exit non-zero on a limit that its runner chose.
+It tests no rule of this repository's code that each change must keep.
+It is a Go benchmark, which `go test -run '^$' -bench '^BenchmarkX$' -benchtime 1x` runs, or a command, and no test file holds it as a test.
+A measurement script carries in its first 15 lines the tool line: `legion: tool - `, then what it measures or reads, and who runs it for which decision.
+
+### When CI runs each job
+
+The merge queue runs every job of `ci.yaml` on the merged tree, except `worker-image` and `dispatch-browser-pr`.
+`worker-image` runs on a pull request whose change its filter selects, and in the release; in the merge queue, `kind / image` builds the same image with the same build probe, and the `kind` job's leak-guard leg runs the image's leak-guard test on that image.
+`dispatch-browser-pr` runs the `@pr` rows of the browser lane on a pull request alone; the merge queue runs the full lane of `dispatch-browser`, which runs every row.
+On a pull request, a job runs when its area's filter selects the change and the job is not held to the merge queue.
+A held job runs on a pull request only while the pull request carries the label `full-ci` or that job's own `lane:<output>` label; `daemon-live` and `agent-harness` are held, and `.github/ci-notes/ci.md`, "Which lane a job runs in: the pull request or the merge queue", names the others.
+No label runs `kind`: no pull request runs it.
+
 ## The fixtures a test takes rather than copies
 
 Each of these is one body per Go module, and a test that needs what it does calls it rather than writing the body again.
