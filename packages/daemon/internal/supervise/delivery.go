@@ -1055,7 +1055,18 @@ func (m *Machine) sendPending(ctx context.Context) error {
 	// earlier daemon's prompt did carry is asked about, and the agent's turn confirms it with what
 	// that prompt carried (turnAnswers: the delivery's copy, Delivery.Carried), never with the news
 	// the send above rendered again.
-	askAgent := m.askFirst && !unsentNews(*p)
+	//
+	// A next change's first task whose start of the working copy no answer was kept for
+	// (unsentStart) is resolved the same way: no earlier daemon's send of it got past its start,
+	// so no prompt of it reached the agent, and its confirmation would retire a task nobody sent
+	// over a working copy still at the previous change. It is sent, and its send starts the
+	// working copy first. Its start is not run under a turn of the agent's own, as a send that
+	// meets such a turn otherwise would be, since the start puts the working copy on the branch's
+	// tree, under the files of the turn the agent is in. So the agent is asked, and a turn of its
+	// own is recorded as a busy answer records one (recordBusyTurn): the task waits, unconfirmed
+	// and unstarted, and the turn's end starts it and sends it.
+	restarted := m.askFirst
+	askAgent := restarted && !unsentNews(*p) && !unsentStart(*p)
 	m.askFirst = false
 	if askAgent {
 		if streaming, _ := m.streaming(ctx, conn); streaming {
@@ -1072,6 +1083,13 @@ func (m *Machine) sendPending(ctx context.Context) error {
 			m.log.Info("supervise: the agent is in a turn; confirming the delivery an earlier daemon sent", "delivery", p.ID)
 			news, _ := m.turnAnswers()
 			return m.confirmCarrying(ctx, news)
+		}
+	}
+	if restarted && unsentStart(*p) {
+		if streaming, _ := m.streaming(ctx, conn); streaming {
+			m.log.Info("supervise: the agent is in a turn of its own; the next change's task waits for its end to start the working copy",
+				"delivery", p.ID, "branch", p.StartAt.Bookmark)
+			return m.recordBusyTurn(ctx)
 		}
 	}
 	// Every role of an issue works one jj workspace, so a task that adopts its working copy adopts
@@ -1139,12 +1157,24 @@ func (m *Machine) asksRoot(d Delivery) bool {
 // one that loses nothing.
 func unsentNews(d Delivery) bool { return len(d.News) > 0 && len(d.Carried) == 0 }
 
+// unsentStart says whether d is a next change's first task whose start of the working copy at the
+// branch no answer was kept for (Delivery.StartAt, owed). The answer is kept at the outcome of the
+// send that ran the start (keepStarted) and written with that outcome, so a restart that finds
+// none knows that no earlier daemon's prompt of the task reached the agent, unless a crash took the
+// daemon between the prompt and that write. Then the task is sent a second time under the same id,
+// which the shim answers without a second turn, and its start finds the working copy already at the
+// branch: of the two faults, that is the one that loses nothing.
+func unsentStart(d Delivery) bool { return d.StartAt.owed() }
+
 // askFirstNeverTakes says whether a turn the agent started by itself is never taken for d's turn
 // by the question a restart left (askFirst): a root architect's task of a run (asksRoot), which
-// may be a task nobody has sent, and a task carrying news no acknowledged prompt carried
-// (unsentNews). The confirmation of either tells something — a person's decisions, or the news —
-// so only a turn a send of this machine's own started may confirm it.
-func (m *Machine) askFirstNeverTakes(d Delivery) bool { return m.asksRoot(d) || unsentNews(d) }
+// may be a task nobody has sent, a task carrying news no acknowledged prompt carried
+// (unsentNews), and a next change's first task whose start no answer was kept for (unsentStart).
+// The confirmation of each tells something — a person's decisions, the news, a task over a working
+// copy it started — so only a turn a send of this machine's own started may confirm it.
+func (m *Machine) askFirstNeverTakes(d Delivery) bool {
+	return m.asksRoot(d) || unsentNews(d) || unsentStart(d)
+}
 
 // rootHears asks whether the root of this claim's tree has an architect to hear the task now
 // (Deps.RootHears). Only a root architect's task of a run is put to the answer (asksRoot): it names

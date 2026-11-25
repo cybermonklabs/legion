@@ -32,6 +32,81 @@ func startRefusal(reason string) error {
 	return fmt.Errorf("worker-stream: %s refused start-at-branch: %s: %w", testToken, reason, runtime.ErrStartAtRefused)
 }
 
+// restoredOwedStart is a daemon restarted over a ready claim that holds the first task of a next
+// change whose start of the working copy at the branch no earlier daemon answered
+// (Delivery.StartAt, Started nil). It carries no news. The restart arms its question over the task
+// (askFirst), as over every unconfirmed task it restores. The agent's connection is registered, and
+// the agent is in a turn of its own, an Envoy message's, so it answers a prompt busy.
+func restoredOwedStart(t *testing.T) *harness {
+	t.Helper()
+	restored := queuedClaim()
+	restored.State, restored.Generation = StateReady, 3
+	restored.Session, restored.SessionFile = session, sessionFile
+	restored.Locator = &runtime.Locator{Runtime: runtime.RuntimeTmux, Claim: testToken, Incarnation: "4242:77",
+		Tmux: &runtime.TmuxLocator{Window: "@1", Pane: "%1"}}
+	restored.Pending = &Delivery{ID: "outbox:47", Task: "implement the next change", Phase: phase.Implementing, Generation: 6,
+		QueuedAt: epoch, StartAt: StartAt{StartAt: nextChangeAt}}
+	h := newBareHarness(t)
+	if err := h.store.PutClaim(h.ctx, restored); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.store.PutDelivery(h.ctx, testToken, *restored.Pending); err != nil {
+		t.Fatalf("seed the restored delivery: %v", err)
+	}
+	h.conns.Register(testToken, h.conn)
+	h.conn.SetStreaming(true)
+	h.conn.RefusePrompt(busyAnswer)
+	h.rt.AnswerStartAtBranch(movedTo)
+	h.start(restored)
+	return h
+}
+
+// After a restart, a next change's first task whose working copy no start has moved is never
+// confirmed by a turn the agent started by itself. No earlier daemon's send of it got past its
+// start, so the agent never read it, and its confirmation would retire a task nobody sent over a
+// working copy still at the previous change. So the question the restart left (askFirst) never
+// takes the agent's turn for the task's, at either place it could: the send the ready makes, where
+// the agent says it is in a turn, and a turn's start seen before anything was sent. Nor does the
+// start run under that turn, which it would change the files of. The task stays unconfirmed and
+// unstarted, and the end of the agent's own turn starts the working copy and sends the task behind
+// what moved, and that send's own turn confirms it.
+func TestARestartNeverConfirmsAFirstTaskWhoseStartIsOwedByATurnOfTheAgentsOwn(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		first Event
+	}{
+		{name: "the ready's send finds the agent in a turn of its own", first: RequestReady{Claim: testToken, Generation: 3, Session: session}},
+		{name: "a turn of the agent's own starts before anything is sent", first: StreamTurnStart{Claim: testToken}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := restoredOwedStart(t)
+
+			h.must(tc.first)
+
+			if stored, ok := h.store.delivery(testToken); !ok || !stored.ConfirmedAt.IsZero() {
+				t.Fatalf("stored delivery after %s = %+v (held %t), want outbox:47 unconfirmed: no start and no prompt of it ran", tc.name, stored, ok)
+			}
+			h.wantCalls("StartAtBranch", 0)
+			h.wantPrompts(0)
+			h.wantState(StateWorking)
+
+			h.conn.FailPrompt(nil)
+			h.conn.SetStreaming(false)
+			h.mustQuiet(StreamTurnEnd{Claim: testToken})
+
+			h.wantCalls("StartAtBranch", 1)
+			sent := h.wantPrompts(1)[0]
+			if want := startedNote(nextChangeAt, movedTo) + "implement the next change"; sent.DeliveryID != h.pending().ID || sent.Message != want {
+				t.Fatalf("the send at the end of the agent's own turn = %+v, want %q under its pending id", sent, want)
+			}
+			h.must(StreamTurnStart{Claim: testToken})
+			if stored, ok := h.store.delivery(testToken); !ok || stored.ConfirmedAt.IsZero() {
+				t.Fatalf("stored delivery after the turn its send started = %+v (held %t), want it confirmed", stored, ok)
+			}
+		})
+	}
+}
+
 // identityHarness is a ready implementer's claim whose daemon mints the role's App identity, so a
 // phase task adopts the working copy, with deps changed by more before the machine is built.
 func identityHarness(t *testing.T, more func(*Deps)) *harness {
