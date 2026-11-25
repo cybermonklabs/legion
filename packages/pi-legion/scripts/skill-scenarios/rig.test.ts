@@ -106,13 +106,14 @@ const miseData =
  * passes MISE_DATA_DIR to every agent. A caller that names neither variable gets neither: the
  * developer's own home decides nothing here. It is the one place this file builds that
  * environment, and its `cwd` is the only one in the file, so a child that gets the test's HOME
- * gets childCwd with it. Eight call sites start their children through it: route, bash (and every
+ * gets childCwd with it. Nine call sites start their children through it: route, bash (and every
  * row that calls bash), checkout_commit's git, the score spawn, groupBash, judge (and the gateway
- * rows through it), the judge whose root is no checkout, and gh. Three children of this file do
- * not, and none of them gets the test's HOME: the key command and the libpq probe pass no
- * environment, so they run under the caller's own HOME, where mise reads the caller's config as
- * its global config. runProcess's child gets PATH and SKILL_SCENARIO_RUN alone, and runs sleep,
- * not a mise shim. */
+ * rows through it), the judge whose root is no checkout, gh, and services_up's python3 probe. Four
+ * children of this file do not, and none of them gets the test's HOME: the key command and the
+ * libpq probe pass no environment, so they run under the caller's own HOME, where mise reads the
+ * caller's config as its global config. runProcess's child gets PATH and SKILL_SCENARIO_RUN alone,
+ * and runs sleep, not a mise shim; nats_ready's probe gets PATH alone, runs bash and timeout, and
+ * is spawned rather than run to its end, since the INFO server it reads is in this process. */
 function childSpawn(argv: string[], env: Record<string, string> = {}) {
   return Bun.spawnSync(argv, {
     env: {
@@ -774,7 +775,7 @@ describe("nats_ready", () => {
         "-",
         ...ports.map(String),
       ],
-      { env: childEnv, stdout: "pipe", stderr: "pipe" }
+      { env: { PATH: callerPath }, stdout: "pipe", stderr: "pipe" }
     );
     await proc.exited;
     return (await new Response(proc.stdout).text()).trim().split("\n");
@@ -1024,9 +1025,7 @@ describe.skipIf(withoutPython || withoutLibpq)("services_up", () => {
     const argv = path.join(dir, "argv.log");
     const ready = path.join(dir, "ready.log");
     // The interpreter itself, not a version manager's shim, which would find this one on PATH.
-    const python = Bun.spawnSync(["python3", "-c", "import sys; print(sys.executable)"], {
-      env: childEnv,
-    })
+    const python = childSpawn(["python3", "-c", "import sys; print(sys.executable)"])
       .stdout.toString()
       .trim();
     writeFileSync(
@@ -1061,7 +1060,7 @@ describe.skipIf(withoutPython || withoutLibpq)("services_up", () => {
         `root=$3\nS=$4\nservices_env=$S/env\nservices_postgres=$S/postgres-url\nservices_up`,
       [pgUrl, loopbackDsn, path.join(dir, "root"), services],
       {
-        PATH: `${bin}:${childEnv.PATH}`,
+        PATH: `${bin}:${callerPath}`,
         SKILL_SCENARIOS_POSTGRES_URL: "postgres://u:p@127.0.0.1:5432/postgres",
         SKILL_SCENARIOS_NATS_URL: natsUrl,
       }
@@ -2029,11 +2028,11 @@ sleep() { command sleep 0.05; }`;
     const run = freshDir("launch-env-run");
     const bin = freshDir("launch-env-bin");
     for (const dir of ["cwd", "sessions"]) mkdirSync(path.join(run, dir));
-    const realEnv = Bun.which("env", { PATH: childEnv.PATH });
+    const realEnv = Bun.which("env", { PATH: callerPath });
     const token = fixtureSecret("tok");
     const url = new URL("nats://127.0.0.1:4222");
     url.username = token;
-    const pane = [`PATH=${bin}:${childEnv.PATH}`, `ENVOY_NATS_URL=${url.href}`, "NOTE=two words"];
+    const pane = [`PATH=${bin}:${callerPath}`, `ENVOY_NATS_URL=${url.href}`, "NOTE=two words"];
     writeFileSync(path.join(run, "prompt.txt"), "Test it.\n");
     writeFileSync(path.join(run, "pane.env"), `${pane.join("\n")}\n`);
     mkdirSync(path.join(bin, "pin", "bin"), { recursive: true });
@@ -2054,7 +2053,7 @@ sleep() { command sleep 0.05; }`;
     const result = bash(
       `${fn("fail")}\n${fn("pinned_omp")}\n${fn("launch")}\n${standIns}\nR=$1 tag=t pin=omp@pin\nlaunch tester-proof-s1-1`,
       [run],
-      { PATH: `${bin}:${childEnv.PATH}` }
+      { PATH: `${bin}:${callerPath}` }
     );
     const argv = existsSync(path.join(run, "argv.log"))
       ? readFileSync(path.join(run, "argv.log"), "utf8")
