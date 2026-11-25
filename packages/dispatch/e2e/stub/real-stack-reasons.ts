@@ -244,6 +244,8 @@ export const realStackReasons: Record<string, string> = {
   "margin-thread-reply.e2e.ts": "margin replies in flight with server refusals",
   "margin.e2e.ts": "two contexts, live document marks, suggestion accepts",
   "mention-composer.e2e.ts": "delivery through the fake Envoy and the listener's own refusals",
+  "mention-reference.e2e.ts":
+    "each row sends a comment and reads the stored record back - the party set the server reads out of the body, its delivery rows and the frames the fake Envoy listener took - and the refusals are the server's own",
   "mermaid.e2e.ts":
     "the edit lands and is re-read; each draws the diagram inside the live document editor",
   "message-agent.e2e.ts": "mention targets posted and their delivery failures",
@@ -284,8 +286,32 @@ export const realStackReasons: Record<string, string> = {
   "project-default-assignee.e2e.ts":
     "which person a question reaches is the server's own expression over three tables, and each of the two writes that move it must reach the open Inboxes, issue page and document page over the live socket with no reload",
   "project.e2e.ts": "the reference closure is the server's graph walk",
+  "reading-agents.e2e.ts":
+    "the Agents rows write a message and a session's reply and read back what the server stored and threaded, for a session the fake registry lists, and the live rows open on a view the relay builds from the session's replay; every key and address reads the title the server holds for its issue",
+  "reading-answers.e2e.ts":
+    "every row writes a record through the API and reads it back on a page the server builds from that write - the Answers rows are its `/me/answers` over the asks alice answered and replied on, the Reply thread is its `/me/replies` - and each key, address and party draws with the title and name the server's issue summaries and agent registry answer",
+  "reading-broadcasts.e2e.ts":
+    "each row writes a broadcast or a recipient's reply through the API and reads it back on the broadcast's page, the Broadcasts list or the Agents page; the issue titles and the session name those texts draw come from the server's summaries and the fake listener's registry, and the send row reads the strip the page keeps after Dispatch refuses the send",
+  "reading-conversation.e2e.ts":
+    "each row writes a record and then reads its own write, as the server resolves it: the bare key and the address read as the titles of issues the server holds, the party as the name of a session in the fake registry, and the decision is the server's reading of decisions.md; the Activity row pins an event and reads it back in the margin",
+  "reading-documents.e2e.ts":
+    "each row writes a record through the API and reads it back in the page, where a key and an address read as the titles the server answers for them, a decision card shows where the server's reading of decisions.md links a spec block, and a pinned card is the reader's pin written to the server and read back from its stored state",
+  "reading-inbox-asks.e2e.ts":
+    "the server reads each stored question, option, answer, earlier wording and resolution reason into the tree the card draws, resolves each reference's title and the live session's name, and decides which closed asks the Inbox lists as Reply rows",
+  "reading-inbox-threads.e2e.ts":
+    "each row writes a record through the API and reads it back in the Inbox: the server lists the Reply rows, builds the approval's question around the summary, and answers each reference's title and the session's name as they are now",
+  "reading-pages.e2e.ts":
+    "each row reads a text the server stored and resolves - a component's prose that the source sync read from the fake GitHub, a priority's description and an issue's reason for touching no component written through the API, and the comments a person wrote, which their page lists from the authored_by tuples the server wrote - and the server decides what each bare key, address, `#id` and party in it reads as, which a recording would freeze at the state it was recorded in",
+  "reading-references.e2e.ts":
+    "each row writes a record through the API and reads it on another record's surface: a card and the hover card read their target as the server stores it, and the palette's hits are the server's ranking and its ts_headline snippet",
   "recipients-claim.e2e.ts": "claims and routes the server computes, with live card updates",
   "reference-cards.e2e.ts": "opens the spec's live editor and its margin thread",
+  "reference-kinds.e2e.ts":
+    "each pick is read back from the stored record, whose text and resolved name the server writes, and the party rows drive the fake registry and the fake Envoy listener",
+  "reference-naming.e2e.ts":
+    "a bare address reads as its target's current name, which is the server's own resolution of the reference, re-read after the write that names it",
+  "reference-picker.e2e.ts":
+    "the picker's rows come from the server's search and its registry read, and the row that reaches another project's node is that search answering across projects",
   "reference-titles.e2e.ts": "asserts drawn titles inside the live editor",
   "references.e2e.ts": "the backlink index the server rebuilds after each write",
   "refetch-budget.e2e.ts": "writes after load, counted reads and the server's event feed",
@@ -324,6 +350,8 @@ export const realStackReasons: Record<string, string> = {
   "writer-spelling.e2e.ts": "asserts the readings inside the live document editor",
   "writes.e2e.ts":
     "a failed pin's retry, one comment from a double Submit, and a pin removed from Pinned",
+  "writing-surfaces.e2e.ts":
+    "it walks every covered writing box, the document's live editor and the agent live conversation among them, and each delivering box's row is read back from the write the server stored and the frame the fake Envoy listener took",
 };
 
 /** The directories under `e2e/` that hold no spec file: `node_modules`, as Playwright's own

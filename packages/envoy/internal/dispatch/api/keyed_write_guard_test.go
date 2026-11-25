@@ -335,11 +335,7 @@ func (g *keyedWriteGuard) walk(fn *lockFunction) {
 // presumed to run after the handler (detached), so a bare write anywhere else - a timer's callback
 // included - is named, and moves into a transaction or onto goDetached.
 func (g *keyedWriteGuard) callees(call *ast.CallExpr) []*lockFunction {
-	callees := g.graph.callees(call)
-	for _, argument := range call.Args {
-		callees = append(callees, g.graph.functionValue(argument)...)
-	}
-	return callees
+	return g.graph.calleesAndPassed(call)
 }
 
 // ownCalls is every call fn's own body makes, a go statement's included, but none inside a function

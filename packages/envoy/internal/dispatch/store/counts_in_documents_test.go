@@ -132,8 +132,8 @@ func TestTheDocumentsStateTheCountsThisPackageHolds(t *testing.T) {
 	docnumbers.Check(t, root, stated)
 }
 
-// sumTerms is one entry per term of the README's connection sum, "opens at most 64 + 28 + 8 + 4 +
-// 2 + 2 + 1 + 2 + 2 + 1 + 5 = 119 connections to Postgres", generated from the pools themselves:
+// sumTerms is one entry per term of the README's connection sum, "opens at most 64 + 29 + 8 + 4 +
+// 2 + 2 + 1 + 2 + 2 + 1 + 5 = 120 connections to Postgres", generated from the pools themselves:
 // the terms in the order the sum writes them, each entry anchored by the terms before it, which
 // are written from the constants too. Nothing of the sum is a literal here, so the day a pool
 // moves the entry moves with it and the sentence is held to the new value rather than to the old

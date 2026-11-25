@@ -283,6 +283,13 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Whether the credential is a person's, for the check of a create under a parent
+	// (refuseSpecWriter), read before the transaction opens (specWriterOf). A create under no
+	// parent is not checked and reads nothing for it.
+	var writer specWriter
+	if parentKey != "" {
+		writer = s.specWriterOf(r, actor)
+	}
 	tx, err := s.begin(r.Context())
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -327,6 +334,17 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 			parentAssignee = nil
 		}
 		if err := refuseParentTooDeep(r.Context(), tx, "", parentKey); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		// The check of who writes the spec of an issue Legion runs, on the new row as the create
+		// leaves it: its labels, and its parent's chain, whose architects pass. A parent of another
+		// project ends that chain at the new row, so the check judges the new issue as a root of
+		// its own project, which it does not judge. It runs before the project's owner lock and the
+		// spec's document call, and before the create's first write.
+		if err := refuseSpecWriter(r.Context(), tx, writer, specWrite{
+			act: specWriteCreate, under: parentKey, labels: labels, project: input.Project,
+		}); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
