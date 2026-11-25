@@ -103,11 +103,12 @@ func TestTheFinishOfAVolumeActWithItsPodFinishesThatPodsRecords(t *testing.T) {
 // issue's Sandbox and its kept volume over a live pod of it (WithPod) names that pod beside the
 // Sandbox. So a round's finish of the pod's act takes the launch's record of the delete, and no
 // other record of the Sandbox, since the suspension of a pod takes no volume. A round's finish whose
-// call took nothing yields to that record: it goes alone, with nothing queued, and the launch's
-// record stands to tell the architect. The next launch's delete of the same Sandbox takes the first
-// launch's record, and with it the round's record of the pod that Sandbox ran. A finish that may
-// yield and finds no record to yield to takes as any finish does. A record of another pod stands in
-// each case.
+// call took nothing yields to that record: it takes nothing and queues nothing, and the round's
+// record stands beside the launch's, which tells the architect once its act is confirmed, with the
+// round's read among those it weighs (the Legion reviewer's Medium 1 on #5285 at 4b123279). The
+// next launch's delete of the same Sandbox takes the first launch's record, and with it the round's
+// record of the pod that Sandbox ran. A finish that may yield and finds no record to yield to takes
+// as any finish does. A record of another pod stands in each case.
 func TestTheFinishOfAnActTakesTheRecordsOfEveryTargetItTook(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
@@ -119,7 +120,7 @@ func TestTheFinishOfAnActTakesTheRecordsOfEveryTargetItTook(t *testing.T) {
 		{name: "a_round's_act_on_the_pod", operation: "round-a",
 			took: []string{"launch-volume", "round-a"}, standing: []string{"launch-reset", "round-b", "launch-next"}},
 		{name: "a_round's_call_that_took_nothing", operation: "round-a", yield: true,
-			standing: []string{"launch-reset", "launch-volume", "round-b", "launch-next"}},
+			standing: []string{"launch-reset", "launch-volume", "round-a", "round-b", "launch-next"}},
 		{name: "the_next_delete_of_the_sandbox", operation: "launch-next",
 			took: []string{"launch-reset", "launch-volume", "round-a", "launch-next"}, standing: []string{"round-b"}},
 		{name: "control:_a_call_that_took_nothing_of_a_pod_no_delete_took", operation: "round-b", yield: true,

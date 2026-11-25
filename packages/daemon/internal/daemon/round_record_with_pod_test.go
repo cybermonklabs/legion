@@ -12,8 +12,10 @@ package daemon
 //   - a: the launch records its act and suspends the Sandbox over the round's pod, then fails in
 //     its wait for the pod to go, so it never tells the daemon what it took. The round's
 //     replacement by issue, which waited for the pod's launch turn, finds the Sandbox Suspended
-//     and asks no last word. The round's record is forgotten and the round ends with no notice of
-//     its own; once the Sandbox is gone, the launch's record tells the architect once.
+//     and asks no last word. The round's record stands beside the launch's, holding nothing, and
+//     the round ends with no notice of its own; once the Sandbox is gone, the launch's finish
+//     takes both records and tells the architect once, from the read of the two that tells most
+//     (the Legion reviewer's Medium 1 on #5285 at 4b123279).
 //   - c: the daemon stops between the launch's delete of the Sandbox and its word of what it took.
 //     The round's record is newer than the launch's, since the round wrote it before its call
 //     waited for the launch turn. After the restart the sweep decides the launch's record first,
@@ -23,8 +25,13 @@ package daemon
 // The table test holds the sweep to what it decides of a record whose target a record it decided
 // first names: gone with that record's finish, standing with that record, the walk's, and the
 // record of a round whose record a launch's finish took.
+//
+// TestARoundsCallThatYieldedIsToldFromItsReadByTheLaunchsNotice is the Legion reviewer's Medium 1
+// on #5285 at 4b123279: path a, where the round's read found a commit and the launch's read could
+// not be made. The launch's one notice names the round's commit.
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -132,8 +139,8 @@ func TestALaunchThatFailedAfterItTookARoundsPodTellsTheArchitectOnce(t *testing.
 	if told := rig.architectNotices(record.WorkspaceTakenNotice); len(told) != 0 {
 		t.Fatalf("the architect was told %+v while the Sandbox and its kept volume stand, want nothing yet: the act is the launch's, and its record tells once the Sandbox is gone", told)
 	}
-	if records := rig.replacementRecords(); records != 1 {
-		t.Fatalf("the store holds %d records while the Sandbox and its kept volume stand, want the launch's alone", records)
+	if records := rig.replacementRecords(); records != 2 {
+		t.Fatalf("the store holds %d records while the Sandbox and its kept volume stand, want the launch's and the round's, whose read the launch's notice weighs", records)
 	}
 
 	rig.rt.ScriptSandboxGone(keptSandboxUID)
@@ -156,6 +163,64 @@ func TestALaunchThatStoppedAfterItsDeleteTellsTheArchitectOnceAfterARestart(t *t
 	next.rt.ScriptSandboxGone(keptSandboxUID)
 	next.awaitSwept(claim.RoleImplementer, "its round to end with the launch's act", func(c supervise.Claim) bool { return c.UpdateRound == "" })
 	next.wantToldOnceByTheLaunch("after the restart")
+}
+
+// unfinishedHoldLine is the sweep's line for an issue it decides nothing of, since the record of a
+// replacement of the issue's pod stands for a round that is not over (reconcilePodUpdates).
+const unfinishedHoldLine = "supervise: the record of a replacement of this issue's pod stands unfinished; no update round of the issue is decided this sweep"
+
+func TestARoundsCallThatYieldedIsToldFromItsReadByTheLaunchsNotice(t *testing.T) {
+	t.Parallel()
+	rig := podlessKeptVolumeRound(t)
+	// The round's replacement by issue reads the workspace and finds passedOverCommit. The launch's
+	// read through a launcher of the pod could not be made.
+	taken := withPodTaken(rig, "launch-volume-1")
+	taken.Work, taken.Err = runtime.WorkspaceWork{}, errors.New("the pod's launchers are not bound to it, so no launcher of the pod can read the workspace")
+	launched := false
+	rig.rt.HoldReplaceIssuePod(func() {
+		if launched {
+			return
+		}
+		launched = true
+		if err := rig.s.recordLaunchTakes(rig.ctx, taken); err != nil {
+			t.Errorf("record the launch's act: %v", err)
+		}
+		rig.rt.ScriptSuspendedOver(podUpdatePod)
+		rig.rt.ScriptKeptVolume(podUpdateIssue, time.Time{})
+	})
+	rig.awaitSwept(claim.RoleImplementer, "its round to end once the launch took its pod", func(c supervise.Claim) bool { return c.UpdateRound == "" })
+	if !launched {
+		t.Fatal("the sweep asked for no replacement by issue, so this case proves nothing")
+	}
+	if asked := rig.byIssueAsks(); len(asked) != 1 || asked[0].Method != "ReplaceIssuePodNoPod" {
+		t.Fatalf("the replacement by issue was asked %+v, want one that found the pod taken", asked)
+	}
+	for range roundSweeps {
+		rig.tick()
+	}
+	if records := rig.replacementRecords(); records != 2 {
+		t.Errorf("the store holds %d records while the Sandbox and its kept volume stand, want the launch's and the round's", records)
+	}
+	if held := loggedLines(t, rig.logs.String(), unfinishedHoldLine); len(held) != 0 {
+		t.Errorf("the sweep held the issue's rounds %d times for a standing record, want never: the round of the record that stands is over", len(held))
+	}
+
+	rig.rt.ScriptSandboxGone(keptSandboxUID)
+	for range roundSweeps {
+		rig.tick()
+	}
+	told := rig.architectNotices(record.WorkspaceTakenNotice)
+	if len(told) != 1 || !strings.Contains(told[0].Reason, "deleted the Sandbox of "+podUpdateIssue+" (uid "+keptSandboxUID+")") ||
+		!strings.Contains(told[0].Reason, passedOverCommit) || strings.Contains(told[0].Reason, "No read of the workspace could be made") {
+		t.Fatalf("the architect was told %+v, want one workspace-taken notice, the launch's, naming the commit %s the round's read found, and not that no read could be made",
+			told, passedOverCommit)
+	}
+	if messages := rig.messages(); len(messages) != 0 {
+		t.Fatalf("the issue was written %q, want nothing: the launch's notice is the one word of the act", messages)
+	}
+	if records := rig.replacementRecords(); records != 0 {
+		t.Fatalf("the store holds %d records once the notice is queued, want none", records)
+	}
 }
 
 func TestTheSweepDecidesARecordOfATargetItDecidedByWhatThatRecordDid(t *testing.T) {
