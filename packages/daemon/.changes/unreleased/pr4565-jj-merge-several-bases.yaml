@@ -7,9 +7,11 @@ body: |-
     conflict if it is not, as at a deleted or binary file. That virtual base is only ever the base
     of a conflict: where a later rebase, abandon or squash would make it a side, jj puts the terms
     of the conflict it stands for in its place, so no file holds its text, and a person's edit of
-    such a conflict reaches every term of the conflict it stands for. A merge that would replace
-    more than 10,000 virtual bases at one path, or more than 10,000 plus 100 for each path where
-    it replaces one, is refused and writes nothing.
+    such a conflict goes into the terms of the conflict it stands for that hold the lines around
+    it; at the start or the end of a side of a block that the merge cut, that is the terms of the
+    block's sides and not the base's. A merge that would replace more than 10,000 virtual bases at
+    one path, or more than 10,000 plus 100 for each path where it replaces one, is refused and
+    writes nothing.
 time: 2026-11-22T11:40:15Z
 custom:
     Issue: pr4565

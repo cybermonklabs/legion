@@ -55,11 +55,13 @@ func fakeJJ(t *testing.T, dir, version string) string {
 // whose f is a conflict, one that resolves f to "R" and one that leaves it, and must give a clean
 // "R". K4 merges two merges of the same two commits, which set f to "x" and "y", one resolved to
 // "x" and one to "y", and must give a conflict at f, not one side's text or the root's "o". The
-// pinned jj must carry the fork's fix of sjawhar/jj#4, which starts from jj-vcs/jj#10100, so this
-// test is red at every pin that lacks that fix. It runs the first compiled jj on PATH
-// (fixturegit.CompiledJJ), which on CI is the one CI's daemon-go-race job installs at ARG JJ_TOOL
-// of packages/daemon/docker/worker.Dockerfile. Run locally, it fails unless that first compiled jj
-// is the pinned one, by design.
+// pinned jj must carry the fork's fix of sjawhar/jj#4, which starts from jj-vcs/jj#10100. The test
+// checks merge results and not the version: it is red at a jj that fails the minimal case, K1, K4
+// or a VB1 subtest, as jj 0.45.1-sami and the cherry-pick of jj-vcs/jj#10100 alone do, and a fork
+// release without the fork's later snapshot fixes passes it; the fork's own tests hold those. It
+// runs the first compiled jj on PATH (fixturegit.CompiledJJ), which on CI is the one CI's
+// daemon-go-race job installs at ARG JJ_TOOL of packages/daemon/docker/worker.Dockerfile, so a
+// local run tests whichever jj is first there.
 func TestPinnedJJKeepsWhatEverySideOfAMergeHolds(t *testing.T) {
 	t.Parallel()
 	jj := fixturegit.CompiledJJ(t)
