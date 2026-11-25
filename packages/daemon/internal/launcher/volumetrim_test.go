@@ -453,9 +453,9 @@ func steady(percent float64) func(int) volumeUsage {
 	return func(int) volumeUsage { return usageAt(percent) }
 }
 
-// useVolume makes reading the case's volume: every trimmer the fixture builds (trimmer, and the
-// launcher's under useLauncherTrimmer) reads it through readUsage, which counts its calls, and
-// that count is what the cases on the sweep's hundred-deletion cadence are asserted on.
+// useVolume makes reading the case's volume in place of the 50% newTrimFixture starts with: every
+// trimmer the fixture aims (aim) reads it through readUsage, which counts its calls, and that count
+// is what the cases on the sweep's hundred-deletion cadence are asserted on.
 func (f *trimFixture) useVolume(reading func(call int) volumeUsage) {
 	f.mu.Lock()
 	f.reading = reading
@@ -463,17 +463,13 @@ func (f *trimFixture) useVolume(reading func(call int) volumeUsage) {
 }
 
 // readUsage is the reading of the volume each trimmer of the fixture is given (trimmer.readUsage):
-// the case's reading once useVolume has named one, else the machine's own statfs of the case's
-// tree, which is what a trimmer reads with no reading of the case's.
+// the case's reading, counted, which is 50% until useVolume names another. No trimmer of the
+// fixture reads the machine's own statfs.
 func (f *trimFixture) readUsage(path string) (volumeUsage, error) {
 	if path != f.root {
 		f.t.Errorf("the trimmer read the volume at %s, want the case's own tree %s", path, f.root)
 	}
 	f.mu.Lock()
-	if f.reading == nil {
-		f.mu.Unlock()
-		return readVolumeUsage(path)
-	}
 	f.reads++
 	call, answer, hook := f.reads, f.reading, f.onRead
 	f.mu.Unlock()
@@ -630,11 +626,20 @@ func (f *trimFixture) assertPrefixed() {
 // deleter the pod runs (entryRemover, volumedelete.go).
 func (f *trimFixture) trimmer() *trimmer {
 	tr := newTrimmer(f.settings, f.trimming, f.send, f.log, f.cover, &pidGuard{})
-	tr.volumeRoot, tr.procRoot, tr.self, tr.readUsage = f.root, f.proc, f.self, f.readUsage
+	f.aim(tr)
 	tr.roots = rebasedOnto(f.root, tr.roots)
+	return tr
+}
+
+// aim points a trimmer at the case's machine: its volume, its reading of it, its /proc, its pid,
+// its clock and its ticker, and removals made in this process (trimmer says why). Both trimmers a
+// case drives are aimed here, the one trimmer builds and the one the launcher builds
+// (useLauncherTrimmer), so a seam added here reaches both; each sets only its roots, and the
+// launcher's its cover and log, apart.
+func (f *trimFixture) aim(tr *trimmer) {
+	tr.volumeRoot, tr.procRoot, tr.self, tr.readUsage = f.root, f.proc, f.self, f.readUsage
 	tr.now, tr.ticks = f.clock.now, f.ticks.make
 	tr.removals = inProcessRemovals
-	return tr
 }
 
 // start runs the interval loop and stops it with the case.
@@ -5455,21 +5460,21 @@ func TestASweepThatReachedTheLowMarkNeitherAnchorsNorPairs(t *testing.T) {
 // is made: the first two are never read, the 92% anchors the episode, and its report carries
 // episode 1.
 func TestASweepWhoseReportPanicsHasBeenReadForARise(t *testing.T) {
-	// Not parallel: it writes the package variable boundReport, which parallel tests read.
+	t.Parallel()
 	const fell = "the report's bound fell over"
 	f := newTrimFixture(t, 0) // no entry: every sweep frees nothing, reports and pauses
 	f.useVolume(sweepStarts(86, 91, 92))
 	f.setSettings(trimSettings())
+	tr := f.trimmer()
 	var bounds atomic.Int32
-	previous := boundReport
-	boundReport = func(trim *trimmer, report shimwire.LauncherVolumeReport) shimwire.LauncherVolumeReport {
+	previous := tr.boundReport
+	tr.boundReport = func(trim *trimmer, report shimwire.LauncherVolumeReport) shimwire.LauncherVolumeReport {
 		if bounds.Add(1) <= 2 {
 			panic(fell)
 		}
 		return previous(trim, report)
 	}
-	t.Cleanup(func() { boundReport = previous })
-	f.start(f.trimmer())
+	f.start(tr)
 
 	sweepsAndPauses(f, 3)
 
@@ -6363,7 +6368,7 @@ func TestAReportThatReplacesAHeldOneCarriesItsFaultsAndRefusedReads(t *testing.T
 // negative control is report as it stood at e6725f56, which took them from the trimmer before the
 // bound ran: the report sent carried the bound's own fault alone and no refused read.
 func TestAReportWhoseBoundPanicsLeavesWhatItCarriesForTheNext(t *testing.T) {
-	// Not parallel: it writes the package variable boundReport, which parallel tests read.
+	t.Parallel()
 	const refused = "process 7: /proc/7/fd: permission denied"
 	f := newTrimFixture(t, 10) // forty entries, four points: the first sweep leaves 86% and sets no pause
 	f.useVolume(f.modelled(90))
@@ -6373,11 +6378,10 @@ func TestAReportWhoseBoundPanicsLeavesWhatItCarriesForTheNext(t *testing.T) {
 	tr.fault("a panic of an earlier interval", []byte("goroutine 1 [running]:\nan earlier stack"))
 	tr.carryRefused([]string{refused})
 
-	previous := boundReport
-	boundReport = func(*trimmer, shimwire.LauncherVolumeReport) shimwire.LauncherVolumeReport {
+	previous := tr.boundReport
+	tr.boundReport = func(*trimmer, shimwire.LauncherVolumeReport) shimwire.LauncherVolumeReport {
 		panic("the bound fell over")
 	}
-	t.Cleanup(func() { boundReport = previous })
 	if _, ending := tr.tick(context.Background(), &set); ending != trimGoesOn {
 		t.Fatalf("the interval whose bound panicked ended the trimmer (%v), want it passed over", ending)
 	}
@@ -6388,7 +6392,7 @@ func TestAReportWhoseBoundPanicsLeavesWhatItCarriesForTheNext(t *testing.T) {
 		t.Fatalf("the trimmer sent %d reports from an interval whose bound panicked, want none", sent)
 	}
 
-	boundReport = previous
+	tr.boundReport = previous
 	tr.tick(context.Background(), &set)
 	sent := f.reports()
 	if len(sent) != 1 {
@@ -6416,7 +6420,7 @@ func TestAReportWhoseBoundPanicsLeavesWhatItCarriesForTheNext(t *testing.T) {
 // the one that merges A into B. The negative control is deliver with no give-back, as it stood at
 // e6725f56: the report sent after it carried the merge's fault alone and no refused read.
 func TestAReportWhoseMergeWithAHeldOnePanicsGivesBackWhatItCarried(t *testing.T) {
-	// Not parallel: it writes the package variable boundReport, which parallel tests read.
+	t.Parallel()
 	const refused = "process 8: /proc/8/fd: permission denied"
 	f := newTrimFixture(t, 0) // no entry: every sweep frees nothing, reports and pauses
 	f.useVolume(steady(90))
@@ -6435,14 +6439,13 @@ func TestAReportWhoseMergeWithAHeldOnePanicsGivesBackWhatItCarried(t *testing.T)
 	tr.carryRefused([]string{refused})
 
 	calls := 0
-	previous := boundReport
-	boundReport = func(trim *trimmer, report shimwire.LauncherVolumeReport) shimwire.LauncherVolumeReport {
+	previous := tr.boundReport
+	tr.boundReport = func(trim *trimmer, report shimwire.LauncherVolumeReport) shimwire.LauncherVolumeReport {
 		if calls++; calls == 2 {
 			panic("the merge fell over")
 		}
 		return previous(trim, report)
 	}
-	t.Cleanup(func() { boundReport = previous })
 	if _, ending := tr.tick(ctx, &set); ending != trimGoesOn {
 		t.Fatalf("the interval whose merge panicked ended the trimmer (%v), want it passed over", ending)
 	}
@@ -6454,7 +6457,7 @@ func TestAReportWhoseMergeWithAHeldOnePanicsGivesBackWhatItCarried(t *testing.T)
 		t.Fatalf("the trimmer holds %+v after the merge panicked, want report A as it was held", tr.held)
 	}
 
-	boundReport = previous
+	tr.boundReport = previous
 	f.refuseSends(nil)
 	tr.pause = 0
 	tr.tick(ctx, &set) // A goes, and then report C

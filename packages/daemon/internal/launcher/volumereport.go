@@ -97,7 +97,7 @@ func (t *trimmer) deliver(report shimwire.LauncherVolumeReport) {
 // deliver, which gives what report carried back to the trimmer (takeBack), since report is then
 // neither sent nor held, and in switchOff, whose panic ends the trimmer (run).
 func (t *trimmer) replace(held, report shimwire.LauncherVolumeReport) shimwire.LauncherVolumeReport {
-	return boundReport(t, carryHeld(held, report))
+	return t.boundReport(t, carryHeld(held, report))
 }
 
 // takeBack puts what a report that was neither sent nor held carried back on the trimmer, for the
@@ -191,7 +191,7 @@ func (t *trimmer) switchOff() {
 		// the first thing the daemon hears of this trimmer.
 		report.RaisedBy = shimwire.VolumeEpisodeFirst
 	}
-	report = boundReport(t, report)
+	report = t.boundReport(t, report)
 	t.faults, t.faultsDropped = nil, 0
 	t.refusedReads, t.refusedDropped = nil, 0
 	if t.held != nil {
@@ -281,7 +281,7 @@ func (t *trimmer) carryRefused(refused []string) {
 // and a report neither sent nor held gives them back (deliver).
 func (t *trimmer) report(ctx context.Context, out sweepOutcome) shimwire.LauncherVolumeReport {
 	walk := t.sizes(ctx)
-	report := boundReport(t, shimwire.LauncherVolumeReport{
+	report := t.boundReport(t, shimwire.LauncherVolumeReport{
 		Trimmer:             t.id,
 		Episode:             t.episode,
 		RaisedBy:            t.raisedBy,
@@ -423,12 +423,6 @@ func (t *trimmer) bound(report shimwire.LauncherVolumeReport) shimwire.LauncherV
 	report.Faults = cutEach(faults, volumeReportFaultRunes)
 	return report
 }
-
-// boundReport is how a report is bounded where it is made and where it replaces a held one
-// (report, switchOff, deliver): bound itself, a package variable so a case can make the bound
-// panic and read that what the report was to carry stays with the trimmer for the next one. A
-// case that replaces it runs alone, since every trimmer of the process reads it.
-var boundReport = (*trimmer).bound
 
 // saidLeftOut writes the one line of what a report leaves out, so a person reading the pod's log
 // knows the report the daemon got is not the whole of what the trimmer measured. deliver writes

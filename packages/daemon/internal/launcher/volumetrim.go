@@ -216,6 +216,10 @@ type trimmer struct {
 	// readUsage is one reading of the volume at volumeRoot: readVolumeUsage (volumeusage.go) in
 	// the pod, and a test's own reading, whose calls it counts, in a test.
 	readUsage func(path string) (volumeUsage, error)
+	// boundReport is how a report is bounded where it is made and where it replaces a held one
+	// (report, switchOff, deliver): bound itself in the pod, and in a test a bound that panics, so
+	// the case can read that what the report was to carry stays with the trimmer for the next one.
+	boundReport func(t *trimmer, report shimwire.LauncherVolumeReport) shimwire.LauncherVolumeReport
 	// measure is one target of the size walk, the seam a test blocks to drive the walk's
 	// budget (measureTree, volumewalk.go). It is given the handle the walk holds on the
 	// directory that holds the target and the target's own name in it, never a path: a name
@@ -286,21 +290,22 @@ func newTrimmer(
 	guard *pidGuard,
 ) *trimmer {
 	return &trimmer{
-		id:         randomID(),
-		settings:   settings,
-		trimming:   trimming,
-		send:       send,
-		now:        time.Now,
-		ticks:      tickerChannel,
-		logf:       logf,
-		volumeRoot: VolumeRoot,
-		procRoot:   "/proc",
-		cover:      cover,
-		self:       os.Getpid(),
-		roots:      ReclaimableRoots,
-		readUsage:  readVolumeUsage,
-		measure:    measureTree,
-		removals:   startRemover(guard),
+		id:          randomID(),
+		settings:    settings,
+		trimming:    trimming,
+		send:        send,
+		now:         time.Now,
+		ticks:       tickerChannel,
+		logf:        logf,
+		volumeRoot:  VolumeRoot,
+		procRoot:    "/proc",
+		cover:       cover,
+		self:        os.Getpid(),
+		roots:       ReclaimableRoots,
+		readUsage:   readVolumeUsage,
+		measure:     measureTree,
+		removals:    startRemover(guard),
+		boundReport: (*trimmer).bound,
 	}
 }
 

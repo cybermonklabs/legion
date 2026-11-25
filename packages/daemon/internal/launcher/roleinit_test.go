@@ -1943,14 +1943,15 @@ func openDescriptors(t *testing.T) map[int]string {
 // descriptorsKept reports what the call between the two snapshots left open, as a set and never
 // as a count: a descriptor open after it, on a target that was not open on that number before
 // it, is one the call opened and did not close. It reads the whole process, so it holds only
-// while nothing else opens a descriptor in the window: its one caller is a test that is not
-// parallel, and no parallel test runs beside such a test, and every goroutine a test starts ends
-// with that test. That is why it checks this direction alone: a descriptor vanishing between the
-// snapshots is no finding, because the finaliser of a file an earlier test left unreferenced
-// closes it at whatever garbage collection lands in the window (measured, with the two snapshots
-// around a runtime.GC()), and a finaliser closes where it never opens.
+// while nothing else opens a descriptor in the window: its caller must run beside no other test,
+// which requireRunsAlone checks first, and every goroutine a test starts ends with that test.
+// That is why it checks this direction alone: a descriptor vanishing between the snapshots is no
+// finding, because the finaliser of a file an earlier test left unreferenced closes it at whatever
+// garbage collection lands in the window (measured, with the two snapshots around a runtime.GC()),
+// and a finaliser closes where it never opens.
 func descriptorsKept(t *testing.T, label string, before, after map[int]string) {
 	t.Helper()
+	requireRunsAlone(t, "descriptorsKept")
 	for number, target := range after {
 		if held, ok := before[number]; !ok || held != target {
 			t.Errorf("%s left descriptor %d open on %s, want every handle it opened closed", label, number, target)

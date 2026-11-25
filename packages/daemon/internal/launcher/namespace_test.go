@@ -252,7 +252,11 @@ func TestPIDOneLauncherUsesConfiguredShutdownGrace(t *testing.T) {
 		grace    time.Duration
 		graceful bool
 	}{
-		{"graceful", 2500 * time.Millisecond, true},
+		// The graceful row's trap sleeps 1.2 s and then writes; its grace leaves room for the
+		// signal's delivery and the start of /bin/sleep and printf under parallel tests and the race
+		// step's other packages. The launcher returns once the shell exits, so a passing row spends
+		// none of it.
+		{"graceful", 10 * time.Second, true},
 		{"deadline", 50 * time.Millisecond, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

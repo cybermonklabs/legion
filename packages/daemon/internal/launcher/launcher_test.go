@@ -157,7 +157,9 @@ func newSessionRig(t *testing.T, cfg Config) *rig {
 // A test may join its rig itself, taking the launcher's one return, and the rig's own cleanup
 // must then find nothing left to wait for, rather than wait out its bound for a second value.
 func TestARigJoinedByItsTestLeavesItsCleanupNothingToWaitFor(t *testing.T) {
-	t.Parallel()
+	// Not parallel: it holds the rig's cleanups to under a second, a wall-clock bound that tests
+	// running beside it would spend; the cleanup's own bound, which the second tells apart, is
+	// minutes long (cleanupBeforeDeadline).
 	var joinedAt, cleanedAt time.Time
 	passed := t.Run("joined", func(t *testing.T) {
 		// Registered before the rig's own cleanups, so it runs after them (cleanups run last first).
@@ -2083,9 +2085,11 @@ func holdSessionSocket(t *testing.T, socket string) net.Conn {
 // what the socket holds at once, through its own non-blocking descriptor, and never waits: a
 // connection still open reads nothing (EAGAIN), however slow the machine. The end of file is
 // there only once no process holds the proxy's end, and a child forked in the test process holds a
-// copy of every descriptor until it execs, so a case that calls this runs alone (not parallel).
+// copy of every descriptor until it execs, so its caller must run beside no other test, which
+// requireRunsAlone checks first.
 func expectHeldClosed(t *testing.T, conn net.Conn) {
 	t.Helper()
+	requireRunsAlone(t, "expectHeldClosed")
 	raw, err := conn.(syscall.Conn).SyscallConn()
 	if err != nil {
 		t.Fatal(err)

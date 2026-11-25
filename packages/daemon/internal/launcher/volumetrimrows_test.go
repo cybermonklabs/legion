@@ -1758,21 +1758,20 @@ func TestATickWhoseLinePanicsKeepsWhatItDecidedBeforeIt(t *testing.T) {
 // sent at the next try of the wait as the switched-off trimmer's last report (INFRA-2009, tester's
 // round 42: no case failed with the switched-off test taken out).
 func TestASwitchOffWhoseBoundPanicsSendsNoOlderReportInItsPlace(t *testing.T) {
-	// Not parallel: it writes the package variable boundReport, which parallel tests read.
+	t.Parallel()
 	const fell = "the bound fell over on the last report"
 	f := newTrimFixture(t, 10) // forty entries, four points: the first sweep leaves 86% and sets no pause
 	f.useVolume(f.modelled(90))
 	f.setSettings(trimSettings())
 	var up atomic.Bool
-	previous := boundReport
-	boundReport = func(trim *trimmer, report shimwire.LauncherVolumeReport) shimwire.LauncherVolumeReport {
+	tr := f.trimmer()
+	previous := tr.boundReport
+	tr.boundReport = func(trim *trimmer, report shimwire.LauncherVolumeReport) shimwire.LauncherVolumeReport {
 		if report.SwitchedOff {
 			panic(fell)
 		}
 		return previous(trim, report)
 	}
-	t.Cleanup(func() { boundReport = previous })
-	tr := f.trimmer()
 	tr.send = func(report shimwire.LauncherVolumeReport) error {
 		if !up.Load() {
 			return errors.New("no daemon connection is up to carry it")

@@ -29,9 +29,8 @@ import (
 // entry, and a fixture that answered the paths itself would prove nothing about the clone a pod
 // holds.
 //
-// A row that works its own clone and hands the sweep its own /proc runs in parallel. A row that
-// drives a launcher stays serial and says why: it uses t.Chdir, which panics in a parallel test, or
-// shortens the package's sweep numbers, which are package variables every sweep reads.
+// A row runs in parallel unless it calls t.Chdir, which panics in a parallel test, or writes a
+// package variable; each serial row says which.
 
 // The repository and the issue every clone of these rows belongs to. They name directories
 // rather than anything the rows assert, but they have to be a repository and an issue
@@ -656,7 +655,9 @@ func TestTheFirstPassKeepsALockAProcessHoldsOpen(t *testing.T) {
 // (TestTheLauncherTakesTheWorkspaceFromItsWorkingDirectory), and from the first role start, whose
 // answer waits for the pass.
 func TestTheFirstPassRunsBeforeTheFirstRoleStarts(t *testing.T) {
-	// Not parallel: it writes the package variable gitLockRemove, which parallel tests read.
+	// Not parallel: it writes the package variable containerInit (useContainerInit), which every
+	// launcher reads to tell whether it is the container's first process. It also changes the whole
+	// process's working directory (t.Chdir).
 	t.Run("no role start is answered until the pass returns", func(t *testing.T) {
 		requireRoleNamespaces(t)
 		c := newLockClone(t)

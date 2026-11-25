@@ -333,8 +333,8 @@ const (
 // the time of the high, the counter's high and low and the largest process, the agent; the next
 // hour's line carries that hour's readings alone.
 func TestControllerPodMemoryGuardEndsEachKindOfCommand(t *testing.T) {
-	// Not parallel: it writes the package variable podTrimmer (useGuardPodKilling), which parallel
-	// tests read.
+	// Not parallel: it writes the package variable containerInit (useContainerInit), which every
+	// launcher reads to tell whether it is the container's first process.
 	python, err := exec.LookPath("python3")
 	if err != nil {
 		t.Skipf("no python3 to start the agent's Python kernel with: %v", err)
