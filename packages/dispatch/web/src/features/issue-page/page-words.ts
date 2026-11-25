@@ -266,6 +266,10 @@ export const PRESET_ORDER = freeze([
   "verification",
   "plan",
   "decisions",
+  // Root R2's one list of views holds Graph last, the whole tree read, a view and no filter (R10,
+  // R12). Dashboard (first), Threads and Documents (after Decisions) are each one line of this
+  // list that its own part adds with its view, at its place in root R2's order.
+  "graph",
 ] as const);
 
 /** One control of the filter row, by its own token: `conversation`, which turns every filter
@@ -277,6 +281,7 @@ export type Preset = (typeof PRESET_ORDER)[number];
 export const PRESET_NAMES = freeze({
   conversation: "Conversation",
   decisions: "Decisions",
+  graph: "Graph",
   plan: "Plan",
   spec: "Spec",
   verification: "Verification",
@@ -513,6 +518,8 @@ export const EMPTY_STATE_LINES = freeze({
   /** The page with no filter on, on an issue whose tree holds nothing under it. */
   conversation: "This issue holds nothing yet.",
   decisions: "This issue has no decisions yet.",
+  /** Graph, the whole tree read, on an issue whose tree holds nothing under it. */
+  graph: "This issue holds nothing yet.",
   /** What the node menu says where its filter leaves none of the issue's files (R3). */
   files_filtered: "No file or document matches this filter.",
   /** What a view says where the filter by words (`?q=`) leaves nothing of what it draws: the

@@ -674,7 +674,9 @@ test("waitingOnReader counts a Change under the decision whose block holds its a
   expect(counted.decisions).toBe(0);
   expect(waitingDecisions).toEqual([]);
   expect(counted.decisions).toBe(waitingDecisions.length);
-  expect(parentsOf(root, moved.id)).toEqual(["spec#b-d2"]);
+  // The Change is on the second decision's words, so it is no row (R9), and that decision reads
+  // changed all the same.
+  expect(parentsOf(root, moved.id)).toEqual([]);
   expect(decisionChangeComments(both, [moved], issue, documents)).toEqual(
     new Map([["c-change", second.ref]])
   );

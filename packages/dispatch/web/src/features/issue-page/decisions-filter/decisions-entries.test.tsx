@@ -62,7 +62,7 @@ async function mountEntries(
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime } } });
   const given = { updatedAt: answeredAt };
   if (decisions !== null) client.setQueryData(["decisions", KEY], decisions, given);
-  if (asks !== null) client.setQueryData(["asks", KEY], asks, given);
+  if (asks !== null) client.setQueryData(["asks", KEY, "thread"], asks, given);
   if (comments !== null) client.setQueryData(["comments", KEY], comments, given);
   // The seam reads no document's blocks; the spec's are put in the cache only so that the cold
   // case can show that no read of them starts.
@@ -182,7 +182,7 @@ async function seamOf(quote: string) {
 // list for her decisions and the first still waits.
 test("the seam gives four parts from today's reads and makes no request", async () => {
   const getIssueDecisions = spyOn(api, "getIssueDecisions");
-  const listIssueAsks = spyOn(api, "listIssueAsks");
+  const listIssueAskThreads = spyOn(api, "listIssueAskThreads");
   const listComments = spyOn(api, "listComments");
   // Any request at all, past the reads the page's tree makes.
   const request = spyOn(globalThis, "fetch");
@@ -211,12 +211,12 @@ test("the seam gives four parts from today's reads and makes no request", async 
     expect(parts.review[0]).not.toHaveProperty("change");
 
     expect(getIssueDecisions).not.toHaveBeenCalled();
-    expect(listIssueAsks).not.toHaveBeenCalled();
+    expect(listIssueAskThreads).not.toHaveBeenCalled();
     expect(listComments).not.toHaveBeenCalled();
     expect(request).not.toHaveBeenCalled();
   } finally {
     getIssueDecisions.mockRestore();
-    listIssueAsks.mockRestore();
+    listIssueAskThreads.mockRestore();
     listComments.mockRestore();
     request.mockRestore();
   }
@@ -276,7 +276,7 @@ test("a reading under an answered question is a write-up, which no part draws an
 // seam reads no document's blocks.
 test("answers older than the app's staleTime are not read again as the seam mounts", async () => {
   const made = [decision("minor")];
-  const names = ["getIssueDecisions", "listIssueAsks", "listComments"] as const;
+  const names = ["getIssueDecisions", "listIssueAskThreads", "listComments"] as const;
   // Each of the three reads, held, so a read the mount started reaches no server.
   const reads = names.map((read) =>
     spyOn(api, read).mockReturnValue(Promise.withResolvers<never>().promise)
@@ -298,7 +298,7 @@ test("answers older than the app's staleTime are not read again as the seam moun
     ).toEqual({
       getIssueDecisions: [],
       listComments: [],
-      listIssueAsks: [],
+      listIssueAskThreads: [],
     });
     expect(request).not.toHaveBeenCalled();
     hook.unmount();
@@ -365,9 +365,9 @@ test("an empty decisions member gives the questions alone and no error", async (
     {
       answer: [],
       heldWhileOut: false,
-      queryKey: ["asks", KEY],
+      queryKey: ["asks", KEY, "thread"],
       mount: () => mountEntries(children, noDecision, null),
-      read: "listIssueAsks",
+      read: "listIssueAskThreads",
       starts: 1,
     },
     {
@@ -415,7 +415,7 @@ test("an empty decisions member gives the questions alone and no error", async (
   const refused = [
     {
       mount: () => mountEntries(children, null),
-      other: "listIssueAsks",
+      other: "listIssueAskThreads",
       read: "issue-decisions",
       request: "getIssueDecisions",
     },
@@ -423,7 +423,7 @@ test("an empty decisions member gives the questions alone and no error", async (
       mount: () => mountEntries(children, noDecision, null),
       other: "getIssueDecisions",
       read: "asks",
-      request: "listIssueAsks",
+      request: "listIssueAskThreads",
     },
   ] as const;
   for (const { mount, other, read, request } of refused) {
@@ -459,7 +459,7 @@ test("an empty decisions member gives the questions alone and no error", async (
   // unreadable, draws no line, and the reads still hold.
   const refetched = [
     { queryKey: ["decisions", KEY], read: "issue-decisions", request: "getIssueDecisions" },
-    { queryKey: ["asks", KEY], read: "asks", request: "listIssueAsks" },
+    { queryKey: ["asks", KEY, "thread"], read: "asks", request: "listIssueAskThreads" },
   ] as const;
   for (const { queryKey, read, request } of refetched) {
     const answer = Promise.withResolvers<never>();

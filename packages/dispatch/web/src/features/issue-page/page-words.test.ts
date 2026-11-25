@@ -313,13 +313,14 @@ test("every answer to the reader's own act is one sentence with no schema token"
   ).toEqual([]);
 });
 
-test("the five controls are named in the order the row draws them, and none is called Tree", () => {
+test("the view row's controls are named in the order the row draws them, and none is called Tree", () => {
   expect(PRESET_ORDER.map((preset) => PRESET_NAMES[preset])).toEqual([
     "Conversation",
     "Spec",
     "Verification",
     "Plan",
     "Decisions",
+    "Graph",
   ]);
   for (const preset of PRESET_ORDER) {
     expect(EMPTY_STATE_LINES[preset]).toMatch(/^[A-Z].*\.$/);

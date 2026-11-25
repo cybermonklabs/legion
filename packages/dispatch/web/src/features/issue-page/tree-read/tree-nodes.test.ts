@@ -2,6 +2,8 @@ import { expect, spyOn, test } from "bun:test";
 import { QueryClient } from "@tanstack/react-query";
 
 import { api } from "../../../api/client";
+import { routeUrl } from "../../../api/paths";
+import { CONVERSATION_KINDS } from "../../../api/queries";
 import type {
   Artifact,
   Ask,
@@ -36,7 +38,14 @@ import {
   treeDraftsFrom,
   treeIdOf,
 } from "./tree-nodes";
-import { issueTreeQuery, type TreeAnswer, type TreeAnswerNode, type TreeTuple } from "./tree-read";
+import {
+  issueTreeQuery,
+  outlineQuery,
+  readOlderComments,
+  type TreeAnswer,
+  type TreeAnswerNode,
+  type TreeTuple,
+} from "./tree-read";
 
 /**
  * The tree read's answer as the outline's drafts. Each case writes the answer as the route sends
@@ -1719,4 +1728,205 @@ test("a requirement whose From line cites a document carries its chip from the t
     nodeOf(root, blockNodeId("spec", "r-cites"))?.chips.map(({ name, ref }) => ({ name, ref })),
     "the requirement draws no chip for the document its From line cites"
   ).toEqual([{ name: NODE_TYPE_NAMES.document, ref: cites }]);
+});
+
+/** A comment of the comments read, a person's on the issue, as the route answers it, which
+ *  `extra` anchors to text or makes a reply. */
+function commentRead(id: string, extra: Partial<Comment> = {}): Comment {
+  return {
+    anchor: null,
+    answers: null,
+    artifact_id: null,
+    ask_id: null,
+    author: { id: "alice", kind: "user" },
+    body: `Words of ${id}.`,
+    created_at: "2026-11-05T00:00:00Z",
+    deleted_at: null,
+    deleted_by: null,
+    deliveries: [],
+    edited_at: null,
+    id,
+    issue_key: KEY,
+    mentions: [],
+    reply_block: null,
+    reply_to: null,
+    resolved: false,
+    resolved_at: null,
+    resolved_by: null,
+    suggestion: null,
+    turn: null,
+    ...extra,
+  };
+}
+
+/** The anchor of a comment on the words of `block` in `document`. */
+function anchorIn(document: Artifact, block: string): NonNullable<Comment["anchor"]> {
+  return {
+    artifact_id: document.id,
+    block_id: block,
+    mark_id: `mark-${block}`,
+    orphaned: false,
+    quote: `Words of ${block}.`,
+    version: 1,
+  };
+}
+
+// R9, R1: Conversation's read repeats `kind` for root R1's kinds, each by the name the read's
+// `kind` filter gives it and never by the supertag `block`, in one order, so its key is the same
+// in every load; the route writes one `kind=` for each. Graph's read is the tree read, which
+// names none.
+test("Conversation's read names root R1's kinds and never block", async () => {
+  expect(CONVERSATION_KINDS).toEqual([
+    "ask",
+    "comment",
+    "reading",
+    "lens",
+    "finding",
+    "risk",
+    "criterion",
+    "requirement",
+    "check",
+    "decision",
+    "issue",
+    "prose",
+    "callout",
+  ]);
+  expect(CONVERSATION_KINDS).not.toContain("block");
+  const conversation = outlineQuery(KEY, "conversation");
+  expect<unknown>(conversation.queryKey).toEqual([
+    "issue-tree",
+    KEY,
+    { kind: [...CONVERSATION_KINDS] },
+  ]);
+  expect(outlineQuery(KEY, "conversation").queryKey, "the key of another load").toEqual(
+    conversation.queryKey
+  );
+  expect(outlineQuery(KEY, "graph").queryKey).toEqual(issueTreeQuery(KEY).queryKey);
+  const read = spyOn(api, "getIssueTree").mockResolvedValue(answer([]));
+  try {
+    const client = new QueryClient();
+    await client.fetchQuery(conversation);
+    await client.fetchQuery(issueTreeQuery(KEY));
+    const [kinds, whole] = read.mock.calls.map(([, query]) => query);
+    expect<unknown>(kinds).toEqual({ kind: [...CONVERSATION_KINDS] });
+    expect(whole).toEqual({});
+    expect(routeUrl("/api/v1/issues/{key}/tree", { key: KEY }, kinds)).toBe(
+      `/api/v1/issues/${KEY}/tree?${CONVERSATION_KINDS.map((kind) => `kind=${kind}`).join("&")}`
+    );
+  } finally {
+    read.mockRestore();
+  }
+});
+
+// R9, R10: a comment on a node's text - one the comments read anchors and the read hangs under
+// that node - is no row of either outline, and neither is a reply in its thread: both stay in the
+// answer the tree is built from, for the margin to draw. A post on the issue, a comment tied to no
+// text, is a row with its replies, and so is a comment anchored in a document whose block the
+// answer holds no node for, which the read hangs under the issue. With no comments read nothing
+// marks a comment as on text, and the read's placement stands.
+test("a comment on a node's text is no row", () => {
+  const tree = answer([
+    block("r1", "requirement", KEY, SPEC, 0),
+    personsComment("c-on", "r1", "2026-11-05T01:00:00Z"),
+    personsComment("c-on-reply", "c-on", "2026-11-05T02:00:00Z"),
+    personsComment("c-post", KEY, "2026-11-05T03:00:00Z"),
+    personsComment("c-post-reply", "c-post", "2026-11-05T04:00:00Z"),
+    personsComment("c-unplaced", KEY, "2026-11-05T05:00:00Z"),
+  ]);
+  const comments = [
+    commentRead("c-on", { anchor: anchorIn(SPEC, "r1") }),
+    commentRead("c-on-reply", { reply_to: "c-on" }),
+    commentRead("c-post"),
+    commentRead("c-post-reply", { reply_to: "c-post" }),
+    commentRead("c-unplaced", { anchor: anchorIn(DECISIONS, "d9") }),
+  ];
+  const { drafts, root } = drawn(tree, { comments, issue: issueDetails() });
+
+  expect(["c-on", "c-on-reply"].map((id) => [nodeOf(root, id), drafts.has(id)])).toEqual([
+    [undefined, false],
+    [undefined, false],
+  ]);
+  expect(
+    ["c-post", "c-post-reply", "c-unplaced"].map((id) =>
+      placementsOf(root, id).map((one) => one.parent)
+    )
+  ).toEqual([[KEY], ["c-post"], [KEY]]);
+  expect((tree.nodes ?? []).map((one) => one.id)).toEqual(
+    expect.arrayContaining(["c-on", "c-on-reply"])
+  );
+  expect(placementsOf(drawn(tree).root, "c-on").map((one) => one.parent)).toEqual([
+    blockNodeId("spec", "r1"),
+  ]);
+});
+
+// R15: the older comment page `?comments_before=` answers merges into the outline read's answer
+// where the read's order puts each node: each comment under the issue among the issue's children
+// by when it was made, after the ranked statement, a reply under its comment, and a reply to an
+// ask of the newer page under that ask, which the page alone held as under the issue. The two
+// controls pressed while the page is out read it once, and once no older comment remains a press
+// reads nothing.
+test("an older comment page merges into the answer in the read's order", async () => {
+  const newest = answer(
+    [
+      block("r1", "requirement", KEY, SPEC, 0, { rank: "a" }),
+      node("q1", "ask", KEY, { made_at: "2026-11-05T12:00:00Z" }),
+      personsComment("c-3", KEY, "2026-11-07T00:00:00Z"),
+      personsComment("c-4", KEY, "2026-11-08T00:00:00Z"),
+    ],
+    [],
+    { comments_before: "2026-11-07T00:00:00.000000Z,c-3" }
+  );
+  const older = treeAnswer(
+    [
+      personsComment("c-1", KEY, "2026-11-05T00:00:00Z"),
+      personsComment("c-1-reply", "c-1", "2026-11-05T06:00:00Z"),
+      personsComment("c-q", "q1", "2026-11-05T13:00:00Z"),
+      personsComment("c-2", KEY, "2026-11-06T00:00:00Z"),
+    ],
+    [],
+    { comments_before: null, converted: true }
+  );
+  const read = spyOn(api, "getIssueTree").mockResolvedValue(older);
+  try {
+    const client = new QueryClient();
+    const { queryKey } = outlineQuery(KEY, "conversation");
+    client.setQueryData(queryKey, newest);
+    await Promise.all([
+      readOlderComments(client, KEY, "conversation"),
+      readOlderComments(client, KEY, "conversation"),
+    ]);
+    expect<unknown>(read.mock.calls.map(([key, query]) => [key, query])).toEqual([
+      [KEY, { comments_before: "2026-11-07T00:00:00.000000Z,c-3", kind: [...CONVERSATION_KINDS] }],
+    ]);
+    const merged = client.getQueryData<TreeAnswer>(queryKey);
+    expect(merged?.nodes?.map((one) => one.id)).toEqual([
+      KEY,
+      `${KEY}/spec#r1`,
+      "c-1",
+      "c-1-reply",
+      "q1",
+      "c-q",
+      "c-2",
+      "c-3",
+      "c-4",
+    ]);
+    expect(merged?.comments_before).toBeNull();
+    await readOlderComments(client, KEY, "conversation");
+    expect(read, "a press with no older comment left").toHaveBeenCalledTimes(1);
+
+    const { root } = drawn(merged ?? newest);
+    expect(nodesOf(root).map((one) => one.id)).toEqual([
+      KEY,
+      blockNodeId("spec", "r1"),
+      "c-1",
+      "c-1-reply",
+      "q1",
+      "c-q",
+      "c-2",
+      "c-3",
+      "c-4",
+    ]);
+  } finally {
+    read.mockRestore();
+  }
 });

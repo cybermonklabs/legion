@@ -3270,13 +3270,14 @@ test("every Change newer than a decision's words is drawn under it", () => {
   expect(nodeOf(root, id)).toMatchObject({ state: "change_requested", waiting: false });
 });
 
-// R3 and R7: a Change sits under the decision it was written in. The anchor names the block the
+// R3 and R7: a Change belongs to the decision it was written in. The anchor names the block the
 // person wrote it in (`Anchor.block_id`), here the paragraph the second decision's block holds,
 // and its quote is words that decision holds; the first decision holds the same words too. So
 // the quote alone cannot say which decision was changed, and the Change must not land on the
 // first decision that holds them: that decision would read Change requested and leave the review
-// list, while the one the person changed would still wait on them.
-test("a Change anchored in one decision is drawn under it, though another decision holds its words", () => {
+// list, while the one the person changed would still wait on them. The read hangs the Change
+// under the second decision's node, on its words, so it is no row (R9): the margin draws it.
+test("a Change anchored in one decision changes it, though another decision holds its words", () => {
   const spec = artifact("artifact-spec", SPEC, "spec.md", true);
   const waiting = (id: string, text: string): Decision => ({
     ...decision(id, text, ["r1"]),
@@ -3316,7 +3317,7 @@ test("a Change anchored in one decision is drawn under it, though another decisi
   const changed = blockNodeId(SPEC, "d2");
   const other = blockNodeId(SPEC, "d1");
 
-  expect(placementsOf(root, "c-change").map((one) => one.parent)).toEqual([changed]);
+  expect(placementsOf(root, "c-change"), "a comment on the decision's words").toEqual([]);
   expect(nodeOf(root, changed)).toMatchObject({ state: "change_requested", waiting: false });
   expect(nodeOf(root, other)).toMatchObject({ state: "waiting_review", waiting: true });
 });

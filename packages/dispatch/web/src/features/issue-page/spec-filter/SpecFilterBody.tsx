@@ -74,7 +74,7 @@ import { nodeRowSelectorOf, TAB_STOP_ROW } from "../tree-focus";
 import type { DrawnRow } from "../tree-fold";
 import { nodesInOrder } from "../tree-keys";
 import { issueTreeQuery, useTreeRead, useTreeReadRunning } from "../tree-read/tree-read";
-import { issueAsksQuery, type NamesFailure } from "../useIssueTree";
+import { issueAskThreadsQuery, type NamesFailure } from "../useIssueTree";
 import { type LineRead, useLineRefusals } from "../useLineRefusals";
 import { moveToRow, useTreeKeymap } from "../useTreeKeymap";
 import { CAP } from "../verification-filter/VerificationFilterBody";
@@ -188,7 +188,7 @@ export function SpecFilterBody({
   const treeQuery = issueTreeQuery(issue.key);
   const resultsQuery = issueResultsQuery(issue.key);
   const decisionsQuery = issueDecisionsQuery(issue.key, true);
-  const asksQuery = issueAsksQuery(issue.key);
+  const asksQuery = issueAskThreadsQuery(issue.key);
   const coverageRead = useQuery(treeRead(coverageQuery));
   const { blocksOf } = useTreeRead(issue);
   // Whether the tree read runs, from an observer of its own (`useTreeReadRunning`): what a line

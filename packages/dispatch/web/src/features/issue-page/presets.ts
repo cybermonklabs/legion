@@ -60,12 +60,18 @@ import type { TreeAnswer, TreeAnswerNode } from "./tree-read/tree-read";
  * signals the filter row draws (`IssuePresets.tsx`) and the unit tests all read the same model.
  */
 
-/** One of the four filters: every control of the row but Conversation, which turns them off. */
-export type Filter = Exclude<Preset, "conversation">;
+/** The four filters, each a control of the row that draws the tree's nodes of its own kinds (R2):
+ *  every control but Conversation, which turns them off, and the views that are no filter -
+ *  Graph (R10), and Dashboard, Threads and Documents once their parts add them. */
+const FILTERS = ["spec", "verification", "plan", "decisions"] as const satisfies readonly Preset[];
 
-/** Whether `preset` is a filter rather than the page with no filter on. */
+/** One of the four filters (`FILTERS`). */
+export type Filter = (typeof FILTERS)[number];
+
+/** Whether `preset` is a filter rather than the page with no filter on or a view that is no
+ *  filter: Graph draws the whole tree read, and no version control (R10). */
 export function isFilter(preset: Preset): preset is Filter {
-  return preset !== "conversation";
+  return (FILTERS as readonly Preset[]).includes(preset);
 }
 
 /** The kinds each filter draws as rows of its own (R2). */
@@ -173,11 +179,13 @@ function holds(node: TreeNode, wanted: string): boolean {
 /**
  * The tree as `preset`, `query` and the address's own node leave it. With no filter on the root
  * is always drawn, because an issue whose words filter matches nothing still has to say so
- * somewhere, and it is context whenever nothing matched it.
+ * somewhere, and it is context whenever nothing matched it. Graph, a view and no filter (R10), is
+ * drawn so too, from Graph's read: every node the page draws as a row, each check and plan task
+ * under each requirement it serves as well.
  *
  * `memo` is the spec's summary callout, which the head draws as the issue's three sentences
  * (R8) and which is no row of the conversation (c-tree: "The memo callout is not a row of the
- * outline"), unless an address names it.
+ * outline"), nor of Graph, unless an address names it.
  */
 export function presetView(
   root: TreeNode,
@@ -187,7 +195,9 @@ export function presetView(
   memo?: string
 ): PresetView {
   const wanted = query.trim().toLowerCase();
-  if (!isFilter(preset)) return conversationView(root, wanted, named, memo);
+  if (!isFilter(preset)) {
+    return conversationView(root, wanted, named, memo, preset === "conversation");
+  }
   // Decisions filters the whole tree: `decisions-entries.ts` reads each decision's members.
   if (preset === "decisions") return filterView(root, preset, wanted, named);
   const held = root.views?.[preset];
@@ -196,13 +206,28 @@ export function presetView(
     : heldFilterView(root, preset, held, wanted, named);
 }
 
-/** The page with no filter on: the whole tree but the memo, or under a words filter each match
- *  with the chain above it as context. */
+/** The kinds Conversation draws no row of (R9): a result and a plan task, unless the answer holds
+ *  one as an ancestor of a row, which is drawn whole with its kind. A constraint is a line on each
+ *  requirement it constrains, and no step drafts one (`tree-read/tree-nodes.ts`). */
+const NO_CONVERSATION_ROW: readonly NodeType[] = ["plan_task", "result"];
+
+/** The kinds of a turn of the conversation, which a message's thread holds under it. */
+const TURN_KINDS: readonly NodeType[] = ["comment", "message"];
+
+/**
+ * The page with no filter on, or Graph: the whole tree but the memo, or under a words filter each
+ * match with the chain above it as context. In Conversation (`conversation`), which draws
+ * Conversation's read and nothing else (R9), a result and a plan task are no row
+ * (`NO_CONVERSATION_ROW`) but where a row stands under one or the address names it, and a message
+ * under which a node it produced stands - any node but a turn of its thread - is one context row
+ * with its kind. Graph draws every node of the tree as a row.
+ */
 function conversationView(
   root: TreeNode,
   wanted: string,
   named: ReadonlySet<string>,
-  memo: string | undefined
+  memo: string | undefined,
+  conversation: boolean
 ): PresetView {
   const context = new Set<string>();
   const matched = new Set<string>();
@@ -211,10 +236,25 @@ function conversationView(
     const children = node.children
       .map(prune)
       .filter((child): child is TreeNode => child !== undefined);
+    if (
+      conversation &&
+      NO_CONVERSATION_ROW.includes(node.type) &&
+      children.length === 0 &&
+      !named.has(node.id)
+    ) {
+      return undefined;
+    }
     const own = named.has(node.id) || holds(node, wanted);
     if (!own && children.length === 0) return undefined;
     if (own) matched.add(node.id);
     else context.add(node.id);
+    if (
+      conversation &&
+      node.type === "message" &&
+      children.some((child) => !TURN_KINDS.includes(child.type))
+    ) {
+      context.add(node.id);
+    }
     return { ...node, children, held: heldBy(children) };
   };
   const filtering = wanted !== "";

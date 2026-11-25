@@ -83,7 +83,7 @@ test("the body and a second caller of the outline's reads send each read once an
     defaultOptions: { queries: { retry: false, staleTime: 30_000 } },
   });
   const reads = {
-    asks: spyOn(api, "listIssueAsks").mockResolvedValue([] as never),
+    asks: spyOn(api, "listIssueAskThreads").mockResolvedValue([] as never),
     comments: spyOn(api, "listComments").mockResolvedValue(TWO_THREADS as never),
     coverage: spyOn(api, "getIssueCoverage").mockResolvedValue({ requirements: [] } as never),
     decisions: spyOn(api, "getIssueDecisions").mockResolvedValue(decisionsRead([])),
@@ -185,7 +185,7 @@ test("the outline's reads are settled once each read and the tree read have answ
     const messages = Promise.withResolvers<never[]>();
     const tree = Promise.withResolvers<TreeAnswer>();
     const spies = [
-      spyOn(api, "listIssueAsks").mockResolvedValue([] as never),
+      spyOn(api, "listIssueAskThreads").mockResolvedValue([] as never),
       spyOn(api, "listComments").mockResolvedValue(TWO_THREADS as never),
       spyOn(api, "getIssueCoverage").mockResolvedValue({ requirements: [] } as never),
       spyOn(api, "getIssueDecisions").mockResolvedValue(decisionsRead([])),

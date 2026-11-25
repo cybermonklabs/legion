@@ -60,7 +60,7 @@ The view row is one line at every width.
 
 /** What the seed below gives each control of the view row to count: no question and no thread
  *  of the reader's, two statements, one check, no plan and no decision. */
-const SEEDED_COUNTS: Readonly<Record<Preset, number>> = {
+const SEEDED_COUNTS: Readonly<Partial<Record<Preset, number>>> = {
   conversation: 0,
   decisions: 0,
   plan: 0,

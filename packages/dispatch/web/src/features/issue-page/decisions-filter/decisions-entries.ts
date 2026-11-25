@@ -10,7 +10,7 @@ import { decisionChanges } from "../decision-review";
 import type { TreeNode } from "../issue-tree";
 import { treeContext } from "../tree-drafts";
 import { nodesInOrder } from "../tree-keys";
-import { issueAsksQuery, issueCommentsQuery } from "../useIssueTree";
+import { issueAskThreadsQuery, issueCommentsQuery } from "../useIssueTree";
 import {
   askIdOf,
   type DecisionsEntry,
@@ -29,7 +29,7 @@ import {
  *
  * The reads are the ones the page's tree is built from: the three reads the tree reads, under
  * the keys `useIssueTree.ts` reads them by, the asks by the tree's own definition of that read
- * (`issueAsksQuery`), so the view adds no request of its own. Each takes the tree's freshness
+ * (`issueAskThreadsQuery`), so the view adds no request. Each takes the tree's freshness
  * too (`EVENT_FRESH`), whose own doc gives the reason. No document's blocks are read, as the
  * tree reads none: a Change stands under the first decision whose words hold its quote
  * (`decision-review.ts`). A read that holds no decisions, or that has not answered yet, gives no
@@ -132,7 +132,7 @@ export function useDecisionsEntries({
 }): DecisionsEntries {
   const decisionsRead = useQuery({ ...issueDecisionsQuery(issue.key, true), ...EVENT_FRESH });
   const decisions = decisionsRead.data;
-  const asksRead = useQuery({ ...issueAsksQuery(issue.key), ...EVENT_FRESH });
+  const asksRead = useQuery({ ...issueAskThreadsQuery(issue.key), ...EVENT_FRESH });
   const asks = asksRead.data;
   // The issue's comments, which hold the changes a person asked of a decision
   // (`decision-review.ts`), under the key the tree reads them by (`issueCommentsQuery`).

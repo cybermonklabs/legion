@@ -97,10 +97,10 @@ function toggled(key: string, view: Preset, active: Preset): string {
  * The chords of the view row, which are the `t` table of the spec's Design section for the five
  * views. Each one opens an address and puts the focus in what that address draws.
  *
- * `t s`, `t k`, `t p` and `t d` toggle the Spec, Verification, Plan and Decisions views, and
- * `t c` is the conversation, the page with every view off; each leaves the focus in the
- * outline. A label names what the chord does on this page, in the view row's own names
- * (`PRESET_NAMES`).
+ * `t s`, `t k`, `t p` and `t d` toggle the Spec, Verification, Plan and Decisions views, `t g`
+ * toggles Graph, the whole tree read (R10), and `t c` is the conversation, the page with every
+ * view off; each leaves the focus in the outline. A label names what the chord does on this
+ * page, in the view row's own names (`PRESET_NAMES`).
  */
 const CHORDS: readonly {
   keys: string;
@@ -108,8 +108,9 @@ const CHORDS: readonly {
   /** The address the chord opens from the view on. */
   path: (key: string, active: Preset) => string;
   part: keyof typeof PARTS;
-  /** What names the binding, which is the tab the address was that tab's. */
-  tab: IssueTab;
+  /** What names the binding, which is the tab the address was that tab's, and Graph's own name
+   *  for Graph, which was no tab. */
+  tab: IssueTab | "graph";
 }[] = [
   {
     keys: "t s",
@@ -147,6 +148,13 @@ const CHORDS: readonly {
     part: "tree",
     path: (key) => presetPath(key, "conversation"),
     tab: "conversation",
+  },
+  {
+    keys: "t g",
+    label: `Turn ${PRESET_NAMES.graph} on or off`,
+    part: "tree",
+    path: (key, active) => toggled(key, "graph", active),
+    tab: "graph",
   },
 ];
 

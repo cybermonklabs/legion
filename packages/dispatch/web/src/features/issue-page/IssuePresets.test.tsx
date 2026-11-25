@@ -13,7 +13,7 @@ import { presetPath } from "./issue-address";
 import { PRESET_NAMES, PRESET_ORDER, type Preset } from "./page-words";
 import type { PresetSignal } from "./presets";
 
-const SIGNALS: Readonly<Record<Preset, PresetSignal>> = {
+const SIGNALS: Readonly<Partial<Record<Preset, PresetSignal>>> = {
   conversation: { count: 0 },
   decisions: { count: 0 },
   plan: { count: 0 },
@@ -62,10 +62,12 @@ test("the one control is a menu button: Enter, Space, Down and Up open it on the
       ["{ArrowDown}", "verification"],
       ["{ArrowDown}", "plan"],
       ["{ArrowDown}", "decisions"],
+      ["{ArrowDown}", "graph"],
       ["{ArrowDown}", "conversation"],
-      ["{ArrowUp}", "decisions"],
+      ["{ArrowUp}", "graph"],
       ["{Home}", "conversation"],
-      ["{End}", "decisions"],
+      ["{End}", "graph"],
+      ["{ArrowUp}", "decisions"],
       ["{ArrowUp}", "plan"],
     ] as const) {
       await user.keyboard(key);

@@ -12,6 +12,7 @@ import {
 } from "@tanstack/react-query";
 import { act, render, waitFor } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
+import { http } from "msw";
 import { type CSSProperties, type ReactNode, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { MemoryRouter, type NavigateFunction, useLocation, useNavigate } from "react-router-dom";
@@ -21,6 +22,7 @@ import * as Y from "yjs";
 import { correction } from "../../__tests__/correction-feed";
 import { displayTree } from "../../__tests__/display-trees";
 import { jump, realClock } from "../../__tests__/fake-clock";
+import { answerRequests } from "../../__tests__/network";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api } from "../../api/client";
 import { markCorrectedPost } from "../../api/corrected-post";
@@ -90,7 +92,13 @@ import { SLOT_FILLED, StageSlot, VIEW_SLOTS, type ViewSlots } from "./slots/stag
 import { addressesAsShortForms } from "./tree-drafts";
 import { TAB_STOP_ROW } from "./tree-focus";
 import { commentNode, treeAnswer, treeNode } from "./tree-read/tree-fixtures";
-import { issueTreeQuery, type TreeAnswer, type TreeAnswerNode } from "./tree-read/tree-read";
+import {
+  issueTreeQuery,
+  outlineQuery,
+  type TreeAnswer,
+  type TreeAnswerNode,
+} from "./tree-read/tree-read";
+import { issueAskThreadsQuery } from "./useIssueTree";
 import type { OnEditing, OnEditor } from "./useNodeEditing";
 import { overflowing } from "./words-scroll-fixtures";
 
@@ -442,6 +450,7 @@ function renderPageTree(root: TreeNode, reader = "alice") {
   client.setQueryData(["whoami"], { kind: "user", login: reader });
   // The writer's own reads, answered empty, so it asks the network for nothing.
   for (const read of ["asks", "comments", "issue-messages"]) client.setQueryData([read, KEY], []);
+  client.setQueryData(issueAskThreadsQuery(KEY).queryKey, []);
   const held: PageHold = {};
   const draw = (drawn: TreeNode) => (
     <MemoryRouter>
@@ -8815,9 +8824,14 @@ function seedBodyReads(
   client.setQueryData(issueResultsQuery(KEY).queryKey, { checks: [] } as never);
   client.setQueryData(["decisions", KEY], decisionsRead([]));
   client.setQueryData(["asks", KEY], []);
+  client.setQueryData(issueAskThreadsQuery(KEY).queryKey, []);
   if (comments !== undefined) client.setQueryData(["comments", KEY], comments);
   client.setQueryData(["issue-messages", KEY], []);
   client.setQueryData(issueTreeQuery(KEY).queryKey, treeReadOf(comments ?? [], nodes));
+  client.setQueryData(
+    outlineQuery(KEY, "conversation").queryKey,
+    treeReadOf(comments ?? [], nodes)
+  );
 }
 
 /** The tree read's answer for an issue that holds `comments`, `nodes` and nothing else, as
@@ -8937,7 +8951,7 @@ const STEP_WORDS = "Hang the lanterns first.";
 // the matching rows in the line's place. Under one the body draws that line only once the names
 // are held, and nothing in its place before. The tree read now answers the step with its words;
 // the names read is not given its address, and names the issue's own key, which the root's words
-// write.
+// write. The step is drawn in Graph, the outline that draws a plan task as a row (R9, R10).
 test("under a words filter the outline does not say nothing holds the words while the names read is out, and draws the rows that match them once it has answered", async () => {
   setViewport(1440);
   // The names read, held out until the case answers it with the step's words.
@@ -8945,7 +8959,7 @@ test("under a words filter the outline does not say nothing holds the words whil
   const names = spyOn(api, "getReferenceTargets").mockReturnValue(held.promise);
   try {
     const { view } = renderAddressedBody(
-      `${buildIssuePath({ key: KEY, kind: "issue" })}?q=lanterns`,
+      `${buildIssuePath({ key: KEY, kind: "graph" })}?q=lanterns`,
       [],
       BodySlot,
       { issue: issueDetails(), nodes: [specStep(STEP_WORDS)] }
@@ -9086,7 +9100,7 @@ test("the outline mounted again past 30 s reads none of the reads it waits on ag
     spyOn(api, "getIssueCoverage").mockResolvedValue({ requirements: [] } as never),
     spyOn(api, "getIssueDecisions").mockResolvedValue(decisionsRead([])),
     spyOn(api, "getIssueResults").mockResolvedValue({ checks: [] } as never),
-    spyOn(api, "listIssueAsks").mockResolvedValue([] as never),
+    spyOn(api, "listIssueAskThreads").mockResolvedValue([] as never),
     spyOn(api, "listComments").mockResolvedValue([] as never),
     spyOn(api, "listIssueMessages").mockResolvedValue([] as never),
     spyOn(api, "getIssueTree").mockResolvedValue(treeAnswer([])),
@@ -9184,6 +9198,13 @@ function renderAddressedBody(
   });
   seedBodyReads(client, { comments, nodes });
   for (const queryKey of unread) client.removeQueries({ queryKey });
+  // The view reads a load of the stage sends with it, Plan's among them (`ViewReadProvider`),
+  // answered with no node.
+  answerRequests(
+    http.get("/api/v1/issues/:key/tree", ({ request }) =>
+      new URL(request.url).searchParams.has("view") ? Response.json(treeAnswer([])) : undefined
+    )
+  );
   const held: { navigate?: NavigateFunction } = {};
   let drawn = issue;
   const draw = () => (
@@ -9401,7 +9422,10 @@ test("an item's failed line stays drawn, with the focus on it and the same alert
     // decision being a block of the spec.
     body.redraw(issueDetails());
     await act(async () => {
-      void body.client.resetQueries({ exact: true, queryKey: issueTreeQuery(KEY).queryKey });
+      void body.client.resetQueries({
+        exact: true,
+        queryKey: outlineQuery(KEY, "conversation").queryKey,
+      });
     });
     await waitFor(() =>
       expect(tree, "the tree was never read again for the added document").toHaveBeenCalled()
@@ -9733,7 +9757,7 @@ test("a line drawn after the reader's row left the outline and they pressed a co
     // The outline draws its turns from the tree read, so every comment leaves the tree read too.
     await act(async () => {
       body.client.setQueryData(["comments", KEY], []);
-      body.client.setQueryData(issueTreeQuery(KEY).queryKey, treeReadOf([]));
+      body.client.setQueryData(outlineQuery(KEY, "conversation").queryKey, treeReadOf([]));
     });
     await waitFor(() => expect(rowsFor(container, moved)).toEqual([]));
     expect(body.view.queryByRole("tree"), "the outline left the page with the row").not.toBeNull();
@@ -10092,7 +10116,7 @@ test("a failed asks read draws its line over the tree and opens the page on its 
   setViewport(1440);
   const user = userEvent.setup();
   const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
-  const asks = spyOn(api, "listIssueAsks").mockResolvedValue([WAITING_QUESTION] as never);
+  const asks = spyOn(api, "listIssueAskThreads").mockResolvedValue([WAITING_QUESTION] as never);
   asks.mockRejectedValueOnce(serverDown());
   const messages = spyOn(api, "listIssueMessages").mockResolvedValue([] as never);
   try {
@@ -10157,7 +10181,7 @@ test("a failed read's line stays drawn, busy, with the focus on its Retry while 
   setViewport(1440);
   const user = userEvent.setup();
   const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
-  const asks = spyOn(api, "listIssueAsks").mockResolvedValue([WAITING_QUESTION] as never);
+  const asks = spyOn(api, "listIssueAskThreads").mockResolvedValue([WAITING_QUESTION] as never);
   asks.mockRejectedValueOnce(serverDown());
   const messages = spyOn(api, "listIssueMessages").mockResolvedValue([] as never);
   try {
@@ -10242,7 +10266,7 @@ test("a failed read's line stays drawn, busy, with the focus on its Retry while 
 test("a read whose refresh failed while it holds its answer draws no line, and a page opened after that opens on the question", async () => {
   setViewport(1440);
   const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
-  const asks = spyOn(api, "listIssueAsks").mockResolvedValue([WAITING_QUESTION] as never);
+  const asks = spyOn(api, "listIssueAskThreads").mockResolvedValue([WAITING_QUESTION] as never);
   const messages = spyOn(api, "listIssueMessages").mockResolvedValue([] as never);
   try {
     const body = renderAddressedBody(`/issues/${KEY}`, TWO_THREADS, StageSlot, {
@@ -10262,9 +10286,10 @@ test("a read whose refresh failed while it holds its answer draws no line, and a
     await act(async () => {
       await body.client.invalidateQueries({ queryKey: ["asks", KEY] });
     });
-    expect(body.client.getQueryState(["asks", KEY])?.status, "the asks' refresh did not fail").toBe(
-      "error"
-    );
+    expect(
+      body.client.getQueryState(issueAskThreadsQuery(KEY).queryKey)?.status,
+      "the asks' refresh did not fail"
+    ).toBe("error");
     expect(
       body.view.container.querySelectorAll("[data-failed-read]").length,
       "the asks' refresh that failed drew a line, though the read holds its answer"
@@ -10318,7 +10343,7 @@ function failedLineSaying(container: HTMLElement, message: string): HTMLElement 
 test("a failed results read draws its line over the tree, and the page opens on the question that waits", async () => {
   setViewport(1440);
   const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
-  const asks = spyOn(api, "listIssueAsks").mockResolvedValue([WAITING_QUESTION] as never);
+  const asks = spyOn(api, "listIssueAskThreads").mockResolvedValue([WAITING_QUESTION] as never);
   const results = spyOn(api, "getIssueResults").mockRejectedValue(serverDown());
   try {
     const { view } = renderAddressedBody(`/issues/${KEY}`, TWO_THREADS, StageSlot, {
@@ -10362,7 +10387,7 @@ test("a failed results read draws its line over the tree, and the page opens on 
 test("with the asks and the results reads failed, the page opens on the asks' Retry", async () => {
   setViewport(1440);
   const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
-  const asks = spyOn(api, "listIssueAsks").mockRejectedValue(serverDown());
+  const asks = spyOn(api, "listIssueAskThreads").mockRejectedValue(serverDown());
   const results = spyOn(api, "getIssueResults").mockRejectedValue(serverDown());
   try {
     const { view } = renderAddressedBody(`/issues/${KEY}`, TWO_THREADS, StageSlot, {
@@ -10403,7 +10428,7 @@ test("with the asks and the results reads failed, the page opens on the asks' Re
 test("with the asks read failed, the page opens on a question that waits on the reader from the issue's own read, not on the asks' Retry", async () => {
   setViewport(1440);
   const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
-  const asks = spyOn(api, "listIssueAsks").mockRejectedValue(serverDown());
+  const asks = spyOn(api, "listIssueAskThreads").mockRejectedValue(serverDown());
   const issue: IssueDetails = {
     ...issueDetails(),
     artifacts: [],
@@ -10448,7 +10473,7 @@ test("with the asks read failed, the page opens on a question that waits on the 
 test("a failed asks read that answers with a question that waits before its Retry's frame hands the opening on to the question, not to another failed read's Retry", async () => {
   setViewport(1440);
   const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
-  const asks = spyOn(api, "listIssueAsks").mockRejectedValue(serverDown());
+  const asks = spyOn(api, "listIssueAskThreads").mockRejectedValue(serverDown());
   const results = spyOn(api, "getIssueResults").mockRejectedValue(serverDown());
   const frames = framesByHand();
   try {
@@ -10505,7 +10530,7 @@ test("a failed comments read opens the page on its Retry where no question waits
   setViewport(1440);
   const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
   const elsewhere = { ...WAITING_QUESTION, waiting_on_person: "bob" };
-  const asks = spyOn(api, "listIssueAsks").mockResolvedValue([elsewhere] as never);
+  const asks = spyOn(api, "listIssueAskThreads").mockResolvedValue([elsewhere] as never);
   const comments = spyOn(api, "listComments").mockRejectedValue(serverDown());
   try {
     const { view } = renderAddressedBody(`/issues/${KEY}`, undefined, StageSlot, {
@@ -10547,7 +10572,7 @@ test("a failed names read's line stays drawn, with the focus on its Retry, while
   setViewport(1440);
   const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
   names.mockRejectedValueOnce(serverDown());
-  const asks = spyOn(api, "listIssueAsks").mockRejectedValueOnce(serverDown());
+  const asks = spyOn(api, "listIssueAskThreads").mockRejectedValueOnce(serverDown());
   const out = Promise.withResolvers<never>();
   try {
     const body = renderAddressedBody(`/issues/${KEY}`, TWO_THREADS, StageSlot, {
@@ -10582,7 +10607,7 @@ test("a failed names read's line stays drawn, with the focus on its Retry, while
       OWN_WORDS
     );
     expect(
-      body.client.getQueryState(["asks", KEY])?.status,
+      body.client.getQueryState(issueAskThreadsQuery(KEY).queryKey)?.status,
       "the asks read running again is not pending"
     ).toBe("pending");
     await framesPass();
@@ -10622,7 +10647,7 @@ test("a failed names read's line stays drawn, with the focus on its Retry, while
 test("a failed names read's line stays drawn, with the focus on its Retry, while the names are read under the addresses a recovered read brought", async () => {
   setViewport(1440);
   const names = spyOn(api, "getReferenceTargets").mockRejectedValue(serverDown());
-  const asks = spyOn(api, "listIssueAsks").mockRejectedValueOnce(serverDown());
+  const asks = spyOn(api, "listIssueAskThreads").mockRejectedValueOnce(serverDown());
   const asksOut = Promise.withResolvers<never>();
   const namesOut = Promise.withResolvers<never>();
   try {
@@ -10896,7 +10921,10 @@ test("the line that the issue has no children stays drawn, with the focus on it,
     // decision being a block of the spec.
     body.redraw(issueDetails());
     await act(async () => {
-      void body.client.resetQueries({ exact: true, queryKey: issueTreeQuery(KEY).queryKey });
+      void body.client.resetQueries({
+        exact: true,
+        queryKey: outlineQuery(KEY, "conversation").queryKey,
+      });
     });
     await waitFor(() =>
       expect(tree, "the tree was never read again for the added document").toHaveBeenCalled()
@@ -10949,7 +10977,7 @@ test("a comment the address landed on that leaves the tree leaves the outline dr
     const without = TWO_THREADS.filter((comment) => comment.id !== "reply-b");
     await act(async () => {
       body.client.setQueryData(["comments", KEY], without);
-      body.client.setQueryData(issueTreeQuery(KEY).queryKey, treeReadOf(without));
+      body.client.setQueryData(outlineQuery(KEY, "conversation").queryKey, treeReadOf(without));
     });
     await waitFor(() => expect(rowsFor(container, "reply-b")).toEqual([]));
     // Long enough for a read of the comment to have answered.
@@ -10996,7 +11024,7 @@ async function dropFocusedComment(
   const without = THREE_COMMENTS.filter((comment) => comment.id !== dropped);
   await act(async () => {
     body.client.setQueryData(["comments", KEY], without);
-    body.client.setQueryData(issueTreeQuery(KEY).queryKey, treeReadOf(without));
+    body.client.setQueryData(outlineQuery(KEY, "conversation").queryKey, treeReadOf(without));
   });
   await waitFor(() => expect(rowsFor(container, dropped)).toEqual([]));
   return { container, unmount: body.view.unmount };
@@ -11573,7 +11601,10 @@ test("a comment's row drawn after the reader acted since following its address m
       // The outline draws its turns from the tree read, which answers the comment with them.
       await act(async () => {
         answer.resolve([...TWO_THREADS]);
-        body.client.setQueryData(issueTreeQuery(KEY).queryKey, treeReadOf(TWO_THREADS));
+        body.client.setQueryData(
+          outlineQuery(KEY, "conversation").queryKey,
+          treeReadOf(TWO_THREADS)
+        );
       });
       await waitFor(() => expect(rowsFor(body.view.container, "reply-b")).not.toEqual([]));
       await nextFrame();

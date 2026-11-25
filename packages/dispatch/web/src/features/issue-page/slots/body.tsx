@@ -88,9 +88,12 @@ export function BodySlot({ acts: given, issue, route }: BodySlotProps): ReactNod
   );
   const named = ancestorNamed ?? addressed.named;
   const memo = useMemo(() => specSummary(root, specSlug ?? "")?.id, [root, specSlug]);
+  // Graph draws the outline from Graph's read whole (`slots/view-graph.tsx`); every other
+  // address draws Conversation, the page with no filter on.
+  const outline = address.preset === "graph" ? "graph" : "conversation";
   const view = useMemo(
-    () => presetView(root, "conversation", address.filter, named, memo),
-    [address.filter, memo, named, root]
+    () => presetView(root, outline, address.filter, named, memo),
+    [address.filter, memo, named, outline, root]
   );
   const artifacts = useMemo(() => artifactsBySlug(issue), [issue]);
   const request = useOutlineRequest();
@@ -153,7 +156,7 @@ export function BodySlot({ acts: given, issue, route }: BodySlotProps): ReactNod
             context={view.context}
             emptyLine={
               address.filter === ""
-                ? EMPTY_STATE_LINES.conversation
+                ? EMPTY_STATE_LINES[outline]
                 : namesHeld
                   ? EMPTY_STATE_LINES.no_match
                   : undefined
@@ -172,6 +175,7 @@ export function BodySlot({ acts: given, issue, route }: BodySlotProps): ReactNod
             reveal={ancestor ?? addressed.reveal}
             root={view.root}
             rootRow={view.rootRow}
+            {...(address.zoom === undefined ? {} : { zoomAt: address.zoom })}
           />
         )}
       </div>

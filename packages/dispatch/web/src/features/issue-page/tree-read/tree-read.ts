@@ -1,17 +1,28 @@
 import {
   focusManager,
+  hashKey,
   matchQuery,
   type Query,
   type QueryClient,
   type QueryFilters,
+  type QueryFunctionContext,
   queryOptions,
   useQuery,
+  useQueryClient,
 } from "@tanstack/react-query";
-import { useMemo } from "react";
+import { useCallback, useMemo } from "react";
+import { useLocation } from "react-router-dom";
 
 import { api } from "../../../api/client";
 import { liveFeedUp, onLiveFeedBack } from "../../../api/live-socket";
-import { issueTreeKey, TREE_FILTERS, type TreeFilter } from "../../../api/queries";
+import type { Query as RouteQuery } from "../../../api/paths";
+import {
+  CONVERSATION_KINDS,
+  conversationTreeKey,
+  issueTreeKey,
+  TREE_FILTERS,
+  type TreeFilter,
+} from "../../../api/queries";
 import { type RefreshTarget, refreshQueries } from "../../../api/query-refresh";
 import type {
   IssueDetails,
@@ -21,8 +32,20 @@ import type {
 } from "../../../api/types";
 import { issueDecisionsQuery } from "../../doc/spec-marks";
 import { EVENT_FRESH } from "../../refs/reference-target";
+import { parseIssuePath } from "../../refs/routes";
 import { writesOf } from "../../writes/write-store";
-import { blocksOfRole, mergeTreePages, nextTreeCursor, type TreeBlock } from "./tree-nodes";
+import { issueAddress } from "../issue-address";
+import type { Preset } from "../page-words";
+import { isFilter } from "../presets";
+import {
+  blocksOfRole,
+  compareCommentPositions,
+  mergeCommentPage,
+  mergeTreePages,
+  nextTreeCursor,
+  olderCommentsBefore,
+  type TreeBlock,
+} from "./tree-nodes";
 
 /**
  * The issue's tree read (`GET /api/v1/issues/{key}/tree`), which the model serves: the one file
@@ -78,45 +101,121 @@ export function dropViews(queryClient: QueryClient, key: string): void {
   }
 }
 
+/** The page's two outlines (R1, R10): Conversation, which draws Conversation's read - the tree
+ *  read with `kind` repeated for `CONVERSATION_KINDS` - and Graph, which draws the tree read with
+ *  no view. Each outline's read stands under a key of its own, both under the tree's
+ *  (`issueTreeKey`), so every event of the issue reaches both. */
+export type Outline = "conversation" | "graph";
+
+/** The tree route's query as the page writes it: the route's own (`view`, `cursor`,
+ *  `comments_before`), with `kind`, the filter by node kind, which the generated contract does not
+ *  name yet. `routeUrl` writes a list as one `kind=` per value (`paths.ts`' `pathWithQuery`). */
+type TreeQuery = RouteQuery<"/api/v1/issues/{key}/tree", "get"> & {
+  readonly kind?: readonly string[];
+};
+
+/** What each outline's read asks the route for, beside a page's `cursor` or `comments_before`. */
+const OUTLINE_QUERIES: Readonly<Record<Outline, TreeQuery>> = {
+  conversation: { kind: CONVERSATION_KINDS },
+  graph: {},
+};
+
+/** How far back the older comment pages the reader loaded into an outline read reach, by the
+ *  read's query: the `comments_before` its answer held once the last of them was merged, or null
+ *  where no older comment remained. A read with no older page loaded has none. The mark is the
+ *  query's, not its answer's: the cache keeps a copy of each answer it is given (TanStack's
+ *  structural sharing), so a read made again finds it, and reads as far back again (`readTree`).
+ *  Held as plain objects, as `heldByWrites` is. */
+const commentPagesOf = new WeakMap<object, { readonly reached: string | null }>();
+
 /**
- * Every page of the tree read, or of one view, asked for in turn: the first, then each next page
- * the page before names (`nextTreeCursor`), and the pages merged once the last answers, so the
- * tree is built once and never from part of the walk. A cursor the walk has asked for already
- * fails the read with an error that names it: the server named one page twice, so the pages past
- * it are missing, and the walk neither answers the pages it read as the whole tree nor asks
- * without end. A page that fails fails the read too. A failure of the tree read with no answer
- * held draws the outline's failed-read line and its Retry, and a view's leaves its filter drawn
- * off the tree (`presets.ts`' `presetView`); over a held answer the page keeps that answer, as
- * TanStack keeps a query's data through a failed refetch. A read made again - a refetch, a retry -
- * starts from the first page, since a cursor names a place in the walk as it stood when the page
- * that gave it was answered. A read TanStack gives up (`signal`: a reset, the last observer gone)
- * ends its page in flight and asks for no next one. It waits for nothing before its first page:
- * what holds a refresh back while a write of the issue is out is the query's `enabled`
- * (`TREE_FRESH`), so a read that is begun is sent.
+ * Every page of the tree read, of Conversation's read or of one view, asked for in turn: the
+ * first, then each next page the page before names (`nextTreeCursor`), and the pages merged once
+ * the last answers, so the tree is built once and never from part of the walk. A cursor the walk
+ * has asked for already fails the read with an error that names it: the server named one page
+ * twice, so the pages past it are missing, and the walk neither answers the pages it read as the
+ * whole tree nor asks without end. A page that fails fails the read too. A failure of the tree
+ * read with no answer held draws the outline's failed-read line and its Retry, and a view's leaves
+ * its filter drawn off the tree (`presets.ts`' `presetView`); over a held answer the page keeps
+ * that answer, as TanStack keeps a query's data through a failed refetch. A read made again - a
+ * refetch, a retry - starts from the first page, since a cursor names a place in the walk as it
+ * stood when the page that gave it was answered, and an outline read then reads again the older
+ * comment pages its answer had loaded (`withLoadedComments`). A read TanStack gives up (`signal`:
+ * a reset, the last observer gone) ends its page in flight and asks for no next one. It waits for
+ * nothing before its first page: what holds a refresh back while a write of the issue is out is
+ * the query's `enabled` (`TREE_FRESH`), so a read that is begun is sent.
  */
 async function readTree(
   key: string,
-  view: TreeFilter | undefined,
-  signal: AbortSignal
+  query: TreeQuery,
+  { client, queryKey, signal }: Pick<QueryFunctionContext, "client" | "queryKey" | "signal">
 ): Promise<TreeAnswer> {
-  const first = await api.getIssueTree(key, { view }, { signal });
+  const first = await api.getIssueTree(key, query, { signal });
   const pages: [TreeAnswer, ...TreeAnswer[]] = [first];
   const asked = new Set<string>();
   let cursor = nextTreeCursor(first);
   while (cursor !== undefined) {
     if (asked.has(cursor)) {
-      const read = view === undefined ? `The tree read of ${key}` : `The ${view} view of ${key}`;
       throw new Error(
-        `${read} named the cursor "${cursor}" twice, so the pages after it are missing.`
+        `${readName(key, query)} named the cursor "${cursor}" twice, so the pages after it are missing.`
       );
     }
     asked.add(cursor);
     signal.throwIfAborted();
-    const page = await api.getIssueTree(key, { cursor, view }, { signal });
+    const page = await api.getIssueTree(key, { ...query, cursor }, { signal });
     pages.push(page);
     cursor = nextTreeCursor(page);
   }
-  return mergeTreePages(pages);
+  const merged = mergeTreePages(pages);
+  return query.view === undefined
+    ? withLoadedComments(key, query, merged, { client, queryKey, signal })
+    : merged;
+}
+
+/** The read `query` asks for, as its failure names it. */
+function readName(key: string, query: TreeQuery): string {
+  if (query.view !== undefined) return `The ${query.view} view of ${key}`;
+  return query.kind === undefined ? `The tree read of ${key}` : `Conversation's read of ${key}`;
+}
+
+/**
+ * `answer`, an outline read's first pages read again, with each older comment page the reader had
+ * loaded into its query (`commentPagesOf`) read again too (R6, R15): from the new answer's own
+ * `comments_before`, page by page, until it reaches as far back as those pages did, or, where they
+ * held every older comment, until none remains. So a refetch after a write keeps every older
+ * comment the reader had loaded. It looks at the mark again after each page, so a page the
+ * reader's press merged while this read was out is read too. A position the walk has read already
+ * fails the read, naming it, as a cursor named twice does. A query with no older page loaded
+ * reads none: the page reads an older page only where the reader asked for one.
+ */
+async function withLoadedComments(
+  key: string,
+  query: TreeQuery,
+  answer: TreeAnswer,
+  { client, queryKey, signal }: Pick<QueryFunctionContext, "client" | "queryKey" | "signal">
+): Promise<TreeAnswer> {
+  const held = client.getQueryCache().find({ exact: true, queryKey });
+  let merged = answer;
+  const asked = new Set<string>();
+  for (;;) {
+    const loaded = held === undefined ? undefined : commentPagesOf.get(held);
+    const before = olderCommentsBefore(merged);
+    if (loaded === undefined || before === undefined) break;
+    if (loaded.reached !== null && compareCommentPositions(before, loaded.reached) <= 0) break;
+    if (asked.has(before)) {
+      throw new Error(
+        `${readName(key, query)} named the comment page "${before}" twice, so the older comments are missing.`
+      );
+    }
+    asked.add(before);
+    signal.throwIfAborted();
+    const page = await api.getIssueTree(key, { ...query, comments_before: before }, { signal });
+    merged = mergeCommentPage(merged, page);
+  }
+  if (held !== undefined && merged !== answer) {
+    commentPagesOf.set(held, { reached: olderCommentsBefore(merged) ?? null });
+  }
+  return merged;
 }
 
 /** Whether a new observer of the tree or of a view may read it (`TREE_FRESH`): where its last
@@ -181,12 +280,24 @@ const TREE_FRESH = {
   retryOnMount: mayReadOnMount,
 } as const;
 
-/** The issue's whole tree, one query over every page (`readTree`). */
+/** The issue's whole tree, one query over every page (`readTree`): Graph's read (R10), the tree
+ *  read with no view. */
 export const issueTreeQuery = (key: string) =>
   queryOptions({
     ...TREE_FRESH,
     queryKey: issueTreeKey(key),
-    queryFn: ({ signal }) => readTree(key, undefined, signal),
+    queryFn: (context) => readTree(key, OUTLINE_QUERIES.graph, context),
+  });
+
+/** The read of `outline`, one query over every page (`readTree`): Graph's under the tree's own
+ *  key (`issueTreeQuery`), Conversation's under its own (`conversationTreeKey`), the kinds it
+ *  names the last member of its key, in their one order, so its key is the same in every load.
+ *  Both are kept fresh as the tree read is (`TREE_FRESH`, `subscribeTreeFreshness`). */
+export const outlineQuery = (key: string, outline: Outline) =>
+  queryOptions({
+    ...TREE_FRESH,
+    queryKey: outline === "graph" ? issueTreeKey(key) : conversationTreeKey(key),
+    queryFn: (context) => readTree(key, OUTLINE_QUERIES[outline], context),
   });
 
 /** One view of the issue's tree, one query over every page (`readTree`). A plain query rather
@@ -199,8 +310,87 @@ export const viewQuery = (key: string, filter: TreeFilter) =>
   queryOptions({
     ...TREE_FRESH,
     queryKey: viewKey(key, filter),
-    queryFn: ({ signal }) => readTree(key, filter, signal),
+    queryFn: (context) => readTree(key, { view: filter }, context),
   });
+
+/** Which outline read a load of `preset` holds (R1, R4, R13): Graph's in Graph (R10),
+ *  Conversation's in Conversation and beside each filter, where the Contents list reads it, and
+ *  neither in any other view: Dashboard, Threads and Documents, which their own parts add to the
+ *  row, hold none and need no line here. */
+export function outlineOf(preset: Preset): Outline | undefined {
+  if (preset === "graph") return "graph";
+  return preset === "conversation" || isFilter(preset) ? "conversation" : undefined;
+}
+
+/**
+ * Which outline read the page holds, as the view of the address the router is at chooses it
+ * (`outlineOf`). Every reader of the outline - the model (`useIssueTree`), the header's count,
+ * the view row's counts, the Contents list, the stage's views, the refused read's line
+ * (`TreeReadFailed`) - reads the address itself (`useOutlineChoice`) and so the one read it
+ * holds, and a load sends that read once and no other. No provider stands around the slots for
+ * it: the one thing the readers share, whether Conversation's read is sent on Spec, is the query
+ * cache's (`outlineBegun`).
+ */
+interface OutlineChoice {
+  /** The filter on where it reads a view of the tree, whose view read holds that role's blocks
+   *  (`TreeRead.blocksOf`); undefined in every other view. */
+  readonly filter: TreeFilter | undefined;
+  /** The outline whose read the page holds, or undefined where the view the address draws holds
+   *  neither. */
+  readonly outline: Outline | undefined;
+  /** Whether a reader sends that read with the load: Graph's in Graph, and Conversation's in
+   *  every view that holds it but Spec, whose own view read holds the memo and the statements the
+   *  view draws. On Spec the stage sends it from 1024 px up, where the Contents pane beside the
+   *  view reads it (`ViewReadProvider`), and the Outline sheet below as it opens
+   *  (`useStartOutlineRead`); each reader watches it, sending nothing, until one of them has. */
+  readonly sends: boolean;
+}
+
+/** The outline read of the address the router is at (`OutlineChoice`): a route the issue page
+ *  does not read (`parseIssuePath`) is the page with no filter on. */
+function useOutlineChoice(): OutlineChoice {
+  const { pathname, search } = useLocation();
+  const route = parseIssuePath(pathname, search);
+  const preset =
+    route === undefined ? "conversation" : issueAddress(route, "", "", undefined).preset;
+  const outline = outlineOf(preset);
+  return {
+    filter: TREE_FILTERS.find((filter) => filter === preset),
+    outline,
+    sends: outline === "graph" || (outline === "conversation" && preset !== "spec"),
+  };
+}
+
+/** Whether an outline read has been sent: it is out, or it has answered or been refused since
+ *  the cache made it. A reader that does not send the read itself (`OutlineChoice.sends`) takes
+ *  it from then on as a reader that does. */
+function outlineBegun(query: Pick<Query, "state">): boolean {
+  return query.state.status !== "pending" || query.state.fetchStatus !== "idle";
+}
+
+/** The outline read `choice` holds, as a reader observes it: sent where `choice` sends it, and
+ *  else watched until something sent it (`outlineBegun`); Conversation's read, watched and never
+ *  sent, where the view the address draws holds neither. */
+function observedOutline(key: string, { outline, sends }: OutlineChoice) {
+  return {
+    ...outlineQuery(key, outline ?? "conversation"),
+    enabled: (query: Pick<Query, "state">) =>
+      outline !== undefined && (sends || outlineBegun(query)) && mayReadNow(query),
+  };
+}
+
+/** Sends Conversation's read of issue `key` where nothing has sent it (`outlineBegun`), and
+ *  nothing where the cache holds it sent, so a load reads it once (R13): what the Outline sheet
+ *  calls as it opens, which on Spec below 1024 px is the first reader that sends it, and what the
+ *  stage calls on Spec from 1024 px up (`ViewReadProvider`). */
+export function useStartOutlineRead(key: string): () => void {
+  const queryClient = useQueryClient();
+  return useCallback(() => {
+    const options = outlineQuery(key, "conversation");
+    const held = queryClient.getQueryCache().find({ exact: true, queryKey: options.queryKey });
+    if (held === undefined || !outlineBegun(held)) void queryClient.prefetchQuery(options);
+  }, [key, queryClient]);
+}
 
 /** One role's blocks from the tree read, answered as the blocks read of that role's document
  *  answered them (`artifactBlocksQuery`), so a caller's lines that read these members stay as
@@ -253,36 +443,53 @@ export interface TreeRead {
 }
 
 /**
- * The tree read alone, for the issue page's model (`useIssueTree`) and for a surface that needs
- * the blocks of a role document, or how the read stands, and none of the model's other reads.
- * Each value it answers keeps its identity while the read's answer and state stand, so a
- * caller's memo built on one is not built again on every render; a role's blocks are made the
- * first time a caller asks for them, so a caller that reads none costs none.
+ * The outline read the page holds (`OutlineChoice`) alone, for the issue page's model
+ * (`useIssueTree`) and for a surface that needs the blocks of a role document, or how the read
+ * stands, and none of the model's other reads. Each value it answers keeps its identity while the
+ * read's answer and state stand, so a caller's memo built on one is not built again on every
+ * render; a role's blocks are made the first time a caller asks for them, so a caller that reads
+ * none costs none.
+ *
+ * A role's blocks come from the read that holds them (R5): under that role's filter its view
+ * read, which `ViewReadProvider` sends and this watches without sending; in Graph Graph's read;
+ * and elsewhere the outline read, which holds the memo, the criteria and the statements. A read
+ * nothing has sent - Conversation's on Spec below 1024 px until the Outline sheet opens - is not
+ * pending: nothing is out, and the reads that wait on every read of the page do not wait on it.
  */
 export function useTreeRead(issue: IssueDetails): TreeRead {
+  const choice = useOutlineChoice();
+  const { filter } = choice;
   const {
     data: answer,
     errorUpdateCount,
+    fetchStatus,
     isError,
     isPending,
     isSuccess,
     refetch,
-  } = useQuery(issueTreeQuery(issue.key));
+  } = useQuery(observedOutline(issue.key, choice));
+  const sent = choice.outline !== undefined && (choice.sends || fetchStatus !== "idle");
+  const view = useQuery({ ...viewQuery(issue.key, filter ?? TREE_FILTERS[0]), enabled: false });
+  const viewAnswer = filter === undefined ? undefined : view.data;
   const blocks = useMemo(
-    () => byRole((role) => blocksOfRole(answer, role, issue)),
-    [answer, issue]
+    () => byRole((role) => blocksOfRole(role === filter ? viewAnswer : answer, role, issue)),
+    [answer, filter, issue, viewAnswer]
   );
+  const { errorUpdateCount: viewErrors, isError: viewRefused, refetch: viewRefetch } = view;
   const blocksOf = useMemo(
     () =>
       byRole(
-        (role): TreeBlocksRead => ({
-          data: blocks(role),
-          errorUpdateCount,
-          isError,
-          refetch,
-        })
+        (role): TreeBlocksRead =>
+          role === filter
+            ? {
+                data: blocks(role),
+                errorUpdateCount: viewErrors,
+                isError: viewRefused,
+                refetch: viewRefetch,
+              }
+            : { data: blocks(role), errorUpdateCount, isError, refetch }
       ),
-    [blocks, errorUpdateCount, isError, refetch]
+    [blocks, errorUpdateCount, filter, isError, refetch, viewErrors, viewRefetch, viewRefused]
   );
   return useMemo(
     () => ({
@@ -291,19 +498,104 @@ export function useTreeRead(issue: IssueDetails): TreeRead {
       blocksRead: isSuccess,
       blocksOf,
       failed: answer === undefined && errorUpdateCount > 0,
-      pending: isPending,
+      pending: sent && isPending,
       refetch,
     }),
-    [answer, blocksOf, errorUpdateCount, isPending, isSuccess, refetch]
+    [answer, blocksOf, errorUpdateCount, isPending, isSuccess, refetch, sent]
   );
 }
 
-/** Whether the tree read of issue `key` runs (TanStack Query's `isFetching`): its first read, a
- *  refresh, or a Retry. An observer of its own beside `useTreeRead`'s, which reads none of it, so
- *  a reader of the tree is drawn again as each read of it starts and ends only where it reads
- *  this: a view that draws a failed read's Retry busy while it runs. */
+/** Whether the outline read the page holds (`OutlineChoice`) of issue `key` runs (TanStack
+ *  Query's `isFetching`): its first read, a refresh, or a Retry. An observer of its own beside
+ *  `useTreeRead`'s, which reads none of it, so a reader of the tree is drawn again as each read of
+ *  it starts and ends only where it reads this: a view that draws a failed read's Retry busy while
+ *  it runs. */
 export function useTreeReadRunning(key: string): boolean {
-  return useQuery(issueTreeQuery(key)).isFetching;
+  return useQuery(observedOutline(key, useOutlineChoice())).isFetching;
+}
+
+/** Whether the outline read the page holds answers older comments it has not read
+ *  (`OlderComments.remain`), and how to read the next page of them. */
+export interface OlderComments {
+  /** Reads the next older page into the outline read's answer (`readOlderComments`): one
+   *  request however often it is asked while that page is out. */
+  readonly read: () => Promise<void>;
+  /** Whether older comments remain: the read's answer names where the next older page starts
+   *  (`comments_before`). */
+  readonly remain: boolean;
+}
+
+/** The older comments of the outline read the page holds (R15), for the two controls that read
+ *  them: the one above the outline's first row under the issue, and the one at the foot of the
+ *  Contents list. Neither reads anything until it is pressed. */
+export function useOlderComments(issue: IssueDetails): OlderComments {
+  const queryClient = useQueryClient();
+  const choice = useOutlineChoice();
+  const answer = useQuery(observedOutline(issue.key, choice)).data;
+  const outline = choice.outline;
+  const remain =
+    outline !== undefined && answer !== undefined && olderCommentsBefore(answer) !== undefined;
+  const read = useCallback(
+    () =>
+      outline === undefined
+        ? Promise.resolve()
+        : readOlderComments(queryClient, issue.key, outline),
+    [issue.key, outline, queryClient]
+  );
+  return useMemo(() => ({ read, remain }), [read, remain]);
+}
+
+/** The older comment pages out, by client, each by its query and the position it reads from
+ *  (`readOlderComments`). */
+const commentPagesOut = new WeakMap<QueryClient, Map<string, Promise<void>>>();
+
+/**
+ * Reads the next older comment page of `outline`'s read of issue `key` (R15), one request with
+ * `?comments_before=` the answer the cache holds names (`comments_before`), no view and no cursor,
+ * beside the kinds Conversation's read names, and merges it into that answer in the cache, where
+ * the read's order puts each node (`mergeCommentPage`). A press while that page is out joins it,
+ * and one after it merged reads the next, so each page is read once whichever control asks for
+ * it. Where the cache holds no answer, or one with no older comment, it reads nothing. A page that
+ * lands once the answer has moved on - a read made again from the first page, which reads again
+ * each page the reader had loaded (`withLoadedComments`) - is not merged into it. The merge writes
+ * the answer by `setQueryData`, which the tree's subscription takes as no write of the issue: it
+ * reacts to a read, an invalidation, a reset and a refusal (`subscribeTreeFreshness`). A query an
+ * event or a write had marked stale stays marked, so the read it owes is still made. A refused
+ * page leaves the answer as it was, and the press may be made again.
+ */
+export function readOlderComments(
+  queryClient: QueryClient,
+  key: string,
+  outline: Outline
+): Promise<void> {
+  const { queryKey } = outlineQuery(key, outline);
+  const held = queryClient.getQueryData<TreeAnswer>(queryKey);
+  const before = held === undefined ? undefined : olderCommentsBefore(held);
+  if (before === undefined) return Promise.resolve();
+  let out = commentPagesOut.get(queryClient);
+  if (out === undefined) {
+    out = new Map();
+    commentPagesOut.set(queryClient, out);
+  }
+  const pages = out;
+  const page = `${hashKey(queryKey)} ${before}`;
+  const reading = pages.get(page);
+  if (reading !== undefined) return reading;
+  const read = api
+    .getIssueTree(key, { ...OUTLINE_QUERIES[outline], comments_before: before })
+    .then((older) => {
+      const now = queryClient.getQueryData<TreeAnswer>(queryKey);
+      const query = queryClient.getQueryCache().find({ exact: true, queryKey });
+      if (now === undefined || query === undefined || olderCommentsBefore(now) !== before) return;
+      const merged = mergeCommentPage(now, older);
+      commentPagesOf.set(query, { reached: olderCommentsBefore(merged) ?? null });
+      const stale = query.state.isInvalidated;
+      queryClient.setQueryData(queryKey, merged);
+      if (stale) void queryClient.invalidateQueries({ exact: true, queryKey, refetchType: "none" });
+    })
+    .finally(() => pages.delete(page));
+  pages.set(page, read);
+  return read;
 }
 
 /** `make`'s value for each role, made on the first ask for that role and the same value on
@@ -321,8 +613,10 @@ function byRole<Value>(make: (role: TreeFilter) => Value): (role: TreeFilter) =>
 }
 
 /**
- * Keeps the tree read and its views as fresh as the issue's other reads. Two signals tell it what
- * can change them, and nothing is judged from the issue's other reads:
+ * Keeps the tree read and its views as fresh as the issue's other reads, and so each outline read
+ * the page holds: Graph's, which is the tree read, and Conversation's (`Outline`), whichever it
+ * holds, each read again with the older comment pages its answer had loaded (`readTree`). Two
+ * signals tell it what can change them, and nothing is judged from the issue's other reads:
  *
  * - every event of the issue names the tree's key, and with it each view's (`event-refresh.ts`):
  *   the app's refresh scheduler reads the tree and each open view once for it (`refreshQueries`),
@@ -403,7 +697,12 @@ function watchTree(
 ): TreeFreshness {
   const cache = queryClient.getQueryCache();
   const writes = writesOf(queryClient);
-  const tree: RefreshTarget = { exact: true, queryKey: issueTreeKey(key) };
+  // Each outline read the page may hold: Graph's, the tree read, and Conversation's (`Outline`).
+  // Each is kept fresh as the tree read is, and a view follows whichever the page holds.
+  const outlines: readonly RefreshTarget[] = [
+    { exact: true, queryKey: issueTreeKey(key) },
+    { exact: true, queryKey: conversationTreeKey(key) },
+  ];
   const decisions: RefreshTarget = {
     exact: true,
     queryKey: issueDecisionsQuery(key, true).queryKey,
@@ -412,7 +711,7 @@ function watchTree(
     exact: true,
     queryKey: viewKey(key, filter),
   }));
-  const treeAndViews: readonly RefreshTarget[] = [tree, ...views];
+  const treeAndViews: readonly RefreshTarget[] = [...outlines, ...views];
   // The tree's query and each view's, by the prefix they share.
   const treeQueries: QueryFilters = { queryKey: issueTreeKey(key) };
   let stopped = false;
@@ -457,7 +756,7 @@ function watchTree(
     if (event.type === "removed") {
       owedReads.delete(hash);
       owedOnRefusal.delete(hash);
-      if (matchQuery(tree, query)) watcher.release();
+      if (outlines.some((outline) => matchQuery(outline, query))) watcher.release();
       return;
     }
     if (event.type !== "updated") return;
@@ -559,7 +858,7 @@ function watchTree(
     if (stopped) return;
     releaseReads();
     const owed = !liveFeedUp(queryClient)
-      ? [tree, ...(refreshedAll ? [] : [decisions]), ...views]
+      ? [...outlines, ...(refreshedAll ? [] : [decisions]), ...views]
       : treeAndViews.filter((target) => {
           const query = cache.find(target);
           if (query === undefined) return false;
@@ -588,7 +887,8 @@ function watchTree(
   const watcher: TreeFreshness = {
     holders: 0,
     release: () => {
-      if (stopped || watcher.holders > 0 || cache.find(tree) !== undefined) return;
+      if (stopped || watcher.holders > 0) return;
+      if (outlines.some((outline) => cache.find(outline) !== undefined)) return;
       stopped = true;
       releaseReads();
       unsubscribe();
