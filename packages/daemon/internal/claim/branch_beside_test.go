@@ -61,15 +61,15 @@ func roomOf(issue string, generation uint64) int {
 // A branch that a step beside a fix pushes to is no issue's branch and no task's: it does not start
 // with legion/, the prefix every issue branch and every task branch has, so BranchIssue takes none
 // of them. A task's id is a plan block's id, which can hold any byte, so the name writes each byte
-// of it outside [A-Za-z0-9-] as `_` and two uppercase hex digits, the empty id as `_`, and an
-// escaping longer than the room GitHub's 255-byte ref leaves cut on an escape's edge to 33 bytes
-// less, then `_` and 32 lowercase hex digits of the id's sha256; a role over 32 bytes is cut to 15,
-// then `_` and 16 hex digits. Every id gives a name git takes as a branch whose ref is at most 255
-// bytes, with the longest fix and role too; each name matches back to its id among the ids it is
-// given, and its two prefixes start it. An issue's key long enough to leave the task no room is
-// an error. The controls: BranchIssue takes an issue's own branch, git refuses the names the raw
-// ids would give, a name matches no id it was not made from, and the longest issue's key that
-// leaves room still gives a name, so no check here passes for want of the power to fail.
+// of it outside [A-Za-z0-9-] as `_` and two uppercase hex digits, and an escaping longer than the
+// room GitHub's 255-byte ref leaves cut on an escape's edge to 33 bytes less, then `_` and 32
+// lowercase hex digits of the id's sha256; a role over 32 bytes is cut to 15, then `_` and 16 hex
+// digits. Every non-empty id gives a name git takes as a branch whose ref is at most 255 bytes,
+// with the longest fix and role too; each name matches back to its id among the ids it is given,
+// and its two prefixes start it. An empty id, and an issue's key long enough to leave the task no
+// room, are errors. The controls: BranchIssue takes an issue's own branch, git refuses the names
+// the raw ids would give, a name matches no id it was not made from, and the longest issue's key
+// that leaves room still gives a name, so no check here passes for want of the power to fail.
 func TestABesideBranchIsNoIssueOrTaskBranch(t *testing.T) {
 	const issue = "ACME-42"
 	room := roomOf(issue, 1)
@@ -159,7 +159,6 @@ func TestABesideBranchIsNoIssueOrTaskBranch(t *testing.T) {
 
 	t.Run("each class of id git refuses in a ref gives a part git takes", func(t *testing.T) {
 		for _, c := range []struct{ class, task, written string }{
-			{"empty", "", "_"},
 			{"a leading dot", ".hidden", "_2Ehidden"},
 			{"a trailing .lock", "x.lock", "x_2Elock"},
 			{"two dots", "a..b", "a_2E_2Eb"},
@@ -186,6 +185,18 @@ func TestABesideBranchIsNoIssueOrTaskBranch(t *testing.T) {
 			if checked, err := checkRefFormat(t, raw); err == nil {
 				t.Errorf("control, %s: git check-ref-format --branch %q = %q and took it, want a refusal", c.class, raw, checked)
 			}
+		}
+	})
+
+	t.Run("an empty task id is an error, so no part is empty", func(t *testing.T) {
+		if name, err := BesideBranch(issue, 1, "", 1, RoleTester); err == nil || name != "" {
+			t.Errorf("BesideBranch of the empty id = %q, %v; want no name and an error", name, err)
+		}
+		if prefix, err := BesideFixPrefix(issue, 1, "", 1); err == nil || prefix != "" {
+			t.Errorf("BesideFixPrefix of the empty id = %q, %v; want an error", prefix, err)
+		}
+		if prefix, err := BesideTaskPrefix(issue, 1, ""); err == nil || prefix != "" {
+			t.Errorf("BesideTaskPrefix of the empty id = %q, %v; want an error", prefix, err)
 		}
 	})
 
@@ -243,7 +254,7 @@ func TestABesideBranchIsNoIssueOrTaskBranch(t *testing.T) {
 		wellFormed(t, name)
 	})
 
-	t.Run("a name of any other form is no branch beside a fix", func(t *testing.T) {
+	t.Run("a name of any other form matches no task", func(t *testing.T) {
 		at := func(task string) string { return "legion-beside/INFRA-1/1/" + task + "/fix-1/tester" }
 		for _, branch := range []string{
 			"",
@@ -263,16 +274,19 @@ func TestABesideBranchIsNoIssueOrTaskBranch(t *testing.T) {
 			"legion-beside/INFRA-1/1/a/fix-1/",
 			"legion-beside/INFRA-1/1/a/fix-1/" + strings.Repeat("r", 33),
 			"other/legion-beside/INFRA-1/1/a/fix-1/tester",
-			at("a b"), at("a.b"), at(""), at("_41"), at("_2e"), at("a_2"), at("a_"), at("__"), at("_xy"),
+			at("a b"), at("a.b"), at(""), at("_"), at("_41"), at("_2e"), at("a_2"), at("a_"), at("__"), at("_xy"),
 			at(strings.Repeat("a", roomOf("INFRA-1", 1)+1)),
 			at(strings.Repeat("a", roomOf("INFRA-1", 1)-33) + "_" + strings.Repeat("ab", 15) + "a"),
 			at(strings.Repeat("a", roomOf("INFRA-1", 1)-32) + "_" + strings.Repeat("ab", 16)),
 		} {
+			if _, _, task, _, _, ok := MatchBesideBranch(branch, append([]string{"a", "", "A", "a b", "_", "a.b"}, ids...)); ok {
+				t.Errorf("MatchBesideBranch(%q) matched the task %q, want no beside branch", branch, task)
+			}
+		}
+		// IsBesideBranch reads the prefix alone.
+		for _, branch := range []string{"", "legion/INFRA-1", "legion-besid", "other/legion-beside/INFRA-1/1/a/fix-1/tester"} {
 			if IsBesideBranch(branch) {
 				t.Errorf("IsBesideBranch(%q) = true, want false", branch)
-			}
-			if _, _, task, _, _, ok := MatchBesideBranch(branch, append([]string{"a", "", "A", "a b"}, ids...)); ok {
-				t.Errorf("MatchBesideBranch(%q) matched the task %q, want no beside branch", branch, task)
 			}
 		}
 		// The control: BranchIssue takes an issue's own branch.

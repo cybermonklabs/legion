@@ -631,8 +631,8 @@ func TestAnAdoptionNamesTheFixAndTheMove(t *testing.T) {
 			t.Errorf("Validate(%s) = %v, want nil", line, err)
 		}
 		// The control: an issue's own branch, which a fix pushes to only at its end, is no
-		// branch of the fix's work in progress, and neither is any other name.
-		for _, branch := range []string{"legion/INFRA-1", "main", "legion-beside/INFRA-1/2/a b/fix-1/implementer", "legion-beside/INFRA-1/2/a/fix-1"} {
+		// branch of the fix's work in progress, and neither is a name outside legion-beside/.
+		for _, branch := range []string{"legion/INFRA-1", "main", "other/legion-beside/INFRA-1/2/a/fix-1/implementer"} {
 			line := head + `,"fixFrom":"` + fixFrom + `","fixBranch":"` + branch + `"}`
 			if err := adoption(t, line).Validate(); !errors.Is(err, ErrMalformedFrame) {
 				t.Errorf("Validate(%s) = %v, want ErrMalformedFrame", line, err)
