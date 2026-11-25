@@ -1604,9 +1604,11 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 	if envoyURL == "" {
 		envoyURL = defaultEnvoyURL
 	}
+	// Both of ENVOY_URL's refusals name the setting alone: the URL as written is where a
+	// credential would be, in its user information or its query.
 	parsed, err := url.Parse(envoyURL)
 	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
-		return bootConfig{}, fmt.Errorf("ENVOY_URL=%q (expected an absolute http(s) URL)", envoyURL)
+		return bootConfig{}, errors.New("ENVOY_URL (expected an absolute http(s) URL)")
 	}
 	boot.EnvoyURL = strings.TrimSuffix(envoyURL, "/")
 
@@ -1694,7 +1696,7 @@ func devSignInFence(boot bootConfig, env settingValues) error {
 		}
 	}
 	if !routes.LoopbackURL(boot.EnvoyURL) {
-		return fmt.Errorf("DISPATCH_DEV_SIGNIN=1 delivers through this machine's Envoy listener only: ENVOY_URL=%q must name 127.0.0.1, [::1] or localhost", boot.EnvoyURL)
+		return errors.New("DISPATCH_DEV_SIGNIN=1 delivers through this machine's Envoy listener only: ENVOY_URL must name 127.0.0.1, [::1] or localhost")
 	}
 	return nil
 }
