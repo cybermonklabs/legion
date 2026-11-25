@@ -70,7 +70,7 @@ func TestCommentThreadPageAnswersAnETagOverEveryParameter(t *testing.T) {
 	create(map[string]any{"body": "A reply to an old thread", "reply_to": anchored}, 5)
 	etag = requireMovedValidator(t, h, first, etag, "a new reply")
 	seq := issueLastSeq(t, db, issue.Key)
-	fixtureSQL(t, db, `insert into comment_deliveries (comment_id,target,attempt,delivery,session_id,state,claimed_at)
+	legionExec(t, db, `insert into comment_deliveries (comment_id,target,attempt,delivery,session_id,state,claimed_at)
   values ($1,'session:s1',1,'steer','s1','pending',now())`, root)
 	if issueLastSeq(t, db, issue.Key) != seq {
 		t.Fatal("the delivery appended an event")

@@ -143,7 +143,8 @@ const DocumentActorSchema = z.object({
  *  the post stands. Every mark is absent on a part of an ask and from a Dispatch older than it.
  *  `quote` and `occurrence` are the words of the block the reply quotes and which of their
  *  matches in the block's plain text they are, counted from 0, as the reply stored them: both or
- *  neither, absent on a reply that quotes nothing and from a Dispatch older than them. */
+ *  neither, absent on a reply that quotes nothing, from an answer where the quoted post is
+ *  deleted, and from a Dispatch older than them. */
 export const WrittenReplyBlockSchema = z
   .strictObject({ ...replyBlockFields, deleted_by: ActorSchema.optional() })
   .readonly();
@@ -151,8 +152,9 @@ export const WrittenReplyBlockSchema = z
 /** The block a reply answers, as a comment or message event payload carries it (`ReplyBlock`).
  *  An event recorded before the field, or by a Dispatch older than it, carries none. A reply's
  *  delete event (`comment.deleted`, `message.deleted`) carries it with every field but `text`,
- *  which is empty: a delete event carries no text of another post. A bus frame may carry a field
- *  this release does not know, so the inbound reading strips rather than refuses. */
+ *  `quote` and `occurrence`: `text` is empty and the other two absent, because a delete event
+ *  carries no text of another post. A bus frame may carry a field this release does not know, so
+ *  the inbound reading strips rather than refuses. */
 export const ReplyBlockSchema = z.object({
   ...replyBlockFields,
   deleted_by: DocumentActorSchema.optional(),

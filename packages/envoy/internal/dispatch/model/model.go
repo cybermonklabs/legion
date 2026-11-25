@@ -3341,13 +3341,15 @@ type Comment struct {
 // is what says the post itself is gone rather than the one block. All three are absent on a part
 // of an ask, which no correction marks. An event's reply_block keeps the marks the write that
 // appended it read. A reply's delete event (comment.deleted, message.deleted) carries the block
-// with every field but its text, which is empty: a delete event carries no text of another post.
+// with every field but its text, quote and occurrence: its text is empty and the other two are
+// absent, because a delete event carries no text of another post.
 //
 // Quote and Occurrence are the words of the block the reply quotes and which of their matches in
 // the block's plain text they are, counted from 0, as the reply stored them
 // (comments.replies_to_quote and replies_to_occurrence, and the same two of messages): both or
 // neither, absent on a reply that quotes nothing, as the marks are absent where the post holds
-// none.
+// none. A read leaves both out once the quoted post is deleted (refs.ReplyBlocks), as they are
+// words of that post.
 type ReplyBlock struct {
 	Node       string     `json:"node"`
 	Ref        string     `json:"ref,omitempty"`

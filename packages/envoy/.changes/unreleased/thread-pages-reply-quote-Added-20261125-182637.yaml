@@ -13,9 +13,9 @@ body: |-
   `reply_to_block` or `in_reply_to_block`, also takes `quote` and `occurrence`, the words of that
   block it quotes in the block's plain text and which of their matches they are: the reply stores
   both, and each answer and event that carries its `reply_block` carries them, except an answer,
-  or an event written, after the answered post's delete. A quote the block does not hold is
-  `404 TARGET_NOT_FOUND`, and one it holds more than once with no `occurrence` is
-  `409 TARGET_AMBIGUOUS`.
+  or an event written, after the answered post's delete. A reply's own delete event never carries
+  them. A quote the block does not hold is `404 TARGET_NOT_FOUND`, and one it holds more than once
+  with no `occurrence` is `409 TARGET_AMBIGUOUS`.
 time: 2026-11-25T18:26:37Z
 custom:
     Issue: thread-pages-reply-quote

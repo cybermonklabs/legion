@@ -12,7 +12,7 @@ import (
 // beside it as its control.
 func TestFindPlainMatchesTheTextAloneOverlapsIncluded(t *testing.T) {
 	t.Parallel()
-	parse := func(markdown string) *Node {
+	parse := func(t *testing.T, markdown string) *Node {
 		t.Helper()
 		doc, err := Parse(markdown)
 		if err != nil {
@@ -20,14 +20,13 @@ func TestFindPlainMatchesTheTextAloneOverlapsIncluded(t *testing.T) {
 		}
 		return doc
 	}
-	occurrence := func(index int) *int { return &index }
 
-	overlapping := NewQuoteFinder(parse("aaa\n"))
+	overlapping := NewQuoteFinder(parse(t, "aaa\n"))
 	for _, row := range []struct {
 		occurrence int
 		want       Range
 	}{{0, Range{From: 1, To: 3}}, {1, Range{From: 2, To: 4}}} {
-		if got, err := overlapping.FindPlain("aa", occurrence(row.occurrence)); err != nil || got != row.want {
+		if got, err := overlapping.FindPlain("aa", new(row.occurrence)); err != nil || got != row.want {
 			t.Fatalf("aa occurrence %d in aaa = %v, %v; want %v", row.occurrence, got, err, row.want)
 		}
 	}
@@ -36,15 +35,15 @@ func TestFindPlainMatchesTheTextAloneOverlapsIncluded(t *testing.T) {
 		t.Fatalf("aa in aaa with no occurrence = %v, want *ErrTargetAmbiguous naming the two overlapping matches", err)
 	}
 	var past *ErrQuoteNotFound
-	if _, err := overlapping.FindPlain("aa", occurrence(2)); !errors.As(err, &past) || past.Matches != 2 {
+	if _, err := overlapping.FindPlain("aa", new(2)); !errors.As(err, &past) || past.Matches != 2 {
 		t.Fatalf("aa occurrence 2 in aaa = %v, want *ErrQuoteNotFound counting the two matches", err)
 	}
-	if _, err := overlapping.FindPlain("aa", occurrence(-1)); !errors.As(err, &past) {
+	if _, err := overlapping.FindPlain("aa", new(-1)); !errors.As(err, &past) {
 		t.Fatalf("aa occurrence -1 in aaa = %v, want *ErrQuoteNotFound", err)
 	}
 
-	twice := NewQuoteFinder(parse("brown X brown\n"))
-	if got, err := twice.FindPlain("brown", occurrence(1)); err != nil || got != (Range{From: 1 + len16("brown X "), To: 1 + len16("brown X brown")}) {
+	twice := NewQuoteFinder(parse(t, "brown X brown\n"))
+	if got, err := twice.FindPlain("brown", new(1)); err != nil || got != (Range{From: 1 + len16("brown X "), To: 1 + len16("brown X brown")}) {
 		t.Fatalf("brown occurrence 1 = %v, %v; want the second brown", got, err)
 	}
 	if _, err := twice.FindPlain("brown", nil); !errors.As(err, &ambiguous) {
@@ -62,7 +61,7 @@ func TestFindPlainMatchesTheTextAloneOverlapsIncluded(t *testing.T) {
 		{"white space the text does not hold", "alpha beta\n", "alpha beta", "alpha   beta"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			doc := parse(row.markdown)
+			doc := parse(t, row.markdown)
 			finder := NewQuoteFinder(doc)
 			if _, err := finder.FindPlain(row.plain, nil); err != nil {
 				t.Fatalf("the plain text %q of %q: %v", row.plain, row.markdown, err)

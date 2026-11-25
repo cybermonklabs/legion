@@ -53,16 +53,25 @@ func TestADeliveryReplysQuoteRefusalComesWhereItsBlockRefusalComes(t *testing.T)
 				return bearerRequest(t, handler, http.MethodPost, route.path, input)
 			}
 			badBlock := map[string]any{route.field: "b9"}
-			badQuotes := map[string]map[string]any{
-				"a quote the block does not hold":       withQuote(map[string]any{}, route.field, "b1", "zarquonabsent", -1),
-				"an occurrence past the last match":     withQuote(map[string]any{}, route.field, "b1", quotedWord, 2),
-				"a word held twice, with no occurrence": withQuote(map[string]any{}, route.field, "b1", quotedWord, -1),
+			// badQuotes are the quotes the block does not take, each with the status and code of
+			// its own refusal on an attempt the route takes.
+			badQuotes := map[string]struct {
+				fields map[string]any
+				status int
+				code   string
+			}{
+				"a quote the block does not hold": {withQuote(map[string]any{}, route.field, "b1", "zarquonabsent", -1),
+					http.StatusNotFound, "TARGET_NOT_FOUND"},
+				"an occurrence past the last match": {withQuote(map[string]any{}, route.field, "b1", quotedWord, 2),
+					http.StatusNotFound, "TARGET_NOT_FOUND"},
+				"a word held twice, with no occurrence": {withQuote(map[string]any{}, route.field, "b1", quotedWord, -1),
+					http.StatusConflict, "TARGET_AMBIGUOUS"},
 			}
 			requireSameAnswer := func(step string, attempt map[string]any) {
 				t.Helper()
 				block := send(attempt, badBlock)
 				for name, quote := range badQuotes {
-					quoted := send(attempt, quote)
+					quoted := send(attempt, quote.fields)
 					if quoted.Code != block.Code || quoted.Body.String() != block.Body.String() {
 						t.Fatalf("%s, %s: status=%d body=%s, want what a bad block answers: status=%d body=%s",
 							step, name, quoted.Code, quoted.Body.String(), block.Code, block.Body.String())
@@ -75,10 +84,10 @@ func TestADeliveryReplysQuoteRefusalComesWhereItsBlockRefusalComes(t *testing.T)
 
 			requireRefusal(t, "the control, a bad block on an attempt the route takes", send(nil, badBlock), route.code, route.field+" b9")
 			for name, quote := range badQuotes {
-				refused := send(nil, quote)
-				if refused.Code == http.StatusBadRequest || !strings.Contains(refused.Body.String(), `"code":"TARGET_`) {
-					t.Fatalf("the control, %s on an attempt the route takes: status=%d body=%s, want the quote's own refusal",
-						name, refused.Code, refused.Body.String())
+				refused := send(nil, quote.fields)
+				if refused.Code != quote.status || !strings.Contains(refused.Body.String(), `"code":"`+quote.code+`"`) {
+					t.Fatalf("the control, %s on an attempt the route takes: status=%d body=%s, want the quote's own refusal, %d %s",
+						name, refused.Code, refused.Body.String(), quote.status, quote.code)
 				}
 			}
 
@@ -99,24 +108,23 @@ func TestAReplyQuoteOnAnItemThatOwesItsIndexIsCheckedOnItsWholeText(t *testing.T
 	t.Parallel()
 	handler, database, _ := newQuoteHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Quotes of owed posts", "before").Key
-	far := strings.Repeat("lorem ipsum ", 45) + "zarquonfar stands past the excerpt."
 	older := func(table string) string {
 		t.Helper()
 		var id string
 		if err := database.Pool.QueryRow(context.Background(), `
 			insert into `+table+` (issue_key, author, body) values ($1, '{"kind":"user","id":"alice"}', $2) returning id::text
-		`, issue, far).Scan(&id); err != nil {
+		`, issue, farParagraph).Scan(&id); err != nil {
 			t.Fatalf("insert into %s as an older build: %v", table, err)
 		}
 		return id
 	}
 	olderComment, olderMessage := older("comments"), older("messages")
 	mentioned := decodeMentionedComment(t, postMentionedComment(t, handler, issue, map[string]any{
-		"body": far, "mentions": []map[string]any{{"target": "session:" + quoteSession}},
+		"body": farParagraph, "mentions": []map[string]any{{"target": "session:" + quoteSession}},
 	})).ID
 	oweCommentIndex(t, database, mentioned)
 	targeted := createIssueMessage(t, handler, issue, map[string]any{
-		"body": far, "target": "session:" + quoteSession, "delivery": "btw",
+		"body": farParagraph, "target": "session:" + quoteSession, "delivery": "btw",
 	}, "alice").ID
 	oweMessageIndex(t, database, targeted)
 
@@ -147,6 +155,6 @@ func TestAReplyQuoteOnAnItemThatOwesItsIndexIsCheckedOnItsWholeText(t *testing.T
 			written = dispatchRequest(t, handler, http.MethodPost, row.path, input, "alice")
 		}
 		requireQuoted(t, row.name, written.Body.Bytes(), createdID(t, written), quoting("zarquonfar", 0))
-		requireItemIndexed(t, database, row.name, row.state, row.item, far)
+		requireItemIndexed(t, database, row.name, row.state, row.item, farParagraph)
 	}
 }

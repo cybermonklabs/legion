@@ -60,7 +60,7 @@ func replyQuoteProblems(ty reflect.Type, names *bool, seen map[reflect.Type]bool
 	}
 	seen[ty] = true
 	members := map[string]reflect.Type{}
-	requestMembers(ty, members)
+	collectDeclaredMembers(ty, func(name string, field reflect.Type) { members[name] = field })
 	var problems []string
 	for _, block := range replyBlockMembers {
 		if _, ok := members[block]; !ok {
@@ -87,34 +87,4 @@ func replyQuoteProblems(ty reflect.Type, names *bool, seen map[reflect.Type]bool
 		problems = append(problems, replyQuoteProblems(members[member], names, seen)...)
 	}
 	return problems
-}
-
-// requestMembers adds to members each JSON member encoding/json decodes into the struct ty, by
-// its tag's name or else its field's, with its Go type: an embedded struct with no tag name
-// gives its own members, as encoding/json promotes them.
-func requestMembers(ty reflect.Type, members map[string]reflect.Type) {
-	for index := range ty.NumField() {
-		field := ty.Field(index)
-		name, _, _ := strings.Cut(field.Tag.Get("json"), ",")
-		if name == "-" {
-			continue
-		}
-		if field.Anonymous && name == "" {
-			embedded := field.Type
-			if embedded.Kind() == reflect.Pointer {
-				embedded = embedded.Elem()
-			}
-			if embedded.Kind() == reflect.Struct {
-				requestMembers(embedded, members)
-				continue
-			}
-		}
-		if !field.IsExported() {
-			continue
-		}
-		if name == "" {
-			name = field.Name
-		}
-		members[name] = field.Type
-	}
 }

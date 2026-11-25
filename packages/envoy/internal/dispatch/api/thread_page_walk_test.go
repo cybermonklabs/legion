@@ -117,17 +117,10 @@ func fixtureTime(n int) time.Time {
 	return time.Date(2025, 1, 1, 0, 0, 0, 123456000, time.UTC).Add(time.Duration(n) * time.Second)
 }
 
-func fixtureSQL(t *testing.T, db *store.Store, statement string, args ...any) {
-	t.Helper()
-	if _, err := db.Pool.Exec(t.Context(), statement, args...); err != nil {
-		t.Fatalf("seed %s: %v", statement, err)
-	}
-}
-
 func timeFixtureEntry(t *testing.T, db *store.Store, table, id string, n int) string {
 	t.Helper()
 	at := fixtureTime(n)
-	fixtureSQL(t, db, "update "+table+" set created_at = $2 where id = $1", id, at)
+	legionExec(t, db, "update "+table+" set created_at = $2 where id = $1", id, at)
 	return at.Format(walkTimeLayout)
 }
 
@@ -330,7 +323,7 @@ func TestThreadPageAuthorKeepsTheThreadsTheActorWroteIn(t *testing.T) {
 		reply := createThreadComment(t, h, issue.Key, map[string]any{"body": "A person's reply", "ask_id": replied}, "alice")
 		timeFixtureEntry(t, db, "comments", reply.ID, 3)
 		answered := create(4)
-		answerPageAsk(t, h, answered, "An answer by Alice.", nil)
+		answerSearchAsk(t, h, answered, map[string]any{"text": "An answer by Alice."})
 		setAskActivity(t, db, answered, "answer", fixtureTime(5))
 		declined := create(6)
 		declinePageAsk(t, h, declined)
@@ -433,19 +426,6 @@ func TestMessageThreadPagePersonSplitsThreadsAndLeavesOutTheDaemons(t *testing.T
 	requirePageIDs(t, h, target, "messages", "", 100, append(newer, personRoot, sessionRoot, roleRoot, agentRoot, otherRoot, answeredDaemon, untargetedDaemon)...)
 }
 
-func answerPageAsk(t *testing.T, h http.Handler, id, text string, replaces *time.Time) time.Time {
-	t.Helper()
-	input := map[string]any{"text": text}
-	if replaces != nil {
-		input["expected_answer_at"] = replaces.UTC().Format(time.RFC3339Nano)
-	}
-	response := dispatchRequest(t, h, http.MethodPost, "/api/v1/asks/"+id+"/answer", input, "alice")
-	if response.Code != http.StatusOK {
-		t.Fatalf("answer ask: %d %s", response.Code, response.Body)
-	}
-	return decodeBody[model.Ask](t, response).Answer.At
-}
-
 func declinePageAsk(t *testing.T, h http.Handler, id string) {
 	t.Helper()
 	response := dispatchRequest(t, h, http.MethodPost, "/api/v1/asks/"+id+"/decline", declineBody(nil), "alice")
@@ -456,7 +436,7 @@ func declinePageAsk(t *testing.T, h http.Handler, id string) {
 
 func setAskActivity(t *testing.T, db *store.Store, id, column string, at time.Time) {
 	t.Helper()
-	fixtureSQL(t, db, "update asks set "+column+" = jsonb_set("+column+", '{at}', to_jsonb($2::text)) where id = $1", id, at.Format(time.RFC3339Nano))
+	legionExec(t, db, "update asks set "+column+" = jsonb_set("+column+", '{at}', to_jsonb($2::text)) where id = $1", id, at.Format(time.RFC3339Nano))
 }
 
 func walkAskPages(t *testing.T, h http.Handler, db *store.Store, key string) {
@@ -467,7 +447,7 @@ func walkAskPages(t *testing.T, h http.Handler, db *store.Store, key string) {
 		ask := createPartAsk(t, h, key, fmt.Sprintf("Question %d?", i))
 		want[i] = expectedThread{ask.ID, timeFixtureEntry(t, db, "asks", ask.ID, max(5, i))}
 	}
-	answerPageAsk(t, h, want[0].id, "The current answer.", nil)
+	answerSearchAsk(t, h, want[0].id, map[string]any{"text": "The current answer."})
 	firstAnswer := fixtureTime(55)
 	setAskActivity(t, db, want[0].id, "answer", firstAnswer)
 	want[0].at = firstAnswer.Format(walkTimeLayout)
@@ -499,7 +479,9 @@ func walkAskPages(t *testing.T, h http.Handler, db *store.Store, key string) {
 	walkThreadPages(t, h, target, "asks", "&state=open&thread=1", 20, open, list)
 	checkThreadPage(t, "asks", pageJSON(t, h, target, "&state=answered"), []expectedThread{answered}, 0)
 	verifyThreadWalk(t, h, target, "asks", "&thread=1", want, list, func(id string) string { return reply(id, 80).at })
-	changedAt := answerPageAsk(t, h, answered.id, "The answerer changed the answer.", &firstAnswer)
+	changedAt := answerSearchAsk(t, h, answered.id, map[string]any{
+		"text": "The answerer changed the answer.", "expected_answer_at": firstAnswer.Format(time.RFC3339Nano),
+	}).At
 	if !changedAt.After(firstAnswer) {
 		t.Fatalf("changed answer at %v, want after %v", changedAt, firstAnswer)
 	}

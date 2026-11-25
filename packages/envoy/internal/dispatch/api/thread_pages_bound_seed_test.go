@@ -135,7 +135,7 @@ func seedBound(t *testing.T, handler http.Handler, database *store.Store) *bound
 	t.Helper()
 	started := time.Now()
 	large := createInteractionIssue(t, handler, boundProject, "The largest thread counts together", "A spec")
-	second := createBoundIssue(t, handler, "The heaviest first pages")
+	second := createProjectIssue(t, handler, boundProject, "The heaviest first pages", "A spec")
 	shape := &boundShape{handler: handler, database: database, large: large.Key, second: second}
 	seedBoundLargeIssue(t, shape)
 	secondComments, secondAsks := seedBoundSecondIssue(t, shape)
@@ -155,20 +155,6 @@ func seedBound(t *testing.T, handler http.Handler, database *store.Store) *bound
 		time.Since(started).Round(time.Millisecond), shape.large, boundAgentComments, boundDaemonThreads,
 		boundAgentAsks, boundPersonThreads, boundPersonThreads, shape.second, boundOtherIssues)
 	return shape
-}
-
-// createBoundIssue files one more issue in the project createInteractionIssue made.
-func createBoundIssue(t *testing.T, handler http.Handler, title string) string {
-	t.Helper()
-	response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]string{
-		"project": boundProject, "title": title, "spec": "A spec",
-	}, boundPerson)
-	if response.Code != http.StatusCreated {
-		t.Fatalf("create issue: status=%d body=%s", response.Code, response.Body.String())
-	}
-	return decodeBody[struct {
-		Key string `json:"key"`
-	}](t, response).Key
 }
 
 // seedBoundLargeIssue writes R7's issue, oldest first: under everything, the threads a person
@@ -246,7 +232,7 @@ func seedBoundSecondIssue(t *testing.T, shape *boundShape) (comments, asks []bou
 		}
 		commentItems = append(commentItems, thread...)
 		for j, item := range thread {
-			comments = append(comments, boundRow{table: "comments", column: "body", item: item, weight: max(2-j, 1)})
+			comments = append(comments, boundRow{table: "comments", item: item, weight: max(2-j, 1)})
 		}
 	}
 	for i := range boundSecondAsks {
@@ -257,9 +243,9 @@ func seedBoundSecondIssue(t *testing.T, shape *boundShape) (comments, asks []bou
 		askItems = append(askItems, ask)
 		askComments = append(askComments, reply, note)
 		asks = append(asks,
-			boundRow{table: "asks", column: "question", item: ask, weight: 2},
-			boundRow{table: "comments", column: "body", item: reply, weight: 1},
-			boundRow{table: "comments", column: "body", item: note, weight: 1})
+			boundRow{table: "asks", item: ask, weight: 2},
+			boundRow{table: "comments", item: reply, weight: 1},
+			boundRow{table: "comments", item: note, weight: 1})
 	}
 	writeBoundAsks(t, shape.database, shape.second, askItems)
 	writeBoundComments(t, shape.database, shape.second, append(commentItems, askComments...))
@@ -399,12 +385,12 @@ func writeBoundAsks(t *testing.T, database *store.Store, issue string, items []b
 	}
 }
 
-// boundRow is one text of a second-issue row that fitBoundRows sizes: the column it is stored in,
+// boundRow is one text of a second-issue row that fitBoundRows sizes: the table it is stored in,
 // and its share of the row's characters.
 type boundRow struct {
-	table, column string
-	item          boundItem
-	weight        int
+	table  string
+	item   boundItem
+	weight int
 }
 
 // fitBoundRows sizes the texts of one first page so its rows weigh want bytes, and at most 0.5 %

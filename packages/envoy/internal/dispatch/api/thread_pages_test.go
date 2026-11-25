@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -12,34 +13,51 @@ func TestThreadPageRefusesAQueryItCannotAnswerExactly(t *testing.T) {
 	issue := createInteractionIssue(t, handler, "PROJ", "Thread query refusals", "A spec")
 	const at = "2025-01-01T00:00:00.000000Z"
 	const id = "ab000000-0000-4000-8000-000000000001"
-	common := []struct{ query, key, values string }{
-		{"order=created", "order", "activity"}, {"order=", "order", "activity"},
-		{"order=activity&order=activity", "order", "activity"},
-		{"order=activity&limit=0", "limit", "1 to 100"}, {"order=activity&limit=101", "limit", "1 to 100"},
-		{"order=activity&limit=abc", "limit", "1 to 100"}, {"order=activity&limit=20&limit=20", "limit", "1 to 100"},
-		{"limit=20", "limit", "order=activity"},
-		{"before=" + at + "," + id, "before", "order=activity"},
-		{"order=activity&before=yesterday", "before", "UUID"},
-		{"order=activity&before=" + at + ",nope", "before", "UUID"},
-		{"order=activity&before=2025-01-01T00:00:00.000000," + id, "before", "UTC"},
-		{"order=activity&before=2025-01-01T00:00:00.000000%2B00:00," + id, "before", "UTC"},
-		{"order=activity&before=2025-01-01T00:00:00.0000000Z," + id, "before", "six"},
-		{"order=activity&before=" + at + "," + strings.ToUpper(id), "before", "lower-case"},
-		{"order=activity&before=" + at + "," + id + "&before=" + at + "," + id, "before", "UUID"},
-		{"author=x", "author", "order=activity"}, {"order=activity&author=", "author", "non-empty"},
-		{"order=activity&author=x&author=x", "author", "non-empty"},
+	// Each refusal says whole which parameter it refuses and every value that parameter takes:
+	// must refuses a value the page cannot read, absent a page parameter sent without order.
+	const (
+		limit  = "one integer from 1 to 100"
+		before = "one position: a UTC timestamp with six fractional digits and Z, a comma, and a lower-case UUID"
+		author = "one non-empty login or session ID"
+	)
+	must := func(key, values string) string { return key + " must be " + values }
+	absent := func(key, values string) string {
+		return key + " must be absent without order=activity; with it, " + values
 	}
-	for _, route := range []struct{ name, personValues string }{{"comments", "in"}, {"messages", "in or none"}, {"asks", "absent"}} {
+	type refusalCase struct{ query, message string }
+	common := []refusalCase{
+		{"order=created", must("order", "activity")}, {"order=", must("order", "activity")},
+		{"order=activity&order=activity", must("order", "activity")},
+		{"order=activity&limit=0", must("limit", limit)}, {"order=activity&limit=101", must("limit", limit)},
+		{"order=activity&limit=abc", must("limit", limit)}, {"order=activity&limit=20&limit=20", must("limit", limit)},
+		{"limit=20", absent("limit", limit)},
+		{"before=" + at + "," + id, absent("before", before)},
+		{"order=activity&before=yesterday", must("before", before)},
+		{"order=activity&before=" + at + ",nope", must("before", before)},
+		{"order=activity&before=2025-01-01T00:00:00.000000," + id, must("before", before)},
+		{"order=activity&before=2025-01-01T00:00:00.000000%2B00:00," + id, must("before", before)},
+		{"order=activity&before=2025-01-01T00:00:00.0000000Z," + id, must("before", before)},
+		{"order=activity&before=" + at + "," + strings.ToUpper(id), must("before", before)},
+		{"order=activity&before=" + at + "," + id + "&before=" + at + "," + id, must("before", before)},
+		{"author=x", absent("author", author)}, {"order=activity&author=", must("author", author)},
+		{"order=activity&author=x&author=x", must("author", author)},
+	}
+	for _, route := range []struct{ name, person string }{
+		{"comments", "one value: in"},
+		{"messages", "one value: in or none"},
+		{"asks", "absent (this route does not take a person filter)"},
+	} {
 		t.Run(route.name, func(t *testing.T) {
-			cases := append([]struct{ query, key, values string }{}, common...)
-			cases = append(cases, struct{ query, key, values string }{"order=activity&person=out", "person", route.personValues}, struct{ query, key, values string }{"order=activity&person=in&person=in", "person", route.personValues})
+			cases := append(slices.Clone(common),
+				refusalCase{"order=activity&person=out", must("person", route.person)},
+				refusalCase{"order=activity&person=in&person=in", must("person", route.person)})
 			switch route.name {
 			case "asks":
-				cases = append(cases, struct{ query, key, values string }{"order=activity&person=in", "person", "absent"})
+				cases = append(cases, refusalCase{"order=activity&person=in", must("person", route.person)})
 			case "comments":
-				cases = append(cases, struct{ query, key, values string }{"order=activity&person=none", "person", "in"})
+				cases = append(cases, refusalCase{"order=activity&person=none", must("person", route.person)})
 			case "messages":
-				cases = append(cases, struct{ query, key, values string }{"person=in", "person", "order=activity"})
+				cases = append(cases, refusalCase{"person=in", absent("person", route.person)})
 			}
 			for _, c := range cases {
 				t.Run(c.query, func(t *testing.T) {
@@ -48,9 +66,8 @@ func TestThreadPageRefusesAQueryItCannotAnswerExactly(t *testing.T) {
 						t.Fatalf("status = %d, want 400: %s", response.Code, response.Body)
 					}
 					refusal := decodeBody[map[string]any](t, response)
-					message, _ := refusal["error"].(string)
-					if refusal["code"] != "INVALID_QUERY" || !strings.HasPrefix(message, c.key+" must be ") || !strings.Contains(message, c.values) || len(refusal) != 2 {
-						t.Fatalf("refusal = %v, want INVALID_QUERY naming %s and %q, without threads", refusal, c.key, c.values)
+					if refusal["code"] != "INVALID_QUERY" || refusal["error"] != c.message || len(refusal) != 2 {
+						t.Fatalf("refusal = %v, want INVALID_QUERY saying %q, without threads", refusal, c.message)
 					}
 				})
 			}

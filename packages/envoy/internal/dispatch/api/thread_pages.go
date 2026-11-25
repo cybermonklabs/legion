@@ -55,17 +55,8 @@ func (p threadPosition) cursor() string { return p.activity() + "," + p.id }
 // not mark a position this API wrote. An empty author must not silently disable the filter.
 // Each caller supplies its allowed person values, so a route never ignores an unsupported one.
 func parseThreadPage(query url.Values, people ...string) (*threadPage, error) {
-	personValues := "absent (this route does not take a person filter)"
-	if len(people) != 0 {
-		personValues = "one value: " + strings.Join(people, " or ")
-	}
-	values := map[string]string{
-		"order": "activity", "limit": fmt.Sprintf("one integer from 1 to %d", contracts.MaxThreadPageLimit),
-		"before": "one position: a UTC timestamp with six fractional digits and Z, a comma, and a lower-case UUID",
-		"author": "one non-empty login or session ID", "person": personValues,
-	}
 	invalid := func(key string) error {
-		return errorf(http.StatusBadRequest, "INVALID_QUERY", "%s must be %s", key, values[key])
+		return errorf(http.StatusBadRequest, "INVALID_QUERY", "%s must be %s", key, threadPageValues(key, people))
 	}
 	for _, key := range []string{"order", "limit", "before", "author", "person"} {
 		if len(query[key]) > 1 {
@@ -74,12 +65,13 @@ func parseThreadPage(query url.Values, people ...string) (*threadPage, error) {
 	}
 	if !query.Has("order") {
 		for _, key := range []string{"limit", "before", "author", "person"} {
-			if query.Has(key) {
-				if key == "person" && len(people) == 0 {
-					return nil, invalid(key)
-				}
-				return nil, errorf(http.StatusBadRequest, "INVALID_QUERY", "%s must be absent without order=activity; with it, %s", key, values[key])
+			if !query.Has(key) {
+				continue
 			}
+			if key == "person" && len(people) == 0 {
+				return nil, invalid(key)
+			}
+			return nil, errorf(http.StatusBadRequest, "INVALID_QUERY", "%s must be absent without order=activity; with it, %s", key, threadPageValues(key, people))
 		}
 		return nil, nil
 	}
@@ -113,6 +105,27 @@ func parseThreadPage(query url.Values, people ...string) (*threadPage, error) {
 	return p, nil
 }
 
+// threadPageFixedValues are the values each page parameter but person takes, as a refusal
+// names them. They are the same on every route, so they are written once.
+var threadPageFixedValues = map[string]string{
+	"order":  "activity",
+	"limit":  fmt.Sprintf("one integer from 1 to %d", contracts.MaxThreadPageLimit),
+	"before": "one position: a UTC timestamp with six fractional digits and Z, a comma, and a lower-case UUID",
+	"author": "one non-empty login or session ID",
+}
+
+// threadPageValues is the values key takes on a route whose person filter takes people, as a
+// refusal of key names them. Only a refusal calls it, so an answered page builds no text.
+func threadPageValues(key string, people []string) string {
+	if key != "person" {
+		return threadPageFixedValues[key]
+	}
+	if len(people) == 0 {
+		return "absent (this route does not take a person filter)"
+	}
+	return "one value: " + strings.Join(people, " or ")
+}
+
 // selectThreadPage is the final select shared by the three page statements. It seeks below
 // before, then sorts by newest activity and largest UUID first. The window counts the
 // filtered threads after that position before the limit, so selectThreads computes remaining
@@ -138,9 +151,17 @@ func (p threadPage) args(key string) []any {
 // ids to batch their follow-up reads and positions to keep the selected activity times.
 type selectedThreads struct {
 	positions []threadPosition
-	ids       []string
 	before    *string
 	remaining int
+}
+
+// ids are the selected threads' ids in page order, read from positions.
+func (s selectedThreads) ids() []string {
+	ids := make([]string, len(s.positions))
+	for i, pos := range s.positions {
+		ids[i] = pos.id
+	}
+	return ids
 }
 
 // selectThreads reads the page's positions and subtracts the selected rows from the window
@@ -160,12 +181,11 @@ func selectThreads(ctx context.Context, q queryer, statement string, args ...any
 			return selectedThreads{}, err
 		}
 		result.positions = append(result.positions, pos)
-		result.ids = append(result.ids, pos.id)
 	}
 	if err := rows.Err(); err != nil {
 		return selectedThreads{}, err
 	}
-	result.remaining = total - len(result.ids)
+	result.remaining = total - len(result.positions)
 	if result.remaining > 0 {
 		result.before = new(result.positions[len(result.positions)-1].cursor())
 	}
@@ -183,11 +203,11 @@ func threadAuthorMatches(actor string) string {
 }
 
 // commentThreadRow groups the root and replies from the existing flat list, shaped as that
-// list shapes them and with replies oldest first. It adds last_activity_at for the thread.
+// list shapes them and with replies oldest first, in commentRead's members. It adds
+// last_activity_at for the thread.
 type commentThreadRow struct {
-	Comment        shapedComment   `json:"comment"`
-	Replies        []shapedComment `json:"replies"`
-	LastActivityAt string          `json:"last_activity_at"`
+	commentRead
+	LastActivityAt string `json:"last_activity_at"`
 }
 
 // commentThreadPage is the issue comment route's activity answer. Its before and remaining
@@ -228,14 +248,14 @@ func (s *server) readCommentThreadPage(ctx context.Context, key, artifact string
 	if err != nil {
 		return commentThreadPage{}, err
 	}
-	result := commentThreadPage{Threads: make([]commentThreadRow, len(selected.ids)), Before: selected.before, Remaining: selected.remaining}
-	if len(selected.ids) == 0 {
+	result := commentThreadPage{Threads: make([]commentThreadRow, len(selected.positions)), Before: selected.before, Remaining: selected.remaining}
+	if len(selected.positions) == 0 {
 		return result, nil
 	}
 	rows, err := pool.Query(ctx, `select `+commentColumns+`
   from comments where (id = any($1::uuid[]) or reply_to = any($1::uuid[]))
    and issue_key = $2 and ask_id is null
-  order by created_at, id`, selected.ids, key)
+  order by created_at, id`, selected.ids(), key)
 	if err != nil {
 		return commentThreadPage{}, err
 	}
@@ -247,10 +267,10 @@ func (s *server) readCommentThreadPage(ctx context.Context, key, artifact string
 	if err != nil {
 		return commentThreadPage{}, err
 	}
-	indexes := make(map[string]int, len(selected.ids))
+	indexes := make(map[string]int, len(selected.positions))
 	for i, pos := range selected.positions {
 		indexes[pos.id] = i
-		result.Threads[i] = commentThreadRow{Replies: []shapedComment{}, LastActivityAt: pos.activity()}
+		result.Threads[i] = commentThreadRow{commentRead: commentRead{Replies: []shapedComment{}}, LastActivityAt: pos.activity()}
 	}
 	reader := s.readDisplayTrees(ctx, trees)
 	reads := shapedComments(comments, reader)
@@ -319,13 +339,13 @@ func (s *server) readMessageThreadPage(ctx context.Context, who model.Actor, key
 	if err != nil {
 		return messageThreadPage{}, err
 	}
-	result := messageThreadPage{Threads: make([]messageThreadRow, 0, len(selected.ids)), Before: selected.before, Remaining: selected.remaining}
-	if len(selected.ids) == 0 {
+	result := messageThreadPage{Threads: make([]messageThreadRow, 0, len(selected.positions)), Before: selected.before, Remaining: selected.remaining}
+	if len(selected.positions) == 0 {
 		return result, nil
 	}
 	rows, err := pool.Query(ctx, `select `+messageColumns+`
   from unnest($1::uuid[]) with ordinality picked(thread_id, pos)
-  join messages on id = picked.thread_id order by picked.pos`, selected.ids)
+  join messages on id = picked.thread_id order by picked.pos`, selected.ids())
 	if err != nil {
 		return messageThreadPage{}, err
 	}
@@ -358,22 +378,29 @@ type askThreadPage struct {
 	Remaining int            `json:"remaining"`
 }
 
-// askThreadPageQuery selects asks for readAskThreadPage. The ask, its ask_id comments, its
-// current answer and its current resolution are the thread's entries. Each can match the
-// author and decide the newest activity. The answer names a login and the resolution names
-// an actor. Replaced answers and resolutions count for neither filter nor sort.
+// askThreadPageQueryAll, askThreadPageQueryOpen and askThreadPageQueryAnswered select asks for
+// readAskThreadPage, one statement per state. The ask, its ask_id comments, its current answer
+// and its current resolution are the thread's entries. Each can match the author and decide
+// the newest activity. The answer names a login and the resolution names an actor. Replaced
+// answers and resolutions count for neither filter nor sort.
 //
 // A literal state lets even a generic plan use asks_open. The answer and resolution times
 // are cut as JSON text before the timestamptz cast, which would otherwise round them and
 // move the cursor away from the entry's time at microsecond precision.
-func askThreadPageQuery(state string) string {
-	stateFilter := ""
-	switch state {
-	case "open":
-		stateFilter = " and a.state = 'open'"
-	case "answered":
-		stateFilter = " and a.state = 'answered'"
-	}
+//
+// askThreadRowsQuery reads the selected asks as the list reads them, in page order.
+var (
+	askThreadPageQueryAll      = askThreadPageStatement("")
+	askThreadPageQueryOpen     = askThreadPageStatement(" and a.state = 'open'")
+	askThreadPageQueryAnswered = askThreadPageStatement(" and a.state = 'answered'")
+	askThreadRowsQuery         = `select ` + askReadColumns + ` ` + askReadFrom + `
+  join unnest($1::uuid[]) with ordinality picked(thread_id, pos) on a.id = picked.thread_id
+  order by picked.pos`
+)
+
+// askThreadPageStatement is the ask page statement narrowed by stateFilter, a literal
+// condition on a.state or nothing.
+func askThreadPageStatement(stateFilter string) string {
 	return `
  with threads as (
   select a.id, greatest(a.created_at, max(c.created_at),
@@ -393,27 +420,26 @@ func askThreadPageQuery(state string) string {
 // readAskThreadPage selects the asks before loading their details and uses the list's row
 // builder, so thread=1 costs one set of batched reads over the page, not a fetch per ask.
 func (s *server) readAskThreadPage(ctx context.Context, who model.Actor, key, state string, page threadPage, withThread, trees bool) (askThreadPage, error) {
+	var statement string
+	switch state {
+	case "open":
+		statement = askThreadPageQueryOpen
+	case "answered":
+		statement = askThreadPageQueryAnswered
+	default:
+		statement = askThreadPageQueryAll
+	}
 	pool := s.deps.Store.Pool
-	selected, err := selectThreads(ctx, pool, askThreadPageQuery(state), page.args(key)...)
+	selected, err := selectThreads(ctx, pool, statement, page.args(key)...)
 	if err != nil {
 		return askThreadPage{}, err
 	}
-	result := askThreadPage{Threads: make([]askThreadRow, 0, len(selected.ids)), Before: selected.before, Remaining: selected.remaining}
-	if len(selected.ids) == 0 {
+	result := askThreadPage{Threads: make([]askThreadRow, 0, len(selected.positions)), Before: selected.before, Remaining: selected.remaining}
+	if len(selected.positions) == 0 {
 		return result, nil
 	}
-	rows, err := pool.Query(ctx, `select `+askReadColumns+` `+askReadFrom+`
-  join unnest($1::uuid[]) with ordinality picked(thread_id, pos) on a.id = picked.thread_id
-  order by picked.pos`, selected.ids)
+	asks, lastReplies, err := queryAskReads(ctx, pool, who, askThreadRowsQuery, selected.ids())
 	if err != nil {
-		return askThreadPage{}, err
-	}
-	defer rows.Close()
-	asks, lastReplies, err := scanAskReads(rows)
-	if err != nil {
-		return askThreadPage{}, err
-	}
-	if err := loadAskDetails(ctx, pool, who, askReadPointers(asks)); err != nil {
 		return askThreadPage{}, err
 	}
 	reads, err := s.shapeIssueAskRows(ctx, who, asks, lastReplies, withThread, trees)

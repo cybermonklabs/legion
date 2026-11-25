@@ -1181,7 +1181,15 @@ func (s *server) queryOwnerAsks(ctx context.Context, q queryer, who model.Actor,
 	default:
 		return nil, nil, errorf(http.StatusBadRequest, "OWNER_INVALID", "owner requires exactly one issue or artifact")
 	}
-	rows, err := q.Query(ctx, query, value)
+	return queryAskReads(ctx, q, who, query, value)
+}
+
+// queryAskReads runs statement, an askReadColumns query, and answers its asks in the order it
+// lists them, each with its details (loadAskDetails), and the newest reply in each ask's thread
+// keyed by ask id (scanAskReads). An owner's asks (queryOwnerAsks) and an issue's ask page
+// (readAskThreadPage) read through it.
+func queryAskReads(ctx context.Context, q queryer, who model.Actor, statement string, args ...any) ([]model.Ask, map[string]model.AskLastReply, error) {
+	rows, err := q.Query(ctx, statement, args...)
 	if err != nil {
 		return nil, nil, err
 	}

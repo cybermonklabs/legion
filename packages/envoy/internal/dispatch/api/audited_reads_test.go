@@ -66,7 +66,7 @@ var auditedReads = []auditedRead{
 	},
 	{
 		name:       "an issue's ask thread page, every state",
-		query:      askThreadPageQuery("all"),
+		query:      askThreadPageQueryAll,
 		relation:   "asks",
 		index:      "asks_issue_key",
 		parameters: []string{"text", "text", "timestamptz", "uuid", "integer"},
@@ -74,7 +74,7 @@ var auditedReads = []auditedRead{
 	},
 	{
 		name:       "an issue's open ask thread page",
-		query:      askThreadPageQuery("open"),
+		query:      askThreadPageQueryOpen,
 		relation:   "asks",
 		index:      "asks_open",
 		parameters: []string{"text", "text", "timestamptz", "uuid", "integer"},
@@ -139,7 +139,7 @@ func createAuditedAsk(t *testing.T, handler http.Handler, target, question strin
 	}
 }
 
-// newAuditedReadFixture is the issue and the document the three reads are read for, in a project
+// newAuditedReadFixture is the issue and the document the reads are read for, in a project
 // big enough that each read reaches a few rows of a table holding many: that is the shape
 // production has, and the shape that decides a planner's choice between two indexes.
 //
@@ -160,6 +160,7 @@ func newAuditedReadFixture(t *testing.T) *store.Store {
 	root := createIssueMessage(t, handler, issue.Key, map[string]any{"body": "Ship the build tonight"}, "alice")
 	createIssueMessage(t, handler, issue.Key, map[string]any{"body": "Sounds good", "in_reply_to": root.ID}, "bob")
 	createIssueMessage(t, handler, issue.Key, map[string]any{"body": "A second thread"}, "alice")
+	createThreadComment(t, handler, issue.Key, map[string]any{"body": "A comment thread"}, "alice")
 
 	ctx := context.Background()
 	for _, bulk := range []struct {

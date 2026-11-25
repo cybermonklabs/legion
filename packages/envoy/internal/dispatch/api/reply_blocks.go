@@ -33,7 +33,7 @@ func replyBlockOwner(nodeID string) refs.ItemKind {
 // kind of item holding it, since a comment's reply may name a block of the comment it answers or
 // a part of the ask it was asked under, the node id replies_to_block stores, the item holding the
 // block, the block's own id and its stored excerpt, and the words of it the reply quotes with the
-// match of them it quotes (replyQuoteOccurrence), both nil for a reply that quotes none.
+// match of them it quotes (namedBlock.setQuote), both nil for a reply that quotes none.
 type namedBlock struct {
 	kind       refs.ItemKind
 	node       string
@@ -151,8 +151,8 @@ type replyRowPlan struct {
 // which replyQuoteRefusal has let stand. A quote is checked on the block's whole text, where the
 // excerpt stops at its 480th rune: the repair's plan holds it for an item this transaction
 // indexes, and the index's record of the block holds it otherwise (refs.CurrentItemBlockText).
-// The block keeps the quote with the occurrence it resolves to (replyQuoteOccurrence), and a
-// quote the block does not hold is the *apiError that function answers.
+// The block keeps the quote with the occurrence it resolves to (namedBlock.setQuote), and a
+// quote the block does not hold is the *apiError that method answers.
 //
 // The live write of this request is the reply, which its own route stamps; the item indexed here
 // is the parent, whose text an earlier write already carried an event for, so a block mention
@@ -186,10 +186,9 @@ func (s *server) planReplyBlock(
 	} else if text, err = refs.CurrentItemBlockText(ctx, tx, kind, node); err != nil {
 		return refs.ItemRepair{}, nil, err
 	}
-	if block.occurrence, err = replyQuoteOccurrence(text, *quote, occurrence, kind, itemID, blockID); err != nil {
+	if err := block.setQuote(text, quote, occurrence); err != nil {
 		return refs.ItemRepair{}, nil, err
 	}
-	block.quote = quote
 	return repair, block, nil
 }
 
@@ -213,38 +212,40 @@ func replyQuoteRefusal(code, field string, block, quote *string, occurrence *int
 	return nil
 }
 
-// replyQuoteOccurrence checks quote against text, the whole markdown of block blockID of item
-// itemID of kind, read as the block's plain text (pmdoc.QuoteFinder.FindPlain), and answers the
-// occurrence the reply stores with it: the one sent, or 0 for a quote the text holds once. A
-// quote the text does not hold, or an occurrence past its last match, is 404 TARGET_NOT_FOUND,
-// and a quote it holds more than once with no occurrence 409 TARGET_AMBIGUOUS, as a document
-// anchor's quote is answered (handler_errors.go), but with no candidates: a position inside the
-// tree of one block means nothing to the reply's writer.
-func replyQuoteOccurrence(text, quote string, occurrence *int, kind refs.ItemKind, itemID, blockID string) (*int, error) {
+// setQuote checks quote against text, the block's whole markdown read as its plain text
+// (pmdoc.QuoteFinder.FindPlain), and keeps on the block the quote with the occurrence the reply
+// stores with it: the one sent, or 0 for a quote the text holds once. A quote the text does not
+// hold, or an occurrence past its last match, is 404 TARGET_NOT_FOUND, and a quote it holds more
+// than once with no occurrence 409 TARGET_AMBIGUOUS, as a document anchor's quote is answered
+// (handler_errors.go), but with no candidates: a position inside the tree of one block means
+// nothing to the reply's writer. A refused quote leaves the block as it was.
+func (block *namedBlock) setQuote(text string, quote *string, occurrence *int) error {
 	doc, err := pmdoc.Parse(text)
 	if err != nil {
-		return nil, fmt.Errorf("read the text of block %s of %s %s: %w", blockID, kind, itemID, err)
+		return fmt.Errorf("read the text of block %s of %s %s: %w", block.id, block.kind, block.item, err)
 	}
-	_, err = pmdoc.NewQuoteFinder(doc).FindPlain(quote, occurrence)
+	_, err = pmdoc.NewQuoteFinder(doc).FindPlain(*quote, occurrence)
 	var ambiguous *pmdoc.ErrTargetAmbiguous
 	var missing *pmdoc.ErrQuoteNotFound
 	switch {
 	case err == nil && occurrence == nil:
-		return new(0), nil
+		block.quote, block.occurrence = quote, new(0)
+		return nil
 	case err == nil:
-		return occurrence, nil
+		block.quote, block.occurrence = quote, occurrence
+		return nil
 	case errors.As(err, &ambiguous):
-		return nil, errorf(http.StatusConflict, "TARGET_AMBIGUOUS",
+		return errorf(http.StatusConflict, "TARGET_AMBIGUOUS",
 			"quote %q matches %d places in block %s of %s %s; send occurrence, counted from 0, to name one",
-			quote, len(ambiguous.Candidates), blockID, kind, itemID)
+			*quote, len(ambiguous.Candidates), block.id, block.kind, block.item)
 	case errors.As(err, &missing) && missing.Matches > 0:
-		return nil, errorf(http.StatusNotFound, "TARGET_NOT_FOUND",
+		return errorf(http.StatusNotFound, "TARGET_NOT_FOUND",
 			"occurrence %d is past the last of the %d matches of quote %q in block %s of %s %s, counted from 0",
-			*occurrence, missing.Matches, quote, blockID, kind, itemID)
+			*occurrence, missing.Matches, *quote, block.id, block.kind, block.item)
 	case errors.As(err, &missing):
-		return nil, errorf(http.StatusNotFound, "TARGET_NOT_FOUND", "quote %q is not in the text of block %s of %s %s", quote, blockID, kind, itemID)
+		return errorf(http.StatusNotFound, "TARGET_NOT_FOUND", "quote %q is not in the text of block %s of %s %s", *quote, block.id, block.kind, block.item)
 	}
-	return nil, fmt.Errorf("find the quote in block %s of %s %s: %w", blockID, kind, itemID, err)
+	return fmt.Errorf("find the quote in block %s of %s %s: %w", block.id, block.kind, block.item, err)
 }
 
 // nodeID is the block's node id for replies_to_block, null for a reply naming no block.

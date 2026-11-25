@@ -10,7 +10,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -24,6 +24,10 @@ const (
 	quotedWord  = "alpha"
 	quotedTwice = "Ship alpha now, alpha later."
 )
+
+// farParagraph is a paragraph whose word zarquonfar stands past the runes a block's stored
+// excerpt keeps (refs.BlockExcerptRunes), so only the block's whole text holds it.
+var farParagraph = strings.Repeat("lorem ipsum ", refs.BlockExcerptRunes/len("lorem ipsum ")+1) + "zarquonfar stands past the excerpt."
 
 // quoteListener is a fake Envoy listener holding quoteSession live, as sessionListener does, that
 // records each send under a lock: a mention and a broadcast's copy are sent after their write has
@@ -177,22 +181,11 @@ type quoteRead struct {
 	read func(t *testing.T, id string) []byte
 }
 
-// readAnswer is the body of handler's answer to a GET of path as alice, failing t unless it is a
-// 200.
-func readAnswer(t *testing.T, handler http.Handler, path string) []byte {
-	t.Helper()
-	response := dispatchRequest(t, handler, http.MethodGet, path, nil, "alice")
-	if response.Code != http.StatusOK {
-		t.Fatalf("GET %s: status=%d body=%s", path, response.Code, response.Body.String())
-	}
-	return response.Body.Bytes()
-}
-
 // getRead is the quoteRead of a GET of path, where {id} stands for the reply's id.
 func getRead(handler http.Handler, name, path string) quoteRead {
 	return quoteRead{name, func(t *testing.T, id string) []byte {
 		t.Helper()
-		return readAnswer(t, handler, strings.ReplaceAll(path, "{id}", id))
+		return getRaw(t, handler, strings.ReplaceAll(path, "{id}", id))
 	}}
 }
 
@@ -215,7 +208,7 @@ func getThreadPageRead(handler http.Handler, path string) quoteRead {
 func feedPayloads(t *testing.T, handler http.Handler, path, eventType, id string) []json.RawMessage {
 	t.Helper()
 	var events []reviewEvent
-	if err := json.Unmarshal(readAnswer(t, handler, path), &events); err != nil {
+	if err := json.Unmarshal(getRaw(t, handler, path), &events); err != nil {
 		t.Fatalf("decode the events at %s: %v", path, err)
 	}
 	return eventsAbout(events, eventType, id)
@@ -305,7 +298,6 @@ func TestAReplyToABlockStoresTheWordsItQuotes(t *testing.T) {
 	handler, _, listener := newQuoteHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Replies that quote", "before").Key
 	document := createProjectDocument(t, handler, "TEST", "Quoted notes", "# Quoted notes\n\nalpha bravo\n").ID
-	far := strings.Repeat("lorem ipsum ", 45) + "zarquonfar stands past the excerpt."
 	headed := "\n\n## Ship the **bold words**\n\naaa"
 	comment := decodeMentionedComment(t, postMentionedComment(t, handler, issue, map[string]any{
 		"body": quotedTwice + headed, "mentions": []map[string]any{{"target": "session:" + quoteSession}},
@@ -313,7 +305,7 @@ func TestAReplyToABlockStoresTheWordsItQuotes(t *testing.T) {
 	documentComment := createdID(t, dispatchRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+document+"/comments",
 		map[string]any{"body": quotedTwice}, "alice"))
 	ask := createPartAsk(t, handler, issue, "Ship alpha now, or alpha later?").ID
-	message := createIssueMessage(t, handler, issue, map[string]any{"body": quotedTwice + "\n\n" + far}, "alice").ID
+	message := createIssueMessage(t, handler, issue, map[string]any{"body": quotedTwice + "\n\n" + farParagraph}, "alice").ID
 	targeted := createIssueMessage(t, handler, issue, map[string]any{
 		"body": quotedTwice, "target": "session:" + quoteSession, "delivery": "btw",
 	}, "alice").ID
@@ -448,7 +440,7 @@ func TestAReplyToABlockStoresTheWordsItQuotes(t *testing.T) {
 	// Each edit drops the quoted word from the block the replies answer, and changes neither value.
 	editThreadComment(t, handler, comment, "Ship it now, later."+headed, "alice")
 	editThreadComment(t, handler, documentComment, "Ship it now, later.", "alice")
-	editIssueMessage(t, handler, message, "Ship it now, later.\n\n"+far, "alice")
+	editIssueMessage(t, handler, message, "Ship it now, later.\n\n"+farParagraph, "alice")
 	editIssueMessage(t, handler, targeted, "Ship it now, later.", "alice")
 	for index, row := range rows {
 		for _, read := range row.reads {
@@ -517,14 +509,14 @@ func TestAReplyQuoteIsRefusedWhereTheBlockDoesNotHoldIt(t *testing.T) {
 		// fields are the reply's own fields beside its body, its block named under field.
 		fields func(field string) map[string]any
 		status int
-		// code is the refusal's code, the route's own for a 400; names is the field a 400's
-		// message opens with.
-		code, names string
+		// code is the refusal's code, the route's own for a 400; opens is what a 400's message
+		// opens with, the field it is about first, {field} standing for the route's block field.
+		code, opens string
 	}{
 		{"occurrence without quote", func(field string) map[string]any { return map[string]any{field: "b1", "occurrence": 1} },
 			http.StatusBadRequest, "", "occurrence"},
 		{"quote without the block field", func(string) map[string]any { return map[string]any{"quote": quotedWord} },
-			http.StatusBadRequest, "", "quote"},
+			http.StatusBadRequest, "", "quote requires {field},"},
 		{"an empty quote", func(field string) map[string]any { return map[string]any{field: "b1", "quote": ""} },
 			http.StatusBadRequest, "", "quote"},
 		{"occurrence -1", func(field string) map[string]any {
@@ -559,10 +551,10 @@ func TestAReplyQuoteIsRefusedWhereTheBlockDoesNotHoldIt(t *testing.T) {
 				if err := json.Unmarshal(response.Body.Bytes(), &answer); err != nil || response.Code != refusal.status || answer.Code != code {
 					t.Fatalf("%s: status=%d body=%s, want %d %s", refusal.name, response.Code, response.Body.String(), refusal.status, code)
 				}
-				if refusal.names != "" && !strings.HasPrefix(answer.Error, refusal.names+" ") {
-					t.Fatalf("%s: the refusal says %q, want it to name %s first", refusal.name, answer.Error, refusal.names)
+				if opens := strings.ReplaceAll(refusal.opens, "{field}", route.field); opens != "" && !strings.HasPrefix(answer.Error, opens+" ") {
+					t.Fatalf("%s: the refusal says %q, want it to open with %q", refusal.name, answer.Error, opens)
 				}
-				if code == "TARGET_AMBIGUOUS" && (!strings.Contains(answer.Error, "2") || !strings.Contains(answer.Error, "occurrence") || answer.Candidates != nil) {
+				if code == "TARGET_AMBIGUOUS" && (!strings.Contains(answer.Error, "matches 2 places") || !strings.Contains(answer.Error, "occurrence") || answer.Candidates != nil) {
 					t.Fatalf("%s: the refusal is %s, want it to name the 2 matches and ask for an occurrence, with no candidates",
 						refusal.name, response.Body.String())
 				}
@@ -708,7 +700,7 @@ func newQuotedPosts(t *testing.T) *quotedPosts {
 			repeat: func(t *testing.T) *httptest.ResponseRecorder {
 				t.Helper()
 				again := send(t, key)
-				if again.Code != reply.status || again.Header().Get(contracts.IdempotencyReplayedHeader) != "?1" {
+				if again.Code != reply.status || !replayed(again) {
 					t.Fatalf("the repeat of the %s reply: status=%d body=%s, want its %d, replayed", reply.name, again.Code, again.Body.String(), reply.status)
 				}
 				return again
@@ -758,7 +750,7 @@ func TestADeletedPostLeavesNoQuoteOfItsWords(t *testing.T) {
 	editThreadComment(t, handler, reply("comment"), "On the second alpha, first edited.", "alice")
 	editIssueMessage(t, handler, reply("message"), "On the message's second alpha, first edited.", "alice")
 	// The control: the reply reads its quote until the delete, so a read that lost it is seen.
-	requireQuoted(t, "GET the comment's reply before the delete", readAnswer(t, handler, "/api/v1/comments/"+reply("comment")),
+	requireQuoted(t, "GET the comment's reply before the delete", getRaw(t, handler, "/api/v1/comments/"+reply("comment")),
 		reply("comment"), quoting(quotedWord, 1))
 
 	deleteThreadComment(t, handler, f.posts["comment"], "alice")
@@ -775,7 +767,7 @@ func TestADeletedPostLeavesNoQuoteOfItsWords(t *testing.T) {
 	get := func(path string) func(*testing.T) []byte {
 		return func(t *testing.T) []byte {
 			t.Helper()
-			return readAnswer(t, handler, path)
+			return getRaw(t, handler, path)
 		}
 	}
 	repeat := func(name string) func(*testing.T) []byte {
@@ -832,7 +824,7 @@ func TestADeletedPostLeavesNoQuoteOfItsWords(t *testing.T) {
 		requireBlockMark(t, step, body, reply(row.reply), "deleted_at")
 	}
 	// The ask no route deletes: its reply keeps both.
-	requireQuoted(t, "GET /api/v1/asks/{id}, the ask's reply", readAnswer(t, handler, "/api/v1/asks/"+f.posts["ask"]),
+	requireQuoted(t, "GET /api/v1/asks/{id}, the ask's reply", getRaw(t, handler, "/api/v1/asks/"+f.posts["ask"]),
 		reply("ask"), quoting(quotedWord, 1))
 	askPage := "/api/v1/issues/" + f.issue + "/asks?order=activity&thread=1"
 	requireQuoted(t, "the ask thread page", readThreadPageAnswer(t, handler, askPage), reply("ask"), quoting(quotedWord, 1))

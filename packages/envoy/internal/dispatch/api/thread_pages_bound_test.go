@@ -123,7 +123,8 @@ func TestThreadPagesHoldTheirBoundOnTheLargestIssues(t *testing.T) {
 }
 
 // openBoundDatabase opens and migrates the database the measurement seeds. One that already holds
-// the seed's project is refused: the seed writes fixed keys, so a second run would fail halfway.
+// any project is refused: the seed writes fixed keys, so a second run would fail halfway, and its
+// counts hold the whole database to the seed, so any other row would fail them or skew a plan.
 func openBoundDatabase(t *testing.T, databaseURL string) *store.Store {
 	t.Helper()
 	ctx := context.Background()
@@ -136,11 +137,12 @@ func openBoundDatabase(t *testing.T, databaseURL string) *store.Store {
 		t.Fatalf("migrate the measurement database: %v", err)
 	}
 	var held bool
-	if err := database.Pool.QueryRow(ctx, `select exists (select 1 from projects where key = $1)`, boundProject).Scan(&held); err != nil {
+	if err := database.Pool.QueryRow(ctx, `select exists (select 1 from projects)`).Scan(&held); err != nil {
 		t.Fatalf("read the measurement database's projects: %v", err)
 	}
 	if held {
-		t.Fatalf("the measurement database already holds project %s: give the measurement a database of its own (createdb), as c-bound's run does", boundProject)
+		t.Fatalf("the database %s names already holds a project: the test seeds the database it names and needs an empty one. "+
+			"Create one with createdb, point %s at it and drop it after, as c-bound's run does", benchtime.DatabaseURLEnv, benchtime.DatabaseURLEnv)
 	}
 	return database
 }

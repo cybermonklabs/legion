@@ -58,7 +58,7 @@ func (s *server) listComments(w http.ResponseWriter, r *http.Request) {
 // ETag, and the subject the display tree read is logged against.
 func (s *server) answerCommentList(w http.ResponseWriter, r *http.Request, owner owner, artifactFilter, name string) {
 	var page *threadPage
-	if r.PathValue("key") != "" {
+	if owner.IssueKey != nil {
 		// Only the issue route accepts paging parameters.
 		var err error
 		page, err = parseThreadPage(r.URL.Query(), "in")
@@ -94,7 +94,7 @@ func (s *server) answerCommentList(w http.ResponseWriter, r *http.Request, owner
 			reader.resolve()
 		}
 	} else {
-		reads, err = s.readCommentThreadPage(r.Context(), deref(owner.IssueKey), artifactFilter, *page, trees)
+		reads, err = s.readCommentThreadPage(r.Context(), *owner.IssueKey, artifactFilter, *page, trees)
 	}
 	if err != nil {
 		s.writeHandlerError(w, err)
