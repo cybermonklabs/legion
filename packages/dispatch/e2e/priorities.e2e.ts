@@ -532,8 +532,14 @@ test("the priorities page opens on the order, and each fault list is a tab of it
     await expect.poll(() => documentOverflow(page)).toBeLessThanOrEqual(0);
     await expect.poll(() => pagerBelowWindow(page)).toBeLessThanOrEqual(0);
 
-    // The grouping control reads "Group by".
-    await expect(priorities.getByRole("combobox", { exact: true, name: "Group by" })).toBeVisible();
+    // The grouping control reads "Group by", inside the View display menu (INFRA-3135, R2).
+    await priorities.getByRole("button", { exact: true, name: "View" }).click();
+    await expect(
+      page
+        .getByRole("dialog", { name: "View" })
+        .getByRole("group", { exact: true, name: "Group by" })
+    ).toBeVisible();
+    await page.keyboard.press("Escape");
 
     // The count closed in the last 7 days is hidden until the column control turns it on.
     const closed = prioritiesTable.getByRole("columnheader", { name: /^Closed, 7 days/ });

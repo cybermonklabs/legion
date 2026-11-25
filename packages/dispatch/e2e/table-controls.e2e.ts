@@ -6771,14 +6771,17 @@ test("every list of options a reader picks from holds a text box that narrows it
         }
 
         await page.keyboard.press("?");
-        await nextFrames(page);
-        if ((await shortcuts.count()) > 0) {
+        const typed = listOf(editPriorities).locator(TEXT_BOXES);
+        const opened = await settledState(`${at} after ?`, [
+          ["shortcuts", shortcuts],
+          ["list", typed],
+        ]);
+        if (opened === "shortcuts") {
           keyed.push(`${at}: ? on the closed trigger opened the Keyboard shortcuts`);
           await page.keyboard.press("Escape");
           await expect(shortcuts, `${at}: Escape left the Keyboard shortcuts open`).toHaveCount(0);
           await editPriorities.focus();
         } else {
-          const typed = listOf(editPriorities).locator(TEXT_BOXES);
           await expect(
             typed,
             `${at}: ? on the closed trigger is not in its list's text box`
@@ -7008,10 +7011,10 @@ test("Edit priorities opens its list in view with the focus in its text box, and
           panel.evaluate((node) => {
             const box = node.getBoundingClientRect();
             const inWindow =
-              box.left >= -1 &&
-              box.right <= window.innerWidth + 1 &&
-              box.top >= -1 &&
-              box.bottom <= window.innerHeight + 1;
+              box.left >= 0 &&
+              box.right <= window.innerWidth &&
+              box.top >= 0 &&
+              box.bottom <= window.innerHeight;
             return inWindow
               ? "whole"
               : `at ${Math.round(box.left)}-${Math.round(box.right)} x ${Math.round(box.top)}-${Math.round(box.bottom)} px in ${window.innerWidth}x${window.innerHeight}`;
