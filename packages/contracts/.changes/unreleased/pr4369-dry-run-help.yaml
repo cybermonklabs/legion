@@ -14,8 +14,10 @@ body: |-
   uploads in Dispatch's order, or that the call refuses for the text alone; that it sends Dispatch
   the bytes of any other Markdown file, refusing what Dispatch refuses of them but never their
   spelling;
-  that for a text it did not refuse before it asks, when Dispatch cannot answer, it says so on
-  stderr and passes; and that with force it asks for none of a new document's refusals and checks
+  that for a text it asks about (each but an empty text given inline, read from content-file or
+  from stdin, which it passes with no warning) and did not refuse before it asks, when Dispatch
+  cannot answer, it says so on stderr and passes; and that with force it asks for none of a new
+  document's refusals and checks
   the spelling Dispatch answers as for any text, so it passes with no warning a text the call can
   then refuse for one of them: under a name the owner does not hold, because the call uploads a
   new document; under a name the owner holds, because a replacement holds those rules for the

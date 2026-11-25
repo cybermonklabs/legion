@@ -2094,7 +2094,11 @@ describe("the dispatch CLI", () => {
     roundTrip = (markdown, body) =>
       "file" in body
         ? Response.json(
-            { code: "NOT_FOUND", error: `no route for POST ${FILE_ROUND_TRIP}`, hint: NO_ROUTE_HINT },
+            {
+              code: "NOT_FOUND",
+              error: `no route for POST ${FILE_ROUND_TRIP}`,
+              hint: NO_ROUTE_HINT,
+            },
             { status: 404 }
           )
         : keptText(markdown);

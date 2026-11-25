@@ -26,7 +26,9 @@ rules, the dry run asks for none of those, so it passes with no warning a text t
 refuse for one of them: under a name the owner does not hold, because the call uploads a new
 document; under a name the owner holds, because a replacement holds those rules for the blocks it
 adds or changes, and refuses a rendering that grows past the bytes one document holds over the
-version it replaces. When Dispatch cannot answer, the dry run says so on stderr and passes.
+version it replaces. When Dispatch cannot answer, the dry run says so on stderr and passes; an
+empty text given inline, in `--content-file` or on stdin, which it asks Dispatch nothing about, it
+passes with no warning.
 The `dispatch` skill in this repository, `skills/dispatch/SKILL.md`, teaches the workflow. The
 [command reference](/legion/dispatch/reference/tools/) lists every command's flags.
 

@@ -1389,7 +1389,8 @@ stdin, or in a Markdown `--path` file. Any other text that is not empty, given i
 with a warning that the call is refused for the same reason; the empty string, which it asks
 Dispatch nothing about, it passes with no warning; and the call is refused for Dispatch being off,
 exit 2. The
-step waits at most 5 s. For a text it does not refuse before it asks, when it gets no answer (no
+step waits at most 5 s. For a text it asks about (each but an empty text given inline, read from
+`--content-file` or from stdin) and does not refuse before it asks, when it gets no answer (no
 Dispatch configured, any other failure, no answer in time, or a Dispatch without the route), the
 dry run passes, and one `dispatch: warning:` line on stderr says why and what the call does then,
 as the check's kind says it: text given inline, read from `--content-file` or from stdin, that a

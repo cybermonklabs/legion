@@ -61,8 +61,9 @@
 //     DISPATCH_DRY_RUN_LOCAL=1 added to that environment (`spawnDryRun`), which the probe
 //     ignores: the CLI's dry run then checks the arguments alone and contacts no Dispatch server,
 //     where `dispatch artifact --dry-run` otherwise asks Dispatch to check the text as the call
-//     does: how it would store inline text, or what it refuses of a Markdown `--path` file's
-//     bytes. The call runs without the variable and itself refuses a text Dispatch would store
+//     does: how it would store text given inline, read from --content-file or from stdin, or what
+//     it refuses of a Markdown `--path` file's bytes. The call runs without the variable and
+//     itself refuses a text Dispatch would store
 //     under another spelling or refuses for the text alone, so the gate's read needs no round
 //     trip. The reads take at most half
 //     the call's deadline: the first run of each is cut at 20 s, or sooner when that half ends
@@ -1827,8 +1828,9 @@ export interface UnreadableCommand {
  * pipes, and so its answer, open until the limit. The script gets `env` with
  * DISPATCH_DRY_RUN_LOCAL=1 added: under it the CLI's dry run of an upload
  * (`dispatch artifact --dry-run`) checks the arguments alone and asks Dispatch nothing, where it
- * otherwise asks Dispatch to check the text as the call does: how it would store inline text
- * (POST /api/v1/markdown/round-trip), or what it refuses of a Markdown `--path` file's bytes
+ * otherwise asks Dispatch to check the text as the call does: how it would store text given
+ * inline, read from --content-file or from stdin (POST /api/v1/markdown/round-trip), or what it
+ * refuses of a Markdown `--path` file's bytes
  * (POST /api/v1/markdown/file-round-trip). The variable leaves a `dispatch result` record's dry
  * run asking Dispatch, as it did before, and the gate reviews no `result`. The gate reads
  * arguments, and the call makes those round trips itself and refuses a text Dispatch would store

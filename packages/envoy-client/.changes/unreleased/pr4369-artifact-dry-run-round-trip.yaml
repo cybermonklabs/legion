@@ -48,9 +48,10 @@ body: |-
   not the refusal of the held name; and a text that is not blank, given inline, read from
   `--content-file` or from stdin, whose check got no answer from a Dispatch that has the route, is
   refused there too, with `Dispatch could not say how it would store this text`, while its dry run
-  passes it with a warning. For a text the dry run does not refuse before it asks Dispatch,
-  when Dispatch gives no answer within 5 s, or has no such route, or is not configured, it passes
-  and says so on stderr, so its standard output is the arguments' JSON alone. The dry run sends no
+  passes it with a warning. For a text the dry run asks Dispatch about (each but an empty text
+  given inline, read from `--content-file` or from stdin) and does not refuse before it asks, when
+  Dispatch gives no answer within 5 s, or has no such route, or is not configured, it passes and
+  says so on stderr, so its standard output is the arguments' JSON alone. The dry run sends no
   second attempt after a failed one, and names the failure Dispatch answers, such as a 500; where
   Dispatch says the token is no longer live, it presents a fresh token once.
   `DISPATCH_DRY_RUN_LOCAL=1` keeps an upload's dry run local: it then asks Dispatch nothing and

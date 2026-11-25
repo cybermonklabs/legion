@@ -564,7 +564,8 @@ Every other Dispatch command is outside the gate, and its text posts unreviewed:
 The gate reads the arguments from the command's own `--dry-run`. It runs the dry run with
 `DISPATCH_DRY_RUN_LOCAL=1`, and the CLI then checks the arguments alone. Without that variable,
 `dispatch artifact --dry-run` asks Dispatch to check the text as the call does: how it would store
-inline text, or what it refuses of a Markdown `--path` file's bytes. The call itself runs without
+text given inline, read from `--content-file` or from stdin, or what it refuses of a Markdown
+`--path` file's bytes. The call itself runs without
 the variable. It asks Dispatch the same questions and refuses a text that Dispatch would store
 under another spelling, or that an upload refuses for the text alone. So the gate's dry run stores
 nothing and contacts no Dispatch server, and
