@@ -80,7 +80,14 @@ func (s *server) createMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	issueKey := r.PathValue("key")
-	message, advice, err := s.createStoredMessage(r.Context(), &issueKey, input, delivery, false, actor, reader)
+	// A role target whose holder may not be shown the issue's project is refused before the
+	// message is written; a session target is judged in its transaction (createStoredMessage).
+	resolved, err := s.refuseMessageTargetOutsideProject(r.Context(), reader, issueKey, input.Target, delivery)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	message, advice, err := s.createStoredMessage(r.Context(), &issueKey, input, delivery, false, actor, reader, resolved)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -137,7 +144,7 @@ func (s *server) createAgentMessage(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	message, _, err := s.createStoredMessage(r.Context(), nil, messageInput, delivery, input.ConnectedOnly, actor, reader)
+	message, _, err := s.createStoredMessage(r.Context(), nil, messageInput, delivery, input.ConnectedOnly, actor, reader, nil)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -373,6 +380,9 @@ func planMessageNode(
 // (createAgentMessageInput.ConnectedOnly). actor is the writer the message records, and reader is
 // that writer as a read binds it (readerAs), which a caller resolves before this opens its
 // transaction: the issue the message is on, and the reply block it names, are read as it.
+// resolved is the target's resolution a caller made before the transaction
+// (refuseMessageTargetOutsideProject), which the first attempt's send takes as its own, and nil
+// where the caller made none.
 func (s *server) createStoredMessage(
 	ctx context.Context,
 	issueKey *string,
@@ -380,6 +390,7 @@ func (s *server) createStoredMessage(
 	delivery string,
 	connectedOnly bool,
 	actor, reader model.Actor,
+	resolved *ResolvedMention,
 ) (model.Message, *writeAdvice, error) {
 	tx, err := s.begin(ctx)
 	if err != nil {
@@ -454,6 +465,21 @@ func (s *server) createStoredMessage(
 	hiddenTarget, err := hiddenSessionTarget(ctx, tx, reader, input.Target)
 	if err != nil {
 		return model.Message{}, nil, err
+	}
+	// A session target the writer sees that may not be shown the issue's project is refused, 403
+	// SESSION_OUTSIDE_PROJECT, before anything of the message is written: its target named here or
+	// inherited from its thread's root above (refuseSessionOutsideProject). A hidden one keeps the
+	// hidden answer above, which sends it nothing.
+	if issueKey != nil && input.Target != nil && hiddenTarget == "" {
+		if route, parseErr := model.ParseRoute(*input.Target); parseErr == nil && route.Kind == "session" {
+			project, _, err := graphstore.ScopeOf(ctx, tx, issueKey, nil)
+			if err == nil {
+				err = refuseSessionOutsideProject(ctx, tx, route.ID, project, "be sent this message")
+			}
+			if err != nil {
+				return model.Message{}, nil, err
+			}
+		}
 	}
 	author, err := json.Marshal(actor)
 	if err != nil {
@@ -626,7 +652,7 @@ func (s *server) createStoredMessage(
 		// owning attempt 1 - a repeat of a keyed send that found this message committed
 		// (sendHeldMessageOn) among them - means the message's delivery is under way there: the
 		// message is stored, so it is answered with the attempts as that sender has left them.
-		attempt, err := s.deliverMessageResuming(sending, message, delivery, actor, &thread, 1)
+		attempt, err := s.deliverMessageWith(sending, message, delivery, actor, &thread, 1, resolved)
 		switch {
 		case errors.Is(err, errAttemptNotPending):
 			if err := s.hydrateWrittenMessage(sending, s.deps.Store.Pool, reader, &message); err != nil {

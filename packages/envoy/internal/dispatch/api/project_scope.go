@@ -84,6 +84,10 @@ const (
 	// codeRestrictedMember refuses a restricted member a write that belongs to the deployment, and
 	// an issue write that names repo (refuseRepoOfRestrictedMember).
 	codeRestrictedMember = "RESTRICTED_MEMBER"
+	// codeSessionOutsideProject refuses a write that gives a session work of a project, or sends
+	// it one of that project's items, when the session may not be shown that project: the person
+	// or the credential it acts for does not see it (refuseSessionOutsideProject).
+	codeSessionOutsideProject = "SESSION_OUTSIDE_PROJECT"
 )
 
 // brokerCredentialActor is the caller an access token the secrets broker issued decided, and

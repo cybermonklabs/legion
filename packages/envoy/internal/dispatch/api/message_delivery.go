@@ -944,11 +944,32 @@ func (s *server) deliverMessageResuming(
 	replyThread *messageReplyThread,
 	resumeAttempt int,
 ) (model.MessageDelivery, error) {
+	return s.deliverMessageWith(ctx, message, delivery, actor, replyThread, resumeAttempt, nil)
+}
+
+// deliverMessageWith is deliverMessageResuming with resolved, a resolution of the message's target
+// its caller made before the message was written (refuseMessageTargetOutsideProject), which the
+// first resolution here takes as its own while the route it would resolve is that same target,
+// so the message's creation asks the listener once. A redo, after the locked rows disagreed with
+// it, resolves afresh; nil resolves as deliverMessageResuming does.
+func (s *server) deliverMessageWith(
+	ctx context.Context,
+	message model.Message,
+	delivery string,
+	actor model.Actor,
+	replyThread *messageReplyThread,
+	resumeAttempt int,
+	resolved *ResolvedMention,
+) (model.MessageDelivery, error) {
 	pending, err := resolveThenLock(ctx,
 		func(ctx context.Context) (ResolvedMention, error) {
 			route, err := s.messageDeliveryRoute(ctx, message, resumeAttempt)
 			if err != nil {
 				return ResolvedMention{}, err
+			}
+			if first := resolved; first != nil && first.Target == route {
+				resolved = nil
+				return *first, nil
 			}
 			return s.resolveMentionTarget(ctx, route, delivery, 0), nil
 		},
@@ -980,6 +1001,13 @@ func (s *server) deliverMessageResuming(
 	// A direct message is written to the session it names and invites its answer; nothing about
 	// one says a reply is unwanted. A copy Dispatch queues for its session says the same.
 	wanted := contracts.ExpectsReplyOptional
+	// The project the message is of, its issue's, which every try's session and the session a
+	// queued copy is stored for must see (sendResolvedDelivery, queueForUnknownSession); a direct
+	// message has none.
+	project, err := s.deliveryProject(ctx, message.IssueKey, nil)
+	if err != nil {
+		return model.MessageDelivery{}, err
+	}
 	takeover := s.newTakeoverRetry()
 	var outcome sendOutcome
 	// held is whether this sender still holds the attempt's claim when its tries end. A renew that
@@ -989,7 +1017,7 @@ func (s *server) deliverMessageResuming(
 	err = takeover.retry(ctx,
 		func() string {
 			outcome = s.sendResolvedDelivery(
-				ctx, pending.resolved, messageTarget(message.Target), message.Body, key, pending.urgency, wanted, pending.frame, connectedOnly,
+				ctx, pending.resolved, messageTarget(message.Target), message.Body, key, pending.urgency, wanted, pending.frame, connectedOnly, project,
 			)
 			return outcome.failure
 		},
@@ -1022,7 +1050,7 @@ func (s *server) deliverMessageResuming(
 				return model.MessageDelivery{}, err
 			}
 			if held {
-				outcome = s.queueForUnknownSession(ctx, message, pending, key, wanted, outcome.failure)
+				outcome = s.queueForUnknownSession(ctx, message, pending, key, wanted, outcome.failure, project)
 			}
 		}
 	}

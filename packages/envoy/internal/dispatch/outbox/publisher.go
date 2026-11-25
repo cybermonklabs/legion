@@ -268,10 +268,11 @@ func lostToContextEnd(ctx context.Context, err error) bool {
 }
 
 // scanBatch reads a batch (readBatch) and publishes it (publishBatch): it resolves its events'
-// destinations with the batch's followers, authors, recipients and mention deliveries read
-// in at most eight statements (loadLookups) and its role routes' holders read once per role
-// (resolveRoleHolders), and sends it through one window (Publisher.WindowUntil) as
-// chains: the sends of one owner's events to one destination key go one at a time, in id order,
+// destinations with the batch's followers, authors, recipients, mention deliveries and sessions'
+// sight read in at most nine statements (loadLookups) and its role routes' holders read once per
+// role, and their sight in one more (resolveRoleHolders), and sends it through one window
+// (Publisher.WindowUntil) as chains: the sends of one owner's events to one destination key go
+// one at a time, in id order,
 // each once the one before it reached its destination, and each send of the owner to a key other
 // than its topic family once the owner's earlier topic sends reached that family, while the chains
 // of different owners and destination keys proceed side by side (planChains, sendChains). That is
@@ -1135,7 +1136,8 @@ func resolveDestinations(ctx context.Context, deps Deps, events []*batchEvent) (
 // the event's mentions did (a new comment's alone), and mentionPending whether a session's copy
 // was held back for a mention still being sent (leftTo). failed holds the settles and the holds
 // of held-back copies that failed, which end no list: each backs the event off once the
-// destinations the list does name are sent (err).
+// destinations the list does name are sent (err). look, project and eventID are what a session's
+// copy is judged by (withheld): the batch's lookup, the event's project and its id.
 type destinations struct {
 	list           []destination
 	seen           map[string]struct{}
@@ -1144,6 +1146,9 @@ type destinations struct {
 	mentions       mentionDeliveries
 	mentionPending bool
 	failed         []error
+	look           lookup
+	project        string
+	eventID        int64
 }
 
 func (d *destinations) add(subject, label, id string) {
@@ -1180,7 +1185,7 @@ func (d *destinations) addDestination(dest destination) {
 // publishFallbackCopies). What reaches this keying is a session whose mentions have settled, or
 // one no attempt of the comment names, which is published to under the event's own key.
 func (d *destinations) addSession(sessionID, label, id string) {
-	if d.leftToMention(sessionID) {
+	if d.withheld(sessionID, label) || d.leftToMention(sessionID) {
 		return
 	}
 	d.addDestination(destination{
@@ -1218,6 +1223,9 @@ func (d *destinations) addSession(sessionID, label, id string) {
 // row of the role's own topic, so the holder's later events flow again and the comment reaches
 // it once, by that row (holdsTheForwardAsARow, unnamedForwardBound).
 func (d *destinations) addWorkingSession(sessionID, label, id string) {
+	if d.withheld(sessionID, label) {
+		return
+	}
 	hold := d.workingSessionHold(sessionID)
 	if hold == copyLeftToTheMention {
 		return
@@ -1236,6 +1244,43 @@ func (d *destinations) addSessions(sessionIDs []string, label string) {
 	for _, sessionID := range sessionIDs {
 		d.addSession(sessionID, label, sessionID)
 	}
+}
+
+// withheld reports whether sessionID's own subject is no destination of the event because the
+// session may not be shown the event's project: the person or the credential it acts for does not
+// see that project (lookup.sees, access.SessionSeesProjectClause). It is the one check every copy
+// bound for a session's own subject asks, before the mention rule is asked of it (addSession,
+// addWorkingSession) - the route's session, the claimant, a primary document's or a thread's or a
+// document's author, a follower, a session a payload names, the previous claimant - so a copy it
+// withholds is held back for no mention and kept as no fallback row: nothing of the event reaches
+// that subject. A role route's holder is judged by the same rule once it is resolved
+// (withholdUnseenHolders), and the fallback pass judges its row's session again when it publishes
+// (decideFallbackCopy).
+//
+// Every event the outbox publishes names a project: an issue's, a document's or a project's own
+// (readBatchSQL's project column, which envelope requires of a document's event); an event that
+// names none - one built with no project, as some of this package's tests build theirs - is judged
+// by nothing here and reaches every route as before. A sight the batch did not read withholds the
+// copy and backs the event off once the destinations its list names are sent (failed), so a
+// session it cannot judge is sent nothing rather than everything.
+//
+// A withheld copy is logged with the event, the project, the session and the route, at Info:
+// nothing failed, and a session's id names no person.
+func (d *destinations) withheld(sessionID, label string) bool {
+	if d.project == "" || d.look == nil {
+		return false
+	}
+	sees, err := d.look.sees(sessionID, d.project)
+	switch {
+	case err != nil:
+		d.failed = append(d.failed, err)
+		return true
+	case sees:
+		return false
+	}
+	slog.Info("dispatch outbox: a destination is withheld: its session does not see the event's project",
+		"event", d.eventID, "project", d.project, "session", sessionID, "route", label)
+	return true
 }
 
 // err joins cause, the lookup or the route failure that ended the list, with the settles and the
@@ -1269,7 +1314,10 @@ func (d *destinations) err(cause error) error {
 // neither.
 func eventDestinations(ctx context.Context, deps Deps, item *batchEvent, look lookup) (*destinations, error) {
 	event := item.event
-	d := &destinations{seen: map[string]struct{}{}, delivered: item.delivered}
+	d := &destinations{seen: map[string]struct{}{}, delivered: item.delivered, look: look, project: event.Project, eventID: event.ID}
+	if event.Project != "" {
+		look.judgedBy(event.Project)
+	}
 	var err error
 	if event.Type == "comment.created" && payloadHasMentions(event.Payload) {
 		commentID := payloadString(event.Payload, "id")

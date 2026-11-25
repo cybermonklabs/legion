@@ -794,6 +794,12 @@ type claimIssueInput struct {
 // with `claim: null` and a text that names no holder; the issue reads, the listing, the children
 // and the priority faults answer such a claim as none, and a route to a role of a private project
 // the reader does not see as no route.
+//
+// A claim made in a session's name is refused, 403 SESSION_OUTSIDE_PROJECT, when that session may
+// not be shown the issue's project (refuseVisibleSessionOutsideProject): the claimant is sent what a person
+// tells the issue (the outbox's addClaimantRoute). It is read before the claim's cycle, which
+// writes nothing until it decides; an issue the caller does not see answers no project here and
+// is the missing issue that cycle answers.
 func (s *server) claimIssue(w http.ResponseWriter, r *http.Request) {
 	var input claimIssueInput
 	if err := decodeJSON(r, &input); err != nil {
@@ -811,6 +817,20 @@ func (s *server) claimIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	key := r.PathValue("key")
+	if actor.Kind == "session" {
+		who, ok := s.readerOf(w, r)
+		if !ok {
+			return
+		}
+		project, err := issueProjectSeenBy(r.Context(), s.deps.Store.Pool, who, key)
+		if err == nil {
+			err = s.refuseVisibleSessionOutsideProject(r.Context(), who, actor.ID, project, "claim this issue")
+		}
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+	}
 	rule := personRule{override: input.Force, forcible: true}
 	s.claimCycle(w, r, key, actor, rule, func(before model.Issue, judged judgement) (claimChange, error) {
 		if before.ClosedAt != nil {

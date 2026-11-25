@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/roles"
 	"github.com/sjawhar/envoy/internal/session"
 )
@@ -237,11 +239,9 @@ func resolveRoleHolders(ctx context.Context, deps Deps, events []*batchEvent, re
 	if len(resolved) == 0 {
 		return
 	}
+	// Every forward is made first, so the sight of every holder they name is read in one statement
+	// (withholdUnseenHolders) before any of them is asked whether it waits.
 	for _, event := range events {
-		// Written into the event's own list: a destination that waits stays in it, marked, so
-		// that it holds its key against the owner's later events, and one a row has taken over
-		// stays in it marked too, sending nothing and holding nothing (destination.waiting,
-		// destination.heldAsARow, planChains).
 		for index := range event.destinationsOf {
 			dest := &event.destinationsOf[index]
 			result, ok := resolved[dest.role]
@@ -251,6 +251,19 @@ func resolveRoleHolders(ctx context.Context, deps Deps, events []*batchEvent, re
 			dest.forward = forwardOf(dest.role, event.item, result.resolution, result.err, result.at)
 			dest.forward.mentionKeys = dest.mentionKeys
 			dest.forward.settledKeys = dest.settledKeys
+		}
+	}
+	withholdUnseenHolders(ctx, deps, events)
+	for _, event := range events {
+		// Written into the event's own list: a destination that waits stays in it, marked, so
+		// that it holds its key against the owner's later events, and one a row has taken over
+		// stays in it marked too, sending nothing and holding nothing (destination.waiting,
+		// destination.heldAsARow, planChains).
+		for index := range event.destinationsOf {
+			dest := &event.destinationsOf[index]
+			if _, ok := resolved[dest.role]; !ok {
+				continue
+			}
 			if roleCopyWaitsForAMention(event, *dest) {
 				dest.waiting = true
 				event.mentionPending = true
@@ -262,6 +275,75 @@ func resolveRoleHolders(ctx context.Context, deps Deps, events []*batchEvent, re
 			if dest.dedupeKey == "" {
 				dest.dedupeKey = roleFallbackKey(dest.mentionKeys, dest.settledKeys, dest.mentionStates.unpinned, dest.forward)
 			}
+		}
+	}
+}
+
+// errNoSightReader is a role forward's holder judged with no store in Deps to read its sight from.
+var errNoSightReader = errors.New("the outbox has no store to read the holder's sight from")
+
+// heldUnseen is the skip of a role forward whose holder may not be shown the event's project.
+const heldUnseen = "the role's holder does not see the event's project"
+
+// withholdUnseenHolders judges the holder of every role forward of events that would reach one
+// (resolveRoleHolders) by the rule every session's own copy is judged by (destinations.withheld,
+// access.SessionSeesProjectClause): a holder that may not be shown the event's project is sent
+// nothing, and the forward counts as reached (roleForward.skip), as one to the event's own actor
+// does, so the role's later events are not held back for it. The sight of every such holder for
+// every such event's project is read in one statement on the outbox's pool, under its gate
+// (lanes.statement). A read that fails, or a Deps with no store, leaves each forward it would have
+// judged pending with nothing sent (roleForward.err, heldStateUnresolved), backed off and resolved
+// again, as a holder whose claim could not be read is. A forward the event already reached, one
+// kept for a role nobody holds (whose handover judges the holder it reaches, handOverKeptCopy),
+// and one that sends nothing whatever is judged by nothing here, nor is an event that names no
+// project (destinations.withheld).
+//
+// A withheld forward is logged with the event, the project, the role and the holder, at Info.
+func withholdUnseenHolders(ctx context.Context, deps Deps, events []*batchEvent) {
+	var judged []*destination
+	var owners []*batchEvent
+	holders, projects := map[string]struct{}{}, map[string]struct{}{}
+	for _, event := range events {
+		if event.event.Project == "" {
+			continue
+		}
+		for index := range event.destinationsOf {
+			dest := &event.destinationsOf[index]
+			forward := dest.forward
+			if forward == nil || forward.holder == "" || forward.keptFor != "" || forward.skip != "" || forward.err != nil {
+				continue
+			}
+			if _, reached := event.delivered[dest.subject]; reached {
+				continue
+			}
+			judged = append(judged, dest)
+			owners = append(owners, event)
+			holders[forward.holder] = struct{}{}
+			projects[event.event.Project] = struct{}{}
+		}
+	}
+	if len(judged) == 0 {
+		return
+	}
+	sight, err := map[string]map[string]bool(nil), errNoSightReader
+	if deps.Store != nil {
+		err = deps.lanes.statement(func() error {
+			var read error
+			sight, read = access.SessionsSeeProjects(ctx, deps.Store.Pool,
+				slices.Sorted(maps.Keys(holders)), slices.Sorted(maps.Keys(projects)))
+			return read
+		})
+	}
+	for index, dest := range judged {
+		forward, event := dest.forward, owners[index]
+		switch {
+		case err != nil:
+			forward.heldState = heldStateUnresolved
+			forward.err = fmt.Errorf("read whether the role's holder %s sees project %s: %w", forward.holder, event.event.Project, err)
+		case !sight[event.event.Project][forward.holder]:
+			forward.skip = heldUnseen
+			slog.Info("dispatch outbox: a destination is withheld: its session does not see the event's project",
+				"event", event.event.ID, "project", event.event.Project, "role", dest.role, "session", forward.holder)
 		}
 	}
 }
@@ -941,6 +1023,10 @@ func handOverKept(ctx context.Context, deps Deps, sender bus.Sender, role string
 // counts only for the holder it reached (keptHandovers.handedTo), and because a keep is made for
 // a role no live holder can take: the resolution that still finds none ends the handover on one
 // claim read rather than on the lane's two.
+//
+// A holder that may not be shown the event's project (holderSeesTheCopy) is handed nothing, as a
+// holder a batch's own forward reaches is (withholdUnseenHolders): the copy stays on the lane, and
+// nothing is recorded as handed over.
 func handOverKeptCopy(ctx context.Context, deps Deps, sender bus.Sender, role string, item contracts.Envelope, keptAt time.Time, handed *keptHandovers) error {
 	if deps.KeptLanes == nil {
 		return nil
@@ -953,6 +1039,13 @@ func handOverKeptCopy(ctx context.Context, deps Deps, sender bus.Sender, role st
 	if handover.keptFor != "" || handover.skip != "" || handover.err != nil {
 		return nil
 	}
+	if sees, err := holderSeesTheCopy(ctx, deps, handover.holder, item); err != nil || !sees {
+		if err == nil {
+			slog.Info("dispatch outbox: a destination is withheld: its session does not see the event's project",
+				"event_id", item.EventID, "role", role, "session", handover.holder)
+		}
+		return err
+	}
 	leads, seq, err := keptCopyLeadsTheLane(ctx, deps.KeptLanes, role, item, handed.handedTo(role, handover.holder))
 	if err != nil || !leads {
 		return err
@@ -964,6 +1057,33 @@ func handOverKeptCopy(ctx context.Context, deps Deps, sender bus.Sender, role st
 	}
 	handed.handed(role, handover.holder, seq)
 	return nil
+}
+
+// holderSeesTheCopy reports whether holder may be shown the event item carries, by the rule every
+// destination is judged by (access.SessionSeesProjectClause), read on the outbox's pool under its
+// gate: an event that names no project in its payload (model.Event.Project) is shown, as the
+// batch's own destinations are (destinations.withheld). A payload that does not decode, and a
+// Deps with no store, answer an error.
+func holderSeesTheCopy(ctx context.Context, deps Deps, holder string, item contracts.Envelope) (bool, error) {
+	var carried struct {
+		Project string `json:"project"`
+	}
+	if err := json.Unmarshal([]byte(item.Payload), &carried); err != nil {
+		return false, fmt.Errorf("read the project of %s: %w", item.EventID, err)
+	}
+	if carried.Project == "" {
+		return true, nil
+	}
+	if deps.Store == nil {
+		return false, errNoSightReader
+	}
+	var sees bool
+	err := deps.lanes.statement(func() error {
+		var read error
+		sees, read = access.SessionSeesProject(ctx, deps.Store.Pool, holder, carried.Project)
+		return read
+	})
+	return sees, err
 }
 
 // keptHandovers is what one batch's own handovers have taken off the kept lanes it writes: per

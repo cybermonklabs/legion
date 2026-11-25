@@ -107,12 +107,18 @@ func (s *server) attemptWriter(ctx context.Context, actor model.Actor) (model.Ac
 // same key - the delivery sweep resuming an attempt whose sender died between this publish and its
 // settle, or a Retry in the same mode - is the duplicate the stream reports, not a second copy.
 //
+// A session that may not be shown project, the message's (deliveryProject), has nothing queued:
+// the attempt settles failed with why (withheldFromSession), as its listener send would have.
+//
 // A publish that fails queues nothing: the attempt then settles failed with failure and the
 // publish's own error, so the person can retry it.
 func (s *server) queueForUnknownSession(
 	ctx context.Context, message model.Message, pending pendingMessageDelivery, key string,
-	wanted contracts.ExpectsReply, failure string,
+	wanted contracts.ExpectsReply, failure, project string,
 ) sendOutcome {
+	if withheld := s.withheldFromSession(ctx, pending.resolved.attemptSessionID, project); withheld != "" {
+		return sendOutcome{failure: withheld}
+	}
 	envelope := queuedEnvelope(listenerSendInput(
 		pending.resolved.attemptSessionID, pending.resolved.Delivery, message.Body, key,
 		pending.urgency, wanted, pending.frame, false,

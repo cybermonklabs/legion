@@ -427,11 +427,15 @@ const privateSession = "s-priv"
 // request it is sent in calls.
 func walkListener(t *testing.T, topics *[]string, calls *listenerCalls) *httptest.Server {
 	t.Helper()
-	const s1 = `{"session_id":"s1","title":"planner","dir":"/w/legion","machine_id":"m1","roles":[],"capabilities":["aside","btw","steer"],"projects":[],"last_seen":42}`
+	// s1's and s-pub's records carry no projects key: the listener does not know their
+	// credentials' lists, so what each session may be sent is its person's sight
+	// (access.SessionSeesProjectClause), and which caller sees each is its session_projects pairs
+	// (seedHiddenWrites).
+	const s1 = `{"session_id":"s1","title":"planner","dir":"/w/legion","machine_id":"m1","roles":[],"capabilities":["aside","btw","steer"],"last_seen":42}`
 	// s-pub and privateSession are live too, so a delivery a caller may not make to one would
 	// reach it: the person and session walk holds such a delivery to the failure one to a session
 	// nobody holds records, and a broadcast to one to the refusal of a send to one nobody holds.
-	const sPub = `{"session_id":"s-pub","title":"pub worker","dir":"/w/pub","machine_id":"m1","roles":[],"capabilities":["aside","btw","steer"],"projects":[],"last_seen":42}`
+	const sPub = `{"session_id":"s-pub","title":"pub worker","dir":"/w/pub","machine_id":"m1","roles":[],"capabilities":["aside","btw","steer"],"last_seen":42}`
 	const sPriv = `{"session_id":"` + privateSession + `","title":"priv worker","dir":"/w/priv","machine_id":"m1","roles":[],"capabilities":["aside","btw","steer"],"projects":["PRIV"],"last_seen":42}`
 	records := map[string]string{"s1": s1, "s-pub": sPub, privateSession: sPriv}
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -528,6 +532,21 @@ func seedHiddenWrites(t *testing.T) hiddenWriteSeed {
 	ask := createdID(t, asCarol(http.MethodPost, "/api/v1/issues/"+issue+"/asks", map[string]any{"question": "Which way for PRIV?"}))
 	publicAsk := createdID(t, asCarol(http.MethodPost, "/api/v1/issues/"+seed.issue[seedPublic]+"/asks", map[string]any{"question": "Which way for PUB?"}))
 	comment := createdID(t, asCarol(http.MethodPost, "/api/v1/issues/"+issue+"/comments", map[string]any{"body": "A remark on PRIV."}))
+	// s1 and s-pub are agents of carol's that have acted in PUB, as a broker token of hers proves
+	// (session_owners, session_projects): each may be sent PRIV's items - s1 the message below and
+	// PRIV's claim, s-pub PRIV's ask it follows - which Dispatch refuses to a session that may not
+	// be shown PRIV (refuseSessionOutsideProject), and each is seen by every caller that sees PUB
+	// and by no caller of PRIV alone (access.SessionClause), as the walk reads them.
+	for _, session := range []string{"s1", "s-pub"} {
+		if _, err := seed.database.Pool.Exec(context.Background(),
+			`insert into session_owners (session_id, login) values ($1, $2)`, session, seedCarol); err != nil {
+			t.Fatalf("tie %s to carol: %v", session, err)
+		}
+		if _, err := seed.database.Pool.Exec(context.Background(),
+			`insert into session_projects (session_id, project_key) values ($1, $2)`, session, seedPublic); err != nil {
+			t.Fatalf("place %s in PUB: %v", session, err)
+		}
+	}
 	message := createdID(t, asCarol(http.MethodPost, "/api/v1/issues/"+issue+"/messages", map[string]any{
 		"body": "A note on PRIV.", "target": "session:s1", "delivery": "btw",
 	}))
@@ -561,11 +580,10 @@ func seedHiddenWrites(t *testing.T) hiddenWriteSeed {
 	// session_projects pair of PRIV: a session hidden from an open caller that does not see PRIV.
 	seed.asSession(t, privateSession, seedPrivate, http.MethodPost, "/api/v1/issues/"+issue+"/comments",
 		map[string]any{"body": privateSession + " works on PRIV."}, http.StatusCreated)
-	// Dispatch holds the listener's record of s1 and s-pub, each naming no project, and of
-	// privateSession, naming PRIV, as it does once any list of the sessions has read them (the
-	// route_roster row): while a project is private, an open viewer reaches a session that has acted
-	// in no project only through that record (access.SessionClause). No call of the walk reads the
-	// list again.
+	// Dispatch holds the listener's record of s1 and s-pub, each listing no credential's projects,
+	// and of privateSession, naming PRIV, as it does once any list of the sessions has read them
+	// (the route_roster row): s1 and s-pub are judged by their PUB pairs, and privateSession by its
+	// PRIV pair (access.SessionClause). No call of the walk reads the list again.
 	seed.mustRequest(t, callerCarol, http.MethodGet, "/api/v1/agents", nil, http.StatusOK)
 	// A Delivery session group of s1, which carol may name now that Dispatch holds s1's record: a
 	// group write reads its sessions as its writer sees them (refuseHiddenSessions).

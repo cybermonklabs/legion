@@ -784,8 +784,18 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 	if isSuggestion {
 		write = refusedWhenClosed
 	}
+	// The project the comment is of, which every session its mentions name or resolve to must see
+	// (refuseMentionSessionsOutsideProject); "" for a comment that mentions nobody.
+	var project string
 	if len(mentionTargets) > 0 {
 		if err := s.refuseOwnerBeforeResolving(r.Context(), writer, owner, write); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		if project, err = s.deliveryProject(r.Context(), owner.IssueKey, owner.ArtifactID); err == nil {
+			err = s.refuseMentionSessionsOutsideProject(r.Context(), writer, project, sessionTargets(mentionTargets))
+		}
+		if err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
@@ -793,6 +803,11 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 	start, err := resolveThenLock(r.Context(),
 		func(ctx context.Context) (commentResolution, error) {
 			resolved, err := s.resolveCommentDeliveries(ctx, owner, input, mentionTargets, delivery)
+			if err == nil && len(mentionTargets) > 0 {
+				// A role mention names its session only now: one that may not be shown the
+				// comment's project refuses the comment before anything of it is written.
+				err = s.refuseMentionSessionsOutsideProject(ctx, writer, project, resolvedRoleHolders(resolved.mentions))
+			}
 			if err == nil && len(mentionTargets) > 0 {
 				// The lookups may have waited a listener take-over out, and the write below reads
 				// its owner by the session content rule.

@@ -278,8 +278,23 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 		return issueWriteResult{}, errorf(http.StatusBadRequest, "INVALID_ISSUE", "refuse_open_foreign_children goes only with status retro or done")
 	}
 	if input.Route != nil && *input.Route != "" {
-		if _, err := model.ParseRoute(*input.Route); err != nil {
+		route, err := model.ParseRoute(*input.Route)
+		if err != nil {
 			return issueWriteResult{}, errorf(http.StatusBadRequest, "ROUTE_INVALID", "invalid route")
+		}
+		// A session route sends the session every event of the issue that notifies (the outbox's
+		// addRoute), so it is refused, 403 SESSION_OUTSIDE_PROJECT, for a session the caller sees
+		// that may not be shown the issue's project (refuseVisibleSessionOutsideProject), before any
+		// of the write is made - the settlement a close runs first among it. An issue the caller
+		// does not see answers no project here and is the missing row loadIssue answers below.
+		if route.Kind == "session" {
+			project, err := issueProjectSeenBy(ctx, s.deps.Store.Pool, who, call.key)
+			if err == nil {
+				err = s.refuseVisibleSessionOutsideProject(ctx, who, route.ID, project, "be routed this issue")
+			}
+			if err != nil {
+				return issueWriteResult{}, err
+			}
 		}
 	}
 	var labels, labelsAdd []string

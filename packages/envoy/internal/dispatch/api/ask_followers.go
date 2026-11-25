@@ -35,6 +35,12 @@ import (
 // for a writer that is not open, a session nobody holds is one the writer does not see either, so
 // the two take this one path. An open writer of a deployment that holds no private project sees
 // every session and reads nothing for it (R9).
+//
+// A follow is refused, 403 SESSION_OUTSIDE_PROJECT, for a session that may not be shown the project the
+// ask is of (refuseSessionOutsideProject): a follower is sent every answer and reply of the ask
+// (the outbox's addFollowerRoutes), so following is being given the ask's thread. It is read in
+// the write's transaction, after the ask and before its lock, so a refusal writes nothing. An
+// unfollow takes nothing from a session and is refused nothing for it.
 
 func parseAskID(r *http.Request) (string, error) {
 	id := r.PathValue("id")
@@ -203,6 +209,16 @@ func (s *server) changeAskFollower(w http.ResponseWriter, r *http.Request, follo
 		}
 		writeFollowerNotFound(w)
 		return
+	}
+	if follow {
+		project, _, err := graphstore.ScopeOf(r.Context(), tx, own.IssueKey, own.ArtifactID)
+		if err == nil {
+			err = refuseSessionOutsideProject(r.Context(), tx, sessionID, project, "follow this ask")
+		}
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
 	}
 	if err := s.deps.Events.LockOwners(r.Context(), tx, own.event("", actor, nil)); err != nil {
 		s.writeHandlerError(w, err)

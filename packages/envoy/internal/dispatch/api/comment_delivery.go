@@ -153,15 +153,23 @@ type sendOutcome struct {
 // session, still the one Dispatch resolved, is not who receives it. The attempt keeps naming that
 // session, and the role's holder answers it as any role-route attempt is answered
 // (lookUpRoleHolderReply).
+//
+// project is the project the delivery is of (deliveryProject): a session that may not be shown it
+// is sent nothing, and the try records why (withheldFromSession, projectWithheldPrefix), which no
+// later try outlasts. Every try of a send is judged so, a role's holder that a renewed resolution
+// names among them; "" is a delivery of no project, judged by nothing.
 func (s *server) sendResolvedDelivery(
 	ctx context.Context, target ResolvedMention, route, body, idempotencyKey string, urgency *string,
-	wanted contracts.ExpectsReply, frame []byte, connectedOnly bool,
+	wanted contracts.ExpectsReply, frame []byte, connectedOnly bool, project string,
 ) sendOutcome {
 	if target.ResolveError != "" {
 		return sendOutcome{failure: target.ResolveError}
 	}
 	if target.SessionID == nil {
 		return sendOutcome{failure: noLiveSessionPrefix}
+	}
+	if withheld := s.withheldFromSession(ctx, *target.SessionID, project); withheld != "" {
+		return sendOutcome{failure: withheld}
 	}
 	input := listenerSendInput(
 		*target.SessionID, target.Delivery, body, idempotencyKey, urgency, wanted, frame, connectedOnly,
@@ -951,6 +959,11 @@ func (s *server) deliverResolvedCommentMention(
 	// send instead, because a try after a listener take-over resolves the mention again and
 	// sends in the mode that resolution names (mentionResolutionFor).
 	wanted := commentExpectsReply(stored)
+	// The project the comment is of, which every try's session must see (sendResolvedDelivery).
+	project, err := s.deliveryProject(ctx, stored.IssueKey, stored.ArtifactID)
+	if err != nil {
+		return model.CommentDelivery{}, nil, err
+	}
 	var outcome sendOutcome
 	// heldBy is the earlier event a try found the session must take first, which it made no try
 	// behind; orderErr is a read of that rule that failed. Either ends the tries: the answer is no
@@ -977,7 +990,7 @@ func (s *server) deliverResolvedCommentMention(
 		}
 		// A comment mention is never the live view's model and thinking switch, so it asks for no
 		// connected session: a stopped session the listener knows takes it when it runs again.
-		outcome = s.sendResolvedDelivery(ctx, target, target.Target, stored.Body, key, nil, wanted, frame, false)
+		outcome = s.sendResolvedDelivery(ctx, target, target.Target, stored.Body, key, nil, wanted, frame, false, project)
 		return outcome.failure
 	}
 	if decided && claimed.pending.SessionID == nil {

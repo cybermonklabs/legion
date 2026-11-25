@@ -211,6 +211,8 @@ func TestAHeldPrivateEventPublishesOnceItsHubsAreProven(t *testing.T) {
 // seedHoldFallbackCopies seeds a comment on PRIV-1 and one on PUB-1, each comment.created event
 // already published, and one copy of each held as a comment_fallback_copies row on a session of
 // its own, unclaimed (the state a row the batch just held back is in), as seedFallbackBacklog does.
+// PRIV-1's session is one alice's broker token proved (session_owners): alice owns PRIV, so the
+// session may be shown PRIV's events, which the fallback pass asks of it (decideFallbackCopy).
 // It returns the two comments' ids.
 func seedHoldFallbackCopies(t *testing.T, database *store.Store, broker *events.Broker) (private, public string) {
 	t.Helper()
@@ -233,6 +235,7 @@ func seedHoldFallbackCopies(t *testing.T, database *store.Store, broker *events.
 		}
 		return commentID
 	}
+	tieSession(t, database, "s-priv", "alice")
 	return seed("PRIV-1", "s-priv"), seed("PUB-1", "s-pub")
 }
 

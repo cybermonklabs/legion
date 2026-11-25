@@ -249,6 +249,7 @@ func TestEverySQLFragmentStartsWithTheMarker(t *testing.T) {
 		"RoleProjectClause":          RoleProjectClause("p.key", "$1"),
 		"HiddenPrivateProjectClause": HiddenPrivateProjectClause("p.key", "$1"),
 		"PartyClause":                PartyClause("n.parties", "$1"),
+		"SessionSeesProjectClause":   SessionSeesProjectClause("s.id", "p"),
 	} {
 		if !strings.HasPrefix(fragment, Marker+name+" */") {
 			t.Errorf("%s = %q, want it to start with %q", name, fragment[:min(len(fragment), 60)], Marker+name+" */")

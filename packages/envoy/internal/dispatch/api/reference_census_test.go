@@ -269,6 +269,9 @@ type crossReferences struct {
 	privateRepository string
 }
 
+// crossPublicSession is the session of PUB's that PRIV's objects name (seedCrossReferences).
+const crossPublicSession = "session-pub-agent"
+
 // seedCrossReferences writes, as carol, who sees both projects, a reference from each project's
 // objects to the other's in every column filteredReference names and in every event payload those
 // writes append: each issue waits on an issue of the other project and is routed to a session that
@@ -299,6 +302,20 @@ func seedCrossReferences(t *testing.T, fixture fragmentCensusFixture) crossRefer
 	// session-priv, which acted in PRIV, holds the claim on PUB's issue, so that issue's reads and
 	// the payloads of its later writes name a holder the walkers that do not see PRIV may not see.
 	fixture.asSession(t, sessionOfPrivate, seedPublic, http.MethodPost, "/api/v1/issues/"+fixture.public.issue+"/claim", map[string]any{}, http.StatusOK)
+	// PRIV's issue names a session of PUB's that may be shown PRIV, crossPublicSession: an agent of
+	// carol's that has acted in PUB alone (session_owners, session_projects). Dispatch refuses to
+	// route, message, mention or give an ask to a session that may not be shown the issue's
+	// project (refuseSessionOutsideProject), which session-pub, whose credential the listener lists
+	// with PUB alone, may not; crossPublicSession is hidden from every walker of PRIV alone all the
+	// same (access.SessionClause), which is what the census reads.
+	for _, row := range []string{
+		`insert into session_owners (session_id, login) values ($1, '` + seedCarol + `')`,
+		`insert into session_projects (session_id, project_key) values ($1, '` + seedPublic + `')`,
+	} {
+		if _, err := fixture.database.Pool.Exec(context.Background(), row, crossPublicSession); err != nil {
+			t.Fatalf("seed %s: %v", crossPublicSession, err)
+		}
+	}
 	for _, pair := range []struct {
 		from, to         censusObjects
 		session          string
@@ -308,7 +325,7 @@ func seedCrossReferences(t *testing.T, fixture fragmentCensusFixture) crossRefer
 		role string
 	}{
 		{fixture.public, fixture.private, sessionOfPrivate, cross.publicPerson, "", cross.privateRole},
-		{fixture.private, fixture.public, sessionOfPublic, cross.privatePerson, seedAlice, ""},
+		{fixture.private, fixture.public, crossPublicSession, cross.privatePerson, seedAlice, ""},
 	} {
 		issue := "/api/v1/issues/" + pair.from.issue
 		// The issue waits on an issue of the other project of its own, so the two waits close no
@@ -538,8 +555,8 @@ func TestNoAnswerNamesAnObjectItsReaderCannotSee(t *testing.T) {
 			[]string{cross.privateRole}, []string{cross.privateRepository})},
 		{callerAlicePubToken, fixture.public, hiddenObjectsOf(t, fixture, seedPrivate, []string{sessionOfPrivate}, nil,
 			[]string{cross.privateRole}, []string{cross.privateRepository})},
-		{callerBob, fixture.private, hiddenObjectsOf(t, fixture, seedPublic, []string{sessionOfPublic}, []string{cross.privatePerson, seedAlice}, nil, nil)},
-		{callerBobPrivToken, fixture.private, hiddenObjectsOf(t, fixture, seedPublic, []string{sessionOfPublic}, []string{cross.privatePerson, seedAlice}, nil, nil)},
+		{callerBob, fixture.private, hiddenObjectsOf(t, fixture, seedPublic, []string{sessionOfPublic, crossPublicSession}, []string{cross.privatePerson, seedAlice}, nil, nil)},
+		{callerBobPrivToken, fixture.private, hiddenObjectsOf(t, fixture, seedPublic, []string{sessionOfPublic, crossPublicSession}, []string{cross.privatePerson, seedAlice}, nil, nil)},
 	}
 	for _, column := range columns {
 		if referenceDispositions[column].kind != filteredReference {
