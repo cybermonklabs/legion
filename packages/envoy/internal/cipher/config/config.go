@@ -2385,6 +2385,14 @@ func httpURLSetting(name, value string) error {
 	return nil
 }
 
+// originAlone reports whether u names a host and nothing after it: no user information, path,
+// query or fragment. BROKER_PUBLIC_URL and BROKER_EDGE_URL are held to it: the broker serves its
+// routes under each, and its authorization server metadata publishes BROKER_PUBLIC_URL as the
+// issuer, which RFC 8414 section 2 holds to no query or fragment.
+func originAlone(u *url.URL) bool {
+	return u.Host != "" && u.User == nil && u.Path == "" && u.RawQuery == "" && u.Fragment == ""
+}
+
 func Load(getenv func(string) string) (Config, error) {
 	for _, removed := range removedVars {
 		if getenv(removed.name) != "" {
@@ -2491,13 +2499,11 @@ func Load(getenv func(string) string) (Config, error) {
 	if cfg.DatabaseIAM, err = databaseIAM(cfg.DatabaseURL); err != nil {
 		return Config{}, err
 	}
-	// publicURL is BROKER_PUBLIC_URL parsed, held to an absolute URL with no user information,
-	// path, query or fragment here (the authorization server metadata publishes it as the issuer,
-	// which RFC 8414 section 2 holds to no query or fragment) and to an http or https scheme by
-	// Load's last check. The refusal names the setting alone: the URL as written is where a
-	// credential would be.
+	// publicURL is BROKER_PUBLIC_URL parsed, held to an absolute URL that names its origin alone
+	// here and to an http or https scheme by Load's last check. The refusal names the setting
+	// alone: the URL as written is where a credential would be.
 	publicURL, parseErr := url.Parse(cfg.PublicURL)
-	if parseErr != nil || publicURL.Scheme == "" || publicURL.Host == "" || publicURL.User != nil || publicURL.Path != "" || publicURL.RawQuery != "" || publicURL.Fragment != "" {
+	if parseErr != nil || publicURL.Scheme == "" || !originAlone(publicURL) {
 		return Config{}, errors.New("BROKER_PUBLIC_URL must be an absolute URL with no user information, path, query or fragment")
 	}
 	// Optional, and still held to its form when it is given: a page the broker cannot build an

@@ -72,7 +72,7 @@ func loadEdge(cfg *Config) error {
 	// that URL's form, and its refusal names the setting alone: the URL as written is where a
 	// credential would be.
 	edgeURL, err := url.Parse(cfg.EdgeURL)
-	if err != nil || (edgeURL.Scheme != "http" && edgeURL.Scheme != "https") || edgeURL.Host == "" || edgeURL.User != nil || edgeURL.Path != "" || edgeURL.RawQuery != "" || edgeURL.Fragment != "" {
+	if err != nil || (edgeURL.Scheme != "http" && edgeURL.Scheme != "https") || !originAlone(edgeURL) {
 		return fmt.Errorf("BROKER_EDGE_URL must be an absolute http or https URL with no user information, path, query or fragment")
 	}
 	// One origin for both would let a DPoP proof made for one listener be spent at the other,
