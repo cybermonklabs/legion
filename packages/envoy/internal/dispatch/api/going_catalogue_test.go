@@ -23,7 +23,8 @@ import (
 
 // goingMutatingRoutesWithNoTool is every write of the served table no action of the catalogue
 // performs. Nearly all of them are the catalogue's gap and this tree's follow-up work: an
-// operation the bar cannot yet propose. Two are not, the review routes, and their rows say why.
+// operation the bar cannot yet propose. Four are not, the two review routes and the two routes
+// of the proven-sessions setting, and their rows say why.
 // TestTheMutatingRoutesNoToolSpecNames holds the list to the table, so a write added later is
 // named here or in goingToolRoutes and never silently missing.
 var goingMutatingRoutesWithNoTool = []string{
@@ -36,6 +37,11 @@ var goingMutatingRoutesWithNoTool = []string{
 	"DELETE /api/v1/priorities/{id}",
 	"DELETE /api/v1/projects/{key}/architecture-sources/{owner}/{repo}",
 	"DELETE /api/v1/projects/{key}/legion/daemon",
+	// The proven-sessions setting's two routes, which dispatch_project_update performs.
+	// goingToolRoutes gives neither a row on purpose: each turns a check of a project on or off,
+	// and the loop that proposes operations on Dispatch's graph must never propose that. Keep
+	// both here; never give either a row.
+	"DELETE /api/v1/projects/{key}/proven-sessions",
 	"PATCH /api/v1/artifacts/{id}",
 	"PATCH /api/v1/delivery/session-groups/{id}",
 	"PATCH /api/v1/me/agent-tokens/{id}",
@@ -99,6 +105,8 @@ var goingMutatingRoutesWithNoTool = []string{
 	"PUT /api/v1/projects/{key}/default-repository",
 	"PUT /api/v1/projects/{key}/gated-steps",
 	"PUT /api/v1/projects/{key}/legion/daemon",
+	// The proven-sessions setting's other route, kept here for the reason its DELETE above is.
+	"PUT /api/v1/projects/{key}/proven-sessions",
 	"PUT /api/v1/settings/delivery",
 }
 
@@ -212,8 +220,9 @@ func TestTheCatalogueIsTheDispatchToolsThatWrite(t *testing.T) {
 
 // TestTheMutatingRoutesNoToolSpecNames: the catalogue's gap, named rather than refused. A write
 // of the served table no catalogue action performs is an operation the bar cannot yet propose,
-// or, for the two review routes, one it must never propose, and the list is committed here so a
-// write added later is either given a tool or added to it.
+// or, for the two review routes and the two routes of the proven-sessions setting, one it must
+// never propose, and the list is committed here so a write added later is either given a tool or
+// added to it.
 func TestTheMutatingRoutesNoToolSpecNames(t *testing.T) {
 	t.Parallel()
 	routes := (&server{}).routes()

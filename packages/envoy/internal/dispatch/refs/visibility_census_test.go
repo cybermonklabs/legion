@@ -186,9 +186,11 @@ var readsWithoutAViewer = map[string]string{
 		"of its root or leave an ancestor out of work above an issue in work; the status change's plan names the ancestors " +
 		"it will move to the caller who asked to move them, in its dry run, its answer and its 403 PROJECT_SCOPE",
 	"IssueDescendantRows": "every caller is a rule of a write - a status change's plan, which moves or unlinks every open " +
-		"issue under the parent so that the parent status rule (R24) holds - and a plan that skipped an issue it may not " +
-		"see would leave that issue open under a done parent; the plan names the issues it will move or unlink to the " +
-		"caller who asked to move or unlink them, in its dry run, its answer and its 403 PROJECT_SCOPE",
+		"issue under the parent so that the parent status rule (R24) holds, and the move check of who writes a Legion-run " +
+		"issue's spec, which judges each issue of the moved subtree that Legion runs - and a plan that skipped an issue it " +
+		"may not see would leave that issue open under a done parent, and a move check that skipped one would let a writer " +
+		"take that issue by moving the issue above it; the plan names the issues it will move or unlink to the caller who " +
+		"asked to move or unlink them, in its dry run, its answer and its 403 PROJECT_SCOPE",
 	"IssueRepository":  noNode,
 	"ItemBlockAt":      nodeDetail,
 	"ItemsOwedWindows": serverWork,
