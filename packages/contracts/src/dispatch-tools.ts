@@ -497,6 +497,8 @@ export const ISSUE_UPDATE_PATCH_FIELDS = [
   "route",
   "parent",
   "blocked_by",
+  "duplicate_of",
+  "filed_from",
   "advances",
   "advances_revision",
   "components",
