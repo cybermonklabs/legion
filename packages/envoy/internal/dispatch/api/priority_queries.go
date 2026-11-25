@@ -135,31 +135,39 @@ const (
 // issues_pkey for each member issue; the group by makes one row of each issue, whatever number of
 // priorities it advances.
 //
-// `member_event` is the newest event of each member issue: its event of issues.last_seq, read by a
-// lateral probe of the unique (issue_key, seq) of events (events_issue_key_seq_key) with `limit 1`.
-// Each append sets last_seq to the seq it took, in the statement that inserts the event
-// (events/broker.go, QueueAppendWithLogins), so that event is the issue's newest by seq. The
-// statement reads that one event of each member issue and no other, and it reads no event of an
-// issue that advances no priority. An issue with no event has last_seq 0, which no event of it
-// carries, so it matches no row; a priority none of whose issues has an event answers no row and
-// keeps its null. The key is unique, so the limit changes no answer; it keeps the planner from
-// flattening the subquery into a join, which it may hash: for a plain join on (issue_key, seq)
-// over a table of a million events, it hashed all of them under both plans. `materialized` is a
-// fence: the planner plans the CTE on its own, so the join to `members` cannot move below the
-// probe, and the probe runs once for each member issue rather than once for each (issue, priority)
-// pair: without it, on the database cmd/dispatch-seed fills at --scale 1, the planner probed
-// each member row, 14,712 probes for 6,362 member issues (TestStatementTimings, PostgreSQL 18.6,
-// 2026-11-24).
+// `member_event` is the newest event of each member issue that has one (last_seq > 0): the time
+// of its event of issues.last_seq. Each append sets last_seq to the seq it took, in the statement
+// that inserts the event (events/broker.go, QueueAppendWithLogins), so that event is the issue's
+// newest by seq. An issue with no event has last_seq 0 and answers no row; a priority none of
+// whose issues has an event answers no row and keeps its null.
 //
-// The probe runs only where the row cannot answer. The statement that advances last_seq writes
-// the event's created_at and seq beside it, as last_event_at and last_event_at_seq
-// (20261125094500, events/broker.go), so where last_event_at_seq equals last_seq the row holds the
-// time of its event of last_seq, the very value the probe reads, and member_event takes it with no
-// read of events. Where the two differ - an event a process of the release before 20261125094500
-// appended, during a roll or after a rollback, or a row 20261125094600 did not fill - or the pair is
-// null, the row's pair names no event this read can trust, and member_event probes as above. So
-// the answer is the probe's own wherever either branch answers, in steady state, in a roll and
-// after a rollback alike. Both branches take last_seq > 0: an issue with no event answers no row.
+// The row answers where it can. The statement that advances last_seq writes the event's
+// created_at and seq beside it, as last_event_at and last_event_at_seq (20261125094500,
+// events/broker.go), so where last_event_at_seq equals last_seq the row holds the time of its
+// event of last_seq, and the `case` takes it with no read of events. Where the two differ - an
+// event a process of the release before 20261125094500 appended, during a roll or after a
+// rollback, or a row 20261125094600 did not fill - or the pair is null, the row's pair names no
+// event this read can trust, and the `else` arm probes the unique (issue_key, seq) of events
+// (events_issue_key_seq_key) for that one event. A `case` runs its `else` only for the rows that
+// reach it, so in steady state the probe never runs, and the answer is the probe's own wherever
+// either arm answers, in steady state, in a roll and after a rollback alike. The probe reads that
+// one event of each member issue and no other, and no event of an issue that advances no
+// priority; the key is unique, so it answers at most one row, and a probe that finds none answers
+// null, which max() passes over. A subquery in the select list is planned as a subplan of its
+// own and never flattened into a join the planner may hash, as it hashed all of a million events
+// for a plain join on (issue_key, seq).
+//
+// It is one select over member_issue rather than a union of the two arms: the planner reads no
+// statistics of a column of a union, so it took the key of such a member_event for 200 distinct
+// values and sized its join to members at 23,027 rows on the seed of R1, and under the plan made
+// for the values it merged the two after sorting both by key, 22 ms of the full statement against
+// 4.8 ms under the generic plan (dispatch://INFRA-5791, 2026-11-25). Over member_issue alone the
+// key is that of member_issue's group by, which the planner takes for distinct, so both plans hash
+// member_event, in about 4 ms. `materialized` is a fence: the planner plans the CTE on its own, so
+// the join to `members` cannot move below the probe, and the probe runs once for each member issue
+// rather than once for each (issue, priority) pair: without it, on the database cmd/dispatch-seed
+// fills at --scale 1, the planner probed each member row, 14,712 probes for 6,362 member issues
+// (TestStatementTimings, PostgreSQL 18.6, 2026-11-24).
 //
 // The time can be earlier than the newest created_at over all the events of the members, but only
 // inside a bound. An event that Dispatch appends takes the start of its transaction as its
@@ -205,19 +213,14 @@ var priorityReadQuery = `with recursive ` + priorityMemberTerms + `, member_issu
 		where ` + priorityProjectFilter + `
 		group by i.key
 	), member_event as materialized (
-		select member_issue.key, member_issue.last_event_at as created_at
+		select member_issue.key,
+		       case when member_issue.last_event_at_seq = member_issue.last_seq then member_issue.last_event_at
+		            else (select last_seq_event.created_at
+		                  from events last_seq_event
+		                  where last_seq_event.issue_key = member_issue.key and last_seq_event.seq = member_issue.last_seq)
+		       end as created_at
 		from member_issue
-		where member_issue.last_seq > 0 and member_issue.last_event_at_seq = member_issue.last_seq
-		union all
-		select member_issue.key, last_seq_event.created_at
-		from member_issue
-		cross join lateral (
-			select last_seq_event.created_at
-			from events last_seq_event
-			where last_seq_event.issue_key = member_issue.key and last_seq_event.seq = member_issue.last_seq
-			limit 1
-		) last_seq_event
-		where member_issue.last_seq > 0 and member_issue.last_event_at_seq is distinct from member_issue.last_seq
+		where member_issue.last_seq > 0
 	), unplaced as (
 		select i.key, i.title, i.project_key, i.status, i.assignee, i.claimed_by, i.claimed_at, i.updated_at
 		from issues i
