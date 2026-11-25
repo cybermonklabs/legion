@@ -427,8 +427,10 @@ func bootResumesTheReviewer(t *testing.T, pool *pgxpool.Pool, engine *Engine) {
 }
 
 // A reviewer relaunched in the middle of its round is given the boot's resume task, which names
-// the entry its row holds, and its verdict records the commit it names. Round 2 here stands at
-// headTwo, and round 1's verdict named headOne.
+// the entry its row holds, and its verdict, held to the entry it reads from that task as the agent
+// reads it (intake.HandoffComplete.Entry; staleEntryRefusal refuses a completion held to another
+// entry), records the commit it names. Round 2 here stands at headTwo, and round 1's verdict named
+// headOne.
 func TestAReviewOfTheEntryTheBootsResumeNamesRecordsItsHead(t *testing.T) {
 	pool, engine, apply := reviewRoundOne(t)
 	apply("request-changes-1", reviewAt(1, "changes_requested", headOne))
@@ -438,13 +440,14 @@ func TestAReviewOfTheEntryTheBootsResumeNamesRecordsItsHead(t *testing.T) {
 		t.Fatalf("round 2's reviewer row reads the reviewed commit %q, want %s", got, headOne)
 	}
 	bootResumesTheReviewer(t, pool, engine)
-	entry := entryNamedIn(t, deliveredTask(t, pool, "the boot's resume"))
-	apply("request-changes-2", reviewAt(2, "changes_requested", headTwo))
+	verdict := reviewAt(2, "changes_requested", headTwo)
+	verdict.Entry = entryNamedIn(t, deliveredTask(t, pool, "the boot's resume"))
+	apply("request-changes-2", verdict)
 	if got := issuePhase(t, pool); got != phase.Implementing {
-		t.Fatalf("after the resumed reviewer's request for changes the issue is in %s, want implementing", got)
+		t.Fatalf("after the resumed reviewer's request for changes of entry %d the issue is in %s, want implementing", verdict.Entry, got)
 	}
 	if got := reviewerRow(t, pool).ReviewedHead; got != headTwo {
-		t.Fatalf("after the resumed reviewer's verdict of entry %d the reviewer's row reads the reviewed commit %q, want %s, the commit that verdict named", entry, got, headTwo)
+		t.Fatalf("after the resumed reviewer's verdict of entry %d the reviewer's row reads the reviewed commit %q, want %s, the commit that verdict named", verdict.Entry, got, headTwo)
 	}
 }
 
@@ -640,9 +643,10 @@ func TestEachWakeOfTheReviewerInReviewingEndsNamingItsEntry(t *testing.T) {
 	}
 }
 
-// A reviewer that a CI settlement brings back gives its verdict of the round that stands, whose
-// entry the wake's task names, and the verdict moves the commit to the commit it names. Round 2
-// here stands at headTwo, and round 1's verdict named headOne.
+// A reviewer that a CI settlement brings back gives its verdict of the round that stands, held to
+// the entry it reads from the wake's task as the agent reads it (intake.HandoffComplete.Entry;
+// staleEntryRefusal refuses a completion held to another entry), and the verdict moves the commit
+// to the commit it names. Round 2 here stands at headTwo, and round 1's verdict named headOne.
 func TestAWokenReviewersReviewOfTheEntryItsWakeNamesMovesTheCommit(t *testing.T) {
 	pool, engine, apply := reviewRoundOne(t)
 	apply("request-changes-1", reviewAt(1, "changes_requested", headOne))
@@ -651,12 +655,13 @@ func TestAWokenReviewersReviewOfTheEntryItsWakeNamesMovesTheCommit(t *testing.T)
 	outboxRan(t, pool)
 	releasesTheReviewer(t, pool, engine)
 	wakes(t, pool, engine, claim.RoleReviewer, "ses-reviewer", headTwo, pods.WakeChecks)
-	entryNamedIn(t, deliveredTask(t, pool, "the wake on a CI settlement"))
-	apply("request-changes-2", reviewAt(2, "changes_requested", headTwo))
+	verdict := reviewAt(2, "changes_requested", headTwo)
+	verdict.Entry = entryNamedIn(t, deliveredTask(t, pool, "the wake on a CI settlement"))
+	apply("request-changes-2", verdict)
 	if got := issuePhase(t, pool); got != phase.Implementing {
-		t.Fatalf("after the woken reviewer's request for changes the issue is in %s, want implementing: the verdict decides the round", got)
+		t.Fatalf("after the woken reviewer's request for changes of entry %d the issue is in %s, want implementing: the verdict decides the round", verdict.Entry, got)
 	}
 	if got := reviewerRow(t, pool).ReviewedHead; got != headTwo {
-		t.Fatalf("after the woken reviewer's verdict the reviewer's row reads the reviewed commit %q, want %s", got, headTwo)
+		t.Fatalf("after the woken reviewer's verdict of entry %d the reviewer's row reads the reviewed commit %q, want %s", verdict.Entry, got, headTwo)
 	}
 }
