@@ -294,9 +294,11 @@ export function isThreadContext(node: Pick<TreeNode, "children" | "type">): bool
  * The page with no filter on, or Graph: the whole tree but the memo, or under a words filter each
  * match with the chain above it as context. In Conversation (`conversation`), which draws
  * Conversation's read and nothing else (R9), a result and a plan task are no row
- * (`NO_CONVERSATION_ROW`) but where a row stands under one or the address names it, and a message
- * under which a node it produced stands - any node but a turn of its thread - is one context row
- * with its kind. Graph draws every node of the tree as a row.
+ * (`NO_CONVERSATION_ROW`), and neither is a block of a converted document drawn as prose (root
+ * R1: the conversation's own blocks are the ones written in it), but where a row stands under one
+ * or the address names it; and a message under which a node it produced stands - any node but a
+ * turn of its thread - is one context row with its kind. Graph draws every node of the tree as a
+ * row, a block of a converted document among them.
  */
 function conversationView(
   root: TreeNode,
@@ -312,9 +314,13 @@ function conversationView(
     const children = node.children
       .map(prune)
       .filter((child): child is TreeNode => child !== undefined);
+    // A prose node is a block of a converted document where its draft is addressed in that
+    // document (`tree-read/tree-nodes.ts`' `referenceOf`, from the node's `document`); a block
+    // written in the conversation, the room's own fragment, has no address of its own.
+    const documentProse = node.type === "prose" && node.reference !== undefined;
     if (
       conversation &&
-      NO_CONVERSATION_ROW[node.type] !== undefined &&
+      (NO_CONVERSATION_ROW[node.type] !== undefined || documentProse) &&
       children.length === 0 &&
       !named.has(node.id)
     ) {

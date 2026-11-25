@@ -200,7 +200,8 @@ export type TreeDraftMark = (
  * the first that answers one. These steps draw the kinds the outline draws, a fixed list read
  * from each node's supertag and not from the page's names for kinds (`NODE_TYPE_NAMES`), which
  * later parts widen: a requirement, a check and a plan task, a result, a decision, an ask, a
- * comment and a message, a callout and an image, a paragraph, a reading, and a child issue.
+ * comment and a message, a callout and an image, a paragraph and every other plain block
+ * (`isPlainBlock`), a reading, and a child issue.
  */
 export const treeDraftSteps: readonly TreeDraftStep[] = [
   draftRequirement,
@@ -815,16 +816,36 @@ function draftBlock(
   return draftOf(node, node.supertag, context);
 }
 
-/** A prose node: a document's plain paragraph, as the model stores it, drawn by its kind and its
- *  words and nothing more. It stands under the parent the read gives it, as every draft whose
+/** A prose node: a block of a document's text that opens no typed block - a paragraph, a list, a
+ *  heading - drawn by its kind and its words and nothing more, whether the read names it by the
+ *  supertag `prose` or answers it as a plain block of this issue (`isPlainBlock`): a plain block
+ *  the read marks as another issue's is a block of that issue's text, which the conversation of
+ *  this issue never wrote. It stands under the parent the read gives it, as every draft whose
  *  step names no parent does (`placeOf`). */
 function draftProse(
   node: TreeAnswerNode,
   _answer: TreeAnswer,
   context: TreeDraftContext
 ): Draft | undefined {
-  if (node.supertag !== "prose") return undefined;
+  if (node.supertag !== "prose" && !(isPlainBlock(node) && !isForeign(node, context.key))) {
+    return undefined;
+  }
   return draftOf(node, "prose", context);
+}
+
+/**
+ * Whether `node` is a plain block, which the read's `kind` filter takes as prose by the server's
+ * kind rule (`nodeKind` in `api/issue_tree_kinds.go`) while every read answers it as a block node
+ * of the supertag `block`: a block node that is no finding and whose text opens no typed block.
+ * The read types a block by the typed block its text opens and answers that type as its
+ * supertag (`typedNodeOf` reads the typed node of that reading), an ask's block's `ask` among
+ * them, so a block of the supertag `block` opens none. A finding is a block whose id names its
+ * lens, `lens/<uuid>#<block id>`, as `lenses/store-link.ts` reads a finding's read id. A block of
+ * an ask, a comment or a message is a node of its item's own block kind (`comment_block`), part
+ * of that item, and no block node.
+ */
+function isPlainBlock(node: TreeAnswerNode): boolean {
+  return node.kind === "block" && node.supertag === "block" && !node.id.startsWith("lens/");
 }
 
 /** A reading: an agent's reading of the ask or the decision it reads, never of the issue, drawn
