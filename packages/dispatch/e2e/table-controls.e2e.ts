@@ -10629,3 +10629,142 @@ test("an Inbox card's Reaches draws no count while the subscribers it counts are
   }
   expect(wrong, wrong.join("; ")).toEqual([]);
 });
+
+// INFRA-3135, round 26 (the tester's): 5a0806a1 and 1946cb1c leave the pick the cause when a
+// second press lands on a control the pick's write holds, and the round-25 red row holds the
+// bar's landing then to where the pick alone puts it, never the body. Measured at 8e7e463a in
+// builds Jobs infra-3135-f-h-w2-cpzw7 and infra-3135-f-h-d-q7gm7, and at 34dc6a07 in
+// infra-3135-f-b-w2-tdtlg and infra-3135-f-b-d-tm7ct, in Chromium, Firefox and WebKit at 1440x900
+// and 390x664: under the project List's Epic filter, with Take out of epic's writes held, a
+// double click or two clicks on the held Start next of a marked row move the focus onto that
+// Start next, and once the writes land and take the row away the focus is on the body; the same
+// press with no second one puts it on the checkbox of the row after the marked two. The focus is
+// then on the row's Start next and not in the bar, so the bar's hand-off has nothing to hand on
+// (components/SelectionBar.tsx:375-381), and the List's row hand-off reads the loss as no press of
+// the reader's (components/focus-place.ts:296): `causedByReader` (:1142-1144) reads the lost
+// control, its rows and its region, which hold neither Take out of epic nor a root it was armed
+// at, so nothing lands the focus. With the focus put back on Take out of epic after the clicks, as
+// Safari's click leaves it, 8e7e463a lands on the row after the marked two and 34dc6a07 on the
+// body, so 1946cb1c holds the press; it is the landing that is missing.
+// SLOW(>=2s): two projects of thirteen issues, and six Take out of epic presses with held writes.
+test("a double click or two clicks on a marked row's held Start next while Take out of epic's writes are out leave the focus where Take out of epic alone puts it once the bar goes, at 1440 and 390 @firefox @webkit", async ({
+  page,
+}) => {
+  test.setTimeout(180_000);
+  // Every issue write sent while `holding` is held until the row lets it through, so the second
+  // presses land while Take out of epic's writes are out.
+  let holding = false;
+  const held: Route[] = [];
+  await page.route(/\/api\/v1\/issues\/[^/?]+$/, async (route) => {
+    if (route.request().method() !== "PATCH" || !holding) return route.fallback();
+    held.push(route);
+  });
+  const bar = page.getByRole("toolbar", { name: "Selected issues" });
+  const rows = page.locator("[data-issue-row]");
+  /** Where the keyboard focus rests: the body, or the focused element and the row it is in, by
+   *  the names `slots` gives the rows read before the press. */
+  const landingOf = (slots: Record<string, string>) =>
+    page.evaluate((slots) => {
+      const focused = document.activeElement;
+      if (!(focused instanceof HTMLElement) || focused === document.body) return "the body";
+      const label =
+        focused instanceof HTMLInputElement ? focused.labels?.[0]?.textContent : undefined;
+      const words = (focused.getAttribute("aria-label") || label || focused.textContent || "")
+        .replace(/\s+/g, " ")
+        .trim()
+        .slice(0, 40);
+      const name = `${focused.tagName.toLowerCase()} "${words}"`;
+      const row = focused.closest("[data-issue-row]")?.getAttribute("data-issue-row");
+      if (row === undefined || row === null) return `${name} in no row`;
+      return `${name} in ${slots[row] ?? `row ${row}`}`;
+    }, slots);
+  const got: string[] = [];
+  const want: string[] = [];
+  for (const [step, size] of [
+    { height: 900, width: 1440 },
+    { height: 664, width: 390 },
+  ].entries()) {
+    await page.setViewportSize(size);
+    // One project per width: an epic and twelve tasks under it, each in Legion's queue, so every
+    // row but the queue's first draws a Start next.
+    const key = step === 0 ? "SNA" : "SNB";
+    await createProject({ key, name: `Start next ${size.width}` });
+    const epic = await createIssue({ project: key, title: `Queue epic ${key}` });
+    await patchIssue(epic.key, { labels: ["epic"] });
+    for (let index = 0; index < 12; index++) {
+      const task = await createIssue({
+        parent: epic.key,
+        project: key,
+        title: `Queued ${key} task ${index}`,
+      });
+      await patchIssue(task.key, { labels: ["legion"], status: "todo" });
+    }
+    const view = `/projects/${key}/issues?f.epic=${encodeURIComponent(`${epic.key} · Queue epic ${key}`)}`;
+    let alone = "";
+    for (const press of ["no second press", "a double click", "two clicks"] as const) {
+      const where = `project List at ${size.width}x${size.height} with ${press} on a marked row's held Start next`;
+      await page.goto(view);
+      await expect.poll(() => rows.count()).toBeGreaterThanOrEqual(4);
+      // The order the rows stand in once the poll above found them drawn: nothing moves them
+      // before the marks below, and it only names the rows.
+      const order = await rows.evaluateAll((nodes) =>
+        nodes.map((node) => node.getAttribute("data-issue-row") ?? "")
+      );
+      const [above = "", upper = "", lower = "", after = ""] = order;
+      const slots = {
+        [above]: "the row above the marked two",
+        [upper]: "the upper marked row",
+        [lower]: "the lower marked row",
+        [after]: "the row after the marked two",
+      };
+      // The lower row first, so the row marked last is the upper one, whose place the focus takes.
+      for (const issue of [lower, upper]) {
+        const mark = page.getByRole("checkbox", { exact: true, name: `Select ${issue}` });
+        await mark.focus();
+        await page.keyboard.press("Space");
+        await expect(mark).toBeChecked();
+      }
+      await expect(bar).toContainText("2 selected");
+      const takeOut = bar.getByRole("button", { exact: true, name: "Take out of epic" });
+      await takeOut.focus();
+      holding = true;
+      await page.keyboard.press("Enter");
+      await expect
+        .poll(() => held.length, { message: `${where}: Take out of epic sent no write` })
+        .toBeGreaterThan(0);
+      const startNext = page
+        .locator(`[data-issue-row="${upper}"]`)
+        .getByRole("button", { exact: true, name: "Start next" });
+      await expect(startNext, `${where}: the marked row's Start next is not held`).toHaveAttribute(
+        "aria-disabled",
+        "true"
+      );
+      if (press === "a double click") await startNext.dblclick({ force: true });
+      if (press === "two clicks") {
+        await startNext.click({ force: true });
+        await startNext.click({ force: true });
+      }
+      await nextFrames(page);
+      holding = false;
+      for (const route of held.splice(0)) await route.continue();
+      await expect(bar).toHaveCount(0);
+      await expect(page.locator(`[data-issue-row="${upper}"]`)).toHaveCount(0);
+      // The bar's hand-off runs after the commit that took the bar away, so it is done after
+      // these frames.
+      await nextFrames(page);
+      await nextFrames(page);
+      // One read is the answer: the writes have landed, the bar has gone and every hand-off of
+      // the press has run, so nothing moves the focus after this.
+      const landing = await landingOf(slots);
+      if (press === "no second press") {
+        alone = landing;
+      } else {
+        got.push(`${where}: ${landing}`);
+        want.push(`${where}: ${alone}`);
+      }
+    }
+  }
+  // A keyboard reader whose second press of a held control lands their focus on the body starts
+  // their next Tab from the top of the page, far from the rows they were working in.
+  expect(got, got.join("; ")).toEqual(want);
+});
