@@ -112,8 +112,17 @@ func (p *Prober) Probe(ctx context.Context, session string) Liveness {
 				"url", p.lookup, "session", session, "error", readErr)
 			return Unknown
 		}
+		// Only the listener's own refusal says the role has no live holder: a JSON object with a
+		// non-empty error (listenerwire.RoleRefusal), which every listener release writes, the
+		// earliest with no reason at all. A 404 of anything else — a proxy's page, an empty body,
+		// JSON of another shape, a path the listener does not serve — says nothing of the role, so
+		// it reads as unknown, as a body this probe cannot read does (dispatch://INFRA-2045 R5).
 		var refusal listenerwire.RoleRefusal
-		_ = json.Unmarshal(body, &refusal)
+		if err := json.Unmarshal(body, &refusal); err != nil || refusal.Error == "" {
+			p.log.Warn("controller liveness: the Envoy listener's 404 to the controller role lookup is not its role refusal; the controller is left as it is",
+				"url", p.lookup, "session", session, "body", excerpt(body))
+			return Unknown
+		}
 		if refusal.HolderState == notify.StateUnresponsive {
 			p.log.Info("controller liveness: the controller role's holder is unresponsive, not gone; the controller is left as it is",
 				"url", p.lookup, "session", session, "reason", refusal.Reason, "lastSeen", refusal.LastSeen)
@@ -142,4 +151,16 @@ func (p *Prober) Probe(ctx context.Context, session string) Liveness {
 		return Gone
 	}
 	return Live
+}
+
+// excerptBytes bounds the part of an answer's body a line quotes (excerpt).
+const excerptBytes = 200
+
+// excerpt is the start of body for a line that says what an answer the probe could not use held:
+// at most excerptBytes of it, marked where it was cut.
+func excerpt(body []byte) string {
+	if len(body) <= excerptBytes {
+		return string(body)
+	}
+	return string(body[:excerptBytes]) + "…"
 }
