@@ -694,11 +694,14 @@ func (s *server) publicURL(ref string) (string, error) {
 // proofSubject verifies r's Proof header and returns who it authenticates, unwrapped: authLauncher
 // and authProof each translate a failure into their own vocabulary (LAUNCHER_INVALID vs
 // PROOF_INVALID), so this reports
-// only the raw error. The htu it checks the proof against is the request's path joined onto the
-// broker's own URL (publicURL), the same join the client makes when it signs the proof
-// (cmd/cipher's doProof signs that URL less any query the path carries).
+// only the raw error. The htu it checks the proof against is the request's path as the request
+// wrote it (r.URL.EscapedPath) joined onto the broker's own URL (publicURL), the same join the
+// client makes when it signs the proof (proof.TargetURI, which keeps an escaped element as
+// written; cmd/cipher's doProof signs that URL less any query the path carries). The decoded path
+// (r.URL.Path) is not that text: %2F in it is a "/" and %41 an "A", so a proof of a route with an
+// escaped element would never verify, and urljoin reads the path it is given as already escaped.
 func (s *server) proofSubject(r *http.Request) (proof.Subject, error) {
-	target, err := s.publicURL(r.URL.Path)
+	target, err := s.publicURL(r.URL.EscapedPath())
 	if err != nil {
 		return proof.Subject{}, err
 	}
