@@ -133,6 +133,26 @@ func (e *fixEnd) opensAtX() {
 	})
 }
 
+// pushesY is the fix's one push of Y to the task's branch, as GitHub sends it: the stand-in moves
+// the pull request to Y first, then the push and the synchronize are sent. It returns Y once the
+// daemon records the pull request at Y.
+func (e *fixEnd) pushesY() string {
+	r := e.at()
+	r.t.Helper()
+	y := scratchCIHead(e.key, "y")
+	moved := r.tick()
+	r.pulls.move(r.number, y, moved)
+	push := r.publishPush(e.x, y)
+	synchronize := r.publishPullRequest("synchronize", y, moved, map[string]string{"before": e.x, "sender": implementerLogin})
+	r.awaitProcessed(push)
+	r.awaitProcessed(synchronize)
+	r.await(e.key+"'s pull request record at Y", func() bool {
+		pr := r.pullRequest()
+		return pr != nil && pr.HeadSHA == y
+	})
+	return y
+}
+
 // implementsAtX is the implementer taking its task, the pull request opening at X, and the
 // implementer completing at X; it returns once the issue stands in testing.
 func (e *fixEnd) implementsAtX() {
@@ -488,16 +508,17 @@ func fixEndCommit(commit *string) string {
 }
 
 // assertRecord fails unless records holds the record of step and attempt, kind step, starting at
-// start and ending at end ("" for not named), and naming check as its fix's check ("" for none).
+// start and ending at end, each "none" where the record must name no commit, and naming check as
+// its fix's check ("" for none).
 func assertRecord(t *testing.T, key string, records []fixEndRecord, step, attempt int, start, end, check string) {
 	t.Helper()
 	got, ok := fixEndRecordOf(records, "step", step, attempt)
 	switch {
 	case !ok:
 		t.Fatalf("%s's steps hold no record of step %d attempt %d: %+v", key, step, attempt, records)
-	case start != "" && fixEndCommit(got.StartCommit) != start:
+	case fixEndCommit(got.StartCommit) != start:
 		t.Fatalf("%s's step %d attempt %d starts at %s, want %s", key, step, attempt, fixEndCommit(got.StartCommit), start)
-	case end != "" && fixEndCommit(got.EndCommit) != end:
+	case fixEndCommit(got.EndCommit) != end:
 		t.Fatalf("%s's step %d attempt %d ends at %s, want %s", key, step, attempt, fixEndCommit(got.EndCommit), end)
 	case check != fixEndCommitOrEmpty(got.FixCheck):
 		t.Fatalf("%s's step %d attempt %d names the fix's check %q, want %q", key, step, attempt, fixEndCommitOrEmpty(got.FixCheck), check)
@@ -562,11 +583,12 @@ func (e *fixEnd) walkToTheEndWhileTheJobRuns() api.Issue {
 //     unit fails at X while it does: no fix starts, and the failure is the merger's.
 //   - E (`implementer tester reviewer`): unit fails at X while the reviewer's turn is open, and the
 //     fix's task reaches the implementer while it stays open, its adoption naming the fix's commit
-//     and the fix's own branch.
+//     and the fix's own branch; the fix pushes Y and ends there.
 //   - F: the same, with the implementer's task held by its own turn while the daemon restarts: after
 //     the restart its adoption names the fix's commit and the fix's own branch.
-//   - The records: each record of B, D and E holds its commits, each fix's record names k-ci, and
-//     the project's read gives each finished issue's fixes.
+//   - The records: each record of each task holds its start and end commits, each fix's record
+//     names k-ci, the record of E's fix ends at Y, and the project's read gives each finished
+//     issue's fixes, B's one among them.
 //
 // The control, kept as a subtest of its own daemon: with the end hold taken out of the engine
 // (WithoutEndHold), task A reaches its retro while unit runs, which the subtest asserts.
@@ -711,6 +733,21 @@ func TestVFixEnd(t *testing.T) {
 		if adoptions := e.fixAdoptions(); len(adoptions) != 1 {
 			t.Fatalf("the fix adoptions of %s's implementer = %+v, want one", e.key, adoptions)
 		}
+		implementer := e.worker(claim.RoleImplementer)
+		implementer.answer()
+		implementer.send(shimwire.AgentStart{DeliveryID: prompt.DeliveryID})
+		implementer.waitState(supervise.StateWorking)
+		y := e.pushesY()
+		handoff, version := er.writeHandoff(implementer.session, "implement")
+		if status, body := er.complete(implementer, api.HandoffCompleteRequest{Summary: "the fix of unit", Commit: y, HandoffID: handoff,
+			HandoffVersion: version}); status != http.StatusOK {
+			t.Fatalf("the fix's completion at Y = %d %s, want 200", status, body)
+		}
+		implementer.endTurn()
+		er.await(e.key+"'s fix ended at Y", func() bool {
+			fixes := e.fixes()
+			return len(fixes) == 1 && fixes[0].state == string(record.FixEnded) && fixes[0].endHead == y
+		})
 	})
 
 	t.Run("F's fix task, pending across a restart, adopts from the fix's commit", func(t *testing.T) {
@@ -750,14 +787,32 @@ func TestVFixEnd(t *testing.T) {
 	})
 
 	t.Run("each record names its commits, each fix's record its check, and the project's read the fixes", func(t *testing.T) {
-		records := d.records()
-		assertRecord(t, d.key, records, 1, 1, "", d.x, "")
-		assertRecord(t, d.key, records, 2, 1, d.x, d.x, "")
-		records = e.records()
-		assertRecord(t, e.key, records, 2, 1, e.x, e.x, "")
-		assertRecord(t, e.key, records, 1, 2, e.x, "", scratchCICheck)
-		records = b.records()
-		assertRecord(t, b.key, records, 1, 2, b.x, b.x, scratchCICheck)
+		// A step that starts before the pull request opens names no start commit; a step still
+		// running names no end commit; a fix's run is its step's second attempt.
+		for _, tc := range []struct {
+			e    *fixEnd
+			want [][3]string
+		}{
+			{e: a, want: [][3]string{{"1/1", "none", a.x}, {"2/1", a.x, a.x}, {"1/2", a.x, a.x}}},
+			{e: b, want: [][3]string{{"1/1", "none", b.x}, {"2/1", b.x, b.x}, {"1/2", b.x, b.x}}},
+			{e: c, want: [][3]string{{"1/1", "none", c.x}}},
+			{e: d, want: [][3]string{{"1/1", "none", d.x}, {"2/1", d.x, d.x}}},
+			{e: e, want: [][3]string{{"1/1", "none", e.x}, {"2/1", e.x, e.x}, {"3/1", e.x, "none"}, {"1/2", e.x, scratchCIHead(e.key, "y")}}},
+			{e: f, want: [][3]string{{"1/1", "none", f.x}, {"2/1", f.x, f.x}, {"3/1", f.x, "none"}, {"1/2", f.x, "none"}}},
+		} {
+			records := tc.e.records()
+			for _, want := range tc.want {
+				var step, attempt int
+				if _, err := fmt.Sscanf(want[0], "%d/%d", &step, &attempt); err != nil {
+					t.Fatal(err)
+				}
+				check := ""
+				if attempt > 1 {
+					check = scratchCICheck
+				}
+				assertRecord(t, tc.e.key, records, step, attempt, want[1], want[2], check)
+			}
+		}
 		var plans struct {
 			Issues []fixEndPlan `json:"issues"`
 		}
