@@ -546,3 +546,44 @@ test("a proposed statement no check serves and a proposed check that has not pas
     "decisions",
   ]);
 });
+
+// An overtaken node is drawn open and whole, folded only by the reader (spec R5): on a load where
+// the reader opened nothing, the outline draws the same rows, each as open as it is in the same
+// tree with nothing overtaken, wherever the question under the node stands. Where the page opens
+// its first focus is a separate rule (root R7), so a question under an overtaken node may be the
+// reason its live self is open and still not be where the page opens.
+test("an overtaken node arrives as open on load as its live self", () => {
+  const open = { question: true, state: "open" } as const;
+  const trees = (overtaken: boolean): TreeNode[] => {
+    const life = overtaken ? OVERTAKEN : {};
+    const under = overtaken ? { closed: true as const } : {};
+    const question = node("spec#b-q1", "ask", [], { ...open, ...under });
+    return [
+      // The question stands right under an overtaken node.
+      node("CORE-1", "issue", [
+        node("spec", "document", [
+          node("spec#b-r1", "requirement", [question], life),
+          node("spec#b-r2", "requirement"),
+        ]),
+      ]),
+      // It stands two levels under one.
+      node("CORE-1", "issue", [
+        node("spec", "document", [
+          node(
+            "spec#b-r1",
+            "requirement",
+            [node("spec#b-r1a", "callout", [question], under)],
+            life
+          ),
+          node("spec#b-r2", "requirement"),
+        ]),
+      ]),
+    ];
+  };
+  const live = trees(false);
+  for (const [index, root] of trees(true).entries()) {
+    const liveRoot = live[index];
+    if (liveRoot === undefined) throw new Error(`no live tree ${index}`);
+    expect(shapeOf(treeRows(root)), `overtaken tree ${index}`).toEqual(shapeOf(treeRows(liveRoot)));
+  }
+});
