@@ -85,15 +85,16 @@ func TestTheChargeOfASentenceRefusesAReadingPastItAndStopsAnOwnOneLoudly(t *test
 	}
 }
 
-// keptTexts is each place in a value of typ, named from path, that can hold text: a string, a slice
-// or an array of bytes or of runes (as of uint8 or int32, which reflect cannot tell from them), at
-// any depth of its struct fields, the elements of its pointers, slices and arrays, the keys and
-// values of its maps, and an interface, which can hold any of them. Of package charge it walks the
-// values of an Index, as Get gives them with no charge, and not their keys, which no walk reads, nor
-// a Texts, which keeps the judgment's texts and gives them only through the charge (Read). Of this
-// package it does not walk the fields that allowed names, each a "type.field" whose text is no
-// sentence's, nor the types that it names, each a string type of names (Rule and Kind); and a
-// function's captured values are no part of its type, so it cannot read them.
+// keptTexts is each place in a value of typ, named from path, that can hold text: a string, a slice,
+// an array or a channel of bytes or of runes (as of uint8 or int32, which reflect cannot tell from
+// them), at any depth of its struct fields, the elements of its pointers, slices, arrays and
+// channels, the keys and values of its maps, and an interface, which can hold any of them. Of
+// package charge it walks the values of an Index, as Get gives them with no charge, and not their
+// keys, which no walk reads, nor a Texts, which keeps the judgment's texts and gives them only
+// through the charge (Read). Of this package it does not walk the fields that allowed names, each a
+// "type.field" whose text is no sentence's, nor the types that it names, each a string type of names
+// (Rule and Kind); and a function's captured values are no part of its type, so it cannot read
+// them.
 func keptTexts(typ reflect.Type, path string, allowed map[string]bool, seen map[reflect.Type]bool) []string {
 	judge := reflect.TypeFor[wayJudge]().PkgPath()
 	switch {
@@ -111,9 +112,12 @@ func keptTexts(typ reflect.Type, path string, allowed map[string]bool, seen map[
 	switch typ.Kind() {
 	case reflect.String, reflect.Interface:
 		return []string{path + " (" + typ.String() + ")"}
-	case reflect.Slice, reflect.Array:
+	case reflect.Slice, reflect.Array, reflect.Chan:
 		if kind := typ.Elem().Kind(); kind == reflect.Uint8 || kind == reflect.Int32 {
 			return []string{path + " (" + typ.String() + ")"}
+		}
+		if typ.Kind() == reflect.Chan {
+			return keptTexts(typ.Elem(), path+"<-", allowed, seen)
 		}
 		return keptTexts(typ.Elem(), path+"[]", allowed, seen)
 	case reflect.Pointer:
@@ -149,10 +153,10 @@ func keptTexts(typ reflect.Type, path string, allowed map[string]bool, seen map[
 // this test that holds the judge's two types and one field more, or a type of the judge's with one
 // field more: a copy of the records of the sentences, of their words, of their runes, of their
 // bytes in an array, of their Spreads (whose Hits hold words), of the records in an Index of package
-// charge, and a value of any type are each named, and so is a new field of offer; a copy of a count
-// or a flag of each sentence is not, as no type rule can tell such a copy from what the judge keeps
-// of the split of its text (wholeText.nth), so the work table catches a walk of it where a row's
-// shape reaches the walk.
+// charge, the words of the sentences in a channel, and a value of any type are each named, and so
+// is a new field of offer; a copy of a count or a flag of each sentence is not, as no type rule can
+// tell such a copy from what the judge keeps of the split of its text (wholeText.nth), so the work
+// table catches a walk of it where a row's shape reaches the walk.
 func TestTheJudgeKeepsNoTextOfASentenceInAField(t *testing.T) {
 	allowed := map[string]bool{"findingKey.detail": true, "wayKey.from": true, "wayOut.from": true, "wayOut.to": true, "offer.note": true,
 		"Rule": true, "Kind": true, "Context.PersonNames": true, "Context.SystemNames": true, "Context.ServerURL": true, "Context.Pages": true,
@@ -201,6 +205,11 @@ func TestTheJudgeKeepsNoTextOfASentenceInAField(t *testing.T) {
 		wholeText
 		open []bool
 	}
+	type chanCopied struct {
+		wayJudge
+		wholeText
+		lines chan string
+	}
 	// offerGrown is the judge's offer with one field more, under the same name, as a new field of offer
 	// would stand.
 	offerGrown := func() reflect.Type {
@@ -222,6 +231,7 @@ func TestTheJudgeKeepsNoTextOfASentenceInAField(t *testing.T) {
 		{reflect.TypeFor[runesCopied](), "runesCopied.runes[] ([]int32)"},
 		{reflect.TypeFor[bytesCopied](), "bytesCopied.lines[] ([64]uint8)"},
 		{reflect.TypeFor[indexCopied](), "indexCopied.byWord.values{}[][].span (string)"},
+		{reflect.TypeFor[chanCopied](), "chanCopied.lines<- (string)"},
 		{offerGrown, "offer.line (string)"},
 		{reflect.TypeFor[flagsCopied](), ""},
 	} {
