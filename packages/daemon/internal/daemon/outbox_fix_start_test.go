@@ -205,7 +205,7 @@ func (r *fixStartRig) sentTheFixsTask() {
 	if sent := r.conn.Prompts()[0]; sent.DeliveryID != held.ID || !strings.Contains(sent.Message, fixStartTask) {
 		t.Fatalf("the implementer's agent was sent %+v, want the fix's task, delivery %s", sent, held.ID)
 	}
-	want := runtime.Adoption{FixFrom: fixStartHead, MoveTo: fixStartMove}
+	want := runtime.Adoption{FixFrom: fixStartHead, MoveTo: fixStartMove, FixBranch: fixStartBranch}
 	made := r.rt.CallsOf("AdoptWorkingCopy")
 	if len(made) != 1 || made[0].Adoption != want || made[0].Identity.Name != "legion-implementer[bot]" {
 		t.Fatalf("adoptions = %+v, want one naming %+v under the implementer's App", made, want)
