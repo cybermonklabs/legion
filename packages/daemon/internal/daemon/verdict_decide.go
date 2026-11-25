@@ -147,8 +147,8 @@ const currentHead = ""
 // verdict entry, or, for currentHead, the head the pull request stands at now: the record's, or the
 // one GitHub shows. A pull request the project's records hold is a Legion head of the issue that
 // owns it, decided from the steps of its task's plan at the head and the reviews delivered at the
-// head (legionInputs), and, where every step passed there, from the change's commits
-// (independence), read after the transaction so it holds no connection over a GitHub call. A
+// head (legionInputs), and, where every step passed there, from the readers of the change's commits
+// (readCommits), read after the transaction so it holds no connection over a GitHub call. A
 // legion/<KEY> head of another project's issue is a Legion head no verdict stands at: this daemon
 // holds no step of that issue (otherProjectsHead). Every other pull request is an outside one,
 // decided from its reviews and, where the entry takes them, its side reviewer's verdict

@@ -181,13 +181,6 @@ func (v *verdictWriter) done(target verdictTarget) {
 	v.ended = make(chan struct{})
 }
 
-// idle is whether no write is queued or being made.
-func (v *verdictWriter) idle() bool {
-	v.mu.Lock()
-	defer v.mu.Unlock()
-	return len(v.queue) == 0 && len(v.swept) == 0 && v.running == 0
-}
-
 // await returns true once issue has no write of legion-verdict queued or being made, false once
 // the writer's bound passes with one still pending, or ctx's error once ctx ends. The merge-state
 // reads of the issue call it before each read (readMergeState): GitHub answers `blocked` until
