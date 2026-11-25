@@ -2756,6 +2756,9 @@ func (s *supervision) askRound(ctx context.Context, issue string, group []superv
 	rows := make([]record.OutboxPayload, len(asking))
 	for i, c := range asking {
 		push := pushes[c.Role]
+		if push.Branch == "" && !push.FixReads {
+			push.Branch, _ = claim.BesideBranch(issue, 1, "a", 1, c.Role)
+		}
 		rows[i] = record.UpdateAsk{Role: c.Role, Round: round, Pod: pod, Text: supervise.UpdateTask(c.Role, round, reasons, *bound, push),
 			Branch: push.Branch, OwnFix: push.OwnFix, FixReads: push.FixReads}
 	}
