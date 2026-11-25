@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -161,6 +163,79 @@ func TestTheFinishOfAnActTakesTheRecordsOfEveryTargetItTook(t *testing.T) {
 				t.Errorf("workspace-taken notices queued = %d, want one only where the finish took its records", queued)
 			}
 		})
+	}
+}
+
+// The Legion reviewer's fix 1 on #5285 at 4b123279: two finishes of one issue that run at once,
+// each of a target of its own, both commit. Each finish takes the rows of its issue's records in one
+// order, oldest first, before it holds any of them, so neither holds a row that the other waits on
+// while it waits itself, and PostgreSQL aborts neither as a deadlock (40P01). other plays the finish
+// that took the older record's row first: it asks for the newer record's row once the finish of the
+// newer record waits.
+func TestTwoFinishesOfOneIssueAtOnceBothCommit(t *testing.T) {
+	st := migratedStore(t)
+	ctx := context.Background()
+	openRunningTree(t, st)
+	for _, r := range []PodReplacement{
+		{Operation: "round-a", Issue: rootIssue, PodUID: "pod-a", Act: runtime.PodAct("pod-a"), Record: []byte(`{}`)},
+		{Operation: "round-b", Issue: rootIssue, PodUID: "pod-b", Act: runtime.PodAct("pod-b"), Record: []byte(`{}`)},
+	} {
+		if err := st.RecordPodReplacement(ctx, "legion", r); err != nil {
+			t.Fatalf("record %s: %v", r.Operation, err)
+		}
+	}
+	other, err := st.Pool().BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = other.Rollback(ctx) }()
+	lock := func(operation string) error {
+		_, err := other.Exec(ctx, `select 1 from pod_replacements where project = 'legion' and issue = $1 and operation = $2 for update`,
+			rootIssue, operation)
+		return err
+	}
+	if err := lock("round-a"); err != nil {
+		t.Fatalf("lock round-a's row: %v", err)
+	}
+	type result struct {
+		finish PodReplacementFinish
+		err    error
+	}
+	finished := make(chan result, 1)
+	go func() {
+		finish, err := st.FinishPodReplacement(ctx, "legion", rootIssue, "round-b", false, nil)
+		finished <- result{finish, err}
+	}()
+	awaitLockWait(t, st)
+	if err := lock("round-b"); err != nil {
+		t.Fatalf("the other finish's lock of round-b's row while the finish of round-b waits = %v; want it granted: a finish holds no row of its issue while it waits for an older one", err)
+	}
+	if err := other.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := <-finished; got.err != nil || !got.finish.Found {
+		t.Fatalf("the finish of round-b = %+v, %v; want its record finished", got.finish, got.err)
+	}
+	if standing := operationsStanding(t, st); !slices.Equal(standing, []string{"round-a"}) {
+		t.Errorf("records standing once round-b is finished = %v, want round-a's", standing)
+	}
+}
+
+// awaitLockWait waits until a session of st's database waits on a lock.
+func awaitLockWait(t *testing.T, st *Store) {
+	t.Helper()
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		var waiting int
+		if err := st.Pool().QueryRow(context.Background(), `select count(*) from pg_stat_activity
+			where datname = current_database() and wait_event_type = 'Lock'`).Scan(&waiting); err != nil {
+			t.Fatal(err)
+		}
+		if waiting > 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("no session waited on a lock within 10s")
+		}
 	}
 }
 
