@@ -932,7 +932,7 @@ func (s *server) storeArtifact(
 	// The node of a document this upload creates: written before its row, in the project of the
 	// issue or the project that owns it, or between the parties of the conversation that does,
 	// and stated under the event the upload appends, or at the sentinel where its owner records
-	// none (agentArtifactTarget.ownsEvents). It states beside it the facts the row projects: its
+	// none (artifactTarget.ownsEvents). It states beside it the facts the row projects: its
 	// part_of the issue that owns it, and an image's or a file's bytes (R16 of
 	// the issue-tree spec); a project's document and a conversation's file hang under no issue.
 	// The row names the node in the same transaction. A ref_key past the store's address bound is

@@ -88,7 +88,7 @@ func backwardMovesServed(t *testing.T, body []byte) map[string]struct {
 // issue has had none: the key's absence is how a reader tells an issue that carries no counts
 // from one whose counts the daemon holds, which an empty object would not say.
 func TestTheStateRouteServesTheBackwardMoveCounts(t *testing.T) {
-	body := stateFrom(t, backwardMovesState(), "10.1.24.9:4100", podClaims(DaemonAPIVersion))
+	body := stateFrom(t, backwardMovesState(), "10.1.24.9:4100", podClaims(DaemonAPIVersion()))
 	served := backwardMovesServed(t, body)
 
 	counted := served["LEGION-20/implementer"]
@@ -152,8 +152,8 @@ func TestBackwardMovesContractIsTheContractThatAddedTheCounts(t *testing.T) {
 		t.Fatalf("backwardMovesContract = %d, want %d, the contract whose entry in version.go added the workers' counts of the moves back",
 			backwardMovesContract, addedBackwardMoves)
 	}
-	if backwardMovesContract > DaemonAPIVersion {
+	if backwardMovesContract > DaemonAPIVersion() {
 		t.Fatalf("backwardMovesContract = %d, above DaemonAPIVersion %d: no caller could be served the counts",
-			backwardMovesContract, DaemonAPIVersion)
+			backwardMovesContract, DaemonAPIVersion())
 	}
 }

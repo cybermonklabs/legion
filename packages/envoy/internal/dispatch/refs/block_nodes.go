@@ -779,23 +779,33 @@ type blockFarEnd struct{ kind, id string }
 // (placed), the index there of the block holding it (parents, -1 for one at the document's top
 // level and for one that hangs under a node that is no block of the version), and that node
 // where a block hangs under one (ends, nil for every other block, and nil as a whole where there
-// is none): a reading in an answered ask, under the ask's node, and an authored node under a
-// conversation node, a block of another document, or an issue that is not the document's top
-// (placeAuthored). textParents is, beside each, the index among the version's unique blocks of the
-// block whose text holds it, -1 for one no block of the version that is a node holds: the parent
-// the text gives it (placeBlocks), which placeAuthored and an answered ask leave as it is.
+// is none): a reading in an answered ask and a decision that settles an ask of its issue, each
+// under the ask's node, and an authored node under a conversation node, a block of another
+// document, or an issue that is not the document's top (placeAuthored). textParents is, beside
+// each, the index among the version's unique blocks of the block whose text holds it, -1 for one
+// no block of the version that is a node holds: the parent the text gives it (placeBlocks), which
+// placeAuthored and an ask's node leave as it is.
 //
 // stored marks, beside each, a block a move of the node route placed whose part_of the pass keeps
 // as the store holds it (keepStored), and unstored a block the store holds at PlacementStored that
-// the pass places again, by its text or by its author (the two exceptions of planBlockParents and
-// placeAuthored); each is nil where it marks none. A block the store holds stored whose part_of
-// is the one the text gives it is in neither: it keeps its placement all the same
-// (planBlockValues).
+// the pass places again, by its text, under the ask it settles or by its author (the exceptions of
+// planBlockParents and placeAuthored); each is nil where it marks none. A block the store holds
+// stored whose part_of is the one the pass gives it is in neither, and keeps its placement all the
+// same (planBlockValues), but for a decision that settles an ask, which is unstored wherever it
+// stands.
 type blockPlacement struct {
 	ids                          []string
 	placed, parents, textParents []int
 	ends                         []*blockFarEnd
 	stored, unstored             []bool
+}
+
+// askPlacements is the blocks of a version that stand under an ask's node in place of the block
+// their text stands in, each by its id with the id of that ask (planBlockParents): readings, each
+// reading in an answered ask, and decisions, each decision that settles an ask of its issue. The
+// zero value places none.
+type askPlacements struct {
+	readings, decisions map[string]string
 }
 
 // end sets the far end the block at index hangs under, making ends where there is none yet.
@@ -935,13 +945,19 @@ func (p parentProbe) position(position int) int {
 // the top projects a null parent_block_id, whichever node its part_of names, and so does an
 // authored node under any node that is no block of the indexed artifact.
 //
-// askParents is each reading of the version that stands in an answered ask, by its id, with that
-// ask's id (DecisionFacts): its part_of is the ask's node, since the decision a reading there
-// reads is the person's answer the node holds, while document_blocks.parent_block_id keeps the
-// id of the ask block holding it, which is that tuple's projection. only, where it is not nil,
-// is the blocks the pass states a parent for, the typed-node pass's own above the deferral bound
-// (PlanDecisionNodes); every block is placed in the version all the same, so the parent each of
-// them takes is the one a pass over the whole version gives it. authored is what the version
+// asks is the blocks of the version that stand under an ask's node in place of the block their
+// text stands in, each by its id with that ask's id (DecisionFacts, TypedFacts.asks): each reading
+// in an answered ask, since the decision a reading there reads is the person's answer the node
+// holds, and each decision that settles an ask of its issue, "a decision under the ask it
+// answers" (R2 of the issue-tree spec). document_blocks.parent_block_id keeps the id of the block
+// whose text holds each - for a reading the ask block holding it, which is that tuple's
+// projection - and so does its text_parent (planBlockValues), so a decision stays where its text
+// stands in its document. A decision that settles an ask stands under it whatever its placement
+// (R7's third exception): a part_of a move of the node route stored is placed again, under the
+// ask (unstore), and the decision takes back the placement PlacementText. only, where it is not
+// nil, is the blocks the pass states a parent for, the typed-node pass's own above the deferral
+// bound (PlanDecisionNodes); every block is placed in the version all the same, so the parent each
+// of them takes is the one a pass over the whole version gives it. authored is what the version
 // writes of where its authored nodes go (authoredSourcesOf), the zero value for a pass that reads
 // none. Every read is q's, in the plan's read phase.
 func (b *BlockIndexing) planBlockParents(
@@ -952,7 +968,7 @@ func (b *BlockIndexing) planBlockParents(
 	nodes []model.ArtifactBlock,
 	fits []bool,
 	fragments map[string]fragmentDocument,
-	askParents map[string]string,
+	asks askPlacements,
 	only map[string]struct{},
 	authored authoredSources,
 ) (blockPlacement, []graphstore.UncausedTuple, map[string]blockFarEnd, error) {
@@ -995,8 +1011,12 @@ func (b *BlockIndexing) planBlockParents(
 		if parents[index] >= 0 {
 			parentIDs[index] = &nodes[parents[index]].ID
 		}
-		if ask, held := askParents[blockIDs[index]]; held {
+		if ask, held := asks.readings[blockIDs[index]]; held {
 			placement.end(index, blockFarEnd{kind: graphstore.KindAsk, id: ask})
+		}
+		if ask, settles := asks.decisions[blockIDs[index]]; settles {
+			placement.end(index, blockFarEnd{kind: graphstore.KindAsk, id: ask})
+			placement.unstore(index)
 		}
 	}
 	kept, err := placeAuthored(ctx, q, b.artifactID, indexed, record, nodes, &placement, parentIDs, authored, b.outside)
@@ -1029,12 +1049,15 @@ func (b *BlockIndexing) planBlockParents(
 	// the rest are read from the store in one probe.
 	//
 	// A block the store holds at PlacementStored keeps the part_of it holds (keepStored): the move
-	// of the node route that placed it decides its parent, and its text does not. The one exception
-	// here is a stored part_of to a block of the document this version no longer holds
-	// (removedParent): the block is placed by its text again (unstore), so no stored block stands
-	// under a gone parent. An authored node's exceptions are placeAuthored's. A block a move of this
+	// of the node route that placed it decides its parent, and its text does not. There are two
+	// exceptions here. A stored part_of to a block of the document this version no longer holds
+	// (removedParent) places the block by its text again (unstore), so no stored block stands
+	// under a gone parent; and a decision that settles an ask of its issue (asks.decisions) stands
+	// under that ask whatever its placement, so its stored part_of is never kept and the pass
+	// unstores it above. An authored node's exceptions are placeAuthored's. A block a move of this
 	// same transaction placed is kept where the move put it (BlockIndex.storedMove), which the store
-	// holds only once the write phase has run.
+	// holds only once the write phase has run; no such move is of a decision that settles an ask,
+	// which the route refuses to move (api's NODE_NOT_MOVABLE).
 	var versionIDs map[string]struct{}
 	removed := func(far blockFarEnd) bool {
 		if versionIDs == nil {
@@ -1044,6 +1067,10 @@ func (b *BlockIndexing) planBlockParents(
 			}
 		}
 		return removedParent(far, refKey, versionIDs)
+	}
+	settles := func(position int) bool {
+		_, settling := asks.decisions[blockIDs[position]]
+		return settling
 	}
 	places := authoredPlaces{document: record, nodes: nodes, placement: &placement, parentIDs: parentIDs, outside: b.outside}
 	keep := func(position int, far blockFarEnd) {
@@ -1073,7 +1100,7 @@ func (b *BlockIndexing) planBlockParents(
 			continue
 		}
 		if indexed.values[id].placement == PlacementStored {
-			if !removed(far) {
+			if !removed(far) && !settles(position) {
 				keep(position, far)
 				continue
 			}
@@ -1089,7 +1116,7 @@ func (b *BlockIndexing) planBlockParents(
 	for _, difference := range read {
 		difference.block = probe.position(difference.block)
 		if difference.placement == PlacementStored {
-			if len(difference.retract) == 1 && !difference.holds && !removed(difference.retract[0]) {
+			if len(difference.retract) == 1 && !difference.holds && !removed(difference.retract[0]) && !settles(difference.block) {
 				keep(difference.block, difference.retract[0])
 				continue
 			}
@@ -1983,9 +2010,10 @@ func (p *authoredPlaces) target(ref text.Ref, resolved authoredResolution, above
 // parent its author decides (placeAuthored), and PlacementStored for a block a move of the node
 // route placed (R7 of the issue-tree spec: api's PATCH /api/v1/issues/{key}/nodes/{id}), whose
 // part_of and rank the store holds as that move wrote them and no pass computes from the text, but
-// for the two exceptions planBlockParents and placeAuthored name. A plan node holds more: a value
-// of each attribute its opening line writes that points at nothing, under the attribute's name,
-// its `size` (AttributePlanSize) in whole minutes (blockPlanValues).
+// for the exceptions planBlockParents and placeAuthored name: a removed parent, an edited parent
+// attribute, and a decision that settles an ask, which stands under it. A plan node holds more: a
+// value of each attribute its opening line writes that points at nothing, under the attribute's
+// name, its `size` (AttributePlanSize) in whole minutes (blockPlanValues).
 const (
 	AttributeRank      = "rank"
 	AttributePlacement = "placement"
@@ -2469,9 +2497,10 @@ type parentChild struct {
 }
 
 // parentChildRanks reads, in one statement, every block each of parents holds now through its
-// current part_of (graphstore.CurrentTupleRead, into a node, which graph_tuples_as_of_in serves),
-// with the rank it holds now, read as heldBlockValues reads a value; a child that holds no rank,
-// or that is no block, is left out.
+// current part_of (graphstore.CurrentTupleRead, into a node, which graph_tuples_as_of_in serves:
+// the read names to_kind <> 'value', the index's predicate, which a far end bound to a column of
+// the probe does not prove), with the rank it holds now, read as heldBlockValues reads a value; a
+// child that holds no rank, or that is no block, is left out.
 func parentChildRanks(ctx context.Context, q Queryer, parents []blockFarEnd) ([]parentChild, error) {
 	kinds, ids := make([]string, len(parents)), make([]string, len(parents))
 	for index, parent := range parents {
@@ -2483,7 +2512,8 @@ func parentChildRanks(ctx context.Context, q Queryer, parents []blockFarEnd) ([]
 		join lateral (
 			select held.from_id from (
 				`+graphstore.CurrentTupleRead(`t.from_kind, t.from_id`, `t.from_kind, t.from_id, t.asserted`,
-		`t.to_kind = parent.kind and t.to_id = parent.id and t.kind = $3 and t.from_kind = $4`)+`
+		`t.to_kind = parent.kind and t.to_id = parent.id and t.kind = $3 and t.from_kind = $4
+				  and t.to_kind <> '`+graphstore.KindValue+`'`)+`
 			) held
 			where held.asserted
 		) child on true
