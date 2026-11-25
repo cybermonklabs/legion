@@ -66,7 +66,7 @@ func TestAnUpdateStalledNoticeNamesThePauseForAClaimALaterReleaseDidNotSuspend(t
 		t.Fatalf("end the pod's hold at the implementer's ready = %t, %v; want the hold ended", ended, err)
 	}
 	releasedAt := podUpdateStart.Add(10 * time.Minute)
-	if _, err := rig.st.RecordPodRelease(rig.ctx, store.PodRelease{Project: podUpdateProject, Issue: podUpdateIssue, Generation: 1,
+	if _, _, err := rig.st.RecordPodRelease(rig.ctx, store.PodRelease{Project: podUpdateProject, Issue: podUpdateIssue, Generation: 1,
 		Roles: []string{string(claim.RoleImplementer)}, At: releasedAt}); err != nil {
 		t.Fatalf("record the idle release of the pod: %v", err)
 	}
