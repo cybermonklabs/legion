@@ -8,10 +8,12 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/wait"
 )
 
-// ErrSuspendHeld answers a suspension that arrived while the claim's agent is in a turn: the
-// machine holds it and suspends the claim itself (holdSuspension). It is not a refusal. A caller
-// that keeps the request durably asks again, and the claim answers nil once it is suspended.
-var ErrSuspendHeld = wait.New("the suspension is held for the agent's turn to end")
+// ErrSuspendHeld answers a suspension that arrived while the claim's agent is in a turn, or a
+// project pause's stop that reached an idle claim whose prompt's answer is still to come: the
+// machine holds it and suspends the claim itself, at the turn's end or at that answer
+// (holdSuspension, holdForAnswer). It is not a refusal. A caller that keeps the request durably
+// asks again, and the claim answers nil once it is suspended.
+var ErrSuspendHeld = wait.New("the suspension is held until the agent's turn ends or its prompt is answered")
 
 // ErrPauseEnded answers a project pause's stop (RequestSuspend.Pause) that reaches its claim once
 // that pause is no longer the open one (Deps.Paused): the pause the stop names has ended, so
@@ -30,20 +32,38 @@ var ErrPauseEnded = errors.New("the pause this stop names has ended, so nothing 
 // that suspension ends no phase, and the wake that brings the pod back resumes the claim with the
 // task it kept (SuspendSource.RetiresPhaseTask). A project pause's stop that reaches an idle claim
 // whose turn ended before the answer of its task's prompt does not run here: it is held for that
-// answer (pauseStopWaits, holdSuspension), as it would have been had it come in the turn.
+// answer (pauseStopWaits, holdForAnswer).
 func suspend(m *Machine, ctx context.Context, ev Event) error {
 	request, err := suspendRequest(m, ev)
 	if err != nil {
 		return err
 	}
 	if m.pauseStopWaits(request) {
-		return holdSuspension(m, ctx, ev)
+		return m.holdForAnswer(request)
 	}
 	return m.suspendNow(ctx, request, false)
 }
 
+// holdForAnswer holds a project pause's stop that reached an idle claim whose turn ended before
+// the answer of the task's prompt (pauseStopWaits), as the stop would have been held had it come
+// in that turn (holdSuspension), and the answer runs it (stopAtResult states the rule). No turn is
+// running, so nothing is held for a turn's end and no deadline is armed: a deadline is the bound
+// on a turn that will not end, and the gate's own stop names one of now (pauseStopDue), which,
+// armed, would stop the claim before the answer it is held for. What bounds the wait is the
+// answer and, failing it, the pause's stop row asking again (pauseStopWaits, suspend). The hold is
+// a new one: a stop that meets a suspension already held is the stop asked again.
+func (m *Machine) holdForAnswer(request RequestSuspend) error {
+	m.held, m.heldLaunch = &RequestSuspend{Claim: request.Claim, Reason: request.Reason, By: request.By, Pause: request.Pause}, false
+	m.log.Info("supervise: the pause's stop is held for the answer of the prompt of the task the claim's last turn confirmed",
+		"reason", request.Reason, "pause", request.Pause, "delivery", m.claim.Pending.ID, "outstanding", m.outstanding)
+	return ErrSuspendHeld
+}
+
 // holdSuspension is a suspension that arrives while the agent is in a turn, and this is the one
-// statement of what a held suspension (Machine.held) does.
+// statement of what a held suspension (Machine.held) does. A project pause's stop is also held,
+// with no turn running, where it reaches an idle claim whose prompt's answer is still to come
+// (holdForAnswer). The rest of this doc holds of that hold too, except that it waits for the
+// answer rather than for a turn's end, and has no deadline.
 //
 // A worker's issue can close, or an operator suspend it, while it is in a turn: the production
 // check's sign-off, say, arriving while the implementer's report of the check is still a tool call
@@ -308,8 +328,20 @@ func suspensionRank(source SuspendSource) int {
 // the workspace, the issue's branch and the session are kept either way. The stop records the turn
 // it cuts off, and the task it took back from that turn, as ended by the suspension (suspendNow,
 // Machine.cutTurnOf, recordEnd).
+//
+// A project pause's hold whose turn ended before the deadline, with the answer of the task's
+// prompt still to come, is that answer's to run (pauseHoldWaits, stopAtResult states the rule):
+// the deadline is for a turn to cut off, and stopped here the claim would have the task its turn
+// confirmed retired as served before the answer says whether it was. The gate's own stop names a
+// deadline of now (pauseStopDue), so a turn's end decided between that stop and this timer reaches
+// here. The timer is spent, and the answer, or the pause's stop row asking again, ends the hold.
 func suspendAtTimeout(m *Machine, ctx context.Context, _ Event) error {
 	if m.held == nil {
+		return nil
+	}
+	if m.pauseHoldWaits() {
+		m.log.Info("supervise: the held suspension's deadline came after the turn's end, and its pause's stop waits for the answer of the task's prompt",
+			"pause", m.held.Pause, "deadline", m.held.Deadline, "delivery", m.claim.Pending.ID, "outstanding", m.outstanding)
 		return nil
 	}
 	if m.claim.State == StateWorking {

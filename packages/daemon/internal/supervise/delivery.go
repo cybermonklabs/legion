@@ -1764,15 +1764,15 @@ func (m *Machine) turnAnswers() (news []byte, inFlight bool) {
 // turn the prompt ran, so the wait is milliseconds; a prompt the agent refused or a daemon
 // restart leaves none outstanding, and the turn's end decides as it always did.
 //
-// The same holds while the send of the task's prompt is in flight and no result has made it moot
-// (sending.resulted): its own result, or a turn-reporting result of any prompt of the task
-// (resultPending's send window). A turn that starts then is taken for the task's
-// (turnAnswers), and its end can be decided before the send's acknowledgement, which reaches the
-// machine on the send's own goroutine (sending). A task retired at that end would have its
-// prompt's result dropped as stale (fence), and with it the final credit of the news the prompt
-// carried, which would then be owed and sent again, or the provider error that leaves the work
-// owed (providerErrored). The send's outcome and the prompt's result say which turn it was, as
-// they do for a prompt acknowledged first.
+// The same holds while the send of the task's prompt is in flight and no answer has made it moot
+// (sending.resulted): its own result or its refusal after the acknowledgement, or a
+// turn-reporting result of any prompt of the task (resultPending's send window). A turn that
+// starts then is taken for the task's (turnAnswers), and its end can be decided before the send's
+// acknowledgement, which reaches the machine on the send's own goroutine (sending). A task
+// retired at that end would have its prompt's result dropped as stale (fence), and with it the
+// final credit of the news the prompt carried, which would then be owed and sent again, or the
+// provider error that leaves the work owed (providerErrored). The send's outcome and the prompt's
+// result say which turn it was, as they do for a prompt acknowledged first.
 //
 // A daemon suspension ends the claim's phase, so a task queued for a phase is the finished phase's
 // and goes with it; the next resume is handed its new phase's task, never that one. An operator
@@ -1810,11 +1810,21 @@ func (m *Machine) settle(ctx context.Context) error {
 // where it names one (Machine.outstanding); the wait that ran out names none, and its prompt
 // stays outstanding, since its turn at the pin is still the session's next. Whatever stays
 // outstanding is what the take-back reads (takeBackPending).
+//
+// A no-turn answer is one of the answers a project pause's hold waits for, so this ends by the
+// held stop (stopAtResult), after the take-back whether or not its write landed: the take-back
+// clears the confirmation in memory first, so the stop keeps the task. The wait that ran out
+// (noTurn) leaves its prompt outstanding, so the stop does nothing there. A charge that reached
+// the limit and ran the held stop itself (chargePrompt) is not followed by a second.
 func (m *Machine) promptFailed(ctx context.Context, why string, read bool) error {
 	if err := m.takeBackPending(ctx, read); err != nil {
+		return errors.Join(err, m.stopAtResult(ctx))
+	}
+	heldStop, err := m.chargePrompt(ctx, why)
+	if heldStop {
 		return err
 	}
-	return m.chargePrompt(ctx, why)
+	return errors.Join(err, m.stopAtResult(ctx))
 }
 
 // interruptedTask begins a task taken back from a turn its process could no longer finish
@@ -1964,7 +1974,7 @@ func (m *Machine) interrupted(ctx context.Context, why string, outOfMemory bool)
 	if p == nil || p.ConfirmedAt.IsZero() {
 		return nil
 	}
-	m.log.Warn("supervise: "+why+"; the task waits for the relaunch", "delivery", p.ID)
+	m.log.Warn("supervise: "+why+"; the task is taken back from that turn, interrupted", "delivery", p.ID)
 	next := *p
 	next.ID, next.ConfirmedAt, next.Interrupted, next.OutOfMemory = rotateTaskID(p.ID), time.Time{}, true, outOfMemory
 	// The confirmation goes, and with it the credit its copy held: the write ends it with the

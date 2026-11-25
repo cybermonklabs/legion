@@ -238,6 +238,61 @@ func TestAPauseHoldOverAWorkingClaimSurvivesAStartAndStopsItAtTheTurnsEnd(t *tes
 	}
 }
 
+// holdPauseInTurn opens pause 7 and asks its stop of the claim, which is in a turn, so the stop is
+// held for that turn (holdSuspension). It waits for nothing the decision starts, since a test may
+// hold the task's send at the door (gatedConn).
+func holdPauseInTurn(t *testing.T, h *harness, flag *pauseFlag) {
+	t.Helper()
+	flag.set(7)
+	if err := h.m.Handle(h.ctx, pauseStop(h.token, 7)); !errors.Is(err, ErrSuspendHeld) {
+		t.Fatalf("the pause's stop of a claim in a turn = %v, want it held", err)
+	}
+}
+
+// gateStop is the stop the pause's gate posts over a claim whose launch it held (pauseStopDue):
+// pause 7's, with a deadline of now.
+func gateStop(h *harness) RequestSuspend {
+	return RequestSuspend{Claim: h.token, By: SuspendedByReleased, Pause: 7, Deadline: h.clock.Now(),
+		Reason: "the project is paused (pause 7) and its gate held this claim's launch"}
+}
+
+// wantHoldWaiting is the claim idle with pause 7's stop still held over it and nothing stopped:
+// the hold waits for the answer of the task's prompt (stopWaitsForResult).
+func wantHoldWaiting(t *testing.T, h *harness, stops *stopTransaction) {
+	t.Helper()
+	h.wantState(StateIdle)
+	h.wantCalls("Suspend", 0)
+	stops.wantStops(t)
+	if pause, held := h.heldPause(); !held || pause != 7 {
+		t.Fatalf("the claim's hold names pause %d (held %v), want pause 7 held for the prompt's answer", pause, held)
+	}
+}
+
+// wantPauseStop is the claim stopped once for pause 7, through the stop transaction, owing the
+// role a launch or not.
+func wantPauseStop(t *testing.T, h *harness, stops *stopTransaction, launchOwed bool) {
+	t.Helper()
+	h.wantState(StateSuspended)
+	h.wantCalls("Suspend", 1)
+	stops.wantStops(t, stopCall{stop: PauseStop{Pause: 7, LaunchOwed: launchOwed}, landed: true})
+}
+
+// wantTaskKeptUnconfirmed is the stopped claim keeping the task for whatever starts it again:
+// unconfirmed, in memory and in the store, so no settle retires it as a finished turn's.
+func wantTaskKeptUnconfirmed(t *testing.T, h *harness) {
+	t.Helper()
+	if p := h.claim().Pending; p == nil || p.Task != providerErrorTaskText || !p.ConfirmedAt.IsZero() {
+		t.Fatalf("the stopped claim holds %+v, want the task kept, unconfirmed", p)
+	}
+	if stored, held := h.store.delivery(h.token); !held || stored.Task != providerErrorTaskText || !stored.ConfirmedAt.IsZero() {
+		t.Fatalf("the stored task is %+v (held %v), want the task kept, unconfirmed", stored, held)
+	}
+}
+
+// heldForAnswerLine is the line a pause's stop that reaches an idle claim before its prompt's
+// answer writes as it is held (holdForAnswer).
+const heldForAnswerLine = "supervise: the pause's stop is held for the answer of the prompt of the task the claim's last turn confirmed"
+
 // A pause's hold over a claim whose turn ends before its prompt's result waits for that result
 // rather than stopping the claim at the turn's end (stopWaitsForResult): a provider's refusal of
 // the prompt takes the task back for another prompt (providerErrored), and the stop that follows
@@ -245,34 +300,104 @@ func TestAPauseHoldOverAWorkingClaimSurvivesAStartAndStopsItAtTheTurnsEnd(t *tes
 // nothing. Stopped at the turn's end, the claim retired the task as a finished turn's, and the
 // refusal arriving behind it was fenced out: the role lost the task the provider refused (check k1
 // of dispatch://INFRA-3759, role D).
+//
+// Nothing that comes between the turn's end and the result ends that wait (stopAtResult states
+// the rule): a ready the agent says again (reready); the deadline of the gate's own stop, which
+// names one of now and can come due after the turn's end (suspendAtTimeout); and a stop that
+// reaches the claim only after the turn's end, from the pause's stop row or from the gate, which
+// is held for the result as one made in the turn is (pauseStopWaits). That last hold arms no
+// deadline, since no turn is running, and its line says what it waits for (holdForAnswer). Run at
+// any of them, the stop retired the task the provider then refused.
 func TestAPauseHoldWaitsForTheTurnsResultAndKeepsATaskAProviderRefused(t *testing.T) {
+	nothing := func(*testing.T, *harness, *pauseFlag) {}
+	stopAfterTheEnd := func(stop func(*harness) RequestSuspend) func(*testing.T, *harness, *pauseFlag) {
+		return func(t *testing.T, h *harness, flag *pauseFlag) {
+			t.Helper()
+			flag.set(7)
+			if err := h.handle(stop(h)); !errors.Is(err, ErrSuspendHeld) {
+				t.Fatalf("the pause's stop of an idle claim whose prompt's answer is still to come = %v, want it held", err)
+			}
+			if h.armed(TimerSuspend) {
+				t.Fatal("the hold over an idle claim armed a deadline, want none: no turn is running")
+			}
+			if lines := h.logs.lines(heldForAnswerLine); len(lines) != 1 {
+				t.Fatalf("the hold logged %v, want the one line that says it waits for the prompt's answer", lines)
+			}
+			h.advance(0)
+		}
+	}
+	for _, tc := range []struct {
+		name string
+		// inTurn is done while the turn runs, and between after its end, before the result.
+		inTurn, between func(t *testing.T, h *harness, flag *pauseFlag)
+	}{
+		{name: "nothing between the turn's end and the result", inTurn: holdPauseInTurn, between: nothing},
+		{name: "a ready said again", inTurn: holdPauseInTurn, between: func(_ *testing.T, h *harness, _ *pauseFlag) { h.ready() }},
+		{
+			name: "the deadline of the gate's stop, held in the turn and due after its end",
+			inTurn: func(t *testing.T, h *harness, flag *pauseFlag) {
+				flag.set(7)
+				if err := h.handle(gateStop(h)); !errors.Is(err, ErrSuspendHeld) {
+					t.Fatalf("the gate's stop of a claim in a turn = %v, want it held", err)
+				}
+				if !h.armed(TimerSuspend) {
+					t.Fatal("the gate's stop armed no deadline over the turn: this case proves nothing")
+				}
+			},
+			between: func(_ *testing.T, h *harness, _ *pauseFlag) { h.advance(0) },
+		},
+		{name: "the pause's stop row, after the turn's end", inTurn: nothing,
+			between: stopAfterTheEnd(func(h *harness) RequestSuspend { return pauseStop(h.token, 7) })},
+		{name: "the gate's stop, after the turn's end", inTurn: nothing, between: stopAfterTheEnd(gateStop)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, flag, stops := pauseHarness(t, queuedClaim())
+			h.reach(StateReady)
+			h.must(RequestDeliver{Claim: h.token, Task: providerErrorTaskText})
+			h.must(StreamTurnStart{Claim: h.token})
+			task := h.pending().ID
+			tc.inTurn(t, h, flag)
+			h.mustQuiet(StreamTurnEnd{Claim: h.token})
+
+			tc.between(t, h, flag)
+
+			wantHoldWaiting(t, h, stops)
+			if p := h.pending(); p.ID != task || p.ConfirmedAt.IsZero() {
+				t.Fatalf("the claim holds %+v before the result, want the task its turn confirmed, kept for the result", p)
+			}
+
+			h.must(StreamPromptResult{Claim: h.token, DeliveryID: task, AgentInvoked: true, Error: "overloaded_error", HTTPStatus: 529})
+
+			wantPauseStop(t, h, stops, true)
+			wantTaskKeptUnconfirmed(t, h)
+			h.advance(promptRetryDelay(1))
+			h.wantPrompts(1)
+		})
+	}
+}
+
+// A pause's stop asked again of an idle claim whose hold still waits for its prompt's answer stops
+// the claim at once: it is the pause's stop row asking after pauseStopWait, the bound on that
+// wait, and an answer that late is taken for none. The process is let go with nothing of the
+// task's prompts to come, so settle retires the task its turn confirmed, with that turn.
+func TestAPauseStopAskedAgainOverAHoldWaitingForItsAnswerStopsTheClaim(t *testing.T) {
 	h, flag, stops := pauseHarness(t, queuedClaim())
 	h.reach(StateReady)
 	h.must(RequestDeliver{Claim: h.token, Task: providerErrorTaskText})
 	h.must(StreamTurnStart{Claim: h.token})
-	task := h.pending().ID
+	h.mustQuiet(StreamTurnEnd{Claim: h.token})
 	flag.set(7)
 	if err := h.handle(pauseStop(h.token, 7)); !errors.Is(err, ErrSuspendHeld) {
-		t.Fatalf("the pause's stop of a claim in a turn = %v, want it held", err)
+		t.Fatalf("the pause's stop of an idle claim whose prompt's answer is still to come = %v, want it held", err)
 	}
+	wantHoldWaiting(t, h, stops)
 
-	h.mustQuiet(StreamTurnEnd{Claim: h.token})
-	stops.wantStops(t)
-	h.wantCalls("Suspend", 0)
+	h.must(pauseStop(h.token, 7))
 
-	h.must(StreamPromptResult{Claim: h.token, DeliveryID: task, AgentInvoked: true, Error: "overloaded_error", HTTPStatus: 529})
-
-	h.wantState(StateSuspended)
-	h.wantCalls("Suspend", 1)
-	stops.wantStops(t, stopCall{stop: PauseStop{Pause: 7, LaunchOwed: true}, landed: true})
-	if stored, held := h.store.delivery(h.token); !held || stored.Task != providerErrorTaskText || !stored.ConfirmedAt.IsZero() {
-		t.Fatalf("the stored task is %+v (held %v), want the refused task back unconfirmed", stored, held)
+	wantPauseStop(t, h, stops, false)
+	if p := h.claim().Pending; p != nil {
+		t.Fatalf("the claim stopped with no answer holds %+v, want the task its turn confirmed retired with that turn", p)
 	}
-	if p := h.claim().Pending; p == nil || p.Task != providerErrorTaskText {
-		t.Fatalf("the stopped claim holds %+v, want the task the provider refused", p)
-	}
-	h.advance(promptRetryDelay(1))
-	h.wantPrompts(1)
 }
 
 // A pause's hold over a claim whose turn ends before the answer to its prompt's send waits for
@@ -353,38 +478,103 @@ func TestAPauseHoldWaitsForTheAnswerOfASendWhoseTurnAlreadyEnded(t *testing.T) {
 			if err := h.m.Handle(h.ctx, StreamTurnStart{Claim: h.token}); err != nil {
 				t.Fatal(err)
 			}
-			flag.set(7)
-			if err := h.m.Handle(h.ctx, pauseStop(h.token, 7)); !errors.Is(err, ErrSuspendHeld) {
-				t.Fatalf("the pause's stop of a claim in a turn = %v, want it held", err)
-			}
+			holdPauseInTurn(t, h, flag)
 
 			if err := h.m.Handle(h.ctx, StreamTurnEnd{Claim: h.token}); err != nil {
 				t.Fatalf("the turn's end: %v", err)
 			}
-			stops.wantStops(t)
-			h.wantCalls("Suspend", 0)
+			wantHoldWaiting(t, h, stops)
 			if p := h.pending(); p.ID != task || p.ConfirmedAt.IsZero() {
 				t.Fatalf("the claim holds %+v after the turn's end, want the task its turn confirmed, kept for the send's answer", p)
 			}
 
 			tc.give(t, h, gated, task)
 
-			h.wantState(StateSuspended)
-			h.wantCalls("Suspend", 1)
-			stored, held := h.store.delivery(h.token)
-			if tc.retired {
-				stops.wantStops(t, stopCall{stop: PauseStop{Pause: 7}, landed: true})
-				if p := h.claim().Pending; p != nil || held {
-					t.Fatalf("the stopped claim holds %+v and the store %+v (held %v), want the finished turn's task retired", p, stored, held)
-				}
+			wantPauseStop(t, h, stops, !tc.retired)
+			if !tc.retired {
+				wantTaskKeptUnconfirmed(t, h)
 				return
 			}
-			stops.wantStops(t, stopCall{stop: PauseStop{Pause: 7, LaunchOwed: true}, landed: true})
-			if !held || stored.Task != providerErrorTaskText || !stored.ConfirmedAt.IsZero() {
-				t.Fatalf("the stored task is %+v (held %v), want the task back unconfirmed", stored, held)
+			if stored, held := h.store.delivery(h.token); h.claim().Pending != nil || held {
+				t.Fatalf("the stopped claim holds %+v and the store %+v (held %v), want the finished turn's task retired", h.claim().Pending, stored, held)
 			}
 		})
 	}
+}
+
+// noTurnAnswer is one prompt's answer that says it ran no turn, as the rows below give it: the
+// prompt, and the connection a replayed refusal arrives on.
+type noTurnAnswer func(h *harness, prompt string, replayed *fake.Conn) error
+
+// The answers that say the prompt ran no turn, each named for the decision that reads it.
+var (
+	noTurnResult noTurnAnswer = func(h *harness, prompt string, _ *fake.Conn) error {
+		return h.handle(StreamPromptResult{Claim: h.token, DeliveryID: prompt})
+	}
+	lateRefusal noTurnAnswer = func(h *harness, prompt string, _ *fake.Conn) error {
+		return h.handle(StreamLateRefusal{Claim: h.token, DeliveryID: prompt, Error: "the model provider refused the request"})
+	}
+	replayedRefusal noTurnAnswer = func(h *harness, prompt string, replayed *fake.Conn) error {
+		return h.handle(StreamLateRefusal{Claim: h.token, DeliveryID: prompt, Error: "the model provider refused the request",
+			Replayed: true, ConnSequence: replayed.Sequence()})
+	}
+	providerRefusal noTurnAnswer = func(h *harness, prompt string, _ *fake.Conn) error {
+		return h.handle(StreamPromptResult{Claim: h.token, DeliveryID: prompt, AgentInvoked: true, Error: "overloaded_error", HTTPStatus: 529})
+	}
+)
+
+// noTurnRow is the claim a row of answers below drives: the task sent and acknowledged, its turn
+// (or the busy answer that records one) under pause 7's hold, and that turn ended, the hold waiting.
+type noTurnRow struct {
+	// waitedOut has the wait for the prompt's turn run out before the turn starts, so the prompt
+	// stays outstanding under an id the task has left.
+	waitedOut bool
+	// busyTurn has Oh My Pi answer the sweep's re-send busy, which records the claim working for a
+	// turn whose start is never read, so no turn confirms the task.
+	busyTurn bool
+	// reconnects has the shim reconnect during the turn, so a refusal its backlog replays names a
+	// prompt an earlier connection sent.
+	reconnects bool
+}
+
+// drive brings the claim to its turn's end under the hold and answers the prompt the answer names
+// (the first one sent), returning the answer's error and the harness.
+func (row noTurnRow) drive(t *testing.T, answer noTurnAnswer, beforeAnswer func(h *harness)) (*harness, *stopTransaction, error) {
+	t.Helper()
+	h, flag, stops := pauseHarness(t, queuedClaim())
+	h.reach(StateReady)
+	h.must(RequestDeliver{Claim: h.token, Task: providerErrorTaskText})
+	prompt := h.wantPrompts(1)[0].DeliveryID
+	if row.waitedOut {
+		h.advance(testRPC)
+		if p := h.pending(); p.ID == prompt {
+			t.Fatalf("pending after the wait for the turn ran out = %+v, want the task under a new id", p)
+		}
+	}
+	if row.busyTurn {
+		h.conn.RefusePrompt(busyAnswer)
+		h.observe(runtime.Alive)
+		h.wantState(StateWorking)
+		if p := h.pending(); !p.ConfirmedAt.IsZero() {
+			t.Fatalf("pending after a busy answer recorded the turn = %+v, want it unconfirmed: no start of that turn was read", p)
+		}
+	} else {
+		h.must(StreamTurnStart{Claim: h.token})
+		if p := h.pending(); p.ConfirmedAt.IsZero() {
+			t.Fatalf("pending after a turn started = %+v, want it confirmed for the outstanding prompt", p)
+		}
+	}
+	var replayed *fake.Conn
+	if row.reconnects {
+		replayed = reconnect(h, false)
+	}
+	holdPauseInTurn(t, h, flag)
+	h.mustQuiet(StreamTurnEnd{Claim: h.token})
+	wantHoldWaiting(t, h, stops)
+	if beforeAnswer != nil {
+		beforeAnswer(h)
+	}
+	return h, stops, answer(h, prompt, replayed)
 }
 
 // A pause's hold that waited for the answer to the task's prompt stops the claim at an answer that
@@ -392,90 +582,68 @@ func TestAPauseHoldWaitsForTheAnswerOfASendWhoseTurnAlreadyEnded(t *testing.T) {
 // ended was another input's, so the answer leaves the claim idle holding the task unconfirmed:
 // left there, the hold stood over an idle claim until the pause's stop row asked again, ten
 // minutes on. The stop keeps the task and owes the role a launch for it. The answers are a result
-// that says the pending prompt ran no turn (promptFailed), a refusal of the acknowledged prompt
-// with no turn running (lateRefused), a result that says a prompt whose wait for its turn had run
-// out ran none, both where the turn that ended had confirmed the task and where a busy answer had
-// only recorded that turn (waitedOutAnswer), and a replayed refusal of a prompt a foreign turn
+// that says the pending prompt ran no turn and a refusal of the acknowledged prompt with no turn
+// running (promptFailed), a result that says a prompt whose wait for its turn had run out ran
+// none, both where the turn that ended had confirmed the task and where a busy answer had only
+// recorded that turn (waitedOutAnswer), and a replayed refusal of a prompt a foreign turn
 // confirmed (refusedElsewhere).
 func TestAPauseHoldStopsTheClaimAtAnAnswerThatSaysThePromptRanNoTurn(t *testing.T) {
-	const refusal = "the model provider refused the request"
 	for _, tc := range []struct {
-		name string
-		// waitedOut has the wait for the prompt's turn run out before the turn starts, so the
-		// prompt stays outstanding under an id the task has left.
-		waitedOut bool
-		// busyTurn has Oh My Pi answer the sweep's re-send busy, which records the claim working
-		// for a turn whose start is never read, so no turn confirms the task.
-		busyTurn bool
-		// reconnects has the shim reconnect during the turn, so a refusal its backlog replays
-		// names a prompt an earlier connection sent.
-		reconnects bool
-		// answer is the prompt's answer, after the turn's end and while the hold stands; replayed
-		// is the connection a replayed refusal arrives on.
-		answer func(h *harness, prompt string, replayed *fake.Conn)
+		name   string
+		row    noTurnRow
+		answer noTurnAnswer
 	}{
-		{name: "a result that says the pending prompt ran no turn", answer: func(h *harness, prompt string, _ *fake.Conn) {
-			h.must(StreamPromptResult{Claim: h.token, DeliveryID: prompt})
-		}},
-		{name: "a refusal of the acknowledged prompt with no turn running", answer: func(h *harness, prompt string, _ *fake.Conn) {
-			h.must(StreamLateRefusal{Claim: h.token, DeliveryID: prompt, Error: refusal})
-		}},
-		{name: "a result that says a prompt whose wait ran out ran no turn", waitedOut: true, answer: func(h *harness, prompt string, _ *fake.Conn) {
-			h.must(StreamPromptResult{Claim: h.token, DeliveryID: prompt})
-		}},
-		{name: "a result that says a prompt whose wait ran out ran no turn, after a turn a busy answer recorded", waitedOut: true, busyTurn: true,
-			answer: func(h *harness, prompt string, _ *fake.Conn) {
-				h.must(StreamPromptResult{Claim: h.token, DeliveryID: prompt})
-			}},
-		{name: "a replayed refusal of the prompt a foreign turn confirmed", reconnects: true, answer: func(h *harness, prompt string, replayed *fake.Conn) {
-			h.must(StreamLateRefusal{Claim: h.token, DeliveryID: prompt, Error: refusal, Replayed: true, ConnSequence: replayed.Sequence()})
-		}},
+		{name: "a result that says the pending prompt ran no turn", answer: noTurnResult},
+		{name: "a refusal of the acknowledged prompt with no turn running", answer: lateRefusal},
+		{name: "a result that says a prompt whose wait ran out ran no turn", row: noTurnRow{waitedOut: true}, answer: noTurnResult},
+		{name: "a result that says a prompt whose wait ran out ran no turn, after a turn a busy answer recorded",
+			row: noTurnRow{waitedOut: true, busyTurn: true}, answer: noTurnResult},
+		{name: "a replayed refusal of the prompt a foreign turn confirmed", row: noTurnRow{reconnects: true}, answer: replayedRefusal},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			h, flag, stops := pauseHarness(t, queuedClaim())
-			h.reach(StateReady)
-			h.must(RequestDeliver{Claim: h.token, Task: providerErrorTaskText})
-			prompt := h.wantPrompts(1)[0].DeliveryID
-			if tc.waitedOut {
-				h.advance(testRPC)
-				if p := h.pending(); p.ID == prompt {
-					t.Fatalf("pending after the wait for the turn ran out = %+v, want the task under a new id", p)
-				}
+			h, stops, err := tc.row.drive(t, tc.answer, nil)
+			if err != nil {
+				t.Fatalf("the answer: %v", err)
 			}
-			if tc.busyTurn {
-				h.conn.RefusePrompt(busyAnswer)
-				h.observe(runtime.Alive)
-				h.wantState(StateWorking)
-				if p := h.pending(); !p.ConfirmedAt.IsZero() {
-					t.Fatalf("pending after a busy answer recorded the turn = %+v, want it unconfirmed: no start of that turn was read", p)
-				}
-			} else {
-				h.must(StreamTurnStart{Claim: h.token})
-				if p := h.pending(); p.ConfirmedAt.IsZero() {
-					t.Fatalf("pending after a turn started = %+v, want it confirmed for the outstanding prompt", p)
-				}
-			}
-			var replayed *fake.Conn
-			if tc.reconnects {
-				replayed = reconnect(h, false)
-			}
-			flag.set(7)
-			if err := h.handle(pauseStop(h.token, 7)); !errors.Is(err, ErrSuspendHeld) {
-				t.Fatalf("the pause's stop of a claim in a turn = %v, want it held", err)
-			}
-			h.mustQuiet(StreamTurnEnd{Claim: h.token})
-			stops.wantStops(t)
-			h.wantCalls("Suspend", 0)
-			h.wantState(StateIdle)
+			wantPauseStop(t, h, stops, true)
+			wantTaskKeptUnconfirmed(t, h)
+		})
+	}
+}
 
-			tc.answer(h, prompt, replayed)
-
-			h.wantState(StateSuspended)
-			h.wantCalls("Suspend", 1)
-			stops.wantStops(t, stopCall{stop: PauseStop{Pause: 7, LaunchOwed: true}, landed: true})
-			if stored, held := h.store.delivery(h.token); !held || stored.Task != providerErrorTaskText || !stored.ConfirmedAt.IsZero() {
-				t.Fatalf("the stored task is %+v (held %v), want the task back unconfirmed", stored, held)
+// An answer whose take-back cannot be written still stops the claim the hold waited for: the
+// take-back clears the confirmation in memory before its write, so the stop keeps the task
+// (stopAtResult states the rule), and the write the store refused is made again by the next one
+// it takes (settle). Left to the write, the hold stood over an idle claim until the pause's stop
+// row asked again, ten minutes on. The three take-backs are a no-turn answer's (promptFailed), a
+// provider refusal's (providerErrored) and a waited-out prompt's no-turn answer's
+// (waitedOutAnswer).
+func TestAPauseHoldStopsTheClaimAtAnAnswerWhoseTakeBackIsNotWritten(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		row    noTurnRow
+		answer noTurnAnswer
+	}{
+		{name: "a result that says the pending prompt ran no turn", answer: noTurnResult},
+		{name: "the provider's refusal as the result", answer: providerRefusal},
+		{name: "a result that says a prompt whose wait ran out ran no turn", row: noTurnRow{waitedOut: true}, answer: noTurnResult},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, stops, err := tc.row.drive(t, tc.answer, func(h *harness) { h.store.fail("PutDelivery", errBoom) })
+			if !errors.Is(err, errBoom) {
+				t.Fatalf("the answer whose take-back the store refused = %v, want the store's error", err)
 			}
+			wantPauseStop(t, h, stops, true)
+			if p := h.claim().Pending; p == nil || !p.ConfirmedAt.IsZero() {
+				t.Fatalf("the stopped claim holds %+v, want the task kept, unconfirmed, in memory", p)
+			}
+
+			// The store takes writes again, and the claim's next decision, the pause's stop asked
+			// again of the suspended claim, writes the take-back first (settle).
+			h.store.fail("PutDelivery", nil)
+			h.must(pauseStop(h.token, 7))
+
+			wantTaskKeptUnconfirmed(t, h)
 		})
 	}
 }
@@ -488,140 +656,115 @@ func TestAPauseHoldStopsTheClaimAtAnAnswerThatSaysThePromptRanNoTurn(t *testing.
 // the claim is not stopped. Stopped there, the task was retired as a finished turn's, and the
 // first prompt's result, the only word that the turn ran, was dropped behind it. That result then
 // stops the claim, with no launch owed: its turn finished the task.
+//
+// The same holds where the second prompt's charge reaches the prompt-failure limit
+// (chargePrompt): the held stop that would retire the process in its place is still the first
+// prompt's answer's to run (stopWaitsForResult).
 func TestAPauseHoldWaitsThroughANoTurnAnswerThatLeavesAnotherPromptOutstanding(t *testing.T) {
-	h, flag, stops := pauseHarness(t, queuedClaim())
-	h.reach(StateReady)
-	h.must(RequestDeliver{Claim: h.token, Task: providerErrorTaskText, Generation: 7})
-	first := h.wantPrompts(1)[0].DeliveryID
-	h.advance(testRPC)
-	h.observe(runtime.Alive)
-	second := h.wantPrompts(2)[1].DeliveryID
-	if second == first || h.pending().ID != second {
-		t.Fatalf("the re-send went under %s with %s pending, want an id of its own, the pending one; the first was %s", second, h.pending().ID, first)
-	}
-	h.must(StreamTurnStart{Claim: h.token})
-	flag.set(7)
-	if err := h.handle(pauseStop(h.token, 7)); !errors.Is(err, ErrSuspendHeld) {
-		t.Fatalf("the pause's stop of a claim in a turn = %v, want it held", err)
-	}
-	h.mustQuiet(StreamTurnEnd{Claim: h.token})
-	h.wantState(StateIdle)
+	for _, tc := range []struct {
+		name string
+		// failures is the claim's prompt failures before the second prompt's answer charges one.
+		failures int
+	}{
+		{name: "below the prompt-failure limit"},
+		{name: "one failure short of the prompt-failure limit", failures: testLimits().PromptFailures - 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, flag, stops := pauseHarness(t, queuedClaim())
+			h.reach(StateReady)
+			h.must(RequestDeliver{Claim: h.token, Task: providerErrorTaskText, Generation: 7})
+			first := h.wantPrompts(1)[0].DeliveryID
+			h.advance(testRPC)
+			h.observe(runtime.Alive)
+			second := h.wantPrompts(2)[1].DeliveryID
+			if second == first || h.pending().ID != second {
+				t.Fatalf("the re-send went under %s with %s pending, want an id of its own, the pending one; the first was %s", second, h.pending().ID, first)
+			}
+			h.must(StreamTurnStart{Claim: h.token})
+			holdPauseInTurn(t, h, flag)
+			h.mustQuiet(StreamTurnEnd{Claim: h.token})
+			// The turn's start reset the count (confirmCarrying), so it is set here, between
+			// decisions, under the machine's lock.
+			h.m.mu.Lock()
+			h.m.claim.Budgets.PromptFailures = tc.failures
+			h.m.mu.Unlock()
 
-	h.must(StreamPromptResult{Claim: h.token, DeliveryID: second, Error: "the model provider refused the request"})
+			h.must(StreamPromptResult{Claim: h.token, DeliveryID: second, Error: "the model provider refused the request"})
 
-	h.wantState(StateIdle)
-	stops.wantStops(t)
-	h.wantCalls("Suspend", 0)
-	if p := h.pending(); p.ConfirmedAt.IsZero() {
-		t.Fatalf("pending after the second prompt said it ran no turn = %+v, want the confirmation kept for the first prompt, still outstanding", p)
-	}
-	if pause, held := h.heldPause(); !held || pause != 7 {
-		t.Fatalf("the hold after the second prompt's answer names pause %d (held %v), want pause 7 still held for the first prompt's result", pause, held)
-	}
+			wantHoldWaiting(t, h, stops)
+			if p := h.pending(); p.ConfirmedAt.IsZero() {
+				t.Fatalf("pending after the second prompt said it ran no turn = %+v, want the confirmation kept for the first prompt, still outstanding", p)
+			}
 
-	h.must(StreamPromptResult{Claim: h.token, DeliveryID: first, AgentInvoked: true})
+			h.must(StreamPromptResult{Claim: h.token, DeliveryID: first, AgentInvoked: true})
 
-	h.wantState(StateSuspended)
-	h.wantCalls("Suspend", 1)
-	stops.wantStops(t, stopCall{stop: PauseStop{Pause: 7}, landed: true})
-	if c := h.claim(); c.Pending != nil || c.ServingGeneration != 7 {
-		t.Fatalf("after the first prompt's result: pending %+v serving %d, want the task retired and run 7 served", c.Pending, c.ServingGeneration)
-	}
-}
-
-// A ready the agent says again while a pause's hold waits for the answer of the task's prompt
-// leaves the hold waiting (reready, pauseHoldWaits): that answer is what runs it (stopAtResult).
-// Run at the ready, the stop retired the task as a finished turn's, and the provider's refusal
-// arriving behind it was fenced out, so the role was owed nothing at the resume. The refusal then
-// stops the claim, and the stop keeps the task.
-func TestAReadySaidAgainLeavesAPauseHoldWaitingForThePromptsAnswer(t *testing.T) {
-	h, flag, stops := pauseHarness(t, queuedClaim())
-	h.reach(StateReady)
-	h.must(RequestDeliver{Claim: h.token, Task: providerErrorTaskText})
-	h.must(StreamTurnStart{Claim: h.token})
-	task := h.pending().ID
-	flag.set(7)
-	if err := h.handle(pauseStop(h.token, 7)); !errors.Is(err, ErrSuspendHeld) {
-		t.Fatalf("the pause's stop of a claim in a turn = %v, want it held", err)
-	}
-	h.mustQuiet(StreamTurnEnd{Claim: h.token})
-
-	h.ready()
-
-	h.wantState(StateIdle)
-	stops.wantStops(t)
-	h.wantCalls("Suspend", 0)
-	if pause, held := h.heldPause(); !held || pause != 7 {
-		t.Fatalf("the hold after the ready said again names pause %d (held %v), want pause 7 still held for the prompt's result", pause, held)
-	}
-	if p := h.pending(); p.ID != task || p.ConfirmedAt.IsZero() {
-		t.Fatalf("the claim holds %+v after the ready said again, want the task its turn confirmed, kept for the prompt's result", p)
-	}
-
-	h.must(StreamPromptResult{Claim: h.token, DeliveryID: task, AgentInvoked: true, Error: "overloaded_error", HTTPStatus: 529})
-
-	h.wantState(StateSuspended)
-	h.wantCalls("Suspend", 1)
-	stops.wantStops(t, stopCall{stop: PauseStop{Pause: 7, LaunchOwed: true}, landed: true})
-	if stored, held := h.store.delivery(h.token); !held || stored.Task != providerErrorTaskText || !stored.ConfirmedAt.IsZero() {
-		t.Fatalf("the stored task is %+v (held %v), want the refused task back unconfirmed", stored, held)
+			wantPauseStop(t, h, stops, false)
+			if c := h.claim(); c.Pending != nil || c.ServingGeneration != 7 {
+				t.Fatalf("after the first prompt's result: pending %+v serving %d, want the task retired and run 7 served", c.Pending, c.ServingGeneration)
+			}
+		})
 	}
 }
 
-// A pause's stop that reaches an idle claim after its turn ended, with the answer of the task's
-// prompt still to come, is held for that answer as a stop made in the turn is (pauseStopWaits,
-// suspend). Run at once, the stop retired the task as a finished turn's, and the provider's
-// refusal arriving behind it was fenced out by the suspended claim, so the role was owed nothing
-// at the resume. The refusal then stops the claim, which keeps the task. A stop that is asked
-// again with the hold standing is the pause_stop row's bound on the wait (pauseStopWait): it stops
-// the claim at once, and the answer that will not come is the turn's end.
-func TestAPauseStopOfAnIdleClaimWhoseTurnEndedBeforeItsAnswerIsHeldForTheAnswer(t *testing.T) {
-	idleOverItsPendingAnswer := func(t *testing.T) (*harness, *stopTransaction, string) {
+// A charge that reaches the prompt-failure limit while a project pause's hold is due runs the held
+// stop itself, charged nothing (chargePrompt), and the answer that charged it runs no second stop
+// (promptFailed, refused). The runtime refuses the stop here, which leaves the hold standing and
+// its stop tried again at the probe interval (suspendHeld): asked twice in one decision, the
+// runtime was asked the same stop twice and the decision answered two joined errors. The answers
+// are a result that says the prompt ran no turn (promptFailed) and the agent's refusal of the
+// send (refused).
+func TestAHeldStopAChargeAtTheLimitRunsIsNotAskedTwice(t *testing.T) {
+	refusesTheStop := func(h *harness) {
+		h.m.mu.Lock()
+		h.m.claim.Budgets.PromptFailures = testLimits().PromptFailures - 1
+		h.m.mu.Unlock()
+		h.rt.FailSuspend(errors.New("the runtime refused the stop"))
+	}
+	wantOneStopAsked := func(t *testing.T, h *harness, stops *stopTransaction) {
 		t.Helper()
-		h, flag, stops := pauseHarness(t, queuedClaim())
-		h.reach(StateReady)
-		h.must(RequestDeliver{Claim: h.token, Task: providerErrorTaskText})
-		h.must(StreamTurnStart{Claim: h.token})
-		task := h.pending().ID
-		h.mustQuiet(StreamTurnEnd{Claim: h.token})
 		h.wantState(StateIdle)
-		flag.set(7)
-		if err := h.handle(pauseStop(h.token, 7)); !errors.Is(err, ErrSuspendHeld) {
-			t.Fatalf("the pause's stop of an idle claim whose prompt's answer is still to come = %v, want it held", err)
-		}
-		h.wantState(StateIdle)
+		h.wantCalls("Suspend", 1)
 		stops.wantStops(t)
-		h.wantCalls("Suspend", 0)
 		if pause, held := h.heldPause(); !held || pause != 7 {
-			t.Fatalf("the hold after the stop names pause %d (held %v), want pause 7 held for the prompt's answer", pause, held)
+			t.Fatalf("the hold after the refused stop names pause %d (held %v), want pause 7 still held", pause, held)
 		}
-		return h, stops, task
+		if !h.armed(TimerSuspend) {
+			t.Fatal("the refused stop is not tried again, want it at the probe interval")
+		}
 	}
 
-	t.Run("the answer comes", func(t *testing.T) {
-		h, stops, task := idleOverItsPendingAnswer(t)
-
-		h.must(StreamPromptResult{Claim: h.token, DeliveryID: task, AgentInvoked: true, Error: "overloaded_error", HTTPStatus: 529})
-
-		h.wantState(StateSuspended)
-		h.wantCalls("Suspend", 1)
-		stops.wantStops(t, stopCall{stop: PauseStop{Pause: 7, LaunchOwed: true}, landed: true})
-		if stored, held := h.store.delivery(h.token); !held || stored.Task != providerErrorTaskText || !stored.ConfirmedAt.IsZero() {
-			t.Fatalf("the stored task is %+v (held %v), want the refused task back unconfirmed", stored, held)
+	t.Run("a result that says the prompt ran no turn", func(t *testing.T) {
+		h, stops, err := noTurnRow{}.drive(t, noTurnResult, refusesTheStop)
+		if err == nil {
+			t.Fatal("the answer whose held stop the runtime refused = nil, want the runtime's refusal")
 		}
+		wantOneStopAsked(t, h, stops)
 	})
 
-	t.Run("the stop is asked again", func(t *testing.T) {
-		h, stops, _ := idleOverItsPendingAnswer(t)
-
-		h.must(pauseStop(h.token, 7))
-
-		h.wantState(StateSuspended)
-		h.wantCalls("Suspend", 1)
-		stops.wantStops(t, stopCall{stop: PauseStop{Pause: 7}, landed: true})
-		if p := h.claim().Pending; p != nil {
-			t.Fatalf("the claim stopped with no answer holds %+v, want the task its turn confirmed retired with that turn", p)
+	t.Run("the agent refuses the send", func(t *testing.T) {
+		h, flag, stops := pauseHarness(t, queuedClaim())
+		h.reach(StateReady)
+		gated := newGatedConn()
+		h.conns.Register(h.token, gated)
+		if err := h.m.Handle(h.ctx, RequestDeliver{Claim: h.token, Task: providerErrorTaskText}); err != nil {
+			t.Fatal(err)
 		}
+		testwait.Receive(t, "the send", gated.entered)
+		if err := h.m.Handle(h.ctx, StreamTurnStart{Claim: h.token}); err != nil {
+			t.Fatal(err)
+		}
+		holdPauseInTurn(t, h, flag)
+		if err := h.m.Handle(h.ctx, StreamTurnEnd{Claim: h.token}); err != nil {
+			t.Fatalf("the turn's end: %v", err)
+		}
+		wantHoldWaiting(t, h, stops)
+		refusesTheStop(h)
+
+		gated.Conn.RefusePrompt("the model provider refused the request")
+		gated.release <- struct{}{}
+		h.m.Wait()
+
+		wantOneStopAsked(t, h, stops)
 	})
 }
 
@@ -629,9 +772,10 @@ func TestAPauseStopOfAnIdleClaimWhoseTurnEndedBeforeItsAnswerIsHeldForTheAnswer(
 // (wakeNow, takeBackAtTurn). A stale-plugin refresh parked a wake over the claim's live process;
 // inside the wait the agent's turn confirmed the task a prompt carried, and a suspension was held
 // for that turn. The turn is still running when the wake's turn comes, so the stop cuts it off:
-// the task it never finished is kept, taken back and interrupted, for the launch the stop owes
-// (stopAtResult states the rule). Stopped with the task still confirmed, settle retired it as
-// served, and the role was owed a launch with nothing to deliver.
+// the task it never finished is kept, taken back and interrupted, and what becomes of it is the
+// suspension's — a project pause's stop owes the role the launch that delivers it (stopAtResult
+// states the rule), and an operator's keeps it for the resume. Stopped with the task still
+// confirmed, settle retired it as served.
 func TestAHeldSuspensionEndedAtAPacedLaunchsTurnKeepsTheTaskItsTurnConfirmed(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -642,14 +786,9 @@ func TestAHeldSuspensionEndedAtAPacedLaunchsTurnKeepsTheTaskItsTurnConfirmed(t *
 	}{
 		{
 			name: "a project pause's",
-			hold: func(t *testing.T, h *harness, flag *pauseFlag) {
-				flag.set(7)
-				if err := h.handle(pauseStop(h.token, 7)); !errors.Is(err, ErrSuspendHeld) {
-					t.Fatalf("the pause's stop of a claim in a turn = %v, want it held", err)
-				}
-			},
+			hold: holdPauseInTurn,
 			wantStopped: func(t *testing.T, h *harness, stops *stopTransaction) {
-				stops.wantStops(t, stopCall{stop: PauseStop{Pause: 7, LaunchOwed: true}, landed: true})
+				wantPauseStop(t, h, stops, true)
 			},
 		},
 		{
@@ -664,6 +803,8 @@ func TestAHeldSuspensionEndedAtAPacedLaunchsTurnKeepsTheTaskItsTurnConfirmed(t *
 				}
 			},
 			wantStopped: func(t *testing.T, h *harness, stops *stopTransaction) {
+				h.wantState(StateSuspended)
+				h.wantCalls("Suspend", 1)
 				stops.wantStops(t)
 				if got := h.claim().SuspendedBy; got != SuspendedByOperator {
 					t.Fatalf("the claim is suspended by %q, want the operator", got)
@@ -689,18 +830,120 @@ func TestAHeldSuspensionEndedAtAPacedLaunchsTurnKeepsTheTaskItsTurnConfirmed(t *
 
 			h.advance(waiting.At.Sub(h.clock.Now()))
 
-			h.wantState(StateSuspended)
 			h.wantStarts(h.token, 1)
 			h.wantCalls("Resume", 0)
-			h.wantCalls("Suspend", 1)
 			tc.wantStopped(t, h, stops)
-			if p := h.claim().Pending; p == nil || p.Task != providerErrorTaskText || !p.ConfirmedAt.IsZero() || !p.Interrupted {
-				t.Fatalf("the stopped claim holds %+v, want the task its cut-off turn confirmed, kept taken back and interrupted", p)
-			}
-			if stored, held := h.store.delivery(h.token); !held || stored.Task != providerErrorTaskText || !stored.ConfirmedAt.IsZero() {
-				t.Fatalf("the stored task is %+v (held %v), want the task back unconfirmed", stored, held)
+			wantTaskKeptUnconfirmed(t, h)
+			if p := h.claim().Pending; !p.Interrupted {
+				t.Fatalf("the stopped claim holds %+v, want the task marked interrupted: its turn was cut off", p)
 			}
 		})
+	}
+}
+
+// A held suspension whose take-back the store refuses at a paced launch's turn keeps the wake, and
+// the wake's turn is tried again at the probe interval (wakeNow): the hold still stands over the
+// process the launch was for. Dropped there, the wake was gone when the hold's stop came, and the
+// stop owed the role no launch for it (launchMet). Once the store takes writes again, the next
+// try takes the task back and the hold ends the claim, owing that launch.
+func TestAHeldSuspensionsTakeBackTheStoreRefusesAtAWakesTurnKeepsTheWake(t *testing.T) {
+	gate := newFakeAdmitter()
+	h, flag, stops := pauseHarness(t, queuedClaim(), pacedDeps(wakeRate), func(d *Deps) { d.RefreshGate = gate })
+	h.reach(StateReady)
+	h.m.deps.PluginContract = refreshContract
+	h.must(RequestDeliver{Claim: h.token, Task: providerErrorTaskText})
+	task := h.wantPrompts(1)[0].DeliveryID
+	h.mustRefreshPass(gate, "sweep")
+	waiting := h.wantWaitingWake(WakePluginRefresh)
+	h.must(StreamTurnStart{Claim: h.token})
+	holdPauseInTurn(t, h, flag)
+	h.store.fail("PutDelivery", errBoom)
+
+	h.advance(waiting.At.Sub(h.clock.Now()))
+
+	h.wantState(StateWorking)
+	h.wantCalls("Suspend", 0)
+	stops.wantStops(t)
+	h.wantWaitingWake(WakePluginRefresh)
+	if !h.armed(TimerWake) {
+		t.Fatal("the wake whose take-back the store refused waits on nothing, want its turn tried again")
+	}
+	if p := h.pending(); p.ID != task || p.ConfirmedAt.IsZero() {
+		t.Fatalf("the claim holds %+v after the refused take-back, want the task its turn confirmed, as the store holds it", p)
+	}
+
+	h.store.fail("PutDelivery", nil)
+	h.advance(testProbe)
+
+	h.wantStarts(h.token, 1)
+	wantPauseStop(t, h, stops, true)
+	wantTaskKeptUnconfirmed(t, h)
+	gate.wantAsks(t, "the wake's turn tried again after a refused take-back", refreshAsks{asked: 1, granted: 1, released: 1})
+}
+
+// An earlier prompt's no-turn answer takes back the task a turn confirmed once a resend in flight
+// has answered too (waitedOutAnswer, sendUnanswered), and a refusal of the resend's prompt answers
+// its send as a result does (lateRefused). The order: the first prompt's wait for its turn runs out
+// and the sweep sends the task again; a turn of another input's starts with that resend in flight,
+// is taken for the task's, and ends under a pause's hold; the resend's own answer, read before its
+// acknowledgement, says its prompt ran no turn; then the first prompt says the same. Neither turn
+// was the task's. Read as still waiting on the resend, the task kept its confirmation, nothing was
+// left to come, and the pause's stop retired it as a finished turn's with no launch owed: the work
+// a provider refused was lost (check k1 of dispatch://INFRA-3759).
+func TestAnEarlierPromptsNoTurnAnswerTakesTheTaskBackOnceTheResendHasAnswered(t *testing.T) {
+	const refusal = "the model provider refused the request"
+	answers := []struct {
+		name string
+		of   func(h *harness, prompt string) Event
+	}{
+		{name: "a result that says it ran no turn", of: func(h *harness, prompt string) Event {
+			return StreamPromptResult{Claim: h.token, DeliveryID: prompt}
+		}},
+		{name: "a refusal after its acknowledgement", of: func(h *harness, prompt string) Event {
+			return StreamLateRefusal{Claim: h.token, DeliveryID: prompt, Error: refusal}
+		}},
+	}
+	for _, resend := range answers {
+		for _, first := range answers {
+			t.Run("the resend: "+resend.name+"; the first prompt: "+first.name, func(t *testing.T) {
+				h, flag, stops := pauseHarness(t, queuedClaim())
+				h.reach(StateReady)
+				gated := newGatedConn()
+				h.conns.Register(h.token, gated)
+				// Handle, not must: must waits for the send, which the gate is holding.
+				handle := func(ev Event) {
+					t.Helper()
+					if err := h.m.Handle(h.ctx, ev); err != nil {
+						t.Fatalf("handle %T: %v", ev, err)
+					}
+				}
+				handle(RequestDeliver{Claim: h.token, Task: providerErrorTaskText})
+				firstPrompt := testwait.Receive(t, "the first send", gated.entered)
+				gated.release <- struct{}{}
+				h.m.Wait()
+				h.advance(testRPC)
+				handle(RuntimeObservation{Observation: runtime.Observation{Locator: h.locator(), Kind: runtime.Alive, At: h.clock.Now()}})
+				resent := testwait.Receive(t, "the resend", gated.entered)
+				handle(StreamTurnStart{Claim: h.token})
+				holdPauseInTurn(t, h, flag)
+				handle(StreamTurnEnd{Claim: h.token})
+				wantHoldWaiting(t, h, stops)
+
+				handle(resend.of(h, resent))
+
+				wantHoldWaiting(t, h, stops)
+				if p := h.pending(); p.ConfirmedAt.IsZero() {
+					t.Fatalf("pending after the resend's answer = %+v, want the confirmation kept for the first prompt, still outstanding", p)
+				}
+
+				handle(first.of(h, firstPrompt))
+
+				wantPauseStop(t, h, stops, true)
+				wantTaskKeptUnconfirmed(t, h)
+				gated.release <- struct{}{}
+				h.m.Wait()
+			})
+		}
 	}
 }
 

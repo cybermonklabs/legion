@@ -433,7 +433,9 @@ func (m *Machine) waitOnMachine(ctx context.Context, waiting *wake) error {
 // (endRefreshLane, dispatch://INFRA-2712 R1): the wake that starts no process is spent where it
 // is read, and the suspension that ends the claim's process lets that process go with the wake
 // it was parked over (endHeld, suspendedFor, letGo). The wake is off the machine either way,
-// which is what that end reads.
+// which is what that end reads. A take-back the store refuses first is neither way out: the hold
+// still stands, so the wake stays, with its credit, and its turn is tried again at the probe
+// interval.
 //
 // Two things a launch does before it launches, which together close the window over a process
 // the gate left running (reserveWake), and which runWake below takes for this turn and for an
@@ -456,10 +458,13 @@ func (m *Machine) waitOnMachine(ctx context.Context, waiting *wake) error {
 //     wake park over a live process, and that process can have confirmed a task since: letting it
 //     go without the take-back would leave a confirmed task in a launching claim, which settle
 //     retires as served though no turn of it ever finished (retirePending). A held suspension
-//     ends the same process, so it takes the task back first as well, and the stop keeps the task
-//     and owes the launch for it (stopAtResult states the rule). The other half of that race is a
-//     delivery sent inside the wait, which sendPending holds back for as long as a launch waits
-//     over the process it would reach (launchWaits, delivery.go).
+//     ends the same process, so it takes the task back first as well, and what becomes of the
+//     task then is the suspension's, as at a death under a hold (endHeld): a project pause's stop
+//     keeps it and owes the role the launch that delivers it (stopAtResult states the rule), an
+//     operator's keeps it for the resume, and a daemon's retires a phase's task with the phase
+//     (settle). The other half of that race is a delivery sent inside the wait, which sendPending
+//     holds back for as long as a launch waits over the process it would reach (launchWaits,
+//     delivery.go).
 //
 // A turn that comes while the project is paused launches nothing (decision 7 of
 // dispatch://INFRA-3759's plan): the wake is held by the pause's gate instead, and the claim is
@@ -470,7 +475,6 @@ func (m *Machine) waitOnMachine(ctx context.Context, waiting *wake) error {
 // (dropEndedPauseHold).
 func wakeNow(m *Machine, ctx context.Context, _ Event) error {
 	waiting := m.wake
-	m.wake = nil
 	if m.held != nil {
 		// Every kind a machine parks today starts a process (StartsProcess), and this hold is
 		// ended for one (endHeld): the process that launch would replace is stopped by the
@@ -479,17 +483,26 @@ func wakeNow(m *Machine, ctx context.Context, _ Event) error {
 		// turn would stop the process in the middle of the turn the hold exists to keep whole
 		// (holdSuspension).
 		if !StartsProcess(waiting.kind) {
+			m.wake = nil
 			m.log.Info("supervise: this claim's wake came due while a suspension waits for its turn to end; the hold keeps that turn and the wake does nothing",
 				"kind", waiting.kind, "reason", m.held.Reason, "by", m.held.By)
 			// The wake is spent and nothing is left of it; the credit goes back with the
 			// decision (endRefreshLane).
 			return nil
 		}
-		if err := m.takeBackAtTurn(ctx); err != nil {
+		// The wake stays on the machine until the take-back has landed. A take-back the store
+		// refuses leaves the hold standing over the process this launch was for, so the wake's
+		// turn is tried again at the probe interval, as a refused stop is (suspendHeld); dropped,
+		// the hold's later stop would owe the role no launch for it (launchMet, suspendNow).
+		if err := m.takeBackAtTurn(ctx, "the held suspension ends the process a launch's turn has come for"); err != nil {
+			waiting.at = m.deps.Clock.Now().Add(m.deps.Timeouts.Probe)
+			m.armAt(TimerWake, waiting.at, "")
 			return err
 		}
+		m.wake = nil
 		return m.endHeld(ctx, true, stopOwed)
 	}
+	m.wake = nil
 	if pause, holds := m.pauseHolds(); holds {
 		return m.pauseGate(ctx, waiting, pause)
 	}
@@ -498,13 +511,14 @@ func wakeNow(m *Machine, ctx context.Context, _ Event) error {
 
 // takeBackAtTurn takes the task the claim's process confirmed back from that process, at the turn
 // a launch's wake has come, before the process is let go: by the launch (runWake) and by a held
-// suspension that ends it in the launch's place (wakeNow). A claim that records no process has
-// none to take it from, and a task no turn confirmed is left as it is (interrupted).
-func (m *Machine) takeBackAtTurn(ctx context.Context) error {
+// suspension that ends it in the launch's place (wakeNow). why is the caller's own reason, which
+// the line the take-back writes leads with (interrupted). A claim that records no process has none
+// to take it from, and a task no turn confirmed is left as it is (interrupted).
+func (m *Machine) takeBackAtTurn(ctx context.Context, why string) error {
 	if m.claim.Locator == nil {
 		return nil
 	}
-	return m.interrupted(ctx, "the process this launch replaces is let go now that its turn has come", ordinaryEnd)
+	return m.interrupted(ctx, why, ordinaryEnd)
 }
 
 // runWake is everything a wake does once it is off the machine: the lifecycle recheck and the
@@ -533,6 +547,14 @@ func (m *Machine) takeBackAtTurn(ctx context.Context) error {
 // that retry parks waits over the claim that write left recording none (launchTries,
 // relaunchLater, parkWake). So the retry handed on here is a case the machine drives, and the
 // lane's kind is what it must not lose on the way.
+//
+// A take-back the store refuses spends the wake here, where wakeNow keeps a held suspension's
+// (its doc says why): no suspension stands over the claim when a launch runs (wakeNow and
+// runParkedLaunchNow end or wait for a held one first), so no stop this decision leaves waiting
+// reads the wake as a launch it owes (launchMet). A stop that comes later finds what is owed where
+// it is kept: a death's relaunch in the claim's record of that death's charge (stopOwesLaunch,
+// DeathCharged), a task in the claim's pending delivery (holdsTask). A relaunch for a stale plugin
+// or a stale address is raised again by the next stale-plugin pass or report of the process.
 //
 // Neither step gives the credit of the refresh gate back; the end of the decision does: the wake
 // is off the machine before either runs (wakeNow, runParkedLaunchNow), so a decision that ends at
@@ -597,7 +619,7 @@ func (m *Machine) runWake(ctx context.Context, waiting *wake, paced bool) error 
 			m.watchAgain()
 			return m.relaunchRefused(ctx, m.retryHolding(waiting.pluginMark, waiting.again), err)
 		}
-		if err := m.takeBackAtTurn(ctx); err != nil {
+		if err := m.takeBackAtTurn(ctx, "the process this launch replaces is let go now that its turn has come"); err != nil {
 			return err
 		}
 	}

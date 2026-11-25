@@ -202,21 +202,36 @@ func (m *Machine) turnOpen() bool {
 // fails with its prompt count left at the limit. A suspension that fails charges nothing: the next
 // failure reaches the limit again and retries the retirement. So does a relaunch the tree lifecycle
 // refuses, checked before the suspension so the process is kept (checkLaunch). A retirement while a
-// suspension is held is that suspension's stop instead, charged nothing (suspendHeld).
+// suspension is held is that suspension's stop instead, charged nothing (suspendHeld), and it
+// reports that it ran the stop (heldStop), so its caller, which is one of the answers a project
+// pause's hold waits for, does not run the stop a second time (stopAtResult).
+//
+// A project pause's hold that waits for the answer of another prompt of the task is the one
+// exception (stopWaitsForResult): that prompt's turn may be the task's, and the stop is that
+// answer's to run (stopAtResult states the rule). Run here, the stop would let the process go,
+// the outstanding prompt with it (letGo), and settle would retire as served the task its turn
+// confirmed. So the failure is charged nothing, as the held stop it waits for is, and the hold
+// stands; a pause that ends first drops it (dropEndedPauseHold), and the next failure reaches the
+// limit again.
 //
 // The retirement's stop is where the process is let go, so that is where what it ended is
 // recorded, under the retirement's own cause (endRetired, letGo): the last retirement as well,
 // whose failure then finds no process left to record. The launch that follows lets nothing go.
-func (m *Machine) chargePrompt(ctx context.Context, why string) error {
+func (m *Machine) chargePrompt(ctx context.Context, why string) (heldStop bool, err error) {
 	failures := m.claim.Budgets.PromptFailures + 1
 	if failures < m.deps.Limits.PromptFailures {
 		m.claim.Budgets.PromptFailures = failures
 		m.log.Warn("supervise: prompt failure", "why", why, "promptFailures", failures,
 			"limit", m.deps.Limits.PromptFailures)
-		return m.persist(ctx)
+		return false, m.persist(ctx)
 	}
 	if m.held != nil {
-		return m.suspendHeld(ctx)
+		if m.stopWaitsForResult() {
+			m.log.Info("supervise: prompt failures reached the limit while a project pause's hold waits for another prompt of the task; that prompt's answer stops the claim",
+				"why", why, "promptFailures", failures, "outstanding", m.outstanding, "pause", m.held.Pause)
+			return false, nil
+		}
+		return true, m.suspendHeld(ctx)
 	}
 	retires := m.claim.Budgets.PromptRetires + 1
 	last := retires >= m.deps.Limits.PromptRetires
@@ -224,18 +239,18 @@ func (m *Machine) chargePrompt(ctx context.Context, why string) error {
 	if last {
 		retirement = m.endProcess // the last retirement fails the claim, which does not run again
 	} else if err := m.checkLaunch(ctx); err != nil {
-		return fmt.Errorf("retire %s after %d prompt failures: %w", m.claim.Token, failures, err)
+		return false, fmt.Errorf("retire %s after %d prompt failures: %w", m.claim.Token, failures, err)
 	}
 	if err := retirement(ctx, endRetired); err != nil {
-		return fmt.Errorf("retire %s after %d prompt failures: suspend: %w", m.claim.Token, failures, err)
+		return false, fmt.Errorf("retire %s after %d prompt failures: suspend: %w", m.claim.Token, failures, err)
 	}
 	m.claim.Budgets.PromptRetires = retires
 	m.log.Warn("supervise: retired after prompt failures", "why", why, "promptFailures", failures,
 		"relaunchCycle", retires, "limit", m.deps.Limits.PromptRetires)
 	if last {
 		m.claim.Budgets.PromptFailures = failures
-		return m.fail(ctx, CausePromptRetiresExhausted, "prompt retirements ran out")
+		return false, m.fail(ctx, CausePromptRetiresExhausted, "prompt retirements ran out")
 	}
 	m.claim.Budgets.PromptFailures = 0
-	return m.launch(ctx, noEnd)
+	return false, m.launch(ctx, noEnd)
 }

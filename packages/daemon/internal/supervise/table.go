@@ -1153,7 +1153,7 @@ func fillTable(t *builder) {
 	t.row(onProbeTimer, "probe the uncertain process again", reprobe, []ClaimState{StateLaunching, StateFailed}, live...)
 	t.ignore(onProbeTimer, noProcess, processless...)
 
-	t.row(onSuspendTimer, "the held suspension's deadline stops the turn, or its stop is tried again", suspendAtTimeout,
+	t.row(onSuspendTimer, "the held suspension's deadline stops the turn, or its stop is tried again; a project pause's hold whose turn has ended still waits for its prompt's answer", suspendAtTimeout,
 		[]ClaimState{StateSuspended}, StateWorking, StateIdle, StateReady, StateLaunching, StateShimConnected, StateRegistered)
 	t.ignore(onSuspendTimer, "no suspension is held", StateQueued, StateLaunchUncertain, StateSuspended, StateRetired, StateFailed)
 
@@ -1268,7 +1268,7 @@ func fillTable(t *builder) {
 	t.ignore(onReady, failedClaim, StateFailed)
 	t.ignore(onReady, retiredClaim, StateRetired)
 
-	t.row(onSuspend, "suspend: stop the process, keep the session", suspend, []ClaimState{StateSuspended},
+	t.row(onSuspend, "suspend: stop the process, keep the session; a project pause's stop of an idle claim whose prompt's answer is still to come is held for that answer", suspend, []ClaimState{StateSuspended},
 		StateRegistered, StateReady, StateIdle)
 	t.row(onSuspend, "a suspension of a claim in a turn is held for that turn's end, since stopping the agent now would cut its turn off, unless no process stands behind the claim: that one is suspended here",
 		holdSuspension, []ClaimState{StateSuspended}, StateWorking)
@@ -1711,14 +1711,18 @@ func ackedInTurn(m *Machine, _ context.Context, _ Event) error {
 // states the rule for that hold): a send refused or lost is the answer, and it has taken the
 // confirmation back, so the stop keeps the task and owes the role a launch for it. A lost send may
 // have reached the agent all the same, and that rule says what the stop costs then. A busy answer
-// leaves the claim working for the turn it names, and the hold waits for that turn's end.
+// leaves the claim working for the turn it names, and the hold waits for that turn's end. A charge
+// that reached the limit and ran the held stop itself (chargePrompt) is not followed by a second.
 //
 // A stale-plugin relaunch held for that turn waited for this answer too, since the turn's end
 // leaves what it holds to the answer while a result is pending (turnEnded). It runs here, alone
 // (relaunchHeldAtRefusal): the rest of what a turn's end runs is the send (afterTurn), and a
-// refused send is not sent again on the spot. It goes before the re-send a hello asked for: that
-// send then finds the claim launching and leaves the task for the process the relaunch starts,
-// where it would otherwise go to the process being replaced.
+// refused send is not sent again on the spot, with one exception: a send lost to the transport
+// after a shim's hello asked for it again (Machine.helloDuringSend) is re-sent here. The relaunch
+// goes before that re-send, which then finds the claim launching and leaves the task for the
+// process the relaunch starts, where it would otherwise go to the process being replaced. A busy
+// answer leaves the claim working for the turn it names, so neither runs: the task waits for that
+// turn's end.
 func refused(m *Machine, ctx context.Context, ev Event) error {
 	r := ev.(PromptRefused)
 	resend := m.helloDuringSend
@@ -1767,12 +1771,15 @@ func refused(m *Machine, ctx context.Context, ev Event) error {
 	var decided error
 	switch {
 	case busy:
-		decided = m.recordBusyTurn(ctx)
+		return m.recordBusyTurn(ctx)
 	case charge != "":
-		decided = m.chargePrompt(ctx, charge+p.LastSendError)
+		var heldStop bool
+		if heldStop, decided = m.chargePrompt(ctx, charge+p.LastSendError); heldStop {
+			return decided
+		}
 	}
 	decided = errors.Join(decided, m.relaunchHeldAtRefusal(ctx))
-	if resend && !busy && charge == "" {
+	if resend && charge == "" {
 		decided = errors.Join(decided, m.sendPending(ctx))
 	}
 	return errors.Join(decided, m.stopAtResult(ctx))
@@ -1879,6 +1886,15 @@ func refusedUnprompted(m *Machine, ctx context.Context, ev Event) error {
 // on the spot for ever against an agent that cannot start a turn at all.
 func lateRefused(m *Machine, ctx context.Context, ev Event) error {
 	r := ev.(StreamLateRefusal)
+	// A refusal of the prompt whose send is still in flight answers that send, as its result
+	// would (sending.resulted): read before the send's outcome, it leaves the send's window open
+	// otherwise, and an earlier prompt's no-turn answer would then find the turn the task was
+	// confirmed by still waiting on a send whose prompt has said it ran none (waitedOutAnswer). A
+	// replayed refusal is an earlier connection's, of a prompt sent before this send under the
+	// same id, so it answers nothing of this one.
+	if send := m.send; send != nil && send.id == r.DeliveryID && !r.Replayed {
+		send.resulted = true
+	}
 	if done, err := refusedElsewhere(m, ctx, r); done {
 		return err
 	}
@@ -1904,8 +1920,9 @@ func lateRefused(m *Machine, ctx context.Context, ev Event) error {
 	// The prompt did not run: the agent answered it a failure with no turn of its own to explain
 	// it — a provider that rejected before any turn began, an agent that will not take the work.
 	// The task goes back unread, so nothing reported from whatever turn follows belongs to it. A
-	// project pause's hold that waited for this prompt's answer stops the claim now (stopAtResult).
-	return errors.Join(m.promptFailed(ctx, "refused an acknowledged prompt with no turn running: "+r.Error, taskUnread), m.stopAtResult(ctx))
+	// project pause's hold that waited for this prompt's answer stops the claim there (promptFailed,
+	// stopAtResult).
+	return m.promptFailed(ctx, "refused an acknowledged prompt with no turn running: "+r.Error, taskUnread)
 }
 
 // agentBusy is Oh My Pi's own refusal of a prompt for a turn already running, which it words
@@ -2190,10 +2207,10 @@ func (m *Machine) busyTurnBegun(delivery string) {
 // Whose turn it was is a question background work made real, and settle is where it is answered:
 // a turn that ends while the task's prompt is still outstanding retires nothing, because Oh My
 // Pi's agent_end names no prompt and a role's own background result starts turns the daemon
-// never prompted. Nor does one that ends while the send of that prompt is in flight and no result
-// has made it moot (sending.resulted): its own result, or a turn-reporting result of any prompt
-// of the task. The stream can hand the machine a turn's end before the send's acknowledgement
-// (resultPending's send window, sending).
+// never prompted. Nor does one that ends while the send of that prompt is in flight and no answer
+// has made it moot (sending.resulted): its own result or its refusal after the acknowledgement,
+// or a turn-reporting result of any prompt of the task. The stream can hand the machine a turn's
+// end before the send's acknowledgement (resultPending's send window, sending).
 //
 // A stale-plugin relaunch held for this turn (refreshPlugin) runs here, before the queued task's
 // send: the claim's process speaks a plugin contract that cannot answer an update round, so it is
@@ -2243,12 +2260,9 @@ func (m *Machine) busyTurnBegun(delivery string) {
 // A suspension held for the turn runs here, now that the turn is over (holdSuspension). Its stop
 // cuts off no turn, so what the let-go records reads the claim as idle, the state this end gives
 // it (suspendHeldAtEnd): the next process is told it was in no turn, and the task the turn
-// confirmed is no task cut off in its turn (recordEnd). A project pause's hold waits instead for
-// the result of the turn's prompt where Oh My Pi has not written it yet (stopWaitsForResult), and
-// runs from that result (promptResulted, stopAtResult) or, for a send refused or lost before it
-// brought one, from the refusal (refused): only the result says whether the turn finished its
-// task or a provider refused it, and a stop made first would retire a refused task the role is
-// still owed.
+// confirmed is no task cut off in its turn (recordEnd). A project pause's hold whose prompt's
+// answer is still to come waits for that answer instead (stopWaitsForResult), by the rule
+// stopAtResult states.
 //
 // Every end this records is counted (TurnsEnded), the compaction's below included, so the daemon
 // can post it to the issue's other claims once this decision is published (its wakeIssue): a phase
@@ -2333,10 +2347,12 @@ func (m *Machine) afterTurn(ctx context.Context) error {
 
 // relaunchHeldStale runs the stale-plugin relaunch held for the agent's turn, where one is held
 // (holdStaleRelaunch): refreshPlugin decides it again as the claim stands now. The mark goes
-// first, since it waits for a turn and that turn has ended.
+// first, since it waits for a turn and that turn has ended. A project pause's hold that is due at
+// the same answer runs nothing here (pauseHoldAtResult): its stop ends the process the relaunch
+// was for, by the rule stopAtResult states, and the let-go drops the mark with it.
 func (m *Machine) relaunchHeldStale(ctx context.Context) error {
 	held := m.staleRelaunch
-	if held == nil {
+	if held == nil || m.pauseHoldAtResult() {
 		return nil
 	}
 	m.staleRelaunch = nil
@@ -2347,11 +2363,11 @@ func (m *Machine) relaunchHeldStale(ctx context.Context) error {
 // where that refusal is the answer the turn's end left the relaunch to: the claim is idle, so the
 // turn has ended, and no result is pending, so nothing else will run what that end held
 // (turnEnded, resultPending). A claim still working keeps the relaunch for its turn's end, and one
-// with a result pending for that result (promptResulted). A project pause's hold that waited for
-// the same answer stops the claim instead, which ends the process the relaunch was for
-// (stopAtResult), as a hold does at a turn's end and at a result.
+// with a result pending for that result: another prompt of the task is outstanding, its turn may
+// be the task's, and a relaunch now would take that task back from the process (interrupted)
+// before its result says whether the turn finished it.
 func (m *Machine) relaunchHeldAtRefusal(ctx context.Context) error {
-	if m.claim.State != StateIdle || m.resultPending() || m.pauseHoldAtResult() {
+	if m.claim.State != StateIdle || m.resultPending() {
 		return nil
 	}
 	return m.relaunchHeldStale(ctx)
@@ -2440,10 +2456,12 @@ func issueTurnEnded(m *Machine, ctx context.Context, _ Event) error { return m.s
 // turn runs when the end found the result still outstanding (afterTurn): settle first, so the
 // round's end and the stale-plugin relaunch read a worker whose hands are empty. A result that
 // beat its turn's end leaves both to that end. A project pause's hold that waited for this result
-// stops the claim here instead (stopAtResult, which states the rule for that hold), once the
-// result has decided the task: a finished one is retired by the settle that follows every decision
-// (Handle), and one taken back, from a provider's refusal (providerErrored) or because the prompt
-// ran no turn (promptFailed), is one the stop owes the role a launch for.
+// stops the claim here instead, by the rule stopAtResult states, once the result has decided the
+// task: a finished one is retired by the settle that follows every decision (Handle), and one
+// taken back, from a provider's refusal (providerErrored) or because the prompt ran no turn
+// (promptFailed), is one the stop owes the role a launch for. A result that says the turn ran
+// runs the stop itself (suspendHeld) in place of the settle and the afterTurn it would make:
+// both are for the process the stop ends, and the settle after the decision retires the task.
 //
 // A result that says the turn ran with no provider error makes final what the task's confirmation
 // credited of news of the approved design: the delivery is marked so (Delivery.Ran), and the write
@@ -2479,15 +2497,15 @@ func promptResulted(m *Machine, ctx context.Context, ev Event) error {
 			}
 			return errors.Join(m.takeBackPending(ctx, taskUnread), m.recordBusyTurn(ctx))
 		}
-		return errors.Join(m.promptFailed(ctx, why, taskRead), m.stopAtResult(ctx))
+		return m.promptFailed(ctx, why, taskRead)
 	}
 	ran, acknowledged := m.promptNews(r.DeliveryID)
 	m.forgetOutstanding()
 	if r.Error != "" {
-		if err := m.providerErrored(ctx, r); err != nil {
-			return err
-		}
-		return m.stopAtResult(ctx)
+		// The take-back is providerErrored's first step that can fail, and it clears the
+		// confirmation in memory before its write, so the stop that follows keeps the task even
+		// where that write failed.
+		return errors.Join(m.providerErrored(ctx, r), m.stopAtResult(ctx))
 	}
 	if m.providerErrorRunOver("supervise: a turn of this task ended with no provider error; the run of provider errors is over",
 		"delivery", r.DeliveryID) {
@@ -2532,8 +2550,9 @@ func promptResulted(m *Machine, ctx context.Context, ev Event) error {
 // twice for one prompt.
 //
 // What the answer can still take back is a confirmation a turn took for this prompt. With no other
-// prompt of the task outstanding and no send of it in flight, the turn that confirmed the task was
-// matched to this prompt (turnStarted), and the prompt says it never ran, so that turn was another
+// prompt of the task outstanding and no send of it whose answer is still to come (sendUnanswered),
+// the turn that confirmed the task was matched to this prompt or to a send whose prompt has said
+// it ran none (turnStarted), and the prompt says it never ran, so that turn was another
 // input's: the task goes back to waiting (takeBackPending), and that turn's end sends it — or,
 // when the end has already come and left what it held to this result (turnEnded, resultPending),
 // it goes from here (afterTurn), as it does from a result of a turn that ran (promptResulted).
@@ -2542,7 +2561,8 @@ func promptResulted(m *Machine, ctx context.Context, ev Event) error {
 // refusal of the prompt that set it always took it (markUnread). read says whether the agent may
 // have read it, as promptFailed's does: a busy answer or a refusal was never read. A project
 // pause's hold that waited for this answer stops the claim wherever the answer leaves nothing of
-// the task's prompts to come (stopAtResult), in place of what else the turn's end held.
+// the task's prompts to come (stopAtResult), after whatever else the turn's end held, which runs
+// nothing while that hold stands (relaunchHeldStale, sendPending).
 //
 // busy is whether the answer is Oh My Pi's busy answer (agentBusy): the agent is in a prompt now,
 // so this is one more of the places the daemon learns that its session is busy, and a ready or
@@ -2566,19 +2586,16 @@ func (m *Machine) waitedOutAnswer(ctx context.Context, id string, read, busy boo
 			return m.recordBusyTurn(ctx)
 		}
 		return nil
-	case !p.ConfirmedAt.IsZero() && m.send == nil:
+	case !p.ConfirmedAt.IsZero() && !m.sendUnanswered():
 		m.log.Warn("supervise: a prompt whose wait for its turn ran out was answered with no turn, so the turn taken for it was another's; the task goes back to waiting",
 			"delivery", id, "pending", p.ID, "why", why)
+		// The take-back clears the confirmation in memory before its write, so the stop keeps the
+		// task even where that write failed.
 		if err := m.takeBackPending(ctx, read); err != nil {
-			return err
-		}
-		if m.pauseHoldAtResult() {
-			// A project pause's hold that waited for this answer stops the claim, as it does at a
-			// result that ran a turn (promptResulted), and nothing else held for the turn runs.
-			return m.suspendHeld(ctx)
+			return errors.Join(err, m.stopAtResult(ctx))
 		}
 		if m.claim.State == StateIdle {
-			return m.afterTurn(ctx)
+			return errors.Join(m.afterTurn(ctx), m.stopAtResult(ctx))
 		}
 		if busy {
 			return m.recordBusyTurn(ctx)
@@ -2600,12 +2617,12 @@ func (m *Machine) waitedOutAnswer(ctx context.Context, id string, read, busy boo
 
 // resultPending is whether the claim is still waiting for the result of its pending task's prompt,
 // the window in which a turn that ends may be any turn at all: the question every reader of "was
-// the turn that ended this task's" asks (settle, turnEnded, stopWaitsForResult, refused,
-// compactStart). Oh My Pi's agent_end names no prompt, so the answer is the result's, and the
-// window has two parts:
+// the turn that ended this task's" asks. Oh My Pi's agent_end names no prompt, so the answer is
+// the result's, and the window has two parts:
 //
-//   - the send window: the send of the task's prompt is in flight and no result has made it moot
-//     (sendUnanswered): its own result, or a turn-reporting result of any prompt of the task.
+//   - the send window: the send of the task's prompt is in flight and no answer has made it moot
+//     (sendUnanswered): its own result or its refusal after the acknowledgement, or a
+//     turn-reporting result of any prompt of the task.
 //     The send's outcome reaches the machine on the send's own goroutine, and the turn the prompt
 //     starts, its end and its result reach it from the stream's queue, so all three can be decided
 //     before the outcome (sending); and
@@ -2634,12 +2651,13 @@ func (m *Machine) resultPending() bool {
 	return false
 }
 
-// sendUnanswered is whether a send is in flight whose answer is still to come: no result has made
-// its outcome moot (sending.resulted). It is the one reading of that for the two questions a send
+// sendUnanswered is whether a send is in flight whose answer is still to come: no answer has made
+// its outcome moot (sending.resulted). It is the one reading of that for the questions a send
 // in flight is asked. resultPending asks it of the pending task's own send: whether a turn that
 // ends may be any turn at all. confirmationInDoubt asks it of a send under any id, since a turn
 // that starts under one is taken for the task's all the same (turnAnswers): whether a let-go can
-// vouch for the task's confirmation.
+// vouch for the task's confirmation. waitedOutAnswer asks it for the same reason: whether the
+// turn that confirmed the task may still be the send's, where an earlier prompt says it ran none.
 func (m *Machine) sendUnanswered() bool {
 	return m.send != nil && !m.send.resulted
 }

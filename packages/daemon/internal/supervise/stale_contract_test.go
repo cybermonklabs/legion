@@ -3,6 +3,7 @@ package supervise
 import (
 	"testing"
 
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -170,12 +171,14 @@ func TestAStalePluginRelaunchThatDecidesNothingStillSendsTheWaitingTask(t *testi
 	}
 }
 
-// A relaunch held for a turn that ends before the task's send is answered waits for that answer,
-// as everything the turn's end holds does (turnEnded, resultPending): a result runs it. A send
-// that is lost brings no result, so its refusal runs the relaunch (refused), and the relaunch
-// alone: a refused send is not sent again on the spot. Left to the next sweep's post, the stale
-// process stayed the claim's for another minute, and a re-send the shim's hello had asked for
-// went to it first: here the task goes to the process the relaunch starts.
+// A relaunch held for a turn that ends before the task's send is answered waits for that answer
+// (turnEnded, resultPending), and three answers run it: a result that says the turn ran with no
+// provider error (promptResulted), an earlier prompt's answer that takes the task back
+// (waitedOutAnswer), and the refusal or loss of the send (refused). A send that is lost brings no
+// result, so its refusal runs the relaunch, and the relaunch alone: a refused send is not sent
+// again on the spot. Left to the next sweep's post, the stale process stayed the claim's for
+// another minute, and a re-send the shim's hello had asked for went to it first: here the task
+// goes to the process the relaunch starts.
 func TestAStalePluginRelaunchHeldPastItsTurnsEndRunsWhenTheSendIsRefused(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -239,6 +242,109 @@ func TestAStalePluginRelaunchHeldPastItsTurnsEndRunsWhenTheSendIsRefused(t *test
 			}
 		})
 	}
+}
+
+// The refusal of a send runs a held relaunch only where no other prompt of the task is still
+// outstanding (relaunchHeldAtRefusal, resultPending). The first prompt's wait for its turn ran
+// out and the sweep sent the task again; the first prompt's turn started, late, with the resend
+// in flight, and ended before the resend was answered. The resend is then lost. The turn that
+// ended may be the first prompt's, and only its result says so: relaunched at the refusal, the
+// process was replaced and the task its turn had finished taken back from it (interrupted), to be
+// done a second time. The first prompt's result then retires the task and runs the relaunch.
+func TestAStalePluginRelaunchHeldPastItsTurnsEndWaitsForAnOutstandingPromptsResult(t *testing.T) {
+	h := updateHarness(t, PodUpdateContract-1)
+	h.reach(StateReady)
+	gated := newGatedConn()
+	h.conns.Register(h.token, gated)
+	handle := func(ev Event) {
+		t.Helper()
+		if err := h.m.Handle(h.ctx, ev); err != nil {
+			t.Fatalf("handle %T: %v", ev, err)
+		}
+	}
+	handle(RequestDeliver{Claim: h.token, Task: "implement the plan", Generation: 7})
+	first := testwait.Receive(t, "the first send", gated.entered)
+	gated.release <- struct{}{}
+	h.m.Wait()
+	h.advance(testRPC)
+	if p := h.pending(); p.ID == first {
+		t.Fatalf("pending after the wait for the first prompt's turn ran out = %+v, want the task under a new id", p)
+	}
+	gated.FailPrompt(errBoom)
+	handle(RuntimeObservation{Observation: runtime.Observation{Locator: h.locator(), Kind: runtime.Alive, At: h.clock.Now()}})
+	testwait.Receive(t, "the resend", gated.entered)
+	handle(StreamTurnStart{Claim: h.token})
+	h.m.deps.PluginContract = PodUpdateContract
+	handle(StalePlugin{Claim: h.token, Trigger: "sweep"})
+	handle(StreamTurnEnd{Claim: h.token})
+	h.wantState(StateIdle)
+
+	gated.release <- struct{}{}
+	h.m.Wait()
+
+	h.wantState(StateIdle)
+	h.wantCalls("Resume", 0)
+	if h.m.staleRelaunch == nil {
+		t.Fatal("the relaunch ran or was dropped at the lost resend, want it held for the first prompt's result")
+	}
+	if p := h.pending(); p.ConfirmedAt.IsZero() {
+		t.Fatalf("pending after the lost resend = %+v, want the confirmation kept for the first prompt, still outstanding", p)
+	}
+
+	handle(StreamPromptResult{Claim: h.token, DeliveryID: first, AgentInvoked: true})
+	h.m.Wait()
+
+	h.wantState(StateLaunching)
+	h.wantCalls("Resume", 1)
+	if c := h.claim(); c.Pending != nil || c.ServingGeneration != 7 {
+		t.Fatalf("after the first prompt's result: pending %+v serving %d, want the task retired as run 7's before the relaunch", c.Pending, c.ServingGeneration)
+	}
+}
+
+// A held relaunch runs nothing at an answer that a project pause's hold is due at as well
+// (relaunchHeldStale, pauseHoldAtResult): the pause's stop ends the process the relaunch was for,
+// and the let-go drops the relaunch with it (stopAtResult states the rule). The send of the task is
+// lost after its turn ended under both, which is the answer each waited for. Run first, the
+// relaunch asked the refresh gate for a credit and ended the hold in its own replacement of the
+// process (replaceProcess, endHeld) rather than the pause's stop ending it.
+func TestAStalePluginRelaunchRunsNothingWhereAPauseHoldIsDueAtTheSameAnswer(t *testing.T) {
+	gate := newFakeAdmitter()
+	h, flag, stops := pauseHarness(t, queuedClaim(), func(d *Deps) {
+		d.PluginContract = PodUpdateContract - 1
+		d.RefreshGate = gate
+	})
+	h.reach(StateReady)
+	gated := newGatedConn()
+	gated.FailPrompt(errBoom)
+	h.conns.Register(h.token, gated)
+	handle := func(ev Event) {
+		t.Helper()
+		if err := h.m.Handle(h.ctx, ev); err != nil {
+			t.Fatalf("handle %T: %v", ev, err)
+		}
+	}
+	handle(RequestDeliver{Claim: h.token, Task: providerErrorTaskText})
+	testwait.Receive(t, "the send", gated.entered)
+	handle(StreamTurnStart{Claim: h.token})
+	h.m.deps.PluginContract = PodUpdateContract
+	handle(StalePlugin{Claim: h.token, Trigger: "sweep"})
+	if h.m.staleRelaunch == nil {
+		t.Fatal("no relaunch is held for the turn")
+	}
+	holdPauseInTurn(t, h, flag)
+	handle(StreamTurnEnd{Claim: h.token})
+	wantHoldWaiting(t, h, stops)
+
+	gated.release <- struct{}{}
+	h.m.Wait()
+
+	wantPauseStop(t, h, stops, true)
+	wantTaskKeptUnconfirmed(t, h)
+	h.wantCalls("Resume", 0)
+	if lines := h.logs.lines("relaunching it onto the current plugin"); len(lines) != 0 {
+		t.Fatalf("the lost send ran the held relaunch, which logged %v; want the pause's stop alone to end the process", lines)
+	}
+	gate.wantAsks(t, "the lost send under a due pause hold", refreshAsks{})
 }
 
 // A claim whose launch installs no plugin is never relaunched for its contract, whatever that
