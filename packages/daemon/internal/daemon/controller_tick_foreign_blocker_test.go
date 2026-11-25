@@ -142,6 +142,81 @@ func TestTheTurnReadsABlockerOutsideTheProject(t *testing.T) {
 	})
 }
 
+// A root that waits on an issue of another project that is already done is held for at most one
+// turn (item 51 of dispatch://INFRA-3320's open items: OSSV-551 stood more than six hours on
+// INFRA-4737, done for days). Both kinds of waiting root are read: one waiting for its first start
+// (seedWaitingRoot) and one the daemon started that gave its slot back for the wait
+// (seedStartedWaiter), as OSSV-551 had. The copy holds no row of the blocker, or a row of it from a
+// reading before its close. The waiter's own row stands at a sequence of its own log far above
+// the blocker's, as an issue at work for weeks does (1511 against 70): each value of a row is
+// fenced by the sequences of that one issue's log alone (record.Store.PutDispatchIssue), so the
+// waiter's sequence decides nothing of the blocker's row. The turn reads the blocker, writes its
+// row at its own sequence and project, and the root takes the slot in that same turn. The control
+// serves the blocker open, and the root stays held.
+func TestARootWaitingOnADoneIssueOfAnotherProjectIsHeldForOneTurnAtMost(t *testing.T) {
+	t.Parallel()
+	const waiter = "CAPTURE-60"
+	for _, kind := range []struct {
+		name string
+		seed func(t *testing.T, pool *store.Pool)
+	}{
+		{"a root waiting for its first start", func(t *testing.T, pool *store.Pool) {
+			seedWaitingRoot(t, pool, waiter, "A")
+			seedTickMirror(t, pool, waiter, "todo", 1511, foreignBlocker)
+		}},
+		{"a started root that gave its slot back for the wait", func(t *testing.T, pool *store.Pool) {
+			seedStartedWaiter(t, pool, waiter, foreignBlocker)
+			seedTickMirror(t, pool, waiter, "in_progress", 1511, foreignBlocker)
+		}},
+	} {
+		for _, copied := range []struct {
+			name string
+			seed func(t *testing.T, pool *store.Pool)
+		}{
+			{"with no row of the blocker in the copy", func(*testing.T, *store.Pool) {}},
+			{"with a row of the blocker from before its close", func(t *testing.T, pool *store.Pool) {
+				seedForeignMirror(t, pool, foreignBlocker, "in_progress", 65)
+			}},
+		} {
+			for _, served := range []struct {
+				status string
+				admit  bool
+			}{{"done", true}, {"in_progress", false}} {
+				t.Run(kind.name+", "+copied.name+", served "+served.status, func(t *testing.T) {
+					t.Parallel()
+					pool := isolatedOutboxPool(t)
+					client := &tickDispatch{issues: map[string]dispatch.Issue{
+						foreignBlocker: {Key: foreignBlocker, Project: foreignProject, Status: served.status, LastSeq: 70},
+					}}
+					w := tickRuntime(t, pool, client)
+					kind.seed(t, pool)
+					copied.seed(t, pool)
+					if slotted := tickSlotted(t, pool); len(slotted) != 0 {
+						t.Fatalf("slots = %v before the turn, want %s waiting", slotted, waiter)
+					}
+
+					w.applyControllerTick(context.Background(), time.Now())
+
+					if asked := client.asked(); !slices.Contains(asked, foreignBlocker) {
+						t.Fatalf("the turn read %v singly, want %s among them", asked, foreignBlocker)
+					}
+					if row := foreignMirrored(t, pool)[foreignBlocker]; row.Project != foreignProject || row.Status != served.status || row.Seq != 70 {
+						t.Fatalf("the copy holds %s as project %q at %q seq %d, want the turn's reading (%s, %s, 70)",
+							foreignBlocker, row.Project, row.Status, row.Seq, foreignProject, served.status)
+					}
+					slotted := tickSlotted(t, pool)
+					if served.admit && !slices.Equal(slotted, []string{waiter}) {
+						t.Fatalf("slots = %v after one turn, want %s admitted: its one blocker is done", slotted, waiter)
+					}
+					if !served.admit && len(slotted) != 0 {
+						t.Fatalf("slots = %v after one turn, want %s still held: its one blocker is open", slotted, waiter)
+					}
+				})
+			}
+		}
+	}
+}
+
 // seedStartedWaiter records key as an issue the daemon has started that waits on blocker: it took
 // a slot, gave it back for the wait, and so stands in the project's waiting line
 // (record.Issue.ReleasedForWaitAt), which is where the turn finds the key it waits on
