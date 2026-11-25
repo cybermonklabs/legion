@@ -152,11 +152,42 @@ control=$(cd "$away" && probe_git GIT_CEILING_DIRECTORIES="$ceiling" timeout 60 
 // never the first (TestGitRefusalReadsAsRefused holds the local git to all of this). GitHub
 // answers 401 for a repository it hides as well as for a private one, but the ls-remote before the
 // control read this one with the role's helper. Anything else is `failed`: git_without_helper_error
-// is then its exit status and first stderr line, with control characters removed and a GitHub
-// token, a JWT and a URL's user info each replaced by `***`.
+// is then its exit status and first stderr line, with control characters removed, a GitHub token
+// and a URL's user info each replaced by `***`, and each dotted run of base64url characters that
+// holds a JWT replaced by `***` whole. A JWT is found by its header, as setupMarkerLeak finds one:
+// in a run's part that is followed by another part and a dot, a suffix that base64url-decodes to a
+// JSON object naming its alg (RFC 7515 4.1.1). The shell reads that object by its text, a `{` and
+// later `"alg"` and a colon, so it redacts every header setupMarkerLeak finds but one that spells
+// its key with a JSON escape (`"\u0061lg"`), which setupMarkerLeak then reports, and may redact
+// more. Each suffix is decoded from one of four alignments, since one decode from offset k reads
+// every suffix at k+4n: so a header written with whitespace, `{ "alg"` (eyAi), is found as compact
+// JSON's eyJ is, and so is one behind other base64url characters. base64 is coreutils', as timeout
+// and mktemp are.
 const liveSetupControlClass = `git_without_helper_error=
 nl='
 '
+jwt_header() {
+  jwt_b64=$(printf '%s' "$1" | tr '_-' '/+')
+  case $((${#jwt_b64} % 4)) in
+    1) jwt_b64=${jwt_b64%?} ;;
+    2) jwt_b64=$jwt_b64== ;;
+    3) jwt_b64=$jwt_b64= ;;
+  esac
+  printf '%s' "$jwt_b64" | base64 -d 2>/dev/null | tr -d '\000-\037' | LC_ALL=C grep -q -E '[{].*"alg"[[:space:]]*:'
+}
+jwt_in_run() {
+  jwt_rest=$1
+  while :; do
+    case $jwt_rest in *.*.*) ;; *) return 1 ;; esac
+    jwt_part=${jwt_rest%%.*}
+    jwt_rest=${jwt_rest#*.}
+    for jwt_offset in 0 1 2 3; do
+      [ -n "$jwt_part" ] || break
+      if jwt_header "$jwt_part"; then return 0; fi
+      jwt_part=${jwt_part#?}
+    done
+  done
+}
 if [ "$status" -eq 0 ]; then
   git_without_helper=ok
 else
@@ -169,7 +200,12 @@ else
   else
     git_without_helper=failed
     first=$(printf '%s\n' "$control" | sed -n 1p | tr -d '\000-\037\177' |
-      sed -E 's/(gh[pousr]_|github_pat_)[A-Za-z0-9_.-]+/\1***/g; s/eyJ[A-Za-z0-9_.-]+/***/g; s#(://)[^/@[:space:]]+@#\1***@#g')
+      sed -E 's/(gh[pousr]_|github_pat_)[A-Za-z0-9_.-]+/\1***/g; s#(://)[^/@[:space:]]+@#\1***@#g')
+    for jwt_run in $(printf '%s\n' "$first" | grep -o -E '[A-Za-z0-9_-]*[.][A-Za-z0-9_-]*[.][A-Za-z0-9_.-]*' || true); do
+      if jwt_in_run "$jwt_run"; then
+        first=${first%%"$jwt_run"*}'***'${first#*"$jwt_run"}
+      fi
+    done
     git_without_helper_error="exit $status: ${first:-no stderr}"
   fi
 fi

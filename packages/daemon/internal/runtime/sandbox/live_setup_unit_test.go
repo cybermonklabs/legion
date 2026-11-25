@@ -354,8 +354,10 @@ func controlClass(t *testing.T, status int, stderr string) (string, string) {
 }
 
 // A failed control's error is git's first stderr line with control characters removed, and a
-// GitHub token, a JWT and a URL's user info each replaced by `***`, since the marker is read with
-// kubectl exec and printed in the run's log.
+// GitHub token, a URL's user info and a JWT each replaced by `***`, since the marker is read with
+// kubectl exec and printed in the run's log. A JWT is found by its header, as setupMarkerLeak
+// finds one: in compact JSON or with whitespace, behind other base64url characters or alone. A
+// dotted name with no such header stays.
 func TestLiveSetupControlErrorIsRedacted(t *testing.T) {
 	for name, tc := range map[string]struct{ stderr, want string }{
 		"a stateless installation token": {
@@ -369,6 +371,19 @@ func TestLiveSetupControlErrorIsRedacted(t *testing.T) {
 		"a bare JWT": {
 			stderr: "fatal: bearer eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ4In0.c2ln refused",
 			want:   "exit 128: fatal: bearer *** refused",
+		},
+		// RFC 7515 lets a header hold whitespace: `{ "alg"` and `{ "iss"` each open eyAi, not eyJ.
+		"a JWT whose header holds whitespace": {
+			stderr: "fatal: bearer " + compactJWT(`{ "alg":"HS256"}`, `{ "iss":"123456"}`, "signature") + " refused",
+			want:   "exit 128: fatal: bearer *** refused",
+		},
+		"a JWT behind other base64url characters": {
+			stderr: "fatal: bearer x" + compactJWT(`{"alg":"RS256"}`, `{"iss":"123456"}`, "signature") + " refused",
+			want:   "exit 128: fatal: bearer *** refused",
+		},
+		"dotted names": {
+			stderr: "fatal: unable to access 'https://api.github.com/x/': git 2.43.0 could not resolve host: api.github.com",
+			want:   "exit 128: fatal: unable to access 'https://api.github.com/x/': git 2.43.0 could not resolve host: api.github.com",
 		},
 		"user info in a URL": {
 			stderr: "fatal: unable to access 'https://x-access-token:s3cret@github.com/x/': Could not resolve host: github.com",
@@ -396,17 +411,19 @@ func TestLiveSetupControlErrorIsRedacted(t *testing.T) {
 	}
 }
 
+// compactJWT is a JWT in compact serialization: header, claims and signature, each base64url.
+func compactJWT(header, claims, signature string) string {
+	encode := base64.RawURLEncoding.EncodeToString
+	return encode([]byte(header)) + "." + encode([]byte(claims)) + "." + encode([]byte(signature))
+}
+
 // setupMarkerLeak finds a JWT in any field of a record but its two paths: in the control's error
 // and in a field no program's text should reach, with its header as compact JSON or with
 // whitespace. It is quiet on CI's record, whose git_from, a name mktemp drew at random, holds eyJ,
 // on a JWT in the paths themselves, and on a dotted host name in the control's error.
 func TestSetupMarkerLeakFindsAJWTOutsideTheRecordsPaths(t *testing.T) {
 	ci := parseSetupMarkerOrFail(t, "setup:architect:pod-1/3 cwd=/tmp/TestLiveSetupNegativeControlno_DNS_for_the_control3505482992/001/start uid=1001 ppid=67790 git_from=/tmp/TestLiveSetupNegativeControlno_DNS_for_the_control3505482992/001/tmp/tmp.eyJ2Sg7LkC helper=expected helper_count=1 helper_effective=1 helper_lines=2 git=ok git_without_helper=failed git_without_helper_error=exit 128: fatal: unable to access 'https://***@github.com/sjawhar/legion-smoke/': Could not resolve host: github.com")
-	jwt := func(header, claims, signature string) string {
-		encode := base64.RawURLEncoding.EncodeToString
-		return encode([]byte(header)) + "." + encode([]byte(claims)) + "." + encode([]byte(signature))
-	}
-	appJWT := jwt(`{"alg":"RS256","typ":"JWT"}`, `{"iat":1764036000,"exp":1764036600,"iss":"123456"}`, "signature")
+	appJWT := compactJWT(`{"alg":"RS256","typ":"JWT"}`, `{"iat":1764036000,"exp":1764036600,"iss":"123456"}`, "signature")
 	for name, tc := range map[string]struct {
 		plant func(m *setupMarker)
 		leak  bool
@@ -418,14 +435,14 @@ func TestSetupMarkerLeakFindsAJWTOutsideTheRecordsPaths(t *testing.T) {
 		// RFC 7519's unsecured JWT: the shortest payload, {}, and an empty signature.
 		"an unsecured JWT with no claims in the control's error": {
 			plant: func(m *setupMarker) {
-				m.gitWithoutHelperError = "exit 128: fatal: bearer " + jwt(`{"alg":"none"}`, `{}`, "") + " refused"
+				m.gitWithoutHelperError = "exit 128: fatal: bearer " + compactJWT(`{"alg":"none"}`, `{}`, "") + " refused"
 			},
 			leak: true,
 		},
 		// RFC 7515 lets a header hold whitespace, and `{ "alg"` opens eyAi, not eyJ.
 		"a JWT whose header holds whitespace in the control's error": {
 			plant: func(m *setupMarker) {
-				m.gitWithoutHelperError = "exit 128: fatal: bearer " + jwt(`{ "alg":"HS256"}`, `{"iss":"123456"}`, "signature") + " refused"
+				m.gitWithoutHelperError = "exit 128: fatal: bearer " + compactJWT(`{ "alg":"HS256"}`, `{"iss":"123456"}`, "signature") + " refused"
 			},
 			leak: true,
 		},
