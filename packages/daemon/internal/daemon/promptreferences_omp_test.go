@@ -197,6 +197,11 @@ func TestTheRealPluginsOnTheRealOhMyPi(t *testing.T) {
 			}
 		})
 	}
+	// The plugins this test packed are the shipped texts the forms inventory scans, so it runs here
+	// rather than packing them again (texts_omp_test.go).
+	t.Run("every reference form in Legion's texts is collected", func(t *testing.T) {
+		everyReferenceFormInLegionsTextsIsCollected(t, envoy, legion)
+	})
 }
 
 // packedPlugin packs the plugin under packages/<name> as its release is packed — the committed
