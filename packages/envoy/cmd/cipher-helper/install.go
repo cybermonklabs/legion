@@ -166,11 +166,12 @@ func isBoolFlag(value flag.Value) bool {
 // changed; otherwise only when the unit changed and `drain` finds it has no sessions (the
 // helper then refuses new ones). A restart ends the sessions' grants, so with sessions it prints
 // them and why it did not restart, and returns nil. The restart is bounded (restartTimeout).
-// After a drain install reads the unit's main process before and after the restart, and when
-// the restart did not replace it — the same main process, none, or a read that failed, as after
-// a restart that failed or outlived its bound — install sends `undrain`, so the helper takes
-// sessions again, and returns the restart's error, or one naming the unchanged process after a
-// restart systemd answered success. A helper older
+// After a drain install reads the unit's main process before and after the restart. When the
+// restart did not replace it (the same main process or none, as after a restart that failed or
+// outlived its bound), or install cannot tell because a read failed, install sends `undrain`, so
+// the helper takes sessions again, and returns the restart's error; after a restart systemd
+// answered success it returns one naming the unchanged process, or the read that failed and
+// that install could not tell whether the restart replaced the helper. A helper older
 // than `drain` cannot refuse a register between the check and the restart, so without
 // restartWithSessions it is never restarted: install prints its sessions and that it predates
 // drain, and returns nil. An unchanged, active unit without restartWithSessions changes nothing.
@@ -301,12 +302,14 @@ WantedBy=default.target
 	before, beforeErr := mainPID()
 	restartErr := restartHelper()
 	after, afterErr := mainPID()
-	var notReplaced string
+	// unread is the read that failed, after which install cannot tell whether the restart replaced
+	// the helper; notReplaced is what a read that answered shows of a restart that did not.
+	var unread, notReplaced string
 	switch {
 	case beforeErr != nil:
-		notReplaced = "its main process could not be read before the restart: " + beforeErr.Error()
+		unread = "its main process could not be read before the restart: " + beforeErr.Error()
 	case afterErr != nil:
-		notReplaced = "its main process could not be read after the restart: " + afterErr.Error()
+		unread = "its main process could not be read after the restart: " + afterErr.Error()
 	case after == 0:
 		notReplaced = "the unit runs no main process after the restart"
 	case after == before:
@@ -326,6 +329,9 @@ WantedBy=default.target
 		if restartErr != nil {
 			return fmt.Errorf("%w; %s, so install did not undrain the helper", restartErr, queued)
 		}
+		if unread != "" {
+			return fmt.Errorf("systemctl --user restart %s answered success, but install could not tell whether the restart replaced the helper it drained, since %s; %s, so install did not undrain the helper", helper.UnitName, unread, queued)
+		}
 		return fmt.Errorf("systemctl --user restart %s answered success, but %s and %s, so install did not undrain the helper", helper.UnitName, notReplaced, queued)
 	}
 	if resp, uerr := helper.Call(cfg.Socket, helper.Request{Op: "undrain"}, 2*time.Second); uerr != nil || !resp.OK {
@@ -333,6 +339,18 @@ WantedBy=default.target
 	}
 	if restartErr != nil {
 		return restartErr
+	}
+	if unread != "" {
+		// An error (main.go's fatal prints it and exits 2), not a note on stdout with exit 0.
+		// Exit 0 tells install's caller that the unit's helper runs the unit install wrote, or,
+		// beside a note on stdout, that install left the helper as it was on purpose; after a
+		// failed read install knows neither, and nothing later reads it again: a re-run finds the
+		// unit unchanged and active and restarts nothing. The guides have a person run install
+		// by hand, and no script in this repository runs it: that person learns that the helper
+		// may still run the old unit and can read its main process with `systemctl --user
+		// status`, and a script that runs install stops here rather than carry on as though the
+		// new unit ran.
+		return fmt.Errorf("systemctl --user restart %s answered success, but install could not tell whether the restart replaced the helper it drained, since %s; install sent undrain, which changes nothing on a new helper", helper.UnitName, unread)
 	}
 	return fmt.Errorf("systemctl --user restart %s answered success, but %s, so the helper install drained was not restarted; install sent it undrain", helper.UnitName, notReplaced)
 }
@@ -356,15 +374,20 @@ func restartHelper() error {
 // systemctlReadTimeout bounds each read of the unit's state, one D-Bus property read that answers
 // at once from a working user manager. Three of them (the main process before and after the
 // restart, and its queued job) and the 2 s undrain fit, with InstallRestartTimeout, inside
-// helper.DefaultDrainBound.
-const systemctlReadTimeout = 5 * time.Second
+// helper.DefaultDrainBound. A variable only so a test can shorten it, as restartTimeout is; no
+// production code sets it, so every production read is bounded at 5 s.
+var systemctlReadTimeout = 5 * time.Second
 
 // unitProperty is the helper unit's property as `systemctl --user show --value` prints it,
-// trimmed.
+// trimmed. A read still running at systemctlReadTimeout is killed, and its error names that
+// bound rather than the kill.
 func unitProperty(property string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), systemctlReadTimeout)
 	defer cancel()
 	out, err := exec.CommandContext(ctx, "systemctl", "--user", "show", "--property="+property, "--value", helper.UnitName).Output()
+	if err != nil && ctx.Err() != nil {
+		return "", fmt.Errorf("systemctl --user show --property=%s %s did not answer within %s", property, helper.UnitName, systemctlReadTimeout)
+	}
 	if err != nil {
 		return "", fmt.Errorf("systemctl --user show --property=%s %s: %w", property, helper.UnitName, err)
 	}

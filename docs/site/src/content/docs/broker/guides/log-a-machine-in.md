@@ -70,7 +70,12 @@ with `--restart-with-sessions` at a quiet moment. If the restart fails, takes mo
 seconds, or leaves the unit's main process the same, `install` lets the helper take sessions again
 and exits with an error that says which; while systemd still holds a job for the unit, as after a
 restart that took too long, it leaves the helper draining until that restart lands or the minute
-passes, and says so.
+passes, and says so. If the restart succeeds but `install` cannot read the unit's main process
+before or after it (the read fails, or does not answer within 5 seconds), `install` cannot tell
+whether the restart replaced the helper: it lets the helper take sessions again, unless systemd
+still holds a job for the unit, and exits 2 with an error that names the read that failed and says
+it could not tell. `systemctl --user status agent-secrets-helper` then shows the unit's main
+process and since when it has run.
 
 A helper that answers on the socket but that the unit does not run (one started by hand) makes
 `install` stop before it writes anything, even when the unit file already matches: it lists that helper's sessions and exits 2 with `an
