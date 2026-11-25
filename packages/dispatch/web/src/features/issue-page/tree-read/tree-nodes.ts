@@ -36,6 +36,7 @@ import type { IssueTreeReads, NodeChip, TreeAsk, TreeNode } from "../issue-tree"
 import { lensChips, lensDrafts } from "../lenses/lens-drafts";
 import { storeWords } from "../lenses/store-words";
 import { blockAttributeLabel, coverageNotes, type NodeType } from "../page-words";
+import { type OnTextReads, onTextOf, onTextReads } from "../text-comments/on-text";
 import {
   addDocumentChips,
   answerOf,
@@ -108,10 +109,6 @@ export interface PostMarks {
  *  outline's builders read it (`blockNodeId`, `nodeIdOf`), so a row and its node meet by one
  *  address. */
 export interface KeptReads {
-  /** The comments the comments read anchors to text (`Comment.anchor`, which names the text's
-   *  block and quote), by their own ids: the tree read answers no anchor on a comment node, and
-   *  hangs such a comment under the node whose text it is on (`onNodeText`). */
-  readonly anchored: ReadonlySet<string>;
   /** Each ask of the issue read's open asks and of the asks read, the asks read's where both
    *  hold it. */
   readonly asks: ReadonlyMap<string, TreeAsk>;
@@ -162,6 +159,9 @@ export interface TreeDraftContext extends TreeWords {
   readonly lineOf: (readId: string) => string | undefined;
   /** The node of the answer `readId` names. */
   readonly nodeOf: (readId: string) => TreeAnswerNode | undefined;
+  /** What R1's rule reads of the answer and of the comments and messages reads
+   *  (`text-comments/on-text.ts`' `onTextReads`), which `draftTurn` asks `onTextOf` with. */
+  readonly onText: OnTextReads;
   /** Where the read places `node`, as the tree draws it: under the nearest node a draft stands
    *  for, walking up from its parent, which is the nearest node before it in the walk that its
    *  `parent` names, since a parent comes before its children; and under the issue, `[]`, where
@@ -272,6 +272,7 @@ export function treeDraftsFrom(
       return draft === undefined ? undefined : context.lineWords(draft);
     },
     nodeOf: (readId) => nodes.get(readId),
+    onText: onTextReads(answer, reads),
     // A node under a kind the page does not draw stands under that node's nearest drawn
     // ancestor, and a chain of parents that runs in a circle ends where it comes round.
     placeOf: (node) => {
@@ -739,7 +740,7 @@ function draftTurn(
   context: TreeDraftContext
 ): Draft | undefined {
   if (node.supertag !== "comment" && node.supertag !== "message") return undefined;
-  if (onNodeText(node, context)) return undefined;
+  if (onTextOf(node, context.onText) !== null) return undefined;
   const draft = draftOf(node, node.supertag, context);
   madeBy(draft, node);
   const marks = context.kept.posts.get(node.id);
@@ -756,34 +757,6 @@ function draftTurn(
   }
   draft.source = stableSourceOf(draft.tree ?? node, node.supertag, node.id);
   return draft;
-}
-
-/**
- * Whether `node` is a comment on a node's text, or a reply in such a comment's thread (R9, R10:
- * no row of either outline, since the margin beside that node draws it, root R41). The tree read
- * answers no anchor on a comment node: the comments read does (`Comment.anchor`, the text's block
- * and its quote, `KeptReads.anchored`), and the read hangs a comment anchored inside a typed
- * block under that block's node. So a comment is on a node's text where the comments read anchors
- * it and the read hangs it under a node other than the issue's own. The second half is why the
- * rule reads the read's placement too: a comment the read hangs under the issue - anchored in a
- * document whose block the answer holds no node for, as a `decisions.md` section's Change is -
- * has no node for the margin to draw it beside, and is drawn as a post. A reply the read hangs
- * under such a comment is in its thread, which the margin draws whole. Until every answer of the
- * read carries the comments on each node's text, a comment on the text of a node an answer lacks
- * is a post of that answer. A chain of parents that runs in a circle ends where it comes round.
- */
-function onNodeText(
-  node: TreeAnswerNode,
-  context: TreeDraftContext,
-  passed: Set<string> = new Set()
-): boolean {
-  const { parent } = node;
-  if (node.supertag !== "comment" || parent === null || passed.has(node.id)) return false;
-  passed.add(node.id);
-  if (context.kept.anchored.has(node.id)) return parent.supertag !== "issue";
-  if (parent.supertag !== "comment") return false;
-  const above = context.nodeOf(parent.id);
-  return above !== undefined && onNodeText(above, context, passed);
 }
 
 /** A callout or an image: a typed block with its words and nothing more. */
@@ -1130,9 +1103,6 @@ function keptReads(
     }
   }
   return {
-    anchored: new Set(
-      (reads.comments ?? []).flatMap((comment) => (comment.anchor == null ? [] : [comment.id]))
-    ),
     asks: indexBy([...asksOf(reads).values()], (ask) => askNodeId(ask, context.slugOf)),
     checks,
     children: indexBy(reads.issue.children ?? [], (child) => child.key),
