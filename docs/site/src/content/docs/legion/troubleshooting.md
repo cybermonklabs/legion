@@ -1085,11 +1085,16 @@ is `legion-<project>-<issue, lowercased>-<role>`, as `legion claims list` shows.
     phase twice.
   - **`suspendedBy: operator`, otherwise:** deliver its phase's resume task. An operator's
     delivery resumes the claim and hands it the task. The task is the one the workflow gives a
-    worker resuming its phase, with the issue's title, key and phase as `legion state` shows them:
+    worker resuming its phase, with the issue's title, key and phase as `legion state` shows them,
+    and it opens with its working copy line. An operator's delivery names no phase, so the daemon
+    writes no working copy line into it: write the line yourself. `<dir>` is the issue's
+    workspace, where `<owner>/<repo>` is the issue's repository: under tmux
+    `<state_dir>/workspaces/<owner>/<repo>/<issue in lower case>`, and under Kubernetes the pod's
+    `/legion/workspaces/<owner>/<repo>/<issue in lower case>`:
 
     ```sh
     legion claims deliver --config legion.yaml --operator-token-file operator-token --claim legion-widgets-widgets-12-implementer \
-      --task "Continue <title>. Issue: WIDGETS-12. Phase: implementing. Resume the existing phase work."
+      --task "Working copy: branch legion/WIDGETS-12, directory <dir>. Continue <title>. Issue: WIDGETS-12. Phase: implementing. Resume the existing phase work."
     ```
 
 - **`retry`** (a failed architect): retry it. The daemon relaunches it on the session it kept, or on

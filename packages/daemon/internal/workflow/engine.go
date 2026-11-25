@@ -184,15 +184,18 @@ type Config struct {
 	// reads nothing, so a record names no session and no model, which is the API-only daemon and
 	// every test that reads no agent.
 	StepAgent func(ctx context.Context, tx pgx.Tx, agent claim.Token) StepAgent
-	// WorkspaceDir is the directory the runtime starts an issue's role processes in, the issue's
-	// working copy, which the task of each start and resume of a phase's worker names (the working
-	// copy line of task and of resumeText), and which every send of such a task names again for the
-	// repository the process it goes to works (Engine.WorkingCopyAtSend), so a task kept across a
-	// correction of the issue's repository names the workspace that process is in. The
-	// daemon reads it from the runtime it runs (engineWorkspaceDir in internal/daemon), the one
-	// place each runtime puts that directory. Nil, or "" for an issue, names no directory, and the
-	// task names the branch alone: an API-only daemon and every test that runs no runtime.
-	WorkspaceDir func(record.Issue) string
+	// WorkspaceDir is the directory the runtime starts the role processes of the issue key in, when
+	// they work repo, the issue's working copy: the working copy line each start and resume of a
+	// phase's worker opens its task with (WorkingCopy, task, resumeText) names it for the repository
+	// the issue's record holds at the composing, and names the branch alone for a record that holds
+	// no repository, every launch of which the daemon refuses; every send of such a task names it
+	// again for the repository the process it goes to works (Engine.WorkingCopyAtSend), the zero
+	// Repository for a launch that named none, so a task kept across a correction of the issue's
+	// repository names the workspace that process is in. The daemon reads it from the runtime it
+	// runs (engineWorkspaceDir in internal/daemon), the one place each runtime puts that directory.
+	// Nil, or "" for a key and a repository, names no directory, and the task names the branch
+	// alone: an API-only daemon and every test that runs no runtime.
+	WorkspaceDir func(key string, repo ghrepo.Repository) string
 }
 
 // Engine interprets the table of each issue's walk (Walk: Table, or the table of its plan's line)

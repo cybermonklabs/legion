@@ -52,8 +52,8 @@ func (r *workingCopyAnswer) askedAbout() []string {
 
 // workingCopyTask is a phase worker's task whose working copy line names dir.
 func workingCopyTask(dir string) string {
-	return "Continue Workflow. Issue: LEGION-209. Phase: implementing. Working copy: branch legion/LEGION-209, directory " + dir +
-		". Implement the plan."
+	return "Working copy: branch legion/LEGION-209, directory " + dir +
+		". Continue Workflow. Issue: LEGION-209. Phase: implementing. Implement the plan."
 }
 
 const (

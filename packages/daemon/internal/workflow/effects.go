@@ -1100,8 +1100,10 @@ const (
 // task is what a started worker is told. It names the phase the worker starts, which the issue
 // record already holds: one role runs several phases (the implementer runs implementing and
 // retro), and a resumed session cannot otherwise tell a new phase from its last. at is where the
-// worker's work stands (standingPart): its lines are placed right after that line, and the text
-// of its task's block, which the owner of the issue wrote, last of all (Standing.owners).
+// worker's work stands (standingPart): its working copy line opens the task, before the continue
+// line and the Dispatch title it holds, so no words a person wrote stand before it
+// (workingCopyLine); its lines are placed right after the continue line, and the text of its
+// task's block, which the owner of the issue wrote, last of all (Standing.owners).
 // The handoff a phase ended with is a Dispatch handoff record on the issue. The line names it by
 // its phase word and the version the daemon accepted, with the command that reads that version,
 // because `Handoff commit:` and the verdict are that version's. It also names the command that
@@ -1125,7 +1127,7 @@ const (
 // held merging (retryPhase); each reads the pull request in its own transaction, so pr says what
 // the record holds.
 func task(issue record.Issue, at Standing, handoff record.PhaseRow, pr *record.PullRequest, reason string) string {
-	text := continueLine(issue) + at.lines
+	text := taskOpening(issue, at) + at.lines
 	if handoff.HandoffRecord != "" {
 		word := handoffWord(handoff.Role)
 		text += fmt.Sprintf(" %[4]s: %[1]s version %[2]d (dispatch handoff-read --issue %[3]s --phase %[1]s --version %[2]d); the newest version of that record: dispatch handoff-read --issue %[3]s --phase %[1]s. A version above %[2]d is a correction its writer recorded after the daemon accepted version %[2]d, so read it too.", word, handoff.HandoffVersion, issue.Key, handoffLabel)
@@ -1162,15 +1164,32 @@ func sentence(s string) string {
 	return s + "."
 }
 
-// continueLine is how every task of a phase worker opens (task, resumeText): the issue's Dispatch
-// title, then its key and the phase the worker starts in (continueEnding).
+// taskOpening is how every task of a phase worker opens (task, resumeText): the working copy line
+// of at, where the work stands (Standing.workingCopy), then a space and the continue line. The
+// line comes first, so the Dispatch title, the one part of the opening a person wrote, stands
+// after it and can neither move it nor be read in its place when a send writes it again
+// (workingCopyLine).
+func taskOpening(issue record.Issue, at Standing) string {
+	return at.workingCopy + " " + continueLine(issue)
+}
+
+// continueOpening is how the continue line begins (continueLine), and so how a task an earlier
+// release composed begins, which opened with that line (earlierWorkingCopy).
+const continueOpening = "Continue "
+
+// continueLine is the line of a phase worker's task that follows its working copy line
+// (taskOpening): the issue's Dispatch title, then its key and the phase the worker starts in
+// (continueEnding).
 func continueLine(issue record.Issue) string {
-	return "Continue " + issue.Title + continueEnding(issue.Key) + string(issue.Phase) + "."
+	return continueOpening + issue.Title + continueEnding(issue.Key) + string(issue.Phase) + "."
 }
 
 // continueEnding is what the continue line of the issue key holds between its title and its
 // phase. The title is the one part of that line a person wrote, so the first place these words
-// stand in a task is where its title ends, unless the title holds them too (workingCopyLine).
+// stand in a task is where its title ends, unless the title holds them too. This release's tasks
+// put the working copy line before the continue line, so no search for these words finds it; a
+// task an earlier release composed, which held that line after them, is read from their first
+// place (earlierWorkingCopy), and a title that holds them hides the line in such a task alone.
 func continueEnding(key string) string {
 	return ". Issue: " + key + ". " + phaseLabel + ": "
 }
@@ -1189,11 +1208,12 @@ func handoffWord(role claim.Role) string {
 // resumeText is what a worker started for a phase already under way is told, at the standing at.
 // No handoff begins that phase — the run that did is over — so the task names the phase and says
 // to carry the work on, which is what a resumed session needs to tell this phase from its last.
-// The standing's lines stand right after the continue line and the text of its task's block
-// last, as a start's task places them (task): a worker resumed in a fresh session has no earlier
-// task to read them from.
+// It opens as a start's task does (taskOpening), with the standing's working copy line and then
+// the continue line; the standing's lines stand right after the continue line and the text of its
+// task's block last, as a start's task places them (task): a worker resumed in a fresh session has
+// no earlier task to read them from.
 func resumeText(issue record.Issue, at Standing) string {
-	return continueLine(issue) + at.lines + " Resume the existing phase work." + at.owners
+	return taskOpening(issue, at) + at.lines + " Resume the existing phase work." + at.owners
 }
 
 // ResumeTask is the resume task of the worker of issue's phase, standing where the record holds

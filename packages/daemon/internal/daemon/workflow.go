@@ -1108,23 +1108,23 @@ func engineConfig(cfg config.Config, reviewAppLogin string, hookPrompts map[stri
 // which every task the engine composes names (workflow.Config.WorkspaceDir) and every send of a
 // worker's task names again (workingCopy): each runtime's own function that places the workspace,
 // sandbox.WorkspaceDir under Kubernetes and tmux.WorkspaceDir under the state directory under
-// tmux, read for the repository the issue value it is handed names (record.Issue.Repository): the
-// record's at the composing, as the launch reads it (issueRepository), and at a send the one the
-// claim's process works, which workingCopy hands it. An issue value whose repository does not
-// parse, or that names none, names no directory, and its task names the branch alone.
-func engineWorkspaceDir(cfg config.Config) func(record.Issue) string {
+// tmux, asked for the issue key and the repository it is handed: at a composing the repository the
+// issue's record holds (workflow.WorkingCopy), and at a send the one the claim's process works
+// (supervise.Claim.WorkingRepository), the zero Repository for a launch that named none. A record
+// that holds no repository, or one that does not parse, is not asked of the runtime: no launch of
+// it reaches the runtime (specs.workerSpawnSpec refuses it), so its task names the branch alone.
+// The runtime answers the zero Repository as its launch does: tmux places such a pane in
+// `<state_dir>/workspaces/<issue>`, and the Sandbox runtime refuses it (workspace.Location). A
+// repository the runtime refuses names no directory, and the task names the branch alone.
+func engineWorkspaceDir(cfg config.Config) func(key string, repo ghrepo.Repository) string {
 	place := func(repo ghrepo.Repository, issue string) (string, error) {
 		return tmux.WorkspaceDir(cfg.StateDir, repo, issue)
 	}
 	if cfg.Runtime.Name == "kubernetes" {
 		place = sandbox.WorkspaceDir
 	}
-	return func(issue record.Issue) string {
-		repo, err := issue.Repository()
-		if err != nil {
-			return ""
-		}
-		dir, err := place(repo, issue.Key)
+	return func(key string, repo ghrepo.Repository) string {
+		dir, err := place(repo, key)
 		if err != nil {
 			return ""
 		}
@@ -1540,8 +1540,9 @@ func resumeJSON(waiting *record.Awaiting) ([]byte, error) {
 // the work moved by the correction sentences in the addressing of each launch after the
 // correction (addressingFragment), not by this line: a process launched before the correction
 // gets neither until its next launch. The line is the engine's, written under the directory the
-// runtime gives that repository (workflow.Engine.WorkingCopyAtSend, engineWorkspaceDir), with no
-// repository for a launch that named none, whose line names the branch alone.
+// runtime gives that repository (workflow.Engine.WorkingCopyAtSend, engineWorkspaceDir), and for a
+// launch that named none under the directory it gives the zero Repository: a tmux pane's
+// `<state_dir>/workspaces/<issue>`, and none under Kubernetes, whose line names the branch alone.
 //
 // A task that carries news of the approved design (supervise.Delivery.News) holds the start's own
 // text twice: in its text and in the news, which every send renders the text from again
@@ -1552,8 +1553,8 @@ func resumeJSON(waiting *record.Awaiting) ([]byte, error) {
 // A claim that records no working repository keeps the task as it is: one that records no
 // process, and one whose process an earlier release launched, which recorded none, so the line
 // stays as the task was composed until this release launches that claim. A held news the answer
-// cannot decode returns its error, as a failed read of a root architect's held task does
-// (rootTask): the machine sends nothing then, and the next trigger asks again.
+// cannot decode returns its error: the machine sends nothing then, and a later trigger that asks
+// of the same held news gets the same error, since nothing here reads a record that could change.
 func (w *workflowRuntime) workingCopy(_ context.Context, c supervise.Claim, d supervise.Delivery) (string, []byte, error) {
 	if c.WorkingRepository == nil {
 		return d.Task, d.News, nil

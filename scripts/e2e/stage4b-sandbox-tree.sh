@@ -3542,7 +3542,8 @@ starts its tree from the task its start carries and the daemon's `catch-up` noti
 says: it writes the spec in the issue's own primary document and registers the gate, then waits.
 Apart from that, do not act until
 a targeted human Dispatch message gives the next exact proof operation. A phase worker's first
-message is the daemon's task line (`Continue <title>. Issue: <key>. Phase: <phase>.`): it names your
+message is the daemon's task line (`Working copy: branch legion/<key>, directory <dir>.`, then
+`Continue <title>. Issue: <key>. Phase: <phase>.`): it names your
 phase and is not that message. Read what your role says to read, then reply WAITING and wait for
 the targeted message. An implementer, on the daemon's task line and on a new task for the same
 phase (one that says its previous process was ended), runs `sleep 300` as one bash call (its
