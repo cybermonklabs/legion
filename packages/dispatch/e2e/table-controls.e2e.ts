@@ -8386,7 +8386,14 @@ test("the Inbox's Decline dialog keeps the keyboard focus inside itself while it
     await page.keyboard.type("Not ours to decide.");
     await dialog.getByRole("button", { exact: true, name: "Decline to answer" }).focus();
     await page.keyboard.press("Enter");
-    await expect.poll(() => held.length, `${where}: the decline was never sent`).toBe(1);
+    // The store sends a write again under its own key when a request got no answer, so the
+    // declines are counted by their Idempotency-Keys: one per decline, however many requests.
+    await expect
+      .poll(
+        () => new Set(held.map((route) => route.request().headers()["idempotency-key"])).size,
+        `${where}: the decline was never sent`
+      )
+      .toBe(1);
     await expect(dialog.getByRole("button", { name: "Declining…" })).toBeVisible();
     // The focus fixup of a disabled control runs in a rendering update; two frames hold one.
     await nextFrames(page);
@@ -8713,7 +8720,9 @@ test("Unfollow and Unsubscribe on an Inbox card's recipients keep the keyboard f
       await expect(dialog).toBeVisible();
       await dialog.getByRole("button", { exact: true, name: "Confirm" }).focus();
       await page.keyboard.press("Enter");
-      await expect.poll(() => writes.held.length, `${where}: Confirm sent no write`).toBe(1);
+      // A DELETE carries no key, and the store may send it again when a request got no answer,
+      // so the row asks only that Confirm sent it.
+      await expect.poll(() => writes.held.length > 0, `${where}: Confirm sent no write`).toBe(true);
       await expect(dialog).toHaveCount(0);
       // The focus fixup of a disabled control runs in a rendering update; two frames hold one.
       await nextFrames(page);
@@ -9834,8 +9843,8 @@ test("a Move with only closed issues marked keeps no press live: a live update t
 // Chromium, Firefox and WebKit alike; with the window at 0 the anchor holds no row and the trigger
 // stays wholly in sight. A shared control's own press that lands the focus out of sight is a
 // failure of this pull request's controls (open-items.md, the rescue's removal, 2026-11-23 21:2xZ).
-// WebKit has no scroll anchoring of its own, which Chromium and Firefox apply beside the anchor's,
-// so the row runs in all three engines.
+// WebKit's own scroll anchoring adjusts a layout late (features/shell/ViewportAnchor.tsx:328-332),
+// beside the anchor's, so the row runs in all three engines.
 // SLOW(>=2s): twenty-three seeded rows, and four presses at 390 px waiting out the list's redraw.
 test("taking off the Inbox's only narrowing by its chip or by Clear filters at 390 leaves the focus on a control in sight, with the window scrolled a little or not at all @firefox @webkit", async ({
   page,
