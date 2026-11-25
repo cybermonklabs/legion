@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -17,6 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore/graphseedtest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -36,7 +38,8 @@ type nodeAnchorWireLine struct {
 }
 
 // nodeAnchorTreeNode is what c-node-anchor reads of a node of the tree read: its kind and id, the
-// node it stands under, and the anchor a comment on text answers (model.IssueTreeAnchor).
+// node it stands under, and the anchor a comment on text answers (model.IssueTreeAnchor), with the
+// container_node_id of an orphaned document anchor, nil where the answer holds none.
 type nodeAnchorTreeNode struct {
 	Kind   string `json:"kind"`
 	ID     string `json:"id"`
@@ -50,10 +53,11 @@ type nodeAnchorTreeNode struct {
 			ID    string `json:"id"`
 			State string `json:"state"`
 		} `json:"node"`
-		BlockID    *string `json:"block_id"`
-		Quote      string  `json:"quote"`
-		Occurrence *int    `json:"occurrence"`
-		Orphaned   bool    `json:"orphaned"`
+		BlockID         *string `json:"block_id"`
+		Quote           string  `json:"quote"`
+		Occurrence      *int    `json:"occurrence"`
+		Orphaned        bool    `json:"orphaned"`
+		ContainerNodeID *string `json:"container_node_id"`
 	} `json:"anchor"`
 }
 
@@ -66,9 +70,16 @@ type nodeAnchored struct {
 // nodeAnchorTree reads the tree of key as alice, the read with no view, by each node's kind and id.
 func nodeAnchorTree(t *testing.T, handler http.Handler, key string) map[string]nodeAnchorTreeNode {
 	t.Helper()
-	response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+key+"/tree", nil, "alice")
+	return nodeAnchorTreeOf(t, handler, key, "", "alice")
+}
+
+// nodeAnchorTreeOf reads the tree of key with query, "" for the read with no view, as login, by
+// each node's kind and id.
+func nodeAnchorTreeOf(t *testing.T, handler http.Handler, key, query, login string) map[string]nodeAnchorTreeNode {
+	t.Helper()
+	response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+key+"/tree"+query, nil, login)
 	if response.Code != http.StatusOK {
-		t.Fatalf("the tree read of %s: status=%d body=%s", key, response.Code, response.Body.String())
+		t.Fatalf("the tree read of %s%s as %s: status=%d body=%s", key, query, login, response.Code, response.Body.String())
 	}
 	read := decodeBody[struct {
 		Nodes []nodeAnchorTreeNode `json:"nodes"`
@@ -278,12 +289,29 @@ func (page activityCommentPage) first(id string) (map[string]json.RawMessage, bo
 // alone, the read answers the first's anchor orphaned with no occurrence and the second's with
 // occurrence 0.
 //
-// Last, she uploads a pre-mortem document with one risk and anchors a comment in a block of it.
+// An orphaned document anchor answers container_node_id, the tree node id of the nearest typed
+// block that holds its block at the read's cut (R31). She writes a requirement r2, a callout n2
+// whose list holds a paragraph, and a requirement r3, and a comment anchored by artifact and
+// block_id in each one's paragraph; each stands under its typed block, its anchor holding no
+// container_node_id. A version of the spec query is written while the three anchors stand. One
+// edit then drops the quoted words and keeps each paragraph and its typed block: the read with no
+// view answers each comment under the issue, its block_id, orphaned, no occurrence and the
+// container_node_id of r2, n2 or r3, each a node of the answer, and its anchored_in and its part_of
+// stay retracted; it answers none on the second limit's orphaned anchor, which no typed block
+// holds, none on the first limit's, which is not orphaned, and none on the finding's node anchor.
+// Once r3 is deleted, the read with no view answers none on the comment in r3's paragraph, which
+// is gone, and ?view=spec at the version written before the orphaning answers r3, the container
+// at that version's cut.
+//
+// Then she uploads a pre-mortem document with one risk and anchors a comment in a block of it.
 // Its conversion (POST /api/v1/issues/{key}/artifacts/{slug}/premortem-convert) leaves the
 // comment's stored anchor, its anchored_in and its part_of naming that block, moves the
 // document's address alone to the lens, and moves no comment to the risk; the skeleton, which
 // holds no block of the pre-mortem, answers the comment under the issue named by its anchor, its
 // parent naming the block, with its anchor naming the block, and the comments read lists it.
+//
+// Last, bob's read answers r2 as the container of the comment in its paragraph until r2 is
+// reserved for its author, alice; then it answers none there, and n2 still on the comment in n2.
 func TestACommentOnANodesTextHangsUnderThatNode(t *testing.T) {
 	handler, database, _ := newTestServer(t, testServerOptions{})
 	ctx := context.Background()
@@ -780,6 +808,163 @@ func TestACommentOnANodesTextHangsUnderThatNode(t *testing.T) {
 	requireOccurrence(limitRead, secondLimit, -1, true)
 	requireOccurrence(limitRead, firstLimit, 0, false)
 
+	// An orphaned document anchor answers container_node_id, the tree node id of the nearest typed
+	// block that holds its block at the read's cut, which the margin draws its thread beside (R31).
+	// Each of three paragraphs stands in a typed block: r2's own, one in the list of the callout
+	// n2, and r3's own.
+	const (
+		retryWords  = "A retry backs off before it tries again."
+		burstWords  = "A burst queues behind the writer."
+		replayWords = "A replay reads the ledger first."
+	)
+	editSpec(t, handler, key, []map[string]any{{"op": "insert", "after": "end", "markdown": ":::requirement{#r2}\n" + retryWords + "\n:::\n\n" +
+		":::callout{#n2}\n- " + burstWords + "\n:::\n\n:::requirement{#r3}\n" + replayWords + "\n:::\n"}})
+	contained := blockIDsByText(t, handler, spec.id)
+	// paragraphOf is the id of the block of the spec whose text is words: the one the blocks read
+	// lists over exactly those words, else the one whose text trimmed is those words.
+	paragraphOf := func(words string) string {
+		t.Helper()
+		if id := contained[words]; id != "" {
+			return id
+		}
+		var found []string
+		for text, id := range contained {
+			if strings.TrimSpace(text) == words {
+				found = append(found, id)
+			}
+		}
+		if len(found) != 1 {
+			t.Fatalf("the spec of %s lists the blocks %v holding %q, want one", key, found, words)
+		}
+		return found[0]
+	}
+	// inTyped is one comment anchored in a paragraph a typed block holds: what the test names it, its
+	// id, its quote, the block id its anchor names as the write answers it and that block's node, and
+	// the typed block's node, the tree node id its orphaned anchor answers as its container_node_id.
+	type inTyped struct {
+		name, id, quote, block, node, container string
+	}
+	retry := inTyped{name: "the comment in r2's paragraph", quote: "backs off", block: paragraphOf(retryWords), container: spec.address("r2")}
+	burst := inTyped{name: "the comment in the list of n2", quote: "queues behind", block: paragraphOf(burstWords), container: spec.address("n2")}
+	replay := inTyped{name: "the comment in r3's paragraph", quote: "reads the ledger", block: paragraphOf(replayWords), container: spec.address("r3")}
+	inTypedBlocks := []*inTyped{&retry, &burst, &replay}
+	for _, comment := range inTypedBlocks {
+		created := createBlockAnchoredComment(t, handler, key, map[string]any{"artifact": spec.id, "block_id": comment.block, "quote": comment.quote})
+		comment.id, comment.block = created.ID, *created.Anchor.BlockID
+		comment.node = anchoredBlockAddress(t, database, spec.id, comment.block)
+	}
+	// requireContainer fails t unless read answers the anchor of the comment id, which the test
+	// names what, with the container_node_id want, or with none where want is "".
+	requireContainer := func(read map[string]nodeAnchorTreeNode, what, id, want string) {
+		t.Helper()
+		node, held := read[graphstore.KindComment+":"+id]
+		switch {
+		case !held || node.Anchor == nil:
+			t.Errorf("the tree read answers no anchor of %s %s", what, id)
+		case want == "" && node.Anchor.ContainerNodeID != nil:
+			t.Errorf("the tree read answers the anchor of %s %s with container_node_id %s, want none", what, id, *node.Anchor.ContainerNodeID)
+		case want != "" && node.Anchor.ContainerNodeID == nil:
+			t.Errorf("the tree read answers the orphaned anchor of %s %s with no container_node_id, want %s, the typed block that holds its block",
+				what, id, want)
+		case want != "" && *node.Anchor.ContainerNodeID != want:
+			t.Errorf("the tree read answers the orphaned anchor of %s %s with container_node_id %s, want %s, the typed block that holds its block",
+				what, id, *node.Anchor.ContainerNodeID, want)
+		}
+	}
+	// requireOrphanedIn fails t unless read answers the anchor of comment orphaned, with the block_id
+	// and the quote it was written with, no occurrence, and the container_node_id want, none where
+	// want is "".
+	requireOrphanedIn := func(read map[string]nodeAnchorTreeNode, comment inTyped, want string) {
+		t.Helper()
+		node, held := read[graphstore.KindComment+":"+comment.id]
+		if !held || node.Anchor == nil {
+			t.Errorf("the tree read answers no anchor of %s %s, want one in %s", comment.name, comment.id, comment.block)
+			return
+		}
+		if anchor := node.Anchor; anchor.BlockID == nil || *anchor.BlockID != comment.block || anchor.Quote != comment.quote || !anchor.Orphaned || anchor.Occurrence != nil {
+			encoded, _ := json.Marshal(anchor)
+			t.Errorf("the tree read answers the anchor of %s %s as %s, want the block %s, the quote %s, orphaned and no occurrence",
+				comment.name, comment.id, encoded, comment.block, comment.quote)
+		}
+		requireContainer(read, comment.name, comment.id, want)
+	}
+	// Each comment stands under its typed block, as the read returns no prose of a role document,
+	// and its anchor, which is not orphaned, holds no container_node_id.
+	onText := nodeAnchorTree(t, handler, key)
+	for _, comment := range inTypedBlocks {
+		requireAnchoredUnder(t, onText, comment.name, comment.id, refs.BlockNodeKind, comment.container)
+		requireContainer(onText, comment.name, comment.id, "")
+	}
+	// A version of the spec query is written while the three anchors stand, so a read at it carries
+	// each comment on the text it quotes.
+	editSpec(t, handler, key, []map[string]any{{"op": "insert", "after": "end", "markdown": ":::requirement{#r4}\nA reader names the key it reads.\n:::\n"}})
+	specQuery := treeReadViewsSpecQuery(t, database, key)
+	var pinned int
+	if err := database.Pool.QueryRow(ctx, `select coalesce(max(number), 0) from artifact_versions where artifact_id = $1::uuid`, specQuery).Scan(&pinned); err != nil {
+		t.Fatalf("read the newest version of the spec query of %s: %v", key, err)
+	}
+	if treeReadViewsRecorded(t, database, specQuery, pinned) != 1 {
+		t.Fatalf("version %d of the spec query of %s holds no record of the store revision it read: this case proves nothing", pinned, key)
+	}
+	var pinnedAt *time.Time
+	var replayMade time.Time
+	if err := database.Pool.QueryRow(ctx, `
+		select r.at, c.created_at from version_renders r, comments c
+		where r.artifact_id = $1::uuid and r.number = $2 and c.id = $3::uuid
+	`, specQuery, pinned, replay.id).Scan(&pinnedAt, &replayMade); err != nil {
+		t.Fatalf("read when version %d of the spec query of %s was read and when %s was written: %v", pinned, key, replay.name, err)
+	}
+	if pinnedAt == nil || pinnedAt.Before(replayMade) {
+		t.Fatalf("version %d of the spec query of %s was read at %v, before %s %s was written at %s: this case proves nothing",
+			pinned, key, pinnedAt, replay.name, replay.id, replayMade)
+	}
+	// One edit drops each quoted word and keeps each paragraph and the typed block that holds it:
+	// the refresh orphans the three anchors and retracts their anchored_in and their part_of.
+	editSpec(t, handler, key, []map[string]any{
+		{"op": "replace", "find": "backs off before", "with": "pauses before"},
+		{"op": "replace", "find": "queues behind the writer", "with": "stands aside"},
+		{"op": "replace", "find": "reads the ledger first", "with": "starts from scratch"},
+	})
+	for _, comment := range inTypedBlocks {
+		if block, orphaned := storedCommentAnchor(t, database, comment.id); !orphaned || block != comment.block {
+			t.Errorf("the edit that drops the words of %s %s leaves its stored anchor in %q orphaned %t, want it in %s orphaned",
+				comment.name, comment.id, block, orphaned, comment.block)
+		}
+		requirePair(t, database, comment.name, comment.id, refs.BlockNodeKind, comment.node, false)
+		requirePair(t, database, comment.name, comment.id, refs.BlockNodeKind, comment.container, false)
+	}
+	// The read answers each where an orphaned comment stands, under the issue, and its anchor's
+	// block_id, orphaned and no occurrence, as before, with the container_node_id of its typed
+	// block, a node the answer holds; and none on an orphaned anchor no typed block holds, on an
+	// anchor that is not orphaned, or on a node anchor.
+	orphanedRead := nodeAnchorTree(t, handler, key)
+	for _, comment := range inTypedBlocks {
+		requireAnchoredUnder(t, orphanedRead, comment.name, comment.id, graphstore.KindIssue, key)
+		requireOrphanedIn(orphanedRead, *comment, comment.container)
+		if _, drawn := orphanedRead[refs.BlockNodeKind+":"+comment.container]; !drawn {
+			t.Errorf("the tree read answers no node %s, the container_node_id of %s %s", comment.container, comment.name, comment.id)
+		}
+	}
+	requireContainer(orphanedRead, "the comment on the second limit", secondLimit, "")
+	requireContainer(orphanedRead, "the comment on the first limit", firstLimit, "")
+	requireContainer(orphanedRead, findingComment.name, findingComment.id, "")
+	// Once r3 is deleted, its paragraph is gone at the head, so the read with no view answers no
+	// container of the comment in it; the read at the version written before the orphaning answers
+	// r3, which held that paragraph at its cut, and not what the head holds.
+	editSpec(t, handler, key, []map[string]any{{"op": "delete", "block": "r3"}})
+	removedRead := nodeAnchorTree(t, handler, key)
+	if _, drawn := removedRead[refs.BlockNodeKind+":"+replay.container]; drawn {
+		t.Errorf("the tree read answers %s, which the spec no longer holds", replay.container)
+	}
+	requireAnchoredUnder(t, removedRead, replay.name, replay.id, graphstore.KindIssue, key)
+	requireOrphanedIn(removedRead, replay, "")
+	requireContainer(removedRead, retry.name, retry.id, retry.container)
+	historical := nodeAnchorTreeOf(t, handler, key, fmt.Sprintf("?view=spec&v=%d", pinned), "alice")
+	if _, drawn := historical[refs.BlockNodeKind+":"+replay.container]; !drawn {
+		t.Errorf("?view=spec&v=%d of %s answers no node %s, which held %s at that version", pinned, key, replay.container, replay.block)
+	}
+	requireOrphanedIn(historical, replay, replay.container)
+
 	// The pre-mortem conversion moves only the document's address to its lens (R31): a person's
 	// comment anchored in a block of the pre-mortem keeps its anchor, its anchored_in and its part_of
 	// to that block; the skeleton, which opens no block of the document, answers it under the issue
@@ -867,6 +1052,33 @@ func TestACommentOnANodesTextHangsUnderThatNode(t *testing.T) {
 	if len(onRisk) != 0 {
 		t.Errorf("the conversion moved the comments %v to its risk %s, want none moved to a risk", onRisk, convertedRisk)
 	}
+
+	// The container answers only where the reader may see it at the cut (R31): bob's read answers r2
+	// as the container of the comment in its paragraph until r2 is reserved for its author, alice,
+	// as a write the store's writers refuse would store it (graphseedtest.SeedAuthorOnly); then it
+	// answers none there, and no block above r2 in its stead, and still n2, which he may see, on the
+	// comment in n2's list.
+	requireContainer(nodeAnchorTreeOf(t, handler, key, "", "bob"), retry.name, retry.id, retry.container)
+	reserve, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the reservation of %s: %v", retry.container, err)
+	}
+	defer reserve.Rollback(ctx)
+	if err := graphseedtest.SeedAuthorOnly(ctx, reserve, graphstore.Node{
+		Kind: refs.BlockNodeKind, ID: retry.container, Supertag: requirementBlockType, State: graphstore.StateLive,
+		MadeAt: time.Now().UTC(), MadeBy: privateNodeAuthor(), SourceEvent: graphstore.NoEvent,
+	}); err != nil {
+		t.Fatalf("reserve %s for its author: %v", retry.container, err)
+	}
+	if err := reserve.Commit(ctx); err != nil {
+		t.Fatalf("commit the reservation of %s: %v", retry.container, err)
+	}
+	unreadable := nodeAnchorTreeOf(t, handler, key, "", "bob")
+	if _, drawn := unreadable[refs.BlockNodeKind+":"+retry.container]; drawn {
+		t.Fatalf("bob's tree read of %s answers %s, which is reserved for alice: this case proves nothing", key, retry.container)
+	}
+	requireOrphanedIn(unreadable, retry, "")
+	requireContainer(unreadable, burst.name, burst.id, burst.container)
 
 	if path := os.Getenv(nodeAnchorWireVariable); path != "" {
 		var lines strings.Builder
