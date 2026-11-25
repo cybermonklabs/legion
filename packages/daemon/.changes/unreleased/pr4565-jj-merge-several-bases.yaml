@@ -1,6 +1,6 @@
 kind: Fixed
 body: |-
-    The worker image's jj is v0.46.0-sami.20261125-032507, the release of sjawhar/jj#4 on top of
+    The worker image's jj is v0.46.0-sami.20261125-091851, the release of sjawhar/jj#4 on top of
     sjawhar/jj#3. In a merge of two commits with more than one merge base, it keeps what both sides
     hold (jj-vcs/jj#6369). Where both sides changed the merge bases' own conflict, it merges them
     against a virtual merge base, as git does, if that conflict is between text files, and gives a
