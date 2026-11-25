@@ -2,8 +2,6 @@ package workflow
 
 import (
 	"context"
-	"fmt"
-	"maps"
 	"reflect"
 	"slices"
 	"testing"
@@ -15,43 +13,8 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/testpg"
 )
-
-// databaseRows is every table's rows, each table's as one sorted JSON text: what a fact changed,
-// and that it sent or queued nothing, read off the whole database.
-func databaseRows(t *testing.T, pool *pgxpool.Pool) map[string]string {
-	t.Helper()
-	ctx := context.Background()
-	tables, err := pool.Query(ctx, `select table_name from information_schema.tables where table_schema = current_schema() and table_type = 'BASE TABLE'`)
-	if err != nil {
-		t.Fatalf("list tables: %v", err)
-	}
-	names, err := pgx.CollectRows(tables, pgx.RowTo[string])
-	if err != nil {
-		t.Fatalf("list tables: %v", err)
-	}
-	rows := map[string]string{}
-	for _, name := range names {
-		var text string
-		query := fmt.Sprintf(`select coalesce(jsonb_agg(to_jsonb(x) order by to_jsonb(x)::text), '[]'::jsonb)::text from %s x`, pgx.Identifier{name}.Sanitize())
-		if err := pool.QueryRow(ctx, query).Scan(&text); err != nil {
-			t.Fatalf("read %s: %v", name, err)
-		}
-		rows[name] = text
-	}
-	return rows
-}
-
-// changedTables is the tables whose rows differ between before and after.
-func changedTables(before, after map[string]string) []string {
-	var changed []string
-	for _, name := range slices.Sorted(maps.Keys(after)) {
-		if before[name] != after[name] {
-			changed = append(changed, name)
-		}
-	}
-	return changed
-}
 
 // namedSync is a synchronize from a listener that sends its before and its sender.
 func namedSync(before, head, sender string, at time.Time) intake.Fact {
@@ -98,14 +61,14 @@ func TestALateSynchronizeOnlyNamesTheMoveAWaitingArrivalTook(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := appliedEvents(t, record.PullRequestOpen, tc.facts...)
-			before := databaseRows(t, pool)
+			before := testpg.TableRows(t, pool)
 			if _, err := intake.ApplyFact(context.Background(), pool, "github", "late", tc.late, testEngine(config.DesignGateRootIssues, nil), admissionStub{}); err != nil {
 				t.Fatalf("apply the late synchronize: %v", err)
 			}
-			after := databaseRows(t, pool)
+			after := testpg.TableRows(t, pool)
 			delete(before, "processed_events")
 			delete(after, "processed_events")
-			changed := changedTables(before, after)
+			changed := testpg.ChangedTables(before, after)
 			if !tc.changes && len(changed) != 0 {
 				t.Fatalf("the late synchronize changed %v, want nothing", changed)
 			}

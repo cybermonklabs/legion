@@ -2,7 +2,9 @@
 // CI Postgres that LEGION_TEST_PG_DSN names: Clone, ClonePool and CloneStore copy a template this
 // process migrated once (template.go), each clone dropped when the test ends, and the package
 // whose tests call any of them returns Main from its TestMain, which drops the template. A test is
-// skipped without that server: there is nothing to run against.
+// skipped without that server: there is nothing to run against. TableRows and ChangedTables
+// (rows.go) read every table of such a database whole, so a test can say which tables a write
+// changed, a row changed in place among them, or that it changed none.
 //
 // Migrating the template needs internal/store, so this package imports it, and a test binary of
 // internal/store cannot import this one back. The half of the fixture that needs no schema is
