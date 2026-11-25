@@ -22,6 +22,7 @@ const planEarlierGiversVersion = 20261124033010
 // The negative control is the read of the column before the migration, which the database
 // refuses as a column it does not know.
 func TestMigrationPlanEarlierGivers(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, planEarlierGiversVersion-1)
@@ -84,6 +85,7 @@ func TestMigrationPlanEarlierGivers(t *testing.T) {
 // the block of the release before this change, under which OTHER's run stops with relation
 // "issue_plans" does not exist).
 func TestThePlanWayBacksRunOnceForEachProjectOfADatabase(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	if _, err := store.Migrate(ctx); err != nil {
