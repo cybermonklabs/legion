@@ -537,6 +537,8 @@ export function createLegionTool(deps: {
         "(ISSUE_OUTSIDE_TREE), an issue the daemon has not recorded whose Dispatch status is not triage, backlog, icebox or todo " +
         "(ISSUE_ALREADY_RELEASED), a version that changes a task that is done (TASK_DONE), and a plan given for a run of the issue " +
         "that ended before Legion applied it: give it again (PLAN_STALE_GENERATION). " +
+        "Legion takes no plan for a recorded issue whose experiment's group runs the project's default steps (PLAN_NOT_TAKEN, naming " +
+        "the group): it records nothing, and the same plan given again gets the same answer. " +
         "stop_task (issue, task) stops one task of the plan Legion runs for a recorded issue: its running step stops, and the issue is " +
         "held, `holdReason` task-stopped, until a later version of the plan, given with register_plan, changes or replaces that task, " +
         "or, on a root, a person sets the root todo; the task then starts at its first step (a task that never started waits for its " +
@@ -545,10 +547,11 @@ export function createLegionTool(deps: {
         "issue whose first step has not run, the stop first settles the plan that step would walk, the newest plan you gave or the " +
         "project's default steps (task default), and then stops its task. The daemon refuses a task the plan does not hold " +
         "(TASK_NOT_FOUND, naming the plan's tasks), one that is done (TASK_DONE), a stop in a tree that lingers after it left the " +
-        "workflow (TREE_LINGERING) and a stop of a root that waits on a person before its first step (TASK_AWAITING_PERSON: change its " +
-        "task with a later version of the plan, or stop it once the person has answered). It also refuses, changing nothing, a stop of " +
-        "an issue outside your tree or one that left it (ISSUE_OUTSIDE_TREE), and a stop of a run of the issue that ended before Legion " +
-        "applied it: read the issue again (TASK_STALE_GENERATION). " +
+        "workflow (TREE_LINGERING), every task of an issue whose experiment's group runs the project's default steps, since Legion " +
+        "takes no plan from its owner (PLAN_NOT_TAKEN), and a stop of a root that waits on a person before its first step " +
+        "(TASK_AWAITING_PERSON: change its task with a later version of the plan, or stop it once the person has answered). It also " +
+        "refuses, changing nothing, a stop of an issue outside your tree or one that left it (ISSUE_OUTSIDE_TREE), and a stop of a run " +
+        "of the issue that ended before Legion applied it: read the issue again (TASK_STALE_GENERATION). " +
         "sign_off is the architect's acceptance of an issue in accepting, moving its task to its next step, or to retro where the " +
         "acceptance is the task's last step. Legion holds it before that retro, `holdReason` `fix` or `ci`, while a fix of its task " +
         "runs or a CI check has not passed at its head. The daemon refuses, changing nothing, a " +

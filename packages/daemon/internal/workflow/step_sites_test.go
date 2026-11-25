@@ -151,7 +151,7 @@ func move(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string, trigger 
 		}
 		// A move no completion records (a backward move) says why, as the engine
 		// requires of its notice; the other moves carry the reason unread.
-		return engine.transition(ctx, tx, issue, trigger, target, handoff, pr, "the step test's move")
+		return engine.transition(ctx, tx, issue, trigger, target, handoff, pr, moveWhy{Reason: "the step test's move"})
 	})
 }
 

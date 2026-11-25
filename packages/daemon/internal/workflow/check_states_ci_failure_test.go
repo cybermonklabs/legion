@@ -35,7 +35,7 @@ func TestAFailedCIJobReachesTheImplementerWhileTheReviewerWorks(t *testing.T) {
 
 		r.states(headOne, 3, k3Failed)
 		r.complete(headOne, 3)
-		r.movedBackNaming([]string{"k3: no (fail)"}, "k1:", "k2:")
+		r.movedBackFailing(headOne, failingOf("k3", "no", "fail"))
 	})
 
 	t.Run("a state of k3 arrives while the tester works", func(t *testing.T) {

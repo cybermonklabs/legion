@@ -16,9 +16,9 @@ body: |-
     `read_failed` is read again 30 s later, doubling to 10 minutes. A `test` handoff waits up to
     30 s until the states its issue's due marks owe are published, stores and answers the serial
     then as `check_states_serial` (`20261121000334`), and answers `503 CHECK_STATES_UNSETTLED`
-    past that. The settler takes one connection of the lease pool: `store.LeasePoolSize` is 23, a
-    server opens up to 114 connections to Postgres (`store.ConnectionsPerProcess`), and the app
-    pod's count in `infra/gcp` (`dispatchConnectionsPerPod`) is 114.
+    past that. The settler takes one connection of the lease pool: `store.LeasePoolSize` is 26, a
+    server opens up to 117 connections to Postgres (`store.ConnectionsPerProcess`), and the app
+    pod's count in `infra/gcp` (`dispatchConnectionsPerPod`) is 117.
 time: 2026-11-21T00:53:44Z
 custom:
     Issue: check-states-settler

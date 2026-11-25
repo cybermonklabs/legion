@@ -492,6 +492,14 @@ Each item below names a script, then what it proves.
   and a first round's `REQUEST_CHANGES` from another review-App session is set aside, leaving the issue in reviewing and no commit recorded.
   No GitHub, no cluster
 
+- `experiment.sh`
+
+  a project's declared experiment draws a group for each new issue, and the group sets how the issue is done, driven against the real Dispatch server this checkout builds, on a database of its own with its events on the run's own `nats-server`, and the whole daemon booted with `dispatch_url` at it, its project declaring the experiment `planning` at mode `on`, whose arm `a` names `plan: owner` and arm `b` `plan: default`:
+  two issues handed to Legion at the arm `a` read in `legion state` as `planning: 2 issues — 2 a (on)`, each with its assignment in `legion state --json`;
+  the owner of the first writes `plan.md` with `dispatch artifact` and gives it with `register_plan`, which takes it, and its run starts at `implementing`;
+  after the daemon is booted again at the arm `b`, `register_plan` on a third issue is answered `409 PLAN_NOT_TAKEN` at both sends, its run starts at `planning`, the project's default steps, and the first two issues keep the arm `a`.
+  No GitHub, no cluster
+
 - `plan-pointer-drive.sh`
 
   a Legion phase worker whose task line names a stale plan-handoff pointer builds from the newest `plan.md` version the plan review approved (dispatch://INFRA-2038), over two arms that differ in the implementer's role prompt alone:
@@ -574,7 +582,7 @@ gh run download <run id>    # every evidence directory the run uploaded
 ```
 
 Each job writes its evidence to one directory and uploads it as `e2e-<script>-<run id>-<run attempt>`, on a pass and on a failure.
-The job sets the evidence variable of the script it runs (`BEHIND_ENTRY_FENCE_EVIDENCE_DIR`, `CHILD_ADOPTION_EVIDENCE_DIR`, `CONFLICT_NO_TAKEOVER_EVIDENCE_DIR`, `HANDOFF_RECORDS_EVIDENCE_DIR`, `MERGE_WAIT_READABLE_EVIDENCE_DIR`, `NATS_CALLOUT_SESSIONS_EVIDENCE_DIR`, `OWNER_STEPS_CLIENT_EVIDENCE_DIR`, `OWNER_STEPS_EVIDENCE_DIR`, `PHASE_ENTRY_CONVERGE_EVIDENCE_DIR`, `REVIEW_RANGE_EVIDENCE_DIR`), so that script writes its transcript and its logs there.
+The job sets the evidence variable of the script it runs (`BEHIND_ENTRY_FENCE_EVIDENCE_DIR`, `CHILD_ADOPTION_EVIDENCE_DIR`, `CONFLICT_NO_TAKEOVER_EVIDENCE_DIR`, `EXPERIMENT_EVIDENCE_DIR`, `HANDOFF_RECORDS_EVIDENCE_DIR`, `MERGE_WAIT_READABLE_EVIDENCE_DIR`, `NATS_CALLOUT_SESSIONS_EVIDENCE_DIR`, `OWNER_STEPS_CLIENT_EVIDENCE_DIR`, `OWNER_STEPS_EVIDENCE_DIR`, `PHASE_ENTRY_CONVERGE_EVIDENCE_DIR`, `PLAN_RATINGS_EVIDENCE_DIR`, `REVIEW_RANGE_EVIDENCE_DIR`, `STEP_RECORDS_EVIDENCE_DIR`, `SUB_ARCHITECT_EVIDENCE_DIR`), as `.github/e2e-scripts.json` names each, so that script writes its transcript and its logs there.
 It also keeps the run's own output as `output.log` in the same directory, which is what `stage1-skeleton.sh`, `dispatch-claimant-delivery.sh` and `verification-results.sh` leave a reader:
 they take no evidence variable and keep a work directory of their own, whose path that output names.
 
@@ -662,7 +670,7 @@ Everything the run takes is its own, so two runs on one box
   and on the devbox path the container `legion-e2e-pg-<pid>`.
 
 After each of the main daemon's two healthy starts, the first and the restart, the run checks that the socket the daemon serves on is held by the daemon's and the keeper's processes alone (`held_only_by`:
-the socket's inode from the `LISTEN` row of `/proc/net/tcp`, its holders from `/proc/*/fd`):
+the socket's inode from the `LISTEN` row of `127.0.0.1:PORT` in `/proc/net/tcp`, its holders from `/proc/*/fd`):
 a copy that leaked into the daemon's tmux server, a pane or a `legion` CLI call would keep the port listening after the daemon stops.
 
 After each healthy start the run also reads `GET /readyz` and requires 200, the daemon's own account of having reached serving (the `servingLatch` the boot sets once its runtime is built, its launcher acceptor installed and the goroutine that serves this API begun), over a route that carries no token and reads no database.
@@ -4382,7 +4390,7 @@ git -C <checkout> worktree remove --force "$TMPDIR/<head tree>"
 The two cases of several open pull requests take their negative controls from a planted fault and from `VERIFICATION_RESULTS_E2E_DISPATCH_CLI`:
 
 ```sh
-# In a worktree of this change's head, delivery.HeadsAttributedTo keeps only its first head:
+# In a worktree of this change's head, delivery.Attributor.HeadsAttributedTo keeps only its first head:
 DATABASE_URL=… VERIFICATION_RESULTS_E2E_CASES=several-open-pull-requests bash scripts/e2e/verification-results.sh
 # → FAIL several-open-pull-requests: the check's heads are [<one head>], want [#82 at …, #83 at …]
 # The command of a worktree of a commit before the lines of each head:
@@ -5093,8 +5101,9 @@ LEGION_OMP_PATH=/opt/omp/bin/omp bash scripts/e2e/refusal-fallback-omp.sh     # 
 ```
 
 dispatch://INFRA-956's live proof that a Legion worker a provider refused stays off that model for the whole of the plugin's cooldown and goes back to it when the cooldown ends (its R1).
-It is a script of its own because the window it measures is longer than any CI job holds:
-Oh My Pi's own floor for suppressing a model whose error it cannot classify is five minutes, the plugin's cooldown here is ten, and `ci.yaml`'s pi-legion job has `timeout-minutes: 10`, so the only way to see that nothing goes back at the five-minute mark and something does after the tenth is to spend the quarter of an hour.
+It is a script of its own because the window it measures is a quarter of an hour:
+Oh My Pi's own floor for suppressing a model whose error it cannot classify is five minutes and the plugin's cooldown here is ten, so the only way to see that nothing goes back at the five-minute mark and something does after the tenth is to spend the quarter of an hour.
+The pi-legion job that runs the plugin's suite (`.github/workflows/ci-job-pi-legion.yaml`) has `timeout-minutes: 28`, but its test step lasts as long as its slowest worker, and it took at most 296.7 s in the three runs of 2026-11-22 that file's comment measures, while a whole run of this proof takes 798 s (below): as a file of that suite it would be the slowest worker, and every run of the job would wait on it.
 It runs on any Linux host with `bash`, `bun` (after `bun install` at the checkout's root) and `go`, which builds the one server it starts — no PostgreSQL, no Docker, no kube context and no tmux, so a Legion pod, a devbox and a runner holding the pinned binary all run it.
 `LEGION_OMP_PATH` is required and names the Oh My Pi every pane runs, an absolute executable, as for [`provider-error-retry.sh`](#provider-error-retrysh), and the script prints which build it ran.
 It reaches no network:
@@ -5474,13 +5483,13 @@ A case reads three things:
 
 | case | driven by | read back as |
 | :--- | :--- | :--- |
-| `one-record` | the tester's pass of k1 and fail of k2 at the head, its test record, and its completion with the summary `Every check passes.`; then the same with passes of both, on an issue of its own | the first issue in `implementing` within 10 s of the completion, its implementer's task naming `k2: no (fail)` and no k1, and its two results; the second issue in `reviewing` within 10 s of the completion, its reviewer started, no task of its implementer, and its two results |
+| `one-record` | the tester's pass of k1 and fail of k2 at the head, its test record, and its completion with the summary `Every check passes.`; then the same with passes of both, on an issue of its own | the first issue in `implementing` within 10 s of the completion, the tester's one `phase-finished` notice on its architect's topic carrying the head as `head` and `[{k2, no, fail}]` as `failing`, its implementer's pending task carrying that notice's `reason`, and its two results; the second issue in `reviewing` within 10 s of the completion, its reviewer started, no task of its implementer, and its two results |
 | `daemon-records-nothing` | the two runs of `one-record`, on issues of their own | each read of `one-record`; then every request of Dispatch's access log that records or retracts a result names a tester's or an implementer's session of the run, and every row of `check_results`, `ci_check_results`, `check_result_retractions` and `ci_check_result_retractions` is written under such a session, never the daemon's `legion-daemon:<PROJECT>` |
 | `dispatch-tells` | the tester's fail of k1 at the head, once the daemon holds the first state of k1 and of k2 there (`no` for `no_result`) | the daemon's log record `workflow: a check state is held` for the issue, k1, the head, `no` and `fail`, its own time within 10 s of the start of the write; then the issue still in `testing`, since its tester has not completed, no task of its implementer, and the one result |
 | `pass-goes-to-review` | the implementer's and the tester's passes of k1 and k2, the test record and the completion | the issue in `reviewing` and its reviewer started, each within 10 s of the completion; no task of its implementer; the four results |
 | `no-check` | an issue whose Verification document holds one check, k3, which is `after_merge`, and so no `before_merge` check; the test record and the completion, with no result | Dispatch's answer of the issue's checks (`GET /api/v1/issues/<key>/results`): a Verification document whose checks hold no `before_merge` one; the issue in `reviewing` and its reviewer started, each within 10 s of the completion; no task of its implementer; no row of the issue in `check_results` or `ci_check_results`; and in Dispatch's `check_states` only the head's set row, with no check, computed from that Verification document |
-| `fail-sends-back` | the tester's pass of k1 and fail of k2; then, on a second issue, a pass and a fail of k1 and a pass of k2 | each issue in `implementing` within 10 s of the completion; the first task names `k2: no (fail)` and no k1, the second `k1: unknown (pass_and_fail)` and no k2; each issue's results |
-| `completion-before-event` | with the states from before the results held by the daemon, the run's `nats-server` stopped (`SIGSTOP`, by the pid the run started it with, which must be a `nats-server` holding the socket on the run's port); the tester's passes, test record and completion; after 10 s, `SIGCONT` | for 10 s the issue stays in `testing` and the daemon starts no worker; the architect has one `phase-finished` notice saying the move waits for Dispatch's check states at the head; the issue in `reviewing` within 10 s of the `SIGCONT`; once its reviewer starts, no task of its implementer; the two results |
+| `fail-sends-back` | the tester's pass of k1 and fail of k2; then, on a second issue, a pass and a fail of k1 and a pass of k2 | each issue in `implementing` within 10 s of the completion; the tester's one `phase-finished` notice on the architect's topic carrying the head as `head` and, as `failing`, `[{k2, no, fail}]` on the first issue and `[{k1, unknown, pass_and_fail}]` on the second; each implementer's pending task carrying its notice's `reason`; each issue's results |
+| `completion-before-event` | with the states from before the results held by the daemon, the run's `nats-server` stopped (`SIGSTOP`, by the pid the run started it with, which must be a `nats-server` holding the socket on the run's port); the tester's passes, test record and completion; after 10 s, `SIGCONT` | for 10 s the issue stays in `testing` and the daemon starts no worker; the architect has one `phase-finished` notice, the tester's, carrying the head as `head` and `fence` as `waits_for`; the issue in `reviewing` within 10 s of the `SIGCONT`; once its reviewer starts, no task of its implementer; the two results |
 
 Every move a case reads also prints the states Dispatch published of the issue (`check_states`).
 
@@ -5816,6 +5825,47 @@ Four things are stood in for, beside what [`step-records.sh`](#step-recordssh) s
 - the older client's read of the state once an issue is held for a new reason is printed, not asserted: the daemon narrows the state for an older caller only in a pod (`stateFor` in `internal/api/server.go`), the fake runtime runs none, and `TestAnOlderCallerIsServedNoNewHoldReason` (`internal/api/hold_reason_test.go`) holds the pod's path.
 
 `OWNER_STEPS_CLIENT_EVIDENCE_DIR` (default a fresh directory under `TMPDIR`, kept and printed) keeps the transcript, the `nats-server`'s log, the daemon's own, Dispatch's (`dispatch.log`) and the driver's output.
+
+## experiment.sh
+
+```sh
+LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
+  [LEGION_E2E_NATS_BIN=<nats-server>] bash scripts/e2e/experiment.sh     # → "experiment e2e: PASS in <n>s", exit 0
+```
+
+The live proof that a project's declared experiment draws a group for each new issue and that the group sets how the issue is done, run before the change merges.
+It runs on any Linux host with `go`, `git`, `jj` 0.38 or later (the daemon's boot refuses to start without them), `awk`, `bun` (after `bun install` at the checkout's root) and `python3` (for [`lib/loopback-dsn.py`](#libloopback-dsnpy)) — no Docker, no cluster, no GitHub, no deployed Dispatch.
+`LEGION_TEST_PG_DSN` is required, its host must be loopback, and, as for [`handoff-records.sh`](#handoff-recordssh), the driver also creates Dispatch's own database on that server and drops it on exit, so the DSN's role must be allowed to create and drop databases and the server must offer `pgvector`.
+The script starts no database, and the broker is the run's own.
+A measured run took 40 seconds with a warm Go build cache: 15 to build the driver and 23 for the proof, which builds Dispatch and `legion` first.
+The four checks are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s;
+before them the script refuses a host with no `bun` or no `node_modules`, and exports `LEGION_E2E_REPO_ROOT`, the checkout the driver builds Dispatch and `legion` from and runs the CLI out of.
+
+| check | what it holds |
+| :--- | :--- |
+| `prerequisites` | as for [`handoff-records.sh`](#handoff-recordssh) |
+| `broker` | that `nats-server`, with JetStream, listening on 127.0.0.1 and ready |
+| `driver` | a test binary of `TestExperimentLive` (`internal/daemon/plan_experiment_live_test.go`, `-tags e2e`) |
+| `proof` | the steps below, each printing what it drove and what it read back between its own `== <name>` and `ok <name>` |
+
+Nothing of the draw's path is stood in for.
+The driver starts Dispatch from this checkout (`startScratchDispatchOn`), on a database of its own with its events on the run's broker, creates a project of the run's own (`P<9 hex digits>`) and maps `acme/widgets` to it, as the person's handover proof does (`personHandoverRig`, `internal/daemon/person_handover_scratch_dispatch_test.go`).
+It boots the whole daemon through `run`, the function `legion start` calls, with `dispatch_url` at that server and an admission cap of three, its project declaring the experiment `planning` at mode `on` and unit `issue`, with the arm `a` (`plan: owner`) and the arm `b` (`plan: default`); the daemon consumes Dispatch's events from the broker, so it records and draws each issue when the person hands it over.
+Each issue is created by a session with the `legion` label and handed to Legion as the person's `todo` through Dispatch's API, and its gate is registered by its architect and approved by the person.
+Its owner writes `plan.md` with the real `dispatch` CLI (`bun packages/envoy-client/bin/dispatch.ts artifact --issue <KEY> --name plan.md --content …`), run as a session with the server's agent token, and gives it with `POST /legion/v1/plans/register`, as the architect's plugin does.
+The operator reads the groups with the `legion` this checkout builds (`legion state`, with `LEGION_DAEMON_URL` at the daemon).
+
+| step | driven by | read back as |
+| :--- | :--- | :--- |
+| `group-recorded` | two issues handed to Legion with the arm `a` in force | `legion state` prints `planning: 2 issues — 2 a (on)`, and `legion state --json` shows on each issue its assignment of `planning`, arm `a`, mode `on`, with the instant of its draw and the group the arm set, `plan` `owner`; control: before either issue, `legion state` prints `planning: none` |
+| `owner-plan-taken` | the owner of the first issue writes the plan `implementer reviewer` as `plan.md` and gives it; the person approves the issue's registered gate | `register_plan` answers `200`, and the issue's run starts at `implementing` on the plan of the source `owner` |
+| `default-not-taken` | the daemon stopped and booted again with the arm `b` in force; a third issue handed to Legion; its owner writes and gives the same plan, twice; the person approves the issue's registered gate | each send answered `409 PLAN_NOT_TAKEN` with the sentence of the group (`intake.PlanNotTaken`); the issue's run starts at `planning`, the project's default steps, on the plan of the source `default`; `legion state` prints `planning: 3 issues — 2 a (on), 1 b (on)`, the first two issues keeping the arm `a`; control, run by hand: with the group's check taken out of `versionRefusal` (`internal/workflow/plan_given.go`), the first send is answered `200` and this step fails |
+
+What the proof stands in for lies outside the draw:
+the broker is a native `nats-server`; GitHub's REST API is the driver's stand-in for a repository's default branch and the issue branch;
+the Apps' tokens are placeholders; Envoy's listener is unreachable, as the rig leaves it;
+and no agent runs: each claim is launched by the package's fake runtime, and nothing plays it.
+`EXPERIMENT_EVIDENCE_DIR` (default a fresh directory under `TMPDIR`, kept and printed) keeps the transcript, the `nats-server`'s log, the daemon's own, Dispatch's (`dispatch.log`) and the driver's output.
 
 ## plan-pointer-drive.sh
 
@@ -6997,15 +7047,18 @@ Each item below names a function, then what it does.
 
 - `listening_holders PORT`
 
-  prints the pid of every process holding the one socket listening on PORT:
-  its inode from the `LISTEN` row of `/proc/net/tcp` and `/proc/net/tcp6`, its holders from `/proc/*/fd`.
+  prints the pid of every process holding the one socket listening on `127.0.0.1:PORT`, where every service of a rig listens (`held-port.py`'s default host, `port_answers`' address):
+  its inode from the `LISTEN` row of `/proc/net/tcp` whose local address is `127.0.0.1:PORT`, its holders from `/proc/*/fd`.
+  A socket on the same port of another address is none of it:
+  the kernel's bind of port 0 on `127.0.0.1` hands out a port that another process already listens on at another loopback address, as a Go test on a devbox did on `127.162.56.110`, and a count of every `LISTEN` row with that port read two sockets and failed.
+  The table writes an address in the host's byte order, so `127.0.0.1` is `0100007F` on a little-endian host, where `7F000001` is `1.0.0.127`, an address a socket can hold too (`IP_FREEBIND`): each call reads the byte order with `od` and takes the one spelling, and exits 2 when `od` does not tell it.
   The shell's glob hands every `/proc/<pid>/fd` to `find` on stdin, never as its arguments, which past ARG_MAX (about 80,000 processes) could not start, and the empty answer read as no holder.
   An fd directory this user may not read, or whose process ended during the walk, is none of the answer; any other complaint of the walk's prints and fails with 2.
-  It fails when no socket, or more than one, listens on PORT
+  It fails when no socket, or more than one, listens on `127.0.0.1:PORT`
 
 - `held_only_by PORT PID…`
 
-  succeeds when the holders of the socket listening on PORT are exactly the PIDs given; otherwise it prints each holder's pid and command line and fails.
+  succeeds when the holders of the socket listening on `127.0.0.1:PORT` are exactly the PIDs given; otherwise it prints each holder's pid and command line and fails.
   Stage 1 runs it after each daemon start with the daemon and its keeper
 
 - `await_start NAME PID SECONDS WHAT CMD…`
@@ -7038,7 +7091,11 @@ Each item below names a function, then what it does.
 
 `lib/run-processes.test.ts` (`bun test scripts/e2e/lib`) runs `run_processes` over the devbox's own `/proc`, under an `ERR` trap that prints, with a `readlink` on `PATH` that records every call and answers nothing and a `grep` that counts its calls:
 it names a process that carries the run's mark and a pane-shaped one whose `XDG_CONFIG_HOME` is under the run's state, leaves a process working in the run's directory, a `tail -f` of its transcript and an unrelated one alone, runs a handful of greps and no `readlink`, and trips no trap.
-It names a marked process double-forked to pid 1, which no tree the run started holds.
+It names a marked process double-forked to pid 1, which no tree the run started holds, once the process's exec of `sleep` is done (`untilExecDone`): inside the exec its `/proc/<pid>/environ` reads empty while its exe link, and then its command line, already name `sleep`, so a walk then names nothing, and the sweep row waits on its escaped process the same way.
+Every row of the file has a bound of 60 s of its own (`setDefaultTimeout`), whatever the runner's command line, and its waits on the kernel run until 15 s before it, then fail naming what they waited for; no shorter span decides a wait, since a loaded devbox held an escaped process inside its exec for more than the 3 s a fixed wait gave it.
+`listening_holders` names only this test process, the holder of the socket on `127.0.0.1:PORT`, while another process listens on `127.0.0.2` with the same port, and while one listens on `1.0.0.127` with it, where `IP_FREEBIND` lets a socket bind there (a host that refuses it skips that row by name).
+Each of those two rows has the other process take a port the kernel chooses first and listens on `127.0.0.1` at that port after, so the collision it is about cannot stop its setup.
+A port the kernel gives the other address can already be listening on `127.0.0.1`, which no order removes, since the box's processes share one network namespace: the row then takes a fresh port until its waits end, and past that fails naming each port `127.0.0.1` refused (`no port free on both … by the end of the row's waits`), with `listening_holders` not run.
 Under a 512 KiB stack (ARG_MAX 128 KiB) and an environment measured to fill it ([`lib/arg-max-force.sh`](#libarg-max-forcesh)), where `find /proc/[0-9]*/cwd` fails with E2BIG, it still names the run's process, and `listening_holders` still names the test process holding a listening socket; the forms they replaced name none.
 Where the kernel does not hold an exec to ARG_MAX, as gVisor does not, those two rows are skipped by that name (`argMaxForceHolds`, [`lib/arg-max-force.sh`](#libarg-max-forcesh)).
 A `find` or a `grep` that a signal ends after part of its output makes `listening_holders` and `run_processes` exit 2, a run that has not marked itself has no processes to read, and an empty run directory names none (`marked_processes`, `procs_naming` and `names_dir` exit 2).
@@ -7901,10 +7958,10 @@ A run that ended before its last check with status 0 says so on the line before,
 
 | argument | is |
 | :--- | :--- |
-| `LABEL` | the run's name in its last line: `busy relaunch delivery`, or `busy relaunch delivery at <sha12>` for its negative control's base run, `child adoption`, `conflict no takeover`, `behind entry fence`, `phase entry converge`, `handoff records`, `review range`, `merge wait readable`, `step records`, `plan ratings`, `owner steps`, `owner steps client`, `approved version news part one`, `approved version news part two`, `provider error retry`, `claim compaction`, `role prompt rule`, `late completion` |
+| `LABEL` | the run's name in its last line: `busy relaunch delivery`, or `busy relaunch delivery at <sha12>` for its negative control's base run, `child adoption`, `conflict no takeover`, `behind entry fence`, `phase entry converge`, `handoff records`, `review range`, `merge wait readable`, `step records`, `plan ratings`, `owner steps`, `owner steps client`, `experiment`, `approved version news part one`, `approved version news part two`, `provider error retry`, `claim compaction`, `role prompt rule`, `late completion`, `sub architect` |
 | `SLUG` | the name of the run's own files under `TMPDIR` (or `/tmp` when it is unset): the work directory `legion-e2e-SLUG.<pid>.*`, which holds the broker's store and, where the `driver` check builds one, the driver binary `SLUG.test`, and the evidence directory `legion-e2e-SLUG-evidence.*` when `EVIDENCE` is empty |
 | `TEST` | the one test the driver runs (`-test.run '^TEST$'`); `proof` fails unless the driver reports `--- PASS: TEST`, so a driver that skipped, or a pattern that matched nothing, is no pass |
-| `EVIDENCE` | the evidence directory the script's own variable names (`BUSY_RELAUNCH_DELIVERY_EVIDENCE_DIR`, `CHILD_ADOPTION_EVIDENCE_DIR`, `CONFLICT_NO_TAKEOVER_EVIDENCE_DIR`, `CONFLICT_MERGER_EVIDENCE_DIR`, `BEHIND_ENTRY_FENCE_EVIDENCE_DIR`, `PHASE_ENTRY_CONVERGE_EVIDENCE_DIR`, `HANDOFF_RECORDS_EVIDENCE_DIR`, `REVIEW_RANGE_EVIDENCE_DIR`, `MERGE_WAIT_READABLE_EVIDENCE_DIR`, `STEP_RECORDS_EVIDENCE_DIR`, `PLAN_RATINGS_EVIDENCE_DIR`, `OWNER_STEPS_EVIDENCE_DIR`, `OWNER_STEPS_CLIENT_EVIDENCE_DIR`, `PROVIDER_ERROR_RETRY_EVIDENCE_DIR`, `CLAIM_COMPACTION_EVIDENCE_DIR`, `ROLE_PROMPT_RULE_EVIDENCE_DIR`, `LATE_COMPLETION_EVIDENCE_DIR`, and a `part-one.*` or `part-two.*` directory inside `APPROVED_VERSION_NEWS_EVIDENCE_DIR`), or empty for a fresh one; kept and printed, it holds `transcript.log`, the broker's `nats.log`, the daemon's own `daemon.log`, which the driver writes through `LEGION_E2E_DAEMON_LOG`, and the driver's `proof.log` |
+| `EVIDENCE` | the evidence directory the script's own variable names (`BUSY_RELAUNCH_DELIVERY_EVIDENCE_DIR`, `CHILD_ADOPTION_EVIDENCE_DIR`, `CONFLICT_NO_TAKEOVER_EVIDENCE_DIR`, `CONFLICT_MERGER_EVIDENCE_DIR`, `BEHIND_ENTRY_FENCE_EVIDENCE_DIR`, `PHASE_ENTRY_CONVERGE_EVIDENCE_DIR`, `HANDOFF_RECORDS_EVIDENCE_DIR`, `REVIEW_RANGE_EVIDENCE_DIR`, `MERGE_WAIT_READABLE_EVIDENCE_DIR`, `STEP_RECORDS_EVIDENCE_DIR`, `PLAN_RATINGS_EVIDENCE_DIR`, `OWNER_STEPS_EVIDENCE_DIR`, `OWNER_STEPS_CLIENT_EVIDENCE_DIR`, `EXPERIMENT_EVIDENCE_DIR`, `PROVIDER_ERROR_RETRY_EVIDENCE_DIR`, `CLAIM_COMPACTION_EVIDENCE_DIR`, `ROLE_PROMPT_RULE_EVIDENCE_DIR`, `LATE_COMPLETION_EVIDENCE_DIR`, `SUB_ARCHITECT_EVIDENCE_DIR`, and a `part-one.*` or `part-two.*` directory inside `APPROVED_VERSION_NEWS_EVIDENCE_DIR`), or empty for a fresh one; kept and printed, it holds `transcript.log`, the broker's `nats.log`, the daemon's own `daemon.log`, which the driver writes through `LEGION_E2E_DAEMON_LOG`, and the driver's `proof.log` |
 | `TIMEOUT` | the driver's own deadline (`-test.timeout`), `20m` when it is not given or is empty; `approved-version-news.sh` gives part two 9 minutes for each run its pick makes and 20 more, since the driver bounds each run at eight minutes, and counts no base run of `a4` or `answers` in a run that picks no arm |
 | `DRIVER` | a driver the caller built with `build_daemon_driver` before the run, which the `driver` check notes and does not build again, and which the run does not remove; not given, or empty, the check builds one into the work directory; `approved-version-news.sh` hands both its parts the driver its `plan` check built, in a run of both parts, and every other entry script gives none |
 

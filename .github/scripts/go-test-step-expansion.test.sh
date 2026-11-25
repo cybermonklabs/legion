@@ -134,12 +134,12 @@ else:
   check "$form is kept, so the tests it skips can be subtracted" "$(is "$retained" "yes")"
 done
 
-# Two steps run database-skips.sh, each with the argument list its entry reads: envoy-go's count,
-# which runs the broker's packages less the race lane's, and its command, and envoy-go-race-api's
-# race step, which runs the API package. Each step is read out of the file that holds it, in the
-# directory GitHub runs it from, so the case holds the entry to the steps as written; an argument
-# list the entry does not list is refused, since what the script runs then is a reading nobody
-# made.
+# Two steps run database-skips.sh, each with the argument list its entry reads: envoy-go's unit
+# step, which runs the module less the race lane's packages, the text checks, internal/integration
+# and the packages envoy-go-build runs, and envoy-go-race-api's race step, which runs the API
+# package. Each step is read out of the file that holds it, in the directory GitHub runs it from,
+# so the case holds the entry to the steps as written; an argument list the entry does not list is
+# refused, since what the script runs then is a reading nobody made.
 echo "case: a step that runs an audited script is read through its entry, by its argument list"
 read_audited() { py 'import pathlib, yaml
 document = yaml.safe_load(pathlib.Path(ex.ROOT / sys.argv[1]).read_text())
@@ -153,9 +153,12 @@ except ex.Refused:
     print("refused")
 else:
     print(read.workdir, read.script)' "$@"; }
-check "envoy-go's count runs the broker's packages less the race lane's, and its command, less the backend count's test" \
-  "$(is "$(read_audited .github/workflows/ci-job-envoy-go.yaml "Count the database broker suites' skips" "")" \
-    "packages/envoy go list ./internal/cipher/... ./cmd/cipherd/ | grep -Ev '/internal/cipher/natscallout$' | xargs go test -json -count=1 -skip '^(TestSettingsNameTheGoogleExchangeAudienceOnEitherStore)\$' -timeout 20m")"
+unit_listing=$(cat <<'EOF'
+packages/envoy go list ./... | grep -Ev '/integration|/internal/textcheck$|/internal/dispatch/architecture/notes$|/internal/runnerlog$|/internal/dispatch/specgraph$|/cmd/architecture-check$|/cmd/spec-check$|/listenerwire$|/internal/wirecheck$|/internal/dispatch/delivery($|/)|/internal/dispatch/store($|/)|/internal/bus$|/cmd/listener$|/internal/store$|/internal/session$|/internal/kvwatch($|/)|/natscred$|/internal/cipher/natscallout$|/internal/oidc$|/internal/dispatch/api$|/internal/dispatch/docs$' | xargs go test -json -count=1 -skip '^(TestEverySecretFormNamesTheSourceItUses|TestNoSecretFormAsksTheBrokerForACredential|TestSettingsNameTheGoogleExchangeAudienceOnEitherStore|TestTheChainSkipsAbsenceAndStopsOnABrokenSource|TestTheWebFixtureFindsItsFilesFromAnyDirectory|TestUseCommandOutsideASessionReachesTheMachineSource|TestWebDisplayFixture)$' -timeout 20m
+EOF
+)
+check "envoy-go's unit step runs the module less the other jobs' packages, less the fixture's and the backend count's tests" \
+  "$(is "$(read_audited .github/workflows/ci-job-envoy-go.yaml "Unit test envoy Go package" "")" "$unit_listing")"
 check "envoy-go-race-api's race step runs the API package under -race through the counter" \
   "$(is "$(read_audited .github/workflows/ci-job-envoy-go-race-api.yaml "Race-test the Dispatch API" "")" \
     "packages/envoy go test -json -count=1 -race -timeout 70m ./internal/dispatch/api/")"
@@ -180,15 +183,15 @@ else:
     command, = ex.commands_of(found[0])
     print(command.step.workdir, " ".join(command.packages), command.run)')" \
     "packages/envoy ./cmd/cipher/ ./internal/cipher/api/ ^(TestEverySecretFormNamesTheSourceItUses|TestNoSecretFormAsksTheBrokerForACredential|TestUseCommandOutsideASessionReachesTheMachineSource|TestTheChainSkipsAbsenceAndStopsOnABrokenSource|TestSettingsNameTheGoogleExchangeAudienceOnEitherStore)\$")"
-check "the unit step skips the four of cmd/cipher and the database-skips step the one of internal/cipher/api" \
+check "the unit step skips all five, the four of cmd/cipher and the one of internal/cipher/api" \
   "$(is "$(py 'ex.shell = lambda script, cwd, what: "(not-run)"
 steps = {step.key: step for step in ex.steps_of(ex.documents())}
 skipping = {name: {test for command in ex.commands_of(steps[(".github/workflows/ci-job-envoy-go.yaml", name)])
                    for test in ex.skip_names(command.skip) or ()}
             for name in sys.argv[1:]}
 print(" ".join(test + ":" + ",".join(name for name, tests in skipping.items() if test in tests)
-               for test in ex.BACKEND_COUNT_TESTS))' "Unit test envoy Go package" "Count the database broker suites' skips")" \
-    "TestEverySecretFormNamesTheSourceItUses:Unit test envoy Go package TestNoSecretFormAsksTheBrokerForACredential:Unit test envoy Go package TestUseCommandOutsideASessionReachesTheMachineSource:Unit test envoy Go package TestTheChainSkipsAbsenceAndStopsOnABrokenSource:Unit test envoy Go package TestSettingsNameTheGoogleExchangeAudienceOnEitherStore:Count the database broker suites' skips")"
+               for test in ex.BACKEND_COUNT_TESTS))' "Unit test envoy Go package")" \
+    "TestEverySecretFormNamesTheSourceItUses:Unit test envoy Go package TestNoSecretFormAsksTheBrokerForACredential:Unit test envoy Go package TestUseCommandOutsideASessionReachesTheMachineSource:Unit test envoy Go package TestTheChainSkipsAbsenceAndStopsOnABrokenSource:Unit test envoy Go package TestSettingsNameTheGoogleExchangeAudienceOnEitherStore:Unit test envoy Go package")"
 
 # The script stops at exit 2 on the first step it cannot read, and it runs by hand, so nothing
 # told the pull request that made a step unreadable: #4319 moved the skips step behind
@@ -231,13 +234,13 @@ cat >"$fixture/.github/workflows/ci-job-envoy-go.yaml" <<'EOF'
 jobs:
   envoy-go:
     steps:
-      - name: Count the database broker suites' skips
-        run: packages/envoy/scripts/database-skips.sh --timeout 20m --skip '^(TestSettingsNameTheGoogleExchangeAudienceOnEitherStore)$'
+      - name: Unit test envoy Go package
+        run: packages/envoy/scripts/database-skips.sh --timeout 20m --skip '^(TestEverySecretFormNamesTheSourceItUses|TestNoSecretFormAsksTheBrokerForACredential|TestSettingsNameTheGoogleExchangeAudienceOnEitherStore|TestTheChainSkipsAbsenceAndStopsOnABrokenSource|TestTheWebFixtureFindsItsFilesFromAnyDirectory|TestUseCommandOutsideASessionReachesTheMachineSource|TestWebDisplayFixture)$' --module-except '/integration|/internal/textcheck$|/internal/dispatch/architecture/notes$|/internal/runnerlog$|/internal/dispatch/specgraph$|/cmd/architecture-check$|/cmd/spec-check$|/listenerwire$|/internal/wirecheck$|/internal/dispatch/delivery($|/)|/internal/dispatch/store($|/)|/internal/bus$|/cmd/listener$|/internal/store$|/internal/session$|/internal/kvwatch($|/)|/natscred$|/internal/cipher/natscallout$|/internal/oidc$|/internal/dispatch/api$|/internal/dispatch/docs$'
 EOF
 skips=packages/envoy/scripts/database-skips.sh
 { cat "$repo/$skips"; echo '# an edit after the reading its pin is of'; } >"$fixture/$skips"
 check "a step whose script has moved past its pin is refused, by step and reason" \
-  "$(contains "$(reader_refusals "$fixture")" "^\.github/workflows/ci-job-envoy-go\.yaml's envoy-go / Count the database broker suites' skips: $skips has SHA-256 ")"
+  "$(contains "$(reader_refusals "$fixture")" "^\.github/workflows/ci-job-envoy-go\.yaml's envoy-go / Unit test envoy Go package: $skips has SHA-256 ")"
 cat >"$fixture/.github/workflows/ci-job-envoy-go.yaml" <<'EOF'
 jobs:
   envoy-go:

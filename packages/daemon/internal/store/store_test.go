@@ -1103,7 +1103,8 @@ func TestTheServingRunBackfillsForARelaunchingClaim(t *testing.T) {
 // database main migrated applies a version left out of the list before the list's own rewrites of
 // that check, which do not name the later kind, so the row seeded of that kind fails the upgrade.
 // So does one that reads a column a version of the list adds, as t-e-54's 20261116144907 reads
-// claims.abandoned_session (20261029121200): applied before that version, it fails on the missing
+// claims.abandoned_session (20261029121200) and dispatch://INFRA-5463's 20261123212127 reads
+// claims.last_start_failure (20261029121000): applied before that version, it fails on the missing
 // column; so would 20261123134547, which alters step_starts (20261117004117) and plan_tasks
 // (20261117034837).
 // 20261123134547 is the last migration that writes outbox_kind_check: it stands above the design
@@ -1122,7 +1123,7 @@ var thisRelease = map[int]bool{
 	20261113082214: true, 20261113110610: true, 20261114031356: true, 20261116144907: true,
 	20261116165926: true, 20261117000528: true, 20261117004117: true, 20261117023932: true,
 	20261117034837: true, 20261117064152: true, 20261119003157: true, 20261119203047: true,
-	20261123134547: true,
+	20261123134547: true, 20261123212127: true,
 }
 
 const idleRelease = 20261101222956

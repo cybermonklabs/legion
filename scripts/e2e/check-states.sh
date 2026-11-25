@@ -14,8 +14,9 @@
 # The cases, each on issues of its own, chosen with CHECK_STATES_E2E_CASES (a comma- or
 # space-separated list; every case when it is unset or empty), in this order:
 #   - one-record: the tester records a pass of k1 and a fail of k2 and completes with the summary
-#     "Every check passes."; the issue goes back to implementing, the implementer's task naming k2.
-#     A second run, its passes of both, goes to reviewing and gives the implementer no task;
+#     "Every check passes."; the issue goes back to implementing, the tester's phase-finished
+#     notice carrying the head and k2 as its failing check. A second run, its passes of both, goes
+#     to reviewing and gives the implementer no task;
 #   - daemon-records-nothing: the two runs of one-record, then every request of Dispatch's access log
 #     that records or retracts a result, and every row of check_results, ci_check_results and their
 #     retraction tables, names a tester's or an implementer's session of the run, and never the
@@ -29,14 +30,15 @@
 #   - no-check: an issue whose Verification document holds one check, after_merge, and so no
 #     before_merge check, goes to reviewing within 10 seconds when its tester completes, and Dispatch
 #     holds no result of it and publishes its head's set with no check;
-#   - fail-sends-back: a pass of k1 and a fail of k2 send the issue back, the implementer's task (read
-#     from the daemon's store) naming k2, no and fail and not k1; on a second issue a pass and a fail
-#     of k1 name k1 with the reason pass_and_fail;
+#   - fail-sends-back: a pass of k1 and a fail of k2 send the issue back, the tester's
+#     phase-finished notice carrying k2, no and fail as its one failing check and the implementer's
+#     task (read from the daemon's store) carrying that notice's reason; on a second issue a pass and
+#     a fail of k1 make the failing check k1 with the reason pass_and_fail;
 #   - completion-before-event: the run's own nats-server stopped with SIGSTOP by the pid this run
 #     started it with, the tester records its passes, writes its test record and completes; for 10
-#     seconds the issue stays in testing, the daemon starts no worker, and the architect is told once
-#     that the move waits for Dispatch's check states at the head; within 10 seconds of the SIGCONT
-#     the issue goes to reviewing.
+#     seconds the issue stays in testing, the daemon starts no worker, and the architect is told once,
+#     in the tester's notice, whose head is the tested head and whose waits_for is fence; within 10 s
+#     of the SIGCONT the issue goes to reviewing.
 # Every case also reads the results Dispatch's database holds of each of its issues. Each 10-second
 # bound is measured from the operation that triggers the answer (the result's write, the tester's
 # completion, the SIGCONT), and an answer that comes later fails at `<assertion>-within`. Each case

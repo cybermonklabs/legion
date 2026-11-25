@@ -1,6 +1,6 @@
 kind: Changed
 body: |-
-  The plugin speaks daemon API contract 221. The `legion` MCP tool's `handoff_complete` sends no
+  The plugin speaks daemon API contract 225. The `legion` MCP tool's `handoff_complete` sends no
   verdict on a phase completion: Dispatch's check states at the tested head decide the testing
   phase. A phase completion that names one is refused once the daemon's record shows it is a
   phase's, before the handoff record is read or a grant minted, with `handoff_complete carries no

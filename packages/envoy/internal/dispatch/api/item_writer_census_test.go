@@ -189,6 +189,7 @@ var itemRowWriters = map[string]map[string]string{
 			"its tables are refs and the item block-ref tables, no item row",
 	},
 	"internal/dispatch/store/repo_rename_pass.go": {
+		"citedWrite": repoRenamePassException,
 		"collisions": repoRenamePassException,
 		"nameWrite":  repoRenamePassException,
 		"urlWrite":   repoRenamePassException,
@@ -417,6 +418,7 @@ var itemRowLockNoRow = map[string]map[string]string{
 		"settleOwedStatement": itemRowCallersTransaction,
 	},
 	"internal/dispatch/store/repo_rename_pass.go": {
+		"citedWrite": itemRowNoOwnerLock,
 		"collisions": itemRowNoOwnerLock,
 		"nameWrite":  itemRowNoOwnerLock,
 		"urlWrite":   itemRowNoOwnerLock,

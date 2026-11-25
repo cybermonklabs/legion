@@ -188,6 +188,9 @@ type statesIssue struct {
 	key, title, head string
 	number           int
 	tester           string
+	// seededTask is the task seed left pending on the tester's claim, the test's own input, which
+	// readyTester finds the tester's first turn by: no word of it is the daemon's.
+	seededTask string
 	// staged is whether the issue's pull request is staged in Dispatch's database (stageHead).
 	staged bool
 	// recorded is each result the case recorded on the issue, as statesRecordedAs spells it.
@@ -469,6 +472,7 @@ func (r *statesProof) seed() {
 			t.Fatalf("record the tester's unfinished launch on %s: %v", issue.key, err)
 		}
 		task := fmt.Sprintf("Continue %s. Issue: %s. Phase: testing. Pull request: #%d.", issue.title, issue.key, issue.number)
+		issue.seededTask = task
 		if err := r.st.PutDelivery(ctx, tester, supervise.Delivery{
 			ID: "seeded-start-" + randomSuffix(t), Task: task, Generation: 1, Phase: phase.Testing, QueuedAt: time.Now(),
 		}); err != nil {

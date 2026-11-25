@@ -402,7 +402,7 @@ func (h *harness) wantRetryRunsUnderTheLanesKind(which string) {
 // refreshRetryArmed is the opening every road to a retry of this lane takes: the lane's relaunch
 // parked over a stale idle claim, its turn met by a store that takes no claim write, and the
 // retry that failed write arms waiting on the probe interval over a claim recording no process
-// (refreshParkedIdle, launchNow, relaunchLater). That retry holds the intent the launch had
+// (refreshParkedIdle, launchTries, relaunchLater). That retry holds the intent the launch had
 // already committed, which is what each road below reads at the wake its own retry parks
 // (retryHolding). The write lands again before this returns, so what the retry meets when it
 // runs is each road's own to set up.
@@ -433,7 +433,7 @@ func refreshRetryArmed(t *testing.T) (*harness, runtime.Locator) {
 // the machine drives to it. The refresh's turn passes its lifecycle recheck, lets the stale
 // process go, and the claim write that records StateLaunching fails: the launch has started
 // nothing, it keeps in memory the mark it had already committed, and it tries the same launch
-// again at the probe interval (launchNow, relaunchLater). That retry is a launch from the top
+// again at the probe interval (launchTries, relaunchLater). That retry is a launch from the top
 // and reserves afresh, and the intent the failed launch took off the machine goes back on it
 // where the retry runs, so the wake it parks is the lane's rather than a plain launch
 // (retryHolding, reserveWake). Counted by its kind, a refresh that lost its wake to `launch`
@@ -445,7 +445,7 @@ func refreshRetryArmed(t *testing.T) (*harness, runtime.Locator) {
 // the case above can only put a claim in: this one reaches it from a stale idle claim and the
 // lane's own pass.
 //
-// The negative control is the wrapping reverted (launchNow handing relaunchLater the bare
+// The negative control is the wrapping reverted (relaunchAtProbe handing relaunchLater the bare
 // closure): the retry then parks under `launch`, which this case reads at the kind of the wake
 // waiting and again at the lines its turns write.
 func TestTheRetryOfARefreshWhoseLaunchWriteFailedWaitsUnderTheLanesOwnKind(t *testing.T) {
@@ -525,7 +525,7 @@ func TestTheLaunchAfterARefreshRetryTheLifecycleRefusedIsCountedAsNoRefresh(t *t
 //
 // The road is the one the case above drives: the refresh's turn runs, the claim write that
 // records StateLaunching fails, and the retry that failure arms puts the intent back and raises
-// the same launch anew from the top, where its own lifecycle check is refused (launchNow,
+// the same launch anew from the top, where its own lifecycle check is refused (launchTries,
 // launchAfter).
 //
 // A refresh that lost its wake to `launch` at this second refusal is lost to the operator

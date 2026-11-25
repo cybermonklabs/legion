@@ -923,13 +923,13 @@ func newTestRouter(t *testing.T) (http.Handler, *AppContext) {
 func TestHideStateFileReachesAPI(t *testing.T) {
 	people := newMemoryPeople()
 	const hideStateFile = "/run/skill-scenarios/quiet/run-1"
-	ctx, err := BuildAppContext(AppContextOptions{
+	ctx, err := BuildAppContext(withDocuments(t, AppContextOptions{
 		SigningKey:    testSigningKey,
 		People:        people,
 		Identity:      identity.HeaderIdentity{Header: "X-Dispatch-User", People: people},
 		Lifetime:      t.Context(),
 		HideStateFile: hideStateFile,
-	})
+	}))
 	if err != nil {
 		t.Fatalf("build context: %v", err)
 	}

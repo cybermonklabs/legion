@@ -33,8 +33,28 @@ import (
 // The pass writes no other column, updated_at included, and appends no event. It never writes
 // repo_projects, the event log, the text of documents, comments, asks and messages, the reference
 // tables read from that text (refs, block_refs, graph_edges), architecture_snapshots.files, a
-// daemon's own readings (legion_current, legion_observations) or github_rate_limits, whose scope
-// names no repository.
+// daemon's own readings (legion_current, legion_observations), the results of spec checks
+// (spec_check_results) or github_rate_limits, whose scope names no repository. A row of
+// spec_check_results is the record of one CI run, with its repository as the run's results token
+// named it, which the row's in-toto statement holds too: nothing updates or deletes such a row,
+// and no read selects or compares by its repository column. The in-toto statement of a CI job's
+// result of an issue's check (ci_check_results.attestation) is such a record of its run too, and
+// the pass writes only that row's commit_repo.
+//
+// Nor does it write the check states settler's tables, check_states and the tables of
+// pull_request_former_heads. The pass's write of an open pull request's row records that row's
+// move from the old name to the new one (pull_request_former_heads_keep) and owes its issue a
+// settle (pull_request_former_heads_begin), and that settle moves the settler's own state of the
+// pull request to the new name, publishes each state under the new name, with an event, and
+// deletes the state under the old one. A rewrite of check_states would leave that settle no state
+// to publish, so a reader that keys a state by its repository, as the Legion daemon's check states
+// do, would never learn it under the new name. A rewrite of the settler's record of writes or of
+// its own state would apply the record of the move against a state under another name than the
+// record's. And the settler keeps each name it met a pull request under
+// (pull_request_former_heads_aliases), since an old name finds the identity of every other name of
+// its pull request by the rename rule (pull_request_canonical_repo), while a rewrite that dropped
+// the old name where the new one holds an identity the settler has not joined yet would part a
+// history from its pull request.
 //
 // A line whose table has a key with the repository in it can meet a collision: the new name gives
 // a row the key of another row. Two keys are equal when their repository is equal in lower case.
@@ -399,9 +419,25 @@ func nameLine(table, column string) repoRenameLine {
 	}
 }
 
-// citedNamed is true where a delivery pull request cites an issue URL that names the old name.
+// citedNamed is true where a pull request row, of delivery_pull_requests or of
+// pull_request_heads, cites an issue URL that names the old name.
 func citedNamed(r repoRename) string {
 	return `exists (select 1 from unnest(attribution_cited_issues) e(url) where ` + r.urlNamed("e.url") + `)`
+}
+
+// citedWrite rewrites each cited URL of table's attribution_cited_issues in its place. A URL the
+// array then holds twice is kept once, at its first place, as delivery's citedIssues keeps each
+// URL once.
+func citedWrite(r repoRename, table string) repoRenameStep {
+	where := citedNamed(r)
+	return repoRenameStep{table: table, where: where, write: "attribution_cited_issues", sql: `
+		update ` + table + ` set attribution_cited_issues = array(
+			select cited.url from (
+				select ` + r.url.RewriteSQL("e.url") + ` as url, min(e.n) as n
+				from unnest(attribution_cited_issues) with ordinality e(url, n)
+				group by 1
+			) cited order by cited.n)
+		where ` + where}
 }
 
 // excludedNamed is true where the delivery settings exclude the old name.
@@ -416,6 +452,9 @@ var repoRenameLines = []repoRenameLine{
 	nameLine("issues", "repo"),
 	nameLine("projects", "default_repo"),
 	nameLine("check_results", "commit_repo"),
+	// A CI job's result names the repository other than the check's issue's that the record route
+	// took its commit to be of, as a role's does (check_results.commit_repo).
+	nameLine("ci_check_results", "commit_repo"),
 	{
 		// A URL links one issue (issue_external_links_url), and readers compare a link in lower
 		// case (issue_external_links_url_lower). So an old URL collides with every link whose
@@ -442,12 +481,16 @@ var repoRenameLines = []repoRenameLine{
 		},
 	},
 	{
-		fields: "pull_request_heads.repo, .url",
+		// A row stores the GitHub issues its body cites (attribution_cited_issues), which a change
+		// of an issue's links judges the row from (delivery.Attributor.LinksChanged), so they are
+		// rewritten as delivery_pull_requests' are.
+		fields: "pull_request_heads.repo, .url, .attribution_cited_issues",
 		steps: func(r repoRename) []repoRenameStep {
 			return []repoRenameStep{
 				collisions(r, "pull_request_heads", "number"),
 				nameWrite(r, "pull_request_heads", "repo"),
 				urlWrite(r, "pull_request_heads", "url"),
+				citedWrite(r, "pull_request_heads"),
 			}
 		},
 	},
@@ -461,23 +504,13 @@ var repoRenameLines = []repoRenameLine{
 		},
 	},
 	{
-		// Each cited URL is rewritten in its place. A URL the array then holds twice is kept once,
-		// at its first place, as delivery's citedIssues keeps each URL once.
 		fields: "delivery_pull_requests.repo, .url, .attribution_cited_issues",
 		steps: func(r repoRename) []repoRenameStep {
-			where := citedNamed(r)
 			return []repoRenameStep{
 				collisions(r, "delivery_pull_requests", "number"),
 				nameWrite(r, "delivery_pull_requests", "repo"),
 				urlWrite(r, "delivery_pull_requests", "url"),
-				{table: "delivery_pull_requests", where: where, write: "attribution_cited_issues", sql: `
-					update delivery_pull_requests set attribution_cited_issues = array(
-						select cited.url from (
-							select ` + r.url.RewriteSQL("e.url") + ` as url, min(e.n) as n
-							from unnest(attribution_cited_issues) with ordinality e(url, n)
-							group by 1
-						) cited order by cited.n)
-					where ` + where},
+				citedWrite(r, "delivery_pull_requests"),
 			}
 		},
 	},

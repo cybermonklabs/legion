@@ -36,12 +36,17 @@ import (
 // result, and by the read of an issue's results for a `before_merge` result's commit, at most
 // once every CommitPullReadStaleAfter — and the reconcile's five-minute pass (reconcile.go),
 // which takes every open row read longer ago than PullRequestHeadStaleAfter (every open row at
-// every pass of one process, as far as the batch reaches, and as PullRequestHeadStaleAfter says
-// with several) and every merged row the rule this build judges by has not judged yet — one
-// offer per rule version (AttributionRuleVersion, ListStalePullRequestHeads). Each writer that
-// read GitHub stores, with the issue, the inputs it judged the issue from (PullRequestHead.Inputs),
-// so a change of an issue's links judges each row it names again from them, in its own
-// transaction and with no read of GitHub (LinksChanged).
+// every pass of one process that tries its whole batch while no more than PullRequestHeadBatch
+// rows are due, and past that, or after a pass a rate limit stopped, within the bound
+// ListStalePullRequestHeads states: of n due rows, the open rows due and the merged rows no read
+// has reached, each within ceil(n/PullRequestHeadBatch) passes that try their whole batch, each
+// stamp acknowledged, while no stamp whose call failed can still commit, a row never tried first,
+// and a pass a rate limit stops leaves the rows it did not try first for the next; and as
+// PullRequestHeadStaleAfter says with several) and every merged row the rule this
+// build judges by has not judged yet — one offer per rule version (AttributionRuleVersion,
+// ListStalePullRequestHeads). Each writer that read GitHub stores, with the issue, the inputs it
+// judged the issue from (PullRequestHead.Inputs), so a change of an issue's links judges each row
+// it names again from them, in its own transaction and with no read of GitHub (LinksChanged).
 //
 // A write that moves a row from one issue to another, or gives an unattributed row an issue, or
 // takes one away, appends AttributionEventType on the issue the row left and on the issue it
@@ -62,7 +67,7 @@ type PullRequestHead struct {
 	// (GitHub's base.sha), "" where the writer read none, which stores null: "not known". The
 	// check states settler's read of a pull request's commits is GitHub's comparison of the head
 	// and this base revision as its claim read them (PullRequestMembership), and applies only where
-	// the row still names them (pull_request_former_heads_snapshot, migration 20261123233128); a
+	// the row still names them (pull_request_former_heads_snapshot, migration 20261124122830); a
 	// row that names none is not read.
 	BaseSHA           string
 	State             string
@@ -167,8 +172,8 @@ func markHeadNotStored(err error) error {
 // found nobody is complete, and clears: GitHub's answer is the whole truth about the row.
 //
 // A write carrying no read time leaves the row's checked_at as it was: nulling it would hand a
-// row the reconcile has just read back to the next batch (ListStalePullRequestHeads orders the
-// never-read first), which is why an incomplete write is held off the attribution rather than
+// row the reconcile has just read back to the next batch (ListStalePullRequestHeads takes every
+// open row never read), which is why an incomplete write is held off the attribution rather than
 // sent round again. attribution_rule is kept by the same test, and it is the other half of the
 // merged arm's bound: a write that did not read GitHub leaves the stored rule alone, so a
 // merged row an incomplete envelope wrote is still offered to the current rule, while a refresh
@@ -230,11 +235,11 @@ func markHeadNotStored(err error) error {
 //
 // Every error this function answers is ErrHeadNotStored: nothing of the row, the seed and the
 // events was written, and the caller may write all three again.
-func UpsertPullRequestHead(ctx context.Context, pool *store.Pool, broker *events.Broker, head PullRequestHead) error {
+func (a *Attributor) UpsertPullRequestHead(ctx context.Context, pool *store.Pool, broker *events.Broker, head PullRequestHead) error {
 	seedsBranch := head.State == "merged" && head.BaseRef != "" && head.MergeCommitSHA != ""
 	records := broker != nil && head.AttributionComplete
 	if !seedsBranch && !records {
-		_, err := upsertHeadRow(ctx, pool, head)
+		_, err := a.upsertHeadRow(ctx, pool, head)
 		return err
 	}
 	tx, err := pool.Begin(ctx)
@@ -258,7 +263,7 @@ func UpsertPullRequestHead(ctx context.Context, pool *store.Pool, broker *events
 			return err
 		}
 	}
-	applied, err := upsertHeadRow(ctx, tx, head)
+	applied, err := a.upsertHeadRow(ctx, tx, head)
 	if err != nil {
 		return err
 	}
@@ -415,10 +420,26 @@ const headWriteRollback = 2 * time.Second
 // credited by a citation of that pull request's number (citingRowsRejudged), so the reconcile's
 // merged arm judges each of them once more, as a raised AttributionRuleVersion has it judge every
 // merged row: a citation of a number Dispatch did not yet hold as a pull request read as a GitHub
-// issue, and this write is what makes it no citation of one (citedPullRequest).
-func upsertHeadRow(ctx context.Context, db refs.Execer, head PullRequestHead) (bool, error) {
+// issue, and this write is what makes it no citation of one (citedPullRequest). The statement is
+// the Attributor's (upsertHeadQuery), built once from its rename pairs.
+func (a *Attributor) upsertHeadRow(ctx context.Context, db refs.Execer, head PullRequestHead) (bool, error) {
 	inputs := storedInputsOf(head)
-	tag, err := db.Exec(ctx, citingRowsRejudged+`
+	tag, err := db.Exec(ctx, a.upsertQuery,
+		head.Repo, head.Number, head.HeadSHA, head.HeadRef, head.BaseRef, head.State,
+		head.IssueKey, head.AttributionSource, head.Title, head.URL, head.EventAt, head.CheckedAt,
+		head.AttributionComplete, AttributionRuleVersion,
+		inputs.titleKeys, inputs.citedIssues, inputs.branchKeys, inputs.commitKeys, inputs.headInRepo, head.BaseSHA,
+	)
+	if err != nil {
+		return false, fmt.Errorf("%w: store the head of %s#%d: %w", ErrHeadNotStored, head.Repo, head.Number, err)
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// upsertHeadQuery is upsertHeadRow's statement: citingRowsRejudged over renames, then the insert.
+// NewAttributor builds it once from its rename pairs.
+func upsertHeadQuery(renames refs.Renames) string {
+	return citingRowsRejudged(renames) + `
 		insert into pull_request_heads (
 			repo, number, head_sha, head_ref, base_ref, state, issue_key, attribution_source,
 			title, url, event_at, checked_at, attribution_rule,
@@ -454,32 +475,26 @@ func upsertHeadRow(ctx context.Context, db refs.Execer, head PullRequestHead) (b
 				then pull_request_heads.attribution_rule else excluded.attribution_rule end
 		where excluded.event_at is null
 		   or pull_request_heads.event_at is null
-		   or excluded.event_at >= pull_request_heads.event_at
-	`,
-		head.Repo, head.Number, head.HeadSHA, head.HeadRef, head.BaseRef, head.State,
-		head.IssueKey, head.AttributionSource, head.Title, head.URL, head.EventAt, head.CheckedAt,
-		head.AttributionComplete, AttributionRuleVersion,
-		inputs.titleKeys, inputs.citedIssues, inputs.branchKeys, inputs.commitKeys, inputs.headInRepo, head.BaseSHA,
-	)
-	if err != nil {
-		return false, fmt.Errorf("%w: store the head of %s#%d: %w", ErrHeadNotStored, head.Repo, head.Number, err)
-	}
-	return tag.RowsAffected() > 0, nil
+		   or excluded.event_at >= pull_request_heads.event_at`
 }
 
 // citingRowsRejudged is the WITH clause upsertHeadRow's insert starts with. Where no row of the
 // pull request ($1, $2) exists yet (every sub-statement reads the snapshot from before the
 // insert), it sets attribution_rule to 0 on each row credited by source github_issue_link whose
-// stored cited issues name that pull request's number in its repository, the cited repository
-// read as stored, which is its canonical name: citedIssues stores each citation under the name its
-// repository is called today (refs.Renames.CanonicalURL), and the row is keyed by that name too
-// (Attributor.canonical). Two first writes of one pull request
-// that cross both mark the rows, and a second judging of them changes nothing. A row credited by
-// another source is left alone: a citation is source 2, so it decided only where it credited the
-// row. The number is bound as an integer (the insert's column) and compared as text. The text is
-// built once, at start, as attributionCandidatesQuery is. A delivery_pull_requests row needs no
-// such mark: AttributePullRequests walks every stored row in turn and judges it from the database.
-var citingRowsRejudged = `with first_record as (
+// stored cited issues name that pull request's number in its repository. The two repositories
+// are compared under their canonical names by renames, without case (refs.CanonicalRepoSQL), as
+// attributionHeld and citedPullRequest compare them: a writer of this build keys the row by the
+// canonical name (Attributor.canonical) and stores each citation under it (citedIssues), but a
+// row the build before it wrote during a roll can cite a repository by the name it was renamed
+// away from until the boot's pass rewrites it (store.RewriteRenamedRepositories), and that
+// citation names this pull request too. Two first writes of one pull request that cross both mark
+// the rows, and a second judging of them changes nothing. A row credited by another source is
+// left alone: a citation is source 2, so it decided only where it credited the row. The number is
+// bound as an integer (the insert's column) and compared as text. A delivery_pull_requests row
+// needs no such mark: AttributePullRequests walks every stored row in turn and judges it from the
+// database.
+func citingRowsRejudged(renames refs.Renames) string {
+	return `with first_record as (
 		select not exists (select 1 from pull_request_heads known where known.repo = $1 and known.number = $2) as first
 	), rejudged as (
 		update pull_request_heads citing set attribution_rule = 0
@@ -487,9 +502,11 @@ var citingRowsRejudged = `with first_record as (
 		where first_record.first
 			and citing.attribution_source = '` + string(sourceGitHubIssueLink) + `'
 			and exists (select 1 from unnest(citing.attribution_cited_issues) cited(url)
-				where lower(split_part(cited.url, '/', 4) || '/' || split_part(cited.url, '/', 5)) = lower($1)
+				where lower(` + refs.CanonicalRepoSQL(renames, `split_part(cited.url, '/', 4) || '/' || split_part(cited.url, '/', 5)`) + `) =
+					lower(` + refs.CanonicalRepoSQL(renames, "$1::text") + `)
 					and split_part(cited.url, '/', 7) = ($2::integer)::text)
 	)`
+}
 
 // storedInputs is the five values upsertHeadRow binds for the stored inputs of a row, each nil
 // (null) where the write has none to store: an incomplete write, which stores none, and a writer
@@ -540,20 +557,28 @@ func storedInputsOf(head PullRequestHead) storedInputs {
 // none: the next pass is handed the old row's key again and re-keys it again, while losing the
 // row would leave the pull request unknown until another event arrived.
 //
+// The order matters to the former heads too. Where the canonical row is first written closed, as
+// a pull request read closed under its canonical name is, that write is the close the check states
+// settler captures, and once a close of the pull request is known it counts a row written closed
+// as a close only while a row of the pull request is open (pull_request_former_heads_apply,
+// migration 20261124122830). The write before the delete leaves the old name's row open when the
+// close is recorded, so the close ends the lifecycle; the delete first would leave no row open,
+// and a reopen would bring back the heads of the lifecycle the close ended.
+//
 // The delete carries the heads the pull request left while open under the old name, and the old
 // row's head where it is another than the canonical row's, to the canonical name, where that row
 // is open: they are heads of the same pull request, which the check states settler keeps computing
 // while it stays open. The delete's own trigger records it (pull_request_former_heads_keep,
-// migration 20261123233128) with the canonical row it reads open, taking no lock beyond the old
+// migration 20261124122830) with the canonical row it reads open, taking no lock beyond the old
 // row the delete holds, and marks the canonical row's issue owed; the settler applies the record
 // in the order of the pull request's writes (pull_request_former_heads_fold), so a head write to
 // either row and a close of the canonical one keep their effect on the carry whichever commits
 // first, and a delete the release before this one makes, which carries nothing itself, carries
 // them too.
-func upsertHeadUnderCanonicalName(
+func (a *Attributor) upsertHeadUnderCanonicalName(
 	ctx context.Context, pool *store.Pool, broker *events.Broker, head PullRequestHead, storedUnder string,
 ) error {
-	if err := UpsertPullRequestHead(ctx, pool, broker, head); err != nil {
+	if err := a.UpsertPullRequestHead(ctx, pool, broker, head); err != nil {
 		return err
 	}
 	if strings.EqualFold(storedUnder, head.Repo) {
@@ -572,8 +597,7 @@ func upsertHeadUnderCanonicalName(
 // this about the check's own issue, so a child's pull request never answers for a check above
 // it (api/results_comparison.go's comparisonReader). A pull request the issue links by its URL
 // answers for it in any repository, since the attribution gives it the issue (attributionHeldFor),
-// unless its head is in a fork (headAttribution): HeadsAttributedTo keeps the same rule. It reads
-// the attributed rows alone, which are keyed by their canonical names, so it reads no rename pair.
+// unless its head is in a fork (headAttribution): HeadsAttributedTo keeps the same rule.
 func (a *Attributor) HeadAttributedTo(ctx context.Context, pool *store.Pool, issueKey, sha string) (bool, error) {
 	var found bool
 	if err := pool.QueryRow(ctx, `
@@ -646,8 +670,9 @@ func headsAttributedQuery(renames refs.Renames) string {
 //
 // The read uses pull_request_heads_issue_head's leading column, as BaseBranchMergedFor's does:
 // the rows one issue's key holds are the handful of pull requests attributed to that issue. It
-// reads through q, a pool or a transaction, as LinkedPullRequests does: its statement is built
-// from the boot's rename pairs (headsAttributedQuery), and it writes nothing.
+// reads through q, a pool or a transaction, and writes nothing, as LinkedPullRequests does: a
+// write route that reaches it (the results record's refuseUnknownCommit) reads it through its own
+// Queryer, which the keyed-write guard reads as no write.
 func (a *Attributor) HeadsAttributedTo(ctx context.Context, q refs.Queryer, issueKey string) ([]AttributedHead, error) {
 	rows, err := q.Query(ctx, a.headsQuery, issueKey)
 	if err != nil {
@@ -763,9 +788,8 @@ func HeadStoredAt(ctx context.Context, pool *store.Pool, repoFull, sha string) (
 // into a branch of its own repository, and the caller walks the branch answered here in repoFull
 // (api/results_comparison.go, branchBases), where a branch of that name is another branch or
 // none. A linked repository's merge is BaseBranchMergedIn's, which the results read walks in that
-// repository. Both names are canonical, the row's as its writer keys it (Attributor.canonical) and
-// repoFull as its caller reads it (api's checkIssueRepository), and they are compared without
-// case, as the attribution compares a pull request's repository with the issue's (attributionHeld).
+// repository. Both names are compared under their canonical names and without case, as the
+// attribution compares a pull request's repository with the issue's (attributionHeld).
 //
 // An empty answer is "no branch to measure against", which a merged row carrying no base_ref
 // gives as much as no merged row at all. The column is declared not null with the empty string
@@ -778,15 +802,9 @@ func HeadStoredAt(ctx context.Context, pool *store.Pool, repoFull, sha string) (
 // `issue_key is not null` and keyed `(issue_key, head_sha)`, so a read by the issue alone uses
 // its leading column, and the rows one issue's key holds are the handful of pull requests
 // attributed to that issue, which the repository test then filters.
-func BaseBranchMergedFor(ctx context.Context, pool *store.Pool, issueKey, repoFull string) (string, error) {
+func (a *Attributor) BaseBranchMergedFor(ctx context.Context, pool *store.Pool, issueKey, repoFull string) (string, error) {
 	var branch string
-	err := pool.QueryRow(ctx, `
-		select base_ref from pull_request_heads
-		where issue_key = $1 and state = 'merged'
-			and lower(repo) = lower($2::text)
-		order by event_at desc nulls last, number desc
-		limit 1
-	`, issueKey, repoFull).Scan(&branch)
+	err := pool.QueryRow(ctx, a.mergedForQuery, issueKey, repoFull).Scan(&branch)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", nil
 	}
@@ -796,37 +814,104 @@ func BaseBranchMergedFor(ctx context.Context, pool *store.Pool, issueKey, repoFu
 	return branch, nil
 }
 
-// PullRequestHeadStaleAfter is how long an open pull request's row may go unread before the
-// reconcile reads it again.
+// baseBranchMergedForQuery is BaseBranchMergedFor's statement, both repositories under their
+// canonical names by renames. NewAttributor builds it once from its rename pairs.
+func baseBranchMergedForQuery(renames refs.Renames) string {
+	return `
+		select base_ref from pull_request_heads
+		where issue_key = $1 and state = 'merged'
+			and lower(` + refs.CanonicalRepoSQL(renames, "repo") + `) = lower(` + refs.CanonicalRepoSQL(renames, "$2::text") + `)
+		order by event_at desc nulls last, number desc
+		limit 1`
+}
+
+// PullRequestHeadStaleAfter is how old an open pull request's row's last read (checked_at) must be
+// for the row to be due again: from then on ListStalePullRequestHeads offers it to the reconcile,
+// whose pass reads it only through a try whose stamp succeeds (reconcilePullRequestHeads).
 //
 // The bound is duty.LeasePeriod(ReconcileInterval), ReconcileInterval less a tenth of it: the
 // shortest wait the reconcile leaves after a pass, whose waits are drawn in
 // (ReconcileInterval - ReconcileInterval/10, ReconcileInterval] (duty.RunJittered,
 // duty.JitteredWithin). A row a pass reads is stamped (checked_at) no later than that pass ends.
-// With one process the next pass starts more than this bound after that end, so every pass
-// re-reads every open row the pass before it read, as far as the batch reaches. With several
-// processes serving one database the next pass can be another process's, starting less than this
-// bound after the read, and it leaves the row as fresh. The first pass that starts more than this
-// bound after the read reads it, and the deployment's passes come at most ReconcileInterval
-// apart, so two reads of an open row are at most about this bound plus ReconcileInterval apart,
-// nine and a half minutes, plus the passes' own run time. A bound of the whole ReconcileInterval
-// would leave such a row not yet due at one process's next pass whenever that pass's wait, with
-// the time the pass before ran on after the read, came to five minutes or less, which a quick pass
-// almost always does, and the row would wait for the pass after: about ten minutes between two
-// reads of it rather than five.
+// With one process the next pass starts more than this bound after that end, so every pass offers
+// again every open row the pass before it read, and takes them all while no more than
+// PullRequestHeadBatch rows are due (ListStalePullRequestHeads says which rows count); past that,
+// or after a pass a rate limit stopped, each due row within the bound ListStalePullRequestHeads
+// gives. With several processes serving one database the next pass can be another process's,
+// starting less than this bound after the read, and it leaves the row as fresh. The first pass
+// that starts more than this bound after the read takes it, and the deployment's passes come at
+// most ReconcileInterval apart, so with no more than a batch due and no pass a rate limit stops,
+// a pass takes an open row at most about this bound plus ReconcileInterval after its last read,
+// nine and a half minutes, plus the passes' own run time.
+//
+// That bounds when the row is due and when a pass takes it, not when GitHub is read again. The
+// pass that takes the row reads GitHub only once its stamp of the try succeeds (stampTry), and
+// that read must then succeed too; a stamp whose call fails gives the row up unread. So where one
+// open row is due, GitHub answers every read made and no rate limit comes, but the stamps of
+// several passes in a row fail, each of those passes takes the row and none reads it, and while
+// such stamps recur nothing bounds the time between two of its reads. Only where the pass that
+// takes the row stamps it and reads it, each successfully, are two reads of the row at most the
+// time above apart.
+//
+// A bound of the whole ReconcileInterval would leave such a row not yet due at one process's next
+// pass whenever that pass's wait, with the time the pass before ran on after the read, came to
+// five minutes or less, which a quick pass almost always does, and the row would wait for the
+// pass after: about ten minutes between two passes that take it rather than five.
 var PullRequestHeadStaleAfter = duty.LeasePeriod(ReconcileInterval)
 
 // PullRequestHeadBatch is how many rows the reconcile reads again in one pass.
 const PullRequestHeadBatch = 200
 
-// ListStalePullRequestHeads is at most limit rows for the reconcile to read again, the longest
-// unread first: every open row whose checked_at is older than PullRequestHeadStaleAfter (a row
-// never read first), every merged row credited to nobody that no read has reached, and every
+// ListStalePullRequestHeads is at most limit rows for the reconcile to read again, the least
+// lately tried first: every open row whose checked_at is older than PullRequestHeadStaleAfter (a
+// row never read is due), every merged row credited to nobody that no read has reached, and every
 // merged row a rule older than this build's judged (AttributionRuleVersion).
 //
+// A row's place is the later of checked_at, its last read, and attempted_at, when the reconcile
+// last stamped a try of it (markHeadTried), and a row with neither is taken first. The reconcile
+// stamps attempted_at just before each row's read, whatever the read then answers, so a row
+// whose reads fail goes behind every due row tried less lately than it, and never holds the front
+// of every batch: before attempted_at, a full batch of rows GitHub answered 5xx for kept their
+// unchanged checked_at, and so their places, every pass, and a row behind them was never read. A
+// failed read stamps no checked_at and stores nothing of the pull request, so the row stays due,
+// and nothing that waits on its read (the check states settler's read of a row with no base
+// revision, api/check_states.go, verifyFormerHeads) takes the try for one. A stamp whose call
+// times out or loses its connection may still commit, at a moment the reconcile never learns, and
+// the reconcile then gives the row up with no read (reconcilePullRequestHeads): where the stamp
+// commits before the next selection the row moves behind the other due rows unread, a selection
+// made before it commits takes the row from its old place, and where it commits after a later
+// stamp of the row nothing orders the two writes, so it can put back its older time. Whichever
+// comes, it stores no checked_at and no base revision, so the row stays due, and it never supplies
+// a base revision or releases a handoff that waits on the read.
+//
+// The bound. Of the rows due, n are those the first select takes from: the open rows due and the
+// merged rows credited to nobody that no read has reached. The rule half takes only the room that
+// select leaves, at most RejudgedHeadsPerPass, so it delays no row of the n. A pass tries its whole
+// batch when it stamps every row of its batch and the server acknowledges each stamp. An
+// acknowledged stamp writes its pass's time, so it only moves a place later, and a row first
+// written, which no read and no try has reached, goes first. So a pass that tries its whole batch
+// and does not take a given due row takes limit rows placed no later than that row and puts each
+// of them behind it: of n rows due, each is tried within ceil(n/limit) such passes, one more for
+// each limit rows first written meanwhile, whatever their reads answer. That holds only while no
+// stamp whose call failed can still commit: such a stamp can leave its row in place for a
+// selection, take the slot of a row the bound counts on, or put back an older time (above), so it
+// is no try, its pass counts toward no bound, and the bound holds again only over the passes after
+// the stamp has settled. While such stamps recur, no number of passes bounds when a given row is
+// read. A pass a rate limit stops tries part of its batch
+// (reconcilePullRequestHeads): each row it tried goes behind every due row tried less lately, and
+// each row of its batch it did not try keeps its place, so the next pass takes those first, after
+// the rows first written meanwhile. Such a pass counts toward no bound above, and while GitHub's
+// limit lasts the passes it stops try few rows each. With one process a pass starts at most
+// ReconcileInterval after the one before it ended. The rule half below is taken in the same
+// order: of m merged rows a rule older than this build's judged, each is tried within
+// ceil(m/RejudgedHeadsPerPass) passes that try their whole batch and leave the rule half that
+// room, under the same condition on failed stamps.
+//
 // A merged row is revisited at all because nothing else ever revisits one. An open row comes
-// round at every pass of one process, each starting at most five minutes after the one before it
-// ended, and as PullRequestHeadStaleAfter says with several; a merged row is written once more at
+// round at every pass of one process that tries its whole batch while no more than a batch is due
+// (the n above), each starting at most five minutes after the one before it ended, within the
+// bound above past that or after a pass a rate limit stopped, and as PullRequestHeadStaleAfter
+// says with several; a merged row is written once more at
 // most, by an envelope or a read-through, and a recorded result reads through only for a commit
 // no head Dispatch knows. So a merged row left credited to nobody stays that way, and every
 // `before_merge` result at that head stands at no basis for ever: a merge delivered by a
@@ -876,7 +961,7 @@ func ListStalePullRequestHeads(ctx context.Context, pool *store.Pool, limit int,
 		select repo, number from pull_request_heads
 		where (state = 'open' and (checked_at is null or checked_at < $1))
 		   or (state = 'merged' and issue_key is null and checked_at is null)
-		order by checked_at nulls first, repo, number
+		order by greatest(checked_at, attempted_at) nulls first, repo, number
 		limit $2
 	`, now.Add(-PullRequestHeadStaleAfter), limit)
 	if err != nil {
@@ -889,7 +974,7 @@ func ListStalePullRequestHeads(ctx context.Context, pool *store.Pool, limit int,
 	rejudged, err := listStaleHeads(ctx, pool, `
 		select repo, number from pull_request_heads
 		where state = 'merged' and attribution_rule < $1
-		order by checked_at nulls first, repo, number
+		order by greatest(checked_at, attempted_at) nulls first, repo, number
 		limit $2
 	`, AttributionRuleVersion, rejudge)
 	if err != nil {
@@ -938,6 +1023,22 @@ func MarkPullRequestHeadChecked(ctx context.Context, pool *store.Pool, repoFull 
 	`, repoFull, number, now, AttributionRuleVersion)
 	if err != nil {
 		return fmt.Errorf("stamp the head of %s#%d: %w", repoFull, number, err)
+	}
+	return nil
+}
+
+// markHeadTried stamps attempted_at on a row the reconcile is about to read, whatever the read
+// then answers, so ListStalePullRequestHeads takes every due row tried less lately before it
+// again, and a row whose reads fail never holds the front of every batch. It stamps nothing else:
+// a try is no read of the pull request, so checked_at, the base revision and every other fact of
+// the row stay as they are, and the row stays due. Its statement is one of its own, so a call that
+// times out or loses its connection may still commit the stamp, then or later, and the reconcile,
+// told it failed, then reads nothing of the row (reconcilePullRequestHeads).
+func markHeadTried(ctx context.Context, pool *store.Pool, repoFull string, number int, now time.Time) error {
+	if _, err := pool.Exec(ctx, `
+		update pull_request_heads set attempted_at = $3 where repo = $1 and number = $2
+	`, repoFull, number, now); err != nil {
+		return fmt.Errorf("stamp the try of the head of %s#%d: %w", repoFull, number, err)
 	}
 	return nil
 }
@@ -1147,9 +1248,10 @@ func (a *Attributor) attributePayload(ctx context.Context, pool *store.Pool, cli
 // way, before any GitHub call, and comes back as that error, so the reconcile warns of the row on
 // the pass that stamps it and not on every pass; a rate limit comes back as the
 // *githubapp.RateLimitError, which stops the batch. The row is stamped even when the commit
-// messages could not be read: this pass is itself the retry, so the next one reads it again in
-// PullRequestHeadStaleAfter rather than holding the front of every batch, and that write, being
-// incomplete, leaves any attribution the row already carries standing.
+// messages could not be read: this pass is itself the retry, so the row is due again only once
+// PullRequestHeadStaleAfter has passed, as a row read whole is, rather than holding the front of
+// every batch (which pass then reads it is PullRequestHeadStaleAfter's to say), and that write,
+// being incomplete, leaves any attribution the row already carries standing.
 //
 // repoFull is the key ListStalePullRequestHeads read off the row, which may be a name the
 // repository has been renamed away from, and every step here but the stamp works on the
@@ -1195,7 +1297,7 @@ func (a *Attributor) RefreshPullRequestHead(
 	if err != nil {
 		return err
 	}
-	return upsertHeadUnderCanonicalName(ctx, pool, broker, headRow(canonical, payload, attributed, &now), repoFull)
+	return a.upsertHeadUnderCanonicalName(ctx, pool, broker, headRow(canonical, payload, attributed, &now), repoFull)
 }
 
 // RepositoryUnreadable reports whether err is the App saying it cannot read a repository: it is
@@ -1280,7 +1382,7 @@ func (a *Attributor) ReadThroughCommitPulls(
 		if attributed.complete {
 			checkedAt = &now
 		}
-		if err := upsertHeadUnderCanonicalName(ctx, pool, broker, headRow(canonical, pull, attributed, checkedAt), repoFull); err != nil {
+		if err := a.upsertHeadUnderCanonicalName(ctx, pool, broker, headRow(canonical, pull, attributed, checkedAt), repoFull); err != nil {
 			return written, atHead, err
 		}
 		written++
@@ -1360,7 +1462,7 @@ func (in *Intake) recordPullRequestHead(ctx context.Context, payload map[string]
 		now := time.Now()
 		checkedAt = &now
 	}
-	return attributed.messages, upsertHeadUnderCanonicalName(ctx, in.pool, in.events, attributed.stored(PullRequestHead{
+	return attributed.messages, in.attributor.upsertHeadUnderCanonicalName(ctx, in.pool, in.events, attributed.stored(PullRequestHead{
 		Repo: repoFull, Number: number, HeadSHA: payload["head_sha"], HeadRef: payload["head_ref"],
 		BaseRef: payload["base_ref"], BaseSHA: payload["base_sha"],
 		State:    PullRequestHeadState(payload["action"], payload["merged"] == "true"),

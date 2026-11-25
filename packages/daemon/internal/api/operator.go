@@ -139,8 +139,10 @@ type OperatorClaim struct {
 	// start did not produce a running agent, and LastReady when its agent last said it could be
 	// prompted. Each is absent until it happens, and the two causes are kept apart because they
 	// answer different questions: a claim that cannot start and a claim that keeps dying are
-	// different faults. LastReady dates them — a cause older than it is one the running agent has
-	// already survived.
+	// different faults. LastReady dates the death's cause — a death older than it is one the
+	// running agent has already survived. The claim drops its start failure when its agent says it
+	// is ready (supervise.Claim.LastStartFailure says which older claims can still hold one from
+	// before).
 	LastDeathCause   string     `json:"lastDeathCause,omitempty"`
 	LastStartFailure string     `json:"lastStartFailure,omitempty"`
 	LastReady        *time.Time `json:"lastReady,omitempty"`

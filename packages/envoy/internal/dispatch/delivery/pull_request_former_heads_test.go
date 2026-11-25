@@ -19,7 +19,7 @@ import (
 // foldedFormerHeadsOf is the former heads of the pull request repo#number stands for, by commit,
 // as the check states settler reads them: once the records the writes of pull_request_heads
 // appended under any of its names are applied (pull_request_former_heads_fold, migration
-// 20261123233128), which each settle of an issue runs first for the issue's open pull requests
+// 20261124122830), which each settle of an issue runs first for the issue's open pull requests
 // (pull_request_former_heads_drain). Every name of one pull request reads its one history.
 func foldedFormerHeadsOf(t *testing.T, ctx context.Context, pool *store.Pool, repo string, number int) []string {
 	t.Helper()
@@ -58,11 +58,12 @@ func newReKeyRig(t *testing.T, number int, left, oldHead, head string) *reKeyRig
 	pool, ctx := deliveryTestPool(t)
 	issue := seedGadgetsIssue(t, ctx, pool, number)
 	seedRenamedGadgets(t, ctx, pool)
+	attributor := NewAttributor(renamesOf(t, ctx, pool))
 	earlier := time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC)
 	stale := time.Now().Add(-10 * time.Minute)
 	for index, sha := range []string{left, oldHead} {
 		at := earlier.Add(time.Duration(index) * time.Minute)
-		if err := UpsertPullRequestHead(ctx, pool, nil, PullRequestHead{
+		if err := attributor.UpsertPullRequestHead(ctx, pool, nil, PullRequestHead{
 			Repo: gadgetsOldRepo, Number: number, HeadSHA: sha,
 			HeadRef: "legion/work", BaseRef: "main", State: "open", EventAt: &at, CheckedAt: &stale,
 		}); err != nil {
@@ -71,7 +72,6 @@ func newReKeyRig(t *testing.T, number int, left, oldHead, head string) *reKeyRig
 	}
 	fake := gadgetsFake(t, number, issue+": the work", head)
 	client := fake.newTestClient()
-	attributor := NewAttributor(renamesOf(t, ctx, pool))
 	if written, _, err := attributor.ReadThroughCommitPulls(ctx, pool, client, nil, gadgetsRepo, head, time.Now()); err != nil || written != 1 {
 		t.Fatalf("read through %s at %s = %d, %v; want one row written", gadgetsRepo, head, written, err)
 	}
@@ -313,7 +313,7 @@ func TestAReKeyOfAPullRequestBackAtAHeadItLeftCarriesThatHead(t *testing.T) {
 	rig := newReKeyRig(t, 529, left, oldHead, head)
 	back := time.Date(2026, 2, 1, 0, 2, 0, 0, time.UTC)
 	stale := time.Now().Add(-10 * time.Minute)
-	if err := UpsertPullRequestHead(rig.ctx, rig.pool, nil, PullRequestHead{
+	if err := unrenamed().UpsertPullRequestHead(rig.ctx, rig.pool, nil, PullRequestHead{
 		Repo: gadgetsOldRepo, Number: rig.number, HeadSHA: left,
 		HeadRef: "legion/work", BaseRef: "main", State: "open", EventAt: &back, CheckedAt: &stale,
 	}); err != nil {
