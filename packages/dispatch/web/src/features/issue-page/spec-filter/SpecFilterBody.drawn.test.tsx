@@ -2241,6 +2241,256 @@ test("a press after a reference counts the reference as the editor holds it", as
   }
 });
 
+/**
+ * Presses statement r1's drawn text `pressed`, `into` characters into it, and waits for the caret
+ * to stand `at` characters into `lands`, the last text of the statement's paragraph in its
+ * editor; both default to the press's own, for words the two draw alike after the kind a case
+ * reads. The statement's words are `text`, drawn from `tree`, the reading the server sends,
+ * where one is given, and as stored where none is, with `names` as the page's batched read named
+ * its references. A plain editable on the stage stands in for the editor's drawing of the
+ * statement, as in the case above: `held` is its paragraph, each kind drawn as the editor draws
+ * it. `drawn` reads the statement's drawn words before the press.
+ */
+async function pressAfterKind({
+  at,
+  drawn,
+  held,
+  into,
+  lands,
+  names,
+  pressed,
+  text,
+  tree,
+}: {
+  at?: number;
+  drawn: (words: HTMLElement) => void;
+  held: ReactNode;
+  into: number;
+  lands?: string;
+  names?: ReadonlyMap<string, string>;
+  pressed: string;
+  text: string;
+  tree?: TreeNode["tree"];
+}): Promise<void> {
+  const user = userEvent.setup();
+  const editorView = new EditorView(null, {
+    state: EditorState.create({
+      schema: new Schema({ nodes: { doc: { content: "text*" }, text: {} } }),
+    }),
+  });
+  const onEditing: OnEditing = (artifactId, onEditor) => {
+    if (artifactId !== undefined) onEditor?.({ view: editorView });
+  };
+  const editor = (
+    <DocumentStage artifactId="artifact-spec">
+      <div contentEditable suppressContentEditableWarning>
+        <section data-block-id="r1">
+          <p>{held}</p>
+        </section>
+      </div>
+    </DocumentStage>
+  );
+  const { read, view } = drawBody(issueTree([statement("r1", { text, tree })]), [], {
+    editor,
+    names,
+    onEditing,
+  });
+  const original = Object.getOwnPropertyDescriptor(document, "caretPositionFromPoint");
+  try {
+    const row = rowOf(view, "spec#b-r1");
+    const words = await waitFor(() => {
+      const found = row.querySelector<HTMLElement>("[data-node-words]");
+      if (found === null) throw new Error("the statement draws no words");
+      drawn(found);
+      return found;
+    });
+    const walker = document.createTreeWalker(words, NodeFilter.SHOW_TEXT);
+    let node = walker.nextNode();
+    while (node !== null && node.textContent !== pressed) node = walker.nextNode();
+    if (node === null || node.parentElement === null) {
+      throw new Error(`the statement draws no text "${pressed}"`);
+    }
+    const point = mock(() => ({ offsetNode: node, offset: into }));
+    Object.defineProperty(document, "caretPositionFromPoint", { configurable: true, value: point });
+    await user.pointer({ keys: "[MouseLeft]", target: node.parentElement });
+    await waitFor(() => {
+      const last = row.querySelector('[data-block-id="r1"] p')?.lastChild;
+      expect(last?.textContent).toBe(lands ?? pressed);
+      expect(window.getSelection()?.anchorNode).toBe(last);
+      expect(window.getSelection()?.anchorOffset).toBe(at ?? into);
+    });
+  } finally {
+    if (original === undefined) Reflect.deleteProperty(document, "caretPositionFromPoint");
+    else Object.defineProperty(document, "caretPositionFromPoint", original);
+    view.unmount();
+    editorView.destroy();
+    read.mockRestore();
+  }
+}
+
+// Inline HTML, such as a placeholder `<name>`, is drawn as its characters, while the editor holds
+// it as an atom the caret cannot enter, so a press after it counts it as nothing. Counted as
+// drawn, the press on "then" would put the caret 6 characters on, after "the".
+test("a press after inline html lands in the word pressed", async () => {
+  const after = " and then the rest.";
+  const text = `Kept by <name>${after}`;
+  await pressAfterKind({
+    drawn: (words) => {
+      expect(words.querySelector('[data-type="html"]')?.textContent).toBe("<name>");
+    },
+    held: (
+      <>
+        {"Kept by "}
+        <span contentEditable={false} data-type="html">
+          {"<name>"}
+        </span>
+        {after}
+      </>
+    ),
+    into: 7,
+    pressed: after,
+    text,
+    tree: displayTree(text),
+  });
+});
+
+// A mention of a block is drawn as a chip by the block's words, while the editor holds the
+// mention as it is written, hidden under a title of its own that takes no caret, so a press after
+// it counts it as written, as a reference to an issue counts.
+test("a press after a mention lands in the word pressed", async () => {
+  const cited = `dispatch://${KEY}/spec#b-r2`;
+  const after = " first, then the rest.";
+  const text = `Read ${cited}${after}`;
+  await pressAfterKind({
+    drawn: (words) => {
+      const chip = words.querySelector(`a[data-row-reference="${cited}"]`);
+      expect(chip).toHaveAttribute("data-row-chip");
+      expect(chip?.textContent).not.toBe(cited);
+    },
+    held: (
+      <>
+        {"Read "}
+        <span contentEditable={false}>The other statement</span>
+        <span hidden>{cited}</span>
+        {after}
+      </>
+    ),
+    into: 3,
+    names: new Map([[cited, "The other statement"]]),
+    pressed: after,
+    text,
+    tree: displayTree(text),
+  });
+});
+
+// A picture of an artifact is drawn by its caption's link until its picture loads, while the
+// editor holds it as an atom the caret cannot enter, its own fallback link inside it, so a press
+// after it counts it as nothing. The summary that names its picture never answers here.
+test("a press after an image lands in the word pressed", async () => {
+  const after = " first, then the rest.";
+  const text = `See ![shot.png](dispatch://${KEY}/artifact/shot-png)${after}`;
+  const summary = spyOn(api, "getIssueSummary").mockReturnValue(new Promise(() => {}));
+  try {
+    await pressAfterKind({
+      drawn: (words) => {
+        expect(words.querySelector("[data-dispatch-picture]")?.textContent).toBe("shot.png");
+      },
+      held: (
+        <>
+          {"See "}
+          <span contentEditable={false} data-dispatch-doc-picture="">
+            <a href="/">{`${KEY}/artifact/shot-png`}</a>
+          </span>
+          {after}
+        </>
+      ),
+      into: 3,
+      pressed: after,
+      text,
+      tree: displayTree(text),
+    });
+  } finally {
+    summary.mockRestore();
+  }
+});
+
+// A hard break is a line break in both, which holds no text, so a press after it counts nothing
+// for it.
+test("a press after a hard break lands in the word pressed", async () => {
+  const after = "Line two, then the rest.";
+  const text = `Line one.\\\n${after}`;
+  await pressAfterKind({
+    drawn: (words) => {
+      expect(words.querySelector("br")).not.toBeNull();
+    },
+    held: (
+      <>
+        {"Line one."}
+        <br />
+        {after}
+      </>
+    ),
+    into: 6,
+    pressed: after,
+    text,
+    tree: displayTree(text),
+  });
+});
+
+// A footnote's reference is drawn as its label, while the editor holds it as an atom the caret
+// cannot enter, so a press after it counts it as nothing.
+test("a press after a footnote reference lands in the word pressed", async () => {
+  const after = " first, then the rest.";
+  const text = `Read the note[^1]${after}\n\n[^1]: The note.`;
+  await pressAfterKind({
+    drawn: (words) => {
+      expect(words.querySelector('[data-type="footnote_reference"]')?.textContent).toBe("1");
+    },
+    held: (
+      <>
+        {"Read the note"}
+        <sup contentEditable={false} data-type="footnote_reference">
+          1
+        </sup>
+        {after}
+      </>
+    ),
+    into: 3,
+    pressed: after,
+    text,
+    tree: displayTree(text),
+  });
+});
+
+// A statement whose read sent no reading of its words is drawn as stored, its inline HTML as the
+// characters it was written as, with no mark of what the editor holds there, so the count of the
+// press runs on by the 6 characters of `<name>`, to the end of "the". The word pressed is found
+// with the words beside it where the editor holds them, and the caret goes as far into it.
+test("an uncounted inline kind still puts the caret in the pressed word", async () => {
+  const after = " and then the rest.";
+  const text = `Kept by <name>${after}`;
+  await pressAfterKind({
+    at: 7,
+    drawn: (words) => {
+      expect(words.querySelector('[data-type="html"]')).toBeNull();
+      expect(words.textContent).toContain(text);
+    },
+    held: (
+      <>
+        {"Kept by "}
+        <span contentEditable={false} data-type="html">
+          {"<name>"}
+        </span>
+        {after}
+      </>
+    ),
+    into: 21,
+    lands: after,
+    pressed: text,
+    text,
+  });
+});
+
 // The same order on a decision's cell: a press on the cell draws the person's whole answer only
 // once it ends, and the statement that had the focus keeps its look until then; a press on that
 // statement keeps the whole answer drawn until it ends, and then the statement takes the focus.

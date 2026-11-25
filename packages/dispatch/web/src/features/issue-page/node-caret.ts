@@ -56,14 +56,13 @@ export const EDITOR_BOX_ATTRIBUTE = "data-editor-box";
  * the task that gives it the focus (`selectInEditor`), so no key reaches it before its selection
  * is the block's. Called again, it puts back a caret the editor dropped or moved as it redrew
  * itself (`useNodeEditing.ts`), in the node's block and nowhere else.
- * With `at`, places the caret that many characters into the editable text instead, which holds
- * a reference as written; a count past the block's text lands at its end, inside the block.
+ * With `at`, it places the caret where the press was instead (`placeAt`).
  */
 export function caretInBlock(host: HTMLElement, blockId?: string, at?: CaretAt): boolean {
   const drawn = drawnBlock(host, blockId);
   if (drawn === null) return false;
   drawn.editable.focus({ preventScroll: true });
-  selectInEditor(at === undefined ? firstPlace(drawn.block) : placeAt(drawn.block, at.offset));
+  selectInEditor(at === undefined ? firstPlace(drawn.block) : placeAt(drawn.block, at));
   return true;
 }
 
@@ -151,8 +150,10 @@ export const MAC_PLATFORM = /Mac|iP(hone|[oa]d)/;
 /** A place in the page, as each end of a selection is one. */
 export type Point = readonly [node: Node, offset: number];
 
-/** A press on the row's words: its viewport coordinates and character offset. */
-export type CaretAt = { readonly x: number; readonly y: number; readonly offset: number };
+/** A press on the row's words: its viewport coordinates, its count of the editor's characters
+ *  before it, and the word pressed as drawn, the text to each neighbour's end and how far in. */
+export type CaretAt = Readonly<{ x: number; y: number; offset: number; word?: PressedWord }>;
+type PressedWord = readonly [before: string, word: string, after: string, into: number];
 
 /**
  * Keeps a key pressed in the editor in `host` from taking its caret out of `blockId`'s block,
@@ -703,7 +704,6 @@ function keyAtBlock(
  * scrolled only as far as brings the box on screen, the body running on under the foot's box.
  *
  * With `at`, it holds the box as above but scrolls only the box, to put the caret's line at `at.y`.
- *
  * Answers what drops that second look.
  */
 export function holdEditorAtBlock(host: HTMLElement, blockId?: string, at?: CaretAt): () => void {
@@ -715,7 +715,7 @@ export function holdEditorAtBlock(host: HTMLElement, blockId?: string, at?: Care
     holdBoxInRow(host, box, least, at === undefined);
     const block = blockIn(box, blockId);
     if (at !== undefined) {
-      const caret = block === null ? null : caretBox(placeAt(block, at.offset));
+      const caret = block === null ? null : caretBox(placeAt(block, at));
       if (caret !== null) box.scrollTop += (caret.top + caret.bottom) / 2 - at.y;
       return;
     }
@@ -819,15 +819,25 @@ function firstPlace(block: HTMLElement): Point {
   return [block, 0];
 }
 
-/** `offset` characters into the editable text of `block`, or its last editable place. */
-function placeAt(block: HTMLElement, offset: number): Point {
+/** `at.offset` characters into the editable text of `block`, or its last editable place; where
+ *  the text there is not the word pressed between its neighbours, as far into the nearest place
+ *  that is, if one is. A press with no word reads an empty one, found at the count itself. */
+function placeAt(block: HTMLElement, at: CaretAt): Point {
   const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT);
-  let remaining = Math.max(0, offset);
+  const texts: Text[] = [];
   for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
-    if (node.parentElement?.isContentEditable !== true) continue;
-    const length = node.textContent?.length ?? 0;
-    if (remaining <= length) return [node, remaining];
-    remaining -= length;
+    if (node instanceof Text && node.parentElement?.isContentEditable === true) texts.push(node);
+  }
+  const [before, word, after, into] = at.word ?? ["", "", "", 0];
+  const text = texts.map((node) => node.data).join("");
+  const start = at.offset - into - before.length;
+  const later = text.indexOf(before + word + after, start);
+  const earlier = text.lastIndexOf(before + word + after, start);
+  const found = later < 0 || (earlier >= 0 && start - earlier < later - start) ? earlier : later;
+  let remaining = Math.max(0, found < 0 ? at.offset : found + before.length + into);
+  for (const node of texts) {
+    if (remaining <= node.data.length) return [node, remaining];
+    remaining -= node.data.length;
   }
   return lastPlace(block);
 }

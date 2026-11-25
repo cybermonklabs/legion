@@ -2401,3 +2401,116 @@ test("a press on a Spec statement's words after inline HTML puts the caret in th
     ).toBe(pressed);
   });
 });
+
+// A press on a statement's words after every inline kind the statement's editor holds otherwise
+// than the Spec view draws it lands in the word pressed. The statement cites an issue by its
+// reference and mentions a block of the spec, each drawn by its target's name and held by the
+// editor as written; holds inline HTML, a picture of an artifact and a footnote's reference, each
+// held by the editor as an atom the caret cannot enter, while the view draws the first as its
+// characters, the picture by its caption once it fails to load, and the reference as its label
+// or as written; and breaks its first line with a hard break. A press on a word after all of them
+// puts the caret in that word.
+// SLOW(>=2s): a seeded issue of sixty statements, a second issue to cite, a load of the Spec view,
+// a turn of the wheel and a press, each read once the page has stopped moving.
+test("a press on a Spec statement's words after every inline kind the editor holds lands in the word pressed", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  const seed = async () => {
+    const seeded = await seedTallSpec();
+    const cited = await createIssue({
+      force: true,
+      project: PROJECT,
+      title: "The issue this statement cites by its key, drawn by its key and its title",
+    });
+    const words = [
+      `Read dispatch://${cited.key} and dispatch://${seeded.key}/spec#b-${requirementBlockId(1)} first.`,
+      `It draws "Kept by <name>" beside ![shot.png](dispatch://${seeded.key}/artifact/shot-png@v1)`,
+      `and a note[^note].\\\n${longWords("long", 120)}`,
+    ].join(" ");
+    await editArtifact(seeded.specArtifactId, {
+      ops: [
+        {
+          after: `block:${requirementBlockId(3)}`,
+          markdown: `${statementBlock(LONG_BLOCK_ID, words)}\n\n[^note]: The note the statement names.`,
+          op: "insert",
+        },
+      ],
+    });
+    return seeded;
+  };
+  await phase(browser, seed, async (page, seeded) => {
+    await page.setViewportSize({ height: DESKTOP.height, width: DESKTOP.width });
+    const body = issuePage(page).locator("[data-spec-body]");
+    const traffic = watchApiRequests(page);
+    await openPreset(page, seeded.key, "spec");
+    await expectLoadSettled(traffic);
+    const long = body.locator(
+      `[data-spec-statement][data-node-id="${blockNodeId(seeded.specSlug, LONG_BLOCK_ID)}"]`
+    );
+    await expect(long, "the Spec view draws no statement that holds every inline kind").toHaveCount(
+      1
+    );
+    const words = long.locator("[data-node-words]");
+    await expect(
+      words.locator("a[data-row-reference]"),
+      "the statement draws no link for each of its reference and its mention"
+    ).toHaveCount(2);
+    await expect(
+      words.locator('[data-type="html"]'),
+      "the statement draws no inline HTML for its placeholder"
+    ).toHaveCount(1);
+    await expect(
+      words.locator("[data-dispatch-picture]"),
+      "the statement draws no picture"
+    ).toHaveCount(1);
+    await expect(words.locator("br"), "the statement draws no hard break").toHaveCount(1);
+    /** The middle of the drawn word `word` of the statement's words, in the viewport. */
+    const wordBox = (word: string): Promise<{ x: number; y: number } | null> =>
+      long.evaluate((row, wanted) => {
+        const drawn = row.querySelector("[data-node-words]");
+        if (drawn === null) return null;
+        const walker = document.createTreeWalker(drawn, NodeFilter.SHOW_TEXT);
+        for (let text = walker.nextNode(); text !== null; text = walker.nextNode()) {
+          const found = ` ${text.textContent ?? ""} `.indexOf(` ${wanted} `);
+          if (found < 0) continue;
+          const range = document.createRange();
+          range.setStart(text, found + 1);
+          range.setEnd(text, found + 2);
+          const box = range.getBoundingClientRect();
+          return { x: box.left + 1, y: (box.top + box.bottom) / 2 };
+        }
+        return null;
+      }, word);
+    // A turn of the wheel, the reader's own act, brings the word "long60" to the screen's middle.
+    const pressed = "long60";
+    const far = await wordBox(pressed);
+    expect(far, `the statement draws no word "${pressed}"`).not.toBeNull();
+    const wheelAt = await scrollAtRest(page);
+    await page.mouse.move(DESKTOP.width / 2, DESKTOP.height / 2);
+    await page.mouse.wheel(0, (far?.y ?? 0) - DESKTOP.height / 2);
+    await expect
+      .poll(() => scrollAtRest(page), { message: "the wheel does not scroll the page" })
+      .not.toBe(wheelAt);
+    // The poll above waited until the page stopped moving after the wheel, so one read of the
+    // word's box is where it stands when it is pressed.
+    const at = await wordBox(pressed);
+    expect(at, `the word "${pressed}" is not on the page after the wheel`).not.toBeNull();
+    const point = at ?? { x: 0, y: 0 };
+    expect(
+      await wordAtCaret(page, point),
+      `the point (${point.x}, ${point.y}) is not on the word "${pressed}"`
+    ).toBe(pressed);
+    await page.mouse.click(point.x, point.y);
+    await expect
+      .poll(() => caretInRowBlock(page, LONG_BLOCK_ID), {
+        message:
+          "a press on the statement's words after every inline kind does not put the caret in them",
+      })
+      .toBe(true);
+    expect(
+      await wordAtCaret(page, "selection"),
+      `a press on the word "${pressed}", after every inline kind the statement holds, puts the caret in another word`
+    ).toBe(pressed);
+  });
+});
