@@ -12,8 +12,8 @@ import {
 } from "@dnd-kit/core";
 import { SortableContext, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import type { CSSProperties, ReactNode } from "react";
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { CSSProperties, ReactNode, RefObject } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 
 import { projectIssuesQuery, userStateQuery } from "../../api/queries";
@@ -56,7 +56,7 @@ import { keyText, listed } from "../shell/key-text";
 import { useKeymap, useKeymapScope } from "../shell/keymap";
 import { useActionKeys } from "../shell/keymap-keys";
 import { openLinkInNewTab } from "../shell/new-tab";
-import { closestMatching } from "../shell/roving";
+import { closestMatching, focusOnDocument } from "../shell/roving";
 import { useUserPreference } from "../shell/userPreference";
 import {
   announceMove,
@@ -342,6 +342,25 @@ const BoardLaneRow = memo(function BoardLaneRow({
   );
 });
 
+/**
+ * Draws nothing. While the rule's question is open, `tookFocusFrom` holds the element the question
+ * took the focus from as it opened, which the question gives the focus back to as it closes
+ * (`useDialog`). Once the question has closed, it holds `null`. The board draws this just before
+ * the question, in one fragment with it. A commit runs the layout effects of siblings in their
+ * order, so this effect reads the focus before the question's own effect takes it. A development
+ * build's StrictMode runs the effects of a new subtree a second time, the whole fragment at once:
+ * the question has given the focus back by then, so the second read finds the same element.
+ */
+function QuestionOpening({ tookFocusFrom }: { tookFocusFrom: RefObject<Element | null> }): null {
+  useLayoutEffect(() => {
+    tookFocusFrom.current = document.activeElement;
+    return () => {
+      tookFocusFrom.current = null;
+    };
+  }, [tookFocusFrom]);
+  return null;
+}
+
 export function IssueBoard({
   project,
   showEdges = false,
@@ -519,16 +538,32 @@ export function IssueBoard({
   // One `aria-live` sentence per keyboard move; `focusAfterMove` names the card focus follows
   // once the optimistic list has rendered (a status move remounts the article under its new
   // column, so the old node cannot keep focus; a card moved into a rail has no node, and focus
-  // lands on the rail). A move sets it only once it has placed the card (its `onPlaced`), so a
-  // move that ends without placing it takes no focus later. The effect runs on the
-  // `columns`/`boardLanes` render - the announcement's own render comes first, before the query
-  // observer has notified, and would focus the doomed node.
+  // lands on the rail). A move sets it only once it has placed the card (its `onPlaced`), and only
+  // while the focus then stands where the move's press left it: on the card the press moved
+  // (`from`), or in the rule's question where the question took the focus from that card
+  // (`questionTookFocusFrom`). The question's choice places the card, and the question gives the
+  // focus back where it took it from as it closes (`useDialog`). Another dialog gives a move no
+  // focus, and nor does a question that took the focus from the body or from another control. The
+  // move reads this as it places the card, before the board draws the card in its new place and so
+  // takes the focus off that card. So a move that ends without placing the card takes no focus
+  // later, and nor does a move the rule's dry run checks first, placed once the dry run answers,
+  // where the reader has moved the focus on by then - a key to another card, a Tab, a click, a
+  // click on a blank spot that leaves the focus on the body too. A move that takes no focus leaves
+  // the plan of an earlier move as it is: the effect checks that plan against its own press. The
+  // effect runs on the `columns`/`boardLanes` render - the announcement's own render comes first,
+  // before the query observer has notified, and would focus the doomed node. It moves the focus
+  // only while the focus still stands on the press's card, or on the body where that card's going
+  // left it, or where the question's hand-back left it once that card had gone.
   const [announcement, setAnnouncement] = useState("");
   const focusAfterMove = useRef<{
     key: string;
     status: IssueStatus;
     laneId: string | null;
+    from: Element | null;
   } | null>(null);
+  /** The element the rule's question took the focus from as it opened, while the question is
+   *  open, else `null` (`QuestionOpening`). */
+  const questionTookFocusFrom = useRef<Element | null>(null);
   const boardNode = (selector: string) => boardRef.current?.querySelector<HTMLElement>(selector);
   /** The `data-board-column` selector for `status`, scoped to `laneId` (`null` outside a
    *  swimlane). */
@@ -543,6 +578,9 @@ export function IssueBoard({
       return;
     }
     focusAfterMove.current = null;
+    const { from } = pending;
+    const stands = document.activeElement === from || (!from?.isConnected && focusOnDocument());
+    if (!stands) return;
     (
       boardNode(`[data-board-card="${pending.key}"]`) ??
       boardNode(laneColumnSelector(pending.status, pending.laneId))
@@ -613,9 +651,12 @@ export function IssueBoard({
     // moved is already in its cell, so the count holds them. A move that ends without placing
     // the card (kept, cancelled or refused) says nothing and takes no focus.
     const lane: PriorityLane | undefined = laneId === null ? undefined : laneFromKey(laneId);
+    // Where the press left the focus: the card it moves (`focusAfterMove`).
+    const from = document.activeElement;
     /** Says where the card stands now - its position and count in the visible cell, the one the
-     *  user sees, or nothing while it is not in that cell - and has focus follow it once the
-     *  board has drawn it there (`focusAfterMove`). */
+     *  user sees, or nothing while it is not in that cell - and, while the focus stands where the
+     *  press left it, has focus follow the card once the board has drawn it there
+     *  (`focusAfterMove`). */
     const placed = () => {
       const column = (queryClient.getQueryData<IssueSummary[]>(queryKey) ?? []).filter(
         (issue) =>
@@ -627,7 +668,13 @@ export function IssueBoard({
       if (position !== -1) {
         setAnnouncement(announceMove(key, target.status, position + 1, column.length));
       }
-      focusAfterMove.current = { key, status: target.status, laneId };
+      // Read now, before the query observer notifies the board: the draw that follows takes the
+      // focus off the press's card, so after it a focus on the body cannot tell that draw from a
+      // reader's click. A choice of the question places the card while the question is still
+      // open, so `questionTookFocusFrom` still holds what the question took the focus from.
+      if (document.activeElement === from || questionTookFocusFrom.current === from) {
+        focusAfterMove.current = { from, key, laneId, status: target.status };
+      }
     };
     if (lanes && lane !== undefined) {
       void moveCardToLane(key, target.status, lane, target.insertionIndex, placed);
@@ -783,8 +830,15 @@ export function IssueBoard({
   );
   // The question belongs to the board's moves (`useBoardMoves`), not to the list: it is drawn
   // whatever the list read shows, so a read that fails while it is open leaves it to be answered,
-  // and its answer ends the move that holds every later read of the list.
-  const questionDialog = question === undefined ? null : <ParentStatusDialog question={question} />;
+  // and its answer ends the move that holds every later read of the list. `QuestionOpening` comes
+  // first, so it reads what the question takes the focus from (`focusAfterMove`).
+  const questionDialog =
+    question === undefined ? null : (
+      <>
+        <QuestionOpening tookFocusFrom={questionTookFocusFrom} />
+        <ParentStatusDialog question={question} />
+      </>
+    );
   const body = issues.isPending ? (
     <LoadingSkeleton label="Loading board" />
   ) : issues.isError ? (

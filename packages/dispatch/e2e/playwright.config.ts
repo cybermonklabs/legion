@@ -376,7 +376,8 @@ const parallelProjects = [
   // view hands the focus to the row now at their place, whose bar and rows the action takes away,
   // its row that Unpin on a pinned agent keeps the keyboard focus on a control in sight, whose
   // row the unpin moves to its new place, its row that a thread's Dismiss in the Inbox's list
-  // hands the focus to the next row, whose row the Dismiss takes away, its five rows that a
+  // hands the focus to the next row, and its row that the same Dismiss at 1440 leaves a reading
+  // column that can scroll where it stood, whose row the Dismiss takes away, its five rows that a
   // control held under the reader's press keeps the keyboard focus - the Inbox's Decline dialog,
   // a references Retry on the Artifacts tab, the Inbox card's Referenced by Retry, Unfollow and
   // Unsubscribe on an Inbox card's recipients, and a group card's Rename in the Session groups
@@ -419,6 +420,13 @@ const parallelProjects = [
   // before the read they count answers, that a Move with only closed issues marked keeps no
   // press live, that each chip Tab reaches in the Inbox's +N more panel stands wholly inside it,
   // and that taking off the Inbox's only narrowing at 390 leaves the focus on a control in sight.
+  // The rows INFRA-3135's round-26 tester pinned, each measured in this engine: `table-controls`'s
+  // rows that the shared list keeps the option it marks active inside its box when a typed word
+  // narrows it and when Enter ticks a value, that the Delivery page's session-groups editor, the
+  // project List's Claimed by and header filters and an Inbox card's Reaches draw no count before
+  // the read they count answers, that a double click on a marked row's held control and the List
+  // bar's partly cut landing leave the focus where it belongs, and that a Board move whose dry run
+  // is out leaves the focus where the reader's click put it.
   // Without a `testMatch` the project would see every spec in this directory, so it names the
   // same `testIgnore` as `chromium`: no tagged row may sit in a plain-HTTP, multiprocess or
   // clock-read spec, and `heavy-bodies.e2e.ts` belongs to `webkit-alone` alone. That ignore is
@@ -512,11 +520,11 @@ const parallelProjects = [
   // row carries the kept-file question with it.
   // The reload line a read-only admission names: `doc-reload-line`'s one row.
   // A focused control taken away, itself or with a parent, for which this engine fires no
-  // `focusout`: `table-controls`'s page-own focus row, its row whose focused row a live update
-  // takes away, its row that Add a priority opens its form in view with the focus on Priority to
-  // advance, its row that Change answer opens the answer form with its first choice whole in
-  // the window, whose button takes itself away, and its scrolling-table row, whose focused row a
-  // scroll takes away.
+  // `focusout`, as measured above `webkit`: every `table-controls` row the `webkit` clause names
+  // for it, from its page-own focus row to its row that offline, Take out of epic hands the focus
+  // to the marked row's checkbox, and its scrolling-table row, whose focused row a scroll takes
+  // away. Each of those rows carries `@firefox` as well as `@webkit`, and its own comment names
+  // this clause.
   // How the engine handles a focused element a commit takes off the page, which a list reads
   // through `focusLost` as its focus lost: `issue-page-h`'s row that Details' labels list gives
   // its text box the focus when Enter on the focused row of a label only the draft holds takes
@@ -548,6 +556,13 @@ const parallelProjects = [
   // before the read they count answers, that a Move with only closed issues marked keeps no
   // press live, that each chip Tab reaches in the Inbox's +N more panel stands wholly inside it,
   // and that taking off the Inbox's only narrowing at 390 leaves the focus on a control in sight.
+  // The rows INFRA-3135's round-26 tester pinned, each measured in this engine: `table-controls`'s
+  // rows that the shared list keeps the option it marks active inside its box when a typed word
+  // narrows it and when Enter ticks a value, that the Delivery page's session-groups editor, the
+  // project List's Claimed by and header filters and an Inbox card's Reaches draw no count before
+  // the read they count answers, that a double click on a marked row's held control and the List
+  // bar's partly cut landing leave the focus where it belongs, and that a Board move whose dry run
+  // is out leaves the focus where the reader's click put it.
   // The `testIgnore` is `chromium`'s, for the reason given above `webkit`.
   {
     name: "firefox",

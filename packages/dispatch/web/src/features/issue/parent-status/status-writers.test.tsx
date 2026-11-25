@@ -15,6 +15,7 @@ import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { realClock, tick } from "../../../__tests__/fake-clock";
+import { pressHeld } from "../../../__tests__/held-press";
 import { pickFromList, pickNamed } from "../../../__tests__/list-picks";
 import { answerRequests } from "../../../__tests__/network";
 import { decisionsAndReadMarkHandlers } from "../../../__tests__/proof-document";
@@ -375,8 +376,9 @@ describe("every status writer of the page asks", () => {
     const user = userEvent.setup();
     const cleanup = renderHeader(issue);
     try {
-      // An open issue's list offers no Done, so the move is to Backlog, which a parent with a
-      // child in work cannot take either. The list is the shared single pick.
+      // An open issue's Status offers no Done, so the move is to Backlog, which a parent with a
+      // child in work cannot take either. The Status is the shared single pick (INFRA-3135's R3),
+      // whose trigger shows the status the question is checking.
       const status = await screen.findByRole("button", { name: pickNamed("Status") });
       await pickFromList(user, status, "Backlog");
       await expectDryRunFirst(writes, "CORE-1", "backlog");
@@ -409,6 +411,30 @@ describe("every status writer of the page asks", () => {
       cleanup();
     }
   });
+
+  // INFRA-3135: Close and Reopen are held (`heldPress`), never disabled, while the rule's question
+  // checks the move: the pressed button keeps the keyboard focus, and a second press, by key or
+  // pointer, sends nothing.
+  for (const [name, shown] of [
+    ["Close issue", issue],
+    ["Reopen issue", closedChild],
+  ] as const) {
+    test(`the header's ${name}, held while its question checks, keeps the focus and sends nothing more`, async () => {
+      const writes = answerWrites();
+      const user = userEvent.setup();
+      const cleanup = renderHeader(shown);
+      try {
+        const pressed = await screen.findByRole("button", { name });
+        await pressHeld(user, pressed, {
+          name,
+          sent: () => writes.statusChanges.mock.calls.length,
+        });
+        expect(writes.patches).not.toHaveBeenCalled();
+      } finally {
+        cleanup();
+      }
+    });
+  }
 
   test("the palette's Close issue", async () => {
     const writes = answerWrites();
@@ -601,6 +627,8 @@ describe("every status writer of the page asks", () => {
     ]);
     try {
       await user.click(await screen.findByRole("checkbox", { name: "Select CORE-3" }));
+      // The selection bar's Move to epic is the shared single pick, which names each epic by its
+      // title, and Move commits the pick (INFRA-3135's R3).
       const bar = screen.getByRole("toolbar", { name: "Selected issues" });
       await user.click(within(bar).getByRole("button", { name: pickNamed("Move to epic") }));
       await user.click(screen.getByRole("option", { name: "Platform" }));
@@ -626,6 +654,7 @@ describe("every status writer of the page asks", () => {
       const heading = (await screen.findByRole("link", { name: "CORE-1 · Source" })).closest("tr");
       if (heading === null) throw new Error("The source epic has no heading row");
       await user.click(within(heading).getByRole("button", { name: "Epic actions ▾" }));
+      // The shared single pick, which names each epic by its title (INFRA-3135's R3).
       await user.click(screen.getByRole("button", { name: pickNamed("Merge into another epic") }));
       await user.click(screen.getByRole("option", { name: "Target" }));
       await user.click(screen.getByRole("button", { name: "Merge…" }));

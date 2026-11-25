@@ -129,8 +129,8 @@ export function IssueTableToolbar({
   /** Where the row's Shift+F and Shift+V are registered (`ControlRow`): the project scope for
    *  the page's one table, or its main one, and none for a table drawn beside it. */
   keyScope?: "project";
-  /** The search box. The focus goes here when a control of the table's head or of a notice goes
-   *  with it and no control at its place can take it (`noteFocus`). */
+  /** The search box. The List's hand-off (`IssuesTable`'s `noteFocus`) never lands in it: its
+   *  walk back passes over every control that takes typed text, and it names no fallback. */
   searchRef: RefObject<HTMLInputElement | null>;
   /** The chip of the issues a link names, which the row draws first among its chips. */
   selection?: FilterChip;

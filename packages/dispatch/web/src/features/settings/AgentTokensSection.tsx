@@ -397,7 +397,7 @@ export function AgentTokensSection(): ReactNode {
               <TableEmpty colSpan={6}>No agent tokens yet.</TableEmpty>
             ) : (
               tokens.data.map((token) => {
-                const held = heldScopes(token.scopes);
+                const tokenScopes = heldScopes(token.scopes);
                 return (
                   <TableRow key={token.id}>
                     <TableCell tone="primary" weight="medium">
@@ -417,11 +417,11 @@ export function AgentTokensSection(): ReactNode {
                       )}
                     </TableCell>
                     <TableCell>
-                      {held.includes("read") ? (
-                        <ReadOnlyScopes held={held} subject={token.name} />
+                      {tokenScopes.includes("read") ? (
+                        <ReadOnlyScopes held={tokenScopes} subject={token.name} />
                       ) : (
                         <TokenScopeChoices
-                          chosen={DISPATCH_SCOPES.filter((scope) => held.includes(scope))}
+                          chosen={DISPATCH_SCOPES.filter((scope) => tokenScopes.includes(scope))}
                           disabled={token.revoked_at !== null}
                           held={scoping}
                           offered={WRITING_SCOPES}

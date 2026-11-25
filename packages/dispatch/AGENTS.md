@@ -21,6 +21,39 @@ The Go server's guide: `packages/envoy/cmd/dispatch/AGENTS.md`.
 
 - Truncate inside a flex control with `components/TruncatedText.tsx`.
 
+- Search, sort and filter controls: a page draws these.
+  `components/one-definition.test.ts` refuses a page's own search box, `<table>`, panel, hand-written control mark and value import of the table library, but not a `<select>`.
+  In the seven features it names in `ADDRESS_FEATURES`, it also refuses every read or write of the address that goes round `lib/page-address.ts`.
+
+  - `components/ControlRow.tsx`: the one row a page's controls sit in.
+
+  - `components/SearchBox.tsx`: the search box of a list narrowed by typed words.
+
+  - `components/PanelTrigger.tsx`: the button that opens a menu, a filter panel or a column filter.
+
+  - `components/DisplayMenu.tsx`: the display choices at the row's end.
+
+  - `components/ColumnFilter.tsx`: the filter on a table column's header.
+
+  - `components/ColumnsMenu.tsx`: which of a table's columns are shown.
+
+  - `components/SelectionBar.tsx`: the bar shown while rows are marked.
+
+  - `components/TableShell.tsx`: a table with no search, sort or filter; `DataTable` is the one with them.
+
+  - `components/DataTable.tsx`: the table core, over TanStack Table.
+
+  - `components/Pager.tsx`: a table's pager.
+
+  - `components/Chip.tsx`: the one interactive chip: a toggle, a removable value, or the control row's `+N more`, which opens a panel.
+
+- `lib/page-address.ts`: the module that reads and writes a page's narrowing in the address, for the seven features in `ADDRESS_FEATURES`; `features/architecture/` still reads the router itself.
+
+- `components/focus-place.ts`: a component's own hand-off of a control a press takes out of it (`useFocusPlace`), armed by the reader's press at the component's root (`armOnPress`); `components/row-marker.ts` says what it treats as a row.
+
+- `components/held-press.ts`: the hold on a control that cannot be pressed now: one whose press started a write or a read that is still out, a step with no page to go to (`StepButton.tsx`, `Pager.tsx`), or a control with nothing to do, such as Rename with no new name (`features/delivery/SessionGroupsEditor.tsx`) and Move with no epic staged (`features/project/issues-table-page.tsx`).
+  A hold through a write's answer (`useHeldThroughAnswer`) keeps the armed hand-off of the press that started the write live (`holdHandOff`); a control held with nothing to do, before its press or once what answers its press has ended, keeps no press live (`components/focus-place.ts`).
+
 - One primary per screen, chrome after it; type 22px, 15px, `text-sm`, `text-xs`; spacing in 4px steps; colour means state.
 
 - Show an agent only through `features/refs/AgentName.tsx`, or `useAgentText()` for a string; lint misses a namespace import (`import * as`), so review for it.

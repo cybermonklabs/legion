@@ -200,6 +200,8 @@ test("parent-status-choice: a parent's move asks which way its open issues go", 
     await page.goto(`/issues/${p1}`);
     await expect(page.getByRole("heading", { level: 1, name: first.parent.title })).toBeVisible();
     const closeButton = page.getByRole("button", { name: "Close issue", exact: true });
+    // The issue page's Status is the shared single pick (INFRA-3135's R3), whose trigger carries
+    // the status it shows in `data-issue-status`; its options are named as `statusText` names them.
     const statusPick = statusTrigger(page);
     const openChildren = [
       { key: first.working.key, relation: "child" },
@@ -271,7 +273,7 @@ test("parent-status-choice: a parent's move asks which way its open issues go", 
       });
 
     // Then to done, Unlink them leaves P1's open children roots and P1 done.
-    await expect(statusPick).toContainText(statusText("backlog"));
+    await expect(statusPick).toHaveAttribute("data-issue-status", "backlog");
     await closeButton.click();
     await expectQuestion(closing, p1, "done", openChildren, [
       "include_children",
@@ -386,6 +388,8 @@ test("parent-status-choice: a parent's move asks which way its open issues go", 
     // The board above left Board as alice's view of the project; the issues table is its List.
     await page.getByRole("button", { name: "List", exact: true }).click();
     const looseSelect = page.getByRole("checkbox", { name: `Select ${loose.key}`, exact: true });
+    // The selection bar's Move to epic is the shared single pick, which names each epic by its
+    // title (INFRA-3135's R3).
     const epicPick = listTrigger(page, "Move to epic");
     const moveButton = page.getByRole("button", { name: "Move", exact: true });
     await looseSelect.check();

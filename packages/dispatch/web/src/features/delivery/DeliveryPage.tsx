@@ -46,16 +46,12 @@ import {
   type ColorFacet,
 } from "./lib/colorScale";
 import {
-  DEPLOYED_LABELS,
-  type DeployedFacet,
   FACET_KEYS,
   FACET_PARAMS,
   type FacetKey,
   type Filters,
-  isPriorityFacet,
+  ownEntry,
   PLACEHOLDER_LABELS,
-  REWORK_LABELS,
-  type ReworkFacet,
 } from "./lib/facets";
 import { parentAgentLabel } from "./lib/parentAgent";
 import {
@@ -207,23 +203,10 @@ function useDeliveryUrlState(): [DeliveryUrlState, (next: DeliveryUrlState) => v
   const sortText = SORT_PARAM.read(searchParams, "sort");
   const sorting = useMemo(() => readSorting(sortText), [sortText]);
   const arrayParams = useRepeatableAddressParams(FACET_KEYS);
-  // `?rework=`, `?deployed=` and `?priority=` keep only the values their facets hold - a priority
-  // as Dispatch reads one - in the address's order, so an unknown one reaches neither the request
-  // nor a chip.
-  const filters: Filters = useMemo(
-    () => ({
-      ...arrayParams,
-      rework: arrayParams.rework.filter((value): value is ReworkFacet =>
-        Object.hasOwn(REWORK_LABELS, value)
-      ),
-      deployed: arrayParams.deployed.filter((value): value is DeployedFacet =>
-        Object.hasOwn(DEPLOYED_LABELS, value)
-      ),
-      priority: arrayParams.priority.filter(isPriorityFacet),
-      search,
-    }),
-    [arrayParams, search]
-  );
+  // Every facet keeps every value the address names, one that names no value of the facet
+  // included: Dispatch selects no row by it, so `?priority=P9` alone lists none and beside a known
+  // value lists what the known one does, and the page draws it as a chip the reader can take off.
+  const filters: Filters = useMemo(() => ({ ...arrayParams, search }), [arrayParams, search]);
 
   const setState = useCallback(
     (next: DeliveryUrlState) => {
@@ -351,10 +334,11 @@ function OwnColourPicker({
 }): ReactNode {
   const [open, setOpen] = useState(false);
   const options = Object.keys(counts)
-    .filter((value) => !(value in PLACEHOLDER_LABELS))
+    .filter((value) => !Object.hasOwn(PLACEHOLDER_LABELS, value))
     .sort((a, b) => (counts[b] ?? 0) - (counts[a] ?? 0));
   const state = selected.length === 0 ? "every value" : `${selected.length} chosen`;
-  const countOf = (value: string) => counts[value] ?? 0;
+  // A chosen agent comes from the address, so the counts are read by their own keys alone.
+  const countOf = (value: string) => ownEntry(counts, value) ?? 0;
   return (
     <MultiSelect
       emptyMessage="No matches."
@@ -428,7 +412,9 @@ function Facet({
   const options = [...new Set([...selected, ...values])];
   const state =
     selected.length === 0 ? `Any ${label.toLowerCase()}` : `${selected.length} selected`;
-  const countOf = (value: string) => counts?.[value] ?? 0;
+  // A selected value comes from the address, so the counts are read by their own keys alone.
+  const countOf = (value: string) =>
+    (counts === undefined ? undefined : ownEntry(counts, value)) ?? 0;
   return (
     <div className="w-full">
       <span className={facetLabelClass}>{label}</span>
@@ -479,7 +465,9 @@ function Facet({
  * on screen is the one for the window, filters and search the address names (`counted`): while a
  * new read is out the previous answer stays on screen, and its counts would be the last filter's.
  * Under Parent agent's old place, **Edit groups** opened the session-groups editor; it sits at
- * the foot of this panel now, since that facet is a column.
+ * the foot of this panel now, since that facet is a column. Its editor lists the sessions of the
+ * answer on screen, and draws each one's count under the same gate: where the address names
+ * another window, they are the previous window's.
  *
  * The row is drawn from the address alone, before the first answer and after a first read that
  * failed (`data` undefined), so a link's narrowing has its chip, its count and its way off while
@@ -502,7 +490,7 @@ function DeliveryControls({
   /** Whether the list is drawn, whose headers hold the five facets that are its columns. */
   columnsDrawn: boolean;
   /** Whether `data` is the answer for the window, filters and search the address names, the
-   *  page's own gate on its count. */
+   *  page's own gate on its count, and on the panel's and the session-groups editor's. */
   counted: boolean;
   /** The answer the panel counts and names values from; undefined until the first one. */
   data:
@@ -551,13 +539,14 @@ function DeliveryControls({
   // issue has no title to read beside its key, so it reads as its key alone.
   const valueLabel = (key: FacetKey, value: string): string => {
     if (isColumnFacet(key)) {
-      if (data === undefined && key === "issue") return PLACEHOLDER_LABELS[value] ?? value;
+      if (data === undefined && key === "issue")
+        return ownEntry(PLACEHOLDER_LABELS, value) ?? value;
       return columnFacetValue(key, value, {
         issueTitles: data?.issue_titles ?? {},
         sessionGroups: data?.session_groups ?? [],
       });
     }
-    const placeholder = PLACEHOLDER_LABELS[value];
+    const placeholder = ownEntry(PLACEHOLDER_LABELS, value);
     if (placeholder !== undefined) return placeholder;
     if (key === "component") {
       const title = data?.components?.[value]?.title ?? value;
@@ -629,6 +618,7 @@ function DeliveryControls({
     >
       {editingGroups && data !== undefined ? (
         <SessionGroupsEditor
+          counted={counted}
           counts={data.session_pr_counts ?? {}}
           groups={data.session_groups ?? []}
           onClose={() => setEditingGroups(false)}
@@ -763,10 +753,10 @@ export function DeliveryPage(): ReactNode {
     setFilters({
       ...state.filters,
       author: picked.get("author") ?? [],
-      deployed: (picked.get("deployed") ?? []) as DeployedFacet[],
+      deployed: picked.get("deployed") ?? [],
       issue: picked.get("issue") ?? [],
       parentAgent: picked.get("parentAgent") ?? [],
-      rework: (picked.get("rework") ?? []) as ReworkFacet[],
+      rework: picked.get("rework") ?? [],
     });
   };
   const setSorting: OnChangeFn<SortingState> = (update) => {
@@ -813,8 +803,8 @@ export function DeliveryPage(): ReactNode {
   // only while the answer on screen is that one: not while a new filter's or a new window's read
   // is out and the previous answer stays on screen (`isPlaceholderData`), nor while a search the
   // reader is typing waits out its debounce before it is asked for. A value's count in the Filter
-  // panel, in the Own colour list and in a List column's header filter is drawn under the same
-  // gate.
+  // panel, in the Own colour list, in a List column's header filter and in the session-groups
+  // editor is drawn under the same gate.
   const counted = !query.isPlaceholderData && search === state.filters.search.trim();
   return (
     // From `xl` the page is the window's height and the chart takes what its header leaves, never

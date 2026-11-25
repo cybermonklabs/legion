@@ -524,8 +524,9 @@ test("AgentsPage: the header's Clear selection arms the header's hand-off", asyn
 // The header's armed hand-off (`SelectionHeader`): Clear selection goes with the selection it
 // empties, and its focus goes to the select-all checkbox before it. While no row matches, that
 // checkbox is disabled and the header holds no other control, so the header's own hand-off walks
-// back over the main content it was in (`walkBackInRegion`): past the search box, which takes
-// typed text, to the Filter button, and never out to the navigation.
+// back over the main content it was in (`walkBackInRegion`) to the Filter button, and never out
+// to the navigation. The page's control row draws the search box first and the Filter button
+// after it (`ControlRow`), so the walk reaches the Filter button before the search box.
 test("AgentsPage: Clear selection hands its focus to the select-all checkbox, and with no row matching walks back to the Filter button", async () => {
   const user = userEvent.setup();
   const region = await drawAgents();
@@ -826,6 +827,8 @@ async function duplicateEpicList(user: UserEvent): Promise<HTMLElement> {
     }),
     spyOn(api, "send").mockResolvedValue(savedIssue("CORE-1"))
   );
+  // On the backlog: main's parent-status rule (bcc5d7e66d) needs no epic in work for it, so the
+  // create is the action's first write, with no question before it.
   drawList([issue("CORE-1", { status: "backlog" })]);
   await user.click(await screen.findByRole("checkbox", { name: "Select CORE-1" }));
   await user.click(screen.getByRole("button", { name: "New epic from these" }));
@@ -863,9 +866,10 @@ for (const press of ["Create anyway", "Cancel new epic"]) {
 // The List's armed hand-off (`IssuesTable`): a column filter's pick that sends the List off to
 // read the issues it has not loaded takes the table's head away with the filter's own list, and
 // the List's hand-off walks back over the main content it was in (`walkBackInRegion`), from the
-// place the head left, past the search box, which takes typed text, to the toolbar's Clear
-// filters, never out to the navigation. By the pointer's pick, and by Enter in the filter's text
-// box.
+// place the head left, to the toolbar's Clear filters, never out to the navigation. The toolbar
+// draws the search box first and Clear filters last, after the Status chip (`ControlRow`), so the
+// walk reaches Clear filters before the search box. By the pointer's pick, and by Enter in the
+// filter's text box.
 for (const way of ["a pointer's pick", "Enter in its text box"]) {
   test(`the List: a column filter pick by ${way} that sends the List to read its issues walks back to the toolbar's Clear filters`, async () => {
     const user = userEvent.setup();

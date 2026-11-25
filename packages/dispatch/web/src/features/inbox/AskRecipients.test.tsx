@@ -11,7 +11,7 @@ import { AGENT_LIST_REFILLING, ApiError, api, REQUEST_DEADLINE_MS } from "../../
 import { DispatchQueryClient } from "../../api/query-client";
 import type { Agent, AskFollower, Subscriber } from "../../api/types";
 import { emulateChromiumFocusFixup } from "../issue-page/chromium-focus-fixup";
-import { AskRecipients, reachLabel, reachRows } from "./AskRecipients";
+import { AskRecipients, type AskRecipientsProps, reachLabel, reachRows } from "./AskRecipients";
 import { followers, renderRecipients, subscriber } from "./ask-recipients-fixture";
 
 function agent(sessionId: string, title: string): Agent {
@@ -54,7 +54,8 @@ test("AskRecipients folds its routing list at rest and still names the count", a
   );
 
   try {
-    const toggle = screen.getByRole("button", { name: "Reaches 2" });
+    // The count waits on the issue's subscriber read, which answers with nobody more.
+    const toggle = await screen.findByRole("button", { name: "Reaches 2" });
     expect(toggle).toHaveAttribute("aria-expanded", "false");
     expect(screen.queryByRole("list", { name: "Followers" })).not.toBeInTheDocument();
 
@@ -394,6 +395,70 @@ test("offline, an Unsubscribe's hold through the read after its write ends at th
     onlineManager.setOnline(online);
     out.resolve();
     unsubscribeIssueSession.mockRestore();
+  }
+});
+
+// `Reaches N` counts the owner's subscribers with the rest, so it waits on their read: while that
+// read is out, a count would be of the followers alone and grow once the read answers. An ask whose
+// owner has no subscribers to read counts at once.
+test("AskRecipients draws no Reaches count while the subscriber read is out, and counts at once with none to read", async () => {
+  const listAgents = spyOn(api, "listAgents").mockResolvedValue([]);
+  const held = Promise.withResolvers<Subscriber[]>();
+  const getIssueSubscribers = spyOn(api, "getIssueSubscribers").mockImplementation(
+    () => held.promise
+  );
+  const getArtifactSubscribers = spyOn(api, "getArtifactSubscribers").mockResolvedValue([]);
+  const draw = (owner: AskRecipientsProps["owner"]) => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    queryClient.setQueryData(["whoami"], { kind: "user", login: "alice" });
+    return render(
+      <MemoryRouter>
+        <QueryClientProvider client={queryClient}>
+          <AskRecipients
+            askId="ask-1"
+            claimant={null}
+            followers={followers}
+            owner={owner}
+            route={null}
+            routeHolder={null}
+            routeStatus={null}
+          />
+        </QueryClientProvider>
+      </MemoryRouter>
+    );
+  };
+
+  try {
+    const view = draw({ artifact_id: null, issue_key: "CORE-1" });
+    try {
+      const section = screen.getByRole("region", { name: "Recipients" });
+      await waitFor(() => expect(getIssueSubscribers).toHaveBeenCalledWith("CORE-1"));
+      expect(
+        within(section).queryByRole("button", { name: /^Reaches \d/ })
+      ).not.toBeInTheDocument();
+      expect(within(section).getByRole("button", { name: "Recipients" })).toBeTruthy();
+
+      await act(async () => held.resolve([subscriber("b0b0b0b0b0b0b0b0", "Platform PO")]));
+      expect(await within(section).findByRole("button", { name: "Reaches 3" })).toBeTruthy();
+    } finally {
+      view.unmount();
+    }
+
+    // Neither an issue nor a document: no subscriber read runs, so the count is whole at once.
+    const unowned = draw({ artifact_id: null, issue_key: null });
+    try {
+      const section = screen.getByRole("region", { name: "Recipients" });
+      expect(within(section).getByRole("button", { name: "Reaches 2" })).toBeTruthy();
+      expect(getIssueSubscribers).toHaveBeenCalledTimes(1);
+      expect(getArtifactSubscribers).not.toHaveBeenCalled();
+    } finally {
+      unowned.unmount();
+    }
+  } finally {
+    held.resolve([]);
+    listAgents.mockRestore();
+    getIssueSubscribers.mockRestore();
+    getArtifactSubscribers.mockRestore();
   }
 });
 

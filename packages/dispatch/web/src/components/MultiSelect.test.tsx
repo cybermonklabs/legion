@@ -21,7 +21,18 @@ import { MENU_TRIGGER_SELECTOR } from "./key-targets";
 import { type ListMarks, type ListMenu, MultiSelect } from "./MultiSelect";
 import { PanelTrigger } from "./PanelTrigger";
 
-function Host({ onCreate, options }: { onCreate?: (value: string) => void; options: string[] }) {
+/** A multi-select as a host draws one, closed until its trigger opens it. With `pickedFirst` it
+ *  lists the picked values first, in the order they were picked, and then the other options in
+ *  their own order, as the Delivery page's facets do (`DeliveryPage`'s `Facet`). */
+function Host({
+  onCreate,
+  options,
+  pickedFirst = false,
+}: {
+  onCreate?: (value: string) => void;
+  options: string[];
+  pickedFirst?: boolean;
+}) {
   const [open, setOpen] = useState(false);
   const [selected, setSelected] = useState<string[]>([]);
   return (
@@ -33,7 +44,7 @@ function Host({ onCreate, options }: { onCreate?: (value: string) => void; optio
         onCreate={onCreate}
         onOpenChange={setOpen}
         open={open}
-        options={options}
+        options={pickedFirst ? [...new Set([...selected, ...options])] : options}
         searchLabel="Search labels"
         selected={selected}
       />
@@ -220,18 +231,32 @@ test("a held Enter toggles the active option once", async () => {
   }
 });
 
+/** The open list's Clear foot, which it draws while its pick holds a value, or null. */
+function clearFoot(): HTMLElement | null {
+  return screen.queryByRole("button", { name: /^Clear / })?.parentElement ?? null;
+}
+
+/** Lays `foot`, the list's Clear foot or a menu's line of keys that sticks, out as `layOutList`
+ *  lays out the list: 61 px tall, stuck to the bottom of what `box`, its panel, shows. */
+function layOutFoot(foot: Element, box: Element): void {
+  foot.getBoundingClientRect = () => {
+    const bottom = box.getBoundingClientRect().top + box.clientTop + box.clientHeight;
+    return new DOMRect(1, bottom - 61, 254, 61);
+  };
+}
+
 /**
  * Lays the open list out as a browser would, which happy-dom does not: its panel, the box that
  * scrolls, is 288 px tall at 100 px down the window inside a 1 px border, so it shows 286 px of
  * what it holds. The text box stands stuck to its top, 61 px tall, and so does the Clear foot or a
- * menu's line of keys, 61 px tall too, to its bottom while it is drawn - but for a menu's line on
- * a coarse pointer, which follows the options (`ListMenu`); each option is 44 px tall, or as tall
- * as `height` makes it as it is measured, under the text box at its place among the options the
- * list draws when it is measured, moved up by the panel's `scrollTop`, which stops at both ends of
- * the scroll, as a browser's does. A case that cuts the panel's box shorter sets its
- * `clientHeight`, which the foot that sticks and the end of the scroll follow. `trigger` stands
- * above the panel, so the panel does not close as one hanging off nothing (`AnchoredPanel`).
- * Answers the panel.
+ * menu's line of keys, 61 px tall too, to its bottom while it is drawn (`layOutFoot`; a Clear foot
+ * drawn after the layout is laid out by `layOutListsAsOpened`) - but for a menu's line on a coarse
+ * pointer, which follows the options (`ListMenu`); each option is 44 px tall, or as tall as
+ * `height` makes it as it is measured, under the text box at its place among the options the list
+ * draws when it is measured, moved up by the panel's `scrollTop`, which stops at both ends of the
+ * scroll, as a browser's does. A case that cuts the panel's box shorter sets its `clientHeight`,
+ * which the foot that sticks and the end of the scroll follow. `trigger` stands above the panel,
+ * so the panel does not close as one hanging off nothing (`AnchoredPanel`). Answers the panel.
  */
 function layOutList(
   trigger: HTMLElement,
@@ -241,10 +266,10 @@ function layOutList(
   const box = listbox.parentElement;
   const head = screen.getByRole("combobox").parentElement;
   if (box === null || head === null) throw new Error("the list is drawn outside its panel");
-  const foot =
-    screen.queryByRole("button", { name: /^Clear / })?.parentElement ??
-    within(box).queryByText(/to choose · Esc to close$/);
-  const sticks = foot?.classList.contains("sticky") === true;
+  // A menu's line of keys, which the list draws as it opens; the Clear foot comes and goes with the
+  // pick, so the foot is read again each time it counts (`clearFoot`).
+  const keys = within(box).queryByText(/to choose · Esc to close$/);
+  const foot = () => clearFoot() ?? keys;
   const drawn = () => [...listbox.querySelectorAll('[role="option"]')];
   const tall = (options: readonly Element[]) =>
     options.reduce((sum, option) => sum + height(option), 0);
@@ -256,7 +281,7 @@ function layOutList(
       configurable: true,
       get: () => scrolled,
       set: (value: number) => {
-        const end = 61 + tall(drawn()) + (foot === null ? 0 : 61) - box.clientHeight;
+        const end = 61 + tall(drawn()) + (foot() === null ? 0 : 61) - box.clientHeight;
         scrolled = Math.min(Math.max(value, 0), Math.max(end, 0));
       },
     },
@@ -264,14 +289,11 @@ function layOutList(
   trigger.getBoundingClientRect = () => new DOMRect(0, 52, 120, 44);
   box.getBoundingClientRect = () => new DOMRect(0, 100, 256, 288);
   head.getBoundingClientRect = () => new DOMRect(1, 101, 254, 61);
-  if (foot !== null) {
-    foot.getBoundingClientRect = () =>
-      new DOMRect(
-        1,
-        sticks ? 101 + box.clientHeight - 61 : 162 + tall(drawn()) - scrolled,
-        254,
-        61
-      );
+  const drawnFoot = foot();
+  if (drawnFoot?.classList.contains("sticky") === true) {
+    layOutFoot(drawnFoot, box);
+  } else if (drawnFoot !== null) {
+    drawnFoot.getBoundingClientRect = () => new DOMRect(1, 162 + tall(drawn()) - scrolled, 254, 61);
   }
   for (const option of drawn()) {
     option.getBoundingClientRect = () => {
@@ -381,8 +403,9 @@ test("the arrows scroll a multi-select's list the least that shows the option th
 /**
  * Lays each list an open draws out as `layOutList` does, its options as tall as `height` makes
  * them, the moment anything first measures it: the open measures its list in the commit that
- * draws it, before a case could lay it out after the open. Answers the box the last list scrolls
- * in, and what puts the measurements back.
+ * draws it, before a case could lay it out after the open. A Clear foot the list draws after
+ * that, as its first value is ticked, is laid out (`layOutFoot`) the moment anything first
+ * measures it too. Answers the box the last list scrolls in, and what puts the measurements back.
  */
 function layOutListsAsOpened(
   trigger: HTMLElement,
@@ -403,6 +426,10 @@ function layOutListsAsOpened(
       box = layOutList(trigger, height);
       // The element measured may be one the layout has just given a box of its own.
       if (Object.hasOwn(this, "getBoundingClientRect")) return this.getBoundingClientRect();
+    }
+    if (box !== null && this.parentElement === box && this === clearFoot()) {
+      layOutFoot(this, box);
+      return this.getBoundingClientRect();
     }
     return measure.call(this);
   });
@@ -602,6 +629,325 @@ test("a single pick keeps the option it opened on shown whole as its label chang
       "Testing on staging, waiting on its release"
     );
     expect([opened, lists.box()?.scrollTop]).toEqual([39, 51]);
+    expect(scrolls).not.toHaveBeenCalled();
+  } finally {
+    scrolls.mockRestore();
+    lists.restore();
+    view.unmount();
+  }
+});
+
+// INFRA-3135, round 27: a word typed in the text box marks the first option it leaves active, and
+// so does the word cleared, while the box stayed where the arrows had scrolled it: in the issue
+// header's Status, Triage stood 39 px above what the box showed after "e", and Enter took an
+// option the reader could not see. Each change of the search shows the option it marks active
+// whole below the text box, the list's own box alone scrolled.
+test("a word typed in a single pick's text box and the word cleared each scroll its list the least that shows the option they mark active whole", async () => {
+  const user = userEvent.setup();
+  const view = render(<SingleHost initial="Triage" options={STATUSES} />);
+  const scrolls = spyOn(Element.prototype, "scrollIntoView");
+  try {
+    const trigger = screen.getByRole("button", { name: pickNamed("Epic") });
+    await user.click(trigger);
+    const box = layOutList(trigger);
+    const search = screen.getByRole("combobox", { name: "Search epics" });
+    // The option the list marks active and how far it has scrolled, after seven ArrowDown and
+    // after each key below: the box shows 61-286 px of its content.
+    await user.keyboard("{ArrowDown}".repeat(7));
+    const walked: [string, number][] = [[activeName(search), box.scrollTop]];
+    for (const key of ["e", "{ArrowUp}", "{Backspace}"]) {
+      await user.keyboard(key);
+      walked.push([activeName(search), box.scrollTop]);
+    }
+    expect(walked).toEqual([
+      // Retro, the last of the eight statuses, at 369-413.
+      ["Retro", 127],
+      // "e" leaves six statuses, Triage the first of them, at 61-105.
+      ["Triage", 0],
+      // ArrowUp wraps to the last of them, Retro, at 281-325.
+      ["Retro", 39],
+      // The word cleared, Triage is the first of all eight again.
+      ["Triage", 0],
+    ]);
+    expect(scrolls).not.toHaveBeenCalled();
+  } finally {
+    scrolls.mockRestore();
+    view.unmount();
+  }
+});
+
+/** The project List's Labels filter's twenty labels, in its order. */
+const FILTER_LABELS = Array.from(
+  { length: 20 },
+  (_, at) => `lab-${String(at + 1).padStart(2, "0")}`
+);
+
+// The same in a multi-select: in the project List's Labels filter, walked to its last label, "1"
+// left lab-01 the active option 259 px above what the box showed, and clearing the word left it
+// above the box too.
+test("a word typed in a multi-select's text box and the word cleared each scroll its list the least that shows the option they mark active whole", async () => {
+  const user = userEvent.setup();
+  const view = render(<Host options={FILTER_LABELS} />);
+  const scrolls = spyOn(Element.prototype, "scrollIntoView");
+  try {
+    const trigger = screen.getByRole("button", { name: "Labels" });
+    await user.click(trigger);
+    const box = layOutList(trigger);
+    const search = screen.getByRole("combobox", { name: "Search labels" });
+    // The option the list marks active and how far it has scrolled, after nineteen ArrowDown and
+    // after each key below: the box shows 61-286 px of its content.
+    await user.keyboard("{ArrowDown}".repeat(19));
+    const walked: [string, number][] = [[activeName(search), box.scrollTop]];
+    for (const key of ["1", "{ArrowUp}", "{Backspace}"]) {
+      await user.keyboard(key);
+      walked.push([activeName(search), box.scrollTop]);
+    }
+    expect(walked).toEqual([
+      // lab-20, the last of the twenty labels, at 897-941.
+      ["lab-20", 655],
+      // "1" leaves eleven labels, lab-01 the first of them, at 61-105.
+      ["lab-01", 0],
+      // ArrowUp wraps to the last of them, lab-19, at 501-545.
+      ["lab-19", 259],
+      // The word cleared, lab-01 is the first of all twenty again.
+      ["lab-01", 0],
+    ]);
+    expect(scrolls).not.toHaveBeenCalled();
+  } finally {
+    scrolls.mockRestore();
+    view.unmount();
+  }
+});
+
+// INFRA-3135, round 27: Enter on the option at the bottom of a multi-select's scrolled box ticked
+// it, the first value ticked, and the tick drew the Clear foot, stuck to the bottom of the box,
+// over it: lab-07 in the project List's Labels filter stood wholly under the foot. Once the host's
+// pick holds the value, the list shows the option it marks active whole above the foot, the
+// list's own box alone scrolled.
+test("Enter that ticks a multi-select's first value at the bottom of its box scrolls the list the least that shows it whole above the Clear foot the tick draws", async () => {
+  const user = userEvent.setup();
+  const labels = ["api", "docs", "frontend", "infra", "mobile", "ops", "qa", "web"];
+  const view = render(<Host options={labels} />);
+  const trigger = screen.getByRole("button", { name: "Labels" });
+  const lists = layOutListsAsOpened(trigger);
+  const scrolls = spyOn(Element.prototype, "scrollIntoView");
+  try {
+    await user.click(trigger);
+    const search = screen.getByRole("combobox", { name: "Search labels" });
+    // The option the list marks active and how far it has scrolled, after five ArrowDown and
+    // after Enter.
+    await user.keyboard("{ArrowDown}".repeat(5));
+    const walked: [string, number | undefined][] = [[activeName(search), lists.box()?.scrollTop]];
+    await user.keyboard("{Enter}");
+    walked.push([activeName(search), lists.box()?.scrollTop]);
+    expect(screen.getByTestId("selected").textContent).toBe("ops");
+    expect(screen.getByRole("button", { name: "Clear labels" })).toBeTruthy();
+    expect(walked).toEqual([
+      // ops, the sixth option, at 281-325 px of the box's content: whole at the bottom of the
+      // 100-325 px the box shows.
+      ["ops", 39],
+      // The foot covers the box's last 61 px, so at 39 the box shows 100-264 px, and ops ends
+      // below that.
+      ["ops", 100],
+    ]);
+    expect(scrolls).not.toHaveBeenCalled();
+  } finally {
+    scrolls.mockRestore();
+    lists.restore();
+    view.unmount();
+  }
+});
+
+// INFRA-3135, round 27: the Delivery page lists a facet's picked values first, so Enter that
+// ticked acme/r06 took it to the top of its Repository list, above what the box the arrows had
+// scrolled showed, and Enter that unticked it took it back to its own place, below what the box
+// showed once it was back at its top. Once the host's pick holds the value otherwise, the list
+// shows the option it marks active whole in its new place, the list's own box alone scrolled.
+test("Enter in a multi-select whose host lists the picked values first scrolls the list to show the option it ticks whole at the top, and the option it unticks whole back in its place", async () => {
+  const user = userEvent.setup();
+  const labels = ["api", "docs", "frontend", "infra", "mobile", "ops", "qa", "web"];
+  const view = render(<Host options={labels} pickedFirst />);
+  const trigger = screen.getByRole("button", { name: "Labels" });
+  const lists = layOutListsAsOpened(trigger);
+  const scrolls = spyOn(Element.prototype, "scrollIntoView");
+  try {
+    await user.click(trigger);
+    const search = screen.getByRole("combobox", { name: "Search labels" });
+    // The option the list marks active, its place among the options, what is picked and how far
+    // the list has scrolled, after seven ArrowDown and after each Enter.
+    const walked: [string, number, string | null, number | undefined][] = [];
+    const note = () => {
+      const active = search.getAttribute("aria-activedescendant");
+      walked.push([
+        activeName(search),
+        screen.getAllByRole("option").findIndex((option) => option.id === active),
+        screen.getByTestId("selected").textContent,
+        lists.box()?.scrollTop,
+      ]);
+    };
+    await user.keyboard("{ArrowDown}".repeat(7));
+    note();
+    for (let enter = 0; enter < 2; enter += 1) {
+      await user.keyboard("{Enter}");
+      note();
+    }
+    expect(walked).toEqual([
+      // web, the last option, at 369-413 px of the box's content, which shows 61-286 px of it.
+      ["web", 7, "", 127],
+      // Ticked, web is listed first, at 61-105.
+      ["web", 0, "web", 0],
+      // Unticked, web is back last, at 369-413, and the Clear foot is gone.
+      ["web", 7, "", 127],
+    ]);
+    expect(scrolls).not.toHaveBeenCalled();
+  } finally {
+    scrolls.mockRestore();
+    lists.restore();
+    view.unmount();
+  }
+});
+
+/** What a case below notes of the open Labels list after each step: the option it marks active,
+ *  that option's place among the options it draws (-1 for none), what the host's pick holds, and
+ *  how far `box`, the list's box, has scrolled. */
+function activePlace(box: HTMLElement | null): [string, number, string | null, number | undefined] {
+  const search = screen.getByRole("combobox", { name: "Search labels" });
+  const active = search.getAttribute("aria-activedescendant");
+  return [
+    activeName(search),
+    screen.getAllByRole("option").findIndex((option) => option.id === active),
+    screen.getByTestId("selected").textContent,
+    box?.scrollTop,
+  ];
+}
+
+// A host that lists picked values first moves them back to their original places when Clear
+// empties its selection. The active option can move below the visible part of the box.
+// Clear keeps active the option it finds active: the value Enter ticked, or the first row, which a
+// list opened again on a pick marks active. Once the host's pick holds nothing, the list shows that
+// option whole in its own place, the list's own box alone scrolled, with the focus still in the
+// text box.
+test("Clear in a multi-select whose host lists the picked values first keeps the option it marks active, and scrolls the list the least that shows it whole in its own place", async () => {
+  const user = userEvent.setup();
+  const labels = ["api", "docs", "frontend", "infra", "mobile", "ops", "qa", "web"];
+  const view = render(<Host options={labels} pickedFirst />);
+  const trigger = screen.getByRole("button", { name: "Labels" });
+  const lists = layOutListsAsOpened(trigger);
+  const scrolls = spyOn(Element.prototype, "scrollIntoView");
+  try {
+    // The option the list marks active, its place among the options, what is picked and how far
+    // the list has scrolled: after seven ArrowDown and Enter, after a pointer's press of Clear,
+    // once Enter has ticked web again and the list is closed and opened again, and after Clear.
+    await user.click(trigger);
+    await user.keyboard("{ArrowDown}".repeat(7));
+    await user.keyboard("{Enter}");
+    const walked = [activePlace(lists.box())];
+    await user.click(screen.getByRole("button", { name: "Clear labels" }));
+    walked.push(activePlace(lists.box()));
+    await user.keyboard("{Enter}");
+    await user.keyboard("{Escape}");
+    await user.click(trigger);
+    walked.push(activePlace(lists.box()));
+    await user.click(screen.getByRole("button", { name: "Clear labels" }));
+    walked.push(activePlace(lists.box()));
+    expect(walked).toEqual([
+      // Ticked, web, the last option, is listed first, at 61-105 px of the box's content, which
+      // shows 61-225 px of it above the Clear foot.
+      ["web", 0, "web", 0],
+      // Cleared, web is back last, at 369-413, and the foot is gone, so at 0 the box showed 61-286.
+      ["web", 7, "", 127],
+      // Ticked again and the list opened again: web is listed first, and is the first row.
+      ["web", 0, "web", 0],
+      // Cleared, web is back last, as above.
+      ["web", 7, "", 127],
+    ]);
+    expect(screen.getByRole("combobox", { name: "Search labels" })).toHaveFocus();
+    expect(scrolls).not.toHaveBeenCalled();
+  } finally {
+    scrolls.mockRestore();
+    lists.restore();
+    view.unmount();
+  }
+});
+
+// A pointer tick in a list that shows picked values first moves the ticked option above the
+// visible part of the scrolled box. The list scrolls nothing for
+// it: the reader picks among the rows the box shows. Once the host's pick holds the value, the
+// list marks active the first option whole between the text box and the Clear foot the tick
+// draws, so the next Enter ticks an option the reader sees, not the one the tick moved out of
+// sight.
+test("a pointer's tick in a multi-select whose host lists the picked values first scrolls nothing, and marks active the first option whole in sight, which the next Enter ticks", async () => {
+  const user = userEvent.setup();
+  const labels = ["api", "docs", "frontend", "infra", "mobile", "ops", "qa", "web"];
+  const view = render(<Host options={labels} pickedFirst />);
+  const trigger = screen.getByRole("button", { name: "Labels" });
+  const lists = layOutListsAsOpened(trigger);
+  const scrolls = spyOn(Element.prototype, "scrollIntoView");
+  try {
+    await user.click(trigger);
+    // The option the list marks active, its place among the options, what is picked and how far
+    // the list has scrolled, after seven ArrowDown, after a pointer's press of ops and after Enter.
+    await user.keyboard("{ArrowDown}".repeat(7));
+    const walked = [activePlace(lists.box())];
+    await user.click(screen.getByRole("option", { name: "ops" }));
+    walked.push(activePlace(lists.box()));
+    await user.keyboard("{Enter}");
+    walked.push(activePlace(lists.box()));
+    expect(walked).toEqual([
+      // web, the last option, at 369-413 px of the box's content, which shows 188-413 px of it;
+      // ops, the sixth, stands whole at 281-325.
+      ["web", 7, "", 127],
+      // Ticked, ops is listed first, at 61-105, above the 188-352 px the box shows over the Clear
+      // foot. docs, at 149-193, is cut by the text box, and frontend, at 193-237, is the first
+      // option whole in sight.
+      ["frontend", 3, "ops", 127],
+      // Enter ticks frontend, which is then listed second, at 105-149, and the list shows it whole.
+      ["frontend", 1, "ops,frontend", 44],
+    ]);
+    expect(scrolls).not.toHaveBeenCalled();
+  } finally {
+    scrolls.mockRestore();
+    lists.restore();
+    view.unmount();
+  }
+});
+
+// The same pointer's tick where no option stands whole between the text box and the Clear foot
+// the tick draws: each option here is 170 px tall, taller than the 164 px between them, as a long
+// label wrapped over many lines makes its row. The first tick draws the foot over the bottom of
+// the option it ticks. The list scrolls nothing and marks no option active, so Enter ticks
+// nothing, until an arrow marks an option again.
+test("a pointer's tick that leaves no option whole between a multi-select's text box and the Clear foot it draws scrolls nothing and marks no option active, so Enter ticks nothing", async () => {
+  const user = userEvent.setup();
+  const labels = ["api", "docs", "frontend", "infra", "mobile", "ops", "qa", "web"];
+  const view = render(<Host options={labels} />);
+  const trigger = screen.getByRole("button", { name: "Labels" });
+  const lists = layOutListsAsOpened(trigger, () => 170);
+  const scrolls = spyOn(Element.prototype, "scrollIntoView");
+  try {
+    await user.click(trigger);
+    // The option the list marks active, its place among the options, what is picked and how far
+    // the list has scrolled, after ArrowDown, after a pointer's press of docs, after Enter and
+    // after ArrowDown again.
+    await user.keyboard("{ArrowDown}");
+    const walked = [activePlace(lists.box())];
+    await user.click(screen.getByRole("option", { name: "docs" }));
+    walked.push(activePlace(lists.box()));
+    await user.keyboard("{Enter}");
+    walked.push(activePlace(lists.box()));
+    await user.keyboard("{ArrowDown}");
+    walked.push(activePlace(lists.box()));
+    expect(walked).toEqual([
+      // docs, the second option, at 231-401 px of the box's content, which shows 176-401 px of it.
+      ["docs", 1, "", 115],
+      // Ticked, docs stays in its place, and the Clear foot covers 340-401: the box shows 176-340,
+      // where api, at 61-231, and docs are each cut.
+      ["no option", -1, "docs", 115],
+      // Enter ticks nothing.
+      ["no option", -1, "docs", 115],
+      // ArrowDown marks the first option, api, and scrolls the box to its top.
+      ["api", 0, "docs", 0],
+    ]);
     expect(scrolls).not.toHaveBeenCalled();
   } finally {
     scrolls.mockRestore();

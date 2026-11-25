@@ -627,6 +627,7 @@ async function walkTheBarCombinations(
           name: "Select all matching",
           control: toolbar.getByRole("button", { name: /^Select all \d+ matching$/ }),
         },
+        // The shared single pick (INFRA-3135's R3), a button and not a select.
         { name: "Move to epic", control: listTrigger(toolbar, "Move to epic") },
         ...namedButtons(toolbar, [
           "Start next",

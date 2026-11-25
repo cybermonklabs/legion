@@ -216,11 +216,11 @@ export function useTableRecovery(project: string, report: (text: string) => void
     /** Waits on each write of `record` still in flight, and sends a refused one again only where
      *  `resend` lets its step go: what the kind's guard, where it has one, has let through
      *  (`ResumableAction.guard` in `issues-table-actions.ts`). A step is a key of `record.writes`:
-     *  an issue's key for its parent or rank write, `create`, `intoWork` or `reason`. A refused
-     *  write `resend` holds back stays as it is in Pending changes. Tells `waitOn` the key each
-     *  write it waits on goes out under, as it starts to wait on it - a Retry made under a new key
-     *  by that new one - so the caller can read the write's lateness in the store. Throws the
-     *  first refusal of a write it waited on or sent. */
+     *  an issue's key for its parent or rank write, or for a merge's close of its source, `create`,
+     *  `intoWork` or `reason`. A refused write `resend` holds back stays as it is in Pending
+     *  changes. Tells `waitOn` the key each write it waits on goes out under, as it starts to wait
+     *  on it - a Retry made under a new key by that new one - so the caller can read the write's
+     *  lateness in the store. Throws the first refusal of a write it waited on or sent. */
     settle: async (
       record: TableAction,
       resend: (step: string) => boolean,

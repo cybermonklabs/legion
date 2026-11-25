@@ -183,8 +183,8 @@ export function IssuesTable({
   const [selection, setSelection] = useState<RowSelectionState>({});
   // The issue the reader marked last - by its own checkbox, or `x` on its row: where the focus
   // goes when the bar goes with it (`returnFocus`, below). A select-all marks no row of the
-  // reader's own, so it records none. The List's search box is the last place `noteFocus`,
-  // below, hands the focus to.
+  // reader's own, so it records none. The List's hand-off (`noteFocus`, below) never lands in the
+  // search box (`searchRef`), which takes typed text.
   const lastMarked = useRef<string | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const recordMark = useCallback((key: string) => {
@@ -198,7 +198,8 @@ export function IssuesTable({
   // Which claims have lapsed is the agent registry's answer, read only while the Claimed by
   // filter asks for it: because it is picked, or because its panel is open and counting.
   const wantsFree = claimPicked.includes(UNCLAIMED_FACET);
-  const registry = useAgentRegistry(wantsFree || openFilter === "claim");
+  const readsRegistry = wantsFree || openFilter === "claim";
+  const registry = useAgentRegistry(readsRegistry);
   const {
     all,
     allItems,
@@ -295,31 +296,34 @@ export function IssuesTable({
   const leaves = () => model.displayRows.flatMap(({ row }) => (row.getIsGrouped() ? [] : [row.id]));
   // The List's own stop: its named table, which is drawn with no row as well.
   const tableStop = () => model.layout.scrollRef.current?.querySelector("table") ?? null;
-  // The bar's hand-off where the issue marked last cannot take the focus, with no scroll. After a
-  // press that took that issue out of the view - off the list, or out of what the filters show,
-  // as Take out of epic does under the Epic filter: a row the reader can see at its place, else
-  // before it. With no issue marked, as after a select-all from the table's head: the first row
-  // the reader can see below the table's sticky head. Else the table's own stop. A row the window
-  // has not drawn is out of their sight, so it is never where the focus lands.
+  // The bar's hand-off (`useLastMarkedPlace`): the checkbox of the issue marked last while the
+  // table draws its row, out of sight or not. After a press that took that issue out of the view
+  // - off the list, or out of what the filters show, as Take out of epic does under the Epic
+  // filter: a row the reader can see at its place, else before it. With no issue marked, as after
+  // a select-all from the table's head: the first row the reader can see below the table's sticky
+  // head. Each is shown whole at its nearest edge, below that head too. `head` is a header cell:
+  // the cells stick, and the `thead` does not (`DataTable`). Else the table's own stop, with no
+  // scroll. A row the window has not drawn is out of their sight, so it is never where the focus
+  // lands in the place of an issue that went.
   const landAtPlace = useLastMarkedPlace({
     control: (key) =>
       model.layout.scrollRef.current
         ?.querySelector(`[${ISSUE_ROW_ATTRIBUTE}="${CSS.escape(key)}"]`)
         ?.querySelector<HTMLElement>(ROW_CHECKBOX) ?? null,
+    head: () => model.layout.scrollRef.current?.querySelector("thead th") ?? null,
     lastMarked: () => lastMarked.current,
     list: tableStop,
     order: leaves,
     shown: Object.keys(selection).length !== 0,
   });
-  // The bar gone with the focus (`SelectionBar`): the checkbox of the issue the reader marked
-  // last while the table lists it. A row the window has not drawn is scrolled to and takes the
-  // focus as it lands (`focusRow`). Else the hand-off above (`landAtPlace`) has put the focus
-  // itself, with no scroll, after a press that took that issue out of the view or with no issue
-  // marked. A table action clears the selection only once the list read after it has settled
+  // The bar gone with the focus (`SelectionBar`): the hand-off above (`landAtPlace`) has put the
+  // focus itself, save where the table lists the issue marked last and its window has not drawn
+  // that row: the row is scrolled to, and its checkbox takes the focus as it lands (`focusRow`).
+  // A table action clears the selection only once the list read after it has settled
   // (`useIssueTableActions`), so the view read here is the one the action left.
   const returnFocus = () => {
     if (landAtPlace()) return null;
-    // `landAtPlace` moved nothing, so the issue marked last is listed.
+    // `landAtPlace` moved nothing, so the issue marked last is listed and its row is not drawn.
     const key = lastMarked.current;
     return key === null ? focusListStop(tableStop()) : model.focusRow(key, ROW_CHECKBOX);
   };
@@ -439,6 +443,14 @@ export function IssuesTable({
     () => (openFilter ? facetCounts(items, openFilter, filters, search) : EMPTY_FACETS),
     [items, openFilter, filters, search]
   );
+  // The header filters count what the table shows once the rows it waits on are in, as the
+  // chip does (`counted`): never the open issues alone while the closed ones it asked for are
+  // out. While the Claimed by filter reads the registry, they also wait until the registry's
+  // latest read has succeeded (`known`), so they stay hidden before its first answer and after a
+  // read that failed: until then no session's claim reads lapsed (`claimIsTakeable`), so Nobody
+  // or lapsed would leave out each claim whose session has gone, in its own count and, picked, in
+  // every other filter's.
+  const filterCounted = counted && (!readsRegistry || registry.known);
 
   const visibleColumns = table.getVisibleLeafColumns().length + 1;
   // A column filter's panel hangs off its header and goes with the table: it is closed then, as
@@ -600,6 +612,7 @@ export function IssuesTable({
         <>
           <DataTable
             empty="No issues match these filters."
+            filterCounted={filterCounted}
             filterCounts={openFacets}
             filterUnloaded={doneLoaded || whole ? undefined : DONE_UNLOADED}
             label={`${name} table`}

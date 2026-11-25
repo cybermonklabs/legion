@@ -517,6 +517,9 @@ export function IssueHeader({
           <button
             aria-label="Reopen issue"
             className={`min-h-11 rounded-lg px-3 py-2 text-sm font-medium ${secondaryButtonBorder} ${secondaryButtonHoverBorder} ${secondaryButtonDisabledText}`}
+            // Held, not disabled, while a write of the header's fields within its deadline or the
+            // rule's question is out (`statusBusy`): the pressed Reopen keeps the keyboard focus,
+            // and a second press sends nothing.
             {...heldPress(statusBusy, () => requestStatus("backlog"))}
             title="Reopen into Backlog"
             type="button"
@@ -729,6 +732,9 @@ export function IssueHeader({
             <button
               aria-label="Close issue"
               className={`min-h-11 shrink-0 rounded-lg px-2 py-2 text-sm font-medium sm:px-3 md:min-h-8 md:py-1 xl:px-2 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder} ${secondaryButtonDisabledText}`}
+              // Held, not disabled, while a write of the header's fields within its deadline or
+              // the rule's question is out (`statusBusy`): the pressed Close keeps the keyboard
+              // focus, and a second press sends nothing.
               {...heldPress(statusBusy, () => requestStatus("done"))}
               type="button"
             >

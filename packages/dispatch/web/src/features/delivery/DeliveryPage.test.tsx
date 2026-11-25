@@ -1543,39 +1543,66 @@ test("after a first read that failed the Filter panel offers every verdict with 
   expect(await facetOptionNames(user, "Deployed")).toEqual(["deployed", "waiting", "not tracked"]);
 });
 
-// `?rework=` and `?deployed=` each name a closed set: a value outside it is dropped, as an unknown
-// `?sort=` id is. `constructor` is a key every object inherits, and none of the labels' own.
-test("a rework or deployed value the page has no label for reaches neither the subscription nor a chip, and a known one beside it does", async () => {
-  renderPage(`${DELIVERY_URL}&rework=constructor&rework=rework&deployed=waiting&deployed=bogus`);
+// INFRA-3135's R5: every address a reader can write selects the rows it selected at the merge
+// base. A facet value the page knows no label for - `constructor`, a key every object inherits
+// and none of the labels' own, `bogus`, `P9` - is sent to Dispatch as it was there, which selects
+// no row by it, and the page draws it as a chip by its own word, so the reader can take it off.
+// Alone it lists nothing, as it did; beside a known value it lists what the known one does.
+for (const [facet, query, chip] of [
+  ["priority", "priority=P9", "Remove Priority: P9 filter"],
+  ["rework", "rework=constructor", "Remove Rework: constructor filter"],
+  ["deployed", "deployed=bogus", "Remove Deployed: bogus filter"],
+] as const) {
+  test(`an unknown ${facet} value alone reaches the subscription and draws its chip`, async () => {
+    renderPage(`${DELIVERY_URL}&${query}`);
+    const socket = await openSocket();
+    const { sub } = await subscriptionTo(socket, { kind: "timeline", window: URL_WINDOW, query });
+    serve(socket, snapshotFrame(sub, everyFacet));
+    expect(await screen.findByText("1 PRs in current filter/window")).toBeDefined();
+    expect(rowControls()).toEqual(["Filter · 1", chip]);
+  });
+}
+
+// A word every object inherits names no count: the Filter panel's Priority list draws
+// `constructor` with a count of 0, where a plain read of the answer's counts drew Object's own
+// function there.
+test("an address value every object inherits draws no inherited count in the Filter panel", async () => {
+  const user = userEvent.setup();
+  renderPage(`${DELIVERY_URL}&priority=constructor`);
   const socket = await openSocket();
   const { sub } = await subscriptionTo(socket, {
     kind: "timeline",
     window: URL_WINDOW,
-    query: "rework=rework&deployed=waiting",
+    query: "priority=constructor",
+  });
+  serve(socket, snapshotFrame(sub, everyFacet));
+  expect(await screen.findByText("1 PRs in current filter/window")).toBeDefined();
+  const names = await facetOptionNames(user, "Priority");
+  expect(names.filter((name) => name.startsWith("constructor"))).toEqual(["constructor, 0 PRs"]);
+});
+
+test("an unknown facet value beside a known one reaches the subscription with it, and each draws its chip", async () => {
+  renderPage(
+    `${DELIVERY_URL}&priority=P9&priority=P0&rework=constructor&rework=rework&deployed=waiting&deployed=bogus`
+  );
+  const socket = await openSocket();
+  const { sub } = await subscriptionTo(socket, {
+    kind: "timeline",
+    window: URL_WINDOW,
+    query:
+      "priority=P9&priority=P0&rework=constructor&rework=rework&deployed=waiting&deployed=bogus",
   });
   serve(socket, snapshotFrame(sub, everyFacet));
   expect(await screen.findByText("1 PRs in current filter/window")).toBeDefined();
   expect(rowControls()).toEqual([
-    "Filter · 2",
+    "Filter · 6",
+    "Remove Priority: P9 filter",
+    "Remove Priority: P0 filter",
+    "Remove Rework: constructor filter",
     "Remove Rework: rework filter",
     "Remove Deployed: waiting filter",
+    "Remove Deployed: bogus filter",
   ]);
-});
-
-// `?priority=` names a closed set too: an issue's priority, P0 to P3, an issue with none and a
-// pull request that names no issue, the values Dispatch counts the facet by and reads a selection
-// of. A value outside it was kept, sent to Dispatch and drawn as a chip.
-test("a priority value outside its facet's values reaches neither the subscription nor a chip, and a known one beside it does", async () => {
-  renderPage(`${DELIVERY_URL}&priority=P9&priority=P0`);
-  const socket = await openSocket();
-  const { sub } = await subscriptionTo(socket, {
-    kind: "timeline",
-    window: URL_WINDOW,
-    query: "priority=P0",
-  });
-  serve(socket, snapshotFrame(sub, everyFacet));
-  expect(await screen.findByText("1 PRs in current filter/window")).toBeDefined();
-  expect(rowControls()).toEqual(["Filter · 1", "Remove Priority: P0 filter"]);
 });
 
 // F2 item 3: the count is the answer's for the filter and the window the address names, so the
@@ -1731,6 +1758,74 @@ test("while a new filter's read is out the Own colour list draws no count beside
   serve(socket, snapshotFrame(sub, colouredByAgent));
   expect(await screen.findByText("1 PRs in current filter/window")).toBeDefined();
   expect(await ownColourNames(user)).toEqual(["Release crew, 3 PRs", "Reviewer, 2 PRs"]);
+});
+
+/** Each session the session-groups editor lists under "Sessions in this window", by its text,
+ *  read from the editor the Filter panel's **Edit groups** opens, which is closed again so the
+ *  next read opens its own. */
+async function editorSessions(user: UserEvent): Promise<string[]> {
+  await openFilterPanel(user);
+  await user.click(screen.getByRole("button", { name: "Edit groups" }));
+  const editor = within(screen.getByRole("dialog", { name: "Session groups" }));
+  const sessions = within(editor.getByRole("list", { name: "Sessions in this window" }))
+    .getAllByRole("listitem")
+    .map((row) => (row.textContent ?? "").replace(/\s+/gu, " ").trim());
+  await user.click(editor.getByRole("button", { name: "Close session groups" }));
+  return sessions;
+}
+
+// INFRA-3135, round 27 (the tester's row 359d0ed7): the editor lists the sessions of the answer
+// on screen with how many pull requests of the window each is first on. While a new window's read
+// was out the previous window's answer stayed on screen (`keepPreviousData`), and the editor drew
+// that window's counts as this one's. It lists those sessions with their groups and no count until
+// the new window answers, then that window's own sessions and counts.
+test("while a new window's read is out the session-groups editor draws no count beside a session, and the new window's sessions and counts once it is in", async () => {
+  const user = userEvent.setup();
+  renderPage();
+  const socket = await answered({
+    ...emptyTimeline,
+    prs: [listedPR],
+    session_groups: [RELEASE_CREW],
+    ...RELEASE_CREW_SESSIONS,
+  });
+  expect(await screen.findByText("1 PRs in current filter/window")).toBeDefined();
+  expect(await editorSessions(user)).toEqual([
+    expect.stringMatching(/^Planner one\b.*\b2 PRs · Release crew$/u),
+    expect.stringMatching(/^Planner two\b.*\b1 PR · Release crew$/u),
+    expect.stringMatching(/^Reviewer\b.*\b1 PR$/u),
+  ]);
+
+  await pickIn(user, () => screen.getByLabelText("Window"), "Last 7 days");
+  const { sub } = await subscriptionTo(socket, {
+    kind: "timeline",
+    window: { preset: 7 },
+    query: "",
+  });
+  // The first window's answer is still on screen while the new window's read is out.
+  await screen.findByText("Counting PRs in current filter/window…");
+  const held = await editorSessions(user);
+  expect(held).toEqual([
+    expect.stringMatching(/^Planner one\b.*\bRelease crew$/u),
+    expect.stringMatching(/^Planner two\b.*\bRelease crew$/u),
+    expect.stringMatching(/^Reviewer\b/u),
+  ]);
+  expect(held.filter((session) => /\b\d+ PRs?\b/u.test(session))).toEqual([]);
+
+  serve(
+    socket,
+    snapshotFrame(sub, {
+      ...emptyTimeline,
+      prs: [listedPR],
+      session_groups: [RELEASE_CREW],
+      session_pr_counts: { s1: 1, s4: 3 },
+      session_titles: { s1: "Planner one", s4: "Builder" },
+    })
+  );
+  expect(await screen.findByText("1 PRs in current filter/window")).toBeDefined();
+  expect(await editorSessions(user)).toEqual([
+    expect.stringMatching(/^Builder\b.*\b3 PRs$/u),
+    expect.stringMatching(/^Planner one\b.*\b1 PR · Release crew$/u),
+  ]);
 });
 
 // F2 item 4: `?ws=x&we=y` was kept as written, `Date.parse` gave NaN and every pull request was

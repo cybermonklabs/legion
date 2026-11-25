@@ -1305,16 +1305,15 @@ function NarrowedByControlRow(): ReactNode {
 
 /**
  * The reader takes the only narrowing of `NarrowedByControlRow` off from the keyboard, with the
- * control row 60 px down the page and 104 px tall, its Filter trigger at `filter`, and the window
- * scrolled to `scrolled`. Expects the focus on Filter, the scrolls into view and of the window to
- * be `moves`, in order, and Filter's top at the window's top once the press is done.
+ * control row 60 px down the page and 104 px tall, its Filter trigger on its first line, 44 px
+ * tall, and the window scrolled to `scrolled`. Expects the focus on Filter, the scrolls into view
+ * and of the window to be `moves`, in order, and Filter's top at the window's top once the press
+ * is done.
  */
 async function expectChipsHandOff({
-  filter: filterAt,
   moves: expected,
   scrolled,
 }: {
-  readonly filter: () => DOMRect;
   readonly moves: unknown[];
   readonly scrolled: number;
 }): Promise<void> {
@@ -1343,7 +1342,7 @@ async function expectChipsHandOff({
     const filter = screen.getByRole("button", { name: "Filter" });
     if (row === null) throw new Error("no control row is drawn");
     row.getBoundingClientRect = () => new DOMRect(0, 60 - window.scrollY, 100, 104);
-    filter.getBoundingClientRect = filterAt;
+    filter.getBoundingClientRect = () => new DOMRect(0, 60 - window.scrollY, 100, 44);
     setScrollY(scrolled);
     screen.getByRole("button", { name: "Remove Type: question filter" }).focus();
 
@@ -1368,10 +1367,7 @@ async function expectChipsHandOff({
 // whole again once the commit is done. A plain `focus()` scrolled it in Chromium and Firefox only
 // to have the anchor undo that scroll.
 test("the control row's chips hand-off shows its landing whole again after the anchor puts the row back where the commit found it", async () => {
-  // The control row stands 60 px down the page, its Filter on its first line; the window is
-  // scrolled to 80 px.
   await expectChipsHandOff({
-    filter: () => new DOMRect(0, 60 - window.scrollY, 100, 44),
     moves: [
       { of: "Filter", options: { block: "nearest", inline: "nearest" }, scroll: "into view" },
       // The anchor puts the row back where the commit found it, 20 px above the window's top.
@@ -1389,10 +1385,7 @@ test("the control row's chips hand-off shows its landing whole again after the a
 // commit found it, which takes Filter out of sight again. The landing showed only a control partly
 // in sight, and left this one where it stood, out of sight.
 test("the control row's chips hand-off shows a landing wholly out of sight at its nearest edge, again after the anchor puts the row back", async () => {
-  // The control row stands 60 px down the page, its Filter on its first line; the window is
-  // scrolled to 200 px.
   await expectChipsHandOff({
-    filter: () => new DOMRect(0, 60 - window.scrollY, 100, 44),
     moves: [
       { of: "Filter", options: { block: "nearest", inline: "nearest" }, scroll: "into view" },
       // The anchor puts the row back where the commit found it, 140 px above the window's top.

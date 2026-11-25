@@ -46,6 +46,7 @@ function renderEditor(
   values: {
     agents?: readonly Agent[];
     titles?: Readonly<Record<string, string>>;
+    counted?: boolean;
     counts?: Readonly<Record<string, number>>;
     inMain?: boolean;
   } = {}
@@ -56,6 +57,7 @@ function renderEditor(
   const editor = (shown: readonly DeliverySessionGroup[]) => {
     const drawn = (
       <SessionGroupsEditor
+        counted={values.counted}
         counts={values.counts ?? counts}
         groups={shown}
         onClose={() => {}}
@@ -87,6 +89,49 @@ test("it lists the window's sessions busiest first, each with its title, count a
     ]);
     expect(rows[0]?.textContent).toContain("3 PRs");
     expect(rows[1]?.textContent).toContain("Release crew");
+  } finally {
+    cleanup();
+  }
+});
+
+// INFRA-3135, round 27: while a new window's read is out the page's answer is the previous
+// window's, so the editor it opens is given that window's counts and told they are not counted
+// (`counted` false). It lists those sessions still, each with its group, but draws no count beside
+// one; given the window's own answer it draws each count again.
+test("an editor whose counts are not counted lists each session and its group with no count, and draws the counts once they are", () => {
+  renderEditor([crew], { counted: false });
+  try {
+    const rows = within(screen.getByRole("list", { name: "Sessions in this window" })).getAllByRole(
+      "listitem"
+    );
+    const held = rows.map((row) => row.textContent ?? "");
+    expect(held).toEqual([
+      expect.stringContaining("Planner one"),
+      expect.stringContaining("Planner two"),
+      expect.stringContaining("Reviewer"),
+    ]);
+    expect(held.filter((text) => /\b\d+ PRs?\b/u.test(text))).toEqual([]);
+    // Planner two's group, with no separator left where its count would have been.
+    expect(held[1]).toContain("Release crew");
+    expect(held[1]).not.toContain("·");
+    // A session in no group draws nothing beside its name, not an empty box.
+    expect(
+      rows.flatMap((row) => [...row.children].filter((part) => part.textContent === ""))
+    ).toEqual([]);
+  } finally {
+    cleanup();
+  }
+
+  renderEditor([crew], { counted: true });
+  try {
+    const rows = within(screen.getByRole("list", { name: "Sessions in this window" })).getAllByRole(
+      "listitem"
+    );
+    expect(rows.map((row) => row.textContent)).toEqual([
+      expect.stringContaining("3 PRs"),
+      expect.stringContaining("2 PRs · Release crew"),
+      expect.stringContaining("1 PR"),
+    ]);
   } finally {
     cleanup();
   }
