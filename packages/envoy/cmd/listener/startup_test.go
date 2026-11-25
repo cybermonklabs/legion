@@ -460,8 +460,10 @@ func TestAListenerWithoutAGitHubRouteLeavesTheCIBucketAlone(t *testing.T) {
 	listener := startListenerProcess(t, cmdtest.Build(t, "envoy-listener"), client.Conn.ConnectedUrl(), "no-github-route")
 	listener.waitHealthy(t)
 	// The positive control, TestAListenerWithAGitHubRouteSettlesTheCIBucket, settles this seed
-	// within a few one-second ticks of turning healthy; five seconds covers them.
-	for deadline := time.Now().Add(listenerWaitBound(t)); time.Now().Before(deadline); time.Sleep(250 * time.Millisecond) {
+	// within a few one-second ticks of turning healthy; five seconds covers them. This loop's only
+	// exit is its deadline, so what it proves is an absence and the five seconds are the row's
+	// subject: it keeps its own span, as the quiet windows do.
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(250 * time.Millisecond) {
 		consumers := 0
 		for range client.JS().ConsumerNames("KV_" + bus.CIStateBucket) {
 			consumers++

@@ -88,7 +88,7 @@ func TestOnePersonsSocketsHoldNoMoreThanTheirShareOfTheBudget(t *testing.T) {
 		}
 		return true
 	}) {
-		t.Fatal("the person's sockets neither took the frames sent to them nor closed within 10 s")
+		t.Fatal("the person's sockets neither took the frames sent to them nor closed in time")
 	}
 	t.Logf("the person's sockets hold %d bytes of their %d share; the replica holds %d of its %d", sockets[0].caller.buffered.Load(), share, rig.sockets.buffered.Load(), budget)
 
@@ -151,7 +151,7 @@ func TestAFrameTheReplicaRefusesLeavesNothingOnItsPerson(t *testing.T) {
 	t.Cleanup(unlock)
 	flood(t, rig.owner.url, session, 6)
 	if !testwait.Holds(listenerWaitBound(t), 10*time.Millisecond, socket.ended.Load) {
-		t.Fatalf("the held socket did not close within 10 s; the replica holds %d bytes", rig.sockets.buffered.Load())
+		t.Fatalf("the held socket did not close in time; the replica holds %d bytes", rig.sockets.buffered.Load())
 	}
 	unlock()
 	if !testwait.Holds(listenerWaitBound(t), 10*time.Millisecond, func() bool { return rig.sockets.buffered.Load() == 0 }) {
@@ -181,7 +181,7 @@ func TestARelaySocketGivesItsPlaceBackOnlyAfterItsPumpsLastFrame(t *testing.T) {
 	t.Cleanup(unlock)
 	publishRelayFrame(t, rig.owner.url, session, natsgo.Header{})
 	if !testwait.Holds(listenerWaitBound(t), 10*time.Millisecond, func() bool { frames, _ := socket.held(); return frames == 1 }) {
-		t.Fatal("the socket took no frame within 5 s")
+		t.Fatal("the socket took no frame before the test binary's deadline")
 	}
 	_ = client.conn.Close()
 	// The pump cannot let its frame go while the row holds the write lock, so with the fix no

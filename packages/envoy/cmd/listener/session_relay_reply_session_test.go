@@ -587,7 +587,7 @@ func TestANakGapReMarkRunsOffTheReceiptCallback(t *testing.T) {
 		select {
 		case <-naked:
 		case <-time.After(listenerWaitBound(t)):
-			t.Fatal("onReply did not return within 2s of a nak carrying a gap mark; it waited on the re-mark instead of running it off the callback")
+			t.Fatal("onReply did not return in time of a nak carrying a gap mark; it waited on the re-mark instead of running it off the callback")
 		}
 		select {
 		case <-started:

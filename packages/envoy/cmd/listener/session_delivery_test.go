@@ -1070,7 +1070,7 @@ func TestSessionConsumerRegistrationHoldsTheLockFromItsFilterToItsRow(t *testing
 			default:
 			}
 			if time.Now().After(deadline) {
-				t.Errorf("after 10s the restart of %s neither waits for the consumer lock nor is done with it", sessionID)
+				t.Errorf("in the time it was given the restart of %s neither waits for the consumer lock nor is done with it", sessionID)
 				return
 			}
 			time.Sleep(5 * time.Millisecond)

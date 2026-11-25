@@ -76,7 +76,7 @@ func waitForKeptRoleMessage(t *testing.T, client *bus.Client, role, eventID stri
 			return item
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("role %s's kept lane does not hold event %s after 5s (last read: %+v, held: %t)", role, eventID, item, ok)
+			t.Fatalf("role %s's kept lane does not hold event %s in the time it was given (last read: %+v, held: %t)", role, eventID, item, ok)
 		}
 	}
 }
@@ -484,7 +484,7 @@ func TestNoKeptRoleCopyOrPublishAnswerCarriesAKeepKey(t *testing.T) {
 	case frame := <-frames:
 		assertNoKeepKey(t, "the copy handed to the role's next holder", frame)
 	case <-time.After(listenerWaitBound(t)):
-		t.Fatalf("the claimant of %s was handed no kept copy in 30 seconds", role)
+		t.Fatalf("the claimant of %s was handed no kept copy in time", role)
 	}
 
 	// The live send's own forward and its 200, which carry the envelope the same way.
@@ -498,7 +498,7 @@ func TestNoKeptRoleCopyOrPublishAnswerCarriesAKeepKey(t *testing.T) {
 	case frame := <-frames:
 		assertNoKeepKey(t, "the copy forwarded to the live holder", frame)
 	case <-time.After(listenerWaitBound(t)):
-		t.Fatalf("the live holder of %s was forwarded nothing in 30 seconds", role)
+		t.Fatalf("the live holder of %s was forwarded nothing in time", role)
 	}
 }
 

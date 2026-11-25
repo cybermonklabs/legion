@@ -118,7 +118,7 @@ func TestARelaySocketRefusesASubjectAndAReplyItWasNotGranted(t *testing.T) {
 			}
 			return true
 		case <-time.After(listenerWaitBound(t)):
-			t.Errorf("a sub to %s was answered nothing within 2 s, want err subject_not_granted for sid %d", subject, sid)
+			t.Errorf("a sub to %s was answered nothing in time, want err subject_not_granted for sid %d", subject, sid)
 			return false
 		}
 	}
@@ -990,7 +990,7 @@ func TestARelaySocketClosesOnAFrameItCannotRead(t *testing.T) {
 	case err := <-client.closed:
 		t.Fatalf("a well-formed sub closed the socket: %v", err)
 	case <-time.After(listenerWaitBound(t)):
-		t.Fatal("no pong within 5 s of a well-formed sub")
+		t.Fatal("no pong before the test binary's deadline of a well-formed sub")
 	}
 }
 
@@ -1063,7 +1063,7 @@ func TestAPingAfterASubIsAnsweredAfterTheSubscribe(t *testing.T) {
 	select {
 	case <-client.pongs:
 	case <-time.After(listenerWaitBound(t)):
-		t.Fatal("no pong within 5 s of the ping")
+		t.Fatal("no pong before the test binary's deadline of the ping")
 	}
 	sent := publishRelayFrame(t, rig.owner.url, session, natsgo.Header{})
 	select {

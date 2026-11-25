@@ -467,7 +467,7 @@ func crashConcurrentClaims(t *testing.T) {
 	case answer = <-cAnswer:
 		cAnswer <- answer
 	case <-time.After(listenerWaitBound(t)):
-		t.Fatalf("%s's claim did not answer within 10s", c)
+		t.Fatalf("%s's claim did not answer in time", c)
 	}
 	if answer.Code != http.StatusOK {
 		t.Fatalf("%s's claim: status %d %s; want 200", c, answer.Code, answer.Body.String())

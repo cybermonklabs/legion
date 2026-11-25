@@ -640,7 +640,7 @@ func awaitCacheHasNoRecord(t *testing.T, sessions *session.SessionRegistry, sess
 			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("after 10s the cache still holds a record of %s; want the delete made through it delivered", sessionID)
+			t.Fatalf("in the time it was given the cache still holds a record of %s; want the delete made through it delivered", sessionID)
 		}
 		time.Sleep(5 * time.Millisecond)
 	}

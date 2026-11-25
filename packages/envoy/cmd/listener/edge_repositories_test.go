@@ -968,7 +968,7 @@ func TestAnEdgeRefreshReadsEachProjectOnItsOwn(t *testing.T) {
 	select {
 	case <-privRead:
 	case <-time.After(listenerWaitBound(t)):
-		t.Fatal("the refresh read no answer of PRIV within 30 s")
+		t.Fatal("the refresh read no answer of PRIV in time")
 	}
 	close(release)
 	<-done

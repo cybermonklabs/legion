@@ -363,7 +363,7 @@ func TestTheEdgeStartsAndServesUnderItsRenderedGrant(t *testing.T) {
 				break
 			}
 			if time.Now().After(deadline) {
-				t.Fatalf("the server logged no violation naming %s within 10s, so its log was not read", provoked)
+				t.Fatalf("the server logged no violation naming %s in time, so its log was not read", provoked)
 			}
 			time.Sleep(200 * time.Millisecond)
 		}

@@ -120,7 +120,7 @@ func interestWarmUp(t *testing.T, p *listenerProcess, n int, while func()) map[s
 			return lines[n-1]
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("no interest registry warm-up line %d within 10s:\n%s", n, p.Output.String())
+			t.Fatalf("no interest registry warm-up line %d in time:\n%s", n, p.Output.String())
 		}
 		time.Sleep(100 * time.Millisecond)
 	}

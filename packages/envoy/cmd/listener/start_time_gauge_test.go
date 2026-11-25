@@ -111,7 +111,7 @@ func startTimeSample(t *testing.T, listener *listenerProcess) (int64, string) {
 			}
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("GET %s did not answer 200 within 30s (last error %v)\n%s", url, err, listener.Output.String())
+			t.Fatalf("GET %s did not answer 200 in time (last error %v)\n%s", url, err, listener.Output.String())
 		}
 		time.Sleep(100 * time.Millisecond)
 	}

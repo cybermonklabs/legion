@@ -77,7 +77,7 @@ func TestTheListenerServesWhileItsIssuersCannotBeDiscovered(t *testing.T) {
 			break
 		}
 		if status != http.StatusServiceUnavailable || time.Now().After(deadline) {
-			t.Fatalf("a projected token once its issuer answers: status %d, want 200 within 45 s with no restart\n%s", status, listener.Output.String())
+			t.Fatalf("a projected token once its issuer answers: status %d, want 200 in time with no restart\n%s", status, listener.Output.String())
 		}
 		time.Sleep(250 * time.Millisecond)
 	}

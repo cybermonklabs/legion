@@ -2639,11 +2639,15 @@ func durableHeldElsewhere(t *testing.T, uri, consumer string) (*bus.Client, *nat
 }
 
 // waitFor polls cond every 50 ms until it holds, and fails the test as waiting for desc if it
-// never does. Its only bound is the test binary's deadline less testwait's margin: every caller
-// waits for something that must happen, and none of them measures how long it takes, so a span of
-// this helper's own would only decide rows on a loaded runner, where the thing it waits for
-// arrives later than it would on an idle one. A row that really hangs still fails by name, before
-// go test's own timeout, and says what it waited for.
+// never does, bounded by listenerWaitBound. Every caller waits for something that must happen and
+// none of them measures how long it takes, so a span of each caller's own would only decide rows
+// on a loaded runner, where the thing arrives later than it would on an idle one. Timed over three
+// whole-package runs under load, every one of these waits but one took at most 5.26 s against that
+// bound; a row that really hangs still fails by name, inside it, and says what it waited for.
+//
+// A wait whose success is that nothing happens is not one of these: its span is what the row
+// asserts, so it keeps its own (the quiet windows, and the loop in
+// TestAListenerWithoutAGitHubRouteLeavesTheCIBucketAlone whose only exit is its deadline).
 func waitFor(t *testing.T, desc string, cond func() bool) {
 	t.Helper()
 	testwait.WithinPolling(t, listenerWaitBound(t), 50*time.Millisecond, desc, cond)

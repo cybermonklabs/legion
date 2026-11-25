@@ -373,7 +373,7 @@ func (r *relayLiveRig) open(t *testing.T, s *relayLiveSession, token string) *re
 	case err := <-client.closed:
 		t.Fatalf("the socket of %s closed before its first pong: %v", s.id, err)
 	case <-time.After(listenerWaitBound(t)):
-		t.Fatalf("the socket of %s answered no ping within 10 s", s.id)
+		t.Fatalf("the socket of %s answered no ping in time", s.id)
 	}
 	return client
 }
@@ -499,7 +499,7 @@ func TestARelaySocketRefusesAnotherSessionsSubjects(t *testing.T) {
 				t.Fatalf("a sub to %s was answered %s, want err %s for sid %d", subject, frame.raw, relayErrSubjectNotGranted, sid)
 			}
 		case <-time.After(listenerWaitBound(t)):
-			t.Errorf("a sub to %s was answered nothing within 3 s, want err %s", subject, relayErrSubjectNotGranted)
+			t.Errorf("a sub to %s was answered nothing in time, want err %s", subject, relayErrSubjectNotGranted)
 		}
 	}
 	// The frame names an event of the token's project, which the edge's rule passes to this
@@ -577,7 +577,7 @@ func TestAProbeOfASocketSessionReadsConnected(t *testing.T) {
 		state = send()
 		return state == sessionStateStopped
 	}) {
-		t.Fatalf("a send to %s, whose socket closed, read %q for 10s, want %q", s.id, state, sessionStateStopped)
+		t.Fatalf("a send to %s, whose socket closed, read %q for the time it was given, want %q", s.id, state, sessionStateStopped)
 	}
 	rig.requireNoViolation(t)
 }

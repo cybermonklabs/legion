@@ -158,7 +158,7 @@ func (rig *windowRig) awaitHeldForSession(t *testing.T, sessionID, eventID, what
 			return held[index]
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("%s: the stream holds %v on %s's own subject after 10s, want event %s among them",
+			t.Fatalf("%s: the stream holds %v on %s's own subject in the time it was given, want event %s among them",
 				what, heldEventIDs(held), sessionID, eventID)
 		}
 		time.Sleep(50 * time.Millisecond)

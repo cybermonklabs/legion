@@ -111,7 +111,7 @@ func TestAnIdentityTokenOfASilentIssuerIsAnswered503(t *testing.T) {
 					select {
 					case <-accepted:
 					case <-time.After(listenerWaitBound(t)):
-						t.Fatal("the background discovery never dialed the silent issuer within 5 s")
+						t.Fatal("the background discovery never dialed the silent issuer before the test binary's deadline")
 					}
 				}
 				status, retryAfter, elapsed, err := sendThroughTheServer(t, auth, unsignedToken(issuer, ""))
@@ -196,7 +196,7 @@ func TestAProjectedTokenOfASlowIssuerIsAnsweredWithinTheWriteDeadline(t *testing
 			break
 		}
 		if err != nil || status != http.StatusServiceUnavailable || time.Now().After(deadline) {
-			t.Fatalf("a projected token once the slow key set was read: status %d after %s, err %v; want 204 within 15 s", status, elapsed.Round(time.Millisecond), err)
+			t.Fatalf("a projected token once the slow key set was read: status %d after %s, err %v; want 204 before the test binary's deadline", status, elapsed.Round(time.Millisecond), err)
 		}
 		time.Sleep(250 * time.Millisecond)
 	}
@@ -205,7 +205,7 @@ func TestAProjectedTokenOfASlowIssuerIsAnsweredWithinTheWriteDeadline(t *testing
 	}
 	status, _, elapsed, err = sendThroughTheServer(t, auth, token)
 	if err != nil || status != http.StatusNoContent || elapsed > time.Second {
-		t.Fatalf("a projected token after the read landed: status %d after %s, err %v; want 204 within 1 s from the kept set", status, elapsed.Round(time.Millisecond), err)
+		t.Fatalf("a projected token after the read landed: status %d after %s, err %v; want 204 from the kept set", status, elapsed.Round(time.Millisecond), err)
 	}
 	if fetches := issuer.JWKSFetches(); fetches != 1 {
 		t.Fatalf("the key set was read %d times, want 1: the read's set was kept", fetches)
@@ -245,7 +245,7 @@ func TestANewKeyIDDuringASlowReadIsAnswered503(t *testing.T) {
 			break
 		}
 		if err != nil || status != http.StatusServiceUnavailable || time.Now().After(deadline) {
-			t.Fatalf("a token signed by B once the read has landed: status %d after %s, err %v; want 204 within 15 s", status, elapsed.Round(time.Millisecond), err)
+			t.Fatalf("a token signed by B once the read has landed: status %d after %s, err %v; want 204 before the test binary's deadline", status, elapsed.Round(time.Millisecond), err)
 		}
 		time.Sleep(250 * time.Millisecond)
 	}

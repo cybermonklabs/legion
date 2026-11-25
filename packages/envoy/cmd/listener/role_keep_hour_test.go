@@ -2157,7 +2157,7 @@ func TestAKeptCopyWakesItsRoleUntilTaken(t *testing.T) {
 		kept := stored[routed].stored
 		for role, held := range stored {
 			if spread := held.stored.Sub(kept); spread < 0 || spread > 30*time.Second {
-				t.Fatalf("role %s's copy was stored %s after the first, want the four copies within 30s of each other", role, spread)
+				t.Fatalf("role %s's copy was stored %s after the first, want the four copies in time of each other", role, spread)
 			}
 		}
 		shift := wakeStepShift(t, kept)

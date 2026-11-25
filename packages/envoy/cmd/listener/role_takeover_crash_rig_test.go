@@ -286,7 +286,7 @@ func (rig *crashRig) storeToSession(sessionID string, n int) {
 	select {
 	case <-js.PublishAsyncComplete():
 	case <-time.After(listenerWaitBound(rig.t)):
-		rig.t.Fatalf("the stream did not acknowledge %d messages to %s within 30s", n, sessionID)
+		rig.t.Fatalf("the stream did not acknowledge %d messages to %s in time", n, sessionID)
 	}
 }
 
@@ -340,7 +340,7 @@ func (rig *crashRig) awaitStored(subject, eventID, what string) storedEnvelope {
 			for i, stored := range held {
 				events[i] = stored.item.EventID
 			}
-			rig.t.Fatalf("%s: the stream holds %v on %s after 10s; want event %s", what, events, subject, eventID)
+			rig.t.Fatalf("%s: the stream holds %v on %s in the time it was given; want event %s", what, events, subject, eventID)
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
