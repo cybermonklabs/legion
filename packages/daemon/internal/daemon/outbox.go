@@ -4323,18 +4323,19 @@ func basisReview(review dispatch.Review, approval dispatch.Approval) intake.Basi
 // and applies the read as a fact of its own (intake.PendingBasisRead), never the gate seed's, so
 // the read reaches the root's step alone and not the ancestor's own gate. It is the one read that
 // opens or ends such a wait: the registration queues it, the boot queues it for every such step,
-// and every event that is a cue for the step queues it (workflow's PendingBasisCue). The workflow
+// and every event that is a cue for the step queues it (workflow's pendingBasisCue). The workflow
 // judges it by its one verdict (workflow's judgeBasisRead): the person's approval of the version,
 // as the document's latest review of its latest version, opens the step on an ancestor that still
 // meets R1's first condition, and a changes request on that version, a newer version of the
 // document, the request no longer open, which the end names with whoever closed it, or the
 // ancestor's leave ends the wait. The workflow applies the fact only while the step still waits on
-// that request in that generation, so a read of a wait that has opened or ended since changes
-// nothing. The fact's id is the step, the request and what the read found (basisReadFound), so
-// the same read again is a duplicate, and a read that finds anything else, another closer
-// included, is a fact of its own. A failed read, of any of the three, is the row's error, and the
-// row is retried on its backoff (permanentRefusal names no pending-basis seed): no event waits on
-// it.
+// that request and registration in that generation, so a read of a wait that has opened or ended
+// since changes nothing. The fact's id names the step, the request, the registration it reads for
+// (record.BasisRegistration) and what the read found (basisReadFound), so the same read again of
+// the same wait is a duplicate, while a read of a later registration on the same request or a read
+// that finds anything else, another closer included, is a fact of its own. A failed read, of any
+// of the three, is the row's error, and the row is retried on its backoff (permanentRefusal names
+// no pending-basis seed): no event waits on it.
 func (r *outbox) seedPendingBasis(ctx context.Context, row record.OutboxRow, payload record.PendingBasisSeed) error {
 	if r.dispatch == nil {
 		return errors.New("pending-basis seed executor has no Dispatch client")
@@ -4343,10 +4344,11 @@ func (r *outbox) seedPendingBasis(ctx context.Context, row record.OutboxRow, pay
 	if err != nil {
 		return err
 	}
-	fact := intake.PendingBasisRead{Issue: row.Issue, Step: payload.Step, Generation: payload.Generation, ArtifactID: payload.ArtifactID,
-		BasisArtifactID: payload.BasisArtifactID, BasisVersion: payload.BasisVersion, Ask: payload.Ask, Read: read}
-	id := fmt.Sprintf("pending-basis:%s:%d:%s:%s:%s:%d:%s", row.Issue, payload.Generation, payload.Step, payload.Ask, payload.BasisArtifactID, payload.BasisVersion,
-		basisReadFound(read))
+	registeredAt := record.BasisRegistration(payload.RegisteredAt)
+	fact := intake.PendingBasisRead{Issue: row.Issue, Step: payload.Step, Generation: payload.Generation, RegisteredAt: registeredAt,
+		ArtifactID: payload.ArtifactID, BasisArtifactID: payload.BasisArtifactID, BasisVersion: payload.BasisVersion, Ask: payload.Ask, Read: read}
+	id := fmt.Sprintf("pending-basis:%s:%d:%s:%s:%d:%s:%d:%s", row.Issue, payload.Generation, payload.Step, payload.Ask, registeredAt.UnixMicro(),
+		payload.BasisArtifactID, payload.BasisVersion, basisReadFound(read))
 	if _, err := intake.ApplyFact(ctx, r.pool, "outbox", id, fact, r.handlers...); err != nil {
 		return fmt.Errorf("apply the pending-basis seed of %s: %w", row.Issue, err)
 	}
@@ -4384,7 +4386,7 @@ func readBasis(ctx context.Context, client dispatch.Client, seed record.PendingB
 		return intake.BasisRead{}, fmt.Errorf("Dispatch shows approval request %s of version %d of %s open, though the document's approval shows it closed",
 			seed.Ask, seed.BasisVersion, seed.BasisArtifactID)
 	}
-	read.Closed = &intake.BasisClose{Actor: ask.ResolvedBy, State: ask.State}
+	read.Closed = &intake.BasisClose{Actor: ask.ClosedBy, State: ask.State}
 	return read, nil
 }
 
