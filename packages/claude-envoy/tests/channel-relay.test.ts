@@ -272,7 +272,7 @@ test("a relay subject the listener refuses is told as an outage naming why, and 
 test("a task frame on the relay socket reaches the session's task values unanswered, and a reopen of the socket tells them a new epoch", async () => {
   const server = startRelaySocketStandIn()
   started.push(() => server.stop())
-  const settings = relaySettings(server)
+  const settings = await relaySettings(server)
   const { inbound } = settings
   if ("off" in inbound) throw new Error(`inbound is off: ${inbound.off}`)
   const dialled = await dialChannelInbound(
