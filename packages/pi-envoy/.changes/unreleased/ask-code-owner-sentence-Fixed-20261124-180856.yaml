@@ -1,13 +1,11 @@
 kind: Fixed
 body: |-
-  AskGate passes an ask for a review that a repository's CODEOWNERS file requires from the
+  AskGate passes an ask for a review that the base branch's CODEOWNERS file requires from the
   person, on a path it gives to no agent identity, when the transcript shows the agent's read of
-  that file. The ask need not say why it needs the person or that they own the path. Content
-  failure 12 counts a fact about the reader's own role or access, such as that they are a code
-  owner of a path, as a fact the reader does not need, and `dispatch-writing-specs` tells a
-  session never to write one. Before, authority failure 1 sent back an ask that was only a
-  pull-request review, and agents opened each code-owner review ask with a sentence that told
-  the person they own the path.
+  that file. Content failure 12 counts a fact about the reader's own role, such as that they are
+  a code owner of a path, as a fact the reader does not need. Before, authority failure 1 sent
+  back an ask that was only a pull-request review, and agents opened each code-owner review ask
+  with a sentence that told the person they own the path.
 time: 2026-11-24T18:08:56Z
 custom:
     Issue: ask-code-owner-sentence

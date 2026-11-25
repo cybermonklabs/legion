@@ -1,7 +1,0 @@
-kind: Changed
-body: |-
-  The `dispatch-writing-specs` skill the plugin links tells a session never to tell the person
-  a fact about their own role or access, such as that they are a code owner of the path.
-time: 2026-11-24T18:08:56Z
-custom:
-    Issue: ask-code-owner-sentence

@@ -43,22 +43,18 @@ it is access 7.) These shapes fail it:
    your approval and nothing more", or `Done`/`Can't` under "Merge the two
    open pull requests". Agents approve and merge pull requests.
    The person is not a step in a merge.
+   Fix: for a review with no CODEOWNERS read in the transcript, read the
+   base branch's CODEOWNERS file, and resend the ask unchanged when the
+   review meets the code-owner case below.
    `blocker` when `kind` is `action`. (Not this: a real risk question about
    *whether* to merge on the evidence in hand — "merge now on the test
    results, or wait a week in staging" — that is their risk appetite and passes. Not
    this: an ask whose main action is their own — rotate their keys, log in, tap
    the key — with a PR to look at mentioned alongside; that passes whole. Not
-   this: a review that the repository's CODEOWNERS file requires from the
+   this: a review that the base branch's CODEOWNERS file requires from the
    person on a path the pull request changes, where that file names no agent
    identity as a code owner of the path, and the transcript shows the agent's
-   read of it. That ask passes. It need not say why it needs the person, and
-   it does not tell them that they own the path: the CODEOWNERS read belongs
-   in the transcript, not in the ask. A rewrite you send adds no such sentence
-   either. For an ask for such a review whose transcript shows no CODEOWNERS
-   read, the fix you give is to read the file before the ask, and to resend
-   the ask unchanged when the read meets this case; it never adds to the ask a
-   sentence about who owns the path. A merge is never this case. Every other
-   click on a pull request stays under this rule.)
+   read of it; that passes. A merge is never this case.)
 2. **A chore the agent could run with a credential it already holds**: the
    ask hands the person a command that runs under a credential the ask itself
    names as the agent's — an `aws …` command under a named profile (the
@@ -148,9 +144,7 @@ it is access 7.) These shapes fail it:
    already shows the check and the capability genuinely absent. Not this:
    anything that needs the person's own hardware, browser session, or
    personal login, such as a YubiKey tap, their SSO, their personal PAT or
-   their own account. Those pass whatever this session holds. Not this: an
-   ask that gives no reason why it needs the person, such as authority 1's
-   code-owner review: it claims nothing, so there is nothing to verify. See
+   their own account. Those pass whatever this session holds. See
    non-findings.)
 
 ### Genuine-uncertainty failure (`concern`)
@@ -253,8 +247,8 @@ An ask is short and self-contained: the person answers it with no other reading.
 
 12. **A fact the reader does not need.** The write holds a fact that the
    reader does not need to decide, build or check. A fact about the reader's
-   own role or access is one, such as that they are a code owner of a path or
-   an admin of an org: they know it. Name each such fact by its
+   own role is one, such as that they are a code owner of a path: they know
+   it. Name each such fact by its
    words. Give the write without them. (Not this: a fact that changes which
    option is right. Not this: a cost. Not this: a count that the decision
    turns on. Not this: a link. Not this: the concrete case the write is
@@ -355,8 +349,8 @@ We invented these examples. Each one shows a shape that fails, and the
 failure it shows.
 
 - "Approve the pull request that adds the retry button… The only step left
-  is your approval." `Done`/`Can't`, and no CODEOWNERS read in the
-  transcript requires the person's review → authority 1, `blocker`. Agents
+  is your approval." `Done`/`Can't`, and the transcript's read of
+  CODEOWNERS gives the path to an agent identity → authority 1, `blocker`. Agents
   approve and merge pull requests, and the person is not a step in that.
 - "Your approval is needed to turn on versioning for the test bucket…
   Command: `AWS_PROFILE=test aws s3api put-bucket-versioning …`" →
