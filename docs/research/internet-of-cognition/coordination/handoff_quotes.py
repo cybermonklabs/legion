@@ -3,8 +3,9 @@
 
 Input: the Dispatch address as the first argument, then one event id or more, each the id of a
 `handoff.recorded` row, and the bearer token in the file $DISPATCH_TOKEN_FILE names, which is
-never printed.  Output: one line per event on stdout.  Run, from the repository root, as the
-row c-handoff-quote-spans-1 runs it:
+never printed.  Output: one line on stdout, so that a row's set membership, whose candidates are
+each one line, can hold it whole.  Run, from the repository root, as the row
+c-handoff-quote-spans-1 runs it:
 
   python3 docs/research/internet-of-cognition/coordination/handoff_quotes.py \
       "$DISPATCH_URL" <event id>...
@@ -12,9 +13,10 @@ row c-handoff-quote-spans-1 runs it:
 For each event it reads the row by its id, through GET /api/v1/events/log?after=<id - 1>&limit=1,
 then the handoff the row names, through GET /api/v1/handoffs/<id>, and reads the handoff's text
 by count.py's own rule, handoff_text.  It matches count.py's own PAT_QUOTE against each
-paragraph of that text, a paragraph at a time as the count does, and prints the event id and,
-for each match in order, the part of it the pattern's author alternative matched, a dash and a
-word, said and a word, or a word and wrote, each written as a JSON string.  A read that fails
+paragraph of that text, a paragraph at a time as the count does.  For each event, in the order
+given, it writes the event id and, for each match in order, the part of it the pattern's author
+alternative matched, the word the match ends on, after a dash or said, or before wrote, each
+written as a JSON string; the events are separated by "; ".  A read that fails
 ends the run on urllib's own error, after a line naming the event; an event that is no
 `handoff.recorded` row ends it too, naming the event.  Either way it exits non-zero.
 """
@@ -55,6 +57,7 @@ def main():
             print("handoff_quotes.py: the read of %s failed" % what, file=sys.stderr)
             raise
 
+    out = []
     for word in sys.argv[2:]:
         event_id = int(word)
         page = read("/api/v1/events/log?after=%d&limit=1" % (event_id - 1), "event %d" % event_id)
@@ -64,7 +67,8 @@ def main():
         hid = (row.get("payload") or {}).get("handoff_id")
         body = read("/api/v1/handoffs/%s" % hid, "handoff %s of event %d" % (hid, event_id)).get("body")
         parts = [part for p in count.PARAGRAPH.split(count.handoff_text(body)) for part in author_parts(p)]
-        print(" ".join([str(event_id)] + [json.dumps(part, ensure_ascii=False) for part in parts]))
+        out.append(" ".join([str(event_id)] + [json.dumps(part, ensure_ascii=False) for part in parts]))
+    print("; ".join(out))
     return 0
 
 

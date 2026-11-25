@@ -193,10 +193,12 @@ Each row carries its count and its denominator, the records of its type read in 
 | between an agent and a person | 11 | 16568 | handoffs |
 | inside one tree | 6054 | 16568 | handoffs |
 | across sessions | 2058 | 16568 | handoffs |
-| a quoted span attributed to a named author, in the handoffs | 14 | 16568 | handoffs |
+| a match of the quotation pattern, in the handoffs | 14 | 16568 | handoffs |
+| a quoted span attributed to a named author, read one match at a time, in the handoffs | 0 | 16568 | handoffs |
 
-One group of rows reads zero over a denominator above zero: the three classes of the answers to asks.
-The last row is no class: it is the quoted spans of the handoffs, the premise the section on handoffs below measures, with the handoffs' own denominator.
+Two groups of rows read zero over a denominator above zero: the three classes of the answers to asks, and the last row, the quoted spans attributed to a named author among the handoffs.
+Each is a premise that failed, which the judgement's front page states.
+The last two rows are no class: they are the premise the section on handoffs below measures, the matches of the quotation pattern and those of them that, read one by one, name who wrote the quoted words, each over the handoffs' own denominator.
 
 ## The smallest class
 
@@ -227,7 +229,7 @@ The window holds 16568 such rows, and the count read 16568 handoffs, which are t
 A read that fails ends the run, naming the handoff, so no handoff is left out of a count the script prints.
 
 14569 of those 16568 are instances [c-handoff-all-1].
-8797 carry a `dispatch://` reference, 11672 a forty-character commit and 14 a quoted span attributed to a named author [c-handoff-all-1].
+8797 carry a `dispatch://` reference, 11672 a forty-character commit and 14 a match of the quotation pattern [c-handoff-all-1].
 
 A handoff's text is every string value its body holds, and it is classed by the same rule and in the same order as the written acts [c-handoff-classes-1].
 Its actor is the actor of its `handoff.recorded` row, the session that recorded it, and its issue is that row's issue [c-handoff-classes-1].
@@ -242,9 +244,11 @@ Each class carries the same denominator of 16568 handoffs read:
 6446 instances are in no class: 5774 cite no record, 142 cite an issue this deployment does not hold, and 530 cite a record whose author the feed does not name [c-handoff-classes-1].
 Read whatever the tree, 8123 of the 14569 instances cite a held record whose author the feed names: 7328 a session citing a record another session wrote, 784 a session citing its own, 11 a session citing a person's, and a person wrote none of them [c-handoff-cited-1].
 
-14 of the 16568 handoffs carry a quoted span attributed to a named author [c-handoff-quote-1].
-So this pattern does not read zero over its denominator, and the judgement's front page may not state, on this count, that no handoff carries another agent's words with the name of who wrote them [c-handoff-quote-1].
-By my reading of the spans those 14 handoffs hold, which no row prints, the word the pattern takes for an author is in each a word after a dash or after `said` that names no one who wrote the quoted words: a status or a verdict such as `TRUE`, `NO`, `COMPLETED` or `CONFLICTING`, an identifier such as a test's name, the name of a project or a product, or the first word of what follows the dash.
+The quotation pattern matches 14 of the 16568 handoffs [c-handoff-quote-1].
+Read one by one, the spans it matches in those 14 handoffs, two in one of them, name no one who wrote the quoted words [c-handoff-quote-1] [c-handoff-quote-spans-1].
+The word each matched span ends on, which the pattern takes for an author's name, is a verdict or a status such as `TRUE`, `NO`, `COMPLETED` or `CONFLICTING`, the name of a test or a field, the name of a project or a product, or the first word of what follows the dash [c-handoff-quote-spans-1].
+So no handoff of the window carries a quoted span attributed to a named author: this premise reads zero over the 16568 handoffs read, a premise that failed, which the judgement's front page states [c-handoff-quote-1].
+In the other kinds of record the quotation pattern's matches were not read one by one, so the figures of quoted spans above count matches of the pattern.
 
 ## What this record cannot hold: one session's own coordination
 
