@@ -8220,6 +8220,61 @@ test("Shift+F opens the Filter panel and Shift+V the View menu on their first co
   }
 });
 
+// INFRA-1109's probe: Escape is a panel's while one stands open, never the selection's. With rows
+// marked, the View menu opened by a press on its trigger takes the first Escape, which closes it
+// and keeps what the reader marked, from the trigger as from where the press left the focus (the
+// menu's first control); the second, with the menu shut, clears the selection.
+test("with rows selected, the first Escape closes the View menu opened by a press on its trigger and keeps the selection, and the second clears it", async () => {
+  const user = userEvent.setup();
+  const rows = [
+    inboxIssue("ask-a", "CORE-1", "Which approach?"),
+    inboxIssue("ask-b", "CORE-2", "Which format?"),
+  ];
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
+  const getAsk = mockAskReads(rows);
+  const getIssue = mockIssueReads();
+  const { unmount } = renderInbox("/");
+  const mark = (askId: string) =>
+    within(rowOf(askId)).getByRole<HTMLInputElement>("checkbox", { name: /^Select / });
+  /** Whether the menu and both marks stand as `open` and `marked` say, after `when`. */
+  const expectMenuAndMarks = (when: string, open: boolean, marked: boolean) => {
+    expect(screen.queryByRole("dialog", { name: "View" }) !== null, `the menu, ${when}`).toBe(open);
+    expect(mark("ask-a").checked, `ask-a, ${when}`).toBe(marked);
+    expect(mark("ask-b").checked, `ask-b, ${when}`).toBe(marked);
+  };
+  try {
+    await screen.findByText("Which format?");
+    await user.click(mark("ask-a"));
+    await user.click(mark("ask-b"));
+    await screen.findByText("2 selected");
+    const trigger = screen.getByRole("button", { name: "View" });
+
+    // The focus on the trigger, as main's probe had it.
+    await user.click(trigger);
+    expectMenuAndMarks("opened", true, true);
+    act(() => trigger.focus());
+    await user.keyboard("{Escape}");
+    expectMenuAndMarks("after one Escape from the trigger", false, true);
+
+    // The focus where the press leaves it: the menu's first control.
+    await user.click(trigger);
+    const menu = screen.getByRole("dialog", { name: "View" });
+    expect(within(menu).getAllByRole("radio", { name: "Newest first" })[0]).toHaveFocus();
+    await user.keyboard("{Escape}");
+    expectMenuAndMarks("after one Escape from the menu", false, true);
+    expect(screen.getByText("2 selected")).toBeTruthy();
+
+    await user.keyboard("{Escape}");
+    expectMenuAndMarks("after the second Escape", false, false);
+    expect(screen.queryByText("2 selected")).toBeNull();
+  } finally {
+    unmount();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+    getIssue.mockRestore();
+  }
+});
+
 /** The schema a decision block is built with, so a test can construct the node view the real
  *  editor constructs for every `ask` node of the document (`ProofDocument.decisions.test.tsx`
  *  does the same against the same fake editor). */

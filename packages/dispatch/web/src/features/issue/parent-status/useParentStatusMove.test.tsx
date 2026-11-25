@@ -8,6 +8,7 @@ import type { ReactNode } from "react";
 import { MemoryRouter, type NavigateFunction, useNavigate } from "react-router-dom";
 
 import { realClock, settle, tick } from "../../../__tests__/fake-clock";
+import { heldNotDisabled } from "../../../__tests__/held-press";
 import { keyedAttempt } from "../../../__tests__/keyed-attempt";
 import { answerRequests } from "../../../__tests__/network";
 import { userOnFakeClock } from "../../../__tests__/user";
@@ -649,10 +650,10 @@ test("asking: a choice confirmed sends the status change with that option", asyn
         keyedAttempt
       )
     );
-    // While it is out, nothing else of the question can be pressed: the choice pressed is held
-    // (`aria-disabled`), so it keeps the focus, and Cancel is disabled.
+    // While it is out, nothing else of the question can be pressed: the choice pressed and Cancel
+    // are held (`aria-disabled`), never disabled, so the focus stays in the question.
     expect(choice("Saving…")).toHaveAttribute("aria-disabled", "true");
-    expect(choice("Cancel")).toBeDisabled();
+    expect(heldNotDisabled(choice("Cancel"), "Cancel")).toBe(true);
     expect(move.patch).not.toHaveBeenCalled();
   } finally {
     surface.unmount();
@@ -755,30 +756,39 @@ test("writing: answered another refusal, the question shows it, writes nothing m
 
 /** The question with Move them with it confirmed, its write never answered, and the clock past
  *  that write's deadline: `table` answers the route, and the test may answer the write itself
- *  through it since. */
+ *  through it since. A check that fails here puts the clock and the surface away. */
 async function pastTheChosenWritesDeadline(
   table: Record<string, () => Promise<StatusChangeAnswer>>
 ) {
   const statusChanges = answerBy(table);
   const surface = renderSurface();
-  const { ended } = await surface.start(closeAcme4());
-  jest.useFakeTimers();
-  const user = userOnFakeClock();
-  await user.click(choice("Move them with it"));
-  await tick(SEND_DEADLINE_MS - 1_000);
-  expect(
-    writesOf(surface.client)
-      .rows()
-      .map((row) => row.status)
-  ).toEqual(["sending"]);
-  expect(choice("Cancel"), "Cancel, a second short of the deadline").toBeDisabled();
-  await tick(1_000);
-  expect(
-    writesOf(surface.client)
-      .rows()
-      .map((row) => row.status)
-  ).toEqual(["late"]);
-  return { ended, statusChanges, surface, user };
+  try {
+    const { ended } = await surface.start(closeAcme4());
+    jest.useFakeTimers();
+    const user = userOnFakeClock();
+    await user.click(choice("Move them with it"));
+    await tick(SEND_DEADLINE_MS - 1_000);
+    expect(
+      writesOf(surface.client)
+        .rows()
+        .map((row) => row.status)
+    ).toEqual(["sending"]);
+    expect(
+      heldNotDisabled(choice("Cancel"), "Cancel"),
+      "Cancel, a second short of the deadline"
+    ).toBe(true);
+    await tick(1_000);
+    expect(
+      writesOf(surface.client)
+        .rows()
+        .map((row) => row.status)
+    ).toEqual(["late"]);
+    return { ended, statusChanges, surface, user };
+  } catch (error) {
+    realClock();
+    surface.unmount();
+    throw error;
+  }
 }
 
 /** The routes' answers of the question's cases past the chosen write's deadline: the chosen
@@ -795,9 +805,9 @@ function withAnUnansweredChoice(): Record<string, () => Promise<StatusChangeAnsw
   };
 }
 
-// A chosen write that never answers holds the question until its deadline, and no longer: offline
-// it would hold the page under it for good. Past it each way out closes the question, while the
-// choices stay held, and the write goes on being tried under its key, as Pending changes shows.
+// A chosen write that never answers holds Keep as it is and Cancel until its deadline, and no
+// longer: offline they would stay held for good. Past it each way out closes the question, while
+// the choices stay held, and the write goes on being tried under its key, as Pending changes shows.
 for (const [name, close] of closes) {
   test(`writing: past the chosen write's deadline ${name} closes the question, and the write goes on being tried`, async () => {
     const { ended, statusChanges, surface, user } = await pastTheChosenWritesDeadline(
@@ -809,7 +819,7 @@ for (const [name, close] of closes) {
         "aria-disabled",
         "true"
       );
-      expect(choice("Cancel"), "Cancel, past the deadline").not.toBeDisabled();
+      expect(heldNotDisabled(choice("Cancel"), "Cancel"), "Cancel, past the deadline").toBe(false);
       await close(user);
       expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
       expect(await ended).toMatchObject({ kind: "left" });
@@ -879,6 +889,48 @@ test("writing: a chosen write the question was left behind past its deadline tha
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   } finally {
     realClock();
+    surface.unmount();
+  }
+});
+
+// Escape, a press on the backdrop and a navigation close the question at any time: while the
+// chosen write is out within its deadline, the question is left behind it, and the write goes on
+// in the write store and lands there as it would have under the question.
+test("writing: Escape while the chosen write is out, short of its deadline, closes the question, and the write goes on and lands", async () => {
+  const answer = fixtureAnswer("changed");
+  const write = Promise.withResolvers<StatusChangeAnswer>();
+  answerBy({
+    "dry run of done with no option": refuse(fixtureRefusal("conflict")),
+    "dry run of done with include_children": async () => fixtureAnswer("dry-run"),
+    "dry run of done with unlink_children": never,
+    "write of done with include_children": () => write.promise,
+  });
+  const user = userEvent.setup();
+  const surface = renderSurface();
+  const statuses = () =>
+    writesOf(surface.client)
+      .rows()
+      .map((row) => row.status);
+  try {
+    const { ended } = await surface.start(closeAcme4());
+    await user.click(choice("Move them with it"));
+    await waitFor(() => expect(statuses()).toEqual(["sending"]));
+
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog"), "the question, after Escape").not.toBeInTheDocument();
+    expect(await ended).toMatchObject({ kind: "left" });
+    expect(pendingStatus()).toHaveTextContent("");
+    expect(statuses(), "the write, once the question closed").toEqual(["sending"]);
+
+    await act(async () => {
+      write.resolve(answer);
+      await settle();
+    });
+    const { written } = (await ended) as Extract<StatusMoveEnd, { kind: "left" }>;
+    expect(await written).toEqual(answer);
+    expect(statuses(), "the write, once it landed").toEqual([]);
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  } finally {
     surface.unmount();
   }
 });

@@ -107,13 +107,15 @@ function ChoiceRow({
 /**
  * The question a status write asks when Dispatch's rule would refuse it (R24): a sibling of
  * `ConfirmDialog` on `useDialog`, so it traps focus, closes on Escape and gives focus back to the
- * control the person came from. A navigation closes it too, as Keep as it is does
- * (`useCloseOnNavigation`). It names the issues that hold the write, offers each choice those
- * issues allow with what its dry run says it changes, and "Keep as it is" and Cancel, which write
- * nothing. A choice is pressed only once its dry run has answered. While a choice's write is out
- * nothing closes it, until that write's deadline (`writingLate`): past it Keep as it is, Cancel,
- * Escape and a navigation close it all the same, and the write goes on being tried under its key,
- * as the shell's Pending changes shows, where the reader can stop it.
+ * control the person came from. A press on the backdrop and a navigation close it too, as Keep as
+ * it is does (`useCloseOnNavigation`). It names the issues that hold the write, offers each choice
+ * those issues allow with what its dry run says it changes, and "Keep as it is" and Cancel, which
+ * write nothing. A choice is pressed only once its dry run has answered. Escape, the backdrop and
+ * a navigation close it at any time: while a choice's write is out the question is left behind it
+ * (`left`), and the write goes on being tried under its key, as the shell's Pending changes shows,
+ * where the reader can stop it. Keep as it is and Cancel are held (`heldPress`, never disabled,
+ * so the focus stays in the dialog) while that write is out, until its deadline (`writingLate`),
+ * and close it the same way past it.
  */
 export function ParentStatusDialog({ question }: { question: ParentStatusQuestion }): ReactNode {
   const keepRef = useRef<HTMLButtonElement>(null);
@@ -179,18 +181,16 @@ export function ParentStatusDialog({ question }: { question: ParentStatusQuestio
           )}
           <div className="flex items-center justify-end gap-2">
             <button
-              className={buttonClasses}
-              disabled={closing}
-              onClick={question.close}
+              className={`refused:cursor-not-allowed refused:opacity-50 ${buttonClasses}`}
+              {...heldPress(closing, question.close)}
               ref={keepRef}
               type="button"
             >
               Keep as it is
             </button>
             <button
-              className={buttonClasses}
-              disabled={closing}
-              onClick={question.close}
+              className={`refused:cursor-not-allowed refused:opacity-50 ${buttonClasses}`}
+              {...heldPress(closing, question.close)}
               type="button"
             >
               Cancel
