@@ -106,9 +106,10 @@ func newRoleRigWithSessionMaxAge(t *testing.T, maxAge time.Duration) *roleRig {
 // keeperHeld is the keeper's period (bus.WithKeepInterval) of an outbox client on a stream a row
 // narrows by hand (roleRig.narrowAgentCapture, sessionOrderRig.refuse and
 // holdsBackASessionRouteTheStreamRefuses): an hour, longer than any row runs. The client owns the
-// stream, and its keeper adds back each of this binary's subjects the stream lacks within one
-// period (bus.ConnectOwningStream), so a pass inside the row lets the stream capture again what the
-// row took off it, and a send the row needs unacknowledged or refused is stored.
+// stream, and each pass of its keeper adds back every subject of this binary's that the stream
+// lacks and that overlaps none the stream carries (bus.ConnectOwningStream), so a pass inside the
+// row lets the stream capture again what the row took off it, and a send the row needs
+// unacknowledged or refused is stored.
 const keeperHeld = time.Hour
 
 // newRoleRigWith is a roleRig on a server of its own, its session registry opened with options. Its
