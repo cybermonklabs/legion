@@ -73,6 +73,7 @@ import {
 import { usePressFocus } from "../press-focus";
 import { RowText, useOutOfTabOrder } from "../RowText";
 import { FailedReadLine } from "../slots/failed-read-line";
+import { useFollowing } from "../slots/following";
 import { specSummary } from "../spec-summary";
 import { nodeRowSelectorOf, TAB_STOP_ROW } from "../tree-focus";
 import { nodesInOrder, rowKeyOf } from "../tree-keys";
@@ -194,8 +195,8 @@ export function SpecFilterBody({
   /** What the page last asked of the outline: go to a node. The page acts on each ask once,
    *  whichever outline or body took it (`useTakeOutlineRequest`). */
   request?: OutlineRequest;
-  /** The node the address names, which takes the focus once per following of the address (R19),
-   *  unless the reader has acted since they followed it. */
+  /** The node the address names, which takes the focus and the tab stop once per following of
+   *  the address (R19), unless the reader has acted since they followed it. */
   reveal?: string;
   /** The whole tree, which holds the asks, the decisions and each statement's checks. */
   root: TreeNode;
@@ -586,20 +587,45 @@ export function SpecFilterBody({
   });
 
   // The tree's one tab stop: the row the focus last rested on (R9), else the row the address
-  // names once the reads have settled, else the first statement. The address's row is the tab
-  // stop from the render that lands on it, as the Plan view's is: the stage gives a focus that
-  // rests on nothing to the tab-stop row as that render is drawn (`slots/stage.tsx`), before the
-  // landing's frame, and a landing whose row lost the focus to another row by then leaves the
-  // focus there (`landOnRow`). It is the tab stop where the reader has acted since the following
-  // as well, and moves no focus then: the stage gives the tab-stop row only a focus that rests on
-  // nothing, and a row the reader moved to holds the tab stop itself (`stop`). No render reads
-  // whether they have acted - an act aborts `addressActs` and draws nothing - so a tab stop that
-  // read it would move at whatever render came next.
+  // names once the reads have settled, where the reader has not acted since they followed the
+  // address, else the first statement. The address's row is the tab stop from the render that
+  // lands on it, as the Plan view's is: the stage gives a focus that rests on nothing to the
+  // tab-stop row as that render is drawn (`slots/stage.tsx`), before the landing's frame, and a
+  // landing whose row lost the focus to another row by then leaves the focus there
+  // (`landOnRow`). Whether the reader has acted since the following is read in the render that
+  // first finds the address's row in that following, and held for the rest of it, under the key
+  // the landing takes (the following and the row, `addressStop`): for a reader who acted the
+  // landing does nothing, but the stage still gives a focus they left on nothing - a turn of the
+  // wheel, or a key pressed on the page, before any statement was drawn - to the tab-stop row as
+  // the statements come, where the address's row would take it off screen; the first statement
+  // takes it instead. An act aborts `addressActs` and draws nothing, so a tab stop that read it
+  // at every render would move at whatever render came next. A row the reader moved to holds the
+  // tab stop itself (`stop`).
+  const following = useFollowing();
+  // The following of the controller the stage hands the body, noted as the Verification view
+  // notes it (`VerificationFilterBody`'s `actsFollowing`): a render of a following the body has
+  // not committed in yet reads the last following's controller (`ReaderActsWatch`), and no act,
+  // since the reader cannot have acted in this one yet.
+  const actsFollowing = useRef<string | undefined>(undefined);
+  useLayoutEffect(() => {
+    actsFollowing.current = following;
+  }, [following]);
   const addressed = readsSettled ? statements.find((node) => node.id === reveal) : undefined;
+  const addressKey = addressed === undefined ? undefined : `${following}:${addressed.id}`;
+  const [addressStop, setAddressStop] = useState<{
+    readonly gives: boolean;
+    readonly key: string;
+  }>();
+  if (addressKey !== undefined && addressStop?.key !== addressKey) {
+    const acted =
+      actsFollowing.current === following && addressActs?.current?.signal.aborted === true;
+    setAddressStop({ gives: !acted, key: addressKey });
+  }
+  const addressTakes = addressStop?.key === addressKey && addressStop?.gives === true;
   const tabStop =
     stop !== undefined && statements.some((node) => node.id === stop)
       ? stop
-      : (addressed ?? statements[0])?.id;
+      : ((addressTakes ? addressed : undefined) ?? statements[0])?.id;
   const rowProps = (node: TreeNode): SpecRowProps => {
     const rowKey = rowKeys.get(node.id);
     const place = documentOfNode(node.id, artifacts);

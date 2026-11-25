@@ -12,10 +12,11 @@ import {
 import { act, type RenderResult, render, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
-import { MemoryRouter, useLocation } from "react-router-dom";
+import { MemoryRouter, type NavigateFunction, useLocation } from "react-router-dom";
 
 import { type HeldNotifications, holdNotifications } from "../../../__tests__/commits";
 import { displayTree } from "../../../__tests__/display-trees";
+import { nextFrame } from "../../../__tests__/frames";
 import { installIntersectionObserver } from "../../../__tests__/intersection-observer";
 import { installResizeObserver } from "../../../__tests__/scroll-box";
 import { api } from "../../../api/client";
@@ -1152,6 +1153,126 @@ test("the Spec view opened more than 30 s after whoami answered asks for it noth
   } finally {
     view.unmount();
     whoAmI.mockRestore();
+    names.mockRestore();
+  }
+});
+
+// The address's statement takes the tab stop only where the reader has not acted since they
+// followed the address, in whatever render the view first draws it. The coverage and every
+// document's blocks, which the statements come from and the settling waits on as well, are held,
+// so the view draws no statement and the stage finds no row to give the focus, which stays on the
+// page's body. The reader turns the wheel there. The reads then answer together, and the
+// statements are first drawn in the render the reads settle in: the landing yields to the wheel,
+// and the stage gives the focus it finds on nothing to the tab-stop row, the first statement, and
+// not the address's, which a spec taller than the screen draws below it.
+test("a Spec address whose statements are drawn only once the reads settle keeps the stop off the address's statement where the reader acted first", async () => {
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  });
+  client.setQueryData(whoAmIQuery().queryKey, { event_head: "0", kind: "user", login: READER });
+  holdTreeReads(client);
+  client.removeQueries({ queryKey: issueCoverageQuery(KEY).queryKey });
+  const answered = Promise.withResolvers<void>();
+  const coverage = spyOn(api, "getIssueCoverage").mockImplementation(async () => {
+    await answered.promise;
+    return coverageRead(["r1", "r2"]);
+  });
+  const blocks = spyOn(api, "getArtifactBlocks").mockImplementation(async () => {
+    await answered.promise;
+    return [];
+  });
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  const view = drawStage("#b-r2", { client, issue: issueDetails(), preset: "spec" });
+  try {
+    await waitFor(() =>
+      expect(
+        view.container.querySelector("[data-spec-tree]"),
+        "the stage drew no Spec view"
+      ).toBeInTheDocument()
+    );
+    expect(
+      view.container.querySelector("[data-spec-body] [data-node-row]"),
+      "the view drew a statement before the reads answered"
+    ).toBeNull();
+    await act(async () => window.dispatchEvent(new Event("wheel")));
+    await act(async () => answered.resolve());
+    const first = await waitFor(() => {
+      const row = rowOf(view, "spec#b-r1");
+      expect(
+        row,
+        `the statements drawn after a turn of the wheel left the focus on ${document.activeElement?.closest<HTMLElement>("[data-node-row]")?.dataset.nodeId ?? document.activeElement?.tagName}`
+      ).toHaveFocus();
+      return row;
+    });
+    // The frame a landing would have asked for as the reads settled.
+    await act(() => nextFrame());
+    const addressed = rowOf(view, "spec#b-r2");
+    expect(
+      first,
+      `the reads settling moved the focus to ${document.activeElement?.tagName}`
+    ).toHaveFocus();
+    expect(
+      [first.tabIndex, addressed.tabIndex],
+      "the address's statement took the tab stop after the reader acted"
+    ).toEqual([0, -1]);
+  } finally {
+    view.unmount();
+    coverage.mockRestore();
+    blocks.mockRestore();
+    names.mockRestore();
+  }
+});
+
+// The stage's controller of the reader's acts is a following's own only from that following's
+// first commit, so the render that draws a view at a new address still reads the last
+// following's, which the press that followed the new address ended. The outline is drawn with
+// every read answered, and the reader presses, as on a link to a statement, which opens the Spec
+// view at the statement's address: the view draws its statements in its first render, from the
+// reads the page holds, and the address's statement takes the tab stop and the focus, since the
+// reader has not acted since they followed that address.
+test("the Spec view opened at a statement after a press on the outline gives that statement the stop and the focus", async () => {
+  const issue = issueDetails();
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  });
+  client.setQueryData(whoAmIQuery().queryKey, { event_head: "0", kind: "user", login: READER });
+  holdTreeReads(client);
+  client.setQueryData(issueCoverageQuery(KEY).queryKey, coverageRead(["r1", "r2"]));
+  for (const id of treeDocumentIds(issue)) {
+    client.setQueryData(artifactBlocksQuery(id).queryKey, []);
+  }
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  const held: { navigate?: NavigateFunction } = {};
+  const view = drawStage("", { client, held, issue, preset: "conversation" });
+  try {
+    await waitFor(() =>
+      expect(
+        view.container.querySelector("[data-issue-body] [data-node-row]"),
+        "the stage drew no outline"
+      ).toBeInTheDocument()
+    );
+    await act(async () => window.dispatchEvent(new Event("pointerdown")));
+    await act(async () => held.navigate?.(`${presetPath(KEY, "spec")}#b-r2`));
+    const addressed = await waitFor(() => {
+      const row = rowOf(view, "spec#b-r2");
+      expect(
+        row,
+        `the Spec view opened at the statement's address left the focus on ${document.activeElement?.closest<HTMLElement>("[data-node-row]")?.dataset.nodeId ?? document.activeElement?.tagName}`
+      ).toHaveFocus();
+      return row;
+    });
+    // The frame the landing asked for as the view was drawn.
+    await act(() => nextFrame());
+    expect(
+      addressed,
+      `the landing moved the focus to ${document.activeElement?.tagName}`
+    ).toHaveFocus();
+    expect(
+      [rowOf(view, "spec#b-r1").tabIndex, addressed.tabIndex],
+      "the address's statement took no tab stop"
+    ).toEqual([-1, 0]);
+  } finally {
+    view.unmount();
     names.mockRestore();
   }
 });

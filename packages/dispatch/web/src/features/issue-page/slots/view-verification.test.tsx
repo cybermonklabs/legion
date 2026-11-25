@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
-import { act, cleanup } from "@testing-library/react";
+import { act, cleanup, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import type { NavigateFunction } from "react-router-dom";
 
 import { nextFrame } from "../../../__tests__/frames";
 import { api } from "../../../api/client";
@@ -12,6 +13,7 @@ import {
   SPEC_SLUG,
   specRef,
 } from "../decisions-filter/decisions-fixtures";
+import { presetPath } from "../issue-address";
 import { blockNodeId } from "../tree-drafts";
 import { nodeRowSelectorOf } from "../tree-focus";
 import { check, VERIFICATION_SLUG } from "../verification-filter/verification-fixtures";
@@ -85,30 +87,43 @@ function blocksOf(
 
 /** Answers the reads the tree and the Verification view are drawn from for `verifiedIssue`: the
  *  coverage read with `statements`, each document's blocks, and the results read with the
- *  check. Each spy is the one `stubReads` set, which `spyOn` hands back, so the `afterEach` that
- *  restores those restores it. */
-function answerVerificationReads(statements: readonly string[] = [STATEMENT]): void {
-  spyOn(api, "getIssueCoverage").mockResolvedValue({
-    gaps: [],
-    has_plan: false,
-    issue: KEY,
-    requirements: statements.map((id) => ({
-      block_id: id,
-      checks: id === STATEMENT ? 1 : 0,
+ *  check, each once `until` answers, where a case holds them. Each spy is the one `stubReads`
+ *  set, which `spyOn` hands back, so the `afterEach` that restores those restores it. */
+function answerVerificationReads(
+  statements: readonly string[] = [STATEMENT],
+  until?: Promise<void>
+): void {
+  const answer = async <T,>(value: T): Promise<T> => {
+    await until;
+    return value;
+  };
+  spyOn(api, "getIssueCoverage").mockImplementation(() =>
+    answer({
       gaps: [],
-      plan_tasks: 0,
-      ref: specRef(id),
-      text: `The view lands on the statement an address names (${id}).`,
-    })),
-    spec_artifact_id: "artifact-spec",
-  });
+      has_plan: false,
+      issue: KEY,
+      requirements: statements.map((id) => ({
+        block_id: id,
+        checks: id === STATEMENT ? 1 : 0,
+        gaps: [],
+        plan_tasks: 0,
+        ref: specRef(id),
+        text: `The view lands on the statement an address names (${id}).`,
+      })),
+      spec_artifact_id: "artifact-spec",
+    })
+  );
   const blocks = blocksOf(statements);
-  spyOn(api, "getArtifactBlocks").mockImplementation(async (id: string) => [...(blocks[id] ?? [])]);
-  spyOn(api, "getIssueResults").mockResolvedValue({
-    checks: [check({ block_id: CHECK })],
-    issue: KEY,
-    verification_artifact_id: VERIFICATION_DOCUMENT.id,
-  });
+  spyOn(api, "getArtifactBlocks").mockImplementation((id: string) =>
+    answer([...(blocks[id] ?? [])])
+  );
+  spyOn(api, "getIssueResults").mockImplementation(() =>
+    answer({
+      checks: [check({ block_id: CHECK })],
+      issue: KEY,
+      verification_artifact_id: VERIFICATION_DOCUMENT.id,
+    })
+  );
 }
 
 /** The Verification view's row of the issue, its tab stop until the reads have settled, and its
@@ -202,4 +217,78 @@ test("a row the reader moved to by key before the reads settled keeps the tab st
     [first?.tabIndex, addressed?.tabIndex],
     "the address's row took the tab stop from the row the reader moved to"
   ).toEqual([0, -1]);
+});
+
+// The address's row takes the tab stop only where the reader has not acted since they followed
+// the address, in whatever render the view first draws it. Every read the view's rows wait on -
+// the coverage, the results and every document's blocks, which the settling waits on as well - is
+// held, so the view draws its tree with no row in it and the stage finds no row to give the focus,
+// which stays on the page's body. The reader turns the wheel there. The reads then answer
+// together, and the rows are first drawn in the render the reads settle in: the landing yields to
+// the wheel, and the stage gives the focus it finds on nothing to the tab-stop row, which is the
+// issue's, at the view's top, and not the address's row, which a page taller than the screen
+// draws below it.
+test("an address whose rows are drawn only once the reads settle gives the stop to the issue's row where the reader acted first", async () => {
+  const answered = Promise.withResolvers<void>();
+  answerVerificationReads([STATEMENT], answered.promise);
+  const view = drawStage(`#b-${STATEMENT}`, { issue: verifiedIssue(), preset: "verification" });
+  await waitFor(() =>
+    expect(
+      view.container.querySelector('[data-verification-body] [role="tree"]'),
+      `the stage drew ${drawnSlot(view)} and no Verification view`
+    ).toBeInTheDocument()
+  );
+  expect(
+    view.container.querySelector(ISSUE_ROW),
+    "the view drew its rows before the reads answered"
+  ).toBeNull();
+  await act(async () => window.dispatchEvent(new Event("wheel")));
+  await act(async () => answered.resolve());
+  const issueRow = await rowTakesFocus(
+    view,
+    ISSUE_ROW,
+    "the Verification view whose reads answered after a turn of the wheel"
+  );
+  // The frame a landing would have asked for as the reads settled.
+  await act(() => nextFrame());
+  const addressed = view.container.querySelector<HTMLElement>(STATEMENT_ROW);
+  expect(drawnSlot(view), "the stage drew the outline in place of the view").toBe("the view");
+  expect(addressed, "the view drew no row for the address's statement").toBeInTheDocument();
+  expect(issueRow, `the reads settling moved the focus to ${focusedRow()}`).toHaveFocus();
+  expect(
+    [issueRow.tabIndex, addressed?.tabIndex],
+    "the address's row took the tab stop after the reader acted"
+  ).toEqual([0, -1]);
+});
+
+// The stage's controller of the reader's acts is a following's own only from that following's
+// first commit, so the render that draws a view at a new address still reads the last
+// following's, which the press that followed the new address ended. The Spec view draws the
+// statement with every read answered, and the reader presses, as on the statement's count of
+// checks, which opens the Verification view at the statement's address: the view draws its rows
+// in its first render, from the reads the page holds, and its row of the statement takes the tab
+// stop and the focus, since the reader has not acted since they followed that address.
+test("the Verification view opened at a statement after a press on the Spec view gives that statement's row the stop and the focus", async () => {
+  answerVerificationReads();
+  const held: { navigate?: NavigateFunction } = {};
+  const view = drawStage("", { held, issue: verifiedIssue(), preset: "spec" });
+  await rowTakesFocus(
+    view,
+    `[data-spec-body] ${nodeRowSelectorOf(blockNodeId(SPEC_SLUG, STATEMENT))}`,
+    "the Spec view"
+  );
+  await act(async () => window.dispatchEvent(new Event("pointerdown")));
+  await act(async () => held.navigate?.(`${presetPath(KEY, "verification")}#b-${STATEMENT}`));
+  const addressed = await rowTakesFocus(
+    view,
+    STATEMENT_ROW,
+    "the Verification view opened at the statement's address"
+  );
+  // The frame the landing asked for as the view was drawn.
+  await act(() => nextFrame());
+  expect(addressed, `the landing moved the focus to ${focusedRow()}`).toHaveFocus();
+  expect(
+    [view.container.querySelector<HTMLElement>(ISSUE_ROW)?.tabIndex, addressed.tabIndex],
+    "the statement's row took no tab stop"
+  ).toEqual([-1, 0]);
 });
