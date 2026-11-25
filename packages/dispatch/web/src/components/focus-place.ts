@@ -1403,15 +1403,15 @@ export function focusOwnStop(region: HTMLElement): void {
 /** The controls a loss the reader caused walks back to, nearest first: the control now at `index`
  *  in `controls`, then each control before that place (`placesFrom`), save every control that
  *  takes typed text (`takesText`). The reader never chose such a field, and their next key would
- *  be typed into it: a column filter's pick that sends the project List off to read its issues
- *  takes its table away, and the List's walk back over the main content meets the Search issues
- *  box. The walk passes over it to the nearest control before it that takes no text, the
- *  toolbar's Clear filters. Where only such fields stand there, it offers nothing: a component's
- *  hand-off then tries its `fallback`, else walks back over its region, else lands on that
- *  region's own stop (`useFocusPlace`). A component's hand-off also passes over every control the
- *  walk offers that the reader cannot see now (`inSightNow`), as it reaches it: a landing scrolls
- *  its control into view (`land`), and the nearest control before the lost place can lie far from
- *  where the reader is. */
+ *  be typed into it. A column filter's pick that sends the project List off to read its issues
+ *  takes its table away, and the List's walk back over the main content reaches the toolbar's
+ *  Clear filters first: the toolbar draws its Search issues box first and Clear filters last,
+ *  after the chips (`ControlRow`), and the walk leaves that box out. Where only such fields stand
+ *  there, it offers nothing: a component's hand-off then tries its `fallback`, else walks back
+ *  over its region, else lands on that region's own stop (`useFocusPlace`). A component's hand-off
+ *  also passes over every control the walk offers that the reader cannot see now (`inSightNow`),
+ *  as it reaches it: a landing scrolls its control into view (`land`), and the nearest control
+ *  before the lost place can lie far from where the reader is. */
 function walkBack(
   controls: readonly HTMLElement[],
   index: number,

@@ -63,11 +63,11 @@ function letGo(opening: { current: Opening | null }): void {
   opening.current = null;
 }
 
-/** What the reader's own change of the list waits for before the list shows the option it marks
- *  active whole (`MultiSelect`'s `awaiting`): the commit that draws the search they typed in its
- *  text box, or the empty search a multi-select's Create row starts (`query`); or, for the value a
+/** What three changes of the reader's wait for before the list shows the option it marks active
+ *  whole (`MultiSelect`'s `awaiting`): the commit that draws the search they typed in its text
+ *  box, or the empty search a multi-select's Create row starts (`query`); or, for the value a
  *  multi-select's Enter or press ticked or unticked (`value`), the commit in which the host's pick
- *  holds that value otherwise than it did at the press (`picked`). */
+ *  holds that value otherwise than it did at the press (`picked`). No other change waits. */
 type Awaiting = { readonly query: string } | { readonly picked: boolean; readonly value: string };
 
 /** What closed the list, which `onOpenChange` hands its host with the close: a single pick's
@@ -307,8 +307,8 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
   const opensWith = useRef("");
   // What an open keeps shown whole (`Opening`), null while it keeps nothing.
   const opening = useRef<Opening | null>(null);
-  // What the reader's own change of the list waits for before the list shows its active option
-  // whole (`Awaiting`), null while it waits for nothing.
+  // What a change of the reader's that `Awaiting` names waits for before the list shows its
+  // active option whole, null while none waits.
   const awaiting = useRef<Awaiting | null>(null);
 
   const searchText = query.trim();
@@ -495,22 +495,23 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
     setActiveValue(value);
     showOption(value);
   };
-  // A change of the reader's shows the option the list then marks active whole, as the arrows
-  // do, in the commit that draws what answers it (`awaiting`), before it paints. A word typed in
-  // the text box or cleared marks the first option it leaves active, and so does the empty search
-  // a multi-select's Create row starts, while the box stayed where the arrows had scrolled it: in
-  // the issue header's Status, Triage stood 39 px above what the box showed after "e". A
-  // multi-select's Enter or press ticks or unticks the active option, and the host's pick that
-  // answers it can draw the Clear foot over the bottom of the box - the first tick drew it over
-  // lab-07 in the project List's Labels filter - or move the option, as a host that lists the
-  // picked values first does (the Delivery page's facets): a tick took acme/r06 to the top of a
-  // box scrolled 83 px, and the untick took it back below what the box showed. That answer is no
-  // commit of the list's own: the press marks active the option the arrows had already marked,
-  // which changes nothing, and the host applies the pick in its own time, the Delivery page's
-  // through the address. So the list waits for the commit in which the host's pick holds the
-  // value otherwise, which draws the foot and the order that come with it, and shows the option
-  // then. An arrow, a word typed and the close each end the wait, so nothing scrolls once the
-  // reader has moved on.
+  // Three changes of the reader's show the option the list then marks active whole, as the arrows
+  // do, in the commit that draws what answers them (`awaiting`), before it paints. A word typed in
+  // the text box or cleared marks the first option it leaves active. The empty search a
+  // multi-select's Create row starts marks active the value it made, where the host lists it by
+  // then, else the first option. Without that scroll the box stayed where the arrows had scrolled
+  // it: in the issue header's Status, Triage stood 39 px above what the box showed after "e". A
+  // multi-select's Enter ticks or unticks the active option, and a press the option it presses,
+  // which it marks active, so a pointer's press on another row changes the active option. The
+  // host's pick that answers it can draw the Clear foot over the bottom of the box - the first
+  // tick drew it over lab-07 in the project List's Labels filter - or move the option, as a host
+  // that lists the picked values first does (the Delivery page's facets): a tick took acme/r06 to
+  // the top of a box scrolled 83 px, and the untick took it back below what the box showed. That
+  // answer need not come in a commit of the list's own: the host applies the pick in its own time,
+  // the Delivery page's through the address. So the list waits for the commit in which the host's
+  // pick holds the value otherwise, which draws the foot and the order that come with it, and
+  // shows the option then. Clear, a single pick's pick and its Create row set no wait. An arrow, a
+  // word typed and the close each end the wait, so nothing scrolls once the reader has moved on.
   useLayoutEffect(() => {
     const awaited = awaiting.current;
     if (awaited === null) return;

@@ -181,8 +181,8 @@ export function IssuesTable({
   const [selection, setSelection] = useState<RowSelectionState>({});
   // The issue the reader marked last - by its own checkbox, or `x` on its row: where the focus
   // goes when the bar goes with it (`returnFocus`, below). A select-all marks no row of the
-  // reader's own, so it records none. The List's search box is the last place `noteFocus`,
-  // below, hands the focus to.
+  // reader's own, so it records none. The List's hand-off (`noteFocus`, below) never lands in the
+  // search box (`searchRef`), which takes typed text.
   const lastMarked = useRef<string | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const recordMark = useCallback((key: string) => {
@@ -441,9 +441,11 @@ export function IssuesTable({
   );
   // The header filters count what the table shows once the rows it waits on are in, as the
   // chip does (`counted`): never the open issues alone while the closed ones it asked for are
-  // out. While the Claimed by filter reads the registry, they also wait on its answer: before
-  // it, no session's claim reads lapsed (`claimIsTakeable`), so Nobody or lapsed would leave out
-  // each claim whose session has gone, in its own count and, picked, in every other filter's.
+  // out. While the Claimed by filter reads the registry, they also wait until the registry's
+  // latest read has succeeded (`known`), so they stay hidden before its first answer and after a
+  // read that failed: until then no session's claim reads lapsed (`claimIsTakeable`), so Nobody
+  // or lapsed would leave out each claim whose session has gone, in its own count and, picked, in
+  // every other filter's.
   const filterCounted = counted && (!readsRegistry || registry.known);
 
   const visibleColumns = table.getVisibleLeafColumns().length + 1;

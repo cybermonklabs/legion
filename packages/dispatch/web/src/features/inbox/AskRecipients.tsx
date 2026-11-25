@@ -288,7 +288,10 @@ export function AskRecipients({
   // `Reaches N` waits on the subscriber read when one runs: until it answers, the count would be
   // of the followers, the claimant and the route alone, short of the subscribers it then adds.
   // It holds back on a read that failed too, which says nothing of how many there are, and the
-  // card says why instead. With no read to run, the count is whole without one.
+  // card says why instead. With no read to run, it counts at once every recipient the card has:
+  // an ask on neither an issue nor a document has no subscribers to read. The sign-in check
+  // (`human`) holds back no read in the app, since `AuthGate` (`app.tsx`) draws the dashboard
+  // only for a signed-in person.
   const counted = !readsSubscribers || (!subscribersQuery.isPending && !subscribersQuery.isError);
   const [confirming, setConfirming] = useState<Confirming | undefined>(undefined);
   const [open, setOpen] = useState(false);
