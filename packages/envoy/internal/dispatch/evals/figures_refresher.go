@@ -219,7 +219,7 @@ func (r *refresh) refoldChanged(ctx context.Context, project string, spans map[s
 	if err != nil {
 		return err
 	}
-	if err := lockLogged(ctx, tx, entries); err != nil {
+	if _, err := lockLogged(ctx, tx, entries); err != nil {
 		return err
 	}
 	scope, ok, err := readFigureScope(ctx, tx, r.build, project)
@@ -235,13 +235,14 @@ func (r *refresh) refoldChanged(ctx context.Context, project string, spans map[s
 	return nil
 }
 
-// lockLogged takes the lock of each logged eval of entries (lockEvals): a computed eval's rows
-// are the refresher's alone, whose passes the refresher's lease runs one at a time, and a logged
-// eval's rows are its readings writes' and its zero fill's too, which each take its lock before
-// they read or write a row. The fold that takes them has read its entries before, and holds no
-// transaction id while it waits; a register write that commits between the two moves the eval's
-// fold key, which a read compares, and logs the eval_versions change that folds it again.
-func lockLogged(ctx context.Context, tx pgx.Tx, entries []Entry) error {
+// lockLogged takes the lock of each logged eval of entries (lockEvals), and answers whether it took
+// any: a computed eval's rows are the refresher's alone, whose passes the refresher's lease runs one
+// at a time, and a logged eval's rows are its readings writes' and its zero fill's too, which each
+// take its lock before they read or write a row. The fold that takes them has read its entries
+// before, and holds no transaction id while it waits; a register write that commits between the
+// two moves the eval's fold key, which a read compares, and logs the eval_versions change that
+// folds it again.
+func lockLogged(ctx context.Context, tx pgx.Tx, entries []Entry) (bool, error) {
 	var logged []string
 	for _, entry := range entries {
 		if !entry.Definition.Computed() {
@@ -249,9 +250,9 @@ func lockLogged(ctx context.Context, tx pgx.Tx, entries []Entry) error {
 		}
 	}
 	if len(logged) == 0 {
-		return nil
+		return false, nil
 	}
-	return lockEvals(ctx, tx, logged)
+	return true, lockEvals(ctx, tx, logged)
 }
 
 // noteWalked records that the pass's walk of family wrote project's rows of day, whose figures it
@@ -455,11 +456,11 @@ func (r *refresh) buildFigures(ctx context.Context, key walkKey, first, last tim
 		return err
 	}
 	byID := entriesByID(entries)
-	if err := lockLogged(ctx, tx, entries); err != nil {
+	if _, err := lockLogged(ctx, tx, entries); err != nil {
 		return err
 	}
 	scope := figureScope{build: r.build, project: key.project, through: last}
-	if err := buildFigureEnds(ctx, tx, scope, byID, nil, first, last); err != nil {
+	if err := buildFigureEnds(ctx, tx, scope, byID, nil, true, first, last); err != nil {
 		return err
 	}
 	if err := r.recordWalkIn(ctx, tx, key, last.AddDate(0, 0, 1)); err != nil {
@@ -508,34 +509,62 @@ func (s *Store) figuresStart(ctx context.Context, project string) (*time.Time, e
 	return &start, nil
 }
 
-// figuresThrough reads in q, for each of projects whose stored figures are built and whose cut of
-// repo ("" for its own rows, which no mark holds) no default move has marked stale, the last end
-// day they are built through (eval_figures_built, eval_figure_cuts_stale): a read of the cut over
-// a range of FigureLengths ending on or before it may read the project's stored figures
-// (figures.go), whichever build serves the read and whichever folded them, and any other reads
-// its day rows. A project is absent until the first whole walk of its figures by any build is done
-// (the first release that holds the stored figures, or a project made later), and stays once it
-// is, through every later release, roll and rollback; and a project is absent from a read of a
-// stale cut from the commit of the move that marks it until the commit of its refold's last batch
-// (refoldStaleCuts). One statement: a primary-key probe of each project's mark.
-func figuresThrough(ctx context.Context, q delivery.Querier, projects []string, repo string) (map[string]time.Time, error) {
+// builtCut is how far one project's stored figures are built (eval_figures_built), and which of
+// its evals a stale mark of the cut a read reads names (eval_figure_cuts_stale): none where no mark
+// holds the cut, every one where the mark names every eval (every, its evals null), and else each
+// eval stale holds.
+type builtCut struct {
+	through time.Time
+	every   bool
+	stale   map[string]bool
+}
+
+// serves reports whether the stored figures of the cut answer evalID, an eval of the project: no
+// stale mark of the cut names it.
+func (b builtCut) serves(evalID string) bool {
+	return !b.every && !b.stale[evalID]
+}
+
+// figuresThrough reads in q, for each of projects whose stored figures are built, the last end day
+// they are built through (eval_figures_built), and which of its evals a mark of its cut of repo
+// ("" for its own rows, which no mark holds) names stale (eval_figure_cuts_stale): a read of the
+// cut over a range of FigureLengths ending on or before that day may read the stored figures of
+// every eval no mark names (figures.go), whichever build serves the read and whichever folded
+// them, and reads the day rows of every other. A project is absent until the first whole walk of
+// its figures by any build is done (the first release that holds the stored figures, or a project
+// made later), and stays once it is, through every later release, roll and rollback. An eval a
+// move of a default repository moved rows of in a cut is named stale there from the commit of the
+// move that marks it until the commit of its refold's last batch (refoldStaleCuts), and every other
+// eval of the cut is read from its stored figures throughout, since no move moved the rows they
+// fold. One statement: a primary-key probe of each project's mark.
+func figuresThrough(ctx context.Context, q delivery.Querier, projects []string, repo string) (map[string]builtCut, error) {
 	rows, err := q.Query(ctx, `
-		select b.project_key, b.through from eval_figures_built b
-		where b.project_key = any($1) and not exists (select 1 from eval_figure_cuts_stale s where s.project_key = b.project_key and s.repo = $2)
+		select b.project_key, b.through, s.project_key is not null, s.evals from eval_figures_built b
+		left join eval_figure_cuts_stale s on s.project_key = b.project_key and s.repo = $2
+		where b.project_key = any($1)
 	`, projects, repo)
 	if err != nil {
 		return nil, fmt.Errorf("read how far the stored figures of %v are built: %w", projects, err)
 	}
-	through := map[string]time.Time{}
+	built := map[string]builtCut{}
 	var project string
 	var day time.Time
-	if _, err := pgx.ForEachRow(rows, []any{&project, &day}, func() error {
-		through[project] = measures.Midnight(day)
+	var marked bool
+	var evals []string
+	if _, err := pgx.ForEachRow(rows, []any{&project, &day, &marked, &evals}, func() error {
+		cut := builtCut{through: measures.Midnight(day), every: marked && evals == nil}
+		if len(evals) > 0 {
+			cut.stale = make(map[string]bool, len(evals))
+			for _, evalID := range evals {
+				cut.stale[evalID] = true
+			}
+		}
+		built[project] = cut
 		return nil
 	}); err != nil {
 		return nil, fmt.Errorf("read how far the stored figures of %v are built: %w", projects, err)
 	}
-	return through, nil
+	return built, nil
 }
 
 // staleCut is one cut of a project's stored figures, by its repository (every deploy repository
@@ -550,29 +579,39 @@ func compareStaleCuts(a, b staleCut) int {
 	return cmp.Or(strings.Compare(a.project, b.project), strings.Compare(a.repo, b.repo))
 }
 
-// markStaleCuts marks each of cuts stale, in tx, the commit of the move of the default
-// repositories that moves what they fold (publishDefaults): a cut no mark holds at generation 1,
-// and one a mark holds already, whose refold may have begun, at its next generation, its refold
-// to begin again from the cut's first end day (next_day null), so a refold begun before the move
-// finishes the cut under the defaults it moved to, and clears no mark the move set
-// (refoldStaleCuts). A cut of a project deleted since is left. In statements of at most
-// statementBytes, each in the byte order of the marks' keys, the order every writer of them takes
-// them in.
-func markStaleCuts(ctx context.Context, tx pgx.Tx, cuts []staleCut) error {
-	slices.SortFunc(cuts, compareStaleCuts)
-	for chunk := range statementChunks(cuts, paramBytes(2), func(cut *staleCut) int { return 2*4 + len(cut.project) + len(cut.repo) }) {
-		projects, repos := make([]string, len(chunk)), make([]string, len(chunk))
+// markStaleCuts marks each cut of marks stale, in tx, the commit of the move of the default
+// repositories that moves what they fold (publishDefaults), naming the evals marks holds for it:
+// the ids of the project's evals whose rows the move moved into or out of the cut (staleMarksOf),
+// none of which holds ','. A cut no mark holds is marked at generation 1, naming those evals. One a
+// mark holds already, whose refold may have begun, is marked at its next generation, its refold to
+// begin again from the cut's first end day (next_day null), naming the evals of both marks, or
+// every eval where the standing mark names every one (null): so a refold begun before the move
+// folds again, under the defaults it moved to, every eval either move moved, and clears no mark
+// the move set (refoldStaleCuts). A cut of a project deleted since is left. In statements of at
+// most statementBytes, each in the byte order of the marks' keys, the order every writer of them
+// takes them in.
+func markStaleCuts(ctx context.Context, tx pgx.Tx, marks map[staleCut][]string) error {
+	cuts := slices.SortedFunc(maps.Keys(marks), compareStaleCuts)
+	joined := make(map[staleCut]string, len(marks))
+	for cut, evals := range marks {
+		joined[cut] = strings.Join(evals, ",")
+	}
+	size := func(cut *staleCut) int { return 3*4 + len(cut.project) + len(cut.repo) + len(joined[*cut]) }
+	for chunk := range statementChunks(cuts, paramBytes(3), size) {
+		projects, repos, evals := make([]string, len(chunk)), make([]string, len(chunk)), make([]string, len(chunk))
 		for index, cut := range chunk {
-			projects[index], repos[index] = cut.project, cut.repo
+			projects[index], repos[index], evals[index] = cut.project, cut.repo, joined[cut]
 		}
 		if _, err := tx.Exec(ctx, `
-			insert into eval_figure_cuts_stale (project_key, repo, generation, next_day)
-			select given.project_key, given.repo, 1, null
-			from unnest($1::text[], $2::text[]) with ordinality as given(project_key, repo, sent)
+			insert into eval_figure_cuts_stale (project_key, repo, generation, next_day, evals)
+			select given.project_key, given.repo, 1, null, string_to_array(given.evals, ',')
+			from unnest($1::text[], $2::text[], $3::text[]) with ordinality as given(project_key, repo, evals, sent)
 			join projects p on p.key = given.project_key
 			order by given.sent
-			on conflict (project_key, repo) do update set generation = eval_figure_cuts_stale.generation + 1, next_day = null
-		`, projects, repos); err != nil {
+			on conflict (project_key, repo) do update set generation = eval_figure_cuts_stale.generation + 1, next_day = null,
+				evals = case when eval_figure_cuts_stale.evals is not null and excluded.evals is not null then array(
+					select id from unnest(eval_figure_cuts_stale.evals || excluded.evals) as id group by id order by id collate "C") end
+		`, projects, repos, evals); err != nil {
 			return fmt.Errorf("mark %d cuts of the stored figures stale: %w", len(chunk), err)
 		}
 	}
@@ -581,7 +620,7 @@ func markStaleCuts(ctx context.Context, tx pgx.Tx, cuts []staleCut) error {
 
 // refoldBatchBudget is about how long the server's schedule holds one batch of a stale cut's refold
 // to (serverRefresherSchedule, refoldStaleCuts, refoldBatchDays). refoldCut holds the locks of the
-// project's logged evals (lockLogged) for the whole batch, and a readings write of such an eval
+// logged evals it folds (lockLogged) for the whole batch, and a readings write of such an eval
 // waits on that lock, so the server's batch is kept well inside R14's 2 s: a batch of 28 end days
 // of INFRA's late history, 5.7 s on the build farm, would hold the write past it. A schedule with
 // no budget, a test's or RefreshThrough's, has no readings write beside it to keep waiting short.
@@ -645,30 +684,34 @@ func (r *refresh) refoldStaleCuts(ctx context.Context) (bool, error) {
 }
 
 // refoldStaleBatch is one batch of days end days of the stale cut's refold, in one transaction: it
-// reads the cut's mark, folds again from the first end day the mark's refold has not folded, or,
-// where it is to begin, from the cut's first end day (refoldCut), and records with the mark where
-// the refold stands, or, once the batch folded through the project's last end day, deletes the
-// mark, so a read of the cut reads the stored figures from this commit on (figuresThrough). Each
-// of the two writes the mark only where its generation is the one the batch read: a move that
-// marked the cut again since leaves it stale, its refold to begin again (markStaleCuts). A cut no
-// mark holds any more is done. It answers whether the cut is done and how long its transaction
-// took, which sizes the next batch (refoldBatchDays).
+// reads the cut's mark, folds again the evals it names (every eval where it names none) from the
+// first end day the mark's refold has not folded, or, where it is to begin, from the cut's first
+// end day (refoldCut), and records with the mark where the refold stands, or, once the batch folded
+// through the project's last end day, deletes the mark, so a read of the cut reads every eval's
+// stored figures from this commit on (figuresThrough). Each of the two writes the mark only where
+// its generation is the one the batch read: a move that marked the cut again since leaves it
+// stale, its refold to begin again (markStaleCuts). A cut no mark holds any more is done. It
+// answers whether the cut is done and how long its transaction took, which sizes the next batch
+// (refoldBatchDays), and logs both beside how long it held the locks of the logged evals it folds,
+// from their take (lockLogged) to its commit, 0 where it took none: the wait a readings write of
+// one of them may have had.
 func (r *refresh) refoldStaleBatch(ctx context.Context, cut staleCut, days int) (bool, time.Duration, error) {
 	began := time.Now()
 	done := true
 	var from *time.Time
-	var next time.Time
+	var next, locked time.Time
 	if err := r.store.inTx(ctx, "a stale cut's refold", func(tx pgx.Tx) error {
 		var generation int64
-		err := tx.QueryRow(ctx, `select generation, next_day from eval_figure_cuts_stale where project_key = $1 and repo = $2`,
-			cut.project, cut.repo).Scan(&generation, &from)
+		var evals []string
+		err := tx.QueryRow(ctx, `select generation, next_day, evals from eval_figure_cuts_stale where project_key = $1 and repo = $2`,
+			cut.project, cut.repo).Scan(&generation, &from, &evals)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil
 		}
 		if err != nil {
 			return fmt.Errorf("read the mark of %s's stale cut of %s: %w", cut.project, cut.repo, err)
 		}
-		if next, done, err = refoldCut(ctx, tx, r.build, cut.project, cut.repo, from, days); err != nil {
+		if next, done, locked, err = refoldCut(ctx, tx, r.build, cut.project, cut.repo, evals, from, days); err != nil {
 			return err
 		}
 		if done {
@@ -686,50 +729,62 @@ func (r *refresh) refoldStaleBatch(ctx context.Context, cut staleCut, days int) 
 		return false, 0, err
 	}
 	took := time.Since(began)
+	var held time.Duration
+	if !locked.IsZero() {
+		held = time.Since(locked)
+	}
 	slog.Info("dispatch: the eval day-row refresher folded a batch of a stale cut of the stored figures", "project", cut.project, "repo", cut.repo,
-		"from", from, "next", next.Format(time.DateOnly), "done", done, "transaction_ms", took.Milliseconds())
+		"from", from, "next", next.Format(time.DateOnly), "done", done, "transaction_ms", took.Milliseconds(), "locks_held_ms", held.Milliseconds())
 	return done, took, nil
 }
 
 // refoldCut folds again, in tx, under build, project's stored figures of its cut of repo, every
-// deploy repository of it: each range that ends on a day from from, or from the cut's first end
-// day where from is nil (cutStart), through at most days end days in all and at most the last end
-// day the project's figures are folded through (readFigureScope), and the day row of every day
-// before one of them (buildFigureEnds of the one cut), under the locks of the project's logged
-// evals (lockLogged), which every readings write of one takes too. It answers the first end day it
-// left and whether it folded through the last one: a cut's refold is whole once a run of calls from
-// nil reaches it, so the one call of a transaction that passes days past the scope's span folds a
-// cut whole, as a move's own commit could where that fits R14's 2 s. A project none of whose
-// figures are folded, and a cut that holds no stored figure and no row, have nothing to fold.
-func refoldCut(ctx context.Context, tx pgx.Tx, build, project, repo string, from *time.Time, days int) (time.Time, bool, error) {
+// deploy repository of it, of each eval evals names, or of every eval of the project where evals
+// is nil: each range that ends on a day from from, or from the cut's first end day where from is
+// nil (cutStart), through at most days end days in all and at most the last end day the project's
+// figures are folded through (readFigureScope), and the day row of every day before one of them
+// (buildFigureEnds of the one cut), under the locks of the logged evals among them (lockLogged),
+// which every readings write of one takes too. It writes and deletes the stored rows of those
+// evals alone, so the stored figures of every other eval of the cut, whose rows no move that
+// marked the cut moved, stand as they are. It answers the first end day it left, whether it folded
+// through the last one, and when it took those locks (the zero time where it took none): a cut's
+// refold is whole once a run of calls from nil reaches it, so the one call of a transaction that
+// passes days past the scope's span folds a cut whole, as a move's own commit could where that fits
+// R14's 2 s. A project none of whose figures are folded, and a cut that holds no stored figure and
+// no row, have nothing to fold.
+func refoldCut(ctx context.Context, tx pgx.Tx, build, project, repo string, evals []string, from *time.Time, days int) (next time.Time, done bool, locked time.Time, err error) {
 	scope, ok, err := readFigureScope(ctx, tx, build, project)
 	if err != nil || !ok {
-		return time.Time{}, true, err
+		return time.Time{}, true, time.Time{}, err
 	}
-	entries, err := readEntries(ctx, tx, project, nil)
+	entries, err := readEntries(ctx, tx, project, evals)
 	if err != nil {
-		return time.Time{}, false, err
+		return time.Time{}, false, time.Time{}, err
 	}
-	if err := lockLogged(ctx, tx, entries); err != nil {
-		return time.Time{}, false, err
+	took, err := lockLogged(ctx, tx, entries)
+	if err != nil {
+		return time.Time{}, false, time.Time{}, err
+	}
+	if took {
+		locked = time.Now()
 	}
 	first := from
 	if first == nil {
 		if first, err = cutStart(ctx, tx, project, repo); err != nil || first == nil {
-			return time.Time{}, err == nil, err
+			return time.Time{}, err == nil, locked, err
 		}
 	}
 	if first.After(scope.through) {
-		return *first, true, nil
+		return *first, true, locked, nil
 	}
 	last := first.AddDate(0, 0, max(days, 1)-1)
 	if last.After(scope.through) {
 		last = scope.through
 	}
-	if err := buildFigureEnds(ctx, tx, scope, entriesByID(entries), &repo, *first, last); err != nil {
-		return time.Time{}, false, err
+	if err := buildFigureEnds(ctx, tx, scope, entriesByID(entries), &repo, evals == nil, *first, last); err != nil {
+		return time.Time{}, false, locked, err
 	}
-	return last.AddDate(0, 0, 1), last.Equal(scope.through), nil
+	return last.AddDate(0, 0, 1), last.Equal(scope.through), locked, nil
 }
 
 // cutStart is the first end day of the refold of project's cut of repo: the day after the first

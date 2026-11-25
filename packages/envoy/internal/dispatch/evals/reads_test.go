@@ -3,6 +3,7 @@ package evals
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"slices"
 	"sort"
 	"strings"
@@ -192,9 +193,11 @@ func dayLabels(days []WindowRow) []string {
 // of a full page of evals (200, the most a page holds), each a logged eval of MaxEvalSeries series
 // folded as quantiles whose names and slug are the largest a key holds, over a window and a compare
 // range: the day rows (DayWindowIn), the series' first days (FirstDaysIn) and the stored figures
-// (ReadStoredFiguresIn), each on the pool, send statements that each take at most statementBytes
-// of parameters as pgx encodes them, the day rows' in several; and the day rows of the three evals
-// that hold some come back once each, each with its samples, and their first days with them.
+// of a project whose figures are built through both ranges (ReadStoredFiguresIn, its range and day
+// figures reads among them), each on the pool, send statements that each take at most
+// statementBytes of parameters as pgx encodes them, the day rows' in several; and the day rows of
+// the three evals that hold some come back once each, each with its samples, and their first days
+// with them.
 func TestTheListReadsOfAFullPageOfTheLargestEvalsSendBoundedStatements(t *testing.T) {
 	r := newRig(t)
 	const page = 200
@@ -227,6 +230,10 @@ func TestTheListReadsOfAFullPageOfTheLargestEvalsSendBoundedStatements(t *testin
 		}
 		r.write(t, largest("e", index), alice, rows...)
 	}
+	if _, err := r.database.Pool.Exec(t.Context(), `insert into eval_figures_built (project_key, through, built_by) values ($1, $2, 'test')`,
+		r.project, day.AddDate(0, 0, 1)); err != nil {
+		t.Fatalf("mark %s's stored figures built: %v", r.project, err)
+	}
 	statements := &sentStatements{}
 	traced := New(storetest.TracedStore(t, r.database, statements), r.documents, r.registry.events, r.registry.attributor)
 	window, compare := Range{From: day, To: day.AddDate(0, 0, 1)}, Range{From: day.AddDate(0, 0, -7), To: day.AddDate(0, 0, -6)}
@@ -238,12 +245,18 @@ func TestTheListReadsOfAFullPageOfTheLargestEvalsSendBoundedStatements(t *testin
 	if err != nil {
 		t.Fatalf("read the first days of %d evals: %v", page, err)
 	}
-	if _, err := ReadStoredFiguresIn(t.Context(), traced.database.Pool, []string{r.project}, entries, "", "", window, &compare); err != nil {
+	if _, err := ReadStoredFiguresIn(t.Context(), traced.database.Pool, []string{r.project}, entries, "", nil, window, &compare); err != nil {
 		t.Fatalf("read the stored figures of %d evals: %v", page, err)
 	}
 	sent := r.measured(t, statements.take())
 	windows := 0
+	figures := map[string]bool{}
 	for _, statement := range sent {
+		for _, table := range []string{"eval_range_figures", "eval_day_figures"} {
+			if strings.Contains(statement.sql, "from "+table) {
+				figures[table] = true
+			}
+		}
 		if statement.bytes > statementBytes {
 			t.Errorf("the list's reads sent %.80q with %d bytes of parameters as pgx encodes them, past %d", strings.Join(strings.Fields(statement.sql), " "), statement.bytes, statementBytes)
 		}
@@ -253,6 +266,9 @@ func TestTheListReadsOfAFullPageOfTheLargestEvalsSendBoundedStatements(t *testin
 	}
 	if windows < 2 {
 		t.Errorf("the day rows of %d evals of %d series were read in %d statements, and the check needs them cut", page, MaxEvalSeries, windows)
+	}
+	if len(figures) != 2 {
+		t.Errorf("the stored figures of %d evals were read from %v, and the check needs both their range and their day figures read", page, slices.Sorted(maps.Keys(figures)))
 	}
 	var want, got []string
 	for _, index := range held {

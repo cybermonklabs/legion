@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -509,14 +510,16 @@ const (
 // repository's cut is stored again"): it marks the project's cut of the deploy repository stale as
 // a move's commit marks it (eval_figure_cuts_stale), reads the paint's 84-day read with a compare
 // range and its 28-day read of that repository once more, as the paint measures each (measure),
-// which fold the day rows while the mark stands (figuresThrough), and takes the mark away again
-// where it made it (staleReads). A running server's refresher folds a marked cut again in any pass
-// (evals.refoldStaleCuts): its first batch records where the refold stands (next_day) and its last
-// deletes the mark. So the fallback does all of that holding the refresher's lease
-// (evals.RefresherLease) on a connection of the bench's lease pool, as a refresher pass holds it
-// (duty.Exclusive with no period), and no refresher pass of any process that takes the lease runs
-// until it gives the lease back. A try that finds the lease held is made again, fallbackLeaseWait
-// later, up to fallbackLeaseTries; where none takes it, the fallback states no read and fails.
+// which fold the day rows of the evals the mark names while it stands and read every other eval's
+// stored figures (figuresThrough), and takes the mark away again where it made it; then the same
+// with the mark naming every eval, the worst case (staleReads). A running server's refresher
+// folds a marked cut again in any pass (evals.refoldStaleCuts): its first batch records where the
+// refold stands (next_day) and its last deletes the mark. So the fallback does all of that holding
+// the refresher's lease (evals.RefresherLease) on a connection of the bench's lease pool, as a
+// refresher pass holds it (duty.Exclusive with no period), and no refresher pass of any process
+// that takes the lease runs until it gives the lease back. A try that finds the lease held is made
+// again, fallbackLeaseWait later, up to fallbackLeaseTries; where none takes it, the fallback
+// states no read and fails.
 func (c *headChecks) fallback(measured []measuredCase, catalog map[int64]bool) {
 	ctx := context.Background()
 	callers, err := c.pool.Leases()
@@ -542,32 +545,87 @@ func (c *headChecks) fallback(measured []measuredCase, catalog map[int64]bool) {
 	}
 }
 
-// staleReads is the fallback's measurement, made under the refresher's lease: it marks the cut,
-// makes the two reads and takes the mark back where it made it. Before the take-back it reads the
-// mark back. The lease keeps out every refresher that takes it, so where the mark no longer stands
-// at generation 1 with its refold to begin, a writer that takes no lease moved it during the
-// measurement, and a read may have read the stored figures: it states no read and fails. Each
-// RESULT line names the read, its database and server time, its body, the same read's database
-// time from the stored figures in the paint, and whether the two answers' items are equal. A read
-// whose items are not fails beside its line: the stored figures and the day rows answer the same
-// values (sameItems). It judges no budget: the architect reads the fallback's time.
+// staleReads is the fallback's measurement, made under the refresher's lease, under two marks of
+// the project's cut of the deploy repository, its published default, one after the other
+// (staleMarkReads): the mark a move of the project's default away from it makes, naming the evals
+// whose rows the move moves out of the cut (defaultRowEvals), the read a person's move of the
+// default meets, its reads named with the suffix -stale; and one naming every eval (null), its
+// worst case, named with -stale-all. A project that publishes another default, or a move that
+// names no eval of the cut, fails beside the first, which then states no read.
 func (c *headChecks) staleReads(ctx context.Context, measured []measuredCase, catalog map[int64]bool) {
 	repo := evalbench.Repos[0]
+	moved, err := c.defaultRowEvals(ctx, repo)
+	switch {
+	case err != nil:
+		c.r.fail("k16 fallback: read the evals a move of %s's default repository from %s names: %v", c.o.project, repo, err)
+	case len(moved) == 0:
+		c.r.fail("k16 fallback: a move of %s's default repository from %s names no eval of its cut, so no read of a cut that move marks is stated", c.o.project, repo)
+	default:
+		c.staleMarkReads(ctx, measured, catalog, repo, moved, "-stale")
+	}
+	c.staleMarkReads(ctx, measured, catalog, repo, nil, "-stale-all")
+}
+
+// defaultRowEvals is the evals a move of the project's default repository away from repo names in
+// repo's cut for the project's own rows stored under legionfacts.DefaultRepo, its evals that hold a
+// listed row under it, read by the statement the move's commit reads them with
+// (evals.DefaultRowEvalsQuery): it marks the cut as the ownDefault case of evals.staleMarksOf does,
+// which is the whole of the mark of the move of INFRA's default the farm measures, a move that
+// moves no owner key. The project must publish repo as its default.
+func (c *headChecks) defaultRowEvals(ctx context.Context, repo string) ([]string, error) {
+	published, err := evals.PublishedDefaultIn(ctx, c.pool, c.o.project)
+	if err != nil {
+		return nil, err
+	}
+	if published != repo {
+		return nil, fmt.Errorf("%s publishes %q as its default repository, not %s", c.o.project, published, repo)
+	}
+	rows, err := c.pool.Query(ctx, evals.DefaultRowEvalsQuery, []string{c.o.project})
+	if err != nil {
+		return nil, err
+	}
+	var marked []string
+	var project, evalID string
+	if _, err := pgx.ForEachRow(rows, []any{&project, &evalID}, func() error {
+		marked = append(marked, evalID)
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	slices.Sort(marked)
+	return marked, nil
+}
+
+// staleMarkReads marks the project's cut of repo stale, naming marked (nil: every eval), makes the
+// two reads, each named with suffix, and takes the mark back where it made it. Before the
+// take-back it reads the mark back. The lease keeps out every refresher that takes it, so where
+// the mark no longer stands at generation 1 with its refold to begin, naming marked, a writer that
+// takes no lease moved it during the measurement, and a read may have read the stored figures of
+// an eval it names: it states no read of it and fails. Each RESULT line names the read, how many
+// evals the mark names ("all" for every one), its database and server time, its body, the same
+// read's database time from the stored figures in the paint, and whether the two answers' items
+// are equal. A read whose items are not fails beside its line: the stored figures and the day rows
+// answer the same values (sameItems). It judges no budget: the architect reads the fallback's time.
+func (c *headChecks) staleMarkReads(ctx context.Context, measured []measuredCase, catalog map[int64]bool, repo string, marked []string, suffix string) {
 	tag, err := c.pool.Exec(ctx, `
-		insert into eval_figure_cuts_stale (project_key, repo, generation, next_day) values ($1, $2, 1, null)
+		insert into eval_figure_cuts_stale (project_key, repo, generation, next_day, evals) values ($1, $2, 1, null, $3)
 		on conflict (project_key, repo) do nothing
-	`, c.o.project, repo)
+	`, c.o.project, repo, marked)
 	if err != nil {
 		c.r.fail("k16 fallback: mark %s's cut of %s stale: %v", c.o.project, repo, err)
 		return
 	}
 	if tag.RowsAffected() == 1 {
 		defer func() {
-			if _, err := c.pool.Exec(ctx, `delete from eval_figure_cuts_stale where project_key = $1 and repo = $2 and generation = 1 and next_day is null`,
-				c.o.project, repo); err != nil {
+			if _, err := c.pool.Exec(ctx, `delete from eval_figure_cuts_stale where project_key = $1 and repo = $2 and generation = 1 and next_day is null
+				and evals is not distinct from $3`, c.o.project, repo, marked); err != nil {
 				c.r.fail("k16 fallback: take back the mark of %s's cut of %s: %v", c.o.project, repo, err)
 			}
 		}()
+	}
+	names := "all"
+	if marked != nil {
+		names = strconv.Itoa(len(marked))
 	}
 	type staleRead struct {
 		name, line string
@@ -582,24 +640,25 @@ func (c *headChecks) staleReads(ctx context.Context, measured []measuredCase, ca
 		}
 		stored := &measured[index]
 		one := stored.paintCase
-		one.name += "-stale"
+		one.name += suffix
 		got, err := measure(ctx, c.pool, c.client, c.o, one, catalog)
 		if err != nil {
 			c.r.fail("k16 fallback: %s: %v", one.name, err)
 			continue
 		}
 		equal := sameItems(got.body, stored.body)
-		reads = append(reads, staleRead{name: one.name, equal: equal, line: fmt.Sprintf("k16 fallback case=%s status=%d db_ms=%.2f statements=%d server_ms=%.0f body_bytes=%d gzip_bytes=%d stored_db_ms=%.2f items_equal=%t",
-			one.name, got.status, dbMs(got.own), len(got.own), got.serverMs, len(got.body), gzipSize(got.body), dbMs(stored.own), equal)})
+		reads = append(reads, staleRead{name: one.name, equal: equal, line: fmt.Sprintf("k16 fallback case=%s marked_evals=%s status=%d db_ms=%.2f statements=%d server_ms=%.0f body_bytes=%d gzip_bytes=%d stored_db_ms=%.2f items_equal=%t",
+			one.name, names, got.status, dbMs(got.own), len(got.own), got.serverMs, len(got.body), gzipSize(got.body), dbMs(stored.own), equal)})
 	}
 	var stands bool
-	if err := c.pool.QueryRow(ctx, `select exists (select 1 from eval_figure_cuts_stale where project_key = $1 and repo = $2 and generation = 1 and next_day is null)`,
-		c.o.project, repo).Scan(&stands); err != nil {
+	if err := c.pool.QueryRow(ctx, `select exists (select 1 from eval_figure_cuts_stale where project_key = $1 and repo = $2 and generation = 1 and next_day is null
+		and evals is not distinct from $3)`, c.o.project, repo, marked).Scan(&stands); err != nil {
 		c.r.fail("k16 fallback: read back the mark of %s's cut of %s: %v", c.o.project, repo, err)
 		return
 	}
 	if !stands {
-		c.r.fail("k16 fallback: the mark of %s's cut of %s no longer stands at generation 1 with its refold to begin, though the fallback held the refresher's lease, so its reads may have read the stored figures; no read of it is stated", c.o.project, repo)
+		c.r.fail("k16 fallback: the mark of %s's cut of %s no longer stands at generation 1 with its refold to begin, naming %s evals, though the fallback held the refresher's lease, so its reads may have read the stored figures of an eval it names; no read of it is stated",
+			c.o.project, repo, names)
 		return
 	}
 	for _, read := range reads {

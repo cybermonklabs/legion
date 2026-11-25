@@ -31,6 +31,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/legionfacts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/explaintest"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -137,9 +138,13 @@ func (r *refresherRig) figuresBuilt(t *testing.T) map[string]time.Time {
 	if err != nil {
 		t.Fatalf("read the projects: %v", err)
 	}
-	built, err := figuresThrough(t.Context(), r.database.Pool, projects, "")
+	cuts, err := figuresThrough(t.Context(), r.database.Pool, projects, "")
 	if err != nil {
 		t.Fatalf("read how far the figures are built: %v", err)
+	}
+	built := make(map[string]time.Time, len(cuts))
+	for project, cut := range cuts {
+		built[project] = cut.through
 	}
 	return built
 }
@@ -837,9 +842,9 @@ search:
 // (none or one repository) where FiguresOffered offers the read and they answer the eval
 // (StoredFigures.SeriesValues), else from the day rows of repos (DayWindowIn, SeriesValuesOf); and
 // beside it the fold of those day rows alone, which the read must answer. Each eval's values are
-// encoded as the list route sends them, by eval id. It answers how many evals the stored figures
+// encoded as the list route sends them, by eval id. It answers which evals the stored figures
 // answered too.
-func (r *refresherRig) listValues(t *testing.T, project string, repos []string, window Range, compare *Range) (stated, folded map[string]string, fromFigures int) {
+func (r *refresherRig) listValues(t *testing.T, project string, repos []string, window Range, compare *Range) (stated, folded map[string]string, fromFigures map[string]bool) {
 	t.Helper()
 	ctx := t.Context()
 	page, err := r.registry.Current(ctx, []string{project}, "", 200, 0)
@@ -865,11 +870,7 @@ func (r *refresherRig) listValues(t *testing.T, project string, repos []string, 
 	var stored StoredFigures
 	offered := FiguresOffered(repos, window, compare)
 	if offered {
-		repo := ""
-		if len(repos) == 1 {
-			repo = repos[0]
-		}
-		if stored, err = ReadStoredFiguresIn(ctx, r.database.Pool, []string{project}, page.Items, deployRepo, repo, window, compare); err != nil {
+		if stored, err = ReadStoredFiguresIn(ctx, r.database.Pool, []string{project}, page.Items, deployRepo, repos, window, compare); err != nil {
 			t.Fatalf("read %s's stored figures: %v", project, err)
 		}
 	}
@@ -880,7 +881,7 @@ func (r *refresherRig) listValues(t *testing.T, project string, repos []string, 
 		}
 		return string(encoded)
 	}
-	stated, folded = map[string]string{}, map[string]string{}
+	stated, folded, fromFigures = map[string]string{}, map[string]string{}, map[string]bool{}
 	for _, entry := range page.Items {
 		id := entry.Definition.EvalID
 		folded[id] = encode(SeriesValuesOf(entry, byEval[id], firsts[id], window, compare))
@@ -890,7 +891,7 @@ func (r *refresherRig) listValues(t *testing.T, project string, repos []string, 
 		}
 		if values, _, ok := stored.SeriesValues(entry, firsts[id], window, compare); ok {
 			stated[id] = encode(values)
-			fromFigures++
+			fromFigures[id] = true
 		}
 	}
 	return stated, folded, fromFigures
@@ -1046,20 +1047,8 @@ func (c cutRead) cutValues(t *testing.T, repos []string, window Range, compare *
 func TestARepositoryFilterAnswersTheFoldOfTheDayRowsOfItsCut(t *testing.T) {
 	r := newRefresherRig(t)
 	ctx, pool := t.Context(), r.database.Pool
-	_, legion := r.seedHistories(t)
-	project, defaultRepo, nextDefault := legion.Project, "acme/legion", "acme/other"
-	r.exec(t, "give the project a default repository", `update projects set default_repo = $2 where key = $1`, project, defaultRepo)
-	r.exec(t, "give two trees the default repository", `update issues set repo = $2 where key = any($1)`, legion.Roots[:2], defaultRepo)
-	facts, filings, err := legionfacts.ComputeProject(ctx, pool, project, deliverytest.DefaultNow)
-	if err != nil {
-		t.Fatalf("compute the facts of %s: %v", project, err)
-	}
-	if _, err := legionfacts.WriteProject(ctx, pool, legionfacts.ProjectWrite{Project: project, Rows: facts, Whole: true}); err != nil {
-		t.Fatalf("write the facts of %s: %v", project, err)
-	}
-	if err := legionfacts.WriteFilings(ctx, pool, legionfacts.FilingsWrite{Project: project, Filings: filings, Whole: true}); err != nil {
-		t.Fatalf("write the filings of %s: %v", project, err)
-	}
+	defaultRepo, nextDefault := "acme/legion", "acme/other"
+	project := r.seedLegionDefault(t, defaultRepo)
 	r.settle(t)
 	r.expectBuilt(t, "the first whole build", refresherToday)
 	held := map[string]int{}
@@ -1093,7 +1082,7 @@ func TestARepositoryFilterAnswersTheFoldOfTheDayRowsOfItsCut(t *testing.T) {
 			for _, filter := range filters {
 				stated, folded, fromFigures := r.listValues(t, project, filter, one.window, &one.compare)
 				cut := read.cutValues(t, filter, one.window, &one.compare)
-				if fromFigures == 0 {
+				if len(fromFigures) == 0 {
 					t.Errorf("%s: the stored figures answered none of %s's evals over %s of %v", what, project, one.name, filter)
 				}
 				for _, id := range slices.Sorted(maps.Keys(folded)) {
@@ -1138,6 +1127,136 @@ func TestARepositoryFilterAnswersTheFoldOfTheDayRowsOfItsCut(t *testing.T) {
 	}
 	check("after the default moves to "+nextDefault, nextDefault, defaultRepo)
 }
+
+// seedLegionDefault seeds the delivery and Legion histories (seedHistories), gives the Legion
+// project defaultRepo as its default repository and as the repository of its first two trees, and
+// stores the project's facts again, so its Legion rows stand under defaultRepo for those two trees
+// and under ':default' (legionfacts.DefaultRepo) for the others, whose chains name no repository.
+// It answers the Legion project.
+func (r *refresherRig) seedLegionDefault(t *testing.T, defaultRepo string) string {
+	t.Helper()
+	ctx, pool := t.Context(), r.database.Pool
+	_, legion := r.seedHistories(t)
+	project := legion.Project
+	r.exec(t, "give the project a default repository", `update projects set default_repo = $2 where key = $1`, project, defaultRepo)
+	r.exec(t, "give two trees the default repository", `update issues set repo = $2 where key = any($1)`, legion.Roots[:2], defaultRepo)
+	facts, filings, err := legionfacts.ComputeProject(ctx, pool, project, deliverytest.DefaultNow)
+	if err != nil {
+		t.Fatalf("compute the facts of %s: %v", project, err)
+	}
+	if _, err := legionfacts.WriteProject(ctx, pool, legionfacts.ProjectWrite{Project: project, Rows: facts, Whole: true}); err != nil {
+		t.Fatalf("write the facts of %s: %v", project, err)
+	}
+	if err := legionfacts.WriteFilings(ctx, pool, legionfacts.FilingsWrite{Project: project, Filings: filings, Whole: true}); err != nil {
+		t.Fatalf("write the filings of %s: %v", project, err)
+	}
+	return project
+}
+
+// TestTheReadOfOneCutsDeployRepositoriesReadsItsRowsAlone: readFigureCuts' read of one cut
+// (cutDeployReposQuery), which every batch of a stale cut's refold makes, answers the cuts of that
+// repository the read of every cut answers (cutOf), and reads the cut's rows of its days and no
+// other. EVAL publishes acme/main as its default and reads the plain owner key of acme/main; over
+// 120 days of two series, EVAL's rows stand under acme/main (those of one deploy repository
+// unlisted), acme/side, "" and ':default', the key's under acme/main, "" and ':default', and
+// another project's under acme/main, each deploy repository but "" that of one cut's rows alone.
+// Over 30 of those days, each of acme/main, acme/side and acme/none is answered as the read of
+// every cut answers it: acme/main with the deploy repository of EVAL's ':default' rows, and with
+// none of the unlisted rows, the key's ':default' rows or the other project's. Its generic plan
+// reads eval_days through eval_days_window alone, each range bounded by its key, a repository (the
+// cut's or ':default') and the days, and its analyzed plan of acme/main reads exactly EVAL's and the
+// key's listed rows of acme/main and EVAL's of ':default' in those days. Red against the statement
+// before it, which read every key's ':default' rows of those days beside them (240 rows here, where
+// the cut holds 180) and, on the farm at INFRA's size, every listed row of the keys in the range,
+// 703 ms a call; and red without the lateral's `offset 0`, whose generic plan reads
+// eval_days_window by the repository and the days alone, every project's rows of the repository.
+func TestTheReadOfOneCutsDeployRepositoriesReadsItsRowsAlone(t *testing.T) {
+	r := newRefresherRig(t)
+	ctx, pool := t.Context(), r.database.Pool
+	owner := OwnerKey("acme/main", nil, nil)
+	r.exec(t, "publish EVAL's default", `insert into eval_days_defaults (project_key, repo) values ($1, 'acme/main')`, r.project)
+	r.exec(t, "seed the day rows", `
+		insert into eval_days (project_key, eval_id, deploy_repo, series, repo, day, listed, built_by)
+		select k.key, k.key || '/a', k.deploy_repo, s.series, k.repo, date '2026-07-01' + n, k.listed, 'test'
+		from (values ($1::text, 'acme/main', '', true), ($1, 'acme/main', 'acme/unlisted', false), ($1, 'acme/side', 'acme/deploy', true),
+			($1, '', '', true), ($1, ':default', 'acme/legacy', true), ($2, 'acme/main', 'acme/deploy', true), ($2, '', '', true),
+			($2, ':default', 'acme/owner-only', true), ('QUAY', 'acme/main', 'acme/quay-only', true)) as k(key, repo, deploy_repo, listed)
+		cross join (values ('n'), ('m')) as s(series)
+		cross join generate_series(0, 119) as n`, r.project, owner)
+	r.exec(t, "analyze the day rows", `analyze eval_days`)
+	read := Range{From: time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC), To: time.Date(2026, 8, 31, 0, 0, 0, 0, time.UTC)}
+	every, err := readFigureCuts(ctx, pool, r.project, read, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, repo := range []string{"acme/main", "acme/side", "acme/none"} {
+		got, err := readFigureCuts(ctx, pool, r.project, read, &repo)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var want []figureCut
+		for _, cut := range every {
+			if cut.repo == repo {
+				want = append(want, cut)
+			}
+		}
+		if !slices.Equal(got, want) {
+			t.Errorf("the read of %s's cut of %s answers %v, and the read of every cut %v of it", r.project, repo, got, want)
+		}
+	}
+	if !slices.Contains(every, figureCut{repo: "acme/main", deployRepo: "acme/legacy"}) {
+		t.Fatalf("the read of every cut answers %v, and the check needs the cut of the ':default' rows under acme/main", every)
+	}
+	var rows float64
+	if err := pool.QueryRow(ctx, `
+		select count(*)::float8 from eval_days d where d.listed and d.day >= $3 and d.day < $4
+			and (d.project_key = any(array[$1::text, $2::text]) and d.repo = 'acme/main' or d.project_key = $1 and d.repo = $5)`,
+		r.project, owner, read.From, read.To, legionfacts.DefaultRepo).Scan(&rows); err != nil {
+		t.Fatal(err)
+	}
+	connection, err := pool.Acquire(ctx)
+	if err != nil {
+		t.Fatalf("acquire a connection for the plan: %v", err)
+	}
+	defer connection.Release()
+	plan := explaintest.GenericPlan(t, ctx, connection, "cut_deploy_repos", cutDeployReposQuery, []string{"text", "date", "date", "text"},
+		[]string{"'" + r.project + "'", "'2026-08-01'", "'2026-08-31'", "'acme/main'"}, "set local enable_seqscan = off")
+	if explaintest.SeqScansRelation(t, plan, "eval_days") {
+		t.Errorf("the read of one cut scans eval_days under the generic plan:\n%s", plan)
+	}
+	explaintest.NewIndexKeys(pool).RequireIndexKeyed(t, plan, "eval_days_window", "the read of one cut", explaintest.CondRequired)
+	defaults := 0
+	for _, scan := range explaintest.IndexScans(t, plan) {
+		if !slices.Contains(evalDaysIndexes, scan.Index) {
+			continue
+		}
+		if scan.Index != "eval_days_window" || !strings.Contains(scan.Cond, "repo = ") || !strings.Contains(scan.Cond, "day >= ") || !strings.Contains(scan.Cond, "day < ") {
+			t.Errorf("the read of one cut reads %s under %q under the generic plan, want a range of eval_days_window bounded by the key, a repository and the days:\n%s",
+				scan, scan.Cond, explaintest.Outline(t, plan))
+		}
+		if strings.Contains(scan.Cond, "'"+legionfacts.DefaultRepo+"'") {
+			defaults++
+		}
+	}
+	if defaults == 0 {
+		t.Errorf("the read of one cut reads no range of %s under the generic plan:\n%s", legionfacts.DefaultRepo, explaintest.Outline(t, plan))
+	}
+	analyzed, raw := explaintest.AnalyzedPlan(t, ctx, pool, cutDeployReposQuery, r.project, read.From, read.To, "acme/main")
+	readRows := 0.0
+	for _, node := range explaintest.Nodes(t, analyzed) {
+		if node.Relation == "eval_days" {
+			readRows += node.Rows*node.Loops + node.RowsRemovedByFilter*node.Loops
+		}
+	}
+	if math.Abs(readRows-rows) > 0.5 {
+		t.Errorf("the read of the cut of acme/main read %.0f rows of eval_days, want its %.0f:\n%s", readRows, rows, raw)
+	}
+	t.Logf("the read of the cut of acme/main read %.0f rows of eval_days, its own:\n%s", readRows, explaintest.Outline(t, analyzed))
+}
+
+// evalDaysIndexes is every index of eval_days (migration 20261117100006), by which a plan test tells
+// a scan of eval_days from one of another table: a bitmap index scan names no relation.
+var evalDaysIndexes = []string{"eval_days_pkey", "eval_days_window", "eval_days_stamps"}
 
 // firstDiffering is the first index at which a and b differ.
 func firstDiffering(a, b string) int {

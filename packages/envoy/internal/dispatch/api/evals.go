@@ -852,14 +852,15 @@ type evalValues struct {
 // repository is this selection and rewrites nothing. It reads each series' first day
 // (evals.FirstDaysIn), and for an offered range (evals.FiguresOffered: a window and a compare range
 // each of a length the Evals tab offers, of the projects' own rows or of the one repository named)
-// the stored figures of that cut (evals.ReadStoredFiguresIn, two primary-key reads and the read of
-// how far each project is built and whether its cut is stale), from which it states each eval they
-// answer. An eval they cannot answer (a project whose figures are not built yet, or whose cut of
-// the repository a move of its default repository marked stale and the refresher has not folded
-// again, or a stored row of another fold key than the eval's) and every eval of any other read, one
-// that names two or more repositories among them, is stated from one read of the day rows of the
-// window and the compare range (evals.DayWindowIn, the rows of repos where it names any), folded
-// once the snapshot is committed (evalValues.items). Both answer the same bits
+// the stored figures of that cut (evals.ReadStoredFiguresIn: the read of how far each project is
+// built and which of its evals a stale mark of the cut names, then two primary-key reads of the
+// evals they serve), from which it states each eval they answer. An eval they cannot answer (an
+// eval of a project whose figures are not built yet, one whose rows in the cut a move of a default
+// repository moved and the refresher has not folded again, or one whose stored row was folded
+// under another fold key than the eval's) and every eval of any other read, one that names two or
+// more repositories among them, is stated from one read of the day rows of the window and the
+// compare range of those evals alone (evals.DayWindowIn, the rows of repos where it names any),
+// folded once the snapshot is committed (evalValues.items). Both answer the same bits
 // (evals.StoredFigures.SeriesValues). Each read reads every project the entries it reads are evals
 // of at once.
 func readEvalValues(ctx context.Context, tx pgx.Tx, entries []evals.Entry, deployRepo string, repos []string, ranges evalRanges, now time.Time) (evalValues, error) {
@@ -875,11 +876,7 @@ func readEvalValues(ctx context.Context, tx pgx.Tx, entries []evals.Entry, deplo
 		return evalValues{}, err
 	}
 	if evals.FiguresOffered(repos, ranges.window, ranges.compare) {
-		repo := ""
-		if len(repos) == 1 {
-			repo = repos[0]
-		}
-		stored, err := evals.ReadStoredFiguresIn(ctx, tx, evalProjects(entries), entries, deployRepo, repo, ranges.window, ranges.compare)
+		stored, err := evals.ReadStoredFiguresIn(ctx, tx, evalProjects(entries), entries, deployRepo, repos, ranges.window, ranges.compare)
 		if err != nil {
 			return evalValues{}, err
 		}

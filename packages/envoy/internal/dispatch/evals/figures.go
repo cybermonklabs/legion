@@ -79,13 +79,16 @@ import (
 // reads otherwise through the repository. At INFRA's size the two defaults' cuts hold about
 // 290,000 range rows, which no write folds again inside R14's 2 s for a move to reach every view.
 // So the move's own commit (publishDefaults) folds again the project's own rows alone, and marks
-// each cut it moves stale (eval_figure_cuts_stale, with a generation each mark moves); the
-// refresher's pass folds each stale cut again, every range and day of it, batch after batch, each
-// batch a short transaction (refoldCut, one function a transaction calls), and clears its mark in
-// the transaction that finishes it unless a later move marked it again (refoldStaleCuts). The pass
-// that publishes the move begins the refold, and a pass stops it between two batches only for an
-// owed wake, whose pass goes on with it. Until then a read of the stale cut folds the day rows,
-// which answer the same bytes (figuresThrough), and every other cut stays served.
+// each cut it moves stale (eval_figure_cuts_stale, with a generation each mark moves), naming the
+// evals whose rows it moved there, read from the stored rows (staleMarksOf): at INFRA, 6 of its 40
+// evals hold rows under legionfacts.DefaultRepo. The refresher's pass folds those evals of each
+// stale cut again, every range and day of them, batch after batch, each batch a short transaction
+// (refoldCut, one function a transaction calls), and clears its mark in the transaction that
+// finishes it unless a later move marked it again (refoldStaleCuts). The pass that publishes the
+// move begins the refold, and a pass stops it between two batches only for an owed wake, whose
+// pass goes on with it. Until then a read of the stale cut folds the day rows of the evals its mark
+// names, which answer the same bytes (figuresThrough), and reads every other eval's stored
+// figures, which fold rows no move moved; every other cut stays served.
 //
 // The writers are the refresher's writes of a project's day (writeProjectDay), its unowned-p0 row
 // (WriteUnownedP0Day), its logged zero fill (fillLoggedZeros) and its rewrite of a settings change
@@ -1455,14 +1458,17 @@ func compareDayFigureKeys(a, b dayFigureKey) int {
 // where they moved (writeFigures): one read of the rows of each cut over those days. Every stored
 // row of those end days and days, of the cuts it folds, that no row holds any more is deleted: one
 // an earlier build folded, of an eval, a cut or a deploy repository that holds none now, or one a
-// move of a default repository left in a cut that no longer holds its rows. It is a batch of the
-// figures walk, the whole of a new end day's ranges once the walk stands at today, and a batch of
-// a stale cut's refold.
+// move of a default repository left in a cut that no longer holds its rows. Where every is set,
+// entries being every eval of the project, every stored range row of those end days is read for
+// it, whatever eval it is of; where it is not (the refold of the evals a stale mark names), only
+// those of entries' evals are, so no stored row of another eval is written or deleted. It is a
+// batch of the figures walk, the whole of a new end day's ranges once the walk stands at today,
+// and a batch of a stale cut's refold.
 //
 // The stored day rows are read through eval_day_figures_eval_day, one range of the days for each
 // eval, the project's evals in statements of at most statementBytes: no route bounds how many
-// evals a project holds.
-func buildFigureEnds(ctx context.Context, tx pgx.Tx, scope figureScope, entries map[string]Entry, repo *string, first, last time.Time) error {
+// evals a project holds. So are entries' stored range rows where every is not set.
+func buildFigureEnds(ctx context.Context, tx pgx.Tx, scope figureScope, entries map[string]Entry, repo *string, every bool, first, last time.Time) error {
 	read := Range{From: first.AddDate(0, 0, -figureSpan), To: last}
 	cuts, err := readFigureCuts(ctx, tx, scope.project, read, repo)
 	if err != nil {
@@ -1487,34 +1493,49 @@ func buildFigureEnds(ctx context.Context, tx pgx.Tx, scope figureScope, entries 
 			})
 		}
 	}
-	ofCut, rangeArgs, dayBase := "", []any{scope.project, first, last}, paramBytes(1, scope.project)+2*(4+8)
+	ofCut, rangeArgs, base := "", []any{scope.project, first, last}, paramBytes(1, scope.project)+2*(4+8)
 	if repo != nil {
-		ofCut, rangeArgs, dayBase = ` and repo = $4`, append(rangeArgs, *repo), dayBase+4+len(*repo)
+		ofCut, rangeArgs, base = ` and repo = $4`, append(rangeArgs, *repo), base+4+len(*repo)
 	}
-	rows, err := tx.Query(ctx, `
-		select repo, days, end_day, eval_id, deploy_repo from eval_range_figures where project_key = $1 and end_day >= $2 and end_day <= $3`+ofCut,
-		rangeArgs...)
-	if err != nil {
-		return fmt.Errorf("read %s's stored range figures ending %s to %s: %w", scope.project, first.Format(time.DateOnly), last.Format(time.DateOnly), err)
-	}
-	var stored rangeFigureKey
-	var n int32
-	if _, err := pgx.ForEachRow(rows, []any{&stored.repo, &n, &stored.end, &stored.eval, &stored.deployRepo}, func() error {
-		stored.days, stored.end = int(n), stored.end.UTC()
-		if !built[stored] {
-			writes.goneRanges = append(writes.goneRanges, stored)
+	readRanges := func(ofEvals string, args []any) error {
+		rows, err := tx.Query(ctx, `
+			select repo, days, end_day, eval_id, deploy_repo from eval_range_figures where project_key = $1 and end_day >= $2 and end_day <= $3`+ofCut+ofEvals,
+			args...)
+		if err != nil {
+			return fmt.Errorf("read %s's stored range figures ending %s to %s: %w", scope.project, first.Format(time.DateOnly), last.Format(time.DateOnly), err)
+		}
+		var stored rangeFigureKey
+		var n int32
+		if _, err := pgx.ForEachRow(rows, []any{&stored.repo, &n, &stored.end, &stored.eval, &stored.deployRepo}, func() error {
+			stored.days, stored.end = int(n), stored.end.UTC()
+			if !built[stored] {
+				writes.goneRanges = append(writes.goneRanges, stored)
+			}
+			return nil
+		}); err != nil {
+			return fmt.Errorf("read %s's stored range figures ending %s to %s: %w", scope.project, first.Format(time.DateOnly), last.Format(time.DateOnly), err)
 		}
 		return nil
-	}); err != nil {
-		return fmt.Errorf("read %s's stored range figures ending %s to %s: %w", scope.project, first.Format(time.DateOnly), last.Format(time.DateOnly), err)
 	}
-	for chunk := range statementChunks(evalIDs, dayBase, textBytes) {
+	if every {
+		if err := readRanges("", rangeArgs); err != nil {
+			return err
+		}
+	} else {
+		ofEvals := fmt.Sprintf(` and eval_id = any($%d)`, len(rangeArgs)+1)
+		for chunk := range statementChunks(evalIDs, base, textBytes) {
+			if err := readRanges(ofEvals, append(slices.Clip(rangeArgs), chunk)); err != nil {
+				return err
+			}
+		}
+	}
+	for chunk := range statementChunks(evalIDs, base, textBytes) {
 		dayArgs := []any{scope.project, first.AddDate(0, 0, -1), last, chunk}
 		ofDayCut := ""
 		if repo != nil {
 			ofDayCut, dayArgs = ` and repo = $5`, append(dayArgs, *repo)
 		}
-		rows, err = tx.Query(ctx, `
+		rows, err := tx.Query(ctx, `
 			select repo, day, eval_id, deploy_repo from eval_day_figures where project_key = $1 and eval_id = any($4) and day >= $2 and day < $3`+ofDayCut,
 			dayArgs...)
 		if err != nil {
@@ -1537,12 +1558,11 @@ func buildFigureEnds(ctx context.Context, tx pgx.Tx, scope figureScope, entries 
 // readFigureCuts reads, in q, each cut project's listed day rows of the days of r hold, its own and
 // those of the owner keys it reads under the published defaults (eval_project_owners, owners.go),
 // each row in the cut cutOf names, in their order (compareFigureCuts); or, where repo is not nil,
-// those of the one cut of repo. The published default's cut is among them wherever a row stored
-// under legionfacts.DefaultRepo is. One statement: for every cut, a walk of each owner's
-// repositories through eval_days_window, one probe each, and the read of each one's deploy
-// repositories from its rows of the days of r, one range of the index each, rather than every
-// listed row of the project; for one cut, the ranges of its repository and of
-// legionfacts.DefaultRepo alone.
+// those of the one cut of repo (cutDeployReposQuery). The published default's cut is among them
+// wherever a row stored under legionfacts.DefaultRepo is. One statement: for every cut, a walk of
+// each owner's repositories through eval_days_window, one probe each, and the read of each one's
+// deploy repositories from its rows of the days of r, one range of the index each, rather than
+// every listed row of the project.
 func readFigureCuts(ctx context.Context, q delivery.Querier, project string, r Range, repo *string) ([]figureCut, error) {
 	var rows pgx.Rows
 	var err error
@@ -1564,14 +1584,7 @@ func readFigureCuts(ctx context.Context, q delivery.Querier, project string, r R
 			where o.project_key = $1 and cut.repo is not null
 		`, project, r.From, r.To)
 	} else {
-		rows, err = q.Query(ctx, `
-			select distinct cut.repo, d.deploy_repo
-			from eval_project_owners o
-			join eval_days d on d.project_key = o.owner and d.listed and d.day >= $2 and d.day < $3
-				and (d.repo = $4 or d.repo = '`+legionfacts.DefaultRepo+`')
-			cross join lateral (select `+cutOf("d", "$1")+` as repo) cut
-			where o.project_key = $1 and `+ownedKeys("d", "= $1")+` and cut.repo = $4
-		`, project, r.From, r.To, *repo)
+		rows, err = q.Query(ctx, cutDeployReposQuery, project, r.From, r.To, *repo)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("read the cuts of %s's day rows: %w", project, err)
@@ -1583,3 +1596,35 @@ func readFigureCuts(ctx context.Context, q delivery.Querier, project string, r R
 	slices.SortFunc(cuts, compareFigureCuts)
 	return cuts, nil
 }
+
+// cutDeployReposQuery is readFigureCuts' read of one cut, of the repository $4, of project $1's
+// listed day rows of the days $2 to $3, each a cut of $4 and of the deploy repository of a row of
+// it, as the read of every cut answers those of $4 (cutOf): for each key the project reads
+// (eval_project_owners), its own and each owner key's, one range of eval_days_window (project_key,
+// repo, day) bounded by the key, $4 and the days; and, where the project publishes $4 as its
+// default (eval_project_repos, read once), one range bounded by its own key,
+// legionfacts.DefaultRepo and the days, of its own rows stored under that repository, which no
+// owner key's row under it joins. The lateral ends in `offset 0`, which keeps Postgres from pulling
+// it up into a join: pulled up, the generic plan a cached statement settles on read
+// eval_days_window by the repository and the days alone, every project's rows of the repository,
+// and joined the keys to them. So it reads the cut's rows of those days and no other row, the rows
+// the batch's fold of the cut reads (readFigureGroups, DayWindowIn, 16.8 ms a call on the farm),
+// where the statement before it, one join of every key's rows of those days bounded by the keys
+// alone, the repository a filter over the two, read every listed row the keys hold of those days:
+// a stale cut's refold at INFRA's size called it 205 times in 157 s, at 703 ms and about 233,000
+// buffers a call, 144 s of the 157 (dispatch://INFRA-2916, Job infra2916-refoldstats-sd-kpj25, at
+// b613db5e).
+const cutDeployReposQuery = `
+	select $4::text, d.deploy_repo
+	from eval_project_owners o
+	cross join lateral (
+		select d.deploy_repo from eval_days d
+		where d.project_key = o.owner and d.listed and d.repo = $4 and d.day >= $2 and d.day < $3
+		offset 0
+	) d
+	where o.project_key = $1
+	union
+	select $4::text, d.deploy_repo from eval_days d
+	where d.project_key = $1 and d.listed and d.repo = '` + legionfacts.DefaultRepo + `' and d.day >= $2 and d.day < $3
+		and exists (select 1 from eval_project_repos p where p.project_key = $1 and p.repo = $4)
+`

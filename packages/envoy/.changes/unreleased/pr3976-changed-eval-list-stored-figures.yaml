@@ -15,10 +15,12 @@ body: |-
   build's whole set of figures once, and then each new day's ranges, and marks a project built
   once the first whole walk of its figures is done (`eval_figures_built`). A move of a project's
   default repository folds the figures of the projects' own rows again in the commit that
-  publishes it, and marks stale the figures of each repository it moves, the old and the new
-  default's and those of the repositories of the owner keys a project gains or loses
-  (`eval_figure_cuts_stale`); the refresher's pass that publishes the move begins to fold those
-  again, and until they are done a read of such a repository folds the day rows. A register
+  publishes it, and marks stale the figures of each repository it moves rows of, the old and the
+  new default's and those of the repositories of the owner keys a project gains or loses
+  (`eval_figure_cuts_stale`), naming the evals whose rows it moved there: of the two defaults'
+  figures, the evals that hold Legion rows under `:default`. The refresher's pass that publishes
+  the move begins to fold those evals again, and until they are done a read of such a repository
+  folds their day rows and reads every other eval from the stored figures. A register
   write that moves what an eval folds by is folded by the refresher's next pass, which reads the
   change log from a cursor of its own. Both reads fold each eval's rows in one order, by day and
   within a day by the key each row is stored under, its repository and its series, so a sum of

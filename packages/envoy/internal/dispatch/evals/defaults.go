@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/legionfacts"
 )
 
 // defaults.go publishes the projects' default repositories (eval_days_defaults, migration
@@ -18,16 +19,18 @@ import (
 // (PUT /api/v1/projects/{key}/default-repository, projects.default_repo) moves no read and no view
 // until the refresher's page that reads it publishes it, and that page's commit makes visible, with
 // the new defaults, the stored figures of the projects' own rows it moves folded under them, and
-// the marks of the stored cuts of repositories it moves (figures.go). So a read in one snapshot
-// answers the old defaults whole, their figures among them, or the new ones whole: a read that
-// names no repository from figures folded under them, and a read that names a repository whose cut
-// the move marked from the day rows until that cut is folded again (refoldStaleCuts). A default
-// moves more than its own project's reads: a pull request whose issue is held through a project's
-// default repository (a condition of its attribution list, delivery_days.go) counts for that
-// project while its default is the pull request's repository and for the repository's other
-// readers otherwise, so the move moves what each of them reads. The move rewrites no day row and
-// no member: every owner key's rows are written whatever the defaults are, its zero rows from its
-// own first input day on, and the published defaults decide who reads them (eval_project_owners).
+// the marks of the stored cuts of repositories it moves, each naming the evals whose rows it moved
+// there (figures.go). So a read in one snapshot answers the old defaults whole, their figures among
+// them, or the new ones whole: a read that names no repository from figures folded under them, and
+// a read that names a repository whose cut the move marked from the day rows of the evals the mark
+// names until they are folded again (refoldStaleCuts), and from the stored figures of every other
+// eval of the cut, whose rows the move did not move. A default moves more than its own project's
+// reads: a pull request whose issue is held through a project's default repository (a condition of
+// its attribution list, delivery_days.go) counts for that project while its default is the pull
+// request's repository and for the repository's other readers otherwise, so the move moves what
+// each of them reads. The move rewrites no day row and no member: every owner key's rows are
+// written whatever the defaults are, its zero rows from its own first input day on, and the
+// published defaults decide who reads them (eval_project_owners).
 
 // defaultsMove is what a page publishes of the projects' default repositories (syncDefaults):
 // every project's default repository as it stands (live, by project), the projects whose published
@@ -112,21 +115,25 @@ func judgingProject(defaults map[string]string, deployRepo string) string {
 // moves, the stored figures of its own rows folded again over every day of its delivery evals
 // (refoldProject, figureScope.own), so they fold the rows it reads under the new defaults, and one
 // eval_days change of no eval (delivery.EvalDaysWrittenByDefaults), which marks its evals views;
-// each cut of a repository the move moves marked stale (markStaleCuts), its refold left to the
-// refresher (refoldStaleCuts); and, where the project judging the delivery views moved, one more
-// change (delivery.JudgingMoved), which marks those views. The projects it moves are those whose
-// own default it moves, and every project whose owner keys (eval_project_owners, with whether it
-// reads each through the repository) the new defaults move, read in tx before and after the write:
-// a default move moves the readers of every key a list of which holds a condition of the moved
+// each cut of a repository the move moves rows into or out of marked stale, naming the evals whose
+// rows it moved (staleMarksOf, markStaleCuts), their refold left to the refresher
+// (refoldStaleCuts); and, where the project judging the delivery views moved, one more change
+// (delivery.JudgingMoved), which marks those views. The projects it moves are those whose own
+// default it moves, and every project whose owner keys (eval_project_owners, with whether it reads
+// each through the repository) the new defaults move, read in tx before and after the write: a
+// default move moves the readers of every key a list of which holds a condition of the moved
 // project, whatever their own defaults. A day whose rows stand and whose readers' via moved folds
 // again too, since its stamp holds each row's via_repository as the project reads it (rowsStamp).
 // The cuts it moves of a project are those of its old and its new published default, whose cut
 // holds its own rows stored under legionfacts.DefaultRepo (cutOf), where its own default moves,
 // and that of the repository of each owner key it gains, loses or reads otherwise through the
-// repository; it folds none of them, since at INFRA's size the two defaults' cuts hold about
-// 290,000 range rows, past what a commit folds inside R14's 2 s. Every write of the commit lands
-// together, so a read answers the old defaults and figures or the new ones. The refresher's pass
-// whose page commits the move folds the stale cuts again once its pages are done, batch after
+// repository (noteMovedCuts); it folds none of them, since at INFRA's size the two defaults' cuts
+// hold about 290,000 range rows, past what a commit folds inside R14's 2 s. Of those two cuts the
+// marks name the evals that hold its rows under legionfacts.DefaultRepo, 6 of INFRA's 40, and those
+// of the owner keys of each repository it gains or loses, and every other eval's stored figures of
+// them stand, read as they are meanwhile. Every write of the commit lands together, so a read
+// answers the old defaults and figures or the new ones. The refresher's pass whose page commits
+// the move folds the marked evals of the stale cuts again once its pages are done, batch after
 // batch, each in a short transaction of its own (refoldStaleCuts).
 func publishDefaults(ctx context.Context, tx pgx.Tx, build string, move *defaultsMove) error {
 	projects := slices.AppendSeq(make([]string, 0, len(move.live)), maps.Keys(move.live))
@@ -173,7 +180,7 @@ func publishDefaults(ctx context.Context, tx pgx.Tx, build string, move *default
 		}
 	}
 	slices.Sort(moved)
-	stale := map[staleCut]bool{}
+	cuts := map[staleCut]*movedCut{}
 	for _, project := range slices.Compact(moved) {
 		if _, _, err := refoldProject(ctx, tx, build, project, true, slugSpans(project, deliveryDaySlugs, everyDay)); err != nil {
 			return err
@@ -182,9 +189,13 @@ func publishDefaults(ctx context.Context, tx pgx.Tx, build string, move *default
 			delivery.ChangeKindEvalDays, delivery.EvalDaysWrittenByDefaults, project); err != nil {
 			return fmt.Errorf("log the default repository %s publishes: %w", project, err)
 		}
-		noteMovedCuts(stale, project, was[project], move.live[project], before[project], after[project])
+		noteMovedCuts(cuts, project, was[project], move.live[project], before[project], after[project])
 	}
-	if err := markStaleCuts(ctx, tx, slices.Collect(maps.Keys(stale))); err != nil {
+	marks, err := staleMarksOf(ctx, tx, cuts)
+	if err != nil {
+		return err
+	}
+	if err := markStaleCuts(ctx, tx, marks); err != nil {
 		return err
 	}
 	if move.judgingWas != move.judge {
@@ -196,19 +207,35 @@ func publishDefaults(ctx context.Context, tx pgx.Tx, build string, move *default
 	return nil
 }
 
-// noteMovedCuts records in stale the cuts of project's stored figures a move of the default
-// repositories moves (publishDefaults), its published default moving from was to now ("" for
-// none) and the owner keys it reads, with whether through the repository, from before to after:
-// the cuts of was and of now where they differ, which hold its own rows stored under
-// legionfacts.DefaultRepo (cutOf), and the cut of the repository of each owner key it gains, loses
-// or reads otherwise, whose rows of that repository the cut folds (an owner key's rows are of its
-// own repository, OwnerKey). No cut of the project's own rows is among them: the move's commit
-// folds those itself.
-func noteMovedCuts(stale map[staleCut]bool, project, was, now string, before, after map[string]bool) {
+// movedCut is what a move of the default repositories moves of one cut of a project's stored
+// figures (noteMovedCuts): the project's own rows stored under legionfacts.DefaultRepo, where its
+// published default moves to or from the cut's repository (ownDefault), and the rows of each owner
+// key whose reading by the project it moves (owners).
+type movedCut struct {
+	ownDefault bool
+	owners     map[string]bool
+}
+
+// noteMovedCuts records in cuts the cuts of project's stored figures a move of the default
+// repositories moves (publishDefaults), and what it moves of each, its published default moving
+// from was to now ("" for none) and the owner keys it reads, with whether through the repository,
+// from before to after: the cuts of was and of now where they differ, which hold its own rows
+// stored under legionfacts.DefaultRepo (cutOf), and the cut of the repository of each owner key it
+// gains, loses or reads otherwise, whose rows of that repository the cut folds (an owner key's rows
+// are of its own repository, OwnerKey). No cut of the project's own rows is among them: the move's
+// commit folds those itself.
+func noteMovedCuts(cuts map[staleCut]*movedCut, project, was, now string, before, after map[string]bool) {
+	cut := func(repo string) *movedCut {
+		key := staleCut{project: project, repo: repo}
+		if cuts[key] == nil {
+			cuts[key] = &movedCut{owners: map[string]bool{}}
+		}
+		return cuts[key]
+	}
 	if was != now {
 		for _, repo := range []string{was, now} {
 			if repo != "" {
-				stale[staleCut{project: project, repo: repo}] = true
+				cut(repo).ownDefault = true
 			}
 		}
 	}
@@ -220,11 +247,113 @@ func noteMovedCuts(stale map[staleCut]bool, project, was, now string, before, af
 				continue
 			}
 			if repo, _, _, ok := parseOwner(owner); ok {
-				stale[staleCut{project: project, repo: repo}] = true
+				cut(repo).owners[owner] = true
 			}
 		}
 	}
 }
+
+// staleMarksOf reads in tx, the commit of the move, the evals whose rows the move moves in each
+// of cuts (noteMovedCuts), from the rows stored as it commits, so an eval whatever its name or
+// kind is named once it holds such a row, a new eval among them: of a cut the project's published
+// default moves to or from, each of the project's evals that holds a listed row under
+// legionfacts.DefaultRepo (DefaultRowEvalsQuery); and of a cut whose owner keys it moves, each of
+// the project's evals of a slug a listed row of one of those keys holds (ownerEvalsQuery, asReader).
+// It answers each cut's ids in byte order, and leaves out a cut that holds no row the move moved,
+// whose stored figures stand. The reads are bounded by eval_days' indexes, inside R14's 2 s: the
+// first one range of eval_days_window for each project whose default moves, every listed row it
+// holds under legionfacts.DefaultRepo (at INFRA's size, 21,993 rows of 6 of its 40 evals); the
+// second a walk of each owner key's eval ids through eval_days_stamps, one probe for each eval of
+// it and one past the last, in statements of at most statementBytes.
+func staleMarksOf(ctx context.Context, tx pgx.Tx, cuts map[staleCut]*movedCut) (map[staleCut][]string, error) {
+	var projects, owners []string
+	for cut, moved := range cuts {
+		if moved.ownDefault && !slices.Contains(projects, cut.project) {
+			projects = append(projects, cut.project)
+		}
+		for owner := range moved.owners {
+			if !slices.Contains(owners, owner) {
+				owners = append(owners, owner)
+			}
+		}
+	}
+	defaultRows := map[string][]string{}
+	if len(projects) > 0 {
+		rows, err := tx.Query(ctx, DefaultRowEvalsQuery, projects)
+		if err != nil {
+			return nil, fmt.Errorf("read the evals of %v that hold rows under %s: %w", projects, legionfacts.DefaultRepo, err)
+		}
+		var project, evalID string
+		if _, err := pgx.ForEachRow(rows, []any{&project, &evalID}, func() error {
+			defaultRows[project] = append(defaultRows[project], evalID)
+			return nil
+		}); err != nil {
+			return nil, fmt.Errorf("read the evals of %v that hold rows under %s: %w", projects, legionfacts.DefaultRepo, err)
+		}
+	}
+	ownerRows := map[string][]string{}
+	slices.Sort(owners)
+	for chunk := range statementChunks(owners, paramBytes(1), textBytes) {
+		rows, err := tx.Query(ctx, ownerEvalsQuery, chunk)
+		if err != nil {
+			return nil, fmt.Errorf("read the evals of %d owner keys a move of the default repositories moves: %w", len(chunk), err)
+		}
+		var owner, evalID string
+		if _, err := pgx.ForEachRow(rows, []any{&owner, &evalID}, func() error {
+			ownerRows[owner] = append(ownerRows[owner], evalID)
+			return nil
+		}); err != nil {
+			return nil, fmt.Errorf("read the evals of %d owner keys a move of the default repositories moves: %w", len(chunk), err)
+		}
+	}
+	marks := map[staleCut][]string{}
+	for cut, moved := range cuts {
+		evals := map[string]bool{}
+		if moved.ownDefault {
+			for _, evalID := range defaultRows[cut.project] {
+				evals[evalID] = true
+			}
+		}
+		for owner := range moved.owners {
+			for _, evalID := range ownerRows[owner] {
+				evals[asReader(owner, cut.project, evalID)] = true
+			}
+		}
+		if len(evals) > 0 {
+			marks[cut] = slices.Sorted(maps.Keys(evals))
+		}
+	}
+	return marks, nil
+}
+
+// DefaultRowEvalsQuery reads the evals of each project $1 names that hold a listed row stored
+// under legionfacts.DefaultRepo, each row a project and one of its evals: the evals a move of the
+// project's published default names in the cuts of the two defaults (staleMarksOf), and the bench's
+// k16 fallback marks its default's cut with, as a move of that default marks it. One range of
+// eval_days_window (project_key, repo, day) for each project, bounded by its key and that
+// repository, every row of which it reads.
+const DefaultRowEvalsQuery = `
+	select distinct d.project_key, d.eval_id from eval_days d
+	where d.project_key = any($1::text[]) and d.repo = '` + legionfacts.DefaultRepo + `' and d.listed
+`
+
+// ownerEvalsQuery reads the evals of each owner key $1 names that hold a listed row (staleMarksOf):
+// for each key, a walk of its eval ids through eval_days_stamps (project_key, eval_id, writer, day),
+// each probe the first listed row of the key after the eval before, so one probe for each eval of
+// the key and one past its last, rather than every row of it.
+const ownerEvalsQuery = `
+	select o.owner, held.eval_id
+	from unnest($1::text[]) as o(owner)
+	cross join lateral (
+		with recursive held(eval_id) as (
+			(select e.eval_id from eval_days e where e.project_key = o.owner and e.listed order by e.eval_id limit 1)
+			union all
+			select (select e.eval_id from eval_days e where e.project_key = o.owner and e.listed and e.eval_id > held.eval_id order by e.eval_id limit 1)
+			from held where held.eval_id is not null
+		)
+		select eval_id from held where eval_id is not null
+	) held
+`
 
 // readPublishedDefaults reads in q every project's published default repository, by project: a
 // project that publishes none is in none.

@@ -23,8 +23,9 @@ const (
 					and deploy_repo = case when eval_id = any($6::text[]) then $7::text else '' end
 			`
 	figuresBuiltRead = `
-		select b.project_key, b.through from eval_figures_built b
-		where b.project_key = any($1) and not exists (select 1 from eval_figure_cuts_stale s where s.project_key = b.project_key and s.repo = $2)
+		select b.project_key, b.through, s.project_key is not null, s.evals from eval_figures_built b
+		left join eval_figure_cuts_stale s on s.project_key = b.project_key and s.repo = $2
+		where b.project_key = any($1)
 	`
 	dayRowsUnion = `select true, eval_id, series, day, n, sum, num, den, max
 			from eval_days

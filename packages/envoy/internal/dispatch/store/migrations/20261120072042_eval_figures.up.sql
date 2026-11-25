@@ -75,17 +75,23 @@
 --
 -- eval_figure_cuts_stale holds one row per cut of a repository (every deploy repository of it)
 -- whose figures a move of its project's default repository moved, from the commit that publishes
--- the move (evals.publishDefaults) until the refresher has folded every range and day of the cut
--- again (evals.refoldStaleCuts), from the pass that publishes the move on, batch after batch, each
--- a short transaction: a read of the cut folds the day rows meanwhile (evals.figuresThrough), and
--- every other cut stays served. The move's commit folds the project's own rows itself, so no row
--- names the cut ''.
+-- the move (evals.publishDefaults) until the refresher has folded again every range and day of the
+-- evals it names (evals.refoldStaleCuts), from the pass that publishes the move on, batch after
+-- batch, each a short transaction: a read of the cut folds those evals' day rows meanwhile and
+-- reads every other eval's stored figures (evals.figuresThrough), and every other cut stays
+-- served. The move's commit folds the project's own rows itself, so no row names the cut ''.
 --   generation  1 for the first mark, one more for each move that marks the cut again, which sets
 --               next_day back to null: the refold's batch that reaches the last end day deletes the
 --               row only where its generation is the one the batch read, so a move during a refold
 --               leaves the cut stale until the refold of its generation is done.
 --   next_day    the first end day the refold of this generation has not folded, null while it is to
 --               begin at the cut's first.
+--   evals       the ids of the project's evals (as the project reads them, `<project>/<slug>`) whose
+--               rows the moves that marked the cut moved into or out of it, each move's computed
+--               from the rows stored at its commit; a move that marks the cut again adds its own
+--               to them. Null names every eval of the cut, and stays null whatever a later move
+--               adds. Every other eval's stored figures of the cut fold rows no move moved, and
+--               stand.
 --
 -- Six statement-level triggers, three on each figures table, record the end days a statement wrote
 -- or deleted figures of (a range's end day, the day after a day's) for the figures walk of the
@@ -158,6 +164,7 @@ create table eval_figure_cuts_stale (
     repo text not null check (repo <> ''),
     generation bigint not null check (generation > 0),
     next_day date,
+    evals text[],
     primary key (project_key, repo)
 );
 
