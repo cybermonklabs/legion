@@ -13,7 +13,7 @@ import (
 )
 
 // inFlight runs f on a goroutine of its own and answers the channel its answer arrives on, for a
-// row that moves a fake clock while the run is in flight.
+// row that waits, under a bound of its own (testwait.Receive), for a call that may never return.
 func inFlight[T any](f func() T) <-chan T {
 	answered := make(chan T, 1)
 	go func() { answered <- f() }()

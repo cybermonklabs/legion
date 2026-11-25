@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -372,7 +373,7 @@ esac
 	// A process actually named "codegraph" in its own argv, so codegraphLockHeldByLiveProcess's
 	// /proc/<pid>/cmdline check — the PID-reuse hardening — sees what a real builder's PID would.
 	builderScript := filepath.Join(binDir, "codegraph-builder")
-	if err := os.WriteFile(builderScript, []byte("#!/bin/bash\nexec -a codegraph sleep 60\n"), 0o700); err != nil {
+	if err := os.WriteFile(builderScript, []byte("#!/bin/bash\nexec -a codegraph sleep 86400\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	builder := exec.Command(builderScript)
@@ -843,7 +844,11 @@ func TestAStalledHoldersReleaseLeavesItsSuccessorsLeaseAtTheSameInode(t *testing
 // were gone. The control comes first: a heartbeat on its own lease does move the mtime forward.
 // The row runs in a synctest bubble, whose clock the heartbeat's ticker and every mtime it writes
 // read, and which does no network I/O: each sleep is a known number of ticks, and synctest.Wait
-// returns once the heartbeat has handled them.
+// returns once the heartbeat has handled them. The heartbeat is also released by a cleanup of the
+// bubble (sync.OnceFunc, since release closes its stop), which runs inside the bubble before
+// synctest.Test returns: a row that fails before its own release ends with its heartbeat stopped,
+// not with the runtime's panic for a bubble whose blocked goroutines outlive its main one, which
+// would end the package's test binary and every row after this one.
 func TestAStalledHoldersHeartbeatLeavesItsSuccessorsLeaseAtTheSameInode(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		dir := t.TempDir()
@@ -858,7 +863,8 @@ func TestAStalledHoldersHeartbeatLeavesItsSuccessorsLeaseAtTheSameInode(t *testi
 		if err := os.Chtimes(lease, past, past); err != nil {
 			t.Fatal(err)
 		}
-		release := holdWarmLease(lease, "A", warmLeaseHeartbeat)
+		release := sync.OnceFunc(holdWarmLease(lease, "A", warmLeaseHeartbeat))
+		t.Cleanup(release)
 		time.Sleep(warmLeaseHeartbeat)
 		synctest.Wait()
 		if info, err := os.Stat(lease); err != nil || !info.ModTime().After(past) {
@@ -917,7 +923,8 @@ func TestAStalledHoldersHeartbeatLeavesItsSuccessorsLeaseAtTheSameInode(t *testi
 // three ticks and moved back 30 s old: a heartbeat still alive brings its mtime forward again at
 // its next tick, and the release that follows removes the lease, which carried this holder's
 // token throughout. The control comes first: the heartbeat does refresh the lease before it is
-// moved away. The row runs in a synctest bubble, as the one above does.
+// moved away. The row runs in a synctest bubble, and releases its heartbeat in a cleanup of the
+// bubble, as the one above does.
 func TestALiveHoldersHeartbeatOutlivesAnUnreadableLease(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		dir := t.TempDir()
@@ -932,7 +939,8 @@ func TestALiveHoldersHeartbeatOutlivesAnUnreadableLease(t *testing.T) {
 		if err := os.Chtimes(lease, past, past); err != nil {
 			t.Fatal(err)
 		}
-		release := holdWarmLease(lease, "A", warmLeaseHeartbeat)
+		release := sync.OnceFunc(holdWarmLease(lease, "A", warmLeaseHeartbeat))
+		t.Cleanup(release)
 		refreshedAfterATick := func(what string) {
 			t.Helper()
 			time.Sleep(warmLeaseHeartbeat)
