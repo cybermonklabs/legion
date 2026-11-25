@@ -195,7 +195,7 @@ describe("each read command with and without --as-of", () => {
     expect(body(past.stdout)).toContain(`Body: left out at ${CUT}`);
   });
 
-  test("doc-read --blocks prints a token and an id left out as left out, never as none", async () => {
+  test("doc-read --blocks prints a token, an id, the anchored counts and a table's ids left out as left out, never as none", async () => {
     // The document is found through the issue read, whose answer names its own fields absent.
     const { present, past } = await readBothWays(READ_FORMS.blocks, {
       noHistory: [],
@@ -206,18 +206,38 @@ describe("each read command with and without --as-of", () => {
         "the block tokens",
         "the block embeddings",
         "the ids of blocks that no index holds",
+        "the references of each block",
+        "the ids of table rows",
+        "the ids of table cells",
       ],
     });
+    const table = "| Mode | Opens | | --- | --- | | native | yes |";
     expect(body(present.stdout).slice(1)).toEqual([
       "intro heading (sha256:intro; 0 comments, 0 asks): # Spec",
       "p-1 paragraph (sha256:p-1; 0 comments, 0 asks): The workspace opens natively.",
+      `modes table (sha256:modes; 0 comments, 0 asks): ${table}`,
+      "  row 0, id r-0",
+      '    row 0 column 0, id c-0-0, under "Mode": Mode',
+      '    row 0 column 1, id c-0-1, under "Opens": Opens',
+      "  row 1, id r-1",
+      '    row 1 column 0, id c-1-0, under "Mode": native',
+      '    row 1 column 1, id c-1-1, under "Opens": yes',
       "",
       "Document token: sha256:spec-token",
       "Document version: 1",
     ]);
+    const counts = `anchored comments and asks left out at ${CUT}`;
+    const id = `id left out at ${CUT}`;
     expect(body(past.stdout).slice(1)).toEqual([
-      `intro heading (token left out at ${CUT}; 0 comments, 0 asks): # Spec`,
-      `(id left out at ${CUT}) paragraph (token left out at ${CUT}; 0 comments, 0 asks): The workspace opens natively.`,
+      `intro heading (token left out at ${CUT}; ${counts}): # Spec`,
+      `(${id}) paragraph (token left out at ${CUT}; ${counts}): The workspace opens natively.`,
+      `modes table (token left out at ${CUT}; ${counts}): ${table}`,
+      `  row 0, ${id}`,
+      `    row 0 column 0, ${id}, under "Mode": Mode`,
+      `    row 0 column 1, ${id}, under "Opens": Opens`,
+      `  row 1, ${id}`,
+      `    row 1 column 0, ${id}, under "Mode": native`,
+      `    row 1 column 1, ${id}, under "Opens": yes`,
       "",
       "Document version: 1",
     ]);
@@ -252,6 +272,28 @@ describe("each read command with and without --as-of", () => {
       expect(run.stdout).not.toContain("The words of 80 hours before.");
     }
   });
+
+  // Dispatch reads `as_of` with Go's RFC 3339 parse, which takes spellings `Date.parse` does not:
+  // a comma before the fraction of a second is one. The window counts from the cut the answer
+  // names in `Dispatch-As-Of`, so every spelling of one time Dispatch reads holds the same items.
+  for (const spelling of ["2026-11-10T12:00:00,5Z", "2026-11-10T14:00:00+02:00"]) {
+    test(`answers --as-of ${spelling} counts its 72 hours back from the cut the answer names`, async () => {
+      const past = await standIn.run([...READ_FORMS.answers, "--as-of", spelling]);
+      expect({
+        failed: past.code === 0 ? [] : [said(past)],
+        calls: callsAtCutProblems(past, spelling),
+        head: body(past.stdout)[0],
+        recent: past.stdout.includes("The words of an hour before."),
+        old: past.stdout.includes("The words of 80 hours before."),
+      }).toEqual({
+        failed: [],
+        calls: [],
+        head: `1 item people wrote to this session in the 72 hours before ${spelling}, newest first, word for word:`,
+        recent: true,
+        old: false,
+      });
+    });
+  }
 
   test("open-asks prints each age at the cut and a person the records cannot give as left out", async () => {
     const { present, past } = await readBothWays(READ_FORMS.openAsks, {
@@ -364,32 +406,25 @@ describe("each read command with and without --as-of", () => {
   });
 });
 
-/** absent.go, the table of every field a route can name absent (`asof.AbsentFields`). */
-const ABSENT_GO = join(import.meta.dir, "../../../envoy/internal/dispatch/asof/absent.go");
-
-/** Each pointer `AbsentFields` names, or its end past the prefix of the helper that builds it:
- *  the first member of each `AbsentField` literal, and each delivery member the helper joins to a
- *  pointer ending in `/`. The words match a pointer by its end, so its end is what they need. */
-function absentGoPointers(): string[] {
-  const source = readFileSync(ABSENT_GO, "utf8");
-  const members = [...source.matchAll(/undated\w+Attempt\s*=\s*\[\]string\{([^}]*)\}/g)].flatMap(
-    (list) => [...(list[1] ?? "").matchAll(/"([^"]+)"/g)].map((member) => member[1] ?? "")
-  );
-  const pointers = [...source.matchAll(/\{(?:prefix \+ )?"(\/[^"]*)"/g)].flatMap((field) => {
-    const pointer = field[1] ?? "";
-    return pointer.endsWith("/") ? members.map((member) => pointer + member) : [pointer];
-  });
-  return [...new Set(pointers)].sort();
-}
+/** The pointers of `asof.AbsentFields`, the table of every field a route can name absent, by
+ *  route: the file packages/envoy/internal/dispatch/asof's TestTheAbsentFieldsFixtureIsAbsentFields
+ *  writes from the table and holds to it. */
+const ABSENT_FIELDS = join(
+  import.meta.dir,
+  "../../../envoy/internal/dispatch/asof/testdata/absent-fields.json"
+);
 
 describe("the words of the Left out at line", () => {
   test("name each field absent.go's AbsentFields can name, and no field it does not", () => {
-    const pointers = absentGoPointers();
+    const byRoute: Record<string, readonly string[]> = JSON.parse(
+      readFileSync(ABSENT_FIELDS, "utf8")
+    );
+    const pointers = [...new Set(Object.values(byRoute).flat())].sort();
     expect({
-      // A few pointers of each kind, so a read of absent.go that finds none fails here.
+      // A few pointers of each kind, so a file that holds none fails here.
       notRead: [
         "/route_status",
-        "/deliveries/*/session_id",
+        "/comment/deliveries/*/session_id",
         "/comment/anchor_block",
         "/results/*/href",
       ].filter((pointer) => !pointers.includes(pointer)),

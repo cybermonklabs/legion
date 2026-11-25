@@ -180,6 +180,14 @@ async function readUploadedFile(
  *  apart without printing the document twice. */
 const BLOCK_OPENING_CHARS = 60;
 
+/** A table row's or cell's id as `dispatch doc-read --blocks` prints it: "no id yet" for one that
+ *  Dispatch gave no id, and at a cut (`asOf`) the words for one the answer left out, since no
+ *  record at the cut gives the ids of a table's rows and cells. */
+function tablePartId(id: string | undefined, asOf: string | undefined): string {
+  if (id === undefined && asOf !== undefined) return `id ${leftOutAt(asOf)}`;
+  return id === "" ? "no id yet" : `id ${id}`;
+}
+
 /**
  * `dispatch doc-read --blocks`: the live document's blocks in document order, one line each, a
  * block indented under the block whose markdown range holds it. Each line carries the id, type,
@@ -190,7 +198,8 @@ const BLOCK_OPENING_CHARS = 60;
  * said to report none, never answered from the markdown, since a column read from the markdown is
  * not the index `delete_column` takes once a cell spans columns. The markdown, the blocks, the
  * token and the version come from one answer (`liveBlocks`), so no write between two reads can
- * leave the offsets slicing text they were not computed over.
+ * leave the offsets slicing text they were not computed over. At `read`'s cut each member the
+ * answer left out prints as left out at that cut.
  */
 async function listDocumentBlocks(
   client: DispatchClient,
@@ -214,17 +223,21 @@ async function listDocumentBlocks(
       points.length > BLOCK_OPENING_CHARS
         ? `${points.slice(0, BLOCK_OPENING_CHARS).join("")}…`
         : flat;
-    const { comments, asks } = block.references;
-    // At a cut a block's token is left out, and so is the id of an untyped block of a version no
-    // index holds: neither prints as a value, nor as "no token".
+    // At a cut a block's token and anchored counts are left out, and so is the id of an untyped
+    // block of a version no index holds: none prints as a value, nor as "no token".
+    const { asOf } = read;
     const id: string | undefined = block.id;
-    const shownId =
-      id === undefined && read.asOf !== undefined ? `(id ${leftOutAt(read.asOf)})` : id;
-    const token =
-      block.token ?? (read.asOf === undefined ? "no token" : `token ${leftOutAt(read.asOf)}`);
-    lines.push(
-      `${indent}${shownId} ${block.type} (${token}; ${comments} comment${comments === 1 ? "" : "s"}, ${asks} ask${asks === 1 ? "" : "s"}): ${opening}`
-    );
+    const shownId = id === undefined && asOf !== undefined ? `(id ${leftOutAt(asOf)})` : id;
+    const token = block.token ?? (asOf === undefined ? "no token" : `token ${leftOutAt(asOf)}`);
+    const references: ArtifactBlock["references"] | undefined = block.references;
+    let anchored: string;
+    if (references === undefined && asOf !== undefined) {
+      anchored = `anchored comments and asks ${leftOutAt(asOf)}`;
+    } else {
+      const { comments, asks } = block.references;
+      anchored = `${comments} comment${comments === 1 ? "" : "s"}, ${asks} ask${asks === 1 ? "" : "s"}`;
+    }
+    lines.push(`${indent}${shownId} ${block.type} (${token}; ${anchored}): ${opening}`);
     // Every pointer a typed block holds, in the order its type declares them: a reader follows
     // these between documents, and a `block[]` attribute a type declares later must not go
     // silently unprinted. A pointer is what the schema declares `block[]`, never what reads like
@@ -242,13 +255,11 @@ async function listDocumentBlocks(
         );
       } else {
         for (const row of block.table.rows ?? []) {
-          lines.push(
-            `${indent}  row ${row.index}, ${row.id === "" ? "no id yet" : `id ${row.id}`}`
-          );
+          lines.push(`${indent}  row ${row.index}, ${tablePartId(row.id, asOf)}`);
           for (const cell of row.cells ?? []) {
             const under = cell.header === "" ? "" : `, under ${JSON.stringify(cell.header)}`;
             lines.push(
-              `${indent}    row ${cell.row} column ${cell.column}, ${cell.id === "" ? "no id yet" : `id ${cell.id}`}${under}: ${cell.text === "" ? "(empty)" : cell.text}`
+              `${indent}    row ${cell.row} column ${cell.column}, ${tablePartId(cell.id, asOf)}${under}: ${cell.text === "" ? "(empty)" : cell.text}`
             );
           }
         }

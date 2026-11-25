@@ -40,13 +40,14 @@ export function leftOutAt(asOf: string): string {
 }
 
 /** The time a read counts its ages and windows from: the present on this machine's clock
- *  (`now`, in epoch milliseconds), or the cut it read Dispatch at (`asOf`). */
-export type ReadTime = { readonly now: number } | { readonly asOf: string };
+ *  (`now`, in epoch milliseconds), or the cut it read Dispatch at, as the read names it (`asOf`)
+ *  and as the instant its answers named in `Dispatch-As-Of` (`at`, in epoch milliseconds). */
+export type ReadTime = { readonly now: number } | { readonly asOf: string; readonly at: number };
 
-/** The time a read at `read`'s cut counts from: the cut, or the present where it names none. */
-export function readTime(read: AsOfRead | undefined): ReadTime {
-  const asOf = read?.asOf;
-  return asOf === undefined ? { now: Date.now() } : { asOf };
+/** The time a read at `cut` counts from: the cut, or the present where it names none. At a cut
+ *  it is read after an answer at the cut, which named the cut (`ReadCut.instant`). */
+export function readTime(cut: ReadCut | undefined): ReadTime {
+  return cut === undefined ? { now: Date.now() } : { asOf: cut.asOf, at: cut.instant() };
 }
 
 /** Why `dispatch results` refuses `--at` with `--as-of`: `--at` compares each check with one
@@ -135,17 +136,34 @@ export function absentFieldWords(pointer: string): string {
 /**
  * The cut one run of a read command reads Dispatch at, and what it left out there. It is the
  * `AsOfRead` the command hands each read of a route that answers `as_of`, so each such read sends
- * the cut and reports the fields its answer names absent. `leave` records a part the command did
- * not read, a route that holds no history, and answers the text the read prints in its place.
+ * the cut, tells it the cut its answer names, and reports the fields its answer names absent.
+ * `leave` records a part the command did not read, a route that holds no history, and answers the
+ * text the read prints in its place.
  */
 export class ReadCut implements AsOfRead {
   readonly #parts = new Set<string>();
   readonly #absent = new Set<string>();
+  #answeredAt: string | undefined;
 
   constructor(readonly asOf: string) {}
 
+  answeredAt(cut: string): void {
+    this.#answeredAt = cut;
+  }
+
   absent(pointers: readonly string[]): void {
     for (const pointer of pointers) this.#absent.add(pointer);
+  }
+
+  /** The cut's instant in epoch milliseconds, read from the cut an answer named in
+   *  `Dispatch-As-Of` and never from `asOf`: Dispatch reads RFC 3339 spellings that `Date.parse`
+   *  does not, such as a comma before the fraction of a second, and names the cut in one form. */
+  instant(): number {
+    const answered = this.#answeredAt;
+    if (answered === undefined) {
+      throw new Error(`no answer read at ${this.asOf} has named its cut yet`);
+    }
+    return Date.parse(answered);
   }
 
   /** Records `part` as left out, and answers the row a section prints for it. */

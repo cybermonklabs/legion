@@ -289,9 +289,10 @@ export function renderSessionAnswers(
 
 /** What `dispatch answers` prints: every item of the 72 hours before `time`, newest first, in the
  *  per-request list's item format and with no cap, or a line saying there is none. A list read at
- *  a cut (`asOf`, RFC 3339) counts the 72 hours back from that cut, and says so. */
+ *  a cut counts the 72 hours back from the instant its answer named (`at`), and says so in the
+ *  words the read names the cut in (`asOf`). */
 export function renderSessionAnswersList(items: readonly SessionAnswer[], time: ReadTime): string {
-  const now = "asOf" in time ? Date.parse(time.asOf) : time.now;
+  const now = "asOf" in time ? time.at : time.now;
   const window = "asOf" in time ? `in the 72 hours before ${time.asOf}` : "in the last 72 hours";
   const shown = withinWindow(items, now);
   if (shown.length === 0) return `No person wrote to this session ${window}.`;

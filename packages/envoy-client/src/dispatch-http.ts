@@ -400,11 +400,14 @@ export class DispatchUnreachableError extends Error {
  * one way this client sends a cut. `asOf` is the cut, an RFC 3339 time, and the read sends it as
  * `as_of`. Dispatch then answers as the records stood at the cut, names the cut in
  * `Dispatch-As-Of`, and names in `Dispatch-As-Of-Absent` each field the records at the cut cannot
- * give. `absent` is told those fields, as the JSON Pointers the header names, when it names any.
- * A read with no `asOf` is the read of the present, as before.
+ * give. `answeredAt` is told the cut as the answer names it, Dispatch's own reading of `asOf`:
+ * RFC 3339 in UTC with six fractional digits. `absent` is told those fields, as the JSON Pointers
+ * the header names, when it names any. A read with no `asOf` is the read of the present, as
+ * before.
  */
 export interface AsOfRead {
   readonly asOf?: string | undefined;
+  answeredAt?(cut: string): void;
   absent?(pointers: readonly string[]): void;
 }
 
@@ -2387,17 +2390,20 @@ export class DispatchClient {
 
   /**
    * Refuses a 2xx answer to a read at a cut that does not name the cut (`AsOfNotAnswered`): a
-   * server older than `as_of` answers the present. Otherwise it tells `read.absent` the fields the
-   * answer names absent. A read at no cut has nothing to check.
+   * server older than `as_of` answers the present. Otherwise it tells `read.answeredAt` the cut
+   * the answer names, and `read.absent` the fields the answer names absent. A read at no cut has
+   * nothing to check.
    */
   #answeredAtCut(url: string, response: Response, read: AsOfRead): void {
     if (read.asOf === undefined) return;
-    if (response.headers.get(DISPATCH_AS_OF_HEADER) === null) {
+    const cut = response.headers.get(DISPATCH_AS_OF_HEADER);
+    if (cut === null) {
       throw new AsOfNotAnswered(
         `GET ${requestForText(this.#baseUrl, url, DISPATCH_URL_SETTING)}`,
         read.asOf
       );
     }
+    read.answeredAt?.(cut);
     const absent = parseAsOfAbsent(response.headers.get(DISPATCH_AS_OF_ABSENT_HEADER));
     if (absent.length > 0) read.absent?.(absent);
   }

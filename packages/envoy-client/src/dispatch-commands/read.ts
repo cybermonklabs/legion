@@ -28,8 +28,13 @@ import {
   stringArg,
 } from "./context";
 import { resolveMessageArgument } from "./conversation";
-import { approvalLine, documentListLines, readRefOwner } from "./document-targets";
-import { dispatchAnswered, refuseMissingOfRef, throughPostCorrections } from "./failures";
+import { approvalLine, documentListLines, liveBlocks, readRefOwner } from "./document-targets";
+import {
+  DocumentNotFoundError,
+  dispatchAnswered,
+  refuseMissingOfRef,
+  throughPostCorrections,
+} from "./failures";
 import { messageIdOf, refOwnerName, refTarget, refuseItemOffRef, resolveIdPrefix } from "./refs";
 import {
   askPartNoun,
@@ -507,9 +512,11 @@ async function blockAtCut(
   const blockID = ref.block ?? "";
   const missing = (clause = "") =>
     new Error(`No block ${blockID} in ${holder} at ${cut.asOf}.${clause}`);
-  // An item the read at the cut does not hold has no block there either.
+  // An item or a document the read at the cut does not hold has no block there either.
   const orMissing = (error: unknown): never => {
-    throw dispatchAnswered(error, 404) ? missing() : error;
+    throw dispatchAnswered(error, 404) || error instanceof DocumentNotFoundError
+      ? missing()
+      : error;
   };
   cut.leave(LEFT_OUT.blockChanged);
   if (ref.pin !== undefined) cut.leave(LEFT_OUT.blockPin);
@@ -522,19 +529,13 @@ async function blockAtCut(
   const item = ref.item;
   let lines: string[];
   if (item === undefined) {
-    // The blocks' byte ranges index the markdown of the version that stood at the cut, which is
-    // read at the same cut.
-    const blocks = await (ref.owner.kind === "project"
-      ? client.projectArtifactBlocks(ref.owner.project, ref.id, cut)
-      : client.issueArtifactBlocks(ref.owner.issue, ref.id, cut)
-    ).catch(orMissing);
+    // The blocks and the markdown come from one answer at the cut (`liveBlocks`): the text route
+    // gives the version that stood then with its blocks, beside the rendering their ranges index.
+    const document = await resolveDocument(ref.owner, ref.id).catch(orMissing);
+    const { bytes, blocks } = await liveBlocks(client, document.artifact, cut).catch(orMissing);
     const block = blocks.find((candidate) => candidate.id === blockID);
     if (block === undefined) throw missing();
-    const document = await resolveDocument(ref.owner, ref.id);
-    const { markdown } = await client.docRead(document.artifact.id, undefined, cut);
-    const text = new TextDecoder().decode(
-      new TextEncoder().encode(markdown).subarray(block.from, block.to)
-    );
+    const text = new TextDecoder().decode(bytes.subarray(block.from, block.to));
     lines = blockLines({ block_id: blockID, text }, ref, block);
   } else if (item.kind === "ask") {
     const { ask } = await client.getAsk(item.id, cut).catch(orMissing);

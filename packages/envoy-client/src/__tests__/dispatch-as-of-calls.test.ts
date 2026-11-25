@@ -1,6 +1,8 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import {
   type Agent,
+  type ArtifactBlock,
+  DISPATCH_AS_OF_ABSENT_HEADER,
   DISPATCH_AS_OF_HEADER,
   DISPATCH_AS_OF_NOT_SERVED,
   DISPATCH_INVALID_AS_OF,
@@ -215,7 +217,9 @@ const HISTORY = {
   ],
 } satisfies PostHistoryRead;
 
-const SPEC_MARKDOWN = "# Spec\n\nThe workspace opens natively.\n";
+/** The spec's table: a header row and one row, of one cell each. */
+const SPEC_TABLE = "| Mode |\n| --- |\n| native |";
+const SPEC_MARKDOWN = `# Spec\n\nThe workspace opens natively.\n\n${SPEC_TABLE}\n`;
 const RUNBOOK_MARKDOWN = "# Runbook\n\nRestart the listener.\n";
 
 /** A document's heading block: the first six UTF-8 bytes of its markdown. */
@@ -233,11 +237,66 @@ function headingBlock(id: string) {
 const SPEC_BLOCK = headingBlock("intro");
 const RUNBOOK_BLOCK = headingBlock("steps");
 
-/** Each document's markdown and its one block, by artifact id. */
-const DOCUMENTS = new Map([
-  [SPEC, { markdown: SPEC_MARKDOWN, block: SPEC_BLOCK }],
-  [RUNBOOK, { markdown: RUNBOOK_MARKDOWN, block: RUNBOOK_BLOCK }],
+/** The spec's table block, its rows and its cells. */
+const SPEC_TABLE_BLOCK: ArtifactBlock = {
+  id: "modes",
+  type: "table",
+  from: SPEC_MARKDOWN.indexOf(SPEC_TABLE),
+  to: SPEC_MARKDOWN.indexOf(SPEC_TABLE) + SPEC_TABLE.length,
+  token: "sha256:modes",
+  references: { comments: 0, asks: 0 },
+  attributes: [],
+  table: {
+    rows: [
+      {
+        id: "r-0",
+        index: 0,
+        cells: [{ id: "c-0-0", row: 0, column: 0, header: "Mode", text: "Mode" }],
+      },
+      {
+        id: "r-1",
+        index: 1,
+        cells: [{ id: "c-1-0", row: 1, column: 0, header: "Mode", text: "native" }],
+      },
+    ],
+  },
+};
+
+/** Each document's markdown and its blocks, by artifact id. */
+const DOCUMENTS = new Map<string, { readonly markdown: string; readonly blocks: ArtifactBlock[] }>([
+  [SPEC, { markdown: SPEC_MARKDOWN, blocks: [SPEC_BLOCK, SPEC_TABLE_BLOCK] }],
+  [RUNBOOK, { markdown: RUNBOOK_MARKDOWN, blocks: [RUNBOOK_BLOCK] }],
 ]);
+
+/**
+ * `blocks` as the text route gives them at a cut, and the members its answer names absent: the
+ * anchored counts of each block, which only the reference graph records, and the ids of each
+ * table's rows and cells, which no index records (`blocksAtTheCut` and `tableAtTheCut` in
+ * packages/envoy/internal/dispatch/api/document_as_of.go). Every other member stands as at the
+ * present, since nothing in this world changed after the cut.
+ */
+function blocksAtTheCut(blocks: readonly ArtifactBlock[]): {
+  readonly blocks: object[];
+  readonly absent: string[];
+} {
+  const absent = new Set<string>();
+  const kept = blocks.map(({ references: _references, table, ...block }) => {
+    absent.add("/blocks/*/references");
+    if (table === undefined) return block;
+    const rows = (table.rows ?? []).map(({ id: _row, cells, ...row }) => {
+      absent.add("/blocks/*/table/rows/*/id");
+      return {
+        ...row,
+        cells: (cells ?? []).map(({ id: _cell, ...cell }) => {
+          absent.add("/blocks/*/table/rows/*/cells/*/id");
+          return cell;
+        }),
+      };
+    });
+    return { ...block, table: { rows } };
+  });
+  return { blocks: kept, absent: [...absent] };
+}
 
 const OPEN_ASKS = {
   session_id: SESSION,
@@ -260,6 +319,12 @@ interface TableRow {
   /** Each form below that calls the route, with `--as-of` and without it. A route of kind
    *  "no history" names none: a form must call it only without `--as-of`. */
   readonly calledBy?: readonly string[];
+  /** Each form below that calls the route with `--as-of` only: its read at the cut reads what its
+   *  read of the present reads from another route. */
+  readonly calledAtACutBy?: readonly string[];
+  /** Each form below that calls the route without `--as-of` only, for the reason
+   *  `calledAtACutBy` gives. */
+  readonly calledAtThePresentBy?: readonly string[];
 }
 
 /**
@@ -284,6 +349,9 @@ const TABLE: readonly TableRow[] = [
       "doc-read: --version",
       "doc-read: an uploaded file",
     ],
+    // A block read at a cut reads the block from its document (`calledAtACutBy` of the text
+    // route), which it finds through the issue.
+    calledAtACutBy: ["read: a block of an issue document"],
   },
   { routes: ["GET /api/v1/issues"], kind: "answers" },
   {
@@ -428,6 +496,7 @@ const TABLE: readonly TableRow[] = [
       "read: a picture at a project address",
       "doc-read: a project document",
     ],
+    calledAtACutBy: ["read: a block of a project document"],
   },
   {
     routes: ["GET /api/v1/agents/{session_id}/artifacts/{slug}"],
@@ -444,6 +513,9 @@ const TABLE: readonly TableRow[] = [
       "doc-read: --blocks",
       "doc-read: a project document",
     ],
+    // A block read at a cut reads its block and the markdown the block's range indexes from one
+    // answer at the cut; the read of the present reads the graph's node and the block route.
+    calledAtACutBy: ["read: a block of an issue document", "read: a block of a project document"],
   },
   {
     routes: ["GET /api/v1/artifacts/{id}/versions/{number}"],
@@ -460,12 +532,12 @@ const TABLE: readonly TableRow[] = [
   {
     routes: ["GET /api/v1/issues/{key}/artifacts/{slug}/blocks"],
     kind: "answers",
-    calledBy: ["read: a block of an issue document"],
+    calledAtThePresentBy: ["read: a block of an issue document"],
   },
   {
     routes: ["GET /api/v1/projects/{key}/artifacts/{slug}/blocks"],
     kind: "answers",
-    calledBy: ["read: a block of a project document"],
+    calledAtThePresentBy: ["read: a block of a project document"],
   },
   {
     routes: ["GET /api/v1/issues/{key}/results"],
@@ -723,12 +795,14 @@ function answer(found: unknown): Response {
   return found === undefined ? NOT_FOUND() : Response.json(found);
 }
 
-/** What Dispatch answers on `route` for the world above, at the present: an answer as of a cut
- *  is the same here, since nothing in it changed after the cut. */
+/** What Dispatch answers on `route` for the world above, at the present or, where `atACut`, as of
+ *  a cut: the same answer, since nothing in it changed after the cut, but for what the records at
+ *  the cut do not give of a document's blocks (`blocksAtTheCut`). */
 function answerFor(
   route: string,
   params: Readonly<Record<string, string>>,
-  query: URLSearchParams
+  query: URLSearchParams,
+  atACut: boolean
 ): Response {
   const id = params.id ?? "";
   switch (route) {
@@ -787,16 +861,14 @@ function answerFor(
       );
     case "GET /api/v1/artifacts/{id}/text": {
       const document = DOCUMENTS.get(id);
-      return answer(
-        document === undefined
-          ? undefined
-          : {
-              markdown: document.markdown,
-              token: `sha256:${id}`,
-              version: 1,
-              ...(query.get("blocks") === "true" ? { blocks: [document.block] } : {}),
-            }
-      );
+      if (document === undefined) return NOT_FOUND();
+      const text = { markdown: document.markdown, token: `sha256:${id}`, version: 1 };
+      if (query.get("blocks") !== "true") return Response.json(text);
+      if (!atACut) return Response.json({ ...text, blocks: document.blocks });
+      const { blocks, absent } = blocksAtTheCut(document.blocks);
+      const answered = Response.json({ ...text, blocks });
+      answered.headers.set(DISPATCH_AS_OF_ABSENT_HEADER, absent.join(","));
+      return answered;
     }
     case "GET /api/v1/artifacts/{id}/versions/{number}": {
       if (params.number !== "1") return NOT_FOUND();
@@ -888,7 +960,9 @@ const server = Bun.serve({
         { status: 500 }
       );
     }
-    if (asOf.length === 0) return answerFor(matched.route, matched.params, url.searchParams);
+    if (asOf.length === 0) {
+      return answerFor(matched.route, matched.params, url.searchParams, false);
+    }
     if (matched.kind !== "answers") {
       return refusal(
         400,
@@ -900,7 +974,7 @@ const server = Bun.serve({
     if (cut === undefined) {
       return refusal(400, DISPATCH_INVALID_AS_OF, `as_of: ${asOf.join(", ")} is not one time`);
     }
-    const answered = answerFor(matched.route, matched.params, url.searchParams);
+    const answered = answerFor(matched.route, matched.params, url.searchParams, true);
     answered.headers.set(DISPATCH_AS_OF_HEADER, headerTime(cut));
     return answered;
   },
@@ -947,11 +1021,30 @@ function said(output: string): string {
   return output.trim().split("\n").slice(0, 4).join(" / ");
 }
 
-/** The routes the table says `row`'s form calls that `ran` did not call. */
-function missedRoutes(row: Row, ran: Run): string[] {
-  return TABLE.filter((entry) => entry.calledBy?.includes(row.form) === true)
+/** The routes the table says `row`'s form calls in `ran`, a run with `--as-of` where `atACut`,
+ *  that `ran` did not call. */
+function missedRoutes(row: Row, ran: Run, atACut: boolean): string[] {
+  return TABLE.filter(
+    (entry) =>
+      entry.calledBy?.includes(row.form) === true ||
+      (atACut ? entry.calledAtACutBy : entry.calledAtThePresentBy)?.includes(row.form) === true
+  )
     .filter((entry) => !ran.calls.some((call) => entry.routes.includes(call.route ?? "")))
     .map((entry) => `${entry.routes.join(" or ")} was not called, so the form was not reached`);
+}
+
+/** The routes the table says `row`'s form calls only in the other run, with `--as-of` or without
+ *  it, that `ran`, a run with `--as-of` where `atACut`, called. */
+function strayRoutes(row: Row, ran: Run, atACut: boolean): string[] {
+  return TABLE.filter(
+    (entry) =>
+      (atACut ? entry.calledAtThePresentBy : entry.calledAtACutBy)?.includes(row.form) === true
+  )
+    .filter((entry) => ran.calls.some((call) => entry.routes.includes(call.route ?? "")))
+    .map(
+      (entry) =>
+        `${entry.routes.join(" or ")} was called, which the form calls ${atACut ? "without" : "with"} --as-of only`
+    );
 }
 
 /** Why one call of a run under `--as-of` breaks the plan's table, or undefined for none. */
@@ -982,7 +1075,8 @@ function callProblem(call: Call): string | undefined {
 function presentProblems(row: Row, ran: Run): string[] {
   return [
     ...(ran.code === 0 ? [] : [`exit ${ran.code}: ${said(ran.output)}`]),
-    ...missedRoutes(row, ran),
+    ...missedRoutes(row, ran, false),
+    ...strayRoutes(row, ran, false),
   ].map((problem) => `without --as-of: ${problem}`);
 }
 
@@ -1003,14 +1097,23 @@ function asOfProblems(row: Row, ran: Run): string[] {
             : `the first call was ${first.text}, not GET /api/v1/whoami`,
         ]),
     ...ran.calls.flatMap((call) => callProblem(call) ?? []),
-    ...missedRoutes(row, ran),
+    ...missedRoutes(row, ran, true),
+    ...strayRoutes(row, ran, true),
     ...(ran.code === 0 ? [] : [`exit ${ran.code}: ${said(ran.output)}`]),
   ];
 }
 
 describe("each read command's calls under --as-of", () => {
   test("the rows are the (command, form) pairs the plan's table names, one row each", () => {
-    const named = [...new Set(TABLE.flatMap((entry) => entry.calledBy ?? []))].sort();
+    const named = [
+      ...new Set(
+        TABLE.flatMap((entry) => [
+          ...(entry.calledBy ?? []),
+          ...(entry.calledAtACutBy ?? []),
+          ...(entry.calledAtThePresentBy ?? []),
+        ])
+      ),
+    ].sort();
     expect(ROWS).toHaveLength(named.length);
     expect(ROWS.map((row) => row.form).sort()).toEqual(named);
     expect(ROWS.filter((row) => !row.form.startsWith(`${row.argv[0]}: `))).toEqual([]);

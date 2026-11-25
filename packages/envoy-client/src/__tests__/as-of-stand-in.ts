@@ -150,6 +150,13 @@ function iso(ms: number): string {
   return new Date(ms).toISOString();
 }
 
+/** The instant an `as_of` names, in epoch milliseconds, as Dispatch reads it: Go's RFC 3339
+ *  parse, which takes a comma before the fraction of a second as it takes a point
+ *  (`2026-11-10T12:00:00,5Z`). */
+function cutTime(asOf: string): number {
+  return Date.parse(asOf.replace(/(T\d{2}:\d{2}:\d{2}),/, "$1."));
+}
+
 /** The time a read is answered at: the cut the call sent, or the present on the test's clock. */
 interface When {
   readonly ms: number;
@@ -356,11 +363,14 @@ function searchResults(when: When): Answered {
   };
 }
 
-const SPEC_MARKDOWN = "# Spec\n\nThe workspace opens natively.\n";
+/** The spec's table: a header row and one row of two cells. */
+const SPEC_TABLE = "| Mode | Opens |\n| --- | --- |\n| native | yes |";
+const SPEC_MARKDOWN = `# Spec\n\nThe workspace opens natively.\n\n${SPEC_TABLE}\n`;
 
-/** `GET /api/v1/artifacts/{id}/text`: the spec, and with `?blocks=true` its heading and its
- *  paragraph. At a cut the tokens are left out, and so is the id of the untyped paragraph, of a
- *  version no index holds. */
+/** `GET /api/v1/artifacts/{id}/text`: the spec, and with `?blocks=true` its heading, its
+ *  paragraph and its table. At a cut the tokens are left out, and so is the id of the untyped
+ *  paragraph, of a version no index holds; so are each block's anchored counts, which only the
+ *  reference graph records, and the ids of the table's rows and cells, which no index records. */
 function documentText(when: When, blocks: boolean): Answered {
   const text = presentOnly(
     { markdown: SPEC_MARKDOWN, token: "sha256:spec-token", version: 1 },
@@ -371,15 +381,42 @@ function documentText(when: When, blocks: boolean): Answered {
   const references = { comments: 0, asks: 0 };
   const heading = { id: "intro", type: "heading", from: 0, to: 6, token: "sha256:intro" };
   const paragraph = { id: "p-1", type: "paragraph", from: 8, to: 37, token: "sha256:p-1" };
+  const tableFrom = SPEC_MARKDOWN.indexOf(SPEC_TABLE);
+  const cell = (row: number, column: number, header: string, words: string) =>
+    presentOnly({ id: `c-${row}-${column}`, row, column, header, text: words }, when, ["id"]);
+  const row = (index: number, cells: readonly object[]) =>
+    presentOnly({ id: `r-${index}`, index, cells }, when, ["id"]);
+  const table = {
+    id: "modes",
+    type: "table",
+    from: tableFrom,
+    to: tableFrom + SPEC_TABLE.length,
+    token: "sha256:modes",
+    table: {
+      rows: [
+        row(0, [cell(0, 0, "Mode", "Mode"), cell(0, 1, "Opens", "Opens")]),
+        row(1, [cell(1, 0, "Mode", "native"), cell(1, 1, "Opens", "yes")]),
+      ],
+    },
+  };
   return {
     body: {
       ...text,
       blocks: [
-        { ...presentOnly(heading, when, ["token"]), references },
-        { ...presentOnly(paragraph, when, ["token", "id"]), references },
+        presentOnly({ ...heading, references }, when, ["token", "references"]),
+        presentOnly({ ...paragraph, references }, when, ["token", "id", "references"]),
+        presentOnly({ ...table, references }, when, ["token", "references"]),
       ],
     },
-    absent: ["/token", "/blocks/*/token", "/blocks/*/embedding", "/blocks/*/id"],
+    absent: [
+      "/token",
+      "/blocks/*/token",
+      "/blocks/*/embedding",
+      "/blocks/*/id",
+      "/blocks/*/references",
+      "/blocks/*/table/rows/*/id",
+      "/blocks/*/table/rows/*/cells/*/id",
+    ],
   };
 }
 
@@ -702,7 +739,7 @@ export function startAsOfStandIn(name: string): AsOfStandIn {
         if (refused !== undefined) return refused;
       }
       const when: When = acknowledged
-        ? { ms: Date.parse(cut), cut }
+        ? { ms: cutTime(cut), cut }
         : { ms: Date.now(), cut: undefined };
       const answered = answerFor(route, params, url.searchParams, when);
       if (answered === undefined) {
@@ -803,9 +840,7 @@ export function callsAtCutProblems(run: Run, cut: string): string[] {
       const [sent, ...more] = call.asOf;
       if (sent === undefined) return [`${call.text}: sent no as_of, not ${cut}`];
       if (more.length > 0) return [`${call.text}: sent as_of ${call.asOf.length} times`];
-      return Date.parse(sent) === Date.parse(cut)
-        ? []
-        : [`${call.text}: as_of=${sent}, not ${cut}`];
+      return cutTime(sent) === cutTime(cut) ? [] : [`${call.text}: as_of=${sent}, not ${cut}`];
     }),
   ];
 }
