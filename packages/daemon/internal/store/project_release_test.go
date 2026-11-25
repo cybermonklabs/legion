@@ -123,12 +123,14 @@ func faultedStore(t *testing.T, st *Store) (*Store, *testdb.CommitFault) {
 // it stand, and a claim the idle release had already suspended stays `released`. The answer names
 // each release with its issue, its generation, its kind (a quiet pod's, or one no role can use) and
 // the roles it had stopped. The queued workspace check of a left pod's close, which writes no mark,
-// is finished too. Another project's idle release and close check are none of this release's.
+// is finished too. Another project's idle release and close check are none of this release's,
+// though a claim of this project names that project's issue (the operator's spawn of it): only that
+// project's daemon runs the issue's rows (claim.KeyOfProject).
 //
 // The stop set: every claim of the project stored in a state whose process is up or coming up,
-// launching through idle, the controller's among them, with its tree, issue, role, session and
-// state, in token order — and none that is queued, suspended, failed or retired, and none of
-// another project.
+// launching through idle, the controller's and the one on another project's issue among them, with
+// its tree, issue, role, session and state, in token order — and none that is queued, suspended,
+// failed or retired, and none of another project.
 func TestStartProjectReleaseTakesOverTheIdleReleasesAndAnswersItsStopSet(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)
@@ -145,6 +147,9 @@ func TestStartProjectReleaseTakesOverTheIdleReleasesAndAnswersItsStopSet(t *test
 		{"LEGION-210", claim.RolePlanner, supervise.StateRegistered},
 		{"LEGION-211", claim.RoleImplementer, supervise.StateReady},
 		{"", claim.RoleController, supervise.StateReady},
+		// The operator's spawn of another project's issue, made under this project's token: a claim
+		// of the project, so the release stops it, whatever issue it names.
+		{"OTHER-1", claim.RoleTester, supervise.StateWorking},
 	}
 	want := map[claim.Token]ProjectReleaseClaim{}
 	for _, c := range running {

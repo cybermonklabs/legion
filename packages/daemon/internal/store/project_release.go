@@ -311,8 +311,13 @@ func runningProjectReleaseTx(ctx context.Context, tx pgx.Tx, project string) (Pr
 // an operator, so the check would read a pod the release took away, decline the close because no
 // role runs to read through, and hold the issue under a streak that no idle pass ends, since no
 // pass visits an issue with no Sandbox. The first idle pass after the next boot decides again each
-// such pod that still stands. A check is of the project when a claim of the project names its
-// issue, which every issue whose close reads a live role holds.
+// such pod that still stands. A check is of the project when its key is (claim.KeyOfProject): the
+// key's part before its first `-`, lowercased, is project, the claim token's spelling, which
+// claim.ProjectToken lowercases one to one from every key a Dispatch project has. A claim of the
+// project does not make a check the project's: the operator's spawn of another project's issue
+// makes such a claim, and that project's daemon, which may share this database, runs every row the
+// issue's key names, its own idle release's workspace check among them, whose delete here would
+// leave that release's teardown to delete the pod with its workspace unread.
 func takeOverIdleReleases(ctx context.Context, tx pgx.Tx, project string) ([]TakenOverIdleRelease, error) {
 	rows, err := tx.Query(ctx, `with taken as (delete from issue_releases where project = $1
 		returning issue, first_row, last_row, suspended, kind)
@@ -350,7 +355,7 @@ func takeOverIdleReleases(ctx context.Context, tx pgx.Tx, project string) ([]Tak
 		takenOver = append(takenOver, TakenOverIdleRelease{Issue: taken.issue, Suspended: taken.mark.roles()})
 	}
 	if _, err := tx.Exec(ctx, `delete from outbox where kind = 'issue_bundle'
-		and issue in (select issue from claims where project = $1)`, project); err != nil {
+		and lower(split_part(issue, '-', 1)) = $1`, project); err != nil {
 		return nil, fmt.Errorf("finish the queued close checks of %s: %w", project, err)
 	}
 	return takenOver, nil
