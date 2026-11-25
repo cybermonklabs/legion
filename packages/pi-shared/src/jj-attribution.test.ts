@@ -56,7 +56,9 @@ describe("exportJjSessionAttribution", () => {
     dirs.push(dir);
     return dir;
   }
-  // The hang guard the `userConfigChain` afterEach below carries, for the reason recorded there.
+  // A bound on work, not a hang guard: nothing here waits on another process. The body removes the
+  // rows' directories, a part of the work of the `userConfigChain` afterEach below, and it carries
+  // that hook's 60_000 for the reading recorded there.
   afterEach(async () => {
     await Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
   }, 60_000);
@@ -214,17 +216,21 @@ describe("exportJjSessionAttribution", () => {
     ["empty", ""],
     ["bogus", "bogus"],
     ['x"y', 'x"y'],
-  ])("writes the session line alone for LEGION_ROLE %s", async (_name, role) => {
-    const dir = await stateDir();
-    const options = paneAttributionOptions(role === undefined ? {} : { LEGION_ROLE: role });
-    expect(options).not.toHaveProperty("role");
-    await exportJjSessionAttribution(ROOT_ID, dir, {
-      ...options,
-      env: {},
-      resolveBase: async () => "/u/base.toml",
-    });
-    await expectSessionLineAlone(dir);
-  });
+  ])(
+    "writes the session line alone for LEGION_ROLE %s",
+    async (_name, role) => {
+      const dir = await stateDir();
+      const options = paneAttributionOptions(role === undefined ? {} : { LEGION_ROLE: role });
+      expect(options).not.toHaveProperty("role");
+      await exportJjSessionAttribution(ROOT_ID, dir, {
+        ...options,
+        env: {},
+        resolveBase: async () => "/u/base.toml",
+      });
+      await expectSessionLineAlone(dir);
+    },
+    JJ_ROW_LIMIT_MS
+  );
 
   // Containment, as for the issue key: the role is interpolated into a jj template inside a TOML
   // literal, so the writer checks a caller's value again.
@@ -232,15 +238,19 @@ describe("exportJjSessionAttribution", () => {
     ["a value that is no role", "bogus"],
     ["a value holding a double quote", 'x"y'],
     ["a role with a trailing newline", "tester\n"],
-  ])("writes the session line alone for %s passed as the role", async (_name, role) => {
-    const dir = await stateDir();
-    await exportJjSessionAttribution(ROOT_ID, dir, {
-      role,
-      env: {},
-      resolveBase: async () => "/u/base.toml",
-    });
-    await expectSessionLineAlone(dir);
-  });
+  ])(
+    "writes the session line alone for %s passed as the role",
+    async (_name, role) => {
+      const dir = await stateDir();
+      await exportJjSessionAttribution(ROOT_ID, dir, {
+        role,
+        env: {},
+        resolveBase: async () => "/u/base.toml",
+      });
+      await expectSessionLineAlone(dir);
+    },
+    JJ_ROW_LIMIT_MS
+  );
 
   it(
     "scopes the Dispatch line to the pane's workspace for a key of the accepted shape",
@@ -347,17 +357,21 @@ describe("exportJjSessionAttribution", () => {
     ["a newline", "/ws/line\nbreak"],
     ["a tab", "/ws/tab\there"],
     ["a DEL", "/ws/del\u007fhere"],
-  ])("writes no scope for a workspace path holding %s", async (_name, ws) => {
-    const dir = await stateDir();
-    const env: NodeJS.ProcessEnv = {};
-    await exportJjSessionAttribution(ROOT_ID, dir, {
-      issueKey: "ACME-7",
-      workspace: ws,
-      env,
-      resolveBase: async () => "/u/base.toml",
-    });
-    await expectSessionLineAlone(dir);
-  });
+  ])(
+    "writes no scope for a workspace path holding %s",
+    async (_name, ws) => {
+      const dir = await stateDir();
+      const env: NodeJS.ProcessEnv = {};
+      await exportJjSessionAttribution(ROOT_ID, dir, {
+        issueKey: "ACME-7",
+        workspace: ws,
+        env,
+        resolveBase: async () => "/u/base.toml",
+      });
+      await expectSessionLineAlone(dir);
+    },
+    JJ_ROW_LIMIT_MS
+  );
 
   // Containment as much as correctness: the value is interpolated into a jj template inside a
   // TOML literal, so anything but a whole key writes the session line alone.
@@ -371,17 +385,21 @@ describe("exportJjSessionAttribution", () => {
     ["a value holding a newline", "ACME-7\nDispatch: OTHER-1"],
     ["a project part over ten characters", "ABCDEFGHIJK-7"],
     ["a lowercase key", "acme-7"],
-  ])("writes the session line alone for %s", async (_name, issueKey) => {
-    const dir = await stateDir();
-    const env: NodeJS.ProcessEnv = {};
-    await exportJjSessionAttribution(ROOT_ID, dir, {
-      issueKey,
-      workspace: await workspace(),
-      env,
-      resolveBase: async () => "/u/base.toml",
-    });
-    await expectSessionLineAlone(dir);
-  });
+  ])(
+    "writes the session line alone for %s",
+    async (_name, issueKey) => {
+      const dir = await stateDir();
+      const env: NodeJS.ProcessEnv = {};
+      await exportJjSessionAttribution(ROOT_ID, dir, {
+        issueKey,
+        workspace: await workspace(),
+        env,
+        resolveBase: async () => "/u/base.toml",
+      });
+      await expectSessionLineAlone(dir);
+    },
+    JJ_ROW_LIMIT_MS
+  );
 
   it(
     "carries a state directory holding a space and a single quote whole",
@@ -505,36 +523,50 @@ describe("exportJjSessionAttribution", () => {
     ["a session id holding a slash", "../s-1"],
     ["a session id holding a backslash", "s\\1"],
     ["a session id over 128 characters", "s".repeat(129)],
-  ])("leaves the environment untouched and writes nothing for %s", async (_name, sessionId) => {
-    const dir = await stateDir();
-    const env: NodeJS.ProcessEnv = {};
-    expect(
-      await exportJjSessionAttribution(sessionId, dir, {
-        env,
-        resolveBase: async () => "/u/base.toml",
-      })
-    ).toBeUndefined();
-    expect(env.JJ_CONFIG).toBeUndefined();
-    expect(await readdir(dir)).toEqual([]);
-  });
+  ])(
+    "leaves the environment untouched and writes nothing for %s",
+    async (_name, sessionId) => {
+      const dir = await stateDir();
+      const env: NodeJS.ProcessEnv = {};
+      expect(
+        await exportJjSessionAttribution(sessionId, dir, {
+          env,
+          resolveBase: async () => "/u/base.toml",
+        })
+      ).toBeUndefined();
+      expect(env.JJ_CONFIG).toBeUndefined();
+      expect(await readdir(dir)).toEqual([]);
+    },
+    JJ_ROW_LIMIT_MS
+  );
 
-  /** The jj commands the templates row below runs, counted: the row holds the count to the
-   *  commands it ran (`ran`), so a command added or lost fails it by name. A fixed 60 s for the
-   *  whole row once decided it at a load of about 1,400, where its jj work took 46 s and more. */
+  /** The jj commands the templates row below runs. The row checks the commands it ran (`ran`)
+   *  against this count. A command added past the count fails the row naming that command. A
+   *  command lost fails the count check at the row's end. */
   const TEMPLATE_ROW_JJ_COMMANDS = 34;
-  /** Each jj command's hang guard in that row: far above one command on a loaded machine, so a
-   *  jj that never ends fails naming its command. */
-  const JJ_COMMAND_MS = 60_000;
-  /** The templates row's own limit: the room the pi-shared job leaves one hang, not six times a
-   *  reading. Sized from the tester's round 27: over 20 runs of this file at the 240 rung a run
-   *  charged up to 442 299 ms, this row's but for the 22.9 s its other rows took together (the
-   *  Job infra-1580-t27-j3-99kcl of the cluster's `builds` namespace, two CPUs and 8 GiB, 417 busy
-   *  loops for the 240 rung, row A 35.3 s), and the row 300 338 ms in infra-1580-t27-j15-tx7cm, at
-   *  06d187e7. Six times either is past the job's room: its
-   *  `timeout-minutes: 10` less its 45 s at 06d187e7 (CI run 45437325102) leaves 555 s. The count
-   *  times each command's guard (2 070 000 ms), the limit before, was past the job's whole 600 s.
-   *  So the room decides 540_000, 1.2 times the worst. */
+  /** The templates row's own limit. A hang guard: what can hang is a real jj command, which runs
+   *  with no deadline of its own. This limit alone ends a jj that never ends, and it names the
+   *  row. The afterEach below names the command and kills it. Worst measured cost: over 20 runs
+   *  of this file at the 240 rung, a run charged up to 442 299 ms, all of it this row's but the
+   *  22.9 s its other rows took together, in the Job infra-1580-t27-j3-99kcl of the cluster's
+   *  `builds` namespace, two CPUs and 8 GiB (417 busy loops for the 240 rung, row A 35.3 s), at
+   *  06d187e7. The row took 300 338 ms in the Job infra-1580-t27-j15-tx7cm at that commit. The
+   *  pi-shared job's room sizes the limit: its `timeout-minutes: 10` less its 45 s at 06d187e7
+   *  (CI run 45437325102) leaves 555 s. Six times either reading is past that room. So the room
+   *  decides 540_000, 1.2 times 442 299 ms. */
   const TEMPLATE_ROW_LIMIT_MS = 540_000;
+  /** The real jj command the templates row below is running, if any: its words and its process.
+   *  A row its limit ends inside a command never clears this, so the afterEach below finds the
+   *  command here. */
+  let jjRunning: { command: string; child: Bun.Subprocess<"ignore", "pipe", "pipe"> } | undefined;
+  // Nothing here waits: the kill is a signal, and the error names the command the row was in.
+  afterEach(() => {
+    const running = jjRunning;
+    jjRunning = undefined;
+    if (running === undefined) return;
+    running.child.kill("SIGKILL");
+    throw new Error(`${running.command} still ran when its row ended, killed here`);
+  });
 
   // The one case here that runs the real jj, which is not on every host: it skips where PATH has
   // none, except on GitHub Actions, where the pi-shared job installs one and a skip would hide
@@ -566,10 +598,11 @@ describe("exportJjSessionAttribution", () => {
       await mkdir(repo);
       let ran = 0;
       const jj = async (...args: string[]): Promise<string> => {
+        const command = `jj ${args.join(" ")}`;
         ran += 1;
         if (ran > TEMPLATE_ROW_JJ_COMMANDS) {
           throw new Error(
-            `jj ${args.join(" ")} is past the ${TEMPLATE_ROW_JJ_COMMANDS} commands this row counts`
+            `${command} is past the ${TEMPLATE_ROW_JJ_COMMANDS} commands this row counts`
           );
         }
         const child = Bun.spawn([JJ, ...args], {
@@ -578,19 +611,19 @@ describe("exportJjSessionAttribution", () => {
           stdin: "ignore",
           stdout: "pipe",
           stderr: "pipe",
-          timeout: JJ_COMMAND_MS,
-          killSignal: "SIGKILL",
         });
-        const [code, stdout, stderr] = await Promise.all([
-          child.exited,
-          new Response(child.stdout).text(),
-          new Response(child.stderr).text(),
-        ]);
-        if (child.signalCode === "SIGKILL") {
-          throw new Error(`jj ${args.join(" ")} ran past its ${JJ_COMMAND_MS} ms guard`);
+        jjRunning = { command, child };
+        try {
+          const [code, stdout, stderr] = await Promise.all([
+            child.exited,
+            new Response(child.stdout).text(),
+            new Response(child.stderr).text(),
+          ]);
+          if (code !== 0) throw new Error(`${command} exited ${code}: ${stderr}`);
+          return stdout;
+        } finally {
+          if (jjRunning?.child === child) jjRunning = undefined;
         }
-        if (code !== 0) throw new Error(`jj ${args.join(" ")} exited ${code}: ${stderr}`);
-        return stdout;
       };
       const description = (revision: string) =>
         jj("log", "--no-graph", "-r", revision, "-T", "description");
@@ -638,7 +671,7 @@ describe("exportJjSessionAttribution", () => {
         `the running pair\n\n${pair}`
       );
       expect(await duplicateOf(undefined)).toBe("");
-      // The count the row's bound is made of is the commands it ran.
+      // A command lost from the row fails this check. One added past the count failed at its call.
       expect(ran).toBe(TEMPLATE_ROW_JJ_COMMANDS);
     },
     TEMPLATE_ROW_LIMIT_MS
@@ -653,7 +686,9 @@ describe("paneAttributionOptions", () => {
 
 describe("resolvedWorkspace", () => {
   const dirs: string[] = [];
-  // The hang guard the `userConfigChain` afterEach below carries, for the reason recorded there.
+  // A bound on work, not a hang guard: nothing here waits on another process. The body removes the
+  // rows' directories, a part of the work of the `userConfigChain` afterEach below, and it carries
+  // that hook's 60_000 for the reading recorded there.
   afterEach(async () => {
     await Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
   }, 60_000);
@@ -762,7 +797,8 @@ describe("userConfigChain", () => {
   // A bound on work, not a hang guard: nothing here waits on another process. The body reads the
   // rows' pidfiles, kills what they name and removes the rows' directories, which a loaded host
   // stretches. 60_000. Worst measured cost: 5 104.35 ms over 15 invocations in 3 runs of this
-  // describe at 75 busy loops (the 240 rung) on a two-CPU, 8 GiB pod.
+  // describe at 75 busy loops (the 240 rung) on a two-CPU, 8 GiB pod. The reading is of the body
+  // at 0ad78f05, which killed without asking `running` first, in a describe of five rows.
   afterEach(async () => {
     rowGeneration += 1;
     const survivors: number[] = [];
@@ -787,10 +823,11 @@ describe("userConfigChain", () => {
   // it: a pidfile that is never written, or a child the kill misses, ends the row there, and the
   // afterEach above kills the fake jj's `sleep 300` either way instead of leaving it for five
   // minutes. Once the row has ended, the afterEach advances `rowGeneration` and the poll stops,
-  // since the generation it checks is the one its row took at its first line. At the base these
-  // polls gave up at 3 s, below the file's 5 s per-test limit, and two of them ran in series in
-  // one row; a give-up on real time inside the row's own limit is a bound on real time deciding
-  // the row, which a wrapper's fork costing 33478 ms at 240 busy loops shows.
+  // since the generation it checks is the one its row took at its first line. At the base,
+  // 67dcae63, these polls gave up at `WAIT_MS`, 30 s, inside row limits of 65 s and 75 s, and two
+  // of them ran in series in one row. A give-up on real time inside the row's own limit is a bound
+  // on real time deciding the row. A wrapper's fork costing 33478 ms at 240 busy loops, past that
+  // 30 s, shows it.
   /** Polls `read` until it answers, warning once at 2 s, which names what it waits for and decides
    *  nothing. */
   async function polled<T>(
@@ -928,14 +965,26 @@ describe("userConfigChain", () => {
   it("kills a wrapper's detached child after jj returns a config path", async () => {
     const row = rowGeneration;
     const pidFile = await childPidFile();
-    // Here the wrapper writes `$!` after forking, and that leaves no window: the group is killed
-    // only once the wrapper exits, after it has written the pid and answered, and `&&` keeps it
-    // from answering when it could not write the pid.
+    // The child records itself, as in the row above: `sh -c` writes its own pid and only then
+    // becomes the `sleep`, so no `sleep` runs before its pid is on disk. The wrapper answers only
+    // once the pidfile holds that pid as a whole line, for which `read` needs the newline. If the
+    // row ends first, the afterEach removes the pidfile's directory. A child that has not written
+    // by then fails its write, and `&&` keeps it from the `sleep`. The wrapper's wait sees the
+    // directory gone and exits, and `userConfigChain` kills its group on that exit.
+    const quotedDir = JSON.stringify(path.dirname(pidFile));
+    const quotedFile = JSON.stringify(pidFile);
     const env = await withJj(
-      `sleep 300 </dev/null >/dev/null 2>&1 & echo $! > ${JSON.stringify(pidFile)} && printf '/u/a.toml\\n'`
+      [
+        `sh -c 'echo $$ > "$1" && exec sleep 300' sh ${quotedFile} </dev/null >/dev/null 2>&1 &`,
+        `until read -r pid 2>/dev/null <${quotedFile}; do`,
+        `  [ -d ${quotedDir} ] || exit 1`,
+        "  sleep 0.01",
+        "done",
+        "printf '/u/a.toml\\n'",
+      ].join("\n")
     );
     // This row's subject is that the detached child is killed after jj answers, and `killGroup`
-    // runs off the child's own exit, so the bound is no part of it. The production default of
+    // runs off the wrapper's own exit, so the bound is no part of it. The production default of
     // 10 s was tried here: a starved host fired it before the fake jj printed, failing a correct
     // run 1 time in 20 at 240 busy loops on this two-CPU pod, and reproducibly when the fake jj
     // answers one second late. So the budget below sits above this row's own 100 s limit, where
@@ -943,14 +992,18 @@ describe("userConfigChain", () => {
     // `jj` that never prints. The row above passes such a bound too, and gives up through its
     // signal once the wrapper's child has written its pid.
     const paths = await userConfigChain(120_000, env);
-    const pid = await polled(row, `the jj wrapper to write ${pidFile}`, () => pidIn(pidFile));
     expect(paths).toBe("/u/a.toml");
+    // The wrapper answered, so the pidfile holds its child's pid: one read finds it.
+    const pid = await pidIn(pidFile);
+    if (pid === undefined) throw new Error(`the jj wrapper answered with no pid in ${pidFile}`);
     // The check, as above: the detached child's 300 s sleep outlives the row unless it is killed.
     await reaped(row, pidFile, pid);
-    // A hang guard: what can hang is a pidfile that is never written, or a detached child the kill
-    // misses. Worst measured cost: 14 098 ms over 20 runs at the 240 rung in the Job
-    // infra-1580-jj-vkdjb of the cluster's `builds` namespace, two CPUs and 8 GiB (350 busy loops
-    // for the 240 rung, row A 33.7 s), at 7025b6c8. 100_000 is 7.1 times that.
+    // A hang guard: what can hang is a pidfile that is never written, which the wrapper waits on,
+    // or a detached child the kill misses. Worst measured cost of the row's form before its child
+    // recorded itself: 14 098 ms over 20 runs at the 240 rung in the Job infra-1580-jj-vkdjb of the
+    // cluster's `builds` namespace, two CPUs and 8 GiB (350 busy loops for the 240 rung, row A
+    // 33.7 s), at 7025b6c8, with a script in which the wrapper wrote `$!`. 100_000 is 7.1 times
+    // that.
   }, 100_000);
 
   it("bounds jj at 10 s, inside the 30 s Oh My Pi gives the session_start handler", () => {
