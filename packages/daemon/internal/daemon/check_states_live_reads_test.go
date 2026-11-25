@@ -38,16 +38,18 @@ func (r *statesProof) moveLine(issue *statesIssue, move, assertion string) *logg
 	return line
 }
 
-// attrStrings is a list attribute of a line of the daemon's JSON log, as strings; nil where the
-// line has none.
+// attrStrings is a list attribute of a line of the daemon's log, as strings; nil where the line has
+// none or the list is empty. The driver keeps a list attribute as the text the log shows
+// (recordingLog's decodeAttr), "[k1 k2]" for the checks k1 and k2, so the list is that text's
+// words between its brackets; a check id holds no blank.
 func attrStrings(value any) []string {
-	values, _ := value.([]any)
-	var out []string
-	for _, v := range values {
-		text, _ := v.(string)
-		out = append(out, text)
+	text, _ := value.(string)
+	inner, opened := strings.CutPrefix(text, "[")
+	inner, closed := strings.CutSuffix(inner, "]")
+	if !opened || !closed {
+		return nil
 	}
-	return out
+	return strings.Fields(inner)
 }
 
 // heldStates is what the daemon's store holds of issue's checks at its head (record.Store's
