@@ -10141,3 +10141,105 @@ test('k-choice-writes-on-enter: on a phone-width page, Use "owner/repo" in the h
     step(`the Use pick scrolls the page nowhere (scrollY ${before} before, ${after} after)`)
   ).toBeLessThanOrEqual(4);
 });
+
+// The tester's red rows of round 18 (cc76c363's held-key rule). Each sends a press and then a
+// repeat of it to one element, as a browser sends a held key, and reads the repeat's own
+// `defaultPrevented`: `Keymap.captureKeyDown` (keymap.ts:779-784) sets it on each repeat it stops,
+// and no binding or control of the page names these keys, so nothing else sets it. The plain `a`
+// and the ArrowDown are the rows' controls: the head leaves their repeats alone, so each row fails
+// only at the step that names its defect. Playwright sends neither AltGr nor a browser's own
+// accelerator, so the rows send the events the browser sends.
+/** A key as `heldPressOf` sends it: its fields and the modifiers held with it. */
+interface HeldKeyInit {
+  readonly altKey?: boolean;
+  readonly code: string;
+  readonly ctrlKey?: boolean;
+  readonly key: string;
+  readonly modifierAltGraph?: boolean;
+}
+
+/** The page's own read of a press and then a repeat of each key of `inits` at the focused element
+ *  (or the body): whether the press and the repeat were default-prevented. */
+function heldPressOf(
+  page: Page,
+  inits: readonly HeldKeyInit[]
+): Promise<{ press: boolean; repeat: boolean }[]> {
+  return page.evaluate(
+    (rows: HeldKeyInit[]) => {
+      const target = document.activeElement ?? document.body;
+      return rows.map((row) => {
+        const init: KeyboardEventInit = {
+          altKey: row.altKey === true,
+          bubbles: true,
+          cancelable: true,
+          code: row.code,
+          composed: true,
+          ctrlKey: row.ctrlKey === true,
+          key: row.key,
+        };
+        // Chromium reads `modifierAltGraph` into `getModifierState("AltGraph")`; the DOM's typing
+        // of `KeyboardEventInit` does not list it.
+        Object.assign(init, { modifierAltGraph: row.modifierAltGraph === true });
+        const press = new KeyboardEvent("keydown", { ...init, repeat: false });
+        target.dispatchEvent(press);
+        const repeat = new KeyboardEvent("keydown", { ...init, repeat: true });
+        target.dispatchEvent(repeat);
+        target.dispatchEvent(new KeyboardEvent("keyup", init));
+        return { press: press.defaultPrevented, repeat: repeat.defaultPrevented };
+      });
+    },
+    [...inits]
+  );
+}
+
+// keyboard.md: "In a text field that had the focus before you pressed the key, typing repeats as
+// usual: a held character". Chromium and Edge on Windows report AltGr as Ctrl+Alt (with
+// `getModifierState("AltGraph")`), so the `@` of AltGr+Q on a German keyboard comes with
+// `ctrlKey` and `altKey` set. At a97f63a2 `writesText` (components/key-targets.ts:88) is false for
+// every `ctrlKey`, so the repeats of a held `@`, `€`, `{`, `[` or `\\` are stopped.
+test("k-default-keys: in the Inbox's search box the repeat of a character typed with AltGr, which Windows reports as Ctrl+Alt, is left to the field as a plain character's is", async ({
+  page,
+}) => {
+  const step = (text: string) => `k-default-keys: a held AltGr character: ${text}`;
+  await seedHeldQuestions();
+  const inbox = await openInboxAt(page, "the reading pane", 3);
+  const search = inbox.scope.getByRole("searchbox", { name: "Search asks" });
+  await search.focus();
+  const [plain, altGr] = await heldPressOf(page, [
+    { code: "KeyA", key: "a" },
+    { altKey: true, code: "KeyQ", ctrlKey: true, key: "@", modifierAltGraph: true },
+  ]);
+  expect(plain?.repeat, step("the repeat of a plain a is left to the field")).toBe(false);
+  expect(altGr?.press, step("the press of AltGr+Q is the field's")).toBe(false);
+  expect(
+    altGr?.repeat,
+    step("the repeat of AltGr+Q is left to the field, as the repeat of a plain a is")
+  ).toBe(false);
+});
+
+// keymap.ts: the rule keeps from the page "each repeat of a held key that would act". Ctrl+- and
+// Ctrl+= are the browser's zoom, which a page's keydown can cancel, and no control or binding of
+// the page names them. At a97f63a2 each of their repeats is cancelled (keymap.ts:783), so a held
+// Ctrl+- zooms out one step only.
+test("k-default-keys: on the Inbox page the repeats of Ctrl+- and Ctrl+=, which no control of the page names, are left to the browser's zoom", async ({
+  page,
+}) => {
+  const step = (text: string) => `k-default-keys: a held Ctrl+- or Ctrl+=: ${text}`;
+  await seedHeldQuestions();
+  await openInboxAt(page, "the reading pane", 3);
+  await page.evaluate(() => {
+    if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+  });
+  const [control, out, inward] = await heldPressOf(page, [
+    { code: "ArrowDown", key: "ArrowDown" },
+    { code: "Minus", ctrlKey: true, key: "-" },
+    { code: "Equal", ctrlKey: true, key: "=" },
+  ]);
+  expect(
+    control?.repeat,
+    step("the repeat of an ArrowDown, which scrolls, is left to the browser")
+  ).toBe(false);
+  expect(out?.press, step("the press of Ctrl+- is the browser's")).toBe(false);
+  expect(out?.repeat, step("the repeat of Ctrl+- (zoom out) is the browser's too")).toBe(false);
+  expect(inward?.repeat, step("the repeat of Ctrl+= (zoom in) is the browser's too")).toBe(false);
+});
