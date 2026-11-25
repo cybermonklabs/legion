@@ -1,0 +1,4 @@
+jj git push --dry-run --ignore-working-copy --color=never --named nm=d8ba684f07847ce4cf4f26ef18e0d5bc01229c91
+Changes to push to origin:
+  bookmark: nm [add to d8ba684f0784]
+Dry-run requested, not pushing.
