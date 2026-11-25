@@ -519,13 +519,15 @@ the limit, as on a dev box whose `TMPDIR` is on a data disk.
   TMPDIR="$L" GOTMPDIR="$L" go test ./<package>/... -count=1
   ```
 
-## A test in `internal/dispatch/api` or `internal/dispatch/docs` runs beside the others
+## A test in `internal/dispatch/api`, `internal/dispatch/docs` or the daemon's `internal/intake` runs beside the others
 
-Every top-level test of `packages/envoy/internal/dispatch/api` and
-`packages/envoy/internal/dispatch/docs` calls `t.Parallel()` as its first statement, and each
-package's `TestMain` sets how many run at once: 8 in api, 6 in docs. Each test already has a
-database and a server or document service of its own (`storetest.Open`), so run alone it spends
-most of its time waiting on Postgres while the machine's other cores sit idle.
+Every top-level test of `packages/envoy/internal/dispatch/api`,
+`packages/envoy/internal/dispatch/docs` and `packages/daemon/internal/intake` calls `t.Parallel()`
+as its first statement, and each package's `TestMain` sets how many run at once: 8 in api, 6 in
+docs, 4 in intake. Each test already has a database and a server or document service of its own
+(`storetest.Open`; in intake `testpg.Clone` and a NATS server of `testnats`' pool, one per test that
+holds one), so run alone it spends most of its time waiting on Postgres while the machine's other
+cores sit idle.
 
 A test stays serial when it, or a helper it calls, changes or measures something the whole test
 process shares: the default logger (`logtest.SetDefault`, `slog.SetDefault`), the environment
@@ -590,11 +592,17 @@ rather than beside the module's other Postgres-backed packages: together they sh
 service and the machine's CPU, and on a small machine `api` and `docs` then each overran the default
 (`docs/solutions/testing/the-dispatch-servers-go-suites-in-an-issue-pod-run-api-and-docs-alone-with-a-timeout-and-read-the-c-collation-docker-and-bun-failures-as-the-environment-LEGION-752.md`).
 
+Every package of `packages/daemon` runs in CI in exactly one leg that `.github/go-legs.yaml` names
+for it (or under `elsewhere`, with the job that runs it). When you add, remove, rename or move a
+daemon package, change its line there in the same change: every daemon-go leg fails, naming the
+package, while `go list ./...` and the file disagree. Put a new package in the leg its measured
+time fits, longest first; `.github/ci-notes/ci-job-daemon-go.md` says how the legs are balanced.
+
 `packages/daemon/internal/daemon` is the daemon's slow, Postgres-backed package. CI runs it only
-under the race detector, once per run, in the `daemon-go-race` job's step "Test the concurrent
-packages under the race detector" (`.github/workflows/ci-job-daemon-go.yaml`), beside the
-`daemon-go` job; `daemon-go`'s plain step ("Test the Go daemon") leaves it out,
-and `go vet -tags e2e ./...` in the `typecheck` job still compiles it without the detector. The
+under the race detector, once per run, in the race leg `.github/go-legs.yaml` gives it, whose step
+is "Test the concurrent packages under the race detector" (`.github/workflows/ci-job-daemon-go.yaml`,
+job `daemon-go-race-legs`), beside the plain legs; the plain step ("Test the Go daemon") leaves it
+out, and `go vet -tags e2e ./...` in the `typecheck` job still compiles it without the detector. The
 figures below were measured while these steps were the `test` job's. On CI's runners, while the
 plain step still ran it, it took at most 625 s there over the 49 green main `test` jobs of
 2026-11-01 to 2026-11-03, and up to 733.581 s in the jobs whose race step timed out (job
@@ -691,6 +699,12 @@ to migrate the template its `Clone` copies, so a test binary of `internal/store`
 `internal/testpg` back, and the half of the fixture that needs no schema sits in `testdb`, which
 imports no package of the module except `internal/testwait`, which imports none, and so is open to
 every package of it.
+Each of those tests runs beside the others on databases and pools of its own, four at a time unless
+the command line names a `-parallel` (`storeTestParallelism`). A pool writes its refusals, and
+`Transact`'s lines about a commit over that `*Pool` itself, to its own log (`Pool.log`), so a test
+reads its own lines there (`captureLog`) and never swaps the default logger. `Transact`'s lines
+about a commit over any other `TxPool`, a test's wrapper of a `*Pool` included, go to the default
+logger.
 `internal/daemon`'s tests boot daemons, which migrate the database they are given: each test's
 daemons write in a clone of the package's template (`testDSN`), so a boot there finds the schema
 in place, and the tests run beside each other on databases of their own. So do `internal/workflow`'s,
