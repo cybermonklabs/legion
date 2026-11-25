@@ -256,6 +256,9 @@ func TestSessionCallerIsTheVerifyRule(t *testing.T) {
 	publicRead.Scope = ciphertoken.ScopeRead
 	publicScoped := jobToken(caller.jkt, time.Hour, ciphertoken.ProjectScopePublic)
 	publicScoped.Scope = "person"
+	// A cut names the past time a read-only token reads at, and a job's token writes.
+	publicCut := jobToken(caller.jkt, time.Hour, ciphertoken.ProjectScopePublic)
+	publicCut.AsOf = "2026-11-18T09:30:00.123456Z"
 	// A job's named token holds no OAuth scope either, a word the broker grants or one it does not
 	// know, while a person's named token keeps the scope its entry grants, as at main.
 	scoped := func(answer ciphertoken.Introspection, scope string) ciphertoken.Introspection {
@@ -293,6 +296,7 @@ func TestSessionCallerIsTheVerifyRule(t *testing.T) {
 		{"a public token beside a person", publicForPerson, false},
 		{"a public token holding the scope read", publicRead, false},
 		{"a public token holding an OAuth scope", publicScoped, false},
+		{"a public token carrying a cut", publicCut, false},
 		{"a job's named token naming no project, for a workflow", namedForAWorkflowNoProject, false},
 		{"a job's named token naming one project, for a workflow", namedForAWorkflow, true},
 		{"a job's named token naming two projects", jobToken(caller.jkt, time.Hour, ciphertoken.ProjectScopeNamed, "ACME", "OTHER"), false},

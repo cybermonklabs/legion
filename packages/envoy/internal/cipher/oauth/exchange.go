@@ -731,15 +731,17 @@ func (p *Provider) reserveSessions(ctx context.Context) error {
 // anything else is read, and the cut, which only a trade asking for oauthwire.ScopeRead may name
 // (readCut); the subject token's audience, which the library never checks and which a token
 // minted for another service would fail; the policy's decision, which names the session, the
-// person or the service, the project scope, the projects and the principal; and then the claims
-// themselves, onto the session, where the row the token is stored in carries them and an
-// introspection answers from them, with the principal beside them for claimSession, and the OAuth
-// scopes the decision carries granted on the request (writeProjectScope).
+// person or the service, the project scope, the projects and the principal; the refusal of a job
+// entry's trade that asks for read (exchange.Claims.Job); and then the claims themselves, onto
+// the session, where the row the token is stored in carries them and an introspection answers
+// from them, with the principal beside them for claimSession, and the OAuth scopes the decision
+// carries granted on the request (writeProjectScope).
 //
 // A trade that asks for read is narrowed on the identity its subject would have had, whatever its
-// kind: the same decision, the same session, person, service, machine and projects, under the
-// narrowed word of its project scope, holding read and, for a token that acts for its person,
-// person beside it. A trade that asks for no scope gets the token it always got.
+// kind but a job entry's, which is refused invalid_request since a job's token is minted whole,
+// with no OAuth scope: the same decision, the same session, person, service, machine and
+// projects, under the narrowed word of its project scope, holding read and, for a token that acts
+// for its person, person beside it. A trade that asks for no scope gets the token it always got.
 //
 // The subject the library asks for is the principal, which every decision names: a token that
 // names a service and no person has no person to be the subject of, and a subject that is

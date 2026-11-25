@@ -112,7 +112,8 @@ type Credential struct {
 	// Projects is a broker token's list (ciphertoken.Caller.Projects), sorted: a `named` token's
 	// one project, or none for an account entry that names no project; the projects a `person`
 	// token's trade asked for; and a `public` token's private projects, its job entry's whole
-	// list. Nil for every other credential and for a read-only token.
+	// list. A token narrowed to reading carries the list of the word it narrows. Nil for every other
+	// credential.
 	Projects []string
 }
 

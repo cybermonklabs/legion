@@ -126,6 +126,13 @@ export interface ArtifactFileVersion {
   readonly bytes: Uint8Array;
 }
 
+/** The members of Dispatch's refusal beside its code and its message that `DispatchServiceError`
+ *  keeps: one list, which the refusal reader (`DispatchRefusal`) and the error's own details
+ *  both name, so a member one of them carries cannot be dropped by the other. */
+type RefusalMember = "candidates" | "changed" | "current" | "issues" | "mismatches";
+
+type RefusalMembers = { readonly [Member in RefusalMember]: DispatchServiceErrorShape[Member] };
+
 export class DispatchServiceError extends Error {
   override readonly name = "DispatchServiceError";
   /**
@@ -147,11 +154,7 @@ export class DispatchServiceError extends Error {
     message: string,
     /** The members of Dispatch's refusal beside its message that a caller reads off the error:
      *  its answer's JSON, or another refusal whose members it keeps. */
-    details: {
-      readonly [Member in "candidates" | "changed" | "current" | "issues" | "mismatches"]?:
-        | DispatchServiceErrorShape[Member]
-        | undefined;
-    } = {}
+    details: { readonly [Member in RefusalMember]?: RefusalMembers[Member] | undefined } = {}
   ) {
     super(message);
     this.candidates = details.candidates;
@@ -713,14 +716,9 @@ function parsedJson(response: Response, text: string): ParsedJson {
 
 /** Dispatch's own refusal, as an answer carries it: its code, where it names one, its text, and
  *  the members some refusals carry beside them, which `DispatchServiceError` keeps. */
-export interface DispatchRefusal {
+export interface DispatchRefusal extends RefusalMembers {
   readonly code: string | undefined;
   readonly error: string;
-  readonly candidates: DispatchServiceErrorShape["candidates"];
-  readonly changed: DispatchServiceErrorShape["changed"];
-  readonly current: DispatchServiceErrorShape["current"];
-  readonly issues: DispatchServiceErrorShape["issues"];
-  readonly mismatches: DispatchServiceErrorShape["mismatches"];
 }
 
 /**

@@ -79,12 +79,13 @@ var (
 	// token names, so a token that names none is refused here rather than admitted for a request
 	// body to name one in its place.
 	//
-	// A token that names a service and no person is a session's credential in four shapes
-	// only: a machine's under the scope person, naming no project; a read entry's read-only
-	// token, to a verifier that serves one (below); a job's under the scope named, naming
-	// exactly one project; and a job's under the scope public, naming 0 to
-	// oauthwire.MaxProjects private projects. Each other shape of such a token is refused, as
-	// it was before job tokens existed.
+	// A token that names a service and no person is a session's credential only in the shapes
+	// shapeOf and sessionCaller admit: a machine's under the scope person, naming no project; an
+	// account entry's under the scope named, naming its account and no project; a job's under
+	// the scope named, naming exactly one project; a job's under the scope public, naming 0 to
+	// oauthwire.MaxProjects private projects; and, to a verifier that serves one (below), a
+	// read-only token, the read entry's or one narrowed from either of the first two. Each other
+	// shape of such a token is refused.
 	//
 	// The scope is refused for the same reason it is read at all: it says what Projects means,
 	// so a word this package does not know is a token it cannot read rather than one that names
@@ -509,16 +510,17 @@ func sessionCaller(answer Introspection, servesReadOnly bool) (Caller, error) {
 	// (cutOf); shapeOf has already refused a cut on a token that is not narrowed to reading.
 	shape := shapeOf(answer)
 	named := oauthwire.BaseProjectScope(answer.ProjectScope) == ProjectScopeNamed
-	// jobShape is a job's token's project scope, unnarrowed: the only scopes under which a
-	// service and no person may name projects. shapeOf has already refused every scope word and
-	// every cut beside either, so a narrowed word never comes here as one.
-	jobShape := answer.ProjectScope == ProjectScopeNamed || answer.ProjectScope == ProjectScopePublic
+	// jobScope is a job's token's project scope, unnarrowed: the only scopes under which a
+	// service and no person may name projects. For a token naming no person, shapeOf has already
+	// refused every scope word and every cut under either, so a narrowed word never comes here as
+	// one.
+	jobScope := answer.ProjectScope == ProjectScopeNamed || answer.ProjectScope == ProjectScopePublic
 	cut, cutErr := cutOf(answer)
 	if answer.Session == "" || (answer.Person == "" && answer.Service == "") || answer.ClientID != ExchangeClientID ||
 		shape == shapeNotASession || (shape == shapeReadOnly && !servesReadOnly) ||
 		(named && len(answer.Projects) > 1) ||
 		(named && answer.Person == "" && len(answer.Projects) == 0 && !oauthwire.AccountSubject.MatchString(answer.Service)) ||
-		(answer.Person == "" && len(answer.Projects) > 0 && !jobShape) ||
+		(answer.Person == "" && len(answer.Projects) > 0 && !jobScope) ||
 		oauthwire.ValidProjects(answer.Projects) != nil || cutErr != nil {
 		return Caller{}, ErrNotASession
 	}
@@ -581,11 +583,10 @@ const (
 // read one word at a time and with no slice built of them, because this runs on every request a
 // verifier decides, an answer served from the cache included.
 func shapeOf(answer Introspection) tokenShape {
-	// reads and persons count the two words a narrowed token's scope is made of, other is any
-	// word besides them, and words counts every word.
-	reads, persons, words, other := 0, 0, 0, false
+	// reads and persons count the two words a narrowed token's scope is made of, and other is any
+	// word besides them.
+	reads, persons, other := 0, 0, false
 	for word := range strings.FieldsSeq(answer.Scope) {
-		words++
 		switch word {
 		case ScopeRead:
 			reads++
@@ -596,13 +597,15 @@ func shapeOf(answer Introspection) tokenShape {
 		}
 	}
 	read := reads > 0
+	// scoped is whether the answer holds any OAuth scope at all.
+	scoped := read || persons > 0 || other
 	readAlone := reads == 1 && persons == 0 && !other
 	readPerson := reads == 1 && persons == 1 && !other
 	switch answer.ProjectScope {
 	case ProjectScopeNamed:
 		// A named token that names no person is a job's or an account entry's naming no person,
 		// and the broker grants neither one an OAuth scope.
-		if read || answer.AsOf != "" || (answer.Person == "" && words > 0) {
+		if read || answer.AsOf != "" || (answer.Person == "" && scoped) {
 			return shapeNotASession
 		}
 		return shapeOrdinary
@@ -612,7 +615,7 @@ func shapeOf(answer Introspection) tokenShape {
 		}
 		return shapeOrdinary
 	case ProjectScopePublic:
-		if words == 0 && answer.AsOf == "" && answer.Person == "" && answer.Service != "" {
+		if !scoped && answer.AsOf == "" && answer.Person == "" && answer.Service != "" {
 			return shapeOrdinary
 		}
 	case ProjectScopeNone:
