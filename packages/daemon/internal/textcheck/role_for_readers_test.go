@@ -49,13 +49,19 @@ type roleForReader struct {
 // (phase.Of), or reads only the phases of a plan's steps, which admitted never is (reportsBefore,
 // and Engine.restartTask, which reads its task's first step: a planner's or an implementer's, as
 // plan.Supported holds every task to an implementer step with each tester, reviewer and
-// acceptance step after it; and a fix's three: Engine.startFix reads the step at the fix's
-// place, Engine.tellStepsOfFix each step of the fix's task, passing over the architect as it
-// passes over no role, and Engine.moveFromHold the step of the task its way returns to),
+// acceptance step after it; and a fix's four: Engine.startFix reads the step at the fix's
+// place, Engine.tellStepsOfFix each step of the fix's task, telling the architect only as the
+// owner of the acceptance it stands in, Engine.besideFacts the step a start beside the fix
+// stands at, and Engine.moveFromHold the step of the task its way returns to; and
+// Engine.UpdatePushes, which names each bound step of the task by the role of its phase, the
+// owner's acceptance under the architect),
 // or reads the retro's own phase and the phase of the last step of a task, neither of which is
 // admitted (retroHeldFor, the notice of every hold before a retro, Engine.startHeldRetro, which
 // runs only for an issue held before its retro, and Engine.retroReport, which reads the last step
 // of a task in its retro),
+// or reads the step a task's CI news reaches and passes over the architect there, which the owner
+// is told as, once (Engine.ciReceivers), and which reads as no step's reader at admitted, where it
+// works the tree's design and no step of the task (Engine.ciReaders),
 // or never reads admitted at all because a check before it refuses that phase, which is what each
 // named test holds it to. The owner walk reads no role: where it starts is its caller's to say
 // (record.NoticeStartsAtParent, for a notice).
@@ -85,6 +91,7 @@ var roleForReaders = map[roleForSite]roleForReader{
 	{file: "internal/workflow/fix.go", fn: "Engine.startFix"}:                     {calls: 1, test: "TestTheFixStartsInItsOwnCopyWithItsJob"},
 	{file: "internal/workflow/fix.go", fn: "Engine.tellStepsOfFix"}:               {calls: 1, test: "TestTheReviewerIsToldOfTheFix"},
 	{file: "internal/workflow/fix.go", fn: "Engine.moveFromHold"}:                 {calls: 1, test: "TestRows3And4ForAnImplementerReviewerTask"},
+	{file: "internal/workflow/fix.go", fn: "Engine.besideFacts"}:                  {calls: 1, test: "TestEachStartBesideAFixHoldsItsFixAndItsBranch"},
 	{file: "internal/workflow/engine.go", fn: "Engine.transition"}:                {calls: 2, test: "TestAnApprovalMovesTheIssueIntoAcceptingStartingNobody"},
 	{file: "internal/workflow/engine.go", fn: "noticeFor"}:                        {calls: 3, test: "TestThePhaseFinishedNoticeOutOfAdmittedCarriesNoRole"},
 	{file: "internal/workflow/plan_stop.go", fn: "StoppedStepRole"}:               {calls: 1, test: "TestStopTaskHoldsTheIssueAndStopsTheStep"},
@@ -92,7 +99,9 @@ var roleForReaders = map[roleForSite]roleForReader{
 	{file: "internal/workflow/plan_stop.go", fn: "Engine.restartTask"}:            {calls: 1, test: "TestATodoOnAStoppedRootStartsItsTaskAtStepOne"},
 	{file: "internal/workflow/merge_forward.go", fn: "Engine.mergeForward"}:       {calls: 1, test: "TestAConflictKeepsPhaseAndAsksTheImplementerToMergeForward"},
 	{file: "internal/workflow/merge_forward.go", fn: "Engine.mergeForwardLanded"}: {calls: 1, test: "TestAConflictKeepsPhaseAndAsksTheReviewerToReadTheMerge"},
-	{file: "internal/workflow/review.go", fn: "Engine.tellChecks"}:                {calls: 1, test: "TestASettlementMovesNothingAndTellsTheThreeRoles"},
+	{file: "internal/workflow/ci_news.go", fn: "Engine.ciReaders"}:                {calls: 1, test: "TestAnIssueAtAdmittedHasNoReaderOfItsCINews"},
+	{file: "internal/workflow/ci_news.go", fn: "Engine.ciReceivers"}:              {calls: 1, test: "TestASettlementMovesNothingAndTellsTheThreeRoles"},
+	{file: "internal/workflow/fix_branches.go", fn: "Engine.UpdatePushes"}:        {calls: 1, test: "TestAnUpdateRoundNamesEachBoundStepByTheRoleOfItsPhase"},
 	{file: "internal/workflow/retro_hold.go", fn: "retroHeldFor"}:                 {calls: 1, test: "TestATaskIsNotDoneWhileItsJobRuns"},
 	{file: "internal/workflow/retro_hold.go", fn: "Engine.startHeldRetro"}:        {calls: 1, test: "TestAParentWithNoAcceptanceIsHeldBeforeItsRetro"},
 	{file: "internal/workflow/retro_hold.go", fn: "Engine.retroReport"}:           {calls: 1, test: "TestTheDefaultStepsRetroIsToldTheReviewsReport"},

@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -86,8 +87,9 @@ func TestTheFixStartsInItsOwnCopyWithItsJob(t *testing.T) {
 	}
 	start := starts[0]
 	if start.Role != claim.RoleImplementer || start.Phase != phase.Implementing || start.Fix != 1 || start.FixFrom != fixHead ||
-		start.NeedsSlot || start.Entry != row.Entry || start.Generation != 1 {
-		t.Fatalf("the fix's start = %+v, want the implementer's in implementing for fix 1 from %s at entry %d, waiting for no slot", start, fixHead, row.Entry)
+		start.FixBranch != besideFix1(t, claim.RoleImplementer) || start.NeedsSlot || start.Entry != row.Entry || start.Generation != 1 {
+		t.Fatalf("the fix's start = %+v, want the implementer's in implementing for fix 1 from %s on its own branch at entry %d, waiting for no slot",
+			start, fixHead, row.Entry)
 	}
 	assertHolds(t, "the fix's task", start.Task, "Phase: implementing.", "Step 1 of 3: implementer.", "k-ci", fixHead, "unit", "failure", fixPage)
 	if row.EntryTask != start.Task || row.StepTask != "a" || row.StepPlace != 1 {
@@ -154,15 +156,202 @@ func TestTheFixsRunStaysOpenBesideTheReview(t *testing.T) {
 	assertStrings(t, "the runs", r.runs(), []string{"a/step/1 open", "a/step/2 ended", "a/step/3 open"})
 }
 
-// At the fix's start each other step of the task that was handed work in this run is told of the
-// fix, by one role message: the tester and the reviewer here. The implementer's own fix is its
-// task, and no step of the task's line that has not started is told.
-func TestTheReviewerIsToldOfTheFix(t *testing.T) {
-	r := startedFix(t, intake.FixJobRead{Name: "unit", URL: fixPage})
-	for _, role := range []claim.Role{claim.RoleReviewer, claim.RoleTester} {
-		assertToldOnceNaming(t, "the "+string(role)+"'s messages", r.told(role), "k-ci", fixHead, "unit")
+// fixStartedRows is each fix-started row of LEGION-208, oldest first, as `<role> <reader> <branch>
+// fix <n> <check>@<head>`, with `-` for no reader and no branch.
+func (r *fixRig) fixStartedRows() []string {
+	r.t.Helper()
+	var lines []string
+	for _, n := range r.newsOf() {
+		if n.Purpose != record.CINewsFixStarted || n.Assigned == nil {
+			continue
+		}
+		reader, branch := readerLine(n.Reader), n.Branch
+		if reader == "" {
+			reader = "-"
+		}
+		if branch == "" {
+			branch = "-"
+		}
+		lines = append(lines, fmt.Sprintf("%s %s %s fix %d %s@%s", roleOf(r.t, n.Role), reader, branch, n.Assigned.Fix, n.Assigned.Check, n.Assigned.Head))
 	}
-	assertStrings(t, "the implementer's messages", r.told(claim.RoleImplementer), nil)
+	return lines
+}
+
+// toldOfFix1 is the fixStartedRows line of the row of fix 1 for k-ci at fixHead to role, for
+// reader ("-" for none), naming role's branch beside fix 1 where branch is true.
+func toldOfFix1(t *testing.T, role claim.Role, reader string, branch bool) string {
+	t.Helper()
+	named := "-"
+	if branch {
+		named = besideFix1(t, role)
+	}
+	return fmt.Sprintf("%s %s %s fix 1 k-ci@%s", role, reader, named, fixHead)
+}
+
+// besideMarks is the fix and the branch beside it that the latest start of step place of
+// LEGION-208's task a names (record.StepStart's BesideFix and PushBranch), as `<fix> <branch>`.
+func (r *fixRig) besideMarks(place int) string {
+	r.t.Helper()
+	var start record.StepStart
+	applyInTx(r.t, r.pool, r.engine, func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		start, err = r.engine.store.StepStarts(ctx, tx, "LEGION-208", record.StepPlace{Task: "a", Kind: record.PlaceStep, Place: place})
+		return err
+	})
+	return fmt.Sprintf("%d %s", start.BesideFix, start.PushBranch)
+}
+
+// testerCompletesBeforeItsStates is the tester's completion at fixHead whose test record names the
+// state event after every one applied so far, so the testing move waits for that event.
+func (r *fixRig) testerCompletesBeforeItsStates() {
+	r.t.Helper()
+	if result := r.apply("test-done", intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleTester, Claim: "tester-claim",
+		Summary: "tested", Commit: fixHead, HandoffRecord: "test-1", HandoffVersion: 1, StatesSerial: r.serial + 1}); result.Refusal != nil {
+		r.t.Fatalf("the tester's completion was refused: %+v", result.Refusal)
+	}
+}
+
+// At the fix's start each other step of the task that runs or was handed work in this run is told
+// of the fix, by one fix-started row naming the fix's check, head and number: the reviewer, which
+// creates no commit, with no branch, and the tester, which passed, with its own branch beside the
+// fix. A tester that runs gets the row for its current work, and its open start is bound to that
+// branch. The owner in accepting gets the row with its own branch, for its acceptance, both at the
+// fix's start and at a move into accepting while the fix runs. The implementer's own fix is its
+// task, and no step of the task's line that has not started is told.
+//
+// A step whose start named the fix is told by that start alone: a reviewer that starts while fix 1
+// reads its job, and an owner that moves into accepting then, get no row at the fix's start, and
+// their start records keep BesideFix 1. A step that started before the fix opened, in the same
+// fact that opened it, keeps zero and gets its one row at the fix's start, under the engine's fixed
+// clock, where the start and the fix's opening share one microsecond.
+//
+// The controls, kept: with the seam toldByClock, which takes a start no earlier than the fix's
+// opening as told, the step started in the fact that opened the fix gets no row; and with the seam
+// tellEveryStepOfFix, which reads no start, the reviewer and the owner told by their starts get a
+// second notice, a row at the fix's start.
+func TestTheReviewerIsToldOfTheFix(t *testing.T) {
+	t.Run("the steps that ran, at the fix's start", func(t *testing.T) {
+		r := startedFix(t, intake.FixJobRead{Name: "unit", URL: fixPage})
+		assertStrings(t, "the fix-started rows", r.fixStartedRows(), []string{
+			toldOfFix1(t, claim.RoleTester, "-", true),
+			toldOfFix1(t, claim.RoleReviewer, r.stepReader(claim.RoleReviewer, phase.Reviewing), false),
+		})
+		assertStrings(t, "the implementer's messages", r.told(claim.RoleImplementer), nil)
+		assertStrings(t, "the reviewer's messages", r.told(claim.RoleReviewer), nil)
+	})
+
+	t.Run("a tester that runs", func(t *testing.T) {
+		r := newFixRig(t, returnEngine(), []string{"implementer", "tester", "reviewer"}, TriggerImplementationReady)
+		r.fails(fixHead, "k-ci")
+		r.readJob(intake.FixJobRead{Name: "unit", URL: fixPage})
+		assertStrings(t, "the fix-started rows", r.fixStartedRows(), []string{toldOfFix1(t, claim.RoleTester, r.stepReader(claim.RoleTester, phase.Testing), true)})
+		if got, want := r.besideMarks(2), "0 "+besideFix1(t, claim.RoleTester); got != want {
+			t.Fatalf("the tester's start names %q, want %q: started before the fix, bound at the fix's start", got, want)
+		}
+	})
+
+	t.Run("the owner in accepting, at the fix's start", func(t *testing.T) {
+		r := newFixRig(t, returnEngine(), []string{"implementer", "reviewer", "acceptance:owner"}, TriggerImplementationReady)
+		r.approves()
+		r.fails(fixHead, "k-ci")
+		r.readJob(intake.FixJobRead{Name: "unit", URL: fixPage})
+		assertStrings(t, "the fix-started rows", r.fixStartedRows(), []string{
+			toldOfFix1(t, claim.RoleReviewer, "-", false),
+			toldOfFix1(t, claim.RoleArchitect, "accepting@0", true),
+		})
+		if got, want := r.besideMarks(3), "0 "+besideFix1(t, claim.RoleArchitect); got != want {
+			t.Fatalf("the owner's acceptance start names %q, want %q", got, want)
+		}
+	})
+
+	t.Run("the owner at a move into accepting while the fix runs", func(t *testing.T) {
+		r := newFixRig(t, returnEngine(), []string{"implementer", "reviewer", "acceptance:owner"}, TriggerImplementationReady)
+		r.fails(fixHead, "k-ci")
+		r.readJob(intake.FixJobRead{Name: "unit", URL: fixPage})
+		r.delivered()
+		r.approves()
+		assertStrings(t, "the fix-started rows of the move", r.fixStartedRows(), []string{toldOfFix1(t, claim.RoleArchitect, "accepting@0", true)})
+		if got, want := r.besideMarks(3), "1 "+besideFix1(t, claim.RoleArchitect); got != want {
+			t.Fatalf("the owner's acceptance start names %q, want %q", got, want)
+		}
+	})
+
+	// readingStarts is LEGION-208 whose reviewer starts while fix 1 reads its job, on
+	// `implementer tester reviewer`, and whose owner moves into accepting then, on `implementer
+	// reviewer acceptance:owner`; the fix then starts. It answers the two rigs.
+	readingStarts := func(t *testing.T, seam bool) (reviewer, owner *fixRig) {
+		reviewer = newFixRig(t, returnEngine(), []string{"implementer", "tester", "reviewer"}, TriggerImplementationReady)
+		reviewer.engine.tellEveryStepOfFix = seam
+		reviewer.fails(fixHead, "k-ci")
+		reviewer.move(TriggerTesterPassed, "", record.PhaseRow{})
+		if facts := reviewer.startFactsIn(phase.Reviewing); facts.Fix != 1 || facts.Branch != "" {
+			t.Fatalf("the reviewer's start facts = %+v, want fix 1 and no branch", facts)
+		}
+		reviewer.readJob(intake.FixJobRead{Name: "unit", URL: fixPage})
+		owner = newFixRig(t, returnEngine(), []string{"implementer", "reviewer", "acceptance:owner"}, TriggerImplementationReady)
+		owner.engine.tellEveryStepOfFix = seam
+		owner.fails(fixHead, "k-ci")
+		owner.approves()
+		owner.readJob(intake.FixJobRead{Name: "unit", URL: fixPage})
+		return reviewer, owner
+	}
+
+	t.Run("a reviewer and an owner that start while the fix reads its job", func(t *testing.T) {
+		reviewer, owner := readingStarts(t, false)
+		assertStrings(t, "the fix-started rows beside the reviewer", reviewer.fixStartedRows(), []string{toldOfFix1(t, claim.RoleTester, "-", true)})
+		if got := reviewer.besideMarks(3); got != "1 " {
+			t.Fatalf("the reviewer's start names %q, want fix 1 and no branch", got)
+		}
+		assertStrings(t, "the fix-started rows beside the owner", owner.fixStartedRows(), []string{
+			toldOfFix1(t, claim.RoleArchitect, "accepting@0", true),
+			toldOfFix1(t, claim.RoleReviewer, "-", false),
+		})
+		if got, want := owner.besideMarks(3), "1 "+besideFix1(t, claim.RoleArchitect); got != want {
+			t.Fatalf("the owner's acceptance start names %q, want %q", got, want)
+		}
+	})
+
+	t.Run("the control: tellEveryStepOfFix tells them again at the fix's start", func(t *testing.T) {
+		reviewer, owner := readingStarts(t, true)
+		if rows := reviewer.fixStartedRows(); !slices.Contains(rows, toldOfFix1(t, claim.RoleReviewer, reviewer.stepReader(claim.RoleReviewer, phase.Reviewing), false)) {
+			t.Fatalf("the fix-started rows beside the reviewer with every step told = %q, want a second notice to the reviewer", rows)
+		}
+		if rows := owner.fixStartedRows(); len(rows) != 3 || rows[2] != toldOfFix1(t, claim.RoleArchitect, "accepting@0", true) {
+			t.Fatalf("the fix-started rows beside the owner with every step told = %q, want a second row to the owner at the fix's start", rows)
+		}
+	})
+
+	// sameFact is LEGION-208 on `implementer tester reviewer` whose one state event both moves
+	// its testing step on, starting its reviewer, and opens fix 1 at its tail; the fix then starts.
+	sameFact := func(t *testing.T, seam bool) *fixRig {
+		r := newFixRig(t, returnEngine(), []string{"implementer", "tester", "reviewer"}, TriggerImplementationReady)
+		r.engine.toldByClock = seam
+		r.at(fixHead, stateOf("k-unit", stateYes, "", "tester"), ciPassing("k-ci2"))
+		r.testerCompletesBeforeItsStates()
+		assertPhase(t, r.pool, phase.Testing)
+		r.fails(fixHead, "k-ci")
+		assertPhase(t, r.pool, phase.Reviewing)
+		assertStrings(t, "the fixes", r.fixes(), []string{fixOf(1, "reading", "k-ci")})
+		if got := r.besideMarks(3); got != "0 " {
+			t.Fatalf("the reviewer's start names %q, want no fix: it started before the fix opened", got)
+		}
+		r.readJob(intake.FixJobRead{Name: "unit", URL: fixPage})
+		return r
+	}
+
+	t.Run("a step started in the fact that opened the fix", func(t *testing.T) {
+		r := sameFact(t, false)
+		if rows := r.fixStartedRows(); !slices.Contains(rows, toldOfFix1(t, claim.RoleReviewer, r.stepReader(claim.RoleReviewer, phase.Reviewing), false)) {
+			t.Fatalf("the fix-started rows = %q, want the reviewer's one", rows)
+		}
+	})
+
+	t.Run("the control: toldByClock takes that step as told", func(t *testing.T) {
+		r := sameFact(t, true)
+		if rows := r.fixStartedRows(); slices.ContainsFunc(rows, func(row string) bool { return strings.HasPrefix(row, string(claim.RoleReviewer)+" ") }) {
+			t.Fatalf("the fix-started rows with the clock read = %q, want none to the reviewer: one shared microsecond confuses its start with the fix's", rows)
+		}
+	})
 }
 
 // A fix whose read found no page of its job, or found no job, names its head and how to find the
@@ -179,7 +368,9 @@ func TestAFixWhoseJobReadFailedNamesTheHeadAndTheRead(t *testing.T) {
 			t.Fatalf("the fix's starts = %+v, want one", starts)
 		}
 		assertHolds(t, "the fix's task", starts[0].Task, "k-ci", fixHead, "Dispatch answered 503", "LEGION-208")
-		assertToldOnceNaming(t, "the reviewer's messages", r.told(claim.RoleReviewer), "k-ci", fixHead)
+		if rows := r.fixStartedRows(); len(rows) != 2 {
+			t.Fatalf("the fix-started rows = %q, want the tester's and the reviewer's", rows)
+		}
 	})
 
 	t.Run("a job with no page", func(t *testing.T) {
@@ -216,7 +407,7 @@ func TestALateJobReadOfAnEndedFixChangesNothing(t *testing.T) {
 	if fix := r.latestFix(); fix.JobName != "" || fix.Entry != 0 {
 		t.Fatalf("the ended fix after a late read = %+v, want it as it ended", fix)
 	}
-	assertStrings(t, "the reviewer's messages", r.told(claim.RoleReviewer), nil)
+	assertStrings(t, "the fix-started rows", r.fixStartedRows(), nil)
 }
 
 // The line of starts that wait for a slot takes no fix's start: a start of a fix is written
