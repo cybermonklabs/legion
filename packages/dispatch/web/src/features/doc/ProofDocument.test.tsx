@@ -15,6 +15,12 @@ import {
   documentSurfaceHandlers,
   renderProofDocument,
 } from "../../__tests__/proof-document";
+import {
+  architectureTree,
+  issueCollaborators,
+  plannerAgent,
+  searchResponse,
+} from "../../__tests__/search-fixture";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, NetworkError } from "../../api/client";
 import type { Artifact, Ask, IssueDetails, IssueReferenceSummary, Version } from "../../api/types";
@@ -1318,6 +1324,57 @@ test("Escape takes the focus out of the editor the reader edits onto the documen
     ).not.toHaveAttribute("tabindex");
   } finally {
     pane.view.unmount();
+  }
+});
+
+// The reference list the editor hosts (`DocumentRefPicker`) is what an Escape pressed while it
+// stands open closes: ProseMirror offers a key to the plugins' `handleKeyDown`, the picker's among
+// them, only when no `handleDOMEvents` handler took it, so the page's handler leaves that press to
+// the editor. With the list shut, the next Escape takes the focus out of the editor as before.
+test("Escape with the document's reference list open is the list's, which closes with the focus in the editor, and the next Escape leaves the editor", async () => {
+  const restore = [
+    spyOn(api, "listAgents").mockResolvedValue([plannerAgent()]),
+    spyOn(api, "getIssueCollaborators").mockResolvedValue(issueCollaborators()),
+    spyOn(api, "getArchitecture").mockResolvedValue(architectureTree()),
+    spyOn(api, "search").mockResolvedValue(searchResponse([])),
+  ];
+  const { editors, sync, view } = renderProofDocument();
+  try {
+    await sync();
+    await waitFor(() => expect(editors).toHaveLength(1));
+    const editor = editors[0];
+    if (editor === undefined) throw new Error("no editor");
+    await waitFor(() => expect(editor.referencePicker).toBeTruthy());
+    const { keydown } = editor.viewProps.handleDOMEvents as {
+      keydown(view: unknown, event: KeyboardEvent): boolean;
+    };
+    editor.root.contentEditable = "true";
+    editor.root.tabIndex = 0;
+    editor.root.focus();
+
+    // The editor reports the door the reader typed, as its picker plugin does.
+    act(() => editor.referencePicker?.onCaret({ bottom: 20, left: 0, text: "@p", top: 10 }));
+    await screen.findByRole("option", { name: /^Planner\b/ });
+    expect(
+      keydown(null, new KeyboardEvent("keydown", { key: "Escape" })),
+      "the page took the Escape the open list closes on"
+    ).toBe(false);
+    // ProseMirror offers that press to the picker plugin, which hands it to the list.
+    act(() => {
+      expect(editor.referencePicker?.pressKey("Escape")).toBe(true);
+    });
+    expect(screen.queryByRole("listbox", { name: "References" })).toBeNull();
+    expect(document.activeElement).toBe(editor.root);
+
+    // The list shut, Escape is the page's again, and takes the focus out of the editor.
+    expect(keydown(null, new KeyboardEvent("keydown", { key: "Escape" }))).toBe(true);
+    expect(pressThroughRegistry(editor.root, ESCAPE)).toBe(true);
+    expect(document.activeElement).toBe(
+      within(view.container).getByRole("article", { name: "Document" })
+    );
+  } finally {
+    view.unmount();
+    for (const spy of restore) spy.mockRestore();
   }
 });
 

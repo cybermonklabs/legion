@@ -2312,9 +2312,9 @@ test("a focused row that its pick takes off the page gives the focus to the sear
 /** A list inside a panel, as the Agents page's Filter holds its Role list (`AgentsPage.tsx`): the
  *  panel's state and the list's are the host's, above the panel, so a pick draws the panel again
  *  and the panel's hand-off for a control a press takes out of it (`useFocusPlace`) runs in the
- *  commit that answers the pick. The options are the roles live sessions hold, then each picked
- *  role none of them holds (`withPicked`), so the picked `ghost-role` is listed only while it is
- *  picked. */
+ *  commit that answers the pick. The options are the roles live sessions hold and each picked
+ *  role none of them holds, as the page's are (`filterOptions`), so the picked `ghost-role` is
+ *  listed only while it is picked. */
 function PanelListHost() {
   const [open, setOpen] = useState(false);
   const [roles, setRoles] = useState<string[]>(["ghost-role"]);

@@ -4264,8 +4264,8 @@ async function multiPickKeepsFocus(page: Page, list: MultiPick): Promise<Locator
 }
 
 /** One list of the Agents page's Filter that lists a picked value no live session reports, only
- *  while it is picked: Role, which lists such a role after the live ones (`withPicked`), and
- *  Machine, which lists such a machine among them (`filterOptions`). */
+ *  while it is picked: Role and Machine, which each list such a value among the live ones, in
+ *  their sorted order (`filterOptions`). */
 interface GhostList {
   readonly what: string;
   /** Its parameter in the page's address, and the word its trigger is named by. */
@@ -4378,7 +4378,7 @@ test("k-list-focus: on the Agents page's Filter, Enter on a role the arrows reac
     field: "role",
     ghost: "ghost-role",
     live: "planner",
-    rows: ["planner", "ghost-role"],
+    rows: ["ghost-role", "planner"],
     search: "Search roles",
     what: "the Agents Role list",
   });
@@ -9717,12 +9717,12 @@ test("k-phone: right after a tap on P1 moves a card, a tap on another card's Sno
 // follows the card up into the P1 band, 1,711 px.
 /** k-phone after a pick that moves a card, then a tap on no card: six asks at P2 on a phone. Twice,
  *  a tap on P1 in the fourth card's priority menu, which moves that card into the P1 band once the
- *  focus leaves it, the card scrolled to the middle of the screen, then a tap on the page's margin:
- *  the first time level with the gap between that card and the card after it, which stays where
- *  the finger saw it, the second time level with the card's middle, where the card before it
- *  stays. Each time the card goes to the P1 band and the tap opens nothing. The taps are in the
- *  margin and not in the 12 px gap itself, since Chromium moves a tap that close to a card onto
- *  that card's link. */
+ *  focus leaves it, the level the finger taps scrolled to the middle of the screen, then a tap on
+ *  the page's margin: the first time level with the gap between that card and the card after it,
+ *  which stays where the finger saw it, the second time level with the card's middle, where the
+ *  card before it stays. Each time the card goes to the P1 band and the tap opens nothing. The
+ *  taps are in the margin and not in the 12 px gap itself, since Chromium moves a tap that close
+ *  to a card onto that card's link. */
 // SLOW(>=2s): six asks on a phone, two priorities picked by taps, and the page beside them tapped.
 test("k-phone: right after a tap on P1 moves a card, a tap on the page beside the cards lets the card go and leaves the cards beside the tap where they stood @phone @phone-only", async ({
   page,
@@ -9801,10 +9801,24 @@ test("k-phone: right after a tap on P1 moves a card, a tap on the page beside th
       step("the picked card stays in the P2 band while the focus is in it")
     ).toHaveAttribute("data-inbox-group", "P2");
 
-    await card.evaluate((node) => {
-      const box = node.getBoundingClientRect();
-      window.scrollBy(0, box.top + box.height / 2 - innerHeight / 2);
-    });
+    /** How far down the window the finger taps: level with the gap after the card, or with the
+     *  card's middle. */
+    const tapLevel = (cardAt: { y: number; height: number }, afterAt: { y: number }) =>
+      level === "the gap after it"
+        ? (cardAt.y + cardAt.height + afterAt.y) / 2
+        : cardAt.y + cardAt.height / 2;
+    // The level the finger taps goes to the middle of the screen. An ask's card here, with its
+    // answer box and that box's hint, stands taller than the window (682 px of 664 at 85f13ed5),
+    // so with the card's own middle there the gap after it would be below the window.
+    const [cardAt, afterAt] = await Promise.all([
+      card.boundingBox(),
+      inboxRow(page, after).boundingBox(),
+    ]);
+    if (cardAt === null || afterAt === null) throw new Error("k-phone: a card has no box");
+    await page.evaluate(
+      (at) => window.scrollBy(0, at - innerHeight / 2),
+      tapLevel(cardAt, afterAt)
+    );
     await settledScrollTop(page, 5);
     const kept = level === "the gap after it" ? after : before;
     const [cardBox, afterBox, keptBox] = await Promise.all([
@@ -9817,10 +9831,7 @@ test("k-phone: right after a tap on P1 moves a card, a tap on the page beside th
     }
     // The page's margin, 24 px wide beside the cards, farther from them than a tap is moved.
     const x = 3;
-    const y =
-      level === "the gap after it"
-        ? (cardBox.y + cardBox.height + afterBox.y) / 2
-        : cardBox.y + cardBox.height / 2;
+    const y = tapLevel(cardBox, afterBox);
     const onNothing = await page.evaluate(
       (at) => {
         const under = document.elementFromPoint(at.x, at.y);

@@ -4,7 +4,7 @@ import type {
   ReferenceInsertion,
   ReferencePickerCaret,
 } from "@legion/proof-editor";
-import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import { type ReactNode, type RefObject, useEffect, useMemo, useRef, useState } from "react";
 
 import { useTooltips } from "../../components/tooltips";
 import { pageQuietText, textMutedOnCanvas } from "../../theme/classes";
@@ -60,6 +60,7 @@ export function DocumentRefPicker({
   editor,
   enabled,
   issueKey,
+  listOpen,
   project,
   writing = DOCUMENT_BODY,
 }: {
@@ -68,6 +69,10 @@ export function DocumentRefPicker({
   enabled: boolean;
   /** The issue this document belongs to, whose people the picker offers. */
   issueKey?: string;
+  /** Set as each render draws, to whether the list stands open: the page's editor keeps a plain
+   *  Escape from the page while it does, so the press reaches the picker and closes the list
+   *  (`ProofDocument`'s `plainEscape`). */
+  listOpen?: RefObject<boolean>;
   /** The project a document of a project belongs to, whose components it offers. */
   project?: string;
   /** The box's row of the writing list, whose words the line under the editor says and whose
@@ -92,6 +97,7 @@ export function DocumentRefPicker({
   pickerNow.current = picker;
   const editorNow = useRef(editor);
   editorNow.current = editor;
+  if (listOpen !== undefined) listOpen.current = enabled && caret !== undefined && picker.open;
   // The caret the picker last drew. A report draws the picker again only where it may change
   // what the picker shows: a door open at the caret drawn, or at the one reported
   // (`readTrigger`). Between two carets with no door the picker draws nothing either way, so a

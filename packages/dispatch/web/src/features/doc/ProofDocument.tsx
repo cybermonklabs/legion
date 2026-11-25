@@ -272,7 +272,9 @@ function setSearchHighlights(root: HTMLElement, query: string): void {
 /** The page editor's `keydown` handler of `handleDOMEvents`: true for a plain Escape, which
  *  ProseMirror then leaves to the page (`leave-editor`); a press with a modifier stays the
  *  editor's, and so does an input method's (`inputMethodKey`): one pressed during a composition,
- *  or the one that ends it, which Safari sends with `isComposing` false and keyCode 229. */
+ *  or the one that ends it, which Safari sends with `isComposing` false and keyCode 229. The
+ *  caller keeps every Escape the editor's while the document's reference list stands open, so
+ *  the editor offers it to that list, which closes (`DocumentRefPicker`'s `listOpen`). */
 function plainEscape(_view: EditorHandle["view"], event: KeyboardEvent): boolean {
   return (
     event.key === "Escape" &&
@@ -301,6 +303,11 @@ export function ProofDocument({
   const root = useRef<HTMLDivElement>(null);
   /** The document's frame, which Escape in the editor gives the focus to (`leave-editor`). */
   const article = useRef<HTMLElement>(null);
+  /** Whether the reference list stands open in the editor (`DocumentRefPicker`), whose own
+   *  Escape closes it: a handler of `handleDOMEvents` that takes a key keeps it from every
+   *  plugin's `handleKeyDown`, the picker's among them, so a plain Escape is left to the page
+   *  only while the list is shut. */
+  const refListOpen = useRef(false);
   const editorRef = useRef<EditorHandle | undefined>(undefined);
   // The handle this document's references are drawn through, beside the ref the callbacks reach
   // it by: the titles are a render of their own, so the surface that draws them re-renders with
@@ -853,12 +860,17 @@ export function ProofDocument({
       }
       // ProseMirror's base keymap binds Escape to "select the parent node", which claims the press
       // before the page's registry reads it; on the page, Escape takes the focus out of the editor
-      // (`leave-editor`). A `handleDOMEvents` handler that answers true leaves the event to the
-      // page: ProseMirror neither handles it nor prevents its default. The editor's own direct
-      // handlers stay beside it (`ask-content.ts` in the editor library sets them).
+      // (`leave-editor`), but for the Escape that closes an open reference list (`refListOpen`),
+      // which the editor offers to the picker. A `handleDOMEvents` handler that answers true
+      // leaves the event to the page: ProseMirror neither handles it nor prevents its default.
+      // The editor's own direct handlers stay beside it (`ask-content.ts` in the editor library
+      // sets them).
       if (page) {
         handle.view.setProps({
-          handleDOMEvents: { ...handle.view.props.handleDOMEvents, keydown: plainEscape },
+          handleDOMEvents: {
+            ...handle.view.props.handleDOMEvents,
+            keydown: (view, event) => !refListOpen.current && plainEscape(view, event),
+          },
         });
       }
       const unbindRemoteMarks = bindRemoteMarks(connection.doc, handle);
@@ -1370,6 +1382,7 @@ export function ProofDocument({
           editor={editorHandle}
           enabled={editorAccess(page, isClosed, schemaReadOnly) === "edit"}
           issueKey={owner.kind === "issue" ? owner.key : undefined}
+          listOpen={refListOpen}
           project={owner.kind === "document" ? owner.project : undefined}
         />
         {askBlockHosts.map((host) => {

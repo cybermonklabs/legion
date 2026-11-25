@@ -1,4 +1,4 @@
-import { agentFilter } from "./agents";
+import { agentFilter, openAgentFilters } from "./agents";
 import { baseUrl, createProjectDocument, userHeaders } from "./api";
 import { recordClipboard } from "./clipboard";
 import { commentField, highlightedRow, refPicker } from "./ref-picker";
@@ -362,8 +362,10 @@ test("the picker reaches every kind, and each pick reads as its node's name and 
     const again = await expandedComment(page, stored.id);
     await again.locator(`a[data-dispatch-ref="${ROLE_REFERENCE}"]`).click();
     await expect(page).toHaveURL(`/agents?role=${ROLE_TOKEN}`);
-    // The filter is a multi-select (R7): its trigger says exactly one option is ticked, as the
-    // page's own row reads it (`agents-groups.e2e.ts`), and the ticked option is this role.
+    // The filter is a multi-select (R7) in the row's one Filter panel: its trigger says exactly
+    // one option is ticked, as the page's own row reads it (`agents-groups.e2e.ts`), and the
+    // ticked option is this role.
+    await openAgentFilters(page);
     const roleFilter = agentFilter(page, "role");
     await expect(roleFilter).toHaveText("Role · 1");
     await roleFilter.click();

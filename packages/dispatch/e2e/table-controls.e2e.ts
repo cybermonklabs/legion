@@ -7500,10 +7500,13 @@ test("a bulk Dismiss deep in the Inbox's list hands the focus to the row now at 
     const issue = await createIssue({ project: "CORE", title });
     await createAsk(issue.key, { question: `${title}: what is the rule?` }, SURFACE_SESSION);
   };
-  // Written oldest first and listed newest first, so the six threads stand between the late asks
-  // above them and the early asks below them: rows 20 to 25 of 38.
+  // Written oldest first and listed newest first, so the seven threads stand between the late
+  // asks above them and the early asks below them: rows 20 to 26 of 39. The four cases take six
+  // of them, so each case's landing is a thread's card, which a 664 px window shows whole at
+  // 390 px: an ask's card there, with its answer box and that box's hint, stands taller than the
+  // window (682 px at 85f13ed5), and no scroll shows it whole.
   for (let index = 0; index < 12; index++) await seedQuestion(`Early ask ${index}`);
-  for (let index = 0; index < 6; index++) {
+  for (let index = 0; index < 7; index++) {
     const issue = await createIssue({ project: "CORE", title: `Thread issue ${index}` });
     await seedCommentThread(issue.key, `Thread ${index}: when does it run?`, "At 03:00.");
   }
