@@ -1,4 +1,13 @@
-import { beforeEach, expect, jest, type Mock, setSystemTime, spyOn, test } from "bun:test";
+import {
+  beforeAll,
+  beforeEach,
+  expect,
+  jest,
+  type Mock,
+  setSystemTime,
+  spyOn,
+  test,
+} from "bun:test";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: user-event has no form for the presses and events the title's and the actions group's cases send: a press the browser cancels as it turns into a drag (its pointercancel and dragend, with no mouseup), a right press whose context menu takes its release (its contextmenu, with no pointerup), a tap's order (its pointer up before the mousedown that moves the focus, where user-event moves the focus as its pointer goes down), and a blur of the window and its focus as the reader comes back.
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
@@ -40,6 +49,7 @@ import {
   fixtureAnswer,
   fixtureRefusal,
 } from "../issue/parent-status/status-change-fixtures";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { buildDispatchReference, DECISIONS_DOCUMENT_SLUG, parseIssuePath } from "../refs/routes";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { appKeymap, useKeymapScope } from "../shell/keymap";
@@ -51,6 +61,12 @@ import { CONTROL_LABELS } from "./page-words";
 import { ShellNavigationContext } from "./shell-navigation";
 import { HeaderSlot } from "./slots/header";
 import { titleWrittenElsewhere } from "./title-elsewhere-fixture";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 /**
  * The header's cases of `features/issue/IssuePage.test.tsx` at the new page's checkpoint, each

@@ -271,8 +271,9 @@ func rewriteApprovalAsk(
 	// which its ask.edited names beside the request's own references. The parts are planned from
 	// the row the update below writes, which the read of the index does not show yet, and written
 	// in that same step; the row carries the edited_at that update sets, so the plan marks the
-	// request edited without reading it back.
-	changes, parts, err := planAskPartsCounted(ctx, tx, reader, row, editedAt, changes)
+	// request edited without reading it back. The question's reconciliation is queued before the
+	// parts, so the parts' step settles the forms queue (questionReconciled).
+	changes, parts, err := planAskPartsCounted(ctx, tx, reader, row, editedAt, true, changes)
 	if err != nil {
 		return fmt.Errorf("index the parts of approval ask %s: %w", ask.ID, err)
 	}

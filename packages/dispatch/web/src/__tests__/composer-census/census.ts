@@ -37,7 +37,7 @@ export interface CensusItem {
   readonly host: string;
   /** The place the item is about: a mount, by its host and the element it is, with its send name
    *  or its handle (`ThreadCard <MentionComposer mutationKey={replyMutationKey}>`,
-   *  `AskCard <textarea data-ask-answer="">`), the component drawn at a place above mounts, or
+   *  `AskCard <MentionField askAnswer={true}>`), the component drawn at a place above mounts, or
    *  `-` for a form of a body that wraps no mount. */
   readonly mount: string;
   readonly kind: ItemKind;

@@ -1,4 +1,4 @@
-import { afterAll, expect, jest, spyOn, test } from "bun:test";
+import { afterAll, beforeAll, expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: a paste and a drop of files, a form's own submit, the same-task pair of presses, a press on a control the send holds disabled, and a key that must not press the button it reaches
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
@@ -20,11 +20,19 @@ import { AskCard } from "../features/inbox/AskCard";
 import { AskReplyComposer } from "../features/inbox/AskThread";
 import type { OwnedAsk } from "../features/inbox/ask-name";
 import { Inbox } from "../features/inbox/Inbox";
+import { warmMarkdownRenderer } from "../features/refs/markdown-engine";
 import { commentDeliveryFields } from "./comment-fixture";
 import { realClock, tick } from "./fake-clock";
 import { graphNode } from "./graph-fixture";
 import { keyedAttempt } from "./keyed-attempt";
+import { architectureTree } from "./search-fixture";
 import { userOnFakeClock } from "./user";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 const getReferences = spyOn(api, "getReferences").mockResolvedValue({
   edges: [],
@@ -2029,7 +2037,9 @@ test("a compact answered ask's Write a reply reveals its composer as the next ke
     expect(replyToggle).toHaveFocus();
 
     const field = view.getByLabelText("Reply");
-    nextTabStop(replyToggle)?.focus();
+    act(() => {
+      nextTabStop(replyToggle)?.focus();
+    });
     expect(field).toHaveFocus();
     expect(controlledBy(replyToggle)?.contains(field)).toBe(true);
     // The toggle and the form's submit button have distinct names.
@@ -2468,6 +2478,7 @@ test("an answered project-document ask keeps its copy-link control", async () =>
 test("the ask's @ picker offers the issue's Not running roles", async () => {
   const user = userEvent.setup();
   const listAgents = spyOn(api, "listAgents").mockResolvedValue([]);
+  const architecture = spyOn(api, "getArchitecture").mockResolvedValue(architectureTree());
   const collaborators = spyOn(api, "getIssueCollaborators").mockResolvedValue({
     agents: [
       {
@@ -2496,16 +2507,16 @@ test("the ask's @ picker offers the issue's Not running roles", async () => {
     const field = await view.findByLabelText("Your answer");
     await user.click(field);
     await user.paste("@");
-    const listbox = await screen.findByRole("listbox", { name: "Mention suggestions" });
-    const stopped = await within(listbox).findByRole("group", { name: "Not running" });
+    const listbox = await screen.findByRole("listbox", { name: "References" });
+    const roles = await within(listbox).findByRole("group", { name: "Roles" });
     expect(collaborators).toHaveBeenCalledWith("CORE-1");
-    expect(
-      within(stopped)
-        .getAllByRole("option")
-        .map((option) => option.getAttribute("aria-label"))
-    ).toEqual(["legion-p-core-1-reviewer"]);
+    const options = within(roles).getAllByRole("option");
+    expect(options).toHaveLength(1);
+    expect(options[0]?.textContent).toContain("legion-p-core-1-reviewer");
+    expect(options[0]?.textContent).toContain("not running");
   } finally {
     view.unmount();
+    architecture.mockRestore();
     collaborators.mockRestore();
     listAgents.mockRestore();
   }

@@ -1,3 +1,4 @@
+import { dispatchWritingBox } from "@legion/contracts";
 import {
   type ReactNode,
   type SetStateAction,
@@ -46,7 +47,7 @@ import {
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { appendToDraft, DraftUploadStatus, useDraftUpload } from "../artifacts/ArtifactUpload";
-import type { MentionFieldHandle } from "../conversation/MentionField";
+import { MentionField, type MentionFieldHandle } from "../conversation/MentionField";
 import { MarkdownBody } from "../refs/MarkdownBody";
 import { ReferencedBy, ReferencedByToggle } from "../refs/ReferencedBy";
 import { buildDispatchReference, type DocumentOwner, itemRoute } from "../refs/routes";
@@ -74,7 +75,6 @@ import { AskThreadDisclosure } from "./AskThreadDisclosure";
 import type { OwnedAsk } from "./ask-name";
 import { askUrgency, URGENCY_LABELS } from "./ask-urgency";
 import { DeclineControl } from "./DeclineControl";
-import type { Draft } from "./draft-store";
 import { EarlierApproval } from "./EarlierApproval";
 import { useAskAnswerForm } from "./useAskAnswerForm";
 
@@ -159,11 +159,8 @@ const UNSENT_ANSWER_WHY =
  * role `main`'s colour has: the card is the page's paper inside its hairline rule; the question
  * is the ink, what a reader acts on the muted grey, what qualifies it the quiet grey, a link
  * the ink, and a question that changed under the reader the page's warning, its waiting
- * orange; Ask back instead is filled with the ink, as the page's one filled control is, and
- * Cancel is its header control's rule and muted words. What the card's children draw - the
- * header (`AskHeader`), the answer area and the buttons it holds (`AskAnswerArea`,
- * `RefusableButton`), the recipients, the thread, the options, the earlier approval, the
- * unsent answer's box (`UnsentBox`) - is theirs.
+ * orange. Ask back instead is filled with the ink. Cancel uses the header control's rule and
+ * muted words. The answer field and the other shared components define their own colours.
  *
  * They stand in this table, not beside `main`'s classes, because `theme/text-on-background.test.ts`
  * pairs each text class with the nearest enclosing ground of the same file across both branches
@@ -244,7 +241,6 @@ export function AskCard({
   currentReplyId,
 }: AskCardProps): ReactNode {
   const {
-    answerDraft,
     answerFailure,
     answerFieldId,
     answerPlaceholder,
@@ -265,13 +261,14 @@ export function AskCard({
     mutation,
     otherSelected,
     questionChoice,
+    questionReads,
     reasonRequired,
     selectRealOption,
     selected,
     sendAnswer,
     sendClarification,
-    setAnswerDraft,
-    setAnswerDraftOf,
+    setAnswerText,
+    setAnswerTextOf,
     setQuestionChoice,
     startChanging,
     submit,
@@ -340,14 +337,17 @@ export function AskCard({
   const reference = itemRoute("ask", displayedAsk, askOwner);
   // Where a `#id` in the ask's own text resolves: the document the server scopes this ask to -
   // the one its block is on, the one it is anchored to, else its issue's spec (`refs.ScopeOf`).
-  const source = textSourceOf("ask", displayedAsk.id);
+  const source = textSourceOf("ask", displayedAsk.id, displayedAsk.issue_key);
   // Where a file pasted or dropped into the answer, or into a reply under the ask, goes.
   const uploadOwner = askUploadOwner(displayedAsk, askOwner);
+  // The project whose components the box's picker offers: the document the ask was asked on.
+  // An issue ask's box needs none, the issue's key holding it.
+  const documentProject = (askOwner ?? displayedAsk.anchor_artifact)?.project;
   // Everything the reader puts in the box goes through here, the keystroke and the text an
   // upload lands alike: a draft the field changed is no longer the question-shaped answer the
   // card offered to ask back instead.
-  const changeDraft = (next: SetStateAction<Draft>) => {
-    setAnswerDraft(next);
+  const changeAnswerText = (next: SetStateAction<string>) => {
+    setAnswerText(next);
     setQuestionChoice(false);
   };
   // The uploads behind this card's answer, held here rather than in the box they are started
@@ -356,15 +356,15 @@ export function AskCard({
   // went with it left the lone Answer drawn over the folded note sending an answer without the
   // picture (dispatch://INFRA-341, R2). Every send this card draws reads the one `uploading`
   // below, wherever the button stands. A file's text joins the answer of the ask it was pasted
-  // or dropped under, which its press carries (`useDraftUpload`, `setAnswerDraftOf`); only text
+  // or dropped under, which its press carries (`useDraftUpload`, `setAnswerTextOf`); only text
   // added to the field on screen puts its question choice away.
   const upload = useDraftUpload((text: string, askId: string) => {
-    const append = (current: Draft) => ({ ...current, text: appendToDraft(current.text, text) });
-    if (askId === ask.id) changeDraft(append);
-    else setAnswerDraftOf(askId, append);
+    const append = (current: string) => appendToDraft(current, text);
+    if (askId === ask.id) changeAnswerText(append);
+    else setAnswerTextOf(askId, append);
   });
   const uploading = upload.pending > 0;
-  const answerFieldRef = useRef<MentionFieldHandle>(null);
+  const answerFieldRef = useRef<MentionFieldHandle | null>(null);
   // Picking Request changes moves the person straight to the field the server insists on, which
   // the choice itself shows on either variant (`ownWordsShown`).
   useEffect(() => {
@@ -465,24 +465,21 @@ export function AskCard({
   // A send this card draws keeps the focus while the card refuses, unless an upload holds it:
   // that one is `disabled` on both sides (`busy`).
   const sendRefusedWhileOut = refusedWhileOut && !uploading;
-  // Ask back instead takes the focus as it is drawn. Outside `NoTooltips` its callback is a new
-  // one at each render, which focuses it again at each render. Inside it is this one callback,
-  // stable across renders as `useFormRef`'s is, which focuses it once: a focus taken at each
-  // render would move the reader's focus while a write is out - from Answer with it anyway, say,
-  // whose answer is out. The choice leaves the page, and the button with it, as the
-  // clarification lands outside `NoTooltips`, and inside once the ask is read again after it; a
-  // focus the button still holds then goes where the form's own hand-off puts it, not to the
-  // body.
+  // Ask back instead takes focus when it appears. Keep the ref stable so a re-render cannot
+  // steal focus from Answer with it anyway or from another card editing the shared draft.
+  // Inside `NoTooltips`, if the button still holds focus when the choice leaves, hand off
+  // focus rather than dropping it to the body.
   const focusAskBackInstead = useCallback(
     (button: HTMLButtonElement | null) => {
       if (button === null) return undefined;
       button.focus();
+      if (!holdsFocus) return undefined;
       return () => {
         const form = formRef.current;
         if (form !== null && document.activeElement === button) handOffFocus(form);
       };
     },
-    [formRef]
+    [formRef, holdsFocus]
   );
   // A block ask the server indexed with no pending author has an empty label and reads as
   // "asked", with no session handles to open.
@@ -608,7 +605,7 @@ export function AskCard({
           onClick={() => {
             if (!refusing) sendClarification();
           }}
-          ref={tooltips ? (node) => node?.focus() : focusAskBackInstead}
+          ref={focusAskBackInstead}
           type="button"
         >
           {clarification.isPending ? "Sending…" : "Ask back instead"}
@@ -657,22 +654,30 @@ export function AskCard({
         )}
       </div>
     );
-  /** The card's half of the one answer area (`AskAnswerArea.tsx`): the field, the `@` picker and
-   *  the draft are the area's, and these submits are the card's, because Answer, Save answer and
-   *  Ask back all post through `useAskAnswerForm` rather than as a comment of the box's own. The
-   *  upload is the card's too, since a send of the card's stands where this area does not. */
+  /** The card's half of the one answer area (`AskAnswerArea.tsx`): the draft and the field's paste,
+   *  drop and keys are the area's, and the box and these submits are the card's, because Answer,
+   *  Save answer and Ask back all post through `useAskAnswerForm` rather than as a comment of the
+   *  box's own, and the box is the ask card's one row of the writing list. The upload is the
+   *  card's too, since a send of the card's stands where this area does not. */
   const answerArea = (
     <AskAnswerArea
       actions={answerActions}
-      disabled={disabledWhileOut}
-      draft={answerDraft}
-      fieldRef={answerFieldRef}
-      handle="data-ask-answer"
-      issueKey={displayedAsk.issue_key ?? undefined}
-      label={reasonRequired ? "Reason (required)" : isApproval ? "Reason" : "Your answer"}
-      labelHidden={!reasonRequired}
-      onDraftChange={changeDraft}
-      placeholder={answerPlaceholder}
+      draft={answerText}
+      field={(props) => (
+        <MentionField
+          {...props}
+          askAnswer={true}
+          disabled={disabledWhileOut}
+          fieldRef={answerFieldRef}
+          issueKey={displayedAsk.issue_key ?? undefined}
+          label={reasonRequired ? "Reason (required)" : isApproval ? "Reason" : "Your answer"}
+          labelHidden={!reasonRequired}
+          placeholder={answerPlaceholder}
+          project={documentProject}
+          writing={dispatchWritingBox("ask-answer", "ask-answer")}
+        />
+      )}
+      onDraftChange={changeAnswerText}
       // Inside `NoTooltips`, while the card refuses, the box is read-only in place of disabled
       // and takes no paste, drop or Ctrl+Enter.
       readOnly={refusedWhileOut}
@@ -696,6 +701,7 @@ export function AskCard({
   if (completed !== null) {
     return (
       <>
+        {questionReads}
         <AskCompletionCard
           answers={answers}
           artifactSlug={artifactSlug}
@@ -755,6 +761,7 @@ export function AskCard({
       data-ask-card={displayedAsk.id}
       data-testid={`ask-${displayedAsk.id}`}
     >
+      {questionReads}
       {/* One provenance line under the question, in the spec's decided conversation grammar:
           whose turn it is (the only part a reader acts on), who asked, when, and the ask's
           own reference, drawn by the one header every surface shows an ask through. The
@@ -833,6 +840,7 @@ export function AskCard({
               <MarkdownBody
                 markdown={displayedAsk.question}
                 source={source}
+                surface="ask-card-question"
                 tree={displayedAsk.question_tree}
               />
             </div>
@@ -895,6 +903,7 @@ export function AskCard({
                   if (!refusing) selectRealOption(option.label);
                 }}
                 option={option}
+                source={source}
               />
             ))}
             {isApproval ? null : (
@@ -907,6 +916,7 @@ export function AskCard({
                   if (!refusing) toggleOther();
                 }}
                 option={{ label: "Other" }}
+                source={source}
               />
             )}
           </fieldset>

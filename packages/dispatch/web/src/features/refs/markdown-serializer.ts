@@ -4,7 +4,8 @@ import { DOMSerializer, Schema } from "prosemirror-model";
 
 import type { MarkdownEngine, RenderSpecWithAttrs } from "./markdown-engine";
 import type { DocumentJSON } from "./markdown-parse.worker";
-import { buildDispatchReference, pictureReference, safeReferencePath } from "./routes";
+import { buildDispatchReference, pictureReference, referenceHref } from "./routes";
+import { SEARCH_HIGHLIGHT_ATTRIBUTE } from "./search-highlight";
 
 /**
  * The half of the Markdown engine written against ProseMirror's own classes, behind the same
@@ -47,21 +48,19 @@ function pictureSerializer(schema: Schema): DOMSerializer {
           return image(node);
         }
         const { named, route } = picture;
-        if (named === undefined) {
+        // The gate every sink of a typed reference goes through (`appHref`): a picture whose
+        // reference names no artifact, and one whose route opens no page of this dashboard,
+        // keeps the address its author wrote rather than a path that opens nothing.
+        const href = named === undefined ? undefined : referenceHref(route);
+        if (href === undefined) {
           return ["a", { href: picture.source }];
-        }
-        // The picture's address is the body's own text, so the path goes into the href only as
-        // a path of this app; one no such path is built from draws as the picture it is.
-        const path = safeReferencePath(route);
-        if (path === undefined) {
-          return image(node);
         }
         return [
           "a",
           {
             "data-dispatch-picture": buildDispatchReference(route),
             "data-picture-caption": picture.caption,
-            href: path,
+            href,
           },
         ];
       },
@@ -84,7 +83,7 @@ const DISPLAY_HIGHLIGHT_MARK = "searchHighlight";
 function displaySchemaOf(schema: Schema): Schema {
   return new Schema({
     marks: schema.spec.marks.addToEnd(DISPLAY_HIGHLIGHT_MARK, {
-      toDOM: () => ["mark", { "data-search-highlight": "" }],
+      toDOM: () => ["mark", { [SEARCH_HIGHLIGHT_ATTRIBUTE]: "" }],
     }),
     nodes: schema.spec.nodes,
     topNode: schema.spec.topNode,

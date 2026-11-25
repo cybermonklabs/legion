@@ -4,7 +4,6 @@ import { useNavigate } from "react-router-dom";
 import { placeInView } from "../doc/readers-place";
 import { buildInboxPath, type InboxRoute } from "../refs/routes";
 import { answerDraft } from "./answer-drafts";
-import { draftEmpty } from "./draft-store";
 import { ROW_ATTRIBUTE } from "./inbox-row";
 import { type InboxListRow, rowId } from "./list-row";
 import { answerOutstanding } from "./outstanding-answers";
@@ -216,8 +215,7 @@ export function usePaneSelection({
       paneSubject.current = undefined;
       return undefined;
     }
-    const kept =
-      subject.kept || answerOutstanding(selectedId) || !draftEmpty(answerDraft(selectedId));
+    const kept = subject.kept || answerOutstanding(selectedId) || answerDraft(selectedId) !== "";
     const row = candidates.find((candidate) => rowId(candidate) === selectedId) ?? subject.row;
     paneSubject.current = kept ? { kept: true, row } : undefined;
     return kept ? row : undefined;

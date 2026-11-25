@@ -42,6 +42,7 @@ import { dispatchMarkPlugins, remarkDispatchMarks, dispatchMarkHandler } from '.
 import remarkInlineLinks from 'remark-inline-links';
 import { remarkSoftBreakAsLine, remarkSoftBreakAsSpace } from './dispatch-soft-breaks.js';
 import { remarkHoistNestedLinks } from './nested-links.js';
+import { remarkKeepAddressesWhole } from './whole-addresses.js';
 import { remarkContainerDirectives } from './lib-remark-directive-plugin.js';
 import { remarkHtmlBlockParagraphs, remarkStrictHtmlFlow } from './html-blocks.js';
 import { remarkReadOnlyDirectives } from './read-only-directives.js';
@@ -183,6 +184,10 @@ export async function createHeadlessProof(options: HeadlessProofOptions = {}): P
       .use(remarkParse)
       .use(remarkFrontmatter, ['yaml'])
       .use(remarkGfm)
+      // Right after remark-gfm, whose two readers of bare addresses may start an email or a URL
+      // inside a `dispatch://` address: each such link is text again, so the address is whole
+      // (./whole-addresses.ts), as Go's reader keeps it.
+      .use(remarkKeepAddressesWhole)
       .use(remarkContainerDirectives)
       .use(remarkStrictHtmlFlow)
       .use(remarkProofMarks)

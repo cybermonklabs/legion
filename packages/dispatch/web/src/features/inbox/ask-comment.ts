@@ -1,6 +1,5 @@
 import { api, type WriteBounds } from "../../api/client";
 import type { Ask, Comment, CreateCommentInput } from "../../api/types";
-import { type Draft, draftTargets } from "./draft-store";
 
 /**
  * The comment an ask sends, and where it goes. One place, because the open card's Ask back
@@ -17,25 +16,13 @@ export function askArtifactId(ask: Pick<Ask, "artifact_id">): string {
   return ask.artifact_id;
 }
 
-/**
- * What one Reply or Ask back puts on the wire: the words the box holds, and the sessions picked
- * in them, which ride with the comment so each one gets it. Both are read when the press starts,
- * so a keystroke after it cannot change what is being sent.
- */
-export function askCommentInput(askId: string, draft: Draft): CreateCommentInput {
-  const mentions = draftTargets(draft).map((mention) => ({ target: mention.target }));
-  return {
-    ask_id: askId,
-    body: draft.text.trim(),
-    ...(mentions.length === 0 ? {} : { mentions }),
-  };
-}
-
-/** Posts `input` where `ask` lives: its issue, through `createReply`, or the document it was
- *  asked on. */
+/** Posts the words `text` as a comment on `ask` where it lives: its issue, through
+ *  `createReply`, or the document it was asked on. A party the words mention is a reference
+ *  written in them, which the server reads deliveries from, so the comment carries no list of
+ *  mentions beside its body. */
 export function postAskComment(
-  ask: Pick<Ask, "artifact_id" | "issue_key">,
-  input: CreateCommentInput,
+  ask: Pick<Ask, "artifact_id" | "id" | "issue_key">,
+  text: string,
   bounds: WriteBounds,
   createReply: (
     issueKey: string,
@@ -43,6 +30,7 @@ export function postAskComment(
     bounds: WriteBounds
   ) => Promise<Comment>
 ): Promise<Comment> {
+  const input: CreateCommentInput = { ask_id: ask.id, body: text };
   if (ask.issue_key === null) {
     return api.createArtifactComment(askArtifactId(ask), input, bounds);
   }

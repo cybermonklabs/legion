@@ -1,3 +1,4 @@
+import { dispatchWritingBox } from "@legion/contracts";
 import type { DocumentJSON } from "@legion/proof-editor";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useContext, useEffect, useId, useRef, useState } from "react";
@@ -11,6 +12,7 @@ import {
   textMutedOnCanvas,
 } from "../../theme/classes";
 import { colorForLogin } from "../doc/connection";
+import { DocumentRefPicker } from "../doc/DocumentRefPicker";
 import { DocumentReferences, useReferenceClick } from "../doc/document-references";
 import { createDoc, type EditorConstruction, type EditorHandle } from "../doc/editor";
 import { DocumentRuntime } from "../doc/runtime";
@@ -20,6 +22,9 @@ import { answered, arrival, NOTHING_KEPT, type SentText, usedOn } from "./field-
 import { ChangedMeanwhile, SAVE_AFTER_MS } from "./InPlaceField";
 
 const NONE_WRITTEN = "No description is written.";
+/** The writing list's row of a priority's description, whose picker the editor hosts
+ *  (`DocumentRefPicker`): the line under the editor is the row's hint. */
+const DESCRIPTION_BOX = dispatchWritingBox("priority-description", "priority-description");
 /** The line under a description drawn from the server's reading of it where the server's parser
  *  does not take the description whole. */
 const NOT_MARKDOWN =
@@ -232,6 +237,10 @@ function rest(held: Held, latest: Latest, fail: (failure: Failure) => void): voi
  * as it reaches any field; the box around it shows the focus ring while the editor holds it.
  * Where a page holds the description in a card of its own (`boxed={false}`), the card is that
  * box: the editor draws no border, only the focus ring, and its words start where the card's do.
+ * An editor the reader writes in hosts the reference picker every box has, as a document's body
+ * does (`DocumentRefPicker`), under the writing list's row of a priority's description
+ * (`DISPATCH_WRITING_BOXES`, `priority-description`), whose words stand under the editor; the
+ * references the text holds are drawn over it as a document's are (`DocumentReferences`).
  *
  * The stored description a reader who may not write it reads is drawn from the tree the server
  * read it into (`descriptionTree`), as every other stored text is, so no such reader's browser
@@ -570,6 +579,7 @@ export function PriorityDescription({
         >
           <div ref={root} />
           <DocumentReferences editor={editor} source={undefined} />
+          <DocumentRefPicker editor={editor} enabled={writes} writing={DESCRIPTION_BOX} />
         </div>
       ) : null}
       {drawn && unreadable ? (

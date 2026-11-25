@@ -28,7 +28,7 @@ const REASONS = {
 } as const;
 
 /** The answer field's mount, and the reply composer's in each thread. */
-const ANSWER_FIELD = "AskCard | AskCard <AskAnswerArea>";
+const ANSWER_FIELD = "AskCard | AskCard <MentionField askAnswer={true}>";
 const INLINE_COMPOSER = "AskThread | AskThread <AskReplyComposer>";
 const COLLAPSED_COMPOSER = "AskThreadDisclosure | AskThreadDisclosure <AskReplyComposer>";
 
@@ -53,7 +53,7 @@ export const coverage: readonly CoverageEntry[] = [
     reason: REASONS[4],
   }),
   ...answers(
-    `${ANSWER_FIELD} | lifetime | <AskAnswerArea>`,
+    `${ANSWER_FIELD} | lifetime | <MentionField askAnswer={true}>`,
     cells(`${ANSWER} · the page reloaded, then back`, TYPED)
   ),
 

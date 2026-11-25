@@ -1,4 +1,10 @@
-import type { BlockMark, DocumentJSON, EditorReferences } from "@legion/proof-editor";
+import type {
+  BlockMark,
+  DocumentJSON,
+  EditorReferencePicker,
+  EditorReferences,
+  ReferenceInsertion,
+} from "@legion/proof-editor";
 import { Awareness } from "y-protocols/awareness";
 import * as Y from "yjs";
 
@@ -48,6 +54,13 @@ export interface FakeEditor {
   /** Whether the host has shown the editor's root (`reveal`), which the real editor keeps
    *  hidden from before the first batch of its build until the host swaps it in. */
   revealed: boolean;
+  /** What the host last handed the editor to host its reference picker with
+   *  (`setReferencePicker`), or undefined before it has handed it anything; the real plugin
+   *  reports the text before the caret through `onCaret` and offers it the document's keys,
+   *  which a test does in its place. */
+  referencePicker: EditorReferencePicker | null | undefined;
+  /** Each pick the host wrote into the document (`insertReference`), in order. */
+  insertions: ReferenceInsertion[];
   /** Whether the fake view's selection is empty (a caret); a test sets it to select text. */
   selectionEmpty: boolean;
   /** The innermost block with an id that holds the selection, as `blockIdAtSelection` answers;
@@ -150,11 +163,13 @@ export function fakeDocumentRuntime(seed: { text?: string } = {}): FakeDocumentR
       documentJSON: undefined,
       focused: [],
       focusedBlocks: [],
+      insertions: [],
       markdown: undefined,
       nodeViewsAtBuild: [],
       options,
       remoteMarks: [],
       references: undefined,
+      referencePicker: undefined,
       root,
       revealed: false,
       selectionEmpty: true,
@@ -212,6 +227,13 @@ export function fakeDocumentRuntime(seed: { text?: string } = {}): FakeDocumentR
       },
       setReferences(references: EditorReferences | null) {
         editor.references = references;
+      },
+      setReferencePicker(picker: EditorReferencePicker | null) {
+        editor.referencePicker = picker;
+      },
+      insertReference(insertion: ReferenceInsertion) {
+        editor.insertions.push(insertion);
+        return true;
       },
       setAccess(access: FakeEditor["access"]) {
         editor.access = access;

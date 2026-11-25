@@ -1,4 +1,4 @@
-import { expect, jest, spyOn, test } from "bun:test";
+import { beforeAll, expect, jest, spyOn, test } from "bun:test";
 import {
   act,
   // biome-ignore lint/style/noRestrictedImports: the bare pointer press below has no user-event form - `click` would also send the click this row proves the page has not had.
@@ -29,6 +29,13 @@ import { writesOf } from "./features/writes/write-store";
 // suspended resource outside `act`. So the module is loaded here, with the test file, and no row
 // starts or waits for it.
 import "./features/margin/Margin";
+import { warmMarkdownRenderer } from "./features/refs/markdown-engine";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 /** A message the tabs of this browser post to each other, naming `login`, from whichever tab. */
 const about = (field: string, login: string) => expect.objectContaining({ [field]: login });
@@ -180,7 +187,7 @@ test("another person signed in from another tab finds none of the drafts the per
   const app = renderApp({ whoAmI: async () => ({ event_head: "0", kind: "user", login }) });
   const tab = new BroadcastChannel("dispatch-sign-in");
   const unsent = unsentDraftsOf(app.queryClient);
-  const draft = { body: "Alice's unsent reply", mentions: [], replacement: "" };
+  const draft = { body: "Alice's unsent reply", replacement: "" };
   const reply = renderHook(() => useReplyDraft("ask-1", true));
   try {
     await screen.findByText(wholeText("Signed in as alice"));
@@ -191,16 +198,12 @@ test("another person signed in from another tab finds none of the drafts the per
         owner: { issueKey: "CORE-1", kind: "issue" },
         replyTo: null,
       });
-      setAnswerDraft("ask-1", { mentions: [], text: "Alice's unsent answer" });
-      setReplyDraft("ask-1", {
-        mentions: [],
-        text: "Alice's unsent ask reply",
-        writtenSettled: true,
-      });
+      setAnswerDraft("ask-1", "Alice's unsent answer");
+      setReplyDraft("ask-1", { text: "Alice's unsent ask reply", writtenSettled: true });
     });
     expect(unsent.read("composer")).toEqual(draft);
     expect(unsent.readAway("composer", null)?.draft).toEqual(draft);
-    expect(answerDraft("ask-1").text).toBe("Alice's unsent answer");
+    expect(answerDraft("ask-1")).toBe("Alice's unsent answer");
     expect(reply.result.current[0].text).toBe("Alice's unsent ask reply");
 
     login = "bob";
@@ -208,7 +211,7 @@ test("another person signed in from another tab finds none of the drafts the per
     await screen.findByText(wholeText("Signed in as bob"));
     await waitFor(() => expect(unsent.read("composer")).toBeUndefined());
     expect(unsent.readAway("composer", null)).toBeUndefined();
-    expect(answerDraft("ask-1").text).toBe("");
+    expect(answerDraft("ask-1")).toBe("");
     expect(reply.result.current[0].text).toBe("");
   } finally {
     reply.unmount();
@@ -236,7 +239,7 @@ test("after another person's sign-in, a reload of the same tab brings back none 
   const whoAmI = async () => ({ event_head: "0", kind: "user" as const, login });
   let app = renderApp({ whoAmI });
   const tab = new BroadcastChannel("dispatch-sign-in");
-  const draft = { body: "Alice's unsent reply", mentions: [], replacement: "" };
+  const draft = { body: "Alice's unsent reply", replacement: "" };
   try {
     await screen.findByText(wholeText("Signed in as alice"));
     const unsent = unsentDraftsOf(app.queryClient);
@@ -247,12 +250,8 @@ test("after another person's sign-in, a reload of the same tab brings back none 
         owner: { issueKey: "CORE-1", kind: "issue" },
         replyTo: null,
       });
-      setAnswerDraft("ask-1", { mentions: [], text: "Alice's unsent answer" });
-      setReplyDraft("ask-1", {
-        mentions: [],
-        text: "Alice's unsent ask reply",
-        writtenSettled: true,
-      });
+      setAnswerDraft("ask-1", "Alice's unsent answer");
+      setReplyDraft("ask-1", { text: "Alice's unsent ask reply", writtenSettled: true });
     });
     const keptForAlice = keptDrafts();
 
@@ -270,7 +269,7 @@ test("after another person's sign-in, a reload of the same tab brings back none 
       afterBob: keptAfterBob,
       alice: keptForAlice,
       reloaded: {
-        answer: answerDraft("ask-1").text,
+        answer: answerDraft("ask-1"),
         away: reloaded.readAway("composer", null),
         composer: reloaded.read("composer"),
         kept: keptDrafts(),

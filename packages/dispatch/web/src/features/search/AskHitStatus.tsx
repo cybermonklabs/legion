@@ -1,6 +1,6 @@
 import { actorActText } from "@legion/contracts/actor-label";
 import { answerSelected } from "@legion/contracts/dispatch-constants";
-import type { ReactNode } from "react";
+import { Fragment, type ReactNode } from "react";
 
 import type { SearchAsk } from "../../api/types";
 import {
@@ -10,8 +10,10 @@ import {
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { AskResolutionLine } from "../refs/AgentName";
+import { MarkdownBody } from "../refs/MarkdownBody";
 import { MarkdownPreview } from "../refs/MarkdownPreview";
 import { Timestamp } from "../refs/Timestamp";
+import type { TextSource } from "../refs/text-references";
 import { textHead, treeHead } from "../refs/tree-fragment";
 
 function askStateLabel(ask: SearchAsk): string {
@@ -27,10 +29,21 @@ function askStateLabel(ask: SearchAsk): string {
 export const ANSWER_PREVIEW_CHARS = 280;
 
 /** Where an ask hit stands, under its excerpt: a badge for its state, who closed it and when,
- *  and its latest answer - who gave it, when, the options chosen and the start of its text
- *  (`ANSWER_PREVIEW_CHARS`), clamped to three lines. Every part wraps inside the row, so a long
- *  label or name never widens the row it sits in. */
-export function AskHitStatus({ ask, muted }: { ask: SearchAsk; muted: boolean }): ReactNode {
+ *  and its latest answer - who gave it, when, the options chosen, each drawn from the tree of its
+ *  label, and the start of its text (`ANSWER_PREVIEW_CHARS`), clamped to three lines. Every part
+ *  wraps inside the row, so a long label or name never widens the row it sits in. */
+export function AskHitStatus({
+  ask,
+  muted,
+  source,
+}: {
+  ask: SearchAsk;
+  muted: boolean;
+  /** The record the hit is - the ask itself, which its answer's text and the labels it chose
+   *  are scoped to (`refs.ScopeOf`), so a `#id` in them resolves as it does on the ask's own
+   *  card. */
+  source?: TextSource;
+}): ReactNode {
   const answer = ask.state === "open" ? undefined : ask.answer;
   const chosen = answer === undefined ? [] : answerSelected(answer);
   // `resolution` is on an ask the server resolved alone, so the state and the record are read
@@ -55,7 +68,29 @@ export function AskHitStatus({ ask, muted }: { ask: SearchAsk; muted: boolean })
             className={`min-w-0 [overflow-wrap:anywhere] ${ask.state === "resolved" ? "basis-full" : ""}`}
           >
             {actorActText(answer.user, answer.act)} · <Timestamp at={answer.at} /> ·{" "}
-            {chosen.length === 0 ? "No option chosen" : `Chose ${chosen.join(", ")}`}
+            {chosen.length === 0 ? (
+              "No option chosen"
+            ) : (
+              <>
+                Chose{" "}
+                {chosen.map((label, index) => (
+                  <Fragment key={label}>
+                    {index === 0 ? null : ", "}
+                    {/* Each label is drawn from its own tree, beside it at the same index. Only
+                        a server older than `selected_trees` answers a label with no tree, and
+                        the renderer then parses it, as it parses every stored text of that
+                        server's answers. */}
+                    <MarkdownBody
+                      markdown={label}
+                      source={source}
+                      surface="search-ask-chosen-options"
+                      tree={answer.selected_trees?.[index]}
+                      variant="inline"
+                    />
+                  </Fragment>
+                ))}
+              </>
+            )}
           </span>
         )}
       </div>
@@ -64,6 +99,8 @@ export function AskHitStatus({ ask, muted }: { ask: SearchAsk; muted: boolean })
           className={`mt-1 ${muted ? textMutedOnSelectedCard : textPrimaryOnSurface}`}
           lines={3}
           markdown={textHead(answer.text, ANSWER_PREVIEW_CHARS)}
+          source={source}
+          surface="search-ask-status"
           tree={
             answer.text_tree === undefined
               ? undefined

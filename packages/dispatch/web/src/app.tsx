@@ -41,7 +41,6 @@ import {
   type MarginDrawerPage,
   MarginSlotProvider,
 } from "./features/issue-page/margin-slot";
-import { ReferenceNamesProvider } from "./features/issue-page/reference-names";
 import {
   type ShellNavigation,
   ShellNavigationContext,
@@ -52,6 +51,7 @@ import { MarginProvider } from "./features/margin/margin-context";
 import { DEFAULT_MARGIN_WIDTH } from "./features/margin/margin-width";
 import { TextAskCard } from "./features/refs/markdown-cards";
 import { NO_HOVER_PREVIEW_ATTRIBUTE } from "./features/refs/ref-preview-card";
+import { ReferenceNamesProvider } from "./features/refs/reference-names";
 import {
   AGENT_ARTIFACT_PATH,
   AGENT_LIVE_PATH,
@@ -1359,7 +1359,7 @@ export function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
         {theRouteIsDrawn ? (
           <>
             <Suspense fallback={null}>
-              <RefPreviewHost />
+              <RefPreviewHost surface="reference-hover-card" />
             </Suspense>
             {/* The one owner of the agent registry's refresh cadence. It draws nothing, and
                 nothing on the page waits for it: a reader it would have named is named from

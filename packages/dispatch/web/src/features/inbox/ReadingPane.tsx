@@ -21,12 +21,18 @@ import { keepWhatStandsUnder, moveTheBox } from "../doc/readers-place";
 import { scrollElementToTop } from "../doc/scroll-block";
 import { VersionView } from "../doc/VersionView";
 import { MarkdownBody } from "../refs/MarkdownBody";
+import { textSourceOf } from "../refs/text-references";
 import { useThreadOrder } from "../threads/thread-order";
 import { AskCard } from "./AskCard";
 import { AskThread, askUploadOwner } from "./AskThread";
 import { isDecisionAsk } from "./ask-decision";
 import type { InboxListRow } from "./list-row";
-import { artifactQueryOptions, DocumentPane, PaneFrame, useSettled } from "./PaneDocument";
+import {
+  artifactQueryOptions,
+  DocumentPane,
+  PaneFrame,
+  useSettledOnDocument,
+} from "./PaneDocument";
 import { holdSection, type SectionHold } from "./pane-placement";
 import { ReadingPaneHead } from "./ReadingPaneHead";
 import { ThreadPane } from "./ThreadPane";
@@ -211,7 +217,7 @@ function ApprovalBody({
    *  starts: it holds until the reader presses, scrolls, touches or types in the column, or
    *  until the write below lets it go. */
   const hold = useRef<SectionHold | undefined>(undefined);
-  const settled = useSettled(artifactId);
+  const settled = useSettledOnDocument(artifactId);
   const approvedVersion = approval.approved?.version;
 
   const user = useQuery(whoAmIQuery()).data;
@@ -337,7 +343,12 @@ function ApprovalBody({
      *  reads as it was written, and a rule tells it from the document's first paragraph. */
     const question = (
       <div className={`mb-3 border-b pb-3 ${borderDefault}`} data-testid="pane-approval-question">
-        <MarkdownBody markdown={ask.question} tree={ask.question_tree} />
+        <MarkdownBody
+          markdown={ask.question}
+          source={textSourceOf("ask", ask.id, ask.issue_key)}
+          surface="approval-ask-question"
+          tree={ask.question_tree}
+        />
       </div>
     );
     /** Whether the document below the question is still opening: every read `VersionView` needs
@@ -369,6 +380,7 @@ function ApprovalBody({
                 ?.created_at
             }
             highlight={undefined}
+            issueKey={artifact.issue_key}
             owner={
               artifact.issue_key === null
                 ? { project: artifact.project, slug: artifact.slug }

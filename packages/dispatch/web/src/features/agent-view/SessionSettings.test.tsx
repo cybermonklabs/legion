@@ -1,18 +1,26 @@
-import { afterEach, expect, jest, type Mock, mock, test } from "bun:test";
+import { afterEach, beforeAll, expect, jest, type Mock, mock, test } from "bun:test";
 import type { AgentStreamSettingsReported } from "@legion/contracts/agent-stream";
 // biome-ignore lint/style/noRestrictedImports: the same-task pair a closed select's own key makes (`stepWithKey`), and the blur that leaves a picker
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ComponentProps } from "react";
 
 import { realClock, tick } from "../../__tests__/fake-clock";
+import { renderWithQueries } from "../../__tests__/query-provider";
 import { userOnFakeClock } from "../../__tests__/user";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import type { SessionSettingsView } from "./conversation";
 import { SessionSettings, SessionSwitchLines } from "./SessionSettings";
 import type { SwitchRequest } from "./use-session-switch";
 
-/** What the page passes the row: the pickers' props, and the switch status the lines under the
- *  row show. */
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
+
+/** What the page passes the row: the pickers' props, and the words of the switch status the
+ *  lines under the row show, which quote no reply here. */
 type Props = ComponentProps<typeof SessionSettings> & { status: string | undefined };
 
 afterEach(cleanup);
@@ -74,7 +82,10 @@ function renderSettings(props: Partial<Omit<Props, "onPick">> = {}): Header {
   const draw = ({ status, ...settings }: Props) => (
     <>
       <SessionSettings {...settings} />
-      <SessionSwitchLines notice={settings.view.notice} status={status} />
+      <SessionSwitchLines
+        notice={settings.view.notice}
+        status={status === undefined ? undefined : { words: status }}
+      />
     </>
   );
   const { rerender } = render(draw(current));
@@ -332,6 +343,39 @@ test("a held picker's steps survive the switch, and Enter after it ends picks th
     ]);
   } finally {
     realClock();
+  }
+});
+
+// The line is a paragraph of the page, in no link or button, so the session's reply - a stored
+// message - is drawn by the renderer inline, as that message: its formatting is drawn and a link
+// in it is a working link (R6). Read as the projection, the line would be plain words with no
+// link; drawn as the characters the message stores, it would keep the asterisks.
+test("the line draws the session's reply through the renderer, with a working link", async () => {
+  await warmMarkdownRenderer();
+  const view = renderWithQueries(
+    <SessionSwitchLines
+      notice={undefined}
+      status={{
+        reply: {
+          body: "Model set to **openai/model-c**, see [the notes](https://example.test/notes).",
+          id: "r1",
+          tree: undefined,
+        },
+        words: "The session answered: ",
+      }}
+    />
+  );
+  try {
+    const status = screen.getByTestId("agent-switch-status");
+    await waitFor(() =>
+      expect(status.textContent).toBe(
+        "The session answered: Model set to openai/model-c, see the notes."
+      )
+    );
+    expect(status.querySelector("strong")?.textContent).toBe("openai/model-c");
+    expect(status.querySelector("a")?.getAttribute("href")).toBe("https://example.test/notes");
+  } finally {
+    view.unmount();
   }
 });
 

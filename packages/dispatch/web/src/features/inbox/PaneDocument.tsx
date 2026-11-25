@@ -94,7 +94,7 @@ function sameBar(left: SectionBar | undefined, right: SectionBar | undefined): b
 /** Whether the column has settled on this document: it follows the selection only once the
  *  selection has stood still for `DOCUMENT_SETTLE_MS`, and two questions in one document never
  *  change it. */
-export function useSettled(artifactId: string): boolean {
+export function useSettledOnDocument(artifactId: string): boolean {
   const [settled, setSettled] = useState<string | undefined>(undefined);
   useEffect(() => {
     if (settled === artifactId) {
@@ -201,10 +201,10 @@ interface DocumentAtBlock {
  * opened is first drawing, or at the reader's own request, and no view in the pane is rebuilt
  * by anything other than a change of the document version it shows.
  *
- * The column follows the selection only once it has settled (`useSettled`), reads the document
- * under the document page's own keys, and reports whether the editor has drawn the block it was
- * opened at: a question written as a decision block, and a comment thread anchored in a project
- * document, are the same placement problem, and this is the one answer to it.
+ * The column follows the selection only once it has settled (`useSettledOnDocument`), reads the
+ * document under the document page's own keys, and reports whether the editor has drawn the
+ * block it was opened at: a question written as a decision block, and a comment thread anchored
+ * in a project document, are the same placement problem, and this is the one answer to it.
  */
 function useDocumentAtBlock({
   artifactId,
@@ -230,7 +230,7 @@ function useDocumentAtBlock({
   // lets it go, and "Skip to the answer" - a placement of the reader's own, pressed in the head
   // rather than in the column - lets it go early.
   const placement = useRef<{ hold: SectionHold; item: string } | undefined>(undefined);
-  const settled = useSettled(artifactId);
+  const settled = useSettledOnDocument(artifactId);
 
   const user = useQuery(whoAmIQuery()).data;
   const issue = useQuery({

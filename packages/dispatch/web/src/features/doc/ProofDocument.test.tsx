@@ -1,4 +1,4 @@
-import { beforeEach, expect, jest, spyOn, test } from "bun:test";
+import { beforeAll, beforeEach, expect, jest, spyOn, test } from "bun:test";
 import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http } from "msw";
@@ -36,6 +36,12 @@ import {
   LONGEST_WAIT_FOR_THE_DOCUMENT_MS,
   theFirstBatchIsAwaited,
 } from "./first-batch";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 answerTextReadsWithTheSeededText();
 
@@ -1051,7 +1057,7 @@ test("a selection-bar action opens the margin composer for the mark and settles 
     heldSends(queryClient).send(marginComposeSendKey(anchor.artifact), {
       anchor,
       ask: { multiple: false, options: [], urgency: "med" },
-      draft: { body: "Why?", mentions: [], replacement: "" },
+      draft: { body: "Why?", replacement: "" },
       edit: undefined,
       kind,
       owner: { issueKey: "CORE-1", kind: "issue" },
@@ -1226,7 +1232,7 @@ test("a closed document's Comment opens a quote composer with no mark, which pos
       heldSends(queryClient).send(marginComposeSendKey(anchor.artifact), {
         anchor,
         ask: { multiple: false, options: [], urgency: "med" },
-        draft: { body: "After the close", mentions: [], replacement: "" },
+        draft: { body: "After the close", replacement: "" },
         edit: undefined,
         kind: "comment",
         owner: { issueKey: "CORE-1", kind: "issue" },

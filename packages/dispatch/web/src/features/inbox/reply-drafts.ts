@@ -1,19 +1,20 @@
 import { type Dispatch, type SetStateAction, useCallback } from "react";
 
 import { type Shape, shape } from "../writes/tab-storage";
-import { createMentionDraftStore, type Draft, EMPTY_DRAFT, keptMentions } from "./draft-store";
+import { createRecordDraftStore } from "./draft-store";
 
-/** A reply draft: the text and its mentions, and whether the ask took a reply as a settled ask
- *  (`takesReply` in `AskThread.tsx`) when the reader last changed them. */
-export interface ReplyDraft extends Draft {
+/** A reply draft: the text, a mention picked in it included (a mention is a reference written in
+ *  the text), and whether the ask took a reply as a settled ask (`takesReply` in `AskThread.tsx`)
+ *  when the reader last changed it. */
+export interface ReplyDraft {
+  readonly text: string;
   readonly writtenSettled: boolean;
 }
 
-const EMPTY_REPLY_DRAFT: ReplyDraft = { ...EMPTY_DRAFT, writtenSettled: false };
+const EMPTY_REPLY_DRAFT: ReplyDraft = { text: "", writtenSettled: false };
 
 /** A reply draft as the tab keeps it for a reload (`ReplyDraft`). */
 const keptReplyDraft = shape.record({
-  mentions: keptMentions,
   text: shape.string,
   writtenSettled: shape.boolean,
 }) satisfies Shape<ReplyDraft>;
@@ -24,11 +25,10 @@ const keptReplyDraft = shape.record({
  * Conversation or decision-block composer can be on one page at once; the Inbox reading pane's
  * approval request and the card the same request is drawn as below the pane's width are one
  * ask's), and a composer that remounts (switching margin tabs away and back, closing and
- * reopening Write a reply) picks the draft back up - the mentions it holds with its text
- * (`draft-store.ts`). The tab keeps each for a reload of the page too, under `reply`, with what
- * it records. A sent reply or an emptied field drops it. The ask resolving does not: a resolved
- * ask's thread still takes the reply (`takesReply` in `AskThread.tsx`). Nor does the ask opening
- * again.
+ * reopening Write a reply) picks the draft back up (`draft-store.ts`). The tab keeps each for a
+ * reload of the page too, under `reply`, with what it records. A sent reply or an emptied field
+ * drops it. The ask resolving does not: a resolved ask's thread still takes the reply
+ * (`takesReply` in `AskThread.tsx`). Nor does the ask opening again.
  *
  * Each write records whether the ask took a reply as a settled ask when the reader wrote it
  * (`writtenSettled`), because composers for one ask can stand on either side of that: an open ask
@@ -38,7 +38,7 @@ const keptReplyDraft = shape.record({
  * read-only (`useUnsentReply`). A draft written while the ask was open is a reply the reader is
  * still writing in that host, which no other thread reads as a send that failed.
  */
-const store = createMentionDraftStore("reply", EMPTY_REPLY_DRAFT, keptReplyDraft);
+const store = createRecordDraftStore("reply", EMPTY_REPLY_DRAFT, keptReplyDraft);
 
 /** Drops an ask's draft once its reply is sent, only while its text is still the text sent. */
 export function clearReplyDraft(askId: string, sent: string): void {
@@ -46,20 +46,20 @@ export function clearReplyDraft(askId: string, sent: string): void {
 }
 
 /**
- * The ask's draft and its setter, for a thread drawn while the ask takes a reply as a settled ask
- * (`settled`, `takesReply`) or while it is open; the component re-renders whenever any composer
- * changes the draft. Every write through the setter records `settled` with what it writes
- * (`writtenSettled`).
+ * The ask's draft and the setter of its text, for a thread drawn while the ask takes a reply as a
+ * settled ask (`settled`, `takesReply`) or while it is open; the component re-renders whenever
+ * any composer changes the draft. Every write through the setter records `settled` with the text
+ * it writes (`writtenSettled`).
  */
 export function useReplyDraft(
   askId: string,
   settled: boolean
-): [ReplyDraft, Dispatch<SetStateAction<Draft>>] {
+): [ReplyDraft, Dispatch<SetStateAction<string>>] {
   const [draft, setDraft] = store.useDraft(askId);
   const write = useCallback(
-    (next: SetStateAction<Draft>) =>
+    (next: SetStateAction<string>) =>
       setDraft((current) => ({
-        ...(typeof next === "function" ? next(current) : next),
+        text: typeof next === "function" ? next(current.text) : next,
         writtenSettled: settled,
       })),
     [setDraft, settled]

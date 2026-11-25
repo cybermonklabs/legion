@@ -333,7 +333,9 @@ export const reviewRoutes: readonly ReviewRoute[] = [
     // the dot alone can be a page read before its chrome is on it. The test id is on the
     // chrome and on nothing else. It is also what the landing ring hangs on, so the page-wide
     // wait for that ring to be gone (`waitForRouteSettled`) says nothing about this page until
-    // this locator is in: before the chrome there is no ring to have ended.
+    // this locator is in: before the chrome there is no ring to have ended. CI run 44032912332
+    // shot this row with that ring on (dark: the header's border drawn as the ring's sky blue),
+    // which the page-wide wait for `data-landing-ring` now rules out.
     ready: (page) => [
       page.getByRole("status", { name: "connected" }),
       page.getByTestId("artifact-header"),

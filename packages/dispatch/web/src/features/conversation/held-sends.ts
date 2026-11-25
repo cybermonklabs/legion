@@ -13,6 +13,7 @@ import { agentMessagesQuery } from "../../api/queries";
 import type { Actor } from "../../api/types";
 import { pastDeadlineKey } from "../../hooks/useSending";
 import { newSendKey } from "../../lib/send-key";
+import { partyMention } from "../refs/party-references";
 import { SEND_DEADLINE_MS, SendStoppedError } from "../writes/keyed-write";
 import { type Shape, shape } from "../writes/tab-storage";
 import {
@@ -37,8 +38,8 @@ import {
   sendAttempt,
 } from "./send-request";
 
-/** A held send's draft as its composer restores it: the text, its accepted mentions and a
- *  suggestion's replacement, and an ask's fields. */
+/** A held send's draft as its composer restores it: the text, a suggestion's replacement, and
+ *  an ask's fields. */
 export interface HeldDraft {
   readonly ask: SentRequest["ask"];
   readonly draft: SentDraft;
@@ -68,12 +69,17 @@ type KeptEdit =
   | string
   | { readonly base?: string; readonly carried?: CarriedBlockIds; readonly id: string };
 
-/** A send's request as it is kept across a reload: an edit by what it saves, not how. */
-type KeptSentRequest = Omit<SentRequest, "edit"> & { readonly edit: KeptEdit | null };
+/** A send's request as it is kept across a reload: an edit by what it saves, not how, and its
+ *  draft as the shape an older record may still hold (`KeptDraft`). */
+type KeptSentRequest = Omit<SentRequest, "draft" | "edit"> & {
+  readonly draft: KeptDraft;
+  readonly edit: KeptEdit | null;
+};
 
-/** A composer's send as it is kept across a reload. */
+/** A composer's send as it is kept across a reload: each draft as the shape an older record may
+ *  still hold (`KeptDraft`). */
 interface KeptComposerSend {
-  readonly draft: HeldDraft;
+  readonly draft: { readonly ask: SentRequest["ask"]; readonly draft: KeptDraft };
   readonly mutationKey: readonly string[];
   readonly request: KeptSentRequest;
   readonly stoppedSend?: KeptSentRequest;
@@ -153,19 +159,40 @@ export const keptAsk = shape.record({
   urgency: shape.oneOf(...ASK_URGENCIES),
 });
 
-/** The text of a draft, its accepted mentions and a suggestion's replacement (`SentDraft`). */
+/** A mention as the build before this one kept it beside the draft: where its cosmetic words
+ *  stand in the body, the delivery address they stood for, and those words. */
+interface KeptMention {
+  readonly end: number;
+  readonly start: number;
+  readonly target: string;
+  readonly text: string;
+}
+
+/** A kept draft: its text, a suggestion's replacement, and the mentions a record the build
+ *  before this one kept holds beside them. */
+export interface KeptDraft extends SentDraft {
+  readonly mentions?: readonly KeptMention[];
+}
+
+/** The text of a draft and a suggestion's replacement (`SentDraft`), as it is read back. Who it
+ *  addresses is in its text (R4), so this build keeps nothing of the kind beside it; an older
+ *  record's `mentions` are read all the same, because its body holds only the cosmetic
+ *  `@Planner` its composer drew and the targets stood in that array, so dropping them would
+ *  resend the draft to nobody with nothing said about it (`restoredDraft`). */
 export const keptDraft = shape.record({
   body: shape.string,
-  mentions: shape.array(
-    shape.record({
-      end: shape.number,
-      start: shape.number,
-      target: shape.string,
-      text: shape.string,
-    })
+  mentions: shape.optional(
+    shape.array(
+      shape.record({
+        end: shape.number,
+        start: shape.number,
+        target: shape.string,
+        text: shape.string,
+      })
+    )
   ),
   replacement: shape.string,
-}) satisfies Shape<SentDraft>;
+}) satisfies Shape<KeptDraft>;
 
 const keptDelivery = shape.oneOf(...DELIVERY_CAPABILITIES);
 
@@ -315,9 +342,52 @@ function keptRequestOf({ edit, ...request }: SentRequest): KeptSentRequest {
   };
 }
 
-/** A kept request as the send it belongs to makes it again (`restoredEdit`). */
-function restoredRequest({ edit, ...request }: KeptSentRequest): SentRequest {
-  return { ...request, edit: edit === null ? undefined : restoredEdit(edit) };
+/** A kept request as the send it belongs to makes it again (`restoredEdit`, `restoredDraft`). */
+function restoredRequest({ draft, edit, ...request }: KeptSentRequest): SentRequest {
+  return {
+    ...request,
+    draft: restoredDraft(draft),
+    edit: edit === null ? undefined : restoredEdit(edit),
+  };
+}
+
+/** A kept draft as its composer takes it up again. A record the build before this one kept
+ *  holds a `mentions` array and a body carrying only the cosmetic `@Name` that build drew, so
+ *  each of those is written back as the party's mention (`[@Name](address)`, R4), its name
+ *  written as literal words as a pick writes one (`partyLink`), which reads as the party's
+ *  current name: the draft then reads as who it addresses and resends to them, where
+ *  dropping the array would have delivered it to nobody with nothing said about it. A span is
+ *  rewritten only while it still reads as the `@Name` that build accepted - the rule that build
+ *  read its own mentions by (`survivingMentions`) - and the spans are written from the last to
+ *  the first, so each is still the one its offsets named.
+ *
+ *  What is read back is a record, not a draft this build wrote: a target is written into the
+ *  body only as the link `partyMention` makes of a delivery address (`party-references.ts`),
+ *  so a target of no route's form keeps the words it stood as rather than becoming Markdown of
+ *  its own, and offsets are rewritten only where they are a span of this text - `slice` counts
+ *  a negative one from the end, and a resumed send whose `wire` is null sends the body this
+ *  writes. Every store that keeps a draft across a reload reads it back through this: a held
+ *  send's, and the drafts a composer keeps for an address (`unsent-drafts.ts`). */
+export function restoredDraft({ body, mentions, replacement }: KeptDraft): SentDraft {
+  if (mentions === undefined) {
+    return { body, replacement };
+  }
+  const written = [...mentions]
+    .sort((one, other) => other.start - one.start)
+    .reduce((text, mention) => {
+      const { end, start } = mention;
+      // The words a mention was typed as, matched against the draft and drawn nowhere.
+      const words = `@${mention.text}`;
+      if (!Number.isInteger(start) || !Number.isInteger(end) || start < 0 || end > text.length) {
+        return text;
+      }
+      if (text.slice(start, end) !== words) {
+        return text;
+      }
+      const link = partyMention(mention.target, mention.text) ?? words;
+      return `${text.slice(0, start)}${link}${text.slice(end)}`;
+    }, body);
+  return { body: written, replacement };
 }
 
 /**
@@ -341,7 +411,7 @@ export const composerSend = defineWriteKind<ComposerSend, KeptComposerSend>({
   landed: (client, write) => refreshAfter(client, write.detail.request),
   name: "composer",
   restore: ({ draft, mutationKey, request, stoppedSend }) => ({
-    draft,
+    draft: { ask: draft.ask, draft: restoredDraft(draft.draft) },
     mutationKey,
     request: restoredRequest(request),
     stoppedSend: stoppedSend === undefined ? undefined : restoredRequest(stoppedSend),
@@ -451,6 +521,27 @@ function carriedTo(
   };
 }
 
+/** Whether the refused send `held` holds already what a keep of `draft` would write over it
+ *  (`HeldSends.keep`): the same text and replacement, and the same ask - whether it takes more
+ *  than one answer, its urgency, and each option's id, label and description, in order. Compared
+ *  by value, since a composer builds each keep afresh from its fields. */
+function holdsAlready(held: HeldSend, { ask, draft }: HeldDraft): boolean {
+  const options = held.draft.ask.options;
+  return (
+    draft.body === held.draft.draft.body &&
+    draft.replacement === held.draft.draft.replacement &&
+    ask.multiple === held.draft.ask.multiple &&
+    ask.urgency === held.draft.ask.urgency &&
+    ask.options.length === options.length &&
+    ask.options.every(
+      (option, at) =>
+        option.id === options[at]?.id &&
+        option.label === options[at]?.label &&
+        option.description === options[at]?.description
+    )
+  );
+}
+
 /**
  * The app's held sends, as its composers read and make them, over the one write store
  * (`writesOf`): one send per composer's name, which a composer that mounts under that name shows,
@@ -537,12 +628,16 @@ export class HeldSends {
     return held !== undefined && this.#writes.discard(held.id);
   }
 
-  /** Keeps what the reader wrote over a refusal, as its composer unmounts. */
+  /** Keeps what the reader wrote over a refusal. Its composer keeps its draft as it unmounts, as
+   *  the page goes, and a short wait after it mounts as well as after each change, so one that
+   *  mounts over a refusal keeps the very draft the send holds. A keep of what the send holds
+   *  already writes nothing (`holdsAlready`): writing it again would only rewrite the entry and
+   *  draw everything that reads the store again, for no change. */
   keep(mutationKey: MutationKey, draft: HeldDraft): void {
     const held = this.get(mutationKey);
-    if (held?.status === "refused") {
-      this.#writes.amend(held.id, composerSend, (detail) => ({ ...detail, draft }));
-    }
+    if (held?.status !== "refused") return;
+    if (holdsAlready(held, draft)) return;
+    this.#writes.amend(held.id, composerSend, (detail) => ({ ...detail, draft }));
   }
 
   /** Re-addresses the refused send under `mutationKey`: a margin compose's kind switch after a

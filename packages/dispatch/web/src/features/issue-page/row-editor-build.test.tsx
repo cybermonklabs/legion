@@ -26,6 +26,7 @@ import { IssuePresetPanels } from "./IssuePresetPanels";
 import { IssueTree } from "./IssueTree";
 import type { TreeNode } from "./issue-tree";
 import { KEY_REPORTS } from "./page-structure";
+import { publishedTree } from "./projection-fixture";
 import type { OnEditing, RowEditorHandlers } from "./useNodeEditing";
 
 /**
@@ -100,6 +101,7 @@ function RowsAndEditor(): ReactNode {
         holdsEscape={false}
         isClosed={false}
         onEditing={onEditing}
+        published={publishedTree(ISSUE)}
         readsHeld
         readsSettled
         reveal={undefined}

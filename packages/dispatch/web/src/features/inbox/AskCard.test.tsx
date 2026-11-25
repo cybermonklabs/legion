@@ -1,4 +1,4 @@
-import { expect, jest, spyOn, test } from "bun:test";
+import { beforeAll, expect, jest, spyOn, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
@@ -36,9 +36,14 @@ import {
   renderCard,
   thread,
 } from "./ask-card-fixture";
-import { draftEmpty } from "./draft-store";
 import { ApprovalExchange } from "./ReadingPane";
 import { ThreadBody } from "./ThreadBody";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 installAskCardApiMocks();
 
@@ -420,7 +425,7 @@ test("Change answer then Cancel leaves the recorded answer alone and no draft be
     expect(card.queryByTestId("ask-unsent-answer")).not.toBeInTheDocument();
     // Nor is any of it left in the draft every card for this ask reads, and the Inbox's reading
     // column holds the question in the column by (`pane-selection.ts`, `paneAsk`).
-    expect(draftEmpty(answerDraft(mine.id))).toBe(true);
+    expect(answerDraft(mine.id)).toBe("");
   } finally {
     view.unmount();
   }

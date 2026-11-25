@@ -20,6 +20,12 @@ import {
   thread,
 } from "./ask-card-fixture";
 
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
+
 // A write the reader stopped on the card: a hand-on, an answer, a question back and a reply may
 // each have been made, so the card says what its Retry does rather than that the write failed;
 // and what that Retry is of once a host draws the same card for another ask.
@@ -342,7 +348,7 @@ test("an answer that lands after the card moves to another ask leaves that ask's
     await user.click(await screen.findByRole("radio", { name: "Ship" }));
     await user.click(screen.getByRole("button", { name: "Answer" }));
 
-    setAnswerDraft(next.id, { mentions: [], text: "Hold until Friday" });
+    setAnswerDraft(next.id, "Hold until Friday");
     rerender(
       <AskCard
         answerAsk={answerAsk}
@@ -361,7 +367,7 @@ test("an answer that lands after the card moves to another ask leaves that ask's
     expect(screen.getByLabelText<HTMLTextAreaElement>("Your answer").value).toBe(
       "Hold until Friday"
     );
-    expect(answerDraft(next.id).text).toBe("Hold until Friday");
+    expect(answerDraft(next.id)).toBe("Hold until Friday");
   } finally {
     realClock();
     view.unmount();
@@ -398,7 +404,7 @@ test("a stopped question back's Retry after the card moves to another ask posts 
     expect(again?.[0]).toBe("CORE-1");
     expect(again?.[1]).toEqual({ ask_id: "ask-1", body: "Ship what, exactly?" });
     expect(again?.[2].key).toBe(stoppedKey);
-    expect(answerDraft("ask-1").text).toBe("");
+    expect(answerDraft("ask-1")).toBe("");
   } finally {
     realClock();
     view.unmount();
@@ -445,7 +451,7 @@ test("a stopped upload's Retry after the card moves to another ask adds the file
     const again = uploadArtifact.mock.calls.at(-1);
     expect(again?.[0]).toEqual({ issue: "CORE-1" });
     expect(again?.[2].key).toBe(stoppedKey);
-    expect(answerDraft("ask-1").text).toBe(SHOT_TEXT);
+    expect(answerDraft("ask-1")).toBe(SHOT_TEXT);
     expect(screen.getByLabelText("Your answer")).toHaveValue("");
   } finally {
     realClock();

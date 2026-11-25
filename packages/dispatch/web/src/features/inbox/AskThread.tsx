@@ -1,3 +1,4 @@
+import { dispatchWritingBox } from "@legion/contracts";
 import type { UseQueryResult } from "@tanstack/react-query";
 import { useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useState } from "react";
@@ -16,25 +17,28 @@ import {
   surfaceMutedBg,
   textMutedOnSurfaceMuted,
   textPrimaryOnSurfaceMuted,
+  textSecondaryOnCanvas,
 } from "../../theme/classes";
 import { appendToDraft, useDraftUpload } from "../artifacts/ArtifactUpload";
+import { MentionField } from "../conversation/MentionField";
 import { AgentName } from "../refs/AgentName";
 import { CopyRefButton } from "../refs/CopyRefButton";
-import { EditedMark, PostBody } from "../refs/PostBody";
+import { PostBody } from "../refs/PostBody";
+import { EditedMark } from "../refs/PostMarks";
 import { postDeletion } from "../refs/post-marks";
 import { type DocumentOwner, itemRoute } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
 import { textSourceOf } from "../refs/text-references";
-import { Unfurl } from "../refs/Unfurl";
 import type { DwellRef } from "../shell/useDwell";
 import { EarlierReplies } from "../threads/EarlierReplies";
 import { threadLayout } from "../threads/thread-layout";
 import type { ThreadOrder } from "../threads/thread-order";
 import { stoppedNote, useKeyedWrite } from "../writes/useKeyedWrite";
 import { AskAnswerArea } from "./AskAnswerArea";
-import { askCommentInput, postAskComment } from "./ask-comment";
+import { postAskComment } from "./ask-comment";
 import { emptyDraftRefusal } from "./draft-store";
 import type { AskPress } from "./outstanding-answers";
+import { useQuestionLabel } from "./question-label";
 import { clearReplyDraft, setReplyDraft, useReplyDraft } from "./reply-drafts";
 import { UnsentText } from "./UnsentText";
 
@@ -72,11 +76,11 @@ function AskReply({
         <PostBody
           deleted={postDeletion(comment)}
           markdown={comment.body}
-          source={textSourceOf("comment", comment.id)}
+          source={textSourceOf("comment", comment.id, comment.issue_key)}
+          surface="ask-thread-reply"
           tree={comment.body_tree}
         />
       </div>
-      <Unfurl body={comment.body} source={textSourceOf("comment", comment.id)} />
       <p
         className={`mt-1 flex flex-wrap items-center gap-x-1.5 text-xs ${textMutedOnSurfaceMuted}`}
       >
@@ -93,10 +97,12 @@ function AskReply({
   );
 }
 
-/** One press of a reply: the ask it is of (`AskPress`) and the comment it posts - the words and
- *  the sessions picked in them, frozen with the press (`askCommentInput`). */
+/** One press of a reply: the ask it is of (`AskPress`), the text it posts, and its question as
+ *  the label names it (`questionWords`). The text is frozen with the press, a mention the reader
+ *  picked in it included. */
 interface ReplyPress extends AskPress {
-  readonly input: CreateCommentInput;
+  readonly questionWords: string;
+  readonly text: string;
 }
 
 /** The draft a file pasted or dropped into a reply joins: the ask's (`reply-drafts.ts`), with
@@ -219,10 +225,10 @@ export function UnsentReply({ className, text }: { className?: string; text: str
  * area as the open card's (`AskAnswerArea.tsx`): the Conversation tab's field and `@` picker,
  * with Reply as the one button it sends by. It posts to the ask's issue, or to its document for
  * a project-document ask, then invalidates the shared thread so the reply shows first. A picked
- * session rides with the comment as a `session:` mention and gets it. Its draft is the ask's
- * (`reply-drafts.ts`), and each write to it records whether the ask was settled when the reader
- * wrote it, so a thread that draws no composer for the ask reads as unsent only a reply typed
- * under a settled ask (`useUnsentReply`). Its send is the ask's too: while any composer's reply
+ * session's reference is in the comment body, which the server reads for delivery. The draft
+ * belongs to the ask (`reply-drafts.ts`). Each edit records whether the ask was settled when
+ * the reader wrote it. A thread with no composer shows an unsent reply only if the reader
+ * typed it under a settled ask (`useUnsentReply`). Its send is the ask's too: while any composer's reply
  * to this ask is out, every composer for it, including one mounted since, shows the draft
  * disabled. A file pasted or dropped into the field uploads to `uploadOwner` and its text joins
  * the draft.
@@ -239,6 +245,7 @@ export function AskReplyComposer({
   uploadOwner?: ArtifactOwner;
 }): ReactNode {
   const queryClient = useQueryClient();
+  const tooltips = useTooltips();
   const settled = takesReply(ask);
   const [draft, setDraft] = useReplyDraft(ask.id, settled);
   // The uploads behind the reply, held by the composer rather than by the box it writes in, as
@@ -249,12 +256,12 @@ export function AskReplyComposer({
   const upload = useDraftUpload(
     (text: string, { askId, settled: pastedSettled }: ReplyUploadDraft) =>
       setReplyDraft(askId, (current) => ({
-        ...current,
         text: appendToDraft(current.text, text),
         writtenSettled: pastedSettled,
       }))
   );
   const uploading = upload.pending > 0;
+  const question = useQuestionLabel(ask);
   // Keyed by the ask, so the send outlives the composer that started it and any composer for the
   // ask sees it in flight.
   const mutationKey = ["ask-reply", ask.id];
@@ -265,24 +272,28 @@ export function AskReplyComposer({
   // host draws this composer for by then.
   const submit = useKeyedWrite({
     method: "POST",
-    write: (press: ReplyPress, bounds) => postAskComment(press.ask, press.input, bounds, reply),
+    write: (press: ReplyPress, bounds) => postAskComment(press.ask, press.text, bounds, reply),
     inline: true,
-    label: (press: ReplyPress) => `Reply on “${press.ask.question}”`,
+    // The question goes in as its plain-text projection, the words the card draws: the reading
+    // list's `write-label` (`DISPATCH_READING_SURFACES`) says why. Each press carries the line as
+    // it reads at the press, while the composer is drawn for that ask, so a Retry made once a host
+    // has drawn the composer for the next one names the question it answers.
+    label: (press: ReplyPress) => `Reply on “${press.questionWords}”`,
     mutationKey,
     onSuccess: (_comment, press) => {
-      clearReplyDraft(press.ask.id, press.input.body ?? "");
+      clearReplyDraft(press.ask.id, press.text);
       void queryClient.invalidateQueries({ queryKey: ["ask-thread", press.ask.id] });
     },
   });
   /** Why Reply refuses the draft as it stands: it posts what the box holds. */
-  const refusal = emptyDraftRefusal(draft);
+  const refusal = emptyDraftRefusal(draft.text);
 
   // The field's own Ctrl/Cmd+Enter stands down while a picture is still uploading
   // (`AskAnswerArea`), and Reply says the upload is what holds it, so neither way in sends a
   // reply the picture would miss.
   const sendReply = () => {
-    if (refusal !== null || sending) return;
-    submit.mutate({ ask, input: askCommentInput(ask.id, draft) });
+    if (refusal !== null || sending || uploading) return;
+    submit.mutate({ ask, questionWords: question.line(), text: draft.text.trim() });
   };
 
   return (
@@ -295,6 +306,7 @@ export function AskReplyComposer({
         sendReply();
       }}
     >
+      {question.reads}
       <AskAnswerArea
         actions={({ reasonId }) => (
           <RefusableButton
@@ -308,10 +320,19 @@ export function AskReplyComposer({
             Reply
           </RefusableButton>
         )}
-        disabled={sending}
-        draft={draft}
-        issueKey={ask.issue_key ?? undefined}
-        label="Reply"
+        draft={draft.text}
+        field={(props) => (
+          <MentionField
+            {...props}
+            disabled={sending}
+            issueKey={ask.issue_key ?? undefined}
+            label="Reply"
+            labelClassName={
+              tooltips ? `block text-sm font-medium ${textSecondaryOnCanvas}` : undefined
+            }
+            writing={dispatchWritingBox("ask-thread-reply", "comment")}
+          />
+        )}
         onDraftChange={setDraft}
         refusals={{ reply: refusal }}
         upload={upload}

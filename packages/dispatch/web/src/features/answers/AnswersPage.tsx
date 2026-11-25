@@ -23,7 +23,8 @@ import { AskCard } from "../inbox/AskCard";
 import { AskOwnerLink } from "../inbox/AskOwnerLink";
 import { MarkdownBody } from "../refs/MarkdownBody";
 import { MarkdownPreview } from "../refs/MarkdownPreview";
-import { EditedMark, PostPreview } from "../refs/PostBody";
+import { PostPreview } from "../refs/PostBody";
+import { EditedMark } from "../refs/PostMarks";
 import { postDeletion } from "../refs/post-marks";
 import { Timestamp } from "../refs/Timestamp";
 import { textSourceOf } from "../refs/text-references";
@@ -58,10 +59,11 @@ function AnswerRow({
   onChange: () => void;
   row: MyAnswerRow;
 }): ReactNode {
-  // Every text of the row is the ask's: its question, the answer written on it, and a reply in
-  // its thread, which takes the ask's scope (`refs.ScopeOf`). So a `#id` in any of them resolves
-  // against the document the server scopes the ask to, read once for the row.
-  const source = textSourceOf("ask", row.ask_id);
+  // Every text of the row is the ask's: its question, the labels of the options an answer chose,
+  // the answer written on it, and a reply in its thread, which takes the ask's scope
+  // (`refs.ScopeOf`). So a `#id` in any of them resolves against the document the server scopes
+  // the ask to, read once for the row.
+  const source = textSourceOf("ask", row.ask_id, row.owner.issue?.key);
   const changeable =
     row.kind === "answer" &&
     row.current &&
@@ -84,15 +86,26 @@ function AnswerRow({
         lines={2}
         markdown={row.question}
         source={source}
+        surface="answers-subject"
         tree={row.question_tree}
       />
       {row.kind === "answer" && row.answer !== undefined ? (
         <div className={`mt-2 text-sm ${textPrimaryOnCanvas}`}>
           {answerSelected(row.answer).length === 0 ? null : (
             <div className="flex flex-wrap gap-1.5">
-              {answerSelected(row.answer).map((label) => (
+              {answerSelected(row.answer).map((label, index) => (
                 <LabelPill key={label} selected>
-                  {label}
+                  {/* Each label is drawn from its own tree, beside it at the same index. Only
+                      a server older than `selected_trees` answers a label with no tree, and the
+                      renderer then parses it, as it parses every stored text of that server's
+                      answers. */}
+                  <MarkdownBody
+                    markdown={label}
+                    source={source}
+                    surface="answers-chosen-options"
+                    tree={row.answer?.selected_trees?.[index]}
+                    variant="inline"
+                  />
                 </LabelPill>
               ))}
             </div>
@@ -102,6 +115,7 @@ function AnswerRow({
               <MarkdownBody
                 markdown={row.answer.text}
                 source={source}
+                surface="answers-answer"
                 tree={row.answer.text_tree}
               />
             </div>
@@ -113,9 +127,8 @@ function AnswerRow({
           is the app's own word and stays beside it, so the quote keeps the row's whole width,
           and carries the reply's own edit, since the row has no byline of the reply's. The
           space between the two draws nothing in the flex row; it keeps the row's text reading
-          `Replied: <reply>`. `links="live"`, because this preview's default is `inert` and a
-          reply's URL or `dispatch://` reference is one of the things the reader came here to
-          follow: R6 asked for the formatting, not for dead links. */}
+          `Replied: <reply>`. The row is not itself a link or button, so the shared renderer
+          keeps the reply's own links live. */}
       {row.kind === "reply" && row.reply !== undefined ? (
         <div className={`mt-2 flex items-baseline gap-1 text-sm ${textPrimaryOnCanvas}`}>
           <span className={`shrink-0 font-medium ${textMutedOnCanvas}`}>
@@ -126,9 +139,9 @@ function AnswerRow({
             className="min-w-0 flex-1"
             deleted={postDeletion(row.reply)}
             lines={3}
-            links="live"
             markdown={row.reply.body}
             source={source}
+            surface="answers-reply"
             tree={row.reply.body_tree}
           />
         </div>

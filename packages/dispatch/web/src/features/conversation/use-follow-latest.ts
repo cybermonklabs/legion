@@ -68,9 +68,14 @@ export function useFollowLatest({
 
   // The newest turn must sit immediately beneath the sticky composer. Recording the actual
   // post-scroll position distinguishes that automated placement from a reader's later scroll,
-  // regardless of whatever height the issue header has at this breakpoint. The turn's top is a
-  // viewport reading and the place written is one down the box, so the top of the box is what
-  // stands between them: zero on a document page, the top of the column's padding box
+  // regardless of whatever height the issue header has at this breakpoint. The composer stands
+  // above the list only where it is sticky, from `sm` up; below `sm` it is fixed at the foot of
+  // the screen (`MentionComposer`'s docked form), so the newest turn goes to the top of the
+  // viewport and the composer's height, which its hint and a reply chip grow, is no offset. An
+  // offset of the foot composer's height lands the newest turn under that composer once twice
+  // its height and the turn's no longer fit above it (`e2e/phone-landing.e2e.ts`). The turn's
+  // top is a viewport reading and the place written is one down the box, so the top of the box
+  // is what stands between them: zero on a document page, the top of the column's padding box
   // (`scrollportTop`) in a reading pane.
   const jumpToLatest = useCallback(() => {
     const newest = document.querySelector<HTMLElement>(NEWEST_TURN_SELECTOR);
@@ -78,8 +83,10 @@ export function useFollowLatest({
     if (newest === null) {
       putTheBoxAt(scroller, 0);
     } else {
-      const composerHeight =
-        document.querySelector<HTMLElement>(COMPOSER_SELECTOR)?.getBoundingClientRect().height ?? 0;
+      const composer = document.querySelector<HTMLElement>(COMPOSER_SELECTOR);
+      const composerAbove =
+        composer !== null && window.getComputedStyle(composer).position !== "fixed";
+      const composerHeight = composerAbove ? composer.getBoundingClientRect().height : 0;
       const target =
         whereTheReaderIs(scroller) +
         newest.getBoundingClientRect().top -

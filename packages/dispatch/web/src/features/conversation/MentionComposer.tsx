@@ -1,6 +1,12 @@
+import {
+  type DispatchWriting,
+  type DispatchWritingBox,
+  dispatchWritingBox,
+} from "@legion/contracts";
 import type { MutationKey } from "@tanstack/react-query";
 import {
   type FormEvent,
+  type KeyboardEvent,
   type ReactNode,
   type Ref,
   type SyntheticEvent,
@@ -28,7 +34,6 @@ import { inputMethodKey } from "../../hooks/inputMethodKey";
 import { submitOnModifiedEnter } from "../../hooks/submitOnModifiedEnter";
 import { useFootInset } from "../../hooks/useFootInset";
 import {
-  badgeMed,
   borderDefault,
   borderStrong,
   calloutInfoBg,
@@ -37,22 +42,18 @@ import {
   calloutWarningBorder,
   calloutWarningText,
   checkboxAccent,
-  controlHoverBorder,
   dangerHoverBorder,
   dangerText,
   dismissButtonText,
   focusRing,
   hoverToDangerText,
-  inputClasses,
   linkHoverText,
   linkText,
   primaryButtonBg,
   quoteAccentBorder,
   quoteBodyText,
-  referencePillBorder,
   secondaryButtonText,
   surfaceBg,
-  surfaceRecessedBg,
   textMutedOnSurface,
   textMutedOnSurfaceMuted,
   textPrimaryOnSurface,
@@ -61,9 +62,11 @@ import {
 import { appendToDraft, DraftUploadStatus } from "../artifacts/ArtifactUpload";
 import { ASK_URGENCIES_ASCENDING, URGENCY_LABELS } from "../inbox/ask-urgency";
 import { useComposerRegistry } from "../margin/margin-context";
+import { useAgentText } from "../refs/AgentName";
+import { mentionOptions } from "../refs/party-options";
+import { draftParties } from "../refs/party-references";
 import { postDeletion } from "../refs/post-marks";
-import { ReferencePicker } from "../refs/ReferencePicker";
-import { composerReferences } from "../refs/routes";
+import { textSourceOf } from "../refs/text-references";
 import { SendStoppedError } from "../writes/keyed-write";
 import { StopTrying } from "../writes/StopTrying";
 import { type FollowedBlocks, followEdit, spansFromBlocks, textareaValue } from "./block-spans";
@@ -76,7 +79,6 @@ import {
   submittedAskOptions,
 } from "./composer-draft";
 import {
-  type AcceptedMention,
   type AnchorRefusal,
   type ComposerAnchor,
   type ComposerKind,
@@ -89,15 +91,11 @@ import {
   type ReplyTarget,
 } from "./composer-model";
 import { deliveryModesOf, MODE_LABELS, noDeliveryReasons, plainDelivery } from "./delivery";
+import { DraftPills, draftSource, useDraftPills } from "./draft-pills";
 import type { HeldSend } from "./held-sends";
 import { KeptDraftOffers } from "./KeptDraftOffers";
 import { keptAwayLine } from "./KeptReply";
-import {
-  MentionField,
-  type MentionFieldChange,
-  type MentionFieldHandle,
-  useMentionOptions,
-} from "./MentionField";
+import { MentionField, type MentionFieldChange, type MentionFieldHandle } from "./MentionField";
 import { ReplyQuote } from "./ReplyQuote";
 import {
   carriedIdsOf,
@@ -110,10 +108,10 @@ import {
   type SentDraft,
   type SentRequest,
   saveCommentEdit,
-  survivingMentions,
   unedited,
 } from "./send-request";
 import { useUnsentDrafts } from "./unsent-drafts";
+import { useAgents } from "./useAgents";
 import { useComposerSend } from "./useComposerSend";
 import { useDraftHomes } from "./useDraftHomes";
 import { composerNameOf, mountDraft, type OfferedDraft, useKeptDrafts } from "./useKeptDrafts";
@@ -201,6 +199,10 @@ interface MentionComposerProps {
    *  mounted out of sight - the margin's, under its collapsed sheet, its rail or the Pinned tab -
    *  passes it once the composer is on screen, since a field out of sight takes no focus. */
   readonly autoFocus?: boolean;
+  /** Which box of the writing list this mount is: the composer draws the shared field, and the
+   *  field's hint is that box's row for the write the composer is making
+   *  (`DISPATCH_WRITING_BOXES`). The host names it, since one composer serves several boxes. */
+  readonly box: DispatchWritingBox;
   /** The owner's issue is closed. A closed issue takes comments and message replies, so a comment
    *  composer shows and sends as ever; its Suggest and Ask kinds are hidden, since a closed issue
    *  refuses both. A suggestion or ask composer stays mounted, so a send of its own still out and
@@ -299,6 +301,7 @@ export function MentionComposer({
   anchor,
   anchorRefusal,
   autoFocus = false,
+  box,
   closed = false,
   docked = false,
   finishing = false,
@@ -349,17 +352,16 @@ export function MentionComposer({
       unsent,
     })
   );
-  const field = useRef<MentionFieldHandle>(null);
-  const replacementTextarea = useRef<HTMLTextAreaElement>(null);
+  /** The body field and, for a suggestion, the replacement field, each reached through the
+   *  handle it hands back: the text as the reader left it, and the focus. */
+  const field = useRef<MentionFieldHandle | null>(null);
+  const replacementField = useRef<MentionFieldHandle | null>(null);
   const formRef = useRef<HTMLFormElement>(null);
   const frameRef = useRef<HTMLDivElement>(null);
   const lastFocusedField = useRef<HTMLElement | null>(null);
-  const optionLabelRefs = useRef<Array<HTMLInputElement | null>>([]);
+  const optionLabelFields = useRef<Array<MentionFieldHandle | null>>([]);
   const focusAddedOption = useRef(false);
-  /** The body as the field's last edit, or the last draft put in the field, left it - ahead of the
-   *  render that draws it, which is a task behind. A standing box reads it to tell the reader's
-   *  own words from its last prefill; the field measures each edit itself (`MentionField`). */
-  const fieldBody = useRef(initial.body);
+  const previousBody = useRef(initial.body);
   const previousReply = useRef<string | undefined>(undefined);
   /** The body the last reply prefill put in the field, which a standing box tells the reader's
    *  own words from. */
@@ -370,18 +372,16 @@ export function MentionComposer({
   const mountedHeld = useRef(initial.taken);
   const [body, setBody] = useState(initial.body);
   const [replacement, setReplacement] = useState(initial.replacement);
-  const [mentions, setMentions] = useState<AcceptedMention[]>(initial.mentions);
   /** The edited comment's blocks as the field's edits moved them, while the blocks route has
    *  answered them; Save carries their ids (`carriedBlocks`). */
   const followedBlocks = useRef<FollowedBlocks | undefined>(undefined);
-  /** Puts a whole draft in the field at once - its text, mentions, and replacement in step with
-   *  the request that supplied them - where the reader did not type it, so their next edit is
-   *  measured from that text rather than from what they last typed (`MentionField`). */
+  /** Puts a whole draft in the field at once - its text and a suggestion's replacement, in step
+   *  with the request that supplied them - where the reader did not type it, so their next edit
+   *  is measured from here (`previousBody`). */
   const replaceDraft = useCallback((draft: Draft) => {
     setBody(draft.body);
-    fieldBody.current = draft.body;
+    previousBody.current = draft.body;
     followedBlocks.current = followEdit(followedBlocks.current, draft.body, undefined, undefined);
-    setMentions([...draft.mentions]);
     setReplacement(draft.replacement ?? "");
   }, []);
   const [askOptions, setAskOptions] = useState<AskOptionDraft[]>(() => askOptionRows(initial.ask));
@@ -394,40 +394,37 @@ export function MentionComposer({
     setMultiple(ask.multiple);
     setUrgency(ask.urgency);
   }, []);
-  const [referencePickerOpen, setReferencePickerOpen] = useState(false);
+  /** Whether the field's reference picker is showing, which the docked composer rises over the
+   *  page for. The field tells it (`onPickerOpenChange`); the list itself is the field's. */
+  const [pickerOpen, setPickerOpen] = useState(false);
   const [confirmingDiscard, setConfirmingDiscard] = useState(false);
   // Why the last kind pick was refused, kept with the mark it answered: the composer stays mounted
   // when its mark changes - the margin writes it again after the server refused the send for it -
   // and a refusal about the old mark says nothing about the new one. A quote anchor (a closed
   // issue's document) has no mark.
   const [kindRefusal, setKindRefusal] = useState<{ markId: string | undefined; text: string }>();
-  /** Everything the field's `@` picker needs (`useMentionOptions`): its options, the issue's
-   *  Legion roles nobody is running, what the read that gave them stands at, and whether the
-   *  picker is open, which lifts a docked composer over the page under it. The issue key is
-   *  what the "Not running" options are read for, so a project document's margin composer and
-   *  a direct message offer none. */
-  const { listing, onPickerOpenChange, options, pickerOpen, stoppedOptions } = useMentionOptions(
-    owner.kind !== "session",
-    suppliedAgents,
-    owner.kind === "issue" ? owner.issueKey : undefined
-  );
-
-  /** Whether this draft takes mentions at all: an edit of a comment does not, and a message to
-   *  one session already reaches it. */
-  const mentionable = edit === undefined && owner.kind !== "session";
+  const live = useAgents(suppliedAgents === undefined && owner.kind !== "session", pickerOpen);
+  const agents = suppliedAgents ?? live.agents;
+  const text = useAgentText();
+  // Only for the delivery mode each addressed session advertises (`targetOptions`): the rows a
+  // pick offers are the picker's own read (`useRefPicker`).
+  const options = useMemo(() => mentionOptions(agents, text), [agents, text]);
   const compact = inline || edit !== undefined;
-  /** The whole draft, gone - the body, its accepted mentions, a suggestion's replacement and an
-   *  ask's options - on a successful send and on Discard alike, in every host, leaving what a fresh
+  /** The whole draft, gone - the body, a suggestion's replacement and an ask's options - on a
+   *  successful send and on Discard alike, in every host, leaving what a fresh
    *  mount shows: a host whose `onClose` only moves focus (`AgentsPage`'s rows) keeps the composer
    *  mounted, and it must read as a new one would. That includes the channel's own mentions: an
    *  issue comment an Agents row writes reaches its agent only by mentioning it, so every message
    *  after the first is seeded as the first was. The kind, the urgency and `Allow multiple` are
    *  the reader's settings, not the draft, and stay. */
   const clearDraft = () => {
-    replaceDraft(seededDraft(seedMentions, undefined, owner));
+    replaceDraft({ body: seededDraft(seedMentions, "", owner) });
     setAskOptions([emptyAskOption()]);
   };
-  const references = useMemo(() => composerReferences(body), [body]);
+  // The pills under the draft read it as a reader of the stored text will (`useDraftPills`),
+  // with the record the write will have (`draftSource`). A compact box - an inline reply, an
+  // edit - shows no pills and asks nothing for them.
+  const pills = useDraftPills(compact ? "" : body, draftSource(owner, replyTo, anchor));
   const editBody = edit?.body;
 
   // The seed belongs to the channel the host addresses. When it changes - an Agents row's issue
@@ -444,7 +441,7 @@ export function MentionComposer({
   useLayoutEffect(() => {
     if (seededFor.current === seedKey) return;
     seededFor.current = seedKey;
-    replaceDraft(seededDraft(seedMentions, { body, mentions }, owner));
+    replaceDraft({ body: seededDraft(seedMentions, body, owner) });
   }, [seedKey]);
   // The edited comment's blocks, read when the edit opens and again whenever the comment changes,
   // then followed through every edit of the field, so Save carries each block's id. A read that
@@ -464,7 +461,7 @@ export function MentionComposer({
         // What the reader typed while the read was out, measured from the body it answered.
         followedBlocks.current = followEdit(
           { revision: answer.revision, spans, value: opened },
-          field.current?.textarea()?.value ?? opened,
+          previousBody.current,
           undefined,
           undefined
         );
@@ -483,7 +480,7 @@ export function MentionComposer({
   }, [autoFocus]);
   useEffect(() => {
     if (focusAddedOption.current) {
-      optionLabelRefs.current[askOptions.length - 1]?.focus();
+      optionLabelFields.current[askOptions.length - 1]?.textarea()?.focus();
       focusAddedOption.current = false;
     }
   }, [askOptions.length]);
@@ -516,7 +513,7 @@ export function MentionComposer({
     // A standing box's draft is its thread's (`unsentName` in `useKeptDrafts`), not one message's:
     // a newer message the host moves the box onto leaves what the reader wrote in the field, where
     // the prefill would write over it.
-    const written = fieldBody.current;
+    const written = previousBody.current;
     if (
       standing &&
       movedFrom !== undefined &&
@@ -553,7 +550,7 @@ export function MentionComposer({
   const cancelReply = () => {
     keepNothing();
     setCancels((count) => count + 1);
-    onCancelReply?.({ body, mentions, replacement });
+    onCancelReply?.({ body, replacement });
   };
   // The Escape listener below reads it as it stands, so it is not re-bound each render for it.
   const cancelReplyNow = useRef(cancelReply);
@@ -580,12 +577,12 @@ export function MentionComposer({
   const closeOrAskNow = useRef(closeOrAsk);
   closeOrAskNow.current = closeOrAsk;
   /** Adds `texts` to the end of the field - the references of files that landed into the draft it
-   *  shows (`useDraftHomes`), or a reference the picker inserts - where the reader did not type
-   *  them, so their next edit is measured from that text (`MentionField`). */
+   *  shows (`useDraftHomes`) - where the reader did not type them, so their next edit is measured
+   *  from here (`previousBody`). A pick is the field's own edit, which `onBodyChange` measures. */
   const appendToField = useCallback((texts: readonly string[]) => {
     setBody((current) => {
       const next = texts.reduce((text, added) => appendToDraft(text, added), current);
-      fieldBody.current = next;
+      previousBody.current = next;
       return next;
     });
   }, []);
@@ -619,7 +616,7 @@ export function MentionComposer({
     composerName,
     discard: discardNow,
     edit,
-    field: { askOptions, body, mentions, multiple, replacement, urgency },
+    field: { askOptions, body, multiple, replacement, urgency },
     homes,
     initial,
     inline,
@@ -649,13 +646,10 @@ export function MentionComposer({
     if (form === null || dormant) return;
     const handleEscape = (event: globalThis.KeyboardEvent) => {
       // The Escape that ends an input method's composition in the field is the input method's:
-      // it closes nothing of the composer (`inputMethodKey`).
+      // it closes nothing of the composer (`inputMethodKey`). An open picker takes a plain
+      // Escape on the field's own listener and stops it there, so this never sees it: Escape
+      // shuts the list, and the one after it reaches the composer.
       if (event.key !== "Escape" || inputMethodKey(event)) return;
-      if (referencePickerOpen) {
-        event.stopPropagation();
-        setReferencePickerOpen(false);
-        return;
-      }
       if (replyTo !== null) {
         event.preventDefault();
         cancelReplyNow.current();
@@ -669,7 +663,6 @@ export function MentionComposer({
   }, [
     // A dormant composer renders no form; the one it renders when it wakes takes the listener.
     dormant,
-    referencePickerOpen,
     replyTo,
   ]);
   // A composer fixed at the foot of the screen - the docked one below `sm`, or one a host's frame
@@ -694,21 +687,19 @@ export function MentionComposer({
     return registerComposer({ keepDraft, mutationKey });
   }, [composerName, registerComposer]);
 
-  /** Every edit the field makes of the draft: its text, the mentions it reconciled against that
-   *  text, and the edit the browser named it by. */
-  const onFieldChange = ({
-    body: value,
-    inputType,
-    mentions: accepted,
-    range,
-  }: MentionFieldChange) => {
-    // `mapSpans` takes the range only where it explains the edit of the value the spans follow,
-    // which is the textarea's own (LF for an edited body's CR LF).
-    followedBlocks.current = followEdit(followedBlocks.current, value, range, inputType);
-    setMentions(accepted);
-    fieldBody.current = value;
-    setBody(value);
-    if (!mentionable) return;
+  /** One edit of the body field: the text, and the edit the browser named, which moves the
+   *  edited comment's blocks with it. `mapSpans` takes that range only where it explains the
+   *  edit of the value the spans follow, which is the textarea's own (LF for an edited body's
+   *  CR LF). */
+  const onBodyChange = (change: MentionFieldChange) => {
+    followedBlocks.current = followEdit(
+      followedBlocks.current,
+      change.body,
+      change.range,
+      change.inputType
+    );
+    previousBody.current = change.body;
+    setBody(change.body);
     setConfirmingDiscard(false);
   };
   const addAskOption = () => {
@@ -732,7 +723,7 @@ export function MentionComposer({
   ): Omit<SentRequest, "sendKey"> => ({
     anchor,
     ask: { multiple, options: submittedAskOptions(askOptions), urgency },
-    draft: { body: sentBody, mentions, replacement: sentReplacement },
+    draft: { body: sentBody, replacement: sentReplacement },
     edit:
       edit === undefined
         ? undefined
@@ -762,16 +753,19 @@ export function MentionComposer({
       refused?.status === "refused" ? refused.refusal : undefined,
       composedRequest(
         field.current?.textarea()?.value ?? body,
-        replacementTextarea.current?.value ?? replacement
+        replacementField.current?.textarea()?.value ?? replacement
       )
     );
-  const activeMentions = useMemo(() => survivingMentions(body, mentions), [body, mentions]);
+  /** Who this draft addresses, read from its own words (`draftParties`): the delivering
+   *  parties, whose advertised modes the notices below are drawn from, and whether it names a
+   *  party at all, which is what decides that a typed `/btw` is a command. */
+  const parties = useMemo(() => draftParties(body), [body]);
   const effectiveTargets: readonly string[] =
     owner.kind === "session"
       ? [`session:${owner.sessionId}`]
       : replyTo?.parentKind === "message" && replyTo.thread !== undefined
         ? [replyTo.thread.target]
-        : activeMentions.map((mention) => mention.target);
+        : parties.targets;
   const targetOptions = effectiveTargets.flatMap((target) => {
     const option = options.find((candidate) => candidate.target === target);
     return option === undefined ? [] : [option];
@@ -795,14 +789,14 @@ export function MentionComposer({
     heldPicked === undefined &&
     (owner.kind === "session"
       ? replyTo?.thread?.delivery === undefined
-      : replyTo?.parentKind !== "message" && activeMentions.length > 0);
+      : replyTo?.parentKind !== "message" && parties.named);
   const inheritedDelivery =
     heldPicked ??
     (owner.kind === "session"
       ? (replyTo?.thread?.delivery ?? plainMode)
       : replyTo?.parentKind === "message"
         ? replyTo.thread?.delivery
-        : activeMentions.length > 0
+        : parties.named
           ? plainMode
           : undefined);
   // A picked mode sends the body as written: no `/btw` or `/aside` at its start is a command.
@@ -841,13 +835,12 @@ export function MentionComposer({
     outgoing.send((refused) => {
       setConfirmingDiscard(false);
       field.current?.closePicker();
-      setReferencePickerOpen(false);
       forgetUnsent();
       return sentRequest(refused);
     });
   /** The hold on the draft from Send's own task on, before React can disable the fieldset: the
    *  fieldset's capture stops every key, click, input and change bound for a control in it - so
-   *  Escape raises no Discard prompt and Ctrl+K opens no picker over a draft that is out. */
+   *  Escape raises no Discard prompt over a draft that is out. */
   const stopHeldComposerInput = (event: SyntheticEvent) => {
     if (!outgoing.sendingNow()) return;
     event.preventDefault();
@@ -885,6 +878,25 @@ export function MentionComposer({
             ? "Reason"
             : "Comment";
   const title = edit !== undefined ? "Save" : kind === "ask" ? "Ask" : "Send";
+  /** What this composer writes now, which decides which row of the writing list the field's
+   *  hint comes from: the kinds the margin switches between, an edit's save, a direct message
+   *  to one session, a reply inside a message thread, and a comment for everything else. */
+  const writes: DispatchWriting =
+    edit !== undefined
+      ? "comment-edit"
+      : kind === "ask"
+        ? "ask"
+        : kind === "suggestion"
+          ? "suggestion"
+          : owner.kind === "session"
+            ? "agent-message"
+            : replyTo?.parentKind === "message"
+              ? "message-reply"
+              : "comment";
+  /** The issue the picker offers the people and the stopped roles of; a document of its own
+   *  project has none, and the picker offers everyone who has signed in there. */
+  const pickerIssue = owner.kind === "issue" ? owner.issueKey : undefined;
+  const pickerProject = owner.kind === "artifact" ? owner.project : undefined;
   const outboundMode = outbound.delivery;
   const unsupportedOptions =
     outboundMode === undefined
@@ -951,6 +963,12 @@ export function MentionComposer({
             deleted={postDeletion(replyParent)}
             edited={replyParent?.edited_at}
             excerpt={replyParent === undefined ? "" : replyTo.excerpt}
+            excerptTree={replyParent === undefined ? undefined : replyTo.excerptTree}
+            source={textSourceOf(
+              replyTo.parentKind,
+              replyTo.id,
+              owner.kind === "issue" ? owner.issueKey : undefined
+            )}
             to={replyTo.to}
           />
           {/* The reply is part of the message's address, fixed once the send is out, so the
@@ -971,6 +989,7 @@ export function MentionComposer({
       )}
       {compact || anchor === undefined ? null : (
         <blockquote className={`border-l-2 pl-2 text-sm ${quoteAccentBorder} ${quoteBodyText}`}>
+          {/* The document's own words, as they are: the reading list's `anchor-quote`. */}
           {anchor.quote}
         </blockquote>
       )}
@@ -1001,6 +1020,7 @@ export function MentionComposer({
               and a newer anchor leaves it behind. */}
           {kindRefusal === undefined || kindRefusal.markId !== anchor?.mark_id ? null : (
             <p className={`text-sm ${dangerText}`} role="status">
+              {/* not stored prose: the host's own words for why the kind did not change */}
               {kindRefusal.text}
             </p>
           )}
@@ -1028,50 +1048,38 @@ export function MentionComposer({
         </div>
       ) : null}
       {kind === "suggestion" ? (
-        <label className={`block text-sm font-medium ${textSecondaryOnSurface}`}>
-          Replace with
-          <textarea
-            aria-label="Replacement"
-            className={`mt-1 block w-full rounded-lg border px-3 py-2 font-normal outline-none ${inputClasses(true)}`}
-            onChange={(event) => {
-              setReplacement(event.target.value);
-              setConfirmingDiscard(false);
-            }}
-            onKeyDown={submitOnModifiedEnter}
-            readOnly={offered !== undefined}
-            ref={replacementTextarea}
-            value={replacement}
-          />
-        </label>
+        <MentionField
+          body={replacement}
+          fieldRef={replacementField}
+          issueKey={pickerIssue}
+          label="Replacement"
+          onChange={(change) => {
+            setReplacement(change.body);
+            setConfirmingDiscard(false);
+          }}
+          onKeyDown={submitOnModifiedEnter}
+          project={pickerProject}
+          readOnly={offered !== undefined}
+          writing={dispatchWritingBox("suggestion-replacement", "suggestion")}
+        />
       ) : null}
       <MentionField
         body={body}
         fieldRef={field}
         inline={inline}
+        issueKey={pickerIssue}
         label={bodyLabel}
         labelHidden={compact}
-        listing={listing}
-        mentions={mentions}
-        onChange={onFieldChange}
+        onChange={onBodyChange}
         onDrop={homes.drop}
-        onKeyDown={(event) => {
-          if (
-            owner.kind === "issue" &&
-            !compact &&
-            (event.ctrlKey || event.metaKey) &&
-            event.key.toLowerCase() === "k"
-          ) {
-            event.preventDefault();
-            setReferencePickerOpen(true);
-            return;
-          }
-          submitOnModifiedEnter(event, { disabled: upload.pending > 0 });
-        }}
+        onKeyDown={(event: KeyboardEvent<HTMLTextAreaElement>) =>
+          submitOnModifiedEnter(event, { disabled: upload.pending > 0 })
+        }
         onPaste={homes.paste}
-        onPickerOpenChange={onPickerOpenChange}
-        options={mentionable ? options : undefined}
+        onPickerOpenChange={setPickerOpen}
+        project={pickerProject}
         readOnly={changed !== undefined || offered !== undefined}
-        stoppedOptions={mentionable ? stoppedOptions : undefined}
+        writing={dispatchWritingBox(box, writes)}
       />
       {/* A kind the closed issue refuses can send nothing, and a margin compose of that kind ends
           once it offers nothing (`useMarginSheet`), so a draft taken into its field would go
@@ -1160,29 +1168,40 @@ export function MentionComposer({
             {askOptions.map((option, index) => (
               <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-2" key={option.id}>
                 <div className="space-y-2">
-                  <input
-                    aria-label={`Option ${index + 1} label`}
-                    className={`block w-full rounded-lg border px-3 py-2 text-sm outline-none ${inputClasses(true)}`}
-                    onChange={(event) => updateAskOption(index, "label", event.target.value)}
+                  <MentionField
+                    body={option.label}
+                    fieldRef={(handle) => {
+                      optionLabelFields.current[index] = handle;
+                    }}
+                    inline
+                    issueKey={pickerIssue}
+                    label={`Option ${index + 1} label`}
+                    labelHidden
+                    onChange={(change) => updateAskOption(index, "label", change.body)}
                     onKeyDown={(event) => {
-                      // The Enter that confirms an input method's word adds no option.
+                      // With the picker open its own listener took this Enter and stopped it
+                      // before this ran: the key takes the row under it rather than adding an
+                      // option nobody asked for. The Enter that confirms an input method's word
+                      // adds no option either.
                       if (event.key === "Enter" && !inputMethodKey(event)) {
                         event.preventDefault();
                         addAskOption();
                       }
                     }}
                     placeholder="Label"
-                    ref={(element) => {
-                      optionLabelRefs.current[index] = element;
-                    }}
-                    value={option.label}
+                    project={pickerProject}
+                    writing={dispatchWritingBox("ask-option-label", "ask")}
                   />
-                  <input
-                    aria-label={`Option ${index + 1} description`}
-                    className={`block w-full rounded-lg border px-3 py-2 text-sm outline-none ${inputClasses(true)}`}
-                    onChange={(event) => updateAskOption(index, "description", event.target.value)}
+                  <MentionField
+                    body={option.description}
+                    inline
+                    issueKey={pickerIssue}
+                    label={`Option ${index + 1} description`}
+                    labelHidden
+                    onChange={(change) => updateAskOption(index, "description", change.body)}
                     placeholder="Description (optional)"
-                    value={option.description}
+                    project={pickerProject}
+                    writing={dispatchWritingBox("ask-option-description", "ask")}
                   />
                 </div>
                 <button
@@ -1206,34 +1225,8 @@ export function MentionComposer({
         <>
           <p className={`text-xs ${textMutedOnSurfaceMuted}`}>
             Paste or drop a picture to show it inline, or any other file to attach it.
-            {owner.kind === "issue" ? " Ctrl+K inserts a reference." : ""}
           </p>
-          {references.length === 0 ? null : (
-            <section aria-label="References" className="flex flex-wrap gap-2">
-              {references.map((reference) => (
-                <a
-                  className={`rounded-full border px-2 py-1 text-xs font-medium ${referencePillBorder} ${surfaceRecessedBg} ${badgeMed.text} ${controlHoverBorder}`}
-                  href={reference.href}
-                  key={reference.reference}
-                >
-                  {reference.reference}
-                </a>
-              ))}
-            </section>
-          )}
-          {/* A picker is a draft control. `send` closes one already open, and Ctrl+K consults the
-              submit guard before it can open another in the task before the fieldset disables. */}
-          {owner.kind === "issue" && referencePickerOpen ? (
-            <ReferencePicker
-              issueKey={owner.issueKey}
-              onClose={() => setReferencePickerOpen(false)}
-              onSelect={(reference) => {
-                appendToField([reference]);
-                setReferencePickerOpen(false);
-                field.current?.textarea()?.focus();
-              }}
-            />
-          ) : null}
+          <DraftPills pills={pills} />
         </>
       )}
       {uploadOwner === undefined ? null : (

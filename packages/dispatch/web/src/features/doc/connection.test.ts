@@ -1,4 +1,4 @@
-import { afterEach, expect, jest, spyOn, test } from "bun:test";
+import { afterEach, beforeAll, expect, jest, spyOn, test } from "bun:test";
 import {
   NO_DOCUMENT_SERVER_CLOSE_CODE,
   NO_DOCUMENT_SERVER_CLOSE_REASON,
@@ -8,6 +8,7 @@ import { createDecoder, readVarString, readVarUint, readVarUint8Array } from "li
 import * as Y from "yjs";
 
 import { quietConsoleError } from "../../__tests__/act-warnings";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import {
   type ConnectionState,
   colorForLogin,
@@ -39,6 +40,12 @@ import {
 } from "./pending-fixture";
 import * as pendingSyncModule from "./pending-sync";
 import { type PendingState, startPendingSync } from "./pending-sync";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 afterEach(closeStores);
 

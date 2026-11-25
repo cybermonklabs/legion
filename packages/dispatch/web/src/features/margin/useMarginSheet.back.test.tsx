@@ -1,4 +1,4 @@
-import { expect, spyOn, test } from "bun:test";
+import { beforeAll, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
@@ -6,11 +6,18 @@ import { MemoryRouter } from "react-router-dom";
 
 import { heldDraftWords, stopReplySend } from "../../__tests__/stop-late-write";
 import { ApiError, api } from "../../api/client";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { buildIssuePath } from "../refs/routes";
 import { SendStoppedError } from "../writes/keyed-write";
 import { Margin } from "./Margin";
 import { MarginProvider, marginReplySendKey } from "./margin-context";
 import { comment, issue, PHONE_WIDTH, stubViewport } from "./margin-fixture";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 /** What a refusal Dispatch gave says in the reply composer. */
 const refusedText = "Couldn't send — the server is down";

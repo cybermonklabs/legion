@@ -1,9 +1,16 @@
-import { expect, spyOn, test } from "bun:test";
+import { beforeAll, expect, spyOn, test } from "bun:test";
 import { act, render } from "@testing-library/react";
 import type { ReactNode } from "react";
 
 import { thePageLeftItThere } from "../doc/readers-place";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { useFollowLatest } from "./use-follow-latest";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 // The composer sits at document top 0; the newest card (topmost `[data-turn]`) sits below it.
 // `useFollowLatest` reads both elements' `getBoundingClientRect()`, so the harness renders
@@ -49,11 +56,15 @@ function installScrollLayoutMocks(): { restore: () => void } {
 }
 
 function Harness({
+  composerAtFoot = false,
   enabled = true,
   itemSeqs,
   onFirstPlacement,
   ownSendCount,
 }: {
+  /** The phone's docked composer, fixed at the foot of the screen rather than sticky above the
+   *  list (`MentionComposer`'s `fixed … sm:sticky`). */
+  composerAtFoot?: boolean;
   enabled?: boolean;
   itemSeqs: number[];
   onFirstPlacement?: () => void;
@@ -62,7 +73,10 @@ function Harness({
   useFollowLatest({ enabled, latestItemSeq: itemSeqs.at(0), onFirstPlacement, ownSendCount });
   return (
     <div>
-      <form aria-label="Comment composer" />
+      <form
+        aria-label="Comment composer"
+        style={composerAtFoot ? { bottom: 64, position: "fixed" } : undefined}
+      />
       {itemSeqs.map((seq) => (
         <div data-turn={`message:${seq}`} key={seq} />
       ))}
@@ -80,6 +94,32 @@ test("scrolls to the newest turn on mount", () => {
     unmount = render(<Harness itemSeqs={[1]} ownSendCount={0} />).unmount;
 
     expect(window.scrollY).toBe(RESTING_SCROLL_Y);
+  } finally {
+    unmount?.();
+    layout.restore();
+    if (scrollY === undefined) {
+      Reflect.deleteProperty(window, "scrollY");
+    } else {
+      Object.defineProperty(window, "scrollY", scrollY);
+    }
+  }
+});
+
+// A phone's composer is fixed at the foot of the screen, so it covers no part of the page above
+// it: the newest turn goes to the top of the viewport. Offset by the composer's height, as the
+// sticky composer above the list needs, it would sit as far down as the composer is tall and run
+// under the composer once twice that height and the turn's no longer fit
+// (`e2e/phone-landing.e2e.ts`, which a longer hint in the composer reddened).
+test("puts the newest turn at the top of the viewport when the composer is fixed at the foot", () => {
+  const scrollY = Object.getOwnPropertyDescriptor(window, "scrollY");
+  const layout = installScrollLayoutMocks();
+  let unmount: (() => void) | undefined;
+
+  try {
+    Object.defineProperty(window, "scrollY", { configurable: true, value: 4_500, writable: true });
+    unmount = render(<Harness composerAtFoot itemSeqs={[1]} ownSendCount={0} />).unmount;
+
+    expect(window.scrollY).toBe(NEWEST_TURN_DOC_TOP);
   } finally {
     unmount?.();
     layout.restore();

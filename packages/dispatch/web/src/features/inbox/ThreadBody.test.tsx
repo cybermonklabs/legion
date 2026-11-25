@@ -1,4 +1,4 @@
-import { afterEach, expect, spyOn, test } from "bun:test";
+import { afterEach, beforeAll, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -21,6 +21,12 @@ import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { agentRow, plannerAgentRow } from "../threads/replies-fixture";
 import { ThreadBody } from "./ThreadBody";
 import { ThreadRowCard } from "./ThreadRowCard";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 /** Every API mock a test installed, restored after it. */
 const restores: { mockRestore: () => void }[] = [];

@@ -16,13 +16,15 @@ import type {
 } from "../../api/types";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
 import { isViewer } from "../refs/actor";
+import { draftParties } from "../refs/party-references";
 import { stoppedNote, useKeyedWrite } from "../writes/useKeyedWrite";
 import { answerAskInput } from "./answer-ask";
-import { setAnswerDraft as setAnswerDraftOfAsk, useAnswerDraft } from "./answer-drafts";
-import { askCommentInput, postAskComment } from "./ask-comment";
-import { type Draft, draftTargets, EMPTY_DRAFT, emptyDraftRefusal } from "./draft-store";
+import { setAnswerDraft, useAnswerDraft } from "./answer-drafts";
+import { postAskComment } from "./ask-comment";
+import { emptyDraftRefusal } from "./draft-store";
 import { type AskPress, useOutstandingAnswerWrite } from "./outstanding-answers";
 import { invalidateOwnerReads } from "./owner-reads";
+import { useQuestionLabel } from "./question-label";
 import { isQuestionShapedAnswer } from "./question-shaped-answer";
 import { useAskThreadRead } from "./useAskThreadRead";
 
@@ -53,9 +55,10 @@ interface AskAnswerFailure {
 }
 
 /** Why Answer and **Answer with it anyway** refuse a draft that names a session: an answer is a
- *  decision on the ask, which carries no mentions (`AnswerAskInput`), so the words would reach
- *  the session as prose and the session itself not at all. Ask back posts a comment, which does
- *  carry them, which is why the reason says where to send it instead. */
+ *  decision on the ask, and the answer request delivers to nobody the words name
+ *  (`AnswerAskInput`), so the words would name the session and the session itself would hear
+ *  nothing. Ask back posts a comment, whose mentions are delivered, which is why the reason says
+ *  where to send it instead. */
 export const ANSWER_MENTION_REFUSAL =
   "An answer cannot mention a session. Remove the mention, or send it with Ask back.";
 
@@ -63,9 +66,11 @@ export const ANSWER_MENTION_REFUSAL =
  *  an ask is answered, and the box holds neither. */
 export const ANSWER_REFUSAL = "Pick an option or write an answer.";
 
-/** One press of the answer: the ask it is of (`AskPress`) and what it sends. */
+/** One press of the answer: the ask it is of (`AskPress`), what it sends, and its question as the
+ *  label names it (`questionWords`). */
 interface AnswerPress extends AskPress {
   readonly input: AnswerAskInput;
+  readonly questionWords: string;
 }
 
 /** Whether a press changes an answer the server has already recorded, which its input names by
@@ -74,10 +79,12 @@ function changesAnswer({ input }: AnswerPress): boolean {
   return input.expected_answer_at !== undefined;
 }
 
-/** One press of a question back: the ask it is of (`AskPress`) and the comment it posts - the
- *  words and the sessions picked in them, frozen with the press (`askCommentInput`). */
+/** One press of a question back: the ask it is of (`AskPress`), the text it posts, and its
+ *  question as the label names it (`questionWords`). The text is frozen with the press, a
+ *  mention the reader picked in it included. */
 interface ClarificationPress extends AskPress {
-  readonly input: CreateCommentInput;
+  readonly questionWords: string;
+  readonly text: string;
 }
 
 /**
@@ -160,21 +167,20 @@ export function useAskAnswerForm({
   const [justAnswered, setJustAnswered] = useState<Ask | null>(null);
   const [askChanged, setAskChanged] = useState(false);
   const [changing, setChanging] = useState(false);
-  // The reader's unsent answer - what they typed and the sessions they picked in it - which
+  // The reader's unsent answer - what they typed, a mention picked in it included - which
   // outlives this form: the ask's own Inbox row can leave under it (withdrawn, resolved, or
   // answered by somebody else), and the reading column then keeps the question with this text
   // under it rather than taking both off the screen.
   const [draftAnswer, setDraftAnswer] = useAnswerDraft(ask.id);
-  // The recorded answer the reader is changing. It is this form's own and never the
+  // The text of a recorded answer the reader is changing. It is this form's own and never the
   // shared draft: an answer the server has recorded is not unsent text, so a change they cancel
   // or walk away from leaves nothing behind for another card to show them as one
   // (`unsentAnswer`) or for the reading column to hold the question by (`pane-selection.ts`,
   // `paneAsk`).
   // Cancelling is what puts the draft that stood before the change back in the box.
-  const [changeAnswer, setChangeAnswer] = useState<Draft>(EMPTY_DRAFT);
-  const answerDraft = changing ? changeAnswer : draftAnswer;
-  const setAnswerDraft = changing ? setChangeAnswer : setDraftAnswer;
-  const answerText = answerDraft.text;
+  const [changeAnswer, setChangeAnswer] = useState("");
+  const answerText = changing ? changeAnswer : draftAnswer;
+  const setAnswerText = changing ? setChangeAnswer : setDraftAnswer;
   const replacing = useRef<AskAnswer | undefined>(undefined);
   const initialChangeConsumed = useRef(false);
   const submitGuard = useSubmitGuard();
@@ -191,16 +197,20 @@ export function useAskAnswerForm({
   // render's values (`useKeyedWrite`), and a host may draw this form for one ask after another,
   // so the state they set - the answer the card shows, the form it closes, the choice it clears -
   // is set only while the form is drawn for the press's ask (`drawnFor`), and never on the ask
-  // the card shows by then; the reads they refresh are the press's ask's either way. A draft a
-  // press addresses to its ask is this form's own while the form is drawn for that ask, and that
-  // ask's stored draft once a host has drawn the form for another (`setAnswerDraftOfAsk`), so the
-  // draft a landing clears, or an upload adds to, is the press's ask's and never the one the card
-  // shows.
+  // the card shows by then; the reads they refresh are the press's ask's either way. Text a press
+  // addresses to its ask is this form's own while the form is drawn for that ask, and that ask's
+  // draft once a host has drawn the form for another (`setAnswerDraft`), so the text a landing
+  // clears, or an upload adds, is the press's ask's and never the one the card shows.
   const drawnFor = (press: AskPress) => press.ask.id === ask.id;
-  const setAnswerDraftOf = (askId: string, next: SetStateAction<Draft>) => {
-    if (askId === ask.id) setAnswerDraft(next);
-    else setAnswerDraftOfAsk(askId, next);
+  const setAnswerTextOf = (askId: string, next: SetStateAction<string>) => {
+    if (askId === ask.id) setAnswerText(next);
+    else setAnswerDraft(askId, next);
   };
+  // The question as the labels of this form's two writes read it: its plain-text projection,
+  // the words the card draws (`useQuestionLabel`). A label is its press's ask's, so each press
+  // carries the line as it reads at the press, while the form is drawn for that ask: a Retry
+  // made once a host has drawn the form for the next one names the question it answers.
+  const question = useQuestionLabel(ask);
   // The card says why an answer was refused, in the ask's own words, beside the draft it holds;
   // the shell's indicator shows the answer only while it is out. The row's removal from the
   // Inbox, its restore on a refusal and the hold that keeps the question where the reader
@@ -210,7 +220,9 @@ export function useAskAnswerForm({
   // another, so a Retry sends the stopped answer to its own ask under its key, and its landing
   // reads that ask again.
   const mutation = useOutstandingAnswerWrite({
-    label: (press: AnswerPress) => `Answer to “${press.ask.question}”`,
+    // A write's label is one line the Writes indicator reads as text, so it holds the question's
+    // plain-text projection: the reading list's `write-label` (`DISPATCH_READING_SURFACES`).
+    label: (press: AnswerPress) => `Answer to “${press.questionWords}”`,
     method: "POST",
     write: (press: AnswerPress, bounds) => answer(press.ask.id, press.input, bounds),
     // A change to an answer the server has already recorded leaves the Inbox alone: the ask has
@@ -255,7 +267,7 @@ export function useAskAnswerForm({
       }
       // The text is the recorded answer now, not an unsent draft: a later card for this ask
       // starts empty, and nothing offers to copy what the server already took.
-      setAnswerDraftOf(press.ask.id, EMPTY_DRAFT);
+      setAnswerTextOf(press.ask.id, "");
       if (changed || updatedAsk === null) {
         if (updatedAsk?.answer != null) {
           const changedAnswer = updatedAsk.answer;
@@ -281,18 +293,18 @@ export function useAskAnswerForm({
   // A question back carries its ask as an answer does, for the same reason.
   const clarification = useKeyedWrite({
     inline: true,
-    label: (press: ClarificationPress) => `Question back on “${press.ask.question}”`,
+    // The same line of the Writes indicator: `write-label` again (see above).
+    label: (press: ClarificationPress) => `Question back on “${press.questionWords}”`,
     method: "POST",
-    // The clarification is a comment, so the sessions the reader picked ride with it and each
-    // one gets the comment; the targets are frozen with the attempt, as the text is
-    // (`askCommentInput`).
+    // The clarification is a comment, so a session the reader mentioned in its words is
+    // delivered it; the words are frozen with the attempt.
     write: (press: ClarificationPress, bounds) =>
-      postAskComment(press.ask, press.input, bounds, createReply),
+      postAskComment(press.ask, press.text, bounds, createReply),
     onSettled: () => {
       submitGuard.release();
     },
     onSuccess: (_comment, press) => {
-      setAnswerDraftOf(press.ask.id, EMPTY_DRAFT);
+      setAnswerTextOf(press.ask.id, "");
       if (drawnFor(press)) setQuestionChoice(false);
       void queryClient.invalidateQueries({ queryKey: ["ask-thread", press.ask.id] });
       // A clarification hands the turn to the asker: every surface that renders this ask from
@@ -326,9 +338,8 @@ export function useAskAnswerForm({
     setSelected(realSelected);
     setOtherSelected(realSelected.length === 0 && current.text !== null && current.text !== "");
     // `changing` is still false this render, so the recorded text goes straight to the form's
-    // own state rather than through `setAnswerDraft` into the shared draft. A recorded answer
-    // carries no mentions, since no answer ever could.
-    setChangeAnswer({ mentions: [], text: current.text ?? "" });
+    // own state rather than through `setAnswerText` into the shared draft.
+    setChangeAnswer(current.text ?? "");
     setQuestionChoice(false);
     setChanging(true);
   };
@@ -376,16 +387,17 @@ export function useAskAnswerForm({
     reasonRequired && trimmedAnswer === ""
       ? `Add a reason to send ${reasonRequiredFor}`
       : undefined;
-  // The sessions this draft would reach, which an answer cannot carry: Answer and "Answer with
+  // The sessions this draft names, which an answer delivers nothing to: Answer and "Answer with
   // it anyway" refuse while one stands, by button and by Ctrl/Cmd+Enter alike, rather than
-  // sending the mention as prose to nobody.
-  const answerMentioned = draftTargets(answerDraft).length > 0;
+  // naming a session that is never told (`draftParties`, the reader the field's own line of
+  // mention targets reads).
+  const answerMentioned = draftParties(answerText).targets.length > 0;
   /** Why Answer refuses the draft as it stands, or null while it would take it. An approval
    *  whose choice demands a reason keeps its own words; the rest is a draft nothing can send. */
   const answerRefusal =
     submitHint ?? (answerMentioned ? ANSWER_MENTION_REFUSAL : canAnswer ? null : ANSWER_REFUSAL);
   /** Why Ask back refuses it: it posts what the box holds, and the box is empty. */
-  const clarificationRefusal = emptyDraftRefusal(answerDraft);
+  const clarificationRefusal = emptyDraftRefusal(answerText);
   const answerPlaceholder = reasonRequired
     ? "Why?"
     : isApproval && selected.includes("Approve")
@@ -400,6 +412,7 @@ export function useAskAnswerForm({
       mutation.mutate({
         ask,
         input: answerAskInput(displayedAsk, answerSelection, text, replacing.current),
+        questionWords: question.line(),
       });
     });
   };
@@ -424,7 +437,7 @@ export function useAskAnswerForm({
       setOtherSelected((current) => {
         const next = !current;
         if (!next) {
-          setAnswerDraft(EMPTY_DRAFT);
+          setAnswerText("");
         }
         return next;
       });
@@ -452,9 +465,8 @@ export function useAskAnswerForm({
   };
   const sendClarification = () => {
     if (clarificationRefusal !== null) return;
-    submitGuard.guard(() =>
-      clarification.mutate({ ask, input: askCommentInput(ask.id, answerDraft) })
-    );
+    const text = answerText.trim();
+    submitGuard.guard(() => clarification.mutate({ ask, questionWords: question.line(), text }));
   };
   const completed = changing ? null : recordedAsk;
   // What the reader typed and no form will ever send: the question closed under them - withdrawn,
@@ -464,7 +476,6 @@ export function useAskAnswerForm({
   const unsentAnswer = completed !== null && justAnswered === null ? answerText : "";
 
   return {
-    answerDraft,
     answerFailure: mutation.error === null ? null : answerFailure(mutation),
     answerFieldId,
     answerPlaceholder,
@@ -485,13 +496,16 @@ export function useAskAnswerForm({
     mutation,
     otherSelected,
     questionChoice,
+    /** Reads the names of the references the question's projection holds, for the labels of
+     *  this form's writes; the card mounts it wherever it draws. */
+    questionReads: question.reads,
     reasonRequired,
     selectRealOption,
     selected,
     sendAnswer,
     sendClarification,
-    setAnswerDraft,
-    setAnswerDraftOf,
+    setAnswerText,
+    setAnswerTextOf,
     setQuestionChoice,
     startChanging,
     submitGuard,

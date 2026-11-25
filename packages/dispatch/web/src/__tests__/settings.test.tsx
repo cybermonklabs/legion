@@ -1,4 +1,4 @@
-import { expect, spyOn, test } from "bun:test";
+import { beforeAll, expect, spyOn, test } from "bun:test";
 import { PROJECT_NAME_MAX } from "@legion/contracts/dispatch-constants";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: the focus sites below reach the picker's people list without a press, which user-event has no form for
@@ -14,7 +14,14 @@ import { App } from "../app";
 // app's lazy parts beyond its pages load through `app-chunks.ts` the same way.
 import "../features/settings/SettingsPage";
 import "./app-chunks";
+import { warmMarkdownRenderer } from "../features/refs/markdown-engine";
 import { keyedAttempt } from "./keyed-attempt";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 test("a human creates a project from Settings and it appears in the project pickers", async () => {
   const user = userEvent.setup();

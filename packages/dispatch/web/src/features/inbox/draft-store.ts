@@ -1,7 +1,5 @@
 import { type Dispatch, type SetStateAction, useCallback, useSyncExternalStore } from "react";
 
-import type { AcceptedMention } from "../conversation/composer-model";
-import { survivingMentions } from "../conversation/send-request";
 import {
   entryNames,
   pageStorage,
@@ -11,77 +9,18 @@ import {
   shape,
 } from "../writes/tab-storage";
 
-/** One unsent draft: what the reader typed, and the mentions picked in it, whose offsets are into
- *  that exact text (`features/conversation/MentionField.tsx`). The two travel together because
- *  only the records reach the wire and only the text reaches the reader, so a store that kept the
- *  text alone would hand a reopened box prose where a mention stood. */
-export interface Draft {
-  readonly mentions: readonly AcceptedMention[];
-  readonly text: string;
-}
-
-/** The empty draft: no text and no mention (`draftEmpty`). A store of plain drafts reads it for a
- *  key it holds nothing under, and forgets a key by it (`createMentionDraftStore`'s `empty`). */
-export const EMPTY_DRAFT: Draft = { mentions: [], text: "" };
-
-/** Whether a draft holds nothing: no text and no picked mention. */
-export function draftEmpty(draft: Draft): boolean {
-  return draft.text === "" && draft.mentions.length === 0;
-}
-
 /** Why Ask back and Reply refuse an empty box: each sends what the box holds. */
 export const EMPTY_DRAFT_REFUSAL = "Write something first.";
 
-/** Why a send that posts what the box holds refuses `draft`, or `null` where it does not: the
+/** Why a send that posts what the box holds refuses `text`, or `null` where it does not: the
  *  one rule, because the open card's Ask back and the answered ask's Reply are the same send. */
-export function emptyDraftRefusal(draft: Draft): string | null {
-  return draft.text.trim() === "" ? EMPTY_DRAFT_REFUSAL : null;
+export function emptyDraftRefusal(text: string): string | null {
+  return text.trim() === "" ? EMPTY_DRAFT_REFUSAL : null;
 }
-
-/** The mentions a draft would put on the wire: those whose span the reader has not edited since
- *  the picker wrote it (`survivingMentions`). A box's text is what the reader sees, so a mention
- *  they typed over is their own prose and reaches nobody. */
-export function draftTargets(draft: Draft): readonly AcceptedMention[] {
-  return survivingMentions(draft.text, draft.mentions);
-}
-
-/** Whether two drafts say the same thing, so a write that changes nothing tells nobody. */
-function sameDraft(left: Draft, right: Draft): boolean {
-  return (
-    left.text === right.text &&
-    left.mentions.length === right.mentions.length &&
-    left.mentions.every((mention, index) => {
-      const other = right.mentions[index];
-      return (
-        other !== undefined &&
-        mention.target === other.target &&
-        mention.text === other.text &&
-        mention.start === other.start &&
-        mention.end === other.end
-      );
-    })
-  );
-}
-
-/** The mentions picked in a draft, as the tab keeps them (`Draft.mentions`). */
-export const keptMentions = shape.array(
-  shape.record({
-    end: shape.number,
-    start: shape.number,
-    target: shape.string,
-    text: shape.string,
-  })
-) satisfies Shape<readonly AcceptedMention[]>;
-
-/** A draft as the tab keeps it (`Draft`): the text and the mentions picked in it. */
-export const keptMentionDraft = shape.record({
-  mentions: keptMentions,
-  text: shape.string,
-}) satisfies Shape<Draft>;
 
 /** One keyed store of unsent drafts, and the ways its callers reach it. Its drafts are `D`: text
- *  (`createDraftStore`), or a `Draft` and whatever else the store's own drafts carry with it
- *  (`createMentionDraftStore`). */
+ *  (`createDraftStore`), or a record of the text and what else the store's own drafts carry
+ *  with it (`createRecordDraftStore`). */
 export interface DraftStore<D = string> {
   /** The key's draft, read without subscribing to it. */
   read(key: string): D;
@@ -95,8 +34,8 @@ export interface DraftStore<D = string> {
    *  calls it after each test, since the store outlives any one render. */
   reset(): void;
   /** Writes the key's draft - the draft, or an updater, which reads the draft as it is now - and
-   *  tells every field holding that key; an empty draft (`""`, or `draftEmpty`) forgets it. A
-   *  draft that says what the key already holds is no write, whatever else it carries. */
+   *  tells every field holding that key; an empty draft (`""`, or a record with no text) forgets
+   *  it. A draft that says what the key already holds is no write, whatever else it carries. */
   set(key: string, next: SetStateAction<D>): void;
   /** Who is signed in now: `login`, or no one (`undefined`: the session lapsed). A draft is the
    *  person's who typed it, and the store outlives the shell, which another person signed in
@@ -178,10 +117,9 @@ const keptDraftShape = shape.record({
 
 /**
  * The longest draft a store keeps for a reload, in UTF-16 code units of the text it keeps for a
- * key (`DraftKind.kept`): a composer's draft, and an answer or a reply with the mentions picked
- * in it, as its JSON. It is twice the longest block Dispatch takes in a body (32,000 units). A
- * longer draft stays in the page while it is open, and the page says it is not kept
- * (`DraftsNotKept`).
+ * key (`DraftKind.kept`): a composer's draft, an answer as it was typed, and a reply as its JSON.
+ * It is twice the longest block Dispatch takes in a body (32,000 units). A longer draft stays in
+ * the page while it is open, and the page says it is not kept (`DraftsNotKept`).
  */
 export const DRAFT_KEPT_UNITS = 65_536;
 
@@ -245,8 +183,8 @@ function dropUnknownStores(storage: Storage): void {
  * `name`, one of `STORE_NAMES`, as well (`ENTRY_PREFIX`), so it outlives a reload of the page
  * too, within the bounds above.
  *
- * Each of the app's draft stores is one of these or a store of mention drafts
- * (`createMentionDraftStore`) - the two the composers' unsent drafts keep for each query client
+ * Each of the app's draft stores is one of these or a store of draft records
+ * (`createRecordDraftStore`) - the two the composers' unsent drafts keep for each query client
  * (`unsent-drafts.ts`), the answer drafts (`answer-drafts.ts`) and the reply drafts
  * (`reply-drafts.ts`) - and all of them are `draftStore`, so a fix to the subscription, the
  * listener cleanup, the updater, the sign-in, the sign-out or the keeping reaches every one.
@@ -261,19 +199,16 @@ export function createDraftStore(
 }
 
 /**
- * A store of the drafts of a box with the `@` picker in it, keyed by what the draft belongs to (an
- * ask id), as `createDraftStore` keeps text: a field that remounts picks the draft back up - its
- * mentions with its text - and a reload does too, the tab keeping each as its JSON.
- *
- * A store's drafts may carry more than the text and its mentions, written with them: a reply
- * draft records whether its ask was settled when the reader wrote it (`reply-drafts.ts`). Only
- * the text and the mentions are compared, so a write that changes neither is no write, and what
- * the draft carries stays what the last write that changed them recorded. `empty` is what the
- * store reads for a key it holds nothing under, and the draft it forgets a key by, and `fits` is
- * the shape a kept draft is read back by: text an older release kept in another shape, or that
- * does not parse, is no draft, and the load drops it.
+ * A store of drafts that carry more than their text, written with it, keyed by what the draft
+ * belongs to (an ask id), as `createDraftStore` keeps text, and kept in the tab as its JSON: a
+ * reply draft records whether its ask was settled when the reader wrote it (`reply-drafts.ts`).
+ * Only the text is compared, so a write that changes no text is no write, and what the draft
+ * carries stays what the last write that changed the text recorded; a draft with no text is
+ * empty. `empty` is what the store reads for a key it holds nothing under, and the draft it
+ * forgets a key by, and `fits` is the shape a kept draft is read back by: text an older release
+ * kept in another shape, or that does not parse, is no draft, and the load drops it.
  */
-export function createMentionDraftStore<D extends Draft>(
+export function createRecordDraftStore<D extends { readonly text: string }>(
   name: StoreName,
   empty: D,
   fits: Shape<D>,
@@ -283,7 +218,7 @@ export function createMentionDraftStore<D extends Draft>(
     name,
     {
       empty,
-      isEmpty: draftEmpty,
+      isEmpty: (draft) => draft.text === "",
       kept: (draft) => JSON.stringify(draft),
       parse: (text) => {
         try {
@@ -293,7 +228,7 @@ export function createMentionDraftStore<D extends Draft>(
           return undefined;
         }
       },
-      same: sameDraft,
+      same: (left, right) => left.text === right.text,
     },
     storage
   );

@@ -8,7 +8,7 @@ import {
 import { Fragment, type ReactNode, useMemo } from "react";
 import { generatePath, Link } from "react-router-dom";
 
-import type { Actor, AskResolution, DisplayTree } from "../../api/types";
+import type { Actor, AskResolution } from "../../api/types";
 import { type PageWords, usePageWords, useTooltips } from "../../components/tooltips";
 import {
   focusVisibleRing,
@@ -24,7 +24,7 @@ import {
   unknownDotBorder,
 } from "../../theme/classes";
 import { useAfterTheFirstBatch } from "../doc/first-batch";
-import { askResolutionBadge, askResolutionReason } from "./actor";
+import { askResolutionBadge } from "./actor";
 import { type AgentRegistry, type AgentState, useAgentRegistry } from "./agent-registry";
 import { AGENT_LIVE_PATH } from "./routes";
 import { relativeTimeLabel, Timestamp } from "./Timestamp";
@@ -421,9 +421,7 @@ export interface AgentText {
    *  not the page's word that `AgentName` draws there. */
   label(actor: Actor): string;
   /** An `AgentPart` as text: a text part as is, an agent part as `label` spells it, which is the
-   *  rule `AgentParts` draws it by everywhere but inside `NoTooltips`, an artifact part its name,
-   *  and a quoted passage the source its author wrote, which is all a place that holds only a
-   *  string can say of it. */
+   *  rule `AgentParts` draws it by everywhere but inside `NoTooltips`. */
   part(part: AgentPart): string;
   /** A bare session id's name: its registry title, else `storedTitle`, else its short id, on every
    *  surface. The mention composer stores it as a mention's `@` text, where the short id still
@@ -550,11 +548,7 @@ export function useAgentText(): AgentText {
             : label({ actor }),
       initials: (actor: Actor) => agentInitials(resolveAgent({ actor }, registry).name),
       label: (actor: Actor) => label({ actor }),
-      part: (part: AgentPart) => {
-        if (typeof part === "string") return part;
-        if (isQuoted(part)) return part.markdown;
-        return "artifact" in part ? part.artifact : label(part);
-      },
+      part: (part: AgentPart) => (typeof part === "string" ? part : label(part)),
       sessionShown: (sessionId: string, storedTitle: string | undefined) =>
         drawnSessionName({ sessionId, storedTitle }, registry, page).name,
       sessionText: (sessionId: string, storedTitle: string | undefined) =>
@@ -594,87 +588,43 @@ export function AskResolutionLine({
 }
 
 /**
- * A sentence that names agents, kept as parts until it is rendered: text, an agent that
- * `AgentParts` draws through `AgentName`, an artifact the sentence is about, or a passage
- * somebody wrote that it quotes. A builder that describes an event returns these, so the agent
- * keeps its identity (its current name, state and live link) instead of being flattened into a
- * label, the artifact keeps the link its host can give it instead of being found again inside
- * the text, and the quoted passage keeps its Markdown instead of being shown as its source. A
- * role address is text; only a recorded session is an agent part.
+ * A sentence that names agents, kept as parts until it is rendered: text, or an agent that
+ * `AgentParts` draws through `AgentName`. A builder that describes an event returns these, so
+ * the agent keeps its identity (its current name, state and live link) instead of being
+ * flattened into a label. A role address is text; only a recorded session is an agent part.
  */
-export type AgentPart = string | AgentRef | ArtifactPart | QuotedPart;
+export type AgentPart = string | AgentRef;
 
-/** The artifact a sentence is about, by name: `AgentParts` draws it as its name, or through
- *  `artifact`, which a host that knows the artifact's route (`ActivityLine`) passes to link it. */
-type ArtifactPart = { artifact: string };
-
-/** A passage somebody wrote that a sentence quotes - an ask's question, the question a reply
- *  answers - as its author wrote it: `AgentParts` hands it to `quote`, which draws it formatted
- *  (`MarkdownPreview` at one line), so `**held**` reads as bold `held` rather than as its
- *  source. The drawing is the host's because this module sits under `MarkdownPreview`'s own
- *  imports and cannot import it back.
- *
- *  `tree` is the reading Go made of that stored text, which the preview draws instead of
- *  parsing the markdown (`e2e/parse-count.e2e.ts` counts a page that parses one). It is absent
- *  only where the answer carried no reading of this text: a question a comment event names in
- *  a field of its own (`payload.ask_question`), which is no stored text of that event and so
- *  has no tree in its map (`api/event_trees.go`), and any answer from a server older than the
- *  trees. The preview then parses the markdown, as every view of a text with no tree does. */
-type QuotedPart = { markdown: string; tree?: DisplayTree };
-
-function isQuoted(part: AgentPart): part is QuotedPart {
-  return typeof part !== "string" && "markdown" in part;
-}
-
-/**
- * Draws `AgentPart`s in a line of text: each text part as is, each agent part as an inline
- * `AgentName`, each artifact part as its name (or through `artifact`, which a host that can
- * link it passes), and each quoted passage through `quote` (or, without one, as the source its
- * author wrote).
- *
- * A sentence that quotes a passage is drawn as a row of its parts: the quote is drawn in a box
- * of its own, which cannot sit inside a run of text, so the sentence's own words sit beside it
- * and keep their spaces (`whitespace-pre-wrap`, which a flex item's text would otherwise
- * collapse at its edges). A sentence without one is the run of text it always was.
- */
+/** Draws `AgentPart`s in a line of text: each text part as is (or through `text`, which the
+ *  host uses to mark up its own text), each agent part as an inline `AgentName`. */
 export function AgentParts({
-  artifact,
   parts,
-  quote,
+  text,
 }: {
-  artifact?: (name: string) => ReactNode;
   parts: readonly AgentPart[];
-  quote?: (markdown: string, tree: DisplayTree | undefined) => ReactNode;
+  text?: (part: string, index: number) => ReactNode;
 }): ReactNode {
-  const quotes = parts.some(isQuoted);
-  const drawPart = (part: AgentPart): ReactNode => {
-    if (typeof part === "string") {
-      return quotes ? <span className="whitespace-pre-wrap">{part}</span> : part;
-    }
-    if (isQuoted(part)) {
-      return quote === undefined ? part.markdown : quote(part.markdown, part.tree);
-    }
-    if ("artifact" in part) {
-      return artifact === undefined ? part.artifact : artifact(part.artifact);
-    }
-    return <AgentName {...part} inline />;
-  };
-  const drawn = parts.map((part, index) => (
+  return parts.map((part, index) => (
     // biome-ignore lint/suspicious/noArrayIndexKey: the parts are one fixed sentence, in order.
-    <Fragment key={index}>{drawPart(part)}</Fragment>
+    <Fragment key={index}>
+      {typeof part === "string" ? (
+        text === undefined ? (
+          part
+        ) : (
+          text(part, index)
+        )
+      ) : (
+        <AgentName {...part} inline />
+      )}
+    </Fragment>
   ));
-  return quotes ? <span className="inline-flex max-w-full items-baseline">{drawn}</span> : drawn;
 }
 
-/** `Resolved by <agent> - <reason>` / `Retracted by <agent> - <reason>` / `Withdrawn when <agent>
- *  closed the issue` (a withdrawal's reason only repeats it) as `AgentPart`s, for the description
- *  builders (the activity and event descriptions). */
+/** `Resolved by <agent>` / `Retracted by <agent>` / `Withdrawn when <agent> closed the issue` /
+ *  `<agent> declined to answer` as `AgentPart`s, for the description builders (the activity and
+ *  event descriptions). The reason is no part of it: it is the resolver's own stored text, which
+ *  a builder adds as a part the one reader draws (`askResolutionReason`, `SentenceParts`). */
 export function askResolutionParts(resolution: AskResolution): AgentPart[] {
   const [before, after] = resolutionFrame(resolution);
-  const reason = askResolutionReason(resolution);
-  return [
-    before,
-    { actor: resolution.actor },
-    reason === undefined ? after : `${after} - ${reason}`,
-  ];
+  return [before, { actor: resolution.actor }, after];
 }

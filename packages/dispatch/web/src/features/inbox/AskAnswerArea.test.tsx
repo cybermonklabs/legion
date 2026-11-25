@@ -1,22 +1,24 @@
-import { afterEach, beforeEach, expect, type Mock, spyOn, test } from "bun:test";
+import { afterEach, beforeAll, beforeEach, expect, type Mock, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-// biome-ignore lint/style/noRestrictedImports: the field's own change, the Ctrl/Cmd+Enter pairs, and the presses on controls a refusal already holds, none of which user-event has a form for
+// biome-ignore lint/style/noRestrictedImports: Ctrl/Cmd+Enter pairs and presses on controls a refusal already holds
 import { fireEvent, type RenderResult, render, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import { graphNode } from "../../__tests__/graph-fixture";
+import { architectureTree } from "../../__tests__/search-fixture";
 import { api } from "../../api/client";
 import type { Agent, Ask, AskRead, Comment, CreateCommentInput } from "../../api/types";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { AskCard } from "./AskCard";
 import { AskReplyComposer } from "./AskThread";
 import { EMPTY_DRAFT_REFUSAL } from "./draft-store";
 import { ANSWER_MENTION_REFUSAL, ANSWER_REFUSAL } from "./useAskAnswerForm";
 
-/** INFRA-341 (R2, R3, R4): the one answer area under an ask - the open card's box and the reply
- *  box under an answered ask - mounts the Conversation tab's field and `@` picker, stores a
- *  picked session on the comment it posts, and refuses an answer that holds one. */
+/** INFRA-341 (R2, R3, R4): the ask's shared answer area stores a picked session as a
+ * reference in the comment body and refuses an answer that would not tell that session. */
 
 const planner: Agent = {
   capabilities: ["steer"],
@@ -32,6 +34,13 @@ const planner: Agent = {
   title: "Planner",
 };
 
+const PLANNER_MENTION = "[@Planner](dispatch://agent/A)";
+
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
+
+let getArchitecture: Mock<typeof api.getArchitecture>;
 let whoAmI: Mock<typeof api.whoAmI>;
 let getReferences: Mock<typeof api.getReferences>;
 let listAgents: Mock<typeof api.listAgents>;
@@ -49,10 +58,8 @@ beforeEach(() => {
     node: graphNode({ id: "ask-1", kind: "ask" }),
   });
   listAgents = spyOn(api, "listAgents").mockResolvedValue([planner]);
-  // The `@` picker reads the ask's issue for the Legion roles nobody is running, as the
-  // Conversation tab's composer does (`useMentionOptions`); no row here is about those, so the
-  // issue records none. The card's own header reads the issue's subscribers. A read nothing
-  // answers fails the file (`__tests__/network.ts`).
+  getArchitecture = spyOn(api, "getArchitecture").mockResolvedValue(architectureTree());
+  // The shared picker reads the issue's people, stopped roles and architecture components.
   getIssueCollaborators = spyOn(api, "getIssueCollaborators").mockResolvedValue({
     agents: [],
     issue_key: "CORE-1",
@@ -63,6 +70,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  getArchitecture.mockRestore();
   whoAmI.mockRestore();
   getReferences.mockRestore();
   listAgents.mockRestore();
@@ -143,20 +151,14 @@ function renderWithClient(node: ReactNode) {
   );
 }
 
-/** Opens the `@` picker in `field` over `text` and picks the one option named `option`, the way
- *  a reader does: the text ends in the `@` the picker stands over. */
-async function pickMention(
-  view: RenderResult,
-  field: HTMLTextAreaElement,
-  text: string,
-  option: string
-): Promise<void> {
-  // The field's own `change` and a press on a picker option: user-event has no form that writes
-  // the draft's text without retyping the `@` the picker is already standing over.
-  fireEvent.change(field, { target: { value: text } });
-  const listbox = await view.findByRole("listbox", { name: "Mention suggestions" });
-  fireEvent.click(within(listbox).getByRole("option", { name: option }));
-  await waitFor(() => expect(field.value).toBe(`${text}${option}`));
+/** Opens the shared picker at the end of the draft and picks Planner's session. */
+async function pickPlanner(view: RenderResult, field: HTMLTextAreaElement, prefix: string) {
+  const user = userEvent.setup();
+  await user.click(field);
+  await user.clear(field);
+  await user.paste(`${prefix}@`);
+  await user.click(await view.findByRole("option", { name: /^Planner\b/ }));
+  await waitFor(() => expect(field.value).toBe(`${prefix}${PLANNER_MENTION}`));
 }
 
 /** The line on screen that a refused button is described by. */
@@ -186,8 +188,7 @@ test("Ask back posts the picked session as a mention, which the answer refuses t
 
   try {
     const field = (await view.findByLabelText("Your answer")) as HTMLTextAreaElement;
-    await pickMention(view, field, "Ask @", "Planner");
-    expect(view.getByRole("list", { name: "Mention targets" }).textContent).toContain("session:A");
+    await pickPlanner(view, field, "Ask ");
 
     // An answer carries no mentions, so Answer refuses this draft - in the tab order, with its
     // reason on screen and as its accessible description.
@@ -203,24 +204,15 @@ test("Ask back posts the picked session as a mention, which the answer refuses t
     fireEvent.keyDown(field, { key: "Enter", metaKey: true });
     expect(answered).toEqual([]);
 
-    // A press on a refused Ask back.
-    fireEvent.click(view.getByRole("button", { name: "Ask back" }));
+    await userEvent.setup().click(view.getByRole("button", { name: "Ask back" }));
     await waitFor(() => expect(posted).toHaveLength(1));
-    expect(posted[0]).toEqual({
-      ask_id: "ask-1",
-      body: "Ask @Planner",
-      mentions: [{ target: "session:A" }],
-    });
+    expect(posted[0]).toEqual({ ask_id: "ask-1", body: `Ask ${PLANNER_MENTION}` });
   } finally {
     view.unmount();
   }
 });
 
-// The shell's one poller refreshes the registry every 15 s, so the list a picker opens on can be
-// that old. The Conversation tab's composer reads it again the moment its picker opens; the ask's
-// picker did not, while this file's own comment said the two were kept the same way, so a session
-// started inside those 15 s was offered in one picker and not the other. Both hosts now take the
-// read from `useMentionOptions`, and this row is the ask side of it.
+// The picker must read again when it opens, even if the last registry poll is still fresh.
 test("opening the ask's @ picker reads the registry again, so a session started since the last poll is offered", async () => {
   const builder: Agent = { ...planner, session_id: "B", title: "Builder" };
   listAgents.mockResolvedValue([planner, builder]);
@@ -242,13 +234,12 @@ test("opening the ask's @ picker reads the registry again, so a session started 
   try {
     const field = (await view.findByLabelText("Your answer")) as HTMLTextAreaElement;
     expect(listAgents).not.toHaveBeenCalled();
-    // The field's own `change`, which is how this row puts the `@` in without the picker's
-    // keystroke handling: user-event has no form that writes text and stops there.
-    fireEvent.change(field, { target: { value: "Ask @" } });
-    const listbox = await view.findByRole("listbox", { name: "Mention suggestions" });
-    expect(within(listbox).getByRole("option", { name: "Planner" })).toBeDefined();
+    const user = userEvent.setup();
+    await user.click(field);
+    await user.paste("Ask @");
+    await view.findByRole("option", { name: /^Planner\b/ });
     await waitFor(() => expect(listAgents).toHaveBeenCalledTimes(1));
-    await view.findByRole("option", { name: "Builder" });
+    await view.findByRole("option", { name: /^Builder\b/ });
   } finally {
     view.unmount();
   }
@@ -269,20 +260,17 @@ test("a draft whose box closes and opens again still posts its picked mention", 
   );
   const first = renderWithClient(card);
   const field = (await first.findByLabelText("Your answer")) as HTMLTextAreaElement;
-  await pickMention(first, field, "Ask @", "Planner");
+  await pickPlanner(first, field, "Ask ");
   first.unmount();
 
   const second = renderWithClient(card);
   try {
     const reopened = (await second.findByLabelText("Your answer")) as HTMLTextAreaElement;
-    expect(reopened.value).toBe("Ask @Planner");
-    expect(second.getByRole("list", { name: "Mention targets" }).textContent).toContain(
-      "session:A"
+    expect(reopened.value).toBe(`Ask ${PLANNER_MENTION}`);
+    await userEvent.setup().click(second.getByRole("button", { name: "Ask back" }));
+    await waitFor(() =>
+      expect(posted).toEqual([{ ask_id: "ask-1", body: `Ask ${PLANNER_MENTION}` }])
     );
-    // A press on a refused Ask back.
-    fireEvent.click(second.getByRole("button", { name: "Ask back" }));
-    await waitFor(() => expect(posted).toHaveLength(1));
-    expect(posted[0]?.mentions).toEqual([{ target: "session:A" }]);
   } finally {
     second.unmount();
   }
@@ -318,15 +306,12 @@ test("the reply box under an answered ask posts the picked session as a mention"
     fireEvent.keyDown(field, { ctrlKey: true, key: "Enter" });
     expect(posted).toEqual([]);
 
-    await pickMention(view, field, "Over to @", "Planner");
-    // The same press again, now that the draft names a session: still a refused control.
-    fireEvent.click(send);
-    await waitFor(() => expect(posted).toHaveLength(1));
-    expect(posted[0]).toEqual({
-      ask_id: "ask-1",
-      body: "Over to @Planner",
-      mentions: [{ target: "session:A" }],
-    });
+    await pickPlanner(view, field, "Over to ");
+    expect(view.getByRole("list", { name: "Mention targets" }).textContent).toContain("session:A");
+    await userEvent.setup().click(send);
+    await waitFor(() =>
+      expect(posted).toEqual([{ ask_id: "ask-1", body: `Over to ${PLANNER_MENTION}` }])
+    );
   } finally {
     view.unmount();
   }
@@ -404,7 +389,7 @@ test("Answer with it anyway refuses a draft another card put a mention in", asyn
     const anyway = within(choice).getByRole("button", { name: "Answer with it anyway" });
     expect(anyway.hasAttribute("aria-disabled")).toBe(false);
 
-    await pickMention(view, other, "How does this fit the release plan? @", "Planner");
+    await pickPlanner(view, other, "How does this fit the release plan? ");
     expect(anyway.getAttribute("aria-disabled")).toBe("true");
     expect(anyway.getAttribute("title")).toBe(ANSWER_MENTION_REFUSAL);
     expect(shownReason(anyway)).toBe(ANSWER_MENTION_REFUSAL);

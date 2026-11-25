@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"maps"
 	"slices"
 	"strconv"
@@ -39,8 +38,8 @@ func sessionConsumersLogging(t *testing.T) (*Client, *SessionConsumers, *capture
 		t.Fatalf("connect the stream's owner: %v", err)
 	}
 	t.Cleanup(owner.Close)
-	logs := &capturedLogs{}
-	consumers, err := ConnectSessionConsumers([]string{uri}, 0, slog.New(slog.NewJSONHandler(logs, nil)))
+	logs := captureLogs()
+	consumers, err := ConnectSessionConsumers([]string{uri}, 0, logs.logger)
 	if err != nil {
 		t.Fatalf("connect session consumers: %v", err)
 	}

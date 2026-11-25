@@ -1,4 +1,4 @@
-import { afterEach, expect, jest, spyOn, test } from "bun:test";
+import { afterEach, beforeAll, expect, jest, spyOn, test } from "bun:test";
 // biome-ignore lint/style/noRestrictedImports: the window focus events below have no user-event form - the deployment check runs on the tab regaining focus, not on any element.
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -7,12 +7,19 @@ import { realClock, tick } from "../../__tests__/fake-clock";
 import { REQUEST_DEADLINE_MS } from "../../api/client";
 import { rememberEarlyFocus } from "../../early-focus";
 import * as markdownEngine from "../refs/markdown-engine";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import {
   DeploymentResilience,
   importWhenOnline,
   installChunkFailureRecovery,
   spendChunkReload,
 } from "./DeploymentResilience";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 function withOnLine<T>(onLine: boolean, run: () => Promise<T>): Promise<T> {
   const descriptor = Object.getOwnPropertyDescriptor(Navigator.prototype, "onLine");

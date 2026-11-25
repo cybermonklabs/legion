@@ -56,7 +56,6 @@ import {
   textMutedOnSurface,
   textPrimaryOnSurface,
 } from "../../theme/classes";
-import { mentionOptions } from "../conversation/MentionField";
 import { ApprovalChip } from "../doc/ApprovalChip";
 import { ConnectionDot } from "../doc/ConnectionDot";
 import { AskCard } from "../inbox/AskCard";
@@ -81,6 +80,7 @@ import { SubscribedAgents } from "../issue/SubscribedAgents";
 import { IssuePriorityLine } from "../priorities/IssuePriorityLine";
 import { AgentName, AgentUnresponsiveNote, useAgentText } from "../refs/AgentName";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
+import { mentionOptions } from "../refs/party-options";
 import { Timestamp } from "../refs/Timestamp";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { useDialog } from "../shell/useDialog";
@@ -199,6 +199,12 @@ interface Stubs {
 }
 
 let stubs: Stubs;
+
+// A reviewer's reason and a components reason are drawn by the renderer, which draws a short
+// body in the commit that mounts it once its engine is loaded.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 beforeEach(() => {
   stubs = {
@@ -1977,9 +1983,11 @@ test("the default shapes keep main's class strings", async () => {
     "ApprovalChip request dialog":
       "pointer-events-auto w-full max-w-sm space-y-3 rounded-lg border p-4 shadow-xl border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900",
     "ApprovalChip request heading": "text-sm font-semibold text-slate-700 dark:text-slate-300",
+    // The reason box is the shared field (features/conversation/MentionField.tsx), which draws
+    // the label around the box, then its own classes and the dialog's text size.
     "ApprovalChip request label": "block text-sm font-medium text-slate-700 dark:text-slate-300",
     "ApprovalChip request reason box":
-      "mt-1 block w-full rounded-lg border px-2 py-1.5 text-sm font-normal outline-none border-slate-300 bg-white focus:border-sky-600 dark:border-slate-700 dark:bg-slate-900 dark:focus:border-sky-400",
+      "mt-1 block w-full rounded-lg border px-3 py-2 font-normal outline-none min-h-24 border-slate-300 bg-white focus:border-sky-600 dark:border-slate-700 dark:bg-slate-950 dark:focus:border-sky-400 text-slate-900 dark:text-slate-100 text-sm",
     "ApprovalChip request refused": "text-sm text-rose-700 dark:text-rose-400",
     "ApprovalChip request Cancel":
       "rounded-lg border px-3 py-1.5 text-sm font-medium border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-300 not-refused:hover:border-sky-500 dark:not-refused:hover:border-sky-400",
@@ -2223,11 +2231,12 @@ test("the default shapes keep main's class strings", async () => {
     // `main`'s features/inbox/AskCard.tsx: the span that says who handed the question on, which
     // has no class.
     "AskCard handed on": null,
-    // The answer box is the answer area's `MentionField` (dispatch://INFRA-341): its label wraps
-    // the box, and draws no words while they are hidden.
+    // The answer box is the shared field (features/conversation/MentionField.tsx): the label
+    // around the box, whose name is its `aria-label` while it draws no words, then the box with
+    // the field's own classes and the card's weight.
     "AskCard answer label": "block text-sm font-medium text-slate-700 dark:text-slate-300",
     "AskCard answer box":
-      "mt-1 block w-full rounded-lg border px-3 py-2 font-normal outline-none min-h-24 border-slate-300 bg-white focus:border-sky-600 dark:border-slate-700 dark:bg-slate-950 dark:focus:border-sky-400 text-slate-900 dark:text-slate-100",
+      "mt-1 block w-full rounded-lg border px-3 py-2 font-normal outline-none min-h-24 border-slate-300 bg-white focus:border-sky-600 dark:border-slate-700 dark:bg-slate-950 dark:focus:border-sky-400 text-slate-900 dark:text-slate-100 font-normal",
     // Answer, Ask back and Answer with it anyway are `RefusableButton`s, and Cancel wears the same
     // `secondaryButton` (dispatch://INFRA-341).
     "AskCard Answer":
@@ -2847,7 +2856,8 @@ test("the default shapes keep main's class strings", async () => {
       await notSaved.findByText("Could not save what this issue advances.")
     );
     const none = within(caseOf(refusals, "none attached"));
-    classAt("IssueComponentsLine none", none.getByText(/^None — /));
+    // The reason is the renderer's, an element of its own, so the line's own words end at "—".
+    classAt("IssueComponentsLine none", none.getByText(/^None —$/));
     await user.click(await none.findByRole("button", { name: "Edit components of CORE-3" }));
     const body = within(refusals.baseElement);
     await user.click(
@@ -4575,7 +4585,9 @@ test("inside NoTooltips the Request changes dialog keeps its focus until the cha
       await user.type(box, reason);
       const submit = dialog.getByRole("button", { name: "Request changes" });
       const cancel = dialog.getByRole("button", { name: "Cancel" });
-      submit.focus();
+      act(() => {
+        submit.focus();
+      });
       await user.keyboard("{Enter}");
       await waitFor(() => expect(createArtifactReview).toHaveBeenCalledTimes(1));
       await waitFor(() => expect(submit.textContent).toBe("Submitting…"));
@@ -4655,7 +4667,9 @@ async function sendChangeRequest(
   await user.keyboard("{Enter}");
   const dialog = within(await scope.findByRole("dialog", { name: "Request changes" }));
   await user.type(dialog.getByRole("textbox", { name: "Reason" }), reason);
-  dialog.getByRole("button", { name: "Request changes" }).focus();
+  act(() => {
+    dialog.getByRole("button", { name: "Request changes" }).focus();
+  });
   await user.keyboard("{Enter}");
   await waitFor(() => expect(createArtifactReview).toHaveBeenCalledTimes(1));
   await settleReads();
@@ -5094,7 +5108,9 @@ test("inside NoTooltips a change request whose read removes Request changes hand
       await user.keyboard("{Enter}");
       const dialog = within(await scope.findByRole("dialog", { name: "Request changes" }));
       await user.type(dialog.getByRole("textbox", { name: "Reason" }), "The plan names no owner");
-      dialog.getByRole("button", { name: "Request changes" }).focus();
+      act(() => {
+        dialog.getByRole("button", { name: "Request changes" }).focus();
+      });
       await user.keyboard("{Enter}");
       const chip = await scope.findByRole("button", { name: "Changes requested" });
       await waitFor(() => expect(scope.queryByRole("dialog")).toBeNull());
@@ -6070,7 +6086,9 @@ const ASK_CARD_CONTROLS: readonly AskCardControl[] = [
     press: async (scope, user) => {
       await user.type(answerBoxOf(scope), "Stage it before the release");
       const askBack = scope.getByRole("button", { name: "Ask back" });
-      askBack.focus();
+      act(() => {
+        askBack.focus();
+      });
       await user.keyboard("{Enter}");
       return askBack;
     },
@@ -6115,7 +6133,9 @@ const ASK_CARD_CONTROLS: readonly AskCardControl[] = [
       const other = await radioOf(scope, "Other");
       await user.click(other);
       await user.type(answerBoxOf(scope), "Stage it first");
-      other.focus();
+      act(() => {
+        other.focus();
+      });
       await user.keyboard("{Enter}");
       return other;
     },
@@ -6444,7 +6464,9 @@ test("inside NoTooltips Ask back keeps the focus until the ask is read again", a
       await settleReads();
       await user.type(answerBoxOf(scope), "Stage it before the release");
       const askBack = scope.getByRole("button", { name: "Ask back" });
-      askBack.focus();
+      act(() => {
+        askBack.focus();
+      });
       await user.keyboard("{Enter}");
       await waitFor(() => expect(createComment).toHaveBeenCalledTimes(1));
       await settleReads();

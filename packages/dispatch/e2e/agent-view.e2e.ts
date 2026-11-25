@@ -1909,10 +1909,11 @@ test("sending a message from the live view while scrolled back takes the reader 
     await page.getByRole("button", { name: "Send" }).click();
     refuse();
     await expect(page.getByTestId("agent-send-error")).toBeVisible();
-    // A refused message is not lost: it is held on screen, with Retry, to send again.
-    await expect(page.getByTestId("agent-send-held")).toContainText(
-      "Your message: “and this one is refused”"
-    );
+    // A refused message is not lost: it is held on screen, named as the reader's, with Retry, to
+    // send again.
+    const held = page.getByTestId("agent-send-held");
+    await expect(held).toContainText("Your message");
+    await expect(held.locator(".dispatch-markdown")).toHaveText("and this one is refused");
     expect((await liveViewLayout(page)).threadScrollTop).toBe(1_200);
   } finally {
     await context.close();

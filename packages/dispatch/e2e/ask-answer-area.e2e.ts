@@ -6,22 +6,22 @@ import { recordClipboard } from "./clipboard";
 import { documentEditor, indexedBlockAsk } from "./editor";
 import { askCard, inboxRow } from "./inbox-pane";
 import { type KeyedWrite, watchWrites } from "./keyed-writes";
+import { openRefPicker, pickReference } from "./ref-picker";
 import { resetDatabase } from "./seed";
 import { pasteFile } from "./sends";
 import { sessionIds } from "./session-ids";
 import { asUser } from "./users";
 
 /**
- * INFRA-341: the ask card's answer box and the reply box under an answered ask are one answer
- * area, with the Conversation tab's own field and `@` picker. A picked session is stored as a
- * `session:` mention on the comment Ask back and Reply post, and that session gets it; an answer
- * carries no mentions, so Answer refuses one rather than dropping it. Every send that cannot be
- * made says why in place (`RefusableButton`), and one ask's header reads the same wherever the
- * ask is drawn.
+ * INFRA-341: the ask card's answer box and the reply box under an answered ask share the
+ * Conversation tab's field and reference picker. Ask back and Reply send a picked session's
+ * reference in the comment body, and the server delivers the comment to that session.
+ * Answer refuses a draft that would not notify a session it names. A refused button says why
+ * in place (`RefusableButton`), and one ask's header reads the same wherever the ask is drawn.
  */
 
 /** The one live session the `@` picker offers. */
-const planner: FakeSession = {
+const planner = {
   capabilities: ["steer"],
   dir: "/workspaces/planner",
   last_seen: 1_700_000_000_000,
@@ -29,9 +29,10 @@ const planner: FakeSession = {
   roles: [],
   session_id: sessionIds.planner,
   title: "Planner",
-};
+} satisfies FakeSession;
 
 const PLANNER_TARGET = `session:${sessionIds.planner}`;
+const PLANNER_MENTION = `[@Planner](dispatch://agent/${planner.session_id})`;
 
 /** The asker of every ask these rows seed. */
 const asker = { actor: { id: sessionIds.planner, kind: "session" as const }, as: "agent" as const };
@@ -54,19 +55,10 @@ async function seedOpenAsk(question = "Which release path?") {
   return { ask, issue };
 }
 
-/** Types `text` - which must end in the `@` the picker stands over - and picks `option`. */
-async function pickMention(
-  page: Page,
-  field: Locator,
-  text: string,
-  option: string
-): Promise<void> {
-  await field.fill(text);
-  await page
-    .getByRole("listbox", { name: "Mention suggestions" })
-    .getByRole("option", { name: option })
-    .click();
-  await expect(field).toHaveValue(`${text}${option}`);
+/** Picks Planner's session at the end of `prefix` and checks the draft's reference. */
+async function pickPlanner(field: Locator, prefix: string): Promise<void> {
+  await pickReference(field, `${prefix}@`, /^Planner\b/);
+  await expect(field).toHaveValue(`${prefix}${PLANNER_MENTION}`);
 }
 
 /** The comments the page posts on `issueKey` from here on, as the bodies it sent. */
@@ -279,11 +271,10 @@ test("a session picked in an Inbox ask's answer area goes out on Ask back, and n
     await page.goto("/");
     const card = await askCard(page, ask.id);
     const field = card.getByLabel("Your answer");
-    await pickMention(page, field, "Over to @", "Planner");
-    await expect(card.getByRole("list", { name: "Mention targets" })).toContainText(PLANNER_TARGET);
+    await pickPlanner(field, "Over to ");
 
-    // An answer carries no mentions, so Answer refuses this draft: in place, with its reason on
-    // screen and as its accessible description, and it sends nothing by click or by key.
+    // An answer does not tell a session it names, so Answer refuses this draft. It says why on
+    // screen and as its accessible description, and sends nothing by click or by key.
     const answer = card.getByRole("button", { exact: true, name: "Answer" });
     await answer.focus();
     await expect(answer).toBeDisabled();
@@ -303,9 +294,7 @@ test("a session picked in an Inbox ask's answer area goes out on Ask back, and n
     await card.getByRole("button", { exact: true, name: "Ask back" }).click();
     await expect
       .poll(() => comments.map((write) => write.input))
-      .toEqual([
-        { ask_id: ask.id, body: "Over to @Planner", mentions: [{ target: PLANNER_TARGET }] },
-      ]);
+      .toEqual([{ ask_id: ask.id, body: `Over to ${PLANNER_MENTION}` }]);
     await expect
       .poll(() => getSentMessages())
       .toMatchObject([{ target_session: planner.session_id }]);
@@ -344,7 +333,7 @@ test("a decision block's answer area picks a session the same way and asks back 
     await expect(card).toBeVisible();
     await card.getByRole("button", { name: "Add a note or answer in your own words" }).click();
     const field = card.getByLabel("Your answer");
-    await pickMention(page, field, "Ask @", "Planner");
+    await pickPlanner(field, "Ask ");
 
     const answer = card.getByRole("button", { exact: true, name: "Answer" });
     await expect(answer).toBeDisabled();
@@ -352,9 +341,7 @@ test("a decision block's answer area picks a session the same way and asks back 
     await card.getByRole("button", { exact: true, name: "Ask back" }).click();
     await expect
       .poll(() => comments.map((write) => write.input))
-      .toEqual([
-        { ask_id: blockAsk.id, body: "Ask @Planner", mentions: [{ target: PLANNER_TARGET }] },
-      ]);
+      .toEqual([{ ask_id: blockAsk.id, body: `Ask ${PLANNER_MENTION}` }]);
     await expect
       .poll(() => getSentMessages())
       .toMatchObject([{ target_session: planner.session_id }]);
@@ -380,23 +367,22 @@ test("the Conversation tab's copy of an ask, and the reply box under an answered
     // its note disclosure.
     const openCard = conversation.getByTestId(`ask-${ask.id}`);
     await openCard.getByRole("button", { name: "Add a note or answer in your own words" }).click();
-    await pickMention(page, openCard.getByLabel("Your answer"), "Ask @", "Planner");
+    await pickPlanner(openCard.getByLabel("Your answer"), "Ask ");
     await openCard.getByRole("button", { exact: true, name: "Ask back" }).click();
     await expect
       .poll(() => comments.map((write) => write.input))
-      .toEqual([{ ask_id: ask.id, body: "Ask @Planner", mentions: [{ target: PLANNER_TARGET }] }]);
+      .toEqual([{ ask_id: ask.id, body: `Ask ${PLANNER_MENTION}` }]);
 
     // The reply box under the answered ask, behind its own Write a reply control. An answered
     // ask's card is its record, and the thread with that control is the turn's, beside it.
     const answeredTurn = conversationTurn(page, decided.id);
     await answeredTurn.getByRole("button", { name: "Write a reply" }).click();
-    await pickMention(page, answeredTurn.getByLabel("Reply"), "Over to @", "Planner");
+    await pickPlanner(answeredTurn.getByLabel("Reply"), "Over to ");
     await answeredTurn.getByRole("button", { exact: true, name: "Reply" }).click();
     await expect.poll(() => comments.map((write) => write.input)).toHaveLength(2);
     expect(comments[1]?.input).toEqual({
       ask_id: decided.id,
-      body: "Over to @Planner",
-      mentions: [{ target: PLANNER_TARGET }],
+      body: `Over to ${PLANNER_MENTION}`,
     });
     await expect
       .poll(() => getSentMessages())
@@ -423,21 +409,22 @@ test("an ask draft keeps its picked mention when its box closes and opens again 
     const turn = conversationTurn(page, decided.id);
     const open = turn.getByRole("button", { name: "Write a reply" });
     await open.click();
-    await pickMention(page, turn.getByLabel("Reply"), "Over to @", "Planner");
+    await pickPlanner(turn.getByLabel("Reply"), "Over to ");
 
-    // The box goes with its disclosure and comes back with the draft the ask kept, mentions and
-    // all, so the reply still reaches the session that was picked before it closed.
+    // The box closes with its disclosure. The draft keeps the reference, so the reply still
+    // reaches the session chosen before the box closed.
     await open.click();
     await expect(turn.getByLabel("Reply")).toHaveCount(0);
     await open.click();
-    await expect(turn.getByLabel("Reply")).toHaveValue("Over to @Planner");
+    await expect(turn.getByLabel("Reply")).toHaveValue(`Over to ${PLANNER_MENTION}`);
     await expect(turn.getByRole("list", { name: "Mention targets" })).toContainText(PLANNER_TARGET);
     await turn.getByRole("button", { exact: true, name: "Reply" }).click();
     await expect
       .poll(() => comments.map((write) => write.input))
-      .toEqual([
-        { ask_id: decided.id, body: "Over to @Planner", mentions: [{ target: PLANNER_TARGET }] },
-      ]);
+      .toEqual([{ ask_id: decided.id, body: `Over to ${PLANNER_MENTION}` }]);
+    await expect
+      .poll(() => getSentMessages())
+      .toMatchObject([{ target_session: planner.session_id }]);
   } finally {
     await alice.close();
   }
@@ -590,29 +577,37 @@ test("the open picker owns the arrows and Enter inside an Inbox ask card @phone"
   browser,
 }) => {
   const { ask } = await seedOpenAsk();
+  await setLiveSessions([
+    planner,
+    {
+      ...planner,
+      last_seen: planner.last_seen - 1,
+      session_id: sessionIds.tester,
+      title: "Planning assistant",
+    },
+  ]);
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
     await page.goto("/");
     const card = await askCard(page, ask.id);
     const field = card.getByLabel("Your answer");
-    await field.fill("@");
-    const option = page
-      .getByRole("listbox", { name: "Mention suggestions" })
-      .getByRole("option", { name: "Planner" });
-    await expect(option).toBeVisible();
-    // Nothing is active until a key moves it; the arrows are the picker's, not the Inbox's own
-    // j/k twins, and the row the reader is on keeps the focus context either way.
-    await expect(option).toHaveAttribute("aria-selected", "false");
-    await page.keyboard.press("ArrowDown");
+    const list = await openRefPicker(field, "@plan");
+    const option = list.getByRole("option", { name: /^Planner\b/ });
+    const next = list.getByRole("option", { name: /^Planning assistant\b/ });
+    await expect(next).toBeVisible();
+    // The shared picker highlights its first row on open. Both arrows move its highlight
+    // without moving the Inbox's selection or the field's focus.
     await expect(option).toHaveAttribute("aria-selected", "true");
-    await page.keyboard.press("ArrowUp");
+    await field.press("ArrowDown");
+    await expect(next).toHaveAttribute("aria-selected", "true");
+    await expect(field).toBeFocused();
+    await field.press("ArrowUp");
     await expect(option).toHaveAttribute("aria-selected", "true");
     await expect(field).toBeFocused();
-    // Enter picks the option rather than moving the Inbox's own focus into the answer box.
-    await page.keyboard.press("Enter");
-    await expect(field).toHaveValue("@Planner");
-    await expect(page.getByRole("listbox", { name: "Mention suggestions" })).toHaveCount(0);
+    await field.press("Enter");
+    await expect(field).toHaveValue(PLANNER_MENTION);
+    await expect(list).toHaveCount(0);
     await expect(field).toBeFocused();
     await expect(inboxRow(page, ask.id)).toBeVisible();
   } finally {

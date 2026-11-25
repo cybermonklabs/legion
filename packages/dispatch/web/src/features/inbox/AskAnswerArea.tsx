@@ -1,23 +1,11 @@
-import {
-  type Dispatch,
-  type ReactNode,
-  type RefObject,
-  type SetStateAction,
-  useId,
-  useRef,
-} from "react";
+import { type ComponentProps, type ReactNode, useId } from "react";
 
 import type { ArtifactOwner } from "../../api/client";
 import { useTooltips } from "../../components/tooltips";
 import { submitOnModifiedEnter } from "../../hooks/submitOnModifiedEnter";
 import { pageQuietText, textMutedOnSurface } from "../../theme/classes";
 import { type DraftUpload, DraftUploadStatus } from "../artifacts/ArtifactUpload";
-import {
-  MentionField,
-  type MentionFieldHandle,
-  useMentionOptions,
-} from "../conversation/MentionField";
-import type { Draft } from "./draft-store";
+import type { MentionField } from "../conversation/MentionField";
 
 /** What the buttons under the area are given: the id of the line already showing each refusal the
  *  host named, by the name the host knows it by. Generic over those names, so a host that reads
@@ -28,6 +16,13 @@ export interface AskAnswerActions<Name extends string = string> {
   readonly reasonId: Readonly<Record<Name, string>>;
 }
 
+/** What the area hands the field its host mounts (`field`): the draft and each edit of it, and the
+ *  paste, the drop and the keys, which are the area's own. */
+export type AskAnswerFieldProps = Required<
+  Pick<ComponentProps<typeof MentionField>, "body" | "onChange" | "onKeyDown" | "readOnly" | "rows">
+> &
+  Pick<ComponentProps<typeof MentionField>, "onDrop" | "onPaste">;
+
 /** The line that says why a send refuses, inside `NoTooltips` (`components/tooltips.tsx`): the
  *  new issue page's quiet words, which qualify the field above them. It stands in this table, as
  *  `AskCard`'s colours do, so `theme/text-on-background.test.ts` pairs none of `main`'s words
@@ -37,32 +32,28 @@ const ON_PAGE = {
 } as const;
 
 /**
- * The one answer area of an ask: the Conversation tab's own body field and `@` picker
+ * The one answer area of an ask: the box every writing box mounts, with its reference picker
  * (`features/conversation/MentionField.tsx`), the draft behind it, the line that says why a send
- * refuses, and the host's uploads, which a file pasted or dropped into the field starts. Its two
- * hosts differ only in what they send it with, which they pass as `actions`: the open card's
- * Answer and Ask back (`AskCard.tsx`, which answers through `useAskAnswerForm`), and the reply
- * box under an answered ask (`AskThread.tsx`). The draft itself is the host's - the ask's answer
- * draft or its reply draft (`answer-drafts.ts`, `reply-drafts.ts`) - and so is the upload behind
- * it, because the host is what sends them: a compact card's lone Answer stands where this area
- * is not mounted, and an upload the area held would have left that send ungated.
+ * refuses, and the host's uploads, which a file pasted or dropped into the box starts. Its two
+ * hosts differ only in the box's row of the writing list and in what they send it with, which
+ * they pass as `field` and `actions`: the open card's Answer and Ask back (`AskCard.tsx`, which
+ * answers through `useAskAnswerForm`), and the reply box under an answered ask (`AskThread.tsx`).
+ * The host mounts the field itself, since the field's row is the host's (`writing`), and the
+ * area hands it everything else it holds (`AskAnswerFieldProps`). The draft is the host's - the
+ * ask's answer draft or its reply draft (`answer-drafts.ts`, `reply-drafts.ts`) - and so is the
+ * upload behind it, because the host is what sends them: a compact card's lone Answer stands
+ * where this area is not mounted, and an upload the area held would have left that send ungated.
  *
- * A picked session is stored as a `session:` mention on the draft and goes to the wire as
- * `CreateCommentInput.mentions`, so the comment reaches that session. An answer carries no
- * mentions at all, so a host whose send is an answer refuses the draft while one survives
- * (`ANSWER_MENTION_REFUSAL`) rather than dropping it silently.
+ * A picked session is a reference written in the draft's text, which the comment Ask back and
+ * Reply post carries to the server, and the server delivers the comment to that session. An
+ * answer delivers to nobody it names, so a host whose send is an answer refuses the draft while
+ * it names a session (`ANSWER_MENTION_REFUSAL`) rather than sending it to nobody.
  */
 export function AskAnswerArea<Name extends string, UploadDraft>({
   actions,
-  disabled = false,
   draft,
-  fieldRef,
-  handle,
-  issueKey,
-  label,
-  labelHidden = false,
+  field,
   onDraftChange,
-  placeholder,
   readOnly = false,
   refusals,
   upload,
@@ -70,23 +61,11 @@ export function AskAnswerArea<Name extends string, UploadDraft>({
   uploadOwner,
 }: {
   readonly actions: (state: AskAnswerActions<Name>) => ReactNode;
-  /** The field takes no typing: this ask's own send is out, and the draft on the wire is not the
-   *  reader's to write over. */
-  readonly disabled?: boolean;
-  readonly draft: Draft;
-  /** The host's handle on the field, where it moves focus into the box itself (`AskCard` lands
-   *  the reader in the reason an approval demands). */
-  readonly fieldRef?: RefObject<MentionFieldHandle | null>;
-  /** A bare `data-` attribute for the textarea (`MentionField`'s `handle`). */
-  readonly handle?: string;
-  /** The issue this ask is on, where it is on one: the `@` picker reads its collaborators and
-   *  offers the Legion roles nobody is running under "Not running", as the Conversation tab's
-   *  composer does for the same issue. A project-document ask has none and is offered none. */
-  readonly issueKey?: string;
-  readonly label: string;
-  readonly labelHidden?: boolean;
-  readonly onDraftChange: Dispatch<SetStateAction<Draft>>;
-  readonly placeholder?: string;
+  readonly draft: string;
+  /** The box, which the host mounts with its own row of the writing list and its own label,
+   *  handed what the area holds of it. */
+  readonly field: (props: AskAnswerFieldProps) => ReactNode;
+  readonly onDraftChange: (text: string) => void;
   /** Inside `NoTooltips`, the host refuses the draft while its own write is out: the field keeps
    *  the focus, `readOnly` in place of `disabled`, and takes no paste, drop or Ctrl/Cmd+Enter. */
   readonly readOnly?: boolean;
@@ -108,19 +87,6 @@ export function AskAnswerArea<Name extends string, UploadDraft>({
   readonly uploadOwner?: ArtifactOwner;
 }): ReactNode {
   const tooltips = useTooltips();
-  // Everything the `@` picker needs, from the one place both its hosts take it
-  // (`useMentionOptions`): the registry is kept fresh through the shell's one poller while the
-  // picker is open and read again the moment it opens, exactly as the Conversation tab's
-  // composer keeps it. The sessions `@` lists are the same sessions, read the same way - the
-  // issue's stopped roles among them, which this picker left out while the composer under it on
-  // the same tab offered them (dispatch://INFRA-341, R2).
-  const { listing, onPickerOpenChange, options, stoppedOptions } = useMentionOptions(
-    true,
-    undefined,
-    issueKey
-  );
-  const ownFieldRef = useRef<MentionFieldHandle>(null);
-  const field = fieldRef ?? ownFieldRef;
   const uploading = upload.pending > 0;
   // One area can be on the page twice (a decision block and the margin sheet, a card and its
   // drawer), so the line each button names is this instance's.
@@ -130,42 +96,29 @@ export function AskAnswerArea<Name extends string, UploadDraft>({
 
   return (
     <div className="space-y-2">
-      <MentionField
-        body={draft.text}
-        disabled={disabled}
-        fieldRef={field}
-        handle={handle}
-        label={label}
-        labelHidden={labelHidden}
-        listing={listing}
-        mentions={draft.mentions}
-        onChange={({ body, mentions }) => onDraftChange({ mentions, text: body })}
-        onDrop={
+      {field({
+        body: draft,
+        onChange: (change) => onDraftChange(change.body),
+        onDrop:
           uploadOwner === undefined
             ? undefined
             : (event) => {
                 if (!readOnly) upload.drop(event, uploadOwner, uploadDraft);
-              }
-        }
+              },
         // A draft sent before its upload lands would go without the picture; the buttons say the
         // upload is what holds them (`busy`), and this key says nothing at all.
-        onKeyDown={(event) => submitOnModifiedEnter(event, { disabled: uploading || readOnly })}
-        onPaste={
+        onKeyDown: (event) => submitOnModifiedEnter(event, { disabled: uploading || readOnly }),
+        onPaste:
           uploadOwner === undefined
             ? undefined
             : (event) => {
                 if (!readOnly) upload.paste(event, uploadOwner, uploadDraft);
-              }
-        }
-        onPickerOpenChange={onPickerOpenChange}
-        options={options}
-        placeholder={placeholder}
-        readOnly={readOnly}
+              },
+        readOnly,
         // Two lines, as `main`'s answer and reply boxes drew, so a phone draws the placeholder
-        // whole: one line is the touch floor's 44 px (`MentionField`'s `rows`).
-        rows={2}
-        stoppedOptions={stoppedOptions}
-      />
+        // whole: one line is the touch floor's 44 px.
+        rows: 2,
+      })}
       <DraftUploadStatus upload={upload} />
       {/* The reason a send refuses, on screen beside the draft it was refused over, and the
           description its button carries (`RefusableButton`'s `refusalShownBy`). */}
