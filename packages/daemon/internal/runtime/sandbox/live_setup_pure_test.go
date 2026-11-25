@@ -47,7 +47,9 @@ import (
 // of entries after the last reset, and the list is `expected` when it is exactly one entry,
 // `!legion git-credential` under one of those two keys at command scope, where GitConfigEnv
 // puts it. The negative control runs the same ls-remote with every command-scope helper value
-// emptied, GitConfigEnv's GIT_CONFIG_VALUE_1 among them, and liveSetupControlClass reads how
+// emptied, GitConfigEnv's GIT_CONFIG_VALUE_1 among them. A key is lowercased under LC_ALL=C to be
+// read as a helper key, since in a single-byte Turkish locale tr lowercases I to dotless ı, and
+// CREDENTIAL.HELPER would then keep its value. liveSetupControlClass reads how
 // it ended: legion-smoke is private, so it must be refused for want of a credential, and git=ok is
 // then the helper's doing. A control that failed for any other reason (no network, a GitHub
 // error, a timeout) proves nothing, and its record says so.
@@ -68,7 +70,7 @@ probe_git() {
     i=$((i - 1))
     eval "key=\${GIT_CONFIG_KEY_$i-} value=\${GIT_CONFIG_VALUE_$i-}"
     if [ -n "$without_helper" ]; then
-      case $(printf '%s' "$key" | tr '[:upper:]' '[:lower:]') in
+      case $(printf '%s' "$key" | LC_ALL=C tr '[:upper:]' '[:lower:]') in
         credential.*helper) value= ;;
       esac
     fi
