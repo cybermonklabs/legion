@@ -22,6 +22,7 @@ import (
 // reads the role's claim and does not drop every lane. Without the rule the restart filters on the
 // other session's inbox and hands its messages to this session.
 func TestARelayRestartFiltersOnNoOtherSessionsInboxItsStoredRowNames(t *testing.T) {
+	t.Parallel()
 	rig := newRelayRig(t)
 	const (
 		sessionID = "ses_row_forged_pub"

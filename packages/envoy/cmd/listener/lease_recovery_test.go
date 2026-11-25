@@ -14,6 +14,7 @@ import (
 
 // The same hand-over on running leases, at production timing: the standby holds within a poll of
 // the release, far inside the ttl it would wait for an unreleased record.
+// It must not run in parallel: the standby must hold within 1.5 s of the release it times.
 func TestLeaseRunningStandbyTakesAReleasedLeaseWithoutTheTTL(t *testing.T) {
 	kv := leaseBucket(t)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -51,6 +52,7 @@ func TestLeaseRunningStandbyTakesAReleasedLeaseWithoutTheTTL(t *testing.T) {
 // of its last successful renewal + ttl - margin, and a standby waits a full ttl from when it
 // first saw that renewal's revision.
 func TestLeaseHolderValidityEndsBeforeAStandbyCanTake(t *testing.T) {
+	t.Parallel()
 	kv := leaseBucket(t)
 	clock := newFakeLeaseClock()
 	a := testLease(kv, "pod-a", productionLeaseConfig(), clock.now)
@@ -104,6 +106,7 @@ func (kv faultyLeaseKV) Update(key string, value []byte, last uint64) (uint64, e
 // validity's end in a longer one, and resumes as a new term taken over an expired record when a
 // renewal after the outage finds its own revision still current.
 func TestLeaseRenewalAfterAnOutageResumes(t *testing.T) {
+	t.Parallel()
 	kv := leaseBucket(t)
 	var fail atomic.Bool
 	clock := newFakeLeaseClock()
@@ -160,6 +163,7 @@ func TestLeaseRenewalAfterAnOutageResumes(t *testing.T) {
 // service_since starts again when the previous record's last write is more than two ttl older
 // than the acquiring write, since no pod of the machine was serving in between.
 func TestLeaseServiceSinceStartsAgainOverAnUnreleasedRecordOlderThanTwoTTL(t *testing.T) {
+	t.Parallel()
 	kv := leaseBucket(t)
 	cfg := leaseConfig{renewEvery: 20 * time.Millisecond, ttl: 100 * time.Millisecond, margin: 20 * time.Millisecond, standbyPoll: 10 * time.Millisecond, receiveLost: 50 * time.Millisecond}
 	clock := newFakeLeaseClock()
@@ -185,6 +189,7 @@ func TestLeaseServiceSinceStartsAgainOverAnUnreleasedRecordOlderThanTwoTTL(t *te
 // A take-over of a record that expired recently keeps its service_since: the machine kept
 // serving across it.
 func TestLeaseServiceSinceIsKeptOverARecentlyExpiredRecord(t *testing.T) {
+	t.Parallel()
 	kv := leaseBucket(t)
 	clock := newFakeLeaseClock()
 	old := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)

@@ -68,6 +68,7 @@ const interestsUnread = "session relay could not read the session's interests"
 // reconnect until it is restored, and the session-consumer connection, straight to the server,
 // reconnects while the cut holds. Only once the restart is under way and the session-consumer
 // connection answers is the main one let back.
+// It must not run in parallel: the message must reach the session within 500 ms of the reconnect.
 func TestASessionRelayRestartWaitsForTheMainConnectionRatherThanFailingOnIt(t *testing.T) {
 	url := testnats.URL(t)
 	hub := testnats.StartProxy(t, url)

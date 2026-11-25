@@ -76,6 +76,7 @@ func TestAListenerStartKeepsAThreeCopyStreamsCopiesByteLimitAndIDAsItCorrectsThe
 // A listener start with ENVOY_NATS_REPLICAS=3 raises the R1 stream an earlier start at the default
 // created, and the durable the lease holder created on it (ensureListenerDurable), which sets no
 // replica count of its own, moves to three copies with it.
+// It must not run in parallel: it sets the listener's settings with t.Setenv (listenerSettings).
 func TestRaisingTheStreamMovesTheListenersDurableToThreeCopies(t *testing.T) {
 	cluster := testnats.StartCluster(t, 3)
 	js := cluster.JetStream(t)
@@ -115,6 +116,7 @@ func TestRaisingTheStreamMovesTheListenersDurableToThreeCopies(t *testing.T) {
 // listener opens the spent-proof bucket, and the GitHub route opens CI state) at one copy, and its
 // next start creates and updates nothing.
 func TestADefaultListenerOnASingleServerCreatesEverythingAtOneCopyAndItsNextStartWritesNothing(t *testing.T) {
+	t.Parallel()
 	const machineID = "replicas-default"
 	uri := testnats.URL(t)
 	binary := cmdtest.Build(t, "envoy-listener")

@@ -11,6 +11,7 @@ import (
 // settle though the record was released; a holder that finds the durable not push-bound clears
 // it. A call for a term that is no longer current changes nothing.
 func TestLeaseStaleBindingIsSetCarriedAndCleared(t *testing.T) {
+	t.Parallel()
 	kv := leaseBucket(t)
 	clock := newFakeLeaseClock()
 	a := testLease(kv, "pod-a", productionLeaseConfig(), clock.now)
@@ -60,6 +61,7 @@ func TestLeaseStaleBindingIsSetCarriedAndCleared(t *testing.T) {
 // released record; once the hold ends it is cleared, and a release then, with nothing handed back
 // (no Unsettle), hands over a term that need not settle.
 func TestLeaseUnsettledIsHandedOnByAReleaseBeforeTheHoldEnds(t *testing.T) {
+	t.Parallel()
 	kv := leaseBucket(t)
 	clock := newFakeLeaseClock()
 	putLease(t, kv, `{"holder":"pod-dead","boot":"0011223344556677","released":false}`)
@@ -113,6 +115,7 @@ func TestLeaseUnsettledIsHandedOnByAReleaseBeforeTheHoldEnds(t *testing.T) {
 // carries ack_wait_owed or stale_binding. A call for a term that is no longer current changes
 // nothing.
 func TestLeaseAckWaitOwedIsTheTermsDebtAndDecidesTheHandBack(t *testing.T) {
+	t.Parallel()
 	kv := leaseBucket(t)
 	clock := newFakeLeaseClock()
 	putLease(t, kv, `{"holder":"pod-dead","boot":"0011223344556677","released":false}`)
@@ -192,6 +195,7 @@ func TestLeaseAckWaitOwedIsTheTermsDebtAndDecidesTheHandBack(t *testing.T) {
 // receiving says nothing of what is in hand; and only Settled, which the hold's end calls - on
 // the durable's count or on the hand-back's mark - clears it.
 func TestLeaseEverySettlingTermOwesTheAckWaitUntilItsHoldEnds(t *testing.T) {
+	t.Parallel()
 	clock := newFakeLeaseClock()
 	for _, row := range []struct {
 		name string
@@ -239,6 +243,7 @@ func TestLeaseEverySettlingTermOwesTheAckWaitUntilItsHoldEnds(t *testing.T) {
 // wrote the lapsed term's own clean flags would let the standby that takes the record deliver
 // new messages at once, ahead of the dropped ones.
 func TestLeaseAStopDuringALapseReleasesTheRecordUnsettled(t *testing.T) {
+	t.Parallel()
 	kv := leaseBucket(t)
 	clock := newFakeLeaseClock()
 	a := testLease(kv, "pod-a", productionLeaseConfig(), clock.now)
@@ -287,6 +292,7 @@ func TestLeaseAStopDuringALapseReleasesTheRecordUnsettled(t *testing.T) {
 // term replaced. The judgement reads the bucket for a candidate alone, and a term that is no
 // longer current is no candidate.
 func TestLeaseAHandBackCandidateIsJudgedByItsMarkAlone(t *testing.T) {
+	t.Parallel()
 	const handedBack = `{"holder":"pod-gone","boot":"0011223344556677","released":true,"unsettled":true}`
 	for _, row := range []struct {
 		name      string
@@ -336,6 +342,7 @@ func TestLeaseAHandBackCandidateIsJudgedByItsMarkAlone(t *testing.T) {
 // Successor tells the pod that released whether another pod has taken the record and whether that
 // holder is receiving.
 func TestLeaseReceivingIsWrittenAndAGracefulReleaseCarriesUnsettled(t *testing.T) {
+	t.Parallel()
 	kv := leaseBucket(t)
 	clock := newFakeLeaseClock()
 	putLease(t, kv, `{"holder":"pod-gone","boot":"0011223344556677","released":true,"receiving":true}`)
@@ -405,6 +412,7 @@ func TestLeaseReceivingIsWrittenAndAGracefulReleaseCarriesUnsettled(t *testing.T
 
 // A running lease writes receiving at once on SetReceiving rather than at its next renewal, so a
 // pod that stopped gracefully lets go of the deliver subject a renewal sooner.
+// It must not run in parallel: the record must say receiving within 500 ms of SetReceiving.
 func TestLeaseSetReceivingIsWrittenAtOnce(t *testing.T) {
 	kv := leaseBucket(t)
 	ctx, cancel := context.WithCancel(context.Background())

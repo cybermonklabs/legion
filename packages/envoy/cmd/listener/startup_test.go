@@ -40,6 +40,7 @@ import (
 // Dispatch delivery or a lost publish. /healthz answers it 200 healthy as a standby that is
 // waiting to receive, and active once the old build lets go.
 func TestTheV1APIIsServedWhileAPreLeaseBuildHoldsTheDurable(t *testing.T) {
+	t.Parallel()
 	const (
 		machineID = "v1-bind-window"
 		secret    = "bind-window-secret"
@@ -226,6 +227,7 @@ func TestAListenerStartedBeforeItsNATSWaitsForItThenServes(t *testing.T) {
 // A SIGTERM while the start waits for NATS ends the process at once: the start installs its own
 // handler only once it serves /v1, so until then the signal's default action ends it.
 func TestASIGTERMEndsAListenerWaitingForItsNATS(t *testing.T) {
+	t.Parallel()
 	server, uri := testnats.Start(t)
 	server.Stop(t)
 	listener := startListenerProcess(t, cmdtest.Build(t, "envoy-listener"), uri, "box-signalled")
@@ -313,6 +315,7 @@ func publishDeniedConfig(user string, deny ...string) string {
 // wait of 1 s and then 2 s (nextRefusedWait). (The listener state bucket is the exception: without
 // it the listener delivers without a lease.) Before, the start exited 1 at the refusal.
 func TestAListenerWhoseGrantRefusesAStoreBucketNamesItAtEachTryAndStaysUnready(t *testing.T) {
+	t.Parallel()
 	seed, public := testnats.User(t)
 	_, uri := testnats.StartConfig(t, bucketDeniedConfig(public, bus.SessionBucket), []string{"-js"}, false)
 	listener := startListenerProcess(t, cmdtest.Build(t, "envoy-listener"), uri, "box-refused", "NATS_NKEY_SEED="+seed)
@@ -816,6 +819,7 @@ func (g *startGate) close() {
 // forwards. The messages go straight onto the lane, as an operator's or an earlier listener's do:
 // the publish route forwards a role message itself.
 func TestARoleMessageReachesItsHolderOnceAcrossTwoTasksOfOneMachine(t *testing.T) {
+	t.Parallel()
 	const (
 		machineID = "two-tasks"
 		holderID  = "ses_two_tasks_holder"
@@ -992,6 +996,7 @@ func countRecords(p *listenerProcess, name string, match func(map[string]any) bo
 // It must start healthy over them and serve the ordinary keys beside them: one stored role must not
 // keep every listener from starting.
 func TestTheListenerStartsOverKeysAnEarlierListenerStored(t *testing.T) {
+	t.Parallel()
 	client, err := bus.ConnectOwningStream([]string{testnats.URL(t)}, bus.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("connect bus: %v", err)
@@ -1102,6 +1107,7 @@ func ciSettled(t *testing.T, client *bus.Client) bool {
 // cache not applicable instead of waiting on it. Seeded with a record any summary loop would settle,
 // it creates no consumer on the CI bucket's stream, publishes no settlement, and reports healthy.
 func TestAListenerWithoutAGitHubRouteLeavesTheCIBucketAlone(t *testing.T) {
+	t.Parallel()
 	client := setupTestNATS(t)
 	kv, key := seedDueCIRecord(t, client, "acme", "widgets", "7", strings.Repeat("d", 40))
 
@@ -1215,6 +1221,7 @@ func do(t *testing.T, request *http.Request) (int, string) {
 // lines in their client name, with no word between the date and time and the message, since the
 // text filters match by position. The listener mounts the GitHub route, so all three caches warm up.
 func TestListenerLogsFromOtherPackagesKeepTheirHandlers(t *testing.T) {
+	t.Parallel()
 	const machineID = "logger-split"
 	const instance = "logger-split-pod"
 	server, uri := testnats.Start(t)

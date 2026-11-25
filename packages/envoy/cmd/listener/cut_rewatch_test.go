@@ -40,6 +40,7 @@ var cutRewatchCaches = []string{
 // always ends before a rewatch can replace it, and the ERROR it writes is a live cache's. The
 // branch a rewatch replaced is pinned by the unit test of internal/kvwatch. What this test holds
 // is the whole cut path, every cache's replacement included, to no ERROR at all.
+// It must not run in parallel: the cut must be reported within 5 s, 2 s past its detection.
 func TestASilentCutRewatchesTheCachesWithNoErrorLine(t *testing.T) {
 	const instance = "cut-rewatch-pod"
 	server, uri := testnats.Start(t)

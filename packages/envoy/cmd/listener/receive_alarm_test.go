@@ -44,6 +44,7 @@ func durableAlarmRecords(logs *cmdtest.LockedBuffer) []map[string]any {
 // nats.Bind refuses a durable whose filter is not its own), and receives as soon as the old build
 // lets go, correcting the policy then.
 func TestAPreLeaseBindingIsWaitedOutAndAlarmedOn(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
 	const machineID = "box-pre-lease"
 	consumer := bus.ListenerDurable(machineID)
@@ -107,6 +108,7 @@ func durableReads(t *testing.T, uri, consumer string) *atomic.Int64 {
 // (durableReads); then the old build exits, and the pod receives within 500 ms of that. A
 // receive.go whose wait between reads doubles from bindPoll fails the row: its seventh read comes
 // 3.2 s after its sixth.
+// It must not run in parallel: the pod must receive within 500 ms of the old build's exit.
 func TestAHeldDurableIsTakenWithinOnePollOfItsRelease(t *testing.T) {
 	uri := testnats.URL(t)
 	const machineID = "box-poll-release"
@@ -146,6 +148,7 @@ func TestAHeldDurableIsTakenWithinOnePollOfItsRelease(t *testing.T) {
 // keeps its binding. At a 2 s poll Stop returns within 500 ms of its call. A receive.go whose wait
 // between reads is a plain time.Sleep(bindPoll), deaf to the stop, fails the row: Stop returns
 // only once that wait is out.
+// It must not run in parallel: Stop must return within 500 ms of its call.
 func TestAStopEndsTheWaitForAHeldDurableAtOnce(t *testing.T) {
 	uri := testnats.URL(t)
 	const machineID = "box-stop-waiting"
@@ -227,6 +230,7 @@ func refusedDurableHolder(t *testing.T, machineID, step string, deny ...string) 
 // at this refusal, exit 1 within 0.03 s; before #4343 the refusal was read only after the
 // create's own 10 s wait.
 func TestAHolderWhoseDurableCreateTheGrantRefusesNamesItAtOnceAndTriesAgain(t *testing.T) {
+	t.Parallel()
 	const machineID = "box-create-refused"
 	consumer := bus.ListenerDurable(machineID)
 	create := "$JS.API.CONSUMER.CREATE." + bus.Stream + "." + consumer
@@ -237,6 +241,7 @@ func TestAHolderWhoseDurableCreateTheGrantRefusesNamesItAtOnceAndTriesAgain(t *t
 // naming the refusal at ERROR at each try as the server's answer arrives. #4343 ended a rebuild's
 // wait for the durable at this refusal; before #4343 the read waited out its own 10 s.
 func TestAHolderWhoseDurableReadTheGrantRefusesNamesItAtOnceAndTriesAgain(t *testing.T) {
+	t.Parallel()
 	const machineID = "box-read-refused"
 	refusedDurableHolder(t, machineID, "read the durable consumer", "$JS.API.CONSUMER.INFO."+bus.Stream+"."+bus.ListenerDurable(machineID))
 }
@@ -508,6 +513,7 @@ func TestAPodThatLostTheLeaseWhileWaitingOutABindingSettlesAHardTakeoverAfterIt(
 // never comes, and its hold would run to the same 7 s - but a term that stopped mid-hold may owe
 // what it held, which only the debt says.
 func TestATermThatNeverSubscribedOwesTheNextHolderAnAckWait(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		name, machineID string
 		giveUp          bool

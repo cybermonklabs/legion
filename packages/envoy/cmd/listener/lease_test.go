@@ -126,6 +126,7 @@ func awaitLease(t *testing.T, what string, within time.Duration, cond func() boo
 // A standby that finds no record takes the lease with Create, reports it taken from an absent
 // record, and starts the machine's service at the server's timestamp of its acquiring write.
 func TestLeaseTakesAnAbsentRecordAndStartsServiceSince(t *testing.T) {
+	t.Parallel()
 	kv := leaseBucket(t)
 	clock := newFakeLeaseClock()
 	before := time.Now()
@@ -181,6 +182,7 @@ func (k overwrittenTakeKV) Create(key string, value []byte) (uint64, error) {
 // A take whose read back by key finds another revision than its write does not hold the lease:
 // another pod wrote first. The standby reads the record again at once, and finds pod-b's.
 func TestLeaseTakeOverwrittenBeforeItsReadBackIsNotHeld(t *testing.T) {
+	t.Parallel()
 	kv := leaseBucket(t)
 	a := testLease(bus.NewKeyValue(overwrittenTakeKV{KeyValue: kv.Legacy()}, kv.WatchHandle(), kv.Streams()), "pod-a", productionLeaseConfig(), newFakeLeaseClock().now)
 	if wait := a.step(); wait != 0 {
@@ -201,6 +203,7 @@ func TestLeaseTakeOverwrittenBeforeItsReadBackIsNotHeld(t *testing.T) {
 // unchanged for a full ttl on its own clock, and reports it taken over an expired record, a term
 // that must settle, which its acquiring write marks unsettled.
 func TestLeaseStandbyTakesAnUnreleasedRecordOnlyAfterTheTTL(t *testing.T) {
+	t.Parallel()
 	kv := leaseBucket(t)
 	clock := newFakeLeaseClock()
 	a := testLease(kv, "pod-a", productionLeaseConfig(), clock.now)
@@ -233,6 +236,7 @@ func TestLeaseStandbyTakesAnUnreleasedRecordOnlyAfterTheTTL(t *testing.T) {
 
 // A holder that renews keeps the lease however long a standby polls.
 func TestLeaseRenewalKeepsTheLease(t *testing.T) {
+	t.Parallel()
 	kv := leaseBucket(t)
 	clock := newFakeLeaseClock()
 	a := testLease(kv, "pod-a", productionLeaseConfig(), clock.now)
@@ -260,6 +264,7 @@ func TestLeaseRenewalKeepsTheLease(t *testing.T) {
 // A holder whose renewal finds another pod's record (a compare-and-swap conflict) steps down,
 // signals the loss, and polls as a standby naming the new holder.
 func TestLeaseHolderStepsDownOnACASConflict(t *testing.T) {
+	t.Parallel()
 	kv := leaseBucket(t)
 	clock := newFakeLeaseClock()
 	a := testLease(kv, "pod-a", productionLeaseConfig(), clock.now)
@@ -292,6 +297,7 @@ func TestLeaseHolderStepsDownOnACASConflict(t *testing.T) {
 // holder does not know. The holder's next renewal conflicts with its own write: it must keep the
 // lease, not step down and take it back as an expired record a TTL later.
 func TestLeaseRenewalWhoseReplyWasLostKeepsTheLease(t *testing.T) {
+	t.Parallel()
 	kv := leaseBucket(t)
 	clock := newFakeLeaseClock()
 	a := testLease(kv, "pod-a", productionLeaseConfig(), clock.now)
@@ -323,6 +329,7 @@ func TestLeaseRenewalWhoseReplyWasLostKeepsTheLease(t *testing.T) {
 // the record released; a standby's next poll takes it at once, with no TTL wait, reports it taken
 // from a released record, and keeps the machine's service_since.
 func TestLeaseReleasedRecordIsTakenAtTheNextPollKeepingServiceSince(t *testing.T) {
+	t.Parallel()
 	kv := leaseBucket(t)
 	clock := newFakeLeaseClock()
 	a := testLease(kv, "pod-a", productionLeaseConfig(), clock.now)
@@ -369,6 +376,7 @@ func TestLeaseReleasedRecordIsTakenAtTheNextPollKeepingServiceSince(t *testing.T
 // whatever its context says, where the select alone would leave it to Go's pick between two ready
 // channels.
 func TestLeaseReleaseWritesWithAnExpiredContextAfterTheLoopStopped(t *testing.T) {
+	t.Parallel()
 	kv := leaseBucket(t)
 	clock := newFakeLeaseClock()
 	// Both channels are closed at every call, so a select over the two would take the context's
@@ -423,6 +431,7 @@ func (k *stalledRenewKV) Update(key string, value []byte, revision uint64) (uint
 // deliver subject by the time the second one writes the record. A standby that takes it moments
 // later must hold for an ack wait, which both the debt on the record and the missing mark say.
 func TestLeaseAReleaseThatTimedOutLeavesTheTermOwingTheAckWait(t *testing.T) {
+	t.Parallel()
 	kv := leaseBucket(t)
 	clock := newFakeLeaseClock()
 	// The clock never moves, so the term's validity never runs out: the debt this row is about is
@@ -483,6 +492,7 @@ func TestLeaseAReleaseThatTimedOutLeavesTheTermOwingTheAckWait(t *testing.T) {
 // hand-back, and the revision the give-up wrote keeps no mark either. A mark there would say a
 // hand-over went through that this stop never made.
 func TestLeaseAStopMarksNoHandBackForTheRevisionAnEarlierGiveUpReleased(t *testing.T) {
+	t.Parallel()
 	kv := leaseBucket(t)
 	clock := newFakeLeaseClock()
 	// The clock moves only to pass the two standby polls a give-up keeps its own released

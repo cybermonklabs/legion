@@ -18,6 +18,7 @@ import (
 // The bucket is created with the configured replicas, file storage, listenerStateMaxAge and one
 // value per key.
 func TestListenerStateBucketIsCreatedAtTheConfiguredReplicas(t *testing.T) {
+	t.Parallel()
 	t.Run("one replica", func(t *testing.T) {
 		kv := leaseBucket(t)
 		status, err := kv.Status()
@@ -55,6 +56,7 @@ func TestListenerStateBucketIsCreatedAtTheConfiguredReplicas(t *testing.T) {
 // The listener state bucket's age (listenerStateMaxAge) is at least the session TTL plus the
 // interest reaper's allowance (store.InterestReapAllowance of store.InterestReapGrace).
 func TestTheListenerStateBucketOutlivesTheLastSeenWindow(t *testing.T) {
+	t.Parallel()
 	conn := testnats.Connect(t, testnats.URL(t))
 	t.Cleanup(conn.Close)
 	sessions, err := session.OpenSessionRegistry(t.Context(), conn, session.WithSessionReplicas(1))
@@ -73,6 +75,7 @@ func TestTheListenerStateBucketOutlivesTheLastSeenWindow(t *testing.T) {
 // raise a deployment that ran an earlier build would drop every `seen.` record at that build's
 // shorter age, and its pods' last_seen answers would end with it.
 func TestOpeningTheListenerStateBucketRaisesAnEarlierBuildsMaxAge(t *testing.T) {
+	t.Parallel()
 	conn := testnats.Connect(t, testnats.URL(t))
 	t.Cleanup(conn.Close)
 	js, err := conn.JetStream()
@@ -103,6 +106,7 @@ func TestOpeningTheListenerStateBucketRaisesAnEarlierBuildsMaxAge(t *testing.T) 
 // A user whose grant lacks the bucket is refused with errListenerStateRefused, naming the bucket
 // and the grant; once the grant has it the same connection opens the bucket and takes the lease;
 // a connection error is not the refusal.
+// It must not run in parallel: the refusal must arrive inside the open's 500 ms request wait.
 func TestListenerStateBucketRefusalIsTheMissingGrant(t *testing.T) {
 	seed, public := testnats.User(t)
 	grant := testnats.StartNkeyGranted(t, public, "_INBOX.>", "$JS.API.INFO")
@@ -143,6 +147,7 @@ func TestListenerStateBucketRefusalIsTheMissingGrant(t *testing.T) {
 // Only a violation of a subject of the listener state bucket, as the open's own error or as a
 // last error that changed across the open, is the refusal.
 func TestListenerStateBucketRefusalClassification(t *testing.T) {
+	t.Parallel()
 	violation := func(subject string) error {
 		return fmt.Errorf("%w: Permissions Violation for Publish to %q", natsgo.ErrPermissionViolation, subject)
 	}

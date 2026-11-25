@@ -71,6 +71,7 @@ func termRecords(t *testing.T, harness listenerDeliveryHarness) []bus.StoredTake
 // no copy on the role's kept lane, and the record as the stream held it. The control is the same
 // sweep within a live term, which copies the message and writes the record on.
 func TestATakeoverPassReachedAfterTheLeaseSteppedDownWritesNothing(t *testing.T) {
+	t.Parallel()
 	ended, end := context.WithCancel(context.Background())
 	end()
 	for _, tc := range []struct {
@@ -122,6 +123,7 @@ func TestATakeoverPassReachedAfterTheLeaseSteppedDownWritesNothing(t *testing.T)
 // (bus.ErrTakeoverRecordMoved), and the stream holds the newer body, or no record, as that left
 // it. The control is the pass with nothing between, whose write lands.
 func TestALateTakeoverRecordWriteIsRefusedOverAWriteOrARemovalMadeAfterItsRead(t *testing.T) {
+	t.Parallel()
 	newer := bus.TakeoverRecord{Role: termRole, Previous: termPrevious, ClaimedAt: 1, Next: 7}
 	for _, tc := range []struct {
 		name string

@@ -25,6 +25,7 @@ import (
 // nor the consumer filter asks the stream's subjects, so the filter carries both topics the route
 // stored, and the consumer delivers what the stream stores on a topic once a subject captures it.
 func TestSessionConsumerFiltersOnATopicOnlyTheDeployedStreamCaptures(t *testing.T) {
+	t.Parallel()
 	const (
 		sessionID  = "ses_deployed_subject"
 		newer      = "notifications.x.>"
@@ -82,6 +83,7 @@ func TestSessionConsumerFiltersOnATopicOnlyTheDeployedStreamCaptures(t *testing.
 // reaches the fan-out, and the session's consumer filter is what delivers it during a roll. The row
 // holds that the fan-out judges such a message as the consumer filter does.
 func TestFanoutLeavesATopicOnlyTheDeployedStreamCapturesToTheSessionsConsumer(t *testing.T) {
+	t.Parallel()
 	const (
 		sessionID = "ses_deployed_fanout"
 		topic     = "notifications.x.y"
@@ -120,6 +122,7 @@ func TestFanoutLeavesATopicOnlyTheDeployedStreamCapturesToTheSessionsConsumer(t 
 // raise it for the same stored message. Judged on the subjects this build compiles, the lane would
 // be published under each exception's own dedupe key, and every listener's report would be kept.
 func TestADeliveryExceptionOnALaneOnlyTheDeployedStreamCapturesIsStoredOnce(t *testing.T) {
+	t.Parallel()
 	const (
 		topic  = "notifications.x.y"
 		lane   = bus.ExceptionTopicPrefix + topic
@@ -170,6 +173,7 @@ func TestADeliveryExceptionOnALaneOnlyTheDeployedStreamCapturesIsStoredOnce(t *t
 // id; no read was made, so the second was judged on the same subjects and stored the same way:
 // two copies.
 func TestADeliveryExceptionOnALaneAddedSinceTheLastReadIsStoredOnce(t *testing.T) {
+	t.Parallel()
 	const (
 		topic  = "notifications.x.z"
 		lane   = bus.ExceptionTopicPrefix + topic
@@ -228,8 +232,8 @@ func TestADeliveryExceptionOnALaneAddedSinceTheLastReadIsStoredOnce(t *testing.T
 // the stream stores the exception under a message id of its own dedupe key
 // (bus.DeliveryExceptionDedupePrefix): neither the core publish the one judgement chose nor the
 // one-copy exception.<reason>.<origin> another listener's JetStream judgement stores it under.
+// It must not run in parallel: its 2 s judgement must end inside the row's 3 s hold of the locks.
 func TestADeliveryExceptionIsPublishedOnTheOneJudgementOfItsLane(t *testing.T) {
-	t.Parallel()
 	const (
 		topic  = "notifications.x.judged"
 		lane   = bus.ExceptionTopicPrefix + topic

@@ -50,6 +50,7 @@ func edgeProcessCall(t *testing.T, caller *ciphertokentest.Caller, edge *listene
 // message reaches it through A before the claim, and a claim through B of a role of another
 // project is refused and moves nothing.
 func TestARoleClaimOnAnotherEdgeReplicaKeepsDelivery(t *testing.T) {
+	t.Parallel()
 	binary := cmdtest.Build(t, "envoy-listener")
 	uri := testnats.URL(t)
 	shared := startListenerProcess(t, binary, uri, "replica-claim-shared")
@@ -135,6 +136,7 @@ func TestARoleClaimOnAnotherEdgeReplicaKeepsDelivery(t *testing.T) {
 // session's first message before the admission is lost, and, when the resume is missing, a
 // registration after the probe's window delivers the message the probe waited for.
 func TestAnEdgeRoleClaimResumesARelayRunThatEndedForWantOfAnAdmission(t *testing.T) {
+	t.Parallel()
 	rig := newEdgeRigServing(t, []string{"PRIV"})
 	const sessionID, role = "ses_claim_resume", "legion-priv-priv-31-tester"
 	const held = "edge relay holds the session's messages in its consumer until the session registers or claims a role through this listener"

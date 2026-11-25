@@ -78,6 +78,7 @@ func awaitEarlierBuildRecord(t *testing.T, registry *session.SessionRegistry, se
 // (sessionMayBeLive). The control is the same session's record deleted: the same pass deletes the
 // consumer of a session that is gone.
 func TestTheSweepKeepsTheConsumerOfALiveSessionAnEarlierBuildRegistered(t *testing.T) {
+	t.Parallel()
 	for _, gone := range []bool{false, true} {
 		name := "its record as an earlier build writes it"
 		if gone {
@@ -131,6 +132,7 @@ func TestTheSweepKeepsTheConsumerOfALiveSessionAnEarlierBuildRegistered(t *testi
 // is answered as to a missing session. The control is the same session's record as this build
 // writes it, naming its key: the edge lists it and takes the send.
 func TestAnEdgeGrantsNoScopeToARecordNamingNoKey(t *testing.T) {
+	t.Parallel()
 	for _, earlier := range []bool{true, false} {
 		name := "a record an earlier build wrote"
 		if !earlier {

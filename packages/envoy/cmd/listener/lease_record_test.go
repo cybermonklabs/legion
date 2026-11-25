@@ -14,6 +14,7 @@ import (
 
 // Every rewrite keeps the JSON keys of the record this build does not know.
 func TestLeaseRewriteKeepsUnknownFields(t *testing.T) {
+	t.Parallel()
 	kv := leaseBucket(t)
 	clock := newFakeLeaseClock()
 	putLease(t, kv, `{"holder":"pod-new-build","boot":"0011223344556677","released":true,"future":{"k":[1,2]}}`)
@@ -62,6 +63,7 @@ func formerHolder(l *lease, boot string) bool {
 // former_boots on, so a chain A -> B -> C names A and B. Renewals and a release leave it as it
 // stands, and FormerHolder reads it.
 func TestLeaseFormerBootsAreWrittenOnEveryTakeOverAndCarriedAlongAChain(t *testing.T) {
+	t.Parallel()
 	kv := leaseBucket(t)
 	clock := newFakeLeaseClock()
 	a := testLease(kv, "pod-a", productionLeaseConfig(), clock.now)
@@ -136,6 +138,7 @@ func TestLeaseFormerBootsAreWrittenOnEveryTakeOverAndCarriedAlongAChain(t *testi
 // An acquisition keeps only the former boots that stopped less than leaseFormerBootAge before
 // it, never names its own boot, and keeps the newest leaseFormerBootsMax.
 func TestLeaseFormerBootsArePrunedByAgeAndCount(t *testing.T) {
+	t.Parallel()
 	kv := leaseBucket(t)
 	clock := newFakeLeaseClock()
 	b := testLease(kv, "pod-b", productionLeaseConfig(), clock.now)
@@ -178,6 +181,7 @@ func TestLeaseFormerBootsArePrunedByAgeAndCount(t *testing.T) {
 // A holder's own lapse and resume is no take-over: it adds nothing to former_boots and keeps the
 // list it acquired with.
 func TestLeaseFormerBootsAreNotChangedByAResumeAfterALapse(t *testing.T) {
+	t.Parallel()
 	kv := leaseBucket(t)
 	var fail atomic.Bool
 	clock := newFakeLeaseClock()
@@ -215,6 +219,7 @@ func TestLeaseFormerBootsAreNotChangedByAResumeAfterALapse(t *testing.T) {
 // held. A term end that cleared it would report no time, and the ledger would take over at once
 // an attempt the released boot may still be forwarding, which delivers it twice.
 func TestLeaseFormerHolderCountsFromTheStartOfATermThatEnded(t *testing.T) {
+	t.Parallel()
 	const releasedBoot = "00000000000000cc"
 	for _, ending := range []struct {
 		name string

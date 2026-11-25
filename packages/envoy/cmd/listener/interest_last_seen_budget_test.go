@@ -36,8 +36,8 @@ func (k hangingSeenKV) Get(string) (natsgo.KeyValueEntry, error) {
 // and no more: the rows still list, without a last heartbeat for the ones it could not read.
 // Before this change that read had no budget at all, so the whole list waited out the JetStream
 // MaxWait once per lapsed row, well past this listener's HTTP write timeout.
+// It must not run in parallel: the list must answer within 2 s past sendRequestBudget.
 func TestTheInterestsListAnswersWithinItsBudgetWhileTheLastSeenBucketHangs(t *testing.T) {
-	t.Parallel()
 	const lapsed = "ses_interests_last_seen_hangs"
 	released := make(chan struct{})
 	t.Cleanup(func() { close(released) })

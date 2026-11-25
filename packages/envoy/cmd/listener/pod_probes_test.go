@@ -191,6 +191,7 @@ func rigHealth(t *testing.T, rig *listRig) (int, string) {
 // which such a startup probe would end with a restart every ten minutes
 // (TestHubListenerProbesNeverRestartAListenerWhoseNATSRefusesItsStart).
 func TestHubListenerIsReadyOnlyOnceItsV1Serves(t *testing.T) {
+	t.Parallel()
 	probes, path := hubProbes(t)
 	requireHubProbeRoutes(t, probes, path)
 	ready := probes["readinessProbe"]

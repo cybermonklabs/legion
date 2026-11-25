@@ -75,6 +75,7 @@ func (l *mpFrameLog) notOnce(messages []mpMessage) []string {
 // under its own event id
 // (TestTwoPodsARelayedFrameTheLinksDroppedUnderIsRepeatedAtMostOnceWithItsId).
 func TestTheExactlyOnceCheckRefusesARepeatOfAFrameAnsweredBeforeTheDrop(t *testing.T) {
+	t.Parallel()
 	dropped := time.Now()
 	justBefore := mpMessage{event: "evt-mp-just-before", session: "ses_mp_relay_drop_once", published: dropped.Add(-time.Second)}
 	log := &mpFrameLog{frames: map[string][]mpFrame{

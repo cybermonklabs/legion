@@ -626,6 +626,7 @@ func (s *deadLetterSeam) assertTakenOver(t *testing.T, held laneCopy) []deadLett
 // row runs two listeners on a stream of its own, sweeping every second where the row sweeps, and
 // moves their clock rather than waiting an hour.
 func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
+	t.Parallel()
 	t.Run("a a publish to a role with no claim is answered 202 with kept_until one hour after the keep", func(t *testing.T) {
 		rig := newHourRig(t)
 		const role = "hour-unclaimed"
@@ -1360,6 +1361,7 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 // is written under (keptRoleDrop.claimReason) back as that drop, so a claim taken over again and
 // again is judged as the first takeover judged it.
 func TestADeadLetterClaimIsTakenOverForTheReasonItWasMade(t *testing.T) {
+	t.Parallel()
 	stored := bus.StoredMessage{Sequence: 7, Time: time.Date(2026, 11, 15, 9, 0, 0, 0, time.UTC)}
 	data, err := json.Marshal(contracts.Envelope{EventID: "evt_claimed", SourceSession: "ses_claim_sender", Payload: `{"delivery":{"mode":"steer"}}`})
 	if err != nil {
@@ -1649,6 +1651,7 @@ func TestADeadLetterNamesADispatchPostAndQuotesNoneOfIt(t *testing.T) {
 // that copy, and one that repeats the key of a copy that was forwarded or whose hour ended is kept
 // as a copy of its own, however many times.
 func TestARepeatedKeepIsOneCopyUntilItEnds(t *testing.T) {
+	t.Parallel()
 	t.Run("k a repeat inside the copy's hour is answered with the first copy and the lane holds one copy", func(t *testing.T) {
 		rig := newHourRig(t)
 		const (
@@ -1777,6 +1780,7 @@ func TestARepeatedKeepIsOneCopyUntilItEnds(t *testing.T) {
 // makes it live, so its registration would not read it as returning, and it is handed the copy
 // at that refresh though the claim is refused (roleSetHandler).
 func TestALapsedHolderIsKeptFor(t *testing.T) {
+	t.Parallel()
 	t.Run("a a publish to a role whose holder deleted its record is kept and reaches that session once it registers again", func(t *testing.T) {
 		rig := newHourRig(t)
 		const (

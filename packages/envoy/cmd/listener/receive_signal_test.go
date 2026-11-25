@@ -35,6 +35,7 @@ const receiverLockHeldFor = 2 * time.Second
 // long as each dial hung: its renewals lapsed instead of its release landing, and a standby took
 // the expired record seconds later
 // (TestTwoPodsReceiveConnectionLostToADroppingRouteReleasesTheLeaseWithin15s).
+// It must not run in parallel: each signal read and lease round must answer within 100 ms.
 func TestTheReceiveSignalAnswersWhileTheReceiveConnectionsLocksAreHeld(t *testing.T) {
 	uri := testnats.URL(t)
 	relay := startListenerRelay(t, uri)
@@ -184,8 +185,8 @@ func awaitHeldLock(t *testing.T, complaint string, read func()) {
 // connection and read up, so the holder would go on renewing a lease it received nothing on while
 // /healthz answered 503; and once it released, a pod with no term left would read up and take
 // the lease back, only to subscribe on the closed connection.
+// It must not run in parallel: the release must come within 2 s past the round it falls due in.
 func TestAReplacedConnectionBehindAFailingHookReadsDownAndReleasesTheLease(t *testing.T) {
-	t.Parallel()
 	uri := testnats.URL(t)
 	const machineID = "box-replaced-behind-a-failing-hook"
 	handle, _ := recordingHandler()

@@ -29,6 +29,7 @@ import (
 // and a listener without a lease, the machine's one deliverer, keeps retrying and answers /healthz
 // 503 unhealthy past the bound, so its runtime counts it unready, as the bounded subscribe that
 // exited did.
+// It must not run in parallel: the alarm must follow /healthz's 503 within 1 s.
 func TestAPodThatCannotPrepareItsDurableAloneTriesAgain(t *testing.T) {
 	timing := testReceiveTiming()
 	timing.alarmAfter, timing.alarmEvery = 5*time.Second, time.Millisecond
@@ -106,6 +107,7 @@ func TestAPodThatCannotPrepareItsDurableAloneTriesAgain(t *testing.T) {
 // published afterwards on every subject the stream stores. nats-server 2.10 accepts an update that
 // clears a push durable's filter instead, and then delivers nothing published after it.
 func TestADurableFilteredOnTheStreamSubjectsDeliversEverySubjectOnceCorrected(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
 	const machineID = "box-filtered"
 	consumer := bus.ListenerDurable(machineID)
@@ -153,6 +155,7 @@ func TestADurableFilteredOnTheStreamSubjectsDeliversEverySubjectOnceCorrected(t 
 // the standby up however long it waits, well past the three intervals after which a terminal
 // failure would end it. /healthz answers it 200 healthy, as a standby naming the active pod.
 func TestAStandbyOutlivesThreeSelfHealthIntervals(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
 	const machineID = "box-standby"
 	handle, _ := recordingHandler()
@@ -219,6 +222,7 @@ func TestAStandbyOutlivesThreeSelfHealthIntervals(t *testing.T) {
 // The holder whose connection the bus replaces (nats.go gave up on it) subscribes again on the new
 // connection, and keeps delivering.
 func TestTheHolderReceivesOnAConnectionTheBusReplaced(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
 	handle, received := recordingHandler()
 	rig := startReceiverRig(t, uri, "box-replaced", "pod-a", handle, testReceiveTiming(), testLeaseTiming())
@@ -315,6 +319,7 @@ func TestAListenerWithoutTheLeaseGrantDeliversWithoutALease(t *testing.T) {
 // takes the record. A degraded branch that asked only whether the record named a holder would
 // read the lapsed pod's own record as an answer and call the pod delivering nothing healthy.
 func TestALapsedHolderDoesNotAnswerHealthy(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
 	const machineID = "box-lapsed-health"
 	handle, _ := recordingHandler()

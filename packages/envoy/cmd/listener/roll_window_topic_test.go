@@ -108,6 +108,7 @@ func requireStored(t *testing.T, js natsgo.JetStreamContext, topic string) {
 //
 // Before that rule, the route judged a topic uncaptured on the subjects it held inside the gap,
 // and refused the publish 400, "no stream subject captures", for a topic the stream stores.
+// It must not run in parallel: the subject must land within 200 ms, inside the 250 ms reread gap.
 func TestAPublishOnATopicASubjectAddedInsideTheRereadGapCapturesIsNotRefused(t *testing.T) {
 	const uncaptured = "notifications.lxspec.probe.gap"
 	url := testnats.URL(t)
@@ -151,6 +152,7 @@ func TestAPublishOnATopicASubjectAddedInsideTheRereadGapCapturesIsNotRefused(t *
 // Before that rule, a read that failed left the topic judged on the subjects the pod held, and the
 // route refused the publish 400 for a topic the stream stores.
 func TestAPublishWhoseReadOfTheSubjectsGoesUnansweredIsNotRefused(t *testing.T) {
+	t.Parallel()
 	url := testnats.URL(t)
 	relay := testnats.StartUnansweredRelayOn(t, url, "$JS.API.STREAM.INFO."+bus.Stream)
 	rig, js := rollWindowRig(t, url, relay.URL())
@@ -175,6 +177,7 @@ func TestAPublishWhoseReadOfTheSubjectsGoesUnansweredIsNotRefused(t *testing.T) 
 // holds, which are this build's: no read will ever come, so a topic only a newer build's subject
 // captures is refused 400 though the stream captures it. It is the one exception to refusing only
 // on a read that started after the publish asked, and it stands under either rule.
+// It must not run in parallel: it sets NATS_NKEY_SEED with t.Setenv.
 func TestAPublishByAUserThatMayNotReadTheStreamIsJudgedOnTheSubjectsItHolds(t *testing.T) {
 	const machineID = "box-no-stream-info"
 	seed, public := testnats.User(t)
@@ -258,6 +261,7 @@ func pullOnce(t *testing.T, js natsgo.JetStreamContext, sessionID string) []stri
 // consumer past the message (nats-server v2.15.1 consumer.go:5066-5073), and the next
 // registration's wider filter kept that position (consumer.go:2695-2754): the message was never
 // delivered.
+// It must not run in parallel: its pull waits 300 ms (rollPull) for a message handed it at once.
 func TestATopicAddedAfterItsRegistrationIsDeliveredAcrossAnEmptyPull(t *testing.T) {
 	const sessionID = "ses_roll_empty_pull"
 	url := testnats.URL(t)
@@ -283,6 +287,7 @@ func TestATopicAddedAfterItsRegistrationIsDeliveredAcrossAnEmptyPull(t *testing.
 // Before the filter kept such a topic, the pull delivered the agent subject's message alone, which
 // moved the consumer past the message on the topic, and the next registration's wider filter kept
 // that position: the message on the topic was never delivered.
+// It must not run in parallel: its pull waits 300 ms (rollPull) for a message handed it at once.
 func TestATopicAddedAfterItsRegistrationIsDeliveredAcrossAMessageDeliveredBeforeTheNextRegistration(t *testing.T) {
 	const sessionID = "ses_roll_delivered_between"
 	url := testnats.URL(t)
@@ -311,6 +316,7 @@ func TestATopicAddedAfterItsRegistrationIsDeliveredAcrossAMessageDeliveredBefore
 // captures it. The consumer is created and updated on that filter like any other, and a core
 // publish on the topic, which no stream stores, delivers nothing and fails nothing.
 func TestATopicNoStreamCapturesIsKeptInTheRowAndTheFilterAndDeliversNothing(t *testing.T) {
+	t.Parallel()
 	const (
 		sessionID = "ses_never_captured"
 		topic     = "notifications.lxspec.probe.never"
@@ -367,6 +373,7 @@ func TestATopicNoStreamCapturesIsKeptInTheRowAndTheFilterAndDeliversNothing(t *t
 // would leave the new form out at the registration, and the consumer, which moves past a message
 // its filter does not match, would skip what the stream stores on that form after the newer
 // build's start until a later write of the filter took the form in.
+// It must not run in parallel: its pull waits 300 ms (rollPull) for a message handed it at once.
 func TestAFollowedTopicWhoseSecondFormOnlyANewerSubjectCapturesKeepsBothFormsInTheFilter(t *testing.T) {
 	const (
 		sessionID   = "ses_roll_second_form"

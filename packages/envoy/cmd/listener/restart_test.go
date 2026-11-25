@@ -22,6 +22,7 @@ import (
 // that window deletes a consumer the server no longer has, which the watcher's end reports at WARN
 // because the consumer is gone either way (kvwatch.Watcher.End, LEGION-278). Every ERROR line
 // fails the test.
+// It must not run in parallel: the cache must list a write within 3 s of the reconnect.
 func TestListenerFollowsTheInterestRegistryAcrossNATSRestarts(t *testing.T) {
 	server, uri := testnats.Start(t)
 	listener := startListenerProcess(t, cmdtest.Build(t, "envoy-listener"), uri, "restart-test")

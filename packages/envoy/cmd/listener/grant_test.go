@@ -31,6 +31,7 @@ import (
 // is a direct get on the stream's bare subject, which it refuses, so the lease was never held and
 // no last-seen record was written.
 func TestAListenerUnderItsMachinesGrantHoldsTheLeaseAndRecordsLastSeen(t *testing.T) {
+	t.Parallel()
 	const (
 		machineID = "box-granted"
 		instance  = "pod-granted"

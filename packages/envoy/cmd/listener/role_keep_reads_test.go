@@ -16,6 +16,7 @@ import (
 // more copy after it, and the sweep's wake scan counts it as a copy that wakes the role
 // (keptLaneWakesItsRole).
 func TestAKeptCopyWithAnExpectsReplyWordThisBuildDoesNotKnowIsReadAlikeByTheWalkTheKeepAndTheWakeScan(t *testing.T) {
+	t.Parallel()
 	harness := newListenerDeliveryHarness(t)
 	const role = "kept-unknown-expects-reply"
 	var frame markedFrame

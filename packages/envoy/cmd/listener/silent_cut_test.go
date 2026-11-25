@@ -38,6 +38,7 @@ func disconnectedUnderName(output, name string) bool {
 // production builds. A test that connected with bus.WithSilentCutDetection itself would report
 // the cut within seconds whether or not that call site carries the option, and would prove
 // nothing.
+// It must not run in parallel: the cut must be reported within 5 s, 2 s past its detection.
 func TestTheListenersNATSClientReportsASilentCutWithinSeconds(t *testing.T) {
 	const instance = "silent-cut-pod"
 	server, uri := testnats.Start(t)

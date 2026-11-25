@@ -29,6 +29,7 @@ func (s *receiveSignal) backUp()   { s.up.Store(true) }
 // takes it settles for the full ack wait and is no hand-back candidate. The pod that released it
 // takes it back from no poll while the connection is down, and stands by again once it is up.
 func TestLeaseHolderReleasesTheRecordOnceItsReceiveConnectionHasBeenDownForTheBound(t *testing.T) {
+	t.Parallel()
 	kv := leaseBucket(t)
 	clock := newFakeLeaseClock()
 	signal := newReceiveSignal()
@@ -92,6 +93,7 @@ func TestLeaseHolderReleasesTheRecordOnceItsReceiveConnectionHasBeenDownForTheBo
 // A receive connection back inside the bound costs the holder nothing: the same term holds the
 // lease on, the record is never released, and the next cut is timed from itself.
 func TestLeaseHolderKeepsTheLeaseWhenItsReceiveConnectionComesBackInsideTheBound(t *testing.T) {
+	t.Parallel()
 	kv := leaseBucket(t)
 	clock := newFakeLeaseClock()
 	signal := newReceiveSignal()
@@ -128,6 +130,7 @@ func TestLeaseHolderKeepsTheLeaseWhenItsReceiveConnectionComesBackInsideTheBound
 // has lain unchanged for the ttl. It reads the record all the while, so its /healthz still names
 // the holder, and takes one again once the connection is back.
 func TestLeaseStandbyTakesNoRecordWhileItsReceiveConnectionIsDown(t *testing.T) {
+	t.Parallel()
 	kv := leaseBucket(t)
 	clock := newFakeLeaseClock()
 	signal := newReceiveSignal()

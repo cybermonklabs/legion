@@ -65,6 +65,7 @@ var listenerKVWatchers = []string{"interest registry", "role claims", "session r
 // (consumersLeft): such a replacement, in flight when its watcher's end ran, may be left to the
 // server to remove.
 func TestTheListenerShutdownEndsItsKVWatchersBeforeTheDrain(t *testing.T) {
+	t.Parallel()
 	// instance is the listener's instance, which names its main client (mainConnection).
 	const instance = "drain-watchers-pod"
 	binary := cmdtest.Build(t, "envoy-listener")
@@ -292,6 +293,7 @@ func mainConnection(output, instance string) (lostAtDrain, remade bool) {
 // (mainConnection says why), which slog's text handler quotes for its space; the role lane's line,
 // under a name of its own, is not read.
 func TestTheShutdownTestReadsTheMainConnectionAtTheDrain(t *testing.T) {
+	t.Parallel()
 	const (
 		instance   = "pod-a"
 		mainLost   = `2026/11/18 07:00:01 INFO envoy nats disconnected name="envoy-listener pod-a" error="nats: stale connection"`

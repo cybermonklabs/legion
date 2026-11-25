@@ -20,6 +20,7 @@ import (
 // cache has it. A send or a role claim through that other pod reads the bucket on a cache miss, so it
 // is answered rather than refused as `no live session` or `session is not registered`.
 func TestSendAndRoleSetThroughAPodWhoseCacheHasNotSeenTheRegistrationAnswer200(t *testing.T) {
+	t.Parallel()
 	t.Run("send", func(t *testing.T) {
 		claimant, observer := trailingListeners(t)
 		if err := claimant.sessions.Put("ses_unseen", session.SessionEntry{Port: 4242, MachineID: "test-machine"}); err != nil {
@@ -53,6 +54,7 @@ func TestSendAndRoleSetThroughAPodWhoseCacheHasNotSeenTheRegistrationAnswer200(t
 // whose cache holds an older copy, that rewrite lands on what the bucket holds, so the newer host
 // another pod recorded is kept rather than replaced by the stale copy's.
 func TestARoleSetOnAPodWhoseCacheTrailsKeepsTheNewerHost(t *testing.T) {
+	t.Parallel()
 	claimant, observer := trailingListeners(t)
 	const sessionID = "ses_moved"
 	register := func(host string) {
@@ -91,6 +93,7 @@ func TestARoleSetOnAPodWhoseCacheTrailsKeepsTheNewerHost(t *testing.T) {
 // role, another client instance is refused. The claiming pod's cache has seen neither registration,
 // so both are read from the bucket the pods share.
 func TestASoftClaimThroughAnotherPodWeighsTheClientInstanceNotThePod(t *testing.T) {
+	t.Parallel()
 	const (
 		forkingInstance = "4f1c2a9e8b7d6c5a4f1c2a9e8b7d6c5a"
 		otherInstance   = "9b8a7c6d5e4f3a2b9b8a7c6d5e4f3a2b"
@@ -179,6 +182,7 @@ func raceSessionWrites(t *testing.T, sessions *session.SessionRegistry) {
 // A registration write that loses its compare-and-set on every attempt is a transient failure: the
 // role set answers 503 with Retry-After, never a 500 or an overwrite of the other writer's value.
 func TestARoleSetWhoseRegistrationWriteLosesEveryRaceAnswers503(t *testing.T) {
+	t.Parallel()
 	_, observer := trailingListeners(t)
 	if err := observer.sessions.Put("ses_raced", session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true}); err != nil {
 		t.Fatalf("register ses_raced: %v", err)
@@ -196,6 +200,7 @@ func TestARoleSetWhoseRegistrationWriteLosesEveryRaceAnswers503(t *testing.T) {
 // A registration, an interest and a role claim stored by a newer build carry a field this build does
 // not know. A heartbeat (subscribe) and a role set through this build keep it in all three.
 func TestAHeartbeatAndARoleSetKeepFieldsThisBuildDoesNotKnow(t *testing.T) {
+	t.Parallel()
 	registry, sessions := setupSessionsTest(t, nil, nil)
 	client := setupPublishTestClient(t)
 	// The role set below lands, and a claim that lands hands its role's kept lane a drain

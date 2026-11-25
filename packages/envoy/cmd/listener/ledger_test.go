@@ -71,6 +71,7 @@ func nakDelay(t *testing.T, settlement string) time.Duration {
 // listener makes itself, so it is the one the ledger keeps a delivered record for, and this is
 // what keeps a holder from being sent the same role message twice by two pods of one machine.
 func TestAPodTakingOverDoesNotForwardARoleMessageTheOldPodDelivered(t *testing.T) {
+	t.Parallel()
 	harness := newListenerDeliveryHarness(t)
 	const role, holder = "takeover-forward", "ses_takeover_holder"
 	if err := harness.sessions.Put(holder, session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true}); err != nil {
@@ -126,6 +127,7 @@ func TestAPodTakingOverDoesNotForwardARoleMessageTheOldPodDelivered(t *testing.T
 // margin cannot tell whether that pod is still delivering, so the durable lane NAKs the message
 // until the attempt is old enough to take over, and nothing is reported meanwhile.
 func TestADurableMessageAnotherPodIsAttemptingIsRetriedOnceItCanBeTakenOver(t *testing.T) {
+	t.Parallel()
 	harness := newListenerDeliveryHarness(t)
 	const topic = "notifications.github.owner.repo.issue.8"
 	harness.registerFanoutTarget(t, "ses_deferred", topic, nil)
@@ -173,6 +175,7 @@ func heldOnly(attempt dedupe.Attempt) error {
 // delivery, so it retries the message after the usual 30 s rather than risk reporting twice, and
 // says so at WARN.
 func TestAnUnavailableLedgerRetriesTheDurableLane(t *testing.T) {
+	t.Parallel()
 	harness := newListenerDeliveryHarness(t)
 	const topic = "notifications.github.owner.repo.issue.9"
 	harness.registerFanoutTarget(t, "ses_unavailable", topic, nil)
@@ -198,6 +201,7 @@ func TestAnUnavailableLedgerRetriesTheDurableLane(t *testing.T) {
 // holder's agent subject, and one WARN says the ledger was not read. A lane that dropped the
 // message instead would drop every role message for as long as the ledger is down.
 func TestAnUnavailableLedgerLetsTheRoleLaneForwardToTheHolder(t *testing.T) {
+	t.Parallel()
 	harness := newListenerDeliveryHarness(t)
 	const role, holder = "ledger-unavailable", "ses_ledger_unavailable_holder"
 	claimRoleFor(t, harness.registry, harness.sessions, holder, role, nil)
@@ -244,6 +248,7 @@ func TestAnUnavailableLedgerLetsTheRoleLaneForwardToTheHolder(t *testing.T) {
 // stored on the holder's agent subject, one role dedupe skip names the deferral, and no exception
 // is published.
 func TestARoleMessageAnotherPodIsAttemptingIsSkippedOnTheRoleLane(t *testing.T) {
+	t.Parallel()
 	harness := newListenerDeliveryHarness(t)
 	const role, holder = "ledger-deferred", "ses_ledger_deferred_holder"
 	claimRoleFor(t, harness.registry, harness.sessions, holder, role, nil)
@@ -303,6 +308,7 @@ func (l *failingOnceLedger) Attempt(dedupeKey, sessionID string) (dedupe.Attempt
 // a short drop of the link otherwise held every message in flight for half a minute. A connection
 // that does not come back within the wait still retries the message after the 30 s.
 func TestALedgerCallThatFailedInAReconnectIsMadeAgainOnceTheConnectionIsBack(t *testing.T) {
+	t.Parallel()
 	harness := newListenerDeliveryHarness(t)
 	const topic = "notifications.github.owner.repo.issue.10"
 	harness.registerFanoutTarget(t, "ses_reconnect", topic, nil)
@@ -348,6 +354,7 @@ func TestALedgerCallThatFailedInAReconnectIsMadeAgainOnceTheConnectionIsBack(t *
 // registries are current (durableNeedsDelivery), so the row hands each to the delivery path
 // itself, as the durable does when a copy trails the bucket that path reads.
 func TestAnAgentMessageThisListenerHandsToNobodyIsAckedWithoutAskingTheLedger(t *testing.T) {
+	t.Parallel()
 	harness := newListenerDeliveryHarness(t)
 	cfg := harness.config
 	cfg.ledger = unavailableLedger{}
@@ -387,6 +394,7 @@ func TestAnAgentMessageThisListenerHandsToNobodyIsAckedWithoutAskingTheLedger(t 
 }
 
 func TestADeliveryExceptionsIDIsItsEventRecipientAndReason(t *testing.T) {
+	t.Parallel()
 	id := deliveryExceptionID("evt-1", "ses_a", "no_holder")
 	if id != deliveryExceptionID("evt-1", "ses_a", "no_holder") {
 		t.Fatal("one event, recipient and reason gave two exception ids")
@@ -412,6 +420,7 @@ func TestADeliveryExceptionsIDIsItsEventRecipientAndReason(t *testing.T) {
 // (TestAGiveUpWhoseNoticeCanNeverBePublishedIsStillTerminal), so the record is aged out between
 // the two, which is what dedupe.AttemptedAge does on its own.
 func TestARepeatedDeliveryExceptionCarriesOneIDAndIsStoredOnce(t *testing.T) {
+	t.Parallel()
 	harness := newListenerDeliveryHarness(t)
 	item := listenerTestEnvelope(contracts.LegacyAgentSubject("ses_nowhere"), "agent.ses_nowhere.0123456789abcdef0123456789abcdef")
 	exceptionTopic := bus.ExceptionTopicPrefix + item.Topic

@@ -174,6 +174,7 @@ func (r *subjectStallRelay) close() {
 // check (`curl -sf`) failed. Each must answer inside /healthz's 3 s budget instead, and still fail
 // that check: 503 unhealthy, naming the dependency and the context's deadline. The negative control
 // is /healthz on the same rig before the stall: 200 healthy.
+// It must not run in parallel: /healthz must answer within 3.5 s, 0.5 s past healthzBudget.
 func TestHealthzAnswersAJetStreamThatStoppedAnsweringInsideItsBudget(t *testing.T) {
 	for _, stall := range []struct {
 		name      string

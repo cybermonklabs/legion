@@ -12618,7 +12618,7 @@ console.log(JSON.stringify(args));
     // session's state.
     const { default: envoyExtension } = await import("./envoy.ts?uncaptured-subscribe-again");
     const fixture = createPi();
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, sessionContext(session));
     const subscribeTool = fixture.tools.find((tool) => tool.name === "envoy_subscribe");
     if (subscribeTool === undefined) throw new Error("envoy_subscribe was not registered");

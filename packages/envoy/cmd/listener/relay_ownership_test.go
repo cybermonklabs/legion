@@ -51,6 +51,7 @@ func startRelayingReceiverRig(t *testing.T, uri, machineID, instance string, han
 // relaying: its term is over, and the resubscribe that reports success for a pod with no term
 // elects nobody.
 func TestALeaseLostBetweenAnUnboundProbeAndTheResubscribeLeavesThePodNotRelaying(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
 	const machineID = "box-relay-ownership-lost"
 	handle, _ := recordingHandler()
@@ -94,6 +95,7 @@ func TestALeaseLostBetweenAnUnboundProbeAndTheResubscribeLeavesThePodNotRelaying
 // and a rebuild whose probe then finds the durable bound returns without resubscribing. Neither
 // says anything about the term, which is what elects this pod.
 func TestAnUnboundProbeInsideALiveTermLeavesTheHolderRelaying(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
 	const machineID = "box-relay-ownership-live"
 	handle, _ := recordingHandler()
@@ -150,6 +152,7 @@ func stepLeaseDown(t *testing.T, kv bus.KeyValue, l *lease) bool {
 // restarts a session's consumer on a pod whose lease another pod has taken. The relay set here has
 // a session on consumer delivery, whose relay a term that took it would start at once.
 func TestATermEndedBetweenPrepareAndBeginStartsNoRelayRun(t *testing.T) {
+	t.Parallel()
 	relayRig := newRelayRigUnowned(t, relayPauseFirst, relayPauseMax)
 	relayRig.subscribe(t, consumerRegistration("ses_term_ended_before_begin_"+id.New(), "epoch-1"))
 	var restarts atomic.Int32
@@ -198,6 +201,7 @@ func TestATermEndedBetweenPrepareAndBeginStartsNoRelayRun(t *testing.T) {
 // (sessionRelays.termContext). Here the step-down lands between the restart's read of the session's
 // row and that call, with the term's context still live, as the receive loop has not heard it.
 func TestARelayRestartAfterTheLeaseSteppedDownDoesNotRestartTheConsumer(t *testing.T) {
+	t.Parallel()
 	rig, run := newRestartableRun(t, "ses_restart_after_step_down_")
 	kv := leaseBucket(t)
 	clock := newFakeLeaseClock()
@@ -240,6 +244,7 @@ func TestARelayRestartAfterTheLeaseSteppedDownDoesNotRestartTheConsumer(t *testi
 // A call it had already sent can still land, which termContext's doc bounds. The
 // session-consumer connection goes through a proxy that the restart's read of the session's row
 // freezes, so the call waits with no answer until its context ends.
+// It must not run in parallel: the restart must end within 1 s of the loss deadline it times.
 func TestARelayRestartStartedJustBeforeTheLeasesLossDeadlineIsCutOffAtIt(t *testing.T) {
 	server := testnats.URL(t)
 	proxy := testnats.StartProxy(t, server)
@@ -317,6 +322,7 @@ func TestARelayRestartStartedJustBeforeTheLeasesLossDeadlineIsCutOffAtIt(t *test
 // because a newer interest row lands under the restart, and the term's context ends inside that
 // pass.
 func TestARelayRestartWhoseTermEndsAfterItsRestartAtFloorStartsNoPull(t *testing.T) {
+	t.Parallel()
 	rig, run := newRestartableRun(t, "ses_term_ends_in_settle_")
 	termCtx, endTerm := context.WithCancel(context.Background())
 	defer endTerm()
@@ -400,6 +406,7 @@ func heldLongLease(t *testing.T, clock *fakeLeaseClock) (*lease, bus.KeyValue, u
 // its reply take milliseconds. A message handed to the old pod's request instead comes back only
 // after the consumer's 60 s ack wait, since nothing restarts the consumer after the next holder's
 // own restart.
+// It must not run in parallel: the old pull must leave the consumer within 2 s of the term's end.
 func TestARelayUnsubscribesItsPullWhenItsTermEndsSoTheNextHolderTakesEachMessage(t *testing.T) {
 	old := newRelayRigUnowned(t, relayPauseFirst, relayPauseMax)
 	next := newRelayRigUnowned(t, relayPauseFirst, relayPauseMax)
@@ -459,8 +466,8 @@ func TestARelayUnsubscribesItsPullWhenItsTermEndsSoTheNextHolderTakesEachMessage
 // cancelled. That holds open the gap between a term's end and the unsubscribe that follows it
 // (relayNATS), in which the old pod's pull request still waits at the consumer, so the server
 // delivers the message to the old pod.
+// It must not run in parallel: the old pull must take the message within the 1 s the row watches.
 func TestARelayLeavesAMessageArrivingAfterItsTermEndedForTheNextHolder(t *testing.T) {
-	t.Parallel()
 	old := newRelayRigUnowned(t, relayPauseFirst, relayPauseMax)
 	sessionID := "ses_after_term_end_" + id.New()
 	standIn := startSessionStandIn(t, old.url, sessionID, answerDone)
@@ -533,6 +540,7 @@ func (a *answerCountingAcker) NakWithDelay(delay time.Duration) error {
 // unanswered at the consumer, which hands it to that pod's relay, and the relay does not send it.
 // No session claims the role, so a judgement under a current term would copy the frame and ack it.
 func TestARoleFrameWhoseTakeOverIsReachedAfterTheTermEndedCopiesAndAcksNothing(t *testing.T) {
+	t.Parallel()
 	const role = "relay-term-ended"
 	rig, run := newRestartableRun(t, "ses_take_over_after_term_")
 	termCtx, endTerm := context.WithCancel(context.Background())

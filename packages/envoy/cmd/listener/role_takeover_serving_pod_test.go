@@ -157,8 +157,8 @@ func TestAClaimRoutePassOnAStandbyAndTheHoldersSweepPassGiveTheNewHolderEachMess
 // stores no copy after that, and its record stands as its last write left it. The holder's sweep
 // then goes on from there, and the new holder receives each message exactly once. The window here is
 // the claimHandoverWindow seam's, 2 s, where the deployed one is roleKeepHandoverWindow.
+// It must not run in parallel: the pass's first copy must land inside its 2 s handover window.
 func TestAClaimRoutePassCutByItsHandoverWindowLeavesTheRestToTheHoldersSweep(t *testing.T) {
-	t.Parallel()
 	rig := newCopiesRig(t)
 	const window = 2 * time.Second
 	var claimPass atomic.Bool

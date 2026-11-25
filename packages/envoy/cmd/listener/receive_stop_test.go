@@ -181,6 +181,7 @@ func TestAGracefulStopOverASlowLinkHandsBackWhatWasOnTheWire(t *testing.T) {
 // receives, so the durable is push-bound at every instant of the hand-over, and ends its linger as
 // soon as the record says so, well before its cap.
 func TestAGracefulStopKeepsItsSubscriptionUntilTheStandbyReceives(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
 	const machineID = "box-linger"
 	activeHandle, _ := recordingHandler()
@@ -249,6 +250,7 @@ func TestAGracefulStopKeepsItsSubscriptionUntilTheStandbyReceives(t *testing.T) 
 // wrote it, and it is written after the drain - after the standby is receiving - so the standby
 // reads it inside its settle hold rather than at its subscribe.
 func TestAGracefulStopMarksTheHandBackForTheRecordItReleased(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
 	const machineID = "box-marked-stop"
 	handle, _ := recordingHandler()
@@ -431,6 +433,7 @@ func TestAStopMarksNoHandBackWhenItsLingerOrItsTermFellShort(t *testing.T) {
 // A graceful stop with no other pod to take the lease keeps its subscription for two standby polls
 // after its release, then, the record still its own, drains it and returns, leaving the record
 // released and unsettled, so whichever pod takes it next settles.
+// It must not run in parallel: the stop must end within 1 s past its lingerUntaken wait.
 func TestAGracefulStopWithNoOtherPodEndsItsLingerUntaken(t *testing.T) {
 	uri := testnats.URL(t)
 	const machineID = "box-alone"
@@ -466,8 +469,8 @@ func TestAGracefulStopWithNoOtherPodEndsItsLingerUntaken(t *testing.T) {
 // A graceful stop whose released lease another pod takes but never receives on keeps its
 // subscription to the linger cap, lingerMax after it handed its messages back, then drains it and
 // returns.
+// It must not run in parallel: the stop must end within 1 s past its 3 s linger cap (lingerMax).
 func TestAGracefulStopLingersToItsCapForATakerThatNeverReceives(t *testing.T) {
-	t.Parallel()
 	uri := testnats.URL(t)
 	const machineID = "box-mute-taker"
 	handle, _ := recordingHandler()
@@ -505,6 +508,7 @@ func TestAGracefulStopLingersToItsCapForATakerThatNeverReceives(t *testing.T) {
 // subject to a lost node's binding, or to no subscriber at all, and mark nothing, so every stop
 // of a busy machine would hand over at the 7 s cap.
 func TestAStoppingPodsLingerHoldsItsFloorThoughItsCapHasRun(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
 	handle, _ := recordingHandler()
 	active := newReceiverRig(t, uri, "box-linger-floor", "pod-a", handle, handBackTiming(), testLeaseTiming())

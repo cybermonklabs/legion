@@ -35,6 +35,7 @@ func countRecipientsOf(t *testing.T, d *listenerDeps, subject string) *int {
 // Each row first checks its own want against the filter, so a row whose want the filter
 // contradicts tests nothing and fails as UNKNOWN.
 func TestTheCountAndTheFilterJudgeAStoredTopicByOneRule(t *testing.T) {
+	t.Parallel()
 	const sessionID = "ses_judged_topics"
 	victimOld := contracts.LegacyAgentSubject("ses_judged_victim")
 	const victimNew = "notifications.agent.PRIV.ses_judged_victim"
@@ -101,6 +102,7 @@ func TestTheCountAndTheFilterJudgeAStoredTopicByOneRule(t *testing.T) {
 // listener's client judges the topic uncaptured, that the filter built from the row holds it and
 // that the send takes core NATS for it, and fails as UNKNOWN otherwise.
 func TestAPublishOnATopicNoStreamSubjectCapturesLeavesBothCountsOut(t *testing.T) {
+	t.Parallel()
 	const (
 		sessionID = "ses_uncaptured_follower"
 		topic     = "notifications.lxspec.probe.counted"
@@ -175,6 +177,7 @@ func retireStreamSubject(t *testing.T, js natsgo.JetStreamContext, subject strin
 // apart from the count. Each premise is checked as it is set up, and a row whose premise does not
 // hold fails as UNKNOWN.
 func TestAPublishCountsItsRecipientsByTheTransportItsSendTakes(t *testing.T) {
+	t.Parallel()
 	const (
 		sessionID = "ses_transport_follower"
 		topic     = "notifications.x.counted"

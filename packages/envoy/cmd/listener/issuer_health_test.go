@@ -19,6 +19,7 @@ import (
 // handler's own starting answer, which is 503 until the listener is ready, and a dependency's
 // unhealthy one (dependencyHealth).
 func TestTheHealthzIssuerFieldsNeverDecideTheAnswer(t *testing.T) {
+	t.Parallel()
 	auth := listenerAPIAuth{verifier: oidc.NewLazyVerifier("http://127.0.0.1:1", listenerTestAudience)}
 	issuers := func(health *listenerwire.Health) { issuerHealthFields(auth, health) }
 	var starting atomic.Pointer[listenerDeps]

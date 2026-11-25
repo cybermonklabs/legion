@@ -23,6 +23,7 @@ import (
 // still exists, every health surface answers 200 healthy, and delivery to every session stops
 // with no signal anywhere that the listener has gone deaf.
 func TestHealthzReportsARecreatedDurableUnhealthy(t *testing.T) {
+	t.Parallel()
 	rig, get := setupUnboundDurableFixture(t, "unbound-health", func(_ context.Context, msg *natsgo.Msg) { _ = msg.Ack() })
 	if code, body := get(); code != http.StatusOK || body["status"] != "healthy" || body["role"] != "active" {
 		t.Fatalf("before the durable is recreated: /healthz = %d %v, want 200 healthy, role active", code, body)
@@ -151,6 +152,7 @@ func recreateListenerDurable(t *testing.T, client *bus.Client, consumer string) 
 // the subscription stays on the deleted consumer's inbox and every message published after the
 // recreation is lost while the listener reports itself healthy.
 func TestTheSelfHealthMonitorResubscribesARecreatedDurable(t *testing.T) {
+	t.Parallel()
 	handle, received := recordingHandler()
 	rig, _ := setupUnboundDurableFixture(t, "unbound-resubscribe", handle)
 
@@ -181,6 +183,7 @@ func TestTheSelfHealthMonitorResubscribesARecreatedDurable(t *testing.T) {
 // subject against the live subscription's, so a mistake there would make every healthy holder
 // resubscribe every interval and eventually terminate.
 func TestABoundDurableNeverFailsItsProbe(t *testing.T) {
+	t.Parallel()
 	rig, get := setupUnboundDurableFixture(t, "unbound-control", func(_ context.Context, msg *natsgo.Msg) { _ = msg.Ack() })
 
 	// The monitor logs from its own goroutine, so the buffer the test reads back is guarded.

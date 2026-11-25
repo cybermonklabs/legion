@@ -75,6 +75,7 @@ func listenerStateRequests(log string) []string {
 // on a server that holds none, and it starts on the same server once a shared listener, which
 // owns the stream, has created it.
 func TestTheEdgeRefusesToStartWithoutTheStream(t *testing.T) {
+	t.Parallel()
 	binary := cmdtest.Build(t, "envoy-listener")
 	uri := testnats.URL(t)
 	broker := ciphertokentest.NewStubBroker(t)
@@ -111,6 +112,7 @@ func TestTheEdgeRefusesToStartWithoutTheStream(t *testing.T) {
 // refusal on the bucket but one the edge's own user is refused, made last, which shows the log is
 // read. A request is the one route to the bucket, so a listener that sent none holds no lease.
 func TestAnEdgeListenerOpensNoLeaseAndSendsNothingOnTheListenerStateBucket(t *testing.T) {
+	t.Parallel()
 	const (
 		machineID = "example-edge-nolease"
 		sessionID = "ses_edge_nolease"
@@ -200,6 +202,7 @@ func TestAnEdgeListenerOpensNoLeaseAndSendsNothingOnTheListenerStateBucket(t *te
 // the interest registry's buckets and is refused there. Control: with grantName naming
 // listenerGrant for every listener, the lines name the listener's grant and the row fails.
 func TestAnEdgeListenerNamesItsOwnGrantInItsBucketRefusals(t *testing.T) {
+	t.Parallel()
 	const machineID = "example-edge-refused"
 	grant, err := natsgrant.Edge(machineID, []string{edgeProject})
 	if err != nil {

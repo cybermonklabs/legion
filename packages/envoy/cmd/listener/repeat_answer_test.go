@@ -125,6 +125,7 @@ func TestAPublishRepeatedUnderOneIdempotencyKeyAnswersTheStoredCopy(t *testing.T
 // to read back, so each answers 200 with no duplicate, and the denial is shown to touch only the
 // answer to a repeat.
 func TestARepeatWhoseStoredCopyCannotBeReadAnswers503(t *testing.T) {
+	t.Parallel()
 	denied := listenerGrantConfig("$JS.API.STREAM.MSG.GET." + bus.Stream)
 	server, uri := testnats.StartConfig(t, denied, []string{"-js"}, false)
 	uri = asListenerUser(t, uri)

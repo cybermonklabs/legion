@@ -22,6 +22,7 @@ import (
 // handler with a delivery ledger of its own, so the lane forwards every send: what the stream
 // keeps of two forwards is this row's subject, not what a ledger stops.
 func TestARoleForwardIsStoredOncePerMessageAndTwoUnderOneChosenKeyTwice(t *testing.T) {
+	t.Parallel()
 	chosen := func(name string) contracts.Envelope {
 		item := listenerTestEnvelope("", "shared-key")
 		item.SourceEventID = "src-" + name

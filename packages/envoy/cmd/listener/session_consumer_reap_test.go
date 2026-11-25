@@ -154,6 +154,7 @@ func (rig *sessionConsumerReapRig) reap(t *testing.T) int {
 // consumer and the position that consumer holds, whether it is live or has stopped answering: its
 // record stands, so it is receiving through that consumer the moment it answers again.
 func TestAReaperPassDeletesTheReapedSessionsConsumerAndKeepsTheOthers(t *testing.T) {
+	t.Parallel()
 	rig := newSessionConsumerReapRig(t)
 	rig.register(t, "ses_reaped")
 	rig.now.advance(90 * time.Second)
@@ -195,6 +196,7 @@ func TestAReaperPassDeletesTheReapedSessionsConsumerAndKeepsTheOthers(t *testing
 // record of a session that is registering again, and goes on to delete that session's consumer
 // with the registration already holding one.
 func TestARegistrationThatRacesTheReapOfItsRecordKeepsItsConsumer(t *testing.T) {
+	t.Parallel()
 	rig := newSessionConsumerReapRig(t)
 	rig.register(t, "ses_back")
 	// Past the two-minute gone horizon, so the pass below judges the record this session's next
@@ -234,6 +236,7 @@ func TestARegistrationThatRacesTheReapOfItsRecordKeepsItsConsumer(t *testing.T) 
 // sent (sessionDelivery.deleteConsumer, sessionRelays.termContext). The lease is on a fake clock
 // and stepped by hand, as the relay's rows step theirs (relay_ownership_test.go).
 func TestAReaperDeleteReachedAfterTheLeaseSteppedDownLeavesTheConsumer(t *testing.T) {
+	t.Parallel()
 	rig := newSessionConsumerReapRig(t)
 	kv := leaseBucket(t)
 	clock := newFakeLeaseClock()

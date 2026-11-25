@@ -42,6 +42,7 @@ const relayFrameP99Bound = relaySettleGrace / 2
 // p99 116.9 ms, with its slowest single round trip 520.1 ms, and the other 39 runs' slowest
 // stayed under 169 ms. So the grace is many times the round trip it covers, and the bound this
 // row gates on is many times the p99 that was measured.
+// It must not run in parallel: its p99 round trip must stay under 375 ms (relayFrameP99Bound).
 func TestAFramesRoundTripIsFarInsideTheRelaysSettleGrace(t *testing.T) {
 	rig := newRelayRig(t)
 	const sessionID = "ses_frame_latency"
@@ -130,6 +131,7 @@ func frameRoundTripSamples(count int, each time.Duration, slow ...time.Duration)
 // past the whole grace - the excursion the measurement above saw once in 40 runs - is a pass,
 // since that frame is repeated under its own event id rather than lost.
 func TestTheFrameRoundTripGateCatchesASlowRelay(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		name    string
 		samples []time.Duration

@@ -78,6 +78,7 @@ func TestASoftClaimLeavesALiveHolderItsRoleWhileTheSessionsCopyIsBehind(t *testi
 // not registered" for a session that is. Control: a claimant the bucket has no record of is
 // refused 404 through the same copy.
 func TestAClaimByAClaimantWhoseRegistrationTheSessionsCopyHasNotAppliedIsGranted(t *testing.T) {
+	t.Parallel()
 	const claimantInstance = "6d5c4b3a2f1e0d9c6d5c4b3a2f1e0d9c"
 	for _, tc := range []struct {
 		name       string

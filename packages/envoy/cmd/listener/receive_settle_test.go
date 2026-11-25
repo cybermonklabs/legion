@@ -201,6 +201,7 @@ func TestASettleHoldWaitsForAMessageOutstandingWithADeadHolderAndDeliversInStrea
 // A term that must settle with nothing outstanding ends its hold at its first read of the durable,
 // and delivers what is published then at once. The expired record it took carried stale_binding;
 // finding the durable not push-bound, the new holder clears it.
+// It must not run in parallel: the hold must end in 500 ms and the message come within 1 s.
 func TestASettleHoldWithNothingOutstandingEndsAtOnce(t *testing.T) {
 	uri := testnats.URL(t)
 	const machineID = "box-expired-idle"
@@ -230,8 +231,8 @@ func TestASettleHoldWithNothingOutstandingEndsAtOnce(t *testing.T) {
 // holds; the outstanding message follows when it comes back. In production the cap is one of the
 // durable's ack waits and a second, 7 s, after a hard take-over, and the hand-back delay and a
 // second, 3 s, after a graceful one.
+// It must not run in parallel: the held message must arrive within 2 s of the hold's 2 s cap.
 func TestASettleHoldEndsAtItsCap(t *testing.T) {
-	t.Parallel()
 	if got := productionReceiveConfig().settleCap; got != 7*time.Second {
 		t.Fatalf("the production settle cap is %s, want 7s: a %s ack wait and a second", got, consumerAckWait)
 	}
@@ -288,8 +289,8 @@ func TestASettleHoldEndsAtItsCap(t *testing.T) {
 // cap is what the previous holder can still have outstanding and no more, so a hand-over that
 // went through waits the hand-back delay out and every other take-over an ack wait, rather than
 // both waiting the sum of the two.
+// It must not run in parallel: each row's first message must come within 700 ms of its cap.
 func TestASettleHoldsCapIsWhatThePreviousHolderCanStillHaveOutstanding(t *testing.T) {
-	t.Parallel()
 	for _, row := range []struct {
 		name, machineID, record string
 		how                     leaseAcquisition
@@ -306,7 +307,6 @@ func TestASettleHoldsCapIsWhatThePreviousHolderCanStillHaveOutstanding(t *testin
 		{"marked beside a stale binding", "box-cap-marked-stale", `{"holder":"pod-gone","boot":"0123456789abcdef","released":true,"unsettled":true,"stale_binding":true}`, leaseTakenReleased, true, consumerAckWait + settleMargin},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			t.Parallel()
 			uri := testnats.URL(t)
 			client := leaveARetryOutstanding(t, uri, row.machineID, "retry")
 			handle, received := recordingHandler()
@@ -359,8 +359,8 @@ func TestASettleHoldsCapIsWhatThePreviousHolderCanStillHaveOutstanding(t *testin
 // how long what that pod NAKed takes to come back. Its end clears the term's debt and the stale
 // binding alike: the mark says a binding this term subscribed beside was the stopping pod's own
 // linger.
+// It must not run in parallel: the first message must come within 700 ms of the hand-back delay.
 func TestAMarkedHandBacksHoldEndsAtTheHandBackDelayAndNotBefore(t *testing.T) {
-	t.Parallel()
 	uri := testnats.URL(t)
 	const machineID = "box-mark-floor"
 	client := leaveARetryOutstanding(t, uri, machineID, "retry")
@@ -635,6 +635,7 @@ func TestAGracefulStopDuringASettleHoldHandsTheHoldOn(t *testing.T) {
 // twice counted once; afterwards the held batch comes first and the queue behind it in arrival
 // order.
 func TestASettleHoldsMessagesAreTakenInStreamOrder(t *testing.T) {
+	t.Parallel()
 	sub := &natsgo.Subscription{}
 	message := func(stream uint64) *natsgo.Msg {
 		return &natsgo.Msg{Sub: sub, Reply: "$JS.ACK.ENVOY_NOTIFICATIONS.listener-box.1." + strconv.FormatUint(stream, 10) + ".1.0.0"}
@@ -681,6 +682,7 @@ func TestASettleHoldsMessagesAreTakenInStreamOrder(t *testing.T) {
 // A held batch is delivered in stream order; a message whose JetStream metadata cannot be read
 // keeps the place it arrived in, and the others are ordered around it.
 func TestSortByStreamSequenceKeepsAnUnreadableMessageInPlace(t *testing.T) {
+	t.Parallel()
 	sub := &natsgo.Subscription{}
 	message := func(stream uint64) *natsgo.Msg {
 		return &natsgo.Msg{Sub: sub, Reply: "$JS.ACK.ENVOY_NOTIFICATIONS.listener-box.1." + strconv.FormatUint(stream, 10) + ".1.0.0"}

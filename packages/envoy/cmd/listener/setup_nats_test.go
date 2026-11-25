@@ -11,6 +11,7 @@ import (
 // test binary, and reaches whatever server the kernel gives that port next, in this binary or in
 // another one go test runs beside it.
 func TestSetupTestNATSClosesItsClientWhenItsTestEnds(t *testing.T) {
+	t.Parallel()
 	var client *bus.Client
 	t.Run("a test that takes the client", func(t *testing.T) {
 		client = setupTestNATS(t)

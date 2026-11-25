@@ -101,6 +101,7 @@ func (pod stateTestPod) claim(t *testing.T, role, holder string) {
 // for long released a claim from before the machine's pods began serving again, and one that
 // started a moment ago kept a claim made long after the machine's service began.
 func TestEveryPodAnswersARoleWhoseHolderLapsedAlike(t *testing.T) {
+	t.Parallel()
 	t.Run("the machine has served since long before the claim", func(t *testing.T) {
 		kv := leaseBucket(t)
 		serviceSince := time.Now().Add(-10 * time.Minute).UTC().Format(time.RFC3339Nano)
@@ -196,6 +197,7 @@ func (kv *heldRoleDeleteKV) Delete(key string, opts ...natsgo.DeleteOpt) error {
 // holder's claim moved (store.Registry.releaseReadExpiredRoleClaim). The lease is stepped by
 // hand, as the relay's and the consumer reaper's rows step theirs (relay_ownership_test.go).
 func TestARoleClaimReleaseReachedAfterTheLeaseSteppedDownKeepsTheNextHoldersClaim(t *testing.T) {
+	t.Parallel()
 	const (
 		role       = "release-after-step-down"
 		goneHolder = "ses_release_after_step_down_gone"

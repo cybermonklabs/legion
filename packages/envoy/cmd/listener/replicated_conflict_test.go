@@ -97,6 +97,7 @@ func leaderReadListenerState(t *testing.T, cluster *testnats.Cluster) bus.KeyVal
 // write's 10164 as it is, which nats.ErrKeyExists does not match. The standby reads the record again
 // at once and notes no failure, and its next take holds the lease. Before, the lost take was noted
 // as a failed bucket call and the standby waited a whole poll.
+// It must not run in parallel: routes frozen past the 4 s election timeout let a follower campaign.
 func TestALeaseTakeOverADeletedRecordThatLosesToAReplicatingWriteIsALostRace(t *testing.T) {
 	cluster := testnats.StartCluster(t, 3)
 	kv := leaderReadListenerState(t, cluster)
