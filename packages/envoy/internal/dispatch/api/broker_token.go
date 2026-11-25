@@ -83,15 +83,26 @@ var brokerPersonScopes = []string{model.ScopePerson}
 // under the DPoP scheme: the broker is asked whether the token is live and the caller is held to
 // the key that token is bound to (internal/ciphertoken). A verified caller is the session the
 // token names, acting for the person it names, or, where the broker names none, for the service
-// the machine holding it belongs to. It is never retried as another credential.
+// it names: the fleet of the machine holding it, or the account an operator's entry lists. It is
+// never retried as another credential.
 //
-// A caller that names a service and no person is a machine nobody has signed in on
-// (`agent-secrets login`). It reads as any session does, and writeNeedsASignedInPerson refuses
-// its every write at the one chokepoint (project_scope.go), so no write is recorded under an
-// empty writer. It holds no OAuth scope either, so the rows a person's own credential reaches
-// turn it away earlier still (gateRouteScopes): there is no person for it to act as.
+// A caller that names a service and no person under the project scope person is a machine nobody
+// has signed in on (`agent-secrets login`). It reads as any session does, and
+// writeNeedsASignedInPerson refuses its every write at the one chokepoint (project_scope.go), so
+// no write is recorded under an empty writer. It holds no OAuth scope either, so the rows a
+// person's own credential reaches turn it away earlier still (gateRouteScopes): there is no
+// person for it to act as.
 //
-// A read-only token is one of those too, a service and no person, and the broker held it to less
+// A caller that names a service and no person under the project scope named is an account
+// entry's that names no person and no project (cipher/exchange's Set.Pod): its service is the
+// account, system:serviceaccount:<namespace>:<name>, and its writes are recorded under that
+// account, as the session the token names acting for that service and for no person
+// (model.Actor.Service). writeNeedsASignedInPerson lets it write, since there is somebody to
+// record the write under: the account the operator listed. It holds no OAuth scope, so a route
+// that needs `person` or `approve` refuses it (gateRouteScopes), and it names no project, so it
+// writes wherever Dispatch's own rules let a credential naming none write.
+//
+// A read-only token names a service and no person too, and the broker held it to less
 // still: the scope read alone, the project scope none, no project (ciphertoken.Caller.ReadOnly,
 // which only a verifier built with Options.ServesReadOnly answers). Its credential is marked
 // read-only (model.Credential.ReadOnly) and holds no OAuth scope, and refuseReadOnlyToken answers
@@ -181,8 +192,10 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 		// already names the agent behind the request and no request body has to name it, and the
 		// actor is Proven: on the credential that acts and on every actor recorded from it
 		// (bearerSessionActor), so the one author rule tells it from a session a body named. A
-		// read-only token is marked as one, which is all refuseReadOnlyToken reads.
-		Credential: &model.Credential{Scopes: scopes, Session: caller.Session, ReadOnly: caller.ReadOnly},
+		// read-only token is marked as one, which is all refuseReadOnlyToken reads, and the
+		// project scope is carried whole, which is how writeNeedsASignedInPerson tells an account
+		// entry's token naming no person from a machine's nobody signed in on.
+		Credential: &model.Credential{Scopes: scopes, Session: caller.Session, ReadOnly: caller.ReadOnly, ProjectScope: caller.ProjectScope},
 		Proven:     true,
 	}
 	// A caller names a person or a service, never both and never neither (ciphertoken.Caller),
@@ -195,8 +208,9 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 	}
 	// Only a token an operator's entry mapped to one project names that project as the one it
 	// may write, which is today's named-scope rule; a named token naming none (the shared
-	// public-session account's) writes, as a token naming no project does, wherever Dispatch's
-	// own rules let it, and ciphertoken refuses a named token naming two.
+	// public-session account's, and an account entry's naming no person) writes, as a token
+	// naming no project does, wherever Dispatch's own rules let it, and ciphertoken refuses a
+	// named token naming two.
 	// A token acting as its person carries the list
 	// its trade asked for (ciphertoken.Caller.Projects), and that list limits no write here: a
 	// dev box session's person writes wherever they may, and the token of a machine naming a
@@ -208,7 +222,7 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 	}
 	// The writer the line names: the person, or the service for a token that names none, under
 	// the `service:` prefix requestKeyLogin spells a service with, so one field never reads a
-	// fleet's name as a person's login.
+	// fleet's name or an account as a person's login.
 	writer := caller.Person
 	if writer == "" {
 		writer = "service:" + caller.Service

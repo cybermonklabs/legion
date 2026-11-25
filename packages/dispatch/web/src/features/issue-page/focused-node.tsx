@@ -31,6 +31,12 @@ export interface FocusedNode {
   readonly reference?: string;
   /** How it stands, as the page's own word for that state, where its type has one. */
   readonly state?: string;
+  /** The person the state names after its word, where it names one: the keeper of a decision
+   *  after "Kept by", or the person whose Change it waits on after "Changed by" (R2, R3,
+   *  `decisions-filter/entry-standing.ts`' `standingParts`), for the panel to name after the
+   *  state's word by the page's one rule for naming a person (`AgentText.author`), as part M's
+   *  `FocusedNodeFacts.tsx` draws it. */
+  readonly stateBy?: Actor;
   /** The node's own first line, or an issue's title: the author's words. */
   readonly title: string;
   readonly type: NodeType;

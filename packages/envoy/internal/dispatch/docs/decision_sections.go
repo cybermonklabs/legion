@@ -21,18 +21,30 @@ import (
 // level or above - and it reads each section's ties as the block index stored them: its links to
 // the spec off the document's block_refs rows, and the asks it cites off the same rows' mentions
 // of an ask (sectionTies).
+//
+// The Keep on a heading of a standing decisions document (DecisionHeading, heading-keep) and the
+// census of the third phase (ReadDecisionsCensus, decisions-documents-fn) read sections through it
+// too, and nothing that stays reads it. Each declaration of the reader carries the step's marker:
+// the step goes once decisions_step_owed reads zero, which counts every standing decisions
+// document, so by then decisions_documents() answers none and those two readers go as well.
 
 // replacedPartTitle is the title of the `## Replaced` part of a decisions document, whose `###`
 // sections are decisions no longer the design.
+//
+// kept for one release: decisions-step
 const replacedPartTitle = "Replaced"
 
 // unsurePrefix opens the paragraph of a section that says how unsure its author was: the rest of
 // the paragraph is what would change the choice (R1's uncertainty_reason).
+//
+// kept for one release: decisions-step
 const unsurePrefix = "Unsure:"
 
 // decisionSection is one section of a decisions document: its heading block, the heading's level
 // and title, whether it stands under `## Replaced`, and the top-level blocks after the heading
 // that it holds, in document order.
+//
+// kept for one release: decisions-step
 type decisionSection struct {
 	heading  *pmdoc.Node
 	level    int
@@ -42,6 +54,8 @@ type decisionSection struct {
 }
 
 // headingID is the block id of the section's heading, the id its address names.
+//
+// kept for one release: decisions-step
 func (section decisionSection) headingID() string {
 	id, _ := section.heading.Attrs[pmdoc.BlockIDAttr].(string)
 	return id
@@ -50,6 +64,8 @@ func (section decisionSection) headingID() string {
 // blockIDs is the id of the section's heading and of each block it holds, wherever it stands in
 // one of them, every typed block and every paragraph alike: the ids the block index keyed the
 // section's block_refs rows by.
+//
+// kept for one release: decisions-step
 func (section decisionSection) blockIDs() []string {
 	ids := []string{section.headingID()}
 	for _, block := range section.body {
@@ -64,6 +80,8 @@ func (section decisionSection) blockIDs() []string {
 }
 
 // blockRanges is the byte range of each block of a rendering, by block id, as its offsets give it.
+//
+// kept for one release: decisions-step
 func blockRanges(offsets []pmdoc.BlockOffset) map[string][2]int {
 	ranges := make(map[string][2]int, len(offsets))
 	for _, offset := range offsets {
@@ -76,6 +94,8 @@ func blockRanges(offsets []pmdoc.BlockOffset) map[string][2]int {
 // markdown, the rendering whose block ranges are ranges (blockRanges): from the start of the first
 // of those blocks the rendering holds to the end of the last, and false where it holds none of them
 // or that span lies outside markdown.
+//
+// kept for one release: decisions-step
 func sectionText(markdown string, ranges map[string][2]int, ids []string) (string, bool) {
 	start, end := -1, -1
 	for _, id := range ids {
@@ -99,6 +119,8 @@ func sectionText(markdown string, ranges map[string][2]int, ids []string) (strin
 // sectionChangedVersion is the greatest version changes, a document's block index
 // (refs.BlockChanges), records as changing one of ids, a section's blocks
 // (decisionSection.blockIDs), and 0 where it records none.
+//
+// kept for one release: decisions-step
 func sectionChangedVersion(changes map[string]refs.BlockChange, ids []string) int {
 	version := 0
 	for _, id := range ids {
@@ -111,6 +133,8 @@ func sectionChangedVersion(changes map[string]refs.BlockChange, ids []string) in
 
 // unsure is the section's `Unsure:` paragraph, the first top-level paragraph whose text opens with
 // unsurePrefix, and the rest of that paragraph's text; nil where it holds none.
+//
+// kept for one release: decisions-step
 func (section decisionSection) unsure() (*pmdoc.Node, string) {
 	for _, block := range section.body {
 		if block.Type != "paragraph" {
@@ -129,6 +153,8 @@ func (section decisionSection) unsure() (*pmdoc.Node, string) {
 // after the heading up to the next heading of its level or above. A heading that opens no section
 // - the document's title, `## Replaced` itself - and the blocks after it up to the next section
 // belong to none.
+//
+// kept for one release: decisions-step
 func decisionSectionsOf(tree *pmdoc.Node) []decisionSection {
 	if tree == nil {
 		return nil
@@ -165,6 +191,8 @@ func decisionSectionsOf(tree *pmdoc.Node) []decisionSection {
 
 // opensDecisionSection reports whether a heading of level opens a section: a `##` heading outside
 // `## Replaced`, or a `###` heading under it.
+//
+// kept for one release: decisions-step
 func opensDecisionSection(level int, inReplaced bool) bool {
 	if inReplaced {
 		return level == 3
@@ -176,6 +204,8 @@ func opensDecisionSection(level int, inReplaced bool) bool {
 // of the block that cites: the blocks of the spec each one links (spec), read through the one
 // resolution of a far end (refs.ResolvedBlockSQL), whose moved_to tuples a block that left
 // reaches, and the asks each one mentions (asks), each in order and once.
+//
+// kept for one release: decisions-step
 type sectionTies struct {
 	spec map[string][]string
 	asks map[string][]string
@@ -183,6 +213,8 @@ type sectionTies struct {
 
 // readSectionTies reads the ties of every block of the decisions document decisionsID, through q:
 // its block_refs rows to a block that specID holds, and its mentions of an ask.
+//
+// kept for one release: decisions-step
 func readSectionTies(ctx context.Context, q graphstore.Queryer, decisionsID, specID string) (sectionTies, error) {
 	ties := sectionTies{spec: map[string][]string{}, asks: map[string][]string{}}
 	rows, err := q.Query(ctx, `
@@ -214,6 +246,8 @@ func readSectionTies(ctx context.Context, q graphstore.Queryer, decisionsID, spe
 }
 
 // collectTies reads rows of (citing block, target) into ties.
+//
+// kept for one release: decisions-step
 func collectTies(rows pgx.Rows, ties map[string][]string) error {
 	defer rows.Close()
 	for rows.Next() {
@@ -227,6 +261,8 @@ func collectTies(rows pgx.Rows, ties map[string][]string) error {
 }
 
 // tiesOf is the targets of the blocks of section in ties, in the order of its blocks, each once.
+//
+// kept for one release: decisions-step
 func tiesOf(section decisionSection, ties map[string][]string) []string {
 	var targets []string
 	seen := map[string]struct{}{}

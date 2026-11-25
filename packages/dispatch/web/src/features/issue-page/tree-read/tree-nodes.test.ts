@@ -18,10 +18,9 @@ import {
   askOfNode,
   decisionNodes,
   nodeReference,
-  nodesById,
   tieTargetReference,
 } from "../decision-nodes/decision-nodes";
-import { decisionNodeChanges } from "../decision-review";
+import { decisionNodeChanges, firstOfEachId } from "../decision-review";
 import {
   assemble,
   buildIssueTree,
@@ -36,6 +35,7 @@ import { blockNodeId } from "../tree-drafts";
 import { type TreeNodeExtra, treeAnswer, treeNode, treeTuple as tuple } from "./tree-fixtures";
 import {
   blocksOfRole,
+  nextTreeCursor,
   type TreeDraftMark,
   treeDraftMarks,
   treeDraftsFrom,
@@ -840,7 +840,7 @@ test("another issue's block keeps the read's id where its document has this issu
 });
 
 // R3: a person's comment the read hangs under a decision node, made after the decision's words
-// last changed, is its Change: the decision reads Change requested and waits on its agent, not
+// last changed, is its Change: the decision reads Changed by and waits on its agent, not
 // on the reader. A person's comment older than its words, and an agent's, stand under it too,
 // and neither is a Change, so without the newer one the decision waits for the reader's review.
 test("a Change is the comment the read hangs under its decision", () => {
@@ -883,6 +883,47 @@ test("a Change is the comment the read hangs under its decision", () => {
     state: "waiting_review",
     waiting: true,
   });
+});
+
+// R2, R3: a decision with a Change reads "Changed by" and the name of the person whose Change it
+// waits on, the first author of the newest Change the read hangs under it: bob's here, though
+// alice asked before him. A decision whose only comment is older than its words has no Change,
+// waits for the reader's review and names nobody who asked.
+test("a changed decision names who asked to change it", () => {
+  const decision = block("d1", "decision", KEY, SPEC, 1, {
+    decision: {
+      changed_at: "2026-11-05T00:00:00Z",
+      links: [linkTo(`dispatch://${KEY}/spec#b-r1`)],
+      waiting_review: true,
+    },
+  });
+  const drawnDecision = blockNodeId("spec", "d1");
+  const reads: IssueTreeReads = {
+    coverage: coverage([requirement("r1")]),
+    issue: issueDetails(),
+    viewer: "alice",
+  };
+  const bob = { id: "bob", kind: "user" as const };
+  const changed = answer([
+    block("r1", "requirement", KEY, SPEC, 0),
+    decision,
+    personsComment("c-alice", "d1", "2026-11-06T00:00:00Z"),
+    node("c-bob", "comment", "d1", { author: [bob], made_at: "2026-11-07T00:00:00Z" }),
+  ]);
+  expect(nodeOf(drawn(changed, reads).root, drawnDecision)).toMatchObject({
+    changedBy: bob,
+    state: "change_requested",
+    waiting: false,
+  });
+
+  const older = answer([
+    block("r1", "requirement", KEY, SPEC, 0),
+    decision,
+    personsComment("c-older", "d1", "2026-11-04T00:00:00Z"),
+  ]);
+  const unchanged = nodeOf(drawn(older, reads).root, drawnDecision);
+  expect(unchanged).toMatchObject({ state: "waiting_review", waiting: true });
+  expect(unchanged?.changedBy).toBeUndefined();
 });
 
 // R2's second difference: an ask block carrying `shaped` ties draws them as chips on its row in
@@ -1014,7 +1055,7 @@ test("a decision node's address is the outline's", () => {
   // Each tie names a node the outline draws a row for, the row of that node, and names it as the
   // tie rule names that node (`tieTargetReference`): a spec block's row carries the spec's slug
   // (`artifact/spec#b-r1`) and the tie the spec's own address (`spec#b-r1`).
-  const nodes = nodesById(tree);
+  const nodes = firstOfEachId(tree.nodes ?? []);
   const askOf = askOfNode(reads);
   const specSlug = primarySpec(reads.issue)?.slug ?? "";
   for (const link of ties) {
@@ -1278,10 +1319,30 @@ test("a page that names no next page ends the walk, the cursor left out or empty
   }
 });
 
-// A server that names the same next page again never ends a walk that follows it: the walk asks
-// for each page at most once and ends, with an answer or a failure, instead of asking without
-// end.
-test("a cursor the server names twice ends the walk", async () => {
+// The rule every walk of the read ends by, the page's own and the e2e helpers' alike
+// (`nextTreeCursor`): a page whose cursor is null, left out of the body or empty names no next
+// page, and any other cursor names the next.
+test("a page's cursor names no next page where it is null, left out or empty", () => {
+  const page = answer([block("r1", "requirement", KEY, SPEC, 0)]);
+  const { cursor: _none, ...leftOut } = page;
+  const pages = [
+    { ...page, cursor: null },
+    leftOut as TreeAnswer,
+    { ...page, cursor: "" },
+    { ...page, cursor: "page-2" },
+  ];
+  expect(pages.map((one) => nextTreeCursor(one))).toEqual([
+    undefined,
+    undefined,
+    undefined,
+    "page-2",
+  ]);
+});
+
+// A server that names a cursor it named already has a fault, and the pages past it are missing:
+// the walk asks for each page at most once, and the read fails with an error that names the
+// cursor, rather than answer the pages it read as the whole tree or ask without end.
+test("a cursor the server names twice fails the read, naming the cursor", async () => {
   const { cursors, outcome } = await walkWith((cursor) =>
     cursor === undefined
       ? { ...answer([block("r1", "requirement", KEY, SPEC, 0)]), cursor: "page-2" }
@@ -1291,7 +1352,7 @@ test("a cursor the server names twice ends the walk", async () => {
         }
   );
   expect(cursors).toEqual([undefined, "page-2"]);
-  expect(JSON.stringify(outcome)).not.toContain("page reads");
+  expect(outcome).toEqual({ error: expect.stringContaining('the cursor "page-2" twice') });
 });
 
 /** Each row of `root` as its depth in dashes, its id and its kind, every branch open. */

@@ -104,6 +104,77 @@ func TestLoadRefusesUniqueConcurrentIndex(t *testing.T) {
 	}
 }
 
+// LoadBuilt keeps every check of Load's that reads no statement: a marker below the first line is
+// refused there too, and a marker on the first line selects execution outside a transaction.
+func TestLoadBuiltKeepsTheMarkerChecks(t *testing.T) {
+	index := "create index concurrently if not exists things_kind on things (kind);\n"
+	got, err := LoadBuilt(fstest.MapFS{"migrations/0001_index.up.sql": {Data: []byte("-- ordinary header\n-- pgmigrate:non-transactional\n" + index)}}, "migrations")
+	if err == nil || len(got) != 0 || !strings.Contains(err.Error(), "migration 0001_index.up.sql line 2") {
+		t.Fatalf("LoadBuilt = %+v, %v; want the refusal Load gives a marker on line 2", got, err)
+	}
+	got, err = LoadBuilt(fstest.MapFS{"migrations/0001_index.up.sql": {Data: []byte("-- pgmigrate:non-transactional\n" + index)}}, "migrations")
+	if err != nil || len(got) != 1 || !got[0].NonTransactional {
+		t.Fatalf("LoadBuilt = %+v, %v; want one migration marked non-transactional", got, err)
+	}
+}
+
+// A runner that reads its set with LoadBuilt reaches a marked migration's statement unchecked, so
+// ExecNonTransactional is what refuses the statements Load refuses (the two tests above), before
+// anything of them runs: each case's statement would build its relation, or open a transaction,
+// on the table it names, and after the refusal the relation is not there and the session is idle.
+// The control is the one statement Load admits, which the same call builds, so the check that
+// the relation is absent can see one that is there.
+func TestExecNonTransactionalRefusesWhatLoadRefuses(t *testing.T) {
+	for _, tc := range []struct {
+		name, sql string
+		// relations are the relations the statement would make if it ran.
+		relations []string
+	}{
+		{"two statements", "create index concurrently if not exists things_kind on things (kind); create table leaked (id integer);", []string{"things_kind", "leaked"}},
+		{"not idempotent", "create index concurrently things_kind on things (kind);", []string{"things_kind"}},
+		{"not concurrent", "create index if not exists things_kind on things (kind);", []string{"things_kind"}},
+		{"unique", "create unique index concurrently if not exists things_kind on things (kind);", []string{"things_kind"}},
+		{"not an index", "create table leaked (id integer);", []string{"leaked"}},
+		{"transaction control", "begin;", nil},
+		{"no statement", "-- nothing\n", nil},
+		{"invalid SQL", "create index concurrently if not exists", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			conn := connect(t, ctx, testpg.URL(t))
+			if _, err := conn.Exec(ctx, "create table things (kind text)"); err != nil {
+				t.Fatal(err)
+			}
+			migration := Migration{Name: "0001_index.up.sql", SQL: tc.sql, NonTransactional: true}
+			err := ExecNonTransactional(ctx, conn, migration, nil)
+			if err == nil || !strings.Contains(err.Error(), "migration 0001_index.up.sql: ") || !strings.Contains(err.Error(), "non-transactional migration") {
+				t.Fatalf("ExecNonTransactional(%q) = %v, want a refusal naming the migration", tc.sql, err)
+			}
+			for _, name := range tc.relations {
+				if got := indexState(t, ctx, conn, name); got != (relation{}) {
+					t.Errorf("after the refusal %s is %+v, want no relation of that name: the statement ran", name, got)
+				}
+			}
+			if status := conn.PgConn().TxStatus(); status != 'I' {
+				t.Errorf("after the refusal the session's transaction status is %q, want idle", status)
+			}
+		})
+	}
+	t.Run("control: the statement Load admits is built", func(t *testing.T) {
+		ctx := context.Background()
+		conn := connect(t, ctx, testpg.URL(t))
+		if _, err := conn.Exec(ctx, "create table things (kind text)"); err != nil {
+			t.Fatal(err)
+		}
+		if err := ExecNonTransactional(ctx, conn, indexMigration(), nil); err != nil {
+			t.Fatalf("ExecNonTransactional = %v, want the index built", err)
+		}
+		if got := indexState(t, ctx, conn, "things_kind"); !got.Index || !got.Valid {
+			t.Fatalf("things_kind = %+v, want a valid index", got)
+		}
+	})
+}
+
 // connect opens one connection to url and closes it when t ends. The URL is the caller's, since
 // testpg.URL makes a database of its own at each call and a test's two connections share one.
 func connect(t *testing.T, ctx context.Context, url string) *pgx.Conn {

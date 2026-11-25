@@ -199,15 +199,18 @@ func readOnlyToken(jkt string, life time.Duration) ciphertoken.Introspection {
 // refused with an outcome of its own rather than handed back as a Caller for whoever mounts
 // this check to fill in. Each leg of the rule is its own token: a machine login's own, one the
 // exchange issued that names neither a person nor a service, one that names a session and a
-// person but comes from
-// another client, and the six whose project scope or list this package cannot read — an answer
-// carrying no project scope at all, one carrying a word it does not know, a named scope with no
-// project and no person, a named scope with two projects, and a list no exchange could have
-// minted. Those are refused rather than read as a token that names no project, which would hand
-// their caller every project the person may write; the one naming a project under no scope would
-// otherwise be the louder of the two, since the project beside the scope is then read under
-// nothing at all. The proof-checked Verify and the answer-only Live refuse every one, so an open
-// connection cannot keep one alive either.
+// person but comes from another client, and the ten whose project scope or list this package
+// cannot read — an answer carrying no project scope at all, one carrying a word it does not know,
+// a named scope naming no person and no project and a service that is no whole account subject (a
+// fleet, the bare account prefix, an account with no name, an upper-case account), a named scope
+// naming an account and a project, a named scope with two projects, and a list no exchange could
+// have minted. Those are refused rather than read as a token that names no project, which would
+// hand their caller every project the person may write; the one naming a project under no scope
+// would otherwise be the louder of the two, since the project beside the scope is then read under
+// nothing at all. A named scope naming no person is minted only by an account entry naming no
+// person, whose service is the account (TestANamedAnswerNamingNoPersonIsItsAccount), so the same
+// answer naming any other service is no token the broker mints. The proof-checked Verify and the
+// answer-only Live refuse every one, so an open connection cannot keep one alive either.
 func TestATokenThatIsNoSessionsCredentialIsRefused(t *testing.T) {
 	rig := newRig(t)
 	caller := newSigner(t)
@@ -219,8 +222,24 @@ func TestATokenThatIsNoSessionsCredentialIsRefused(t *testing.T) {
 	noScope.ProjectScope = ""
 	unknownScope := liveToken(caller.jkt, time.Hour)
 	unknownScope.ProjectScope = "organisation"
-	namedNoOne := liveToken(caller.jkt, time.Hour)
-	namedNoOne.Person, namedNoOne.Service, namedNoOne.Projects = "", "example-fleet", nil
+	namedFleet := liveToken(caller.jkt, time.Hour)
+	namedFleet.Person, namedFleet.Service, namedFleet.Projects = "", "example-fleet", nil
+	// Services that open like an account and are no whole account subject, which no account
+	// entry can hold (exchange.NewSet holds each to oauthwire.AccountSubject).
+	namedPrefixOnly := liveToken(caller.jkt, time.Hour)
+	namedPrefixOnly.Person, namedPrefixOnly.Service, namedPrefixOnly.Projects = "", "system:serviceaccount:", nil
+	namedNoName := liveToken(caller.jkt, time.Hour)
+	namedNoName.Person, namedNoName.Service, namedNoName.Projects = "", "system:serviceaccount:ns", nil
+	namedUpperCase := liveToken(caller.jkt, time.Hour)
+	namedUpperCase.Person, namedUpperCase.Service, namedUpperCase.Projects = "", "system:serviceaccount:NS:Name", nil
+	// An account with text after it, and an account with text before it: the grammar is anchored
+	// at both ends, so neither is the account it holds.
+	namedTrailing := liveToken(caller.jkt, time.Hour)
+	namedTrailing.Person, namedTrailing.Service, namedTrailing.Projects = "", "system:serviceaccount:example-ns:example-public===x", nil
+	namedLeading := liveToken(caller.jkt, time.Hour)
+	namedLeading.Person, namedLeading.Service, namedLeading.Projects = "", "xsystem:serviceaccount:example-ns:example-public", nil
+	namedServiceProject := liveToken(caller.jkt, time.Hour)
+	namedServiceProject.Person, namedServiceProject.Service = "", "system:serviceaccount:example-ns:example-public"
 	namedTwo := liveToken(caller.jkt, time.Hour)
 	namedTwo.Projects = []string{"INFRA", "PRIV"}
 	unsorted := liveToken(caller.jkt, time.Hour)
@@ -231,7 +250,13 @@ func TestATokenThatIsNoSessionsCredentialIsRefused(t *testing.T) {
 		"a token of another client":                     anotherClient,
 		"a token naming no project scope":               noScope,
 		"a token of an unknown project scope":           unknownScope,
-		"a named scope naming no project and no person": namedNoOne,
+		"a named scope naming a fleet and no person":    namedFleet,
+		"a named scope naming the bare account prefix":  namedPrefixOnly,
+		"a named scope naming an account with no name":  namedNoName,
+		"a named scope naming an upper-case account":    namedUpperCase,
+		"a named scope naming an account and more":      namedTrailing,
+		"a named scope naming text and an account":      namedLeading,
+		"a named scope naming an account and a project": namedServiceProject,
 		"a named scope naming two projects":             namedTwo,
 		"a list no exchange mints":                      unsorted,
 	} {
@@ -266,9 +291,9 @@ func TestATokenThatIsNoSessionsCredentialIsRefused(t *testing.T) {
 }
 
 // TestLiveRefusesANamedAnswerItCannotRead: a named token is an operator's entry's, which names
-// one project, or none for an account entry naming none, and always a person. An answer of that
-// scope naming two or more projects, or none and no person, is no token the exchange minted and is
-// refused, so a Dispatch reader never takes it as a caller no project limits.
+// one project, or none for an account entry naming none. An answer of that scope naming two,
+// sixteen or seventeen projects is no token the exchange minted and is refused, so a Dispatch
+// reader never takes it as a caller no project limits.
 func TestLiveRefusesANamedAnswerItCannotRead(t *testing.T) {
 	rig := newRig(t)
 	caller := newSigner(t)
@@ -338,6 +363,51 @@ func TestANamedAnswerNamingNoProjectIsAPublicSession(t *testing.T) {
 		decided, err := decide()
 		if err != nil || !reflect.DeepEqual(decided, want) {
 			t.Errorf("%s = %+v, %v; want %+v", name, decided, err, want)
+		}
+	}
+}
+
+// TestANamedAnswerNamingNoPersonIsItsAccount: an account entry naming no person and no project
+// mints a named token naming no person and no project, whose service is the account it acts as;
+// its answer is that caller, under Verify, Live and the NATS auth service's SessionCaller alike,
+// and so is the answer of such an entry that fixes its session (<service account>===<session>),
+// whose service is the same account. The same answer naming a project, or naming no service, is
+// no token the exchange mints.
+func TestANamedAnswerNamingNoPersonIsItsAccount(t *testing.T) {
+	const account = "system:serviceaccount:example-ns:example-public"
+	rig := newRig(t)
+	caller := newSigner(t)
+	answer := liveToken(caller.jkt, time.Hour)
+	answer.Person, answer.Service, answer.Projects = "", account, nil
+	const token = "a-personless-account-token"
+	rig.broker.Says(token, answer)
+	want := ciphertoken.Caller{Session: "ses_a1b2c3", Service: account, ProjectScope: ciphertoken.ProjectScopeNamed}
+	for name, decide := range map[string]func() (ciphertoken.Caller, error){
+		"Verify": func() (ciphertoken.Caller, error) {
+			return rig.verifier.Verify(t.Context(), caller.at(resourcePath, token))
+		},
+		"Live": func() (ciphertoken.Caller, error) {
+			return rig.verifier.Live(t.Context(), caller.at(resourcePath, token))
+		},
+		"SessionCaller": func() (ciphertoken.Caller, error) { return ciphertoken.SessionCaller(answer) },
+	} {
+		decided, err := decide()
+		if err != nil || !reflect.DeepEqual(decided, want) {
+			t.Errorf("%s = %+v, %v; want %+v", name, decided, err, want)
+		}
+	}
+	fixed := answer
+	fixed.Session = "example-public-session"
+	if decided, err := ciphertoken.SessionCaller(fixed); err != nil || !reflect.DeepEqual(decided, ciphertoken.Caller{Session: fixed.Session, Service: account, ProjectScope: ciphertoken.ProjectScopeNamed}) {
+		t.Errorf("SessionCaller of the answer of an entry naming no person that fixes its session = %+v, %v; want that session acting for %s", decided, err, account)
+	}
+	withProject := answer
+	withProject.Projects = []string{"INFRA"}
+	noService := answer
+	noService.Service = ""
+	for name, refused := range map[string]ciphertoken.Introspection{"naming a project": withProject, "naming no service": noService} {
+		if _, err := ciphertoken.SessionCaller(refused); !errors.Is(err, ciphertoken.ErrNotASession) {
+			t.Errorf("SessionCaller of a named answer naming no person and %s = %v, want ErrNotASession", name, err)
 		}
 	}
 }
@@ -908,5 +978,72 @@ func TestNewRefusesAVerifierWithNoSourceAddress(t *testing.T) {
 	supplied.Address = sourceAddress
 	if _, err := ciphertoken.New(supplied); err != nil {
 		t.Fatalf("New refused the same options with the address function supplied: %v", err)
+	}
+}
+
+// TestLiveUntilAnswersWhenTheTokenStopsBeingLive: a connection that outlives its request tells a
+// token whose life ended from one the broker ended early by the instant the broker said it would
+// end, since both answer ErrNotActive once they are over. So LiveUntil hands that instant back beside
+// the caller: the answer's 'exp', to the second the broker writes it, and the zero time for an answer
+// that names none. A token the broker does not hold live answers ErrNotActive and no instant, as
+// Live does.
+func TestLiveUntilAnswersWhenTheTokenStopsBeingLive(t *testing.T) {
+	rig := newRig(t)
+	caller := newSigner(t)
+	const (
+		dated   = "a-token-the-broker-dated"
+		undated = "a-token-the-broker-named-no-expiry-for"
+		unknown = "a-token-the-broker-never-issued"
+	)
+	answer := liveToken(caller.jkt, time.Hour)
+	rig.broker.Says(dated, answer)
+	decided, until, err := rig.verifier.LiveUntil(t.Context(), caller.at(resourcePath, dated))
+	if err != nil {
+		t.Fatalf("LiveUntil of a live token: %v", err)
+	}
+	if want := time.Unix(answer.ExpiresAt, 0); !until.Equal(want) {
+		t.Fatalf("LiveUntil answered the expiry %v, want the answer's exp %v", until, want)
+	}
+	if decided.Session != answer.Session || decided.Person != answer.Person {
+		t.Fatalf("LiveUntil = %+v, want the caller Live answers for the same token", decided)
+	}
+
+	noExpiry := liveToken(caller.jkt, time.Hour)
+	noExpiry.ExpiresAt = 0
+	rig.broker.Says(undated, noExpiry)
+	if _, until, err := rig.verifier.LiveUntil(t.Context(), caller.at(resourcePath, undated)); err != nil || !until.IsZero() {
+		t.Fatalf("LiveUntil of a token with no exp = %v, %v; want the zero time and no error", until, err)
+	}
+
+	if decided, until, err := rig.verifier.LiveUntil(t.Context(), caller.at(resourcePath, unknown)); !errors.Is(err, ciphertoken.ErrNotActive) || !until.IsZero() || !reflect.DeepEqual(decided, ciphertoken.Caller{}) {
+		t.Fatalf("LiveUntil of a token the broker does not hold = %+v, %v, %v; want no caller, the zero time and ErrNotActive", decided, until, err)
+	}
+}
+
+// TestLiveUntilSpendsNoAddressBucket: LiveUntil is the recheck of a connection whose opening
+// request Verify already admitted with its proof (the listener's relay socket), so it introspects
+// with the source address's bucket spent, where Live and Verify are refused ErrRateLimited: a
+// stranger who empties the bucket of an address, which every client behind one load balancer
+// shares, cannot close the sockets opened from it. Control: Live, with the same bucket spent, is
+// refused ErrRateLimited and reaches no broker.
+func TestLiveUntilSpendsNoAddressBucket(t *testing.T) {
+	rig := newRig(t, func(o *ciphertoken.Options) {
+		o.AddressLimit = ratelimit.Limit{Every: time.Minute, Burst: 1}
+	})
+	caller := newSigner(t)
+	rig.broker.Says("the-token-that-spends-the-bucket", liveToken(caller.jkt, time.Hour))
+	if _, err := rig.verifier.Verify(t.Context(), caller.at(resourcePath, "the-token-that-spends-the-bucket")); err != nil {
+		t.Fatalf("the request that spends the bucket: %v", err)
+	}
+	rig.broker.Says("a-socket-token", liveToken(caller.jkt, time.Hour))
+	if _, _, err := rig.verifier.LiveUntil(t.Context(), caller.at(resourcePath, "a-socket-token")); err != nil {
+		t.Fatalf("LiveUntil with the address's bucket spent = %v, want the broker's answer", err)
+	}
+	if rig.broker.Count() != 2 {
+		t.Fatalf("LiveUntil cost %d introspections in all, want 2", rig.broker.Count())
+	}
+	rig.broker.Says("a-websocket-token", liveToken(caller.jkt, time.Hour))
+	if _, err := rig.verifier.Live(t.Context(), caller.at(resourcePath, "a-websocket-token")); !errors.Is(err, ciphertoken.ErrRateLimited) {
+		t.Fatalf("Live with the address's bucket spent = %v, want ErrRateLimited", err)
 	}
 }

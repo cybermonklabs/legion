@@ -35,8 +35,8 @@ export function ContentsSlot({ issue, route }: SlotProps): ReactNode {
   const address = issueAddress(route, search, hash, specSlug);
   const { blocksOf, root } = useIssueTree(issue);
   // The head says the spec holds no summary only once the spec's blocks are held, which is when
-  // the tree holds its summary node where it has one: the tree read's (`blocksOf`). The sentences
-  // are drawn from that node's reading (`TreeNode.tree`), which the same read carries.
+  // the tree holds its summary node where it has one. The sentences are drawn from that node's
+  // reading (`TreeNode.tree`), which the tree read carries with the spec's blocks (`blocksOf`).
   const specBlocks = blocksOf("spec");
   const specHeld = spec !== undefined && specBlocks.data !== undefined;
   const memo = useMemo(() => specSummary(root, specSlug), [root, specSlug]);

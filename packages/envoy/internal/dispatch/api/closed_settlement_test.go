@@ -144,6 +144,7 @@ func awaitSettledVersionHolding(t *testing.T, handler http.Handler, database *st
 // of the server-owned ask attributes, and the text an agent reads shows the withdrawn decision and
 // the third block resolved, and the answered decision answered.
 func TestASettlementAfterACloseChangesNoAsk(t *testing.T) {
+	t.Parallel()
 	handler, database, documentService := newClosedSettlementHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "A settlement after the close", closedSettlementSpec)
 	spec := issue.PrimaryArtifactID
@@ -224,6 +225,7 @@ func TestASettlementAfterACloseChangesNoAsk(t *testing.T) {
 // opens the block's ask, credited to the recorded author, and the text an agent reads shows it
 // open.
 func TestAnAskBlockWithNoRowIsResolvedWhileClosedAndOpensAtTheReopen(t *testing.T) {
+	t.Parallel()
 	handler, database, documentService := newClosedSettlementHandler(t)
 	ctx := context.Background()
 	issue := createInteractionIssue(t, handler, "TEST", "An ask block across a close", "Context\n")

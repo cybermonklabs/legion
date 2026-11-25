@@ -4,6 +4,7 @@ import type { IssueDecisions, IssueTreeRead } from "../web/src/api/types";
 import type { Filter } from "../web/src/features/issue-page/presets";
 import {
   mergeTreePages,
+  nextTreeCursor,
   type TreeIdReads,
   treeIdOf,
 } from "../web/src/features/issue-page/tree-read/tree-nodes";
@@ -145,17 +146,20 @@ function watchTreeRoute(page: Page, view: TreeView | null): TreeAnswerWatch {
 }
 
 /** The newest read every page of which has answered: a read starts at a page its request sent no
- *  cursor for, and goes on with each page whose cursor the page before it answered. */
+ *  cursor for, goes on with each page whose cursor the page before it named, and ends at a page
+ *  that names none, each by the page's own rule (`nextTreeCursor`). */
 function newestRead(received: readonly ReceivedPage[]): IssueTreeRead | undefined {
   const reads: IssueTreeRead[][] = [];
   for (const { cursor, page } of [...received].sort((a, b) => a.arrived - b.arrived)) {
     const read = reads[reads.length - 1];
     if (cursor === null) reads.push([page]);
-    else if (read !== undefined && read[read.length - 1]?.cursor === cursor) read.push(page);
+    else if (read !== undefined && nextTreeCursor(read[read.length - 1]) === cursor) {
+      read.push(page);
+    }
   }
   for (let at = reads.length - 1; at >= 0; at -= 1) {
     const [first, ...rest] = reads[at] ?? [];
-    if (first !== undefined && (rest[rest.length - 1] ?? first).cursor === null) {
+    if (first !== undefined && nextTreeCursor(rest[rest.length - 1] ?? first) === undefined) {
       return mergeTreePages([first, ...rest]);
     }
   }

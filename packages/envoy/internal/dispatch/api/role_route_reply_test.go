@@ -230,6 +230,7 @@ type roleRouteCommentReply struct {
 // and (4). Rows (2), (5) and (6) are TestADispatchMessageForARoleReachesTheSessionThatTakesTheRole
 // in cmd/listener, which runs the real listener.
 func TestAReplyToARoleRouteAttemptComesFromTheRolesHolder(t *testing.T) {
+	t.Parallel()
 	const holderA, holderB, other = "ses_role_a", "ses_role_b", "ses_role_other"
 
 	t.Run("(1) a different session takes R: its reply and its error callback are accepted", func(t *testing.T) {
@@ -360,6 +361,7 @@ func TestAReplyToARoleRouteAttemptComesFromTheRolesHolder(t *testing.T) {
 // never a refusal that ends a reply the role's holder may well be entitled to. The session the
 // attempt names is answered as ever, with no lookup at all.
 func TestAReplyWhoseRoleHolderTheListenerDoesNotNameIsAskedAgain(t *testing.T) {
+	t.Parallel()
 	rig := newRoleRouteReplies(t)
 	const role = "reply-unanswered"
 	rig.listener.claim(role, "ses_role_a", true)
@@ -407,6 +409,7 @@ func (*routeReadFault) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryE
 // REPLY_FORBIDDEN: the holder's host makes the reply again. The control is the same two replies
 // once the read answers, which are accepted, so the 500 comes from the failed read alone.
 func TestAReplyWhoseRouteReadFailsIsNotRefused(t *testing.T) {
+	t.Parallel()
 	fault := &routeReadFault{}
 	rig := newRoleRouteRepliesTraced(t, fault)
 	const role = "reply-read-fails"

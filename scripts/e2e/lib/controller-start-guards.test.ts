@@ -1,7 +1,7 @@
-import { beforeAll, describe, expect, test } from "bun:test";
+import { beforeAll, expect, test } from "bun:test";
 import { copyFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { hostTool, skipWithout } from "@legion/test-fixtures/host-tools";
+import { hostGate, hostTool } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { ownGroup } from "./own-group";
 import { scriptFunctions } from "./script-functions";
@@ -19,11 +19,11 @@ const rig = join(import.meta.dir, "rig.sh");
 const root = join(import.meta.dir, "..", "..", "..");
 const dir = temporaryDirectory("controller-start-guards-test");
 // perl: run starts every harness in a group of its own (ownGroup, lib/own-group.ts).
-const skip = skipWithout("bash", "sleep", "sh", "env", "perl");
+const host = hostGate({ programs: ["bash", "sleep", "sh", "env", "perl"] });
 const work = join(dir, "work");
 const bin = join(dir, "bin");
 beforeAll(() => {
-  if (skip) return;
+  if (host.missing) return;
   const bash = hostTool("bash");
   const sleep = hostTool("sleep");
   if (bash === null || sleep === null) throw new Error("bash or sleep is not on PATH");
@@ -67,7 +67,9 @@ start_cli() {
     if [ -n "$kid" ]; then
       omp=$(cat /proc/"$kid"/task/*/children 2>/dev/null || :)
       omp=\${omp%% *}
-      [ -n "$omp" ] && [ "$(readlink "/proc/$omp/exe" 2>/dev/null || :)" = "$want" ] && break
+      # Its environment, which every row reads next (controller_omp), only once the exec has laid it
+      # out (environ_laid_out, lib/process-tree.sh): the exe names EXE before that.
+      [ -n "$omp" ] && [ "$(readlink "/proc/$omp/exe" 2>/dev/null || :)" = "$want" ] && environ_laid_out "$omp" && break
       omp=
     fi
     sleep 0.05
@@ -102,7 +104,7 @@ echo "found $found of 20"`;
 
 const slow = 120_000;
 
-describe.skipIf(skip)("controller_omp", () => {
+host.describe("controller_omp", () => {
   test(
     "finds the Oh My Pi the run's legion controller start launched whatever name it runs under",
     () => {

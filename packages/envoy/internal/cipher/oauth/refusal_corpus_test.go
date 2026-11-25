@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -81,7 +82,9 @@ const (
 	policySource     = "../exchange/exchange.go"
 )
 
-var corpusSessionRule = fmt.Sprintf("a session name is printable, carries no whitespace, and is at most %d bytes", exchange.MaxSessionBytes)
+const corpusSessionRuleFormat = "a session name is printable, carries no whitespace, '*' or '>', and is at most %d bytes"
+
+var corpusSessionRule = fmt.Sprintf(corpusSessionRuleFormat, exchange.MaxSessionBytes)
 
 var policyRefusals = []policyRefusal{
 	{"%w: %s presented a token bound to no pod, which proves only that the account exists", []any{exchange.ErrNoPodBinding, corpusAccount}, policySource},
@@ -275,7 +278,7 @@ func TestEachCorpusHintStandsInTheBrokersSource(t *testing.T) {
 			t.Errorf("%s holds no refusal %q: the policy's sentence changed, so the corpus and cipher-client's list must too", refusal.source, refusal.format)
 		}
 	}
-	if !strings.Contains(read(policySource), `"a session name is printable, carries no whitespace, and is at most %d bytes"`) {
+	if !strings.Contains(read(policySource), strconv.Quote(corpusSessionRuleFormat)) {
 		t.Errorf("%s holds no session rule as the corpus writes it", policySource)
 	}
 	raw, err := os.ReadFile(filepath.Join("..", "api", "handlers_oauth.go"))

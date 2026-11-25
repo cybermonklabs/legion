@@ -19,6 +19,7 @@ import {
   startCodexServer,
   until,
 } from "./codex-server-process"
+import { fakeHost } from "./fake-nats-server"
 
 const stops: (() => Promise<void> | void)[] = []
 // Registered before the directories' removal below, which bun runs after it: a server still alive
@@ -67,11 +68,14 @@ function broker() {
 }
 
 /** A hub that runs an auth service as far as a client can tell: its INFO names a nonce of this
- *  connection's own. It keeps each CONNECT it is sent, with the nonce it sent that connection. */
+ *  connection's own. It keeps each CONNECT it is sent, with the nonce it sent that connection, on
+ *  an address of its own (fakeHost), so the CONNECT a row reads first is its own server's and never
+ *  a stray client's. */
 function hub() {
   const connects: { nonce: string; connect: Record<string, unknown> }[] = []
+  const host = fakeHost("127.86.1.4")
   const listener: TCPSocketListener<{ nonce: string; buffered: string }> = Bun.listen({
-    hostname: "127.0.0.1",
+    hostname: host,
     port: 0,
     socket: {
       open(socket) {
@@ -99,7 +103,7 @@ function hub() {
     },
   })
   stops.push(() => listener.stop(true))
-  return { connects, url: `nats://127.0.0.1:${listener.port}` }
+  return { connects, url: `nats://${host}:${listener.port}` }
 }
 
 describe("the Codex server's NATS CONNECT", () => {

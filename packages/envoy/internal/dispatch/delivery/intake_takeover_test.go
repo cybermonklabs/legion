@@ -43,7 +43,7 @@ func newTakeOverProcess(t *testing.T, pool *store.Pool, natsURL string) *takeOve
 	}
 	t.Cleanup(client.Close)
 	intake := newIntake(client, second.Pool, leases, newFakeGitHub(t).newTestClient(), events.NewBroker(),
-		loadedSettingsCache(t, t.Context(), second.Pool))
+		loadedSettingsCache(t, t.Context(), second.Pool), unrenamed())
 	t.Cleanup(func() {
 		stopping, cancel := context.WithTimeout(context.Background(), intakeStopBudget)
 		defer cancel()
@@ -63,6 +63,7 @@ func (a *takeOverAttempt) delivers() string { return a.intake.subject }
 // (TestTwoProcessesPollingOneDurableNeverBothBindIt in #2913), asked of the mechanism that
 // replaced it.
 func TestTwoProcessesPollingOneDurableNeverBothBindIt(t *testing.T) {
+	t.Parallel()
 	t.Run("back to back", func(t *testing.T) {
 		pool, ctx := deliveryTestPool(t)
 		seedDeliverySettings(t, ctx, pool)

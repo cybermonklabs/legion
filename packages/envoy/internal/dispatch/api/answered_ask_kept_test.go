@@ -34,6 +34,7 @@ const (
 // block back. The person then writes the block back, and the settlement that binds the ask's row
 // to it retracts the removal.
 func TestAnAgentCannotDropAnAnsweredAsk(t *testing.T) {
+	t.Parallel()
 	handler, database := blockAskHandler(t)
 	personalToken := personalTokenHolding(t, database, model.ScopePerson)
 	writes := []struct {

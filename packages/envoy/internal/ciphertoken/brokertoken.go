@@ -170,18 +170,19 @@ type Caller struct {
 	// naming none is ErrNotASession and never reaches one.
 	Session string
 	// Person is the person that session acts for. A Caller names a person or a service, never
-	// both and never neither: an answer that names no person names the service its machine is.
+	// both and never neither: an answer that names no person names the service it is.
 	Person string
 	// Service is the service a caller that names no person is: the fleet the machine presenting
-	// the token belongs to, as the broker's own configuration names it. Whoever mounts this
-	// check decides what such a caller may do; what this package promises is that one of the two
-	// is set.
+	// the token belongs to, as the broker's own configuration names it, the service a read entry
+	// names, or the account of an account entry naming no person, which the token acts as
+	// (system:serviceaccount:<namespace>:<name>). Whoever mounts this check decides what such a
+	// caller may do; what this package promises is that one of the two is set.
 	Service string
 	// Projects is the token's list of projects, the caller's own copy: a ProjectScopeNamed
 	// token's one project, or none for an account entry naming none (the shared public-session
-	// account's), and the projects a ProjectScopePerson token's trade asked for, each one its
-	// person could see then, nil for none. A read-only caller (ReadOnly) names none, since it
-	// writes none. Sorted, each once.
+	// account's, and an account entry naming no person), and the projects a ProjectScopePerson
+	// token's trade asked for, each one its person could see then, nil for none. A read-only
+	// caller (ReadOnly) names none, since it writes none. Sorted, each once.
 	Projects []string
 	// ProjectScope is the broker's own `project_scope` claim, carried whole rather than read
 	// down to a flag: a reader deciding what a token may do has to tell "the broker scoped this
@@ -356,7 +357,7 @@ func Presented(r *http.Request) (string, bool) {
 // Its error is one of the sentinels above, and the Caller it answers is only ever one the broker
 // called live and whose proof verified.
 func (v *Verifier) Verify(ctx context.Context, r *http.Request) (Caller, error) {
-	token, answer, caller, err := v.live(ctx, r)
+	token, answer, caller, err := v.live(ctx, r, true)
 	if err != nil {
 		return Caller{}, err
 	}
@@ -376,20 +377,41 @@ func (v *Verifier) Verify(ctx context.Context, r *http.Request) (Caller, error) 
 // and would close a sound connection; what is left to ask of an open connection is whether the
 // token is still live, which is this. Nothing admits a caller through it.
 func (v *Verifier) Live(ctx context.Context, r *http.Request) (Caller, error) {
-	_, _, caller, err := v.live(ctx, r)
+	_, _, caller, err := v.live(ctx, r, true)
 	return caller, err
+}
+
+// LiveUntil is Live and the instant the broker's answer says the token stops being live: its
+// 'exp', or the zero time when the broker named none. A connection that outlives its request reads
+// it to tell a token whose life ended from one the broker ended early, since both answer
+// ErrNotActive once they are over and only the first was due: the listener's relay socket closes
+// the one for a fresh trade at once and the other as a refusal (cmd/listener, relay_socket.go).
+//
+// Unlike Live it spends nothing of the source address's bucket: its caller is a connection whose
+// opening request Verify admitted with its proof, which spent the bucket then, and which asks
+// again at an interval its own process sets (the relay socket's 20 s check, of at most
+// relaySocketMaxPerListener sockets). Charging it would let a stranger who empties the bucket of
+// an address, which every client behind one load balancer shares, close every connection opened
+// from it.
+func (v *Verifier) LiveUntil(ctx context.Context, r *http.Request) (Caller, time.Time, error) {
+	_, answer, caller, err := v.live(ctx, r, false)
+	if err != nil {
+		return Caller{}, time.Time{}, err
+	}
+	return caller, expiryOf(answer), nil
 }
 
 // live is the broker's half of both checks: the token r presents, the broker's answer about it,
 // and the caller sessionCaller reads that answer as, held to this verifier's read-only switch.
 // Verify and Live both read the answer through here, so an open connection's heartbeat is held to
-// the same rule as the request that opened it, the read-only switch included.
-func (v *Verifier) live(ctx context.Context, r *http.Request) (string, Introspection, Caller, error) {
+// the same rule as the request that opened it, the read-only switch included. spend says whether
+// an introspection spends the source address's bucket (known).
+func (v *Verifier) live(ctx context.Context, r *http.Request, spend bool) (string, Introspection, Caller, error) {
 	token, ok := Presented(r)
 	if !ok {
 		return "", Introspection{}, Caller{}, ErrNotPresented
 	}
-	answer, err := v.known(ctx, r, token)
+	answer, err := v.known(ctx, r, token, spend)
 	if err != nil {
 		return "", Introspection{}, Caller{}, err
 	}
@@ -431,15 +453,19 @@ func sessionCaller(answer Introspection, servesReadOnly bool) (Caller, error) {
 	// not know, or a shape the broker mints no token in, is a token it cannot read, and is refused
 	// here rather than taken as a token that names no project at all (ErrNotASession). A
 	// read-only token passes only a verifier whose service serves one. A named token is an
-	// operator's entry's, which names one project, or none for an account entry that names none,
-	// and always a person: a named answer naming two or more projects, which a reader holding a
-	// write to one project would take as no limit at all, or naming none and no person, is the
-	// same case. A list no exchange mints (oauthwire.ValidProjects) and a service's token naming
-	// a project, which the exchange refuses to mint, are refused for the same reason.
+	// operator's entry's, which names one project, or none for an account entry that names none:
+	// such an entry names a person, or names no person and acts as its account, which is the
+	// token's service and is always a whole Kubernetes account subject (oauthwire.AccountSubject),
+	// so a named answer naming no person and any other service, a fleet's name or a string that
+	// only opens like an account among them, is no token the broker mints. A named answer naming
+	// two or more projects, which a reader holding a write to one project would take as no limit
+	// at all, is the same case. A list no exchange mints (oauthwire.ValidProjects) and a service's
+	// token naming a project, which the exchange refuses to mint, are refused for the same reason.
 	shape := shapeOf(answer)
 	if answer.Session == "" || (answer.Person == "" && answer.Service == "") || answer.ClientID != ExchangeClientID ||
 		shape == shapeNotASession || (shape == shapeReadOnly && !servesReadOnly) ||
-		(answer.ProjectScope == ProjectScopeNamed && (len(answer.Projects) > 1 || (len(answer.Projects) == 0 && answer.Person == ""))) ||
+		(answer.ProjectScope == ProjectScopeNamed && len(answer.Projects) > 1) ||
+		(answer.ProjectScope == ProjectScopeNamed && answer.Person == "" && !oauthwire.AccountSubject.MatchString(answer.Service)) ||
 		(answer.Person == "" && len(answer.Projects) > 0) ||
 		oauthwire.ValidProjects(answer.Projects) != nil {
 		return Caller{}, ErrNotASession
@@ -512,8 +538,9 @@ func shapeOf(answer Introspection) tokenShape {
 // had just been given. A stranger still pays per distinct token, which is the flood the bucket
 // exists for. The introspection runs under the context of whichever request opened the flight,
 // so one that goes away takes the others' answer with it; they are answered ErrBrokerUnreachable
-// and come back, which is what every other lost answer does.
-func (v *Verifier) known(ctx context.Context, r *http.Request, token string) (Introspection, error) {
+// and come back, which is what every other lost answer does. With spend false the bucket is not
+// spent (LiveUntil).
+func (v *Verifier) known(ctx context.Context, r *http.Request, token string, spend bool) (Introspection, error) {
 	key := sha256.Sum256([]byte(token))
 	if answer, ok := v.cache.lookup(key, v.now()); ok {
 		return answer, nil
@@ -524,7 +551,7 @@ func (v *Verifier) known(ctx context.Context, r *http.Request, token string) (In
 		if answer, ok := v.cache.lookup(key, v.now()); ok {
 			return answer, nil
 		}
-		if !v.addresses.AllowAt(v.address(r), v.now()) {
+		if spend && !v.addresses.AllowAt(v.address(r), v.now()) {
 			return Introspection{}, ErrRateLimited
 		}
 		answer, err := v.introspect(ctx, token)

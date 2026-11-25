@@ -181,6 +181,7 @@ func seedGoingProject(t *testing.T, handler http.Handler, project string) (strin
 // answerer is given, and every frame it emits is stored in order, the last of them ending the
 // stream.
 func TestGoingRequestRecordsTheQuestionAndItsFramesReachTheRecord(t *testing.T) {
+	t.Parallel()
 	answerer := &fakeAnswerer{
 		searches: "pelican",
 		frames: []going.Event{
@@ -250,6 +251,7 @@ func TestGoingRequestRecordsTheQuestionAndItsFramesReachTheRecord(t *testing.T) 
 // contracts.GoingWordsMax is refused as search refuses a query past its own cap. Neither records
 // a run.
 func TestGoingRequestRefusesAQuestionItCannotAsk(t *testing.T) {
+	t.Parallel()
 	rig := newGoingRoutesRig(t, &fakeAnswerer{frames: []going.Event{going.End(0, 0)}})
 
 	for name, words := range map[string]any{"missing": nil, "blank": "   "} {
@@ -282,6 +284,7 @@ func TestGoingRequestRefusesAQuestionItCannotAsk(t *testing.T) {
 // A credential scoped to one project asks only of that project: the check runs on the project
 // the body names, as createIssue's does, before anything is recorded.
 func TestGoingRequestRefusesAProjectScopedCallerAnotherProject(t *testing.T) {
+	t.Parallel()
 	rig := newBrokerTokenRig(t)
 	caller := newBrokerCaller(t)
 	const token = "a-token-scoped-to-one-project"
@@ -313,6 +316,7 @@ func TestGoingRequestRefusesAProjectScopedCallerAnotherProject(t *testing.T) {
 // Last-Event-ID answers the frames past the one a reader holds, which is what a reader that
 // dropped asks for.
 func TestGoingStreamReplaysStoredFramesAndResumes(t *testing.T) {
+	t.Parallel()
 	rig := newGoingRoutesRig(t, nil)
 	run, err := rig.server.recordGoingRequest(context.Background(), goingAsker, "GOI", "who closed it?")
 	if err != nil {
@@ -406,6 +410,7 @@ func (s *goingStreamSink) text() string {
 // waiting on going_requests, so the state it answers holds an ending no frames read could have
 // seen.
 func TestGoingStreamCarriesAnEndingStoredBetweenItsTwoReads(t *testing.T) {
+	t.Parallel()
 	rig := newGoingRoutesRig(t, nil)
 	ctx := context.Background()
 	run, err := rig.server.recordGoingRequest(ctx, goingAsker, "", "who is answering this?")
@@ -452,6 +457,7 @@ func TestGoingStreamCarriesAnEndingStoredBetweenItsTwoReads(t *testing.T) {
 		var waiting int
 		if err := rig.database.Pool.QueryRow(ctx, `
 			select count(*) from pg_locks where relation = 'going_requests'::regclass and not granted
+			  and database = (select oid from pg_database where datname = current_database())
 		`).Scan(&waiting); err != nil {
 			t.Fatalf("read what is waiting on going_requests: %v", err)
 		}
@@ -475,6 +481,7 @@ func TestGoingStreamCarriesAnEndingStoredBetweenItsTwoReads(t *testing.T) {
 // A run nobody asked for, an id that could be nobody's, and a run that is somebody else's are
 // one answer, word for word: an id tells a caller nothing it did not already know.
 func TestGoingStreamAnswersEveryRunItWillNotServeAlike(t *testing.T) {
+	t.Parallel()
 	rig := newGoingRoutesRig(t, nil)
 	mine, err := rig.server.recordGoingRequest(context.Background(), goingAsker, "", "what is going on?")
 	if err != nil {
@@ -508,6 +515,7 @@ func TestGoingStreamAnswersEveryRunItWillNotServeAlike(t *testing.T) {
 // ends_at with no ending stored and nothing is writing it. The reader ends it itself, with the
 // deadline's error, and stores it, so the next reader of that run is answered the same ending.
 func TestGoingStreamEndsARunWhosePodIsGone(t *testing.T) {
+	t.Parallel()
 	rig := newGoingRoutesRig(t, nil)
 	var id string
 	if err := rig.database.Pool.QueryRow(context.Background(), `
@@ -543,6 +551,7 @@ func TestGoingStreamEndsARunWhosePodIsGone(t *testing.T) {
 // Dispatch admits - a pod holding nothing but an agent token included - so no endpoint,
 // deployment name or credential can be read from it.
 func TestGoingCapabilitySaysWhetherAModelIsConfigured(t *testing.T) {
+	t.Parallel()
 	none, _, _, _ := newRegisteredTestServer(t, testServerOptions{})
 	response := sessionRequest(t, none, http.MethodGet, "/api/v1/going/capability", nil)
 	if response.Code != http.StatusOK || strings.TrimSpace(response.Body.String()) != `{"model_configured":false}` {
@@ -566,6 +575,7 @@ func TestGoingCapabilitySaysWhetherAModelIsConfigured(t *testing.T) {
 // error that says so, which is how a reader learns it: the POST answers exactly as it does with
 // a model, since nothing of this route's own status says what the deployment configured.
 func TestGoingRequestWithNoModelConfiguredStreamsThatFault(t *testing.T) {
+	t.Parallel()
 	rig := newGoingRoutesRig(t, nil)
 
 	response := rig.ask(t, "alice", map[string]any{"words": "is anybody answering?"})
@@ -590,6 +600,7 @@ func TestGoingRequestWithNoModelConfiguredStreamsThatFault(t *testing.T) {
 // Owner: &owner} (agent_tokens.go), so a comparison of kind and id alone - model.Actor.SameAs -
 // would hand Bob every run Alice asked under her own token.
 func TestGoingStreamRefusesAnotherOwnersPersonalToken(t *testing.T) {
+	t.Parallel()
 	rig := newGoingRoutesRig(t, nil)
 	alice := personalTokenOwnedBy(t, rig.database, "alice", model.ScopePerson)
 	bob := personalTokenOwnedBy(t, rig.database, "bob", model.ScopePerson)
@@ -621,6 +632,7 @@ func TestGoingStreamRefusesAnotherOwnersPersonalToken(t *testing.T) {
 // asked through the route and its author's owner then restated under "Dana@Example.COM", in case
 // only, as such a build stored it.
 func TestAGoingRunAskedUnderAnEarlierBuildsOwnerAnswersItsCanonicalOwner(t *testing.T) {
+	t.Parallel()
 	const owner, stored = "dana@example.com", "Dana@Example.COM"
 	rig := newGoingRoutesRig(t, nil)
 	dana := personalTokenOwnedBy(t, rig.database, owner, model.ScopePerson)
@@ -660,6 +672,7 @@ func TestAGoingRunAskedUnderAnEarlierBuildsOwnerAnswersItsCanonicalOwner(t *test
 // and no workload, and the stream serves such a run to nobody: the model would be called and
 // the deployment's paced quota spent on frames every reader of them is answered 404.
 func TestGoingRequestRefusesAnAskerThatNamesNobody(t *testing.T) {
+	t.Parallel()
 	answerer := &fakeAnswerer{frames: []going.Event{going.End(1, 0)}}
 	rig := newGoingRoutesRig(t, answerer)
 
@@ -690,6 +703,7 @@ func TestGoingRequestRefusesAnAskerThatNamesNobody(t *testing.T) {
 // rests on: {Service: &subject} carries the same empty kind and id as {}, so comparing kind
 // and id alone - SameAs - would serve the pod's run to the shared token.
 func TestGoingStreamRefusesARunWhoseAuthorNamesNobody(t *testing.T) {
+	t.Parallel()
 	rig := newGoingRoutesRig(t, nil)
 
 	nobodys, err := rig.server.recordGoingRequest(context.Background(), model.Actor{}, "", "whose run is this?")
@@ -720,6 +734,7 @@ func TestGoingStreamRefusesARunWhoseAuthorNamesNobody(t *testing.T) {
 // read that carries the stream would fail against the integer column and the reader would be
 // answered 200 with no frame at all.
 func TestGoingStreamReadsAResumePointPastTheSequenceColumnAsNone(t *testing.T) {
+	t.Parallel()
 	rig := newGoingRoutesRig(t, nil)
 	ctx := context.Background()
 	run, err := rig.server.recordGoingRequest(ctx, goingAsker, "", "how far can a reader resume?")
@@ -778,6 +793,7 @@ func (c *cursorAnswerer) Run(ctx context.Context, _ going.Request, emit func(goi
 // of being answered this run's id. Here the run's cursor is held open while the settle's own
 // statement runs, which is the collision itself rather than a window it might fall into.
 func TestGoingRequestGivesItsRunAConnectionMarkOfItsOwn(t *testing.T) {
+	t.Parallel()
 	answerer := &cursorAnswerer{opened: make(chan struct{}), release: make(chan struct{})}
 	rig := newGoingRoutesRig(t, answerer)
 	answerer.pool = rig.database.Pool
@@ -819,6 +835,7 @@ func TestGoingRequestGivesItsRunAConnectionMarkOfItsOwn(t *testing.T) {
 // request's own context already holds one of the pool's connections, which is the one thing
 // ForConcurrentRead refuses (store.ErrNestedAcquire).
 func TestGoingRequestAnswersTheFailureWhenItsRunCannotBeDetached(t *testing.T) {
+	t.Parallel()
 	answerer := &fakeAnswerer{frames: []going.Event{going.End(1, 0)}}
 	rig := newGoingRoutesRig(t, answerer)
 	held, release := store.HoldsConnection(context.Background())

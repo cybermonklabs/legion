@@ -147,8 +147,8 @@ const ITEM_BLOCK_REFERENCE = new RegExp(
  * fragment. Go's validator reads the value through `text.ParseRef`, which first ends it at a
  * character no reference holds (`referenceEnd`: `'`, `"`, `<`, `>`, a backtick, `[`, `]`, `|` or
  * whitespace) and trims trailing punctuation, so such a value may be refused here with a different
- * reason than Go gives; both refuse it. A message never changes, so a pinned message block is no
- * reference.
+ * reason than Go gives; both refuse it. A message records no revisions, so a pinned message block
+ * is no reference.
  */
 function itemBlockKind(value: string): "ask" | "comment" | "message" | undefined {
   const match = ITEM_BLOCK_REFERENCE.exec(value);
@@ -814,7 +814,7 @@ export const DISPATCH_BLOCK_POINTER_VALUES: readonly {
  * Go's reader refuses one holding `&`, so the two never read one back alike. Go's twin is
  * `pmdoc.typedBlockIDShortcutExcluded`.
  */
-const TYPED_BLOCK_ID_SHORTCUT_EXCLUDED = "\t\n\r \"#&'.<=>`}";
+export const TYPED_BLOCK_ID_SHORTCUT_EXCLUDED = "\t\n\r \"#&'.<=>`}";
 
 /**
  * How a typed block's opening line writes the block's id, as Go's renderer
@@ -836,6 +836,122 @@ export function typedBlockIdAttribute(id: string): string {
     .replaceAll("\n", "&#xA;")
     .replaceAll("\r", "&#xD;");
   return `id="${value}"`;
+}
+
+/**
+ * One container marker a block nested in a quote, a list item or a footnote is written after, as
+ * a regular expression's source: a quote marker (`>`), a list marker (`-`, `*`, `+`, or a number
+ * and `.` or `)`, each followed by a space or a tab) or a footnote label (`[^label]:` with a label
+ * that is not blank and holds no line break). The renderer writes the first block of a list item
+ * or of a footnote's definition on the marker's or the label's line, so a reader that finds a
+ * block's opening line skips each marker and the spaces and tabs after it. `askOpenerLines`, the
+ * scan the web's and the CLI's readers of ask blocks' opening lines share, skips them by it.
+ */
+const CONTAINER_MARKER_PATTERN = String.raw`(?:>|[-*+][ \t]|\d+[.)][ \t]|\[\^(?!\s*\])[^\]\n]*\]:)`;
+
+/** A fenced code block's fence: its character, a backtick or a tilde, and its length. */
+type CodeFence = { readonly char: string; readonly run: number };
+
+/** A line that opens or closes a document's front matter. */
+const FRONT_MATTER_FENCE = /^---[ \t]*$/;
+
+/** One container marker at the start of a line (`CONTAINER_MARKER_PATTERN`). */
+const CONTAINER_MARKER = new RegExp(`^${CONTAINER_MARKER_PATTERN}`);
+
+/**
+ * Each line of `markdown` that opens an ask block, without its indentation and its containers'
+ * markers (`CONTAINER_MARKER_PATTERN`), outside fenced code and outside the front matter a
+ * document opens with, as CommonMark and pmdoc's parser read the canonical rendering a text route
+ * serves, which writes every code block fenced. A line that quotes an opener in code - a fence,
+ * one opened on a footnote's label line too, or an inline span, which never starts the line -
+ * opens no block, and nor does a line of front matter, which is no markdown. The web's reader of
+ * a live text of the release before, and the CLI's reader of a live text and its check of a
+ * version for open ask blocks before an approval request, all read openers here, so none takes a
+ * line a document's writer quoted for a state or an answer Dispatch recorded. The server's
+ * refs.questionBlocks makes the same scan past the same markers (trimContainerMarkers) and the
+ * same front matter (frontMatterEnd), but takes only spaces and tabs after a closing fence, where
+ * this scan takes any blank.
+ */
+export function askOpenerLines(markdown: string): string[] {
+  const openers: string[] = [];
+  let fence: CodeFence | undefined;
+  const lines = markdown.split("\n").map((line) => line.replace(/\r$/, ""));
+  for (const line of lines.slice(frontMatterEnd(lines))) {
+    const rest = withoutContainerMarkers(line);
+    if (fence !== undefined) {
+      const closer = fenceRun(rest);
+      if (
+        closer?.char === fence.char &&
+        closer.run >= fence.run &&
+        rest.slice(closer.run).trim() === ""
+      ) {
+        fence = undefined;
+      }
+      continue;
+    }
+    const opened = fenceRun(rest);
+    if (
+      opened !== undefined &&
+      opened.run >= 3 &&
+      !(opened.char === "`" && rest.slice(opened.run).includes("`"))
+    ) {
+      fence = opened;
+      continue;
+    }
+    if (/^:{3,}ask\{/.test(rest)) openers.push(rest);
+  }
+  return openers;
+}
+
+/** The lines of `openers`, a version's ask block openers as `askOpenerLines` gives them, that
+ *  open the ask block `blockId`: `:::ask{<id> …}`, the id as the renderer writes it
+ *  (`typedBlockIdAttribute`: `#<id>`, or `id="…"` for an id the shortcut cannot hold), followed
+ *  by a space or the closing brace. The web's and the CLI's readers of one block's opening line
+ *  both take it here. */
+export function askOpeners(openers: readonly string[], blockId: string): string[] {
+  const id = typedBlockIdAttribute(blockId);
+  return openers.filter((line) => {
+    // Each line opens the directive (`:::ask{`), so its first brace is the directive's.
+    const attributes = line.slice(line.indexOf("{") + 1);
+    return attributes.startsWith(`${id} `) || attributes.startsWith(`${id}}`);
+  });
+}
+
+/**
+ * Where `lines` go on past the front matter a document opens with, as pmdoc's
+ * parseFrontmatterBlock reads it: a first line of `---` and any spaces or tabs opens it, and the
+ * first later line that is the same closes it. pmdoc keeps it word for word, so no line of it opens
+ * a block. 0 where the document opens with none, or with an opener nothing closes, which the
+ * renderer never writes: a rule opening a document is written `***`.
+ */
+function frontMatterEnd(lines: readonly string[]): number {
+  if (!FRONT_MATTER_FENCE.test(lines[0] ?? "")) return 0;
+  const close = lines.findIndex((line, index) => index > 0 && FRONT_MATTER_FENCE.test(line));
+  return close < 0 ? 0 : close + 1;
+}
+
+/** The run of backticks or tildes `text` opens with, if any. */
+function fenceRun(text: string): CodeFence | undefined {
+  const char = text[0];
+  if (char !== "`" && char !== "~") return undefined;
+  let run = 1;
+  while (text[run] === char) run++;
+  return { char, run };
+}
+
+/** `line` without the indentation and the container markers (`CONTAINER_MARKER_PATTERN`: quote
+ *  markers, list markers followed by a space or a tab, and footnote labels, as
+ *  packages/envoy-client's askgate-new-asks.ts reads pmdoc's footnote definition), each with every
+ *  space and tab after it, that a block nested in a quote, a list item or a footnote is written
+ *  after. The lines are split at each line break first, so no label holds one. */
+function withoutContainerMarkers(line: string): string {
+  let rest = line;
+  for (;;) {
+    rest = rest.replace(/^[ \t]+/, "");
+    const marker = CONTAINER_MARKER.exec(rest);
+    if (marker === null) return rest;
+    rest = rest.slice(marker[0].length);
+  }
 }
 
 /** Each typed block id and how its opening line writes it (`typedBlockIdAttribute`). */

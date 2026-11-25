@@ -1,9 +1,10 @@
-import { useQuery } from "@tanstack/react-query";
+import { type QueryStatus, useQuery } from "@tanstack/react-query";
 
 import { whoAmIQuery } from "../api/queries";
-import type { EVENT_FRESH } from "../features/refs/reference-target";
-/** The freshness of a read that events keep fresh (`EVENT_FRESH`'s two options). */
-export type EventFreshness = Partial<typeof EVENT_FRESH>;
+
+type FocusRule = (query: { readonly state: { readonly status: QueryStatus } }) => "always" | false;
+/** The freshness of a read that events keep fresh: `EVENT_FRESH`'s two options, by shape. */
+export type EventFreshness = Readonly<{ refetchOnWindowFocus: FocusRule; staleTime: number }>;
 
 /** Whether the signed-in principal is a person (`/auth/whoami`'s `kind: "user"`), whose sign-in
  *  holds the `person` scope that the routes behind these surfaces require: false while the

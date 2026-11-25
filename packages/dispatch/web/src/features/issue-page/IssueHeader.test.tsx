@@ -22,9 +22,15 @@ import type {
   IssueCoverage,
   IssueDetails,
   Project,
+  StatusChangeAnswer,
   UserIssueState,
 } from "../../api/types";
 import { subsetRanges } from "../../fonts/inter/subset-script";
+import {
+  answerStatusChanges,
+  fixtureAnswer,
+  fixtureRefusal,
+} from "../issue/parent-status/status-change-fixtures";
 import { buildDispatchReference, parseIssuePath } from "../refs/routes";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { appKeymap, useKeymapScope } from "../shell/keymap";
@@ -366,21 +372,22 @@ test("the header hides whose turn when the server sent open asks without waiting
   }
 });
 
-// The count reads the reader's login, the coverage and the tree, whose decision nodes and the
-// Changes under them it counts, under the keys the outline reads them by, and no decisions read
-// and no comments read; and a root issue's header reads the projects for its gated steps, under
-// the key the shell's sidebar reads them by. The header mounts again each time the reader comes
-// back to the issue's page, and under the app's `staleTime` a read is stale 30 s after it answered
-// (`main.tsx`), each observer judging it by its own options: read with the app's defaults, the
-// header mounted again past that would send its count's reads and the projects read again,
-// although the feed's events keep them fresh (decision 180).
+// The count reads the reader's login, the coverage, the comments, which say which Changes their
+// author deleted, and the tree, whose decision nodes and the Changes under them it counts, under
+// the keys the outline reads them by, and no decisions read; and a root issue's header reads the
+// projects for its gated steps, under the key the shell's sidebar reads them by. The header
+// mounts again each time the reader comes back to the issue's page, and under the app's
+// `staleTime` a read is stale 30 s after it answered (`main.tsx`), each observer judging it by
+// its own options: read with the app's defaults, the header mounted again past that would send
+// its count's reads and the projects read again, although the feed's events keep them fresh
+// (decision 180).
 test("the header mounted again past 30 s sends none of its count's reads, nor the projects read, again", async () => {
   const restore = stubHeader(issue);
   // The issue's own read keeps the app's 30 s, so the header mounted again reads it again: that is
   // what says the mount came past the age the five and the projects read would go stale at.
   const getIssue = spyOn(api, "getIssue");
-  // The login answered here, and the coverage and the tree by what the file already answers them
-  // with. The decisions and the comments are watched too, and the header reads neither.
+  // The login answered here, and the coverage, the comments and the tree by what the file already
+  // answers them with. The decisions are watched too, and the header does not read them.
   const reads = [
     spyOn(api, "whoAmI").mockResolvedValue({ event_head: "0", kind: "user", login: "alice" }),
     spyOn(api, "getIssueDecisions").mockResolvedValue({
@@ -403,9 +410,13 @@ test("the header mounted again past 30 s sends none of its count's reads, nor th
   let view = renderHeader("/issues/CORE-1", queryClient);
 
   try {
-    // The login is the one the shell already holds, the coverage and the tree are each sent once,
-    // and the decisions and the comments are not sent at all.
-    await waitFor(() => expect(sent()).toEqual([0, 0, 1, 0, 1]));
+    // The login is the one the shell already holds, the coverage, the comments and the tree are
+    // each sent once, and the decisions are not sent at all.
+    await waitFor(() =>
+      expect(sent(), "the header did not send each of its count's reads once").toEqual([
+        0, 0, 1, 1, 1,
+      ])
+    );
     await waitFor(() => expect(listProjects).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(queryClient.isFetching()).toBe(0));
     const issueReads = getIssue.mock.calls.length;
@@ -418,7 +429,7 @@ test("the header mounted again past 30 s sends none of its count's reads, nor th
     await waitFor(() => expect(getIssue.mock.calls.length).toBeGreaterThan(issueReads));
     await waitFor(() => expect(queryClient.isFetching()).toBe(0));
     expect(sent(), "the header mounted again sent a read of its count's again").toEqual([
-      0, 0, 1, 0, 1,
+      0, 0, 1, 1, 1,
     ]);
     expect(listProjects.mock.calls.length, "the header mounted again read the projects again").toBe(
       1
@@ -553,6 +564,7 @@ test("the header draws a gated root issue's steps where the header's one chip sa
     open_asks: 0,
     key: "CORE",
     name: "Core",
+    proven_sessions: false,
   };
   const listProjects = spyOn(api, "listProjects").mockResolvedValue([gated]);
   const view = renderHeader("/issues/CORE-1/conversation");
@@ -585,6 +597,37 @@ test("the header draws a gated root issue's steps where the header's one chip sa
   }
 });
 
+test("the header draws the steps of a root whose parent is in another project", async () => {
+  // CORE-1 under OTHR-6 is a root of CORE: a parent of another project passes nothing on, so the
+  // issue stands in CORE's gate and the header reads the projects to draw it.
+  const restore = stubHeader({ ...issue, parent: "OTHR-6" });
+  const gated: Project = {
+    created_at: "2026-09-09T00:00:00Z",
+    gated_steps: ["criteria", "spec"],
+    open_asks: 0,
+    key: "CORE",
+    name: "Core",
+    proven_sessions: false,
+  };
+  const listProjects = spyOn(api, "listProjects").mockResolvedValue([gated]);
+  const view = renderHeader("/issues/CORE-1/conversation");
+
+  try {
+    await screen.findByRole("heading", { level: 1, name: issue.title });
+    const stateActions = screen.getByTestId("issue-state-actions");
+    const steps = await within(stateActions).findByTestId("issue-approval-steps");
+    expect(
+      Array.from(steps.querySelectorAll("[data-approval-step]")).map((step) =>
+        step.getAttribute("data-approval-step")
+      )
+    ).toEqual(["criteria", "spec"]);
+  } finally {
+    view.unmount();
+    listProjects.mockRestore();
+    restore();
+  }
+});
+
 test("the header keeps the primary document's chip when no gated step reviews it", async () => {
   const restore = stubHeader({
     ...issue,
@@ -604,6 +647,7 @@ test("the header keeps the primary document's chip when no gated step reviews it
     open_asks: 0,
     key: "CORE",
     name: "Core",
+    proven_sessions: false,
   };
   const listProjects = spyOn(api, "listProjects").mockResolvedValue([gated]);
   const view = renderHeader("/issues/CORE-1/conversation");
@@ -2922,6 +2966,128 @@ test("the actions group closes once a focus moved by code goes to a control outs
     await waitFor(() => expect(control).toHaveAttribute("aria-expanded", "false"));
   } finally {
     view.unmount();
+    restore();
+  }
+});
+
+// The rule's question on the new page's header (INFRA-4731): the header draws what the dry run of a
+// status write answers, so a write the rule would refuse never leaves the status pending with
+// nothing on the screen and every later pick refused as one too many.
+
+/** The issue under a parent, so the rule judges each write of its status. */
+const issueUnderAParent: IssueDetails = { ...issue, parent: "CORE-9" };
+
+test("a status pick the rule would refuse asks the question, and Keep as it is puts the status back for the next pick", async () => {
+  const user = userEvent.setup();
+  const restore = stubHeader(issueUnderAParent);
+  const statusChanges = answerStatusChanges().mockImplementation(async (_key, input) => {
+    // Each choice's own dry run is held: the question is about to be closed unanswered.
+    if (input.include_children === true || input.unlink_children === true) {
+      return new Promise<StatusChangeAnswer>(() => {});
+    }
+    if (input.status === "in_progress") throw fixtureRefusal("conflict");
+    return fixtureAnswer("dry-run");
+  });
+  const patchIssue = answerIssuePatches().mockResolvedValue({
+    ...issueUnderAParent,
+    status: "backlog",
+  });
+  const view = renderHeader();
+
+  try {
+    const status = await screen.findByRole("combobox", { name: "Status" });
+    await user.selectOptions(status, "in_progress");
+    const question = await screen.findByRole("dialog", { name: "Move CORE-1 to In progress?" });
+    expect(status).toHaveValue("in_progress");
+    expect(patchIssue).not.toHaveBeenCalled();
+
+    await user.click(within(question).getByRole("button", { name: "Keep as it is" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(status).toHaveValue("todo");
+    expect(patchIssue).not.toHaveBeenCalled();
+
+    // The next pick is taken: its dry run asks nothing, and its PATCH goes.
+    await user.selectOptions(status, "backlog");
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenCalledWith("CORE-1", { status: "backlog" }, keyedAttempt)
+    );
+    expect(statusChanges).toHaveBeenCalledWith(
+      "CORE-1",
+      { dry_run: true, status: "backlog" },
+      expect.anything()
+    );
+  } finally {
+    view.unmount();
+    patchIssue.mockRestore();
+    restore();
+  }
+});
+
+test("a status pick whose dry run is refused for another reason says why, and the status goes back", async () => {
+  const user = userEvent.setup();
+  const restore = stubHeader(issueUnderAParent);
+  const refusal = fixtureRefusal("stale");
+  answerStatusChanges().mockRejectedValue(refusal);
+  const patchIssue = answerIssuePatches();
+  const view = renderHeader();
+
+  try {
+    const status = await screen.findByRole("combobox", { name: "Status" });
+    await user.selectOptions(status, "in_progress");
+    expect(
+      await screen.findByText(`Couldn't change the status of CORE-1 — ${refusal.message}`)
+    ).toHaveAttribute("role", "alert");
+    expect(status).toHaveValue("todo");
+    expect(patchIssue).not.toHaveBeenCalled();
+  } finally {
+    view.unmount();
+    patchIssue.mockRestore();
+    restore();
+  }
+});
+
+// The page takes a pick while an earlier one is out (its select is never disabled), and writes
+// each in the order they came. A pick of an issue under a parent sends the rule's dry run first:
+// a second pick made while that dry run is out shows at once and goes once the first has made its
+// write, as a pick made while a write is out waits behind it in the issue's line.
+test("a second status pick while the first one's dry run is out shows at once, and both are written in order", async () => {
+  const user = userEvent.setup();
+  const restore = stubHeader(issueUnderAParent);
+  const firstCheck = Promise.withResolvers<StatusChangeAnswer>();
+  const statusChanges = answerStatusChanges().mockImplementation(async (_key, input) =>
+    input.status === "testing" ? firstCheck.promise : fixtureAnswer("dry-run")
+  );
+  const patchIssue = answerIssuePatches().mockImplementation(async (_key, input) => ({
+    ...issueUnderAParent,
+    status: input.status ?? issueUnderAParent.status,
+  }));
+  const view = renderHeader();
+
+  try {
+    const status = await screen.findByRole("combobox", { name: "Status" });
+    await user.selectOptions(status, "testing");
+    expect(status).toHaveValue("testing");
+    await user.selectOptions(status, "needs_review");
+    expect(status).toHaveValue("needs_review");
+    expect(statusChanges).toHaveBeenCalledTimes(1);
+    expect(patchIssue).not.toHaveBeenCalled();
+
+    await act(async () => {
+      firstCheck.resolve(fixtureAnswer("dry-run"));
+    });
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(2));
+    expect(patchIssue.mock.calls.map(([, input]) => input)).toEqual([
+      { status: "testing" },
+      { status: "needs_review" },
+    ]);
+    expect(statusChanges.mock.calls.map(([, input]) => input.status)).toEqual([
+      "testing",
+      "needs_review",
+    ]);
+    await waitFor(() => expect(status).toHaveValue("needs_review"));
+  } finally {
+    view.unmount();
+    patchIssue.mockRestore();
     restore();
   }
 });

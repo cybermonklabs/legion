@@ -769,6 +769,7 @@ func TestAnUntouchedDocumentIsRemovedWholeAndATouchedOneIsRefused(t *testing.T) 
 // The close carries no content: the removal is refused for anything but an untouched document,
 // which the test reads as the document's one empty version before it removes anything.
 func TestARemovedDocumentsRoomClosesOnEveryProcess(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	removing, ok := deps.Docs.(*docs.Service)
@@ -978,6 +979,7 @@ func documentAppendCount(t *testing.T, database *store.Store, artifactID string)
 // row to naming the document no more: only the cursor, which censusExempt says is a position in
 // the fill, may keep the removed id.
 func TestRemovingTheDocumentTheSearchFillCursorNamesKeepsTheFillsProgressRow(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	for _, pass := range []struct {
 		state string

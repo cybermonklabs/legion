@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"runtime"
 	"strings"
 	"sync"
 	"syscall"
@@ -26,7 +27,6 @@ import (
 	"google.golang.org/grpc/codes"
 
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
-	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // TestCreateSignalHelper is the process the tests below signal. It creates on GCP's fake Secret
@@ -181,31 +181,51 @@ func (a announcedCreate) CreateSecret(ctx context.Context, in *secretsmanager.Cr
 }
 
 // createProcess is a TestCreateSignalHelper process: its standard input, a pipe held open until
-// the test writes or closes it, and everything it printed.
+// the test writes or closes it, everything it printed, and a channel closed once it has been waited
+// for, with what the wait answered.
 type createProcess struct {
-	t     *testing.T
-	cmd   *exec.Cmd
-	stdin io.WriteCloser
-	out   *syncWriter
+	t       *testing.T
+	cmd     *exec.Cmd
+	stdin   io.WriteCloser
+	out     *syncWriter
+	waited  chan struct{}
+	waitErr error
 }
 
 // startCreate starts cmd, a command that runs TestCreateSignalHelper, with env added to its
-// environment, killing it if the test ends first.
+// environment, killing it if the test ends first. Where this test process is itself killed and
+// runs no cleanup, the helper is killed with it (its parent-death signal), so it does not outlive
+// the test binary holding a store call for up to an hour (heldDeadline). The signal follows the
+// thread that started the helper, so one goroutine holds that thread from Start until the helper
+// has been waited for, and it is the one that waits: the rows read the end from waited.
 func startCreate(t *testing.T, cmd *exec.Cmd, env ...string) *createProcess {
 	t.Helper()
 	cmd.Env = append(append(os.Environ(), "AGENT_SECRETS_CREATE_HELPER=1"), env...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Pdeathsig: syscall.SIGKILL}
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		t.Fatal(err)
 	}
-	p := &createProcess{t: t, cmd: cmd, stdin: stdin, out: &syncWriter{}}
+	p := &createProcess{t: t, cmd: cmd, stdin: stdin, out: &syncWriter{}, waited: make(chan struct{})}
 	cmd.Stdout, cmd.Stderr = p.out, p.out
-	if err := cmd.Start(); err != nil {
+	started := make(chan error, 1)
+	go func() {
+		runtime.LockOSThread()
+		defer runtime.UnlockOSThread()
+		if err := cmd.Start(); err != nil {
+			started <- err
+			return
+		}
+		started <- nil
+		p.waitErr = cmd.Wait()
+		close(p.waited)
+	}()
+	if err := <-started; err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
 		_ = cmd.Process.Kill()
-		_ = cmd.Wait()
+		<-p.waited
 	})
 	return p
 }
@@ -218,12 +238,12 @@ func helperCommand() *exec.Cmd {
 	return exec.Command("env", "--default-signal=HUP,INT,QUIT,TERM", os.Args[0], "-test.run=^TestCreateSignalHelper$")
 }
 
-// waitFor returns once the process has printed want, failing the test once the wait the test
-// binary's own deadline leaves has passed (testwait).
+// waitFor returns once the process has printed want, failing the test once the moment the waits of
+// these tests give up has passed (waitsGaveUp).
 func (p *createProcess) waitFor(want string) {
 	p.t.Helper()
-	if !testwait.Holds(testwait.Bounded(p.t, time.Minute, time.Second), testwait.Poll, func() bool { return strings.Contains(p.out.String(), want) }) {
-		p.t.Fatalf("the create never printed %q: %q", want, p.out.String())
+	if !heldBeforeGiveUp(p.t, func() bool { return strings.Contains(p.out.String(), want) }) {
+		p.t.Fatalf("the create never printed %q, %s before the test binary's deadline: %q", want, waitMargin, p.out.String())
 	}
 }
 
@@ -236,31 +256,41 @@ func (p *createProcess) signal(sig syscall.Signal) {
 }
 
 // endedBy waits for the process and fails the test unless sig ended it, the create never having
-// returned, within the wait the test binary's own deadline leaves (testwait).
+// returned. The wait's one bound is the moment the waits of these tests give up (waitsGaveUp): a
+// process sig did not end fails the test then, and is killed. That bound decides only whether the
+// process ended; whether the signal, not the store call's own deadline, ended it is the row's to
+// show (endsAtOnceBy).
 func (p *createProcess) endedBy(sig syscall.Signal) string {
 	p.t.Helper()
-	return p.endedByWithin(sig, testwait.Bounded(p.t, time.Minute, time.Second))
-}
-
-// endedByWithin is endedBy, failing the test, and killing the process, unless it ended within limit.
-func (p *createProcess) endedByWithin(sig syscall.Signal, limit time.Duration) string {
-	p.t.Helper()
-	waited := make(chan struct{})
-	go func() {
-		_ = p.cmd.Wait()
-		close(waited)
-	}()
-	select {
-	case <-waited:
-	case <-time.After(limit):
+	if _, ok := received(p.t, p.waited); !ok {
 		_ = p.cmd.Process.Kill()
-		<-waited
-		p.t.Fatalf("the create had not ended %s on, output %q; want it ended by %s by then", limit, p.out.String(), sig)
+		<-p.waited
+		p.t.Fatalf("the create had not ended %s before the test binary's deadline, output %q; want it ended by %s by then", waitMargin, p.out.String(), sig)
 	}
 	out := p.out.String()
 	if ws := p.cmd.ProcessState.Sys().(syscall.WaitStatus); !ws.Signaled() || ws.Signal() != sig || strings.Contains(out, "RETURNED") {
 		p.t.Fatalf("the create ended %v, output %q; want it ended by %s before it returned", p.cmd.ProcessState, out, sig)
 	}
+	return out
+}
+
+// heldDeadline is the deadline on each store call (AGENT_SECRETS_CREATE_DEADLINE) of the rows whose
+// second signal ends the process at once: longer than any run, so with the store holding its
+// answer for an hour, nothing but that signal can end the process while the test waits.
+const heldDeadline = "AGENT_SECRETS_CREATE_DEADLINE=1h"
+
+// endsAtOnceBy sends sig, which must end the process at once, and answers its output once sig has
+// ended it (endedBy). Two things decide that the signal ended it, not the call it interrupts: the
+// row's store call can end no other way (heldDeadline), so a signal path that waits behind the call
+// never ends and fails endedBy; and the end is timed from the signal against no deadline of its own
+// (requireCommandOnTime), so a path that waits for anything first fails at once, not at the give-up.
+func (p *createProcess) endsAtOnceBy(sig syscall.Signal) string {
+	p.t.Helper()
+	meter := startStallMeter(p.t)
+	sent := time.Now()
+	p.signal(sig)
+	out := p.endedBy(sig)
+	requireCommandOnTime(p.t, meter, "the create after its signal "+signalNoun(sig)+", which ends it at once", sent, 0)
 	return out
 }
 
@@ -281,12 +311,11 @@ func TestCreateSignalBeforeTheCreateAnswerDeletesTheEmptySecret(t *testing.T) {
 // process at once, naming the empty secret that may stay and the command that clears it. The
 // second is sent only once the process has received the first, so the two cannot merge.
 func TestCreateSecondSignalBeforeTheCreateAnswerNamesWhatMayStay(t *testing.T) {
-	p := startCreate(t, helperCommand(), "AGENT_SECRETS_CREATE_HOLD=CreateSecret:1h")
+	p := startCreate(t, helperCommand(), "AGENT_SECRETS_CREATE_HOLD=CreateSecret:1h", heldDeadline)
 	p.waitFor("CREATED")
 	p.signal(syscall.SIGINT)
 	p.waitFor("SIGNALLED interrupt")
-	p.signal(syscall.SIGTERM)
-	out := p.endedByWithin(syscall.SIGTERM, 5*time.Second)
+	out := p.endsAtOnceBy(syscall.SIGTERM)
 	if !strings.Contains(out, "a second signal") || !strings.Contains(out, clearEmptySecret) {
 		t.Fatalf("output %q; want the interrupted create's empty secret and its cleanup command", out)
 	}
@@ -450,13 +479,13 @@ func TestCreateSecondSignalEndsAtOnceNamingWhatMayStay(t *testing.T) {
 		first, second syscall.Signal
 		want, not     []string
 	}{
-		{"GCP, the add in flight", []string{"AGENT_SECRETS_CREATE_HOLD=AddSecretVersion:1h"}, true, "CALL AddSecretVersion", syscall.SIGINT, syscall.SIGINT,
+		{"GCP, the add in flight", []string{"AGENT_SECRETS_CREATE_HOLD=AddSecretVersion:1h", heldDeadline}, true, "CALL AddSecretVersion", syscall.SIGINT, syscall.SIGINT,
 			[]string{"a second signal (interrupt)", newTestID, "empty or holding the value", "`agent-secrets secret show NEW_TEST`", "`" + clearEmptySecret + "`"},
 			[]string{"CALL ListSecretVersions", "CALL DeleteSecret"}},
-		{"GCP, the delete in flight", []string{"AGENT_SECRETS_CREATE_HOLD=DeleteSecret:1h"}, false, "CALL DeleteSecret", syscall.SIGTERM, syscall.SIGTERM,
+		{"GCP, the delete in flight", []string{"AGENT_SECRETS_CREATE_HOLD=DeleteSecret:1h", heldDeadline}, false, "CALL DeleteSecret", syscall.SIGTERM, syscall.SIGTERM,
 			[]string{"a second signal (termination)", "the empty secret " + newTestID, "another writer may now hold that name", "agent-secrets-create label is", "`" + clearEmptySecret + "`"},
 			[]string{"holding the value", "REREAD"}},
-		{"AWS, the create in flight", []string{"AGENT_SECRETS_CREATE_STORE=aws", "AGENT_SECRETS_CREATE_HOLD=CreateSecret:1h"}, true, "CALL CreateSecret", syscall.SIGHUP, syscall.SIGTERM,
+		{"AWS, the create in flight", []string{"AGENT_SECRETS_CREATE_STORE=aws", "AGENT_SECRETS_CREATE_HOLD=CreateSecret:1h", heldDeadline}, true, "CALL CreateSecret", syscall.SIGHUP, syscall.SIGTERM,
 			[]string{"a second signal (termination)", "the store may hold NEW_TEST", "or no NEW_TEST at all", "`agent-secrets secret show NEW_TEST`"},
 			[]string{"REREAD"}},
 	} {
@@ -474,8 +503,7 @@ func TestCreateSecondSignalEndsAtOnceNamingWhatMayStay(t *testing.T) {
 				p.signal(row.first)
 				p.waitFor(row.hung)
 			}
-			p.signal(row.second)
-			out := p.endedByWithin(row.second, 5*time.Second)
+			out := p.endsAtOnceBy(row.second)
 			for _, want := range row.want {
 				if !strings.Contains(out, want) {
 					t.Fatalf("output %q; want %q", out, want)
@@ -509,8 +537,10 @@ func TestCreateSignalInheritedIgnoredStaysIgnored(t *testing.T) {
 	p.signal(syscall.SIGINT)
 	_, _ = io.WriteString(p.stdin, "piped-value")
 	_ = p.stdin.Close()
-	err := p.cmd.Wait()
-	if out := p.out.String(); err != nil || !strings.Contains(out, "RETURNED 0") || !strings.Contains(out, "created NEW_TEST") || strings.Contains(out, "CALL DeleteSecret") {
-		t.Fatalf("the create ended %v, output %q; want the value stored and nothing deleted", err, out)
+	if _, ok := received(t, p.waited); !ok {
+		t.Fatalf("the create had not ended after its value came, %s before the test binary's deadline; output %q", waitMargin, p.out.String())
+	}
+	if out := p.out.String(); p.waitErr != nil || !strings.Contains(out, "RETURNED 0") || !strings.Contains(out, "created NEW_TEST") || strings.Contains(out, "CALL DeleteSecret") {
+		t.Fatalf("the create ended %v, output %q; want the value stored and nothing deleted", p.waitErr, out)
 	}
 }

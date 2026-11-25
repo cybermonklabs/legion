@@ -6,6 +6,14 @@
 
 package main
 
+// The two-build suite's stored-document half reads this tree's side of what each build holds
+// (documentSides, tree ../../internal/dispatch); the previous build's side is the copy
+// packages/envoy/scripts/build-dispatch-build.sh writes outside the checkout.
+//ci:reads packages/envoy/internal/dispatch/pmdoc/schema/blocks.json documentSides readManifest (os.ReadFile) of the current build's block manifest
+//ci:reads packages/envoy/internal/dispatch/pmdoc/testdata/corpus/*.md documentSides the current build's corpus: corpusFiles os.ReadDir, and requireCorpusCrossesBuilds os.ReadFile of each .md file it lists
+//ci:reads packages/envoy/internal/dispatch/text/testdata/dispatch-text-references.json documentSides the current build's reference fixtures, read by referencesMarkdown through readFixture os.ReadFile
+//ci:reads packages/envoy/internal/dispatch/text/testdata/dispatch-href-references.json documentSides the current build's reference fixtures, read by referencesMarkdown and hrefsReadApart through hrefTable and readFixture os.ReadFile
+
 import (
 	"bytes"
 	"context"

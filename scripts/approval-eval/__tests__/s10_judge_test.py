@@ -1938,8 +1938,9 @@ class JobSpecTest(unittest.TestCase):
         self.assertEqual(volumes["gateway-key"]["secret"],
                          {"secretName": "session-secrets", "items": [{"key": "GATEWAY_KEY", "path": "key"}],
                           "defaultMode": 288})
-        self.assertEqual(volumes["route"]["configMap"]["items"],
-                         [{"key": "models.yml", "path": "models.yml"}, {"key": "overlay.yml", "path": "overlay.yml"}])
+        self.assertEqual(volumes["route"]["configMap"],
+                         {"name": "s10-judge-route",
+                          "items": [{"key": "models.yml", "path": "models.yml"}, {"key": "overlay.yml", "path": "overlay.yml"}]})
         self.assertEqual(volumes["work"], {"name": "work", "emptyDir": {}})
         self.assertEqual(len(volumes), 3)
         self.assertEqual([one["name"] for one in container["env"]],
@@ -1952,6 +1953,43 @@ class JobSpecTest(unittest.TestCase):
         self.assertEqual(next(one["value"] for one in kept if one["name"] == "S10_SANDBOX"), "sha256:" + sha("program"))
         other = JOB.job_spec("s10-judge-1", own_pod(), IMAGE, "session-account", {}, self.environ)
         self.assertEqual(other["spec"]["template"]["spec"]["serviceAccountName"], "session-account")
+
+    def test_the_route_is_point_twos_whatever_route_the_driver_mounts(self):
+        # The driver's own route ConfigMap holds Legion's live route as of the session's last
+        # apply, which can be another than point 2's: the Job names s10-judge-route, whose bytes
+        # `runtime_refusal` checks, and never the driver's, even where the driver mounts none.
+        unrouted = own_pod()
+        unrouted["spec"]["volumes"] = [one for one in unrouted["spec"]["volumes"] if one["name"] != "route"]
+        container = unrouted["spec"]["containers"][0]
+        container["volumeMounts"] = [one for one in container["volumeMounts"] if one["name"] != "route"]
+        for pod in (own_pod(), unrouted):
+            spec = JOB.job_spec("s10-judge-1", pod, IMAGE, JOB.SERVICE_ACCOUNT, {}, self.environ)
+            volumes = {one["name"]: one for one in spec["spec"]["template"]["spec"]["volumes"]}
+            self.assertEqual(volumes["route"]["configMap"]["name"], "s10-judge-route")
+            self.assertNotIn("route-map", json.dumps(spec))
+
+    def test_a_judge_runs_at_its_drivers_priority_class(self):
+        # A pod that names no class can run at priority 0, where a pod above it may preempt a judge
+        # mid-run: the Job names the driver's own class, whichever it is, and none where the driver
+        # names none.
+        for name in ("agent-session-priority", "another-priority"):
+            pod = own_pod()
+            pod["spec"]["priorityClassName"] = name
+            spec = JOB.job_spec("s10-judge-1", pod, IMAGE, JOB.SERVICE_ACCOUNT, {}, self.environ)
+            self.assertEqual(spec["spec"]["template"]["spec"]["priorityClassName"], name)
+        spec = JOB.job_spec("s10-judge-1", own_pod(), IMAGE, JOB.SERVICE_ACCOUNT, {}, self.environ)
+        self.assertNotIn("priorityClassName", spec["spec"]["template"]["spec"])
+
+    def test_a_runs_deadline_counts_from_its_pods_start_and_the_job_waits_for_a_node_too(self):
+        # A Job's deadline also counts the time its pod waits for a node; a pod's counts from its
+        # start there. So the run's deadline is the pod's, and the Job's is PLACEMENT_LIMIT and
+        # MARGIN longer, so a pod the driver keeps after the limit still has its whole deadline.
+        request = JOB.job_spec("s10-judge-1", own_pod(), IMAGE, JOB.SERVICE_ACCOUNT, {}, self.environ)
+        preflight = JOB.job_spec("s10-judge-1", own_pod(), IMAGE, JOB.SERVICE_ACCOUNT, {}, self.environ,
+                                 JOB.PREFLIGHT_DEADLINE)
+        for spec, deadline in ((request, SANDBOX.OMP_TIMEOUT + 900), (preflight, JOB.PREFLIGHT_DEADLINE)):
+            self.assertEqual(spec["spec"]["template"]["spec"]["activeDeadlineSeconds"], deadline)
+            self.assertEqual(spec["spec"]["activeDeadlineSeconds"], deadline + JOB.PLACEMENT_LIMIT + JOB.MARGIN)
 
     def test_a_pod_whose_gateway_key_is_not_one_item_is_refused(self):
         pod = own_pod()
@@ -2078,6 +2116,51 @@ class KubeRunnerTest(unittest.TestCase):
                               "get pods": [(0, json.dumps({"items": []}))]})
         self.assertEqual(runner.run("a1", {}).failure, "the Job ran 0 pods")
 
+    def waiting_pod(self, started):
+        status = {"phase": "Pending"} if not started else {"phase": "Running", "startTime": "2026-11-23T17:00:00Z"}
+        return json.dumps({"items": [{"metadata": {"name": "pod-1"}, "status": status}]})
+
+    def clocked(self, runner, *times):
+        # The driver reads its clock once at the create and once at each poll the Job is not done;
+        # a read past `times` fails the test rather than letting the loop run on.
+        readings = iter(times)
+        runner.clock = lambda: next(readings)
+        return runner
+
+    def test_a_job_whose_pod_has_not_started_once_the_limit_passed_stops_the_run_and_is_deleted(self):
+        # A pod the cluster cannot place, or one a quota refused, waits as long as the cluster
+        # lacks room: at the first poll at or past PLACEMENT_LIMIT the run stops, as on an API
+        # failure, so no later request meets the same cluster with a Job of its own.
+        limit = JOB.PLACEMENT_LIMIT
+        for name, pods in {"a pod not placed": self.waiting_pod(False), "no pod": json.dumps({"items": []})}.items():
+            with self.subTest(name=name):
+                runner = self.clocked(self.runner({"get job": [(0, json.dumps({"status": {"active": 1}}))],
+                                                   "get pods": [(0, pods)]}), 100, 100 + limit - 1, 100 + limit)
+                with self.assertRaisesRegex(JOB.KubeUnavailable, f"no pod of Job s10-judge-\\S+ had started at a poll {limit} s"):
+                    runner.run("a1", {})
+                self.assertEqual(runner.calls, ["create", "get job", "get pods", "get job", "get pods", "delete"])
+        runner = self.clocked(self.runner({"get job": [(0, json.dumps({"status": {"active": 1}}))],
+                                           "get pods": [(1, "connection refused")]}), 100, 100)
+        with self.assertRaisesRegex(JOB.KubeUnavailable, "kubectl get failed 3 times"):
+            runner.run("a1", {})
+        self.assertEqual(runner.calls[-1], "delete")
+
+    def test_a_pod_seen_started_runs_to_its_end_even_past_the_limit_and_is_not_read_again(self):
+        # The pod starts between the last poll before the limit and the first after it: the
+        # driver keeps it, since the Job's MARGIN leaves it its whole deadline.
+        limit = JOB.PLACEMENT_LIMIT
+        runner = self.clocked(self.runner({"get job": [(0, json.dumps({"status": {"active": 1}}))] * 3
+                                           + [(0, json.dumps({"status": {"succeeded": 1}}))],
+                                           "get pods": [(0, self.waiting_pod(False)), (0, self.waiting_pod(True)),
+                                                        (0, self.pods())],
+                                           "logs": [(0, self.log({"record.json": b"{}"}))]}),
+                              100, 100 + limit - 1, 100 + limit + 60, 100 + limit + 120)
+        run = runner.run("a1", {})
+        self.assertIsNone(run.failure)
+        self.assertEqual(run.files, {"record.json": b"{}"})
+        self.assertEqual(runner.calls, ["create", "get job", "get pods", "get job", "get pods", "get job", "get job",
+                                        "get pods", "logs", "delete"])
+
     def test_the_preflight_sends_no_file_and_has_a_short_deadline(self):
         created = []
         runner = self.runner({"get job": [(0, json.dumps({"status": {"succeeded": 1}}))],
@@ -2092,7 +2175,9 @@ class KubeRunnerTest(unittest.TestCase):
         runner.invoke = invoke
         self.assertIsNone(runner.preflight().failure)
         [spec] = created
-        self.assertEqual(spec["spec"]["activeDeadlineSeconds"], JOB.PREFLIGHT_DEADLINE)
+        self.assertEqual(spec["spec"]["template"]["spec"]["activeDeadlineSeconds"], JOB.PREFLIGHT_DEADLINE)
+        self.assertEqual(spec["spec"]["activeDeadlineSeconds"],
+                         JOB.PREFLIGHT_DEADLINE + JOB.PLACEMENT_LIMIT + JOB.MARGIN)
         env = {one["name"]: one["value"] for one in spec["spec"]["template"]["spec"]["containers"][0]["env"]}
         self.assertEqual(SANDBOX.payload_of(env), {})
         self.assertEqual(env[SANDBOX.MODE_VARIABLE], "preflight")

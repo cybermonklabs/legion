@@ -1,5 +1,5 @@
 import { DELIVERY_CAPABILITIES, type LegionRole, roleToken } from "@legion/contracts";
-import { expect, type Locator, type Page } from "@playwright/test";
+import { type BrowserContext, expect, type Locator, type Page } from "@playwright/test";
 
 import type { BroadcastCreated, CreateBroadcastInput, TmuxPlace } from "../web/src/api/types";
 import type { AgentGroup } from "../web/src/features/agents/agent-groups";
@@ -162,8 +162,33 @@ export async function setSessionLastSeen(sessionID: string, lastSeen: number): P
  *  `ok`. */
 export type ListsState = "ok" | "refilling" | "down";
 
-export async function setListsState(state: ListsState): Promise<void> {
-  await fixtureRequest("/__fixture/lists", "PUT", { state });
+/** Sets the fake listener's list answer. `retryAfterSeconds` is the `Retry-After` a refilling
+ *  answer carries, the real listener's 5 when it is left out: the page's two retries of a refused
+ *  read each wait that long and up to as much again (`queryRetryDelay`,
+ *  `web/src/api/query-client.ts`), so a row that waits through several refilling reads sets 1. */
+export async function setListsState(
+  state: ListsState,
+  options: { retryAfterSeconds?: number } = {}
+): Promise<void> {
+  await fixtureRequest("/__fixture/lists", "PUT", {
+    state,
+    ...(options.retryAfterSeconds === undefined
+      ? {}
+      : { retry_after_seconds: options.retryAfterSeconds }),
+  });
+}
+
+/** Makes every page `context` opens from now on poll the agent list every `pollMs` in place of the
+ *  shell's 15 s (`AGENT_REGISTRY_POLL_MS`, read through `agentRegistryPollMs` in
+ *  `web/src/features/refs/agent-registry.ts`), so a row that waits for a change of the list to
+ *  reach an open page waits one short poll. Set before the page loads, as the poller reads it.
+ *  `Reflect.set` rather than the property itself: the `Window` field is declared in that web
+ *  module, which the docs site's program, which reads this file for its screenshots, does not
+ *  load. */
+export async function pollAgentListEvery(context: BrowserContext, pollMs: number): Promise<void> {
+  await context.addInitScript((ms) => {
+    Reflect.set(window, "__dispatchAgentRegistryPollMs", ms);
+  }, pollMs);
 }
 
 /** One Legion agent registry entry as the daemon writes it to the listener

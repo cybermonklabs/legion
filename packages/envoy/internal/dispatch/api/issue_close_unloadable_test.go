@@ -22,6 +22,7 @@ import (
 // older release made and restoring for its reopen, succeed rather than fail on that document for
 // good.
 func TestClosingAnIssueWithAnUnloadableDocumentWithdrawsItsAsksAndReopeningRestoresThem(t *testing.T) {
+	t.Parallel()
 	// An hour, so no settlement timer loads the unloadable document between the requests.
 	f := newRepairFixtureSettlingAfter(t, time.Hour)
 	issue := createInteractionIssue(t, f.handler, "TEST", "Closing beside an unloadable document", "Context\n")
@@ -79,6 +80,7 @@ func TestClosingAnIssueWithAnUnloadableDocumentWithdrawsItsAsksAndReopeningResto
 // rollWindowAskAttributes); on a fleet of one build the text an agent reads renders the state from
 // the store. So the test registers a process of each of two builds and reads the live tree.
 func TestRebuildingAClosedIssuesUnloadableDocumentShowsItsWithdrawnDecisionBlockResolved(t *testing.T) {
+	t.Parallel()
 	f := newRepairFixture(t)
 	registerTwoBuilds(t, f.database)
 	issue := createInteractionIssue(t, f.handler, "TEST", "Rebuilding a closed issue's document", "Context\n")
@@ -143,6 +145,7 @@ func TestRebuildingAClosedIssuesUnloadableDocumentShowsItsWithdrawnDecisionBlock
 // answer's words; the asks member of the text an agent reads still holds both blocks' states
 // from the store.
 func TestRebuildingAClosedIssuesDocumentWritesTheAskAttributesAsTheFleetStands(t *testing.T) {
+	t.Parallel()
 	for _, twoBuilds := range []bool{false, true} {
 		name := "a fleet of one build"
 		if twoBuilds {

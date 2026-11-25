@@ -224,6 +224,7 @@ func shapedHistory(t *testing.T, database *store.Store, address string) []graphs
 // `GET /api/v1/references?to=`, and every time compared is an event the store holds: a tie state
 // that carries none fails the test, and no time a writer passed, nor the clock, orders two of them.
 func TestAShapedTupleTiesADecisionToEachSpecNodeItShaped(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
 	documents := deps.Docs.(*docs.Service)
 	ctx := context.Background()

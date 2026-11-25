@@ -1,13 +1,10 @@
 package api
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"net/http"
 	"time"
-
-	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -56,7 +53,11 @@ import (
 // A member written null reads as left out, since encoding/json decodes null into a pointer as nil;
 // the contract's LegionHandoffCompleteRequest, which the plugins' daemon client
 // (packages/pi-shared/src/daemon-client.ts) parses each completion with, refuses null, so no
-// plugin sends one.
+// plugin sends one. ReturnTo is the step of the issue's running task that a failed
+// step names as the one its task returns to, by its place in the task, 1 for its first: only
+// a tester's completion with the verdict fail names one (returnToRefusal), and it is a pointer for
+// the reason PlanRating is, so a completion naming 0 is refused rather than read as naming none.
+// Which step it may name is the workflow's to judge against the task's steps (RETURN_REFUSED).
 type HandoffCompleteRequest struct {
 	GrantID        string     `json:"grantId"`
 	Summary        string     `json:"summary"`
@@ -67,6 +68,7 @@ type HandoffCompleteRequest struct {
 	WakeAt         *time.Time `json:"wakeAt,omitempty"`
 	PlanRating     *int       `json:"planRating,omitempty"`
 	PlanReason     *string    `json:"planReason,omitempty"`
+	ReturnTo       *int       `json:"returnTo,omitempty"`
 	// Ready is read only so that the body of a plugin below contract 86 is read: such a plugin
 	// sends `ready` on every call, and readBody refuses a member no field names. What each value
 	// means is the sentence of the field's row in requests.go's AcceptedByName.
@@ -237,6 +239,12 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 		s.writeFailure(w, r, http.StatusBadRequest, "VERDICT_ROLE_FORBIDDEN", "only a tester may report a verdict")
 		return
 	}
+	// The step a failed step's task returns to is the tester's fail's alone (returnToRefusal),
+	// refused here on every other completion before anything is read or recorded.
+	if refusal := returnToRefusal(req, req.Verdict == "fail", fmt.Sprintf("this completion of phase %s of %s", issue.Phase, grant.Issue)); refusal != nil {
+		s.writeFailure(w, r, refusal.Status, refusal.Code, refusal.Message)
+		return
+	}
 	// A wake is a production check's pending report alone: it names when that check's next look is
 	// due, and a phase ends with no look to follow it. The contract says so for every client
 	// (contracts' LegionHandoffCompleteRequest), so the daemon holds a phase completion to it
@@ -379,11 +387,30 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 	// by bumping only the root's, and restarts a child's worker in the phase it stood in, so a
 	// child's completion refused before (while the tree lingered, or while the old gate was closed)
 	// would otherwise take the new generation's key.
+	//
+	// For an issue with plan rows the pass is its running task's (completionPosition), and the
+	// task is in the key before it, so a new task at pass 0 takes no key an earlier task of the
+	// issue used. An issue with no plan rows keeps today's key, so a completion retried across the
+	// upgrade keeps its key.
+	//
+	// The step a fail names its task's return to (returnTo) ends the key when the completion
+	// names one, for the reason the verdict is in it: the workflow commits its refusal of a step it
+	// may not name (RETURN_REFUSED) as processed, so the same fail naming another step must be a
+	// fact of its own. A completion naming none keeps the key it had before returnTo existed.
 	reported, received := req.Commit, "at commit "+req.Commit
 	if recordBacked {
 		reported, received = req.HandoffID, fmt.Sprintf("naming handoff record %s (%s version %d)", req.HandoffID, word, req.HandoffVersion)
 	}
-	eventID := fmt.Sprintf("handoff:%s:%d:%d:%d:%s:%s:%d:%s:%s", grant.Issue, treeGeneration, issue.Generation, serving, grant.Role, issue.Phase, pass, reported, req.Verdict)
+	counted := fmt.Sprint(pass)
+	if position.task != "" {
+		counted = position.task + ":" + counted
+	}
+	eventID := fmt.Sprintf("handoff:%s:%d:%d:%d:%s:%s:%s:%s:%s", grant.Issue, treeGeneration, issue.Generation, serving, grant.Role, issue.Phase, counted, reported, req.Verdict)
+	returnTo := 0
+	if req.ReturnTo != nil {
+		returnTo = *req.ReturnTo
+		eventID += fmt.Sprintf(":%d", returnTo)
+	}
 	// The phase's last handoff is stored text, so what this completion reports is compared as the
 	// store would keep it (storetext.Text).
 	if grant.Role == claim.RoleImplementer && issue.Phase == phase.Implementing && !position.lingers && storetext.Text(reported) != position.lastHandoff {
@@ -398,7 +425,8 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 	// refused for its rating leaves the key unspent, so the same completion, corrected, applies.
 	result, err := s.apply(r.Context(), "api", eventID, intake.HandoffComplete{Generation: serving, Issue: grant.Issue, Role: grant.Role, Claim: grant.Claim,
 		Summary: req.Summary, Verdict: req.Verdict, Commit: req.Commit,
-		HandoffRecord: req.HandoffID, HandoffVersion: req.HandoffVersion, PlanRating: rating, MustRate: c.PluginContract >= PlanRatingContract})
+		HandoffRecord: req.HandoffID, HandoffVersion: req.HandoffVersion, PlanRating: rating, MustRate: c.PluginContract >= PlanRatingContract,
+		ReturnTo: returnTo})
 	if err != nil {
 		s.writeFailure(w, r, http.StatusInternalServerError, "FACT_APPLY_FAILED", "could not apply handoff fact")
 		return
@@ -421,6 +449,30 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 	}
 	s.writeAnswer(w, r, AnswerHandoffComplete, http.StatusOK, HandoffCompleteResponse{})
 	return
+}
+
+// returnToRefusal holds a completion's returnTo to its rule, and is nil when the completion
+// names none or names one it may. failsAStep is whether the completion fails a step (a tester's
+// verdict fail, which VERDICT_ROLE_FORBIDDEN leaves to the tester alone), and what names the
+// completion in a refusal. Every refusal is a 400 its caller writes before anything is recorded,
+// so the same completion sent again, corrected, is taken:
+//
+//   - INVALID_RETURN_TO: returnTo below 1, which names no step of a task.
+//   - RETURN_TO_NEEDS_FAIL: a completion that fails no step names returnTo: a pass, another role's
+//     completion, or a production check's report, which is no step. Dropping it unread would let
+//     an agent believe it had sent the task back.
+func returnToRefusal(req HandoffCompleteRequest, failsAStep bool, what string) *intake.Refusal {
+	switch {
+	case req.ReturnTo == nil:
+		return nil
+	case *req.ReturnTo < 1:
+		return &intake.Refusal{Status: http.StatusBadRequest, Code: "INVALID_RETURN_TO", Message: fmt.Sprintf(
+			"returnTo is %d, and it names a step of the task by its place, 1 for its first; nothing was recorded", *req.ReturnTo)}
+	case !failsAStep:
+		return &intake.Refusal{Status: http.StatusBadRequest, Code: "RETURN_TO_NEEDS_FAIL", Message: fmt.Sprintf(
+			"%s names returnTo, and only the completion of a step that failed, with the verdict fail, names the step its task returns to: send it again without returnTo; nothing was recorded", what)}
+	}
+	return nil
 }
 
 // handoffRecord reads the Dispatch handoff record a completion of issue's file-backed phase of,
@@ -571,7 +623,9 @@ func staleCompletion(issue string, current, serving uint64, pending *supervise.D
 // it: a daemon upgraded in place has roles no start has stamped, whose row answers 0, and workers
 // that confirmed no task carrying an entry, whose claim answers 0 (supervise.Claim.ServingEntry).
 // A completion level with its row's entry is not this fence's: the engine decides it, and records
-// one that arrives after the daemon moved the issue on by an event (workflow's leftItsPhase).
+// one that arrives after the daemon moved the issue on by an event (workflow's leftItsPhase),
+// whether or not the task has plan rows, or, for a task its owner or a failed step stopped,
+// refuses it as the report of the step the stop ended (workflow's lateReport).
 //
 // Where the two differ, the fence first asks whether the role works the phase the issue stands
 // in, because the entry it compares is the role's own row's, which stays where the role's last
@@ -743,9 +797,10 @@ func unraisedEntry(issue string, role claim.Role, p phase.Phase, current, servin
 }
 
 // implementationPullRequest is the implementer's completion's read of GitHub: in implementing, a
-// completion moves its issue to testing only on a pull request recorded open or merged for it
-// (workflow's TriggerImplementationReady), and only the opened webhook, or the daemon's per-issue
-// read standing in for one that webhook lost (readIssuePullRequest), records one open. So before
+// completion moves its issue to its task's next step (testing, in the default steps) only on a
+// pull request recorded open or merged for it (workflow's TriggerImplementationReady), and only
+// the opened webhook, or the daemon's per-issue read standing in for one that webhook lost
+// (readIssuePullRequest), records one open. So before
 // the completion is applied, the open pull request on the issue's branch (claim.IssueBranch) is
 // read as the implement App, minted for the owner of the issue's repository in GitHub's spelling
 // (record.Issue.GitHubRepo, which the webhook's facts name it by), and it says whether the
@@ -754,11 +809,11 @@ func unraisedEntry(issue string, role claim.Role, p phase.Phase, current, servin
 //   - one open: when the record does not already hold it open, the intake.PullRequestOpened its
 //     webhook would have carried is applied first, a reopen when the record holds the same pull
 //     request closed, under the read's stable id (intake.OpenedRead). The completion then
-//     moves the issue to testing. A failure to apply it is FACT_APPLY_FAILED, with the completion
-//     not applied.
+//     moves the issue to its task's next step. A failure to apply it is FACT_APPLY_FAILED, with
+//     the completion not applied.
 //   - none, with the record holding the pull request merged: the completion is applied and moves
-//     the issue to testing. The work landed, its merge told the architect (pr-merged), and the
-//     workflow runs on.
+//     the issue to its task's next step. The work landed, its merge told the architect
+//     (pr-merged), and the workflow runs on.
 //   - none otherwise: HANDOFF_NO_PULL_REQUEST, 409, and nothing is applied, so the completion at
 //     the same commit is applied once the pull request is open. When the record holds the pull
 //     request closed without merging, the refusal names it: the close told the architect, which
@@ -929,8 +984,14 @@ func (s *server) checkReport(w http.ResponseWriter, r *http.Request, grant crede
 			"this report names wakeAt and no look follows it: %s; send it again without a time, and nothing was recorded", why))
 		return
 	}
+	what := fmt.Sprintf("this report on look %d of %s's production check", look.Look, grant.Issue)
 	if req.PlanRating != nil || req.PlanReason != nil {
-		refusal := intake.PlanRatingUnexpected(fmt.Sprintf("this report on look %d of %s's production check", look.Look, grant.Issue))
+		refusal := intake.PlanRatingUnexpected(what)
+		s.writeFailure(w, r, refusal.Status, refusal.Code, refusal.Message)
+		return
+	}
+	// A look is no step of a task, so its report fails none and names no step to return to.
+	if refusal := returnToRefusal(req, false, what); refusal != nil {
 		s.writeFailure(w, r, refusal.Status, refusal.Code, refusal.Message)
 		return
 	}
@@ -951,66 +1012,4 @@ func (s *server) checkReport(w http.ResponseWriter, r *http.Request, grant crede
 		return
 	}
 	s.writeAnswer(w, r, AnswerHandoffComplete, http.StatusOK, HandoffCompleteResponse{})
-}
-
-// completionPosition is where issue key stands as the completion route reads it, in one repeatable-read
-// snapshot: the issue record, its tree's generation (the root's) and whether the tree lingers, its
-// pass — the implementer's count of returns to an earlier phase, which tells each implementing,
-// testing, and reviewing pass from the last — the handoff record the implementer last named for a
-// file-backed phase (record.PhaseRow.LastHandoff), the phase entry the completing role's current
-// phase is on (record.PhaseRow.Entry, 0 on a row no start has stamped) and whether the start
-// that raised it moved the issue back (record.PhaseRow.EntryMovedBack), its pull request record,
-// nil while none is recorded, and its production check, nil while none was ever opened.
-type completionPosition struct {
-	issue          *record.Issue
-	treeGeneration uint64
-	lingers        bool
-	pass           int
-	entry          int64
-	entryMovedBack bool
-	lastHandoff    string
-	pullRequest    *record.PullRequest
-	check          *record.ProductionCheck
-}
-
-// handoffPosition reads key's position (completionPosition) for the completing role, whose phases
-// row names the entry it was last raised to; an issue the workflow does not record is a position
-// with no issue and no error.
-func (s *server) handoffPosition(ctx context.Context, key string, role claim.Role) (completionPosition, error) {
-	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly, IsoLevel: pgx.RepeatableRead})
-	if err != nil {
-		return completionPosition{}, err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	issue, err := s.records.Issue(ctx, tx, key)
-	if err != nil || issue == nil {
-		return completionPosition{}, err
-	}
-	root := issue
-	if !claim.IsTreeRoot(issue.Key, issue.Tree) {
-		if root, err = s.records.Issue(ctx, tx, issue.Tree); err != nil {
-			return completionPosition{}, err
-		}
-		if root == nil {
-			return completionPosition{}, fmt.Errorf("the tree root %s of %s is not recorded", issue.Tree, issue.Key)
-		}
-	}
-	rows, err := s.records.Phases(ctx, tx, key)
-	if err != nil {
-		return completionPosition{}, err
-	}
-	implementer := record.PhaseRowOf(rows, claim.RoleImplementer)
-	completing := record.PhaseRowOf(rows, role)
-	pass, lastHandoff := implementer.Pass, implementer.LastHandoff
-	pr, err := s.records.PullRequest(ctx, tx, key)
-	if err != nil {
-		return completionPosition{}, err
-	}
-	check, err := s.records.ProductionCheck(ctx, tx, key)
-	if err != nil {
-		return completionPosition{}, err
-	}
-	return completionPosition{issue: issue, treeGeneration: root.Generation, lingers: root.Lingers(), pass: pass,
-		lastHandoff: lastHandoff, entry: completing.Entry, entryMovedBack: completing.EntryMovedBack,
-		pullRequest: pr, check: check}, tx.Commit(ctx)
 }

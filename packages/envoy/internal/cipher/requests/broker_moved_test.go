@@ -35,7 +35,7 @@ import (
 func askOfAnotherBroker(t *testing.T, m *Machine, enr string, key *ecdsa.PrivateKey, names ...string) Request {
 	t.Helper()
 	m.Audience = anotherBroker
-	req, err := m.Create(context.Background(), enr, signRequest(t, m, key, "asked of the other broker", names...), "", nil)
+	req, err := m.Create(context.Background(), enr, signRequest(t, m, key, "asked of the other broker", names...), "")
 	m.Audience = testAudience
 	if err != nil || req.State != "pending" || req.RecordID == nil {
 		t.Fatalf("Create(%v) on %s = %+v, %v; want a pending request with a record", names, anotherBroker, req, err)
@@ -160,7 +160,7 @@ func TestAskingAgainWithTheSameNamesEndsARequestSignedForAnotherBroker(t *testin
 	stale := askOfAnotherBroker(t, m, enr, key, "DEEL_API_KEY")
 	watched := watchJudgeOf(m, "DEEL_API_KEY")
 
-	again, err := m.Create(ctx, enr, signRequest(t, m, key, "asked again on this broker", "DEEL_API_KEY"), "", nil)
+	again, err := m.Create(ctx, enr, signRequest(t, m, key, "asked again on this broker", "DEEL_API_KEY"), "")
 	if err != nil || again.ID == stale.ID || again.Coalesced || again.State != "pending" || again.RecordID == nil {
 		t.Fatalf("Create(DEEL_API_KEY) again = %+v, %v; want a new pending request, not coalesced onto %s", again, err, stale.ID)
 	}
@@ -197,7 +197,7 @@ func TestAskingAgainWithOverlappingNamesEndsARequestSignedForAnotherBroker(t *te
 			stale := askOfAnotherBroker(t, m, enr, key, "DEEL_API_KEY")
 			watched := watchJudgeOf(m, "DEEL_API_KEY", stripeKey)
 
-			again, err := m.Create(context.Background(), enr, c.ask(t, m, key), "", nil)
+			again, err := m.Create(context.Background(), enr, c.ask(t, m, key), "")
 			if err != nil || again.ID == stale.ID || again.Coalesced || again.State != "pending" || again.RecordID == nil {
 				t.Fatalf("Create(%v) with %s = %+v, %v; want a new pending request, not refused for %s", c.names, c.name, again, err, stale.ID)
 			}
@@ -219,12 +219,12 @@ func TestAskingAgainLeavesARequestSignedForThisBrokerAsItIs(t *testing.T) {
 	ctx := context.Background()
 	retagStripeKey(t, m)
 	watched := watchJudgeOf(m, "DEEL_API_KEY", stripeKey)
-	own, err := m.Create(ctx, enr, signRequest(t, m, key, "asked of this broker", "DEEL_API_KEY"), "", nil)
+	own, err := m.Create(ctx, enr, signRequest(t, m, key, "asked of this broker", "DEEL_API_KEY"), "")
 	if err != nil || own.State != "pending" || own.RecordID == nil {
 		t.Fatalf("Create(DEEL_API_KEY) = %+v, %v; want a pending request with a record", own, err)
 	}
 
-	same, err := m.Create(ctx, enr, signRequest(t, m, key, "asked again", "DEEL_API_KEY"), "", nil)
+	same, err := m.Create(ctx, enr, signRequest(t, m, key, "asked again", "DEEL_API_KEY"), "")
 	if err != nil || !same.Coalesced || same.ID != own.ID {
 		t.Fatalf("Create(DEEL_API_KEY) again = %+v, %v; want it coalesced onto %s", same, err, own.ID)
 	}
@@ -232,7 +232,7 @@ func TestAskingAgainLeavesARequestSignedForThisBrokerAsItIs(t *testing.T) {
 		"another lifetime": signRequestFor(t, m, key, 600, "DEEL_API_KEY"),
 		"more names":       signRequest(t, m, key, "asked again for more", "DEEL_API_KEY", stripeKey),
 	} {
-		if req, err := m.Create(ctx, enr, overlapping, "", nil); !errors.Is(err, ErrRequestPending) || !strings.Contains(err.Error(), own.ID) {
+		if req, err := m.Create(ctx, enr, overlapping, ""); !errors.Is(err, ErrRequestPending) || !strings.Contains(err.Error(), own.ID) {
 			t.Fatalf("Create with %s = %+v, %v; want ErrRequestPending naming %s", name, req, err, own.ID)
 		}
 	}
@@ -252,7 +252,7 @@ func TestAskingAgainEndsEveryStaleRequestItOverlaps(t *testing.T) {
 	moveSession(t, m, earlier, enr)
 	watched := watchJudgeOf(m, "DEEL_API_KEY", stripeKey)
 
-	again, err := m.Create(context.Background(), enr, signRequest(t, m, key, "asked again for both", "DEEL_API_KEY", stripeKey), "", nil)
+	again, err := m.Create(context.Background(), enr, signRequest(t, m, key, "asked again for both", "DEEL_API_KEY", stripeKey), "")
 	if err != nil || again.Coalesced || again.State != "pending" || again.ID == first.ID || again.ID == second.ID {
 		t.Fatalf("Create(DEEL_API_KEY, %s) = %+v, %v; want one new pending request, not refused for %s or %s", stripeKey, again, err, first.ID, second.ID)
 	}
@@ -287,14 +287,14 @@ func TestAStaleRequestBeforeOneThatVerifies(t *testing.T) {
 			ctx := context.Background()
 			stale := askOfAnotherBroker(t, m, enr, key, "DEEL_API_KEY")
 			earlier, earlierKey := newEnrollment(t, m.Store, "session", "box-b-"+t.Name(), new(fixtureOperator), nil)
-			verifies, err := m.Create(ctx, earlier, signRequest(t, m, earlierKey, "asked of this broker", "DEEL_API_KEY"), "", nil)
+			verifies, err := m.Create(ctx, earlier, signRequest(t, m, earlierKey, "asked of this broker", "DEEL_API_KEY"), "")
 			if err != nil || verifies.State != "pending" || verifies.RecordID == nil {
 				t.Fatalf("Create(DEEL_API_KEY) on the earlier box = %+v, %v; want a pending request with a record", verifies, err)
 			}
 			moveSession(t, m, earlier, enr)
 			watched := watchJudgeOf(m, "DEEL_API_KEY")
 
-			got, err := m.Create(ctx, enr, c.ask(t, m, key), "", nil)
+			got, err := m.Create(ctx, enr, c.ask(t, m, key), "")
 			if c.coalesces {
 				if err != nil || !got.Coalesced || got.ID != verifies.ID {
 					t.Fatalf("Create = %+v, %v; want it coalesced onto %s, the request that verifies, and not onto %s", got, err, verifies.ID, stale.ID)
@@ -336,7 +336,7 @@ func TestAStaleRequestDecidedOnTheOtherBrokerMeanwhile(t *testing.T) {
 	done := make(chan result, 1)
 	again := signRequest(t, m, key, "asked again on this broker", "DEEL_API_KEY")
 	go func() {
-		req, err := m.Create(ctx, enr, again, "", nil)
+		req, err := m.Create(ctx, enr, again, "")
 		done <- result{req, err}
 	}()
 	storetest.AwaitLockWaiters(t, m.Store.Pool, decision, 1)
@@ -374,7 +374,7 @@ func TestAStaleRequestDecidedOnTheOtherBrokerMeanwhile(t *testing.T) {
 func staleAfterOneThatVerifies(t *testing.T, m *Machine, enr string, key *ecdsa.PrivateKey) (verifies, stale Request) {
 	t.Helper()
 	earlier, earlierKey := newEnrollment(t, m.Store, "session", "box-b-"+t.Name(), new(fixtureOperator), nil)
-	verifies, err := m.Create(context.Background(), earlier, signRequest(t, m, earlierKey, "asked of this broker", "DEEL_API_KEY"), "", nil)
+	verifies, err := m.Create(context.Background(), earlier, signRequest(t, m, earlierKey, "asked of this broker", "DEEL_API_KEY"), "")
 	if err != nil || verifies.State != "pending" || verifies.RecordID == nil {
 		t.Fatalf("Create(DEEL_API_KEY) on the earlier box = %+v, %v; want a pending request with a record", verifies, err)
 	}
@@ -411,7 +411,7 @@ func TestAStaleRequestAfterOneThatVerifies(t *testing.T) {
 			verifies, stale := staleAfterOneThatVerifies(t, m, enr, key)
 			watched := watchJudgeOf(m, "DEEL_API_KEY")
 
-			got, err := m.Create(context.Background(), enr, c.ask(t, m, key), "", nil)
+			got, err := m.Create(context.Background(), enr, c.ask(t, m, key), "")
 			if c.coalesces {
 				if err != nil || !got.Coalesced || got.ID != verifies.ID {
 					t.Fatalf("Create = %+v, %v; want it coalesced onto %s, the request that verifies, and not onto %s", got, err, verifies.ID, stale.ID)
@@ -457,7 +457,7 @@ func TestAStaleRequestEndsWhenTheAskIsDecidedAtOnce(t *testing.T) {
 			c.prepare(t, m)
 			watched := watchJudgeOf(m, "DEEL_API_KEY")
 
-			got, err := m.Create(context.Background(), enr, signRequest(t, m, key, "asked again on this broker", c.names...), "", nil)
+			got, err := m.Create(context.Background(), enr, signRequest(t, m, key, "asked again on this broker", c.names...), "")
 			if err != nil || got.ID == stale.ID || got.Coalesced || got.State != c.state {
 				t.Fatalf("Create(%v) again = %+v, %v; want a new request %s at once", c.names, got, err, c.state)
 			}
@@ -479,7 +479,7 @@ func TestAStaleRequestEndsWhenTheAskIsDecidedAtOnce(t *testing.T) {
 func liveGrantBesideAStaleRequest(t *testing.T, m *Machine, enr string, key *ecdsa.PrivateKey, approver string) (granted Request, grantID string, stale Request) {
 	t.Helper()
 	ctx := context.Background()
-	granted, err := m.Create(ctx, enr, signRequest(t, m, key, "asked of this broker", "DEEL_API_KEY"), "", nil)
+	granted, err := m.Create(ctx, enr, signRequest(t, m, key, "asked of this broker", "DEEL_API_KEY"), "")
 	if err != nil || granted.State != "pending" || granted.RecordID == nil {
 		t.Fatalf("Create(DEEL_API_KEY) = %+v, %v; want a pending request with a record", granted, err)
 	}
@@ -502,7 +502,7 @@ func TestAStaleRequestEndsWhenALiveGrantAnswersTheAsk(t *testing.T) {
 	granted, grantID, stale := liveGrantBesideAStaleRequest(t, m, enr, key, approver)
 	watched := watchJudgeOf(m, "DEEL_API_KEY")
 
-	got, err := m.Create(context.Background(), enr, signRequest(t, m, key, "asked again on this broker", "DEEL_API_KEY"), "", nil)
+	got, err := m.Create(context.Background(), enr, signRequest(t, m, key, "asked again on this broker", "DEEL_API_KEY"), "")
 	if err != nil || got.ID != granted.ID || got.GrantID == nil || *got.GrantID != grantID {
 		t.Fatalf("Create(DEEL_API_KEY) again = %+v, %v; want the live grant %s of request %s handed back", got, err, grantID, granted.ID)
 	}
@@ -525,7 +525,7 @@ func TestAStaleRequestEndsWhenALiveGrantAnswersTheAsk(t *testing.T) {
 func TestAReuseWithNoStaleRequestWaitsOnNoWriterOfTheEnrollment(t *testing.T) {
 	m, enr, key, approver := newFixture(t)
 	ctx := context.Background()
-	own, err := m.Create(ctx, enr, signRequest(t, m, key, "asked of this broker", "DEEL_API_KEY"), "", nil)
+	own, err := m.Create(ctx, enr, signRequest(t, m, key, "asked of this broker", "DEEL_API_KEY"), "")
 	if err != nil || own.State != "pending" || own.RecordID == nil {
 		t.Fatalf("Create(DEEL_API_KEY) = %+v, %v; want a pending request with a record", own, err)
 	}
@@ -542,7 +542,7 @@ func TestAReuseWithNoStaleRequestWaitsOnNoWriterOfTheEnrollment(t *testing.T) {
 	}
 	bounded, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	got, err := m.Create(bounded, enr, signRequest(t, m, key, "asked again", "DEEL_API_KEY"), "", nil)
+	got, err := m.Create(bounded, enr, signRequest(t, m, key, "asked again", "DEEL_API_KEY"), "")
 	if err != nil || got.ID != own.ID || got.GrantID == nil {
 		t.Fatalf("Create(DEEL_API_KEY) again beside a writer of the enrollment row = %+v, %v; want the live grant of request %s at once", got, err, own.ID)
 	}
@@ -579,7 +579,7 @@ func TestAnAskRefusedBeforeAnythingIsWrittenEndsNothing(t *testing.T) {
 			m, enr, key, _ := newFixture(t)
 			stale := askOfAnotherBroker(t, m, enr, key, "DEEL_API_KEY")
 
-			got, err := m.Create(context.Background(), enr, c.ask(t, m, key), "", nil)
+			got, err := m.Create(context.Background(), enr, c.ask(t, m, key), "")
 			if err == nil || (c.want != nil && !errors.Is(err, c.want)) {
 				t.Fatalf("Create = %+v, %v; want it refused (%v)", got, err, c.want)
 			}

@@ -11,7 +11,7 @@ import { useMemo } from "react";
 
 import { api } from "../../../api/client";
 import { liveFeedUp, onLiveFeedBack } from "../../../api/live-socket";
-import { issueTreeKey } from "../../../api/queries";
+import { issueTreeKey, TREE_FILTERS, type TreeFilter } from "../../../api/queries";
 import { type RefreshTarget, refreshQueries } from "../../../api/query-refresh";
 import type {
   IssueDetails,
@@ -21,7 +21,7 @@ import type {
 } from "../../../api/types";
 import { EVENT_FRESH } from "../../refs/reference-target";
 import { writesOf } from "../../writes/write-store";
-import { blocksOfRole, mergeTreePages, type TreeBlock } from "./tree-nodes";
+import { blocksOfRole, mergeTreePages, nextTreeCursor, type TreeBlock } from "./tree-nodes";
 
 /**
  * The issue's tree read (`GET /api/v1/issues/{key}/tree`), which the model serves: the one file
@@ -32,19 +32,14 @@ export type TreeAnswer = IssueTreeRead;
 export type TreeAnswerNode = IssueTreeNode;
 export type TreeTuple = IssueTreeTuple;
 
-/** The views of the tree a filter reads (`?view=`). Each is the query of the document of the
- *  same role, so the name says which role's blocks a caller asks for as well (`blocksOfRole`). */
-export type TreeFilter = "spec" | "verification" | "plan";
+/** Every view of the tree a read asks for (`?view=`), in the order the filters read them: a
+ *  role document's, one for each filter (`TREE_FILTERS`, Spec's, Verification's and Plan's),
+ *  then the decisions view, the issue's decisions wherever they are written. That view plays no
+ *  role, so `blocksOf` takes no such name. */
+export const TREE_VIEWS = [...TREE_FILTERS, "decisions"] as const;
 
-/** Every view of the tree a read asks for (`?view=`): a role document's (`TreeFilter`), and the
- *  decisions view, the issue's decisions wherever they are written. That view plays no role, so
- *  `blocksOf` takes no such name. */
-export type TreeView = TreeFilter | "decisions";
-
-/** The views of the tree the filters read, one for each filter, in this order: Spec's,
- *  Verification's and Plan's role documents, and the issue's decisions wherever they are
- *  written (`?view=decisions`). */
-export const TREE_VIEWS: readonly TreeView[] = ["spec", "verification", "plan", "decisions"];
+/** One view of the tree, a member of `TREE_VIEWS` by its type, so that list holds every view. */
+export type TreeView = (typeof TREE_VIEWS)[number];
 
 /** One view's key: under the tree's (`issueTreeKey`), so every event of the issue reaches it
  *  too (`event-refresh.ts`). */
@@ -91,16 +86,19 @@ export function dropViews(queryClient: QueryClient, key: string): void {
 
 /**
  * Every page of the tree read, or of one view, asked for in turn: the first, then each next page
- * the page before names (`cursor`), and the pages merged once the last answers, so the tree is
- * built once and never from part of the walk. A page that names no next page is the last,
- * whether its cursor is null, left out of the body or empty, as a server that drops an empty
- * field writes it. A cursor the walk has asked for already ends it there with the pages read, so
- * a server that names one page again cannot hold the walk in a loop. A page that fails fails the
- * read, and a read made again - a refetch, a retry - starts from the first page, since a cursor
- * names a place in the walk as it stood when the page that gave it was answered. A read TanStack
- * gives up (`signal`: a reset, the last observer gone) ends its page in flight and asks for no
- * next one. It waits for nothing before its first page: what holds a refresh back while a write
- * of the issue is out is the query's `enabled` (`TREE_FRESH`), so a read that is begun is sent.
+ * the page before names (`nextTreeCursor`), and the pages merged once the last answers, so the
+ * tree is built once and never from part of the walk. A cursor the walk has asked for already
+ * fails the read with an error that names it: the server named one page twice, so the pages past
+ * it are missing, and the walk neither answers the pages it read as the whole tree nor asks
+ * without end. A page that fails fails the read too. A failure of the tree read with no answer
+ * held draws the outline's failed-read line and its Retry, and a view's leaves its filter drawn
+ * off the tree (`presets.ts`' `presetView`); over a held answer the page keeps that answer, as
+ * TanStack keeps a query's data through a failed refetch. A read made again - a refetch, a retry -
+ * starts from the first page, since a cursor names a place in the walk as it stood when the page
+ * that gave it was answered. A read TanStack gives up (`signal`: a reset, the last observer gone)
+ * ends its page in flight and asks for no next one. It waits for nothing before its first page:
+ * what holds a refresh back while a write of the issue is out is the query's `enabled`
+ * (`TREE_FRESH`), so a read that is begun is sent.
  */
 async function readTree(
   key: string,
@@ -110,13 +108,19 @@ async function readTree(
   const first = await api.getIssueTree(key, { view }, { signal });
   const pages: [TreeAnswer, ...TreeAnswer[]] = [first];
   const asked = new Set<string>();
-  let cursor: string | null | undefined = first.cursor;
-  while (typeof cursor === "string" && cursor !== "" && !asked.has(cursor)) {
+  let cursor = nextTreeCursor(first);
+  while (cursor !== undefined) {
+    if (asked.has(cursor)) {
+      const read = view === undefined ? `The tree read of ${key}` : `The ${view} view of ${key}`;
+      throw new Error(
+        `${read} named the cursor "${cursor}" twice, so the pages after it are missing.`
+      );
+    }
     asked.add(cursor);
     signal.throwIfAborted();
     const page = await api.getIssueTree(key, { cursor, view }, { signal });
     pages.push(page);
-    cursor = page.cursor;
+    cursor = nextTreeCursor(page);
   }
   return mergeTreePages(pages);
 }

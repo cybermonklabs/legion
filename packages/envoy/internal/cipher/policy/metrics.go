@@ -27,8 +27,9 @@ func NewStoreReads(r *metrics.Registry) *metrics.Counter {
 
 // NewUnservableSecrets registers broker_unservable_secrets on r, read from c's live policy
 // (Current.Get) at each scrape: one series of value 1 for each secret it refuses to serve
-// (Set.Refused), labelled secret (the store's whole name of the secret, the name its
-// RefusedMessage line carries), reason and owner (Refusal.Owner). So the gauge holds the standing
+// (Set.Refused), labelled secret (the store's whole name of the secret, or "profile:" and a
+// refused profile's name, the name its RefusedMessage line carries), reason and owner
+// (Refusal.Owner). So the gauge holds the standing
 // state the state-change lines only mark the edges of: a secret that becomes servable or leaves
 // the store leaves the scrape at the next one, with no call to remove it, and a reread of a name
 // the store does not hold adds none. It takes the Current NewCurrent answered, so it is

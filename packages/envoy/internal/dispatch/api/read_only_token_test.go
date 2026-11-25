@@ -33,6 +33,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/githubtest"
+	"github.com/sjawhar/envoy/internal/pgmigrate"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -92,6 +93,7 @@ func readOnlyTable() []apiRoute {
 // registered server mounts (its route index, one entry a row), so a walk that skipped a row, or
 // walked none, fails.
 func TestEveryRowTheReadListDoesNotNameRefusesAReadOnlyTokenBeforeItsHandler(t *testing.T) {
+	t.Parallel()
 	rig := newBrokerTokenRigOn(t, testServerOptions{testHooks: true})
 	caller := newBrokerCaller(t)
 	const token = "a-read-only-token-walking-every-chain"
@@ -167,6 +169,7 @@ var readListAnswers = map[string]struct {
 // A row is counted once its assertions have run, and the count is held to the rows the
 // registered server mounts, as the walk above is.
 func TestTheMountedServerServesAReadOnlyTokenOnTheReadListAlone(t *testing.T) {
+	t.Parallel()
 	rig := newBrokerTokenRigOn(t, testServerOptions{testHooks: true})
 	caller := newBrokerCaller(t)
 	const token = "a-read-only-token-walking-the-mounted-server"
@@ -248,6 +251,7 @@ func TestRegisterRefusesAReadOnlyListOfNoMountedGETRow(t *testing.T) {
 // list names, sorted, each name that is no row of the table and each row that is a write, and
 // passes a GET row whether the deployment serves it or only a server with its test hooks in does.
 func TestTheReadOnlyListCheckNamesEveryRowThatIsNoMountedGET(t *testing.T) {
+	t.Parallel()
 	if refused := readRoutesNotMountedAsGET(readScopeRoutes); len(refused) != 0 {
 		t.Fatalf("the read list as it stands is refused: %v", refused)
 	}
@@ -255,13 +259,13 @@ func TestTheReadOnlyListCheckNamesEveryRowThatIsNoMountedGET(t *testing.T) {
 		"GET /api/v1/projects/{key}/architecture",
 		"GET /api/v1/artifacts/_test/rooms",
 		"POST /api/v1/issues/{key}/comments",
-		"DELETE /api/v1/settings/repo-projects/{owner}/{repo}",
+		"DELETE /api/v1/projects/{key}/legion/daemon",
 		"PUT /api/v1/me/asks/{id}/snooze",
 		"GET /api/v1/projects/{key}/architecture/no-such-route",
 		"get /api/v1/projects/{key}/architecture",
 	})
 	want := []string{
-		"DELETE /api/v1/settings/repo-projects/{owner}/{repo}",
+		"DELETE /api/v1/projects/{key}/legion/daemon",
 		"GET /api/v1/projects/{key}/architecture/no-such-route",
 		"POST /api/v1/issues/{key}/comments",
 		"PUT /api/v1/me/asks/{id}/snooze",
@@ -280,6 +284,7 @@ func TestTheReadOnlyListCheckNamesEveryRowThatIsNoMountedGET(t *testing.T) {
 // token's key would be free whatever the first request did - which is why the key table is read
 // as well.
 func TestAReadOnlyTokenIsRefusedBeforeTheIdempotencyKey(t *testing.T) {
+	t.Parallel()
 	rig := newBrokerTokenRig(t)
 	caller := newBrokerCaller(t)
 	const readOnly, named = "a-read-only-token-that-tries-to-write", "a-named-token-that-writes"
@@ -346,13 +351,18 @@ func (m *markedStatements) TraceCopyFromStart(ctx context.Context, _ *pgx.Conn, 
 func (m *markedStatements) TraceCopyFromEnd(context.Context, *pgx.Conn, pgx.TraceCopyFromEndData) {}
 
 var (
-	// tableWrite is one insert, update or delete and the table it writes.
-	tableWrite = regexp.MustCompile(`(?i)\b(insert\s+into|update|delete\s+from)\s+"?([a-z_][a-z0-9_."]*)`)
+	// tableWrite is one insert, update, delete or merge and the table it writes.
+	tableWrite = regexp.MustCompile(`(?i)\b(insert\s+into|update|delete\s+from|merge\s+into)\s+"?([a-z_][a-z0-9_."]*)`)
 	// writeWord is every word that makes a statement a write, so a write tableWrite cannot read
 	// shows as a word left over.
-	writeWord = regexp.MustCompile(`(?i)\b(insert|update|delete)\b`)
+	writeWord = regexp.MustCompile(`(?i)\b(insert|update|delete|merge)\b`)
 	// upsertUpdate is an insert's own conflict clause, whose table is the insert's.
 	upsertUpdate = regexp.MustCompile(`(?i)\bdo\s+update\b`)
+	// mergeInto opens a merge, whose actions (mergeAction) write the merge's own table.
+	mergeInto   = regexp.MustCompile(`(?i)\bmerge\s+into\b`)
+	mergeAction = regexp.MustCompile(`(?i)\bthen\s+(update|insert|delete)\b`)
+	// updateWord is the word update wherever it stands; updateNoWrite decides where it is none.
+	updateWord = regexp.MustCompile(`(?i)\bupdate\b`)
 	// sourcesRead is the architecture's first read, of the project's architecture sources.
 	sourcesRead = regexp.MustCompile(`(?i)\bfrom\s+architecture_sources\b`)
 	// stepsRead is the steps read's one read, of the tuples that make each run part of its issue.
@@ -363,9 +373,32 @@ var (
 )
 
 // writesOf answers each write statement makes, as "<verb> <table>", and false when it holds a
-// write word no table can be read for: such a statement fails the test rather than passing it.
+// write word no table can be read for: such a statement fails the test rather than passing it. It
+// reads past comments where Postgres reads them (pgmigrate.WithoutComments, on the transcription
+// of scan.l: a -- comment ends at a newline or a carriage return; none starts inside a string or a
+// quoted name; and a dollar quote's body, a function's or a DO block's, is read as SQL, its own
+// strings and dollar quotes kept whole, so a write inside one it EXECUTEs stays visible), reads a
+// merge as a write of its table, and reads the word update as no write only where updateNoWrite
+// places it, so a write it cannot place is a write.
 func writesOf(statement string) ([]string, bool) {
-	read := upsertUpdate.ReplaceAllString(statement, "do upsert")
+	read := pgmigrate.WithoutComments(statement)
+	read = upsertUpdate.ReplaceAllString(read, "do upsert")
+	if mergeInto.MatchString(read) {
+		read = mergeAction.ReplaceAllString(read, "then merge_action")
+	}
+	var unverbed strings.Builder
+	last := 0
+	for _, at := range updateWord.FindAllStringIndex(read, -1) {
+		unverbed.WriteString(read[last:at[0]])
+		if updateNoWrite(read, at) {
+			unverbed.WriteString("update_word")
+		} else {
+			unverbed.WriteString(read[at[0]:at[1]])
+		}
+		last = at[1]
+	}
+	unverbed.WriteString(read[last:])
+	read = unverbed.String()
 	matches := tableWrite.FindAllStringSubmatch(read, -1)
 	writes := make([]string, 0, len(matches))
 	for _, match := range matches {
@@ -377,6 +410,88 @@ func writesOf(statement string) ([]string, bool) {
 		writes = append(writes, verb+" "+table)
 	}
 	return writes, len(writeWord.FindAllString(read, -1)) == len(matches)
+}
+
+// updateNoWrite reports whether the update read[at[0]:at[1]] is no write: a row lock, after for or
+// for no key; or a column of that name (doc_updates.update), which stands after a dot, a comma, an
+// open parenthesis or select, and before a comma, a close parenthesis, a cast, from, as or the
+// statement's end. Every other update is the verb of a write, an update in a common table
+// expression's parentheses included, since it is followed by its table.
+func updateNoWrite(read string, at []int) bool {
+	before := strings.TrimRight(read[:at[0]], " \t\r\n")
+	after := strings.TrimLeft(read[at[1]:], " \t\r\n")
+	previous := strings.ToLower(before[strings.LastIndexFunc(before, func(r rune) bool { return !isSQLWordRune(r) })+1:])
+	if previous == "for" || previous == "key" {
+		return true
+	}
+	afterColumn := strings.HasSuffix(before, ".") || strings.HasSuffix(before, ",") || strings.HasSuffix(before, "(") || previous == "select"
+	next := strings.ToLower(after)
+	beforeColumnEnd := after == "" || strings.HasPrefix(after, ",") || strings.HasPrefix(after, ")") || strings.HasPrefix(after, "::") ||
+		startsWithSQLWord(next, "from") || startsWithSQLWord(next, "as")
+	return afterColumn && beforeColumnEnd
+}
+
+func isSQLWordRune(r rune) bool {
+	return r == '_' || r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9'
+}
+
+// startsWithSQLWord reports whether s begins with the whole word word.
+func startsWithSQLWord(s, word string) bool {
+	return strings.HasPrefix(s, word) && (len(s) == len(word) || !isSQLWordRune(rune(s[len(word)])))
+}
+
+// writesOf reads a write by its verb and its table, and the word update by where it stands: a
+// column of that name a document room reads (doc_updates.update) and a row lock are no write, an
+// update statement however it names its table is one, a comment hides no write and a merge is one,
+// and a write word it cannot place a table for leaves the statement unreadable.
+func TestWritesOfReadsAnUpdateByItsSetClause(t *testing.T) {
+	for _, tc := range []struct {
+		statement string
+		writes    []string
+		readable  bool
+	}{
+		{`select update from doc_updates where artifact_id = $1 and version <= $2 order by version asc`, nil, true},
+		{`select count(*), coalesce(sum(octet_length(d.update)), 0) from doc_updates d where d.artifact_id = $1`, nil, true},
+		{`select id from issues where key = $1 for update`, nil, true},
+		{`select id from issues where key = $1 for no key update skip locked`, nil, true},
+		{`update projects set name = name where key = $1`, []string{"update projects"}, true},
+		{`UPDATE "public"."projects" AS p SET name = p.name`, []string{"update projects"}, true},
+		{`with moved as (update issues set rank = $2 where key = $1 returning key) select key from moved`, []string{"update issues"}, true},
+		{`insert into text_trees (sum, tree) values ($1, $2) on conflict (sum) do update set tree = excluded.tree`, []string{"insert text_trees"}, true},
+		{`delete from doc_updates where artifact_id = $1 and version <= $2`, []string{"delete doc_updates"}, true},
+		{`insert /* a table this test cannot read */ ($1)`, []string{}, false},
+		// A comment hides neither a write's verb nor its table, and a merge writes its table.
+		{`update /* the project's name */ projects set name = name where key = $1`, []string{"update projects"}, true},
+		{"-- the rename\nupdate projects set name = $2 where key = $1", []string{"update projects"}, true},
+		{`merge into projects p using (select $1::text as key) s on p.key = s.key when matched then update set name = p.name`, []string{"merge projects"}, true},
+		{`merge into projects using (select 1) s on false when not matched then insert (key, name) values ('A', 'A')`, []string{"merge projects"}, true},
+		// An update whose table this test cannot place is no column: it leaves the statement unreadable.
+		{`with x as (select 1) update`, []string{}, false},
+		// A column named update in an insert's list is no write of its own.
+		{`insert into doc_updates (artifact_id, version, update, content_changed) select $1, v, u, c from unnest($2::bigint[], $3::bytea[], $4::boolean[]) as a(v, u, c)`, []string{"insert doc_updates"}, true},
+		// A comment starts only outside a quoted span: a `--` or `/*` inside a string, an escape
+		// string, a quoted name or a dollar quote hides no write after it, and a parameter is no
+		// dollar quote.
+		{`select '--'; update projects set name = name`, []string{"update projects"}, true},
+		{`select 'it''s -- no comment', '/*'; update projects set name = name`, []string{"update projects"}, true},
+		{`select E'\'--'; update projects set name = name`, []string{"update projects"}, true},
+		{`select "a--b" from projects; update projects set name = name`, []string{"update projects"}, true},
+		{`select $$/*$$; update projects set name = name`, []string{"update projects"}, true},
+		{`select $x$ -- $x$; update projects set name = name`, []string{"update projects"}, true},
+		{`update projects set name = $1 -- the new name`, []string{"update projects"}, true},
+		// A -- comment ends at a carriage return as at a newline, and a dollar quote's tag takes
+		// bytes 0x80-0xff, as Postgres's scan.l reads them.
+		{"select 1 -- c\rupdate projects set name = name", []string{"update projects"}, true},
+		{`select $é$ -- $é$; update projects set name = name`, []string{"update projects"}, true},
+		// A dollar quote inside a DO body is a string, kept whole, so a write in SQL the body
+		// EXECUTEs stays visible, a -- before it included.
+		{`do $$ begin execute $q$select 1 -- note update projects set name = name$q$; end $$`, []string{"update projects"}, true},
+	} {
+		writes, readable := writesOf(tc.statement)
+		if readable != tc.readable || !slices.Equal(writes, tc.writes) {
+			t.Errorf("writesOf(%q) = %v, %v; want %v, %v", tc.statement, writes, readable, tc.writes, tc.readable)
+		}
+	}
 }
 
 // readOnlyTreeFiles is the model the test below imports: two components whose prose no other test
@@ -401,6 +516,7 @@ func readOnlyTreeFiles(nonce string) map[string]string {
 // workflow_tuples and the read of the project's finished issues, so a tracer that saw nothing
 // cannot pass.
 func TestTheReadOnlyListedRouteWritesOnlyItsProofAndCaches(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	marked := &markedStatements{}
 	traced := storetest.TracedStore(t, database, marked)

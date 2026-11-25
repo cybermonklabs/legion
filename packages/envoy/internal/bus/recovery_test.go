@@ -46,6 +46,7 @@ func subscribeAllNotifications(client *bus.Client, handler natsgo.MsgHandler, op
 
 // TestSubOK_NoSubscription verifies SubOK is false when no subscription exists.
 func TestSubOK_NoSubscription(t *testing.T) {
+	t.Parallel()
 	_, uri := startNATS(t)
 	client, err := bus.ConnectOwningStream([]string{uri})
 	if err != nil {
@@ -111,6 +112,7 @@ func TestPublishBoundsReconnectWhenNATSUnavailable(t *testing.T) {
 }
 
 func TestCoreSubscriptionRestoresAfterConnectionRecovery(t *testing.T) {
+	t.Parallel()
 	_, uri := startNATS(t)
 	client, err := bus.ConnectOwningStream([]string{uri})
 	if err != nil {
@@ -148,6 +150,7 @@ func TestCoreSubscriptionRestoresAfterConnectionRecovery(t *testing.T) {
 // the recovery bound delivers, and CoreSubOK must report the replacement: read from the returned
 // handle, a recovered lane would read inactive forever.
 func TestCoreSubOKReportsTheReplacementAfterTheClientReplacesAClosedConnection(t *testing.T) {
+	t.Parallel()
 	_, uri := startNATS(t)
 	client, err := bus.Connect([]string{uri})
 	if err != nil {
@@ -191,6 +194,7 @@ func TestCoreSubOKReportsTheReplacementAfterTheClientReplacesAClosedConnection(t
 // in that window must restore the role lane though the durable still refuses the bind: the role
 // lane is a queue member a role message can be handed to, and nothing else re-subscribes it.
 func TestACoreSubscriptionRecoversWhileTheJetStreamOneCannotBind(t *testing.T) {
+	t.Parallel()
 	_, uri := startNATS(t)
 	client, err := bus.ConnectOwningStream([]string{uri})
 	if err != nil {
@@ -357,6 +361,7 @@ func TestReconnectHooksRunOneAtATimeOnceForEachEventBetweenRuns(t *testing.T) {
 // what it last followed, until the next connection event. Here the hooks fail once after an
 // in-place reconnect and run again with no other connection event.
 func TestAFailedRunOfTheReconnectHooksRunsAgainWithoutAnotherConnectionEvent(t *testing.T) {
+	t.Parallel()
 	_, uri := startNATS(t)
 	client, err := bus.ConnectOwningStream([]string{uri})
 	if err != nil {
@@ -414,6 +419,7 @@ func TestAFailedRunOfTheReconnectHooksRunsAgainWithoutAnotherConnectionEvent(t *
 // connection's own recovery finds the first still running, and before the first looked again the
 // client stayed on a closed connection for good.
 func TestAConnectionThatClosesAsARecoveryEndsIsRecovered(t *testing.T) {
+	t.Parallel()
 	_, uri := startNATS(t)
 	client, err := bus.ConnectOwningStream([]string{uri})
 	if err != nil {
@@ -582,6 +588,7 @@ func waitOutHeldDurable(t *testing.T, client *bus.Client, uri string) {
 }
 
 func TestCoreSubscriptionsShareQueueGroup(t *testing.T) {
+	t.Parallel()
 	_, uri := startNATS(t)
 	first, err := bus.ConnectOwningStream([]string{uri})
 	if err != nil {
@@ -629,6 +636,7 @@ func TestCoreSubscriptionsShareQueueGroup(t *testing.T) {
 
 // TestSubOK_AfterSubscribe verifies SubOK is true after subscribing.
 func TestSubOK_AfterSubscribe(t *testing.T) {
+	t.Parallel()
 	_, uri := startNATS(t)
 	client, err := bus.ConnectOwningStream([]string{uri})
 	if err != nil {
@@ -653,6 +661,7 @@ func TestSubOK_AfterSubscribe(t *testing.T) {
 // triggers recovery and the subscription is restored. After recovery,
 // messages flow normally through the restored subscription.
 func TestRecovery_ClosedTriggersWithoutPublish(t *testing.T) {
+	t.Parallel()
 	_, uri := startNATS(t)
 	client, err := bus.ConnectOwningStream([]string{uri})
 	if err != nil {
@@ -702,6 +711,7 @@ func TestRecovery_ClosedTriggersWithoutPublish(t *testing.T) {
 // TestRecovery_AtMostOneSubscription verifies that after recovery, only one
 // subscription callback is active (no duplicate message delivery).
 func TestRecovery_AtMostOneSubscription(t *testing.T) {
+	t.Parallel()
 	_, uri := startNATS(t)
 	client, err := bus.ConnectOwningStream([]string{uri})
 	if err != nil {
@@ -751,6 +761,7 @@ func TestRecovery_AtMostOneSubscription(t *testing.T) {
 // do not spawn competing retry goroutines. The atomic recovering flag ensures
 // at most one recovery goroutine runs at a time.
 func TestRecovery_ConcurrentRecoverySerializes(t *testing.T) {
+	t.Parallel()
 	_, uri := startNATS(t)
 	client, err := bus.ConnectOwningStream([]string{uri})
 	if err != nil {
@@ -794,6 +805,7 @@ func TestRecovery_ConcurrentRecoverySerializes(t *testing.T) {
 }
 
 func TestStreamSubjectsIncludesDispatchEvents(t *testing.T) {
+	t.Parallel()
 	for _, subject := range bus.StreamSubjects() {
 		if subject == "notifications.dispatch.>" {
 			return
@@ -803,6 +815,7 @@ func TestStreamSubjectsIncludesDispatchEvents(t *testing.T) {
 }
 
 func TestConnectedReportsLiveConnection(t *testing.T) {
+	t.Parallel()
 	_, uri := startNATS(t)
 	client, err := bus.ConnectOwningStream([]string{uri})
 	if err != nil {
@@ -816,6 +829,7 @@ func TestConnectedReportsLiveConnection(t *testing.T) {
 }
 
 func TestReconnectHookRunsAfterReconnect(t *testing.T) {
+	t.Parallel()
 	_, uri := startNATS(t)
 	client, err := bus.ConnectOwningStream([]string{uri})
 	if err != nil {
@@ -845,6 +859,7 @@ func TestReconnectHookRunsAfterReconnect(t *testing.T) {
 // follows: a KV watcher's subscription survives the outage, so the hook is what tells its cache it
 // stopped following the bucket, and the reconnect hook's read starts after that.
 func TestDisconnectHookRunsBeforeTheReconnectHook(t *testing.T) {
+	t.Parallel()
 	_, uri := startNATS(t)
 	client, err := bus.ConnectOwningStream([]string{uri})
 	if err != nil {
@@ -874,6 +889,7 @@ func TestDisconnectHookRunsBeforeTheReconnectHook(t *testing.T) {
 }
 
 func TestJetStreamPublishDeduplicatesAStableEnvelopeDestination(t *testing.T) {
+	t.Parallel()
 	_, uri := startNATS(t)
 	client, err := bus.ConnectOwningStream([]string{uri})
 	if err != nil {
@@ -913,6 +929,7 @@ func TestJetStreamPublishDeduplicatesAStableEnvelopeDestination(t *testing.T) {
 // The retained copy is not a replay for a pane: a pane subscribes over core NATS and gets only what
 // is published while it is subscribed.
 func TestJetStreamPublishRetainsLegionIssueNotices(t *testing.T) {
+	t.Parallel()
 	_, uri := startNATS(t)
 	client, err := bus.ConnectOwningStream([]string{uri})
 	if err != nil {

@@ -1,0 +1,5 @@
+kind: Changed
+body: The worker image's test Postgres (`legion-testpg`) allows 479 connections, room for four Dispatch processes of 114 connections each beside the other suites.
+time: 2026-11-20T16:57:11.342987354Z
+custom:
+    Issue: pr4631

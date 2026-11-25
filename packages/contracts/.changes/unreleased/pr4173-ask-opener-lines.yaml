@@ -1,0 +1,6 @@
+kind: Added
+body: |-
+    `askOpenerLines(markdown)` returns each line of a document that opens an ask block (`:::ask{`), without its indentation and the container markers before it: `>`, a list marker (`-`, `*`, `+`, or a number and `.` or `)`) followed by a space or a tab, and a footnote label `[^label]:` with a label that is not blank. It skips every line of fenced code, a fence of backticks or tildes, and of the front matter a document opens with, so an opener quoted in either is not read as one. `askOpeners(openers, blockId)` keeps the lines of those that open the ask block `blockId`, its id written as `typedBlockIdAttribute` writes it. The web's reader of the answer a Dispatch of the release before writes on an ask block's opening line, `dispatch doc-read`'s answer lines and `dispatch request-approval`'s check for open ask blocks read the opening lines through them.
+time: 2026-11-24T07:49:03.000000000Z
+custom:
+    Issue: pr4173

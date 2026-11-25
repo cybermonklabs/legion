@@ -153,8 +153,11 @@ const (
 	// deviceCodeGrant is RFC 8628's grant type, which x/oauth2 spells in a package its users
 	// cannot import.
 	deviceCodeGrant = "urn:ietf:params:oauth:grant-type:device_code"
-	testRedirect    = "http://127.0.0.1:1/auth/callback"
-	testDomain      = "d.example"
+	// testCallback is the callback each code-flow client registers, a loopback one with no
+	// port, and testRedirect the one its authorizations name, at the port its server bound.
+	testCallback = "http://127.0.0.1/auth/callback"
+	testRedirect = "http://127.0.0.1:1/auth/callback"
+	testDomain   = "d.example"
 )
 
 // noRedirects hands back each redirect rather than following it, so a test reads where the
@@ -208,13 +211,19 @@ func secretFile(t *testing.T, content string) string {
 }
 
 // authorizeURL is the authorization request the confidential client clientID sends the browser
-// to.
+// to, naming testRedirect.
 func authorizeURL(endpoint, clientID, state, nonce string) string {
+	return authorizeURLTo(endpoint, clientID, testRedirect, state, nonce)
+}
+
+// authorizeURLTo is the authorization request the confidential client clientID sends the browser
+// to, naming redirect as its redirect URI.
+func authorizeURLTo(endpoint, clientID, redirect, state, nonce string) string {
 	return endpoint + "?" + url.Values{
 		"client_id":     {clientID},
 		"response_type": {"code"},
 		"scope":         {"openid email"},
-		"redirect_uri":  {testRedirect},
+		"redirect_uri":  {redirect},
 		"state":         {state},
 		"nonce":         {nonce},
 	}.Encode()
@@ -296,7 +305,7 @@ func idTokenClaims(t *testing.T, raw string) map[string]any {
 func TestTheCodeFlowSignsInTheDefaultPersonUntilAnotherIsQueued(t *testing.T) {
 	ctx := context.Background()
 	// The trailing newline is the file's, not the secret's.
-	issuerURL := startRun(t, "--code-flow", testClientID+"="+secretFile(t, testClientSecret+"\n"), "--sign-in-as", "Alice@D.example", "--sign-in-group", "dispatch-members")
+	issuerURL := startRun(t, "--code-flow", testClientID+"="+secretFile(t, testClientSecret+"\n")+"="+testCallback, "--sign-in-as", "Alice@D.example", "--sign-in-group", "dispatch-members")
 
 	authorizeEndpoint, tokenEndpoint := discoveryEndpoints(t, issuerURL)
 	verifier, err := oidc.New(ctx, issuerURL, testClientID)
@@ -381,7 +390,7 @@ func TestTheCodeFlowSignsInTheDefaultPersonUntilAnotherIsQueued(t *testing.T) {
 // person, still refuses the next authorization.
 func TestTheSignInControlRefusesACallerOffLoopback(t *testing.T) {
 	issuer := oidctest.New(t)
-	issuer.EnableCodeFlow(issuer.PublishKey(t, "signing-key"), testClientID, testClientSecret)
+	issuer.EnableCodeFlow(issuer.PublishKey(t, "signing-key"), testClientID, testClientSecret, testCallback)
 	request := httptest.NewRequest(http.MethodPost, "/_dev/sign-in-as", strings.NewReader(`{"sub":"mallory","email":"mallory@d.example","email_verified":true,"hd":"d.example"}`))
 	request.RemoteAddr = "192.0.2.1:40000"
 	recorder := httptest.NewRecorder()
@@ -393,9 +402,33 @@ func TestTheSignInControlRefusesACallerOffLoopback(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	body, _ := io.ReadAll(response.Body)
 	response.Body.Close()
-	if response.StatusCode != http.StatusBadRequest {
-		t.Fatalf("the authorization after a refused sign-in: status %d, want 400, nobody queued", response.StatusCode)
+	if response.StatusCode != http.StatusBadRequest || !strings.Contains(string(body), "no sign-in queued") {
+		t.Fatalf("the authorization after a refused sign-in: status %d (%s), want 400, nobody queued", response.StatusCode, body)
+	}
+}
+
+// TestTheCodeFlowRedirectsOnlyToTheRegisteredCallback gives --code-flow a loopback callback with
+// no port, as each local stack registers its broker's or Dispatch's before that server binds a
+// port the OS chooses: an authorization naming that callback at the port its server bound is
+// redirected there, and one naming any other address is refused 400 and sends the browser
+// nowhere.
+func TestTheCodeFlowRedirectsOnlyToTheRegisteredCallback(t *testing.T) {
+	issuerURL := startRun(t, "--code-flow", testClientID+"="+secretFile(t, testClientSecret)+"="+testCallback, "--sign-in-as", "alice@d.example")
+	authorizeEndpoint, _ := discoveryEndpoints(t, issuerURL)
+	authorize(t, authorizeURL(authorizeEndpoint, testClientID, "state-1", "nonce-1"), "state-1")
+
+	for _, foreign := range []string{"http://attacker.example/auth/callback", "http://127.0.0.1:1/auth/other", "http://localhost:1/auth/callback"} {
+		response, err := noRedirects.Get(authorizeURLTo(authorizeEndpoint, testClientID, foreign, "state-2", "nonce-2"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, _ := io.ReadAll(response.Body)
+		response.Body.Close()
+		if response.StatusCode != http.StatusBadRequest || response.Header.Get("Location") != "" || !strings.Contains(string(body), "redirect_uri_mismatch") {
+			t.Errorf("an authorization naming %s: status %d to %q (%s), want 400 redirect_uri_mismatch and no redirect", foreign, response.StatusCode, response.Header.Get("Location"), body)
+		}
 	}
 }
 
@@ -408,8 +441,8 @@ func TestTheSignInControlRefusesACallerOffLoopback(t *testing.T) {
 func TestOneIssuerServesTwoClients(t *testing.T) {
 	ctx := context.Background()
 	issuerURL := startRun(t,
-		"--code-flow", testClientID+"="+secretFile(t, testClientSecret),
-		"--code-flow", brokerClientID+"="+secretFile(t, brokerClientSecret),
+		"--code-flow", testClientID+"="+secretFile(t, testClientSecret)+"="+testCallback,
+		"--code-flow", brokerClientID+"="+secretFile(t, brokerClientSecret)+"="+testCallback,
 		"--sign-in-as", "alice@d.example")
 	authorizeEndpoint, tokenEndpoint := discoveryEndpoints(t, issuerURL)
 	signIn := func(clientID, secret, nonce string) map[string]any {
@@ -454,28 +487,40 @@ func TestOneIssuerServesTwoClients(t *testing.T) {
 }
 
 // TestRunRefusesACodeFlowItCannotServe pins the usage refusals of --code-flow, --device-flow and
-// --sign-in-as, each exit 2 naming what is wrong before any issuer runs: a value with no secret
-// file, a secret file that cannot be read or holds only whitespace, one client id named twice by
-// either flag or once by each, --sign-in-as with no flow to sign in at, and a --sign-in-as that
-// is not an email address.
+// --sign-in-as, each exit 2 naming what is wrong before any issuer runs: a --code-flow with no
+// secret file or no callback, a callback that is not an absolute http or https URL or that
+// carries a fragment (RFC 6749 section 3.1.2), a secret file that cannot be read or holds only
+// whitespace, one client id named twice by either flag or once by each, --sign-in-as with no flow
+// to sign in at, and a --sign-in-as that is not an email address.
 func TestRunRefusesACodeFlowItCannotServe(t *testing.T) {
 	secret := secretFile(t, testClientSecret)
+	client := testClientID + "=" + secret + "=" + testCallback
 	for _, tc := range []struct {
 		args []string
 		says string
 	}{
-		{[]string{"--code-flow", testClientID}, "want <client id>=<client secret file>"},
-		{[]string{"--code-flow", testClientID + "=" + filepath.Join(t.TempDir(), "missing")}, "read the client secret"},
-		{[]string{"--code-flow", testClientID + "=" + secretFile(t, " \n")}, "is empty"},
-		{[]string{"--code-flow", testClientID + "=" + secret, "--code-flow", testClientID + "=" + secret}, "--code-flow names client " + testClientID + " twice"},
+		{[]string{"--code-flow", testClientID}, "want <client id>=<client secret file>=<redirect URI>"},
+		{[]string{"--code-flow", testClientID + "=" + secret}, "want <client id>=<client secret file>=<redirect URI>"},
+		{[]string{"--code-flow", testClientID + "=" + secret + "=/auth/callback"}, `the redirect URI "/auth/callback" is not an absolute http or https URL`},
+		{[]string{"--code-flow", testClientID + "=" + secret + "=javascript:alert(1)"}, `the redirect URI "javascript:alert(1)" is not an absolute http or https URL`},
+		{[]string{"--code-flow", testClientID + "=" + secret + "=" + testCallback + "#top"}, `the redirect URI "` + testCallback + `#top" carries a fragment`},
+		{[]string{"--code-flow", testClientID + "=" + secret + "=http://:80/auth/callback"}, `the redirect URI "http://:80/auth/callback" is not an absolute http or https URL`},
+		{[]string{"--code-flow", testClientID + "=" + filepath.Join(t.TempDir(), "missing") + "=" + testCallback}, "read the client secret"},
+		{[]string{"--code-flow", testClientID + "=" + secretFile(t, " \n") + "=" + testCallback}, "is empty"},
+		{[]string{"--code-flow", client, "--code-flow", client}, "--code-flow names client " + testClientID + " twice"},
 		{[]string{"--sign-in-as", "alice@d.example"}, "--sign-in-as needs --code-flow"},
-		{[]string{"--code-flow", testClientID + "=" + secret, "--sign-in-as", "alice"}, `--sign-in-as "alice" is not an email address`},
-		{[]string{"--code-flow", testClientID + "=" + secret, "--sign-in-group", "dispatch-members"}, "--sign-in-group needs --sign-in-as"},
+		{[]string{"--code-flow", client, "--sign-in-as", "alice"}, `--sign-in-as "alice" is not an email address`},
+		{[]string{"--code-flow", client, "--sign-in-group", "dispatch-members"}, "--sign-in-group needs --sign-in-as"},
 		{[]string{"--device-flow", testClientID + "=" + secret, "--device-flow", testClientID + "=" + secret}, "--device-flow names client " + testClientID + " twice"},
-		{[]string{"--code-flow", testClientID + "=" + secret, "--device-flow", testClientID + "=" + secret}, "--device-flow names client " + testClientID + ", which --code-flow serves"},
+		{[]string{"--code-flow", client, "--device-flow", testClientID + "=" + secret}, "--device-flow names client " + testClientID + ", which --code-flow serves"},
 	} {
+		// A flag the command wrongly takes starts an issuer that serves until its context
+		// ends: the deadline makes that an exit 0 this case reports, rather than a hang.
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		var stderr lockedBuffer
-		if code := run(context.Background(), tc.args, &stderr); code != exitUsageError || !strings.Contains(stderr.String(), tc.says) {
+		code := run(ctx, tc.args, &stderr)
+		cancel()
+		if code != exitUsageError || !strings.Contains(stderr.String(), tc.says) {
 			t.Errorf("%q: exit %d, stderr %q; want %d saying %q", tc.args, code, stderr.String(), exitUsageError, tc.says)
 		}
 	}
@@ -649,7 +694,7 @@ func TestTheDeviceFlowSignsInOnceTheUserCodeIsApproved(t *testing.T) {
 // as Google refuses a client not registered for limited-input devices. The approval control is
 // not mounted at all.
 func TestTheDeviceGrantIsAbsentWithoutTheFlag(t *testing.T) {
-	issuerURL := startRun(t, "--code-flow", testClientID+"="+secretFile(t, testClientSecret), "--sign-in-as", "alice@d.example")
+	issuerURL := startRun(t, "--code-flow", testClientID+"="+secretFile(t, testClientSecret)+"="+testCallback, "--sign-in-as", "alice@d.example")
 	if status, body := deviceAuthorize(t, issuerURL+"/device_authorization", testClientID); status != http.StatusUnauthorized || !strings.Contains(string(body), "invalid_client") {
 		t.Errorf("a device authorization for a code-flow client: status %d, body %s, want 401 invalid_client", status, body)
 	}

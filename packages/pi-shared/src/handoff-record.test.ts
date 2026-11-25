@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import { writeFileSync } from "node:fs";
-import { lstat, mkdtemp, rm, utimes, writeFile } from "node:fs/promises";
+import { lstat, mkdtemp, realpath, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { LEGION_ROLES, type LegionRole } from "@legion/contracts";
@@ -155,9 +155,10 @@ test("every other completion reports the commit the workspace stands on, and rea
 });
 
 test("a reviewer whose review moved its issue on reports its own newest review record and the head it names", async () => {
-  // A request for changes moves the issue to implementing at once, an approval to accepting once
-  // the pull request is mergeable, and the reviewer completes after it: the daemon records that
-  // completion on reviewing, the phase the reviewer left, and reads its review record back.
+  // A request for changes moves the issue to implementing at once, an approval to its task's next
+  // step once the pull request is mergeable (accepting, in the default steps, which this test
+  // reads), and the reviewer completes after it: the daemon records that completion on reviewing,
+  // the phase the reviewer left, and reads its review record back.
   for (const phase of ["implementing", "accepting"] as const) {
     const { jj, calls } = fakeJj();
     const { latestHandoff, reads } = recordingDispatch();
@@ -735,7 +736,7 @@ test("the branch head is the issue bookmark at origin, and empty when the remote
   };
   await expect(answer(TIP)).resolves.toBe(TIP);
   expect(calls).toEqual([["log", "-r", REMOTE, "--no-graph", "-T", "commit_id"]]);
-  // A planner before its first push: no branch at the remote, and no error.
+  // A planner step that runs before the branch's first push: no branch at the remote, and no error.
   await expect(answer("")).resolves.toBe("");
 
   // The issue key names the branch, and a worker sets its own environment.
@@ -927,9 +928,14 @@ function isolatedHome(root: string): Record<string, string> {
   };
 }
 
-/** Runs jj in `cwd` with the test's own environment, failing on a non-zero exit. */
-async function jj(cwd: string, env: Record<string, string>, ...args: string[]): Promise<string> {
-  const child = Bun.spawn([jjProgram ?? "jj", ...args], {
+/** Runs `program` in `cwd` with the test's own environment, failing on a non-zero exit. */
+async function run(
+  program: string,
+  cwd: string,
+  env: Record<string, string>,
+  args: string[]
+): Promise<string> {
+  const child = Bun.spawn([program, ...args], {
     cwd,
     env,
     stdout: "pipe",
@@ -940,8 +946,20 @@ async function jj(cwd: string, env: Record<string, string>, ...args: string[]): 
     new Response(child.stderr).text(),
     child.exited,
   ]);
-  if (code !== 0) throw new Error(`jj ${args.join(" ")} exited ${code}:\n${stderr}`);
+  if (code !== 0) {
+    throw new Error(`${path.basename(program)} ${args.join(" ")} exited ${code}:\n${stderr}`);
+  }
   return stdout.trim();
+}
+
+/** Runs jj in `cwd` with the test's own environment, failing on a non-zero exit. */
+function jj(cwd: string, env: Record<string, string>, ...args: string[]): Promise<string> {
+  return run(jjProgram ?? "jj", cwd, env, args);
+}
+
+/** Runs PATH's git, the one a pane's `git commit` and `git push` run, as {@link jj} runs jj. */
+function git(cwd: string, env: Record<string, string>, ...args: string[]): Promise<string> {
+  return run("git", cwd, env, args);
 }
 
 test.skipIf(withoutJj)(
@@ -1055,6 +1073,100 @@ test.skipIf(withoutJj)(
         latestHandoff,
       })
     ).resolves.toEqual({ commit: fix });
+  },
+  60_000
+);
+
+// R4 of dispatch://INFRA-4036, in the pod's layout, which the row above does not build: the
+// workspace is a jj workspace of a colocated clone, and so a git worktree of it, and the round's
+// commit is made with `git commit` and pushed with `git push`, so jj has not seen it. The report's
+// read of `@-` (`STANDING`) snapshots the workspace, which imports git's HEAD, and that snapshot is
+// what filled a large workspace's pod; whatever makes it cheaper must leave it answering the
+// commit git made. The control shows jj still standing on the older commit before that read, so
+// the answer is the snapshot's import and not something jj already knew. A host whose jj makes no
+// git worktree fails the row saying so, rather than passing it on another layout.
+test.skipIf(withoutJj)(
+  "against a real jj workspace that is a git worktree, the implementer's report answers a commit made with git commit and pushed with git push",
+  async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "legion-handoff-worktree-"));
+    scratch.push(root);
+    const origin = path.join(root, "origin.git");
+    const seed = path.join(root, "seed");
+    const clone = path.join(root, "clone");
+    const workspace = path.join(root, "workspace");
+    const childEnv = isolatedHome(root);
+    // The fixture's environment writes no git identity, and `git commit` reads none of jj's.
+    const gitEnv = {
+      ...childEnv,
+      GIT_AUTHOR_NAME: versionControlIdentity.JJ_USER,
+      GIT_AUTHOR_EMAIL: versionControlIdentity.JJ_EMAIL,
+      GIT_COMMITTER_NAME: versionControlIdentity.JJ_USER,
+      GIT_COMMITTER_EMAIL: versionControlIdentity.JJ_EMAIL,
+    };
+    const paneEnv = { ...versionControlIdentity, LEGION_WORKSPACE: workspace, LEGION_ISSUE: ISSUE };
+
+    // A bare origin with one commit on `main`, its clone made colocated, and a jj workspace of
+    // that clone, as a pod's shared clone and its issue's workspace are.
+    await git(root, gitEnv, "init", "--bare", "--quiet", "--initial-branch=main", origin);
+    await git(root, gitEnv, "init", "--quiet", "--initial-branch=main", seed);
+    await writeFile(path.join(seed, "README.md"), "seed\n");
+    await git(seed, gitEnv, "add", "README.md");
+    await git(seed, gitEnv, "commit", "--quiet", "-m", "the base");
+    await git(seed, gitEnv, "push", "--quiet", origin, "main");
+    await git(root, gitEnv, "clone", "--quiet", origin, clone);
+    await jj(root, childEnv, "git", "init", "--colocate", clone);
+    await jj(root, childEnv, "workspace", "add", workspace, "-R", clone);
+
+    // git's own answer, not the `.git` file's text, which a newer git writes relative.
+    const cloneGit = await realpath(path.join(clone, ".git"));
+    const common = await git(workspace, gitEnv, "rev-parse", "--git-common-dir").then(
+      (answer) => realpath(path.resolve(workspace, answer)),
+      (error: unknown) => `no repository (${error instanceof Error ? error.message : error})`
+    );
+    if (common !== cloneGit) {
+      throw new Error(
+        `this host's jj made ${workspace} no git worktree of ${clone}, so the row cannot build the pod's layout: git there answers ${common} as its common directory, not ${cloneGit}`
+      );
+    }
+
+    /** The commit the workspace stands on, read without a snapshot. */
+    const standing = () =>
+      jj(
+        root,
+        childEnv,
+        "--ignore-working-copy",
+        "-R",
+        workspace,
+        "log",
+        "-r",
+        "@-",
+        "--no-graph",
+        "-T",
+        "commit_id"
+      );
+    const before = await standing();
+    expect(before).toMatch(/^[0-9a-f]{40}$/);
+
+    await writeFile(path.join(workspace, "main.py"), 'print("hi")\n');
+    await git(workspace, gitEnv, "add", "main.py");
+    await git(workspace, gitEnv, "commit", "--quiet", "-m", "implement: the change");
+    await git(workspace, gitEnv, "push", "--quiet", "origin", `HEAD:refs/heads/legion/${ISSUE}`);
+    const commit = await git(workspace, gitEnv, "rev-parse", "HEAD");
+
+    // The control: jj has not snapshotted since `git commit`, so it still stands on `before`.
+    expect(await standing()).toBe(before);
+
+    // The record names the commit git made, as the round writes it once the push succeeded.
+    const { latestHandoff } = fakeLatestHandoff(async () => ({ ...RECORD, body: body(commit) }));
+    await expect(
+      findHandoffReport({
+        phase: "implementing",
+        role: "implementer",
+        env: paneEnv,
+        jj: pathJj,
+        latestHandoff,
+      })
+    ).resolves.toEqual({ commit, handoffId: RECORD.id, handoffVersion: RECORD.version });
   },
   60_000
 );

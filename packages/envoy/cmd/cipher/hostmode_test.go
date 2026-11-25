@@ -13,6 +13,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -26,6 +27,7 @@ import (
 	"github.com/sjawhar/envoy/cipheraddr"
 	"github.com/sjawhar/envoy/internal/cipher/helper"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
+	"github.com/sjawhar/envoy/internal/cipher/record"
 )
 
 // TestBuildSignerSelectsMode covers the Signer abstraction's mode selection: file mode when
@@ -40,7 +42,7 @@ func TestBuildSignerSelectsMode(t *testing.T) {
 	isolateChain(t)
 	t.Setenv("AGENT_SECRETS_KEY_DIR", "")
 	t.Setenv("AGENT_SECRETS_HELPER_SOCK", "")
-	if _, _, err := buildSigner(); err == nil ||
+	if _, _, err := buildSigner(io.Discard); err == nil ||
 		!strings.Contains(err.Error(), "no broker identity for this process") ||
 		!strings.Contains(err.Error(), "AGENT_SECRETS_KEY_DIR") ||
 		!strings.Contains(err.Error(), "AGENT_SECRETS_HELPER_SOCK") {
@@ -51,7 +53,7 @@ func TestBuildSignerSelectsMode(t *testing.T) {
 	sock, _ := fakeHelper(t, helper.Response{OK: true, Proof: "eyJ.fake.proof"})
 	t.Setenv("AGENT_SECRETS_KEY_DIR", emptyDir)
 	t.Setenv("AGENT_SECRETS_HELPER_SOCK", sock)
-	_, signer, err := buildSigner()
+	_, signer, err := buildSigner(io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,13 +62,13 @@ func TestBuildSignerSelectsMode(t *testing.T) {
 	}
 
 	t.Setenv("AGENT_SECRETS_HELPER_SOCK", "/x/h.sock")
-	if _, _, err := buildSigner(); err == nil || !strings.Contains(err.Error(), "agent-secrets-helper at /x/h.sock") ||
+	if _, _, err := buildSigner(io.Discard); err == nil || !strings.Contains(err.Error(), "agent-secrets-helper at /x/h.sock") ||
 		strings.Contains(err.Error(), "no broker identity for this process") {
 		t.Fatalf("a named socket that is not there is a stopped helper, which stops the chain: %v", err)
 	}
 
 	t.Setenv("AGENT_SECRETS_KEY_DIR", newKeyDir(t))
-	id, signer, err := buildSigner()
+	id, signer, err := buildSigner(io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -106,14 +108,14 @@ func TestBuildSignerNamesTheEnrollmentErrorDiagnostic(t *testing.T) {
 	t.Setenv("AGENT_SECRETS_KEY_DIR", dir)
 	t.Setenv("AGENT_SECRETS_HELPER_SOCK", "")
 
-	if _, _, err := buildSigner(); err == nil || strings.Contains(err.Error(), "enrollment.error") {
+	if _, _, err := buildSigner(io.Discard); err == nil || strings.Contains(err.Error(), "enrollment.error") {
 		t.Fatalf("no enrollment.error file must not be mentioned: %v", err)
 	}
 
 	if err := os.WriteFile(filepath.Join(dir, "enrollment.error"), []byte("broker 503 DATABASE: postgres unreachable\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	_, _, err := buildSigner()
+	_, _, err := buildSigner(io.Discard)
 	if err == nil || !strings.Contains(err.Error(), "enrollment.error") || !strings.Contains(err.Error(), "postgres unreachable") {
 		t.Fatalf("a missing enrollment names the error file and its content: %v", err)
 	}
@@ -131,12 +133,12 @@ func TestBuildSignerFallsBackToTheRuntimeDirDefaults(t *testing.T) {
 
 	runtime := t.TempDir()
 	t.Setenv("XDG_RUNTIME_DIR", runtime)
-	if _, _, err := buildSigner(); err == nil || !strings.Contains(err.Error(), "no broker identity for this process") {
+	if _, _, err := buildSigner(io.Discard); err == nil || !strings.Contains(err.Error(), "no broker identity for this process") {
 		t.Fatalf("an empty runtime dir is no identity: %v", err)
 	}
 
 	copyKeyDir(t, newKeyDir(t), filepath.Join(runtime, "agent-secrets"))
-	id, signer, err := buildSigner()
+	id, signer, err := buildSigner(io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,7 +150,7 @@ func TestBuildSignerFallsBackToTheRuntimeDirDefaults(t *testing.T) {
 	t.Setenv("XDG_RUNTIME_DIR", hostRuntime)
 	sock := filepath.Join(hostRuntime, "agent-secrets", "helper.sock")
 	fakeHelperAt(t, sock, helper.Response{OK: true, Proof: "eyJ.fake.proof"})
-	_, signer, err = buildSigner()
+	_, signer, err = buildSigner(io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -293,23 +295,66 @@ func TestHelperSignerSignsRequestObjects(t *testing.T) {
 	sock, reqs := fakeHelper(t, helper.Response{OK: true, RequestObject: "eyJ.fake.request"})
 	signer := &helperSigner{sock: sock}
 	lifetime := 120
-	ro, err := signer.SignRequestObject(cipheraddr.New("https://secrets.test"), []string{"DEEL_API_KEY", "OTHER_KEY"}, "why", &lifetime)
+	ro, err := signer.SignRequestObject(cipheraddr.New("https://secrets.test"), []string{"DEEL_API_KEY", "OTHER_KEY"}, "why", &lifetime, nil)
 	if err != nil || ro != "eyJ.fake.request" {
 		t.Fatalf("sign-request: %q %v", ro, err)
 	}
-	select {
-	case req := <-reqs:
-		if req.Op != "sign-request" || !reflect.DeepEqual(req.Secrets, []string{"DEEL_API_KEY", "OTHER_KEY"}) || req.Reason != "why" || req.LifetimeSeconds == nil || *req.LifetimeSeconds != lifetime {
-			t.Fatalf("request sent to the helper: %+v", req)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("the fake never saw a request")
+	req, ok := received(t, reqs)
+	if !ok {
+		t.Fatalf("the fake never saw a request, %s before the test binary's deadline", waitMargin)
+	}
+	if req.Op != "sign-request" || !reflect.DeepEqual(req.Secrets, []string{"DEEL_API_KEY", "OTHER_KEY"}) || req.Reason != "why" || req.LifetimeSeconds == nil || *req.LifetimeSeconds != lifetime || req.Locations != nil {
+		t.Fatalf("request sent to the helper: %+v", req)
 	}
 
 	sock2, _ := fakeHelper(t, helper.Response{Code: helper.CodeNotASession, Error: "pid 5 is not inside a registered machine session"})
-	if _, err := (&helperSigner{sock: sock2}).SignRequestObject(cipheraddr.New("https://secrets.test"), []string{"DEEL_API_KEY"}, "why", nil); err == nil ||
+	if _, err := (&helperSigner{sock: sock2}).SignRequestObject(cipheraddr.New("https://secrets.test"), []string{"DEEL_API_KEY"}, "why", nil, nil); err == nil ||
 		!strings.Contains(err.Error(), helper.CodeNotASession) {
 		t.Fatalf("the helper's code reaches the caller: %v", err)
+	}
+}
+
+// TestHelperSignerSignsTheTargetAndRefusesAHelperThatDropsIt: SignRequestObject sends the
+// target's locations to the helper's sign-request op, and hands back the object the helper signed
+// when it carries them. A helper from before locations reads no such field and signs the object
+// without them, a request for the whole profile, which nothing the broker answers would show; the
+// signer refuses that object before anything is sent, naming the helper and --target.
+func TestHelperSignerSignsTheTargetAndRefusesAHelperThatDropsIt(t *testing.T) {
+	key, err := proof.NewKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	locations := []string{"https://github.com/acme-org/proofs", "https://github.com/acme-org/widgets"}
+	signed := func(locations []string) string {
+		t.Helper()
+		compact, err := record.Sign(key, "https://secrets.test", []record.AuthorizationDetail{
+			{Type: record.KindAgentSecret, Identifier: "GITHUB_READ", Actions: []string{"inject"}, Locations: locations},
+		}, "why", "", nil, time.Now())
+		if err != nil {
+			t.Fatal(err)
+		}
+		return compact
+	}
+
+	carried := signed(locations)
+	sock, reqs := fakeHelper(t, helper.Response{OK: true, RequestObject: carried})
+	ro, err := (&helperSigner{sock: sock}).SignRequestObject(cipheraddr.New("https://secrets.test"), []string{"GITHUB_READ"}, "why", nil, locations)
+	if err != nil || ro != carried {
+		t.Fatalf("sign-request of a target the helper signed: %v; want the helper's object back", err)
+	}
+	req, ok := received(t, reqs)
+	if !ok {
+		t.Fatalf("the fake never saw a request, %s before the test binary's deadline", waitMargin)
+	}
+	if req.Op != "sign-request" || !reflect.DeepEqual(req.Locations, locations) {
+		t.Fatalf("request sent to the helper: %+v; want sign-request with the locations %q", req, locations)
+	}
+
+	older, _ := fakeHelper(t, helper.Response{OK: true, RequestObject: signed(nil)})
+	_, err = (&helperSigner{sock: older}).SignRequestObject(cipheraddr.New("https://secrets.test"), []string{"GITHUB_READ"}, "why", nil, locations)
+	var notSent *refusedBeforeCall
+	if !errors.As(err, &notSent) || !strings.Contains(err.Error(), "agent-secrets-helper at "+older) || !strings.Contains(err.Error(), "without its --target") {
+		t.Fatalf("a helper that signed no target = %v; want a refusal before anything is sent, naming the helper and --target", err)
 	}
 }
 
@@ -322,13 +367,12 @@ func TestRegisterRefusesWithNoHelperSocket(t *testing.T) {
 	t.Setenv("XDG_RUNTIME_DIR", runtimeDir)
 	t.Setenv("AGENT_SECRETS_HELPER_SOCK", "")
 	var stdout, stderr bytes.Buffer
+	meter := startStallMeter(t)
 	start := time.Now()
 	code := cmdRegister(nil, &stdout, &stderr)
+	requireOnTime(t, meter, "register with no helper socket, which should wait for nothing", start, 0)
 	if code != exitUsageError {
 		t.Fatalf("register with no helper socket: exit %d, want %d; stderr %q", code, exitUsageError, stderr.String())
-	}
-	if elapsed := time.Since(start); elapsed > 2*time.Second {
-		t.Fatalf("register waited %s for a helper that is not there", elapsed)
 	}
 	sock := filepath.Join(runtimeDir, "agent-secrets", "helper.sock")
 	if msg := stderr.String(); !strings.Contains(msg, "AGENT_SECRETS_HELPER_SOCK is unset") || !strings.Contains(msg, sock) ||
@@ -537,9 +581,19 @@ func TestIdentity(t *testing.T) {
 				tc.setup(t, p)
 
 				var stdout, stderr bytes.Buffer
+				meter := startStallMeter(t)
 				start := time.Now()
 				code := cmdIdentity(nil, &stdout, &stderr)
-				elapsed := time.Since(start)
+				// A helper that never answers is given up on after about 2 s; nothing else may hold
+				// identity up. Each is timed against that, allowing for the time this process was
+				// held up (requireOnTime); a silent helper's 2 s is a floor no load can shorten.
+				if tc.slow {
+					if elapsed := requireOnTime(t, meter, "identity against a helper that never answers", start, 2*time.Second); elapsed < 1500*time.Millisecond {
+						t.Fatalf("a helper that never answers is given up on after about 2 s, took %s", elapsed)
+					}
+				} else {
+					requireOnTime(t, meter, "identity, which only a silent helper may hold up", start, 0)
+				}
 				if code != tc.exit {
 					t.Fatalf("exit %d, want %d (stderr %q)", code, tc.exit, stderr.String())
 				}
@@ -555,12 +609,6 @@ func TestIdentity(t *testing.T) {
 				}
 				if want == "" && stderr.Len() != 0 {
 					t.Fatalf("stderr %q, want nothing", stderr.String())
-				}
-				if tc.slow && (elapsed < 1500*time.Millisecond || elapsed > 4*time.Second) {
-					t.Fatalf("a helper that never answers is given up on after about 2 s, took %s", elapsed)
-				}
-				if !tc.slow && elapsed > 5*time.Second {
-					t.Fatalf("identity took %s; only a silent helper may hold it up", elapsed)
 				}
 			})
 		}

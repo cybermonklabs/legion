@@ -47,6 +47,7 @@ import {
   headingCount,
   waitingOrder,
 } from "./decisions-parts";
+import { entryStanding } from "./entry-standing";
 
 /**
  * The Decisions filter's four parts, read from the tree, the decision nodes of its decisions
@@ -443,6 +444,7 @@ test("a decision the reader asked to change leaves the review list and carries t
       at: "2026-11-12T09:00:00Z",
       body: "Change asked, please.",
       by: READER_ACTOR,
+      editedAt: null,
       id: "c-new",
       path: `/issues/${KEY}/comments/c-new`,
     },
@@ -464,6 +466,63 @@ test("a decision the reader asked to change leaves the review list and carries t
     )
   ).toBe(false);
   expect(waitingOrder(parts)).toEqual([D("stale"), D("waits")]);
+});
+
+// R2, R3: a decision the reader asked to change reads "Changed by" with the reader's own name, as
+// the row's margin and the panel's facts draw how an entry stands (`entryStanding`), where it read
+// "Change requested"; and it stands among the reader's own decisions, since a statement rests on
+// it.
+test("a decision the reader asked to change reads Changed by with the reader's name", () => {
+  const parts = partsOf(
+    [statement("s1"), decisionNode("asked")],
+    [decision("asked", { decision: { links: [shaped(specRef("s1"))] } })],
+    [],
+    undefined,
+    [changeComment("c-asked", "asked", "2026-11-12T09:00:00Z", "Change asked, please.")]
+  );
+
+  expect(idsOf(parts).yours).toEqual([D("asked")]);
+  const [asked] = parts.yours;
+  if (asked === undefined) throw new Error("the changed decision stands in none of her parts");
+  expect(
+    entryStanding(asked, (actor) => (actor.id === READER ? "Alice" : actor.id)),
+    "the decision the reader asked to change does not read Changed by with her name"
+  ).toEqual({ token: "change_requested", words: "Changed by Alice" });
+});
+
+// R2: the reader's own part, and what others decided, hold an agent decision a person asked to
+// change only where a statement rests on it, as they hold a kept one. One no statement rests on
+// stands at the foot, whoever asked, and still carries the Change and says it was asked.
+test("a changed decision no statement rests on stands at the foot", () => {
+  const bob = { id: "bob", kind: "user" as const };
+  const parts = partsOf(
+    [statement("s1"), decisionNode("tied"), decisionNode("loose"), decisionNode("bobs")],
+    [
+      decision("tied", { decision: { links: [shaped(specRef("s1"))] } }),
+      decision("loose"),
+      decision("bobs"),
+    ],
+    [],
+    undefined,
+    [
+      changeComment("c-tied", "tied", "2026-11-12T09:00:00Z", "Change the tied one."),
+      changeComment("c-loose", "loose", "2026-11-13T09:00:00Z", "Change the loose one."),
+      changeComment("c-bobs", "bobs", "2026-11-14T09:00:00Z", "Change Bob's one.", bob),
+    ]
+  );
+
+  expect(idsOf(parts)).toMatchObject({
+    agents: [D("loose"), D("bobs")],
+    others: [],
+    review: [],
+    yours: [D("tied")],
+  });
+  expect(parts.agents.map((entry) => [entry.change?.id, entry.change?.by, entry.standing])).toEqual(
+    [
+      ["c-loose", READER_ACTOR, "change_requested"],
+      ["c-bobs", bob, "change_requested"],
+    ]
+  );
 });
 
 // R2: a declined ask reads as a question the person declined, never as an answer: the entry
@@ -738,10 +797,16 @@ test("a parent's line and a statement's line are cut from the node's first block
   );
   const entry = (block: string) => parts.review.find((one) => one.node.id === D(block));
 
-  expect(entry("headed")?.parent).toEqual({ id: "q1", line: "Where the box sits", type: "ask" });
+  expect(entry("headed")?.parent).toEqual({
+    id: "q1",
+    line: "Where the box sits",
+    reference: `dispatch://${KEY}/ask/q1`,
+    type: "ask",
+  });
   expect(entry("wordless")?.parent).toEqual({
     id: "q2",
     line: NODE_TYPE_NAMES.ask,
+    reference: `dispatch://${KEY}/ask/q2`,
     type: "ask",
   });
   expect(entry("headed")?.shapes.map((one) => one.line)).toEqual([

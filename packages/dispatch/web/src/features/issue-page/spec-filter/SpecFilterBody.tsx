@@ -44,6 +44,7 @@ import { agentRoleWord } from "../agent-role";
 import { CutWords } from "../CutWords";
 import { decisionNodes } from "../decision-nodes/decision-nodes";
 import { conversationPath } from "../decisions-filter/decisions-parts";
+import { standingParts } from "../decisions-filter/entry-standing";
 import { useSetFocusedNode } from "../focused-node";
 import { IssueThreeThings } from "../IssueThreeThings";
 import { focusedNodeOf, type OutlineRequest, useReleaseFocus } from "../IssueTree";
@@ -65,7 +66,6 @@ import {
   EMPTY_STATE_LINES,
   GLYPH_TOKENS,
   NODE_TYPE_NAMES,
-  nodeStateWord,
   SPEC_WORDS,
   STATE_LINES,
   sentenceCase,
@@ -1130,6 +1130,11 @@ function DecisionCell({
   const words = useRef<HTMLDivElement | null>(null);
   const press = useOnScreenUnderHeads(words, focused);
   const marks = useDecisionMarks(decision);
+  const agentText = useAgentText();
+  // How the decision stands, with the person its state names: its keeper after "Kept by", and
+  // whoever asked to change it after "Changed by" (`standingParts`, R2, R3).
+  const standing =
+    decision?.state === undefined ? undefined : standingParts(decision.state, decision);
   const rule = decision === undefined ? pageHairBorder : "border-page-decision";
   const cap = decision === undefined ? pageHairBg : pageKindBullet.decision;
   // The question the words answer, unless the statements hang under it already: there the
@@ -1244,7 +1249,21 @@ function DecisionCell({
                   part:
                     decision.state === undefined ? null : (
                       <span data-node-state={decision.state} {...pageChrome}>
-                        {nodeStateWord(decision.state)}
+                        {standing?.word}
+                        {standing?.person === undefined ? null : (
+                          <>
+                            {" "}
+                            <span
+                              data-changed-by={
+                                decision.state === "change_requested" ? "" : undefined
+                              }
+                              data-kept-by={decision.state === "kept" ? "" : undefined}
+                              {...authorText}
+                            >
+                              {agentText.author(standing.person)}
+                            </span>
+                          </>
+                        )}
                       </span>
                     ),
                 },

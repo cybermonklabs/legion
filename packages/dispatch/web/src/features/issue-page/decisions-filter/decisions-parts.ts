@@ -40,9 +40,10 @@ import { type DecisionState, isReader, NODE_TYPE_NAMES } from "../page-words";
  *    the third part "his own decisions", and Dispatch has several readers: another person's
  *    answer is no decision of the reader's, and it is still an ask the filter draws (R2:
  *    "Decisions the asks and the decisions"), so it stands under a heading that says whose it is.
- * 5. **The agents' decisions that no statement rests on**, folded at the foot: an agent
- *    decision no `shaped` tie names a statement for, and a replaced one, which no statement
- *    stands on any longer (R5: "A replaced decision draws no line").
+ * 5. **The agents' decisions that no statement rests on**, at the foot and unfolded, which the
+ *    page folds only when the reader folds them: an agent decision no `shaped` tie names a
+ *    statement for, whether a person kept it, asked to change it or neither, and a replaced one,
+ *    which no statement stands on any longer (R5: "A replaced decision draws no line").
  *
  * Before the five parts stands the node the address names where it is neither an ask nor a
  * decision - a comment, a statement, a check: the address outranks the filter (`presets.ts`),
@@ -124,7 +125,9 @@ interface EntryBase {
   /** The node, as the whole tree holds it at the place it is edited. */
   readonly node: TreeNode;
   /** The node's parent in the conversation as one line on its row (R2), since no row of this
-   *  filter stands under another; absent for a node that hangs under the issue itself. */
+   *  filter stands under another, with its address and a comment's or a message's marks, as a
+   *  filter's parent line holds them (`presets.ts`); absent for a node that hangs under the
+   *  issue itself. */
   readonly parent?: ParentLine;
   /** The address of the node in the conversation, which the entry links to. */
   readonly path?: string;
@@ -147,6 +150,10 @@ export interface DecisionChange {
   /** What the person wrote, as stored. */
   readonly body: string;
   readonly by: Actor;
+  /** When the person last edited what they wrote (`Comment.edited_at`), which the row says
+   *  ` · edited` after the words for (`EditedMark`, INFRA-1523, R2); null for a change nobody
+   *  edited. */
+  readonly editedAt: string | null;
   /** The comment's own id, which is its node's in the conversation. */
   readonly id: string;
   /** The comment's address in the conversation. */
@@ -298,7 +305,7 @@ export function decisionsParts({
       const own = rows.get(node.reference ?? "");
       const shapes = own?.kind === "person" ? shapesOf(own, nodeIdOf, placed) : [];
       const closing = closings.get(askId);
-      // `question` is the ask's own `state === "open"` (`tree-drafts.ts`'s `addAsks`).
+      // `question` is the ask's own `state === "open"` (`tree-read/tree-nodes.ts`' `draftAsk`).
       if (node.question) {
         open.push({ ...base, ...timeOf(node.at), kind: "ask", shapes });
         continue;
@@ -344,6 +351,7 @@ export function decisionsParts({
               at: asked.created_at,
               body: asked.body,
               by: asked.author,
+              editedAt: asked.edited_at,
               id: asked.id,
               path: buildIssuePath({ id: asked.id, key: issueKey, kind: "comment" }),
             },
@@ -355,13 +363,14 @@ export function decisionsParts({
     };
     if (row.replaced) {
       agents.push(entry);
-    } else if (asked !== undefined) {
-      // The reader asked for a change: the decision waits on its agent, and stands with the
-      // decisions of whoever asked, by the time they did.
+    } else if (asked !== undefined && shapes.length > 0) {
+      // A person asked for a change of a decision a statement rests on: it waits on its agent,
+      // and stands with the decisions of whoever asked, by the time they did.
       decidedBy(asked.author).push({ ...entry, ...timeOf(asked.created_at) });
-    } else if (inReviewList(row, isStatement)) {
+    } else if (inReviewList(row, isStatement, asked !== undefined)) {
       review.push(entry);
     } else if (shapes.length === 0) {
+      // No statement rests on it, whether a person kept it, asked to change it or neither.
       agents.push(entry);
     } else {
       // An agent's decision a statement rests on that does not wait: a person kept it as it
@@ -394,8 +403,9 @@ interface Placement {
 }
 
 /** Every node of the tree by its id, in reading order, at its first placement, which is where it
- *  is edited (`TreeNode.transcluded`), with the parent it hangs under there. The issue itself is
- *  no parent a row names: the page is the issue. */
+ *  is edited (`TreeNode.transcluded`), with the parent it hangs under there: its one line, its
+ *  address and its author's corrections of it, as the outline's filters give a row's parent
+ *  (`presets.ts`). The issue itself is no parent a row names: the page is the issue. */
 export function placements(root: TreeNode): ReadonlyMap<string, Placement> {
   const placed = new Map<string, Placement>();
   const walk = (node: TreeNode, above: TreeNode | undefined): void => {
@@ -408,6 +418,14 @@ export function placements(root: TreeNode): ReadonlyMap<string, Placement> {
               parent: {
                 id: above.id,
                 line: lineOf(above),
+                // The parent's own address, which makes a parent's line with words the link a
+                // reader follows to it (R18); a wordless parent is its kind word, with no link.
+                ...(above.reference === undefined ? {} : { reference: above.reference }),
+                // A comment's or a message's marks, which its child's row draws with the line
+                // (INFRA-1523, R2 and R3).
+                ...(above.deletedAt === undefined ? {} : { deletedAt: above.deletedAt }),
+                ...(above.deletedBy === undefined ? {} : { deletedBy: above.deletedBy }),
+                ...(above.editedAt === undefined ? {} : { editedAt: above.editedAt }),
                 type: above.type,
                 // The parent's marks, which its line draws.
                 ...marksOf(above),

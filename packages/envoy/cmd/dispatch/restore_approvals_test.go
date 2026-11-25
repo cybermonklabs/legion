@@ -33,6 +33,13 @@ import (
 // restoreSession is the agent's session whose writes move the answered asks out of the specs.
 const restoreSession = "ses_restore_approvals_agent"
 
+// copyBlock is the block id of the answered ask of issue C's questions.md and of its copy in spec
+// C, and copyQuestion the question both ask.
+const (
+	copyBlock    = "q-c-shelf"
+	copyQuestion = "Which shelf keeps the census?"
+)
+
 // restoreAsk is an ask block of the fixture: id, question and two options.
 func restoreAsk(id, question string) string {
 	return ":::ask{#" + id + " urgency=\"med\" multiple=\"false\"}\n" + question + "\n\n- First: The first way.\n- Second: The second way.\n:::\n"
@@ -244,8 +251,9 @@ func keptBlockOf(t *testing.T, ctx context.Context, database *pgx.Conn, document
 // node of its own ask, or of the ask it is a copy of (keptBlockOf). A block that has no ask row and
 // is no copy of an ask holds none of the eight server-owned attributes. A block that differs fails
 // the test, which prints the block. It answers the answer_state each block's ask's node holds,
-// "" for a block with no ask, by block id.
-func requireEveryAskBlockKept(t *testing.T, ctx context.Context, database *pgx.Conn, what, document, markdown string) map[string]string {
+// "" for a block with no ask, by block id, and each block it read as a copy of an ask, with the
+// ask and the address of that ask's document, by block id.
+func requireEveryAskBlockKept(t *testing.T, ctx context.Context, database *pgx.Conn, what, document, markdown string) (map[string]string, map[string]keptBlock) {
 	t.Helper()
 	tree, err := pmdoc.ParseRendering(markdown)
 	if err != nil {
@@ -263,10 +271,13 @@ func requireEveryAskBlockKept(t *testing.T, ctx context.Context, database *pgx.C
 		}
 		return true
 	})
-	states := map[string]string{}
+	states, copies := map[string]string{}, map[string]keptBlock{}
 	for _, block := range blocks {
 		if kept, asked := keptBlockOf(t, ctx, database, document, block); asked {
 			states[block] = requireKeptForm(t, ctx, database, what, markdown, kept)
+			if kept.copied != "" {
+				copies[block] = kept
+			}
 			continue
 		}
 		states[block] = ""
@@ -282,7 +293,7 @@ func requireEveryAskBlockKept(t *testing.T, ctx context.Context, database *pgx.C
 				what, block, strings.Join(held, " "), askBlockText(markdown, block))
 		}
 	}
-	return states
+	return states, copies
 }
 
 // The restore says what it does to the approval of each document it changes, and carries or
@@ -305,7 +316,13 @@ func requireEveryAskBlockKept(t *testing.T, ctx context.Context, database *pgx.C
 //   - issue B: a spec with no `## Decisions` part; the restore adds the heading, writes the spec
 //     alone, and that version still reads approved.
 //   - issue C: a person approved the spec after its ask left, so the approved bytes never held the
-//     ask; the restore carries.
+//     ask; the restore carries. The approved spec holds a copy of the answered ask of the issue's
+//     questions.md (copyBlock), which no row names, so every version the restore wrote of the spec
+//     holds that copy, and its block keeps copied_from naming that ask and copied_from_document
+//     naming questions.md beside the form R10 keeps from that ask's node. Once this build's
+//     settlement of the spec has claimed the copy (its copied_from tuple), requireEveryAskBlockKept
+//     reads the block as that copy, and the versions the restore wrote hold a copy of an answered
+//     ask, so the copy's arm of the form is read too.
 //   - issue D: the colliding ask of each shape, whose block id a callout of the spec holds; each
 //     takes a new id, the approval carries, and no superseded approval is reported.
 //   - issue E: an ask of the second shape whose question an agent edited in the decisions.md after
@@ -380,12 +397,35 @@ func TestTheRestoreCarriesOrSupersedesTheApprovalOfBothDocuments(t *testing.T) {
 		"The older build writes it. This shapes dispatch://"+issueB+"/spec#b-r-b. Decided in dispatch://"+issueB+"/ask/"+blockAskOf(t, previous, issueB, "q-b")+".\n")
 	settledDocument(t, ctx, previous, database, decisionsB)
 
-	// Issue C: approved after its ask left.
+	// Issue C: approved after its ask left. Before the approval an agent puts into spec C a copy of
+	// the answered ask of questions.md - the same id, question, options and urgency - which the base
+	// release settles as a copy of that ask, as seed-decisions.sh's copies.md is settled: no row
+	// names it, and its block holds copied_from naming that ask and copied_from_document naming
+	// questions.md. The restore writes a version of spec C, so that version holds the copy.
 	issueC, specC := createCensusIssue(t, previous, "RST", "Approved after the move", "# Approved after the move\n\n"+restoreAsk("q-c", "Which census runs first?"))
 	answerAsk(t, previous, blockAskOf(t, previous, issueC, "q-c"), "First", "The store census.")
+	questionsC := agentUpload(t, previous, issueC, "questions.md", "# Questions\n\n"+restoreAsk(copyBlock, copyQuestion))
+	copiedAsk := askOfBlock(t, ctx, database, questionsC, copyBlock)
+	answerAsk(t, previous, copiedAsk, "Second", "The second shelf.")
+	settledDocument(t, ctx, previous, database, questionsC)
 	agentEdits(t, previous, specC, remove("q-c"))
+	agentEdits(t, previous, specC, map[string]string{"op": "insert", "after": "end", "markdown": strings.TrimSuffix(restoreAsk(copyBlock, copyQuestion), "\n")})
 	agentEdits(t, previous, specC, pointer(issueC))
 	approvedC := approveAndCapture(t, ctx, previous, database, issueC, specC, "spec C")
+	var copyRows int
+	if err := database.QueryRow(ctx, `select count(*) from asks where block_artifact_id = $1::uuid and block_id = $2`, specC, copyBlock).Scan(&copyRows); err != nil {
+		t.Fatalf("read the ask rows of the block %s of spec C: %v", copyBlock, err)
+	}
+	if copied := askBlockText(approvedC.markdown, copyBlock); copyRows != 0 || !strings.Contains(copied, ` copied_from="`+copiedAsk+`"`) ||
+		!strings.Contains(copied, ` copied_from_document="`) || !strings.Contains(copied, ` state="answered"`) {
+		t.Fatalf("the base release settled the block %s of spec C under %d ask rows and wrote it as:\n%s\nwant a copy no row names, answered, naming the ask %s of questions.md and its document",
+			copyBlock, copyRows, copied, copiedAsk)
+	}
+	var questionsSlug string
+	if err := database.QueryRow(ctx, `select slug from artifacts where id = $1::uuid`, questionsC).Scan(&questionsSlug); err != nil {
+		t.Fatalf("read the slug of questions.md of %s: %v", issueC, err)
+	}
+	copySource := keptBlock{block: copyBlock, ask: copiedAsk, copied: "dispatch://" + issueC + "/artifact/" + questionsSlug}
 
 	// Issue D: the colliding ask of each shape.
 	issueD, specD := createCensusIssue(t, previous, "RST", "Collisions", "# Collisions\n\n"+restoreAsk("q-dmain", "Which line names a move?"))
@@ -548,26 +588,72 @@ func TestTheRestoreCarriesOrSupersedesTheApprovalOfBothDocuments(t *testing.T) {
 		Env: map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_HOLD_DECISIONS_STEP": "1"}})
 	current.waitHealthy(t)
 
+	// The copy in spec C, read from the ask the fixture made it of: every version the restore wrote
+	// of spec C holds the block copyBlock with copied_from naming that ask, copied_from_document
+	// naming questions.md, and the rest of the form R10 keeps as that ask's node gives it.
+	versionMarkdown := func(document string, number int) string {
+		t.Helper()
+		var version struct {
+			Markdown string `json:"markdown"`
+		}
+		readJSON(t, current, fmt.Sprintf("/api/v1/artifacts/%s/versions/%d", document, number), &version)
+		return version.Markdown
+	}
+	for number := beforeRestore[specC] + 1; number <= afterRestore[specC]; number++ {
+		requireKeptForm(t, ctx, database, fmt.Sprintf("the copy %s in version %d of spec C, which the restore wrote", copyBlock, number),
+			versionMarkdown(specC, number), copySource)
+	}
+	// This build's settlement of spec C claims the copy: it states the copied_from tuple of the
+	// block's node, which keptBlockOf reads a copy by. The restore's write left spec C owing a
+	// settlement, which the load of its room runs.
+	settledOnTheNextLoad(t, ctx, current, database, specC, copyQuestion)
+	for deadline := time.Now().Add(30 * time.Second); ; time.Sleep(200 * time.Millisecond) {
+		var claimed bool
+		if err := database.QueryRow(ctx, `
+			select exists (select 1 from document_blocks d
+				join graph_tuples t on t.from_kind = d.node_kind and t.from_id = d.node_address
+				where d.artifact_id = $1::uuid and d.block_id = $2 and t.kind = 'copied_from' and t.to_kind = 'ask' and t.to_id = $3 and t.asserted)
+		`, specC, copyBlock, copiedAsk).Scan(&claimed); err != nil {
+			t.Fatalf("read the copied_from of the block %s of spec C: %v", copyBlock, err)
+		}
+		if claimed {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no settlement of this build stated the copied_from of the block %s of spec C to the ask %s within 30s of the load of its room", copyBlock, copiedAsk)
+		}
+	}
+
 	// Every ask block of every version the restore wrote, of both documents and in both shapes,
 	// holds the form R10 keeps, each value equal to its ask's node; and the versions hold an ask of
-	// each answer state, so each arm of the form is read.
+	// each answer state and a copy of an answered ask, so each arm of the form is read.
 	keptStates := map[string]bool{}
+	answeredCopies := 0
 	for _, document := range restored {
 		if document.written && afterRestore[document.id] == beforeRestore[document.id] {
 			t.Errorf("the restore wrote no version of %s, which still stands at version %d", document.name, beforeRestore[document.id])
 		}
 		for number := beforeRestore[document.id] + 1; number <= afterRestore[document.id]; number++ {
-			var version struct {
-				Markdown string `json:"markdown"`
-			}
-			readJSON(t, current, fmt.Sprintf("/api/v1/artifacts/%s/versions/%d", document.id, number), &version)
+			markdown := versionMarkdown(document.id, number)
 			what := fmt.Sprintf("version %d of %s, which the restore wrote", number, document.name)
-			states := requireEveryAskBlockKept(t, ctx, database, what, document.id, version.Markdown)
+			states, copies := requireEveryAskBlockKept(t, ctx, database, what, document.id, markdown)
 			for _, state := range states {
 				keptStates[state] = true
 			}
-			t.Logf("%s: the answer state of the ask of each of its ask blocks: %v", what, states)
+			for block := range copies {
+				if states[block] == asks.StateAnswered {
+					answeredCopies++
+				}
+			}
+			if read, copied := copies[copyBlock]; document.id == specC && (!copied || read != copySource) {
+				t.Errorf("%s: its block %s reads as the copy %+v (a copy: %t), want the copy %+v of the ask of questions.md:\n%s",
+					what, copyBlock, read, copied, copySource, askBlockText(markdown, copyBlock))
+			}
+			t.Logf("%s: the answer state of the ask of each of its ask blocks: %v, and the copies among them: %v", what, states, copies)
 		}
+	}
+	if answeredCopies == 0 {
+		t.Errorf("no ask block of a version the restore wrote reads as a copy of an answered ask, so the form R10 keeps for a copy is never read")
 	}
 	for _, state := range []string{asks.StateAnswered, asks.StateResolved, asks.StateOpen} {
 		if !keptStates[state] {

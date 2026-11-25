@@ -1,6 +1,6 @@
 kind: Changed
 body: |-
-    The plugin declares daemon API contract 216, whose design steps are `criteria` and `spec`.
+    The plugin declares daemon API contract 233, whose design steps are `criteria` and `spec`.
 time: 2026-11-17T17:20:07.000000000Z
 custom:
     Issue: pr4173

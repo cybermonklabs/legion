@@ -14,16 +14,20 @@ import { whoAmIQuery } from "../../api/queries";
 import type { Artifact } from "../../api/types";
 import { textMutedOnCanvas } from "../../theme/classes";
 import { isViewer } from "../refs/actor";
+import { EditedMark } from "../refs/PostBody";
+import { postDeletion } from "../refs/post-marks";
 import { EVENT_FRESH } from "../refs/reference-target";
 import { buildIssuePath } from "../refs/routes";
 import { focusOnDocument } from "../shell/roving";
 import { useMediaQuery } from "../shell/useDialog";
 import { ChangeDraftsProvider } from "./DecisionActions";
+import { standingParts } from "./decisions-filter/entry-standing";
 import { type FocusedNode, useSetFocusedNode } from "./focused-node";
 import { bringOnScreen, FOOT_HEIGHT_PROPERTY, IDENTITY_HEIGHT_PROPERTY } from "./identity-block";
 import { pathToTarget } from "./issue-address";
 import { drawnLine, firstLineOf, lineWords, type TreeNode } from "./issue-tree";
 import { DETAILS_ATTRIBUTE } from "./margin-slot";
+import { DeletedLine } from "./NodeRow";
 import { NodeStatesProvider } from "./node-states/NodeMarks";
 import { marksOf, statesByReference } from "./node-states/node-states";
 import { SettleIssueProvider } from "./node-states/settle-write";
@@ -32,7 +36,7 @@ import { useFocusBranch, useTakeOutlineRequest } from "./outline-request";
 import { threadMarks } from "./outline-thread-read";
 import { conversationItem, useOutlineWriter } from "./outline-writer";
 import { authorText, pageChrome } from "./page-structure";
-import { CONTROL_LABELS, NODE_TYPE_NAMES, nodeStateWord } from "./page-words";
+import { CONTROL_LABELS, NODE_TYPE_NAMES } from "./page-words";
 import { type Press, trackPress, usePressFocus } from "./press-focus";
 import { FAILED_READ_RETRY, FailedReadLine } from "./slots/failed-read-line";
 import { CYCLE_STATES, EVERYTHING, TreeRows } from "./TreeRows";
@@ -1212,7 +1216,7 @@ export function IssueTree({
               type="button"
               {...authorText}
             >
-              {crumbName(above, root.id)}
+              <CrumbLine issueId={root.id} node={above} />
             </button>
           ))}
           <span {...pageChrome}>/</span>
@@ -1293,6 +1297,25 @@ function crumbName(node: TreeNode, issueId: string): string {
   if (node.id === issueId) return node.id;
   const first = firstLineOf(lineWords(node));
   return first.line === "" ? NODE_TYPE_NAMES[node.type] : drawnLine(first);
+}
+
+/**
+ * What a crumb above a zoom draws for `node`: its name (`crumbName`), with the marks of a post
+ * its author corrected, since a crumb draws a node's one line where its own row is not drawn, as
+ * a filter's parent line does (`NodeRow.tsx`'s `ParentLink`, INFRA-1523 R2 and R3). A deleted
+ * comment or message is drawn as its deleted line, from the delete (`DeletedLine`) and never from
+ * the node's text, which names the actor as no registry knows it and the time as stored; an
+ * edited one says ` · edited` after its line (`EditedMark`).
+ */
+function CrumbLine({ issueId, node }: { issueId: string; node: TreeNode }): ReactNode {
+  const deleted = postDeletion({ deleted_at: node.deletedAt, deleted_by: node.deletedBy });
+  if (deleted !== null) return <DeletedLine deleted={deleted} />;
+  return (
+    <>
+      {crumbName(node, issueId)}
+      <EditedMark at={node.editedAt} marks={pageChrome} />
+    </>
+  );
 }
 
 /**
@@ -1431,17 +1454,21 @@ function landingParent(
  *  item it is, its own address and its state, and its own first line as its title, cut from the
  *  words every one-line drawing of a node is cut from (`lineWords`). A node with no words is
  *  named by the page's word for its kind (`NODE_TYPE_NAMES`), never by its id, which is no name
- *  a reader reads. */
+ *  a reader reads. Its state is the standing word: a decision reads "Kept by", or "Changed by"
+ *  where the person whose Change it waits on is known, and `stateBy` is that person or its
+ *  keeper, whom the panel names after the word (`standingParts`, R2, R3). */
 export function focusedNodeOf(node: TreeNode): FocusedNode {
   const item = conversationItem(node);
   const line = firstLineOf(lineWords(node)).line;
+  const standing = node.state === undefined ? undefined : standingParts(node.state, node);
   return {
     ...(node.author === undefined ? {} : { author: node.author }),
     id: node.id,
     ...(item === undefined ? {} : { item }),
     ...marksOf(node),
     ...(node.reference === undefined ? {} : { reference: node.reference }),
-    ...(node.state === undefined ? {} : { state: nodeStateWord(node.state) }),
+    ...(standing === undefined ? {} : { state: standing.word }),
+    ...(standing?.person === undefined ? {} : { stateBy: standing.person }),
     title: line === "" ? NODE_TYPE_NAMES[node.type] : line,
     type: node.type,
   };

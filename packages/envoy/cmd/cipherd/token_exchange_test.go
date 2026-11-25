@@ -37,7 +37,9 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/cipherclient"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 const (
@@ -254,7 +256,8 @@ func TestTheBinaryExchangesAPodsTokenIntrospectsItAndRenewsIt(t *testing.T) {
 	t.Run("a lapsed token is renewed by the same standing pod token", func(t *testing.T) {
 		// Its own broker run, on a schema of its own, started with an access-token lifetime of a
 		// few seconds: the proof is that the first token lapses, not that the test waits.
-		renewalBroker := startBroker(t, brokerOptions{Env: exchangeEnv(t, storetest.URL(t), cluster, github, shortAccessSeconds)})
+		renewalDB := storetest.URL(t)
+		renewalBroker := startBroker(t, brokerOptions{Env: exchangeEnv(t, renewalDB, cluster, github, shortAccessSeconds)})
 		renewalBroker.Await(t, "token exchange")
 		renewalAddr := renewalBroker.Addr
 		renewal := newLiveBroker(renewalAddr, key)
@@ -267,12 +270,31 @@ func TestTheBinaryExchangesAPodsTokenIntrospectsItAndRenewsIt(t *testing.T) {
 			t.Fatalf("the renewing role's first exchange = %d %v, want 200 with an access token", status, body)
 		}
 
-		time.Sleep((shortAccessSeconds + 1) * time.Second)
-		status, body = renewal.introspect(t, first, apiToken)
-		if status != http.StatusOK || body["active"] != false {
-			t.Fatalf("introspection of the first token %ds after it was minted = %d %v, want 200 with active false: this broker was started with a %ds access-token lifetime, past which its token is not live",
-				shortAccessSeconds+1, status, body, shortAccessSeconds)
+		// The lifetime the broker stamped on the first token, read from the one row it stored
+		// an access token in: the expiry it wrote against the moment the exchange request was
+		// made (the stored request's requestedAt), both on the broker's clock. The stamp is the
+		// configured lifetime plus the milliseconds the exchange took between those two moments,
+		// so it is read to the whole second.
+		var tokens int
+		var stamped float64
+		if err := connectToBroker(t, renewalDB).QueryRow(t.Context(), `select count(*), coalesce(max(extract(epoch from expires_at - (request->>'requestedAt')::timestamptz)), 0)::float8
+			from oauth_access_tokens`).Scan(&tokens, &stamped); err != nil {
+			t.Fatalf("read the first token's stored lifetime: %v", err)
 		}
+		if lifetime := time.Duration(stamped * float64(time.Second)); tokens != 1 || lifetime.Truncate(time.Second) != shortAccessSeconds*time.Second {
+			t.Fatalf("the broker stored %d access tokens, the first stamped to live %s from its request; want one, stamped with the %ds access-token lifetime this broker was started with", tokens, lifetime, shortAccessSeconds)
+		}
+
+		// The first token lapses at this broker's own access-token lifetime, which it was
+		// started with: the row waits for the introspection that says so. Each introspection
+		// spends the listed caller's address bucket, so it is asked every tenth of a second.
+		testwait.UntilPolling(t, 100*time.Millisecond, "the first access token to lapse", func() (map[string]any, bool) {
+			status, body := renewal.introspect(t, first, apiToken)
+			if status != http.StatusOK {
+				t.Fatalf("introspection of the first token = %d %v, want 200", status, body)
+			}
+			return body, body["active"] == false
+		})
 
 		status, body = renewal.exchange(t, exchangeForm(podToken, renewalSession))
 		second, _ := body["access_token"].(string)
@@ -732,6 +754,96 @@ func TestTheBinaryExchangesAReadEntrysPodTokenForOneThatOnlyReads(t *testing.T) 
 		status, body := live.exchange(t, with(form, "scope", oauthwire.ScopeRead))
 		if status != http.StatusBadRequest || body["error"] != "invalid_scope" || body["access_token"] != nil {
 			t.Fatalf("an exchange naming the scope %s = %d %v, want 400 invalid_scope and no access token: the exchange client is registered for %s alone, and the read entry grants read without being asked", oauthwire.ScopeRead, status, body, oauthwire.Scope)
+		}
+	})
+}
+
+// TestTheBinaryExchangesAPersonlessAccountEntrysPodToken is the live proof of an account entry
+// that names no person and no project (<service account>===<session>), on the real binary and a
+// fresh schema: the broker boots with it beside two entries naming a person, a pod of the account
+// presenting its projected token with a DPoP proof of its own key and no client credential is
+// answered a token, and the listed API account reads that token back as the account's own: the
+// project scope named, the account as its service, the session the entry fixes, no person, no
+// project and no scope, and this test's own key. That very answer is a session's credential to
+// the rule every resource server reads (ciphertoken.SessionCaller), so the verifier admits what
+// the broker mints. The same pod naming a project is refused, as under any entry naming none, and
+// a broker whose entry names a project and no person refuses to start, naming the rule.
+func TestTheBinaryExchangesAPersonlessAccountEntrysPodToken(t *testing.T) {
+	const (
+		personlessAccount = "system:serviceaccount:example-ns:example-public"
+		personlessSession = "example-public-session"
+		personlessPodUID  = "pod-uid-public"
+	)
+	databaseURL := storetest.URL(t)
+	cluster, github := oidctest.New(t), oidctest.New(t)
+	clusterKey := cluster.PublishKey(t, "cluster-key")
+	github.PublishKey(t, "github-key")
+	key := proofKey(t)
+	jkt, err := proof.Thumbprint(&key.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	apiToken := accountToken(t, cluster, clusterKey, apiAccount)
+	binary := buildBroker(t)
+	broker := startBroker(t, brokerOptions{Binary: binary, Env: append(exchangeEnv(t, databaseURL, cluster, github, longAccessSeconds),
+		"BROKER_EXCHANGE_ACCOUNTS="+podAccount+"="+project+"="+person+" "+listedAccount+"=OTHER=mallory@example.com "+
+			personlessAccount+"==="+personlessSession)})
+	broker.AwaitRecord(t, "token exchange", map[string]any{"state": "on", "accounts": 3})
+	live := newLiveBroker(broker.Addr, key)
+	form := exchangeForm(mintPodToken(t, cluster, clusterKey, personlessAccount, exchangeAudience, personlessPodUID), "")
+	var token string
+
+	t.Run("the pod of an entry naming no person mints a token", func(t *testing.T) {
+		status, body := live.exchange(t, form)
+		token, _ = body["access_token"].(string)
+		if status != http.StatusOK || token == "" || body["token_type"] != "DPoP" {
+			t.Fatalf("the exchange of %s's pod token = %d %v, want 200 with a DPoP-bound access token: the entry names no person and fixes the session, so the pod names none and is registered for nothing", personlessAccount, status, body)
+		}
+	})
+
+	t.Run("a listed service account introspects it as the account's own token", func(t *testing.T) {
+		if token == "" {
+			t.Fatal("the exchange minted no access token, so there is nothing to read back")
+		}
+		status, body := live.introspect(t, token, apiToken)
+		if status != http.StatusOK {
+			t.Fatalf("introspection by the listed API account %s = %d %v, want 200", apiAccount, status, body)
+		}
+		raw, err := json.Marshal(body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var answer oauthwire.Introspection
+		if err := json.Unmarshal(raw, &answer); err != nil {
+			t.Fatalf("the introspection answer %s is not an introspection: %v", raw, err)
+		}
+		want := oauthwire.Introspection{Active: true, ClientID: oauthwire.ExchangeClientID, Thumbprint: jkt, Session: personlessSession, Service: personlessAccount, ProjectScope: oauthwire.ProjectScopeNamed, ExpiresAt: answer.ExpiresAt}
+		if !reflect.DeepEqual(answer, want) {
+			t.Errorf("introspection answered %+v, want %+v: an entry naming no person mints a named token that names the account as its service and the session it fixes, and names no person, no project and no scope", answer, want)
+		}
+		if answer.ExpiresAt <= time.Now().Unix() {
+			t.Errorf("introspection answered exp %d, which is not in the future", answer.ExpiresAt)
+		}
+		caller, err := ciphertoken.SessionCaller(answer)
+		wantCaller := ciphertoken.Caller{Session: personlessSession, Service: personlessAccount, ProjectScope: oauthwire.ProjectScopeNamed}
+		if err != nil || !reflect.DeepEqual(caller, wantCaller) {
+			t.Errorf("the shared verifier rule read the broker's answer as %+v, %v; want %+v: every resource server must admit the token the broker mints for an entry naming no person", caller, err, wantCaller)
+		}
+	})
+
+	t.Run("the same pod naming a project mints nothing", func(t *testing.T) {
+		status, body := live.exchange(t, with(form, oauthwire.FormProjects, project))
+		if status != http.StatusBadRequest || body["error"] != "invalid_request" || body["access_token"] != nil {
+			t.Fatalf("an exchange naming %s under an entry naming no project = %d %v, want 400 invalid_request and no access token", project, status, body)
+		}
+	})
+
+	t.Run("an entry naming a project and no person refuses the start", func(t *testing.T) {
+		out := runRefusedBroker(t, binary, append(exchangeEnv(t, databaseURL, cluster, github, longAccessSeconds),
+			"BROKER_EXCHANGE_ACCOUNTS="+podAccount+"="+project+"="+person+" "+listedAccount+"=OTHER=mallory@example.com "+
+				personlessAccount+"="+project+"=")...)
+		if !strings.Contains(out, "names no person only when it names no project either") {
+			t.Fatalf("the broker refused to start, but its output does not name the rule:\n%s", out)
 		}
 	})
 }

@@ -52,7 +52,12 @@ export interface RefreshTarget {
   readonly when?: RefreshCheck;
 }
 
-export type RefreshCheck = (data: unknown, query: Query) => boolean;
+/** A test of one query's answer (`RefreshTarget.when`): its data, the query, and the client the
+ *  refresh runs on, which `refreshQueries` always hands it; a test called apart from a refresh may
+ *  be handed none. A check may do more than answer: it may wait on that client for another
+ *  query's answer, and then ask for a refresh of its own (`refreshQueries`), after the refresh
+ *  that called it has ended. */
+export type RefreshCheck = (data: unknown, query: Query, client?: QueryClient) => boolean;
 
 interface DeferredCheck {
   readonly requestedAt: number;
@@ -284,15 +289,23 @@ export function refreshQueries(queryClient: QueryClient, targets?: readonly Refr
     }
   } else {
     for (const target of targets) {
+      // Each check is handed this client, whenever it runs: at once below, or on the response of
+      // a fetch out, which the cache's subscription judges it by.
+      const { when } = target;
+      const check: RefreshCheck | undefined =
+        when === undefined ? undefined : (data, query) => when(data, query, queryClient);
       for (const query of cache.findAll({ exact: target.exact, queryKey: target.queryKey })) {
         const current = reached.get(query);
         if (current === true) {
           continue;
         }
-        reached.set(query, target.when === undefined ? true : [...(current ?? []), target.when]);
+        reached.set(query, check === undefined ? true : [...(current ?? []), check]);
       }
     }
   }
+  // Every check is judged before any query is marked or fetched: each check of one refresh sees
+  // the cache as the refresh found it, so no mark of the same refresh decides another check.
+  const accepted: Query[] = [];
   for (const [query, condition] of reached) {
     if (isLiveQuery(query)) {
       continue;
@@ -311,6 +324,9 @@ export function refreshQueries(queryClient: QueryClient, targets?: readonly Refr
         continue;
       }
     }
+    accepted.push(query);
+  }
+  for (const query of accepted) {
     owe(state, query, requestedAt);
     drive(state, queryClient, query.queryHash);
     for (const listener of [...(state.owners.get(query.queryHash) ?? [])]) {

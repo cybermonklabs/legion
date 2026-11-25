@@ -1,5 +1,8 @@
 package daemon
 
+//ci:reads packages/daemon/internal/intake/testdata/dispatch/issue-updated.json TestDaemonPermissionsOnRealServers
+//ci:reads packages/daemon/internal/intake/testdata/github/pr-opened.json TestDaemonPermissionsOnRealServers
+
 import (
 	"context"
 	"encoding/json"
@@ -27,6 +30,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/natsauth"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/testnats"
 	"github.com/sjawhar/legion/daemon/internal/testnkeys"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
@@ -45,6 +49,7 @@ const (
 // NATS server grant, while this test drives the daemon's real connection, durable consumers,
 // acknowledgements, and exceptions subscription through it.
 func TestDaemonPermissionsOnRealServers(t *testing.T) {
+	t.Parallel()
 	for _, image := range testnatsimages.Images {
 		t.Run(image.Name, func(t *testing.T) {
 			t.Run("the daemon restarts, reads its consumers' lag, acknowledges Dispatch, GitHub and the listener's wake, and receives exceptions", func(t *testing.T) {
@@ -193,8 +198,8 @@ func grantWorkflow(t *testing.T, logs *syncBuffer) *workflowRuntime {
 	github := newNamedGitHub(t, map[string]string{"sjawhar/legion": "sjawhar/legion@main"})
 	w := &workflowRuntime{pool: isolatedOutboxPool(t), records: projectRecords{Store: record.NewStore(), project: "CAPTURE"},
 		repositories: repos, defaultBranches: newDefaultBranches(roleTokens{}, repos, github.url, defaultBranchTTL, time.Now), log: grantLogger(logs)}
-	if err := pgx.BeginFunc(t.Context(), w.pool, func(tx pgx.Tx) error {
-		return w.records.PutIssue(t.Context(), tx, record.Issue{Key: "CAPTURE-90", Tree: "CAPTURE-90", Project: "CAPTURE", Title: "a tree on sjawhar/legion",
+	if err := store.Transact(t.Context(), w.pool, func(ctx context.Context, tx pgx.Tx) error {
+		return w.records.PutIssue(ctx, tx, record.Issue{Key: "CAPTURE-90", Tree: "CAPTURE-90", Project: "CAPTURE", Title: "a tree on sjawhar/legion",
 			Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "A", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion"})
 	}); err != nil {
 		t.Fatalf("record the tree whose repository GitHub intake hears: %v", err)

@@ -180,8 +180,10 @@ type AgentSecretsTokenResult struct {
 }
 
 // LauncherHello authenticates a role launcher independently from its child shim. The daemon
-// minted Token belongs to exactly this pod UID, role and Secret epoch; LauncherID changes each
-// time Kubernetes restarts the launcher container.
+// minted Token for one role and Secret epoch, and accepts it only from the pod UID its Secret
+// binds: the pod a launch made, or a pod Agent Sandbox made again from the same Sandbox outside a
+// launch, which the daemon binds at its launchers' first hello. LauncherID changes each time
+// Kubernetes restarts the launcher container.
 //
 // LeakCheckTag is the launcher's own pin of the shared public leak check (its environment's
 // LEGION_LEAK_CHECK_TAG), empty when its environment names none: a hello that names a tag is a
@@ -227,20 +229,31 @@ type LauncherHelloAck struct {
 	VolumeTrim *LauncherVolumeTrim `json:"volumeTrim,omitempty"`
 	// KernelKills says the daemon reads a launcher_memory_kill whose cause is
 	// MemoryKillCauseKernel or MemoryKillCauseKernelProtected as the kernel's kill and tells its
-	// role so. The daemon sets it on every issue pod's acknowledgement, whether or not it sends
-	// MemoryGuard, and never on the controller's pod's. A microVM pod's launcher sends its kill
-	// reports only on a connection whose acknowledgement carries it, whatever MemoryGuard says, so
-	// a daemon built before it, which sends no member, never reads a kernel's kill with the guard's
-	// words. It is left out when false, so such an acknowledgement is the bytes an older daemon
-	// writes.
+	// role so, or the project's controller where the report is of the controller's pod. The
+	// daemon sets it on every launcher's acknowledgement, an issue pod's and the controller's pod's
+	// alike, whether or not it sends MemoryGuard, since the controller's pod runs in a microVM where
+	// the project's sandbox is one (INFRA-4567); a daemon of an earlier release sets it on the issue
+	// pods' alone. A microVM pod's launcher sends its kill reports only on a connection whose
+	// acknowledgement carries it, whatever MemoryGuard says, so a daemon built before it, which
+	// sends no member, never reads a kernel's kill with the guard's words; a gVisor pod's launcher
+	// ignores it and sends its guard's reports where MemoryGuard came. It is left out when false,
+	// so an acknowledgement without it is the bytes an older daemon writes.
 	KernelKills bool `json:"kernelKills,omitempty"`
 }
 
 // LauncherMemoryGuard is what a launcher's memory guard runs by: it reads the pod's anonymous
-// memory every IntervalMilliseconds, and at ActPercent of the container's limit it ends the
-// largest process it may end, where those processes hold at least FloorPercent of the limit
-// between them; after a kill it waits up to WaitSeconds for the reading to fall before it ends
-// another.
+// memory every IntervalMilliseconds, and at ActPercent of the container's limit it ends, of the
+// processes it may end, the process that grew the most over its last few reads, else the largest
+// one it has read at most once in its last two readings near the limit, else the one that grew the
+// most since the guard's first kill while the reading stays near the limit, else the largest, a
+// fork that still runs its parent's program counted by what it holds over its parent, where those
+// processes hold at least FloorPercent of the limit between them, and at or above the urgent
+// share, halfway from ActPercent to the limit, every other process that grew over its last few
+// reads at the same reading and, where a process it may end is not new to its stay near the
+// limit, every other one new to it that holds memory of its own; after the kills of a reading it
+// ends no other until every killed process has exited or WaitSeconds has passed, and it gives the
+// rise up once WaitSeconds has passed with the reading not fallen and nothing it may end grown
+// since the kills.
 //
 // It holds no `enabled` member: a deployment that turns the guard off sends no member at all,
 // which is the same absence a daemon that does not know the guard sends, so one rule in the
@@ -263,6 +276,22 @@ type LauncherMemoryGuard struct {
 // acknowledgement reaches it, and the daemon's configuration defaults, so a change to one moves
 // both. The act share's default is the one a measurement may move. Every minimum is above zero
 // because a guard cannot be armed with a zero interval or wait.
+//
+// MemoryGuardControllerWaitDefault is the controller pod's wait after a kill in place of
+// MemoryGuardWaitDefault, an issue pod's (INFRA-3531, R4): its guard's start
+// (memoryguard.ControllerDefaults) and the daemon's default for
+// `runtime.kubernetes.memory_guard.controller_pod`. It is below the 3.4 seconds this issue's tester
+// measured from a kill that freed nothing to the host's kill of a 4 GiB pod, so the controller's
+// guard decides on the next process before that kill comes.
+//
+// MemoryGuardConfigActMax is the highest act share the daemon's loader takes for either pod kind,
+// `runtime.kubernetes.memory_guard.issue_pods.act_percent` and `controller_pod.act_percent`
+// (INFRA-3531 R4 of spec version 43): the urgent share, the mark plus half the distance from the
+// mark to the limit, is then at most 95% of the limit and stays below the lowest kill point this
+// issue's tester measured at 4 GiB, 96.88% on 2026-11-18; at an act share of 95 the urgent share
+// would be 97.5%, at or above that kill point. Both kinds run the guard's one core, so both take
+// the same bound. The wire keeps MemoryGuardActMax, and Validate with it, so a launcher of this
+// release still takes the settings a daemon of an earlier release sends, which may name 91 to 95.
 const (
 	MemoryGuardActMin      = 50
 	MemoryGuardActMax      = 95
@@ -277,6 +306,9 @@ const (
 	MemoryGuardFloorDefault    = 10
 	MemoryGuardWaitDefault     = 5
 	MemoryGuardIntervalDefault = 100
+
+	MemoryGuardControllerWaitDefault = 1
+	MemoryGuardConfigActMax          = 90
 )
 
 // LauncherMemoryKill is one process of a role that was stopped because the pod was out of memory:

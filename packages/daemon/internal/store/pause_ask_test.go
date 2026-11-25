@@ -49,7 +49,7 @@ func TestThePausesCatchUpAsksOnlyTheStopsItHasNotAsked(t *testing.T) {
 
 	// The implementer stops; a role the boot finds live — its claim written live since the pause
 	// read the claims — has never been asked.
-	if err := st.Tx(ctx, func(tx pgx.Tx) error {
+	if err := Transact(ctx, st.pool, func(ctx context.Context, tx pgx.Tx) error {
 		_, err := RecordPauseStoppedTx(ctx, tx, pause, implementer, pausedAt.Add(time.Minute), false)
 		return err
 	}); err != nil {
@@ -183,7 +183,7 @@ func TestAPauseStopRecordedAgainKeepsItsOneRow(t *testing.T) {
 	record := func(stop PauseStopClaim, owed bool) bool {
 		t.Helper()
 		var first bool
-		if err := st.Tx(ctx, func(tx pgx.Tx) error {
+		if err := Transact(ctx, st.pool, func(ctx context.Context, tx pgx.Tx) error {
 			var err error
 			first, err = RecordPauseStoppedTx(ctx, tx, pause, stop, pausedAt.Add(time.Minute), owed)
 			return err
@@ -255,7 +255,7 @@ func TestAPauseStopRecordRefusesTheBackstopOfAnotherRole(t *testing.T) {
 	pause, stops := pauseLegion(t, st, pausedAt)
 	implementer := stops[0]
 
-	err := st.Tx(ctx, func(tx pgx.Tx) error {
+	err := Transact(ctx, st.pool, func(ctx context.Context, tx pgx.Tx) error {
 		_, err := RecordPauseStopTx(ctx, tx, PauseStopRecord{Pause: pause, Stop: implementer, At: pausedAt.Add(time.Minute),
 			HoldPod: true, Backstop: &PodWakeBackstop{Project: "legion", Issue: implementer.Issue, Role: claim.RoleTester,
 				DueAt: pausedAt.Add(time.Hour)}})

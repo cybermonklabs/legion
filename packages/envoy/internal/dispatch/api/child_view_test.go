@@ -204,11 +204,13 @@ func TestAChildsRequirementWrittenThroughTheRoomMakesItsSpecItsOwn(t *testing.T)
 // server whose settlement waits an hour and whose document service starts no block-index
 // reconciliation, a parent whose spec holds no requirement takes a child, born converted, whose
 // spec holds a list of more items than a write indexes in its own request and one requirement, so
-// the create leaves the room's blocks to the reconciliation (R15) and only the create's own mark
-// holds the child's spec its own. The parent then takes a requirement while the child's index is
-// still deferred, and the child answers view_of null; one tick of the reconciliation indexes the
-// child's spec, after which it answers view_of null again and its coverage lists the requirement
-// as its own, counted as every requirement is, with no line reading it as a requirement on a view.
+// the create leaves the room's blocks to the reconciliation (R15), the spec owed its block index,
+// and the create's own mark and the pass that writes its requirement in the create's own
+// transaction (docs' planTypedPasses) hold the child's spec its own. The parent then takes a
+// requirement while the child's index is still deferred, and the child answers view_of null; one
+// tick of the reconciliation indexes the child's spec, after which it answers view_of null again
+// and its coverage lists the requirement as its own, counted as every requirement is, with no line
+// reading it as a requirement on a view.
 func TestAChildWhoseCreateDeferredItsIndexKeepsItsSpecItsOwn(t *testing.T) {
 	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
 	ctx := context.Background()
@@ -217,8 +219,8 @@ func TestAChildWhoseCreateDeferredItsIndexKeepsItsSpecItsOwn(t *testing.T) {
 	const block = "cr1"
 	spec := deferralList(itemsOverTheBlockBound, "end") + "\n" + requirementMarkdown(block, "The child's own work.")
 	child := createDigestChild(t, handler, database, "DEFER", "The child", spec, parent.Key, false)
-	if indexed := blockIndexVersion(t, database, child.PrimaryArtifactID); indexed != nil || requirementIndexed(t, database, child.Key, block) {
-		t.Fatalf("the create of %s indexed its blocks in its own request, so no index was deferred", child.Key)
+	if indexed := blockIndexVersion(t, database, child.PrimaryArtifactID); indexed != nil {
+		t.Fatalf("the create of %s indexed its blocks in its own request at version %d, so no index was deferred", child.Key, *indexed)
 	}
 	giveRequirement(t, handler, database, parent, "r1")
 
@@ -247,9 +249,10 @@ func TestAChildWhoseCreateDeferredItsIndexKeepsItsSpecItsOwn(t *testing.T) {
 // and the edit route, which defers no index by its size, writing it while another fragment of the
 // child's room holds a browser's edit that no settlement has versioned, so the write leaves the
 // room owed its index. Each child is born converted under a root that holds no requirement, so
-// only the write's own mark can hold it. The root then takes a requirement before the
-// reconciliation runs, and each child still answers view_of null and takes a requirement
-// unrefused.
+// only the write's own mark, and the pass that writes the requirement in the write's own
+// transaction while its document stays owed its block index (docs' planTypedPasses), can hold
+// it. The root then takes a requirement before the reconciliation runs, and each child still
+// answers view_of null and takes a requirement unrefused.
 func TestEachAPIWriteSetsTheOwnSpecMark(t *testing.T) {
 	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour, browserPeers: true})
 	documents := deps.Docs.(*docs.Service)
@@ -259,20 +262,21 @@ func TestEachAPIWriteSetsTheOwnSpecMark(t *testing.T) {
 	}
 	for _, write := range []struct {
 		name  string
-		write func(t *testing.T, child model.Issue, id string)
+		write func(t *testing.T, child model.Issue, id string) string
 	}{
-		{"the upload of a new document", func(t *testing.T, child model.Issue, id string) {
-			uploadDocument(t, handler, "/api/v1/issues/"+child.Key, "notes.md", large(id))
+		{"the upload of a new document", func(t *testing.T, child model.Issue, id string) string {
+			return uploadDocument(t, handler, "/api/v1/issues/"+child.Key, "notes.md", large(id)).Artifact.ID
 		}},
-		{"the upload of a new version", func(t *testing.T, child model.Issue, id string) {
+		{"the upload of a new version", func(t *testing.T, child model.Issue, id string) string {
 			owner := "/api/v1/issues/" + child.Key + "/artifacts"
 			response := dispatchRequest(t, handler, http.MethodPost, owner,
 				map[string]any{"name": "spec", "content": large(id), "precondition": uploadBaseNamed(t, handler, owner, "spec")}, "alice")
 			if response.Code != http.StatusCreated {
 				t.Fatalf("upload a new version of the spec of %s: status=%d body=%s", child.Key, response.Code, response.Body.String())
 			}
+			return child.PrimaryArtifactID
 		}},
-		{"the edit route", func(t *testing.T, child model.Issue, id string) {
+		{"the edit route", func(t *testing.T, child model.Issue, id string) string {
 			verification := uploadDocument(t, handler, "/api/v1/issues/"+child.Key, "verification.md", "The checks to come.\n").Artifact
 			peer := connectBrowserPeer(t, handler, documents, verification.ID)
 			t.Cleanup(peer.close)
@@ -286,15 +290,16 @@ func TestEachAPIWriteSetsTheOwnSpecMark(t *testing.T) {
 			})
 			peer.barrier(t)
 			succeeded(t, "write the requirement "+id+" into the spec of "+child.Key, insertRequirement(t, handler, child.PrimaryArtifactID, id, "The child's own work."))
+			return child.PrimaryArtifactID
 		}},
 	} {
 		t.Run(write.name, func(t *testing.T) {
 			root := createDigestIssue(t, handler, database, "MARK", "The root of "+write.name, "The root's words.\n", false)
 			child := createDigestChild(t, handler, database, "MARK", "The child of "+write.name, "The child's words.\n", root.Key, false)
 			const block = "cr1"
-			write.write(t, child, block)
-			if requirementIndexed(t, database, child.Key, block) {
-				t.Fatalf("%s indexed the requirement %s of %s in its own request, so only the block index could have marked it", write.name, block, child.Key)
+			written := write.write(t, child, block)
+			if indexed := blockIndexVersion(t, database, written); indexed != nil {
+				t.Fatalf("%s indexed the document it wrote of %s at version %d in its own request, so no block index was left to the reconciliation", write.name, child.Key, *indexed)
 			}
 			giveRequirement(t, handler, database, root, "r1")
 			if read := treeRead(t, handler, child.Key, "", "alice", false); read.ViewOf != nil {

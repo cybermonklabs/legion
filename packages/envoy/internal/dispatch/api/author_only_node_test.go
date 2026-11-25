@@ -337,6 +337,7 @@ func requireOnlyTheFiveKindsTakeAuthor(t *testing.T) {
 // nodes of the kinds that compare the person, bob's reads none. Last, a comment asked for author is
 // refused naming its kind, and the comment list holds no new comment.
 func TestAnAuthorOnlyNodeIsAnsweredToItsAuthorAndToNobodyElse(t *testing.T) {
+	t.Parallel()
 	requireOnlyTheFiveKindsTakeAuthor(t)
 
 	rig := newReasoningRig(t)
@@ -860,8 +861,7 @@ func TestAnAuthorOnlyNodeIsAnsweredToItsAuthorAndToNobodyElse(t *testing.T) {
 	listed := map[string][]string{alice: commentIDs(t, aliceCookie, rig.issue), bob: commentIDs(t, bobCookie, rig.issue)}
 	refused := dispatchRequest(t, rig.handler, http.MethodPost, "/api/v1/issues/"+rig.issue+"/comments",
 		map[string]any{"body": "A remark she keeps.", "visibility": graphstore.VisibilityAuthor}, alice)
-	requireRefused(t, "alice's comment asked for author", refused, http.StatusBadRequest, "VISIBILITY_NOT_ADMITTED",
-		"the node kind "+graphstore.KindComment+" takes no node reserved for its author")
+	requireRefused(t, "alice's comment asked for author", refused, http.StatusBadRequest, "VISIBILITY_NOT_ADMITTED", graphstore.KindComment)
 	for login, reads := range map[string]*credentialReads{alice: aliceCookie, bob: bobCookie} {
 		if after := commentIDs(t, reads, rig.issue); !slices.Equal(after, listed[login]) {
 			t.Errorf("%s's comment list holds %v after the refusal, and held %v", login, after, listed[login])

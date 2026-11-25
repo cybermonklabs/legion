@@ -191,6 +191,25 @@ describe("the dispatch CLI the package ships", () => {
       expect(help.stdout.toString()).toStartWith("Usage: dispatch ");
     });
 
+    // A shell profile may export CDPATH=.:<dirs>; a `cd` whose operand CDPATH resolves prints the
+    // directory it entered, which the shim's `$(cd … && pwd)` would then hold as well.
+    test("bin/dispatch started by a relative path from the plugin's directory runs under an exported CDPATH", () => {
+      const help = Bun.spawnSync(["sh", "-c", 'cd "$1" && bin/dispatch --help', "sh", unpacked], {
+        env: {
+          PATH: process.env.PATH ?? "",
+          HOME: work,
+          CDPATH: ".",
+          DISPATCH_HOST: "omp",
+          DISPATCH_SESSION_ID: "pack-check",
+        },
+      });
+      expect({
+        exitCode: help.exitCode,
+        stderr: help.stderr.toString(),
+        usage: help.stdout.toString().startsWith("Usage: dispatch "),
+      }).toEqual({ exitCode: 0, stderr: "", usage: true });
+    });
+
     test("carries AskGate's prompt files inlined, so no session reads them from disk", async () => {
       // The prompts are imported `with { type: "text" }` and inlined by `bun build`; `files` ships
       // only dist and bin, so a prompt that failed to inline would leave the gate with no text at all.

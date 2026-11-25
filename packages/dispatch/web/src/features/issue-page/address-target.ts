@@ -2,6 +2,7 @@ import { isIdPrefix, itemFromSearch } from "@legion/contracts";
 import { notifyManager, type QueryKey, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useMemo, useState, useSyncExternalStore } from "react";
 
+import { ambiguousItems } from "../../api/client";
 import type { Ask, Comment, IssueDetails, MessageRead } from "../../api/types";
 import {
   type ItemLanding,
@@ -114,9 +115,9 @@ export function landingPath(to: string): string {
  * a thread only agents wrote in (`agentsOnlyItem`), which the outline draws no node for: the
  * entry the turn was written under - the comment its write answered (`answers`, else the head of
  * its thread, `reply_to`), the ask it replies under (`ask_id`), the message it answers
- * (`in_reply_to`) - where the tree holds it, else that entry's own, as `tree-drafts.ts`'s
- * `addTurns` places each turn. Where the tree holds none of them - the head of such a thread
- * sits under the issue, and an approval request is no node (`addAsks`) - it is the issue alone.
+ * (`in_reply_to`) - where the tree holds it, else that entry's own, as `tree-read/tree-nodes.ts`
+ * places each turn, by its `parent`. Where the tree holds none of them - the head of such a thread
+ * sits under the issue, and an approval request is no node (`draftAsk`) - it is the issue alone.
  */
 function agentsOnlyAncestor(
   root: TreeNode,
@@ -218,10 +219,10 @@ function landingReadKey(route: ItemRoute): QueryKey {
  *  (`useAddressFallback`). */
 interface Following {
   /** Whether the following draws the line that the tree holds no node of the block or the
-   *  children its address names (`absent`), as last stored here. The children come with the
-   *  issue's own read alone (`tree-drafts.ts`'s `addChildren`), so the children's line, once
-   *  drawn, stays while the tree's reads are out again; a block's line goes then, since a
-   *  document added to the issue may hold the block. */
+   *  children its address names (`absent`), as last stored here. A document added to the issue
+   *  may hold a block but brings no child (each child is an issue, `tree-nodes.ts`' `draftChild`),
+   *  so the children's line, once drawn, stays while the tree's reads are out again; a block's
+   *  line goes then. */
   readonly absent: boolean;
   /** How many times the landing's read had failed as this following first read it (its
    *  `errorUpdateCount`), from which the following counts its own failures; undefined until the
@@ -234,9 +235,11 @@ interface Following {
   readonly key: string;
   /** The landing the old page's landing settled on during this following, as last stored here,
    *  which the following draws again while the read runs again, and while the tree's reads are
-   *  out again (`readsHeld`). A new one is stored only when its kind changes (or another field
-   *  of the following does), so a later answer of the same kind - a second list of matches - is
-   *  not stored, and this can be an earlier answer than the last one drawn. */
+   *  out again (`readsHeld`). A new one is stored when its kind changes (or another field of the
+   *  following does), and a list of matches whenever the matches it lists do (`sameMatches`): a
+   *  later list, or the list the cache holds once a correction is written into it
+   *  (`markCorrectedPost`). So a list drawn while its read runs again is the refusal the cache
+   *  held last, with every correction since, where the cache holds none then. */
   readonly settled: Exclude<ItemLanding, { kind: "pending" }> | undefined;
 }
 
@@ -265,9 +268,12 @@ interface Following {
  * once a read draws it. A read that runs again holds no answer, so its landing is pending again
  * until that run ends - a Retry's, or window focus reading a read in error again - and the
  * following keeps drawing the kind of landing it last settled on meanwhile (`Following.settled`):
- * an item found missing keeps its line, and a failed read its line, busy, with its Retry and the
- * focus. The failures are counted from the following's start, so an item whose read failed
- * before the address was followed again draws no failure of its own until its read fails again.
+ * an item found missing keeps its line, a failed read its line, busy, with its Retry and the
+ * focus, and several items their list: the refusal the cache holds for the read, where a
+ * correction asked the read again (`correctRefusal` in `api/corrected-post.ts`), and else the one
+ * it held last, so a match deleted since is drawn deleted. The failures are counted from the
+ * following's start, so an item whose read failed before the address was followed again draws no
+ * failure of its own until its read fails again.
  * A block or the children is `absent`, as no read is left to draw it.
  *
  * The reads going out again after the following has settled on a landing - a document added to
@@ -278,8 +284,8 @@ interface Following {
  * such turn the server stores - which the conversation's reads still tell while the blocks are
  * read: dropped then, the tree had no address to land on, and once the reads answered the
  * landing's key came back as a new landing's would, which left a zoom the reader had made after
- * the landing; and the line that the issue has no children, which come with the issue's own read
- * alone (`Following.absent`). A block's line goes while the reads are out, as a document added
+ * the landing; and the line that the issue has no children, as a document added brings no
+ * child (`Following.absent`). A block's line goes while the reads are out, as a document added
  * to the issue may hold the block. Each goes as before where the tree draws the address's node
  * (`found`), and with the following.
  */
@@ -356,7 +362,13 @@ export function useAddressFallback({
   const retrying = state?.fetchStatus === "fetching";
   const failures = state?.errorUpdateCount ?? 0;
   const failedBefore = before?.failedBefore ?? (readKey === undefined ? undefined : failures);
-  const settled = landing?.kind === "pending" ? before?.settled : landing;
+  const refused = landing?.kind === "pending" ? ambiguousItems(state?.error) : undefined;
+  const settled: Following["settled"] =
+    refused !== undefined
+      ? { candidates: refused, kind: "ambiguous" }
+      : landing?.kind === "pending"
+        ? before?.settled
+        : landing;
   const target = address.target;
   const named =
     address.document === undefined && (target?.kind === "block" || target?.kind === "children")
@@ -373,7 +385,8 @@ export function useAddressFallback({
     before.absent !== absent ||
     before.found !== found ||
     before.failedBefore !== failedBefore ||
-    before.settled?.kind !== settled?.kind
+    before.settled?.kind !== settled?.kind ||
+    !sameMatches(before.settled, settled)
   ) {
     setFollowed({ absent, failedBefore, found, key: following, settled });
   }
@@ -390,4 +403,17 @@ export function useAddressFallback({
     retrying,
     route: read,
   };
+}
+
+/** Whether the landing stored and the one settled on list the same matches, item for item as the
+ *  cache holds each: a correction written into the refusal they come from gives each item it marks
+ *  anew (`markCorrectedPost`), as a later read gives every item. Landings that list no matches are
+ *  the same here. */
+function sameMatches(stored: Following["settled"], settled: Following["settled"]): boolean {
+  if (stored?.kind !== "ambiguous" || settled?.kind !== "ambiguous") return true;
+  const { candidates } = settled;
+  return (
+    stored.candidates.length === candidates.length &&
+    stored.candidates.every((item, at) => item === candidates[at])
+  );
 }

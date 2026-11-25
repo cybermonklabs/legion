@@ -7,9 +7,10 @@ import { MemoryRouter, useLocation } from "react-router-dom";
 
 import { displayTree } from "../../../__tests__/display-trees";
 import { nextFrame } from "../../../__tests__/frames";
+import { installIntersectionObserver } from "../../../__tests__/intersection-observer";
 import { ApiError, api } from "../../../api/client";
 import { issueTreeKey } from "../../../api/queries";
-import type { Actor, AuthenticatedUser, Decision, DecisionKeep } from "../../../api/types";
+import type { Actor, AuthenticatedUser, Comment, Decision, DecisionKeep } from "../../../api/types";
 import {
   pageFocusedRow,
   pageInkText,
@@ -17,16 +18,18 @@ import {
   pageStateText,
 } from "../../../theme/classes";
 import { MarginProvider } from "../../margin/margin-context";
+import { actorLabelText } from "../../refs/AgentName";
 import { warmMarkdownRenderer } from "../../refs/markdown-engine";
 import { EVENT_FRESH } from "../../refs/reference-target";
 import { KeymapProvider } from "../../shell/KeymapProvider";
 import { useKeymapScope } from "../../shell/keymap";
+import { measureNearWords } from "../clamp-fixtures";
 import type { OutlineRequest } from "../IssueTree";
 import { artifactsBySlug } from "../issue-artifacts";
 import type { TreeNode } from "../issue-tree";
 import { NoTooltips } from "../NoTooltips";
 import { OutlineRequestProvider } from "../outline-request";
-import { KEY_REPORTS } from "../page-structure";
+import { KEY_REPORTS, PAGE_CHROME_ATTRIBUTE } from "../page-structure";
 import {
   ANSWER_LINES,
   CONTROL_LABELS,
@@ -41,6 +44,7 @@ import {
 } from "../page-words";
 import { presetView } from "../presets";
 import { ViewStage } from "../slots/stage";
+import { AppProviders } from "../slots/stage-fixtures";
 import { decisionBehind } from "../tree-keys";
 import {
   issueTreeQuery,
@@ -70,7 +74,6 @@ import {
   READER,
   READER_ACTOR,
   SPEC_DOCUMENT,
-  SPEC_SLUG,
   shaped,
   specRef,
   statement,
@@ -83,9 +86,9 @@ import type { DecisionsAsk } from "./decisions-parts";
  * R9, R22, R35). Which entry stands in which part is the model's, read in
  * `decisions-parts.test.ts`; these rows read the drawing: the four parts under their headings,
  * the words each state reads, Keep and Change on the review list alone, the person's answer
- * character for character, and where the focus goes. How a row is laid out and where a long
- * question is cut are the browser's to say, which no DOM of a unit test lays out, so the
- * browser suite's c-row, c-decisions and c-review-list read them.
+ * character for character, and where the focus goes. How a row is laid out is the browser's to
+ * say, which no DOM of a unit test lays out, so the browser suite's c-row, c-decisions and
+ * c-review-list read it.
  */
 
 /** The page's line for an issue the view draws nothing for, which the slot hands the body. */
@@ -107,6 +110,16 @@ const KEPT: DecisionKeep = {
   kept_at: "2026-11-15T09:00:00Z",
   kept_by: READER,
 };
+
+/** The agent's write-up of the person's answer: a `reading` block of the spec, which the tree
+ *  draws under the answered ask it reads (`tree-read/tree-nodes.ts`'s `draftReading`). */
+const READING = node({
+  author: AGENT,
+  id: `${SPEC_DOCUMENT.slug}#b-reading`,
+  reference: specRef("reading"),
+  text: "The reader wants the rail kept.",
+  type: "reading",
+});
 
 /** One issue that holds an entry of every part: an open question, two decisions a statement
  *  rests on that wait, one the reader kept, an answered ask, which is the reader's decision,
@@ -137,15 +150,7 @@ function wholeIssue(): {
         "a-answered",
         { at: "2026-11-14T09:00:00Z", selected: ["Changes needed"], text: STORED },
         {
-          children: [
-            node({
-              author: AGENT,
-              id: `${SPEC_SLUG}#b-reading`,
-              reference: specRef("reading"),
-              text: "The reader wants the rail kept.",
-              type: "reading",
-            }),
-          ],
+          children: [READING],
           options: [{ label: "Works" }, { label: "Changes needed" }],
           text: "Does the built page work for you?",
         }
@@ -316,6 +321,7 @@ function renderBody(
     asks = [],
     changes = [],
     children,
+    comments = [],
     made = [],
   }: {
     /** The issue's asks, or null for a read left out of the cache, which the page's own read
@@ -323,6 +329,9 @@ function renderBody(
     asks?: DecisionsAsk[] | null;
     changes?: TreeAnswerNode[];
     children: TreeNode[];
+    /** The issue's comments as the comments read holds them, which say what the tree read
+     *  answers no mark of: which Changes their author deleted, and when one was last edited. */
+    comments?: Comment[];
     /** The decisions the tree read and its decisions view hold, or null for both reads left
      *  out of the cache, which the page's own reads then ask the server for (`treeReads`). */
     made?: TreeAnswerNode[] | null;
@@ -376,7 +385,7 @@ function renderBody(
     client.setQueryData(viewKey(KEY, "decisions"), readView(), answered);
   }
   if (asks !== null) client.setQueryData(["asks", KEY], asks, answered);
-  client.setQueryData(["comments", KEY], [], answered);
+  client.setQueryData(["comments", KEY], comments, answered);
   // Who is reading, as the page's first read of it left it, where the reads are dated: the page
   // read it as it loaded, before any view was opened.
   if (answered !== undefined) {
@@ -427,26 +436,22 @@ function renderBody(
     const held = main ? <PageChangeMain>{staged}</PageChangeMain> : staged;
     return (
       <MemoryRouter>
-        <QueryClientProvider client={client}>
-          <KeymapProvider>
-            <MarginProvider>
-              <IssueScope />
-              <Where />
-              {/* Inside `NoTooltips`, as the view's slot draws it, so an author is named as the
-                  page names one. */}
-              <NoTooltips>
-                {requests ? (
-                  <OutlineRequestProvider>
-                    <button type="button">Elsewhere</button>
-                    {held}
-                  </OutlineRequestProvider>
-                ) : (
-                  held
-                )}
-              </NoTooltips>
-            </MarginProvider>
-          </KeymapProvider>
-        </QueryClientProvider>
+        <AppProviders client={client}>
+          <IssueScope />
+          <Where />
+          {/* Inside `NoTooltips`, as the view's slot draws it, so an author is named as the
+              page names one. */}
+          <NoTooltips>
+            {requests ? (
+              <OutlineRequestProvider>
+                <button type="button">Elsewhere</button>
+                {held}
+              </OutlineRequestProvider>
+            ) : (
+              held
+            )}
+          </NoTooltips>
+        </AppProviders>
       </MemoryRouter>
     );
   };
@@ -467,7 +472,7 @@ function words(element: Element | null | undefined): string | null {
 }
 
 /** What the body says of each read that stands refused, in the page's words, by which a reader
- *  tells the two reads' lines apart. */
+ *  tells the two reads' lines apart, each by the seam's word for its read. */
 const REFUSED_READ_WORDS = {
   asks: STATE_LINES.asks_unreadable,
   decisions: STATE_LINES.issue_decisions_unreadable,
@@ -562,8 +567,8 @@ function chromeOf(scope: Element): string[] {
 }
 
 // R2, c-decisions: four parts under their own headings and in this order: the open questions,
-// the decisions waiting for review, the reader's own decisions newest first, and the folded
-// foot. No other sentence stands over them or between them (R22).
+// the decisions waiting for review, the reader's own decisions newest first, and the foot,
+// unfolded. No other sentence stands over them or between them (R22).
 test("the four parts are drawn under their headings, in order, and no sentence explains them", async () => {
   const user = userEvent.setup();
   const view = renderBody(wholeIssue());
@@ -597,12 +602,12 @@ test("the four parts are drawn under their headings, in order, and no sentence e
       part: "yours",
       rows: [D("kept"), "a-answered", "a-declined"],
     },
-    // Folded at the foot: its heading says how many it holds, and none is drawn.
+    // At the foot and unfolded: its heading says how many it holds, and each is drawn.
     {
       count: "2",
       heading: `2 ${DECISIONS_WORDS.agents_many}`,
       part: "agents",
-      rows: [],
+      rows: [D("minor"), D("replaced")],
     },
   ]);
 
@@ -671,43 +676,43 @@ test("the four parts are drawn under their headings, in order, and no sentence e
   expect(rowOf(view, D("first")).querySelector("[data-node-body]")).toBeNull();
   expect(view.getByTestId("where").textContent).toBe(`/issues/${KEY}#b-kept`);
 
-  // The foot unfolds from its own control, which is a plain button in the tab order, and
-  // folds again. Its rows stand after it and are the tree's own.
+  // The foot is unfolded as the list opens, under its own control, which is a plain button in
+  // the tab order, and folds and unfolds it. Its rows stand after it and are the tree's own.
   const foot = view.getByRole("button", FOOT_CONTROL);
   // The mark before the count is a shape hidden from assistive technology, not text: the
   // page's typeface keeps neither triangle. Its path is what says whether the foot is open.
   const mark = () =>
     foot.querySelector('svg[aria-hidden="true"] path')?.getAttribute("d") ?? "no mark";
-  const folded = mark();
-  expect(folded).not.toBe("no mark");
+  const unfolded = mark();
+  expect(unfolded).not.toBe("no mark");
   expect(foot.textContent).not.toMatch(/[▾▸]/u);
-  expect(foot.getAttribute("aria-expanded")).toBe("false");
-  expect(foot.hasAttribute("tabindex")).toBe(false);
-  expect(tree.hasAttribute("aria-owns")).toBe(false);
-  await user.click(foot);
-  expect(rowsOfPart(view, "agents")).toEqual([D("minor"), D("replaced")]);
   expect(foot.getAttribute("aria-expanded")).toBe("true");
-  expect(words(foot)).toBe(`2 ${DECISIONS_WORDS.agents_many}`);
-  expect(mark()).not.toBe("no mark");
-  expect(mark()).not.toBe(folded);
-  expect(foot.textContent).not.toMatch(/[▾▸]/u);
+  expect(foot.hasAttribute("tabindex")).toBe(false);
   const footRows = view.container.querySelector('[data-decisions-part="agents"] [role="group"]');
   expect(tree.getAttribute("aria-owns")).toBe(footRows?.id ?? "no group");
   expect(footRows?.getAttribute("aria-labelledby")).toBe(foot.id);
   await user.click(foot);
   expect(rowsOfPart(view, "agents")).toEqual([]);
-  expect(mark()).toBe(folded);
+  expect(foot.getAttribute("aria-expanded")).toBe("false");
+  expect(words(foot)).toBe(`2 ${DECISIONS_WORDS.agents_many}`);
+  expect(mark()).not.toBe("no mark");
+  expect(mark()).not.toBe(unfolded);
+  expect(foot.textContent).not.toMatch(/[▾▸]/u);
+  expect(tree.hasAttribute("aria-owns")).toBe(false);
+  await user.click(foot);
+  expect(rowsOfPart(view, "agents")).toEqual([D("minor"), D("replaced")]);
+  expect(mark()).toBe(unfolded);
 
   // Tab from the row the reader stands on goes to the foot's control, which is inside the
   // list: the row is drawn as focused no more, its body closed and its card plain.
   const first = rowOf(view, D("first"));
   await act(async () => first.focus());
   expect(first.querySelector("[data-node-body]")).not.toBeNull();
-  expect(first.querySelector("[data-node-card]")?.className).toContain(pageFocusedRow);
+  expect(first.querySelector("[data-node-card]")).toHaveClass(pageFocusedRow);
   await user.tab();
   expect(document.activeElement).toBe(foot);
   expect(first.querySelector("[data-node-body]")).toBeNull();
-  expect(first.querySelector("[data-node-card]")?.className).not.toContain(pageFocusedRow);
+  expect(first.querySelector("[data-node-card]")).not.toHaveClass(pageFocusedRow);
 });
 
 /** An issue whose only decision is an agent's that no statement rests on: the list draws its
@@ -723,6 +728,36 @@ function footControlOf(drawn: RenderResult): HTMLElement | null {
 test("the foot's heading agrees with how many decisions it holds", () => {
   const view = renderBody(FOOT_ONLY);
   expect(words(footControlOf(view))).toBe(`1 ${DECISIONS_WORDS.agents_one}`);
+});
+
+// R2, root R6: the agents' decisions no statement rests on stand at the foot unfolded: they are
+// drawn as the view opens, with nothing pressed, and the page folds them only when the reader
+// folds them with the foot's own control, by the pointer or the keyboard, whose next press
+// unfolds them again. The control's words and its count stay as they are.
+test("the foot opens unfolded", async () => {
+  const user = userEvent.setup();
+  const view = renderBody(wholeIssue());
+  const foot = footControlOf(view);
+  if (foot === null) throw new Error("the list draws no foot");
+  expect(rowsOfPart(view, "agents")).toEqual([D("minor"), D("replaced")]);
+  expect(foot.getAttribute("aria-expanded")).toBe("true");
+  expect(words(foot)).toBe(`2 ${DECISIONS_WORDS.agents_many}`);
+
+  await user.click(foot);
+  expect(rowsOfPart(view, "agents")).toEqual([]);
+  expect(foot.getAttribute("aria-expanded")).toBe("false");
+  expect(words(foot)).toBe(`2 ${DECISIONS_WORDS.agents_many}`);
+  await user.click(foot);
+  expect(rowsOfPart(view, "agents")).toEqual([D("minor"), D("replaced")]);
+  expect(foot.getAttribute("aria-expanded")).toBe("true");
+
+  // The press left the focus on the control, where Enter folds them and Space unfolds them.
+  expect(document.activeElement).toBe(foot);
+  await user.keyboard("{Enter}");
+  expect(rowsOfPart(view, "agents")).toEqual([]);
+  await user.keyboard(" ");
+  expect(rowsOfPart(view, "agents")).toEqual([D("minor"), D("replaced")]);
+  expect(words(foot)).toBe(`2 ${DECISIONS_WORDS.agents_many}`);
 });
 
 // R2: a part that holds nothing is not drawn, and an issue that holds no ask and no decision
@@ -1430,7 +1465,6 @@ test("a failed read's line takes the focus the empty tree holds, and the focus s
     await waitFor(() => expect(document.activeElement).toBe(tree));
     failed.again([statement("s1"), decisionNode("first")]);
     await waitFor(() => expect(focusedRow(failed)).toBe(D("first")));
-    expect(document.activeElement).not.toBe(document.body);
   } finally {
     failed.unmount();
   }
@@ -1487,11 +1521,11 @@ test("a failed read's line takes the focus the empty tree holds, and the focus s
     await act(async () => row.focus());
     expect(focusedRow(partial)).toBe(D("first"));
     expect(row.querySelector("[data-node-body]")).not.toBeNull();
-    expect(row.querySelector("[data-node-card]")?.className).toContain(pageFocusedRow);
+    expect(row.querySelector("[data-node-card]")).toHaveClass(pageFocusedRow);
     await user.tab({ shift: true });
     expect(document.activeElement).toBe(retryOf(partial, "asks"));
     expect(row.querySelector("[data-node-body]")).toBeNull();
-    expect(row.querySelector("[data-node-card]")?.className).not.toContain(pageFocusedRow);
+    expect(row.querySelector("[data-node-card]")).not.toHaveClass(pageFocusedRow);
     expect(focusedRow(partial)).toBeUndefined();
     partial.unmount();
   } finally {
@@ -1499,17 +1533,18 @@ test("a failed read's line takes the focus the empty tree holds, and the focus s
   }
 
   // A list that holds only the foot, with the asks read refused before it first answers. A
-  // question or the asks' Retry may yet come, so the foot's control takes no focus until that
-  // read has answered: the tree's focus, which `t d` gives it from outside the view before the
-  // refusal comes back, goes to the Retry once its line is drawn, and a page opened on the list
-  // puts it there too. Enter on the Retry with the read refused again leaves its line drawn
-  // while the read runs, its Retry busy and still holding the focus, and that same Retry holds
-  // it once the run is refused. Enter with the read answering no question takes the line off
-  // the page with the focus on its Retry and leaves a list that holds only the foot with both
-  // reads held, so the focus goes on from the tree to the foot's control; a later read that adds
-  // a question takes it from there to the question's row, as the foot hands it on. Where the
-  // read's answer brings the question with it, drawn in the one render, the focus goes from the
-  // busy Retry to the question's row, and the foot's control takes it at no point on the way.
+  // question or the asks' Retry may yet come, so the foot, its rows as much as its control,
+  // takes no focus until that read has answered: the tree's focus, which `t d` gives it from
+  // outside the view before the refusal comes back, goes to the Retry once its line is drawn,
+  // and a page opened on the list puts it there too. Enter on the Retry with the read refused
+  // again leaves its line drawn while the read runs, its Retry busy and still holding the focus,
+  // and that same Retry holds it once the run is refused. Enter with the read answering no
+  // question takes the line off the page with the focus on its Retry and leaves a list that
+  // holds only the foot with both reads held, so the focus goes on from the tree to the foot's
+  // first row, which keeps it when a later read adds a question: it is a row of the list, as
+  // the question's is. Where the read's answer brings the question with it, drawn in the one
+  // render, the focus goes from the busy Retry to the question's row, and the foot takes it at
+  // no point on the way.
   const asksOut = Promise.withResolvers<never>();
   const asksRead = spyOn(api, "listIssueAsks").mockReturnValue(asksOut.promise);
   try {
@@ -1535,9 +1570,14 @@ test("a failed read's line takes the focus the empty tree holds, and the focus s
     await waitFor(() =>
       expect(opened.client.getQueryData<readonly unknown[]>(["asks", KEY])).toEqual([])
     );
-    await waitFor(() => expect(document.activeElement).toBe(footControlOf(opened)));
+    await waitFor(() =>
+      expect(document.activeElement, "the focus is not on the minor decision").toBe(
+        rowOf(opened, D("minor"))
+      )
+    );
     opened.again({ children: [openAsk("q-open"), decisionNode("minor")] });
-    await waitFor(() => expect(focusedRow(opened)).toBe("q-open"));
+    await waitFor(() => expect(rowsOfPart(opened, "open_questions")).toEqual(["q-open"]));
+    expect(document.activeElement).toBe(rowOf(opened, D("minor")));
     opened.unmount();
 
     asksRead.mockRejectedValue(new Error("refused"));
@@ -1562,9 +1602,8 @@ test("a failed read's line takes the focus the empty tree holds, and the focus s
         // tree built from that answer draws them.
         answered.again({ children: [openAsk("q-open"), decisionNode("minor")] });
         answer.resolve([]);
-        const settled = Promise.withResolvers<void>();
-        setTimeout(settled.resolve, 0);
-        await settled.promise;
+        // The read's run (`Query.promise`): the query takes its answer as the run ends, first.
+        await answered.client.getQueryCache().find({ queryKey: ["asks", KEY] })?.promise;
       });
     } finally {
       document.removeEventListener("focusin", recordFocus);
@@ -1733,9 +1772,9 @@ test("a refused read's run that ends with no new refusal draws no new alert, and
       expect(document.activeElement, "the cancelled run took the focus off the Retry").toBe(retry);
 
       await retryRefusedAgain(view, read, (run) => spy.mockReturnValue(run), user);
-      expect(alertOf(view, read), "the read refused again kept the alert it drew before").not.toBe(
-        alert
-      );
+      const again = alertOf(view, read);
+      expect(again, "the read refused again drew no alert").not.toBeNull();
+      expect(again, "the read refused again kept the alert it drew before").not.toBe(alert);
       view.unmount();
     } finally {
       if (read === "asks") spy.mockRestore();
@@ -1746,10 +1785,8 @@ test("a refused read's run that ends with no new refusal draws no new alert, and
 // R2: wherever a decision is drawn, one waiting for a person's review reads "Waiting for
 // review", one a person kept "Kept by" with their name, and a replaced one "Replaced", each by
 // a word and a shape (R6).
-test("a decision reads how it stands in the three states the page names", async () => {
-  const user = userEvent.setup();
+test("a decision reads how it stands in the three states the page names", () => {
   const view = renderBody(wholeIssue());
-  await user.click(view.getByRole("button", FOOT_CONTROL));
 
   const state = (id: string) => {
     const row = rowOf(view, id);
@@ -1805,9 +1842,7 @@ test("a decision reads how it stands in the three states the page names", async 
 // other row of the filter draws either: not the reader's own decisions, not a question, and
 // not a decision no statement rests on, whether or not it waits.
 test("Keep and Change are drawn on the review list's rows and on no other", async () => {
-  const user = userEvent.setup();
   const view = renderBody(wholeIssue());
-  await user.click(view.getByRole("button", FOOT_CONTROL));
 
   const controls = (id: string) =>
     [...rowOf(view, id).querySelectorAll("button[data-row-action]")].map((button) => [
@@ -1927,7 +1962,7 @@ test("a decision that leaves the review list by no act of the reader keeps the f
   kept.unmount();
 
   // The reader is on the decision, and the decisions view, read again, says it was replaced,
-  // which puts it in the folded foot.
+  // which puts it in the foot.
   const replaced = renderBody(whole);
   await act(async () => rowOf(replaced, D("second")).focus());
   await act(async () =>
@@ -2007,7 +2042,6 @@ test("an entry that moves to another part by no act of the reader keeps the focu
   answered.unmount();
 
   const tied = renderBody(whole);
-  await act(async () => tied.getByRole("button", FOOT_CONTROL).click());
   await waitFor(() => expect(rowsOfPart(tied, "agents")).toContain(D("minor")));
   await act(async () => rowOf(tied, D("minor")).focus());
   expect(focusedRow(tied)).toBe(D("minor"));
@@ -2221,7 +2255,7 @@ test("an answered ask draws the person's answer as stored, and no reading", asyn
   );
 
   // The agent's write-up of the answer is drawn nowhere in the filter.
-  expect(view.container.querySelector(`[data-node-id="${D("reading")}"]`)).toBeNull();
+  expect(view.container.querySelector(`[data-node-id="${READING.id}"]`)).toBeNull();
   expect(view.queryByText("The reader wants the rail kept.")).toBeNull();
 });
 
@@ -2250,10 +2284,8 @@ test("a declined ask says who declined it and draws no answer", () => {
 
 // c-decisions: "The decision that shaped three requirements is one entry with one node id, and
 // it reaches all three. Each entry links to the node that holds it."
-test("a decision reaches each statement it shaped, and every entry links to its node", async () => {
-  const user = userEvent.setup();
+test("a decision reaches each statement it shaped, and every entry links to its node", () => {
   const view = renderBody(wholeIssue());
-  await user.click(view.getByRole("button", FOOT_CONTROL));
 
   expect(view.container.querySelectorAll(`[data-node-id="${D("second")}"]`).length).toBe(1);
   const informs = rowOf(view, D("second")).querySelector("[data-decision-informs]");
@@ -2410,7 +2442,7 @@ test("each statement on the informs line is named within 32 characters", () => {
 // R9: the list is one tab stop and the outline's own keys work it: `j` and `k` move through
 // the parts in the order they are drawn, and so does `q` through the open questions, Shift+K
 // presses Keep, Enter goes to the entry's node in the conversation, and the key that cycles how
-// much is drawn unfolds the foot.
+// much is drawn opens every body, the foot unfolded, and unfolds the foot the reader folded.
 test("the outline's keys move through the parts and work a row's controls", async () => {
   const user = userEvent.setup();
   const kept = spyOn(api, "keepDecision").mockReturnValue(Promise.withResolvers<never>().promise);
@@ -2435,15 +2467,18 @@ test("the outline's keys move through the parts and work a row's controls", asyn
     await waitFor(() => expect(kept).toHaveBeenCalled());
     expect(kept.mock.calls[0]?.[1]).toBe("first");
 
-    // The key that cycles how much is drawn unfolds the foot, and folds it again.
+    // The key that cycles how much is drawn opens every body, the foot unfolded as the list
+    // opened it, and then goes back to the list as it opens, the foot still unfolded.
     await user.keyboard("z");
     expect(rowsOfPart(view, "agents")).toEqual([D("minor"), D("replaced")]);
+    expect(rowOf(view, D("minor")).querySelector("[data-node-body]")).not.toBeNull();
     await user.keyboard("{End}");
     expect(focusedRow(view)).toBe(D("replaced"));
     await user.keyboard("{Home}");
     expect(focusedRow(view)).toBe("q-open");
     await user.keyboard("z");
-    expect(rowsOfPart(view, "agents")).toEqual([]);
+    expect(rowsOfPart(view, "agents")).toEqual([D("minor"), D("replaced")]);
+    expect(rowOf(view, D("minor")).querySelector("[data-node-body]")).toBeNull();
 
     // Enter on a row goes to its node in the conversation.
     await user.keyboard("{Enter}");
@@ -2451,13 +2486,16 @@ test("the outline's keys move through the parts and work a row's controls", asyn
       expect(view.getByTestId("where").textContent).toBe(`/issues/${KEY}/asks/q-open`)
     );
 
-    // A fold with the focus on one of the foot's rows puts it on the foot's control, which
-    // stays, rather than dropping it to the page with the row.
-    await user.keyboard("z");
-    await act(async () => rowOf(view, D("minor")).focus());
-    await user.keyboard("z");
+    // Where the reader folded the foot, with the focus on its control, the key unfolds it again
+    // with every body open, and then leaves it unfolded.
+    await act(async () => footControlOf(view)?.click());
     expect(rowsOfPart(view, "agents")).toEqual([]);
     expect(document.activeElement).toBe(footControlOf(view));
+    await user.keyboard("z");
+    expect(rowsOfPart(view, "agents")).toEqual([D("minor"), D("replaced")]);
+    expect(rowOf(view, D("minor")).querySelector("[data-node-body]")).not.toBeNull();
+    await user.keyboard("z");
+    expect(rowsOfPart(view, "agents")).toEqual([D("minor"), D("replaced")]);
 
     // Let close on a row pinned open, pressed while another row has the focus, leaves the focus
     // where it is: the press moves none, so the body it closes takes none to the page.
@@ -2506,6 +2544,8 @@ test("the page's ask and the address put the focus on an entry, unfolding the fo
   view.again({ request: { focusBranch: false, id: D("first"), seq: 1 } });
   expect(focusedRow(view)).toBe("q-open");
 
+  // The reader folds the foot, and an address that names one of its own unfolds it again.
+  await act(async () => footControlOf(view)?.click());
   expect(rowsOfPart(view, "agents")).toEqual([]);
   view.again({ reveal: D("replaced") });
   await waitFor(() => expect(focusedRow(view)).toBe(D("replaced")));
@@ -2563,6 +2603,150 @@ test("an address that names a comment draws its row first and focuses it", async
   expect(view.getByText(EMPTY_LINE)).toBeTruthy();
 });
 
+/** A session nobody named, which the page calls by its word for an agent. */
+const UNTITLED: Actor = { id: "0f8e2c4a-1111-4222-8333-444455556666", kind: "session" };
+
+/** When the posts below were deleted, and when edited. */
+const DELETED_AT = "2026-11-12T10:00:00Z";
+const EDITED_AT = "2026-11-12T11:00:00Z";
+
+/** How the deleted line opens: the page's words, then the session nobody named as the page
+ *  names an author, never as the model's line holds it. */
+const DELETED_OPENING = `${CONTROL_LABELS.post_deleted_by} ${CONTROL_LABELS.unnamed_author} · `;
+
+/** A comment the session nobody named wrote and deleted, as the model holds it
+ *  (`tree-drafts.ts`'s `addTurns`): its delete, and the deleted line as its text, the actor
+ *  named as no registry knows it and the time as stored, with no reading. */
+function deletedComment(id: string, children: readonly TreeNode[] = []): TreeNode {
+  return node({
+    at: "2026-11-12T09:00:00Z",
+    author: UNTITLED,
+    children,
+    deletedAt: DELETED_AT,
+    deletedBy: UNTITLED,
+    id,
+    reference: `dispatch://${KEY}/comment/${id}`,
+    text: `${CONTROL_LABELS.post_deleted_by} ${actorLabelText(UNTITLED)} · ${DELETED_AT}`,
+    type: "comment",
+  });
+}
+
+// R2 and R3 of dispatch://INFRA-1523: a comment an address named is drawn with the marks the
+// outline's row draws it with once its author corrected it. One its author deleted draws the
+// deleted line in place of its words, in the page's words, its actor named as the page names an
+// author and never as the model's text holds it, and its time as the page draws a time.
+test("a deleted comment an address named draws its deleted line, never the model's line", () => {
+  const gone = deletedComment("c-gone");
+  const children = [statement("s1"), gone];
+  const view = renderBody(
+    { children },
+    {
+      reveal: gone.id,
+      view: presetView(issueTree(children), "decisions", "", new Set([gone.id])).root,
+    }
+  );
+  const row = rowOf(view, gone.id);
+  const deletedLine = row.querySelector("[data-node-words] [data-post-deleted]");
+  expect(deletedLine?.textContent?.slice(0, DELETED_OPENING.length)).toBe(DELETED_OPENING);
+  expect(deletedLine?.hasAttribute(PAGE_CHROME_ATTRIBUTE)).toBe(true);
+  expect(row.textContent).not.toContain(actorLabelText(UNTITLED));
+  expect(row.textContent).not.toContain(DELETED_AT);
+});
+
+// R2 of dispatch://INFRA-1523: a message an address named that its author edited draws its
+// words as they read now, and says ` · edited` after its time, outside its words, in the page's
+// own words, as the outline's row says it in its margin.
+test("an edited message an address named draws its words and says · edited after them", () => {
+  const edited = node({
+    at: "2026-11-12T09:00:00Z",
+    author: READER_ACTOR,
+    editedAt: EDITED_AT,
+    id: "m-edited",
+    reference: `dispatch://${KEY}/message/m-edited`,
+    text: "The rail stays where it is, at 56 px.",
+    type: "message",
+  });
+  const children = [statement("s1"), edited];
+  const view = renderBody(
+    { children },
+    {
+      reveal: edited.id,
+      view: presetView(issueTree(children), "decisions", "", new Set([edited.id])).root,
+    }
+  );
+  const row = rowOf(view, edited.id);
+  expect(words(row.querySelector("[data-node-words]"))).toBe(edited.text);
+  const mark = row.querySelector("[data-node-edited]");
+  expect([mark?.textContent, mark?.hasAttribute(PAGE_CHROME_ATTRIBUTE)]).toEqual([
+    ` · ${CONTROL_LABELS.post_edited}`,
+    true,
+  ]);
+  expect(mark?.closest("[data-node-words]")).toBeNull();
+});
+
+// R2 and R3 of dispatch://INFRA-1523: an entry's parent line is the outline's own
+// (`NodeRow.tsx`'s `ParentLink`), so it carries a corrected post's marks. A comment its author
+// deleted is drawn as its deleted line, its actor named as the page names an author and never as
+// the model's line holds it, and it stays the link to the comment, out of the tab order as
+// everything inside a row is.
+test("an entry whose parent is a deleted comment draws the parent line as the deleted line", () => {
+  const view = renderBody({
+    children: [statement("s1"), deletedComment("c-gone", [decisionNode("under")])],
+    made: [decision("under", { decision: { links: [shaped(specRef("s1"))] } })],
+  });
+  const line = rowOf(view, D("under")).querySelector("[data-node-parent-line]");
+  expect(line?.getAttribute("data-parent-id")).toBe("c-gone");
+  const deletedLine = line?.querySelector("a [data-post-deleted]");
+  expect(deletedLine?.textContent?.slice(0, DELETED_OPENING.length)).toBe(DELETED_OPENING);
+  expect(line?.textContent).not.toContain(actorLabelText(UNTITLED));
+  expect(line?.textContent).not.toContain(DELETED_AT);
+  expect(
+    [...(line?.querySelectorAll<HTMLAnchorElement>("a") ?? [])].map((link) => [
+      link.getAttribute("href"),
+      link.tabIndex,
+    ])
+  ).toEqual([[`/issues/${KEY}/comments/c-gone`, -1]]);
+});
+
+// R2 of dispatch://INFRA-1523: an entry whose parent is a comment its author edited says
+// ` · edited` after the parent's line, in the page's own words, inside the link to the comment;
+// a parent with no words of its own is named by its kind's word once, then the same mark.
+test("an entry whose parent is an edited comment draws · edited after the parent's line", () => {
+  const edited = node({
+    children: [decisionNode("under")],
+    editedAt: EDITED_AT,
+    id: "c-edited",
+    reference: `dispatch://${KEY}/comment/c-edited`,
+    text: "Where does the rail sit?",
+    type: "comment",
+  });
+  const wordless = node({
+    children: [decisionNode("bare")],
+    editedAt: EDITED_AT,
+    id: "c-wordless",
+    reference: `dispatch://${KEY}/comment/c-wordless`,
+    text: "",
+    type: "comment",
+  });
+  const view = renderBody({
+    children: [statement("s1"), edited, wordless],
+    made: [
+      decision("under", { decision: { links: [shaped(specRef("s1"))] } }),
+      decision("bare", { decision: { links: [shaped(specRef("s1"))] } }),
+    ],
+  });
+  const line = rowOf(view, D("under")).querySelector("[data-node-parent-line]");
+  const link = line?.querySelector("a");
+  expect(link?.textContent).toBe(`${edited.text} · ${CONTROL_LABELS.post_edited}`);
+  expect(link?.querySelector(`[${PAGE_CHROME_ATTRIBUTE}]`)?.textContent).toBe(
+    ` · ${CONTROL_LABELS.post_edited}`
+  );
+  expect(link?.getAttribute("href")).toBe(`/issues/${KEY}/comments/c-edited`);
+  expect(words(rowOf(view, D("bare")).querySelector("[data-node-parent-line]"))).toBe(
+    `${NODE_TYPE_NAMES.comment} · ${CONTROL_LABELS.post_edited}`
+  );
+});
+
 // R6: the page holds which of the Contents list's requests an outline or a view took
 // (`outline-request.tsx`), so a view drawn again, turned off and on, does not take the reader
 // back to the request it took before.
@@ -2582,44 +2766,68 @@ test("a body drawn again does not act on a request the page already took", async
   expect(document.activeElement).toBe(elsewhere);
 });
 
-// R4, R6: a list that holds only the foot draws no row, so it has no tab stop to take the
-// focus. A page opened on it with nothing focused gives the focus to the foot's control, and
-// so does a focus on the tree, which is where `t d` puts it when the tree holds no tab stop
+// R4, R6: a list that holds only the foot draws the foot's rows unfolded, after the tree element
+// and outside it, where the stage looks for no tab stop (`slots/stage.tsx`). A page opened on it
+// with nothing focused gives the focus to the list's tab stop, the foot's first row, and so does
+// a focus on the tree, which is where `t d` puts it when the tree holds no tab stop
 // (`useIssueKeymap.ts`): the tree element keeps no focus while the list draws a row or the
-// foot. The foot leaving the page with the focus on its control leaves that focus in the list.
-test("a list that holds only the foot gives the focus to the foot's control", async () => {
+// foot. With the foot folded the list draws no row, and the focus goes to the foot's control.
+// The foot leaving the page with the focus in it leaves that focus in the list.
+test("a list that holds only the foot gives the focus to its first row, and to the foot's control once folded", async () => {
   const user = userEvent.setup();
   expect(document.activeElement).toBe(document.body);
   const view = renderBody(FOOT_ONLY);
-  await waitFor(() => expect(document.activeElement).toBe(footControlOf(view)));
+  await waitFor(() =>
+    expect(document.activeElement, "the focus is not on the foot's first row").toBe(
+      rowOf(view, D("minor"))
+    )
+  );
 
-  (document.activeElement as HTMLElement).blur();
-  expect(document.activeElement).not.toBe(footControlOf(view));
+  await act(async () => (document.activeElement as HTMLElement).blur());
+  expect(focusedRow(view)).toBeUndefined();
+  await act(async () => view.getByRole("tree", { name: CONTROL_LABELS.tree }).focus());
+  expect(document.activeElement).toBe(rowOf(view, D("minor")));
+  // Folded, the list draws no row, and the tree passes the focus to the foot's control.
+  await user.click(footControlOf(view) as HTMLElement);
+  expect(rowsOfPart(view, "agents")).toEqual([]);
+  await act(async () => (document.activeElement as HTMLElement).blur());
   await act(async () => view.getByRole("tree", { name: CONTROL_LABELS.tree }).focus());
   expect(document.activeElement).toBe(footControlOf(view));
   view.unmount();
 
-  // The tree is built read by read (`useIssueTree.ts`): a list that holds only the foot until
-  // the asks read answers gives the focus to the foot's control, and once the question's row
-  // is drawn the focus goes to it, where the stage would have put it.
+  // The tree is built read by read (`useIssueTree.ts`): where the tree passed the focus to the
+  // control of a folded foot, the list drawing no row, a question's row drawn later takes it,
+  // where the stage would have put it.
   const early = renderBody(FOOT_ONLY);
-  await waitFor(() => expect(document.activeElement).toBe(footControlOf(early)));
+  await waitFor(() =>
+    expect(document.activeElement, "the focus is not on the foot's first row").toBe(
+      rowOf(early, D("minor"))
+    )
+  );
+  await user.click(footControlOf(early) as HTMLElement);
+  await act(async () => (document.activeElement as HTMLElement).blur());
+  await act(async () => early.getByRole("tree", { name: CONTROL_LABELS.tree }).focus());
+  expect(document.activeElement).toBe(footControlOf(early));
   early.again({ children: [openAsk("q-open"), decisionNode("minor")] });
   await waitFor(() => expect(focusedRow(early)).toBe("q-open"));
   early.unmount();
 
   // A read ties the foot's one decision to a statement, which takes it up to the review list,
-  // and the foot leaves the page with the focus on its control. The focus goes to the
-  // decision's row there, never to the page's body, whether the reader put it on the control,
-  // by Tab, or the body did, on a page opened here.
+  // and the foot leaves the page with the focus in it. The focus goes to the decision's row
+  // there, never to the page's body, whether it was on the foot's control, where the reader
+  // put it by Shift+Tab from the row, or on the foot's row, where the body put it on a page
+  // opened here.
   const tieable = { children: [statement("s1"), decisionNode("minor")], made: [decision("minor")] };
   const tied = treeAnswer([decision("minor", { decision: { links: [shaped(specRef("s1"))] } })]);
-  for (const placed of ["the reader", "the body"] as const) {
+  for (const placed of ["the control", "the row"] as const) {
     const left = renderBody(tieable);
-    await waitFor(() => expect(document.activeElement).toBe(footControlOf(left)));
-    if (placed === "the reader") {
-      await act(async () => (document.activeElement as HTMLElement).blur());
-      await user.tab();
+    await waitFor(() =>
+      expect(document.activeElement, "the focus is not on the foot's first row").toBe(
+        rowOf(left, D("minor"))
+      )
+    );
+    if (placed === "the control") {
+      await user.tab({ shift: true });
       expect(document.activeElement).toBe(footControlOf(left));
     }
     await act(async () => {
@@ -2634,10 +2842,17 @@ test("a list that holds only the foot gives the focus to the foot's control", as
     left.unmount();
   }
 
-  // A reader who presses the control keeps the focus on it, though the foot's rows it unfolds
-  // are drawn.
+  // A reader who presses the control keeps the focus on it, though the press folds the foot's
+  // rows, and the next press draws them again.
   const pressed = renderBody(FOOT_ONLY);
-  await waitFor(() => expect(document.activeElement).toBe(footControlOf(pressed)));
+  await waitFor(() =>
+    expect(document.activeElement, "the focus is not on the foot's first row").toBe(
+      rowOf(pressed, D("minor"))
+    )
+  );
+  await user.click(footControlOf(pressed) as HTMLElement);
+  expect(rowsOfPart(pressed, "agents")).toEqual([]);
+  expect(document.activeElement).toBe(footControlOf(pressed));
   await user.click(footControlOf(pressed) as HTMLElement);
   expect(rowsOfPart(pressed, "agents")).toEqual([D("minor")]);
   expect(document.activeElement).toBe(footControlOf(pressed));
@@ -2646,17 +2861,17 @@ test("a list that holds only the foot gives the focus to the foot's control", as
 // The app focuses its main element at each page change but the first (`app.tsx`), so a page
 // opened on a list that holds only the foot by a link inside the app - from another issue, the
 // Inbox or a board - finds the focus on what holds the list. Nobody put it there, as nobody puts
-// it on the page itself, so the foot's control takes it, here once the tree read and its
-// decisions view answer after the page mounted. The body is drawn in the stage, as the page
-// draws a view.
-test("a list that holds only the foot, opened by a link inside the app, gives its control the focus once the reads answer", async () => {
+// it on the page itself, so the foot's first row, the list's tab stop, takes it, here once the
+// tree read and its decisions view answer after the page mounted. The body is drawn in the
+// stage, as the page draws a view.
+test("a list that holds only the foot, opened by a link inside the app, gives its first row the focus once the reads answer", async () => {
   const answer = Promise.withResolvers<TreeAnswer>();
   treeReads ??= spyOn(api, "getIssueTree");
   treeReads.mockReturnValue(answer.promise);
   try {
     const view = renderBody({ ...FOOT_ONLY, made: null }, {}, { main: true, stage: true });
-    // The foot is drawn from the tree, but until the read answers a row may yet come, so its
-    // control takes no focus.
+    // The foot is drawn from the tree, but until the read answers a row may yet come, so the
+    // foot takes no focus.
     await act(() => Promise.resolve());
     expect(footControlOf(view)).not.toBeNull();
     expect(document.activeElement).toBe(view.getByRole("main"));
@@ -2665,7 +2880,7 @@ test("a list that holds only the foot, opened by a link inside the app, gives it
       expect(
         document.activeElement,
         "the reads answered after the page mounted, and the focus stayed on the app's main element"
-      ).toBe(footControlOf(view))
+      ).toBe(rowOf(view, D("minor")))
     );
     view.unmount();
   } finally {
@@ -2675,7 +2890,7 @@ test("a list that holds only the foot, opened by a link inside the app, gives it
 
 // The same with the reads cached, as on Back to the page's address: the body places the focus in
 // the commit the page mounts in, and the app then moves it to its main element, since React runs
-// a child's effects before its parent's. The control takes it back in the next frame.
+// a child's effects before its parent's. The foot's first row takes it back in the next frame.
 test("a list that holds only the foot, opened by a link inside the app with its reads cached, takes back the focus the app puts on its main element", async () => {
   (document.activeElement as HTMLElement | null)?.blur();
   const view = renderBody(FOOT_ONLY, {}, { main: true, stage: true });
@@ -2687,7 +2902,7 @@ test("a list that holds only the foot, opened by a link inside the app with its 
   expect(
     document.activeElement,
     "the reads were cached, and the focus stayed on the app's main element"
-  ).toBe(footControlOf(view));
+  ).toBe(rowOf(view, D("minor")));
   view.unmount();
 });
 
@@ -2722,23 +2937,34 @@ test("each press of the count of what waits goes to the next thing that waits", 
   await waitFor(() => expect(focusedRow(noQuestion)).toBe(D("second")));
   noQuestion.unmount();
 
-  // A press that lands before the decisions view holds the decision is taken once it does.
-  const early = renderBody({ children: [statement("s1"), decisionNode("first")] });
-  early.again({ waitingPress: 2 });
-  expect(focusedRow(early)).toBeUndefined();
-  await act(async () =>
-    early.client.setQueryData(
-      viewKey(KEY, "decisions"),
-      treeAnswer([
-        decision("first", {
-          decision: {
-            links: [shaped(specRef("s1"))],
-          },
-        }),
-      ])
-    )
-  );
-  await waitFor(() => expect(focusedRow(early)).toBe(D("first")));
+  // A press that lands before the decisions view holds the decision is taken once it does. The
+  // decision stands in the foot until then, and the reader is on a control outside the view, so
+  // the foot's row takes no focus as the view opens (`focusIsLoose`).
+  const outside = document.body.appendChild(document.createElement("button"));
+  try {
+    outside.focus();
+    const early = renderBody({ children: [statement("s1"), decisionNode("first")] });
+    early.again({ waitingPress: 2 });
+    expect(document.activeElement).toBe(outside);
+    expect(focusedRow(early)).toBeUndefined();
+    await act(async () =>
+      early.client.setQueryData(
+        viewKey(KEY, "decisions"),
+        treeAnswer([
+          decision("first", {
+            decision: {
+              links: [shaped(specRef("s1"))],
+            },
+          }),
+        ])
+      )
+    );
+    await waitFor(() =>
+      expect(focusedRow(early), "the focus is not on the first decision").toBe(D("first"))
+    );
+  } finally {
+    outside.remove();
+  }
 });
 
 // A Change sent on a decision is a comment anchored to its words. Once the tree read hangs it
@@ -2768,11 +2994,16 @@ test("a decision the reader sent a Change on says so, leaves the review list and
     await user.click(view.getByRole("button", { name: CONTROL_LABELS.send_change }));
     await waitFor(() => expect(create).toHaveBeenCalled());
     // The comment is anchored to the decision's own block and words in the spec, the document
-    // the decision is a block of.
+    // the decision is a block of, at the first match of those words in that block.
     expect(create.mock.calls[0]?.slice(0, 2)).toEqual([
       KEY,
       {
-        anchor: { artifact: SPEC_DOCUMENT.id, block_id: "second", quote: "The decision second." },
+        anchor: {
+          artifact: SPEC_DOCUMENT.id,
+          block_id: "second",
+          occurrence: 0,
+          quote: "The decision second.",
+        },
         body: "Name the read, please.",
       },
     ]);
@@ -2786,9 +3017,11 @@ test("a decision the reader sent a Change on says so, leaves the review list and
     expect(rowsOfPart(view, "yours")[0]).toBe(D("second"));
     const row = rowOf(view, D("second"));
     expect(row.getAttribute("data-node-state")).toBe("change_requested");
+    // It reads "Changed by" with the reader's name, where it read "Change requested" (R2, R3).
     expect(words(row.querySelector("[data-node-margin] [data-node-state]"))).toBe(
-      NODE_STATE_WORDS.decision.change_requested
+      `${DECISIONS_WORDS.changed_by} alice`
     );
+    expect(row.querySelector("[data-changed-by][data-author-text]")?.textContent).toBe("alice");
     expect(row.querySelectorAll("button[data-row-action]").length).toBe(0);
     expect(row.querySelector("[data-change-words]")?.textContent).toBe("Name the read, please.");
     const link = row.querySelector("a[data-change-link]");
@@ -2803,6 +3036,32 @@ test("a decision the reader sent a Change on says so, leaves the review list and
     create.mockRestore();
     list.mockRestore();
   }
+});
+
+// INFRA-1523, R2: a Change its author edited says so after its words, as every surface marks an
+// edited post: the person's words as stored, then ` · edited` in the page's own words
+// (`EditedMark`). A Change nobody edited draws its words and nothing after them. Each Change is
+// the comment the tree read hangs under its decision, and the comments read says when its author
+// last edited it, which the tree read answers no mark of.
+test("a Change its author edited draws its words, then · edited, and one nobody edited no mark", async () => {
+  const changes = [
+    changeComment("change-second", "second", "2026-11-16T09:00:00Z", "Name the read, please."),
+    changeComment("change-first", "first", "2026-11-16T10:00:00Z", "Keep it shorter."),
+  ];
+  const comments = [
+    { deleted_at: null, edited_at: "2026-11-16T09:30:00Z", id: "change-second" },
+    { deleted_at: null, edited_at: null, id: "change-first" },
+  ] as Comment[];
+  const view = renderBody({ ...wholeIssue(), changes, comments });
+  const changeWords = (block: string) => rowOf(view, D(block)).querySelector("[data-change-words]");
+  await waitFor(() =>
+    expect(changeWords("second")?.textContent).toBe("Name the read, please. · edited")
+  );
+  const mark = changeWords("second")?.lastElementChild;
+  expect(mark?.textContent).toBe(" · edited");
+  expect(mark?.hasAttribute(PAGE_CHROME_ATTRIBUTE)).toBe(true);
+  expect(changeWords("first")?.textContent).toBe("Keep it shorter.");
+  expect(changeWords("first")?.querySelector(`[${PAGE_CHROME_ATTRIBUTE}]`)).toBeNull();
 });
 
 // R2: the view draws four parts. What another person answered is no part of its own: it stands
@@ -2906,7 +3165,6 @@ test("Left on a row of the foot goes up to the foot's control", async () => {
       );
     });
   const control = footControlOf(view) as HTMLElement;
-  await act(async () => control.click());
   expect(rowsOfPart(view, "agents")).toEqual([D("minor"), D("replaced")]);
   const foot = rowOf(view, D("replaced"));
   expect(foot).toHaveAttribute("aria-level", "2");
@@ -3080,10 +3338,8 @@ test("the body draws the entries the filter's view left", async () => {
 // R2: the filter is drawn at every width. Nothing the body draws is taken off the page at a
 // width: no element of it carries a class that hides it, at any breakpoint. What each width
 // lays out is the browser's to say (c-decisions at 1440 px and at 390 px).
-test("nothing the body draws is hidden at a width", async () => {
-  const user = userEvent.setup();
+test("nothing the body draws is hidden at a width", () => {
   const view = renderBody(wholeIssue());
-  await user.click(view.getByRole("button", FOOT_CONTROL));
 
   const hiding = /(^|\s)(\S+:)?(hidden|invisible|sr-only)(\s|$)/;
   expect(
@@ -3092,4 +3348,243 @@ test("nothing the body draws is hidden at a width", async () => {
       .map((element) => element.getAttribute("class"))
   ).toEqual([]);
   expect(view.container.querySelectorAll("[data-decisions-body] [hidden]").length).toBe(0);
+});
+
+/** Lays every element out `height` px tall, and every element's words `height` px long, until
+ *  the answer is called: no DOM of a unit test lays anything out, and the page's one measurer
+ *  reads the words' own boxes (`clamp-measurer.ts`'s `measureClamp`). */
+function layOut(height: number): () => void {
+  const own = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollHeight");
+  Object.defineProperty(HTMLElement.prototype, "scrollHeight", {
+    configurable: true,
+    get: () => height,
+  });
+  // On Element, which owns the method (`docs/testing.md`).
+  const box = spyOn(Element.prototype, "getBoundingClientRect").mockReturnValue(
+    new DOMRect(0, 0, 600, height)
+  );
+  return () => {
+    if (own === undefined) Reflect.deleteProperty(HTMLElement.prototype, "scrollHeight");
+    else Object.defineProperty(HTMLElement.prototype, "scrollHeight", own);
+    box.mockRestore();
+  };
+}
+
+// R2, root R6, decision 424: each entry draws its words whole, with no cut and no control that
+// opens the rest. An answered question and an agent's decision at the foot, the two the six-line
+// cut reached, draw every word of their 400 lines, even once the page has measured them, and no
+// "more" stands under either.
+test("an entry's words are drawn whole, with no cut", async () => {
+  // The rows draw the reading of their words, which is the page's engine's.
+  await warmMarkdownRenderer();
+  const text = Array.from({ length: 3000 }, (_unused, at) => `word${at + 1}`).join(" ");
+  // 3,000 words over 400 lines of 24 px, of which the cut drew six.
+  const restore = layOut(9600);
+  const near = installIntersectionObserver();
+  try {
+    const view = renderBody({
+      children: [
+        answeredAsk("a-long", { at: "2026-11-14T09:00:00Z", text: "Yes." }, { text }),
+        decisionNode("long", { text }),
+      ],
+      made: [decision("long", { text })],
+    });
+    expect(rowsOfPart(view, "yours")).toEqual(["a-long"]);
+    expect(rowsOfPart(view, "agents")).toEqual([D("long")]);
+    await measureNearWords(near);
+    for (const id of ["a-long", D("long")]) {
+      const row = rowOf(view, id);
+      const drawn = row.querySelector<HTMLElement>("[data-node-words]");
+      expect({ id, maxHeight: drawn?.style.maxHeight, words: words(drawn) }).toEqual({
+        id,
+        maxHeight: "",
+        words: text,
+      });
+      expect({
+        id,
+        more: [...row.querySelectorAll("[data-node-more], button")].filter(
+          (control) =>
+            control.hasAttribute("data-node-more") ||
+            control.textContent?.startsWith(CONTROL_LABELS.read_more) === true
+        ).length,
+      }).toEqual({ id, more: 0 });
+    }
+    view.unmount();
+  } finally {
+    near.restore();
+    restore();
+  }
+});
+
+/** `count` ids, each `prefix` and then its place from 01, in order. */
+function numbered(prefix: string, count: number): string[] {
+  return Array.from(
+    { length: count },
+    (_unused, at) => `${prefix}${String(at + 1).padStart(2, "0")}`
+  );
+}
+
+/** An issue of `questions` open questions, each waiting on the reader, `review` decisions that
+ *  wait for the reader's review, and `foot` agents' decisions no statement rests on, with the
+ *  ids of each part in the order it draws them: the decisions all made at one time, so each part
+ *  keeps the outline's order. */
+function longIssue(sizes: { foot: number; questions: number; review: number }) {
+  const ids = {
+    foot: numbered("foot", sizes.foot),
+    questions: numbered("q", sizes.questions),
+    review: numbered("review", sizes.review),
+  };
+  return {
+    ids,
+    issue: {
+      children: [
+        statement("s1"),
+        ...ids.questions.map((id) => openAsk(id)),
+        ...ids.review.map((block) => decisionNode(block)),
+        ...ids.foot.map((block) => decisionNode(block)),
+      ],
+      made: [
+        ...ids.review.map((block) =>
+          decision(block, { decision: { links: [shaped(specRef("s1"))] } })
+        ),
+        ...ids.foot.map((block) => decision(block)),
+      ],
+    },
+  };
+}
+
+/** The control under `part` that draws its next entries, or null where it draws none. */
+function nextControlOf(drawn: RenderResult, part: string): HTMLElement | null {
+  return drawn.container.querySelector<HTMLElement>(
+    `[data-decisions-part="${part}"] [data-decisions-next] button`
+  );
+}
+
+/** The words of the control that draws a part's next `count` entries, `left` of them left. */
+const nextWords = (count: number, left: number) =>
+  `${DECISIONS_WORDS.page_next} ${count} (${left} ${DECISIONS_WORDS.page_left})`;
+
+// R2, root R40, decision 424: each part draws its first 20 entries, and under a part that holds
+// more stands one control, a plain button in the tab order, whose name says how many are left -
+// the part's entries less those drawn - and which draws the next 20 at most when pressed, by the
+// keyboard or the pointer, until none is left and it goes, the focus going to the first entry
+// its last press drew. A part of 20 draws them all and no control. Each part pages on its own,
+// and each count counts every entry of its part, drawn or not.
+test("each part draws 20 entries at a time, with the count left", async () => {
+  const user = userEvent.setup();
+  const { ids, issue } = longIssue({ foot: 45, questions: 45, review: 20 });
+  const view = renderBody(issue);
+  /** What `part` draws: the count it says it holds, its rows, and its control's words. */
+  const drawnIn = (part: string) => ({
+    count: words(
+      view.container.querySelector(`[data-decisions-part="${part}"] [data-decisions-count]`)
+    ),
+    next: words(nextControlOf(view, part)),
+    rows: rowsOfPart(view, part),
+  });
+  const questions = (drawn: number) => ids.questions.slice(0, drawn);
+  const foot = (drawn: number) => ids.foot.slice(0, drawn).map(D);
+
+  expect(drawnIn("open_questions")).toEqual({
+    count: "45",
+    next: nextWords(20, 25),
+    rows: questions(20),
+  });
+  expect(drawnIn("review")).toEqual({ count: "20", next: null, rows: ids.review.map(D) });
+  expect(drawnIn("agents")).toEqual({ count: "45", next: nextWords(20, 25), rows: foot(20) });
+  // Each control's name holds the number left, and Tab reaches it.
+  const named: (HTMLElement | null)[] = view.getAllByRole("button", {
+    name: (name) => name.includes(`25 ${DECISIONS_WORDS.page_left}`),
+  });
+  expect(named).toEqual([nextControlOf(view, "open_questions"), nextControlOf(view, "agents")]);
+  await act(async () => rowOf(view, "q01").focus());
+  await user.tab();
+  expect(document.activeElement).toBe(nextControlOf(view, "open_questions"));
+
+  // The questions by the keyboard, then by the pointer; the foot draws what it drew.
+  await user.keyboard("{Enter}");
+  expect(drawnIn("open_questions")).toEqual({
+    count: "45",
+    next: nextWords(5, 5),
+    rows: questions(40),
+  });
+  expect(document.activeElement).toBe(nextControlOf(view, "open_questions"));
+  expect(drawnIn("agents")).toEqual({ count: "45", next: nextWords(20, 25), rows: foot(20) });
+  await user.click(nextControlOf(view, "open_questions") as HTMLElement);
+  expect(drawnIn("open_questions")).toEqual({ count: "45", next: null, rows: questions(45) });
+  await waitFor(() =>
+    expect(focusedRow(view), "the last press does not focus the first entry it drew").toBe("q41")
+  );
+
+  // The foot by the pointer, then by the keyboard; the questions draw what they drew.
+  await user.click(nextControlOf(view, "agents") as HTMLElement);
+  expect(drawnIn("agents")).toEqual({ count: "45", next: nextWords(5, 5), rows: foot(40) });
+  expect(document.activeElement).toBe(nextControlOf(view, "agents"));
+  await user.keyboard(" ");
+  expect(drawnIn("agents")).toEqual({ count: "45", next: null, rows: foot(45) });
+  await waitFor(() =>
+    expect(focusedRow(view), "the last press does not focus the first entry it drew").toBe(
+      D("foot41")
+    )
+  );
+  expect(drawnIn("open_questions")).toEqual({ count: "45", next: null, rows: questions(45) });
+  expect(drawnIn("review")).toEqual({ count: "20", next: null, rows: ids.review.map(D) });
+  view.unmount();
+});
+
+// R2: an address, the Contents pane's go-to, the key to the next question, or the header's count
+// of what waits, that goes to an entry on a page of its part not yet drawn draws the pages of
+// that part up to it first, and then puts the focus on it; every other part draws what it drew.
+test("an entry the view goes to on a later page draws the pages up to it", async () => {
+  const user = userEvent.setup();
+  const { ids, issue } = longIssue({ foot: 45, questions: 45, review: 0 });
+
+  // The address names the foot's 30th decision.
+  const addressed = renderBody(issue, { reveal: D("foot30") });
+  await waitFor(() =>
+    expect(focusedRow(addressed), "the address does not reach the 30th foot entry").toBe(
+      D("foot30")
+    )
+  );
+  expect(rowsOfPart(addressed, "agents")).toEqual(ids.foot.slice(0, 40).map(D));
+  expect(words(nextControlOf(addressed, "agents"))).toBe(nextWords(5, 5));
+  expect(rowsOfPart(addressed, "open_questions")).toEqual(ids.questions.slice(0, 20));
+  addressed.unmount();
+
+  // The Contents pane's list goes to the 30th question.
+  const asked = renderBody(issue, { request: { focusBranch: false, id: "q30", seq: 1 } });
+  await waitFor(() =>
+    expect(focusedRow(asked), "the Contents go-to does not reach the 30th question").toBe("q30")
+  );
+  expect(rowsOfPart(asked, "open_questions")).toEqual(ids.questions.slice(0, 40));
+  expect(rowsOfPart(asked, "agents")).toEqual(ids.foot.slice(0, 20).map(D));
+  asked.unmount();
+
+  // `q` on the last question drawn goes to the next one, on the page after it.
+  const keyed = renderBody(issue);
+  await act(async () => rowOf(keyed, "q20").focus());
+  await user.keyboard("q");
+  await waitFor(() =>
+    expect(focusedRow(keyed), "the next-question key does not reach the 21st question").toBe("q21")
+  );
+  expect(rowsOfPart(keyed, "open_questions")).toEqual(ids.questions.slice(0, 40));
+  keyed.unmount();
+
+  // The header's count, pressed 30 times, goes to the 30th question that waits.
+  const counted = renderBody(issue, { waitingPress: 1 });
+  await waitFor(() =>
+    expect(focusedRow(counted), "the count's first press does not reach the first question").toBe(
+      "q01"
+    )
+  );
+  for (let press = 2; press <= 30; press += 1) {
+    counted.again({ waitingPress: press });
+    await waitFor(() =>
+      expect(focusedRow(counted), `the count's press ${press} does not reach its question`).toBe(
+        ids.questions[press - 1]
+      )
+    );
+  }
+  expect(rowsOfPart(counted, "open_questions")).toEqual(ids.questions.slice(0, 40));
+  counted.unmount();
 });

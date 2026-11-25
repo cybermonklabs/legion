@@ -1,5 +1,9 @@
 package store
 
+//ci:reads docs/site/src/content/docs/dispatch/running-dispatch.md internal/dispatch/store/counts_in_documents_test.go reads it: the connection counts it states of this package's pools must equal the constants that decide them: store.LeasePoolSize, store.ConnectionsPerProcess and every pool of the sum (sharedPoolSize, RoomsPoolSize, roomAppendsPoolSize, compactionPoolSize, healthPoolSize, outboxPoolSize, horizonPoolSize, registryPoolSize, listenerConnections)
+//ci:reads .dispatch/architecture/dispatch-store.md internal/dispatch/store/counts_in_documents_test.go reads it, for the lease pool's own count, which that document states in words
+//ci:reads packages/envoy/cmd/dispatch/README.md TestTheDocumentsStateTheCountsThisPackageHolds docnumbers.Check and sumTerms os.ReadFile under ../../../../..: the pool table and connection sum it states must equal the same constants
+
 import (
 	"os"
 	"path/filepath"
@@ -44,6 +48,7 @@ import (
 // internal/dispatch/processes'), and a number of something else - a migration version, a review
 // round - belongs to no entry anywhere here.
 func TestTheDocumentsStateTheCountsThisPackageHolds(t *testing.T) {
+	t.Parallel()
 	const (
 		site      = "docs/site/src/content/docs/dispatch/running-dispatch.md"
 		readme    = "packages/envoy/cmd/dispatch/README.md"
@@ -127,11 +132,12 @@ func TestTheDocumentsStateTheCountsThisPackageHolds(t *testing.T) {
 	docnumbers.Check(t, root, stated)
 }
 
-// sumTerms is one entry per term of the README's connection sum, "opens at most 64 + 20 + 8 + 4 +
-// 2 + 1 + 2 + 2 + 1 + 5 = 109 connections to Postgres", generated from the pools themselves: the
-// terms in the order the sum writes them, each entry anchored by the terms before it, which are
-// written from the constants too. Nothing of the sum is a literal here, so the day a pool moves
-// the entry moves with it and the sentence is held to the new value rather than to the old one.
+// sumTerms is one entry per term of the README's connection sum, "opens at most 64 + 25 + 8 + 4 +
+// 2 + 2 + 1 + 2 + 2 + 1 + 5 = 116 connections to Postgres", generated from the pools themselves:
+// the terms in the order the sum writes them, each entry anchored by the terms before it, which
+// are written from the constants too. Nothing of the sum is a literal here, so the day a pool
+// moves the entry moves with it and the sentence is held to the new value rather than to the old
+// one.
 //
 // How many terms the sum has is read from the document rather than from the loop below, because
 // a guard whose expectation and whose observation come from one source cannot fail: a term added

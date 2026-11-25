@@ -160,7 +160,7 @@ func checkTask(issue record.Issue, check record.ProductionCheck, cause, detail s
 			"before reporting it, write on the pull request why the check did not run within the bound.")
 	} else {
 		text.WriteString(" Report pending when production does not carry the merge yet, or carries it with one of those requirements still unobserved and a look still to follow, the summary naming what is missing and what you will look for next, with no result recorded and the pull request body saying the check is still open on the merge commit. A pending report also carries wake_at, an RFC 3339 time: when you want your next look. " +
-			"Nothing else starts one. A time less than a minute ahead is moved out to a minute, and a time at or after the check's own bound starts no look of its own, since the look at the bound already stands. " +
+			"Besides it, only the look at the check's bound and the retry of a look nobody reported start one. A time less than a minute ahead is moved out to a minute, and a time at or after the check's own bound starts no look of its own, since the look at the bound already stands. " +
 			"At that report the daemon stops this process and keeps this session, and your next look resumes it with a task naming the summary you gave as what woke it.")
 	}
 	text.WriteString(" Wait for nothing in this session: end the turn with the report.")

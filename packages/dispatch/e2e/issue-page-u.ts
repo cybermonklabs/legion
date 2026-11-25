@@ -1,14 +1,19 @@
-import { expect, type Page, type Request, type Route } from "@playwright/test";
+import { expect, type Locator, type Page, type Request, type Route } from "@playwright/test";
 
 import type { IssueTreeNode, IssueTreeRead } from "../web/src/api/types";
-import { NODE_STATE_WORDS, PRESET_NAMES } from "../web/src/features/issue-page/page-words";
+import {
+  DECISIONS_WORDS,
+  NODE_STATE_WORDS,
+  PRESET_NAMES,
+} from "../web/src/features/issue-page/page-words";
 import type { TreeIdReads } from "../web/src/features/issue-page/tree-read/tree-nodes";
 import { editArtifact, getIssue, listIssueAsks } from "./api";
 import { asPlanner, blockNodeIn, readTree, treePath } from "./issue-layout-seed-support";
 import { requirementBlockId, specBlockRef } from "./issue-layout-seed-text";
 import { presetCount, presetToggle } from "./issue-page";
-import { blockNode } from "./issue-page-g";
+import { blockNode, longWords } from "./issue-page-g";
 import { expectActivePreset, pickPreset } from "./issue-page-i";
+import { decisionsPart } from "./issue-page-q";
 import { drawnRowReadings, type RowReading, steadily } from "./issue-page-t";
 import {
   type DecisionsRead,
@@ -54,12 +59,19 @@ import type { ApiRequests } from "./traffic";
  *   (`[data-spec-because]`) - and `statementsBeside` the statements a decision stands beside, a
  *   link going to a node by part T's rule (`issue-page-t-tree.ts`' `linksTo`).
  *   `readFilter` and `releaseFilter` press one filter on and off as part T's rows do
- *   (`e2e/issue-page-t-rows.ts`).
+ *   (`e2e/issue-page-t-rows.ts`). `actsBesideWords` is what keeps the focused row's acts
+ *   (`RowActs`) from standing beside its words; `decisionsPages` is each part of the Decisions
+ *   view as row 4 reads its pages - its count, each entry with how many lines its words draw and
+ *   whether they are cut or folded, and the words of the control under it that draws its next
+ *   entries (`nextEntries`), which `nextCount` reads as the numbers it says.
  * - **What the page sends and receives.** `watchWrites` keeps every request under `/api/` that is
  *   no read, with its body; `holdTreeReads` holds every tree read the page sends until released.
- * - **Row 2's third decision.** `writeThirdDecision` writes, through the spec's edit route, a
+ * - **Row 2's decisions.** `writeThirdDecision` writes, through the spec's edit route, a
  *   `:::decision` block whose `shaped` names `r1`, as the planner; `rewordThirdDecision` changes
- *   its words.
+ *   its words, and `rewordSecondDecision` those of the seed's second decision.
+ * - **Row 4's decisions.** `writeFootDecisions` writes, through the spec's edit route, as the
+ *   planner, `FOOT_DECISIONS` `:::decision` blocks that no `shaped` pointer ties to a statement,
+ *   each with words that run past six lines at 1440 px.
  */
 
 /** The nodes the read of issue `key`'s view `view` answers, every page its cursor names. */
@@ -230,6 +242,122 @@ export function statementsBeside(
   );
 }
 
+/** What keeps the acts of the focused row `row` (`RowActs`, `[data-row-acts]`) from standing
+ *  beside its words (`[data-node-words]`) and outside them, each as words: none where the row
+ *  draws one line of acts, in the column its words stand in, outside their box. */
+export function actsBesideWords(row: Locator): Promise<string[]> {
+  return row.evaluate((element) => {
+    const words = element.querySelector("[data-node-words]");
+    const acts = [...element.querySelectorAll("[data-row-acts]")];
+    const [line] = acts;
+    if (words === null) return ["draws no words"];
+    if (line === undefined || acts.length > 1) return [`draws ${acts.length} lines of acts`];
+    const problems: string[] = [];
+    if (words.contains(line)) problems.push("draws its acts inside its words");
+    if (line.parentElement !== words.parentElement) {
+      problems.push("draws its acts outside the column its words stand in");
+    }
+    const drawn = line.getBoundingClientRect();
+    const box = words.getBoundingClientRect();
+    if (
+      drawn.top < box.bottom &&
+      drawn.bottom > box.top &&
+      drawn.left < box.right &&
+      drawn.right > box.left
+    ) {
+      problems.push("draws its acts over its words");
+    }
+    return problems;
+  });
+}
+
+/** One entry of a part of the Decisions view as row 4 reads it: its node, how many lines its
+ *  words draw, whether they are cut - a control that opens the rest (`[data-node-more]`), or
+ *  words their box hides - and whether its row is folded (`aria-expanded="false"`). */
+export interface PagedEntry {
+  readonly cut: boolean;
+  readonly folded: boolean;
+  readonly id: string;
+  readonly lines: number;
+}
+
+/** One part of the Decisions view as row 4 reads it: its count, the entries it draws in the
+ *  order it draws them, the words of each control under it that draws its next entries
+ *  (`[data-decisions-next]`), and for the foot what its control says of it (`aria-expanded`),
+ *  null for a headed part. */
+export interface PagedPart {
+  readonly count: string;
+  readonly entries: readonly PagedEntry[];
+  readonly next: readonly string[];
+  readonly part: string;
+  readonly unfolded: string | null;
+}
+
+/** Each part of the Decisions view, in the order it is drawn, with the pages it draws. A line
+ *  of an entry's words is a run of their text whose top stands 4 px or more below the last. */
+export function decisionsPages(page: Page): Promise<PagedPart[]> {
+  return page.evaluate(() => {
+    const text = (element: Element | null) =>
+      (element?.textContent ?? "").replace(/\s+/gu, " ").trim();
+    const linesOf = (words: Element | null): number => {
+      if (words === null) return 0;
+      const tops: number[] = [];
+      const walker = document.createTreeWalker(words, NodeFilter.SHOW_TEXT);
+      for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+        const range = document.createRange();
+        range.selectNodeContents(node);
+        for (const rect of [...range.getClientRects()]) {
+          if (rect.width > 0) tops.push(rect.top);
+        }
+      }
+      tops.sort((a, b) => a - b);
+      return tops.filter((top, at) => at === 0 || top - (tops[at - 1] ?? top) >= 4).length;
+    };
+    return [...document.querySelectorAll("[data-issue-page] [data-decisions-part]")].map(
+      (part) => ({
+        count: text(part.querySelector("[data-decisions-count]")),
+        entries: [...part.querySelectorAll("[data-node-row]")].map((row) => {
+          const words = row.querySelector("[data-node-words]");
+          return {
+            cut:
+              row.querySelector("[data-node-more]") !== null ||
+              (words !== null && words.scrollHeight > words.clientHeight),
+            folded: row.getAttribute("aria-expanded") === "false",
+            id: row.getAttribute("data-node-id") ?? "",
+            lines: linesOf(words),
+          };
+        }),
+        next: [...part.querySelectorAll("[data-decisions-next] button")].map(text),
+        part: part.getAttribute("data-decisions-part") ?? "",
+        unfolded:
+          part.querySelector("[data-decisions-foot] button")?.getAttribute("aria-expanded") ?? null,
+      })
+    );
+  });
+}
+
+/** The control under the Decisions view's part `part` that draws its next entries
+ *  (`DecisionsFilterBody.tsx`' `NextEntries`), a plain button. */
+export function nextEntries(page: Page, part: string): Locator {
+  return decisionsPart(page, part).locator("[data-decisions-next] button");
+}
+
+/** The words of the control that draws a part's next entries, by the page's own entries, with
+ *  the two numbers it says: "Show the next 7 (7 left)". */
+const NEXT_WORDS = new RegExp(
+  `^${DECISIONS_WORDS.page_next} (\\d+) \\((\\d+) ${DECISIONS_WORDS.page_left}\\)$`,
+  "u"
+);
+
+/** What the control under a part says, read off its words `words`: how many entries a press
+ *  draws and how many are left; its words as they are where they say neither. */
+export function nextCount(
+  words: string
+): { readonly left: number; readonly shows: number } | { readonly words: string } {
+  const said = NEXT_WORDS.exec(words);
+  return said === null ? { words } : { left: Number(said[2]), shows: Number(said[1]) };
+}
+
 /** One filter as it holds still once pressed: its control's count and the rows it draws. */
 export interface FilterReading {
   readonly count: string | null;
@@ -357,4 +485,57 @@ export async function rewordThirdDecision(spec: string): Promise<void> {
     { ops: [{ find: THIRD_DECISION.words, op: "replace", with: THIRD_DECISION.reworded }] },
     asPlanner
   );
+}
+
+/**
+ * Changes the words of row 2's second decision, `seedReviewList`'s `tiedOlder` ("Shapes" and the
+ * address of `r1`), in the spec `spec` of issue `key`, as the planner: its second paragraph, so
+ * its first, which its Change quotes, stays as it was. Row 2's third decision says those words
+ * after it, so the edit names their first match (`occurrence` 0).
+ */
+export async function rewordSecondDecision(key: string, spec: string): Promise<void> {
+  const statement = specBlockRef(key, requirementBlockId(1));
+  await editArtifact(
+    spec,
+    {
+      ops: [
+        {
+          find: `Shapes ${statement}.`,
+          occurrence: 0,
+          op: "replace",
+          with: `It shapes ${statement}.`,
+        },
+      ],
+    },
+    asPlanner
+  );
+}
+
+/** How many decisions row 4 writes at the foot of the Decisions view: more than the 20 a part
+ *  draws at a time (`DecisionsFilterBody.tsx`' `PAGE`, root R40). */
+const FOOT_DECISIONS = 25;
+
+/** How many words each of row 4's decisions says: four paragraphs of forty (`longWords`), which
+ *  run past six lines in the Decisions view's list at 1440 px, 960 px wide, as c-layout's long
+ *  questions do. */
+const FOOT_DECISION_WORDS = 160;
+
+/**
+ * Writes row 4's decisions at the end of issue `key`'s spec, through the spec's edit route, as
+ * the planner, so each is an agent's: `FOOT_DECISIONS` `:::decision` blocks with no `shaped`
+ * pointer, so no statement rests on any of them and each stands at the foot of the Decisions
+ * view, each with words of its own that run past six lines at 1440 px. Answers their block ids,
+ * in the order they are written.
+ */
+export async function writeFootDecisions(key: string): Promise<string[]> {
+  const spec = await specOf(key);
+  const blocks = Array.from({ length: FOOT_DECISIONS }, (_unused, at) => `d-foot-${at + 1}`);
+  const markdown = blocks
+    .map(
+      (block, at) =>
+        `:::decision{#${block}}\n${longWords(`foot${at + 1}w`, FOOT_DECISION_WORDS)}\n:::`
+    )
+    .join("\n\n");
+  await editArtifact(spec, { ops: [{ after: "end", markdown, op: "insert" }] }, asPlanner);
+  return blocks;
 }

@@ -26,6 +26,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/promptrefs"
 	"github.com/sjawhar/legion/daemon/internal/prompts"
 	"github.com/sjawhar/legion/daemon/internal/redact"
+	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 	"github.com/sjawhar/legion/daemon/internal/shim"
 )
 
@@ -69,11 +70,11 @@ var digits = regexp.MustCompile(`^[0-9]+$`)
 // bootprobe.OKLine with the capabilities and model-fallback marks; a failed capability is the
 // probe's message, exit 1, so a broken image never publishes. Each check is judged as it returns,
 // by the deadline --probe-budget sets: what it saw fail before the deadline is exit 1, while a
-// check the deadline cut, a capability row among them (capabilities.StatusUnanswered), and a TLS
-// run with no verdict (probeTLSClients) have no verdict, which ends nothing, so the later checks
-// still run. Where nothing failed and something has no verdict, it prints
-// bootprobe.NoVerdictLine, naming each, to stderr and exits bootprobe.NoVerdictExit, which
-// asks the daemon's probe Sandbox for another attempt rather than refusing the image. Unlike the
+// check the deadline cut, a capability row among them (capabilities.StatusUnanswered), has no
+// verdict, which ends nothing, so the later checks still run. Where nothing failed and something
+// has no verdict, it prints bootprobe.NoVerdictLine, naming each, to stderr and exits
+// bootprobe.NoVerdictExit, which asks the daemon's probe Sandbox for another attempt rather than
+// refusing the image. Unlike the
 // TypeScript command, the contract is always checked:
 // with none named, against this binary's own DaemonAPIVersion, which the plugin packed from the
 // same commit must declare. The load probe also holds every task agent the
@@ -200,14 +201,18 @@ func runProbeImage(ctx context.Context, f *probeImageFlags, args []string, stdou
 		}
 		references = decoded
 	}
-	invocation := f.omp
-	if invocation == "" {
-		invocation = os.Getenv("LEGION_OMP_PATH")
+	// --omp and LEGION_OMP_PATH each name the OMP executable, a path, as LEGION_OMP_PATH is for the
+	// daemon (omplaunch.ResolveInvocation). Every launch below is shell text, so the path goes in as
+	// one shell word: a path holding a space or a glob character still names the one file.
+	omp := f.omp
+	if omp == "" {
+		omp = os.Getenv("LEGION_OMP_PATH")
 	}
-	if invocation == "" {
+	if omp == "" {
 		fmt.Fprintln(stderr, "legion probe-image: set LEGION_OMP_PATH (or pass --omp) to the OMP executable to probe")
 		return 1
 	}
+	invocation := shellprefix.Word(omp)
 	expected, err := strconv.Atoi(f.contract)
 	if !digits.MatchString(f.contract) || err != nil || expected < 1 {
 		fmt.Fprintf(stderr, "legion probe-image: --daemon-api-version must be a positive integer (got %q)\n", f.contract)
@@ -252,7 +257,7 @@ func runProbeImage(ctx context.Context, f *probeImageFlags, args []string, stdou
 	// From here on each step is judged as it returns: a failure it saw while ctx was alive ends
 	// the probe with exit 1, and what the probe's deadline (--probe-budget) cut has no verdict,
 	// which ends nothing, so the later steps still run and a failure they see still fails. noVerdict
-	// names each step and TLS run with no verdict; where nothing failed, they make the exit
+	// names each step with no verdict; where nothing failed, they make the exit
 	// bootprobe.NoVerdictExit.
 	var noVerdict []string
 	err = daemon.ProbeImage(ctx, daemon.ImageProbe{
@@ -293,36 +298,6 @@ func runProbeImage(ctx context.Context, f *probeImageFlags, args []string, stdou
 			noVerdict = append(noVerdict, "capability "+string(line.Name)+": not checked")
 		}
 	}
-	// The sites the positive controls reached, where a TLS client's run its own limit ends with no
-	// answer has no verdict (probeTLSClients): every compromised site once the controls passed.
-	var reached []tlsSite
-	var controlsNoVerdict tlsNoVerdicts
-	switch err := newTLSPositiveControls(ctx, environ); {
-	case errors.As(err, &controlsNoVerdict):
-		noVerdict = append(noVerdict, controlsNoVerdict...)
-	case err != nil:
-		fmt.Fprintf(stderr, "legion probe-image: %v\n", err)
-		return 1
-	default:
-		reached = compromisedTLSSites()
-		fmt.Fprintln(stdout, tlsPositiveControlsLine(reached))
-	}
-	tlsStateDir, removeTLSStateDir, err := newTLSStateDir()
-	if err != nil {
-		fmt.Fprintf(stderr, "legion probe-image: %v\n", err)
-		return 1
-	}
-	defer removeTLSStateDir()
-	observations, clientsNoVerdict, err := probeTLSClients(ctx, newImageTLSClients(invocation, environ, tlsStateDir), reached)
-	for _, observation := range observations {
-		fmt.Fprintf(stdout, "probe-image: TLS client %s %s: %s (%s)\n",
-			observation.client, observation.site.name, observation.status, observation.detail)
-	}
-	if err != nil {
-		fmt.Fprintf(stderr, "legion probe-image: %v\n", err)
-		return 1
-	}
-	noVerdict = append(noVerdict, clientsNoVerdict...)
 	modelFallback, err := capabilities.ReadModelFallback(ctx, img)
 	if err != nil {
 		fmt.Fprintf(stderr, "legion probe-image: model-fallback not read; the deployment's capability report shows the row open: %v\n", err)
@@ -354,7 +329,7 @@ func runProbeImage(ctx context.Context, f *probeImageFlags, args []string, stdou
 	if natsUser != "" {
 		fmt.Fprintln(stdout, bootprobe.NATSUserLine(natsUser))
 	}
-	fmt.Fprintln(stdout, bootprobe.OKLine(invocation, expected, agentModels, checked, modelFallback))
+	fmt.Fprintln(stdout, bootprobe.OKLine(omp, expected, agentModels, checked, modelFallback))
 	return 0
 }
 

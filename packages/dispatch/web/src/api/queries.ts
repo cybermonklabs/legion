@@ -23,6 +23,7 @@ import type {
   InboxRow,
   IssueDetails,
   MyRepliesResponse,
+  ReferenceTarget,
 } from "./types";
 
 /** The signed-in principal (`/auth/whoami`). One key shared by every surface that reads it; it
@@ -103,6 +104,17 @@ export const issueQuery = (key: string | undefined) =>
 export function issueTreeKey(key: string): readonly ["issue-tree", string] {
   return ["issue-tree", key];
 }
+
+/** The filters that read a role document's view of the tree, in this order. Decisions reads a
+ *  view too, the decisions view, which plays no role (`features/issue-page/tree-read/tree-read.ts`'
+ *  `TREE_VIEWS`). */
+export const TREE_FILTERS = ["spec", "verification", "plan"] as const;
+
+/** The views of the tree a filter reads (`?view=`), each under the tree's key
+ *  (`["issue-tree", key, view]`). Each is the query of the document of the same role, so the name
+ *  says which role's blocks a caller asks for as well (`blocksOfRole`). The type is the members
+ *  of `TREE_FILTERS`, so that list holds every filter. */
+export type TreeFilter = (typeof TREE_FILTERS)[number];
 
 /** What each requirement of the issue's spec lacks (`GET /api/v1/issues/{key}/coverage`), which
  *  the Spec tab draws beside the requirement. It hangs under the issue's own key for the
@@ -193,6 +205,11 @@ function referenceTargetBatches(named: readonly string[]): string[][] {
   return batches;
 }
 
+/** What a names read (`referenceTargetsQuery`) holds: one member per address it names. */
+export interface ReferenceTargetsAnswer {
+  readonly targets: readonly ReferenceTarget[];
+}
+
 /** What the `dispatch://` references a page names point at (`GET /api/v1/reference-targets`): a
  *  page that names many references reads their names with this query, in as few requests as
  *  both bounds of one request allow. The key holds the references themselves, sorted, so two
@@ -213,7 +230,7 @@ export const referenceTargetsQuery = (refs: readonly string[]) => {
   return queryOptions({
     enabled: named.length > 0,
     queryKey: ["reference-targets", named],
-    queryFn: async () => {
+    queryFn: async (): Promise<ReferenceTargetsAnswer> => {
       const answers = await Promise.all(
         referenceTargetBatches(named).map((batch) => api.getReferenceTargets(batch))
       );

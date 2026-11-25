@@ -2,12 +2,14 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -24,6 +26,7 @@ import (
 // hour count truncated to zero would reach the engine as no linger at all, closing a finished tree
 // the moment it ends, or as no check bound, which the engine's default would then stand in for.
 func TestLingerHoursReachesTheEngineAsItsDuration(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "legion.yaml")
 	body := "project: demo\nstate_dir: /var/lib/legion\npostgres_dsn: postgres://legion@127.0.0.1:5432/legion\nlinger_hours: 0.3\nproduction_check_hours: 0.1\n"
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
@@ -40,6 +43,23 @@ func TestLingerHoursReachesTheEngineAsItsDuration(t *testing.T) {
 	}
 	if engine.ProductionCheckBound != 6*time.Minute {
 		t.Errorf("the engine's production check bound = %s, want 6m0s", engine.ProductionCheckBound)
+	}
+}
+
+// The engine runs the default steps of its own project (`projects.<KEY>.default_steps`, read
+// through config.Project.RunsByDefault): the steps an issue whose owner gives no plan stores at its
+// first step. A project that names none runs today's line up to the owner's acceptance.
+func TestTheProjectsDefaultStepsReachTheEngine(t *testing.T) {
+	t.Parallel()
+	todays := (config.Project{}).RunsByDefault()
+	steps := append(todays[1:2:2], todays[3]) // implementer reviewer
+	cfg := config.Config{Project: "DEMO", Projects: map[string]config.Project{"DEMO": {DefaultSteps: steps}, "ACME": {}}}
+	if got := engineConfig(cfg, "legion-reviewer[bot]", nil).DefaultSteps; !reflect.DeepEqual(got, steps) {
+		t.Fatalf("the engine's default steps = %+v, want DEMO's %+v", got, steps)
+	}
+	cfg.Project = "ACME"
+	if got, want := engineConfig(cfg, "legion-reviewer[bot]", nil).DefaultSteps, (config.Project{}).RunsByDefault(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("the engine's default steps for ACME, which names none = %+v, want today's line %+v", got, want)
 	}
 }
 
@@ -82,6 +102,7 @@ func (t loginTokens) ReadToken(ctx context.Context, role appauth.AppRole, _ stri
 // two roles resolve to one App would read every red the implementer leaves as a planned one: boot
 // refuses it, and a review App with no login, before anything else opens.
 func TestOpenWorkflowRefusesAReviewLoginItCannotTellFromTheImplementers(t *testing.T) {
+	t.Parallel()
 	dispatchServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !servedBootCall(t, w, r, "demo") {
 			t.Errorf("Dispatch request = %s %s", r.Method, r.URL.Path)
@@ -99,7 +120,7 @@ func TestOpenWorkflowRefusesAReviewLoginItCannotTellFromTheImplementers(t *testi
 		"no review login":        {appauth.Implement: "legion-implementer[bot]"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, err := openWorkflow(context.Background(), cfg, nil, "project-id", "dispatch-token", nil, newRepositories(cfg.Project, cfg.RepositoryRenames), appauth.NewInstalled(), log, tokens, github, nil, time.Now)
+			_, err := openWorkflow(context.Background(), cfg, nil, "project-id", "dispatch-token", nil, newRepositories(cfg.Project, cfg.RepositoryRenames), appauth.NewInstalled(), log, tokens, github, nil, time.Now, nil, nil)
 			if err == nil || !strings.Contains(err.Error(), "the workflow needs two different Apps") {
 				t.Fatalf("openWorkflow = %v, want the two-Apps refusal", err)
 			}
@@ -110,13 +131,43 @@ func TestOpenWorkflowRefusesAReviewLoginItCannotTellFromTheImplementers(t *testi
 // The boot reads the review App's bot login, the login the engine judges a push's pusher against,
 // under the App's own JWT, with no owner to mint for.
 func TestAppLoginsAtBootReturnsTheReviewAppLogin(t *testing.T) {
+	t.Parallel()
 	tokens := loginTokens{appauth.Implement: "legion-implementer[bot]", appauth.Review: "legion-reviewer[bot]"}
-	login, err := appLoginsAtBoot(context.Background(), tokens, newStartWaits(startRateLimits, time.Now), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	login, err := appLoginsAtBoot(context.Background(), tokens, newStartWaits(productionAppCalls(), time.Now), slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {
 		t.Fatalf("appLoginsAtBoot: %v", err)
 	}
 	if login != "legion-reviewer[bot]" {
 		t.Fatalf("appLoginsAtBoot = %q, want the review App's login %q", login, "legion-reviewer[bot]")
+	}
+}
+
+// countedLogins answers each App's login with the bot login named for it and counts each App's
+// reads; the review App's first read fails as GitHub's own trouble, as a viewer read GitHub
+// answered 502 does.
+type countedLogins map[appauth.AppRole]int
+
+func (c countedLogins) AppLogin(_ context.Context, role appauth.AppRole) (string, error) {
+	c[role]++
+	if role == appauth.Review && c[role] == 1 {
+		return "", &appauth.TransientError{Err: errors.New("read the review App's bot login (GraphQL viewer) failed (502)")}
+	}
+	return "legion-" + string(role) + "[bot]", nil
+}
+
+// An attempt of the logins read after one that failed on the review App reads the review App
+// alone, as the key proof skips an App it proved: the implement App's login was read, and in
+// token mode each read of an App runs its token_command, whose grant may wait on a person's
+// approval.
+func TestTheLoginsReadReadsNoAppAgainOnceItReadItsLogin(t *testing.T) {
+	t.Parallel()
+	reads := countedLogins{}
+	login, err := appLoginsAtBoot(context.Background(), reads, newStartWaits(*quickAppMints(), time.Now), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if want := "legion-" + string(appauth.Review) + "[bot]"; err != nil || login != want {
+		t.Fatalf("appLoginsAtBoot = %q, %v; want %q, the review App's login, after one transient failure", login, err, want)
+	}
+	if reads[appauth.Implement] != 1 || reads[appauth.Review] != 2 {
+		t.Errorf("the logins read read the implement App %d times and the review App %d times, want 1 and 2: an attempt read an App whose login an attempt before it had read", reads[appauth.Implement], reads[appauth.Review])
 	}
 }
 
@@ -128,8 +179,9 @@ func TestAppLoginsAtBootReturnsTheReviewAppLogin(t *testing.T) {
 // sum of the waits, each cut at that end. The start's calls run one after the other
 // (openWorkflow), so no two waits of a start overlap.
 func TestStartWaitsDecidesEachWait(t *testing.T) {
-	if want := (rateLimitPolicy{Max: time.Hour, Bound: 70 * time.Minute, NoTime: time.Minute}); startRateLimits != want {
-		t.Fatalf("the start's rate-limit policy = %+v, want R4's %+v", startRateLimits, want)
+	t.Parallel()
+	if want := (rateLimitPolicy{Max: time.Hour, Bound: 70 * time.Minute, NoTime: time.Minute}); productionAppCalls().rateLimits != want {
+		t.Fatalf("the start's rate-limit policy = %+v, want R4's %+v", productionAppCalls().rateLimits, want)
 	}
 	start := time.Date(2026, 11, 20, 4, 0, 0, 0, time.UTC)
 	retryAfter := func(seconds string) *githubrest.Answer {
@@ -191,7 +243,7 @@ func TestStartWaitsDecidesEachWait(t *testing.T) {
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			now := start
-			waits := newStartWaits(startRateLimits, func() time.Time { return now })
+			waits := newStartWaits(productionAppCalls(), func() time.Time { return now })
 			for index, step := range row.steps {
 				now = start.Add(step.at)
 				until, waited, ended := waits.wait(step.call, step.answer, step.wait)

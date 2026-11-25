@@ -27,6 +27,7 @@ import (
 // version, past the bound, holds d1 alone, and the typed-node pass in that write states d2 gone,
 // so the read no longer lists it, while d1 stays.
 func TestTheDecisionsReadListsADecisionAnAskAndAReadingAtEveryStateButGone(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
 	documents := deps.Docs.(*docs.Service)
 	ctx := context.Background()

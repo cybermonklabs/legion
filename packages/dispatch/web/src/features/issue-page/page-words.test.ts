@@ -197,6 +197,15 @@ test("a type the model gives no state has no state words, and the ask, the check
   expect(nodeStateWord("replaced")).toBe("Replaced");
 });
 
+// R2, R3: a decision a person asked to change reads "Changed by" and their name wherever the page
+// draws it, the outline's row as much as the Decisions view, while its state keeps its own word:
+// a file the Dashboard chunk loads takes additions only (root R33), so "Change requested" stays.
+test("a decision with a Change reads Changed by, and its state's own word stays Change requested", () => {
+  expect(DECISIONS_WORDS.changed_by).toBe("Changed by");
+  expect(NODE_STATE_WORDS.decision.change_requested).toBe("Change requested");
+  expect(nodeStateWord("change_requested")).toBe("Change requested");
+});
+
 // A row draws its node's state through `nodeStateWord`, which takes the state alone, so a
 // state token two types share must draw the one word: `retracted` is a question its asker took
 // back and a check whose results were all withdrawn, and both read "Retracted". Every state of

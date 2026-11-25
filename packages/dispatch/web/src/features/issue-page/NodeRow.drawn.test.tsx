@@ -8,14 +8,15 @@ import { MemoryRouter, useLocation, useNavigationType } from "react-router-dom";
 import { displayTree } from "../../__tests__/display-trees";
 import { installIntersectionObserver } from "../../__tests__/intersection-observer";
 import { api } from "../../api/client";
-import type { Agent, DisplayTree, IssueChild } from "../../api/types";
+import type { Actor, Agent, DisplayTree, IssueChild } from "../../api/types";
 import { pageKindBullet, pageKindTag } from "../../theme/classes";
 import type { ReplyTarget } from "../conversation/composer-model";
 import { heldSends } from "../conversation/held-sends";
 import type { SentRequest } from "../conversation/send-request";
-import { useAgentText } from "../refs/AgentName";
+import { actorLabelText, useAgentText } from "../refs/AgentName";
 import { agentsQuery } from "../refs/agent-registry";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
+import type { PostDeletion } from "../refs/post-marks";
 import { measureNearWords } from "./clamp-fixtures";
 import {
   AGENT,
@@ -25,23 +26,26 @@ import {
   SPEC_DOCUMENT,
   SPEC_SLUG,
 } from "./decisions-filter/decisions-fixtures";
-import { buildIssueTree, type NodeChip, type TreeNode } from "./issue-tree";
+import { buildIssueTree, type NodeChip, type ParentLine, type TreeNode } from "./issue-tree";
 import { NodeGlyph } from "./NodeGlyph";
 import { KeepOpen, NodeOptions, NodeRow, useRowOnScreen } from "./NodeRow";
 import { NoTooltips } from "./NoTooltips";
 import * as nodeRowChip from "./node-row-chip";
 import { type OutlineWriter, OutlineWriterProvider, useOutlineWriter } from "./outline-writer";
+import { AUTHOR_TEXT_ATTRIBUTE, PAGE_CHROME_ATTRIBUTE } from "./page-structure";
 import {
   type AuthorKind,
   authorKind,
   BLOCK_TYPE_NAMES,
   CONTROL_LABELS,
+  DECLARED_WORDS,
   type GapKind,
   GLYPH_NAMES,
   GLYPH_TOKENS,
   isReader,
   NODE_TYPE_NAMES,
   type NodeType,
+  wordsIn,
 } from "./page-words";
 import { RowText } from "./RowText";
 import { ReferenceNamesProvider, usePublishReferenceNames } from "./reference-names";
@@ -397,6 +401,326 @@ test.failing("owed until the tree read answers a session's stamped title: a deci
   });
 });
 
+/** A session nobody named, which the page calls by its word for an agent. */
+const UNTITLED: Actor = { id: "0f8e2c4a-1111-4222-8333-444455556666", kind: "session" };
+
+/** Who deleted a post, in each form the page names an author by, and the name the page gives
+ *  each: a session nobody named, a titled session, a person, and a person acting through a
+ *  session. */
+const DELETERS: readonly (readonly [Actor, string])[] = [
+  [UNTITLED, CONTROL_LABELS.unnamed_author],
+  [
+    {
+      id: "1a2b3c4d-1111-4222-8333-444455556666",
+      kind: "session",
+      origin: { session_title: "Planner" },
+    },
+    "Planner",
+  ],
+  [{ id: "alice", kind: "user" }, "alice"],
+  [{ act: { session: UNTITLED.id }, id: "alice", kind: "user" }, "alice, acting through an agent"],
+];
+
+/** When the posts below were deleted. */
+const DELETED_AT = "2026-11-05T12:00:00Z";
+
+/** A comment its author deleted, as the model holds it (`tree-drafts.ts`'s `addTurns`): its
+ *  delete, and the deleted line as its text, the actor named as no registry knows it and the
+ *  time as stored, with no reading. */
+function deletedTurn(by: Actor, more: Partial<TreeNode> = {}): TreeNode {
+  return node({
+    author: { id: "bob", kind: "user" },
+    deletedAt: DELETED_AT,
+    deletedBy: by,
+    id: "comment-1",
+    reference: "dispatch://CORE-1/comment/comment-1",
+    text: `Deleted by ${actorLabelText(by)} · ${DELETED_AT}`,
+    type: "comment",
+    ...more,
+  });
+}
+
+// R3 of dispatch://INFRA-1523, and INFRA-1196's decision 342: a comment its author deleted keeps
+// its row, which draws the deleted line where its words stood, as every surface draws it
+// (`DeletedBody`, in its italic), whole and as a folded branch's one line. The actor is named as
+// the page names an author, by the rule the row's own author is named by: a session nobody named
+// reads "An agent" and never its short id, and a person acting through a session reads as the
+// page names one. None of the model's text is drawn, which names the actor as no registry knows
+// it and the time as stored.
+test("a deleted comment's row draws the deleted line, its actor named as the page names an author", () => {
+  for (const [by, name] of DELETERS) {
+    for (const folded of [false, true]) {
+      const where = `${name}${folded ? ", folded" : ""}`;
+      const view = renderRow(
+        deletedTurn(by, folded ? { held: 1 } : {}),
+        folded ? { body: false, expanded: false, folded: 1 } : { body: false }
+      );
+      try {
+        const words = view.container.querySelector(
+          folded ? "[data-node-first-line]" : "[data-node-words]"
+        );
+        const line = words?.querySelector("[data-post-deleted]");
+        const opening = `Deleted by ${name} · `;
+        expect(line?.textContent?.slice(0, opening.length), where).toBe(opening);
+        expect(line?.textContent?.length ?? 0, where).toBeGreaterThan(opening.length);
+        expect(line?.className, where).toContain("italic");
+        expect(words?.textContent, where).not.toContain("session:");
+        expect(words?.textContent, where).not.toContain(DELETED_AT);
+      } finally {
+        view.unmount();
+      }
+    }
+  }
+});
+
+// R2 of dispatch://INFRA-1523: a message its author edited says ` · edited` after its time, as
+// its byline does on every surface (`EditedMark`). The row says it at its right, outside its
+// words, so no cut of the words takes it: an agent's words cut at six lines, or a folded
+// branch's one line. A message nobody edited says nothing of an edit.
+test("an edited message's row says edited after its time, whole or folded, outside its words", () => {
+  const at = `${new Date().getFullYear()}-11-05T12:00:00Z`;
+  const planner: Author = { kind: "agent", name: "Planner", reader: false };
+  const drawn = (editedAt: string | undefined, folded: boolean) =>
+    renderRow(
+      node({
+        at,
+        ...(editedAt === undefined ? {} : { editedAt }),
+        held: folded ? 1 : 0,
+        id: "message-1",
+        text: "Ship it.",
+        type: "message",
+      }),
+      { author: planner, body: false, ...(folded ? { expanded: false, folded: 1 } : {}) }
+    );
+  for (const folded of [false, true]) {
+    const view = drawn("2026-11-05T13:00:00Z", folded);
+    try {
+      const where = folded ? "folded" : "whole";
+      expect(view.container.querySelector("[data-node-byline]")?.textContent, where).toMatch(
+        /^Planner · \S.* · edited$/u
+      );
+      const mark = view.container.querySelector("[data-node-edited]");
+      expect(mark?.closest("[data-node-margin]"), where).not.toBeNull();
+      expect(mark?.closest("[data-node-words], [data-node-first-line]"), where).toBeNull();
+    } finally {
+      view.unmount();
+    }
+  }
+  const unedited = drawn(undefined, false);
+  try {
+    expect(unedited.container.querySelector("[data-node-byline]")?.textContent).not.toContain(
+      "edited"
+    );
+    expect(unedited.container.querySelector("[data-node-edited]")).toBeNull();
+  } finally {
+    unedited.unmount();
+  }
+});
+
+// R2 and R3 of dispatch://INFRA-1523 under a filter, and INFRA-1196's decision 342: a node whose
+// parent is no row draws the parent as one line, and a parent its author deleted is drawn as the
+// deleted line, its actor named as the page names an author, as the parent's own row draws it,
+// never as the model's line holds it; one its author edited says ` · edited` after its line.
+test("a parent line draws a deleted parent as its deleted line, and an edited one with its mark", () => {
+  const under = (line: ParentLine) =>
+    renderRow(
+      node({
+        id: "plan-md#b-t1",
+        parentLine: line,
+        text: "Stand the harness up.",
+        type: "plan_task",
+      }),
+      { body: false }
+    );
+  const deleted = under({
+    deletedAt: DELETED_AT,
+    deletedBy: UNTITLED,
+    id: "comment-1",
+    line: `Deleted by ${actorLabelText(UNTITLED)} · ${DELETED_AT}`,
+    reference: "dispatch://CORE-1/comment/comment-1",
+    type: "comment",
+  });
+  try {
+    const parent = deleted.container.querySelector("[data-node-parent-line]");
+    const opening = `Deleted by ${CONTROL_LABELS.unnamed_author} · `;
+    const line = parent?.querySelector("a [data-post-deleted]");
+    expect(line?.textContent?.slice(0, opening.length)).toBe(opening);
+    expect(parent?.textContent).not.toContain("session:");
+    expect(parent?.textContent).not.toContain(DELETED_AT);
+  } finally {
+    deleted.unmount();
+  }
+  const edited = under({
+    editedAt: "2026-11-05T13:00:00Z",
+    id: "message-1",
+    line: "Ship it.",
+    reference: "dispatch://CORE-1/message/message-1",
+    type: "message",
+  });
+  try {
+    expect(edited.container.querySelector("[data-node-parent-line] a")?.textContent).toBe(
+      "Ship it. · edited"
+    );
+  } finally {
+    edited.unmount();
+  }
+});
+
+/** The words of `region` by the mark each is read under, as a reader of the page's words reads
+ *  them (`page-words.ts`): a word whose nearest marked element is `[data-page-chrome]` is the
+ *  page's own, one whose nearest is `[data-author-text]` is its author's, and any other is
+ *  marked neither. */
+function wordsByMark(region: Element | null | undefined) {
+  const marked = { author: [] as string[], chrome: [] as string[], unmarked: [] as string[] };
+  if (region === null || region === undefined) return marked;
+  const walker = document.createTreeWalker(region, NodeFilter.SHOW_TEXT);
+  for (let text = walker.nextNode(); text !== null; text = walker.nextNode()) {
+    const holder = text.parentElement?.closest(
+      `[${PAGE_CHROME_ATTRIBUTE}], [${AUTHOR_TEXT_ATTRIBUTE}]`
+    );
+    const words = wordsIn(text.textContent ?? "");
+    if (holder === null || holder === undefined) marked.unmarked.push(...words);
+    else if (holder.hasAttribute(PAGE_CHROME_ATTRIBUTE)) marked.chrome.push(...words);
+    else marked.author.push(...words);
+  }
+  return marked;
+}
+
+// The architect's ruling of 2026-11-20 07:52Z on dispatch://INFRA-1523: the deleted line
+// ("Deleted by …", "Deleted") and the edited mark (" · edited") a row draws are the page's own
+// words, so each carries the page-chrome mark and is declared in `page-words.ts`, as its rule says;
+// the actor's name, and the time, stay its author's. That holds of the row's words whole and
+// folded, of its margin, of a parent line, and of a chip.
+test("a row's deleted line and edited mark are the page's own words, and the actor's name stays the author's", () => {
+  const chrome = (region: Element | null | undefined) => {
+    const { author, chrome: own, unmarked } = wordsByMark(region);
+    return {
+      author: author.filter((word) => ["alice", "an", "agent", "ship", "it"].includes(word)),
+      chrome: own,
+      undeclared: own.filter((word) => !DECLARED_WORDS.includes(word)),
+      unmarked,
+    };
+  };
+  const deletedLine = {
+    author: ["alice"],
+    chrome: ["deleted", "by"],
+    undeclared: [],
+    unmarked: [],
+  };
+  const alice: Actor = { id: "alice", kind: "user" };
+  const shown: Record<string, unknown> = {};
+
+  for (const folded of [false, true]) {
+    const view = renderRow(
+      deletedTurn(alice, folded ? { held: 1 } : {}),
+      folded ? { body: false, expanded: false, folded: 1 } : { body: false }
+    );
+    try {
+      const words = view.container.querySelector(
+        folded ? "[data-node-first-line]" : "[data-node-words]"
+      );
+      shown[folded ? "folded" : "whole"] = chrome(words?.querySelector("[data-post-deleted]"));
+    } finally {
+      view.unmount();
+    }
+  }
+  const edited = renderRow(
+    node({
+      at: "2026-11-05T12:00:00Z",
+      editedAt: "2026-11-05T13:00:00Z",
+      id: "m-1",
+      type: "message",
+    }),
+    { author: { kind: "person", name: "alice", reader: false }, body: false }
+  );
+  try {
+    shown.edited = chrome(edited.container.querySelector("[data-node-edited]"));
+  } finally {
+    edited.unmount();
+  }
+  const under = (line: ParentLine) =>
+    renderRow(
+      node({ id: "plan-md#b-t1", parentLine: line, text: "Stand it up.", type: "plan_task" }),
+      {
+        body: false,
+      }
+    );
+  const deletedParent = under({
+    deletedAt: DELETED_AT,
+    deletedBy: alice,
+    id: "comment-1",
+    line: `Deleted by alice · ${DELETED_AT}`,
+    reference: "dispatch://CORE-1/comment/comment-1",
+    type: "comment",
+  });
+  try {
+    shown.deletedParent = chrome(
+      deletedParent.container.querySelector("[data-node-parent-line] [data-post-deleted]")
+    );
+  } finally {
+    deletedParent.unmount();
+  }
+  const editedParent = under({
+    editedAt: "2026-11-05T13:00:00Z",
+    id: "message-1",
+    line: "Ship it.",
+    reference: "dispatch://CORE-1/message/message-1",
+    type: "message",
+  });
+  try {
+    shown.editedParent = chrome(editedParent.container.querySelector("[data-node-parent-line] a"));
+  } finally {
+    editedParent.unmount();
+  }
+  const chips = renderRow(
+    node({
+      chips: [
+        {
+          answered: true,
+          deletedAt: DELETED_AT,
+          deletedBy: UNTITLED,
+          gone: false,
+          name: `Deleted by ${actorLabelText(UNTITLED)}`,
+          ref: "dispatch://CORE-1/comment/c-deleted",
+        },
+        {
+          answered: true,
+          editedAt: "2026-11-05T13:00:00Z",
+          gone: false,
+          name: "Ship it.",
+          ref: "dispatch://CORE-1/message/m-edited",
+        },
+      ],
+      id: "comment-9",
+      text: "Read these.",
+      type: "comment",
+    }),
+    { body: false }
+  );
+  try {
+    const [deletedChip, editedChip] = [...chips.container.querySelectorAll("[data-chip-name]")];
+    shown.deletedChip = chrome(deletedChip);
+    shown.editedChip = chrome(editedChip);
+  } finally {
+    chips.unmount();
+  }
+
+  expect(shown).toEqual({
+    deletedChip: {
+      author: ["an", "agent"],
+      chrome: ["deleted", "by"],
+      undeclared: [],
+      unmarked: [],
+    },
+    deletedParent: deletedLine,
+    edited: { author: [], chrome: ["edited"], undeclared: [], unmarked: [] },
+    editedChip: { author: ["ship", "it"], chrome: ["edited"], undeclared: [], unmarked: [] },
+    editedParent: { author: ["ship", "it"], chrome: ["edited"], undeclared: [], unmarked: [] },
+    folded: deletedLine,
+    whole: deletedLine,
+  });
+});
+
 // A view that edits rows in place passes `editable`, and the row element itself carries
 // `data-editable` for that view's style. Every other view passes nothing, and its rows carry none.
 test("a row carries data-editable where its view passes editable, and none by default", () => {
@@ -698,6 +1022,18 @@ test("a plan task nobody asked for says so, in words", () => {
     chip: "No reason given",
     line: "This task names no statement it serves and nothing a person asked for.",
   });
+});
+
+// While a document of the issue is still being indexed no statement is drawn as lacking a check:
+// its body draws, where its gaps are, that document's line in the server's own words, and its row
+// draws no gap.
+test("a statement whose coverage waits on a document still being indexed draws its line and no gap", () => {
+  const owed = "spec.md version 12 is still being indexed; its coverage shows once that ends.";
+  expect(
+    drawnGap(
+      node({ coverageNotes: [owed], id: "spec-md#b-r1", statement: true, type: "requirement" })
+    )
+  ).toEqual({ chip: undefined, line: owed });
 });
 
 /** One row the way the tree draws it: unfocused until a focus lands inside it, and then the
@@ -1098,18 +1434,115 @@ test("a chip of an ambiguous short reference draws the reference as written, not
   }
 });
 
-/** The names the page's one batched read brought, and the references it read as ambiguous,
- *  published as the page publishes them. */
+// R2 and R3 of dispatch://INFRA-1523 on a tie's chip, and INFRA-1196's decision 342: a chip
+// naming a comment its author deleted names it by the deleted line without its time, in the
+// deleted line's italic, its actor named as the page names an author and not as the model's name
+// holds it; a chip naming a message its author edited names it by its words cut to the chip's 32
+// characters, then ` · edited`, so no cut takes the mark.
+test("a chip names a deleted post by its deleted line, and an edited one by its cut words then edited", () => {
+  const words = "Hold the deploy until the plan lands and the reviewer signs off";
+  const view = renderRow(
+    node({
+      chips: [
+        {
+          answered: true,
+          deletedAt: DELETED_AT,
+          deletedBy: UNTITLED,
+          gone: false,
+          name: `Deleted by ${actorLabelText(UNTITLED)}`,
+          ref: "dispatch://CORE-1/comment/c-deleted",
+        },
+        {
+          answered: true,
+          editedAt: "2026-11-05T13:00:00Z",
+          gone: false,
+          name: words,
+          ref: "dispatch://CORE-1/message/m-edited",
+        },
+      ],
+      id: "comment-9",
+      text: "Read these.",
+      type: "comment",
+    }),
+    { body: false }
+  );
+  try {
+    const chips = [...view.container.querySelectorAll("[data-node-chip]")];
+    expect(chips.map((chip) => chip.textContent)).toEqual([
+      `Deleted by ${CONTROL_LABELS.unnamed_author}`,
+      `${nodeRowChip.chipWords(words)} · edited`,
+    ]);
+    expect(chips[0]?.querySelector("a [data-post-deleted]")?.className).toContain("italic");
+    expect(chips[1]?.querySelector("[data-post-deleted]")).toBeNull();
+  } finally {
+    view.unmount();
+  }
+});
+
+// R3 of dispatch://INFRA-1523, and the architect's ruling of 2026-11-20 07:52Z, on a chip cut
+// short: a deleted post's chip whose actor is named by one long word is cut right after "Deleted
+// by" (`chipWords`), and that cut still draws the deleted line, in its italic, its opening marked
+// as the page's own words and none of it as the author's.
+test("a deleted post's chip cut right after Deleted by keeps the deleted line's italic and its page-chrome mark", () => {
+  const title = "legion-infra-1523-implementer";
+  const by: Actor = {
+    id: "2b3c4d5e-1111-4222-8333-444455556666",
+    kind: "session",
+    origin: { session_title: title },
+  };
+  // The title's one word runs past the chip's room, so the cut ends at the space before it.
+  expect(nodeRowChip.chipWords(`Deleted by ${title}`)).toBe("Deleted by…");
+  const view = renderRow(
+    node({
+      chips: [
+        {
+          answered: true,
+          deletedAt: DELETED_AT,
+          deletedBy: by,
+          gone: false,
+          name: `Deleted by ${actorLabelText(by)}`,
+          ref: "dispatch://CORE-1/comment/c-deleted",
+        },
+      ],
+      id: "comment-9",
+      text: "Read these.",
+      type: "comment",
+    }),
+    { body: false }
+  );
+  try {
+    const name = view.container.querySelector("[data-chip-name]");
+    const line = name?.querySelector("[data-post-deleted]");
+    expect({
+      italic: line?.classList.contains("italic"),
+      line: line?.textContent,
+      words: wordsByMark(name),
+    }).toEqual({
+      italic: true,
+      line: "Deleted by…",
+      words: { author: [], chrome: ["deleted", "by"], unmarked: [] },
+    });
+  } finally {
+    view.unmount();
+  }
+});
+
+/** The names the page's one batched read brought, and the references it read as ambiguous, as
+ *  edited and as deleted, published as the page publishes them. */
 function Named({
   ambiguous,
   children,
+  deleted,
+  edited,
   names,
 }: {
   ambiguous?: ReadonlySet<string>;
   children: ReactNode;
+  deleted?: ReadonlyMap<string, PostDeletion>;
+  edited?: ReadonlySet<string>;
   names: ReadonlyMap<string, string>;
 }): ReactNode {
-  usePublishReferenceNames(names, ambiguous);
+  usePublishReferenceNames(names, ambiguous, edited, deleted);
   return children;
 }
 
@@ -1239,6 +1672,60 @@ test("an ambiguous short reference in a node's words is drawn as written with no
         `the ambiguous reference drawn ${drawn} is a link`
       ).toBeNull();
       expect(view.container.textContent).toContain(`It follows ${written} and `);
+    } finally {
+      view.unmount();
+    }
+  }
+});
+
+// R2 and R3 of dispatch://INFRA-1523 in a node's words, and INFRA-1196's decision 342: a
+// reference to a post its author edited reads its words, cut, then ` · edited`; one to a post its
+// author deleted reads the deleted line without its time, in the deleted line's italic, its actor
+// named as the page names an author and not as the published name holds it. The words drawn from
+// their reading and the words drawn as stored are both read.
+test("a node's words name an edited post with its mark, and a deleted one by its deleted line", async () => {
+  const edited = "dispatch://CORE-1/comment/c-edited";
+  const deleted = "dispatch://CORE-1/message/m-deleted";
+  const text = `See ${edited} and ${deleted}.`;
+  const editedWords = "Hold the deploy until the plan lands and the reviewer signs off";
+  const names = new Map([
+    [edited, editedWords],
+    [deleted, `Deleted by ${actorLabelText(UNTITLED)}`],
+  ]);
+  const deletions = new Map([[deleted, { at: DELETED_AT, by: UNTITLED }]]);
+  const marked = new Set([edited]);
+  for (const tree of [displayTree(text), undefined]) {
+    const drawn = tree === undefined ? "as stored" : "from their reading";
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const view = render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter>
+          <NoTooltips>
+            <ReferenceNamesProvider>
+              <Named deleted={deletions} edited={marked} names={names}>
+                <RowText markdown={text} {...(tree === undefined ? {} : { tree })} />
+              </Named>
+            </ReferenceNamesProvider>
+          </NoTooltips>
+        </MemoryRouter>
+      </QueryClientProvider>
+    );
+    try {
+      const link = (reference: string) =>
+        view.container.querySelector(`a[data-row-reference="${reference}"]`);
+      await waitFor(() =>
+        expect(link(edited)?.textContent, drawn).toBe(
+          `${nodeRowChip.chipWords(editedWords)} · edited`
+        )
+      );
+      const gone = link(deleted);
+      expect(gone?.textContent, drawn).toBe(`Deleted by ${CONTROL_LABELS.unnamed_author}`);
+      expect(
+        gone?.matches("[data-post-deleted]") === true ||
+          gone?.querySelector("[data-post-deleted]") !== null,
+        `the deleted post drawn ${drawn} is not in the deleted line's italic`
+      ).toBe(true);
+      expect(link(edited)?.querySelector("[data-post-deleted]"), drawn).toBeNull();
     } finally {
       view.unmount();
     }
@@ -1856,6 +2343,20 @@ test("Copy reference is drawn on a focused node with an address, and on none wit
   expect(focusedControls(comment("dispatch://CORE-1/comment/comment-1"), true).copy).toBe(true);
   expect(focusedControls(comment("dispatch://CORE-1/comment/comment-1"), false).copy).toBe(true);
   expect(focusedControls(comment(), true).copy).toBe(false);
+});
+
+// R3 of dispatch://INFRA-1523: Dispatch takes no reply to a comment or a message its author
+// deleted (409 `POST_DELETED`), so its focused row draws no Reply. Copy reference still stands,
+// since it writes nothing.
+test("a deleted comment's or message's focused row draws no Reply, and still Copy reference", () => {
+  for (const type of ["comment", "message"] as const) {
+    const deleted = deletedTurn(UNTITLED, {
+      id: `${type}-1`,
+      reference: `dispatch://CORE-1/${type}/${type}-1`,
+      type,
+    });
+    expect(focusedControls(deleted, true), type).toEqual({ acts: [], copy: true });
+  }
 });
 
 // Part G's R16: while a send of the line's own is out, a press that would set the line to

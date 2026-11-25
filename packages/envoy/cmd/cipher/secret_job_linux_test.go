@@ -53,8 +53,8 @@ func TestPromptJobStopBeforeTheLabelKeepsTheEntry(t *testing.T) {
 	s.start(false, true)
 	// Go leaves SIGTSTP at its default action until the prompt's watcher asks
 	// for it, so a stop sent once the watcher catches it is the prompt's to handle.
-	for budget := newWaitBudget(t); !catches(t, s.pid, syscall.SIGTSTP); time.Sleep(time.Millisecond) {
-		if budget.spent() {
+	for ; !catches(t, s.pid, syscall.SIGTSTP); time.Sleep(time.Millisecond) {
+		if waitsGaveUp(t) {
 			t.Fatal("the prompt never caught SIGTSTP")
 		}
 	}
@@ -119,13 +119,13 @@ func TestPromptJobSignalInTheBackgroundEndsItWithoutFg(t *testing.T) {
 			s.reset()
 			s.send("kill -" + tc.signal + " %1\r")
 			// bash reaps a job that ends; one a restore stopped stays in /proc in state T.
-			for budget := newWaitBudget(t); ; time.Sleep(time.Millisecond) {
+			for ; ; time.Sleep(time.Millisecond) {
 				stat, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", s.pid))
 				if os.IsNotExist(err) {
 					break
 				}
-				if budget.spent() {
-					t.Fatalf("the prompt was still there after SIG%s in the background, past this wait's bound of %s: %q; terminal: %q", tc.signal, promptJobWait, stat, s.out.String())
+				if waitsGaveUp(t) {
+					t.Fatalf("the prompt was still there after SIG%s in the background, %s before the test binary's deadline: %q; terminal: %q", tc.signal, waitMargin, stat, s.out.String())
 				}
 			}
 			s.pid = 0
@@ -182,8 +182,8 @@ func TestPromptJobFastForegroundDoesNotRestopOrExposeValue(t *testing.T) {
 			s.send("\x1a")
 			// Queue fg at the first stopped thread, without waiting for all of the
 			// job's threads or bash to reclaim the terminal.
-			for budget := newWaitBudget(t); processState(t, s.pid) != "T"; time.Sleep(time.Millisecond) {
-				if budget.spent() {
+			for ; processState(t, s.pid) != "T"; time.Sleep(time.Millisecond) {
+				if waitsGaveUp(t) {
 					t.Fatal("prompt did not stop")
 				}
 			}
@@ -798,6 +798,8 @@ func TestPromptHangupRestoresAndAbortCannotDumpTheValue(t *testing.T) {
 			if _, err := controller.Write([]byte("private-value")); err != nil {
 				t.Fatal(err)
 			}
+			meter := startStallMeter(t)
+			sent := time.Now()
 			if err := cmd.Process.Signal(sig); err != nil {
 				t.Fatal(err)
 			}
@@ -816,20 +818,28 @@ func TestPromptHangupRestoresAndAbortCannotDumpTheValue(t *testing.T) {
 					}
 				}
 			}()
-			exitWithin := 10 * time.Second
+			// The process ends on the signal; the one bound of this wait is the moment every wait
+			// of these tests gives up (waitsGaveUp). Its end is then timed from the signal against
+			// no deadline of its own (requireCommandOnTime), except SIGABRT's: Go's
+			// GOTRACEBACK=crash relays SIGQUIT between threads, and a SIGQUIT subscriber can make
+			// that relay wait for its 10s watchdog before the runtime raises the fatal SIGABRT.
+			for ended := false; !ended; time.Sleep(time.Millisecond) {
+				select {
+				case <-done:
+					ended = true
+				default:
+					if waitsGaveUp(t) {
+						_ = controller.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
+						state, _ := os.ReadFile(fmt.Sprintf("/proc/%d/status", cmd.Process.Pid))
+						t.Fatalf("signal did not end the prompt; process: %s; terminal: %q", state, <-output)
+					}
+				}
+			}
+			allowed := time.Duration(0)
 			if sig == syscall.SIGABRT {
-				// Go's GOTRACEBACK=crash relays SIGQUIT between threads. A
-				// SIGQUIT subscriber can make that relay wait for its 10s
-				// watchdog before the runtime raises the fatal SIGABRT.
-				exitWithin = 30 * time.Second
+				allowed = 10 * time.Second
 			}
-			select {
-			case <-done:
-			case <-time.After(exitWithin):
-				_ = controller.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
-				state, _ := os.ReadFile(fmt.Sprintf("/proc/%d/status", cmd.Process.Pid))
-				t.Fatalf("signal did not end the prompt; process: %s; terminal: %q", state, <-output)
-			}
+			requireCommandOnTime(t, meter, "the prompt after "+sig.String(), sent, allowed)
 			if err := controller.SetReadDeadline(time.Now().Add(300 * time.Millisecond)); err != nil {
 				t.Fatal(err)
 			}

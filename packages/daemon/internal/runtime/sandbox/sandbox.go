@@ -127,10 +127,18 @@ type Runtime struct {
 	// keptVolumeBound is how long a launch gives a pod with a kept volume to start where the boot
 	// timeout is shorter (startBound): keptVolumeAttachWait, which a test sets short.
 	keptVolumeBound time.Duration
+	// helloBindBound is how long a binding of a pod's launchers at a hello may hold the pod's
+	// launch turn (bindCurrentPod): apiTimeout, the longest a hello waits for it, which a test sets
+	// short.
+	helloBindBound time.Duration
 	// memoryGuard is Options.MemoryGuard: the memory guard settings an issue pod's launcher is
 	// handed on the answer to each hello (LauncherResolver), nil for a deployment that turned the
-	// guard off.
+	// issue pods' guard off.
 	memoryGuard *shimwire.LauncherMemoryGuard
+	// controllerMemoryGuard is Options.ControllerMemoryGuard: the memory guard settings the
+	// launcher of the controller's pod is handed on the answer to each hello (LauncherResolver),
+	// nil for a deployment that turned that pod's guard off.
+	controllerMemoryGuard *shimwire.LauncherMemoryGuard
 	// leakCheck is Options.LeakCheckSetting: the deployment's shared public leak check, whose
 	// install and checker every role is told where it is configured (mainEnvironment).
 	leakCheck leakguard.Setting
@@ -317,7 +325,7 @@ func configureProber(opts Options) (*Runtime, error) {
 	case opts.StorageClass == "":
 		return refuse("no storage class for the issue volume (the cluster has no default class to fall back on)")
 	case opts.Sandbox.AnyMicroVM() && (opts.Sandbox.MicroVM == nil || opts.Sandbox.MicroVM.ComputeClass == ""):
-		return refuse("no compute class for the issue pods that run in a microVM (sandbox type %q, canary issues %v): the ComputeClass whose nodes run them",
+		return refuse("no compute class for the pods that run in a microVM (sandbox type %q, canary issues %v): the ComputeClass whose nodes run them",
 			opts.Sandbox.Type, opts.Sandbox.CanaryIssues)
 	case opts.Sandbox.AnyMicroVM() && opts.Sandbox.MicroVM.StorageClass == "":
 		return refuse("no storage class for the disks of the issue pods that run in a microVM (the cluster has no default class to fall back on)")
@@ -367,9 +375,10 @@ func configureProber(opts Options) (*Runtime, error) {
 		}
 	}
 	if a := opts.AgentSecrets; a != nil {
-		// The Workload Identity pool is the audience of the token a microVM pod's launcher
-		// exchanges for a Google one (workloadIdentityVolumes); empty, no pod carries that token.
-		// While an issue pod runs in a microVM the switch above has refused a nil MicroVM.
+		// The Workload Identity pool is the audience of the token a microVM pod's launcher, an issue
+		// pod's or the controller's, exchanges for a Google one (workloadIdentityVolumes); empty, no
+		// pod carries that token. While any pod runs in a microVM (AnyMicroVM, which holds wherever
+		// the controller's pod runs in one) the switch above has refused a nil MicroVM.
 		var workloadPool string
 		if opts.Sandbox.AnyMicroVM() && opts.Sandbox.MicroVM.Metadata != nil {
 			workloadPool = opts.Sandbox.MicroVM.Metadata.WorkloadPool
@@ -424,11 +433,12 @@ func configureProber(opts Options) (*Runtime, error) {
 		variantFiles: runtime.VariantOverlays(opts.ExperimentVariants),
 		providerKeys: opts.ProviderKeys, providersSecrets: slices.Sorted(slices.Values(opts.ProvidersSecrets)), natsUser: opts.NATSUser,
 		sessionStore: opts.SessionStore, controllerSlackChannels: slices.Clone(opts.ControllerSlackChannels),
-		bootTimeout: opts.BootTimeout, keptVolumeBound: keptVolumeAttachWait, registrationIntervals: opts.RegistrationIntervals,
+		bootTimeout: opts.BootTimeout, keptVolumeBound: keptVolumeAttachWait, helloBindBound: apiTimeout, registrationIntervals: opts.RegistrationIntervals,
 		busyBackoff: opts.BusyBackoff, provisionBound: provisionBound, terminationGrace: opts.TerminationGrace,
 		launchBound:   launchBound(opts.BootTimeout, longestStart, provisionBound, opts.TerminationGrace),
 		probeInterval: opts.ProbeInterval, adoptTimeout: opts.AdoptTimeout, agent: opts.Agent, setup: slices.Clone(opts.Setup),
-		testPostgres: opts.TestPostgres, memoryGuard: opts.MemoryGuard, leakCheck: opts.LeakCheckSetting, volumeTrim: opts.VolumeTrim, roundPodEnds: opts.RoundPodEnds,
+		testPostgres: opts.TestPostgres, leakCheck: opts.LeakCheckSetting, roundPodEnds: opts.RoundPodEnds,
+		memoryGuard: opts.MemoryGuard, controllerMemoryGuard: opts.ControllerMemoryGuard, volumeTrim: opts.VolumeTrim,
 		tokens: opts.Tokens, gitHubCredential: opts.GitHubCredential, controllerCredential: opts.ControllerCredential,
 		gitHubDirs: opts.GitHubDirs,
 		store:      opts.Store, conns: opts.Conns, now: opts.Now, log: opts.Log,
@@ -447,11 +457,11 @@ func configureProber(opts Options) (*Runtime, error) {
 		r.log = slog.Default()
 	}
 	// The launchers carry the shared public leak check and one pod's saved workspace bundle to it
-	// before any of its roles start, take its memory guard's kill reports and its cache trimmer's
-	// sweep reports, and log what they could not carry or record, so they are built once the
-	// runtime's log is settled.
+	// before any of its roles start, take its memory guard's kill reports, an issue pod's and the
+	// controller pod's, and its cache trimmer's sweep reports, and log what they could not carry or
+	// record, so they are built once the runtime's log is settled.
 	r.launchers = newLaunchers(opts.LeakCheckSetting, opts.LeakCheck, opts.SavedWorkspaceBundle, opts.WorkspaceBundleRestored, opts.HeldWorkspaceBundle,
-		opts.MemoryGuardKilled, opts.VolumeReported, r.log)
+		opts.MemoryGuardKilled, opts.ControllerMemoryGuardKilled, opts.VolumeReported, r.log)
 	// Last, after the logger a failed encoding is reported through: every input is settled above
 	// and none is written again, so each kind's shape in each sandbox is encoded here and only
 	// read afterwards.
@@ -790,10 +800,10 @@ func terminal(p *corev1.Pod) bool {
 // issue pod on another image keeps it (relaunch): such a pod is replaced by its update round,
 // once every role in it has answered the update message, no turn runs and no claim's activity
 // report holds it (internal/daemon's roundEnd.holding), or at the round's bound (PodDrift,
-// ReplacePod). The controller's pod, which no round covers, is replaced by the next launch into it
-// that installs nothing (roundCovers), and the repository cache's own pod, which holds no worker,
-// by its next sweep (reconcileCachePod). ReconcileOrphans warns of each one it finds. A nil pod
-// holds no drift: it is replaced for being absent.
+// ReplacePod). The controller's pod, which no round covers, is replaced by the next launch into it,
+// an installing one included (roundCovers, podImageDrift), and the repository cache's own pod,
+// which holds no worker, by its next sweep (reconcileCachePod). ReconcileOrphans warns of each one
+// it finds. A nil pod holds no drift: it is replaced for being absent.
 func imageDrift(p *corev1.Pod, image string) (string, bool) {
 	if p == nil {
 		return "", false

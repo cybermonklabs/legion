@@ -655,6 +655,27 @@ func TestADevBoxSessionExchangesItsMachineToken(t *testing.T) {
 	}
 }
 
+// TestADevBoxTradeNamingAWildcardSessionIsRefused: a machine login's trade that names the session
+// *, > or one holding either is refused 400 invalid_request naming the unusable session, and no
+// token is minted: a token of such a session would make a relay socket subscribe a wildcard over
+// every session's relay subject. Control: the same login's trade naming ada-devbox is minted.
+func TestADevBoxTradeNamingAWildcardSessionIsRefused(t *testing.T) {
+	f := newExchangeFixture(t, func(*oauth.Config) {})
+	key := newKey(t)
+	machineToken := f.devBoxToken(t, key, person)
+	for _, session := range []string{"*", ">", "ada-*"} {
+		status, body := f.exchange(t, exchangeForm(machineToken, oauthwire.SubjectTokenTypeAccessToken, session), key)
+		description, _ := body["error_description"].(string)
+		if status != http.StatusBadRequest || body["error"] != "invalid_request" || !strings.Contains(description, exchange.ErrSessionInvalid.Error()) {
+			t.Errorf("a trade naming the session %q = %d %v, want 400 invalid_request naming %q", session, status, body, exchange.ErrSessionInvalid)
+		}
+		if _, minted := body["access_token"]; minted {
+			t.Errorf("a trade naming the session %q minted a token", session)
+		}
+	}
+	f.exchanged(t, exchangeForm(machineToken, oauthwire.SubjectTokenTypeAccessToken, "ada-devbox"), key)
+}
+
 // tokenAnswer is a token endpoint answer read off a goroutine, where a test may not fail.
 type tokenAnswer struct {
 	status int

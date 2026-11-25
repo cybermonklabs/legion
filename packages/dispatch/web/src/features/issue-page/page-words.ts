@@ -33,9 +33,11 @@
  * - from `../project/board-model`, the issue statuses and `statusLabel` and `statusText`, the
  *   board's word for a status, which `ISSUE_STATUS_WORDS` and `issueStatusWord` say;
  * - from `../refs/actor`, `ASK_RESOLUTION_WORDS`, the words a closed question is drawn in, and
- *   `isViewer`, whether an actor is the signed-in person.
+ *   `isViewer`, whether an actor is the signed-in person;
+ * - from `../refs/post-marks`, `POST_MARK_WORDS`, the words a deleted post's line and an edited
+ *   post's mark say on every surface.
  *
- * The last two are the module's links to files today's pages use.
+ * The last three are the module's links to files today's pages use.
  *
  * A test, a browser spec and a component therefore all read the same list.
  */
@@ -48,9 +50,10 @@ import {
   type ResultCommitStands,
 } from "@legion/contracts";
 
-import type { Actor } from "../../api/types";
+import type { Actor, IssueCoverage } from "../../api/types";
 import { issueStatuses, statusLabel, statusText } from "../project/board-model";
 import { ASK_RESOLUTION_WORDS, isViewer } from "../refs/actor";
+import { POST_MARK_WORDS } from "../refs/post-marks";
 import {
   freeze,
   HELP_LINES,
@@ -144,10 +147,12 @@ export const BLOCK_TYPE_NAMES = freeze({
  * agent's decision that waits for a person's review, `kept` one a person kept as it reads now -
  * the row draws the name of who kept it after the word - and `replaced` one a later decision
  * replaced (`decisions.go`'s `replaced`, `waiting_review` and `kept`, read by
- * `decision-review.ts`' `reviewState`). `change_requested` is a decision the reader sent a Change
+ * `decision-review.ts`' `reviewState`). `change_requested` is a decision a person sent a Change
  * on since it last changed, which waits on its agent and no longer on the reader
- * (`decision-review.ts`). A decision in none of them - an agent's that nobody has reviewed and
- * nothing replaced, or a person's own section - draws no state.
+ * (`decision-review.ts`): the page draws it as "Changed by" and the name of that person
+ * (`DECISIONS_WORDS.changed_by`), and its word here stays as it is, since a file the Dashboard
+ * chunk loads takes additions only (root R33). A decision in none of them - an agent's that
+ * nobody has reviewed and nothing replaced, or a person's own section - draws no state.
  */
 export const NODE_STATE_WORDS = freeze({
   ask: {
@@ -380,13 +385,19 @@ export const SPEC_WORDS = freeze({
  * `NODE_STATE_WORDS.decision`, which the outline draws too.
  */
 export const DECISIONS_WORDS = freeze({
-  /** The fourth part's heading, which is the control that unfolds it, after the count of the
-   *  decisions it holds; the words agree with the count (R2: "folded at the foot, the agents'
-   *  decisions that no statement rests on"). */
+  /** The fourth part's heading, which is the control that folds and unfolds it, after the count
+   *  of the decisions it holds; the words agree with the count (R2: "at the foot and unfolded,
+   *  the agents' decisions no statement rests on, which the page folds only when the reader
+   *  folds them"). */
   agents_many: "agent decisions that no statement rests on",
   agents_one: "agent decision that no statement rests on",
   /** Before the reader's words of a Change they sent on a decision, under that decision. */
   change: "change asked for",
+  /** What a decision with a Change reads in place of its state's own word
+   *  (`NODE_STATE_WORDS.decision.change_requested`), wherever the page draws it, the outline's
+   *  row as much as this view: then the name of the person whose Change it waits on, the
+   *  reader's own where they asked (R2, R3). */
+  changed_by: "Changed by",
   /** After the name of the person who declined a question, so the row reads as a question that
    *  person declined and never as an answer (R2). */
   declined: "declined to answer",
@@ -394,6 +405,15 @@ export const DECISIONS_WORDS = freeze({
   in_conversation: "in the conversation",
   /** Before the spec's statements that an entry's links tie it to, as the picture draws it. */
   informs: "informs",
+  /** After the count of a part's entries not yet drawn, on the control under the part that
+   *  draws the next of them, which says it in brackets after what a press draws: "Show the next
+   *  20 (25 left)" (R2: a control at a part's foot "that says how many are left", decision 424). */
+  page_left: "left",
+  /** The control under a part whose entries are not all drawn, before the count of those a
+   *  press draws, at most 20, the size root R40 pages a flat list by: "Show the next 20 (25
+   *  left)". Each part draws its first 20 entries as the view opens, and a press draws the next
+   *  ones; a page is no fold (R2, decision 424). */
+  page_next: "Show the next",
   /** The headings of the headed parts, in the order the filter draws them (R2): the reader's
    *  own decisions are "his own decisions", and what another person answered, declined, kept or
    *  asked to change stands under a heading that says it is theirs. */
@@ -673,10 +693,49 @@ export const GAP_WORDS = freeze({
  * (`RequirementCoverage.gaps`), which name a block by its id; every surface of the page reads
  * the line through this and draws `GAP_WORDS` or `GAP_LINES` instead, so no identifier and no
  * server phrasing is drawn where a name belongs (R22). A requirement no plan task serves is no
- * gap the page draws (R10), so that line answers nothing.
+ * gap the page draws (R10), so that line answers nothing, and so does the line of a document
+ * still being indexed (`coverageLineWords`), which names no gap of any requirement.
  */
 export function coverageGapKind(line: string): GapKind | undefined {
   return line.endsWith("has no check") ? "no_check" : undefined;
+}
+
+/**
+ * The line the coverage read writes for a document of the issue that owes its block index, in
+ * place of every missing check and plan task while it does (the server's `owedGap`): `<file
+ * name> version <n> is still being indexed; its coverage shows once that ends.`.
+ */
+const OWED_COVERAGE_LINE =
+  /^\S.* version \d+ is still being indexed; its coverage shows once that ends\.$/u;
+
+/**
+ * What the page draws for one line of the coverage read (`IssueCoverage.gaps`), where it draws
+ * one: the sentence of the gap the line names (`coverageGapKind`, `GAP_LINES`), and for the line
+ * of a document still being indexed, the line's own words. While a document owes its block
+ * index the server names no requirement as lacking a check, so the page draws none as lacking
+ * one either, and says instead which document's coverage waits and at which version; that line
+ * names a file, which the server's words name and no word of the page could. Any other line
+ * draws nothing.
+ */
+export function coverageLineWords(line: string): string | undefined {
+  const kind = coverageGapKind(line);
+  if (kind !== undefined) return GAP_LINES[kind];
+  return OWED_COVERAGE_LINE.test(line) ? line : undefined;
+}
+
+/**
+ * What the page draws for the coverage read's own lines (`IssueCoverage.gaps`) that name no gap of
+ * a requirement - a requirement's gap is drawn on the requirement, from its own gaps - each in the
+ * words `coverageLineWords` draws it in, where it draws any. Today that is the line of each
+ * document still being indexed, which says why no requirement is drawn as lacking a check: today's
+ * Spec tab draws these over its list of requirements (`SpecRequirements`), and the outline in the
+ * body of each statement (`TreeNode.coverageNotes`).
+ */
+export function coverageNotes(coverage: IssueCoverage | undefined): string[] {
+  return (coverage?.gaps ?? []).flatMap((line) => {
+    const words = coverageGapKind(line) === undefined ? coverageLineWords(line) : undefined;
+    return words === undefined ? [] : [words];
+  });
 }
 
 /** The noun a progress count is written with: `1/1 item`, `3/7 items` of the spec's checklist
@@ -1127,6 +1186,14 @@ export const CONTROL_LABELS = freeze({
   /** The pin, as the issue's actions control holds it (R13, the Design's "Where each thing
    *  goes"): it reads what pressing it does, and carries `aria-pressed` for what is so. */
   pin_issue: "Pin issue",
+  /** A deleted post's line, where a row draws it in place of the post's words, and a chip names
+   *  the post by: `Deleted` for a delete that names nobody, else `Deleted by` and the actor, whose
+   *  name is the author's text (INFRA-1523, R3). The words every surface's deleted line says. */
+  post_deleted: POST_MARK_WORDS.deleted,
+  post_deleted_by: POST_MARK_WORDS.deleted_by,
+  /** What a row's byline, a parent line and a chip say after an edited post's time or words:
+   *  ` · edited` (INFRA-1523, R2), as every surface's byline says it. */
+  post_edited: POST_MARK_WORDS.edited,
   /** The row of five controls, Conversation and the four filters, as a reader hears it named
    *  (R2). */
   presets: "Filters",
@@ -1328,6 +1395,8 @@ export const BLOCK_ATTRIBUTE_LABELS = freeze({
    *  the chart's own word for a task that holds none is `PLAN_WORDS.no_size`. */
   size: "size",
   state: "state",
+  /** The steps of Legion a plan task runs, in their order. */
+  steps: "steps",
   surface: "surface",
   title: "title",
   /** How unsure the agent was of a decision, and in the next one why. */

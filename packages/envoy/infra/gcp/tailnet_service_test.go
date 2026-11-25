@@ -2,7 +2,6 @@ package gcp
 
 import (
 	"bytes"
-	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -19,18 +18,9 @@ import (
 )
 
 // These tests sit inside the package because the pieces they run are unexported; they reach the
-// shell as gcp_test's shellCommand does, by /bin/sh or the words of ENVOY_TEST_SHELL, so the
-// scripts run under both dash and bash. A missing shell or tool fails the test rather than
+// shell through shellCommand, by /bin/sh or the words of ENVOY_TEST_SHELL, so the scripts run
+// under both dash and bash. A missing shell or tool fails the test rather than
 // skipping it.
-
-// tailnetTestShell is the command that runs a script under test, with args after it.
-func tailnetTestShell(ctx context.Context, args ...string) *exec.Cmd {
-	shell := strings.Fields(os.Getenv("ENVOY_TEST_SHELL"))
-	if len(shell) == 0 {
-		shell = []string{"/bin/sh"}
-	}
-	return exec.CommandContext(ctx, shell[0], append(shell[1:], args...)...)
-}
 
 // The stand-ins every script test puts first on PATH, all logging to FAKE/calls, each line
 // starting with the fake clock in FAKE/clock:
@@ -215,19 +205,19 @@ func (r *tailnetRig) events(t *testing.T) []tailnetEvent {
 }
 
 // run runs the advertiser until the clock has moved seconds on, and returns the calls it made and
-// what it printed.
+// what it printed. The fake sleep ends the script at that limit, which is the run's end: the shell
+// is bounded only by the test's deadline (shellCommandUntilTheTestDeadline), since the wall time
+// the fake clock's steps take is the machine's.
 func (r *tailnetRig) run(t *testing.T, seconds int) ([]tailnetEvent, string) {
 	t.Helper()
 	clock, err := os.ReadFile(filepath.Join(r.fake, "clock"))
 	require.NoError(t, err)
 	now, _ := strconv.Atoi(strings.TrimSpace(string(clock)))
 	r.set(t, "limit", strconv.Itoa(now+seconds))
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cancel()
-	cmd := tailnetTestShell(ctx, "-c", tailnetAdvertiserScript(r.host))
+	cmd := shellCommandUntilTheTestDeadline(t, "-c", tailnetAdvertiserScript(r.host))
 	cmd.Env = r.env()
 	out, _ := cmd.CombinedOutput()
-	if ctx.Err() != nil {
+	if killedBySignal(cmd) {
 		t.Fatalf("the advertiser did not stop at its clock limit:\n%s", out)
 	}
 	return r.events(t), string(out)
@@ -310,9 +300,7 @@ func TestTailnetServiceAdvertiserExitsOnSIGTERM(t *testing.T) {
 			}
 		}
 	})
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cancel()
-	cmd := tailnetTestShell(ctx, "-c", tailnetAdvertiserScript(r.host))
+	cmd := shellCommand(t, "-c", tailnetAdvertiserScript(r.host))
 	cmd.Env = r.env()
 	var out bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &out
@@ -557,7 +545,7 @@ func TestTailnetServicePreStopDrainsThenLogsOut(t *testing.T) {
 	for _, f := range []string{r.host.paths.nodeID(), r.host.paths.ready()} {
 		require.NoError(t, os.WriteFile(f, []byte(tailnetRigNode+"\n"), 0o644))
 	}
-	cmd := tailnetTestShell(context.Background(), "-c", tailnetPreStopScript(r.host))
+	cmd := shellCommand(t, "-c", tailnetPreStopScript(r.host))
 	cmd.Env = r.env()
 	out, err := cmd.CombinedOutput()
 	require.NoError(t, err, string(out))
@@ -580,7 +568,7 @@ func TestTailnetServicePreStopDrainsThenLogsOut(t *testing.T) {
 	// With no node id (tailscaled never ran as a node) there is nothing to keep from being
 	// advertised: no draining file, and the drain and logout still run.
 	r = newTailnetRig(t, "")
-	cmd = tailnetTestShell(context.Background(), "-c", tailnetPreStopScript(r.host))
+	cmd = shellCommand(t, "-c", tailnetPreStopScript(r.host))
 	cmd.Env = r.env()
 	out, err = cmd.CombinedOutput()
 	require.NoError(t, err, string(out))
@@ -699,9 +687,9 @@ func TestTailnetServiceProbes(t *testing.T) {
 	require.Equal(t, pulumi.Int(1), ready.FailureThreshold)
 	command := tailnetProbeCommand(t, ready)
 	require.Equal(t, []string{"/bin/sh", "-c"}, command[:2])
-	require.Error(t, tailnetTestShell(context.Background(), "-c", command[2]).Run(), "ready with no ready file")
+	require.Error(t, shellCommand(t, "-c", command[2]).Run(), "ready with no ready file")
 	require.NoError(t, os.WriteFile(h.paths.ready(), []byte(tailnetRigNode+"\n"), 0o644))
-	require.NoError(t, tailnetTestShell(context.Background(), "-c", command[2]).Run(), "not ready with the ready file")
+	require.NoError(t, shellCommand(t, "-c", command[2]).Run(), "not ready with the ready file")
 
 	require.Equal(t, []string{"wget", "-qO-", "http://127.0.0.1:9002/healthz"}, tailnetProbeCommand(t, tailnetServiceStartup(h)))
 

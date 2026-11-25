@@ -3,18 +3,21 @@
 // machine_read.go) and the proxy's (AirlockValues, airlock.go). It reads or mints each granted
 // name, splits the names the airlock holds back into their slots, and writes the one grant.used
 // row and the one log line the release writes, with the detail of whichever caller wrote it. One
-// loop rather than two, because a fix to the split, to that row, or to what a narrowing may reach
-// must not land in one release and not in the other.
+// loop rather than two, because a fix to the split or to that row must not land in one release
+// and not in the other.
 package requests
 
 import (
 	"context"
 	"fmt"
 	"log/slog"
+	"runtime"
+	"runtime/debug"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/cipher/policy"
+	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/record"
-	"github.com/sjawhar/envoy/internal/cipher/secrets"
 )
 
 // ReleasedMessage is logged, at INFO, once for each release of a grant, once its grant.used row
@@ -22,11 +25,10 @@ import (
 // which the row's detail holds too: names=<the names it released>, reason=<the reason the grant's
 // request gave> and then, for the session's release (Values), call_reason=<the reason the
 // session's own call gave, as record.Sanitize leaves it> where that says something the grant's
-// reason does not, command=<the argument vector the session said the release starts, as
-// loggedCommand records it: empty from a client from before the field> and github_app=<the
-// narrowing it applied>, where it applied one; or, for the proxy's (AirlockValues), airlock=true,
-// since that release starts no command. It is the operator's line for what each grant was spent
-// on and why.
+// reason does not, and command=<the argument vector the session said the release starts, as
+// loggedCommand records it: empty from a client from before the field>; or, for the proxy's
+// (AirlockValues), airlock=true, since that release starts no command. It is the operator's line
+// for what each grant was spent on and why.
 //
 // What the command does not hold is what loggedCommand redacts (redact.go): each value this
 // release handed out of eight bytes or more, each string of eight bytes or more inside a stored
@@ -52,16 +54,14 @@ type ReleaseCall struct {
 // caller adds.
 type grantUse struct {
 	names []string
-	// airlock marks the proxy's release (AirlockValues), which starts no command and narrows
-	// nothing; command, callReason and narrowing are the session's release's (Values) alone.
+	// airlock marks the proxy's release (AirlockValues), which starts no command; command and
+	// callReason are the session's release's (Values) alone.
 	airlock bool
 	// command is the argument vector the session's release starts, as loggedCommand records it.
 	command []string
 	// callReason is the reason the session's own call gave, as callReasonOf records it: "" when
 	// it gave none or gave the grant's own.
 	callReason string
-	// narrowing is the GitHub App narrowing the session's release applied, nil for none.
-	narrowing *secrets.GitHubNarrowing
 }
 
 // recordedField is one key and value a release records, in its grant.used row's detail and in
@@ -82,11 +82,7 @@ func (u grantUse) recorded(reason string) []recordedField {
 	if u.callReason != "" {
 		fields = append(fields, recordedField{"call_reason", u.callReason})
 	}
-	fields = append(fields, recordedField{"command", u.command})
-	if u.narrowing != nil {
-		fields = append(fields, recordedField{"github_app", auditDetail{"owner": u.narrowing.Owner, "repositories": u.narrowing.Repositories, "read_only": u.narrowing.ReadOnly}})
-	}
-	return fields
+	return append(fields, recordedField{"command", u.command})
 }
 
 // callReasonOf is the reason a session's call gave (said) as its release records it, beside
@@ -102,12 +98,9 @@ func callReasonOf(said, granted string) string {
 }
 
 // releaseRead is what one caller wants of the shared read. The session's release asks for every
-// granted name and may narrow; the proxy's asks for the names behind the airlock alone, since
-// the session was handed the rest at its own release.
+// granted name; the proxy's asks for the names behind the airlock alone, since the session was
+// handed the rest at its own release.
 type releaseRead struct {
-	// narrowing is this release's GitHub App narrowing, nil for a release that asks for none.
-	// It reaches the github-app minter of every github-app name the grant holds.
-	narrowing *secrets.GitHubNarrowing
 	// airlockOnly leaves every name the airlock does not hold back out of the read: no value of
 	// it is read, and none is minted.
 	airlockOnly bool
@@ -130,6 +123,15 @@ type releasedName struct {
 	// what it mints again before, the second what says how to spend them.
 	expires    time.Time
 	secretType string
+	// gitHubValue is the github.value of the GitHub profile the name is served as
+	// (githubname.ValueInstallations or githubname.ValueToken), "" for any other name: with the
+	// type, what says how the value takes apart into slots (airlockSplitOf), and what the value
+	// is to a give-back (GiveBack).
+	gitHubValue string
+	// leftOut is, for a github-app profile, each entry the cut of its permissions to what an
+	// installation holds left out, by account (secrets.Minted.LeftOut); nil for any other name
+	// and where the cut left nothing out.
+	leftOut map[string][]string
 }
 
 // behindAirlock reports whether the airlock's rules hold this name back, which is what says
@@ -152,21 +154,29 @@ func (m *Machine) readRelease(ctx context.Context, grantID string, checked grant
 		}
 	}()
 	for _, g := range checked.granted {
-		entry := m.Airlock.Bound(g.name)
+		// The name's proxy block, nil for a name no profile puts behind the proxy. Every entry
+		// binds at least one host (proxyrules.Validate), so an entry is a name the airlock holds back.
+		entry := m.Airlock.Lookup(g.name)
+		// A name under an entry of kind dpop is a capability the broker mints and holds, and never
+		// a stored secret's release: it is refused before anything of it is read.
+		if entry != nil && entry.Kind == proxyrules.KindDPoP {
+			return nil, fmt.Errorf("release %s: %w", g.name, ErrMintedOnly)
+		}
 		if entry == nil && want.airlockOnly {
 			continue
 		}
 		served := checked.set.Secrets[g.name]
-		minted, err := m.readValue(ctx, grantID, checked.enrollmentID, g, served, want.narrowing)
+		minted, err := m.readValue(ctx, grantID, checked.enrollmentID, g, served)
 		if err != nil {
 			return nil, err
 		}
 		// Held for the give-back as soon as it is read, so a split that refuses this value gives
 		// it back as well as every value before it.
-		read = append(read, releasedName{name: g.name, value: minted.Value, expires: minted.Expires, secretType: served.Type()})
+		read = append(read, releasedName{name: g.name, value: minted.Value, expires: minted.Expires, secretType: served.Type(),
+			gitHubValue: gitHubValueOf(served), leftOut: minted.LeftOut})
 		if entry != nil {
 			released := &read[len(read)-1]
-			if released.split, err = airlockSplitOf(entry.Kind, released.secretType, minted.Value); err != nil {
+			if released.split, err = airlockSplitOf(entry.Kind, released.secretType, released.gitHubValue, minted.Value); err != nil {
 				return nil, fmt.Errorf("release %s behind the airlock: %w", g.name, err)
 			}
 		}
@@ -177,23 +187,36 @@ func (m *Machine) readRelease(ctx context.Context, grantID string, checked grant
 	return read, nil
 }
 
+// gitHubValueOf is the github.value of the GitHub profile served is, "" for a name that is no
+// GitHub profile.
+func gitHubValueOf(served policy.Secret) string {
+	if served.Profile == nil || served.Profile.GitHub == nil {
+		return ""
+	}
+	return served.Profile.GitHub.Value
+}
+
 // giveBack hands each value in read that a type's minter made back to that type's upstream
-// (Machine.GiveBacks), for a release that minted it and hands it to nobody: one that failed, or a
+// (Machine.GiveBacks), with the value form of the GitHub profile it was minted for
+// (gitHubValue), for a release that minted it and hands it to nobody: one that failed, or a
 // name the airlock holds back, whose session gets placeholders (heldBack). A stored value, and a
 // value of a type with no GiveBack, is left as it is. It runs in the background, detached from
 // ctx, and the release answers at once: nothing the release answers depends on it, and a
 // give-back that waited on GitHub, up to its bound for each installation of each value, could
 // hold a session's release past the time its client gives the call. Each GiveBack bounds its own
 // revokes; one a stopping broker cuts short leaves its token to lapse, as before the give-back.
+// A GiveBack that panics leaves its value to lapse too, logged (recoverGiveBack), and the
+// give-back goes on to the next value: net/http recovers a panic only on a handler's own
+// goroutine, so one here would end the broker.
 func (m *Machine) giveBack(ctx context.Context, read []releasedName) {
 	type minted struct {
-		giveBack    GiveBack
-		name, value string
+		giveBack          GiveBack
+		name, value, form string
 	}
 	var back []minted
 	for _, released := range read {
 		if giveBack := m.GiveBacks[released.secretType]; giveBack != nil && released.value != "" {
-			back = append(back, minted{giveBack, released.name, released.value})
+			back = append(back, minted{giveBack, released.name, released.value, released.gitHubValue})
 		}
 	}
 	if len(back) == 0 {
@@ -204,9 +227,36 @@ func (m *Machine) giveBack(ctx context.Context, read []releasedName) {
 	go func() {
 		defer m.givingBack.Done()
 		for _, each := range back {
-			each.giveBack(detached, each.name, each.value)
+			func() {
+				defer recoverGiveBack(each.name)
+				each.giveBack(detached, each.name, each.value, each.form)
+			}()
 		}
 	}()
+}
+
+// giveBackPanickedMessage is logged, at ERROR, each time a GiveBack panics (recoverGiveBack),
+// followed by name=<the secret's name>, error=<what panicText says of the panic> and stack=<the
+// goroutine's stack>, which hold no part of the value it was giving back. That value is left to
+// lapse.
+const giveBackPanickedMessage = "broker: a give-back of a minted value panicked; the value is left to lapse"
+
+// recoverGiveBack, deferred directly around one value's GiveBack (giveBack), logs a panic there
+// (giveBackPanickedMessage) and lets the give-back go on to the next value.
+func recoverGiveBack(name string) {
+	if p := recover(); p != nil {
+		slog.Error(giveBackPanickedMessage, "name", name, "error", panicText(p), "stack", string(debug.Stack()))
+	}
+}
+
+// panicText is what a log line or an error says of the panic p, from code that may hold a secret
+// value or a token: a runtime error's message, which names types and indexes and no data, or else
+// the panic value's type alone, since a value a panic was given can be anything that code held.
+func panicText(p any) string {
+	if err, ok := p.(runtime.Error); ok {
+		return err.Error()
+	}
+	return fmt.Sprintf("a panic of type %T", p)
 }
 
 // heldBack is the names in read the airlock holds back. A session's release reads or mints each

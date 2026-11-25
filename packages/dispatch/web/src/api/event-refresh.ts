@@ -1,5 +1,9 @@
+import { isIdPrefix } from "@legion/contracts";
+import { hashKey, type Query, type QueryCache, type QueryClient } from "@tanstack/react-query";
+
 import { askProject } from "../features/inbox/list-row";
-import { buildDispatchReference } from "../features/refs/routes";
+import { routeItem } from "../features/refs/block-reference";
+import { buildDispatchReference, parseNodeReference } from "../features/refs/routes";
 import { issueProject } from "../lib/issue-key";
 import {
   agentMessagesQuery,
@@ -11,10 +15,16 @@ import {
   projectArchitectureSourcesQuery,
   projectDefaultAssigneesQuery,
   projectsQuery,
+  type TreeFilter,
   userAgentStateQuery,
   userStateQuery,
 } from "./queries";
-import { answeredNotFound, type RefreshCheck, type RefreshTarget } from "./query-refresh";
+import {
+  answeredNotFound,
+  type RefreshCheck,
+  type RefreshTarget,
+  refreshQueries,
+} from "./query-refresh";
 import type {
   ArchitectureTree,
   ArchitectureTreeComponent,
@@ -28,8 +38,10 @@ import type {
   EventType,
   GraphReferences,
   InboxRow,
+  IssueDetails,
   IssueSummary,
   IssueTreeNode,
+  IssueTreeParent,
   IssueTreeRead,
   MyRepliesResponse,
   MyReplyRow,
@@ -80,8 +92,9 @@ export function isViewer(login: string | undefined, viewer: string | undefined):
 }
 
 /** A list read's rows, as the reader that holds the query wrote them; none for a query with no
- *  list (an error, or not loaded). */
-function rowsOf<Row>(data: unknown): readonly Row[] {
+ *  list (an error, or not loaded), or a read of another shape. The caller names the rows' type
+ *  (`Row`): a cached answer is the one its own read returned. */
+export function rowsOf<Row>(data: unknown): readonly Row[] {
   return Array.isArray(data) ? (data as Row[]) : [];
 }
 
@@ -391,7 +404,8 @@ const ISSUE_NODE_MOVERS: Readonly<Record<keyof IssueTreeNode, readonly string[]>
  *  each named by the field an issue write names in `changed` when it moves one: its parent
  *  (`child_of`, and the `part_of` a parent move retracts), its waits (`needs`, which a Dispatch
  *  of the release before names `blocked_by`), the issue it repeats, the item it was filed out of
- *  and its components (`affects`). */
+ *  and its components (`affects`). `changesReferenceGraph` holds the same fields, with the title,
+ *  in a list of its own, so an edit to one list finds the other. */
 const ISSUE_EDGE_FIELDS: readonly string[] = [
   "parent",
   "needs",
@@ -464,14 +478,21 @@ function heldKind(kind: string, supertag: string): HeldKind {
  *  out of it (`treeNodesMoved`). */
 const BY_THE_WRITE = "by the write";
 
+/** An ask's event, or a block's found invalid or repaired, which moves the nodes it is on
+ *  (`onItsTarget`) and no other node of its issue. */
+const ON_ITS_TARGET = "on its target";
+
 /**
  * Which kinds of an issue's nodes (`HeldKind`) each event of the issue can move in a tree read of
  * another issue that holds them, or that holds a node standing under one, from what the route
- * reads (`issue_tree_read.go`) and what the event's writer writes. It is keyed by every event
- * type, so a type the contract adds does not compile until it says here what it moves. A type
- * whose writes are not shown to leave a kind alone names every kind.
+ * reads (`issue_tree_read.go`) and what the event's writer writes, or that it moves only the
+ * nodes it is on (`ON_ITS_TARGET`). It is keyed by every event type, so a type the contract adds
+ * does not compile until it says here what it moves. A type whose writes are not shown to leave a
+ * kind alone names every kind.
  */
-const TREE_NODES_MOVED: Readonly<Record<EventType, readonly HeldKind[] | typeof BY_THE_WRITE>> = {
+const TREE_NODES_MOVED: Readonly<
+  Record<EventType, readonly HeldKind[] | typeof BY_THE_WRITE | typeof ON_ITS_TARGET>
+> = {
   "issue.created": BY_THE_WRITE,
   "issue.updated": BY_THE_WRITE,
   "issue.closed": BY_THE_WRITE,
@@ -497,11 +518,14 @@ const TREE_NODES_MOVED: Readonly<Record<EventType, readonly HeldKind[] | typeof 
   // A child added or taken out moves the issue's two halves in a plan view.
   "child.added": ["issue"],
   "child.removed": ["issue"],
-  // No node carries a status, and the child's own write names every ancestor.
+  // No node carries a status.
   "child.status": [],
-  // An edit moves the comment's words and its blocks, which a node standing under one names as
-  // its parent's first line.
+  // An edit or a delete of a comment or an issue message moves the post's words and its blocks,
+  // which a node standing under one names as its parent's first line.
+  "comment.deleted": ["conversation"],
   "comment.edited": ["conversation"],
+  "message.deleted": ["conversation"],
+  "message.edited": ["conversation"],
   // A new comment or message, a reply, a delivery, a resolution, an anchor, a suggestion's
   // verdict - whose document change is its own version - and a follower: no answer holds a
   // conversation node of another issue, and none of these moves the words of one a node names
@@ -520,17 +544,20 @@ const TREE_NODES_MOVED: Readonly<Record<EventType, readonly HeldKind[] | typeof 
   "message.delivery": [],
   "ask.follower_added": [],
   "ask.follower_removed": [],
-  // An ask's other events, and a block ask found invalid or repaired, move its state, a decision
-  // block's asks and the ties of an answered ask: not shown to leave any kind alone.
-  "ask.anchor_refreshed": EVERY_KIND,
-  "ask.answered": EVERY_KIND,
-  "ask.asked_of": EVERY_KIND,
-  "ask.edited": EVERY_KIND,
-  "ask.handed_back": EVERY_KIND,
-  "ask.opened": EVERY_KIND,
-  "ask.resolved": EVERY_KIND,
-  "block.invalid": EVERY_KIND,
-  "block.repaired": EVERY_KIND,
+  // An ask's other events move only what the ask is on (`onItsTarget`): its own node, which an
+  // answer holds as a tie, with its state and wording; the decision that names it; and its typed
+  // block, whose server attributes the version a person's answer, resolve or decline writes
+  // carries. A block found invalid or repaired - an ask's or a check's - is the block the event
+  // names, whose change the settlement's own version carries.
+  "ask.anchor_refreshed": ON_ITS_TARGET,
+  "ask.answered": ON_ITS_TARGET,
+  "ask.asked_of": ON_ITS_TARGET,
+  "ask.edited": ON_ITS_TARGET,
+  "ask.handed_back": ON_ITS_TARGET,
+  "ask.opened": ON_ITS_TARGET,
+  "ask.resolved": ON_ITS_TARGET,
+  "block.invalid": ON_ITS_TARGET,
+  "block.repaired": ON_ITS_TARGET,
   // A claim, a release, a deploy, a pull request's attribution, a handoff and a subscription:
   // no node carries one.
   "issue.claimed": [],
@@ -554,47 +581,406 @@ const TREE_NODES_MOVED: Readonly<Record<EventType, readonly HeldKind[] | typeof 
   "user_thread_state.updated": [],
 };
 
+/** Whether an issue write may have moved the issue's parent, which decides which issues' trees
+ *  read its nodes: it names `parent` among what it moved - a create under a parent does, since it
+ *  names every field the new issue holds a value in - or it does not say what it moved. */
+function mayMoveParent(event: DispatchEvent): boolean {
+  const changes = issueChanges(event);
+  return changes === undefined || changes.has("parent");
+}
+
 /**
- * The kinds of the issue's nodes an event of the issue can move (`TREE_NODES_MOVED`). A write
- * moves the issue's node where it moved a member of it or a relation out of it
- * (`ISSUE_NODE_FIELDS`), and every kind where it moved the parent, which decides whether a tree
- * reads the issue's nodes at all: the route reads the nodes of the issues under the issue read
- * alone. A write that does not say what it moved may have moved the parent.
+ * The kinds of the issue's nodes an event of the issue can move (`TREE_NODES_MOVED`), or that it
+ * moves the nodes it is on (`ON_ITS_TARGET`). A write moves the issue's node where it moved a
+ * member of it or a relation out of it (`ISSUE_NODE_FIELDS`), and every kind where it may have
+ * moved the parent (`mayMoveParent`'s rule), which decides whether a tree reads the issue's nodes
+ * at all: the route reads the nodes of the issues under the issue read alone.
  */
-function treeNodesMoved(event: DispatchEvent): readonly HeldKind[] {
+function treeNodesMoved(event: DispatchEvent): readonly HeldKind[] | typeof ON_ITS_TARGET {
   const moved = TREE_NODES_MOVED[event.type];
   if (moved !== BY_THE_WRITE) {
     return moved;
   }
-  const changes = issueChanges(event);
-  if (changes === undefined || changes.has("parent")) {
+  if (mayMoveParent(event)) {
     return EVERY_KIND;
   }
+  // The write says what it moved, and the parent is none of it (`mayMoveParent`).
+  const changes = issueChanges(event) ?? [];
   return [...changes].some((field) => ISSUE_NODE_FIELDS.has(field)) ? ["issue"] : [];
 }
 
-/** Every tree read and every view of one (`["issue-tree", key, view]`) whose answer holds a node
- *  of issue `key`, or a node standing under one, whichever issue it is the tree of, where `event`
- *  can move that node's kind (`treeNodesMoved`): a parent's outline holds an `issue` node for
- *  each child and the child's nodes it reads, and a descendant's view carries its ancestors'
- *  requirements as context. A node of another issue than the tree's names it (`issue`), the
- *  issue's own node among them, and is judged by its own kind; a node standing under one names
- *  it as its parent's (`parent.issue`), and is judged by its parent's kind. An event that moves
- *  no kind reaches none: a child's comment or message reads nothing of its parent's tree. */
+/** A node of a tree read, or the parent a node names: what `treesHolding` judges of either. */
+type HeldNode = Pick<IssueTreeParent, "id" | "issue" | "kind" | "supertag"> &
+  Partial<Pick<IssueTreeNode, "decision" | "document">>;
+
+/** Whether a node, or the parent a node names, is of issue `key`: it names the issue (`issue`),
+ *  or it is the issue's own node, which is known by its id whether or not it names its issue. */
+function ofIssue(node: HeldNode, key: string): boolean {
+  return node.issue === key || (node.kind === "issue" && node.id === key);
+}
+
+/** The block id a node's address ends with (`<KEY>/<slug>#<id>`), or "" for a node that is no
+ *  block of a document. */
+function blockIdOf(address: string): string {
+  const at = address.indexOf("#");
+  return at < 0 ? "" : address.slice(at + 1);
+}
+
+/** Whether an event's `block_id` names a block: one that names none is absent, null or "". */
+function namesBlock(id: string | null | undefined): id is string {
+  return typeof id === "string" && id !== "";
+}
+
+/** A document of an issue an event names, by its id, and by its address (`<KEY>/<slug>`) where
+ *  the event carries its slug: the address of a node of the document, or the start of one. */
+interface NamedDocument {
+  readonly id: string;
+  readonly address: string | undefined;
+}
+
+/** A block an event names: its id, which is its id within its document alone; that document,
+ *  where the event names it, and the block's address (`<KEY>/<slug>#<id>`) where it carries the
+ *  document's slug too. A block whose event names no document is matched by its id within the
+ *  issue. */
+interface NamedBlock {
+  readonly block: string;
+  readonly document: { readonly id: string } | undefined;
+  readonly address: string | undefined;
+}
+
+/**
+ * The nodes of a tree read of another issue that an ask's event of issue `key`, or a block's found
+ * invalid or repaired, is on (`ON_ITS_TARGET`), as a test of a node or of the parent one names:
+ *
+ * - the ask's own node, which an answer holds only as a tie a view carries (`readTies`: an ask a
+ *   person answered whose `shaped` names a node of the view), and a node whose decision names the
+ *   ask (`decision.asks`: the person's decision the answered ask is, or an agent's that settles
+ *   it);
+ * - the block a block ask is written as (`block_id`, in the document `block_artifact` names), and
+ *   the block an anchored ask's mark is in (`anchor.block_id`, in the anchor's document), each
+ *   matched by its document and its block id together: a node of that document (`document`)
+ *   whose address ends with the block id, or the node at the block's address (`<KEY>/<slug>#<id>`),
+ *   which a node standing under the block names as its parent;
+ * - every node of the document an ask is anchored in where its mark is in no block of it: a node
+ *   that names it as its document, or whose address is the document's (`<KEY>/<slug>`, the parent
+ *   a node of it standing under no block of it names) or one of its blocks';
+ * - a block an event names with no document, in whichever document of the issue: the block
+ *   settlement found invalid or repaired, and the block of an ask's event settlement writes, which
+ *   carries `block_id` and no `block_artifact`.
+ *
+ * A plain ask - no block, no anchor - is on no node another issue's answer holds but a decision
+ * that settles it: only an ask's typed block states `shaped`, and no answer holds an ask node of
+ * another issue but as a tie. A block ask's answer reaches more than its target in a view that
+ * carries ties (`tie` and `VIEWS_CARRYING_TIES` in `treesHolding`).
+ */
+function onItsTarget(key: string, event: DispatchEvent): (node: HeldNode) => boolean {
+  let ask: string | undefined;
+  const blocks: NamedBlock[] = [];
+  const documents: NamedDocument[] = [];
+  switch (event.type) {
+    case "block.invalid":
+    case "block.repaired":
+      blocks.push({ address: undefined, block: event.payload.block_id, document: undefined });
+      break;
+    case "ask.anchor_refreshed":
+    case "ask.answered":
+    case "ask.asked_of":
+    case "ask.edited":
+    case "ask.handed_back":
+    case "ask.opened":
+    case "ask.resolved": {
+      const { anchor, anchor_artifact, block_artifact, block_id, id } = event.payload;
+      ask = id;
+      // An issue's ask is written and anchored in that issue's documents alone, so each is at
+      // `<KEY>/<slug>`: `block_artifact` names the document a block ask is written in, the anchor
+      // its document's id, and `anchor_artifact` that document's slug.
+      if (namesBlock(block_id)) {
+        blocks.push({
+          address:
+            block_artifact === undefined ? undefined : `${key}/${block_artifact.slug}#${block_id}`,
+          block: block_id,
+          document: block_artifact,
+        });
+      }
+      if (anchor != null) {
+        const document =
+          anchor_artifact === undefined ? undefined : `${key}/${anchor_artifact.slug}`;
+        if (namesBlock(anchor.block_id)) {
+          blocks.push({
+            address: document === undefined ? undefined : `${document}#${anchor.block_id}`,
+            block: anchor.block_id,
+            document: { id: anchor.artifact_id },
+          });
+        } else {
+          documents.push({ address: document, id: anchor.artifact_id });
+        }
+      }
+      break;
+    }
+    default:
+      break;
+  }
+  return (node) => {
+    const block = blockIdOf(node.id);
+    return (
+      (node.kind === "ask" && node.id === ask) ||
+      (ask !== undefined && node.decision?.asks?.includes(ask) === true) ||
+      blocks.some(
+        (named) =>
+          named.block === block &&
+          (named.document === undefined
+            ? ofIssue(node, key)
+            : node.document?.artifact_id === named.document.id || node.id === named.address)
+      ) ||
+      documents.some(
+        ({ address, id }) =>
+          node.document?.artifact_id === id ||
+          (address !== undefined && addressUnder(node.id, address, "#"))
+      )
+    );
+  };
+}
+
+/** The views whose answer carries ties (`readTies`, which the route runs for these two alone): a
+ *  decision, or an ask a person answered, whose `shaped` names a node the view answers. */
+const VIEWS_CARRYING_TIES: Partial<Record<string, true>> = {
+  spec: true,
+  verification: true,
+} satisfies Partial<Record<TreeFilter, true>>;
+
+/** The nodes a held tree read or view answers, as its reader holds them; none for a query that
+ *  holds no answer. */
+function treeNodesOf(data: unknown): readonly IssueTreeNode[] {
+  return rowsOf<IssueTreeNode>((data as Partial<IssueTreeRead> | undefined)?.nodes);
+}
+
+/** The events that write an issue's documents - a create, a version, a removal - and so can bring
+ *  a node of the issue into the tree of any issue above it, a grandparent's included. */
+const DOCUMENT_WRITES: Partial<Record<EventType, true>> = {
+  "artifact.created": true,
+  "artifact.removed": true,
+  "artifact.version": true,
+};
+
+/**
+ * The issues above issue `key` that the page can place from what `cache` holds: a document event
+ * carries no `ancestors`, so the chain is read from the page's own reads. An issue's parent is the
+ * one its held detail (`["issue", <key>]`) names, unless that detail is marked stale - the issue
+ * may have moved since it was read, so it places nothing until it is read again - else the issue
+ * a held tree read or view places the issue's node under: the node the issue's node stands under
+ * is that issue's own node, or a node of it the issue's `part_of` names (a requirement), which is
+ * of the issue it names (`issue`), else of the tree's own issue (the query's key), as the route
+ * marks a node of the issue read with no issue. The trees are read only once no fresh detail
+ * names a parent. The walk goes up from `key` to each parent it finds, and stops at an issue it
+ * has passed already. The event's own refresh, which carries every event of the same flush,
+ * marks details stale only after every check of the refresh has run (`refreshQueries`), so a
+ * detail marked stale here is one an earlier refresh marked. One gap stays: where every tree or
+ * view the check judges has a read out when the event lands - the event's own issue's are read
+ * whatever they hold, and judge nothing - the walk runs on the first answer that lands, after the
+ * refresh's marks, and the event's issue's detail then places nothing.
+ */
+function issuesAbove(key: string, cache: QueryCache): ReadonlySet<string> {
+  const above = new Set<string>();
+  let parents: Map<string, string> | undefined;
+  const treeParent = (issue: string): string | undefined => {
+    if (parents === undefined) {
+      parents = new Map();
+      for (const query of cache.findAll({ queryKey: ["issue-tree"] })) {
+        const tree = query.queryKey[1];
+        for (const node of treeNodesOf(query.state.data)) {
+          const parent = node.parent;
+          if (node.kind !== "issue" || parent == null || parents.has(node.id)) {
+            continue;
+          }
+          const of = parent.kind === "issue" ? parent.id : (parent.issue ?? tree);
+          if (typeof of === "string") {
+            parents.set(node.id, of);
+          }
+        }
+      }
+    }
+    return parents.get(issue);
+  };
+  for (let issue = key; ; ) {
+    const detail = cache.get(hashKey(["issue", issue]))?.state;
+    const named =
+      detail?.isInvalidated === true
+        ? undefined
+        : (detail?.data as Partial<Pick<IssueDetails, "parent">> | undefined)?.parent;
+    const parent = named ?? treeParent(issue);
+    if (parent === undefined || parent === key || above.has(parent)) {
+      return above;
+    }
+    above.add(parent);
+    issue = parent;
+  }
+}
+
+/**
+ * Every tree read and every view of one (`["issue-tree", key, view]`) whose answer holds a node
+ * of issue `key`, or a node standing under one, whichever issue it is the tree of, that `event`
+ * can move: one of a kind it can move (`treeNodesMoved`), or one it is on (`onItsTarget`). A
+ * parent's outline holds an `issue` node for each child and the child's nodes it reads, and a
+ * descendant's view carries its ancestors' requirements as context. A node of another issue than
+ * the tree's is of that issue (`ofIssue`) - it names it (`issue`), or it is the issue's own node
+ * - and is judged by its own kind; a node standing under one names it as its parent, and is
+ * judged by its parent's kind. A document event of the issue reaches as well every answer that
+ * holds the node of an issue the page places above it (`issuesAbove`) other than the answer's own
+ * issue's node, which every outline holds: a grandparent's outline holds its child's node and none
+ * of the grandchild's, and the grandchild's new check serving the grandparent's requirement comes
+ * into it. A block ask's answer reaches as well a view that carries ties (`VIEWS_CARRYING_TIES`)
+ * and holds a block of the ask's issue, and no other answer by that (`tie`).
+ *
+ * A view follows its outline (`["issue-tree", key]`): whatever marks an issue's outline stale
+ * marks every view of that issue the page holds, by the outline's answer. An outline with no read
+ * out judges its views at once, and so does one whose answer this event judged as holding what it
+ * moves before its read went out: the read this event's own refresh starts once it has judged
+ * every answer it can at once, which a view whose own read was out finds on that read's response.
+ * While any other read of the outline is out - its first, or a refetch out as the event lands - a
+ * view is judged by its own answer alone, and a view that leaves unmarked waits for the outline's
+ * answer: once it lands, or the read is refused and leaves the answer the outline held, the views
+ * that wait are marked where that answer holds what the event moves, each once, and none read
+ * since it was judged. An event that moves no kind reaches none: a child's comment or message
+ * reads nothing of its parent's tree. A child's plain ask is on no node its parent's answers hold,
+ * so it reads none of them.
+ */
 function treesHolding(key: string, event: DispatchEvent): RefreshTarget | undefined {
   const moved = treeNodesMoved(event);
-  if (moved.length === 0) {
+  if (moved !== ON_ITS_TARGET && moved.length === 0) {
     return undefined;
   }
-  const moves = (kind: string, supertag: string) => moved.includes(heldKind(kind, supertag));
+  const moves =
+    moved === ON_ITS_TARGET
+      ? onItsTarget(key, event)
+      : (node: HeldNode) =>
+          ofIssue(node, key) && moved.includes(heldKind(node.kind, node.supertag));
+  // A block ask's answer (`ask.answered` naming its `block_id`: a person's first, a replaced one,
+  // or one settlement restores) can bring the ask into a view that carries ties as the tie of a
+  // block of the view it shaped: `shaped` names blocks of the ask's own issue alone, so such a
+  // view that holds a block of that issue may gain the ask though it holds no node the ask is
+  // on. No other answer gains a tie.
+  const tie = event.type === "ask.answered" && namesBlock(event.payload.block_id);
+  // The issues above the event's issue, read once for a document event, from the cache of the one
+  // client the event's refresh runs on; none for any other event. A check handed no client reads
+  // no cache, and keeps nothing for the checks that are handed one.
+  let placed: ReadonlySet<string> | undefined;
+  const above = (client: QueryClient | undefined): ReadonlySet<string> | undefined => {
+    if (client !== undefined) {
+      placed ??=
+        DOCUMENT_WRITES[event.type] === true ? issuesAbove(key, client.getQueryCache()) : new Set();
+    }
+    return placed;
+  };
+  // Whether each answer holds a node the event moves, read once for the event once the issues
+  // above are known, so the views that fall back to one outline read its nodes once.
+  const held = new WeakMap<object, boolean>();
+  const holds = (data: unknown, issues: ReadonlySet<string> | undefined): boolean => {
+    if (typeof data !== "object" || data === null) {
+      return false;
+    }
+    const known = issues === undefined ? undefined : held.get(data);
+    if (known !== undefined) {
+      return known;
+    }
+    // An issue placed above the event's issue reaches an answer by its node, but never the
+    // answer's own issue's node: every outline holds that one, whatever it holds under it.
+    const own = (data as Partial<IssueTreeRead>).issue;
+    const answer = treeNodesOf(data).some(
+      (node) =>
+        moves(node) ||
+        (node.parent != null && moves(node.parent)) ||
+        (node.kind === "issue" && node.id !== own && issues?.has(node.id) === true)
+    );
+    if (issues !== undefined) {
+      held.set(data, answer);
+    }
+    return answer;
+  };
+  // The views that wait for the answer of each outline with a read out, each with the count of
+  // its settled reads when it was judged, and the one listener on the cache per outline that
+  // waits for it. The listener goes on the outline's response, its refusal or its removal, and
+  // marks the views where the answer the outline then holds holds a node the event moves: outside
+  // the cache's notification, through the refresh rules, and only those still idle and read no
+  // more since, so a view another event's wait or the view's own read since has read is not read
+  // again.
+  const waiting = new WeakMap<Query, Map<Query, number>>();
+  const settledReads = (query: Query): number =>
+    query.state.dataUpdateCount + query.state.errorUpdateCount;
+  const waitForOutline = (
+    client: QueryClient,
+    outline: Query,
+    view: Query,
+    issues: ReadonlySet<string> | undefined
+  ): void => {
+    const views = waiting.get(outline);
+    if (views !== undefined) {
+      if (!views.has(view)) {
+        views.set(view, settledReads(view));
+      }
+      return;
+    }
+    const waited = new Map([[view, settledReads(view)]]);
+    waiting.set(outline, waited);
+    const stop = client.getQueryCache().subscribe((change) => {
+      if (change.query !== outline) {
+        return;
+      }
+      const removed = change.type === "removed";
+      const settled = change.type === "updated" && outline.state.fetchStatus === "idle";
+      if (!(removed || settled)) {
+        return;
+      }
+      stop();
+      waiting.delete(outline);
+      if (settled && holds(outline.state.data, issues)) {
+        queueMicrotask(() => {
+          const unread = [...waited].flatMap(([each, reads]) =>
+            each.state.fetchStatus === "idle" && settledReads(each) === reads
+              ? [{ exact: true, queryKey: each.queryKey }]
+              : []
+          );
+          if (unread.length > 0) {
+            refreshQueries(client, unread);
+          }
+        });
+      }
+    });
+  };
   return {
     queryKey: ["issue-tree"],
-    when: (data) =>
-      rowsOf<IssueTreeNode>((data as Partial<IssueTreeRead> | undefined)?.nodes).some(
-        (node) =>
-          (node.issue === key && moves(node.kind, node.supertag)) ||
-          (node.parent?.issue === key && moves(node.parent.kind, node.parent.supertag))
-      ),
+    // A view (`["issue-tree", key, view]`) holds only the nodes its view takes, so the node an
+    // event of a child moves can be in the outline (`["issue-tree", key]`) and in no view yet: a
+    // child's first check serving the issue's requirement.
+    when: (data, query, client) => {
+      const issues = above(client);
+      const view = query.queryKey[2];
+      if (
+        holds(data, issues) ||
+        (tie &&
+          typeof view === "string" &&
+          VIEWS_CARRYING_TIES[view] === true &&
+          treeNodesOf(data).some((node) => node.kind === "block" && ofIssue(node, key)))
+      ) {
+        return true;
+      }
+      if (view === undefined || client === undefined) {
+        return false;
+      }
+      const outline = client.getQueryCache().get(hashKey(query.queryKey.slice(0, 2)));
+      if (outline === undefined) {
+        return false;
+      }
+      // A read of the outline out after this event judged the answer it holds as holding what
+      // the event moves - the read this event's own refresh started, which a view whose own read
+      // was out finds on its response - answers nothing the view waits for: the view is read now.
+      const answer = outline.state.data;
+      const judged = typeof answer === "object" && answer !== null && held.get(answer) === true;
+      if (outline.state.fetchStatus !== "idle" && !judged) {
+        waitForOutline(client, outline, query, issues);
+        return false;
+      }
+      return holds(answer, issues);
+    },
   };
 }
 
@@ -616,6 +1002,7 @@ function eventDocument(event: DispatchEvent): string | undefined {
     case "comment.resolved":
     case "comment.reopened":
     case "comment.edited":
+    case "comment.deleted":
     case "comment.anchor_refreshed":
     case "suggestion.accepted":
     case "suggestion.rejected":
@@ -647,8 +1034,8 @@ function appendCommentReads(targets: RefreshTarget[], event: DispatchEvent): voi
     event.type === "comment.delivery" ? event.payload.comment_id : payloadString(event, "id");
   if (id !== undefined) {
     targets.push({ queryKey: ["comment", id] });
-    if (event.type === "comment.edited") {
-      targets.push(commentBlockReads(id));
+    if (event.type === "comment.edited" || event.type === "comment.deleted") {
+      targets.push(itemBlockReads("comment", id));
     }
   }
   const root = payloadString(event, "reply_to");
@@ -663,14 +1050,15 @@ function appendCommentReads(targets: RefreshTarget[], event: DispatchEvent): voi
 }
 
 /**
- * Every read of a block of comment `id` (`blockQuery`, which each link to the block and its own
- * panel share, pinned or not), found by its node, `comment/<id>#<block id>`. The node carries the
- * block's text, which the read keeps until an event refreshes it (`staleTime: Infinity`), and the
- * server names no block of a comment in `references_changed`: the comment's own edit does. An
- * issue message is never edited, so its blocks' text never moves.
+ * Every read of a block of comment or issue message `id` (`blockQuery`, which each link to the
+ * block and its own panel share, pinned or not), found by its node, `<kind>/<id>#<block id>`.
+ * The node carries the block's text, which the read keeps until an event refreshes it
+ * (`staleTime: Infinity`), and the server names no block of a post in `references_changed`: the
+ * post's own edit does, and its delete, which re-indexes the post with an empty body. A message
+ * has both since the post corrections gave it them.
  */
-function commentBlockReads(id: string): RefreshTarget {
-  const prefix = `comment/${id}#`;
+function itemBlockReads(kind: "comment" | "message", id: string): RefreshTarget {
+  const prefix = `${kind}/${id}#`;
   return referencePanels(({ node }) => node.kind === "block" && node.id.startsWith(prefix));
 }
 
@@ -685,21 +1073,39 @@ function appendRepliedBlock(targets: RefreshTarget[], event: DispatchEvent): voi
   }
 }
 
-/** The signed-in person's answers page lists every answer and every reply on an ask, so the
- *  two events that write one refresh it. The query exists only while that page is open. */
+/** The signed-in person's answers page lists every answer and every reply on an ask, and prints
+ *  each reply's body with its edit and delete marks, so the two events that write one refresh
+ *  it, and so do the edit and the delete of a reply on an ask. The query exists only while that
+ *  page is open. */
 function appendAnswersPage(targets: RefreshTarget[], event: DispatchEvent): void {
   if (
     event.type === "ask.answered" ||
-    (event.type === "comment.created" && payloadString(event, "ask_id") !== undefined)
+    ((event.type === "comment.created" ||
+      event.type === "comment.edited" ||
+      event.type === "comment.deleted") &&
+      payloadString(event, "ask_id") !== undefined)
   ) {
     targets.push({ queryKey: ["me", "answers"] });
   }
 }
 
+/** A person's page (`["people", <login>, "nodes"]`) lists each comment its person wrote or was
+ *  delivered, with the first line of its words and its edit and delete marks (INFRA-1523, R2 and
+ *  R3). An edit or a delete of a comment refreshes every person's page, so a page that is open
+ *  reads the new words: the cached correction (corrected-post.ts) writes the mark at once, but not
+ *  the words, which an edit event can carry cut short. The query exists only while a person's page
+ *  is open. */
+function appendPersonPages(targets: RefreshTarget[], event: DispatchEvent): void {
+  if (event.type === "comment.edited" || event.type === "comment.deleted") {
+    targets.push({ queryKey: ["people"] });
+  }
+}
+
 // An ask or comment that is written, re-anchored or edited in a document is an `anchored_to` edge
 // into it, and one a project document owns an `owned_by` edge: that document's backlink panel
-// lists both, each row showing the head of the item's text, which an edit moves. A resolution, a
-// reopen, an answer, a hand-back or a suggestion's verdict moves neither the edge nor its text.
+// lists both, each row showing the head of the item's text, which an edit moves and a comment's
+// delete clears. A resolution, a reopen, an answer, a hand-back or a suggestion's verdict moves
+// neither the edge nor its text.
 function appendDocumentPanel(targets: RefreshTarget[], event: DispatchEvent): void {
   if (
     event.type !== "ask.opened" &&
@@ -708,6 +1114,7 @@ function appendDocumentPanel(targets: RefreshTarget[], event: DispatchEvent): vo
     event.type !== "comment.created" &&
     event.type !== "comment.answered" &&
     event.type !== "comment.edited" &&
+    event.type !== "comment.deleted" &&
     event.type !== "comment.anchor_refreshed"
   ) {
     return;
@@ -760,6 +1167,7 @@ function isCommentLikeEvent(event: DispatchEvent): boolean {
     event.type === "comment.resolved" ||
     event.type === "comment.reopened" ||
     event.type === "comment.edited" ||
+    event.type === "comment.deleted" ||
     event.type === "comment.anchor_refreshed" ||
     event.type === "suggestion.accepted" ||
     event.type === "suggestion.rejected"
@@ -805,14 +1213,24 @@ function isMessageEvent(event: DispatchEvent): boolean {
     event.type === "message.created" ||
     event.type === "message.delivery" ||
     event.type === "message.accepted" ||
-    event.type === "message.answered"
+    event.type === "message.answered" ||
+    event.type === "message.edited" ||
+    event.type === "message.deleted"
   );
 }
 
 // The writes that fire a `user_threads` trigger - a comment, a session's reply to a mention
 // (`comment.answered`), an issue message or a reply to one, an answer - and an ask opening
 // (settlement restoring one) or being resolved, which decides whether the Inbox lists its thread
-// instead. An edit, a resolution of a comment, a delivery or a claim moves no row.
+// instead. A resolution of a comment, a delivery or a claim moves no row.
+//
+// An edit or a delete of a comment or an issue message (`comment.edited`, `comment.deleted`,
+// `message.edited`, `message.deleted`) moves no row either, but it changes what a row prints: a
+// Reply row draws its thread's root (`subject`, with the root's edit time and its delete marks,
+// `ThreadTitle`) and its newest reply (`reply.first_line`), so an Inbox that did not read its rows
+// again would go on printing a post's old words after its edit, and a deleted post's words after
+// its delete (R2 and R3 of dispatch://INFRA-1523). The correction's `thread_logins` decides whose
+// rows read again, as a create's does, and every viewer's do where it carries none.
 //
 // A hand-on (`ask.asked_of`) is here for the same reason an assignee move is: the Inbox leaves
 // out the Reply row of an open ask it already lists (`myRepliesOwner` in the server's
@@ -833,8 +1251,12 @@ function isMessageEvent(event: DispatchEvent): boolean {
 const INBOX_THREAD_WRITES: Partial<Record<EventType, true>> = {
   "comment.created": true,
   "comment.answered": true,
+  "comment.edited": true,
+  "comment.deleted": true,
   "message.created": true,
   "message.answered": true,
+  "message.edited": true,
+  "message.deleted": true,
   "ask.opened": true,
   "ask.answered": true,
   "ask.asked_of": true,
@@ -844,13 +1266,13 @@ const INBOX_THREAD_WRITES: Partial<Record<EventType, true>> = {
 
 /**
  * Whether the viewer's Inbox thread rows (`["me", "replies"]`: both states of the unpaged read,
- * the unread count and every owner's unread set) can have moved: a write above, or an issue
- * closing, reopening or being reassigned. A reassignment, a hand-on (`ask.asked_of`, among the
- * writes above) and a project's default moving all move the same rows for the same reason: whom
- * an open ask waits on is one expression, `coalesce(a.asked_of, i.assignee, p.default_assignee)`,
- * and the Reply rows leave out an ask the Inbox already lists for the viewer (`myRepliesOwner`
- * in the server's replies.go), so moving that person moves the ask's thread into one person's
- * Reply rows and out of the other's.
+ * the unread count and every owner's unread set) can have moved, or changed what they print (a
+ * correction of a post a row draws): a write above, or an issue closing, reopening or being
+ * reassigned. A reassignment, a hand-on (`ask.asked_of`, among the writes above) and a project's
+ * default moving all move the same rows for the same reason: whom an open ask waits on is one
+ * expression, `coalesce(a.asked_of, i.assignee, p.default_assignee)`, and the Reply rows leave out
+ * an ask the Inbox already lists for the viewer (`myRepliesOwner` in the server's replies.go), so
+ * moving that person moves the ask's thread into one person's Reply rows and out of the other's.
  *
  * A project-default write moves the person without touching the thread or naming an issue, so
  * it reads it for the two named people's whole Inbox as well, and every other reader's Inbox
@@ -858,12 +1280,13 @@ const INBOX_THREAD_WRITES: Partial<Record<EventType, true>> = {
  * `ownerTargets`). An assignee write needs no such read: every reader's Inbox holds every open
  * ask of the issue, so the test against its rows (`inboxRowsOf`) finds each list it moves.
  *
- * `thread_logins` names whose rows the write moved - for an issue-less message the thread root's
- * author, which is the person whose Agent row it is, for a hand-on the person it moved from and
- * the one it moved to, and for a project default the previous default and the new one - so only
- * theirs, and the writer's own, refresh. Without it every one of those writes refreshes, except
- * an `issue.updated` that says it moved neither status nor assignee: the server names the logins
- * on every status move, a close and a reopen among them, and on every assignee move.
+ * `thread_logins` names whose rows the write moved or reprinted - for an issue-less message the
+ * thread root's author, which is the person whose Agent row it is, for a hand-on the person it
+ * moved from and the one it moved to, and for a project default the previous default and the new
+ * one - so only theirs, and the writer's own, refresh. Without it every one of those writes
+ * refreshes, except an `issue.updated` that says it moved neither status nor assignee: the server
+ * names the logins on every status move, a close and a reopen among them, and on every assignee
+ * move.
  *
  * The known limit: an older server mid-deploy writes no `thread_logins` on a reassignment, so a
  * Reply row that should appear here - an open ask on an issue assigned away from the viewer -
@@ -892,7 +1315,8 @@ function movesInboxThreads(event: DispatchEvent, viewer: string | undefined): bo
 
 /** Whether the event is an issue write: `issue.created`, `issue.updated` or `issue.closed`, the
  *  events whose payload is the issue row with what the write moved (`changed`) and the issue's
- *  parent chain after it (`ancestors`). */
+ *  parent chain after it (`ancestors`). `ownerTargets` makes the same test inline, so an edit to
+ *  one finds the other. */
 function isIssueWrite(
   event: DispatchEvent
 ): event is Extract<DispatchEvent, { type: "issue.created" | "issue.updated" | "issue.closed" }> {
@@ -915,8 +1339,8 @@ function issueChanges(event: DispatchEvent): ReadonlySet<string> | undefined {
  * upload or title correction, which moves the title every reference to the document shows; an
  * ask's creation or edit (a settled ask block among them), a comment or message body -
  * an answer's reply body is indexed like any other - an anchor refresh, a follower change, a child
- * link, and an issue write that moved a structural edge (`ISSUE_EDGE_FIELDS`: its parent, its
- * blockers, its components) or the title every one of them shows as its excerpt.
+ * link, and an issue write that moved a structural edge (its parent, its blockers, its components)
+ * or the title every one of them shows as its excerpt.
  */
 function changesReferenceGraph(event: DispatchEvent): boolean {
   switch (event.type) {
@@ -934,14 +1358,21 @@ function changesReferenceGraph(event: DispatchEvent): boolean {
     case "comment.anchor_refreshed":
     case "comment.created":
     case "comment.edited":
+    case "comment.deleted":
     case "issue.created":
     case "message.answered":
     case "message.created":
+    case "message.edited":
+    case "message.deleted":
       return true;
     case "issue.updated": {
       const changes = issueChanges(event);
       return (
-        changes === undefined || [...ISSUE_EDGE_FIELDS, "title"].some((field) => changes.has(field))
+        changes === undefined ||
+        // `ISSUE_EDGE_FIELDS`, with the title: an edit to either list finds the other.
+        ["parent", "needs", "blocked_by", "duplicate_of", "filed_from", "components", "title"].some(
+          (field) => changes.has(field)
+        )
       );
     }
     default:
@@ -1294,6 +1725,7 @@ function documentTargets(event: DispatchEvent, viewer: string | undefined): Refr
     targets.push({ queryKey: myRepliesKey });
   }
   appendAnswersPage(targets, event);
+  appendPersonPages(targets, event);
   appendDocumentPanel(targets, event);
   if (event.type === "subscription.removed") {
     targets.push({ queryKey: ["subscribers", id] });
@@ -1302,30 +1734,37 @@ function documentTargets(event: DispatchEvent, viewer: string | undefined): Refr
 }
 
 function ownerTargets(event: DispatchEvent, viewer: string | undefined): RefreshTarget[] {
-  if (
-    event.type === "project.created" ||
-    event.type === "project.updated" ||
-    event.type === "settings.repo_project.updated"
-  ) {
+  if (event.type === "project.created" || event.type === "project.updated") {
     if (event.project === undefined) {
       throw new Error("project event is missing its project");
     }
     return [
       { queryKey: projectsKey },
       { queryKey: ["project", event.project] },
-      { queryKey: ["issues", "project", event.project] },
-      { queryKey: ["repo-projects"] },
-      // The project list carries no default assignee: a new project's is in the defaults read
-      // alone, which the Settings table reads it from and was answered before it existed.
       ...(event.type === "project.created"
-        ? [{ queryKey: projectDefaultAssigneesQuery().queryKey }]
-        : []),
-      // A mapping write can change the repository every issue of its project resolves to (a new
-      // default, one removed or moved away), which the issue header reads from the issue's
-      // detail. The detail's key names no project, so every loaded detail refreshes; mapping
-      // writes are rare settings changes.
-      ...(event.type === "settings.repo_project.updated" ? [{ queryKey: ["issue"] }] : []),
+        ? [
+            { queryKey: ["issues", "project", event.project] },
+            // The project list carries no default assignee: a new project's is in the defaults
+            // read alone, which the Settings table reads it from and was answered before it
+            // existed.
+            { queryKey: projectDefaultAssigneesQuery().queryKey },
+          ]
+        : [
+            // An update can change the project's default repository. Each issue of the project
+            // that names no repository, and whose parent issues name none, resolves to it, and
+            // every issue list and issue detail shows `resolved_repo`. Not every key of those
+            // reads names a project, so every loaded list and detail reads again. A project
+            // changes only when a person or a daemon changes one of its settings, which is rare.
+            { queryKey: ["issues"] },
+            { queryKey: ["issue"] },
+          ]),
     ];
+  }
+  // A retained event: no build writes it now, and the events an earlier build stored stay as
+  // history. A project's default repository is on the project now, so it changes nothing that a
+  // page reads.
+  if (event.type === "settings.repo_project.updated") {
+    return [];
   }
   // The Settings table always, and the Inbox, issue, document and Reply-thread reads of a question
   // the move carries: a project's default is the last step of the chain that decides who a
@@ -1446,25 +1885,35 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
     { queryKey: ["events", key] },
     // Every event an issue owns moves its `last_seq`, which a project list's unread dot reads.
     { queryKey: project === undefined ? ["issues", "project"] : ["issues", "project", project] },
-    // The issue page's tree read, and each view of it under its key: the tree answers what every
-    // event of its issue may have moved, so it is told of each one, read once by the scheduler
-    // where something draws it and marked stale where nothing does.
-    { queryKey: issueTreeKey(key) },
   ];
-  // A tree holds nodes of other issues as well, and is told of their events the same way: each
-  // ancestor's tree the event names (`ancestors`), which a write can put a node of the issue in
-  // that its answer does not hold yet - a new child, a moved one - and every other tree or view
-  // whose answer holds a node of the issue, or a node standing under one, that the event can move
-  // (`treesHolding`). An issue write that names no ancestors - written before the field existed,
-  // or by an older server mid-rollout - may have put the issue under any tree, so every tree and
-  // every view is told of it, as every loaded detail is (`issueWriteTargets`). No other event
-  // carries `ancestors`, so its absence there says nothing.
+  // The issue page's tree read, and each view of it under its key: the tree answers what an event
+  // of its issue may have moved, so it is told of each one, read once by the scheduler where
+  // something draws it and marked stale where nothing does. A person's edit notice is not one of
+  // them: it moves no node the tree or a view draws (its branch below).
+  if (event.type !== "artifact.human_edited") {
+    targets.push({ queryKey: issueTreeKey(key) });
+  }
+  // A tree holds nodes of other issues as well, and is told of their events the same way: every
+  // tree or view whose answer holds a node of the issue, or a node standing under one, that the
+  // event can move (`treesHolding`), and, for an issue write that may have moved the issue's
+  // parent (`mayMoveParent`), each ancestor's tree and every view of it the event names
+  // (`ancestors`): a create under a parent or a parent move puts the issue's nodes in an
+  // ancestor's answer that does not hold them yet, and a write that does not say what it moved
+  // may have moved the parent. Any other write reads no ancestor's tree by its name: a title
+  // reaches the parent's outline through the child's node it holds, and a status, an assignee, a
+  // priority, labels or no field at all (`changed: []`) move no node of the issue. An issue write
+  // that names no ancestors - written before the field existed, or by an older server
+  // mid-rollout - may have put the issue under any tree, so every tree and every view is told of
+  // it, as every loaded detail is (`issueWriteTargets`). No other event carries `ancestors`, so
+  // its absence there says nothing.
   const ancestors = payloadStrings(event, "ancestors");
   if (isIssueWrite(event) && ancestors === undefined) {
     targets.push({ queryKey: ["issue-tree"] });
   } else {
-    for (const ancestor of ancestors ?? []) {
-      targets.push({ queryKey: issueTreeKey(ancestor) });
+    if (isIssueWrite(event) && mayMoveParent(event)) {
+      for (const ancestor of ancestors ?? []) {
+        targets.push({ queryKey: issueTreeKey(ancestor) });
+      }
     }
     const holding = treesHolding(key, event);
     if (holding !== undefined) {
@@ -1497,7 +1946,12 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
     return targets;
   }
 
-  if (isIssueWrite(event)) {
+  // The same test as `isIssueWrite`, written inline: an edit to either finds the other.
+  if (
+    event.type === "issue.created" ||
+    event.type === "issue.updated" ||
+    event.type === "issue.closed"
+  ) {
     targets.push(...issueWriteTargets(event, key, project));
     return targets;
   }
@@ -1609,6 +2063,7 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
       targets.push({ queryKey: ["artifact", document] });
     }
     appendAnswersPage(targets, event);
+    appendPersonPages(targets, event);
     appendDocumentPanel(targets, event);
     return targets;
   }
@@ -1635,6 +2090,7 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
     }
     appendCommentReads(targets, event);
     appendAnswersPage(targets, event);
+    appendPersonPages(targets, event);
     appendDocumentPanel(targets, event);
     return targets;
   }
@@ -1651,6 +2107,14 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
     // Every message read of the issue (a reference to a message, which shows the thread under
     // its root): a reply changes its root's read, and a payload need not name the root.
     targets.push({ queryKey: ["issue-messages", key] }, { queryKey: ["issue-message", key] });
+    // An edit and a delete rewrite the message's blocks, so every read of one of them, as a
+    // comment's own edit does (`itemBlockReads`).
+    if (event.type === "message.edited" || event.type === "message.deleted") {
+      const id = payloadString(event, "id");
+      if (id !== undefined) {
+        targets.push(itemBlockReads("message", id));
+      }
+    }
     appendRepliedBlock(targets, event);
     return targets;
   }
@@ -1841,6 +2305,27 @@ function askThreadsOn(issue: string): RefreshTarget {
   };
 }
 
+/** The kind of post each correction is of: the segment an address names it under
+ *  (`/comment/<id>`, `/message/<id>`).
+ *
+ *  The search palette keeps each answer under the words it was asked for and the request it
+ *  sent, never under the posts it holds, for its `staleTime` (`useTieredSearch.ts`, `["search",
+ *  words, request]`), and an answer holds a post's text or a block of it with the post's marks.
+ *  So an edit or a delete of a post reads every kept answer again: the post may be in any of
+ *  them, and its words may be gone. A create needs none: a kept answer that misses a post written
+ *  since shows no text of it. The names reads (`referenceTargetsQuery`) hold a post's words and
+ *  marks too, but under the addresses they name, so a correction reads again only those whose
+ *  key names an address of the issue or the project document the post is on, or names the post
+ *  by its id under any other owner (`referenceNameTargets`). */
+const POST_CORRECTIONS: Partial<Record<EventType, "comment" | "message">> = {
+  "comment.edited": "comment",
+  "comment.deleted": "comment",
+  "message.edited": "message",
+  "message.deleted": "message",
+};
+
+const SEARCH_ANSWERS: RefreshTarget = { queryKey: ["search"] };
+
 /**
  * Whether `address` is `owner` or an address under it: `owner`, then the end of the address or
  * one of `next`, the characters that may stand after an owner of that kind in an address
@@ -1855,16 +2340,17 @@ function addressUnder(address: string, owner: string, next: string): boolean {
 }
 
 /** The slug of the project document `event` is on, where its payload carries it: a created,
- *  renamed or removed document's own, an edited comment's document's (`artifact_slug`), and an
- *  edited ask's document's, the one its anchor quotes (`anchor_artifact`), for an edit through
- *  the ask's own route the one that holds its typed block (`block_artifact`), or for an approval
- *  request's rewording the one it asks approval of (`approval_artifact`, which the server's read
- *  of the event log attaches to every ask event carrying `approval`), each the document the ask
- *  is on. Four events carry none, and name the document by its id alone, which no address is
- *  written with: a new version, a comment's edit written before `artifact_slug` existed, the
- *  edit of a question asked of the document as a whole, with no anchor, no block and no
- *  approval, and a document version's rewording of a block ask, whose event the document's
- *  settlement writes without `block_artifact`. */
+ *  renamed or removed document's own, an edited or a deleted comment's document's
+ *  (`artifact_slug`, which the read of a deleted comment's event keeps beside its delete marks),
+ *  and an edited ask's document's, the one its anchor quotes (`anchor_artifact`), for an edit
+ *  through the ask's own route the one that holds its typed block (`block_artifact`), or for an
+ *  approval request's rewording the one it asks approval of (`approval_artifact`, which the
+ *  server's read of the event log attaches to every ask event carrying `approval`), each the
+ *  document the ask is on. Four events carry none, and name the document by its id alone, which
+ *  no address is written with: a new version, a comment's edit written before `artifact_slug`
+ *  existed, the edit of a question asked of the document as a whole, with no anchor, no block
+ *  and no approval, and a document version's rewording of a block ask, whose event the
+ *  document's settlement writes without `block_artifact`. */
 function projectDocumentSlug(event: DispatchEvent): string | undefined {
   switch (event.type) {
     case "artifact.created":
@@ -1878,6 +2364,7 @@ function projectDocumentSlug(event: DispatchEvent): string | undefined {
         event.payload.approval_artifact?.slug
       );
     case "comment.edited":
+    case "comment.deleted":
       return event.payload.artifact_slug;
     default:
       return undefined;
@@ -1922,9 +2409,54 @@ function eventAddresses(event: DispatchEvent): ((address: string) => boolean) | 
   return (address) => addressUnder(address, document, "@/#");
 }
 
+/** A post's id as Dispatch stores it and every read of it writes it: a uuid, canonical and in
+ *  lower case. */
+const POST_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+/**
+ * Whether an address names the post a correction (`POST_CORRECTIONS`) is of, the post itself or a
+ * block of it, as GET /api/v1/reference-targets reads the address; undefined for every other
+ * event, and for a correction whose payload names no post by an id Dispatch stores (`id`,
+ * `POST_ID`), which no address can name. The read names a comment and a message by the id the
+ * address writes, whatever owner it is written under: in the issue's form
+ * (`dispatch://<KEY>/comment/<id>`, `dispatch://<KEY>/message/<id>`), in a project document's
+ * (`dispatch://<PROJECT>/artifact/<slug>/comment/<id>`, with or without a version after the
+ * slug), and as a block's (`…#b-<block id>`, pinned or not). That id is the post's whole id as it
+ * is stored: the server looks the post up by that text, so an id spelled any other way, in upper
+ * case or without its hyphens, names nothing. An id written short - a hex digit, then seven or
+ * more hex digits or hyphens, read without case, and no whole id (`isIdPrefix`) - names the post
+ * only in an address under what the post is on (`eventAddresses`): the server resolves a short id
+ * among the items of the owner the address names and no other, so the same prefix under another
+ * owner names one of that owner's items or nothing. An address that writes no post's id - an
+ * issue, a document, a block of a document - names no post. A dashboard URL, which the server
+ * reads too, is not read here: the issue page names every read by its `dispatch://` address.
+ */
+export function correctedPostAddresses(
+  event: DispatchEvent
+): ((address: string) => boolean) | undefined {
+  const kind = POST_CORRECTIONS[event.type];
+  const id = payloadString(event, "id");
+  if (kind === undefined || id === undefined || !POST_ID.test(id)) {
+    return undefined;
+  }
+  const owned = eventAddresses(event);
+  return (address) => {
+    const route = parseNodeReference(address);
+    const item = route === undefined ? undefined : routeItem(route);
+    if (item?.kind !== kind) {
+      return false;
+    }
+    return (
+      item.id === id ||
+      (isIdPrefix(item.id) && id.startsWith(item.id.toLowerCase()) && owned?.(address) === true)
+    );
+  };
+}
+
 /**
  * Every names read whose key (`["reference-targets", <sorted addresses>]`) holds an address
- * `event` can change the words under (`eventAddresses`), or one written in a form other than
+ * `event` can change the words under (`eventAddresses`), one that names the post a correction is
+ * of under any owner (`correctedPostAddresses`), or one written in a form other than
  * `dispatch://` and its owner, which could name anything and so is refreshed for rather than
  * missed. An event on neither an issue nor a project document refreshes every names read.
  */
@@ -1933,24 +2465,28 @@ function namesReadsNaming(event: DispatchEvent): RefreshTarget {
   if (touched === undefined) {
     return { queryKey: ["reference-targets"] };
   }
+  const post = correctedPostAddresses(event);
   return {
     queryKey: ["reference-targets"],
     when: (_data, query) =>
       rowsOf<unknown>(query.queryKey[1]).some(
         (address) =>
-          typeof address === "string" && (!address.startsWith("dispatch://") || touched(address))
+          typeof address === "string" &&
+          (!address.startsWith("dispatch://") || touched(address) || post?.(address) === true)
       ),
   };
 }
 
 /**
  * Which names reads (`referenceTargetsQuery`, `["reference-targets", <sorted addresses>]`) an
- * event refreshes: those whose key holds an address it changes the words under, on a comment's
- * edit (its body), an ask's edit (its question) and a document's new version (its blocks' words),
- * and none on any other event. The issue page's names reads are kept fresh by events
- * (`reference-target.ts`'s `EVENT_FRESH`), never by their age, and a names read's key is the set of
- * addresses it names, so a page that comes to hold another set reads again under a key of its
- * own: only a change of words under the same address needs a rule.
+ * event refreshes: those whose key holds an address it changes the words under, on an edit or a
+ * delete of a comment or an issue message (its body, which a delete empties, and the marks the
+ * read answers for the post, `edited_at`, `deleted_at` and `deleted_by`), an ask's edit (its
+ * question) and a document's new version (its blocks' words), and none on any other event. The
+ * issue page's names reads are kept fresh by events (`reference-target.ts`'s `EVENT_FRESH`),
+ * never by their age, and a names read's key is the set of addresses it names, so a page that
+ * comes to hold another set reads again under a key of its own: only a change of words under the
+ * same address needs a rule.
  * An issue's write that changes its title (`issue.updated` naming `title` among its changes, or
  * naming none, as an older server sends it) renames the issue's own address, since a names read
  * names an issue by its title, so it refreshes the reads naming that address, and only those
@@ -1961,21 +2497,33 @@ function namesReadsNaming(event: DispatchEvent): RefreshTarget {
  * its blocks name nothing (`gone`), so each refreshes them too.
  *
  * Of the names reads the app holds, each event refreshes those whose key holds an address it can
- * change, of the issue or the project document it is on (`namesReadsNaming`). The test reads the
- * query's key, not the page's issue, since a page's words can cite another issue's target. Every
- * address the issue page names a read by is written `dispatch://` and its owner
- * (`treeReferences`): a node's own, a chip's, each one its words cite, a bare key asked as its
- * issue's own address, and an item id or a block id written short still under its owner, so the
- * key alone ties each address to what owns it. An event of these kinds on neither an issue nor a
- * project document never reaches this rule: `documentTargets` refuses it first, and the feed then
- * refreshes every read the app holds.
+ * change: one of the issue or the project document it is on (`eventAddresses`), and, for a
+ * post's correction, one that names the post by its id under any owner
+ * (`correctedPostAddresses`). The test reads the query's key, not the page's issue, since a
+ * page's words can cite another issue's target. Every address the issue page names a read by is
+ * written `dispatch://` and its owner (`treeReferences`): a node's own, a chip's, each one its
+ * words cite, a bare key asked as its issue's own address, and an item id or a block id written
+ * short still under its owner. So the key alone ties each address to what owns it, but for a
+ * comment's or a message's whole id: the server names a post by that id whatever owner the
+ * address is written under, so a page on CORE-2 whose words cite a CORE-1 comment as
+ * `dispatch://CORE-2/comment/<id>` holds that comment's words under a CORE-2 address. A comment
+ * or ask event on neither an issue nor a project document never reaches this rule:
+ * `documentTargets` refuses it first, and the feed then refreshes every read the app holds. A
+ * message correction always carries its issue, since the server refuses to correct any other
+ * message (`message_corrections.go`).
  *
  * A person's edit of a document (`artifact.human_edited`) is none of them: it is the notice sent
  * once the document has been quiet after those edits, each of which wrote a version that sent
- * its own `artifact.version` (the notice's branch of `ownerTargets`), so it changes no text. Nor
- * is a message: the feed has no `message.edited` (its message events are `message.created`,
- * `message.delivery`, `message.accepted` and `message.answered`), so a message's body never
- * changes under its address.
+ * its own `artifact.version` (the notice's branch of `ownerTargets`), so it changes no text. A
+ * post's correction is on what owns the post: a comment's on its issue, or on the project
+ * document it belongs to, whose slug its payload carries (`projectDocumentSlug`), and a
+ * message's on its issue, since the server corrects an issue message and refuses any other. So
+ * each reaches every names read whose key names anything of that owner, the post and its blocks
+ * among them, and every one whose key names the post or a block of it by its whole id under
+ * another owner, and no other: an id written short under another owner names one of that
+ * owner's items or nothing.
+ * The search palette's answers, which a post's words are kept under too, are keyed by no
+ * address, so a correction reads every one of them again (`POST_CORRECTIONS`).
  *
  * The feed is the workspace's (`api/event-feed.ts`): these events arrive for every issue and
  * project document of the workspace, a document's new version above all, and one that can
@@ -1991,7 +2539,16 @@ function namesReadsNaming(event: DispatchEvent): RefreshTarget {
  * every other rule does, so a read already out, or begun under a second ago, is fetched again
  * once those rules allow; since the rule tests the read's key against the answer that lands, a
  * first read out at the event that then fails holds no answer to test and is not read again by
- * it, and window focus or a later event reads it again (`refetchFailedOnFocus`).
+ * it, and window focus or a later event reads it again (`refetchFailedOnFocus`). A refetch that
+ * fails keeps the answer it would have replaced, so a post's correction writes its own marks
+ * into each answer the cache holds as it arrives (`markCorrectedPost`): a read that then fails
+ * names a deleted post by the deleted line and an edited one with its mark. An answer that a
+ * read already out at an event lands was composed before it, and a refetch of it that fails
+ * keeps it, which stands for every refresh but a correction's own facts: the feed puts each
+ * answer it marks over every read of that query still out, and reads the query again
+ * (`replaceQueryData`), and keeps a correction while a read out at its arrival of a query it
+ * marked nothing in is out, writing its marks into the answer that read lands (`keepCorrection`
+ * in `corrected-post.ts`).
  */
 function referenceNameTargets(event: DispatchEvent): RefreshTarget[] {
   switch (event.type) {
@@ -2001,6 +2558,9 @@ function referenceNameTargets(event: DispatchEvent): RefreshTarget[] {
     case "artifact.version":
     case "ask.edited":
     case "comment.edited":
+    case "comment.deleted":
+    case "message.edited":
+    case "message.deleted":
       return [namesReadsNaming(event)];
     case "issue.updated": {
       const changes = issueChanges(event);
@@ -2022,6 +2582,9 @@ export function eventRefreshTargets(event: DispatchEvent, signedInLogin?: string
   const threadsIssue = askThreadsIssue(event);
   if (threadsIssue !== null) {
     targets.push(askThreadsOn(threadsIssue));
+  }
+  if (POST_CORRECTIONS[event.type] !== undefined) {
+    targets.push(SEARCH_ANSWERS);
   }
   return targets;
 }

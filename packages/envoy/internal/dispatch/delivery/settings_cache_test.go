@@ -89,6 +89,7 @@ func countedDeliveryPool(t *testing.T, pool *store.Pool) (*store.Pool, *settings
 // all -- at the cache's start and on the hub's signal after its LISTEN -- and then not once over
 // three seconds: no timer reads it.
 func TestTheIntakesReadNoSettingsWhileNothingChanges(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	counted, counter := countedDeliveryPool(t, pool)
@@ -99,7 +100,7 @@ func TestTheIntakesReadNoSettingsWhileNothingChanges(t *testing.T) {
 	runCtx, cancel := context.WithCancel(ctx)
 	stop, err := StartIntakes(runCtx, func(name string) (*bus.Client, error) {
 		return bus.Connect([]string{natsURL}, bus.WithName(name))
-	}, counted, deliveryTestIntakeLeases(t, counted), newFakeGitHub(t).newTestClient(), events.NewBroker(), wake, nil)
+	}, counted, deliveryTestIntakeLeases(t, counted), newFakeGitHub(t).newTestClient(), events.NewBroker(), wake, nil, unrenamed())
 	if err != nil {
 		cancel()
 		t.Fatalf("start the intakes: %v", err)
@@ -127,6 +128,7 @@ func TestTheIntakesReadNoSettingsWhileNothingChanges(t *testing.T) {
 // Ten job events of a tracked deploy run are checked against the cached settings: none of them
 // reads delivery_settings, and they still schedule the run's read.
 func TestJobEventsReadNoSettings(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	seedRunningDeployRun(t, ctx, pool)
@@ -150,6 +152,7 @@ func TestJobEventsReadNoSettings(t *testing.T) {
 // written are stored and close the channel Changed handed out before them; a later read whose
 // deploy repository is malformed keeps the settings before it.
 func TestTheSettingsCacheKeepsTheLastValidSettings(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	cache := newSettingsCache(pool, nil)
 	changed := cache.Changed()

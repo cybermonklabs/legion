@@ -14,7 +14,9 @@ import (
 // to its last block. TextSHA256 is the sum of that text (decisionread.TextSum): the sum the
 // release before's Decisions read served, and the sum the conversion compares a Keep with
 // (issueRestore.sectionKeeps). ChangedVersion is the greatest version the block index recorded
-// for one of the section's blocks, as that read gave it.
+// for one of the section's blocks, as that read gave it. DecisionHeading alone answers it.
+//
+// kept for one release: heading-keep
 type HeadingDecision struct {
 	Text           string
 	TextSHA256     string

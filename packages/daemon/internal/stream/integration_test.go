@@ -1,5 +1,7 @@
 package stream_test
 
+//ci:builds packages/daemon ./cmd/legion buildLegion go build .../daemon/cmd/legion
+
 // The shim–listener integration test: the real `legion worker-shim` binary, built from
 // cmd/legion by this test, dials the real Listener — over a unix socket and over TCP — and
 // bridges a fake Oh My Pi, which is this test binary re-executed. Neither end is a stand-in: the
@@ -479,10 +481,7 @@ func TestTheRealShimReadsItsProjectedTokenAgainForTheRealListener(t *testing.T) 
 // on its record instead of re-sending for ever (INFRA-1480).
 func TestTheRealShimRefusesAnAdoptionAStaleLockWedges(t *testing.T) {
 	legion := buildLegion(t)
-	jj, err := exec.LookPath("jj")
-	if err != nil {
-		t.Fatalf("jj is required: %v", err)
-	}
+	jj := fixturegit.CompiledJJ(t)
 	home, workspace := t.TempDir(), t.TempDir()
 	// The init takes no -R and opens no workspace, so with no Dir jj would walk up from the test
 	// process's directory to the closest .jj and write that repository (docs/testing.md).

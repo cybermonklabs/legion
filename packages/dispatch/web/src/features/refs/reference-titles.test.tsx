@@ -6,7 +6,7 @@ import { MemoryRouter } from "react-router-dom";
 
 import { graphNode } from "../../__tests__/graph-fixture";
 import { ApiError, api } from "../../api/client";
-import type { AskRead, IssueReferenceSummary, MessageRead } from "../../api/types";
+import type { AskRead, CommentRead, IssueReferenceSummary, MessageRead } from "../../api/types";
 import { MarkdownBody } from "./MarkdownBody";
 
 const ASK_ID = "2a7f1c90-1f4e-4a2b-9c3d-5e6f70819a2b";
@@ -114,6 +114,136 @@ test("a message reference reads as the headline of its body, as a comment's does
     const link = await within(view.container).findByRole("link");
     // The author is no title: the headline of what the message says is.
     await waitFor(() => expect(link.textContent).toBe("Shipped it The deploy went out at noon."));
+  } finally {
+    view.unmount();
+  }
+});
+
+// A reference link's text is the headline of the post it names, so the link is a print of that
+// post: a link to a post its author deleted says that it is deleted, and a link to a message its
+// author edited marks it as edited (INFRA-1523, R2 and R3). A deleted post's body is empty, and a
+// headline cut from it is an empty title, which drew the link as an anchor with no text and no
+// size: the reader could not see that the post cited anything, nor hover or click the link.
+const DELETED_COMMENT = "5b0e2c41-7d3a-4f6e-8a1b-2c3d4e5f6a7b";
+const DELETED_MESSAGE = "6c1f3d52-8e4b-4a7f-9b2c-3d4e5f6a7b8c";
+const EDITED_MESSAGE = "7d2a4e63-9f5c-4b8a-8c3d-4e5f6a7b8c9d";
+const DELETED_AT = "2026-11-13T12:00:00Z";
+
+function messageRead(id: string, fields: Record<string, unknown>): MessageRead {
+  return {
+    message: {
+      author: { id: "planner", kind: "session" },
+      body: "",
+      created_at: "2026-01-01T00:00:00Z",
+      deleted_at: null,
+      deleted_by: null,
+      deliveries: [],
+      edited_at: null,
+      id,
+      in_reply_to: null,
+      issue_key: "CORE-1",
+      ...fields,
+    },
+    replies: [],
+  } as unknown as MessageRead;
+}
+
+test("a reference to a deleted comment says it is deleted and never reads as an empty link", async () => {
+  spies.push(
+    spyOn(api, "getComment").mockResolvedValue({
+      comment: {
+        anchor: null,
+        ask_id: null,
+        author: { id: "alice", kind: "user" },
+        body: "",
+        created_at: "2026-01-01T00:00:00Z",
+        deleted_at: DELETED_AT,
+        deleted_by: { id: "alice", kind: "user" },
+        deliveries: [],
+        edited_at: null,
+        id: DELETED_COMMENT,
+        issue_key: "CORE-1",
+        reply_to: null,
+        resolved: false,
+        resolved_at: null,
+        resolved_by: null,
+        suggestion: null,
+        turn: null,
+      },
+      replies: [],
+    } as unknown as CommentRead)
+  );
+  const view = render(
+    withQueries(
+      freshClient(),
+      <MarkdownBody markdown={`see dispatch://CORE-1/comment/${DELETED_COMMENT}`} />
+    )
+  );
+
+  try {
+    const link = () => view.container.querySelector("a");
+    await waitFor(() => expect(link()?.textContent ?? "").toContain("Deleted by alice"), {
+      timeout: 2000,
+    });
+  } finally {
+    view.unmount();
+  }
+});
+
+test("a reference to a deleted message says it is deleted and never reads as an empty link", async () => {
+  spies.push(
+    spyOn(api, "getMessage").mockResolvedValue(
+      messageRead(DELETED_MESSAGE, {
+        deleted_at: DELETED_AT,
+        deleted_by: { id: "alice", kind: "user" },
+      })
+    )
+  );
+  const view = render(
+    withQueries(
+      freshClient(),
+      <MarkdownBody markdown={`see dispatch://CORE-1/message/${DELETED_MESSAGE}`} />
+    )
+  );
+
+  try {
+    const link = () => view.container.querySelector("a");
+    await waitFor(() => expect(link()?.textContent ?? "").toContain("Deleted by alice"), {
+      timeout: 2000,
+    });
+  } finally {
+    view.unmount();
+  }
+});
+
+test("a reference to an edited message marks it as edited, and one to a standing message does not", async () => {
+  const standing = "8e3b5f74-af6d-4c9b-9d4e-5f6a7b8c9d0e";
+  spies.push(
+    spyOn(api, "getMessage").mockImplementation((_key: string, id: string) =>
+      Promise.resolve(
+        id === EDITED_MESSAGE
+          ? messageRead(id, { body: "Shipped it, as corrected.", edited_at: DELETED_AT })
+          : messageRead(id, { body: "Shipped it." })
+      )
+    )
+  );
+  const view = render(
+    withQueries(
+      freshClient(),
+      <MarkdownBody
+        markdown={`see dispatch://CORE-1/message/${EDITED_MESSAGE}\n\nand dispatch://CORE-1/message/${standing}`}
+      />
+    )
+  );
+
+  try {
+    const paragraph = (id: string) =>
+      view.container.querySelector(`a[data-dispatch-ref$="${id}"]`)?.closest("p")?.textContent ??
+      "";
+    await waitFor(() => expect(paragraph(EDITED_MESSAGE)).toContain("Shipped it, as corrected."));
+    await waitFor(() => expect(paragraph(standing)).toContain("Shipped it."));
+    expect(paragraph(EDITED_MESSAGE)).toContain("edited");
+    expect(paragraph(standing)).not.toContain("edited");
   } finally {
     view.unmount();
   }

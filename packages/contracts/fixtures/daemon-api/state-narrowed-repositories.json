@@ -7,7 +7,7 @@
     "startedAt": "2026-09-22T09:15:02Z"
   },
   "contract": {
-    "daemon": 216,
+    "daemon": 233,
     "caller": 199
   },
   "admission": {
@@ -330,6 +330,12 @@
         {
           "experiment": "plan-length",
           "variant": "long",
+          "mode": "random",
+          "drawnAt": "2026-09-21T18:42:11Z"
+        },
+        {
+          "experiment": "planning",
+          "variant": "b",
           "mode": "random",
           "drawnAt": "2026-09-21T18:42:11Z"
         }
@@ -659,30 +665,6 @@
       "state": "retired"
     }
   ],
-  "wakesWaiting": [
-    {
-      "claim": "legion-legion-legion-207-implementer",
-      "issue": "LEGION-207",
-      "role": "implementer",
-      "kind": "plugin-refresh",
-      "dueAt": "2026-09-22T09:17:56Z"
-    },
-    {
-      "claim": "legion-legion-legion-208-architect",
-      "issue": "LEGION-208",
-      "role": "architect",
-      "kind": "catch-up",
-      "dueAt": "2026-09-22T09:18:03Z"
-    },
-    {
-      "claim": "legion-legion-legion-208-planner",
-      "issue": "LEGION-208",
-      "role": "planner",
-      "kind": "launch",
-      "dueAt": "2026-09-22T09:18:11Z"
-    }
-  ],
-  "claimsToRefresh": 4,
   "paused": {
     "id": 7,
     "since": "2026-09-22T09:09:00Z",
@@ -821,6 +803,12 @@
       "status": "present",
       "detail": "the image probe pod scheduled at its first attempt",
       "source": "boot"
+    },
+    {
+      "name": "repository-cache-room",
+      "status": "open",
+      "detail": "1 of 1 repository caches ran out of room: acme/widgets on a 20.0 GiB volume (claim cache-legion-legion-cache-acme-widgets-d782c874) with 0.1 GiB available, its clone 6.2 GiB; its repack failed for lack of space at 2026-10-16T02:15:33Z. Room comes from growing the cache's claim in place and raising runtime.kubernetes.repository_cache.volume",
+      "configLine": "capabilities.decided.repository-cache-room: \"\u003creason\u003e\""
     },
     {
       "name": "network",
@@ -1008,6 +996,13 @@
             "floor_percent": 15,
             "wait_seconds": 8,
             "interval_milliseconds": 250
+          },
+          "controller_pod": {
+            "enabled": true,
+            "act_percent": 85,
+            "floor_percent": 10,
+            "wait_seconds": 1,
+            "interval_milliseconds": 100
           }
         },
         "volume_trim": {
@@ -1062,6 +1057,13 @@
         },
         "experiments": [],
         "production_check": "tester",
+        "default_steps": [
+          "planner",
+          "implementer",
+          "tester",
+          "reviewer",
+          "acceptance:owner"
+        ],
         "deploys": []
       },
       "WIDGETS": {
@@ -1071,6 +1073,10 @@
         },
         "experiments": [],
         "production_check": "off",
+        "default_steps": [
+          "implementer",
+          "reviewer"
+        ],
         "deploys": []
       }
     },
@@ -1162,5 +1168,29 @@
       "unavailable": "read the consumer's info: context deadline exceeded"
     }
   ],
-  "lowestPluginContract": 201
+  "lowestPluginContract": 201,
+  "wakesWaiting": [
+    {
+      "claim": "legion-legion-legion-207-implementer",
+      "issue": "LEGION-207",
+      "role": "implementer",
+      "kind": "plugin-refresh",
+      "dueAt": "2026-09-22T09:17:56Z"
+    },
+    {
+      "claim": "legion-legion-legion-208-architect",
+      "issue": "LEGION-208",
+      "role": "architect",
+      "kind": "catch-up",
+      "dueAt": "2026-09-22T09:18:03Z"
+    },
+    {
+      "claim": "legion-legion-legion-208-planner",
+      "issue": "LEGION-208",
+      "role": "planner",
+      "kind": "launch",
+      "dueAt": "2026-09-22T09:18:11Z"
+    }
+  ],
+  "claimsToRefresh": 4
 }

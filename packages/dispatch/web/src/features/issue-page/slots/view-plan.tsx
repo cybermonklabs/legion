@@ -40,22 +40,26 @@ export function ViewPlanSlot({
   // tree reads it by, so they cost no request of their own.
   const { blocksOf, readsSettled, refused: refusedLines, root } = useOutlineReads(issue);
   // The view waits on the reads of the two documents it draws from, and on no other: the plan's
-  // blocks, which are its tasks, and the spec's, which are the statements a task serves. Both are
-  // the tree read's (`useOutlineReads`' `blocksOf`), as the plan's blocks are again for the order
-  // they are written in (`PlanFilterBody`), so the view sends no request of its own, and a failed
-  // line's Retry reads the tree again. A document the issue does not name needs no read.
+  // blocks, which are its tasks, and the spec's, which are the statements a task serves.
+  //
+  // Every read the view watches - these two, and the plan's blocks again for the order they are
+  // written in (`PlanFilterBody`) - is watched under the key `useIssueTree` fills, by an observer
+  // that `useIssueTree` mounts (`useOutlineReads`' `blocksOf`): all three are the one tree read,
+  // kept fresh by its own rule (`TREE_FRESH`). So the view sends no request of its own and sees
+  // whatever the tree's observer fetches; `refetch` still fetches, which is what Retry asks. A
+  // document the issue does not name needs no read.
   //
   // A read has answered where it holds data, whatever its status, and has failed where it stands
   // failed (`refs/reference-target.ts`'s `standsFailed`, the one rule, which says why neither
   // is read from the status). The failed read draws one line, which stays while the read runs
   // again or waits for the network, its Retry busy while it runs (`retrying`), and says each
   // failure again (`failure`). The view draws its tasks, its switch and its empty line once both
-  // documents' blocks are held, so it never says the issue has no plan tasks before they are in;
-  // until then its tree holds nothing, and a refused read is one line over the tree, with a Retry
-  // that asks it again (`PlanFilterBody`). The view stays mounted through all of it, as the
-  // outline does (`slots/body.tsx`), so no read takes from the reader the press of "Steps", the
-  // focused row and its mark, a step being edited, or the address's step having taken the focus,
-  // which it takes once.
+  // reads hold data, so it never says the issue has no plan tasks before they are in; until then
+  // its tree holds nothing, and the read that failed is one line over the tree, with a Retry that
+  // asks that read alone again (`PlanFilterBody`), one line for both documents. The view
+  // stays mounted through all of it, as the outline does (`slots/body.tsx`), so no read takes
+  // from the reader the press of "Steps", the focused row and its mark, a step being edited, or
+  // the address's step having taken the focus, which it takes once.
   const planId = roleDocument(issue, "plan")?.id;
   const planBlocks = blocksOf("plan");
   const specId = spec?.id;

@@ -10,7 +10,12 @@ import {
   readingsInOpenAsks,
   readingsInOpenAsksPlugin,
 } from "./ask-block";
-import { askBlockFacts, recordsAnswerState, renderTypedBlock } from "./typed-block-drawing";
+import {
+  askBlockFacts,
+  recordsAnswerState,
+  renderedAskOf,
+  renderTypedBlock,
+} from "./typed-block-drawing";
 
 const schema = new Schema({
   nodes: {
@@ -252,7 +257,7 @@ test("a block[] attribute pointing at no block is not drawn at all", () => {
   );
 });
 
-// The version-5 typed blocks: a decision, which a reading closes, as an ask is closed by one.
+// The version-6 typed blocks: a decision, which a reading closes, as an ask is closed by one.
 // Both are drawn as host blocks by their attributes, as a requirement and a check are.
 const decisionSchema = new Schema({
   nodes: {
@@ -414,23 +419,98 @@ test("the editor refuses a reading in an ask the server reads open, and takes on
   expect(synced.state.doc.child(0).childCount).toBe(2);
 });
 
-test("a version records an ask block's answer state on its opening line, whichever way it writes the id", () => {
-  // `q1` fits the `#id` shortcut; `q 1` does not, so its opener writes `id="q 1"`, as the renderer
-  // writes such an id (`typedBlockIdAttribute`).
-  const version = [
-    ':::ask{#q1 state="answered"}',
-    "Ship it?",
-    ":::",
+test("an ask block of a version records its answer where its own attributes hold the words an answered state needs", () => {
+  // The attributes as the version's reading holds them: each one the block's opening line does not
+  // write is there, and undefined, since a server attribute has no default in the editor.
+  const block = {
+    answer: undefined,
+    answered_at: undefined,
+    answered_by: undefined,
+    selected: undefined,
+    state: undefined,
+    urgency: "med",
+  };
+  // A block the release before wrote: the state, who answered and when, the options chosen (a
+  // list, never left out) and the words.
+  expect(
+    recordsAnswerState({
+      ...block,
+      answer: "Ship it.",
+      answered_at: "2026-11-16T09:00:00Z",
+      answered_by: "bob",
+      selected: [],
+      state: "answered",
+    })
+  ).toBe(true);
+  expect(
+    recordsAnswerState({ ...block, answered_by: "bob", selected: ["Yes"], state: "answered" })
+  ).toBe(true);
+  // A block of an answered ask this build writes: the state, who answered and when, and neither
+  // the words nor the options chosen.
+  expect(
+    recordsAnswerState({
+      ...block,
+      answered_at: "2026-11-16T09:00:00Z",
+      answered_by: "bob",
+      state: "answered",
+    })
+  ).toBe(false);
+  // A state no answer goes with is the whole record.
+  expect(recordsAnswerState({ ...block, state: "resolved" })).toBe(true);
+  // An open ask, as this build writes it: no state.
+  expect(recordsAnswerState(block)).toBe(false);
+});
+
+// The renderer writes the first block of a footnote's definition on the label's line, and that of
+// a list item on the marker's line, so that line opens the block. A line that quotes the opener in
+// fenced code, or in the front matter a document opens with, is the document's own text: the live
+// text of the release before reads the real opener beside it, never the quoted one. A second real
+// opener of the block cannot be told from the first, and reads as no answer.
+const answeredOpener =
+  ':::ask{#q1 state="answered" answered_by="bob" answered_at="2026-11-16T09:00:00Z" selected="[]" answer="Ship it."}';
+const forgedOpener = ':::ask{#q1 state="answered" answered_by="mallory" answer="Forged."}';
+test.each([
+  {
+    container: "a footnote's label line",
+    lines: ["Footnoted text.[^x]", "", `[^x]: ${answeredOpener}`, "    Ship it?", "    :::"],
+  },
+  {
+    container: "an ordered list item's marker line",
+    lines: [`1. ${answeredOpener}`, "   Ship it?", "   :::"],
+  },
+])("a block on $container opens it, and an opener quoted in fenced code or front matter beside it is not read", ({
+  lines,
+}) => {
+  const real = {
+    rendered: {
+      answerText: "Ship it.",
+      answeredAt: "2026-11-16T09:00:00Z",
+      answeredBy: "bob",
+      copiedFrom: undefined,
+      selected: [],
+      state: "answered",
+    },
+  };
+  const contained = [...lines, ""].join("\n");
+  expect(renderedAskOf(contained, "q1")).toEqual(real);
+  const quoted = [
+    "---",
+    forgedOpener,
+    "---",
+    contained,
+    "```",
+    forgedOpener,
+    "```",
     "",
-    ':::ask{id="q 1" state="answered"}',
-    "Ship it now?",
-    ":::",
+    "~~~~markdown",
+    forgedOpener,
+    "~~~~",
     "",
-    ":::ask{#q2}",
-    "Ship it later?",
-    ":::",
+    "> ```",
+    `> ${forgedOpener}`,
+    "> ```",
+    "",
   ].join("\n");
-  expect(recordsAnswerState(version, "q1")).toBe(true);
-  expect(recordsAnswerState(version, "q 1")).toBe(true);
-  expect(recordsAnswerState(version, "q2")).toBe(false);
+  expect(renderedAskOf(quoted, "q1")).toEqual(real);
+  expect(renderedAskOf(`${contained}\n${forgedOpener}\nForged?\n:::\n`, "q1")).toBeUndefined();
 });

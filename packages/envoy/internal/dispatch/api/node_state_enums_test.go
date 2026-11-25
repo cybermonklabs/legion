@@ -23,6 +23,7 @@ import (
 // over. Both the document the emitter writes now and the one committed beside the clients are
 // read.
 func TestEveryNodeStateAndVisibilityEnumIsTheStoresValues(t *testing.T) {
+	t.Parallel()
 	states := slices.Sorted(slices.Values(graphstore.NodeStates()))
 	visibilities := slices.Sorted(slices.Values([]string{graphstore.VisibilityProject, graphstore.VisibilityAuthor}))
 	rendered, _ := readOpenAPI(t)
@@ -77,18 +78,18 @@ func TestEveryNodeStateAndVisibilityEnumIsTheStoresValues(t *testing.T) {
 // TestTheStructuralEdgeKindsNameEveryKindTheStoreAloneStates holds model.GraphEdgeKinds, the
 // structural edge kinds a reference read takes in `?kind=` and a typed block's `block[]`
 // attribute may never be named after, to the kinds graph_edges answers from the node and tuple
-// store alone, with no projection row behind them: each tuple kind a reasoning node, a run of the
-// command bar or a requirement block states (graphstore.TupleChangedByRun, TupleHasKind,
-// TupleTriggeredBy, TupleConstrainedBy, TuplePreventedBy, and TupleAuthoredBy and TuplePartOf out
-// of those nodes) is one refs.TupleKinds lists, the list the view's tuple arm renders, and one
-// GraphEdgeKinds names, so a kind the store comes to state with no projection row reaches both
-// lists or fails here.
+// store alone, with no projection row behind them: each pointer the store's type rules hold
+// (graphstore.PointerKinds) and each placement (graphstore.PlacementKinds), the changed_by_run of
+// a run of the command bar, and the authored_by of a reasoning node, is one refs.TupleKinds lists,
+// the list the view's tuple arm renders, and one GraphEdgeKinds names, so a kind the store comes
+// to state with no projection row reaches both lists or fails here. GraphEdgeKinds cannot take
+// these kinds from graphstore, which imports model; this test is what holds it to them, and a
+// pointer added to graphstore's pointerRules alone fails it.
 func TestTheStructuralEdgeKindsNameEveryKindTheStoreAloneStates(t *testing.T) {
+	t.Parallel()
 	rendered := refs.TupleKinds()
-	for _, kind := range []string{
-		graphstore.TupleChangedByRun, graphstore.TupleHasKind, graphstore.TupleTriggeredBy,
-		graphstore.TupleConstrainedBy, graphstore.TuplePreventedBy, graphstore.TupleAuthoredBy, graphstore.TuplePartOf,
-	} {
+	for _, kind := range slices.Concat(graphstore.PointerKinds(), graphstore.PlacementKinds(),
+		[]string{graphstore.TupleChangedByRun, graphstore.TupleAuthoredBy}) {
 		if !slices.Contains(rendered, kind) {
 			t.Errorf("refs.TupleKinds %v leaves out %s, which graph_edges answers from the store alone", rendered, kind)
 		}

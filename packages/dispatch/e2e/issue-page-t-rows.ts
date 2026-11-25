@@ -1,10 +1,11 @@
 import { type Browser, expect, type Page } from "@playwright/test";
 
-import type { IssueTreeNode, IssueTreeRead } from "../web/src/api/types";
+import type { Actor, DispatchEvent, IssueTreeNode, IssueTreeRead } from "../web/src/api/types";
 import { decisionNodeChanges } from "../web/src/features/issue-page/decision-review";
 import { shortDay } from "../web/src/features/issue-page/node-time";
 import { NODE_STATE_WORDS, PRESET_NAMES } from "../web/src/features/issue-page/page-words";
 import { type TreeIdReads, treeIdOf } from "../web/src/features/issue-page/tree-read/tree-nodes";
+import { getIssueEvents } from "./api";
 import { seedSpineCases, seedWholeIssue } from "./issue-layout-seed";
 import { gotoIssue, phase, presetCount, presetToggle } from "./issue-page";
 import { expectIssuePageDrawn, unfoldEveryBranch } from "./issue-page-g";
@@ -41,6 +42,7 @@ import {
   treeReadGate,
 } from "./issue-page-t-tree";
 import { heldDecisionsRead, idReadsOf, sessionTitleGate } from "./issue-page-u";
+import { isLiveSocket } from "./live-socket-watch";
 import { type ApiRequests, expectLoadSettled, watchApiRequests } from "./traffic";
 
 /**
@@ -705,6 +707,84 @@ export async function firstLoad(page: Page, traffic: ApiRequests, key: string) {
   return traffic.requests.slice(0, total);
 }
 
+/** The kind of a version's author the server counts as a person (`recordEditNotice`,
+ *  `packages/envoy/internal/dispatch/docs/edit_notices.go`): a version that lists no author of
+ *  that kind opens no edit notice. */
+const PERSON = "user" satisfies Actor["kind"];
+
+/** The most events one page of an issue's event log holds, and what a page holds when its read
+ *  names no limit (`maxEventPage`, `packages/envoy/internal/dispatch/api/events.go`). */
+const EVENT_PAGE = 200;
+
+/** How long `editNoticesSent` waits: the 30 s a document stays quiet after a person's last
+ *  version before its notice is due (`defaultEditNoticeQuiet`), up to 5 s more for the server's
+ *  next sweep (`editNoticeSweepSchedule`), and a margin. */
+const EDIT_NOTICES_WAIT_MS = 60_000;
+
+/** Every event of issue `key`, oldest first: its event log read a page at a time, each page after
+ *  the last event's `seq`, until a page comes back short. */
+async function issueEventLog(key: string): Promise<DispatchEvent[]> {
+  const log: DispatchEvent[] = [];
+  let batch: DispatchEvent[];
+  do {
+    batch = await getIssueEvents(key, { after: log.at(-1)?.seq ?? 0, limit: EVENT_PAGE });
+    log.push(...batch);
+  } while (batch.length === EVENT_PAGE);
+  return log;
+}
+
+/**
+ * Each document of `log` the server still owes an edit notice, named with the version it owes it
+ * for. The server opens a document's notice window at a version whose authors list a person, and
+ * moves the window on at each later one; a document's creation is an upload, which opens none
+ * (`recordEditNotice`). The window's `artifact.human_edited` event names the last of those
+ * versions in `to_version`, so a document is owed its notice until such an event reaches the
+ * last version a person wrote of it.
+ */
+function owedEditNotices(log: readonly DispatchEvent[]): string[] {
+  const written = new Map<string, { readonly name: string; readonly version: number }>();
+  const noticed = new Map<string, number>();
+  for (const event of log) {
+    if (event.type === "artifact.version") {
+      const { artifact_id, name, version } = event.payload;
+      if (version.authors.some((author) => author.kind === PERSON)) {
+        written.set(artifact_id, { name, version: version.number });
+      }
+    } else if (event.type === "artifact.human_edited") {
+      const { artifact_id, to_version } = event.payload;
+      noticed.set(artifact_id, Math.max(noticed.get(artifact_id) ?? 0, to_version));
+    }
+  }
+  return [...written].flatMap(([id, last]) =>
+    (noticed.get(id) ?? 0) >= last.version
+      ? []
+      : [`${last.name} (${id}) at version ${last.version}`]
+  );
+}
+
+/**
+ * Waits until the server has sent every edit notice issue `key` is owed (`owedEditNotices`), and
+ * then for the page to go quiet. The server sends a document's notice, one
+ * `artifact.human_edited` event, about 30 s after a person's last version of it, in a sweep every
+ * 5 s (`defaultEditNoticeQuiet` and `editNoticeSweepSchedule`,
+ * `packages/envoy/internal/dispatch/docs/edit_notices.go`), and the page reads the issue's detail
+ * again for each notice it hears. A seed whose documents a person wrote is still owed those
+ * notices half a minute on, so a row that counts what a press sends waits them out first,
+ * whatever its own timing is.
+ */
+export async function editNoticesSent(key: string, traffic: ApiRequests): Promise<void> {
+  await expect
+    .poll(async () => owedEditNotices(await issueEventLog(key)), {
+      intervals: [1_000],
+      message:
+        `the server sent no edit notice within ${EDIT_NOTICES_WAIT_MS / 1000} s for each ` +
+        "document listed, whose last version by a person no artifact.human_edited event reaches",
+      timeout: EDIT_NOTICES_WAIT_MS,
+    })
+    .toEqual([]);
+  await expectLoadSettled(traffic);
+}
+
 /** Turns `filter` on and waits for its rows to hold still. */
 export async function pressFilter(page: Page, traffic: ApiRequests, filter: TreeView) {
   const name = PRESET_NAMES[filter];
@@ -723,10 +803,76 @@ export async function releaseFilter(page: Page, filter: TreeView): Promise<void>
   await expectActivePreset(page, PRESET_NAMES.conversation);
 }
 
-/** Moves the page's clock 31 s on, past the app's 30 s `staleTime` (`web/src/main.tsx`), and
- *  waits out whatever a timer due in that time sent, so what follows counts what a press sends. */
-export async function pastStaleTime(page: Page, traffic: ApiRequests): Promise<void> {
+/** When the page's live socket last received a frame, by this process's clock, which
+ *  `page.clock` does not move: undefined before its first frame, and again after each jump of
+ *  `pastStaleTime`, since a frame from before a jump is 31 s older to the page than to this
+ *  process. */
+export interface LiveFrames {
+  at: number | undefined;
+}
+
+/** Records when the page's live socket receives each frame. Called before the page loads, it
+ *  watches every live socket the page opens. */
+export function watchLiveFrames(page: Page): LiveFrames {
+  const live: LiveFrames = { at: undefined };
+  page.on("websocket", (socket) => {
+    if (!isLiveSocket(socket)) return;
+    socket.on("framereceived", () => {
+      live.at = Date.now();
+    });
+  });
+  return live;
+}
+
+/** The youngest the live socket's last frame may be as `pastStaleTime` jumps. */
+const JUMP_FRAME_MIN_AGE_MS = 2_000;
+
+/** The oldest the live socket's last frame may be as `pastStaleTime` jumps. */
+const JUMP_FRAME_MAX_AGE_MS = 10_000;
+
+/** How long `pastStaleTime` waits for a frame of that age: two of the server's heartbeats. */
+const JUMP_FRAME_WAIT_MS = 30_000;
+
+/**
+ * Moves the page's clock 31 s on, past the app's 30 s `staleTime` (`web/src/main.tsx`), and
+ * waits out whatever a timer due in that time sent, so what follows counts what a press sends.
+ *
+ * It jumps only once the live socket's last frame is 2 to 10 s old, by this process's clock. The
+ * page replaces a socket that has carried no frame for 45 s (`LIVE_SOCKET_SILENT_MS`,
+ * `web/src/api/live-socket.ts`), and its check for that, every 15 s, falls due inside the jump,
+ * so it runs once at the jump's end and finds the last frame 31 s older. The server sends a
+ * heartbeat frame every 15 s (`defaultStreamHeartbeat`), so a jump made more than 14 s after the
+ * last frame replaces the socket, and the new socket's feed reads the issue, the tree and the
+ * open view again inside the press that counts them. A frame under 10 s old is at most 41 s old
+ * to that check. The next check comes 15 s after the jump and replaces the socket unless a frame
+ * came since. A last frame at least 2 s old means the last heartbeat came at least 2 s before
+ * the jump, so the next one comes inside those 15 s.
+ */
+export async function pastStaleTime(
+  page: Page,
+  traffic: ApiRequests,
+  live: LiveFrames
+): Promise<void> {
+  await expect
+    .poll(
+      () => {
+        if (live.at === undefined) return false;
+        const age = Date.now() - live.at;
+        return age >= JUMP_FRAME_MIN_AGE_MS && age < JUMP_FRAME_MAX_AGE_MS;
+      },
+      {
+        message:
+          `the page's live socket carried no frame ${JUMP_FRAME_MIN_AGE_MS / 1000} to ` +
+          `${JUMP_FRAME_MAX_AGE_MS / 1000} s old within ${JUMP_FRAME_WAIT_MS / 1000} s, so the ` +
+          "clock cannot jump 31 s without the page replacing the socket",
+        timeout: JUMP_FRAME_WAIT_MS,
+      }
+    )
+    .toBe(true);
   await page.clock.fastForward("00:31");
+  // A frame from before the jump is 31 s older to the page than to this process, so the next
+  // jump waits for one after it.
+  live.at = undefined;
   await expectLoadSettled(traffic);
 }
 

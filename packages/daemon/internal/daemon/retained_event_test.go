@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/testnats"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
@@ -84,6 +85,7 @@ func retainedIssueEnvelope(t *testing.T, key string, id, seq int64, status strin
 // snapshot admission holds behind it never stands in for the event's own, actor-bearing write. The
 // daemon's preparation fills a recorded issue's missing repository from its record.
 func TestARetainedEventKeepsTheSessionFenceOfItsActor(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name     string
 		retained bool
@@ -99,7 +101,7 @@ func TestARetainedEventKeepsTheSessionFenceOfItsActor(t *testing.T) {
 			records := record.NewStore()
 			root := record.Issue{Key: "LEGION-300", Tree: "LEGION-300", Project: "LEGION", Title: "root", Phase: phase.Planning, Generation: 1, Status: "in_progress",
 				DispatchStatus: "in_progress", Rank: "A", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", HandedOver: true, LastDispatchSeq: 1}
-			if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+			if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 				if err := records.PutIssue(ctx, tx, root); err != nil {
 					return err
 				}
@@ -121,7 +123,13 @@ func TestARetainedEventKeepsTheSessionFenceOfItsActor(t *testing.T) {
 				t.Fatal(err)
 			}
 			client := &detailDispatch{resolved: map[string]string{root.Key: "acme/gadgets"}}
-			spec := intake.ConsumerSpec{Project: "LEGION", Repositories: []ghrepo.Repository{ghrepo.MustParse("acme/widgets")}, AckWait: time.Second, Logger: quietLogger()}
+			// AckWait is a hang guard, not the subject: the daemon's preparation reads the
+			// issue's record from the store (prepareRepository, recordOf), and AckWait bounds that
+			// read. At 1 s a read a loaded runner made slower was cut and its event naked, here
+			// with the default 30 s NakDelay, so whether the event applied inside the row's wait
+			// was the machine's to decide. hangGuardAckWait is longer than that wait.
+			spec := intake.ConsumerSpec{Project: "LEGION", Repositories: []ghrepo.Repository{ghrepo.MustParse("acme/widgets")},
+				AckWait: hangGuardAckWait(t), Logger: quietLogger()}
 			if tc.prepared {
 				w := &workflowRuntime{pool: pool, records: records, dispatch: client, repositories: newRepositories("LEGION", ghrepo.Renames{})}
 				spec.PrepareRepository = w.prepareRepository
@@ -164,7 +172,7 @@ func TestARetainedEventKeepsTheSessionFenceOfItsActor(t *testing.T) {
 				t.Fatal(err)
 			}
 			var got *record.Issue
-			if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+			if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 				var err error
 				got, err = records.Issue(ctx, tx, root.Key)
 				return err
@@ -188,6 +196,7 @@ func TestARetainedEventKeepsTheSessionFenceOfItsActor(t *testing.T) {
 // that detail shows it, at its sequence; it is never applied with no repository, and never
 // dropped for the boot snapshot to stand in for.
 func TestARetainedEventOfAnUnrecordedIssueReadsItsRepositoryFromDispatch(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -204,8 +213,13 @@ func TestARetainedEventOfAnUnrecordedIssueReadsItsRepositoryFromDispatch(t *test
 		defaultBranches: newDefaultBranches(roleTokens{}, repos, github.url, defaultBranchTTL, time.Now)}
 	engine := workflow.New(records, workflow.Config{Project: "LEGION", Repositories: w, Steps: config.DesignGateOff.Steps()}, quietLogger())
 	admission := admit.New(records, engine, 1, "LEGION", quietLogger())
+	// AckWait is a hang guard, not the subject: it bounds the whole preparation, the store read of
+	// the issue's record (recordOf) and the Dispatch read this row counts among them, so at 1 s a
+	// preparation a loaded runner made slower was cut, naked and prepared again, and could read
+	// Dispatch once more than the failed read and its retry the row counts. hangGuardAckWait is
+	// longer than the row's wait.
 	consumers, err := intake.OpenConsumers(ctx, js, pool, intake.ConsumerSpec{Project: "LEGION", Repositories: []ghrepo.Repository{ghrepo.MustParse("acme/widgets")},
-		AckWait: time.Second, NakDelay: 10 * time.Millisecond, Logger: quietLogger(), PrepareRepository: w.prepareRepository})
+		AckWait: hangGuardAckWait(t), NakDelay: 10 * time.Millisecond, Logger: quietLogger(), PrepareRepository: w.prepareRepository})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -224,7 +238,7 @@ func TestARetainedEventOfAnUnrecordedIssueReadsItsRepositoryFromDispatch(t *test
 	})
 	var got *record.Issue
 	testwait.Eventually(t, "the retained event records its issue", func() bool {
-		if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+		if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 			var err error
 			got, err = records.Issue(ctx, tx, "LEGION-301")
 			return err
@@ -246,6 +260,7 @@ func TestARetainedEventOfAnUnrecordedIssueReadsItsRepositoryFromDispatch(t *test
 // is not overruled: the redelivery is applied as Dispatch now shows the issue, which records
 // nothing, whatever failed before.
 func TestAnAdmissionWhoseApplyFailedIsAppliedAsDispatchNowShowsIt(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -277,8 +292,12 @@ func TestAnAdmissionWhoseApplyFailedIsAppliedAsDispatchNowShowsIt(t *testing.T) 
 		}
 		return intake.Result{}, nil
 	})
+	// AckWait is a hang guard, not the subject, for the reason of the row above: it bounds the
+	// preparation's store read of the issue's record (recordOf), so at 1 s whether the row's
+	// preparations were cut was the machine's to decide. hangGuardAckWait is longer than the
+	// row's wait.
 	consumers, err := intake.OpenConsumers(ctx, js, pool, intake.ConsumerSpec{Project: "LEGION", Repositories: []ghrepo.Repository{ghrepo.MustParse("acme/widgets")},
-		AckWait: time.Second, NakDelay: 10 * time.Millisecond, Logger: quietLogger(), PrepareRepository: w.prepareRepository})
+		AckWait: hangGuardAckWait(t), NakDelay: 10 * time.Millisecond, Logger: quietLogger(), PrepareRepository: w.prepareRepository})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -315,7 +334,7 @@ func TestAnAdmissionWhoseApplyFailedIsAppliedAsDispatchNowShowsIt(t *testing.T) 
 		t.Fatalf("the redelivery applied %s handed over %t at seq %d, want backlog, the label off, at seq 6, as Dispatch now shows it", again.Status, again.HandedOver, again.Seq)
 	}
 	var got *record.Issue
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		got, err = records.Issue(ctx, tx, "LEGION-310")
 		return err
@@ -325,6 +344,16 @@ func TestAnAdmissionWhoseApplyFailedIsAppliedAsDispatchNowShowsIt(t *testing.T) 
 	if got != nil {
 		t.Fatalf("LEGION-310 = %s %s, want nothing recorded: the person withdrew it before its event was applied", got.Status, got.Phase)
 	}
+}
+
+// hangGuardAckWait is the AckWait of a test's intake consumers whose preparation reads the store:
+// a hang guard that only a hung read reaches. It is two minutes, or all that is left of the test
+// binary's deadline when that is sooner, so it is always longer than a row's own wait for the
+// event's effect, testwait.Eventually's minute or what is left of that deadline less a second: a
+// read that hangs fails the row by the row's own line, naming what it waited for, while the read
+// is still held, and never by the guard cutting the read and a nak bringing the event back.
+func hangGuardAckWait(t *testing.T) time.Duration {
+	return testwait.Bounded(t, 2*time.Minute, 0)
 }
 
 // applyFunc is an intake.Handler of one function.

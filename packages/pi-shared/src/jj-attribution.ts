@@ -78,10 +78,10 @@ const DEL_CODE = 0x7f;
 /** `LEGION_ROLE` in the controller's process (`legion controller start`): it is no `LegionRole`,
  * and a commit the controller makes names it all the same. */
 const CONTROLLER_ROLE = "controller";
-/** jj 0.45's default `templates.revert_description` (`jj config list --include-defaults
- * templates`), one argument of its `concat` per entry, copied as jj writes them. jj writes a
- * revert's description from this template alone and adds no `commit_trailers` to it, so the
- * overlay's revert template is these parts, then a blank line and the pair. */
+/** jj's default `templates.revert_description` (`jj config list --include-defaults templates`,
+ * verified against jj 0.46.0-sami), one argument of its `concat` per entry, copied as jj writes
+ * them. jj writes a revert's description from this template alone and adds no `commit_trailers`
+ * to it, so the overlay's revert template is these parts, then a blank line and the pair. */
 const JJ_REVERT_PARTS = [
   `'Revert "' ++ description.first_line() ++ '"' ++ "\\n"`,
   `"\\n"`,
@@ -182,9 +182,17 @@ function withoutOverlays(chain: string): string {
     .join(":");
 }
 
+/**
+ * The user config chain `jj config path --user` prints, joined with `:`, or undefined when jj
+ * gives no answer within `timeoutMs`, fails or prints nothing. jj runs in a group of its own,
+ * which is killed once its leader exits or the wait ends, so no helper it forked outlives the
+ * call. `giveUp` ends the wait at once, as `timeoutMs` passing does: a test drives it once the
+ * fact it waits for holds, where a bound of its own would race the wrapper it runs.
+ */
 export async function userConfigChain(
   timeoutMs = JJ_CONFIG_PATH_TIMEOUT_MS,
-  env: NodeJS.ProcessEnv = process.env
+  env: NodeJS.ProcessEnv = process.env,
+  giveUp?: AbortSignal
 ): Promise<string | undefined> {
   try {
     const child = Bun.spawn(["jj", "config", "path", "--user"], {
@@ -212,17 +220,23 @@ export async function userConfigChain(
       new Response(child.stderr).text(),
     ]);
     const stdout = await new Promise<string | undefined>((resolve) => {
-      const timer = setTimeout(() => {
+      const stop = () => {
+        clearTimeout(timer);
         killGroup();
         resolve(undefined);
-      }, timeoutMs);
+      };
+      const timer = setTimeout(stop, timeoutMs);
+      if (giveUp?.aborted) stop();
+      giveUp?.addEventListener("abort", stop, { once: true });
       void completed.then(
         ([code, output]) => {
           clearTimeout(timer);
+          giveUp?.removeEventListener("abort", stop);
           resolve(code === 0 ? output : undefined);
         },
         () => {
           clearTimeout(timer);
+          giveUp?.removeEventListener("abort", stop);
           resolve(undefined);
         }
       );

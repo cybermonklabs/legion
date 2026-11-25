@@ -29,6 +29,7 @@ import (
 // Its control is the sweep's gone statement caused at the sentinel: the swept node's gone
 // statement then names no event, where the removal's names its own.
 func TestTheSweepStatesAnOrphanGoneAsTheRemovalStatesIt(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	ctx := context.Background()
 	issue := createInteractionIssue(t, handler, "SWP", "A document each build removes", "The spec.\n")
@@ -91,7 +92,7 @@ func removeAsTheReleaseBefore(t *testing.T, database *store.Store, artifact mode
 // It answers the event's id.
 func deleteAsTheReleaseBefore(ctx context.Context, tx pgx.Tx, artifact model.Artifact) (int64, error) {
 	owners := events.OwnerRows{}
-	owners.Add(*artifact.IssueKey, artifact.ID, "document "+artifact.ID)
+	owners.Add(*artifact.IssueKey, artifact.ID)
 	if err := events.LockOwnerRows(ctx, tx, owners); err != nil {
 		return 0, err
 	}

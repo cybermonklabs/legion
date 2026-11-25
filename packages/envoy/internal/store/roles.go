@@ -28,12 +28,13 @@ type RoleClaim struct {
 	// GrantID names the grant that wrote this claim: an id each grant draws at random for the
 	// record it writes (SetRoleWithPrevious), which the holder's renewals, the adoption of a
 	// claim that names no process and the hand-back's mark carry over untouched. It is what
-	// tells a claim granted again from the claim a hand-back read before its write lost
-	// (RoleClaim.sameGrant, Registry.markRoleClaimHandedBack), which ClaimedAt cannot: a grant
-	// stamped in the millisecond of the claim before it carries that claim's moment. Empty on a
-	// claim an earlier build wrote: that build draws no grant id, and its renewal and its mark
-	// write back a claim decoded without the field, so a record it rewrites loses the id. Such a
-	// claim renews, is adopted, released and marked as it was.
+	// tells a claim granted again from the claim a release read before its write lost - the
+	// delete that frees the claim and the hand-back's mark alike (RoleClaim.sameGrant,
+	// Registry.releaseReadRoleClaim, Registry.markRoleClaimHandedBack) - which ClaimedAt cannot:
+	// a grant stamped in the millisecond of the claim before it carries that claim's moment.
+	// Empty on a claim an earlier build wrote: that build draws no grant id, and its renewal and
+	// its mark write back a claim decoded without the field, so a record it rewrites loses the
+	// id. Such a claim renews, is adopted, released and marked as it was.
 	GrantID string `json:"grant_id,omitempty"`
 	// ClientInstanceID is the client instance of the process that holds the claim, which the
 	// claimant named when it took the role. A session id alone does not name that process: a
@@ -111,14 +112,16 @@ func (c RoleClaim) HeldByProcess(instance string) bool {
 }
 
 // sameGrant reports whether c is the grant read is, as the holder's renewals and the adoption
-// leave it: the question a hand-back asks of the claim it reads again after its mark lost a
-// write (Registry.markRoleClaimHandedBack). Where c carries a grant id, that id decides, so a
-// grant made since read, which drew an id of its own, is never read's, whatever millisecond it
-// was stamped in. Where c carries none, an earlier build wrote it - its grant draws no id, and
-// its renewal drops the one it read - so ClaimedAt decides, as it did in that build. Two grants
-// in read's own millisecond therefore read as read while such a build writes the bucket: one that
-// build wrote, and one this build wrote that such a build renewed before this read, which has
-// lost its id. No code here can tell either apart; both end when no such build writes the bucket.
+// leave it: the question a release asks of the claim it reads again after a write of its own lost
+// its compare-and-swap, the delete that frees the claim (Registry.releaseReadRoleClaim) and the
+// mark a hand-back leaves on it (Registry.markRoleClaimHandedBack) alike. Where c carries a grant
+// id, that id decides, so a grant made since read, which drew an id of its own, is never read's,
+// whatever millisecond it was stamped in. Where c carries none, an earlier build wrote it - its
+// grant draws no id, and its renewal drops the one it read - so ClaimedAt decides, as it did in
+// that build. Two grants in read's own millisecond therefore read as read while such a build
+// writes the bucket: one that build wrote, and one this build wrote that such a build renewed
+// before this read, which has lost its id. No code here can tell either apart; both end when no
+// such build writes the bucket.
 func (c RoleClaim) sameGrant(read RoleClaim) bool {
 	if c.GrantID != "" {
 		return c.GrantID == read.GrantID
@@ -434,7 +437,7 @@ const (
 	// gone when it arrived.
 	roleClaimWriteMissing
 	// roleClaimWriteRaced is every attempt lost to a write that landed since the read it was
-	// conditional on (nats.ErrKeyExists), the last of them at the attempt bound.
+	// conditional on (bus.IsCASConflict), the last of them at the attempt bound.
 	roleClaimWriteRaced
 )
 
@@ -465,7 +468,7 @@ func (r *Registry) writeRoleClaim(ctx context.Context, claim RoleClaim, w roleCl
 			return roleClaimWriteLanded, at, nil
 		case errors.Is(err, nats.ErrKeyNotFound):
 			return roleClaimWriteMissing, claim, nil
-		case !errors.Is(err, nats.ErrKeyExists):
+		case !bus.IsCASConflict(err):
 			return roleClaimWriteFailed, claim, err
 		case attempt == w.attempts:
 			return roleClaimWriteRaced, claim, nil
@@ -613,6 +616,32 @@ func (r *Registry) RoleClaim(ctx context.Context, role string) (RoleClaim, error
 		return RoleClaim{}, err
 	}
 	claim.Revision = entry.Revision()
+	return claim, nil
+}
+
+// RoleClaimFromLeader reads role's claim as RoleClaim does, from the role bucket stream's leader
+// (bus.KeyValue.ReadFromLeader) rather than by a direct get, which on a replicated bucket any copy
+// near enough to current answers: a copy that has not applied a takeover answers the previous
+// holder's claim. It is the read for a decision a stale claim would get wrong for good, such as the
+// session relay's judgement of whether a role message still belongs to the session it was stored
+// for. A role with no claim, or a delete or purge marker, is the zero claim without an error; a
+// message the server wrote under the role's key is ErrMalformedRoleClaim, as a value no claim
+// decodes from is.
+func (r *Registry) RoleClaimFromLeader(ctx context.Context, role string) (RoleClaim, error) {
+	leader, err := r.roles().ReadFromLeader(ctx, role)
+	switch {
+	case err != nil:
+		return RoleClaim{}, fmt.Errorf("read role %s's claim: %w", role, err)
+	case leader.Kind == bus.LeaderAbsent || leader.Kind == bus.LeaderMarker:
+		return RoleClaim{}, nil
+	case leader.Kind == bus.LeaderServerWritten:
+		return RoleClaim{}, fmt.Errorf("%w: role %s's key holds a message the server wrote", ErrMalformedRoleClaim, role)
+	}
+	claim, err := DecodeRoleClaim(leader.Value)
+	if err != nil {
+		return RoleClaim{}, err
+	}
+	claim.Revision = leader.Revision
 	return claim, nil
 }
 

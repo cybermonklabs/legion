@@ -47,6 +47,7 @@ import (
 // that does not hold the named commit (a shallow clone, an archive) has nothing to read, which is
 // the reason cmd/dispatch's older-build test reads its base the same way.
 func TestNoRouteOrFieldTheForkPointServedIsGone(t *testing.T) {
+	t.Parallel()
 	root := gitOutput(t, ".", "rev-parse", "--show-toplevel")
 	commit := testbaseline.Commit(t)
 	base := decodeServedDocument(t, "the fork point's document", []byte(gitOutput(t, root, "show", commit+":"+OpenAPIDocumentPath)))
@@ -143,6 +144,7 @@ func compareAnswer(name, status, served, current string) (failure, narrowing str
 // no JSON for it, and against one whose shape moved. It reads no history, so it runs wherever the
 // tag is given.
 func TestAnAnswerTheForkPointLeftOpaqueNarrowsAndNoOtherAnswerMoves(t *testing.T) {
+	t.Parallel()
 	rendered := renderOpenAPI(t)
 	answerOf := func(document map[string]any, path string) map[string]any {
 		operation := document["paths"].(map[string]any)[path].(map[string]any)["get"].(map[string]any)
@@ -199,6 +201,7 @@ func TestAnAnswerTheForkPointLeftOpaqueNarrowsAndNoOtherAnswerMoves(t *testing.T
 // same enum added to a string field of a schema a request takes fails, naming that field. It
 // reads no history, so it runs wherever the tag is given.
 func TestAnEnumNarrowsAnAnsweredFieldAndFailsARequestedOne(t *testing.T) {
+	t.Parallel()
 	rendered := renderOpenAPI(t)
 	requested := requestSchemas(t, rendered)
 	if len(requested) == 0 {

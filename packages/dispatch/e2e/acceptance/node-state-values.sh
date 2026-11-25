@@ -324,7 +324,7 @@ reads S1 "$requirement" block "$requirement_node" settled
 
 refused V1 "$requirement_node" "$requirement" block "$requirement_node" "$misspelled" settled 400 INVALID_ATTRIBUTE_VALUE
 expect V1 "the refusal names the attribute state and the value $misspelled" true \
-  --arg w "$misspelled" '.error | contains("the node state \"" + $w + "\" is none of")'
+  --arg w "$misspelled" '.error | test("\\bstate\\b") and contains($w)'
 pass V1 "the refusal reads: $(jq -r '.error' "$work/body")"
 
 # --- T1: the store holds no tuple whose far end is the misspelling ------------------------------

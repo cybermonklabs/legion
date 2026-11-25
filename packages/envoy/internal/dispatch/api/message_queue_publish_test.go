@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -125,6 +126,7 @@ func sendFindsNoSessionListener(t *testing.T) (*httptest.Server, func() []listen
 // message on the session's own subject once, and records the attempt queued with that envelope,
 // in its row and in the receipt the conversation renders.
 func TestATargetedMessageToASessionNoStoreHoldsIsQueuedByDispatch(t *testing.T) {
+	t.Parallel()
 	listener := stoppedAndLive(t)
 	handler, database, deps := newTestServer(t, testServerOptions{envoyURL: listener.url})
 
@@ -168,6 +170,7 @@ func TestATargetedMessageToASessionNoStoreHoldsIsQueuedByDispatch(t *testing.T) 
 // than a second copy. A publish that fails queues nothing: the attempt fails with the publish's
 // own error after the listener's, so the person can retry it.
 func TestATargetedMessageWhoseSendFindsNoLiveSessionIsQueuedByDispatch(t *testing.T) {
+	t.Parallel()
 	t.Run("queued as the envelope the send would have stored", func(t *testing.T) {
 		listener, sends := sendFindsNoSessionListener(t)
 		handler, _, deps := newTestServer(t, testServerOptions{envoyURL: listener.URL})
@@ -234,6 +237,7 @@ func TestATargetedMessageWhoseSendFindsNoLiveSessionIsQueuedByDispatch(t *testin
 // message to a session no store of the listener's holds failed, as it did before Dispatch queued
 // any, from the registry's 404 and from the send's alike.
 func TestATargetedMessageWithNoPublisherFails(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name     string
 		listener func(t *testing.T) *httptest.Server
@@ -270,6 +274,7 @@ func TestATargetedMessageWithNoPublisherFails(t *testing.T) {
 // the record reads gone or the send to it then finds none; queued, the message would go onto that
 // other session's subject. So it is not queued, and the attempt settles failed with the answer.
 func TestATargetedMessageWhoseAttemptNamesAnotherSessionIsNotQueued(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name     string
 		registry string
@@ -316,6 +321,7 @@ func TestATargetedMessageWhoseAttemptNamesAnotherSessionIsNotQueued(t *testing.T
 // longer its own: it publishes nothing, since the session already has the message, and the
 // attempt reads as the session's answer made it.
 func TestATargetedMessageAnsweredBetweenItsTriesIsNotQueued(t *testing.T) {
+	t.Parallel()
 	var handler http.Handler
 	var database *store.Store
 	var mu sync.Mutex
@@ -369,11 +375,84 @@ func TestATargetedMessageAnsweredBetweenItsTriesIsNotQueued(t *testing.T) {
 	}
 }
 
+// A sender re-checks its claim immediately before it queues, as it does before each try. Here the
+// message's author deletes it while its one try waits on the listener, whose send then answers
+// that it holds no live session for s1. The delete settled the attempt meanwhile, so the sender
+// publishes nothing - a copy queued now would hold the deleted body for s1 to read when it
+// registers again - and the attempt reads as the delete left it, with the one receipt the delete
+// appended.
+func TestATargetedMessageDeletedDuringItsLastTryIsNotQueued(t *testing.T) {
+	t.Parallel()
+	landed := make(chan string, 1)
+	release := make(chan struct{})
+	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/registry/s1":
+			_, _ = w.Write([]byte(`{"session_id":"s1","title":"planner","capabilities":["aside","btw","steer"]}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/messages/send":
+			var body listenerSendBody
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Errorf("decode the listener send: %v", err)
+			}
+			select {
+			case landed <- body.IdempotencyKey:
+			default:
+			}
+			<-release
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"error":"no live session s1","state":"gone"}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"error":"not found"}`))
+		}
+	}))
+	t.Cleanup(listener.Close)
+	// A window shorter than the first backoff leaves one try, so the send held here is the last.
+	handler, database, deps := newTestServer(t, testServerOptions{envoyURL: listener.URL, takeoverWindow: time.Nanosecond})
+	answerSend := sync.OnceFunc(func() { close(release) })
+	t.Cleanup(answerSend)
+	issue := createInteractionIssue(t, handler, "TEST", "A message deleted during its last try", "before")
+
+	created := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		created <- dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/messages", map[string]any{
+			"body": "The text its author withdraws.", "target": "session:s1", "delivery": "btw",
+		}, "alice")
+	}()
+	var key string
+	select {
+	case key = <-landed:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the message's send never reached the listener")
+	}
+	messageID, _, _ := strings.Cut(key, ":")
+	deleteIssueMessage(t, handler, messageID, "alice")
+	answerSend()
+
+	if answer := <-created; answer.Code != http.StatusCreated {
+		t.Fatalf("the message: status=%d body=%s", answer.Code, answer.Body.String())
+	}
+	if published := publishedBy(t, deps); len(published) != 0 {
+		t.Fatalf("published %d envelopes for a message deleted during its last try, want none: the queued copy "+
+			"holds the body the delete withdrew", len(published))
+	}
+	if attempts := messageAttempts(t, database, messageID); len(attempts) != 1 ||
+		attempts[0].State != model.DeliveryStateFailed || deref(attempts[0].Error) != endedByThePostsDelete ||
+		attempts[0].EnvelopeID != nil {
+		t.Fatalf("the stored attempts = %#v, want attempt 1 failed %q as the delete left it", attempts, endedByThePostsDelete)
+	}
+	if receipts := messageDeliveryReceiptRows(t, database, messageID); len(receipts) != 1 ||
+		receipts[0] != (deliveryReceipt{Attempt: 1, State: model.DeliveryStateFailed}) {
+		t.Fatalf("the delivery receipts = %#v, want the one failed receipt the delete appended", receipts)
+	}
+}
+
 // A message to a role keeps its failure when the role's holder is gone: the role names no session
 // to queue for, and a session that held the role once is not where a role's message goes. That
 // holds when the role read refuses for a holder that is gone, and when it named a holder whose
 // send then found no live session.
 func TestAMessageToARoleWhoseHolderIsGoneStillFails(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		role func(w http.ResponseWriter)
@@ -421,6 +500,7 @@ func TestAMessageToARoleWhoseHolderIsGoneStillFails(t *testing.T) {
 // stored for a session that is not running: one no store of the listener's holds keeps its
 // failure, and Dispatch publishes nothing for it.
 func TestASwitchToASessionNoStoreHoldsIsNotQueued(t *testing.T) {
+	t.Parallel()
 	listener := stoppedAndLive(t)
 	handler, database, deps := newTestServer(t, testServerOptions{envoyURL: listener.url})
 
@@ -446,6 +526,7 @@ func TestASwitchToASessionNoStoreHoldsIsNotQueued(t *testing.T) {
 // publishes to the bus holds none to list and says so, and one without test hooks serves no such
 // route.
 func TestTheQueuedTestHookListsWhatThisProcessQueued(t *testing.T) {
+	t.Parallel()
 	live := false
 	sent := []map[string]any{}
 	listener := sessionListener(t, &live, &sent)

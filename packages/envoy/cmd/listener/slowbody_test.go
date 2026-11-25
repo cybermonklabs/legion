@@ -27,10 +27,13 @@ type slowBodyPublisher struct {
 	published []contracts.Envelope
 }
 
-func (p *slowBodyPublisher) PublishWithin(_ context.Context, e contracts.Envelope) error {
+func (p *slowBodyPublisher) PublishEachWithin(_ context.Context, e contracts.Envelope, published func(topic string, duplicate, resent bool)) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.published = append(p.published, e)
+	if published != nil {
+		published(e.Topic, false, false)
+	}
 	return nil
 }
 
@@ -109,7 +112,7 @@ func TestAGitHubDeliveryWhoseBodyArrivesOverMoreThanTenSecondsIsPublished(t *tes
 	mac := hmac.New(sha256.New, []byte(secret))
 	mac.Write(body)
 	pub := &slowBodyPublisher{}
-	status := serveSlowly(t, "/webhook/github", webhook.GitHubHandler(secret, "@legion", "", pub, noCI{}), map[string]string{
+	status := serveSlowly(t, "/webhook/github", webhook.GitHubHandler(secret, "@legion", "", "", pub, noCI{}, webhook.NewBodyBudget(webhook.DefaultBodyBudget, nil)), map[string]string{
 		"X-GitHub-Delivery":   "delivery-slow-body",
 		"X-GitHub-Event":      "push",
 		"X-Hub-Signature-256": "sha256=" + hex.EncodeToString(mac.Sum(nil)),
@@ -131,7 +134,7 @@ func TestAGitHubBodyReadFailureIsLogged(t *testing.T) {
 	previous := log.Writer()
 	log.SetOutput(logged)
 	t.Cleanup(func() { log.SetOutput(previous) })
-	addr := serveWebhook(t, "/webhook/github", webhook.GitHubHandler("s", "@legion", "", &slowBodyPublisher{}, noCI{}))
+	addr := serveWebhook(t, "/webhook/github", webhook.GitHubHandler("s", "@legion", "", "", &slowBodyPublisher{}, noCI{}, webhook.NewBodyBudget(webhook.DefaultBodyBudget, nil)))
 	conn, err := net.Dial("tcp", addr)
 	if err != nil {
 		t.Fatal(err)
@@ -151,14 +154,16 @@ func TestAGitHubBodyReadFailureIsLogged(t *testing.T) {
 }
 
 // Every other route keeps the server's 10 s bound on its body: a Slack body that takes longer to
-// arrive is cut off.
+// arrive is cut off. The body is a signed url_verification, which the route would answer 200 had
+// it arrived whole.
 func TestASlackBodyStillHasTheServersReadTimeout(t *testing.T) {
 	if testing.Short() {
 		t.Skip("sends a body over 12 s")
 	}
 	pub := &slowBodyPublisher{}
+	body := []byte(`{"type":"url_verification","challenge":"` + strings.Repeat("c", 4000) + `"}`)
 	start := time.Now()
-	status := serveSlowly(t, "/webhook/slack", webhook.SlackHandler("s", pub), nil, []byte(`{"type":"url_verification","challenge":"`+strings.Repeat("c", 4000)+`"}`), 12*time.Second)
+	status := serveSlowly(t, "/webhook/slack", webhook.SlackHandler("s", pub, webhook.NewBodyBudget(webhook.DefaultBodyBudget, nil)), slackHeaders("s", start, body), body, 12*time.Second)
 	elapsed := time.Since(start)
 	if status == http.StatusOK {
 		t.Fatalf("status = 200 after %s; want the server's 10 s read timeout to cut the body off", elapsed.Round(time.Millisecond))

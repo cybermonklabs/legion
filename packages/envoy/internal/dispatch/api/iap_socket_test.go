@@ -82,6 +82,9 @@ func (k iapSocketKeys) expiring(t *testing.T, lifetime time.Duration) http.Heade
 // assertion, which is judged again: the expired one opens nothing, and a fresh one opens a socket.
 // The control, the same person on a nine-minute assertion, stays open throughout.
 func TestALiveSocketBehindIAPRotatesWhenItsUpgradesAssertionExpires(t *testing.T) {
+	// Not parallel: both sockets must answer the server's ping inside the 200 ms heartbeat's
+	// window to stay open, and among this package's parallel tests under the race detector a
+	// client read goroutine missed it and the control socket was cut with 1006.
 	database := storetest.Open(t)
 	iap := newIAPSocketKeys(t, database)
 	const heartbeat = 200 * time.Millisecond
@@ -157,6 +160,7 @@ var iapChanges = []iapChange{
 // fresh assertion is judged again and refused. The heartbeat is 3 s, so by the first one the
 // upgrade's assertion, which had one to two seconds left, is past its exp and the skew.
 func TestALiveSocketBehindIAPClosesWhenItsExpiredAssertionIsAlsoWrong(t *testing.T) {
+	t.Parallel()
 	for _, change := range iapChanges {
 		t.Run(change.name, func(t *testing.T) {
 			database := storetest.Open(t)
@@ -255,6 +259,7 @@ func (rig *iapDocumentRig) openDocument(t *testing.T, headers http.Header) *sync
 // silent drop (1006) that ends a socket whose person no longer resolves. The control, a nine-minute
 // assertion, keeps its socket open and answering its editor.
 func TestADocumentSocketBehindIAPReopensWhenItsUpgradesAssertionExpires(t *testing.T) {
+	t.Parallel()
 	const heartbeat = 250 * time.Millisecond
 	rig := newIAPDocumentRig(t, heartbeat)
 	short := rig.openDocument(t, rig.iap.expiring(t, 3*time.Second))
@@ -284,6 +289,7 @@ func TestADocumentSocketBehindIAPReopensWhenItsUpgradesAssertionExpires(t *testi
 // frame (1006), never the 4412 on which the provider reconnects as after a rotation. The heartbeat
 // is 4 s, so by the first one the upgrade's assertion, which had 2 to 3 s left, is past its exp.
 func TestADocumentSocketBehindIAPClosesWhenItsExpiredAssertionIsAlsoWrong(t *testing.T) {
+	t.Parallel()
 	for _, change := range iapChanges {
 		t.Run(change.name, func(t *testing.T) {
 			rig := newIAPDocumentRig(t, 4*time.Second)
@@ -305,6 +311,7 @@ func TestADocumentSocketBehindIAPClosesWhenItsExpiredAssertionIsAlsoWrong(t *tes
 // A socket whose person no longer resolves is still cut as before, whatever identity it runs
 // under: only the credential's own expiry (identity.ErrCredentialExpired) is a rotation.
 func TestOnlyAnExpiredCredentialRotatesASocket(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		err  error

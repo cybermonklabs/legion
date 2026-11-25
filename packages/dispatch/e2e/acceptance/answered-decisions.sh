@@ -57,7 +57,10 @@
 # block holds `selected`, `answer` or `invalid`. A block that differs fails the run, which prints
 # the block, its attributes and the ones its ask's node gives. Spec D's version holds the copy of
 # the answered ask, and the run fails unless a version the restore wrote holds a copy of an
-# answered ask whose kept form it read. It reads every captured version of
+# answered ask whose kept form it read. It requires no block that has no ask row and is no copy:
+# no release's API makes one, and the Go test
+# TestEveryVersionTheRestoreWritesHoldsNoneOfTheEightOnABlockWithNoAskRowThatIsNoCopy holds that
+# half. It reads every captured version of
 # both documents answering the captured bytes. For the second shape it reads the two documents
 # move together: the decisions document's block index and block_refs hold nothing of the moved
 # asks or of a block they held, and the spec's hold each ask and each captured edge, an ask block's
@@ -385,7 +388,8 @@ same_text() {
 # each block's attributes; a block that differs fails the run, which prints the block, the
 # attributes it holds and the ones its ask's node gives. It counts the blocks of each branch it read
 # that hold the form, in kept_copies, kept_answered_copies (a copy whose source is answered) and
-# kept_rowless (a block with no ask row and no copy), for a caller that requires a branch read.
+# kept_rowless (a block with no ask row and no copy), for a caller that requires a branch read or
+# prints what it read.
 kept_form() {
   local section="$1" document="$2" number="$3" what="$4" id own source copied state by at name whose
   local opening got held wants differs blocks=0
@@ -912,7 +916,11 @@ done
 # shape's blocks out of, and any other its lines count - holds the form R10 keeps, each value equal
 # to its ask's node (kept_form). Spec D's holds the copy of the answered ask q-d-copied, so the
 # kept form of a copy is read there: its source's state, answerer and time, and copied_from and
-# copied_from_document.
+# copied_from_document. A block that has no ask row and is no copy is read wherever a version holds
+# one, but none is required and the PASS line claims none: no release's API makes such a block (a
+# browser writes it into a room), and the Go test
+# TestEveryVersionTheRestoreWritesHoldsNoneOfTheEightOnABlockWithNoAskRowThatIsNoCopy holds that
+# half. kept_rowless is printed in the FAIL line alone, beside the copies, to say what was read.
 kept_copies=0 kept_answered_copies=0 kept_rowless=0
 step_versions kept restore "$before_restore"
 [[ -s "$work/restore.versions" ]] || fail kept "the restore wrote a version" "its lines name none: $(<"$work/restore.out")"
@@ -923,7 +931,7 @@ pass kept "every ask block of the $(wc -l <"$work/restore.versions") versions th
 [[ "$kept_answered_copies" -gt 0 ]] ||
   fail kept "a version the restore wrote holds a copy of an answered ask, so the kept form of a copy is read" \
     "the versions it wrote hold $kept_copies copies, none of an answered ask, and $kept_rowless blocks with no ask row and no copy"
-pass kept "the versions the restore wrote hold $kept_answered_copies copies of an answered ask, each holding its source's state, answered_by and answered_at, and copied_from and copied_from_document, as its source's node gives them; and $kept_rowless blocks with no ask row and no copy, each holding none of the eight"
+pass kept "the versions the restore wrote hold $kept_answered_copies copies of an answered ask, each holding its source's state, answered_by and answered_at, and copied_from and copied_from_document, as its source's node gives them"
 
 # Every version captured before the upgrade answers the same bytes.
 for captured in "$work"/capture/version.*.md; do

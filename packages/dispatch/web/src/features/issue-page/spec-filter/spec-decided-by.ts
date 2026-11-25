@@ -87,6 +87,9 @@ export interface SpecDecision {
   readonly at?: string;
   /** Who decided it, where the model holds an author. */
   readonly by?: Actor;
+  /** The person whose Change it waits on, where it stands asked to change
+   *  (`TreeNode.changedBy`), whom its line names after "Changed by". */
+  readonly changedBy?: Actor;
   /** How a line names the decision among others, after "informed by": its quote cut to a chip's
    *  length as a chip names its target (`chipWords`), cut with each reference it cites unnamed
    *  and each named after the cut (`referenceStandIns`), so the cut never falls inside a name. */
@@ -97,6 +100,9 @@ export interface SpecDecision {
   /** The node that holds the whole of it, which the link to it names: the answered ask whose
    *  answer this is, or the decision. */
   readonly id: string;
+  /** The person who kept it, where it stands kept (`TreeNode.keptBy`), whom its line names after
+   *  "Kept by". */
+  readonly keptBy?: Actor;
   /** The decision node the tie came from, where the tree holds it: the node the cell is drawn
    *  as, which Details draws while the cell holds the focus. A person's decision is drawn by
    *  their answer (`id`), and this is the question itself (`decisionNodes`). */
@@ -318,7 +324,7 @@ function nodesById(root: TreeNode): ReadonlyMap<string, TreeNode> {
 
 /** Each ask of the tree by the id a decision names it with (`Decision.asks`), which is the ask's
  *  own id and not the id of the row it is drawn as: an ask the server indexed from a block of a
- *  document is drawn as that block (`tree-drafts.ts`'s `addAsks`). */
+ *  document is drawn as that block (`tree-read/tree-nodes.ts`' `draftAsk`). */
 function asksById(nodes: ReadonlyMap<string, TreeNode>): ReadonlyMap<string, TreeNode> {
   const asks = new Map<string, TreeNode>();
   for (const node of nodes.values()) {
@@ -427,9 +433,11 @@ function decisionOf(
   return {
     ...(at === undefined ? {} : { at }),
     ...(node?.author === undefined ? {} : { by: node.author }),
+    ...(node?.changedBy === undefined ? {} : { changedBy: node.changedBy }),
     chip: references.named(chipWords(line)),
     chose: [],
     id: node?.id ?? decision.ref,
+    ...(node?.keptBy === undefined ? {} : { keptBy: node.keptBy }),
     ...(node === undefined ? {} : { node: node.id }),
     quote: references.named(line),
     reference: decision.ref,

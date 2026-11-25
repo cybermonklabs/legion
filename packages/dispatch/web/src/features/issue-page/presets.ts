@@ -1,3 +1,4 @@
+import type { TreeFilter } from "../../api/queries";
 import type { DisplayTree } from "../../api/types";
 import { wordsOf } from "../refs/tree-fragment";
 import { blockIdOfNode } from "./decision-review";
@@ -22,7 +23,7 @@ import {
 } from "./page-words";
 import { outOfCounts } from "./tree-fold";
 import { readingOf, treeIdOfNode } from "./tree-read/tree-nodes";
-import type { TreeAnswer, TreeAnswerNode, TreeFilter } from "./tree-read/tree-read";
+import type { TreeAnswer, TreeAnswerNode } from "./tree-read/tree-read";
 
 /**
  * The page with no filter on, and the four filters, as views of the one tree.
@@ -77,12 +78,6 @@ const ROW_KINDS: Readonly<Record<Filter, readonly NodeType[]>> = {
   verification: ["check", "result"],
 };
 
-/** The kinds `filter` draws as rows of its own (`ROW_KINDS`), for a part that draws a filter's
- *  rows itself, so it reads them here rather than holding a copy. */
-export function rowKindsOf(filter: Filter): readonly NodeType[] {
-  return ROW_KINDS[filter];
-}
-
 /** The kinds a filter draws as context: rows that place its own, faint and marked, and drawn
  *  whether or not anything of the filter's sits under them (R2's "each requirement as
  *  context"). */
@@ -123,7 +118,8 @@ export interface PresetView {
    *  not hide it. */
   readonly filtering: boolean;
   /** The decisions and constraints of the view read each row carries as a line of its own, by
-   *  the row's id: never rows (R4). Empty where the view is read off the tree. */
+   *  the row's id: in the view read of Spec, Verification or Plan, a decision or a constraint is
+   *  a line of a row and never a row itself. Empty where the view is read off the tree. */
   readonly lines: ReadonlyMap<string, readonly PresetLine[]>;
   /** How many distinct nodes of the view's main kind it matched, closed ones too: a check drawn
    *  under two requirements is one node, so this is what the control's own count says. */
@@ -135,9 +131,11 @@ export interface PresetView {
   readonly rootRow: boolean;
 }
 
-/** A node of a view read drawn as a line of a row rather than as a row (R4): a decision whose
+/** A node of a view read drawn as a line of a row, never as a row itself, which is how the view
+ *  read of Spec, Verification or Plan draws a decision and a constraint: a decision whose
  *  `shaped` tuple names the row's node, or a constraint the row's node's `constrained_by` tuple
- *  names. Later parts of the page draw them. */
+ *  names. Later parts of the page draw these lines. The Decisions filter and the outline draw a
+ *  decision as a row of its own. */
 export interface PresetLine {
   /** The node's id: a decision's block id (`block_id`), and the view read's id of any other. */
   readonly id: string;
@@ -162,9 +160,16 @@ function kindOf(node: TreeNode): NodeType | undefined {
 
 /** Whether `node`'s words hold `wanted`, which is already lowercased; `""` holds everywhere.
  *  The words are the ones a reader reads (`nodeWords`, R1, R4's "the nodes whose words hold
- *  them"), never the stored source: `**bold** text` is found by `bold text` and not by `**`. */
+ *  them"), never the stored source: `**bold** text` is found by `bold text` and not by `**`. A
+ *  post its author deleted holds none: its text is the deleted line as the model writes it
+ *  (`tree-drafts.ts`'s `deletedPostLine`), naming the actor by a short id and the time as stored,
+ *  and its row draws the page's own deleted line in its place (`NodeRow.tsx`'s `DeletedLine`), so
+ *  no word typed finds it (INFRA-1523, R3). */
 function holds(node: TreeNode, wanted: string): boolean {
-  return wanted === "" || nodeWords(node).toLowerCase().includes(wanted);
+  return (
+    wanted === "" ||
+    (node.deletedAt === undefined && nodeWords(node).toLowerCase().includes(wanted))
+  );
 }
 
 /**
@@ -325,7 +330,7 @@ function filterView(
 }
 
 /**
- * One filter drawn from its view read (`TreeNode.views`, R4): the nodes the view's query took of
+ * One filter drawn from its view read (`TreeNode.views`): the nodes the view's query took of
  * the filter's row kinds, each drawn as the tree's node of the same identity (`treeIdOfNode`),
  * so a row reads as it does in the outline, under the row the read places it under, else at the
  * top; two nodes of one read id, blocks of two documents, are two rows of two nodes. Verification
@@ -634,6 +639,11 @@ function lineOfParent(node: TreeNode): ParentLine {
     // The parent's own address, which makes its line the link a reader follows to it (R18, and
     // R26: a step's row reaches the statement it serves).
     ...(node.reference === undefined ? {} : { reference: node.reference }),
+    // A comment's or a message's marks, which its child's row draws with the line
+    // (INFRA-1523, R2 and R3).
+    ...(node.deletedAt === undefined ? {} : { deletedAt: node.deletedAt }),
+    ...(node.deletedBy === undefined ? {} : { deletedBy: node.deletedBy }),
+    ...(node.editedAt === undefined ? {} : { editedAt: node.editedAt }),
     type: node.type,
   };
 }
@@ -693,8 +703,8 @@ export function filterSignals(
   query: string
 ): Readonly<Record<Filter, PresetSignal>> {
   const view = (filter: Filter) => presetView(root, filter, query);
-  // Once a filter's view read is held, its count is that read's own nodes of its main kind whose
-  // words hold the query (R4); until then, what the view read off the tree draws.
+  // Once a filter's view read is held, its count is the held view's own nodes of its main kind
+  // whose words hold the query; until then, what the view read off the tree draws.
   const count = (filter: TreeFilter): number => {
     const held = root.views?.[filter];
     if (held === undefined) return view(filter).matches;

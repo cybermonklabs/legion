@@ -2,7 +2,6 @@ package cistore
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"errors"
 	"maps"
@@ -25,13 +24,11 @@ const (
 	heldDebounce = 20 * time.Millisecond
 )
 
-// suiteObservation is a check_suite observation of h as the webhook maps it, with its App and the
-// run count the event gave (nil for none).
-func suiteObservation(h head, id, appID, status, conclusion, observedAt string, count *int) contracts.CIObservation {
+// suiteObservation is a check_suite observation of h as the webhook maps it, with its App.
+func suiteObservation(h head, id, appID, status, conclusion, observedAt string) contracts.CIObservation {
 	return contracts.CIObservation{
 		Owner: h.owner, Repo: h.repo, Number: h.number, SHA: h.sha,
 		SuiteID: id, AppID: appID, Status: status, Conclusion: conclusion, ObservedAt: observedAt,
-		CheckRunCount: count,
 	}
 }
 
@@ -142,27 +139,28 @@ func finishedChecks(h head) []contracts.CIObservation {
 	}
 }
 
-// actionsSuites records three completed suites of h's from GitHub Actions (App 15368), whose event
-// gave a count that a completed suite does not keep.
+// actionsSuites records three completed suites of h's from GitHub Actions (App 15368).
 func actionsSuites(h head) []contracts.CIObservation {
 	return []contracts.CIObservation{
-		suiteObservation(h, "120620605801", "15368", "completed", "success", "2026-11-19T15:53:00Z", new(48)),
-		suiteObservation(h, "120620605802", "15368", "completed", "success", "2026-11-19T15:53:00Z", new(2)),
-		suiteObservation(h, "120620605803", "15368", "completed", "failure", "2026-11-19T15:53:00Z", new(1)),
+		suiteObservation(h, "120620605801", "15368", "completed", "success", "2026-11-19T15:53:00Z"),
+		suiteObservation(h, "120620605802", "15368", "completed", "success", "2026-11-19T15:53:00Z"),
+		suiteObservation(h, "120620605803", "15368", "completed", "failure", "2026-11-19T15:53:00Z"),
 	}
 }
 
 // A record the summary loop does not settle - one not ready, or a head-gated listener's leftover
 // it holds back - is named in one line once it has had no event for ten minutes: WARN where every
 // recorded check run is terminal and INFO where one still runs, naming the head, its generation,
-// its check count, each check that is not terminal, each suite that is not completed with its App
-// and run count, and the hold the snapshot does not take. The line is logged at the bound and not
-// a millisecond before, once for each snapshot and hold: a pass over a day later, or a pass that
-// files the record again unchanged, logs nothing more, while a new event and a second bound, or a
-// change of the hold alone, logs it once more. A record that settles logs none.
+// its check count, each check that is not terminal, each suite that holds it with its App, and the
+// hold the snapshot does not take. The line is logged at the bound and not a millisecond before,
+// once for each snapshot and hold: a pass over a day later, or a pass that files the record again
+// unchanged, logs nothing more, while a new event and a second bound, or a change of the hold
+// alone, logs it once more. A record that settles logs none. The suites that hold here are GitHub
+// Actions' and one whose App the record does not know: another App's suite holds nothing
+// (suiteHolds), and the line does not name it.
 func TestAHeldHeadNoRunLogsOneLineNamingWhatHoldsIt(t *testing.T) {
 	const day = int64(24 * time.Hour / time.Millisecond)
-	queuedApp := "120620537894 app=5789269 status=queued runs=0"
+	queuedApp := "120620537894 app=15368 status=queued"
 	for _, tc := range []struct {
 		name   string
 		h      head
@@ -172,27 +170,27 @@ func TestAHeldHeadNoRunLogsOneLineNamingWhatHoldsIt(t *testing.T) {
 		fields map[string]any
 	}{
 		{
-			name: "every check finished and an App's suite queued with no run",
+			name: "every check finished and an Actions suite queued with no run",
 			h:    head{"example-org", "example-repo", "42", "5e1d000000000000000000000000000000000001"},
 			record: func(r *heldRig, h head) {
 				r.record(finishedChecks(h)...)
 				r.record(actionsSuites(h)...)
-				r.record(suiteObservation(h, "120620537894", "5789269", "queued", "", "2026-11-19T15:56:07Z", new(0)))
+				r.record(suiteObservation(h, "120620537894", githubActionsAppID, "queued", "", "2026-11-19T15:56:07Z"))
 			},
 			level:  "WARN",
 			fields: heldFields(3, []any{}, []any{queuedApp}),
 		},
 		{
-			name: "two Apps' suites not completed name both in one line",
+			name: "an Actions suite with no run and a suite of no App name both in one line",
 			h:    head{"example-org", "example-repo", "42", "5e1d000000000000000000000000000000000002"},
 			record: func(r *heldRig, h head) {
 				r.record(finishedChecks(h)...)
 				r.record(actionsSuites(h)...)
-				r.record(suiteObservation(h, "120620537894", "5789269", "queued", "", "2026-11-19T15:56:07Z", new(0)))
-				r.record(suiteObservation(h, "120620537895", "424242", "requested", "", "2026-11-19T15:56:08Z", new(0)))
+				r.record(suiteObservation(h, "120620537894", githubActionsAppID, "queued", "", "2026-11-19T15:56:07Z"))
+				r.record(suiteObservation(h, "120620537895", "", "requested", "", "2026-11-19T15:56:08Z"))
 			},
 			level:  "WARN",
-			fields: heldFields(3, []any{}, []any{queuedApp, "120620537895 app=424242 status=requested runs=0"}),
+			fields: heldFields(3, []any{}, []any{queuedApp, "120620537895 app= status=requested"}),
 		},
 		{
 			name: "a check still in progress",
@@ -201,6 +199,18 @@ func TestAHeldHeadNoRunLogsOneLineNamingWhatHoldsIt(t *testing.T) {
 				r.record(h.check("build", 9201, "completed", "success", "2026-11-19T15:50:00Z"))
 				r.record(h.check("deploy", 9202, "in_progress", "", "2026-11-19T15:51:00Z"))
 				r.record(actionsSuites(h)[0])
+			},
+			level:  "INFO",
+			fields: heldFields(2, []any{"deploy:in_progress"}, []any{}),
+		},
+		{
+			name: "a check still in progress beside another App's queued suite, which the line does not name",
+			h:    head{"example-org", "example-repo", "43", "5e1d00000000000000000000000000000000000b"},
+			record: func(r *heldRig, h head) {
+				r.record(h.check("build", 9211, "completed", "success", "2026-11-19T15:50:00Z"))
+				r.record(h.check("deploy", 9212, "in_progress", "", "2026-11-19T15:51:00Z"))
+				r.record(actionsSuites(h)[0])
+				r.record(suiteObservation(h, "120620537897", "5789269", "queued", "", "2026-11-19T15:56:07Z"))
 			},
 			level:  "INFO",
 			fields: heldFields(2, []any{"deploy:in_progress"}, []any{}),
@@ -223,16 +233,6 @@ func TestAHeldHeadNoRunLogsOneLineNamingWhatHoldsIt(t *testing.T) {
 			level:  "WARN",
 			held:   1,
 			fields: heldFields(1, []any{}, []any{}, "legacy"),
-		},
-		{
-			name: "a suite recorded with no run count",
-			h:    head{"example-org", "example-repo", "46", "5e1d000000000000000000000000000000000006"},
-			record: func(r *heldRig, h head) {
-				r.record(h.check("build", 9601, "completed", "success", "2026-11-19T15:50:00Z"))
-				r.record(suiteObservation(h, "120620537896", "5789269", "queued", "", "2026-11-19T15:56:07Z", nil))
-			},
-			level:  "WARN",
-			fields: heldFields(1, []any{}, []any{"120620537896 app=5789269 status=queued runs=unknown"}),
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -273,21 +273,21 @@ func TestAHeldHeadNoRunLogsOneLineNamingWhatHoldsIt(t *testing.T) {
 		r := newHeldRig(t)
 		h := head{"example-org", "example-repo", "47", "5e1d000000000000000000000000000000000007"}
 		r.record(finishedChecks(h)...)
-		r.record(suiteObservation(h, "120620537894", "5789269", "queued", "", "2026-11-19T15:56:07Z", new(0)))
+		r.record(suiteObservation(h, "120620537894", githubActionsAppID, "queued", "", "2026-11-19T15:56:07Z"))
 		first := cachedAsStored(t, r.store, h)
 		bound := first.LastEventAt + heldBound.Milliseconds()
 		r.pass(bound - 1)
 		r.pass(bound)
 		r.wantHeldLines(1, "at the first bound")
 
-		r.record(suiteObservation(h, "120620537894", "5789269", "in_progress", "", "2026-11-19T16:10:00Z", new(0)))
+		r.record(suiteObservation(h, "120620537894", githubActionsAppID, "in_progress", "", "2026-11-19T16:10:00Z"))
 		second := cachedAsStored(t, r.store, h)
 		next := second.LastEventAt + heldBound.Milliseconds()
 		r.pass(next - 1)
 		r.wantHeldLines(1, "a millisecond before the second bound")
 		r.pass(next)
 		lines := r.wantHeldLines(2, "at the second bound")
-		assertHeldLine(t, lines[1], "WARN", h, second, heldFields(3, []any{}, []any{"120620537894 app=5789269 status=in_progress runs=0"}, "every_check_finished"))
+		assertHeldLine(t, lines[1], "WARN", h, second, heldFields(3, []any{}, []any{"120620537894 app=15368 status=in_progress"}, "every_check_finished"))
 		r.pass(next + day)
 		r.wantHeldLines(2, "a day after the second bound")
 	})
@@ -343,12 +343,12 @@ func TestAHeldHeadNoRunLogsOneLineNamingWhatHoldsIt(t *testing.T) {
 		// A record named while held that then settles drops what was logged of it.
 		later := head{"example-org", "example-repo", "50", "5e1d00000000000000000000000000000000000a"}
 		r.record(finishedChecks(later)...)
-		r.record(suiteObservation(later, "120620537894", "5789269", "queued", "", "2026-11-19T15:56:07Z", new(0)))
+		r.record(suiteObservation(later, "120620537894", githubActionsAppID, "queued", "", "2026-11-19T15:56:07Z"))
 		held := cachedAsStored(t, r.store, later)
 		heldAt := max(held.LastEventAt+heldBound.Milliseconds(), bound+day+1)
 		r.pass(heldAt)
 		r.wantHeldLines(1, "the held record at its bound")
-		r.record(suiteObservation(later, "120620537894", "5789269", "completed", "success", "2026-11-19T16:20:00Z", new(0)))
+		r.record(suiteObservation(later, "120620537894", githubActionsAppID, "completed", "success", "2026-11-19T16:20:00Z"))
 		cachedAsStored(t, r.store, later)
 		r.pass(heldAt + 1)
 		if got := r.pub.count(); got != 2 {
@@ -475,113 +475,4 @@ func TestASettlementPublishedLogsOneLine(t *testing.T) {
 		}
 		assertPublished(t, lines[0], h, settlementOf(t, r.pub), false)
 	})
-}
-
-// A suite's run count is kept, as the check_suite event gave it, while the suite is not completed:
-// a count of 0 reads back from the bucket as 0, not as no count, and a completed suite keeps none.
-// The same event delivered again changes nothing, its count compared by value, so it neither
-// writes the record nor moves its last event. The count is display only: the record's snapshot
-// and readiness are the same with it as without it.
-func TestARecordedSuiteKeepsItsRunCountUntilItCompletes(t *testing.T) {
-	conn, cleanup := connectNATS(t)
-	defer cleanup()
-	s := openStore(t, conn)
-	h := head{"example-org", "example-repo", "54", "5e1d00000000000000000000000000000000000e"}
-	recordOne := func(observation contracts.CIObservation) bool {
-		t.Helper()
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		changed, err := s.recordSuite(ctx, observation)
-		if err != nil {
-			t.Fatalf("record %+v: %v", observation, err)
-		}
-		return changed
-	}
-	// storedRunCounts reads each suite's run_count from the bucket's bytes, absent ones left out.
-	storedRunCounts := func() (map[string]any, uint64) {
-		t.Helper()
-		entry, err := s.watcher.KV().Get(h.key())
-		if err != nil {
-			t.Fatalf("kv get: %v", err)
-		}
-		var record struct {
-			Suites map[string]map[string]any `json:"suites"`
-		}
-		if err := json.Unmarshal(entry.Value(), &record); err != nil {
-			t.Fatalf("decode the stored record: %v", err)
-		}
-		counts := map[string]any{}
-		for id, suite := range record.Suites {
-			if count, ok := suite["run_count"]; ok {
-				counts[id] = count
-			}
-		}
-		return counts, entry.Revision()
-	}
-	withoutCounts := func(st State) State {
-		st.Suites = maps.Clone(st.Suites)
-		for id, suite := range st.Suites {
-			suite.RunCount = nil
-			st.Suites[id] = suite
-		}
-		return st
-	}
-
-	if !recordOne(suiteObservation(h, "9301", "5789269", "requested", "", "2026-11-19T15:56:07Z", new(0))) {
-		t.Fatal("the requested suite changed nothing")
-	}
-	if !recordOne(suiteObservation(h, "9302", "424242", "requested", "", "2026-11-19T15:56:08Z", new(2))) {
-		t.Fatal("the second requested suite changed nothing")
-	}
-	counts, revision := storedRunCounts()
-	if want := map[string]any{"9301": float64(0), "9302": float64(2)}; !maps.Equal(counts, want) {
-		t.Fatalf("the bucket holds run counts %v, want %v", counts, want)
-	}
-	st := getState(t, s, h.owner, h.repo, h.number, h.sha)
-	if c := st.Suites["9301"].RunCount; c == nil || *c != 0 {
-		t.Fatalf("suite 9301 reads back run count %v, want 0", c)
-	}
-	if c := st.Suites["9302"].RunCount; c == nil || *c != 2 {
-		t.Fatalf("suite 9302 reads back run count %v, want 2", c)
-	}
-	if bare := withoutCounts(st); bare.Hash() != st.Hash() || settlementReady(bare) != settlementReady(st) {
-		t.Fatalf("the not-ready record without its counts hashes %s ready %v, with them %s ready %v",
-			bare.Hash(), settlementReady(bare), st.Hash(), settlementReady(st))
-	}
-
-	// The same event again, its count a pointer of its own.
-	if recordOne(suiteObservation(h, "9301", "5789269", "requested", "", "2026-11-19T15:56:07Z", new(0))) {
-		t.Fatal("the requested suite delivered again changed the record")
-	}
-	if _, again := storedRunCounts(); again != revision {
-		t.Fatalf("the requested suite delivered again wrote the record (revision %d -> %d)", revision, again)
-	}
-	if again := getState(t, s, h.owner, h.repo, h.number, h.sha); again.LastEventAt != st.LastEventAt {
-		t.Fatalf("the requested suite delivered again moved the last event from %d to %d", st.LastEventAt, again.LastEventAt)
-	}
-
-	if !recordOne(suiteObservation(h, "9301", "5789269", "completed", "success", "2026-11-19T16:20:00Z", new(3))) {
-		t.Fatal("the completed suite changed nothing")
-	}
-	if !recordOne(suiteObservation(h, "9302", "424242", "completed", "success", "2026-11-19T16:20:01Z", new(2))) {
-		t.Fatal("the second completed suite changed nothing")
-	}
-	if counts, _ := storedRunCounts(); len(counts) != 0 {
-		t.Fatalf("the completed suites keep run counts %v, want none", counts)
-	}
-	if err := record(s, h.check("build", 9303, "completed", "success", "2026-11-19T16:21:00Z")); err != nil {
-		t.Fatalf("record the check run: %v", err)
-	}
-	ready := getState(t, s, h.owner, h.repo, h.number, h.sha)
-	if !settlementReady(ready) {
-		t.Fatalf("the record of completed suites and a completed run is not ready: %+v", ready)
-	}
-	counted := withoutCounts(ready)
-	suite := counted.Suites["9301"]
-	suite.RunCount = new(3)
-	counted.Suites["9301"] = suite
-	if counted.Hash() != ready.Hash() || !settlementReady(counted) {
-		t.Fatalf("the ready record with a count hashes %s ready %v, without it %s ready true",
-			counted.Hash(), settlementReady(counted), ready.Hash())
-	}
 }

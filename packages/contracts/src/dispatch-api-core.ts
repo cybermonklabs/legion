@@ -107,6 +107,20 @@ export const ActorSchema = z.union([
 ]);
 
 /**
+ * The actor and the act exactly as Dispatch writes them: what `ActorSchema` and `ActorActSchema`
+ * parse, which is what every `DispatchEvent` payload of this package carries.
+ *
+ * They are deliberately not the contract's `Actor` and `ActorAct`, which are the OpenAPI
+ * document's reading and keep the plain names: that reading's `kind` is a `string` and its
+ * optional fields do not carry `undefined`, so neither type is assignable to the other
+ * (`dispatch-api-spellings.test.ts`). A renderer handed an actor from a payload names these, as
+ * one handed an actor from a served row names `Actor`.
+ */
+export type WrittenActorAct = z.output<typeof ActorActSchema>;
+
+export type WrittenActor = z.output<typeof ActorSchema>;
+
+/**
  * An actor as a bus frame carries it, in the three readings the inbound parsers need.
  *
  * `kind` is an open string in each: JetStream retains a frame for 72 hours, so a reader may still
@@ -256,24 +270,36 @@ export const ProjectSchema = z
      *  a person. A Dispatch of the release before may still answer `decisions`. */
     // kept for one release: contract-read-side
     gated_steps: z.array(z.enum(GATED_STEPS)).optional(),
+    /** The project's default repository, `owner/name`: an issue that names no repository, and
+     *  whose parent chain names none, resolves to it.
+     *  `PUT /api/v1/projects/{key}/default-repository` sets and clears it. Absent when the
+     *  project has none, and from a Dispatch older than the field. */
+    default_repo: z.string().optional(),
+    /** Whether the project needs a credential that proves the session: when it is on, an
+     *  architect's write of an issue's spec or Verification document passes only on a credential
+     *  that proves the architect's session, and a role-holder publication only on one that proves
+     *  `legion-daemon:<project>`. Off by default. Dispatch always answers it. */
+    proven_sessions: z.boolean(),
     created_at: z.string(),
   })
   .readonly();
 
+/** A row of `GET /api/v1/settings/repo-projects`, the one route that still reads the repository
+ *  mapping. Nothing writes the rows now: they stay as the migration of `Project.default_repo`
+ *  left them, for the Legion daemons that read the route at boot, and the next release removes
+ *  the route. The retained event `settings.repo_project.updated` carries one as `mapping`. */
 export const RepoProjectSchema = z
   .strictObject({
     repo: z.string(),
     project: z.string(),
-    /** The project's default repository: an issue with no repository of its own and none on its
-     *  parent chain resolves to it. At most one mapping of a project is its default. */
+    /** Whether the row was its project's default repository. The migration copied each default
+     *  to `Project.default_repo`, which is what an issue resolves to now. */
     default: z.boolean(),
     /** The full `owner/name` this repository is called today, null for one that was never
-     *  renamed. Dispatch holds both names of a renamed repository and canonicalises every
-     *  comparison through this field, so an issue recorded under the old name is held to a pull
-     *  request on the new one. `PUT /api/v1/settings/repo-projects/{owner}/{repo}` takes it:
-     *  absent or null leaves the stored pair alone, `""` clears it. Optional here because a
-     *  client written before the field existed builds this shape without it; Dispatch always
-     *  answers it. */
+     *  renamed. Dispatch reads each pair once at boot: it writes the new name in place of the old
+     *  one in every stored repository field, and compares a repository under the new name.
+     *  Optional here because a client written before the field existed builds this shape
+     *  without it; Dispatch always answers it. */
     renamed_to: z.string().nullable().optional(),
     created_by: ActorSchema,
     created_at: z.string(),
@@ -303,6 +329,9 @@ export const ArchitectureSourceSchema = z
   })
   .readonly();
 
+/** `settings.repo_project.updated`: a write of the repository mapping, which no build makes
+ *  now. The events an earlier build stored stay as history, so the type stays for them.
+ *  `deleted` is true for a write that removed the mapping, and false for one that set it. */
 export const RepoProjectUpdatedEventPayloadSchema = z
   .strictObject({ mapping: RepoProjectSchema, deleted: z.boolean() })
   .readonly();

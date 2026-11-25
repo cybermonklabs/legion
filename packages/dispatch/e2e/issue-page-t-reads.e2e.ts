@@ -7,6 +7,7 @@ import { decisionsFoot } from "./issue-page-q";
 import { fixtureSeed, seedKeys, steadily } from "./issue-page-t";
 import {
   checksOutOfPlace,
+  editNoticesSent,
   firstLoad,
   idSet,
   idsOfType,
@@ -17,6 +18,7 @@ import {
   unexplainedDifferences,
   VIEW_FILTERS,
   VIEW_SEEDS,
+  watchLiveFrames,
 } from "./issue-page-t-rows";
 import {
   besideViewRead,
@@ -56,7 +58,10 @@ import { expectLoadSettled, watchApiRequests } from "./traffic";
 // a slot the stage mounts again past the app's 30 s `staleTime` sends no read of its own, shown
 // on Plan, whose slot reads only through `useIssueTree`.
 // SLOW(>=2s): the whole seeded issue, its load waited out to a 1.5 s quiet window, Details
-// opened, and three filters each pressed on, off and on again with each press waited out.
+// opened, the seed's edit notices waited for, which the server sends about 30 s after a
+// person's last version of each document, three filters each pressed on, off and on again with
+// each press waited out, and each of Plan's two 31 s jumps of the clock held until the live
+// socket's last frame is 2 to 10 s old, up to one 15 s heartbeat.
 test("the first load reads the tree once and a filter its view once", async ({ browser }) => {
   test.setTimeout(ROW_MS);
   await phase(browser, seedWholeIssue, async (page, seeded) => {
@@ -67,6 +72,7 @@ test("the first load reads the tree once and a filter its view once", async ({ b
       verification: viewAnswerOf(page, "verification"),
     } satisfies Record<(typeof VIEW_FILTERS)[number], TreeAnswerWatch>;
     const traffic = watchApiRequests(page);
+    const live = watchLiveFrames(page);
     await page.clock.install();
     const load = await firstLoad(page, traffic, seeded.key);
     await expect(headerStatus(page), "the page draws no header").toBeVisible();
@@ -86,11 +92,16 @@ test("the first load reads the tree once and a filter its view once", async ({ b
       "the first load, with the outline, Details and the header drawn, sends no blocks read"
     ).toEqual([]);
     await closeDetails(page);
+    // A person wrote versions of the seed's documents, and the server sends each document's edit
+    // notice about 30 s after that person's last version, a notice the page reads the issue's
+    // detail again for. The Plan re-press below holds to no read at all, so the presses are
+    // counted only once every notice is sent.
+    await editNoticesSent(seeded.key, traffic);
 
     for (const filter of VIEW_FILTERS) {
       const name = PRESET_NAMES[filter];
       const late = filter === "plan";
-      if (late) await pastStaleTime(page, traffic);
+      if (late) await pastStaleTime(page, traffic, live);
       const first = traffic.requests.length;
       await pressFilter(page, traffic, filter);
       await heldAnswer(views[filter], `the ${name} view read`);
@@ -105,7 +116,7 @@ test("the first load reads the tree once and a filter its view once", async ({ b
         ).toEqual([]);
       }
       await releaseFilter(page, filter);
-      if (late) await pastStaleTime(page, traffic);
+      if (late) await pastStaleTime(page, traffic, live);
       const again = traffic.requests.length;
       await pressFilter(page, traffic, filter);
       if (late) await expectLoadSettled(traffic);
@@ -305,7 +316,7 @@ test("each filter draws its view read's rows, and each decision that shaped a st
 // view read's rows, as Spec, Verification and Plan draw theirs, which is how the root issue
 // settled row 3's gap for Decisions, and a press that sends no view read fails the row.
 // SLOW(>=2s): two seeded issues, each load waited out, and Decisions pressed, read until it holds
-// still, its foot unfolded and read again until it holds still, and released.
+// still with its foot drawn unfolded as the view opens, and released.
 test("each filter draws its view read's rows, and the Decisions filter draws its view read's rows @owed", async ({
   browser,
 }) => {
@@ -323,10 +334,13 @@ test("each filter draws its view read's rows, and the Decisions filter draws its
       await pressFilter(page, traffic, "decisions");
       const foot = decisionsFoot(page);
       // `pressFilter` above read the view once its rows and count held still with the network
-      // quiet, so its foot is drawn by now or not at all, and one read says which.
+      // quiet, so its foot is drawn by now or not at all, and one read says which. The foot is
+      // drawn unfolded as the view opens (part U's R2), so its rows are read with nothing pressed.
       if ((await foot.count()) > 0) {
-        await expect(foot, `${where}, the view's foot draws its control`).toBeVisible();
-        await foot.click();
+        await expect(
+          foot,
+          `${where}, the view's foot is drawn unfolded as the view opens`
+        ).toHaveAttribute("aria-expanded", "true");
       }
       const drawn = await steadily(page, traffic, `${where} with its foot open`, async () => ({
         count: await presetCount(page, "decisions").textContent(),

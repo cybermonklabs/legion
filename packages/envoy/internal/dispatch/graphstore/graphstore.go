@@ -1,10 +1,9 @@
 // Package graphstore is the one place in the tree that writes `graph_nodes` and `graph_tuples`.
 // A node is a thing Dispatch holds; a tuple is one fact stated about it at one moment, by one
-// writer, caused by one event. Nothing here updates a tuple, and nothing deletes one but
-// EraseNode, the erase's delete of a node with every tuple on both sides of it: a relation that
-// ends is a second tuple with Asserted false, and an attribute that changes is a second tuple
-// carrying the new value. Every table Dispatch reads today stays where it is and becomes the
-// projection of these two (store/migrations/20261109013400_graph_store.up.sql).
+// writer, caused by one event. Nothing here updates a tuple and nothing deletes one: a relation
+// that ends is a second tuple with Asserted false, and an attribute that changes is a second
+// tuple carrying the new value. Every table Dispatch reads today stays where it is and becomes
+// the projection of these two (store/migrations/20261109013400_graph_store.up.sql).
 //
 // A read answers the tuples alone, never the projection: a caller that wants the current state
 // asks CurrentOut, CurrentIn or CurrentValue, one that wants the state at a moment asks AsOfOut
@@ -102,15 +101,17 @@ type Node struct {
 	// comment's anchor, a document's address - and says of the state only whether the node is
 	// there (StateLive) or not (StateGone). Over a node the store holds, such a write keeps the
 	// stored visibility and attributes, and keeps a stored state of live, proposed, settled or
-	// overtaken, since a write that marked the node so is not this writer's to undo: it writes its
-	// state only over a node stored gone, which comes back live, and writes gone whenever it says
-	// gone. A node the store does not hold is made as the writer states it. Every writer that
-	// writes a node again for facts of its own restates it: the block index (refs.IndexBlocks),
+	// overtaken, since a write that marked the node so - a later release's, which marks a
+	// requirement proposed or reserves a node for its author, and beside which this release serves
+	// during a roll and alone after a rollback - is not this writer's to undo: it writes its state
+	// only over a node stored gone, which comes back live, and writes gone whenever it says gone.
+	// A node the store does not hold is made as the writer states it. Every writer that writes a
+	// node again for facts of its own restates it: the block index (refs.IndexBlocks),
 	// CommentFacts, IssueNode, ArtifactNode, AskNode and MessageNode, the backfill
-	// (internal/dispatch/graphcensus), and the seed (cmd/dispatch-seed), which writes its
-	// author's node and its followers' session nodes again in later batches. A write that means
-	// to move a node's state, visibility or attributes leaves it false. WriteArms reads none of
-	// it: its upsert moves nothing on a node already there.
+	// (internal/dispatch/graphcensus), and the seed (cmd/dispatch-seed), which writes its author's
+	// node and its followers' session nodes again in later batches. A write that means to move a
+	// node's state, visibility or attributes leaves it false. WriteArms reads none of it: its
+	// upsert moves nothing on a node already there.
 	Restates bool
 	// KeepsCause says the write keeps the cause the store holds of a node already there, its
 	// row's source_event, whatever else of the row it moves. It is for a write that moves only a
@@ -134,24 +135,6 @@ type Node struct {
 	// so that the tuple is dated and signed otherwise than the node, names it through
 	// PlanChangedForRun instead. No read answers it.
 	Changed bool
-}
-
-// AsStateWrite sets each of nodes, in place, to be written again at state by who at at, as a
-// request's write of a node's state writes it (api's writeNodeState): the node as the store holds
-// it but for its state, which the write moves (Restates false), keeping the cause the store holds
-// of it (KeepsCause), marked changed, and at the sentinel, so its write states one state tuple at
-// the sentinel signed by who. Every writer that moves a node's state, or takes a node's subtree
-// gone beside a write of its own, sets the nodes it read so: the state route and the settle
-// (writeNodeState, with what NodesBeneath reads beneath a node it takes gone), and the statement
-// that takes every stale lens gone with all that stands under it (graphcensus's
-// StateStaleLensesGone), which the block-index tick runs after its orphan sweep and a document's
-// removal (api's removeArtifact) runs too.
-func AsStateWrite(nodes []Node, state string, at time.Time, who model.Actor) {
-	for index := range nodes {
-		each := &nodes[index]
-		each.State, each.Restates, each.KeepsCause, each.Changed = state, false, true, true
-		each.MadeAt, each.MadeBy, each.SourceEvent = at, who, NoEvent
-	}
 }
 
 // Tuple is one fact stated about a node. ToKind KindValue makes it an attribute, whose ToID is

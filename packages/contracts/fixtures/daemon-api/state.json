@@ -7,8 +7,8 @@
     "startedAt": "2026-09-22T09:15:02Z"
   },
   "contract": {
-    "daemon": 216,
-    "caller": 216
+    "daemon": 233,
+    "caller": 233
   },
   "admission": {
     "cap": 5,
@@ -332,6 +332,13 @@
           "variant": "long",
           "mode": "random",
           "drawnAt": "2026-09-21T18:42:11Z"
+        },
+        {
+          "experiment": "planning",
+          "variant": "b",
+          "mode": "random",
+          "drawnAt": "2026-09-21T18:42:11Z",
+          "plan": "default"
         }
       ]
     },
@@ -823,6 +830,13 @@
       "source": "boot"
     },
     {
+      "name": "repository-cache-room",
+      "status": "open",
+      "detail": "1 of 1 repository caches ran out of room: acme/widgets on a 20.0 GiB volume (claim cache-legion-legion-cache-acme-widgets-d782c874) with 0.1 GiB available, its clone 6.2 GiB; its repack failed for lack of space at 2026-10-16T02:15:33Z. Room comes from growing the cache's claim in place and raising runtime.kubernetes.repository_cache.volume",
+      "configLine": "capabilities.decided.repository-cache-room: \"\u003creason\u003e\"",
+      "source": "caches"
+    },
+    {
       "name": "network",
       "status": "withheld",
       "detail": "dispatch://LEGION-5: reaches beyond the pod's own network: the pod is the boundary, except a workload a role starts where its deployment's cluster admits it, carrying the pod label that deployment's declaration names for a workload asking to be reachable, and the Service fronting that workload"
@@ -998,6 +1012,13 @@
             "floor_percent": 15,
             "wait_seconds": 8,
             "interval_milliseconds": 250
+          },
+          "controller_pod": {
+            "enabled": true,
+            "act_percent": 85,
+            "floor_percent": 10,
+            "wait_seconds": 1,
+            "interval_milliseconds": 100
           }
         },
         "volume_trim": {
@@ -1052,6 +1073,13 @@
         },
         "experiments": [],
         "production_check": "tester",
+        "default_steps": [
+          "planner",
+          "implementer",
+          "tester",
+          "reviewer",
+          "acceptance:owner"
+        ],
         "deploys": []
       },
       "WIDGETS": {
@@ -1061,6 +1089,10 @@
         },
         "experiments": [],
         "production_check": "off",
+        "default_steps": [
+          "implementer",
+          "reviewer"
+        ],
         "deploys": []
       }
     },
@@ -1152,5 +1184,57 @@
       "unavailable": "read the consumer's info: context deadline exceeded"
     }
   ],
-  "lowestPluginContract": 46
+  "lowestPluginContract": 46,
+  "intakeGiveUps": {
+    "consumers": [
+      {
+        "name": "legion-go-LEGION-dispatch",
+        "open": 2,
+        "newestSeq": 6044896
+      },
+      {
+        "name": "legion-go-LEGION-github",
+        "open": 1,
+        "newestSeq": 812004
+      }
+    ],
+    "newest": [
+      {
+        "id": 43,
+        "consumer": "legion-go-LEGION-dispatch",
+        "subject": "notifications.dispatch.issue.LEGION-214.issue.updated",
+        "streamSeq": 6044896,
+        "storedAt": "2026-09-22T08:40:12Z",
+        "eventId": null,
+        "deliveries": 1,
+        "gaveUpAt": "2026-09-22T08:40:13Z",
+        "reason": "undecodable",
+        "lastError": "decode Envoy envelope: unexpected end of JSON input"
+      },
+      {
+        "id": 42,
+        "consumer": "legion-go-LEGION-github",
+        "subject": "notifications.github.acme.widgets.pr.17.review",
+        "streamSeq": 812004,
+        "storedAt": "2026-09-22T06:02:00Z",
+        "eventId": "github-9b2c71e0",
+        "deliveries": 3,
+        "gaveUpAt": "2026-09-22T07:55:00Z",
+        "reason": "consumer moved past",
+        "lastError": "the consumer moved past it without delivering it again"
+      },
+      {
+        "id": 41,
+        "consumer": "legion-go-LEGION-dispatch",
+        "subject": "notifications.dispatch.issue.LEGION-213.issue.updated",
+        "streamSeq": 6044801,
+        "storedAt": "2026-09-22T06:30:00Z",
+        "eventId": "dispatch-6044801",
+        "deliveries": 21,
+        "gaveUpAt": "2026-09-22T07:31:04Z",
+        "reason": "bound",
+        "lastError": "apply the issue event: read LEGION-213 from Dispatch: context deadline exceeded"
+      }
+    ]
+  }
 }

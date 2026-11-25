@@ -1,6 +1,7 @@
 import { type BlockItemKind, parseBlockPointerValue } from "@legion/contracts";
 
 import { primarySpec, roleDocument } from "../../../api/issue-cache";
+import type { TreeFilter } from "../../../api/queries";
 import type {
   ArtifactBlock,
   BlockAttributeValue,
@@ -12,6 +13,7 @@ import type {
   IssueDetails,
   RequirementCoverage,
 } from "../../../api/types";
+import { type PostDeletion, postDeletion } from "../../refs/post-marks";
 import { buildDispatchReference, parseNodeReference } from "../../refs/routes";
 import { checkFacts, resultFacts } from "../check-facts";
 import {
@@ -24,16 +26,23 @@ import {
   issueAsks,
   type Lookup,
   nodeReference,
-  nodesById,
   tieReference,
   tieTargetReference,
   tuplesByFrom,
 } from "../decision-nodes/decision-nodes";
-import { blockIdOfNode, decisionNodeChanges, inReviewList, reviewState } from "../decision-review";
+import {
+  blockIdOfNode,
+  decisionNodeChanges,
+  deletedPostIds,
+  firstOfEachId,
+  inReviewList,
+  parentsIn,
+  reviewState,
+} from "../decision-review";
 import type { IssueTreeReads, NodeChip, TreeAsk, TreeNode } from "../issue-tree";
 import { lensChips, lensDrafts } from "../lenses/lens-drafts";
 import type { NodeStates } from "../node-states/node-states";
-import { blockAttributeLabel, type NodeType } from "../page-words";
+import { blockAttributeLabel, coverageNotes, type NodeType } from "../page-words";
 import {
   addDocumentChips,
   answerOf,
@@ -44,12 +53,13 @@ import {
   coverageStatements,
   type Draft,
   deciderOf,
+  deletedPostLine,
   plainWords,
   requirementGaps,
   stableSourceOf,
   type TreeContext,
 } from "../tree-drafts";
-import type { TreeAnswer, TreeAnswerNode, TreeFilter, TreeTuple } from "./tree-read";
+import type { TreeAnswer, TreeAnswerNode, TreeTuple } from "./tree-read";
 
 /**
  * The tree read's answer as the outline's drafts (`tree-drafts.ts`), for `assemble` to build the
@@ -92,6 +102,13 @@ export interface TreeWords extends TreeContext {
   readonly lineWords: (node: Pick<TreeNode, "text" | "tree">) => string;
 }
 
+/** What the author of a comment or a message did to it: deleted it (`postDeletion`), or last
+ *  replaced its body (`editedAt`). */
+export interface PostMarks {
+  readonly deleted: PostDeletion | null;
+  readonly editedAt: string | null;
+}
+
 /** The page's other reads, each row by the tree id of the node it tells about (`treeIdOf`): the
  *  facts the answer does not hold, each row's `dispatch://` address read to a node id as the
  *  outline's builders read it (`blockNodeId`, `nodeIdOf`), so a row and its node meet by one
@@ -106,6 +123,14 @@ export interface KeptReads {
   readonly requirements: ReadonlyMap<string, RequirementCoverage>;
   /** Each result of the results read, by its own id. */
   readonly results: ReadonlyMap<string, CheckResult>;
+  /** The coverage read's own lines, which name no requirement's gap: while a document of the
+   *  issue is still being indexed, its line, which the server writes in place of every missing
+   *  check (`coverageNotes`). Each requirement the read holds draws them. */
+  readonly coverageNotes: string[];
+  /** What the author of each comment and message of the comments read and the messages read did
+   *  to it, by the post's own id: the tree read answers its words, a deleted post's none, and no
+   *  mark of either. A post nobody corrected has no entry. */
+  readonly posts: ReadonlyMap<string, PostMarks>;
   /** The artifact id of the issue's Verification document (`roleDocument`): a check block of it
    *  is a check, which draws a state, and one of any other document is a block and nothing more,
    *  since the results read never answers for it. */
@@ -227,7 +252,7 @@ export function treeDraftsFrom(
   reads: IssueTreeReads,
   context: TreeWords
 ): Map<string, Draft> {
-  const nodes = nodesById(answer);
+  const nodes = firstOfEachId(answer.nodes ?? []);
   const tuples = tuplesByFrom(answer);
   const ending = new Map<string, TreeTuple[]>();
   for (const tuple of answer.tuples ?? []) {
@@ -253,7 +278,7 @@ export function treeDraftsFrom(
   const drafting: TreeDraftContext = {
     ...context,
     askOf: lookup.askOf,
-    changes: decisionNodeChanges(answer, idOfNode),
+    changes: decisionNodeChanges(answer, idOfNode, deletedPostIds(reads.comments)),
     decisions: new Map(
       decisionNodes(answer, reads, lookup).map((decision) => [decision.node, decision])
     ),
@@ -342,27 +367,6 @@ function firstDraft(
   return undefined;
 }
 
-/**
- * The node each node of `order` hangs under: the nearest node before it in `order` that its
- * `parent` names, since a parent comes before its children; else the answer's node of that id
- * (`nodes`). A decision's Change is the comment the read hangs under it by the same rule
- * (`decision-review.ts`' `parentsIn`).
- */
-function parentsIn(
-  order: readonly TreeAnswerNode[],
-  nodes: ReadonlyMap<string, TreeAnswerNode>
-): Map<TreeAnswerNode, TreeAnswerNode> {
-  const parents = new Map<TreeAnswerNode, TreeAnswerNode>();
-  const latest = new Map<string, TreeAnswerNode>();
-  for (const node of order) {
-    const parent =
-      node.parent === null ? undefined : (latest.get(node.parent.id) ?? nodes.get(node.parent.id));
-    if (parent !== undefined) parents.set(node, parent);
-    latest.set(node.id, node);
-  }
-  return parents;
-}
-
 /** What `treeIdOf` reads beside the answer: the issue, for its key and its documents' slugs, and
  *  the asks read, which names the block an ask was indexed from. */
 export type TreeIdReads = Pick<IssueTreeReads, "asks" | "issue">;
@@ -408,7 +412,7 @@ export function treeIdOfNode(
  * does not hold is its own tree id.
  */
 export function treeIdOf(answer: TreeAnswer, reads: TreeIdReads): (readId: string) => string {
-  const nodes = nodesById(answer);
+  const nodes = firstOfEachId(answer.nodes ?? []);
   const idOfNode = nodeIdsIn(reads);
   return (readId) => {
     const node = nodes.get(readId);
@@ -488,7 +492,7 @@ export function nodeStatesOf(answer: TreeAnswer): ReadonlyMap<string, NodeStates
  * issue's tree. Every node a step is offered then has its ancestors' drafts made before it.
  */
 function walkOf(answer: TreeAnswer, key: string): TreeAnswerNode[] {
-  const nodes = nodesById(answer);
+  const nodes = firstOfEachId(answer.nodes ?? []);
   const inTree = new Map<TreeAnswerNode, boolean>();
   const reachesIssue = (node: TreeAnswerNode): boolean => {
     const known = inTree.get(node);
@@ -527,6 +531,7 @@ function draftRequirement(
   if (isStatementNode(node, context)) draft.statement = true;
   if (coverage !== undefined) {
     draft.counts = { checks: coverage.checks, planTasks: coverage.plan_tasks };
+    if (context.kept.coverageNotes.length > 0) draft.coverageNotes = context.kept.coverageNotes;
     // The decisions that shaped it count only against an origin (`requirementGaps`), so they are
     // read only where it has one.
     const origin = originOf(node, context);
@@ -645,7 +650,8 @@ function draftResult(
  * the person or the session its `decided_by` tuple names, which the read answers as context
  * (`deciderOf`), since the node's `decision` names no decider; none where the read answers no
  * such tuple. A person's Change the read hangs under it says it waits on its agent
- * (`decisionNodeChanges`).
+ * (`decisionNodeChanges`), and names who asked for it: the first author of the newest Change
+ * (`changedBy`), whose name the row draws after "Changed by".
  *
  * Whether its agent was unsure and whether it waits on the reader are read off the decision as
  * every other reader of a decision reads it (`decisionNodes`), so the row, the header's count
@@ -679,8 +685,11 @@ function draftDecision(
     ...chip,
     stale: stale.has(context.nodeIdOf(chip.ref) ?? chip.ref),
   }));
-  const changed = context.changes.has(draft.id);
+  const change = context.changes.get(draft.id);
+  const changed = change !== undefined;
   draft.state = reviewState(decision, changed);
+  const changer = change?.author?.[0];
+  if (draft.state === "change_requested" && changer !== undefined) draft.changedBy = changer;
   if (decision.kept != null && decision.waiting_review !== true) {
     draft.keptBy = { id: decision.kept.kept_by, kind: "user" };
   }
@@ -752,7 +761,13 @@ function draftAsk(
 
 /** A turn of the conversation, a comment or a message: who wrote it and when, and the record
  *  its words are, which its body's links resolve against, kept by the reading of its words
- *  (`stableSourceOf`). */
+ *  (`stableSourceOf`). A turn its author corrected keeps its place (INFRA-1523, R2 and R3): an
+ *  edited one keeps its words and carries when it was last edited (`editedAt`); a deleted one
+ *  carries when and by whom (`deletedAt`, `deletedBy`) and holds the deleted line as its text
+ *  (`deletedPostLine`) and no reading, so no line, body, filter or citation read from the node
+ *  reads any part of its body. It carries no `editedAt`: the deleted line already says what
+ *  became of the text. The marks are the comments read's and the messages read's, by the post's
+ *  id (`KeptReads.posts`): the tree read holds neither. */
 function draftTurn(
   node: TreeAnswerNode,
   _answer: TreeAnswer,
@@ -761,6 +776,18 @@ function draftTurn(
   if (node.supertag !== "comment" && node.supertag !== "message") return undefined;
   const draft = draftOf(node, node.supertag, context);
   madeBy(draft, node);
+  const marks = context.kept.posts.get(node.id);
+  if (marks?.deleted != null) {
+    // The read answers a deleted post with no body, and no mark of the delete: the line is made
+    // from the delete alone, so it holds no part of the body even where a read still carries
+    // one, and the post keeps no reading.
+    draft.deletedAt = marks.deleted.at;
+    if (marks.deleted.by !== null) draft.deletedBy = marks.deleted.by;
+    draft.text = deletedPostLine(marks.deleted);
+    delete draft.tree;
+  } else if (marks?.editedAt != null) {
+    draft.editedAt = marks.editedAt;
+  }
   draft.source = stableSourceOf(draft.tree ?? node, node.supertag, node.id);
   return draft;
 }
@@ -1075,6 +1102,8 @@ function keptReads(
   return {
     checks,
     children: indexBy(reads.issue.children ?? [], (child) => child.key),
+    coverageNotes: coverageNotes(reads.coverage),
+    posts: postMarksOf(reads),
     requirements: indexBy(reads.coverage?.requirements ?? [], (requirement) =>
       blockNodeId(context.specSlug, requirement.block_id)
     ),
@@ -1084,6 +1113,24 @@ function keptReads(
     ),
     verification,
   };
+}
+
+/** What the author of each comment and message did to it (`PostMarks`), by the post's id: the
+ *  comments read's and the messages read's, which carry the marks the tree read does not. A post
+ *  nobody deleted or edited has none, and a deleted post has no edit mark, since the deleted
+ *  line says what became of its text. */
+function postMarksOf(reads: Pick<IssueTreeReads, "comments" | "messages">): Map<string, PostMarks> {
+  const marks = new Map<string, PostMarks>();
+  const posts = [
+    ...(reads.comments ?? []),
+    ...(reads.messages ?? []).flatMap((thread) => [thread.message, ...(thread.replies ?? [])]),
+  ];
+  for (const post of posts) {
+    const deleted = postDeletion(post);
+    const editedAt = deleted === null ? (post.edited_at ?? null) : null;
+    if (deleted !== null || editedAt !== null) marks.set(post.id, { deleted, editedAt });
+  }
+  return marks;
 }
 
 /** `rows` by the id `idOf` gives each, a row with none left out and a later row over an earlier
@@ -1188,7 +1235,7 @@ function blockOf(
  *  on another document's block of the same id. */
 function hungUnder(answer: TreeAnswer): Map<TreeAnswerNode, { asks: number; comments: number }> {
   const counts = new Map<TreeAnswerNode, { asks: number; comments: number }>();
-  for (const [node, parent] of parentsIn(answer.nodes ?? [], nodesById(answer))) {
+  for (const [node, parent] of parentsIn(answer.nodes ?? [])) {
     if (node.supertag !== "ask" && node.supertag !== "comment") continue;
     const count = counts.get(parent) ?? { asks: 0, comments: 0 };
     if (node.supertag === "ask") count.asks += 1;
@@ -1259,4 +1306,16 @@ export function mergeTreePages(pages: readonly [TreeAnswer, ...TreeAnswer[]]): T
     nodes: pages.flatMap((page) => page.nodes ?? []),
     tuples: pages.flatMap((page) => page.tuples ?? []),
   };
+}
+
+/**
+ * The cursor of the page after `page` in its read, or undefined where `page` is the last: one
+ * whose cursor is null, left out of the body, or empty, as a server that drops an empty field
+ * writes it. The one rule every walk of the read ends by: the page's own (`tree-read.ts`'
+ * `readTree`) and the e2e helpers', which load this module and not that one, as they do for
+ * `mergeTreePages`.
+ */
+export function nextTreeCursor(page: TreeAnswer): string | undefined {
+  const { cursor } = page;
+  return typeof cursor === "string" && cursor !== "" ? cursor : undefined;
 }

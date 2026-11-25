@@ -202,6 +202,15 @@ def check_rerun_guard(document: dict, problems: list) -> None:
 
 
 # ---------------------------------------------------------------- the cache round trip
+# The one suffix a save of ci-caches.yaml may add to its restores' key: the commit the fill built.
+# A family saved under it is filled again on every push, each entry under a key of its own, and a
+# restore of the bare key takes the newest of them by prefix.
+COMMIT_SUFFIX = "-${{ github.sha }}"
+# A save's key that is the key a restore step of its job computed, as actions/cache/restore gives
+# it in its cache-primary-key output: the key as that step evaluated it, before the build ran.
+COMPUTED_KEY = re.compile(r"\$\{\{\s*steps\.([A-Za-z0-9_-]+)\.outputs\.cache-primary-key\s*\}\}")
+
+
 def cache_family(key: str) -> str:
     """The family a cache key names: its text up to the first expression - the Go version the
     entry is keyed on - without the separator that joins the two."""
@@ -243,20 +252,70 @@ def restores_of(documents: dict) -> dict:
     return restores
 
 
+def saves_of(caches: dict, problems: list) -> list:
+    """Every save of ci-caches.yaml, as (its job, its family, its key as its restores write it, its
+    with:). A save under COMPUTED_KEY of a restore step of its own job takes that step's key text,
+    the key the restore computed before the build; a save naming any other step is refused, and
+    so is a save whose own key holds hashFiles(): the save evaluates it after the build, and the
+    build can change the files it hashes (a go command may add the checksums it fetched to go.sum
+    or go.work.sum), so the key it saves under need not be the one the restores ask for. On the
+    repository, go-envoy-infra's save hashed its module files again and every push missed its
+    lookup (run 45088325195: lookup ...-85ddfce1..., save ...-f2bbc22a...)."""
+    saves = []
+    for job_id, job in (caches.get("jobs") or {}).items():
+        steps = (job or {}).get("steps") or []
+        for step in steps:
+            if str((step or {}).get("uses", "")).split("@")[0] != "actions/cache/save":
+                continue
+            given = step.get("with") or {}
+            key = str(given.get("key", "")).rstrip()
+            if "hashFiles(" in key:
+                problems.append(error(CACHE_WORKFLOW, f"job {job_id} saves under `{key}`, which holds hashFiles(): the "
+                                                      f"save evaluates it after the build, which can change a file it hashes, "
+                                                      f"so the entry can land under a key no restore asks for; save under "
+                                                      f"the key the lookup computed, `${{{{ steps.<id>.outputs.cache-primary-key }}}}`"))
+                continue
+            named = COMPUTED_KEY.fullmatch(key.strip())
+            if named:
+                restore = next((s for s in steps if str((s or {}).get("id", "")) == named.group(1)
+                                and str((s or {}).get("uses", "")).split("@")[0] == "actions/cache/restore"), None)
+                if restore is None:
+                    problems.append(error(CACHE_WORKFLOW, f"job {job_id} saves under `{key}`, but no "
+                                                          f"actions/cache/restore of that job has the id {named.group(1)}, "
+                                                          f"so nothing says which key the entry lands under"))
+                    continue
+                key = str((restore.get("with") or {}).get("key", "")).rstrip()
+            saves.append((job_id, cache_family(key), key, given))
+    return saves
+
+
 def check_cache_round_trip(documents: dict, problems: list) -> None:
     """ci-caches.yaml fills on a push to main the entries ci.yaml's run restores - its own jobs'
     restores, and those of the local workflows they call - so each family's save must carry
-    exactly the key and the paths its restores name: a key or a path that drifts apart makes
-    every restore miss, and nothing fails - each job just rebuilds from nothing what the fill
-    already built. A family is the key's text up to its first expression, and it is what
+    exactly the key and the paths its restores name, or for the key, that key followed by
+    COMMIT_SUFFIX: a key or a path that drifts apart makes every restore miss, and nothing fails -
+    each job just rebuilds from nothing what the fill already built. A save under the key and the
+    commit is a fill made again on every push: no entry then carries the restores' key itself, and
+    GitHub gives each restore the newest entry whose key starts with it; any other suffix is
+    drift, a restore key that itself names the commit is drift, and one family saved both ways is
+    refused, since its entry under the bare key would win every restore. A save's key is its own
+    text, or the text of the restore step of its job whose computed key it names (saves_of says
+    why a hashFiles() of its own is refused). A family is the key's text up to its first
+    expression, and it is what
     pairs a save with the restores to hold it to; the keys are compared as text and the paths as
     the ordered lists of lines they name. A family ci.yaml restores that this workflow does not
     save is no fault: docs-pages.yaml saves go-docs. The other way round is one, a family nothing
-    restores being a fill nobody reads. Each restore here is a lookup, which must be
-    `lookup-only: true` with no restore-keys: the question it asks is whether that exact key is
-    already there, the entry it would download is read by nothing in this workflow, and a prefix
-    hit would answer for an older key and skip the build that fills this one. A ci-caches.yaml
-    that is not in the repository saves nothing, and so has nothing to hold.
+    restores being a fill nobody reads.
+
+    This workflow's own restores of a family it saves under the commit are what the fill builds on,
+    and have one shape: no lookup-only at all (an expression can evaluate to true), so the newest
+    entry downloads, and exactly its key followed by `-` as restore-keys, which no entry of
+    another Go version starts with. Every other restore here is a lookup, which must be
+    `lookup-only: true` with no
+    restore-keys: the question it asks is whether that exact key is already there, the entry it
+    would download is read by nothing in this workflow, and a prefix hit would answer for an older
+    key and skip the build that fills this one. A ci-caches.yaml that is not in the repository
+    saves nothing, and so has nothing to hold.
 
     The restores are collected from every document of the set, ci.yaml and each workflow its
     jobs call, since a job that gives its steps to a called file takes its restore there with
@@ -264,7 +323,7 @@ def check_cache_round_trip(documents: dict, problems: list) -> None:
 
     The key and the paths are held for every other workflow of the directory too: a release
     build (release.yaml's go-daemon, release-envoy-infra.yaml's go-envoy-infra), the nightly
-    browser re-record (go-envoy) and this workflow's own lookups restore the entries it fills,
+    browser re-record (go-envoy) and this workflow's own restores read the entries it fills,
     and a restore there that drifts from the save misses as silently as one of ci.yaml's. Only
     the existence check above stays ci.yaml's: a fill is for ci.yaml's run, so a family only
     another workflow restores is still a fill ci.yaml does not read."""
@@ -274,8 +333,14 @@ def check_cache_round_trip(documents: dict, problems: list) -> None:
     restores = restores_of(documents)
     elsewhere = restores_of({path: document for path, document in directory_workflows().items()
                              if path not in documents})
-    for job_id, family, given in cache_steps(caches, "save"):
-        key, paths = str(given.get("key", "")).rstrip(), path_lines(given.get("path", ""))
+    saves = saves_of(caches, problems)
+    refilled = {family for _, family, key, _ in saves if key.endswith(COMMIT_SUFFIX)}
+    for family in sorted(refilled & {family for _, family, key, _ in saves if not key.endswith(COMMIT_SUFFIX)}):
+        problems.append(error(CACHE_WORKFLOW, f"this workflow saves family {family} both under `{COMMIT_SUFFIX}` and "
+                                              f"without it: the entry under the restores' own key wins every restore as an "
+                                              f"exact match, so the fills under the commit reach nobody"))
+    for job_id, family, key, given in saves:
+        paths = path_lines(given.get("path", ""))
         if family not in restores:
             problems.append(error(CACHE_WORKFLOW, f"job {job_id} saves cache family {family}, which no "
                                                   f"actions/cache/restore of {WORKFLOW} or of a workflow it calls "
@@ -286,11 +351,19 @@ def check_cache_round_trip(documents: dict, problems: list) -> None:
         for restore_where, restored in restores[family] + elsewhere.get(family, []):
             restored_key = str(restored.get("key", "")).rstrip()
             restored_paths = path_lines(restored.get("path", ""))
-            if key != restored_key:
+            expected = restored_key + COMMIT_SUFFIX if key.endswith(COMMIT_SUFFIX) else restored_key
+            if key != expected:
+                if restored_key and key.startswith(restored_key):
+                    why = (f"that restore takes it only by prefix, and this workflow deletes the entries a fill "
+                           f"replaced only once one under `{COMMIT_SUFFIX}` is there, so under any other suffix each "
+                           f"fill's entry piles up beside the last")
+                else:
+                    why = ("a restore whose key is not the save's misses every time, and nothing fails - the job "
+                           "rebuilds from nothing instead")
                 problems.append(error(CACHE_WORKFLOW, f"job {job_id} saves family {family} under key "
                                                       f"`{key}`, but {restore_where} restores it under "
-                                                      f"`{restored_key}`: a restore whose key is not the save's "
-                                                      f"misses every time, and nothing fails - the job rebuilds from nothing instead"))
+                                                      f"`{restored_key}`: a save's key must be the restore's, or the "
+                                                      f"restore's followed by `{COMMIT_SUFFIX}`; {why}"))
             if paths != restored_paths:
                 problems.append(error(CACHE_WORKFLOW, f"job {job_id} saves family {family} from "
                                                       f"{', '.join(paths) or '(no path)'}, but {restore_where} restores "
@@ -298,11 +371,32 @@ def check_cache_round_trip(documents: dict, problems: list) -> None:
                                                       f"entry then holds other directories than the job reads, and the job rebuilds what "
                                                       f"the fill already built"))
     for job_id, family, given in cache_steps(caches, "restore"):
-        if str(given.get("lookup-only", "")).strip().lower() != "true":
+        given_lookup = given.get("lookup-only")
+        lookup_text = str(given_lookup).strip().lower() if isinstance(given_lookup, bool) else str(given_lookup).strip()
+        restore_keys = given.get("restore-keys")
+        if family in refilled:
+            prefix = str(given.get("key", "")).rstrip() + "-"
+            # The fill's restore of such a family has one shape: no lookup-only at all (an
+            # expression such as `${{ true }}` can evaluate to true, and this check does not
+            # evaluate expressions), and exactly its key and a `-` as restore-keys.
+            if given_lookup is not None:
+                problems.append(error(CACHE_WORKFLOW, f"job {job_id}'s actions/cache/restore of family "
+                                                      f"{family} is `lookup-only: {lookup_text}`, but this workflow saves the family "
+                                                      f"under `{COMMIT_SUFFIX}`, filling it again on every push: the fill builds "
+                                                      f"on the newest entry, so its restore must download it, or each fill "
+                                                      f"compiles everything from nothing; leave lookup-only out"))
+            if path_lines(restore_keys or "") != [prefix]:
+                problems.append(error(CACHE_WORKFLOW, f"job {job_id}'s actions/cache/restore of family "
+                                                      f"{family} has restore-keys {', '.join(path_lines(restore_keys or '')) or '(none)'}, "
+                                                      f"but a family this workflow saves under `{COMMIT_SUFFIX}` takes exactly "
+                                                      f"`{prefix}`: the newest entry of the same Go, which a shorter prefix "
+                                                      f"would let an entry of another Go stand in for"))
+            continue
+        if lookup_text.lower() != "true":
             problems.append(error(CACHE_WORKFLOW, f"job {job_id}'s actions/cache/restore of family "
                                                   f"{family} is not `lookup-only: true`: it asks only whether that exact key is already "
                                                   f"there, and the entry a restore downloads is read by no step of this workflow"))
-        if given.get("restore-keys") is not None:
+        if restore_keys is not None:
             problems.append(error(CACHE_WORKFLOW, f"job {job_id}'s actions/cache/restore of family "
                                                   f"{family} has restore-keys: a prefix hit would answer for an older key, and the build "
                                                   f"that fills this one would be skipped, leaving the key empty"))
@@ -318,7 +412,7 @@ def check_cache_round_trip(documents: dict, problems: list) -> None:
 # of the build is no package. TABLE, the file the list is in, is the workspaces section's constant
 # below: both rules name that one file, so there is one spelling of it here. A race build of
 # another job fills another family's cache, for another lane, and is not this rule's: the
-# envoy-infra job's fills envoy-infra-go's unit step.
+# envoy-infra job's fills envoy-infra-build's unit step.
 RACE_TEST = re.compile(r"\bgo\s+(?:-C\s+\S+\s+)?test\b")
 RACE_FLAG = re.compile(r"(?<![\w-])-race\b")
 RACE_LIST = "DAEMON_RACE_PACKAGES"

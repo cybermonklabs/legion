@@ -1,11 +1,14 @@
 package horizontest
 
 import (
+	"context"
 	"log"
 	"log/slog"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/logtest"
@@ -160,8 +163,9 @@ func heldRecordFor(pendingFor, held time.Duration, database string) slog.Record 
 // test a boundary that has moved.
 func TestVerdictOfKeysTheWaitOnTheStallWarning(t *testing.T) {
 	const ownDatabase = "dispatch_test_ab"
-	// A foreign holder: another service's transaction on the same Postgres instance, which holds
-	// the horizon back and is no defect of Dispatch's, however long it has stood.
+	// A foreign holder: an event write of another database, which a horizon reading that database
+	// reports - another server's in the same process, which Listen hears too - and which is no
+	// defect of this test's, however long it has stood.
 	foreign := FromLine(stallWarningLine("legion_daemon", 2*OwnHoldBound))
 	// warnStall's other two arms carry no database= field at all.
 	diagnosisFailed := FromLine(stallWarningHead(2*OwnHoldBound) + ` diagnosis_error="timeout: context deadline exceeded"`)
@@ -294,6 +298,102 @@ func TestVerdictOfKeysTheWaitOnTheStallWarning(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestAWatchOfATestThatWaitsUntilTheDeadlineIsEndedBySilenceNowhere drives Watch.Failure past each
+// bound: a horizon that never warned past Base, and one that stopped warning past Extension. A test
+// that did not call UntilTheDeadline is failed at each, which is the control that this row reads a
+// watch the bounds can end; one that called it, and its subtest, are failed at neither, but still at
+// the drain before the run's deadline and on an own hold past OwnHoldBound, whether a warning names
+// it or the wait's own read of the holder finds it, each naming what it waited for.
+func TestAWatchOfATestThatWaitsUntilTheDeadlineIsEndedBySilenceNowhere(t *testing.T) {
+	const ownDatabase = "dispatch_test_ab"
+	const what = "an event of events"
+	none := func() []Warning { return nil }
+	// silentPast is a watch on a horizon that has said nothing for past each bound since it began.
+	silentPast := func(t *testing.T) *Watch {
+		watch := NewWatch(t, none, ownDatabase, nil)
+		watch.began = time.Now().Add(-2 * max(Base, Extension))
+		watch.drain = time.Time{}
+		return watch
+	}
+	// stoppedPast is a watch whose horizon warned once of a foreign holder, its last warning
+	// counted past Extension ago.
+	stoppedPast := func(t *testing.T) *Watch {
+		warned := []Warning{FromLine(stallWarningLine("other_service", time.Second))}
+		watch := NewWatch(t, func() []Warning { return warned }, ownDatabase, nil)
+		watch.began = time.Now().Add(-2 * max(Base, Extension))
+		watch.rose = watch.began
+		watch.current.warnings, watch.current.last = 1, warned[0]
+		watch.drain = time.Time{}
+		return watch
+	}
+	t.Run("a test that did not call it", func(t *testing.T) {
+		if failure := silentPast(t).Failure(what); !strings.Contains(failure, "never said it was held back") {
+			t.Errorf("a silent horizon past Base: Failure = %q, want the base bound's failure", failure)
+		}
+		if failure := stoppedPast(t).Failure(what); !strings.Contains(failure, "stopped saying it was held back") {
+			t.Errorf("a horizon silent past Extension: Failure = %q, want the extension window's failure", failure)
+		}
+	})
+	t.Run("a test that called it", func(t *testing.T) {
+		UntilTheDeadline(t)
+		for name, watch := range map[string]*Watch{"silent past Base": silentPast(t), "silent past Extension": stoppedPast(t)} {
+			if failure := watch.Failure(what); failure != "" {
+				t.Errorf("a horizon %s: Failure = %q, want the wait to go on", name, failure)
+			}
+		}
+		t.Run("and its subtest", func(t *testing.T) {
+			if failure := silentPast(t).Failure(what); failure != "" {
+				t.Errorf("a subtest's silent horizon past Base: Failure = %q, want the wait to go on", failure)
+			}
+		})
+		drained := silentPast(t)
+		drained.drain = time.Now().Add(-time.Millisecond)
+		if failure := drained.Failure(what); !strings.HasPrefix(failure, what+" did not arrive in the ") {
+			t.Errorf("past the drain: Failure = %q, want the drain's failure naming %q", failure, what)
+		}
+		held := []Warning{FromLine(stallWarningLine(ownDatabase, 2*OwnHoldBound))}
+		ownHeld := NewWatch(t, func() []Warning { return held }, ownDatabase, nil)
+		ownHeld.before = 0
+		ownHeld.drain = time.Time{}
+		if failure := ownHeld.Failure(what); !strings.Contains(failure, "a client of the test's own database") {
+			t.Errorf("an own hold past OwnHoldBound: Failure = %q, want the own-hold failure", failure)
+		}
+		// A horizon whose warnings have not come, while the wait's own read of the holder finds a
+		// transaction of the test's own database that has stood twice OwnHoldBound.
+		probed := NewWatch(t, none, ownDatabase, heldBy{database: ownDatabase, since: 2 * OwnHoldBound})
+		probed.began = time.Now().Add(-2 * max(Base, Extension))
+		probed.drain = time.Time{}
+		if failure := probed.Failure(what); !strings.Contains(failure, "a client of the test's own database") {
+			t.Errorf("an own holder the probe found past OwnHoldBound: Failure = %q, want the own-hold failure", failure)
+		}
+	})
+}
+
+// heldBy is a Querier whose holder read (readHolder) finds a transaction of database that began
+// since ago, by the database's own clock.
+type heldBy struct {
+	database string
+	since    time.Duration
+}
+
+func (h heldBy) QueryRow(context.Context, string, ...any) pgx.Row { return h }
+
+// Scan fills readHolder's columns: kind, pid, started, state, application_name, database, query
+// and clock_timestamp().
+func (h heldBy) Scan(dest ...any) error {
+	now := time.Now()
+	started := now.Add(-h.since)
+	*dest[0].(*string) = "backend"
+	*dest[1].(*int32) = 4242
+	*dest[2].(**time.Time) = &started
+	*dest[3].(*string) = "idle in transaction"
+	*dest[4].(*string) = "psql"
+	*dest[5].(*string) = h.database
+	*dest[6].(*string) = "begin; select 1"
+	*dest[7].(*time.Time) = now
+	return nil
 }
 
 // TestFromLineMatchesTheWholeDatabaseField holds the trap a field read exists to avoid: a prefix

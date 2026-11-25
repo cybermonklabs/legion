@@ -86,6 +86,76 @@ func scanSQL(text string, visit func(sqlToken) error) error {
 	return failure
 }
 
+// WithoutComments is text with each comment blanked: every byte of it becomes a space but a line
+// break, which stays, so an offset into the answer is the same offset into text, a line is the
+// same line, and a comment between two words still parts them, as it does for Postgres. Comments
+// are found as Postgres reads text with standard_conforming_strings on, the setting a pgx
+// statement and a migration are sent under: a -- comment runs to a newline or a carriage return,
+// a /* */ comment nests, and none starts inside a string, a quoted identifier or a dollar quote,
+// whose tag takes bytes 0x80-0xff as scan.l's ident_start does. A dollar quote's body is read the
+// same way, since a function's or a DO block's body is SQL or PL/pgSQL, whose comments these are;
+// its own strings and dollar quotes stay whole, as PL/pgSQL reads them: a dollar quote inside a
+// body is a string, even one the body EXECUTEs as SQL, so a -- in it is string text and a word in
+// it stays visible. Every other byte is kept. A reader that matches words in a statement reads it
+// through this, so a comment hides no word and a comment's text is none.
+func WithoutComments(text string) string {
+	out := []byte(text)
+	blankComments(text, out, 0, false)
+	return string(out)
+}
+
+// blankComments blanks, in out at offset at, each comment of text, and when text is not a body
+// itself, each comment of the body of each dollar quote in it, as WithoutComments says.
+func blankComments(text string, out []byte, at int, body bool) {
+	lexSQL(text, true, func(token sqlToken) {
+		switch token.kind {
+		case sqlComment:
+			for i := token.start; i < token.end; i++ {
+				if c := text[i]; c != '\n' && c != '\r' {
+					out[at+i] = ' '
+				}
+			}
+		case sqlDollarString:
+			if body {
+				// A dollar quote inside a body is a string to PL/pgSQL, kept whole.
+				return
+			}
+			quoted := text[token.start:token.end]
+			tag := quoted[:strings.IndexByte(quoted[1:], '$')+2]
+			inner := quoted[len(tag):]
+			// An unterminated quote runs to the end of text, with no closing tag to leave out.
+			if len(inner) >= len(tag) && strings.HasSuffix(inner, tag) {
+				inner = inner[:len(inner)-len(tag)]
+			}
+			blankComments(inner, out, at+token.start+len(tag), true)
+		}
+	})
+}
+
+// Statements is text split at each semicolon that stands outside a string, a quoted identifier, a
+// dollar quote and a comment, as scan.l reads them with standard_conforming_strings on. It knows
+// no grammar, so the semicolons inside a BEGIN ATOMIC body split it too. Each statement is trimmed,
+// with its comments blanked as WithoutComments blanks them, and one that holds nothing else is
+// left out.
+func Statements(text string) []string {
+	blanked := WithoutComments(text)
+	var statements []string
+	from := 0
+	cut := func(to int) {
+		if statement := strings.TrimSpace(blanked[from:to]); statement != "" {
+			statements = append(statements, statement)
+		}
+	}
+	lexSQL(text, true, func(token sqlToken) {
+		if token.kind == sqlOther && text[token.start:token.end] == ";" {
+			cut(token.start)
+			from = token.end
+		}
+	})
+	cut(len(text))
+	return statements
+}
+
 // isDigit is scan.l's decdigit, [0-9].
 func isDigit(c byte) bool { return '0' <= c && c <= '9' }
 

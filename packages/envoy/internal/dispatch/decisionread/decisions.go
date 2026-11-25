@@ -506,8 +506,8 @@ func staleLink(link model.DecisionLink, changedAt time.Time, changedEvent *int64
 	return changedAfterTie && targetBefore
 }
 
-// isDecision reports whether node is read as a decision: an ask node with an `asks` row, or a
-// block node of the `decision` supertag at any state but gone.
+// isDecision reports whether node is read as a decision: an ask node with an `asks` row, or a block
+// node of the `decision` supertag present at any state but gone (the spec's R12).
 func (node heldNode) isDecision() bool {
 	return node.kind == graphstore.KindAsk && node.question != nil ||
 		node.kind == refs.BlockNodeKind && node.supertag == refs.DecisionSupertag && node.state != graphstore.StateGone

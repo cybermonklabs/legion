@@ -3,13 +3,14 @@ package graphstore
 import (
 	"context"
 	"errors"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore/graphstoretest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
@@ -46,9 +47,12 @@ func TestTheStoreRefusesAuthorOnAKindItDoesNotAdmit(t *testing.T) {
 		{"Write", func(ctx context.Context, tx pgx.Tx, node Node) error {
 			return Write(ctx, tx, []Node{node}, nil)
 		}},
-		{"QueueNodes", func(ctx context.Context, tx pgx.Tx, node Node) error {
-			write, err := writeHeldNodes(ctx, tx, []Node{node}, nil)
-			if err != nil {
+		{"PlanUncaused and QueueNodes", func(ctx context.Context, tx pgx.Tx, node Node) error {
+			write := PlanUncaused([]Node{node}, nil)
+			if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+				QueueNodes(b, write)
+				return nil
+			}); err != nil {
 				return err
 			}
 			return Caused(ctx, tx, write, NoEvent)
@@ -186,7 +190,7 @@ func requireVisibilityNotAdmitted(t *testing.T, err error, kind string) {
 	if refusal.Kind != kind {
 		t.Errorf("the refusal names the kind %q, want %q", refusal.Kind, kind)
 	}
-	if !strings.Contains(refusal.Error(), "the node kind "+kind+" takes no node reserved for its author") {
+	if !graphstoretest.NamesAsAWord(refusal.Error(), kind) {
 		t.Errorf("the refusal reads %q, which does not name the kind %s", refusal.Error(), kind)
 	}
 }

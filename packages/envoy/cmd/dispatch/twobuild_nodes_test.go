@@ -9,9 +9,7 @@ package main
 import (
 	"context"
 	"errors"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"regexp"
 	"slices"
 	"strconv"
@@ -33,8 +31,10 @@ import (
 //     writeObjectNodesAnotherBuildWrote) or the one that opens the decisions step's phase 1
 //     (graphcensus's BackfillAsks). So the roll needs no second envoy-dispatch backfill-graph-store.
 //   - This build makes a document, writing its node, and the previous build removes it: the node
-//     stands live behind no row. The census names it orphaned, with the command that removes it,
-//     the backfill leaves it as it is, and that command, run as the census printed it, removes it.
+//     stands live behind no row. The census names it orphaned, and the backfill, which reads no
+//     node no row stands behind, leaves it as it is. This build's block-index tick, in the object
+//     pass it runs once the previous build has stopped, states it gone as this build's own removal
+//     would have (graphcensus's StateOrphanedGone), and the census then names it no more.
 //   - The previous build removes this build's document and this build makes it again: the create
 //     finds the orphaned node at the free address and states it gone, then live, under its own
 //     event, and the census names nothing.
@@ -84,27 +84,15 @@ func TestTwoBuildsLeaveADocumentsNodeTheCensusNamesAndItsCureClears(t *testing.T
 		document := makeTypedDocument(t, current, builds.currentName(), issue, "Removed by the previous build.md")
 		requireDocumentNodeState(t, builds, document.ref, graphstore.StateLive)
 		removeTypedDocument(t, previous, builds.previousName(), document)
-		erase := "envoy-dispatch erase --node artifact:" + document.ref
+		orphaned := "artifact " + document.ref + ": orphaned; no in-band cure, unless an older build's removal made it during a two-build roll: this build's block-index tick then states that node gone"
 		census := runTwoBuildStoreCensus(t, builds)
 		requireProjectLine(t, census, "artifact", "orphaned=1")
-		if !requireIncompleteLinesNaming(t, census, document.ref, "artifact "+document.ref+": orphaned; remove it with: "+erase) {
+		if !requireIncompleteLinesNaming(t, census, document.ref, orphaned) {
 			t.FailNow()
 		}
 		runCurrentCommand(t, builds, []int{0}, "backfill-graph-store")
 		requireDocumentNodeState(t, builds, document.ref, graphstore.StateLive)
-		census = runTwoBuildStoreCensus(t, builds)
-		if !requireIncompleteLinesNaming(t, census, document.ref, "artifact "+document.ref+": orphaned; remove it with: "+erase) {
-			t.FailNow()
-		}
-		printed := strings.TrimPrefix(incompleteLinesNaming(census, document.ref)[0], "artifact "+document.ref+": orphaned; remove it with: ")
-		listing := runPrinted(t, builds, 1, printed)
-		digest := regexp.MustCompile(`(?m)^  listing digest: ([0-9a-f]{64})$`).FindStringSubmatch(listing)
-		if digest == nil {
-			t.Fatalf("the printed command %q listed no digest:\n%s", printed, listing)
-		}
-		runPrinted(t, builds, 0, printed+" --confirm "+digest[1])
-		requireDocumentNodeState(t, builds, document.ref, noDocumentNode)
-		requireIncompleteLinesNaming(t, runTwoBuildStoreCensus(t, builds), document.ref)
+		requireIncompleteLinesNaming(t, runTwoBuildStoreCensus(t, builds), document.ref, orphaned)
 	})
 
 	t.Run("this build removes a document and the previous build makes it again", func(t *testing.T) {
@@ -277,19 +265,6 @@ func runTwoBuildStoreCensus(t *testing.T, builds *twoBuilds) string {
 func runCurrentCommand(t *testing.T, builds *twoBuilds, wants []int, args ...string) string {
 	t.Helper()
 	return runCommand(t, builds, wants, strings.Join(args, " "), exec.Command(builds.binary, args...))
-}
-
-// runPrinted runs a command line as the census printed it, in a POSIX shell whose PATH finds this
-// tree's envoy-dispatch first, against the pair's database, failing the test unless it exits with
-// want. The shell reads the line as an operator's does, its quoting included.
-func runPrinted(t *testing.T, builds *twoBuilds, want int, line string) string {
-	t.Helper()
-	command := exec.Command("sh", "-c", line)
-	command.Env = append(command.Environ(), "PATH="+filepath.Dir(builds.binary)+string(os.PathListSeparator)+os.Getenv("PATH"))
-	if filepath.Base(builds.binary) != "envoy-dispatch" {
-		t.Fatalf("this tree's server is built as %s, so no shell finds it as envoy-dispatch", builds.binary)
-	}
-	return runCommand(t, builds, []int{want}, line, command)
 }
 
 func runCommand(t *testing.T, builds *twoBuilds, wants []int, shown string, command *exec.Cmd) string {

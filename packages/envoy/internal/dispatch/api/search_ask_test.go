@@ -1,14 +1,16 @@
 package api
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/asks"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -126,6 +128,7 @@ func answerSearchAsk(t *testing.T, handler http.Handler, askID string, body map[
 }
 
 func TestSearchAskHitsCarryTheirAnswerState(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "SRCH", "Orrery restoration", "Gear notes.")
 
@@ -165,24 +168,20 @@ func TestSearchAskHitsCarryTheirAnswerState(t *testing.T) {
 	}
 
 	// (d) a legacy settlement retraction: answered, then rewritten to resolved with its answer
-	// left only in its ask.answered event.
+	// left only in its ask.answered event, as the decisions step's catch-up states a retraction a
+	// release before wrote (asks.Recorded): on the ask's node, which every read of an answer reads,
+	// and on its row.
 	legacy := createSearchAsk(t, handler, issue.Key, "Plate the orrery arms?", "Silver", "Nickel")
 	legacyAnswer := answerSearchAsk(t, handler, legacy, map[string]any{
 		"selected": []string{"Silver"}, "text": "Silver, thinly.",
 	})
-	if _, err := database.Pool.Exec(context.Background(), `
-		update asks
-		set state = 'resolved', answer = null,
-		    resolution = jsonb_build_object(
-		      'kind', 'retracted',
-		      'reason', 'removed from the document in version 3',
-		      'actor', jsonb_build_object('kind', 'system', 'id', 'document-settlement'),
-		      'at', now()
-		    )
-		where id = $1
-	`, legacy); err != nil {
-		t.Fatalf("seed legacy settlement retraction: %v", err)
+	retraction := model.AskResolution{
+		Kind: "retracted", Reason: "removed from the document in version 3",
+		Actor: model.Actor{Kind: "system", ID: "document-settlement"}, At: time.Now().UTC(),
 	}
+	retracted := asks.Recorded(asks.StateResolved, nil, &retraction)
+	retracted.Who, retracted.At, retracted.Event = retraction.Actor, retraction.At, graphstore.NoEvent
+	settleAskAsTheCatchUp(t, database, legacy, retracted)
 
 	// (e) open.
 	open := createSearchAsk(t, handler, issue.Key, "Wind the orrery weekly?", "Yes", "No")
