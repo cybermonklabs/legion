@@ -7,6 +7,9 @@
 # ci.yaml's changes job runs it too, on a dispatch of a branch that selects by its diff, and hands
 # the merge base it prints to the filter generation as CI_FILTERS_BASE
 # (.github/ci-notes/ci.md#what-a-dispatched-run-of-a-branch-selects-and-when-to-ask-for-every-job).
+# ci-job-daemon-go.yaml's plain legs run it too, in the step "Find the commit this run's tree lands
+# onto", and hand the base it prints to internal/store's deployed-order upgrade test as
+# LEGION_TEST_MIGRATION_BASE.
 #
 # The base is the commit the run's tree lands onto:
 #   * any event but workflow_dispatch (a pull request, a merge group, a push): the first parent

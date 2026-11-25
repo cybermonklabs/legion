@@ -95,3 +95,25 @@ What it costs:
 
 Standard runners on this public repository bill no money; the cost is runner concurrency and that
 wait.
+
+## Why the plain step is handed the commit the tree lands onto
+
+A deployed database has recorded every migration of the release that migrated it. The next
+release's daemon applies each embedded migration that database has not recorded, so a
+migration a pull request adds runs after all of main's, also after those that sort above it.
+internal/store's `TestADatabaseMainMigratedTakesThisBranchsMigrationsLast` measures that order.
+It migrates an empty database with the base's own migration files, which it reads with git, and
+then upgrades that database to the tree under test.
+
+The test cannot know the base itself. The checkout is one commit deep and holds no main, and on
+a pull request the base is the first parent of GitHub's merge commit, not a merge base. So the
+step "Find the commit this run's tree lands onto" runs `.github/scripts/edited-migrations-base.sh`,
+which picks that commit for envoy-go-build's edited-migrations check too. It fetches the commit
+and prints it, and the plain step hands it to the test as `LEGION_TEST_MIGRATION_BASE`. Each
+plain leg runs the step, so the test keeps its base when `.github/go-legs.yaml` moves
+internal/store to another leg.
+
+The test fails under `GITHUB_ACTIONS` when the variable is unset, so a step that stops handing it
+over turns the job red, not the test into a skip. On a dispatch of main the step needs the
+`migration-base` input, as envoy-go-build's step does: without it the script exits 2, and the
+job fails rather than measure the push's last commit alone.

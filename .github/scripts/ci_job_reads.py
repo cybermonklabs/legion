@@ -1939,6 +1939,13 @@ DAEMON_STAMPED_GATE_SCRIPT = (
     "-run '^(TestEveryAnswerAtEveryContractIsTheShapeItsRecordDescribes|TestTheRecordSetIsOneRecordPerAnswerPerContract)$'")
 
 
+# daemon-go's plain legs find the commit the run's tree lands onto with EDITED_MIGRATIONS_BASE
+# and hand it to the plain step as LEGION_TEST_MIGRATION_BASE: internal/store's deployed-order
+# upgrade test migrates a database with that commit's own migration files, then upgrades it. The
+# step starts no go command.
+DAEMON_MIGRATION_BASE_STEP = "Find the commit this run's tree lands onto"
+
+
 # The text-check job: the three modules' text checks, and the twenty-two tests of the Dispatch API's
 # ten static checks - its nine source guards and one_expression_guard_test.go. They read the
 # module's source and no database, so they belong here rather than in the Postgres-backed

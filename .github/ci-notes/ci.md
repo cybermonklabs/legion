@@ -1436,10 +1436,11 @@ the image.
 ## The commit main pointed at before the push the bypass check read
 
 The commit main pointed at before the push the bypass check read: envoy-go-build compares
-every migration it holds with this run's tree, the range the push landed. A dispatch on
-main without it fails that check, which cannot tell what the run lands. A dispatch on
-another branch without it compares with the branch's merge
-base with main (.github/scripts/edited-migrations-base.sh).
+every migration it holds with this run's tree, the range the push landed, and daemon-go
+migrates a database with that commit's migrations before it upgrades the database to this
+run's tree. A dispatch on main without it fails both, which cannot tell what the run lands. A
+dispatch on another branch without it takes the branch's merge base with main
+(.github/scripts/edited-migrations-base.sh).
 
 ## What a newer push cancels, and what is never cancelled
 

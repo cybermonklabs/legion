@@ -68,6 +68,8 @@ GATE = gate("daemon_go_tests", "daemon-go", runs=[
     (GO_LEGS_SCRIPT, at(DAEMON_PLAIN_LEGS_JOB, DAEMON_PLAIN_STEP, DAEMON_FILE)),
     (GO_LEGS, f"{GO_LEGS_SCRIPT} reads each leg's packages from it"),
     ("scripts/daemon-contract-order.sh", at(DAEMON_PLAIN_LEGS_JOB, DAEMON_CONTRACT_ORDER_STEP, DAEMON_FILE)),
+    (EDITED_MIGRATIONS_BASE, f"{at(DAEMON_PLAIN_LEGS_JOB, DAEMON_MIGRATION_BASE_STEP, DAEMON_FILE)} runs it for the base "
+                             f"internal/store's deployed-order upgrade test migrates a database with"),
     ("scripts/e2e/stage1-skeleton.sh", at(DAEMON_PLAIN_LEGS_JOB, "Stage 1 live proof", DAEMON_FILE)),
     ("scripts/e2e/lib/rig.sh", "`scripts/e2e/stage1-skeleton.sh#$root/scripts/e2e/lib/rig.sh` sources it"),
     ("scripts/e2e/lib/loopback-dsn.sh", "scripts/e2e/lib/rig.sh sources it (its `. \"$root/scripts/e2e/lib/loopback-dsn.sh\"` line)"),
