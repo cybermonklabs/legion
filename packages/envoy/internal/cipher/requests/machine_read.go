@@ -2226,25 +2226,29 @@ type RecordDetail struct {
 	// JudgeDeciding is whether the model judge holds the record's request now: pending, with its
 	// judge_until ahead. No person decides such a record until the judge has given it up.
 	JudgeDeciding bool
-	// Profiles is each name of an agent_secret record that the live policy serves as a profile,
-	// in the record's own order, with the target the record narrows it to: the scope a person's
-	// approval grants. It is nil for a machine login and for a record of stored secrets alone.
+	// Profiles is each name of an agent_secret record that the live policy serves as a profile or
+	// behind a kind of the profiles file, in the record's own order, with the target the record
+	// narrows it to: the scope a person's approval grants (recordProfiles). It is nil for a machine
+	// login and for a record of stored secrets behind no kind alone.
 	Profiles []RecordProfile
 }
 
-// RecordProfile is one profile a record asks for: its name, its entry of the profiles file as the
-// live policy serves it, that entry's fingerprint (policy.Secret.ProfileDigest), and the target
-// the record's signed request narrows it to (record.AuthorizationDetail.Target), as a refusal of
-// a target words one (record.Target.String), "" for a record that names none. The profile is
-// the live one, not one frozen with the record: an approval binds its grant to the entry live
-// when it is given (decidedUnder), however the entry was when the request was made, and an edit
-// of the entry after the approval ends that grant (checkRelease). So what an approval can release
-// is what the live entry says, and the approval page binds a person's approval to the entry it
-// printed by carrying Digest back in its decision form, refusing the approval when the live
-// fingerprint is another.
+// RecordProfile is one name a record asks for whose scope an approval binds: a profile, or a
+// stored secret served by its own name behind a kind (its proxy tag names one). It holds its name,
+// its entry of the profiles file as the live policy serves it (nil for such a stored secret, which
+// has none), the kind it is behind (policy.Secret.Proxy, "" for none), its fingerprint
+// (policy.Secret.ProfileDigest, which for such a stored secret holds its kind), and the target the
+// record's signed request narrows it to (record.AuthorizationDetail.Target), as a refusal of a
+// target words one (record.Target.String), "" for a record that names none. The scope is the live
+// one, not one frozen with the record: an approval binds its grant to the fingerprint live when it
+// is given (decidedUnder), however it was when the request was made, and a change of it after the
+// approval ends that grant (checkRelease). So what an approval can release is what the live policy
+// says, and the approval page binds a person's approval to the scope it printed by carrying Digest
+// back in its decision form, refusing the approval when the live fingerprint is another.
 type RecordProfile struct {
 	Name    string
 	Profile *policy.Profile
+	Kind    string
 	Digest  string
 	Target  string
 }
@@ -2368,10 +2372,10 @@ func (m *Machine) readRecord(ctx context.Context, recordID string, shown func(ro
 }
 
 // RecordProfiles reads a record's kind, the names it asks for in its own order, and, for an
-// agent_secret record, each of them the live policy serves as a profile: ReadRecord's Kind,
-// Identifiers and Profiles, its Profiles built the same way (recordProfiles). Unlike ReadRecord,
-// whose SecretProjects asks Dispatch for a name of a project, it asks Dispatch nothing. The approval
-// page checks every record an approval names against it before deciding any
+// agent_secret record, each of them the live policy serves as a profile or behind a kind:
+// ReadRecord's Kind, Identifiers and Profiles, its Profiles built the same way (recordProfiles).
+// Unlike ReadRecord, whose SecretProjects asks Dispatch for a name of a project, it asks Dispatch
+// nothing. The approval page checks every record an approval names against it before deciding any
 // (approval.Page.profilesMoved), so that check holds while Dispatch is down: a record of a private
 // project's secret, or of a profile of one, is then still checked, and left to ApplyDecision,
 // which decides it as unavailable (ErrProjectAccessUnavailable), and the approval's other records
@@ -2398,15 +2402,18 @@ func (m *Machine) RecordProfiles(ctx context.Context, recordID string) (kind str
 }
 
 // recordProfiles is each name of an agent_secret record's details that set, the live policy read
-// once, serves as a profile, in the details' order, with the target its detail narrows it to
-// (RecordProfile): the scope an approval grants, which ReadRecord prints and RecordProfiles
-// answers alike, so what the approval page printed and what its approval is checked against are
-// one reading of the record.
+// once, serves as a profile or behind a kind, in the details' order, with the target its detail
+// narrows it to (RecordProfile): the scope an approval grants, which ReadRecord prints and
+// RecordProfiles answers alike, so what the approval page printed and what its approval is checked
+// against are one reading of the record. A stored secret its proxy tag puts behind a kind has a
+// fingerprint of its own, which holds that kind, as a profile's holds its entry, so a retag between
+// the page and the approval moves it as an edit of a profile moves a profile's; one behind no kind
+// has none, and is left out.
 func recordProfiles(set *policy.Set, details []record.AuthorizationDetail) []RecordProfile {
 	var profiles []RecordProfile
 	for _, d := range details {
-		if served := set.Secrets[d.Identifier]; served.Profile != nil {
-			profiles = append(profiles, RecordProfile{Name: d.Identifier, Profile: served.Profile, Digest: served.ProfileDigest, Target: d.Target().String()})
+		if served := set.Secrets[d.Identifier]; served.Profile != nil || served.Proxy != "" {
+			profiles = append(profiles, RecordProfile{Name: d.Identifier, Profile: served.Profile, Kind: served.Proxy, Digest: served.ProfileDigest, Target: d.Target().String()})
 		}
 	}
 	return profiles
