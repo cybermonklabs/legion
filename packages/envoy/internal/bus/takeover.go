@@ -84,8 +84,9 @@ type StoredTakeoverRecord struct {
 var ErrTakeoverRecordMoved = errors.New("bus: the takeover record was written by another pass")
 
 // ErrTakeoverRecordFinished is the refusal of a write over a takeover record its writer read
-// finished (Client.WriteTakeoverRecordAt): no pass runs a finished record, and a write over one
-// would make TakeoverRecords serve a record that is not the subject's newest.
+// finished (Client.WriteTakeoverRecordAt): no pass runs a finished record, and the read-once cache
+// of finished records rests on no write landing over one (TakeoverRecords, its rule of
+// finishedTakeovers).
 var ErrTakeoverRecordFinished = errors.New("bus: the takeover record is finished")
 
 // WriteTakeoverRecord publishes record on subject, a takeover record's own subject
@@ -119,10 +120,7 @@ func (c *Client) WriteTakeoverRecord(ctx context.Context, subject string, record
 // The two make a record's finish terminal: a pass that read the record unfinished and was then
 // held - a stall, a slow read - cannot write that older state over the finish a later pass wrote,
 // and no pass writes over a finish it read, so no reader after the finish sees the record
-// unfinished again. TakeoverRecords rests on that (its rule of finishedTakeovers): it reads a
-// finished record's subject again only when the subject's message count moves, and a write over
-// the finish is the one thing that could change the subject's newest message while the count
-// stands, an age-limit removal landing between two reads beside it.
+// unfinished again. TakeoverRecords' rule of finishedTakeovers rests on that.
 func (c *Client) WriteTakeoverRecordAt(ctx context.Context, stored StoredTakeoverRecord, record TakeoverRecord) (uint64, error) {
 	if stored.Record.Finished {
 		return 0, fmt.Errorf("%w: %s", ErrTakeoverRecordFinished, stored.Subject)
@@ -147,14 +145,14 @@ func (c *Client) WriteTakeoverRecordAt(ctx context.Context, stored StoredTakeove
 // subject whose finished record this client holds (finishedTakeovers). A record no read can decode
 // is left out, since no pass can act on it. Its errors are the stream's own, named with the lane.
 //
-// The rule of finishedTakeovers: this client reads a finished record's subject again only when the
-// STREAM.INFO count of its messages differs from the count at its last read. That count stands
-// while the newest message stands, since no write lands over a finished record
-// (WriteTakeoverRecordAt), and it moves at each removal by the stream's age limit as at each
-// write, so a finished record is read once and then once more each time the age limit takes one
-// of its subject's older messages. A stream with a per-subject limit (MaxMsgsPerSubject) drops a
-// message at each write past it and leaves the count where it stood, so on such a stream every
-// subject is read each time.
+// The rule of finishedTakeovers, which ErrTakeoverRecordFinished and WriteTakeoverRecordAt point
+// to: this client reads a finished record's subject again only when the STREAM.INFO count of its
+// messages differs from the count at its last read. While that count stands, the subject's newest
+// message is the one this client read: no write lands over a finished record
+// (WriteTakeoverRecordAt), so all that changes the subject afterwards is the stream's age limit
+// removing its older messages, and each removal moves the count and costs one read. A stream with
+// a per-subject limit (MaxMsgsPerSubject) drops a message at each write past it and leaves the
+// count where it stood, so on such a stream every subject is read each time.
 func (c *Client) TakeoverRecords(ctx context.Context, role string) ([]StoredTakeoverRecord, error) {
 	if err := c.ensureConnWithContext(ctx); err != nil {
 		return nil, err

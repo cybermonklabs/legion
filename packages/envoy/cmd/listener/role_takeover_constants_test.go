@@ -13,8 +13,8 @@ import (
 // inside the hour a takeover's copy reads; a takeover record's passes run for takeoverRecordLife,
 // that hour, so the pass that ends a record has read every such forward; and the record's last
 // write, at the latest one sweep interval past its life, comes before the stream's age limit takes
-// its first, so no record a pass needs ages out and a finished record's message count moves only by
-// a write (bus.Client.TakeoverRecords). A change to one that leaves the others fails here.
+// its first, so no record a pass needs ages out. (What the cache of finished records rests on is
+// stated once, on bus.Client.TakeoverRecords.) A change to one that leaves the others fails here.
 func TestTheTakeoverCopysBoundsHoldTogether(t *testing.T) {
 	if want := roleKeepWindow - roleWakeInterval; roles.ForwardFenceAge != want {
 		t.Errorf("roles.ForwardFenceAge = %s, want roleKeepWindow less roleWakeInterval, %s", roles.ForwardFenceAge, want)

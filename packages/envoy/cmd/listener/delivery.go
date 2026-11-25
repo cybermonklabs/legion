@@ -122,10 +122,12 @@ type listenerDeliveryHandlerConfig struct {
 	// fault.
 	takeoverFaults *takeoverFaultHooks
 	// consumerGrant answers whether this listener's NATS user holds the session consumers' calls,
-	// which decides whether it runs takeover passes (passRecords). It is required, as
-	// deferredUnplaceable is: main.go makes one before it builds this configuration and sets its
-	// answer to its session delivery's holdsConsumerGrant once that is open, so every copy of the
-	// configuration reads that one answer. A test that builds a config sets its own.
+	// which decides whether it runs takeover passes (passRecords). It is required, but it is refused
+	// only when first asked, not when a handler is built: a configuration without it panics at its
+	// first claim handover or sweep pass (holdsConsumerGrant). main.go makes it inside this
+	// configuration's literal and sets its answer to its session delivery's holdsConsumerGrant once
+	// that is open, so every copy of the configuration reads that one answer. A test rig sets an
+	// answer of its own, and may set it again over an earlier one.
 	consumerGrant *consumerGrantAnswer
 	// keepPublish is the stored publish a keep (keepRoleMessage) and a takeover's copy
 	// (keepTakenRoleFrame) make onto a role's kept lane: main.go sets it to
@@ -195,9 +197,10 @@ func (cfg listenerDeliveryHandlerConfig) holdsConsumerGrant(ctx context.Context)
 
 // consumerGrantAnswer is where every copy of a listener's configuration reads whether its NATS
 // user holds the session consumers' calls (listenerDeliveryHandlerConfig.consumerGrant). main.go
-// makes one before it builds the configuration, which its role forwarder copies at once, and sets
+// makes it inside the configuration's literal, which its role forwarder copies at once, and sets
 // the answer once the session delivery it reads from is open, before /v1 opens and before the
-// sweep starts, which are the two callers (passRecords).
+// sweep starts, which are the two callers (passRecords). A later set replaces the answer for every
+// copy; a test rig uses that to put its own session delivery's answer over the harness's.
 type consumerGrantAnswer struct {
 	answer atomic.Pointer[func(context.Context) bool]
 }
