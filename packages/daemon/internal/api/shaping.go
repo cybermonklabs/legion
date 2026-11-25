@@ -586,7 +586,6 @@ var stateNarrowings = []stateNarrowing{
 	{contract: priorityContract, issue: withoutPriority, dropped: "the issues' priority and their waitingLine's priority"},
 	{contract: causeTimesContract, issue: withoutCauseTimes, dropped: "the claim views' lastDeathAt and lastStartFailureAt"},
 	{contract: dispatchCredentialContract, state: withoutDispatchCredential, dropped: "dispatchCredential"},
-	{contract: projectReleaseContract, state: withoutProjectRelease, dropped: "projectRelease"},
 }
 
 // valueStrip is one strip of a value from the state: what it takes off the state's own values,
@@ -1121,37 +1120,6 @@ func withoutPriority(issue Issue) (Issue, bool) {
 	}
 	return issue, moved
 }
-
-// projectReleaseContract is the daemon contract that added the project release (version.go's 295,
-// dispatch://INFRA-3583). It added keys to two answers a plugin parses: `projectRelease`, the
-// project's newest project release and its result, to the state, and `heldPods`, each pod a pause
-// still holds, to a refusal (api.PauseFailure, which the release's own route answers while a pause
-// holds the project). A plugin before it is served the state without its key
-// (withoutProjectRelease, its row of stateNarrowings) and a PauseFailure without its list
-// (withoutHeldPods, in the refusal's row of shapeAnswer): one built before sjawhar/legion#2788
-// reads the state with a strict schema and would refuse the whole body for a key it does not name,
-// and one built after strips the key instead, so the strip is what keeps the release from a caller
-// that did not ask for it. The roles a running release asks are such callers, and they are asked to
-// push and end their turn on that same body. repositoriesLiveContract stands below it, and the six
-// rows of stateNarrowings between the two are assignmentPlanContract's, which takes each
-// assignment's `plan` off below 220, intakeGiveUpsContract's, which takes `intakeGiveUps` off below
-// 228, podHoldContract's, which takes each issue's `podHold` off below 246, priorityContract's,
-// which takes each issue's `priority` and its waiting line's `priority` off below 250,
-// causeTimesContract's, which takes each claim view's `lastDeathAt` and `lastStartFailureAt` off
-// below 256, and dispatchCredentialContract's, which takes the state's `dispatchCredential` off
-// below 275, so a caller at or above repositoriesLiveContract and below this contract, 202 to 294,
-// is served the `live` block and not `projectRelease`. The release's six enumerated fields
-// (answers.go's releaseOutcomes and the rows beside it) arrived with the key at this contract and
-// ride its band, so no value strip is owed. The release's own two routes answer the `legion`
-// command, which is built from the daemon's own commit, so their bodies are no row of answers.go's
-// Answers.
-//
-// It is a literal of its own and never DaemonAPIVersion: the number a later contract takes moves
-// that constant, and the contract these keys arrived at stays where it is. It moves only with the
-// number version.go's dispatch://INFRA-3583 entry declares, and it is the last number of
-// answers.go's SupportedContracts, which names the constant rather than its number for that reason,
-// as it names cachesSourceContract.
-const projectReleaseContract = 295
 
 // causeTimesContract is the daemon contract that added each claim view's `lastDeathAt` and
 // `lastStartFailureAt`, the time the daemon recorded the claim's `lastDeathCause` and its

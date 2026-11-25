@@ -49,19 +49,19 @@ const ServingFloor = 46
 // TestSupportedContractsAreTheNumberedEntriesFromTheFloorUp (`version_test.go`) reads the entry
 // headers out of version.go and holds this list to them in both directions.
 //
-// 193, 202, 205, 213, 219, 220, 228, 246, 250, 256, 275 and 295 are constants rather than their
+// 193, 202, 205, 213, 219, 220, 228, 246, 250, 256 and 275 are constants rather than their
 // numbers, because the entries that added them name them (shapedAnswersContract, the shaped
 // answers' entry; repositoriesLiveContract, dispatch://INFRA-4401's; childRouteRemovedContract,
 // dispatch://INFRA-3178's; cachesSourceContract, dispatch://INFRA-4036's; OwnerPlanContract, the
 // owner's plan's; assignmentPlanContract, the experiment group's; priorityContract, the waiting
 // line's priority's; intakeGiveUpsContract, dispatch://INFRA-1575's; podHoldContract, the pod
-// hold's; causeTimesContract, the claim views' cause times, #5349's; dispatchCredentialContract,
-// the Dispatch credential's; and projectReleaseContract, dispatch://INFRA-3583's): a renumber of
-// any of those entries moves its constant and this list with it, and moving one alone would
-// describe a shape at a contract no entry declares. The other entries above 193 follow them as
+// hold's; causeTimesContract, the claim views' cause times, #5349's; and
+// dispatchCredentialContract, the Dispatch credential's): a renumber of any of those entries
+// moves its constant and this list with it, and moving one alone would describe a shape at a
+// contract no entry declares. The other entries above 193 follow them as
 // numbers: 199 is version.go's entry for INFRA-4605, 217 its entry for dispatch://INFRA-3531 and
 // dispatch://INFRA-4567, and 232 its entry for dispatch://INFRA-4508.
-var SupportedContracts = []int{46, 48, 49, 51, 52, 53, 54, 55, 56, 57, 58, 59, 62, 64, 68, 73, 75, 85, 86, 87, 94, 98, 104, 111, 123, 132, 133, 137, 141, 144, 146, 151, 152, 160, 168, 178, 188, 189, shapedAnswersContract, 199, repositoriesLiveContract, childRouteRemovedContract, cachesSourceContract, 217, OwnerPlanContract, assignmentPlanContract, intakeGiveUpsContract, 232, podHoldContract, priorityContract, causeTimesContract, dispatchCredentialContract, projectReleaseContract}
+var SupportedContracts = []int{46, 48, 49, 51, 52, 53, 54, 55, 56, 57, 58, 59, 62, 64, 68, 73, 75, 85, 86, 87, 94, 98, 104, 111, 123, 132, 133, 137, 141, 144, 146, 151, 152, 160, 168, 178, 188, 189, shapedAnswersContract, 199, repositoriesLiveContract, childRouteRemovedContract, cachesSourceContract, 217, OwnerPlanContract, assignmentPlanContract, intakeGiveUpsContract, 232, podHoldContract, priorityContract, causeTimesContract, dispatchCredentialContract}
 
 // AnswerID names one answer a plugin parses. It is stable: every write of this package goes
 // through `shapeAnswer(id, …)`, so the id outlives the route that happens to carry the answer
@@ -460,19 +460,6 @@ var stateEnumeratedFields = []EnumeratedField{
 	// contract whole (shaping.go's withoutIntakeGiveUps), so no body below 228 carries a value of
 	// it.
 	{Answer: AnswerState, KeyPath: "intakeGiveUps.newest.*.reason", Values: intakeGiveUpReasons},
-	// The project's newest project release (api.ProjectReleaseResponse): who ended it, and on
-	// each line of its result a Sandbox's `kind` and `outcome` and each asked role's `role`, and a
-	// stopped claim's `role` and `ended`. All six arrived with `projectRelease`, which is served
-	// down below that contract whole (shaping.go's withoutProjectRelease), so no body below 295
-	// carries a value of any of them. A claim line's role takes `controller` beside the claim
-	// roles, since the release stops the controller's claim too; an asked role never does, since
-	// the release asks the roles of an issue pod alone.
-	{Answer: AnswerState, KeyPath: "projectRelease.endedBy", Values: releaseEnders},
-	{Answer: AnswerState, KeyPath: "projectRelease.result.sandboxes.*.kind", Values: releasedSandboxKinds},
-	{Answer: AnswerState, KeyPath: "projectRelease.result.sandboxes.*.outcome", Values: releaseOutcomes},
-	{Answer: AnswerState, KeyPath: "projectRelease.result.sandboxes.*.asked.*.role", Values: releaseAskRoles},
-	{Answer: AnswerState, KeyPath: "projectRelease.result.claims.*.role", Values: releasedClaimRoles},
-	{Answer: AnswerState, KeyPath: "projectRelease.result.claims.*.ended", Values: releaseClaimEnds},
 }
 
 // valuesFrom is every value of a field whose list has not moved since the field arrived: each
@@ -643,44 +630,6 @@ var wakeRoles = valuesFrom(wakesWaitingContract, floorRoles...)
 // each claim the open pause waits on takes (api.PauseStopView.Role): no `paused` is served below
 // that contract at all (shaping.go's withoutPause).
 var pauseStopRoles = valuesFrom(pauseContract, floorRoles...)
-
-// releaseAskRoles is the same list of roles at the contract `projectRelease` arrived at, which
-// the role of each asked role of a release's Sandbox line takes (api.ReleasedAsk.Role): no
-// `projectRelease` is served below that contract at all (shaping.go's withoutProjectRelease).
-var releaseAskRoles = valuesFrom(projectReleaseContract, floorRoles...)
-
-// releasedClaimRoles is the role of each claim a release stopped (api.ReleasedClaim.Role): the
-// same list of roles with `controller` beside them, since the release stops the project's
-// controller too, recorded at the contract `projectRelease` arrived at, as releaseAskRoles is.
-var releasedClaimRoles = valuesFrom(projectReleaseContract, append(slices.Clone(floorRoles), claim.RoleController)...)
-
-// releaseEnders is every word of `projectRelease.endedBy` (store.ProjectReleaseEnder): the
-// daemon's next boot, and nothing else. releaseOutcomes is every outcome of a Sandbox's line
-// (api.ReleaseOutcome), and releasedSandboxKinds every kind of Sandbox a line names
-// (runtime.ProjectSandboxKind). releaseClaimEnds is every word for how a claim of the stop set
-// ended (api.ReleasedClaimEnd): each claim state but `suspended`, each suspension source, and
-// `unrecorded`. All four are recorded at projectReleaseContract, the contract `projectRelease`
-// arrived at. Each names its constants rather than reading api.ReleaseOutcomes or
-// api.ReleasedClaimEnds, as failureCauses names its causes, because a word added to one of those
-// later arrives at its own contract and not at this one; TestProjectReleaseWordsGolden holds the
-// rosters themselves to the plugin's enums.
-var releaseEnders = valuesFrom(projectReleaseContract, store.ProjectReleaseEndedByBoot)
-var releaseOutcomes = valuesFrom(projectReleaseContract,
-	ReleaseWaiting, ReleaseDeletedClean, ReleaseDeletedUnread, ReleaseDeletedLost, ReleaseDeletedReadRefused,
-	ReleaseDeleted, ReleaseLeft)
-var releasedSandboxKinds = valuesFrom(projectReleaseContract,
-	runtime.ProjectSandboxIssue, runtime.ProjectSandboxController, runtime.ProjectSandboxCache,
-	runtime.ProjectSandboxProbe, runtime.ProjectSandboxUnknown)
-var releaseClaimEnds = valuesFrom(projectReleaseContract,
-	ReleasedClaimEnd(supervise.StateQueued), ReleasedClaimEnd(supervise.StateLaunchUncertain),
-	ReleasedClaimEnd(supervise.StateLaunching), ReleasedClaimEnd(supervise.StateShimConnected),
-	ReleasedClaimEnd(supervise.StateRegistered), ReleasedClaimEnd(supervise.StateReady),
-	ReleasedClaimEnd(supervise.StateWorking), ReleasedClaimEnd(supervise.StateIdle),
-	ReleasedClaimEnd(supervise.StateFailed), ReleasedClaimEnd(supervise.StateRetired),
-	ReleasedClaimEnd(supervise.SuspendedByUnknown), ReleasedClaimEnd(supervise.SuspendedByOperator),
-	ReleasedClaimEnd(supervise.SuspendedByDaemon), ReleasedClaimEnd(supervise.SuspendedByExit),
-	ReleasedClaimEnd(supervise.SuspendedByReleased), ReleasedClaimEnd(supervise.SuspendedByProjectRelease),
-	ReleasedClaimUnrecorded)
 
 // updateStates is every value of a claim view's `updateState`, recorded at
 // shapedAnswersContract, the contract that added the key. The words are the four the package
