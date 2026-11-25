@@ -600,7 +600,7 @@ func (r *Rig) Introspect(t *testing.T, token string) oauthwire.Introspection {
 		t.Fatalf("POST /v1/oauth/introspect: %v", err)
 	}
 	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
+	body, err := answertest.Read(resp)
 	if err != nil {
 		t.Fatalf("read the answer of POST /v1/oauth/introspect: %v", err)
 	}

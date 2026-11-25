@@ -4,9 +4,11 @@ package cipherclient
 
 import (
 	"bytes"
-	"encoding/json"
 	"io"
+	"math"
 	"net/http"
+
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // tokenNotActive is the code a resource server refuses a token the broker no longer holds as live
@@ -79,17 +81,19 @@ func (t *tokenTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 }
 
 // refusedAsNotActive reports whether resp's body is a refusal whose code is tokenNotActive. It
-// reads at most refusalReadLimit of the body and puts what it read back in front of the rest, so
-// whoever reads the answer reads all of it.
+// reads the body as a stream of data (redact.StreamAnswer), at most refusalReadLimit of it, decides
+// on the code as it came (redact.UnmarshalData, whose error quotes nothing), which nothing prints,
+// and puts what it read back in front of the rest of that stream, so whoever reads the answer
+// reads all of it, through its own reader.
 func refusedAsNotActive(resp *http.Response) bool {
-	body := resp.Body
-	read, err := io.ReadAll(io.LimitReader(body, refusalReadLimit))
+	whole := redact.StreamAnswer(resp, math.MaxInt64)
+	read, err := io.ReadAll(io.LimitReader(whole, refusalReadLimit))
 	resp.Body = struct {
 		io.Reader
 		io.Closer
-	}{io.MultiReader(bytes.NewReader(read), body), body}
+	}{io.MultiReader(bytes.NewReader(read), whole), whole}
 	var answer struct {
 		Code string `json:"code"`
 	}
-	return err == nil && json.Unmarshal(read, &answer) == nil && answer.Code == tokenNotActive
+	return err == nil && redact.UnmarshalData(read, &answer) == nil && answer.Code == tokenNotActive
 }
