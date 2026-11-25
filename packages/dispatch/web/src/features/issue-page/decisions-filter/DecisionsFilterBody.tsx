@@ -811,7 +811,7 @@ export function DecisionsFilterBody({
               key={part}
               role="group"
             >
-              {/* The part's heading (the prototype's `.dgh`): its name and how many entries
+              {/* The part's heading (the prototype's `.dgh`): its name and `headingCount`, of what
                   it holds. Its name is the group's; a tree holds rows and groups alone, so it
                   is no element with a role of its own. */}
               <div
