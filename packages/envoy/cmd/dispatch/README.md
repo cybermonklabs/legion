@@ -828,7 +828,7 @@ The database retains the migrated schema; tests only truncate rows they create.
 `go run ./cmd/dispatch-seed` fills an empty database with the data set a statement measurement is taken on:
 ten times production's row counts at `--scale 1` — 10 projects, 20,000 issues over parent chains and `blocked_by` links, 40,000 documents with 200,000 versions, 80,000 asks, 370,000 comments, 60,000 messages, 1,250,000 events beside the `ask.opened` event every ask is written with, and a vector for half the issues, documents, asks, comments and messages
 — and the same shape times the scale at any other.
-It is deterministic: one fixed base time, one fixed random seed, and a fixed block id generator (`pmdoc.SetBlockIDGenerator`), so two runs at one scale write the same rows and a reading taken before a change and one taken after it read the same data.
+It is deterministic: one fixed base time, one fixed random seed, and block ids from a counter the run itself holds, restarted for each document and handed to the one parse whose ids are stored (`seedRun.blockIDs`, `pmdoc.ParseWithBlockIDs`), so two runs at one scale write the same rows and a reading taken before a change and one taken after it read the same data.
 The text is drawn from a Zipf list of 20,000 words, so the `tsvector` columns carry real lexemes at known frequencies.
 
 ```sh
