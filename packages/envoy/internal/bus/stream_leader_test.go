@@ -8,6 +8,7 @@ package bus
 
 import (
 	"context"
+	"log/slog"
 	"slices"
 	"sync/atomic"
 	"testing"
@@ -122,7 +123,7 @@ func TestAWaitForTheLeaderEndsOnlyOnceTheLeaderTakesWrites(t *testing.T) {
 	t.Parallel()
 	for _, step := range []streamStep{afterCreate, afterRaise, afterOpen} {
 		reads := &scriptedReads{script: []string{"unserved", "unserved"}}
-		if err := awaitStreamLeader(t.Context(), reads, step, "KV_envoy_unserved_test"); err != nil {
+		if err := awaitStreamLeader(t.Context(), slog.New(slog.DiscardHandler), reads, step, "KV_envoy_unserved_test"); err != nil {
 			t.Fatalf("after %s: the wait = %v, want nil once the leader serves", step, err)
 		}
 		if got := reads.reads.Load(); got != 3 {
@@ -167,7 +168,7 @@ func TestAStartThatFindsAJustRaisedBucketAnswersOnceItHasALeader(t *testing.T) {
 	if _, err := EnsureKeyValue(t.Context(), conn, js, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.FileStorage, Replicas: 1}); err != nil {
 		t.Fatalf("create the one-copy bucket: %v", err)
 	}
-	if _, err := raiseReplicas(t.Context(), js, bucket, 3); err != nil {
+	if _, err := raiseReplicas(t.Context(), slog.Default(), js, bucket, 3); err != nil {
 		t.Fatalf("another program's raise: %v", err)
 	}
 	kv, err := EnsureKeyValue(t.Context(), conn, js, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.FileStorage, Replicas: 3})
@@ -194,7 +195,7 @@ func TestAStartAtOneCopyThatFindsAJustRaisedBucketAnswersOnceItHasALeader(t *tes
 	if _, err := EnsureKeyValue(t.Context(), conn, js, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.FileStorage, Replicas: 1}); err != nil {
 		t.Fatalf("create the one-copy bucket: %v", err)
 	}
-	if _, err := raiseReplicas(t.Context(), js, bucket, 3); err != nil {
+	if _, err := raiseReplicas(t.Context(), slog.Default(), js, bucket, 3); err != nil {
 		t.Fatalf("another program's raise: %v", err)
 	}
 	kv, err := EnsureKeyValue(t.Context(), conn, js, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.FileStorage, Replicas: 1})
@@ -349,7 +350,7 @@ func TestAStartWhoseStreamCreateIsAnsweredEarlyAnswersOnceItHasALeader(t *testin
 	cluster, js := startClusterJetStream(t)
 	cfg := parseConnectOptions([]ConnectOption{WithReplicas(3)}).streamConfig()
 	early := &earlyAnswerJetStream{JetStreamContext: js}
-	if _, err := ensureStreamWithConfig(t.Context(), early, &cfg, capsAnUnsetStream, atStart); err != nil {
+	if _, err := ensureStreamWithConfig(t.Context(), slog.Default(), early, &cfg, capsAnUnsetStream, atStart); err != nil {
 		t.Fatalf("a start whose create's first answer was lost: %v", err)
 	}
 	if early.sent < 2 {

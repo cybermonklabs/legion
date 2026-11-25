@@ -3,6 +3,7 @@ package bus
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -116,7 +117,7 @@ func TestAServerThatAnswersEveryReadLateIsStillWaitedFor(t *testing.T) {
 	if readDelay <= firstReadLimit || readDelay >= RequestTimeout {
 		t.Fatalf("readDelay %s must lie between the first read limit %s and RequestTimeout %s for this row to hold anything", readDelay, firstReadLimit, RequestTimeout)
 	}
-	if _, err := ensureKeyValue(t.Context(), 20*time.Second, conn, slow, config); err != nil {
+	if _, err := ensureKeyValue(t.Context(), slog.Default(), 20*time.Second, conn, slow, config); err != nil {
 		t.Fatalf("a start whose every lookup is answered %s late = %v, want it to open the bucket", readDelay, err)
 	}
 	if lookups := slow.lookups.Load(); lookups < 2 {
@@ -223,7 +224,7 @@ func servingStreamInfo(stream string) *nats.StreamInfo {
 // and after four such reads the caller's whole ten second wait.
 func TestAnAnsweredReadSetsTheReadLimitBack(t *testing.T) {
 	reads := &scriptedReads{script: []string{"lost", "lost", "leaderless", "lost"}}
-	if err := awaitStreamLeader(t.Context(), reads, afterOpen, "KV_envoy_limit_back_test"); err != nil {
+	if err := awaitStreamLeader(t.Context(), slog.Default(), reads, afterOpen, "KV_envoy_limit_back_test"); err != nil {
 		t.Fatalf("a wait whose leader came after lost reads = %v, want nil", err)
 	}
 	answeredAt := time.Now()
@@ -248,7 +249,7 @@ func TestAStreamNotFoundIsReadAgainOnlyAfterACreate(t *testing.T) {
 	}{{afterCreate, true}, {afterRaise, false}, {afterOpen, false}} {
 		t.Run(row.step.String(), func(t *testing.T) {
 			reads := &scriptedReads{script: []string{"missing"}}
-			err := awaitStreamLeader(t.Context(), reads, row.step, "KV_envoy_missing_test")
+			err := awaitStreamLeader(t.Context(), slog.Default(), reads, row.step, "KV_envoy_missing_test")
 			switch {
 			case row.readAgain && (err != nil || reads.reads.Load() != 2):
 				t.Fatalf("after %s: the wait = %v after %d reads, want nil after 2: the member had not applied the create", row.step, err, reads.reads.Load())
@@ -289,7 +290,7 @@ func TestAServerThatAnswersEveryReadLateKeepsALimitAboveItsDelay(t *testing.T) {
 	reads := &slowReads{delay: 3 * time.Second, leaderFrom: start.Add(6 * time.Second)}
 	ctx, cancel := context.WithTimeout(t.Context(), 13*time.Second)
 	defer cancel()
-	err := awaitStreamLeader(ctx, reads, afterOpen, "KV_envoy_slow_reads_test")
+	err := awaitStreamLeader(ctx, slog.Default(), reads, afterOpen, "KV_envoy_slow_reads_test")
 	took := time.Since(start)
 	if err != nil {
 		t.Fatalf("a wait on a server that answers every read 3 s late = %v after %s, want the leader: the limit after an answered read stays above the server's delay", err, took.Round(time.Millisecond))
@@ -310,12 +311,12 @@ func TestTheStepsOfOneStartShareOneRunOfReads(t *testing.T) {
 	ctx, cancel := context.WithTimeout(withReadLimit(t.Context()), 13*time.Second)
 	defer cancel()
 	start := time.Now()
-	if _, err := readAgain(ctx, "KV_envoy_shared_run_test STREAM.INFO", readLimitOf(ctx), func() (*nats.StreamInfo, error) {
+	if _, err := readAgain(ctx, slog.Default(), "KV_envoy_shared_run_test STREAM.INFO", readLimitOf(ctx), func() (*nats.StreamInfo, error) {
 		return reads.StreamInfo("KV_envoy_shared_run_test")
 	}); err != nil {
 		t.Fatalf("the first step's read = %v after %s, want it answered", err, time.Since(start).Round(time.Millisecond))
 	}
-	if err := awaitStreamLeader(ctx, reads, afterOpen, "KV_envoy_shared_run_test"); err != nil {
+	if err := awaitStreamLeader(ctx, slog.Default(), reads, afterOpen, "KV_envoy_shared_run_test"); err != nil {
 		t.Fatalf("the leader wait after it = %v after %s, want the leader in one read: the steps share the run of reads", err, time.Since(start).Round(time.Millisecond))
 	}
 	if readLimitOf(ctx) != readLimitOf(ctx) {

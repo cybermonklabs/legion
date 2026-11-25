@@ -881,13 +881,13 @@ func reconcileSubjects(deployed, own []string) streamReconciliation {
 	return result
 }
 
-// log reports the reconciliation once the stream carries it.
-func (r streamReconciliation) log() {
+// log reports the reconciliation to logger once the stream carries it.
+func (r streamReconciliation) log(logger *slog.Logger) {
 	for _, replacement := range r.replaced {
-		slog.Warn("envoy nats stream subject replaced by an overlapping one", slog.String("dropped", replacement.dropped), slog.Any("kept", replacement.kept))
+		logger.Warn("envoy nats stream subject replaced by an overlapping one", slog.String("dropped", replacement.dropped), slog.Any("kept", replacement.kept))
 	}
 	if len(r.foreign) > 0 {
-		slog.Info("envoy nats stream keeps subjects this binary does not compile", slog.Any("subjects", r.foreign))
+		logger.Info("envoy nats stream keeps subjects this binary does not compile", slog.Any("subjects", r.foreign))
 	}
 }
 
@@ -995,14 +995,15 @@ const (
 // start that raised the stream from one copy to three answered at once, and its first publish,
 // with no election held, drew no answer within its 5 s. A start that ended its wait on the new
 // leader's name lost its first publish too, while that leader had not yet applied its first entry
-// as leader (leaderNotServing).
-func ensureStreamWithConfig(ctx context.Context, js nats.JetStreamContext, cfg *nats.StreamConfig, defaultsAnUnsetCap bool, at streamEnsure) ([]string, error) {
+// as leader (leaderNotServing). Its lines, the reconciliation's and those of its waits, go to
+// logger.
+func ensureStreamWithConfig(ctx context.Context, logger *slog.Logger, js nats.JetStreamContext, cfg *nats.StreamConfig, defaultsAnUnsetCap bool, at streamEnsure) ([]string, error) {
 	ctx, cancel := hangGuard(ctx, startHangGuard)
 	defer cancel()
 	ctx = withReadLimit(ctx)
 	read, create := Stream+" STREAM.INFO", Stream+" STREAM.CREATE"
 	readStream := func() (*nats.StreamInfo, error) { return js.StreamInfo(Stream) }
-	info, err := readAgain(ctx, read, readLimitOf(ctx), readStream)
+	info, err := readAgain(ctx, logger, read, readLimitOf(ctx), readStream)
 	if errors.Is(err, nats.ErrStreamNotFound) {
 		created := *cfg
 		created.Metadata = stampGeneration(cfg.Metadata)
@@ -1013,10 +1014,10 @@ func ensureStreamWithConfig(ctx context.Context, js nats.JetStreamContext, cfg *
 		// jsClusteredStreamRequest, "This is an equal assignment"), so the start goes on; only
 		// another start's create, which carries another id, draws ErrStreamNameAlreadyInUse, which
 		// this branch reads as such and follows with the read below.
-		_, err = sentAgain(ctx, create, func() (*nats.StreamInfo, error) { return js.AddStream(&created) })
+		_, err = sentAgain(ctx, logger, create, func() (*nats.StreamInfo, error) { return js.AddStream(&created) })
 		if err == nil {
 			if created.Replicas > 1 {
-				err = awaitStreamLeader(ctx, js, afterCreate, Stream)
+				err = awaitStreamLeader(ctx, logger, js, afterCreate, Stream)
 			}
 			if err != nil {
 				return nil, err
@@ -1029,7 +1030,7 @@ func ensureStreamWithConfig(ctx context.Context, js nats.JetStreamContext, cfg *
 		if !errors.Is(err, nats.ErrStreamNameAlreadyInUse) {
 			return nil, refusedSettings(err, nil, &created)
 		}
-		info, err = readAgain(ctx, read, readLimitOf(ctx), readStream)
+		info, err = readAgain(ctx, logger, read, readLimitOf(ctx), readStream)
 	}
 	if unanswered(err) || ctx.Err() != nil {
 		return nil, namedRequest(read, err)
@@ -1040,17 +1041,17 @@ func ensureStreamWithConfig(ctx context.Context, js nats.JetStreamContext, cfg *
 	if leaderless(info) && at == atStart {
 		// The stream another start created or raised a moment ago has no leader that takes writes
 		// yet: that start's own wait does not reach this one, and a write sent now draws no answer.
-		if err := awaitStreamLeader(ctx, js, afterOpen, Stream); err != nil {
+		if err := awaitStreamLeader(ctx, logger, js, afterOpen, Stream); err != nil {
 			return nil, err
 		}
 	}
 	if newerBuild(info) {
-		logLeftToNewerBuild(info)
+		logLeftToNewerBuild(logger, info)
 		return info.Config.Subjects, nil
 	}
 	desired, reconciliation := reconciledStream(info, cfg, defaultsAnUnsetCap)
 	if reflect.DeepEqual(desired, info.Config) {
-		reconciliation.log()
+		reconciliation.log(logger)
 		return info.Config.Subjects, nil
 	}
 	// The migrate and the purge below are requests a server can leave unanswered, and each is
@@ -1077,7 +1078,7 @@ func ensureStreamWithConfig(ctx context.Context, js nats.JetStreamContext, cfg *
 		reconciled, _ := reconciledStream(current, cfg, defaultsAnUnsetCap)
 		return reconciled, true
 	}
-	update, err := updateStream(ctx, js, info, reconcile, func(again *nats.StreamInfo) bool {
+	update, err := updateStream(ctx, logger, js, info, reconcile, func(again *nats.StreamInfo) bool {
 		reconciled, write := reconcile(again)
 		return write && reflect.DeepEqual(reconciled, again.Config)
 	})
@@ -1091,17 +1092,17 @@ func ensureStreamWithConfig(ctx context.Context, js nats.JetStreamContext, cfg *
 		// A newer build's start wrote the stream while this one's update was unanswered: its
 		// settings stand, as on a first read that finds them, and so does its new election.
 		if leaderless(update.from) && at == atStart {
-			if err := awaitStreamLeader(ctx, js, afterOpen, Stream); err != nil {
+			if err := awaitStreamLeader(ctx, logger, js, afterOpen, Stream); err != nil {
 				return nil, err
 			}
 		}
-		logLeftToNewerBuild(update.from)
+		logLeftToNewerBuild(logger, update.from)
 		return update.from.Config.Subjects, nil
 	}
 	_, reconciliation = reconciledStream(update.from, cfg, defaultsAnUnsetCap)
-	reconciliation.log()
+	reconciliation.log(logger)
 	if update.sent.Replicas > info.Config.Replicas {
-		if err := awaitStreamLeader(ctx, js, afterRaise, Stream); err != nil {
+		if err := awaitStreamLeader(ctx, logger, js, afterRaise, Stream); err != nil {
 			return nil, err
 		}
 	}
@@ -1121,10 +1122,10 @@ func newerBuild(info *nats.StreamInfo) bool {
 	return MetadataGeneration(info.Config.Metadata, streamGenerationKey) > streamConfigGeneration
 }
 
-// logLeftToNewerBuild logs that a start found info's stream carrying a newer build's settings and
-// leaves them as they are (newerBuild).
-func logLeftToNewerBuild(info *nats.StreamInfo) {
-	slog.Info("envoy nats stream settings belong to a newer build, so this build leaves them as they are",
+// logLeftToNewerBuild logs to logger that a start found info's stream carrying a newer build's
+// settings and leaves them as they are (newerBuild).
+func logLeftToNewerBuild(logger *slog.Logger, info *nats.StreamInfo) {
+	logger.Info("envoy nats stream settings belong to a newer build, so this build leaves them as they are",
 		slog.Int("deployed_generation", MetadataGeneration(info.Config.Metadata, streamGenerationKey)), slog.Int("own_generation", streamConfigGeneration))
 }
 
@@ -1292,8 +1293,9 @@ type streamUpdate struct {
 // The read after the update is a read of a stream's state, sent again while the server leaves it
 // unanswered, each send up to its read limit, for as long as ctx lasts (readAgain): an update
 // sent while the stream's group elects a leader can draw no answer, and a read sent then can be
-// lost too, so a read sent once could leave a raise that landed reported as one that failed.
-func updateStream(ctx context.Context, js nats.JetStreamContext, info *nats.StreamInfo, change func(*nats.StreamInfo) (nats.StreamConfig, bool), holds func(*nats.StreamInfo) bool) (streamUpdate, error) {
+// lost too, so a read sent once could leave a raise that landed reported as one that failed. The
+// lines of those reads sent again go to logger.
+func updateStream(ctx context.Context, logger *slog.Logger, js nats.JetStreamContext, info *nats.StreamInfo, change func(*nats.StreamInfo) (nats.StreamConfig, bool), holds func(*nats.StreamInfo) bool) (streamUpdate, error) {
 	name := info.Config.Name
 	result := streamUpdate{from: info}
 	for overlaps := 0; ; {
@@ -1312,7 +1314,7 @@ func updateStream(ctx context.Context, js nats.JetStreamContext, info *nats.Stre
 		case !unanswered(err):
 			return result, err
 		}
-		again, readErr := readAgain(ctx, name+" STREAM.INFO", readLimitOf(ctx), func() (*nats.StreamInfo, error) { return js.StreamInfo(name) })
+		again, readErr := readAgain(ctx, logger, name+" STREAM.INFO", readLimitOf(ctx), func() (*nats.StreamInfo, error) { return js.StreamInfo(name) })
 		switch {
 		case readErr == nil && holds(again):
 			return result, nil
