@@ -4,10 +4,10 @@
  * The entry chunk holds the shell's frame and asks for the app with `import()`
  * (dispatch://INFRA-341, R11), so between the page's `load` and the app's first commit there is a
  * window - about 300 ms on a phone at 4x CPU throttling, longer on a cold cache - in which the
- * skeleton is on the screen and nothing is listening for a shortcut. A reader who opens Dispatch
- * and presses `i` in that window used to open the Inbox and now presses it into nothing, because
- * the one `window` keydown listener is bound by `KeymapProvider`'s own effect
- * (`features/shell/KeymapProvider.tsx`) and the registry it resolves against is the app's.
+ * skeleton is on the screen and nothing is listening for a shortcut. A press in that window
+ * reaches no listener: the one `window` keydown listener is bound by `KeymapProvider`'s own
+ * effect (`features/shell/KeymapProvider.tsx`), and the registry it resolves against is the
+ * app's. Without this record it would do nothing, and `i` pressed there would not open the Inbox.
  *
  * So the entry listens from its own task and holds what it hears until the keymap binds, which
  * replays each one through the same `appKeymap.handleKeyDown` a live press takes. The reader's

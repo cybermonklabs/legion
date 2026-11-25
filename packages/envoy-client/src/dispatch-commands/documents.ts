@@ -11,7 +11,7 @@ import type {
 import { typedBlockIdAttribute } from "@legion/contracts";
 import { goBlankPattern } from "@legion/contracts/go-blank";
 import { commandName } from "../dispatch-command";
-import type { DispatchClient } from "../dispatch-http";
+import { type DispatchClient, DispatchServiceError } from "../dispatch-http";
 import {
   dispatchChildRef,
   dispatchDocumentRef,
@@ -44,7 +44,7 @@ import {
   stringArg,
 } from "./context";
 import { approvalLine, documentPlaysPlan, liveBlocks } from "./document-targets";
-import { dispatchAnswered, withMessage } from "./failures";
+import { dispatchAnswered } from "./failures";
 import { openAnchoredThreads, waitsOnPerson } from "./render-item";
 import {
   documentResultDetails,
@@ -418,9 +418,11 @@ function withUnguardedBlocks(error: unknown): unknown {
   if (!dispatchAnswered(error, 409) || error.code !== "PRECONDITION_FAILED") return error;
   const unguarded = error.unguardedBlocks ?? [];
   if (unguarded.length === 0) return error;
-  return withMessage(
-    error,
-    `${error.message}\nBlock guard: this edit would remove ${guardedBlockList(unguarded, "block")}. A guard names a block as {id, token} in precondition.blocks (--precondition-json).`
+  return new DispatchServiceError(
+    error.code,
+    error.status,
+    `${error.message}\nBlock guard: this edit would remove ${guardedBlockList(unguarded, "block")}. A guard names a block as {id, token} in precondition.blocks (--precondition-json).`,
+    error
   );
 }
 

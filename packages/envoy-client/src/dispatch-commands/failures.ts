@@ -45,17 +45,7 @@ export function refusalWithCode(error: unknown, ...clauses: string[]): unknown {
     joined !== "" && /[.!?]$/.test(error.message)
       ? `${error.message} ${suffix.charAt(0).toUpperCase()}${suffix.slice(1)}`
       : `${error.message}${joined}`;
-  return withMessage(error, `${error.code}: ${told}`);
-}
-
-/**
- * A refusal Dispatch wrote, with `message` in place of its own. Every other field of the refusal
- * (`candidates`, `current`, `mismatches`, `issues`, `changed`, `unguardedBlocks`) rides along,
- * since the refusal is the new one's `details`, so every caller that rewords a refusal keeps a
- * field the refusal gains.
- */
-export function withMessage(error: DispatchServiceError, message: string): DispatchServiceError {
-  return new DispatchServiceError(error.code, error.status, message, error);
+  return new DispatchServiceError(error.code, error.status, `${error.code}: ${told}`, error);
 }
 
 /**
