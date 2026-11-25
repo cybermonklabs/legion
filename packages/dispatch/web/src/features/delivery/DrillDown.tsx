@@ -22,7 +22,7 @@ import {
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { AgentName } from "../refs/AgentName";
-import { buildIssuePath } from "../refs/routes";
+import { buildIssuePath } from "../refs/page-routes";
 import { useDialog } from "../shell/useDialog";
 import { NO_COMPONENT, NO_ISSUE, NO_PRIORITY, NO_SESSION, PLACEHOLDER_LABELS } from "./lib/facets";
 import { parentAgentLabel } from "./lib/parentAgent";

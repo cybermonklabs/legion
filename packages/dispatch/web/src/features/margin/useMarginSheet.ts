@@ -17,7 +17,7 @@ import { useProjectArtifact } from "../document/useProjectArtifact";
 import { writePin } from "../issue/pin-write";
 import { eventItemId } from "../issue/pins";
 import { useMarginDrawer } from "../issue-page/margin-slot";
-import { parseIssuePath, parseProjectPath } from "../refs/routes";
+import { parseIssuePath, parseProjectPath } from "../refs/page-routes";
 import { COMPACT_VIEWPORT_QUERY, PHONE_VIEWPORT_QUERY } from "../shell/useDialog";
 import type { MarginComposer } from "./CommentsTab";
 import type { MarginSheetModel } from "./MarginSheet";

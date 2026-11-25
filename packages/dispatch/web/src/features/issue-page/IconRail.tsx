@@ -11,7 +11,7 @@ import {
   iconRailText,
 } from "../../theme/classes";
 import { PRIORITIES_PATH } from "../priorities/priority-routes";
-import { buildProjectPath } from "../refs/routes";
+import { buildProjectPath } from "../refs/page-routes";
 
 /**
  * The shell's navigation on the issue page, from the phone's width up: a 56 px column of icons

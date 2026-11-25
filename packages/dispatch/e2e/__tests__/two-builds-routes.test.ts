@@ -7,7 +7,7 @@ import {
   AGENT_LIVE_PATH,
   ANSWERS_PATH,
   PERSON_PATH,
-} from "../../web/src/features/refs/routes";
+} from "../../web/src/features/refs/page-routes";
 import { walkRoutes } from "../two-builds-routes";
 
 // The two-builds walk (e2e/two-builds.multiprocess.e2e.ts) asks the other build's process for

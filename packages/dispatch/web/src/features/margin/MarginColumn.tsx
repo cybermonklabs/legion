@@ -1,7 +1,7 @@
 import { type ReactNode, Suspense } from "react";
 import { useLocation } from "react-router-dom";
 
-import { routeHasMargin } from "../refs/routes";
+import { routeHasMargin } from "../refs/page-routes";
 import { lazyChunk } from "../shell/chunk-loads";
 import { useContentDrawn } from "../shell/content-drawn";
 import { COMPACT_VIEWPORT_QUERY, useMediaQuery } from "../shell/useDialog";

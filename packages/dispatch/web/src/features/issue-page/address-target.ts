@@ -11,8 +11,8 @@ import {
   isItemRoute,
   useItemLanding,
 } from "../issue/useItemLanding";
+import { type IssueRoute, parseIssuePath } from "../refs/page-routes";
 import { askQuery, commentQuery, messageQuery, referencesQuery } from "../refs/reference-target";
-import { type IssueRoute, parseIssuePath } from "../refs/routes";
 import { prefixReference } from "../refs/text-references";
 import {
   type AddressTarget,

@@ -54,8 +54,9 @@ import {
 } from "../refs/AgentName";
 import { CopyRefButton } from "../refs/CopyRefButton";
 import { EditedMark, PostBody } from "../refs/PostBody";
+import { buildIssuePath } from "../refs/page-routes";
 import { type PostDeletion, postDeletion } from "../refs/post-marks";
-import { buildIssuePath, documentItemPath, sessionOfAddress } from "../refs/routes";
+import { documentItemPath, sessionOfAddress } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
 import { textSourceOf } from "../refs/text-references";
 import { Unfurl } from "../refs/Unfurl";

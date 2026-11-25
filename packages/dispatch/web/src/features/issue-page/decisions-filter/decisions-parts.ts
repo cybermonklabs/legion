@@ -1,7 +1,8 @@
 import type { Actor, Decision, IssueDecisions } from "../../../api/types";
 import { compareTimestamps, isTimestamp } from "../../../lib/timestamps";
 import { blockFragment } from "../../refs/block-reference";
-import { buildIssuePath, parseNodeReference } from "../../refs/routes";
+import { buildIssuePath } from "../../refs/page-routes";
+import { parseNodeReference } from "../../refs/routes";
 import { type ChangeComment, inReviewList } from "../decision-review";
 import {
   drawnLine,

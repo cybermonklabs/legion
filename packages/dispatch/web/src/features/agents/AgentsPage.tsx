@@ -76,8 +76,9 @@ import {
   useAgentText,
 } from "../refs/AgentName";
 import { EditedMark, PostBody } from "../refs/PostBody";
+import { buildInboxPath, buildIssuePath } from "../refs/page-routes";
 import { postDeletion } from "../refs/post-marks";
-import { buildInboxPath, buildIssuePath, buildMachinePath } from "../refs/routes";
+import { buildMachinePath } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
 import { closestMatching, focusOnDocument } from "../shell/roving";
 import { MD_VIEWPORT_QUERY, useMediaQuery } from "../shell/useDialog";

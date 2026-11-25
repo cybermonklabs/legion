@@ -1,6 +1,6 @@
 import { useLocation, useNavigate } from "react-router-dom";
 
-import { type IssueTab, parseIssuePath } from "../refs/routes";
+import { type IssueTab, parseIssuePath } from "../refs/page-routes";
 import { useKeymap, useKeymapScope } from "../shell/keymap";
 import { bringOnScreen } from "./identity-block";
 import { issueAddress, presetPath } from "./issue-address";

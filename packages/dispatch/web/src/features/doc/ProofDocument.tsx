@@ -56,13 +56,9 @@ import {
 import { useMargin } from "../margin/margin-context";
 import type { MarginOwner } from "../margin/useMarginItems";
 import { blockFragment } from "../refs/block-reference";
+import { buildIssuePath, buildProjectPath } from "../refs/page-routes";
 import { watchPicturePath } from "../refs/reference-target";
-import {
-  buildDispatchReference,
-  buildIssuePath,
-  buildProjectPath,
-  documentRoute,
-} from "../refs/routes";
+import { buildDispatchReference, documentRoute } from "../refs/routes";
 import { textSourceOf, uniquePrefixMatch } from "../refs/text-references";
 import { chunk, chunkComponent } from "../shell/chunk-component";
 import { importWhenOnline, renderChunk } from "../shell/chunk-loads";

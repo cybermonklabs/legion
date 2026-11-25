@@ -2,7 +2,7 @@ import type { ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
 
 import { Tabs } from "../../components/Tabs";
-import { buildIssuePath, type IssueTab } from "../refs/routes";
+import { buildIssuePath, type IssueTab } from "../refs/page-routes";
 import { issueTabs } from "./issue-tab-list";
 
 /** The IssuePage tablist keeps its active view in the canonical issue route. `artifactCount` is

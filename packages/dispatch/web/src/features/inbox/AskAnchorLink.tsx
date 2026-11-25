@@ -12,7 +12,7 @@ import {
   textPrimaryOnSuccessCallout,
 } from "../../theme/classes";
 import { blockFragment } from "../refs/block-reference";
-import { buildIssuePath, buildProjectPath } from "../refs/routes";
+import { buildIssuePath, buildProjectPath } from "../refs/page-routes";
 
 /** The document named by an ask's quote anchor, including its stable block fragment when known. */
 export function AskAnchorLink({ ask }: { ask: Ask }): ReactNode {

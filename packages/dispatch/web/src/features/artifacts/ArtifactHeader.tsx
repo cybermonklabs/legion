@@ -24,12 +24,8 @@ import { ConnectionDot } from "../doc/ConnectionDot";
 import type { DocumentToolbar } from "../doc/ProofDocument";
 import { AgentName } from "../refs/AgentName";
 import { CopyRefButton } from "../refs/CopyRefButton";
-import {
-  buildIssuePath,
-  buildProjectPath,
-  buildReferencePath,
-  documentRoute,
-} from "../refs/routes";
+import { buildIssuePath, buildProjectPath } from "../refs/page-routes";
+import { buildReferencePath, documentRoute } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
 import { useContentDrawn } from "../shell/content-drawn";
 import {

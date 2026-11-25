@@ -30,12 +30,12 @@ import { useMarginDrawer } from "../issue-page/margin-slot";
 import { useAgentText } from "./AgentName";
 import { itemOfBlock } from "./block-reference";
 import { useMarkdownHeadline } from "./markdown-engine";
+import type { IssueRoute } from "./page-routes";
 import { deletedLineText, editedName, type PostDeletion, postDeletion } from "./post-marks";
 import {
   buildDispatchReference,
   buildReferencePath,
   type DispatchReferenceRoute,
-  type IssueRoute,
   type ReferencedArtifact,
   referencedArtifact,
 } from "./routes";

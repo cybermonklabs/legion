@@ -6,7 +6,7 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { api } from "../../api/client";
 import type { PersonNode, PersonNodes } from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
-import { PERSON_PATH } from "../refs/routes";
+import { PERSON_PATH } from "../refs/page-routes";
 import { PersonPage } from "./PersonPage";
 
 function node(id: string, overrides: Partial<PersonNode> = {}): PersonNode {

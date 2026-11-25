@@ -12,7 +12,8 @@ import { ApiError, api } from "../../api/client";
 import type { ComposerAnchor, ComposerKind } from "../conversation/composer-model";
 import { MentionComposer } from "../conversation/MentionComposer";
 import type { RecordMarkPlacement } from "../doc/editor";
-import { buildIssuePath, composerReferences } from "../refs/routes";
+import { buildIssuePath } from "../refs/page-routes";
+import { composerReferences } from "../refs/routes";
 import { Margin } from "./Margin";
 import {
   BRIDGE_BIND_WAIT_MS,

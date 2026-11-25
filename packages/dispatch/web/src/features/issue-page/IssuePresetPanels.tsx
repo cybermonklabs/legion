@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 
 import type { Artifact, IssueDetails } from "../../api/types";
 import type { DocumentToolbar } from "../doc/ProofDocument";
-import { buildIssuePath } from "../refs/routes";
+import { buildIssuePath } from "../refs/page-routes";
 import { StagedDocument } from "./StagedDocument";
 import { useToolbarSink } from "./useDocumentToolbars";
 import type { OnEditing, OnEditor } from "./useNodeEditing";

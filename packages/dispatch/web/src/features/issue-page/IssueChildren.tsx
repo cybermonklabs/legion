@@ -4,7 +4,7 @@ import { Link } from "react-router-dom";
 import type { IssueChild } from "../../api/types";
 import { pageInkText, pageKindTag, pageQuietText } from "../../theme/classes";
 import { AgentName } from "../refs/AgentName";
-import { buildIssuePath } from "../refs/routes";
+import { buildIssuePath } from "../refs/page-routes";
 import { authorText, PROPERTY_LABELS, pageChrome } from "./page-structure";
 import { issueStatusWord } from "./page-words";
 

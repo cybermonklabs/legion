@@ -1,7 +1,7 @@
 import { type RefObject, useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 
-import { buildInboxPath, type InboxRoute } from "../refs/routes";
+import { buildInboxPath, type InboxRoute } from "../refs/page-routes";
 import { answerDraft } from "./answer-drafts";
 import { ROW_ATTRIBUTE } from "./inbox-row";
 import { type InboxListRow, rowId } from "./list-row";

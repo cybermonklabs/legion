@@ -44,7 +44,6 @@ import { MarginProvider } from "./features/margin/margin-context";
 import { DEFAULT_MARGIN_WIDTH } from "./features/margin/margin-width";
 import { AgentRegistryPoller } from "./features/refs/agent-registry";
 import { TextAskCard } from "./features/refs/markdown-cards";
-import { RefPreviewLayer } from "./features/refs/RefPreviewLayer";
 import {
   AGENT_ARTIFACT_PATH,
   AGENT_LIVE_PATH,
@@ -63,7 +62,8 @@ import {
   routeHasMargin,
   routeIsInbox,
   routeProjectOf,
-} from "./features/refs/routes";
+} from "./features/refs/page-routes";
+import { RefPreviewLayer } from "./features/refs/RefPreviewLayer";
 import { useRecordRecents } from "./features/search/recents";
 import { SearchPaletteHost } from "./features/search/SearchPaletteHost";
 import {
@@ -179,7 +179,7 @@ const loadDocumentChunks = () => Promise.all([loadEditorLibrary(), loadTransport
 const DOCUMENT_TABS: readonly IssueTab[] = ["spec", "verification", "plan"];
 
 /** Whether the issue page at this address draws a live document, read from the address by the
- *  router's own parse of it (`features/refs/routes.ts`, `issueTabForRoute`) rather than by a
+ *  router's own parse of it (`features/refs/page-routes.ts`, `issueTabForRoute`) rather than by a
  *  second rule kept here, which could say one thing while the page drew another.
  *
  *  An address naming an artifact - `/issues/<key>/artifact/<slug>` - draws that artifact as a

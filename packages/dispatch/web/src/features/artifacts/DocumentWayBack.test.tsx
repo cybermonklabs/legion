@@ -12,7 +12,7 @@ import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, NetworkError } from "../../api/client";
 import type { Artifact } from "../../api/types";
 import type { DocumentToolbar } from "../doc/ProofDocument";
-import { buildIssuePath, parseIssuePath } from "../refs/routes";
+import { buildIssuePath, parseIssuePath } from "../refs/page-routes";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { ArtifactHeader } from "./ArtifactHeader";
 

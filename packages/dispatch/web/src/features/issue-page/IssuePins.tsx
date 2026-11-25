@@ -18,9 +18,9 @@ import {
 } from "../issue/pins";
 import { AgentParts } from "../refs/AgentName";
 import { EditedMark } from "../refs/PostBody";
+import { buildIssuePath } from "../refs/page-routes";
 import { postDeletion } from "../refs/post-marks";
 import { EVENT_FRESH } from "../refs/reference-target";
-import { buildIssuePath } from "../refs/routes";
 import { wordsOf } from "../refs/tree-fragment";
 import { drawnLine, firstLineOf } from "./issue-tree";
 import { DeletedLine } from "./NodeRow";

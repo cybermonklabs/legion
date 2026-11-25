@@ -11,7 +11,7 @@
  * bar acts on. They sit on either side of the box, and only the filter chip can be removed.
  */
 import { BLOCK_ID_ATTRIBUTE } from "../doc/block-id";
-import { parseIssuePath, parseProjectPath, routeProjectOf } from "../refs/routes";
+import { parseIssuePath, parseProjectPath, routeProjectOf } from "../refs/page-routes";
 
 /** How much of a block's own text the chip names it by. */
 const BLOCK_TEXT_MAX = 60;

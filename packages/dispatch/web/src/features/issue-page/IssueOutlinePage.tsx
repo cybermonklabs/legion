@@ -13,7 +13,7 @@ import {
   textPrimaryOnCanvas,
   textSecondaryOnCanvas,
 } from "../../theme/classes";
-import { type IssueRoute, parseIssuePath } from "../refs/routes";
+import { type IssueRoute, parseIssuePath } from "../refs/page-routes";
 import { NotFoundPage } from "../shell/NotFoundPage";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
 import { IssueContentsPane, PAGE_INSET } from "./contents-frame";

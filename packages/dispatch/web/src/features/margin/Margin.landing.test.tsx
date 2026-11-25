@@ -18,7 +18,7 @@ import {
   MarginSlotProvider,
   useFillMarginSlot,
 } from "../issue-page/margin-slot";
-import { buildIssuePath } from "../refs/routes";
+import { buildIssuePath } from "../refs/page-routes";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { type KeyBindingDescription, useKeymap } from "../shell/keymap";
 import { ShortcutHelp } from "../shell/ShortcutHelp";

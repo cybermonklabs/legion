@@ -8,8 +8,9 @@ import type { ReplyTarget } from "../conversation/composer-model";
 import { deliveryMode } from "../conversation/delivery";
 import { redirectedReplyTarget, useHeldReplyTo, useHeldSends } from "../conversation/held-sends";
 import { type AgentText, useAgentText } from "../refs/AgentName";
+import { buildIssuePath } from "../refs/page-routes";
 import { EVENT_FRESH } from "../refs/reference-target";
-import { buildIssuePath, parseNodeReference, sessionOfAddress } from "../refs/routes";
+import { parseNodeReference, sessionOfAddress } from "../refs/routes";
 import type { TreeNode } from "./issue-tree";
 import { issueMessagesQuery } from "./useIssueTree";
 

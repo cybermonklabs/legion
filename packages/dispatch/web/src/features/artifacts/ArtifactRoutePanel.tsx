@@ -4,7 +4,7 @@ import { Link } from "react-router-dom";
 import type { Artifact } from "../../api/types";
 import { dangerText, linkHoverText, linkText } from "../../theme/classes";
 import type { DocumentToolbar } from "../doc/ProofDocument";
-import { buildIssuePath, type DispatchRoute } from "../refs/routes";
+import { buildIssuePath, type DispatchRoute } from "../refs/page-routes";
 import { ArtifactDetails } from "./ArtifactDetails";
 import { ArtifactBlobView, ArtifactHeader } from "./ArtifactHeader";
 import { ArtifactsTab } from "./ArtifactsTab";

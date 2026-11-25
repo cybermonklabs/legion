@@ -249,7 +249,14 @@ export default defineConfig({
     // document's route from `features/refs/routes.ts`, so the search bar's chip
     // (`features/search/bar-scope.ts`) is a chunk that the bar and the issue list share
     // (1,142 bytes). That left 498,776 bytes; the correction's mark then joined the event map's
-    // chunk (`api/event-refresh-load.ts`), and the entry reads 498,590.
+    // chunk (`api/event-refresh-load.ts`), and the entry read 498,590. The forward merges of the
+    // default branch after it, whose layers of the page's foot (#4631) added about 6,500 bytes,
+    // and the fixes after them took the entry to 506,935, over the budget. The page addresses
+    // that the shell reads then left `features/refs/routes.ts` for a module of their own
+    // (`features/refs/page-routes.ts`), with no new lazy load: the grammar of references and the
+    // modules that only it imports are two chunks that the pages' chunks share (`routes-*.js`,
+    // 10,989 bytes, and `dispatch-block-ref-*.js`, 3,632), and the entry reads 492,802 bytes with
+    // a 39-character `DISPATCH_BUILD` on 2026-11-25.
     // `web/src/asset-sizes-in-build.ts` holds the entry to 500,000 bytes and keeps its history,
     // and `bun run check:asset-sizes` reads it again; this `chunkSizeWarningLimit` is Vite's own
     // warning and is over the ECharts chunk alone.

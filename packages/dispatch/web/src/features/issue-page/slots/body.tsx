@@ -18,7 +18,7 @@ import {
 } from "../../../theme/classes";
 import { ItemMatchList } from "../../issue/ItemMatchList";
 import type { ItemLanding, ItemRoute } from "../../issue/useItemLanding";
-import { buildIssuePath } from "../../refs/routes";
+import { buildIssuePath } from "../../refs/page-routes";
 import {
   type AddressFallback,
   landingPath,

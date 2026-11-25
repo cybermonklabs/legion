@@ -84,7 +84,7 @@ import { otherTab, renderApp } from "./app-sign-out-fixture";
 import { composerNameOf } from "./features/conversation/composer-names";
 import { threadReplySendKey } from "./features/conversation/usePhoneThread";
 import { issue } from "./features/margin/margin-fixture";
-import { buildIssuePath } from "./features/refs/routes";
+import { buildIssuePath } from "./features/refs/page-routes";
 // The Agents page is a lazy page (`app.tsx`) that the rows reach on a held clock, whose waits
 // spend moments of that clock, which a load on the real one does not keep pace with. So the page
 // is loaded here, with the test file, and no row waits for its load.

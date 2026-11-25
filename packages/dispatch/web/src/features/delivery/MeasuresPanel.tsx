@@ -25,7 +25,7 @@ import {
   textPrimaryOnSurface,
   textPrimaryOnSurfaceMuted,
 } from "../../theme/classes";
-import { buildIssuePath } from "../refs/routes";
+import { buildIssuePath } from "../refs/page-routes";
 import { formatMinutes, pct } from "./lib/format";
 import { Sparkbars } from "./Sparkbars";
 import { TargetBadge } from "./TargetBadge";

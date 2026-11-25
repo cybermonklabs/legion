@@ -32,9 +32,9 @@ import {
   pinnedConversations,
   pinnedEventIds,
 } from "../issue/pins";
+import { parseIssuePath, parseProjectPath } from "../refs/page-routes";
 import { type PostDeletion, postDeletion } from "../refs/post-marks";
 import { useNewIssuePageFreshness } from "../refs/reference-target";
-import { parseIssuePath, parseProjectPath } from "../refs/routes";
 import { useAnsweredAsks } from "./useAnsweredAsks";
 import { type CommentAction, useCommentActionQueue } from "./useCommentActionQueue";
 

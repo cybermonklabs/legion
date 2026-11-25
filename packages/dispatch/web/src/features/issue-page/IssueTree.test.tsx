@@ -44,7 +44,8 @@ import { bindRemoteMarks, createEditor, type EditorHandle } from "../doc/editor"
 import { compiledBlockSchema } from "../doc/schema";
 import { MarginProvider } from "../margin/margin-context";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
-import { buildDispatchReference, buildIssuePath, parseIssuePath } from "../refs/routes";
+import { buildIssuePath, parseIssuePath } from "../refs/page-routes";
+import { buildDispatchReference } from "../refs/routes";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { useKeymapScope } from "../shell/keymap";
 import { issueDetails } from "./decisions-filter/decisions-fixtures";

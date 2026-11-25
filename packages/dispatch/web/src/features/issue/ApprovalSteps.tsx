@@ -12,7 +12,7 @@ import {
 } from "../../theme/classes";
 import { ApprovalChip, approvalVersion } from "../doc/ApprovalChip";
 import { AgentName } from "../refs/AgentName";
-import { buildIssuePath } from "../refs/routes";
+import { buildIssuePath } from "../refs/page-routes";
 import type { StepEntry } from "./gated-steps";
 
 /** A value drawn inside `NoTooltips` - a document's name, a version, a reviewer's reason - keeps

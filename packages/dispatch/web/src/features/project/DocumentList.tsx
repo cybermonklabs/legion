@@ -29,7 +29,8 @@ import {
 import { CreateDocument } from "../artifacts/CreateDocument";
 import { ApprovalChip } from "../doc/ApprovalChip";
 import { CopyRefButton } from "../refs/CopyRefButton";
-import { buildIssuePath, buildProjectPath, documentRoute } from "../refs/routes";
+import { buildIssuePath, buildProjectPath } from "../refs/page-routes";
+import { documentRoute } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
 
 function documentUpdatedAt(document: Artifact): string {

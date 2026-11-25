@@ -6,7 +6,8 @@ import { issueQuery } from "../../api/queries";
 import type { Artifact, DispatchEvent } from "../../api/types";
 import { linkText } from "../../theme/classes";
 import { type AgentPart, AgentParts } from "../refs/AgentName";
-import { buildIssuePath, buildReferencePath, documentRoute } from "../refs/routes";
+import { buildIssuePath } from "../refs/page-routes";
+import { buildReferencePath, documentRoute } from "../refs/routes";
 
 type ArtifactVersionEvent = Extract<DispatchEvent, { type: "artifact.version" }>;
 

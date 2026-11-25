@@ -14,7 +14,7 @@ import type {
   IssueReferencesAnswer,
   ReferenceLink,
 } from "../../api/types";
-import { buildIssuePath } from "../refs/routes";
+import { buildIssuePath } from "../refs/page-routes";
 import { ArtifactsTab } from "./ArtifactsTab";
 
 const artifact = {

@@ -42,7 +42,7 @@ import {
   specArtifact,
   stubDocumentBridge,
 } from "../features/margin/margin-fixture";
-import { buildIssuePath } from "../features/refs/routes";
+import { buildIssuePath } from "../features/refs/page-routes";
 import { KeymapProvider } from "../features/shell/KeymapProvider";
 import { SendStoppedError } from "../features/writes/keyed-write";
 import { entryNames, removeEntry } from "../features/writes/tab-storage";

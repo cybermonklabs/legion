@@ -30,7 +30,8 @@ import {
 } from "../../theme/classes";
 import { blockFragment } from "../refs/block-reference";
 import { MarkdownBody } from "../refs/MarkdownBody";
-import { buildIssuePath, DECISIONS_DOCUMENT_SLUG, documentItemPath } from "../refs/routes";
+import { buildIssuePath } from "../refs/page-routes";
+import { DECISIONS_DOCUMENT_SLUG, documentItemPath } from "../refs/routes";
 import { textSourceOf } from "../refs/text-references";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { useKeyedWrite } from "../writes/useKeyedWrite";

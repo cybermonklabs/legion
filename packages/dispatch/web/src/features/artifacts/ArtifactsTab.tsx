@@ -23,14 +23,12 @@ import { ApprovalChip } from "../doc/ApprovalChip";
 import { AgentName } from "../refs/AgentName";
 import { CopyRefButton } from "../refs/CopyRefButton";
 import { DeletedBody, EditedMark } from "../refs/PostBody";
+import { buildIssuePath, buildProjectPath, parseIssuePath } from "../refs/page-routes";
 import { postDeletion } from "../refs/post-marks";
 import {
-  buildIssuePath,
-  buildProjectPath,
   buildReferencePath,
   documentRoute,
   isAgentArtifact,
-  parseIssuePath,
   parseNodeReference,
 } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";

@@ -26,8 +26,8 @@ import {
 import { GitHubLink } from "../issue/GitHubLink";
 import { statusText } from "../project/board-model";
 import { MarkdownBody } from "../refs/MarkdownBody";
+import { buildIssuePath } from "../refs/page-routes";
 import { referenceTriggerProps } from "../refs/reference-trigger";
-import { buildIssuePath } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
 import { expansionStorageKey, placeChild, splitWork } from "./architecture-model";
 

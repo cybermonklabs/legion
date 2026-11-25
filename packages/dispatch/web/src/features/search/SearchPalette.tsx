@@ -37,14 +37,10 @@ import {
 import { statusText } from "../project/board-model";
 import { MarkdownPreview } from "../refs/MarkdownPreview";
 import { DeletedBody, EditedMark } from "../refs/PostBody";
+import { buildIssuePath, buildProjectPath } from "../refs/page-routes";
 import { postDeletion } from "../refs/post-marks";
 import { referenceTriggerProps } from "../refs/reference-trigger";
-import {
-  buildIssuePath,
-  buildProjectPath,
-  type DispatchReferenceRoute,
-  nodeRouteFromHref,
-} from "../refs/routes";
+import { type DispatchReferenceRoute, nodeRouteFromHref } from "../refs/routes";
 import { appKeymap, DIALOG_SCOPE, type KeymapAction, useKeymap } from "../shell/keymap";
 import { KeyHints } from "../shell/ShortcutHelp";
 import { useCloseOnNavigation, useDialog } from "../shell/useDialog";

@@ -2,7 +2,7 @@ import { type UseQueryResult, useQuery } from "@tanstack/react-query";
 
 import { projectArtifactQuery } from "../../api/queries";
 import type { Artifact } from "../../api/types";
-import type { ProjectDocumentRoute } from "../refs/routes";
+import type { ProjectDocumentRoute } from "../refs/page-routes";
 
 /**
  * The project document a route names, by `project/slug` (`projectArtifactQuery`). Every caller

@@ -1,8 +1,8 @@
 import type { ComponentProps, ReactNode } from "react";
 
 import { borderDefault, pagePaperBg, skeletonBg } from "../../theme/classes";
+import { parseIssuePath } from "../refs/page-routes";
 import { NO_HOVER_PREVIEW_ATTRIBUTE } from "../refs/ref-preview-card";
-import { parseIssuePath } from "../refs/routes";
 import { IconRail } from "./IconRail";
 import type { ShellNavigation } from "./shell-navigation";
 

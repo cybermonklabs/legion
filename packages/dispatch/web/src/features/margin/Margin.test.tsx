@@ -16,7 +16,7 @@ import type { Ask, AskRead, Comment, IssueAskRow, IssueDetails } from "../../api
 import { heldSends } from "../conversation/held-sends";
 import { SendMovedError } from "../conversation/send-request";
 import type { RetypeOutcome } from "../doc/editor";
-import { buildIssuePath, buildProjectPath } from "../refs/routes";
+import { buildIssuePath, buildProjectPath } from "../refs/page-routes";
 import { SendStoppedError } from "../writes/keyed-write";
 import { Margin } from "./Margin";
 import {

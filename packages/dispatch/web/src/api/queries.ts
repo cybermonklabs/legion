@@ -13,7 +13,7 @@ import { credentialPendingQuery } from "../features/credentials/pending";
 import { beginInboxFetch, finishInboxFetch } from "../features/inbox/ask-thread-freshness";
 import type { AdvancesListing } from "../features/project/issues-table-data";
 import { agentsQuery } from "../features/refs/agent-registry";
-import { parseIssuePath, parseProjectPath } from "../features/refs/routes";
+import { parseIssuePath, parseProjectPath } from "../features/refs/page-routes";
 import { compareTimestamps, isTimestamp } from "../lib/timestamps";
 
 import {
@@ -830,7 +830,7 @@ export type LandingRead = Query<"/api/v1/landing", "get">;
  * Which page the entry asks the landing for, read from the address the browser is loading.
  *
  * The shapes are the router's own, parsed by the functions that already parse them
- * (`features/refs/routes.ts`), so this cannot drift from what `app.tsx` draws at that address:
+ * (`features/refs/page-routes.ts`), so this cannot drift from what `app.tsx` draws at that address:
  * `/issues/<key>` and every tab, document and item under it are one issue page; a project's
  * `/documents/<slug>` is a document page; every other `/projects/<key>` address - the board and
  * its Issues, Documents and Architecture tabs - is a board.

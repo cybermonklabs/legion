@@ -4,7 +4,11 @@ import { useLocation } from "react-router-dom";
 
 import { primarySpec, roleDocument } from "../../api/issue-cache";
 import { issueQuery, userStateQuery } from "../../api/queries";
-import { type IssueRoute, isPrimaryDocumentArtifactRoute, issueTabForRoute } from "../refs/routes";
+import {
+  type IssueRoute,
+  isPrimaryDocumentArtifactRoute,
+  issueTabForRoute,
+} from "../refs/page-routes";
 import { firstHighlightTerm } from "../search/search-model";
 
 export function useIssueDetail(route: IssueRoute) {

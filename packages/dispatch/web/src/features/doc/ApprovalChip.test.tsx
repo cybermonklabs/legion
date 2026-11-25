@@ -11,7 +11,7 @@ import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, NetworkError } from "../../api/client";
 import type { Artifact, ArtifactApproval, ArtifactReview } from "../../api/types";
 import { ArtifactHeader } from "../artifacts/ArtifactHeader";
-import { buildIssuePath, parseIssuePath } from "../refs/routes";
+import { buildIssuePath, parseIssuePath } from "../refs/page-routes";
 import { stoppedWriteNote } from "../writes/keyed-write";
 import { ApprovalChip } from "./ApprovalChip";
 

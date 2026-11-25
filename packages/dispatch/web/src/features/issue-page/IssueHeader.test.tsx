@@ -34,7 +34,8 @@ import {
   fixtureAnswer,
   fixtureRefusal,
 } from "../issue/parent-status/status-change-fixtures";
-import { buildDispatchReference, DECISIONS_DOCUMENT_SLUG, parseIssuePath } from "../refs/routes";
+import { parseIssuePath } from "../refs/page-routes";
+import { buildDispatchReference, DECISIONS_DOCUMENT_SLUG } from "../refs/routes";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { appKeymap, useKeymapScope } from "../shell/keymap";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";

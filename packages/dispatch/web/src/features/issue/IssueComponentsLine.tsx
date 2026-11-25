@@ -27,7 +27,7 @@ import {
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { ComponentPicker } from "../architecture/ComponentPicker";
-import { buildIssuePath } from "../refs/routes";
+import { buildIssuePath } from "../refs/page-routes";
 import { useIssueComponents } from "./useIssueComponents";
 
 /** Whether the components picker's trigger draws a bare "+": the issue's own explicit set, which

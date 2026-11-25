@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import type { Artifact, Ask, Comment, IssueDetails } from "../../api/types";
-import { buildIssuePath } from "../refs/routes";
+import { buildIssuePath } from "../refs/page-routes";
 import { KEEPS_DETAILS_ATTRIBUTE } from "./Margin";
 import { type DocumentBridge, useMargin } from "./margin-context";
 

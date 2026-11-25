@@ -10,8 +10,9 @@ import { AgentParts, AskResolutionLine } from "../refs/AgentName";
 import { askResolutionReason } from "../refs/actor";
 import { MarkdownBody } from "../refs/MarkdownBody";
 import { EditedMark, PostBody } from "../refs/PostBody";
+import { buildIssuePath } from "../refs/page-routes";
 import { postDeletion } from "../refs/post-marks";
-import { buildIssuePath, buildReferencePath, itemRoute } from "../refs/routes";
+import { buildReferencePath, itemRoute } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
 import { textSourceOf } from "../refs/text-references";
 

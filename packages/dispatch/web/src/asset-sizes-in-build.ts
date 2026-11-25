@@ -55,8 +55,13 @@ export const MAX_ASSET_BYTES = 8 * 1024 * 1024;
  * takes it to 499,583, each with a 39-character build id. The merge of the default branch's
  * correction and deletion of a post (#3512, 2026-11-24) then wrote 500,975, and three moves the
  * same day answered it with no new lazy load, the ones `web/vite.config.ts`'s build comment
- * names, to 498,776; with the correction's mark in the event map's chunk the entry reads
- * 498,590 bytes with a 39-character build id, 1,410 under this budget.
+ * names, to 498,776; with the correction's mark in the event map's chunk the entry read
+ * 498,590 bytes with a 39-character build id. The forward merges of the default branch after
+ * it, whose layers of the page's foot (#4631) added about 6,500 bytes, and the fixes after them
+ * wrote 506,935, over this budget again; the page addresses the shell reads then left
+ * `features/refs/routes.ts` for a module of their own (`features/refs/page-routes.ts`), with no
+ * new lazy load, so the grammar of references and the modules only it imports left the entry,
+ * which reads 492,802 bytes with a 39-character build id, 7,198 under this budget.
  * No hash is recorded with these sizes: that hash carries the build id, which falls back to the clock
  * (`__DISPATCH_BUILD__`, `web/vite.config.ts`), so two builds of one tree write the same bytes
  * under two names. The id is in the entry too, so CI's build, whose id is the 40-character

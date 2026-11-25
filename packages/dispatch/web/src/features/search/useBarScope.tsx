@@ -3,7 +3,7 @@ import { useLocation } from "react-router-dom";
 
 import { borderDefault, textMutedOnSurface, textSecondaryOnSurface } from "../../theme/classes";
 import { useProjectArtifact } from "../document/useProjectArtifact";
-import { documentRouteOf, routeProjectOf } from "../refs/routes";
+import { documentRouteOf, routeProjectOf } from "../refs/page-routes";
 import { KeyHints } from "../shell/ShortcutHelp";
 import {
   type BarScopeLevel,

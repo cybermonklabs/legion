@@ -13,13 +13,9 @@ import { ArtifactQueryStates } from "../artifacts/ArtifactQueryStates";
 import type { DocumentToolbar } from "../doc/ProofDocument";
 import { SubscribedAgents } from "../issue/SubscribedAgents";
 import { useAgentText } from "../refs/AgentName";
+import { buildProjectPath, parseProjectPath } from "../refs/page-routes";
 import { ReferencedBy } from "../refs/ReferencedBy";
-import {
-  buildDispatchReference,
-  buildProjectPath,
-  documentRoute as documentReferenceRoute,
-  parseProjectPath,
-} from "../refs/routes";
+import { buildDispatchReference, documentRoute as documentReferenceRoute } from "../refs/routes";
 import { firstHighlightTerm } from "../search/search-model";
 import { useEndHoldWhen } from "../shell/content-drawn";
 import { useDocumentTitle } from "../shell/useDocumentTitle";

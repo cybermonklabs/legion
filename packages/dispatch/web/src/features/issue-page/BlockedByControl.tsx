@@ -9,7 +9,7 @@ import {
   pageInkText,
   pageQuietText,
 } from "../../theme/classes";
-import { buildIssuePath } from "../refs/routes";
+import { buildIssuePath } from "../refs/page-routes";
 import { focusOnDocument } from "../shell/roving";
 import { blockedByControlName } from "./details-names";
 import { FormActions } from "./IssueFieldForms";

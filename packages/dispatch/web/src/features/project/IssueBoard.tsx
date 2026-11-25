@@ -43,9 +43,10 @@ import { PriorityControl } from "../issue/PriorityControl";
 import { ProgressChips } from "../issue/ProgressChips";
 import { ParentStatusDialog } from "../issue/parent-status/ParentStatusDialog";
 import { UnreachableRouteMarker } from "../issue/RouteReach";
+import { buildIssuePath } from "../refs/page-routes";
 import { closeRefPreview } from "../refs/RefPreview";
 import { referenceTriggerProps } from "../refs/reference-trigger";
-import { buildDispatchReference, buildIssuePath } from "../refs/routes";
+import { buildDispatchReference } from "../refs/routes";
 import { useKeymap, useKeymapScope } from "../shell/keymap";
 import { closestMatching } from "../shell/roving";
 import {

@@ -15,8 +15,8 @@ import {
   railText,
 } from "../../theme/classes";
 import { DETAILS_ATTRIBUTE, type MarginDrawer, useMarginDrawer } from "../issue-page/margin-slot";
+import { routeHasMargin } from "../refs/page-routes";
 import { NO_HOVER_PREVIEW_ATTRIBUTE } from "../refs/ref-preview-card";
-import { routeHasMargin } from "../refs/routes";
 import { DIALOG_SCOPE, useKeymap } from "../shell/keymap";
 import {
   COMPACT_VIEWPORT_QUERY,

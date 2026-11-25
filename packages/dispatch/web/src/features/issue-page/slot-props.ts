@@ -1,5 +1,5 @@
 import type { IssueDetails } from "../../api/types";
-import type { IssueRoute } from "../refs/routes";
+import type { IssueRoute } from "../refs/page-routes";
 
 /** The one object the root hands to every slot: the issue as `issueQuery` loaded it, and the
  *  address as `parseIssuePath` read it. Every slot takes the same object, so a part that fills a

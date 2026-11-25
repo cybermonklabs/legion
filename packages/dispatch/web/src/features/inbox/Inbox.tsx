@@ -38,13 +38,8 @@ import { issuePriority } from "../issue/issue-priority";
 import { PriorityControl } from "../issue/PriorityControl";
 import { AgentName, useAgentText } from "../refs/AgentName";
 import { COPY_REF_SELECTOR, CopyRefButton } from "../refs/CopyRefButton";
-import {
-  buildInboxPath,
-  INBOX_FILTER_FIELDS,
-  type InboxRoute,
-  type InboxShow,
-  parseInboxSearch,
-} from "../refs/routes";
+import { buildInboxPath, INBOX_FILTER_FIELDS, type InboxRoute } from "../refs/page-routes";
+import { type InboxShow, parseInboxSearch } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
 import { type KeymapScope, useKeymap, useKeymapScope } from "../shell/keymap";
 import { closestMatching, focusedMatching, roveFocus } from "../shell/roving";

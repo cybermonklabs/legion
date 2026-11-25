@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 
 import { linkHoverText, pageHeaderControl, pageInkText, pageQuietText } from "../../theme/classes";
 import { CopyRefButton } from "../refs/CopyRefButton";
-import { buildIssuePath } from "../refs/routes";
+import { buildIssuePath } from "../refs/page-routes";
 import { type IssueAction, IssueActionsMenu } from "./IssueActionsMenu";
 import { DETAILS_ATTRIBUTE, useMarginDrawer } from "./margin-slot";
 import { authorText, pageChrome } from "./page-structure";

@@ -26,7 +26,7 @@ import {
 import { AgentName, AskResolutionLine } from "../refs/AgentName";
 import { askResolutionBadge, askResolutionReason } from "../refs/actor";
 import { MarkdownBody } from "../refs/MarkdownBody";
-import { buildIssuePath } from "../refs/routes";
+import { buildIssuePath } from "../refs/page-routes";
 import { Timestamp } from "../refs/Timestamp";
 import { textSourceOf } from "../refs/text-references";
 import type { DwellRef } from "../shell/useDwell";

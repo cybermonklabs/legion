@@ -2,7 +2,7 @@ import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 
 import { blockFragment } from "../refs/block-reference";
-import { buildIssuePath, buildProjectPath } from "../refs/routes";
+import { buildIssuePath, buildProjectPath } from "../refs/page-routes";
 import { isDecisionAsk } from "./ask-decision";
 import type { OwnedAsk } from "./ask-name";
 

@@ -24,7 +24,7 @@ import {
 } from "../../theme/classes";
 import { ArchitecturePage } from "../architecture/ArchitecturePage";
 import { BlockedOnYou } from "../inbox/BlockedOnYouLink";
-import { buildProjectPath, parseProjectPath } from "../refs/routes";
+import { buildProjectPath, parseProjectPath } from "../refs/page-routes";
 import { useKeymap, useKeymapScope } from "../shell/keymap";
 import { NotFoundPage } from "../shell/NotFoundPage";
 import { useDocumentTitle } from "../shell/useDocumentTitle";

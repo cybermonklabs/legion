@@ -1,4 +1,4 @@
-import type { IssueTab } from "../refs/routes";
+import type { IssueTab } from "../refs/page-routes";
 import { chunk } from "../shell/chunk-component";
 
 /**

@@ -38,7 +38,7 @@ import {
   parseIssuePath,
   parseProjectPath,
   routeIsInbox,
-} from "../refs/routes";
+} from "../refs/page-routes";
 import { SessionAgentName, useSessionText } from "../refs/SessionName";
 
 /** The rows the Agents heading folds, named so the heading's chevron can say what it controls. */

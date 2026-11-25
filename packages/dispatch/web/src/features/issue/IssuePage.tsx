@@ -25,13 +25,8 @@ import {
 import { ArtifactDocument } from "../artifacts/ArtifactDocument";
 import type { DocumentToolbar } from "../doc/ProofDocument";
 import { outsideAskCard } from "../inbox/ask-card";
-import {
-  buildReferencePath,
-  documentRoute,
-  type IssueRoute,
-  type IssueTab,
-  parseIssuePath,
-} from "../refs/routes";
+import { type IssueRoute, type IssueTab, parseIssuePath } from "../refs/page-routes";
+import { buildReferencePath, documentRoute } from "../refs/routes";
 import { chunkComponent } from "../shell/chunk-component";
 import { useEndHoldWhen } from "../shell/content-drawn";
 import { useKeymap, useKeymapScope } from "../shell/keymap";

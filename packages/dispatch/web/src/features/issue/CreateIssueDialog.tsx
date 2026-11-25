@@ -24,7 +24,7 @@ import {
   textPrimaryOnSurface,
   textSecondaryOnSurface,
 } from "../../theme/classes";
-import { buildIssuePath, routeProjectOf } from "../refs/routes";
+import { buildIssuePath, routeProjectOf } from "../refs/page-routes";
 import { useDialog } from "../shell/useDialog";
 import { LandedWithoutAnswer } from "../writes/LandedWithoutAnswer";
 import { stoppedNote, useKeyedWrite } from "../writes/useKeyedWrite";

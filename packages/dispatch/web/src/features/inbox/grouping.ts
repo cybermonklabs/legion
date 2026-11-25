@@ -14,7 +14,8 @@
  */
 
 import { compareTimestamps } from "../../lib/timestamps";
-import type { InboxDimension, InboxFilterField, InboxGroupBy, InboxSort } from "../refs/routes";
+import type { InboxFilterField } from "../refs/page-routes";
+import type { InboxDimension, InboxGroupBy, InboxSort } from "../refs/routes";
 import { NO_FILTER_VALUE } from "../refs/routes";
 import { ASK_URGENCIES_ASCENDING, URGENCY_LABELS } from "./ask-urgency";
 import {

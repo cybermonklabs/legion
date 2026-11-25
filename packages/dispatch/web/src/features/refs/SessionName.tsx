@@ -21,8 +21,8 @@ import {
   unknownDotBorder,
 } from "../../theme/classes";
 import { type AgentRegistry, type AgentState, useAgentRegistry } from "./agent-registry";
+import { AGENT_LIVE_PATH } from "./page-routes";
 import { relativeTimeLabel } from "./relative-time";
-import { AGENT_LIVE_PATH } from "./routes";
 
 /**
  * A session as `AgentName` draws it (`AgentName.tsx`): its state mark, its name and its link to

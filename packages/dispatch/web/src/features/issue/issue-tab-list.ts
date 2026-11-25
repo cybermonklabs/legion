@@ -1,5 +1,5 @@
 import type { TabDefinition } from "../../components/Tabs";
-import type { IssueTab } from "../refs/routes";
+import type { IssueTab } from "../refs/page-routes";
 
 /** The issue tablist's tabs, in the order a reader meets them, and nothing that renders them.
  *  The loading skeleton in `app.tsx` stands in for the tablist and so needs these labels, but it

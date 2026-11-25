@@ -146,7 +146,7 @@
                 },
                 "patterns": [
                   {
-                    "group": ["**/refs/routes", "./routes"],
+                    "group": ["**/refs/page-routes", "./page-routes"],
                     "importNamePattern": "AGENT_LIVE_PATH",
                     "message": "A link to an agent's live conversation is AgentName's (features/refs/AgentName.tsx)."
                   }
