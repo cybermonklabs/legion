@@ -250,9 +250,10 @@ func raiseKeptRoleWake(ctx context.Context, cfg listenerDeliveryHandlerConfig, r
 // most roleKeepWakeAge. The read goes forward because the stream reads no message before a
 // sequence; a lane's copies grow younger along it, so the read ends at the first copy that wakes
 // the role. An outbox copy wakes nothing, as the outbox's own keep raises no report, and a copy
-// whose role no read can tell (readRoleFrame) wakes nothing either, as the walk ends it. A copy is
-// read field by field, as the walk reads it (roleFrame.envelope), so a copy the walk forwards wakes
-// the role, an expects_reply word this build does not know among it.
+// whose role no read can tell (readRoleFrame) wakes nothing either, as the walk ends it, nor does a
+// withdrawal mark (isWithdrawnFrame), which the walk ends and forwards to no one. A copy is read
+// field by field, as the walk reads it (roleFrame.envelope), so a copy the walk forwards wakes the
+// role, an expects_reply word this build does not know among it.
 func keptLaneWakesItsRole(ctx context.Context, client *bus.Client, role string, from uint64, now time.Time) (bool, error) {
 	subject := bus.KeptRoleSubject(role)
 	next := from
@@ -268,7 +269,7 @@ func keptLaneWakesItsRole(ctx context.Context, client *bus.Client, role string, 
 		if now.Sub(stored.Time) > roleKeepWakeAge {
 			continue
 		}
-		if frame, err := readRoleFrame(stored.Data); err == nil && !isOutboxCopy(frame.envelope()) {
+		if frame, err := readRoleFrame(stored.Data); err == nil && !isOutboxCopy(frame.envelope()) && !isWithdrawnFrame(frame.envelope()) {
 			return true, nil
 		}
 	}

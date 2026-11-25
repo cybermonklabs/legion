@@ -9,14 +9,18 @@ body: |-
   the role and says that nothing was kept and why. The request's log line names the outcome
   `role_no_source_session`. For such a publish, whether a live session holds the role is read from
   the role bucket stream's leader and the holder's registration from the session bucket stream's
-  leader, never from a copy, so a copy that is behind refuses no message a live holder can take. A
+  leader, never from the cache or a copy, so neither refuses a message a live holder can take. A
   publish that names a session, and one to a role a live session holds, are unchanged. A publish
   whose forward the stream stores for its holder later than `roles.ForwardFenceAge` and the route's
-  3.5 s budget after the listener read that holder is answered `504 delivery_failed`, its error
-  naming `roles.ErrForwardStoredTooLate`, and not `200`: the holder may have lost the role
-  meanwhile and the takeover record that would have copied the message to its next holder may have
-  ended, so the copy reached nobody. The sender's retry reads the holder again and reaches the
-  role's holder once.
+  3.5 s budget after the listener read that holder was answered `200`, though the holder may have
+  lost the role and a takeover could copy the forward to the next holder beside the sender's own
+  retry. The listener now withdraws such a forward: it publishes a withdrawal mark to the role's
+  kept lane under the message id a takeover's copy of the forward takes, and the stream's duplicate
+  window decides which landed first. The send is answered `504 delivery_failed`, wrapping
+  `roles.ErrForwardStoredTooLate`, when the mark landed first, so the retry is the one delivery;
+  `200` when a copy landed first and is on its way; and `503 maybe_stored` when no mark can be
+  published, which can give the holder a second copy under a new event id if a later pass copies
+  the forward and the sender retries. The kept lane's walk ends a mark and forwards it to no one.
 time: 2026-11-24T17:39:19Z
 custom:
     Issue: pr5412
