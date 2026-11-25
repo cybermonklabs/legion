@@ -1583,7 +1583,13 @@ func (s *parityStack) normalized(t *testing.T, body string) string {
 				}
 			}
 		case []any:
-			for _, inner := range value {
+			for place, inner := range value {
+				if id, isString := inner.(string); isString {
+					if index := slices.Index(s.ids, id); index >= 0 {
+						value[place] = fmt.Sprintf("result %d", index)
+						continue
+					}
+				}
 				walk(inner)
 			}
 		}

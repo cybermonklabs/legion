@@ -140,6 +140,29 @@ var mergedPullRequestOfQuery = `
 
 var mergedPullRequestRead = newHeadsStatement("", mergedPullRequestOfQuery, 2, "")
 
+// headForRefresh is the current request's row that a writer's unreadable refresh would stamp.
+// It uses the same head relation as every comparison, including earlier local learning.
+func headForRefresh(ctx context.Context, q refs.Queryer, repo string, number int, answers HeadAnswers) (PullRequestHead, bool, error) {
+	query, args := headForRefreshRead.query(answers, repo, number)
+	var head PullRequestHead
+	err := q.QueryRow(ctx, query, args...).Scan(&head.Repo, &head.Number, &head.HeadSHA, &head.HeadRef,
+		&head.BaseRef, &head.State, &head.IssueKey, &head.EventAt, &head.MergeCommitSHA, &head.MergedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return PullRequestHead{}, false, nil
+	}
+	if err != nil {
+		return PullRequestHead{}, false, fmt.Errorf("read the current pull request head a refresh would stamp: %w", err)
+	}
+	return head, true, nil
+}
+
+var headForRefreshQuery = `
+	select repo, number, head_sha, head_ref, base_ref, state, issue_key, event_at,
+		merge_commit_sha, merged_at
+	from pull_request_heads where repo = $1 and number = $2`
+
+var headForRefreshRead = newHeadsStatement("", headForRefreshQuery, 2, "")
+
 // HoldAnswer is what Dispatch can say about one commit's history holding one merge commit.
 // HoldUnknown is that it cannot say now: the read failed, or the App cannot read the repository.
 // It is kept apart from DoesNotHold, as BranchAnswer keeps BranchUnknown apart, because a read

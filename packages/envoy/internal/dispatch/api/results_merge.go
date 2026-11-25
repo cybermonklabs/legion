@@ -57,6 +57,8 @@ type mergeTimeFills struct {
 	refreshed map[mergeRow]refreshedMerge
 	readOnly  bool
 	answers   *delivery.HeadAnswers
+	// generation changes after each once-per-row refresh, which may also change attribution.
+	generation uint64
 }
 
 // mergeRow is one pull request row's key in mergeTimeFills.
@@ -116,7 +118,7 @@ func (s *server) refreshMerge(ctx context.Context, fills *mergeTimeFills, repo s
 	}
 	var refreshErr error
 	if fills.readOnly {
-		pulls, err := s.deps.Attributor.ReadPullRequestHead(ctx, s.deps.Store.Pool, s.deps.GitHub, repo, number, s.resultsNow())
+		pulls, err := s.deps.Attributor.ReadPullRequestHead(ctx, s.deps.Store.Pool, s.deps.GitHub, repo, number, s.resultsNow(), *fills.answers)
 		fills.answers.Add(pulls)
 		refreshErr = err
 	} else {
@@ -136,6 +138,7 @@ func (s *server) refreshMerge(ctx context.Context, fills *mergeTimeFills, repo s
 		fills.refreshed = map[mergeRow]refreshedMerge{}
 	}
 	fills.refreshed[key] = learned
+	fills.generation++
 	return learned
 }
 
