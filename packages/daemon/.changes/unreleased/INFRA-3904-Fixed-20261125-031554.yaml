@@ -1,0 +1,16 @@
+kind: Fixed
+body: |-
+    A claim write that the database answered past the 5 s claim-write bound, after it had answered
+    the write's BEGIN, is now made once more at once, in the same decision. Before, such a write
+    was owed and made again only at the claim's next decision: a launch whose write as launching
+    was cut waited for the next probe to be tried again, and the boot's release of an uncertain
+    launch waited for the next orphan sweep. A write the bound cut before the database answered its
+    BEGIN (a dial, a wait in the pool's queue, the BEGIN itself) is owed at once, as before, and so
+    is a second cut in a row. The cost: a database that answers BEGIN and then hangs every write
+    holds a claim's machine twice as long before the write is owed, two claim-write bounds instead
+    of one (about 10 s instead of 5 s; at worst about 20 s, or 74 s for a write that queued first,
+    by the bounds INFRA-1075's entry gives per try). The release of a claim's held names is made
+    only once, since a second try after a first that landed would answer that it freed no names.
+time: 2026-11-25T03:15:54Z
+custom:
+    Issue: INFRA-3904

@@ -4609,9 +4609,13 @@ func (m *Machine) forgetSend() {
 // was cut was tried again at the probe interval (writeTry, relaunchAtProbe), and the boot's release
 // of an uncertain launch at the daemon's next orphan sweep (ReleaseUncertainLaunch;
 // dispatch://INFRA-3904). A call made again may have been applied the first time, whatever its
-// answer said, which is why the repair already makes such a write again (writeOwed); a call whose
-// answer is what the first try changed is not made again (writeOnce). A second cut is owed as every
-// write the database did not take is (owes, repair). Any other failure — a dial the bound cut, a
+// answer said, so each call that comes here must be safe to make twice, each for a reason of its
+// own: PutClaim, PutClaimAndDelivery and PauseStopped are the writes the repair itself makes again
+// (repair); PutDelivery is an upsert of one row; RetireDelivery reads ErrNoSuchDelivery after a
+// landed first try as the retirement made; HoldSessions inserts on conflict do nothing. A new
+// caller of write must have such a reason too. ReleaseHolds has none, because it answers the names
+// it freed, so ReleaseNames makes it once (writeOnce). A second cut is owed as every write the
+// database did not take is (owes, repair). Any other failure — a dial the bound cut, a
 // wait in the store's pool queue that ran out its bound (defaultClaimAcquire), a connection that
 // broke or was refused, a statement refused, a refusal of the store's own — is answered at once
 // and is not made again here: none of them reached the database, or the database answered it, so

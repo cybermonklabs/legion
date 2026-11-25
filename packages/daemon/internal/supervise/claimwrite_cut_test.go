@@ -19,57 +19,55 @@ func (c begunCut) Unwrap() error    { return c.err }
 func (begunCut) WriteBegun() bool   { return true }
 func cutAfterBegin(err error) error { return begunCut{err} }
 
-// cutStore is the store double whose next PutClaim calls are cut by the claim-write bound: each
-// answers as the store wraps a write its bound ended (context.DeadlineExceeded), and records the
-// call as countingStore does. begun says whether the cut came after the database was handed the
-// write (the error answers WriteBegun), or before (a dial, a wait in the pool's queue, a BEGIN: no
-// mark). Every other call is the store's.
+// cutStore is the store double whose next PutClaim calls fail with an error of the row's own, as
+// stopTransaction's failNext makes PauseStopped fail, and records each call as countingStore does.
+// Every other call is the store's.
 type cutStore struct {
 	*countingStore
 	mu    sync.Mutex
-	cuts  int
-	begun bool
+	fails int
+	err   error
 }
 
-// cutNext makes the next n PutClaim calls answer as writes the bound cut short, after the
-// database was handed them or before, as begun says.
-func (s *cutStore) cutNext(n int, begun bool) {
+// failNext makes the next n PutClaim calls fail with err, writing nothing.
+func (s *cutStore) failNext(n int, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.cuts, s.begun = n, begun
+	s.fails, s.err = n, err
 }
 
 func (s *cutStore) PutClaim(ctx context.Context, c Claim) error {
 	s.mu.Lock()
-	cut, begun := s.cuts > 0, s.begun
-	if cut {
-		s.cuts--
+	failing, err := s.fails > 0, s.err
+	if failing {
+		s.fails--
 	}
 	s.mu.Unlock()
-	if !cut {
+	if !failing {
 		return s.countingStore.PutClaim(ctx, c)
 	}
 	s.record("PutClaim")
-	err := fmt.Errorf("put claim %s: %w", c.Token, context.DeadlineExceeded)
-	if begun {
-		return cutAfterBegin(err)
-	}
 	return err
 }
 
 // newCutHarness is newCountedHarness over a cutStore.
 func newCutHarness(t *testing.T) (*harness, *cutStore) {
 	t.Helper()
-	h := newBareHarness(t)
-	cut := &cutStore{countingStore: &countingStore{Store: h.store}}
-	h.deps.Store = cut
-	c := queuedClaim()
-	if err := h.store.PutClaim(h.ctx, c); err != nil {
-		t.Fatal(err)
-	}
-	h.start(c)
+	var cut *cutStore
+	h, _ := newCountedHarnessUnder(t, func(counted *countingStore) Store {
+		cut = &cutStore{countingStore: counted}
+		return cut
+	})
 	return h, cut
 }
+
+// The two cuts a claim write can meet, as the store answers them: one the bound made after the
+// database answered the write's BEGIN (WriteBegun), and one it made before, in a dial, a queue's
+// wait or the BEGIN itself (no mark).
+var (
+	cutAfterTheBegin  = cutAfterBegin(fmt.Errorf("put claim: %w", context.DeadlineExceeded))
+	cutBeforeTheBegin = fmt.Errorf("put claim: %w", context.DeadlineExceeded)
+)
 
 // One claim write the claim-write bound cut after the database was handed it (a database that
 // answered that write past defaultClaimWrite) is made again in the same decision, so the decision
@@ -84,7 +82,7 @@ func TestAClaimWriteTheBoundCutShortOnceIsMadeAgainInTheSameDecision(t *testing.
 		h, cut := newCutHarness(t)
 		h.reach(StateReady)
 		attempted := cut.mark()
-		cut.cutNext(1, true)
+		cut.failNext(1, cutAfterTheBegin)
 
 		if err := h.handle(StreamTurnStart{Claim: testToken}); err != nil {
 			t.Fatalf("the turn start whose first write the bound cut = %v, want it to land", err)
@@ -111,7 +109,7 @@ func TestAClaimWriteTheBoundCutShortOnceIsMadeAgainInTheSameDecision(t *testing.
 		h, cut := newCutHarness(t)
 		h.reach(StateReady)
 		attempted := cut.mark()
-		cut.cutNext(2, true)
+		cut.failNext(2, cutAfterTheBegin)
 
 		if err := h.handle(StreamTurnStart{Claim: testToken}); !errors.Is(err, context.DeadlineExceeded) {
 			t.Fatalf("the turn start whose two writes the bound cut = %v, want the cut", err)
@@ -131,7 +129,7 @@ func TestAClaimWriteTheBoundCutShortOnceIsMadeAgainInTheSameDecision(t *testing.
 		h, cut := newCutHarness(t)
 		h.reach(StateReady)
 		attempted := cut.mark()
-		cut.cutNext(1, false)
+		cut.failNext(1, cutBeforeTheBegin)
 
 		if err := h.handle(StreamTurnStart{Claim: testToken}); !errors.Is(err, context.DeadlineExceeded) {
 			t.Fatalf("the turn start whose write the bound cut before the database had it = %v, want the cut", err)
@@ -148,7 +146,7 @@ func TestAClaimWriteTheBoundCutShortOnceIsMadeAgainInTheSameDecision(t *testing.
 		h, cut := newCutHarness(t)
 		h.reach(StateReady)
 		attempted := cut.mark()
-		cut.cutNext(1, true)
+		cut.failNext(1, cutAfterTheBegin)
 		h.shutdown()
 
 		if err := h.handle(StreamTurnStart{Claim: testToken}); !errors.Is(err, context.DeadlineExceeded) {

@@ -278,6 +278,12 @@ func (m *Machine) makeOwedReports(reports []owedReport) {
 // and the write is the only thing that would ever put it there. A nil error is no refusal and
 // owes nothing.
 //
+// This rule decides what is owed once Machine.write has stopped trying, not whether it tries again
+// first: write makes a deadline cut of a write the database was handed once more in the same
+// decision (cutByBound, claimWriteTries), and only a write whose last try still failed comes here.
+// A deadline cut of a write the database was never handed (a dial, a queue's wait, a BEGIN) is
+// owed at once, as the deadline row of TestTheOwedWriteErrorsAreTheOnesNoServerAnsweredAbout reads.
+//
 // The rule reads the error in two steps, and their order is the substance of it rather than a
 // style of writing.
 //

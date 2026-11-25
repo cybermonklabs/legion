@@ -75,9 +75,16 @@ func (s *countingStore) mark() int {
 // machine's own writes and nothing else.
 func newCountedHarness(t *testing.T) (*harness, *countingStore) {
 	t.Helper()
+	return newCountedHarnessUnder(t, func(counted *countingStore) Store { return counted })
+}
+
+// newCountedHarnessUnder is newCountedHarness with the counting store wrapped by wrap, for a row
+// that needs a double over the tally (cutStore).
+func newCountedHarnessUnder(t *testing.T, wrap func(*countingStore) Store) (*harness, *countingStore) {
+	t.Helper()
 	h := newBareHarness(t)
 	counted := &countingStore{Store: h.store}
-	h.deps.Store = counted
+	h.deps.Store = wrap(counted)
 	c := queuedClaim()
 	if err := h.store.PutClaim(h.ctx, c); err != nil {
 		t.Fatal(err)
