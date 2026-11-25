@@ -10540,3 +10540,92 @@ test("the project List's header filters draw no count while the closed issues th
   expect(await headerOptions("Priority", 2)).toEqual(["P1, 3 issues", "P2, 1 issue"]);
   expect(wrong, wrong.join("; ")).toEqual([]);
 });
+
+// SLOW(>=2s): a question seeded with two followers and a subscriber, opened in the Inbox at two widths with the subscriber read held.
+// INFRA-3135, round 26 (the tester's), by the architect's ruling of 2026-11-24 08:07Z (a count
+// beside a value is drawn only once the data it counts has answered) and the round-23 rule (an
+// instance in main's code, in a file this pull request changes, is fixed here). Measured in builds
+// Jobs infra-3135-cr-h-5jqpq (head 8e7e463a) and infra-3135-cr-m-bfr59 (main 0dbe5048), in
+// Chromium, Firefox and WebKit at 1440x900 (the reading column's card) and 390x664 (the list's
+// card): a question that reaches its asker, a session that replied to it and a session subscribed
+// to its issue reads "Reaches 2" while the issue's subscriber read
+// (`GET /api/v1/issues/{key}/subscribers`) is out, and "Reaches 3" once it answers. The card counts
+// the subscriber read's rows as none while it has no answer
+// (`subscribersQuery.data ?? EMPTY_SUBSCRIBERS`, features/inbox/AskRecipients.tsx:276) and holds
+// the count back only on a failure (`const counted = !subscribersQuery.isError`, :288), so the
+// toggle draws `reachLabel` (:372) over the followers alone.
+test("an Inbox card's Reaches draws no count while the subscribers it counts are out @firefox @webkit", async ({
+  page,
+}) => {
+  // Two widths, each with a question seeded and the Inbox opened for it.
+  test.setTimeout(90_000);
+  await createProject({ key: "CORE", name: "Core" });
+  const asker = { id: "e2e-reach-asker", kind: "session" as const };
+  const replier = { id: "e2e-reach-replier", kind: "session" as const };
+  const watcher = "e2e-reach-watcher";
+  await setLiveSessions([
+    { session_id: asker.id, title: "Asker (e2e)" },
+    { session_id: replier.id, title: "Replier (e2e)" },
+    { session_id: watcher, title: "Watcher (e2e)" },
+  ]);
+  // Every issue's subscriber read is held until the row lets it through.
+  let holding = true;
+  const held: Route[] = [];
+  await page.route(
+    (url) => /^\/api\/v1\/issues\/[^/]+\/subscribers$/u.test(url.pathname),
+    async (route) => {
+      if (route.request().method() !== "GET") return route.fallback();
+      if (holding) {
+        held.push(route);
+        return;
+      }
+      await route.continue();
+    }
+  );
+  const wrong: string[] = [];
+  for (const size of [
+    { height: 900, width: 1440 },
+    { height: 664, width: 390 },
+  ]) {
+    await page.setViewportSize(size);
+    holding = true;
+    const issue = await createIssue({ project: "CORE", title: `Who hears it at ${size.width}` });
+    await patchIssue(issue.key, { assignee: "alice" });
+    const ask = await createAsk(
+      issue.key,
+      { options: [{ label: "Ship" }, { label: "Hold" }], question: `Ship it at ${size.width}?` },
+      { actor: asker, as: "agent" }
+    );
+    await createComment(
+      issue.key,
+      { ask_id: ask.id, body: "Tests are green on my side." },
+      { actor: replier, as: "agent" }
+    );
+    await setInterests([
+      { session_id: watcher, topics: [`notifications.dispatch.issue.${issue.key}.>`] },
+    ]);
+    await page.goto("/");
+    await expect(inboxRow(page, ask.id)).toBeVisible();
+    const card = await askCard(page, ask.id);
+    const toggle = card
+      .getByRole("region", { name: "Recipients" })
+      .getByRole("button", { name: /^(?:Reaches|Recipients)\b/u });
+    await expect(toggle).toBeVisible();
+    await expect.poll(() => held.length).toBeGreaterThan(0);
+    // The subscriber read is held, so what the toggle names now is the unanswered state.
+    const whileOut = (await toggle.textContent()) ?? "";
+    wrong.push(
+      ...[whileOut]
+        .filter((label) => /^Reaches \d/u.test(label))
+        .map(
+          (label) =>
+            `${size.width}x${size.height}: the card reads "${label}" while its subscribers are out`
+        )
+    );
+    holding = false;
+    for (const route of held.splice(0)) await route.continue();
+    // The control: once the subscribers answer, the card counts all three.
+    await expect(toggle).toHaveText(/^Reaches 3\b/u);
+  }
+  expect(wrong, wrong.join("; ")).toEqual([]);
+});
