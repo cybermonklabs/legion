@@ -146,51 +146,105 @@ function required(env: BrokerEnvironment, name: keyof BrokerVariables, kind: str
   return named;
 }
 
+/** One identity source this client can trade, named by {@link IDENTITY_VAR}'s value. */
+export interface IdentitySource {
+  readonly name: string;
+  /** The broker's identity provider whose tokens it makes (Go's `identity.Kind`); null for the
+   *  device login, whose broker access token no identity provider verifies. */
+  readonly provider: string | null;
+  /** The source read out of a deployment's variables, which throws naming the first one a
+   *  deployment that asked for this identity left unset. */
+  readonly read: (env: BrokerEnvironment) => TokenSource;
+}
+
 /**
- * The identity {@link IDENTITY_VAR} names, or undefined when it names none, which is a machine
- * that trades nothing and is no error. A named identity whose own variables are missing throws
- * naming them, since a deployment that asked for one and gave it nothing has a mistake in it.
- * Each kind reads the variables Go's `MachineIdentity` reads for it
- * (`packages/envoy/internal/cipherclient/environment.go`), in the same order; a device login,
- * which Go has no kind for, reads the broker it was made at and the file that keeps it.
+ * Every identity this client can prove, in the order a refusal lists them. Each entry reads the
+ * variables Go's `MachineIdentity` reads for it
+ * (`packages/envoy/internal/cipherclient/environment.go`), in the same order, and names the
+ * broker provider that verifies its tokens, which the broker's own
+ * `TestClientSourcesAgree` holds to the server's registry. A device login, which Go has no kind
+ * for, reads the broker it was made at and the file that keeps it, and names no provider.
  */
-export function machineIdentity(env: BrokerEnvironment): TokenSource | undefined {
-  const kind = value(env, IDENTITY_VAR);
-  switch (kind) {
-    case "":
-      return undefined;
-    case IDENTITY_KUBERNETES:
-      return projectedToken(required(env, MACHINE_TOKEN_FILE_VAR, kind), MACHINE_TOKEN_FILE_VAR);
-    case IDENTITY_METADATA:
-      return metadataIdentity(required(env, MACHINE_AUDIENCE_VAR, kind));
-    case IDENTITY_POOL: {
-      const subject = required(env, MACHINE_TOKEN_FILE_VAR, kind);
-      const tokenAudience = required(env, MACHINE_AUDIENCE_VAR, kind);
-      const audience = required(env, POOL_AUDIENCE_VAR, kind);
-      const serviceAccount = required(env, POOL_ACCOUNT_VAR, kind);
+export const IDENTITY_SOURCES: readonly IdentitySource[] = [
+  {
+    name: IDENTITY_KUBERNETES,
+    provider: "kubernetes",
+    read: (env) =>
+      projectedToken(
+        required(env, MACHINE_TOKEN_FILE_VAR, IDENTITY_KUBERNETES),
+        MACHINE_TOKEN_FILE_VAR
+      ),
+  },
+  {
+    name: IDENTITY_METADATA,
+    provider: "google",
+    read: (env) => metadataIdentity(required(env, MACHINE_AUDIENCE_VAR, IDENTITY_METADATA)),
+  },
+  {
+    name: IDENTITY_POOL,
+    provider: "google",
+    read: (env) => {
+      const subject = required(env, MACHINE_TOKEN_FILE_VAR, IDENTITY_POOL);
+      const tokenAudience = required(env, MACHINE_AUDIENCE_VAR, IDENTITY_POOL);
+      const audience = required(env, POOL_AUDIENCE_VAR, IDENTITY_POOL);
+      const serviceAccount = required(env, POOL_ACCOUNT_VAR, IDENTITY_POOL);
       return poolIdentity({
         subject: projectedToken(subject, MACHINE_TOKEN_FILE_VAR),
         audience,
         serviceAccount,
         tokenAudience,
       });
-    }
-    case IDENTITY_GITHUB_ACTIONS: {
-      const requestUrl = required(env, ACTIONS_ID_TOKEN_REQUEST_URL_VAR, kind);
-      const requestToken = required(env, ACTIONS_ID_TOKEN_REQUEST_TOKEN_VAR, kind);
-      const audience = required(env, MACHINE_AUDIENCE_VAR, kind);
-      return githubActionsIdentity({ requestUrl, requestToken, audience });
-    }
-    case IDENTITY_DEVICE_LOGIN: {
-      const brokerUrl = required(env, BROKER_URL_VAR, kind);
-      return new DeviceLoginIdentity({ path: deviceLoginFile(env), brokerUrl });
-    }
-    default:
-      // Its value is not quoted: a secret pasted into the wrong variable would be printed.
-      throw new Error(
-        `${IDENTITY_VAR} names no identity this machine can prove; it takes ${IDENTITY_KUBERNETES}, ${IDENTITY_METADATA}, ${IDENTITY_POOL}, ${IDENTITY_GITHUB_ACTIONS} or ${IDENTITY_DEVICE_LOGIN}`
+    },
+  },
+  {
+    name: IDENTITY_GITHUB_ACTIONS,
+    provider: "github",
+    read: (env) => {
+      const requestUrl = required(env, ACTIONS_ID_TOKEN_REQUEST_URL_VAR, IDENTITY_GITHUB_ACTIONS);
+      const requestToken = required(
+        env,
+        ACTIONS_ID_TOKEN_REQUEST_TOKEN_VAR,
+        IDENTITY_GITHUB_ACTIONS
       );
+      const audience = required(env, MACHINE_AUDIENCE_VAR, IDENTITY_GITHUB_ACTIONS);
+      return githubActionsIdentity({ requestUrl, requestToken, audience });
+    },
+  },
+  {
+    name: IDENTITY_DEVICE_LOGIN,
+    provider: null,
+    read: (env) => {
+      const brokerUrl = required(env, BROKER_URL_VAR, IDENTITY_DEVICE_LOGIN);
+      return new DeviceLoginIdentity({ path: deviceLoginFile(env), brokerUrl });
+    },
+  },
+];
+
+/** The sources a refusal lists, in registry order: "kubernetes, metadata, pool, github-actions or device-login". */
+function sourceNames(): string {
+  const names = IDENTITY_SOURCES.map((source) => source.name);
+  const last = names[names.length - 1];
+  return `${names.slice(0, -1).join(", ")} or ${last}`;
+}
+
+/**
+ * The identity {@link IDENTITY_VAR} names, or undefined when it names none, which is a machine
+ * that trades nothing and is no error. A named identity whose own variables are missing throws
+ * naming them, since a deployment that asked for one and gave it nothing has a mistake in it.
+ * The identity comes from {@link IDENTITY_SOURCES}, so a source added there is one this client
+ * takes, lists in its refusal, and the broker's `TestClientSourcesAgree` checks the server for.
+ */
+export function machineIdentity(env: BrokerEnvironment): TokenSource | undefined {
+  const kind = value(env, IDENTITY_VAR);
+  if (kind === "") return undefined;
+  const source = IDENTITY_SOURCES.find((candidate) => candidate.name === kind);
+  if (source === undefined) {
+    // Its value is not quoted: a secret pasted into the wrong variable would be printed.
+    throw new Error(
+      `${IDENTITY_VAR} names no identity this machine can prove; it takes ${sourceNames()}`
+    );
   }
+  return source.read(env);
 }
 
 /**

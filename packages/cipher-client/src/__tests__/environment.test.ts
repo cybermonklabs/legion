@@ -21,6 +21,7 @@ import {
   BROKER_VARIABLES,
   brokerTokenClient,
   IDENTITY_DEVICE_LOGIN,
+  IDENTITY_SOURCES,
   IDENTITY_VAR,
   KEY_DIR_VAR,
   MACHINE_AUDIENCE_VAR,
@@ -69,6 +70,43 @@ function broker(): DeviceLoginBroker {
 function loginPath(): string {
   return join(makeDirectory(), "legion", "device-login.json");
 }
+
+test("IDENTITY_SOURCES names today's values in today's order", () => {
+  expect(IDENTITY_SOURCES.map((source) => source.name)).toEqual([
+    "kubernetes",
+    "metadata",
+    "pool",
+    "device-login",
+  ]);
+  // The broker provider whose tokens each source makes, as the server's registry names its kinds;
+  // a device login's access token is the broker's own, which no identity provider verifies.
+  expect(IDENTITY_SOURCES.map((source) => source.provider)).toEqual([
+    "kubernetes",
+    "google",
+    "google",
+    null,
+  ]);
+});
+
+test("machineIdentity reads each source from the registry", () => {
+  const environments: Record<string, Record<string, string>> = {
+    kubernetes: { [MACHINE_TOKEN_FILE_VAR]: "/var/run/secrets/exchange/token" },
+    metadata: { [MACHINE_AUDIENCE_VAR]: "example-audience" },
+    pool: {
+      [MACHINE_TOKEN_FILE_VAR]: "/var/run/secrets/exchange/token",
+      [MACHINE_AUDIENCE_VAR]: "example-audience",
+      AGENT_SECRETS_POOL_AUDIENCE:
+        "//iam.googleapis.com/projects/1/locations/global/workloadIdentityPools/p/providers/v",
+      AGENT_SECRETS_POOL_ACCOUNT: "example-fleet@example-project.iam.gserviceaccount.com",
+    },
+    "device-login": { [BROKER_URL_VAR]: "https://broker.test", HOME: "/home/ada" },
+  };
+  for (const source of IDENTITY_SOURCES) {
+    const env = { [IDENTITY_VAR]: source.name, ...environments[source.name] };
+    const read = machineIdentity(env);
+    expect(read?.describe()).toBe(source.read(env).describe());
+  }
+});
 
 test("a machine that names no identity trades nothing, and that is no error", async () => {
   expect(machineIdentity({})).toBeUndefined();
