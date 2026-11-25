@@ -197,11 +197,13 @@ create table eval_days (
 -- INFRA's size), and an insert finds the space a delete freed only in the free space map, which a
 -- vacuum alone writes. At the defaults autovacuum waits for inserts or dead rows of a fifth of the
 -- table, and pruning keeps taking the dead rows off its count, so over 60 such passes it never ran
--- and the table grew 66 KB a pass, 236.0 to 240.0 MB (dispatch://INFRA-2916, test round 15). With
--- a vacuum after every 1,000 inserts, whatever the table holds, the freed space is found again
--- within 17 such passes. The index cleanup is on because those passes leave dead item pointers on
--- fewer than 2 % of the pages, where a vacuum left to choose skips its index pass and, with it,
--- the pass that frees those pointers and records their pages' free space.
+-- and the table grew 66 KB a pass, 236.0 to 240.0 MB, and was growing still (dispatch://INFRA-2916,
+-- test round 15). With a vacuum after every 1,000 inserts, whatever the table holds, over 120 such
+-- passes on the farm the table grew 235.7 to 238.6 MB in the first 19, until its first vacuum, and
+-- not a byte in the 101 after it, 99.4 % of its 854,640 updates HOT. The index cleanup is on
+-- because a vacuum left to choose skips its index pass while few pages hold dead item pointers,
+-- and with it the pass that frees those pointers: the same 120 passes with it left to choose took
+-- 65 KB more late in the run, between two vacuums 22 passes apart.
 with (fillfactor = 80, autovacuum_vacuum_insert_threshold = 1000, autovacuum_vacuum_insert_scale_factor = 0, vacuum_index_cleanup = on);
 create index eval_days_window on eval_days (project_key, repo, day) where listed;
 create index eval_days_stamps on eval_days (project_key, eval_id, writer, day) where listed;
