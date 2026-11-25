@@ -7,11 +7,10 @@ import (
 )
 
 // A take-over's start, row by row, with no server: each row is a durable as ConsumerInfo reports
-// it, and the stream sequence the take-over recreates it at (takeOverConfig, takeOverStart). The
-// rows hold what no test against nats-server v2.15.1 can tell apart, since that server reports a
-// fresh durable's ack floor as the sequence before its start: the floor of v2.10.29's fresh durable,
-// the floor a one-copy stream's data loss leaves below the start, and the durable with no start of
-// its own that nobody bound.
+// it, and the stream sequence the take-over recreates it at (takeOverConfig, takeOverStart, which
+// says why each row starts where it does). These are the rows no test against nats-server v2.15.1
+// tells apart, since that server reports a fresh durable's ack floor as the sequence before its
+// start.
 func TestATakeOverStartsAtTheFloorRuleOrTheTip(t *testing.T) {
 	t.Parallel()
 	const streamLast = 100

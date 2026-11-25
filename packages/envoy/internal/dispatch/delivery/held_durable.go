@@ -406,10 +406,10 @@ func (d *heldDurable) holds() bool {
 // take-over before this one, or a check that found the durable gone (check), recorded and did not
 // create it again (intakeHoldToken). With no start recorded, a config that asks for new messages
 // only (DeliverNewPolicy) is created at the stream's next sequence, read under the lease, as an
-// explicit start (takeOverConfig says why the start is explicit). A durable bound to a subject no
+// explicit start (takeOverStart says why the start is explicit). A durable bound to a subject no
 // hold recorded is left as it is (boundElsewhere). Any other -- unbound, or bound to the subject
 // the hold records, which is a holder that died or was cut off -- is deleted and created again on a
-// fresh deliver subject at the start takeOverConfig reads off it, and that start is recorded as
+// fresh deliver subject at the start takeOverStart reads off it, and that start is recorded as
 // the hold's token before the delete. The durable's state is read again here, under the lease,
 // since a process of the build before holds can bind it between attempt's read and this one.
 //

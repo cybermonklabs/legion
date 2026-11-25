@@ -576,8 +576,8 @@ func movedSource(t *testing.T) (*fakeSource, *Importer, *store.Store, int) {
 }
 
 // A push of a component source's branch, published on the bus as Envoy's webhook publishes it,
-// starts that source's import through the delivery intake, with delivery settings that name
-// another repository (startPushBus) and no timer pass running: within 10s of the push, and once.
+// starts that source's import through the delivery intake, with no delivery settings saved
+// (startPushBus) and no timer pass running: within 10s of the push, and once.
 // A push to another branch, a push of a tag of the branch's name and a push of the same branch to
 // another repository start none. Pushes that arrive while the source's import runs, after its
 // head lookup, start one more import between them, whether a push or the five-minute import

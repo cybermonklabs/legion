@@ -177,10 +177,9 @@ func (r *Reconcile) leasedPass(ctx context.Context, leases duty.Leases, due time
 //
 // The intake's NATS consumer follows the same split: it binds its durable and writes every
 // `pull_request` envelope's head row whatever the settings say, and hands its delivery-timeline
-// work to the settings (Intake.Run, route). Its durable asks for new messages only, and the first
-// bind of a deployment that never had it starts at the stream's next sequence (heldDurable.takeOver),
+// work to the settings (Intake.Run, route). Its first bind starts at the stream's next sequence,
 // so turning the intake on hands it none of the stream's 72-hour retained history
-// (docs/solutions/envoy/a-fresh-jetstream-consumer-reports-ack-floor-0-so-create-it-at-a-start-sequence-INFRA-594.md).
+// (heldDurable.takeOver, takeOverStart).
 //
 // It is the pass the lease runs (leasedPass), so it is one attempt at reading GitHub
 // (githubreads), recorded through RecordGitHubReads' recorder when it ends: the GitHub client

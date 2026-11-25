@@ -513,12 +513,11 @@ func TestIntakeKeepsUpWithABurstOfDeliveryEvents(t *testing.T) {
 	}
 }
 
-// TestIntakeDrainsABacklogPublishedBeforeItBinds pins what the server does with events that
-// arrive while no subscriber is attached to the durable: the whole time the process is down. The
-// backlog is held undelivered rather than pushed at an inbox nobody is reading, so one larger
-// than intakeMaxAckPending drains in full once the intake comes up, with nothing waiting on the
-// ack wait to be redelivered. A first intake makes the durable and stops before the backlog is
-// published: the durable's first bind starts at the stream's next message
+// TestIntakeDrainsABacklogPublishedBeforeItBinds: a backlog published while no process is bound to
+// the durable, three times intakeMaxAckPending, drains in full once the intake comes up, every run
+// stored within the bound awaitRuns sets, which is well inside the ack wait a redelivery would take.
+// A first intake makes the durable and stops before the backlog is published: the durable's first
+// bind starts at the stream's next message
 // (TestAFirstBindStartsAtTheStreamsNextMessageAndATakeOverKeepsThatStart), so what the stream held
 // before the durable existed is no backlog of the durable's.
 func TestIntakeDrainsABacklogPublishedBeforeItBinds(t *testing.T) {
