@@ -1,7 +1,7 @@
 kind: Changed
 body: |-
-  The Legion skills `legion-retro` and `legion-worker` are written in the style of
-  writing-agent-skills, with the same rules.
+  The Legion skill `legion-worker` is written in the style of writing-agent-skills, with the same
+  rules.
   `legion-retro` no longer forbids a rebase, and `legion-worker` no longer forbids `jj rebase` when
   an agent merges the base forward, nor a rewrite of a pushed commit. `legion-worker` no longer
   gives the commands of a merge of the base: it states the jj behaviours an agent may not expect.

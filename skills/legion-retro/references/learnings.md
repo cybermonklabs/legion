@@ -13,23 +13,23 @@ or a repository guide.
   it moves it. Where the head no longer shows what your sentence says, quote the text and name the
   commit you read it at.
 - **Where it belongs**: the file a reader would look in, for example
-  `skills/legion-worker/references/tools.md`. The librarian decides.
+  `skills/legion-worker/references/tools.md`; the librarian decides.
 - **What it replaces**, when an instruction the repository carries is wrong: quote it and its path.
 
-Drop a point that cites no file, symbol, quoted text or commit of this pull request. Drop a point
+Drop a point that cites no file, symbol, quoted text or commit of this pull request, and a point
 that only restates what a skill already says.
 
 ## Find what already covers the topic
 
-1. **Search Dispatch:** `dispatch search --query '<two or three words naming the topic>'`.
-2. **Search `docs/solutions/`** with the `grep` tool, case-insensitive: an older rule may say it
-   already, or say the opposite, which is itself the point to report.
-3. **Check the skills and role prompts the point would change** (`skills/`,
+1. `dispatch search --query '<two or three words naming the topic>'`.
+2. The `grep` tool, case-insensitive, over `docs/solutions/`: an older rule may say it already, or
+   say the opposite, which is itself the point to report.
+3. The skills and role prompts the point would change (`skills/`,
    `packages/daemon/internal/prompts/`). A rule one of them states is no learning.
 
 ## The comment
 
-Put every kept point in one comment, each under its own `###` heading:
+One comment holds every kept point, each under its own `###` heading:
 
 ```bash
 dispatch comment --issue '<KEY>' --body-file - <<'EOF'
