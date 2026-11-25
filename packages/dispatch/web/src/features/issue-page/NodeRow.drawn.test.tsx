@@ -164,7 +164,7 @@ test("an author is drawn by a name and a shape of its own kind", () => {
       const shape = shown?.querySelector("svg[data-glyph]");
       return {
         chrome: shown === null ? null : shown.querySelector("[data-page-chrome]") !== null,
-        face: shown === null ? null : shown.closest("[data-node-face]") !== null,
+        face: shown === null ? null : shown.closest("[data-node-body]") !== null,
         margin: shown === null ? null : shown.closest("[data-node-margin]") !== null,
         name: shape?.getAttribute("aria-label") ?? null,
         role: shape?.getAttribute("role") ?? null,
@@ -323,7 +323,7 @@ test("an agent's decision draws the session its entry names as its decider, by t
       const text = (selector: string) =>
         view.container.querySelector(selector)?.textContent ?? null;
       return {
-        face: text("[data-node-face] [data-node-author]"),
+        face: text("[data-node-body] [data-node-author]"),
         kind: view.container.querySelector("[data-author-kind]")?.getAttribute("data-author-kind"),
         row: text("[data-node-margin] [data-node-author]"),
         title: text("[data-node-author-title]"),
@@ -937,7 +937,7 @@ function drawnGap(drawn: TreeNode): { chip: string | undefined; line: string | u
   try {
     return {
       chip: view.container.querySelector("[data-gap]")?.textContent ?? undefined,
-      line: [...view.container.querySelectorAll("[data-node-face] p")]
+      line: [...view.container.querySelectorAll("[data-node-body] p")]
         .map((paragraph) => paragraph.textContent ?? "")
         .find((text) => text.endsWith(".")),
     };
