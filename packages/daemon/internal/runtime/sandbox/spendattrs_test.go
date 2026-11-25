@@ -29,6 +29,7 @@ const operatorSpendAttributes = "acme.project=legion,acme.lane=legion-infra,acme
 // reads to the C library's lookup, which answers with the first, so the operator's own value
 // would be the one read and the issue would never reach the spend report.
 func TestEveryLaunchCarriesTheOperatorsSpendAttributesWithItsOwnIssueAndRole(t *testing.T) {
+	t.Parallel()
 	opts := testOptions()
 	opts.Pod = Pod{Env: map[string]string{runtime.SpendAttributesVariable: operatorSpendAttributes}}
 	r, err := configure(opts)
@@ -64,6 +65,7 @@ func TestEveryLaunchCarriesTheOperatorsSpendAttributesWithItsOwnIssueAndRole(t *
 // runs no role and serves no issue, so there is no issue to split its spend by and no role to
 // name, and a legion.issue of some launch's would bill the probe's own minutes to that issue.
 func TestTheImageProbeIsToldTheOperatorsSpendAttributesAlone(t *testing.T) {
+	t.Parallel()
 	opts := goldenOptions()
 	opts.Pod = Pod{Env: map[string]string{runtime.SpendAttributesVariable: operatorSpendAttributes}}
 	r, err := configure(opts)
@@ -100,6 +102,7 @@ func TestTheImageProbeIsToldTheOperatorsSpendAttributesAlone(t *testing.T) {
 // value, and the word `unset` for a variable its environment does not hold, so a value that is
 // absent reads apart from one that is empty and from the operator's own alone.
 func TestAGenerationsChildProcessReadsTheComposedSpendAttributes(t *testing.T) {
+	t.Parallel()
 	opts := testOptions()
 	opts.Pod = Pod{Env: map[string]string{runtime.SpendAttributesVariable: operatorSpendAttributes}}
 	r, err := configure(opts)
@@ -141,6 +144,7 @@ func TestAGenerationsChildProcessReadsTheComposedSpendAttributes(t *testing.T) {
 // spend attributes in the pod specification is told from a read that could see nothing there at
 // all. Both printed halves are the evidence, and both are asserted.
 func TestTheComposedSpendAttributesTravelInTheStartCommandAndNoPodSpecification(t *testing.T) {
+	t.Parallel()
 	opts := testOptions()
 	opts.Pod = Pod{Env: map[string]string{runtime.SpendAttributesVariable: operatorSpendAttributes}}
 	r, err := configure(opts)
