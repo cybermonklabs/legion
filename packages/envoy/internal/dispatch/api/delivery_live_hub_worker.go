@@ -2,12 +2,15 @@ package api
 
 import (
 	"context"
+	"errors"
 	"log"
 	"log/slog"
 	"maps"
 	"slices"
 	"strconv"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
@@ -16,7 +19,10 @@ import (
 // work recomputes g's dirty views and the expired ones, one at a time, and keeps the freshness
 // verdict on its threshold, until g ends. One timer, re-armed after every pass, wakes it at the
 // earliest moment a view is due or the reconciled sources cross their threshold; nothing else
-// wakes it but a mark.
+// wakes it but a mark, and the socket's heartbeat (accessRecheckEvery), on which it resolves every
+// sub's reader again: an access change that appends no event and announces nothing on
+// store.AccessChangedChannel, one made by SQL alone, moves a reader all the same, and the re-check is
+// what moves its sub to the view of the reader it is now (recheckSubs), as an announced change does.
 func (h *deliveryHub) work(g *hubGeneration) {
 	select {
 	case <-g.ctx.Done():
@@ -29,6 +35,8 @@ func (h *deliveryHub) work(g *hubGeneration) {
 			timer.Stop()
 		}
 	}()
+	recheck := time.NewTicker(h.server.accessRecheckEvery())
+	defer recheck.Stop()
 	for {
 		for h.runDue(g) {
 		}
@@ -48,12 +56,17 @@ func (h *deliveryHub) work(g *hubGeneration) {
 		case <-g.ctx.Done():
 			return
 		case <-g.wakeWork:
+		case <-recheck.C:
+			g.readersStale.Store(true)
 		}
 	}
 }
 
-// runDue recomputes, or narrows, the view that is due earliest, and is false when none is due.
+// runDue recomputes, or narrows, the view that is due earliest, and is false when none is due. An
+// access change announced since the last pass is read first (recheckStaleReaders), so the view is
+// recomputed for the readers it left.
 func (h *deliveryHub) runDue(g *hubGeneration) bool {
+	h.recheckStaleReaders(g)
 	now := h.clock.Now()
 	h.mu.Lock()
 	var due *deliveryView
@@ -125,10 +138,14 @@ func (h *deliveryHub) nextWakeLocked(g *hubGeneration, now time.Time) (time.Time
 	return next, !next.IsZero()
 }
 
-// deliveryViewRead is one recompute's read and compute.
+// deliveryViewRead is one recompute's read and compute: seq the change position it read through,
+// and shownSeq and shownAt the position it names to its reader (deliveryShownChange); changedAt,
+// when seq was recorded, is read for a reader that sees every object alone, which is named seq.
 type deliveryViewRead struct {
 	seq               int64
 	changedAt         *time.Time
+	shownSeq          int64
+	shownAt           *time.Time
 	settings          delivery.DeliverySettings
 	pop               deliveryPopulation
 	pipe              pipelinePopulation
@@ -188,10 +205,10 @@ func (h *deliveryHub) recompute(g *hubGeneration, view *deliveryView, cause stri
 	default:
 		if g.epoch != epoch {
 			// The change log was reset while it read, so its position names nothing in the new one.
-			read.seq = 0
+			read.seq, read.shownSeq = 0, 0
 		}
 		view.settings, view.pop, view.pipe, view.readFrom = read.settings, read.pop, read.pipe, read.from
-		view.body, view.seq, view.changedAt = &read.body, read.seq, read.changedAt
+		view.body, view.seq, view.shownSeq, view.shownAt = &read.body, read.seq, read.shownSeq, read.shownAt
 		view.from, view.at, view.expiry = read.from, read.at, read.expiry
 		view.issues, view.ancestors, view.sessions = read.issues, read.ancestors, read.sessions
 		sent = h.sendLocked(g, view)
@@ -201,17 +218,19 @@ func (h *deliveryHub) recompute(g *hubGeneration, view *deliveryView, cause stri
 			break
 		}
 		if !g.known {
-			// The first verdict is set silently, from the first settings read.
+			// The row's freshness is set silently, from the first settings read.
 			g.fresh = deliveryFreshnessHeard{
 				lastEventAt: read.settings.LastEventAt, lastReconcileAt: read.settings.LastReconcileAt,
-				lastError: read.settings.LastError, unfetchable: read.unfetchable,
+				lastError: read.settings.LastError,
 			}
-			g.sent = g.verdictLocked(now)
 			g.known = true
-		} else {
-			g.fresh.unfetchable = read.unfetchable
-			h.judgeLocked(g, now)
 		}
+		g.unfetchable[spec.viewer] = read.unfetchable
+		if _, told := g.sent[spec.viewer]; !told {
+			// A reader's first verdict is set silently too, from its first read.
+			g.sent[spec.viewer] = g.verdictLocked(now, spec.viewer)
+		}
+		h.judgeLocked(g, now)
 	}
 	// What the events heard since the read took its position touched is checked against the
 	// answer it installed, or the last one when it installed none (recheckHeardLocked), and the
@@ -247,7 +266,7 @@ func (h *deliveryHub) read(g *hubGeneration, view *deliveryView, spec deliveryLi
 		view.dirty, view.immediate = false, false
 	}
 	h.mu.Unlock()
-	if read.seq > 0 {
+	if read.seq > 0 && seesEveryObject(spec.reader) {
 		if read.changedAt, err = delivery.ChangeAt(ctx, pool, read.seq); err != nil {
 			return read, err
 		}
@@ -257,14 +276,81 @@ func (h *deliveryHub) read(g *hubGeneration, view *deliveryView, spec deliveryLi
 	if err != nil {
 		return read, err
 	}
+	if read.shownSeq, read.shownAt, err = deliveryShownChange(ctx, pool, spec, &read); err != nil {
+		return read, err
+	}
 	read.body, err = encodeDeliveryBody(spec.kind, body)
 	return read, err
+}
+
+// deliveryShownChange is the change position a view names to its reader, a snapshot's and a
+// delta's seq and changed_at: the newest change at or below the position its read took (read.seq)
+// of a row that read shows the reader, a pull request or a run of its population or, for a view
+// that reads delivery rows, the delivery settings, which every reader of one reads; with when it
+// was recorded, and 0 with no time when there is none. So a change of a row the reader is not shown
+// moves neither, nor the time the page shows beside its last change, and neither does a change no
+// row names, a session group's. A page gives the position back only to ask whether the log still
+// keeps it (Subscribe), which one below the newest answers as truly. A reader that sees every
+// object (seesEveryObject) is shown every row, and is named read.seq and when it was recorded, as
+// every reader was before a project could be private (R9).
+func deliveryShownChange(ctx context.Context, q queryer, spec deliveryLiveSpec, read *deliveryViewRead) (int64, *time.Time, error) {
+	if seesEveryObject(spec.reader) {
+		return read.seq, read.changedAt, nil
+	}
+	settings := spec.classes().reads == viewReadsDelivery
+	prs, runs := read.shownRows()
+	if read.seq == 0 || (!settings && len(prs) == 0 && len(runs) == 0) {
+		return 0, nil, nil
+	}
+	var seq int64
+	var at time.Time
+	err := q.QueryRow(ctx, `
+		select seq, at from delivery_changes
+		where seq <= $1 and (($2 and kind = 'settings')
+			or (kind = 'pull_request' and repo || '#' || ref = any($3::text[]))
+			or (kind in ('run', 'run_job') and repo || '#' || ref = any($4::text[])))
+		order by seq desc limit 1
+	`, read.seq, settings, prs, runs).Scan(&seq, &at)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return 0, nil, nil
+	case err != nil:
+		return 0, nil, err
+	}
+	return seq, &at, nil
+}
+
+// shownRows is every pull request and every run the read shows its reader, each as delivery_changes
+// names it, its repository and its number or run id ("owner/name#n"): the population's, a timeline's
+// or a measures view's, and a pipeline view's lead times and runs.
+func (read *deliveryViewRead) shownRows() (prs, runs []string) {
+	prs, runs = []string{}, []string{}
+	for _, pop := range []deliveryPopulation{read.pop, read.pipe.leadTimes} {
+		for _, pr := range pop.prs {
+			prs = append(prs, pr.Repo+"#"+strconv.Itoa(pr.Number))
+		}
+		for _, pr := range pop.waiting {
+			prs = append(prs, pr.Repo+"#"+strconv.Itoa(pr.Number))
+		}
+		for _, list := range [][]delivery.DeliveryRun{pop.applyRuns, pop.windowRuns} {
+			for _, run := range list {
+				runs = append(runs, run.Repo+"#"+strconv.FormatInt(run.RunID, 10))
+			}
+		}
+	}
+	for _, list := range [][]delivery.DeliveryRun{read.pipe.checks.Runs, read.pipe.deploys.Runs} {
+		for _, run := range list {
+			runs = append(runs, run.Repo+"#"+strconv.FormatInt(run.RunID, 10))
+		}
+	}
+	return prs, runs
 }
 
 // readLegionBoardView is a Legion board's read: the project's own daemon state as the sampler
 // recorded it. It reads no delivery settings — its own are the project's Legion setting, and a
 // deployment that configured one and not the other still shows the board. A project that does
-// not exist is loadProject's refusal, as GET /api/v1/projects/{key}/legion/board answers it.
+// not exist, or that the view's reader does not see (access.ProjectClause), is loadProject's
+// refusal, as GET /api/v1/projects/{key}/legion/board answers it.
 func (h *deliveryHub) readLegionBoardView(ctx context.Context, spec deliveryLiveSpec, now time.Time, read *deliveryViewRead) (any, error) {
 	if _, err := h.server.loadProject(ctx, h.server.deps.Store.Pool, spec.reader, spec.project); err != nil {
 		return nil, err
@@ -277,21 +363,6 @@ func (h *deliveryHub) readLegionBoardView(ctx context.Context, spec deliveryLive
 	// board shows no session, so it names none.
 	read.issues = board.issueKeys()
 	return legionBoardCompute(board, now), nil
-}
-
-// readLegionIssueView is a legion_issue view's read: GET /api/v1/issues/{key}/legion's body, through
-// the route's own readLegionIssue, so the view and the route answer one body. A key Dispatch holds
-// no issue of is that function's *apiError, NOT_FOUND in the route's words, which the hub refuses
-// the view's subscribers with once (viewReads.refusal). A project that names no daemon is the body
-// whose configured is false and never an error, so this view, unlike the board, is never refused
-// LEGION_NOT_CONFIGURED. It names no issue in read.issues: no Dispatch event moves the body, which
-// only its project's notifications and its issue's runs move (dirtyLegionProject, dirtyLegionIssue).
-func (h *deliveryHub) readLegionIssueView(ctx context.Context, spec deliveryLiveSpec, now time.Time, read *deliveryViewRead) (any, error) {
-	answer, err := h.server.readLegionIssue(ctx, spec.reader, spec.issue)
-	if err != nil {
-		return nil, err
-	}
-	return answer, nil
 }
 
 // readPipelineView is a pipeline view's read: the delivery settings and the runs, jobs and merges
@@ -445,20 +516,21 @@ func (h *deliveryHub) answerLocked(g *hubGeneration, sub *deliverySub) bool {
 	sent := h.answerBodyLocked(sub)
 	if sub.needsVerdict {
 		sub.needsVerdict = false
-		if g.known {
-			sub.conn.Send(g.freshnessFrameLocked(g.sent))
+		if verdict, told := g.sent[sub.view.spec.viewer]; g.known && told {
+			sub.conn.Send(g.freshnessFrameLocked(verdict))
 		}
 	}
 	return sent
 }
 
 // answerBodyLocked sends sub the snapshot, when it holds none, or the delta against its
-// revisions, when anything differs.
+// revisions, when anything differs, each naming the change position its view names to its reader
+// (deliveryShownChange).
 func (h *deliveryHub) answerBodyLocked(sub *deliverySub) bool {
 	view := sub.view
 	sub.told = false
 	if sub.needsSnapshot {
-		sub.conn.Send(view.body.snapshot(sub.id, view.seq, view.changedAt))
+		sub.conn.Send(view.body.snapshot(sub.id, view.shownSeq, view.shownAt))
 		sub.revs, sub.needsSnapshot = view.body.revs, false
 		return true
 	}
@@ -466,7 +538,7 @@ func (h *deliveryHub) answerBodyLocked(sub *deliverySub) bool {
 	if !changed {
 		return false
 	}
-	delta.Sub, delta.Seq, delta.ChangedAt = sub.id, strconv.FormatInt(view.seq, 10), view.changedAt
+	delta.Sub, delta.Seq, delta.ChangedAt = sub.id, strconv.FormatInt(view.shownSeq, 10), view.shownAt
 	sub.conn.Send(delta)
 	sub.revs = view.body.revs
 	return true

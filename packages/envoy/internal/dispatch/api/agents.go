@@ -12,25 +12,35 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 type agentResponse struct {
 	envoy.Session
-	OpenAsks     int     `json:"open_asks"`
-	LastActivity *string `json:"last_activity"`
+	// Projects shadows the embedded session's list, which encoding/json serves in its place, and
+	// nothing sets it, so no row names a session's projects: a viewer of PUB would read PRIV's key
+	// (R4), and a listed session's row would change in a deployment with no private project (R9).
+	// The OpenAPI document declares neither field (unservedFields).
+	Projects     []string `json:"projects,omitempty"`
+	OpenAsks     int      `json:"open_asks"`
+	LastActivity *string  `json:"last_activity"`
 }
 
-func (s *server) agentOpenAskCounts(ctx context.Context, sessionIDs []string) (map[string]int, error) {
+// agentOpenAskCounts counts each session's open asks of the projects the reader whose visibility
+// argument is viewer sees: an ask of another project is not the reader's to count.
+func (s *server) agentOpenAskCounts(ctx context.Context, viewer any, sessionIDs []string) (map[string]int, error) {
 	rows, err := s.deps.Store.Pool.Query(ctx, `
 		select a.author->>'id', count(*)::int
 		from asks a
 		left join issues i on i.key = a.issue_key
+		left join artifacts ar on ar.id = a.artifact_id
 		where a.state = 'open'
 			and a.author->>'kind' = 'session'
 			and a.author->>'id' = any($1::text[])
 			and (i.key is null or i.closed_at is null)
+			and `+access.ProjectClause("coalesce(i.project_key, ar.project_key)", "$2")+`
 		group by a.author->>'id'
-	`, sessionIDs)
+	`, sessionIDs, viewer)
 	if err != nil {
 		return nil, fmt.Errorf("query agent open asks: %w", err)
 	}
@@ -111,20 +121,26 @@ func (s *server) sessionsSeen(ctx context.Context, viewer any, ids []string) (ma
 // actor->>'kind' = 'session' because that index is partial on it, and it is joined with `cross
 // join`, not a left join: a session with no event is a session the caller's map must not hold,
 // which is what the grouped read answered by returning it no row.
-const agentLastActivityQuery = `
+//
+// Only an event the reader whose visibility argument is $2 may read in the event log counts, under
+// the log's one rule (eventReadableSQL), so a session whose every event is hidden from it answers
+// as a session with none, and a session's answer in a conversation the reader is a party of counts
+// for that reader as the log shows it to them.
+var agentLastActivityQuery = `
 		select s.id, e.created_at
 		from unnest($1::text[]) s(id)
 		cross join lateral (
-			select created_at
-			from events
-			where actor->>'kind' = 'session' and actor->>'id' = s.id
-			order by created_at desc
+			select activity.created_at
+			from events activity
+			where activity.actor->>'kind' = 'session' and activity.actor->>'id' = s.id
+				and ` + eventReadableSQL("activity", "$2") + `
+			order by activity.created_at desc
 			limit 1
 		) e
 	`
 
-func (s *server) agentLastActivity(ctx context.Context, sessionIDs []string) (map[string]time.Time, error) {
-	rows, err := s.deps.Store.Pool.Query(ctx, agentLastActivityQuery, sessionIDs)
+func (s *server) agentLastActivity(ctx context.Context, viewer any, sessionIDs []string) (map[string]time.Time, error) {
+	rows, err := s.deps.Store.Pool.Query(ctx, agentLastActivityQuery, sessionIDs, viewer)
 	if err != nil {
 		return nil, fmt.Errorf("query agent activity: %w", err)
 	}
@@ -145,9 +161,10 @@ func (s *server) agentLastActivity(ctx context.Context, sessionIDs []string) (ma
 	return activity, nil
 }
 
-// listAgents is readable by any authenticated caller: a session picks a target by the
-// capabilities it advertises. Sending to a session without an issue needs the person scope
-// (routeScopes), since it writes to someone else's conversation. The list is
+// listAgents is readable by any authenticated caller, and answers it the sessions it may see
+// (visibleRosterSessions): a session picks a target by the capabilities it advertises. Sending to
+// a session without an issue needs the person scope (routeScopes), since it writes to someone
+// else's conversation. The list is
 // the stored copy of the listener's sessions every process shares (readRouteRoster, the
 // route_roster row), at most routeRosterTTL (5 s) old, so one listener call serves agents lists
 // and issue reads alike; a listener that did not answer answers 503 for as long as that copy is a
@@ -159,9 +176,10 @@ func (s *server) agentLastActivity(ctx context.Context, sessionIDs []string) (ma
 // The copy carries the unresponsive sessions as well as the live ones, each row with its own
 // `state`, so the Agents page shows a session that missed its heartbeats as stalled rather than
 // dropping it: it is still working, still holds its claims, and is still a target a reader may
-// pick (dispatch://INFRA-392).
+// pick. A session's open asks are those of the projects the caller sees.
 func (s *server) listAgents(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAuthenticated(w, r) {
+	reader, ok := s.readerOf(w, r)
+	if !ok {
 		return
 	}
 	if s.deps.Envoy == nil {
@@ -198,7 +216,8 @@ func (s *server) listAgents(w http.ResponseWriter, r *http.Request) {
 		WriteJSON(w, http.StatusOK, []agentResponse{})
 		return
 	}
-	// The roster's list is every read's, so the sort orders a copy of it.
+	// The roster's list is every read's, so the sort orders a copy of it, and the caller's
+	// sessions are cut from that copy.
 	sessions := slices.Clone(roster.sessions)
 	sort.SliceStable(sessions, func(left, right int) bool {
 		if sessions[left].LastSeen != sessions[right].LastSeen {
@@ -206,16 +225,35 @@ func (s *server) listAgents(w http.ResponseWriter, r *http.Request) {
 		}
 		return sessions[left].SessionID < sessions[right].SessionID
 	})
+	viewer := refs.VisibilityArg(reader)
+	// A reader that sees every object passes SessionClause on every id, so the read would cut
+	// nothing (R9).
+	if !seesEveryObject(reader) {
+		if sessions, err = s.visibleRosterSessions(r.Context(), viewer, sessions); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		// A session the reader may read can still hold a role of a project it does not see,
+		// whose name spells that project's key (contracts.RoleProject).
+		if err = leaveOutHiddenSessionRoles(r.Context(), s.deps.Store.Pool, reader, sessions); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+	}
+	if len(sessions) == 0 {
+		WriteJSON(w, http.StatusOK, []agentResponse{})
+		return
+	}
 	sessionIDs := make([]string, len(sessions))
 	for index, session := range sessions {
 		sessionIDs[index] = session.SessionID
 	}
-	openAsks, err := s.agentOpenAskCounts(r.Context(), sessionIDs)
+	openAsks, err := s.agentOpenAskCounts(r.Context(), viewer, sessionIDs)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	activity, err := s.agentLastActivity(r.Context(), sessionIDs)
+	activity, err := s.agentLastActivity(r.Context(), viewer, sessionIDs)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

@@ -11,6 +11,7 @@ import (
 	"sort"
 
 	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/envoy"
@@ -96,11 +97,28 @@ func exactTopics(topics []string, base string) []string {
 	return exact
 }
 
+// listIssueSubscribers answers the sessions subscribed to an issue's topics. An issue of a
+// project the caller does not see answers as a key no issue carries answers: a topic scoped to
+// that issue names it, so it is left out (writeSubscribers' hidden), and what a broader wildcard
+// delivers is listed as for any key.
 func (s *server) listIssueSubscribers(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.actingPerson(w, r); !ok {
 		return
 	}
-	s.writeSubscribers(w, r, issueSubscriberBase(r.PathValue("key")))
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
+	key := r.PathValue("key")
+	viewer := refs.VisibilityArg(who)
+	var hidden bool
+	err := s.deps.Store.Pool.QueryRow(r.Context(), `select not `+access.ProjectClause("project_key", "$2")+
+		` from issues where key = $1`, key, viewer).Scan(&hidden)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		s.writeHandlerError(w, err)
+		return
+	}
+	s.writeSubscribers(w, r, who, issueSubscriberBase(key), hidden)
 }
 
 // otherIssueBase is the subject root of an issue no key names ("-" is no key's spelling): a topic
@@ -134,10 +152,15 @@ func (s *server) listArtifactSubscribers(w http.ResponseWriter, r *http.Request)
 		s.writeHandlerError(w, err)
 		return
 	}
-	s.writeSubscribers(w, r, documentSubscriberBase(artifact.Project, artifact.Slug))
+	s.writeSubscribers(w, r, who, documentSubscriberBase(artifact.Project, artifact.Slug), false)
 }
 
-func (s *server) writeSubscribers(w http.ResponseWriter, r *http.Request, base string) {
+// writeSubscribers answers the sessions whose interests deliver an event published under base,
+// each one who may see (seenSessions). hidden says base names an owner of a project the
+// viewer does not see: every topic scoped to that owner (keyScoped) names it, so it is left
+// out of every row, and a row left with no topic is dropped; the answer is then the one a key
+// nobody holds gets, which lists what the broader wildcards deliver.
+func (s *server) writeSubscribers(w http.ResponseWriter, r *http.Request, who model.Actor, base string, hidden bool) {
 	if s.deps.Envoy == nil {
 		writeError(w, "ENVOY_UNAVAILABLE", http.StatusServiceUnavailable, "ENVOY_URL is not configured")
 		return
@@ -162,6 +185,9 @@ func (s *server) writeSubscribers(w http.ResponseWriter, r *http.Request, base s
 	result := make([]subscriber, 0)
 	for _, interest := range interests {
 		matched := matchingTopics(interest.Topics, base)
+		if hidden {
+			matched = slices.DeleteFunc(matched, func(topic string) bool { return keyScoped(topic, base) })
+		}
 		if len(matched) == 0 {
 			continue
 		}
@@ -183,6 +209,20 @@ func (s *server) writeSubscribers(w http.ResponseWriter, r *http.Request, base s
 			entry.LastSeen = session.LastSeen
 		}
 		result = append(result, entry)
+	}
+	// A reader that sees every object passes SessionClause on every id, so the read would cut
+	// nothing (R9).
+	if !seesEveryObject(who) {
+		ids := make([]string, len(result))
+		for index, entry := range result {
+			ids[index] = entry.SessionID
+		}
+		seen, err := s.seenSessions(r.Context(), refs.VisibilityArg(who), ids)
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		result = slices.DeleteFunc(result, func(entry subscriber) bool { return !seen[entry.SessionID] })
 	}
 	sort.SliceStable(result, func(left, right int) bool {
 		if result[left].LastSeen != result[right].LastSeen {
@@ -421,7 +461,7 @@ func (s *server) finishPendingRemoval(w http.ResponseWriter, r *http.Request, ow
 		return
 	}
 	if requestID == nil {
-		writeError(w, "SUBSCRIBER_NOT_FOUND", http.StatusNotFound, "session is not subscribed")
+		writeSubscriberNotFound(w)
 		return
 	}
 	event, completeErr := s.completeSubscriptionRemoval(r.Context(), own, sessionID, *requestID, actor)
@@ -435,6 +475,14 @@ func (s *server) finishPendingRemoval(w http.ResponseWriter, r *http.Request, ow
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// unsubscribeSession removes the session the path names from own's topics, base being their root.
+// A session the caller may not see (sessionHiddenFromReader, access.SessionClause) is a session
+// nobody holds: it is answered 404 SUBSCRIBER_NOT_FOUND, as one the listener has no interest of
+// and no removal pending for is, before the listener is asked anything, a lock is taken or a
+// removal is read. While a project is private, and in every deployment for a caller that is not
+// open, a session nobody holds is one the caller does not see either, so the two take this one
+// path. An open caller of a deployment that holds no private project sees every session and reads
+// nothing for it (R9).
 func (s *server) unsubscribeSession(
 	w http.ResponseWriter,
 	r *http.Request,
@@ -447,6 +495,15 @@ func (s *server) unsubscribeSession(
 		return
 	}
 	sessionID := r.PathValue("session_id")
+	hidden, err := s.sessionHiddenFromReader(r.Context(), sessionID)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	if hidden {
+		writeSubscriberNotFound(w)
+		return
+	}
 	interest, err := s.deps.Envoy.Interest(r.Context(), sessionID)
 	if err != nil {
 		if errors.Is(err, envoy.ErrNotFound) {
@@ -518,6 +575,12 @@ func (s *server) unsubscribeSession(
 		s.publish(r.Context(), *event)
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// writeSubscriberNotFound answers an unsubscribe of a session with no interest in the owner and no
+// removal pending for it, and one the caller may not see (unsubscribeSession), in the same words.
+func writeSubscriberNotFound(w http.ResponseWriter) {
+	writeError(w, "SUBSCRIBER_NOT_FOUND", http.StatusNotFound, "session is not subscribed")
 }
 
 // writeEnvoyError answers a listener failure: the listener's refilling answer as 503

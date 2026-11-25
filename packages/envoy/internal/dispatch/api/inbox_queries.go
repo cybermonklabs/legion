@@ -18,6 +18,8 @@ import (
 // recursion over `comments`, so the two can be read against each other; query_plan_test.go pins
 // both from there.
 
+// loadInboxAskEdits reads each listed ask's rewordings from its ask.edited events, oldest first,
+// of the events who may read (eventReadableSQL).
 func (s *server) loadInboxAskEdits(ctx context.Context, q queryer, who model.Actor, askIDs []string) (map[string][]model.AskEdit, error) {
 	edits := make(map[string][]model.AskEdit, len(askIDs))
 	for _, askID := range askIDs {
@@ -26,9 +28,9 @@ func (s *server) loadInboxAskEdits(ctx context.Context, q queryer, who model.Act
 	rows, err := q.Query(ctx, `
 		select payload->>'id', payload->'previous', payload->'edited_by', created_at
 		from events
-		where type = 'ask.edited' and payload->>'id' = any($1::text[])
+		where type = 'ask.edited' and payload->>'id' = any($1::text[]) and `+eventReadableSQL("events", "$2")+`
 		order by payload->>'id', id
-	`, askIDs)
+	`, askIDs, refs.VisibilityArg(who))
 	if err != nil {
 		return nil, fmt.Errorf("load inbox ask edits: %w", err)
 	}
@@ -241,7 +243,7 @@ func (s *server) loadInboxAskReplyChains(ctx context.Context, q queryer, who mod
 	for _, askID := range askIDs {
 		replies[askID] = []model.Comment{}
 	}
-	rows, err := q.Query(ctx, inboxAskReplyChainsQuery, askIDs)
+	rows, err := q.Query(ctx, inboxAskReplyChainsQuery, askIDs, refs.VisibilityArg(who))
 	if err != nil {
 		return nil, fmt.Errorf("load inbox ask replies: %w", err)
 	}

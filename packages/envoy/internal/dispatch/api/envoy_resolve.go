@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/access"
 	dispatchenvoy "github.com/sjawhar/envoy/internal/dispatch/envoy"
@@ -141,8 +142,21 @@ func resolveThenLock[R, T any](
 // before the listener is asked, exactly as a session the listener holds no record of, so a
 // restricted member or a credential acting for one reaches no session outside what it sees, and an
 // open viewer no session of a private project it does not see, and neither learns whether one is
-// live. Such a resolution alone answers hidden, which the answer never shows. A session route was
-// held to its author's reader when it was written.
+// live. Such a resolution alone answers hidden, which the answer never shows: it is how the sender
+// knows the "no live session" is the reader's refusal and not the listener's, so Dispatch queues
+// nothing for that session in the listener's place (mayQueueForUnknownSession). A role whose holder
+// that reader may not see, or a role
+// of a private project it does not see by the role's own name (legion-<project>-…,
+// contracts.RoleProject), whoever holds it, is answered as a role no session claims
+// (dispatchenvoy.NoRoleHolder), in the listener's words.
+// A role resolved with no reader at all - the delivery sweep's resume of a message attempt nothing
+// resolved before a crash - is answered so too while the deployment holds a private project
+// (roleResolvesWithoutAReader): its holder is chosen now, and could be a session the author may not
+// see. The sweep resumes a comment mention's attempt as the comment's author (resumeOwedDelivery).
+// A session route was held to its author's reader when it was written. The role's reads run
+// whatever the listener answers, a holder or none, so a role held by a session the reader may not
+// see costs what an unheld role costs, and the time a resolve takes tells nothing of the holder
+// (roleHolderHidden).
 func (s *server) resolveDeliveryTarget(ctx context.Context, route model.Route, delivery string) (string, string, string, bool) {
 	if s.deps.Envoy == nil {
 		return "", "", listenerNotConfiguredText, false
@@ -151,6 +165,14 @@ func (s *server) resolveDeliveryTarget(ctx context.Context, route model.Route, d
 	var err error
 	if route.Kind == "role" {
 		target, err = s.deps.Envoy.Role(ctx, route.ID)
+		hidden, hiddenErr := s.roleHolderHidden(ctx, route.ID, target.SessionID)
+		switch {
+		case err != nil:
+		case hiddenErr != nil:
+			return "", "", hiddenErr.Error(), false
+		case hidden:
+			target, err = dispatchenvoy.Session{}, dispatchenvoy.NoRoleHolder(route.ID)
+		}
 	} else {
 		// A session route was held to its author's reader when it was written, so a resolve with
 		// no reader in ctx - the delivery sweep's resume of a message attempt, a mention send
@@ -423,7 +445,7 @@ func (s *server) resolveThroughTakeover(
 	takeover := s.newTakeoverRetry()
 	var resolved ResolvedMention
 	resolve := func() string {
-		resolved = s.resolveMentionTarget(ctx, target, delivery, s.commentLookupBound(target))
+		resolved = s.resolveMentionTarget(ctx, target, delivery, mentionLookupTimeout)
 		return resolved.ResolveError
 	}
 	if !wait {
@@ -433,16 +455,6 @@ func (s *server) resolveThroughTakeover(
 	// A try that holds nothing has nothing to renew, so retry answers no error.
 	_ = takeover.retry(ctx, resolve, nil)
 	return resolved, takeover
-}
-
-// commentLookupBound is the bound on one try of a comment's listener lookup of target, read as
-// that try starts: mentionLookupTimeout on every server the deployment builds, which sets no
-// mentionLookupBound, and whatever a test set for that target otherwise.
-func (s *server) commentLookupBound(target string) time.Duration {
-	if s.mentionLookupBound != nil {
-		return s.mentionLookupBound(target)
-	}
-	return mentionLookupTimeout
 }
 
 // again reports whether the sender tries once more after a try that recorded failure, having

@@ -16,13 +16,19 @@ parameter (`bind`), over records the real API handlers and outbox wrote.
 
 ## Running
 
+`psql` is given Dispatch's database URL with its password and its pgx-only `pool_` parameters
+taken out, `$DISPATCH_PSQL_URL`, and the password in `PGPASSWORD`, `$DISPATCH_PGPASSWORD`, so the
+password is never an argument of a command, which every user of the box can read from
+`/proc/<pid>/cmdline` while it runs. The runbook's "Signing people in" (Running Dispatch) gives the
+one block that makes both from `DATABASE_URL`.
+
 ```bash
-psql "$DATABASE_URL" --single-transaction -q -X -v ON_ERROR_STOP=1 --csv \
+PGPASSWORD="$DISPATCH_PGPASSWORD" psql "$DISPATCH_PSQL_URL" --single-transaction -q -X -v ON_ERROR_STOP=1 --csv \
   -c 'SET TRANSACTION READ ONLY' \
   -v from=2026-10-01T00:00:00Z -v to=2026-11-01T00:00:00Z \
   -f comments.sql > comments.csv
 
-psql "$DATABASE_URL" --single-transaction -q -X -v ON_ERROR_STOP=1 --csv \
+PGPASSWORD="$DISPATCH_PGPASSWORD" psql "$DISPATCH_PSQL_URL" --single-transaction -q -X -v ON_ERROR_STOP=1 --csv \
   -c 'SET TRANSACTION READ ONLY' \
   -v comment=<comment uuid> \
   -f trace.sql > trace.csv

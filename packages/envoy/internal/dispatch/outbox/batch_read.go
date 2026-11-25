@@ -71,7 +71,11 @@ type routing struct {
 // later ones back from its unreached destinations. An event with no owner has no destination and
 // forms no chain, and is read alone. It reads no event of an owner $2 names, the owners the
 // batches running beside this one hold in flight (lanes), so no two batches ever take one owner
-// and an owner waiting on a send holds back only its own events. A pending subscription command
+// and an owner waiting on a send holds back only its own events. With $3, the private-delivery
+// hold (Deps.holdRead), it chooses no owner whose project the database holds private
+// (privateOwnerSQL): such an owner is never read, so it takes no place among the batchSize
+// owners a batch chooses and holds back no public owner's event, and every event of it waits,
+// unread and unwritten, for a read without $3. A pending subscription command
 // (api/subscribers.go) is in no index this reads, and neither is a backed-off event of an owner
 // the batch does not choose. Every predicate on pending is spelled as the indexes spell it
 // (migration 20261101143203_outbox_claim), which is what lets Postgres prove the indexes' predicates from the query's.
@@ -88,13 +92,14 @@ type routing struct {
 // Postgres does not flatten into a join, so each is one lookup of events_pkey: as a join, the
 // planner, which expects many more kept rows than a batch keeps, merges them with a walk of every
 // event's id.
-const readBatchSQL = `
+var readBatchSQL = `
 	with fresh as (
 		select id, coalesce(issue_key, artifact_id::text, project_key) as owner, next_attempt_at
 		from events
 		where published_at is null and next_attempt_at is null
 		  and (payload ->> 'pending') is distinct from 'true'
 		  and coalesce(issue_key, artifact_id::text, project_key, '') <> all($2::text[])
+		  and not ($3::boolean and ` + privateOwnerSQL("events") + `)
 		order by id
 		limit $1
 	), retried as (
@@ -103,6 +108,7 @@ const readBatchSQL = `
 		where published_at is null and next_attempt_at is not null
 		  and (payload ->> 'pending') is distinct from 'true'
 		  and coalesce(issue_key, artifact_id::text, project_key, '') <> all($2::text[])
+		  and not ($3::boolean and ` + privateOwnerSQL("events") + `)
 		  and next_attempt_at <= now()
 		order by next_attempt_at, id
 		limit $1
@@ -158,6 +164,21 @@ const readBatchSQL = `
 	order by r.first, r.id
 `
 
+// privateOwnerSQL is whether the events row alias names belongs to an owner whose project the
+// database holds private, by the project that owner resolves to: a project event's own, an issue's,
+// a document's (readBatchSQL's project column). It is true or false, never null, and the one test
+// the private-delivery hold makes of a row: in the batch's read (readBatchSQL), the fallback pass's
+// claim (claimFallbackCopies) and the retry timer (Outbox.nextRetry). Every event of one owner
+// resolves to one project, so the hold takes an owner whole and never one event of it alone.
+func privateOwnerSQL(alias string) string {
+	return fmt.Sprintf(`exists (
+		select 1 from projects held
+		where held.visibility = 'private'
+		  and held.key = coalesce(%[1]s.project_key,
+		      (select i.project_key from issues i where i.key = %[1]s.issue_key),
+		      (select a.project_key from artifacts a where a.id = %[1]s.artifact_id)))`, alias)
+}
+
 // readBatch reads a batch (readBatchSQL), in owner order and each owner's events in id order. It
 // writes no row. stopped reports a row that failed to scan, which ends pgx's cursor: the rows after
 // it are not read, and the batch is the rows before it and that row, backed off. The read leaves
@@ -177,7 +198,7 @@ func readBatch(ctx context.Context, deps Deps) (pending []pendingEvent, stopped,
 func readRows(ctx context.Context, deps Deps, inFlight []string) (pending []pendingEvent, stopped bool, err error) {
 	deps.lanes.lock()
 	defer deps.lanes.unlock()
-	rows, err := deps.Store.Pool.Query(ctx, readBatchSQL, batchSize, inFlight)
+	rows, err := deps.Store.Pool.Query(ctx, readBatchSQL, batchSize, inFlight, deps.holdRead())
 	if err != nil {
 		return nil, false, fmt.Errorf("read the outbox's batch: %w", err)
 	}

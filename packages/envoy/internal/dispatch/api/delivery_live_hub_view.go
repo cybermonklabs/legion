@@ -1,7 +1,6 @@
 package api
 
 import (
-	"encoding/json"
 	"net/url"
 	"slices"
 	"strconv"
@@ -15,26 +14,17 @@ import (
 // parseDeliveryLiveView resolves a subscribed view as the matching GET route reads its query, or
 // answers the error frame refusing it: INVALID_FRAME for a view of no known shape, and for one the
 // route would refuse, the code that route answers. What each kind reads of a view is its own
-// entry's `parse` (live_frames.go), so the only things decided here are what every kind shares:
-// that the kind is one of the five, and that only a kind that reads a project's daemon
-// (viewReadsLegion) is given a project; a legion_issue view, the one such kind that names no
-// project, refuses one itself (parseLegionIssueLiveView).
-//
-// An issue is refused by nothing here. The socket's decode (decodeSocketClientFrame, a plain
-// json.Unmarshal, which type-checks every member its struct declares) accepts an `issue` member
-// of any JSON type, since DeliveryLiveView holds it raw, and only legion_issue's parse reads it
-// (parseLegionIssueLiveView). The timeline, measures, pipeline and legion kinds ignore it whatever
-// its type, as they did before any kind read one, so a frame a deployed page sends with one is
-// answered exactly as it was and never becomes INVALID_FRAME.
+// entry's `parse` (live_frames.go), so the only thing decided here is what every kind shares. The
+// spec it answers names no reader yet (readFor).
 func parseDeliveryLiveView(view DeliveryLiveView) (deliveryLiveSpec, *LiveError) {
 	classes, known := deliveryLiveKinds[view.Kind]
 	if !known {
-		return deliveryLiveSpec{}, invalidLiveView("INVALID_FRAME", "view.kind must be timeline, measures, pipeline, legion or legion_issue")
+		return deliveryLiveSpec{}, invalidLiveView("INVALID_FRAME", "view.kind must be timeline, measures, pipeline or legion")
 	}
 	if view.Project != nil && classes.reads != viewReadsLegion {
 		return deliveryLiveSpec{}, invalidLiveView("INVALID_FRAME", "only a legion view names a project")
 	}
-	spec := deliveryLiveSpec{kind: view.Kind, reader: everyReader}
+	spec := deliveryLiveSpec{kind: view.Kind}
 	if refusal := classes.parse(&spec, view); refusal != nil {
 		return deliveryLiveSpec{}, refusal
 	}
@@ -71,7 +61,7 @@ func parseDeliveryWindowView(spec *deliveryLiveSpec, view DeliveryLiveView) *Liv
 	if refusal != nil {
 		return refusal
 	}
-	spec.key = view.Kind + "|" + named + "|" + spec.query.Encode()
+	spec.shape = view.Kind + "|" + named + "|" + spec.query.Encode()
 	return nil
 }
 
@@ -82,7 +72,7 @@ func parsePipelineLiveView(spec *deliveryLiveSpec, view DeliveryLiveView) *LiveE
 	if view.Window != nil || view.Query != nil {
 		return invalidLiveView("INVALID_FRAME", "a pipeline view names at most an at")
 	}
-	spec.key = "pipeline|now|"
+	spec.shape = "pipeline|now|"
 	if view.At != nil {
 		at, err := parseOptionalRFC3339(url.Values{"at": {*view.At}}, "at", time.Time{})
 		if err != nil {
@@ -90,7 +80,7 @@ func parsePipelineLiveView(spec *deliveryLiveSpec, view DeliveryLiveView) *LiveE
 		}
 		at = at.UTC()
 		spec.at = &at
-		spec.key = "pipeline|" + at.Format(time.RFC3339Nano) + "|"
+		spec.shape = "pipeline|" + at.Format(time.RFC3339Nano) + "|"
 	}
 	return nil
 }
@@ -113,37 +103,7 @@ func parseLegionLiveView(spec *deliveryLiveSpec, view DeliveryLiveView) *LiveErr
 		return invalidLiveView("INVALID_PROJECT", projectKeyProblem("project", project))
 	}
 	spec.project = project
-	spec.key = legionBoardView + "|" + project + "|"
-	return nil
-}
-
-// parseLegionIssueLiveView reads a legion_issue view: it names the issue whose Legion state it
-// shows and nothing else, since that state has no window and the key is all
-// GET /api/v1/issues/{key}/legion reads. It is the one kind that reads an `issue` member, which
-// the decode holds raw whatever its JSON type (DeliveryLiveView.Issue): it reads it as a string,
-// and refuses one that is absent, null, empty or of another type INVALID_FRAME in this kind's own
-// words, where every other kind ignores the member (parseDeliveryLiveView). It refuses a project
-// itself too: the shared gate lets a project through to every kind that reads a project's daemon,
-// this one included, and this view's project is its key's, never one the frame names.
-//
-// The view's project is the key's prefix before its first "-" (legionProjectOf, the rule
-// legionDaemonSessionOf reads a key's project by): no route moves an issue to another project, so
-// the prefix is the issue row's project_key, and a read of that project's daemon, or a write of
-// its Legion setting, marks the view (dirtyLegionProject). The key is read as the route reads its
-// path, unchecked: one Dispatch holds no issue of is the read's to refuse, NOT_FOUND in the
-// route's words (readLegionIssueView).
-func parseLegionIssueLiveView(spec *deliveryLiveSpec, view DeliveryLiveView) *LiveError {
-	if view.Project != nil || view.Window != nil || view.At != nil || view.Query != nil {
-		return invalidLiveView("INVALID_FRAME", "a legion_issue view names an issue, not a project, a window, an at or a query")
-	}
-	// A null member decodes as no string, and so as the empty key, which is refused with the rest.
-	var issue string
-	if len(view.Issue) == 0 || json.Unmarshal(view.Issue, &issue) != nil || issue == "" {
-		return invalidLiveView("INVALID_FRAME", "a legion_issue view names its issue, a non-empty string")
-	}
-	spec.issue = issue
-	spec.project = legionProjectOf(spec.issue)
-	spec.key = legionIssueView + "|" + spec.issue + "|"
+	spec.shape = legionBoardView + "|" + project + "|"
 	return nil
 }
 
@@ -172,6 +132,13 @@ func (spec *deliveryLiveSpec) readWindow(window *DeliveryLiveWindow) (string, *L
 	default:
 		return refuse("INVALID_FRAME", "a window is a preset or a from and to")
 	}
+}
+
+// readFor makes spec the view reader reads: the reader, its part of the key (deliveryReaderKey),
+// and the key itself, the view's shape and that part.
+func (spec *deliveryLiveSpec) readFor(reader model.Actor) {
+	spec.reader, spec.viewer = reader, deliveryReaderKey(reader)
+	spec.key = spec.shape + "|" + spec.viewer
 }
 
 // deliveryReaderKey is the part of a view's key its reader decides: whether the reader is the

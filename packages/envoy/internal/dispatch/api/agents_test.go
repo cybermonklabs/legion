@@ -15,7 +15,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
-	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 func agentsHandler(t *testing.T, envoyURL string) http.Handler {
@@ -198,6 +197,38 @@ func TestAgentsTmuxPlaceFromAListenerThatPredatesTheFieldChangesNothing(t *testi
 	}
 	if !reflect.DeepEqual(rows[0], want) {
 		t.Fatalf("row = %v, want the answer this release already gives: %v", rows[0], want)
+	}
+}
+
+// TestAnAgentsRowCarriesNoProjectsWhateverTheListenerSends: a listener that names a session's
+// projects (K6) does not put them on that session's row of GET /api/v1/agents. Dispatch reads the
+// list to filter the roster and serves none of it: a viewer of one project would otherwise read the
+// keys of another (R4), and a listed session's row would change in a deployment with no private
+// project (R9). alice's row has no projects key and no byte that names either project.
+//
+// Control: drop agentResponse's own Projects field; the embedded session's list is served, the row
+// carries "projects":["PRIV","PUB"], and the test fails naming it.
+func TestAnAgentsRowCarriesNoProjectsWhateverTheListenerSends(t *testing.T) {
+	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`[{"session_id":"a","title":"planner","dir":"/w/planner","machine_id":"example-listener","roles":["planner"],"capabilities":["btw"],"projects":["PRIV","PUB"],"last_seen":100,"state":"live"}]`))
+	}))
+	defer listener.Close()
+
+	response := dispatchRequest(t, agentsHandler(t, listener.URL), http.MethodGet, "/api/v1/agents", nil, "alice")
+	if response.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", response.Code, response.Body.String())
+	}
+	rows := decodeBody[[]map[string]any](t, response)
+	if len(rows) != 1 {
+		t.Fatalf("rows = %v, want the one session the listener sent", rows)
+	}
+	if projects, named := rows[0]["projects"]; named {
+		t.Errorf("alice's row of session a carries projects %v, want no projects key", projects)
+	}
+	for _, key := range []string{"PRIV", "PUB"} {
+		if strings.Contains(response.Body.String(), key) {
+			t.Errorf("alice's answer names %s: %s", key, response.Body.String())
+		}
 	}
 }
 
@@ -490,8 +521,11 @@ func TestAnAgentsListWhoseRequestEndsWhileItWaitsOnTheFetchAnswers503(t *testing
 	}()
 	awaitCalls(t, calls, 1)
 	cancel()
-	// The fetch is held until the release below, so a list that waited on it would never answer.
-	testwait.Receive(t, "the agents list to answer once its request ended", answered)
+	select {
+	case <-answered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("an agents list did not answer within 5 s of its request ending")
+	}
 	body := response.Body.String()
 	if response.Code != http.StatusServiceUnavailable || !strings.Contains(body, `"code":"ENVOY_UNAVAILABLE"`) ||
 		!strings.Contains(body, "context canceled") {

@@ -15,7 +15,6 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
-	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 func createIssueMessage(t *testing.T, handler http.Handler, issueKey string, input map[string]any, login string) model.Message {
@@ -122,7 +121,7 @@ func TestCreateMessageReplyCarriesReplyBodyAndGetMessageReturnsChain(t *testing.
 		t.Fatalf("list events: status=%d body=%s", events.Code, events.Body.String())
 	}
 	if !strings.Contains(events.Body.String(), `"reply_body":"Ship the build tonight"`) {
-		t.Fatalf("message.answered event missing reply_body preview: %s", events.Body.String())
+		t.Fatalf("message.created event missing reply_body preview: %s", events.Body.String())
 	}
 
 	read := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+issue.Key+"/messages/"+root.ID, nil, "alice")
@@ -554,7 +553,11 @@ func TestTargetedMessagePrefixesUnavailableListenerErrors(t *testing.T) {
 			got[0].Error == nil || !strings.HasPrefix(*got[0].Error, "envoy listener: ") {
 			t.Fatalf("timeout delivery = %#v", got)
 		}
-		testwait.Receive(t, "the cancel of the listener request once Dispatch's timeout ended it", cancelled)
+		select {
+		case <-cancelled:
+		case <-time.After(time.Second):
+			t.Fatal("listener request was not cancelled after the Dispatch timeout")
+		}
 	})
 }
 
@@ -951,7 +954,7 @@ func sessionListener(t *testing.T, live *bool, sent *[]map[string]any) *httptest
 				_, _ = w.Write([]byte(`[]`))
 				return
 			}
-			_, _ = w.Write([]byte(`[{"session_id":"s1","title":"planner","dir":"/w/legion","machine_id":"m1","roles":[],"capabilities":["aside","btw","steer"],"last_seen":42}]`))
+			_, _ = w.Write([]byte(`[{"session_id":"s1","title":"planner","dir":"/w/legion","machine_id":"m1","roles":[],"capabilities":["aside","btw","steer"],"projects":[],"last_seen":42}]`))
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/messages/send":
 			var request map[string]any
 			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
@@ -1562,7 +1565,11 @@ func TestStrandedMessageAttemptIsResumedRatherThanDeliveredTwice(t *testing.T) {
 		handler.ServeHTTP(recorder, request)
 		answered <- recorder
 	}()
-	testwait.Receive(t, "the send's arrival at the listener that holds it", held)
+	select {
+	case <-held:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the send never reached the listener")
+	}
 	select {
 	case recorder := <-answered:
 		t.Fatalf("the send should not have completed while its listener holds it: status=%d body=%s", recorder.Code, recorder.Body.String())
@@ -1608,7 +1615,12 @@ func TestStrandedMessageAttemptIsResumedRatherThanDeliveredTwice(t *testing.T) {
 	// The stalled sender is answered at last. Its claim is no longer the row's, so it records
 	// nothing and answers with the attempt as the retry settled it.
 	letGo()
-	late := testwait.Receive(t, "the stalled sender's answer once its listener let it go", answered)
+	var late *httptest.ResponseRecorder
+	select {
+	case late = <-answered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the stalled sender never answered")
+	}
 	if late.Code != http.StatusCreated {
 		t.Fatalf("the stalled sender: status=%d body=%s", late.Code, late.Body.String())
 	}

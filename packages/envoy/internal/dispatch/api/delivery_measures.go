@@ -37,7 +37,9 @@ type deliveryMeasuresResponse struct {
 
 // getDeliveryMeasures answers GET /api/v1/delivery/measures, computed from stored facts on
 // request: the window's population read once (readDeliveryPopulation) and measured by
-// deliveryMeasuresCompute, the two halves the live hub calls too.
+// deliveryMeasuresCompute, the two halves the live hub calls too. The population is the caller's,
+// so every pull request and run it measures and every unowned P0 issue it lists is one the caller
+// is shown (readDeliveryRows).
 func (s *server) getDeliveryMeasures(w http.ResponseWriter, r *http.Request) {
 	reader, ok := s.readerOf(w, r)
 	if !ok {

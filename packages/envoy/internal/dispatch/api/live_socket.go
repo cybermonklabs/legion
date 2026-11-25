@@ -13,7 +13,9 @@ import (
 	"time"
 
 	gws "github.com/gorilla/websocket"
+
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
@@ -84,10 +86,14 @@ type liveSocket struct {
 	// resolves. Each events or agent subscription runs on a context derived from it.
 	ctx    context.Context
 	cancel context.CancelFunc
-	// credential is the caller's credential as the upgrade resolved it, which is where every
-	// socket's authorization is decided: a frame carries no credential of its own, so a view the
-	// socket serves reads what the caller proved when it opened (holds).
-	credential *model.Credential
+	// actor is the caller as the upgrade resolved it (optionalActor), its credential kept, which
+	// is where every socket's authorization is decided: a frame carries no credential of its own,
+	// so a view the socket serves reads what the caller proved when it opened (holds), and resolves
+	// from it what the caller sees now (caller, readerFor): the delivery hub at each subscribe and
+	// at each event that can move what the caller sees, an events subscription as it starts and at
+	// each such event (feedEvents), and an agent subscription as it starts and at each re-arm
+	// (relayAgentConversation).
+	actor model.Actor
 	// queue holds the hub's frames and the socket's own refusals (Send).
 	queue chan any
 	// stream holds the frames of the events and agent subscriptions (SendWait).
@@ -108,8 +114,9 @@ type liveSocket struct {
 	// writer sets once it has closed; closing stops further extensions.
 	deadline sync.Mutex
 	closing  bool
-	// subs is every subscription the socket holds, by sub. Only the handler's goroutine touches it:
-	// the read loop, then the cleanup once the loop has ended.
+	// subs is every subscription the socket holds, by sub. A delivery view's stays here after the
+	// hub drops it on its own until the socket next counts at the cap (subscribeLive). Only the
+	// handler's goroutine touches it: the read loop, then the cleanup once the loop has ended.
 	subs map[string]*liveSub
 	// ending counts the subscriptions stopping beside the read loop, which the socket waits for
 	// once it ends.
@@ -121,26 +128,32 @@ type liveSocket struct {
 	beforePick func(socket *liveSocket, takesStream bool)
 }
 
-func newLiveSocket(ctx context.Context, conn *gws.Conn, credential *model.Credential) *liveSocket {
+func newLiveSocket(ctx context.Context, conn *gws.Conn, actor model.Actor) *liveSocket {
 	ctx, cancel := context.WithCancel(ctx)
 	return &liveSocket{
-		conn:       conn,
-		ctx:        ctx,
-		cancel:     cancel,
-		credential: credential,
-		queue:      make(chan any, liveSocketQueue),
-		stream:     make(chan liveStreamFrame, liveSocketStream),
-		full:       make(chan struct{}),
-		shut:       make(chan struct{}),
-		closed:     make(chan struct{}),
-		subs:       map[string]*liveSub{},
+		conn:   conn,
+		ctx:    ctx,
+		cancel: cancel,
+		actor:  actor,
+		queue:  make(chan any, liveSocketQueue),
+		stream: make(chan liveStreamFrame, liveSocketStream),
+		full:   make(chan struct{}),
+		shut:   make(chan struct{}),
+		closed: make(chan struct{}),
+		subs:   map[string]*liveSub{},
 	}
 }
 
 // holds reports whether the caller's credential holds scope: the socket's own test of what the
 // caller may watch, which is model.Credential.Holds over the credential the upgrade kept.
 func (socket *liveSocket) holds(scope string) bool {
-	return socket.credential.Holds(scope)
+	return socket.actor.Credential.Holds(scope)
+}
+
+// caller is the caller as the upgrade resolved it, its credential kept: what a view resolves
+// again (readerFor) to learn what the caller sees now.
+func (socket *liveSocket) caller() model.Actor {
+	return socket.actor
 }
 
 // liveSocketAge is how long a socket opening now lives: Deps.LiveSocketAge's, or
@@ -348,7 +361,7 @@ func (socket *liveSocket) writeFrame(frame any) bool {
 
 // serveLiveSocket serves GET /ws/live to a signed-in person or an agent's bearer, keeping what
 // that caller's credential may do: a frame carries no credential, so the credential the caller
-// proved here is what each of its views is answered against (liveSocket.credential). The upgrade
+// proved here is what each of its views is answered against (liveSocket.actor). The upgrade
 // keeps gorilla's same-origin check, so another site's page cannot open the socket with a
 // person's cookie.
 func (s *server) serveLiveSocket(w http.ResponseWriter, r *http.Request) {
@@ -363,13 +376,18 @@ func (s *server) serveLiveSocket(w http.ResponseWriter, r *http.Request) {
 		s.writeAuthenticationError(w, err)
 		return
 	}
+	// The handler is counted before the upgrade hands its connection over, while the server still
+	// tracks the request as its own: a page that reads the upgrade's answer and closes at once can
+	// end the test that opened it, whose cleanup waits for every handler (liveSocketSet.wait), and
+	// a count taken after the upgrade could come after that wait began.
+	defer s.liveSockets.serve()()
 	upgrader := gws.Upgrader{EnableCompression: true, ReadBufferSize: liveSocketReadBuffer}
-	conn, err := upgrader.Upgrade(w, r, nil)
+	conn, err := upgrader.Upgrade(w, r, access.UpgradeHeader(w))
 	if err != nil {
 		return // the upgrader has answered the request
 	}
 	age := s.liveSocketAge()
-	socket := newLiveSocket(r.Context(), conn, actor.Credential)
+	socket := newLiveSocket(r.Context(), conn, actor)
 	socket.beforePick = s.liveWriterBeforePick
 	if !s.liveSockets.add(socket) {
 		socket.closeUnserved()
@@ -511,20 +529,33 @@ func (s *server) shutAllLiveSockets(code int, reason string) {
 
 // liveSocketSet is every open GET /ws/live socket: the test hooks close them, and the shutdown
 // (server.waitBackground) waits for every socket's handler, and so every subscription it ran, to
-// return before the database pool closes. http.Server.Shutdown counts no hijacked connection, so an
-// upgrade still in flight at the signal can reach add after that wait has begun. The set takes no
-// socket from then on: its count is a sync.WaitGroup, whose count may not rise from zero beside its
-// Wait, and a socket taken after the wait returned would serve on while the pool closes.
+// return before the database pool closes. http.Server.Shutdown counts no hijacked connection, so a
+// socket request in flight at the signal can reach serve, and its upgraded socket add, after that
+// wait has begun. The set takes no socket from then on: its count is a sync.WaitGroup, whose count
+// may not rise from zero beside its Wait, and a socket taken after the wait returned would serve on
+// while the pool closes.
 type liveSocketSet struct {
 	mu      sync.Mutex
 	open    map[*liveSocket]struct{}
 	serving sync.WaitGroup
-	// closed is set as wait begins. It is read and set under mu, the lock add counts a socket
+	// closed is set as wait begins. It is read and set under mu, the lock serve counts a handler
 	// under, so every Add either comes before the Wait or does not happen.
 	closed bool
 }
 
-// add counts socket among the open sockets, and answers false, counting nothing, once wait has
+// serve counts one socket handler until the func it answers runs (wait). Once wait has begun it
+// counts nothing and answers a func that does nothing, and add then refuses the handler's socket.
+func (set *liveSocketSet) serve() (done func()) {
+	set.mu.Lock()
+	defer set.mu.Unlock()
+	if set.closed {
+		return func() {}
+	}
+	set.serving.Add(1)
+	return set.serving.Done
+}
+
+// add takes socket among the open sockets, and answers false, taking nothing, once wait has
 // begun.
 func (set *liveSocketSet) add(socket *liveSocket) bool {
 	set.mu.Lock()
@@ -536,15 +567,13 @@ func (set *liveSocketSet) add(socket *liveSocket) bool {
 		set.open = map[*liveSocket]struct{}{}
 	}
 	set.open[socket] = struct{}{}
-	set.serving.Add(1)
 	return true
 }
 
 func (set *liveSocketSet) remove(socket *liveSocket) {
 	set.mu.Lock()
+	defer set.mu.Unlock()
 	delete(set.open, socket)
-	set.mu.Unlock()
-	set.serving.Done()
 }
 
 // all is every socket open now.
