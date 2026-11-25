@@ -7,6 +7,7 @@ import { pageQuietText } from "../../theme/classes";
 import { useAgentText } from "../refs/AgentName";
 import { EVENT_FRESH } from "../refs/reference-target";
 import { useDocumentAdmissions } from "./document-admission";
+import { type RowReveal, useRowEdits } from "./graph-edit/row-edits";
 import { documentOfNode } from "./issue-artifacts";
 import type { TreeNode } from "./issue-tree";
 import { LensActContext, useLensAct } from "./lenses/LensMenu";
@@ -41,6 +42,7 @@ export function TreeRows({
   onPage,
   onToggle,
   report,
+  rowReveal,
   rows,
   tabStop,
   threads,
@@ -76,6 +78,9 @@ export function TreeRows({
   /** What a key reported when it had nowhere to go, and the key of the row it was pressed on,
    *  which draws it (`NodeRow`'s `report`). */
   report?: { readonly line: string; readonly row: string | undefined };
+  /** The outline's way of taking the reader to a row, which Graph's node menu takes them by after
+   *  a move and from a refusal's line (`IssueTree.tsx`'s `useRowReveal`). */
+  rowReveal?: RowReveal;
   rows: readonly DrawnRow[];
   /** The key of the row that is the tree's one tab stop. */
   tabStop: string | undefined;
@@ -103,6 +108,9 @@ export function TreeRows({
   // The Lens act the focused row offers in Conversation and in Graph, one value while the
   // address stands (`useLensAct`).
   const lensAct = useLensAct();
+  // Graph's node menu (`graph-edit/RowMenu.tsx`): each row's, and the delete's confirm while one
+  // is open, which outlives the row's focus. Nothing outside Graph.
+  const edits = useRowEdits({ act: lensAct, isClosed, reveal: rowReveal, rows, zoomRoot });
   return (
     <>
       {onOlder === undefined ? null : (
@@ -128,6 +136,7 @@ export function TreeRows({
           }
           const place = documentOfNode(row.node.id, artifacts);
           const mark = threads.get(row.node.id);
+          const edit = edits.editOf(row);
           return (
             <NodeRow
               {...(row.node.answer === undefined
@@ -140,6 +149,7 @@ export function TreeRows({
               }}
               context={context.has(row.node.id)}
               {...(place === undefined ? {} : { document: place.artifact })}
+              {...(edit === undefined ? {} : { edit })}
               editable={nodeEditable(place, isClosed, admissions)}
               {...(editing?.row === key ? { editing: editing.artifactId } : {})}
               expanded={row.expanded}
@@ -163,6 +173,7 @@ export function TreeRows({
           );
         })}
       </LensActContext.Provider>
+      {edits.confirm}
       {more === undefined ? null : (
         <PageControl kind="more" level={1} onPress={more.onPress}>
           <NextPageWords left={more.left} />

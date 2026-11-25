@@ -10,6 +10,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { createPortal } from "react-dom";
 import { useLocation } from "react-router-dom";
 
 import { ApiError } from "../../../api/client";
@@ -426,4 +427,181 @@ function menuLine(
   if (listed) return undefined;
   if (read.isError && !read.isFetching) return { failed: true, words: LENS_ANSWERS.kinds_failed };
   return { failed: false, words: LENS_ANSWERS.loading_kinds };
+}
+
+/**
+ * The Lens act's menu of kinds as a submenu of another menu: Graph's node menu
+ * (`graph-edit/RowMenu.tsx`), where the act leaves the row and is that menu's last entry (part
+ * R's R1). It is `ActAndMenu`'s menu without its act: the same read of the catalogue as it opens,
+ * each kind by its words and, under them, its first source's standard, in the catalogue's order,
+ * the same write (`useInvokeLens`), one pick at a time, and the same line with the role `status`,
+ * which says the catalogue is read, that its read failed, or that a pick is out. Its opening lets
+ * go of the refusal the act's line says, as `ActAndMenu`'s opening does (`LensRefusal` draws that
+ * line in Graph).
+ *
+ * Its keys are `ActAndMenu`'s menu's: it takes the focus as it opens and its first kind once the
+ * catalogue answers, Up and Down move, wrapping, Home and End go to the ends, Enter or a press
+ * picks, and every other key has its default prevented; but for Left, which gives the focus back
+ * to the entry that opened it (`onBack`), and Tab and Escape, which are the outer menu's. Its line
+ * stands in `lineHost`, beside the outer menu and not inside it, as `ActAndMenu`'s line stands
+ * beside its menu; none is drawn while no host is given. `onAnswered` is told once a pick is
+ * answered, with a lens or with a refusal: the outer menu closes then, as `ActAndMenu`'s does.
+ */
+export function LensKinds({
+  act,
+  lineHost,
+  on,
+  onAnswered,
+  onBack,
+}: {
+  act: LensAct;
+  lineHost: HTMLElement | null;
+  on: string;
+  onAnswered: () => void;
+  onBack: () => void;
+}): ReactNode {
+  const invocation = useInvokeLens(act.issueKey, on, act.outline, act.standing);
+  // Whether a pick is out, as `ActAndMenu` holds it: from the press until `invoke` answers, and
+  // while the node's write is out on any menu.
+  const [picked, setPicked] = useState(false);
+  const examining = picked || invocation.pending;
+  const kinds = useQuery(lensKindsQuery(true));
+  const listed = kinds.data;
+  const menu = useRef<HTMLSpanElement>(null);
+  const titleId = useId();
+
+  // The opening lets go of the node's answered invocations, and so of the refusal the act's line
+  // says, once: `forget` is a new function at every render.
+  const forget = useRef(invocation.forget);
+  forget.current = invocation.forget;
+  useEffect(() => {
+    forget.current();
+  }, []);
+
+  // The submenu takes the focus as it opens, and its first kind once the catalogue answers; a kind
+  // the reader moved to keeps it.
+  useEffect(() => {
+    const list = menu.current;
+    if (list === null) return;
+    const first = list.querySelector<HTMLElement>('[role="menuitem"]');
+    if (listed === undefined || first === null) {
+      list.focus();
+      return;
+    }
+    const focus = document.activeElement;
+    if (focus === list || !list.contains(focus)) first.focus();
+  }, [listed]);
+
+  // One invocation on the node at a time, as `ActAndMenu`'s `pick` sends it.
+  const pick = (kind: string) => {
+    if (examining) return;
+    setPicked(true);
+    const answered = () => {
+      setPicked(false);
+      onAnswered();
+    };
+    void invocation.invoke(kind).then(answered, answered);
+  };
+
+  const walk = (event: KeyboardEvent<HTMLElement>) => {
+    if (event.ctrlKey || event.metaKey || event.altKey) return;
+    if (event.key === "Tab" || event.key === "Escape") return;
+    event.preventDefault();
+    if (event.key === "ArrowLeft") {
+      onBack();
+      return;
+    }
+    const items = [...event.currentTarget.querySelectorAll<HTMLElement>('[role="menuitem"]')];
+    const at = event.target instanceof HTMLElement ? items.indexOf(event.target) : -1;
+    if (event.key === "Enter") {
+      const kind = listed?.[at];
+      if (kind !== undefined) pick(kind.id);
+      return;
+    }
+    const to = step(event.key, at, items.length);
+    if (to !== undefined) items[to]?.focus();
+  };
+
+  const line = menuLine(examining, listed !== undefined, kinds);
+
+  return (
+    <>
+      <span
+        aria-labelledby={titleId}
+        className="flex flex-col"
+        onKeyDown={walk}
+        ref={menu}
+        role="menu"
+        tabIndex={-1}
+      >
+        <span
+          className={`block px-2 pt-1 pb-1.5 text-xs font-semibold ${pageMutedText}`}
+          id={titleId}
+          {...pageChrome}
+        >
+          {LENS_WORDS.menu_title}
+        </span>
+        {(listed ?? []).map((kind) => {
+          const standard = kind.sources?.[0]?.standard ?? "";
+          return (
+            <button
+              className={`${pageMenuItem} flex flex-col gap-0.5`}
+              key={kind.id}
+              onClick={() => pick(kind.id)}
+              role="menuitem"
+              tabIndex={-1}
+              type="button"
+            >
+              <span className="break-words" data-lens-kind-words="" {...authorText}>
+                {kind.words}
+              </span>
+              {standard === "" ? null : (
+                <span
+                  className={`break-words text-xs font-normal ${pageMutedText}`}
+                  data-lens-kind-standard=""
+                  {...authorText}
+                >
+                  {standard}
+                </span>
+              )}
+            </button>
+          );
+        })}
+      </span>
+      {lineHost === null
+        ? null
+        : createPortal(
+            <span
+              className={
+                line === undefined
+                  ? undefined
+                  : `block px-2 py-[7px] text-sm ${line.failed ? pageFailedText : pageQuietText}`
+              }
+              data-lens-menu-line=""
+              role="status"
+              {...pageChrome}
+            >
+              {line?.words}
+            </span>,
+            lineHost
+          )}
+    </>
+  );
+}
+
+/**
+ * What the act's line says of the node's last refused invocation, as `ActAndMenu` says it after
+ * the act, for a row whose act stands in another menu: in Graph, where the act leaves the row, it
+ * is drawn after the node menu's control (`graph-edit/RowMenu.tsx`), until the Lens submenu opens
+ * again on that node (`LensKinds`). Nothing while no invocation on the node was refused.
+ */
+export function LensRefusal({ act, on }: { act: LensAct; on: string }): ReactNode {
+  const invocation = useInvokeLens(act.issueKey, on, act.outline, act.standing);
+  const refusal = refusalOf(invocation.refusal);
+  if (refusal === undefined) return null;
+  return (
+    <span className={pageFailedText} role="status" {...pageChrome}>
+      {refusal === "gone" ? LENS_ANSWERS.gone : LENS_ANSWERS.failed}
+    </span>
+  );
 }

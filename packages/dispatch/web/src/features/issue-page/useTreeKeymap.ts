@@ -4,6 +4,7 @@ import { inputMethodKey } from "../../lib/input-method-key";
 import { type KeyBinding, useKeymap } from "../shell/keymap";
 import { focusOnDocument } from "../shell/roving";
 import { type RowAction, rowActionSelector } from "./DecisionActions";
+import { ROW_MENU_ATTRIBUTE } from "./graph-edit/RowMenu";
 import { bringOnScreen } from "./identity-block";
 import type { TreeNode } from "./issue-tree";
 import { type OutlineWriter, replyItemOf, takesAnswer } from "./outline-writer";
@@ -147,6 +148,9 @@ const SCROLL_KEYS: Record<string, true> = {
   Home: true,
 };
 
+/** The control of Graph's node menu a row draws (`graph-edit/RowMenu.tsx`), which `m` presses. */
+const MENU_CONTROL = `button[${ROW_MENU_ATTRIBUTE}]`;
+
 /** The marks of the controls a row draws that a key of this keymap presses, which `f` leaves to
  *  that key: the fold control (the arrows), Keep and Change (`Shift+K`, `Shift+C`), Reply and
  *  Answer (`r`, `a`), and an open question's options, which the line `a` sets draws as chips of
@@ -158,6 +162,8 @@ const KEYED_CONTROLS = [
   '[data-row-act="reply"]',
   '[data-row-act="answer"]',
   "[data-pick-option]",
+  // Graph's node menu control, which `m` presses (`tree-menu`).
+  MENU_CONTROL,
 ].join(", ");
 
 /** Whether a key of this keymap presses `control`: one of `KEYED_CONTROLS`, or the control that
@@ -297,6 +303,12 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
       (control) => control.tabIndex < 0 && !control.disabled && !pressedByAKey(control)
     );
     return [...chips, ...rest.filter((link) => !chips.includes(link)), ...controls];
+  };
+  /** The node menu's control of the row that holds the focus itself, or null where the focus is
+   *  on no row, on a control inside one, or on a row that draws none (`MENU_CONTROL`). */
+  const rowMenuControl = (): HTMLButtonElement | null => {
+    const { elements } = drawn();
+    return elements[onRowItself(elements)]?.querySelector<HTMLButtonElement>(MENU_CONTROL) ?? null;
   };
   /** Moves to the row `index`, clamped to the tree's ends (`moveToRow`), and clears whatever a
    *  key reported. Where that row is the one holding the focus itself, the key that asked for it
@@ -558,6 +570,19 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
         stops[(on + 1) % stops.length]?.focus();
       },
       when: () => rowStops().length > 0,
+    },
+    {
+      // The focused row's node menu, in Graph (`graph-edit/RowMenu.tsx`): `m` presses its
+      // control, as a press does, and the menu puts the focus on its first entry. It is offered
+      // from the row itself alone, while the row draws that control: from a control inside the
+      // row, from the caret, from anywhere else on the page and in every other view, `m` does
+      // nothing (R1, R10).
+      id: "tree-menu",
+      keys: "m",
+      label: CONTROL_LABELS.edit_menu_key,
+      palette: false,
+      run: () => rowMenuControl()?.click(),
+      when: () => rowMenuControl() !== null,
     },
     {
       id: "tree-zoom-in",

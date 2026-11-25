@@ -1223,7 +1223,7 @@ test("a delete takes the block and its subtree after a confirm that names the co
       "the shared check keeps its serves to the other two statements"
     ).toEqual([true, true]);
     expect(
-      (await getComment(seed.comment)).anchor?.quote,
+      (await getComment(seed.comment)).comment.anchor?.quote,
       "the person's comment on the deleted statement's text is still answered with its quote"
     ).toBe(SEED_WORDS.statement3Quote);
 

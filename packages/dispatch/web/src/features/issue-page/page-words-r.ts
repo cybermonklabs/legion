@@ -30,6 +30,8 @@ export default {
       /** The control of the focused row in Graph that opens the menu (R1). Lens is part W's act
        *  (`LENS_WORDS.act`), and the menu's last entry. */
       edit_menu: "Row menu",
+      /** What the key table (`?`) says `m` does: it opens the focused row's menu (R10). */
+      edit_menu_key: "Open the focused row's menu",
       /** The menu's entries, in R1's order. */
       edit_new_below: "New row below",
       edit_new_under: "New row under",
@@ -77,6 +79,10 @@ export default {
       grey_first: "It is already the first.",
       grey_last: "It is already the last.",
       grey_not_paragraph: "Only a paragraph takes a new kind.",
+      /** Why New row below, New row under and Retype are grey on a row whose entry the row
+       *  takes, where no editor of the issue's room is given to the menu (R3, R5): each writes
+       *  through that editor alone, so the menu writes nothing for it. */
+      grey_no_editor: "The editor is not available for this row.",
       grey_criterion_parent: "A criterion goes under a question, a comment or a message.",
       grey_view_criterion: "This issue's agent writes its spec, so it takes no criterion.",
       grey_statement_parent:

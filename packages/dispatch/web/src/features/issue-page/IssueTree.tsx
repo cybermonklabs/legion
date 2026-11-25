@@ -19,6 +19,7 @@ import { EVENT_FRESH } from "../refs/reference-target";
 import { focusOnDocument } from "../shell/roving";
 import { ChangeDraftsProvider } from "./DecisionActions";
 import { type FocusedNode, useSetFocusedNode } from "./focused-node";
+import { useRowReveal } from "./graph-edit/row-reveal";
 import { bringOnScreen, FOOT_HEIGHT_PROPERTY, IDENTITY_HEIGHT_PROPERTY } from "./identity-block";
 import { pathToTarget } from "./issue-address";
 import { drawnLine, firstLineOf, lineWords, type TreeNode } from "./issue-tree";
@@ -519,6 +520,9 @@ export function IssueTree({
     },
     [goToNode]
   );
+  // Graph's node menu takes the reader to a row through these: the row a taken move put under a
+  // new parent, and the row a refusal's line names (`graph-edit/row-reveal.ts`).
+  const rowReveal = useRowReveal({ body, reach, root, unfoldPath });
 
   useEffect(() => {
     if (wanted === undefined) return;
@@ -1245,6 +1249,7 @@ export function IssueTree({
             {...(report === undefined
               ? {}
               : { report: { line: report.line, row: report.row ?? tabStop } })}
+            rowReveal={rowReveal}
             rows={rows}
             tabStop={tabStop}
             threads={threads}

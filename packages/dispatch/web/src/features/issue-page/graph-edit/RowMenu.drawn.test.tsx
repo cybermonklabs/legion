@@ -7,8 +7,10 @@ import { http } from "msw";
 import type { ReactNode } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
+import { installFakeLiveSockets } from "../../../__tests__/live-socket-harness";
 import { answerRequests } from "../../../__tests__/network";
 import { api } from "../../../api/client";
+import { liveFeedUp, liveSocketFor } from "../../../api/live-socket";
 import type { IssueDetails } from "../../../api/types";
 import { MarginProvider } from "../../margin/margin-context";
 import { parseIssuePath } from "../../refs/routes";
@@ -100,20 +102,24 @@ function rowId(node: TreeAnswerNode): string {
 
 // What stands in for the page's other reads, which the outline's draw needs and no case is about.
 let stubs: { mockRestore(): void }[] = [];
+// The live feeds a case put up (`liveFeedOn`), each ended once its page is gone.
+const feeds: (() => void)[] = [];
 beforeEach(() => {
   stubs = stubReads();
 });
 afterEach(() => {
   cleanup();
   for (const stub of stubs) stub.mockRestore();
+  for (const end of feeds.splice(0)) end();
 });
 
 /** One answer of a route: its status and body as the fixture holds them, held until `gate`
- *  settles where it has one. */
+ *  settles where it has one, and told to `returned` as it goes back to the page. */
 interface Reply {
   readonly status: number;
   readonly body: unknown;
   readonly gate?: Promise<void>;
+  readonly returned?: () => void;
 }
 
 /** What one request to a node route carried. */
@@ -149,6 +155,7 @@ function answerNodeRoutes(
     const reply = waiting[kind].shift();
     if (reply === undefined) throw new Error(`a ${kind} request came that no answer was left for`);
     await reply.gate;
+    reply.returned?.();
     return Response.json(renamed(reply.body), { status: reply.status });
   }
   answerRequests(
@@ -254,12 +261,37 @@ function signedIn(): QueryClient {
   return client;
 }
 
+/** The live feed of `client` up, as the shell's event feed holds it on the page: its socket open,
+ *  and the feed's subscription on it started by Dispatch (`events_start`), as
+ *  `useIssueTree.test.tsx`'s `liveFeedOn` puts it up. With it up, the end of a write of the issue
+ *  reads again only what the write left owed (`tree-read.ts`' `subscribeTreeFreshness`), as on
+ *  the page; with no feed, the harness's default, it reads every outline again. The feed ends,
+ *  and the page's WebSocket is put back, after the case. */
+function liveFeedOn(client: QueryClient): void {
+  const sockets = installFakeLiveSockets();
+  const live = liveSocketFor(client);
+  feeds.push(() => {
+    live.close();
+    sockets.restore();
+  });
+  live.subscribeEvents({ onEvent: () => undefined, onStart: () => undefined, since: () => null });
+  const socket = sockets.latest();
+  act(() => socket.open());
+  const { sub } = socket.subscribed("events");
+  act(() => socket.receive({ type: "events_start", sub, since: "1", replay_complete: true }));
+  expect(liveFeedUp(client), "the live feed is not up").toBe(true);
+}
+
 /** The page at `path`, its tree read answered by `reads` (`answerTreeReads`, Graph's answer where
- *  a case names none). */
-function draw(path = `/issues/${KEY}/graph`, issue: IssueDetails = issueDetails()): RenderResult {
+ *  a case names none), under `client`. */
+function draw(
+  path = `/issues/${KEY}/graph`,
+  issue: IssueDetails = issueDetails(),
+  client: QueryClient = signedIn()
+): RenderResult {
   return render(
     <MemoryRouter initialEntries={[path]}>
-      <AppProviders client={signedIn()}>
+      <AppProviders client={client}>
         <Stage issue={issue} />
       </AppProviders>
     </MemoryRouter>
@@ -353,6 +385,13 @@ function focusedRowId(): string | undefined {
   return document.activeElement?.closest<HTMLElement>("[data-node-row]")?.dataset.nodeId;
 }
 
+/** The node id of each row the page draws, in the order it draws them. */
+function rowIds(view: RenderResult): string[] {
+  return [...view.container.querySelectorAll<HTMLElement>("[data-node-row]")].map(
+    (row) => row.dataset.nodeId ?? ""
+  );
+}
+
 // R12: no request of this part is made by the first load of Graph, whatever rows it draws, and
 // none by a row's taking the focus.
 test("Graph's first load sends no node request", async () => {
@@ -432,16 +471,28 @@ test("each key of this part acts only where R4 and R10 say", async () => {
     expect(sent.deletes, `a key asked the server in ${preset}`).toEqual([]);
     view.unmount();
   }
-  // In Graph `m` opens it from a row, and from nowhere else: with no row focused it opens none.
+  // In Graph `m` opens it from a row, and from nowhere else: with the focus on a control outside
+  // the outline it opens none and sends nothing. The page gives its first row the focus once its
+  // reads settle, after its first draw, so the case waits for that focus before it moves the focus
+  // out.
   answerTreeReads();
-  answerNodeRoutes({ deletes: [{ ...deleted.dry_run }] });
+  const sent = answerNodeRoutes();
   const graph = draw();
-  await waitFor(() => expect(rowOf(graph, STATEMENT_3)).not.toBeNull());
-  act(() => {
-    if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
-  });
-  await user.keyboard("m");
-  expect(menuOf(graph), "m opened a menu with no row focused").toBeNull();
+  await waitFor(() => expect(focusedRowId(), "the page gave no row the focus").toBeDefined());
+  const outside = document.createElement("button");
+  outside.type = "button";
+  document.body.append(outside);
+  try {
+    act(() => outside.focus());
+    expect(document.activeElement, "the focus is not on the control outside Graph").toBe(outside);
+    await user.keyboard("m");
+    expect(menuOf(graph), "m opened a menu from a control outside Graph").toBeNull();
+    await letRequestsSettle();
+    expect(sent.patches, "m outside Graph wrote").toEqual([]);
+    expect(sent.deletes, "m outside Graph asked the server").toEqual([]);
+  } finally {
+    outside.remove();
+  }
 });
 
 test("m opens the node menu on the focused row", async () => {
@@ -943,17 +994,31 @@ test("confirm sends one DELETE with If-Match and expected_count", async () => {
 
 // R6: the nodes the server marks gone leave Graph, and the focus goes to the nearest row, with
 // one re-read of the outline (R7). The re-read answers the tree after the delete, which the
-// fixture holds as `deleted.tree_after`.
+// fixture holds as `deleted.tree_after`, and so only once the taken delete's answer has gone back
+// to the page. The live feed is up, as on the page, so the refused delete before it reads nothing.
 test("a taken delete drops the gone nodes and moves the focus to the nearest row", async () => {
   const user = userEvent.setup();
   expect(treeAfterDelete, "the fixture holds no tree read after the taken delete").toBeDefined();
   const after = renamed(treeAfterDelete?.body) as unknown as TreeAnswer;
-  const reads = answerTreeReads(converted, Promise.resolve(after));
+  const taken = Promise.withResolvers<void>();
+  const reads = answerTreeReads(
+    converted,
+    taken.promise.then(() => after)
+  );
   const sent = answerNodeRoutes({
-    deletes: [deleted.dry_run, deleted.refused.DELETE_COUNT_MOVED, deleted.taken],
+    deletes: [
+      deleted.dry_run,
+      deleted.refused.DELETE_COUNT_MOVED,
+      { ...deleted.taken, returned: () => taken.resolve() },
+    ],
   });
-  const view = draw();
+  const client = signedIn();
+  liveFeedOn(client);
+  const view = draw(undefined, undefined, client);
   let dialog = await confirmDialog(view, user);
+  // Where the deleted row stands among the rows, which the nearest row stands at once it is gone.
+  const at = rowIds(view).indexOf(rowId(STATEMENT_3));
+  expect(at, "the third statement's row is not drawn").toBeGreaterThanOrEqual(0);
   const confirm = (within: HTMLElement) =>
     [...within.querySelectorAll("button")].find(
       (each) => each.textContent === CONTROL_LABELS.confirm_delete
@@ -980,9 +1045,14 @@ test("a taken delete drops the gone nodes and moves the focus to the nearest row
       `${gone} is still drawn`
     ).toBeNull();
   }
-  // The focus is on a row of the outline, the one nearest where the deleted row stood.
+  // The focus is on a row of the outline, the one nearest where the deleted row stood: the row
+  // now at its place, or the last where none is (`IssueTree.tsx`'s drop rule).
   await waitFor(() => expect(focusedRowId(), "the focus is on no row").toBeDefined());
   expect(focusedRowId()).not.toBe(rowId(STATEMENT_3));
+  const left = rowIds(view);
+  expect(focusedRowId(), "the focus is not on the nearest row").toBe(
+    left[Math.min(at, left.length - 1)]
+  );
   // One re-read of the outline after the answer, and none besides the first load.
   await letRequestsSettle();
   expect(reads.outline()).toBe(2);
@@ -1034,7 +1104,10 @@ test("a refused delete keeps the tree and draws its line", async () => {
   const user = userEvent.setup();
   const reads = answerTreeReads();
   const sent = answerNodeRoutes({ deletes: [deleted.dry_run, deleted.refused.PARENT_CONTENDED] });
-  const view = draw();
+  // The live feed is up, as on the page: the end of a refused write owes no read.
+  const client = signedIn();
+  liveFeedOn(client);
+  const view = draw(undefined, undefined, client);
   const dialog = await confirmDialog(view, user);
   await user.click(
     [...dialog.querySelectorAll("button")].find(

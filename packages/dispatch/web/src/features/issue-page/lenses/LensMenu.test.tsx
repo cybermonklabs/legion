@@ -25,6 +25,7 @@ import { useDialog } from "../../shell/useDialog";
 import { SEND_DEADLINE_MS } from "../../writes/keyed-write";
 import { writesOf } from "../../writes/write-store";
 import { node, READER_ACTOR } from "../decisions-filter/decisions-fixtures";
+import { ROW_MENU_ATTRIBUTE } from "../graph-edit/RowMenu";
 import { buildIssueTree, type TreeNode } from "../issue-tree";
 import { NoTooltips } from "../NoTooltips";
 import { LENS_ANSWERS, LENS_WORDS, NODE_TYPES, type NodeType } from "../page-words";
@@ -901,17 +902,75 @@ test("a 201 on a tree read already marked stale reads it again and lands", async
   }
 });
 
-// In Graph the act is offered too, and a 201 reads Graph's tree once - the tree read with no
-// view, which names no kind - and never Conversation's read, which Graph does not draw (R6). The
-// page lands on Graph's own address of the new lens's row, keeping the words filter, so the lens
-// is drawn in the view it was invoked in (R4, R7).
+/** Answers each request of the node route of this issue, which the node menu of Graph's row
+ *  sends as the delete's dry run once it opens on a node part R admits (`graph-edit/RowMenu.tsx`),
+ *  and keeps, for each, the node it names and whether it was a dry run. */
+function answerNodeDeletes(): { readonly dryRun: boolean; readonly id: string }[] {
+  const sent: { dryRun: boolean; id: string }[] = [];
+  answerRequests(
+    http.delete(`/api/v1/issues/${KEY}/nodes/:id`, ({ params, request }) => {
+      const dryRun = new URL(request.url).searchParams.get("dry_run") === "true";
+      sent.push({ dryRun, id: decodeURIComponent(String(params.id)) });
+      return Response.json({ count: 1 });
+    })
+  );
+  return sent;
+}
+
+/** Focuses the row once it is drawn, and answers the control of Graph's node menu once the row
+ *  draws it: in Graph the Lens act is that menu's last entry (part R's R1). */
+async function focusedMenuControl(
+  view: RenderResult,
+  id = STATEMENT_ID
+): Promise<HTMLButtonElement> {
+  const row = await waitFor(() => rowOf(view, id));
+  act(() => row.focus());
+  return waitFor(() => {
+    const control = view.container.querySelector<HTMLButtonElement>(
+      `button[${ROW_MENU_ATTRIBUTE}]`
+    );
+    if (control === null) throw new Error("the focused row draws no node menu control");
+    return control;
+  });
+}
+
+/** The open node menu's Lens entry, once the menu draws it. */
+function menuLensEntry(view: RenderResult): Promise<HTMLElement> {
+  return waitFor(() => {
+    const entry = [
+      ...view.container.querySelectorAll<HTMLElement>('[role="menu"] [role="menuitem"]'),
+    ].find((item) => item.textContent === LENS_WORDS.act);
+    if (entry === undefined) throw new Error("the node menu holds no Lens entry");
+    return entry;
+  });
+}
+
+/** The kinds the node menu's Lens submenu lists, the second menu drawn, once the catalogue's
+ *  answer draws them. */
+async function drawnSubmenuKinds(view: RenderResult): Promise<HTMLElement[]> {
+  return waitFor(() => {
+    const submenu = view.container.querySelectorAll<HTMLElement>('[role="menu"]')[1];
+    const drawn = [...(submenu?.querySelectorAll<HTMLElement>('[role="menuitem"]') ?? [])];
+    if (drawn.length === 0) throw new Error("the Lens submenu lists no kind");
+    return drawn;
+  });
+}
+
+// In Graph the act is offered too, as the node menu's last entry (part R's R1), and a 201 reads
+// Graph's tree once - the tree read with no view, which names no kind - and never Conversation's
+// read, which Graph does not draw (R6). The page lands on Graph's own address of the new lens's
+// row, keeping the words filter, so the lens is drawn in the view it was invoked in (R4, R7). The
+// row draws no Lens act of its own there, and the menu sends the one dry run of its Delete.
 test("an invocation made in Graph reads Graph's tree once and lands on Graph's ?node=", async () => {
   const user = userEvent.setup();
   const [read] = buildIssueTree({ issue: ISSUE, tree: treeAnswer(0) }).children;
-  if (read?.reference === undefined) throw new Error("the tree read draws no statement");
+  if (read?.reference === undefined || read.readId === undefined) {
+    throw new Error("the tree read draws no statement");
+  }
   answerCatalogue(() => Response.json(schema(CATALOGUE)));
   const tree = answerTreeReads();
   const bodies = answerInvocations(() => Response.json(invoked("trade-off"), { status: 201 }));
+  const deletes = answerNodeDeletes();
   const client = signedIn();
   trackQueryFetches(client);
   const address: Address = { at: "", go: undefined };
@@ -924,11 +983,13 @@ test("an invocation made in Graph reads Graph's tree once and lands on Graph's ?
     client
   );
   try {
-    const control = await focusedAct(view, read.id);
+    const control = await focusedMenuControl(view, read.id);
+    expect(lensAct(view), "Graph's row draws the Lens act of its own").toBeNull();
     const rows = view.container.querySelectorAll("[data-node-row]").length;
     expect(tree.reads).toBe(1);
     await user.click(control);
-    await user.click((await drawnItems(view))[0] as HTMLElement);
+    await user.click(await menuLensEntry(view));
+    await user.click((await drawnSubmenuKinds(view))[0] as HTMLElement);
     await waitFor(() =>
       expect(address.at).toBe(`/issues/${KEY}/graph?q=notices&node=${invoked("trade-off").id}`)
     );
@@ -940,6 +1001,9 @@ test("an invocation made in Graph reads Graph's tree once and lands on Graph's ?
       expect(view.container.querySelectorAll("[data-node-row]")).toHaveLength(rows + 1)
     );
     expect(menuOf(view)).toBeNull();
+    expect(deletes, "the menu sent more than the statement's one dry run").toEqual([
+      { dryRun: true, id: read.readId },
+    ]);
   } finally {
     view.unmount();
   }
@@ -1213,6 +1277,19 @@ async function drawsLensAct(path: string, isClosed = false): Promise<boolean> {
   }
 }
 
+/** Whether the statement's row, focused at `path`, draws the control of Graph's node menu, and
+ *  that menu, opened, holds the Lens act (part R's R1). */
+async function menuOffersLens(path: string): Promise<boolean> {
+  const user = userEvent.setup();
+  const drawn = renderAt(<Rows nodes={[statement]} />, path);
+  try {
+    await user.click(await focusedMenuControl(drawn));
+    return (await menuLensEntry(drawn)) !== undefined;
+  } finally {
+    drawn.unmount();
+  }
+}
+
 // The act is drawn in Conversation and in Graph alone, on a node of this issue the invoke route
 // takes; a route that names no issue draws none. A closed issue keeps it.
 test("the Lens act is offered in Conversation and in Graph alone, on the kinds the route takes", async () => {
@@ -1246,10 +1323,13 @@ test("the Lens act is offered in Conversation and in Graph alone, on the kinds t
     true
   );
   expect(await drawsLensAct(`/issues/${KEY}`, true), "a closed issue's Conversation").toBe(true);
-  expect(await drawsLensAct(`/issues/${KEY}/graph`), "Graph").toBe(true);
-  expect(await drawsLensAct(`/issues/${KEY}/graph?node=${STATEMENT_ID}`), "Graph at a node").toBe(
-    true
-  );
+  // In Graph the act leaves the row for the node menu, whose last entry it is (part R's R1).
+  expect(await drawsLensAct(`/issues/${KEY}/graph`), "Graph's row").toBe(false);
+  expect(await menuOffersLens(`/issues/${KEY}/graph`), "Graph's node menu").toBe(true);
+  expect(
+    await menuOffersLens(`/issues/${KEY}/graph?node=${STATEMENT_ID}`),
+    "Graph's node menu at a node"
+  ).toBe(true);
   expect(await drawsLensAct("/"), "a route that names no issue").toBe(false);
 });
 

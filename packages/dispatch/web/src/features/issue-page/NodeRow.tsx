@@ -37,6 +37,8 @@ import { openChildEntry } from "./children-section";
 import { type Clamp, clampRedrawn, sameClamp, watchClamp } from "./clamp-measurer";
 import { DecisionActions } from "./DecisionActions";
 import { useDocumentStage } from "./document-stage";
+import { RowEditLine, RowMenu } from "./graph-edit/RowMenu";
+import type { RowEdit } from "./graph-edit/row-edits";
 import { ChildIssueFacts } from "./IssueChildren";
 import { bringOnScreen } from "./identity-block";
 import { presetNodePath } from "./issue-address";
@@ -111,6 +113,7 @@ export function NodeRow({
   author,
   context,
   document,
+  edit,
   editable = false,
   editing,
   expanded,
@@ -146,6 +149,10 @@ export function NodeRow({
    *  another of the issue's (R7). Undefined for a node that is no block of a document of this
    *  issue. */
   document?: Artifact;
+  /** The node menu the row draws in Graph (`graph-edit/RowMenu.tsx`): its control among the
+   *  focused row's acts, in place of the Lens act, and on every row the line a refused write of
+   *  the menu leaves. Undefined everywhere else, where the row draws its acts as today. */
+  edit?: RowEdit;
   /** Whether the row carries `data-editable`, for a view that lets the reader edit its words in
    *  place and draws such a row its own way: part I's outline passes it, and its styles draw the
    *  cue that the row takes typing (decision 323); nothing in part G reads it. False unless the
@@ -372,6 +379,7 @@ export function NodeRow({
           )}
           {oneLine ? null : <LensChain node={node} tabStops={tabStops} />}
           <RowActs
+            edit={edit}
             focused={focused}
             node={node}
             ownAnswer={ownAnswer}
@@ -380,6 +388,7 @@ export function NodeRow({
             tabStops={tabStops}
             writer={writer}
           />
+          {edit === undefined ? null : <RowEditLine edit={edit} node={node} tabStops={tabStops} />}
           {report === undefined ? null : (
             <p
               className={`text-xs leading-5 ${pageMutedText}`}
@@ -1037,8 +1046,12 @@ export function NodeOptions({
  * A press leaves the focus where it is until the action moves it to the line, as the row's other
  * controls do, so the press never lands on a row that moved under it. Each is out of the tab
  * order unless `tabStops` holds (`NodeRow`'s).
+ *
+ * In Graph (`edit`), the focused row draws the node menu's control there instead
+ * (`graph-edit/RowMenu.tsx`), whose last entry is the Lens act, and no Lens act of its own.
  */
 export function RowActs({
+  edit,
   focused = false,
   node,
   ownAnswer,
@@ -1047,6 +1060,8 @@ export function RowActs({
   tabStops = false,
   writer,
 }: {
+  /** The node menu of the row in Graph, which takes the Lens act into it (`RowMenu`). */
+  edit?: RowEdit;
   /** Whether the row has the focus: only the focused row offers the Lens act (`LensMenu`). */
   focused?: boolean;
   node: TreeNode;
@@ -1126,7 +1141,10 @@ export function RowActs({
           {status === "copied" ? ANSWER_LINES.copied : ANSWER_LINES.copy_failed}
         </span>
       )}
-      {focused ? <LensMenu node={node} tabStops={tabStops} /> : null}
+      {focused && edit === undefined ? <LensMenu node={node} tabStops={tabStops} /> : null}
+      {focused && edit !== undefined ? (
+        <RowMenu edit={edit} node={node} tabStops={tabStops} />
+      ) : null}
     </p>
   );
 }

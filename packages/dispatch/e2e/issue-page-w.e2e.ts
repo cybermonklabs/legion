@@ -388,6 +388,32 @@ function menuItem(page: Page, place: number): Locator {
   return lensMenu(page).getByRole("menuitem").nth(place);
 }
 
+/** Item `place` of the open menu of lens kinds in `view`: part W's menu in Conversation, and in
+ *  Graph the node menu's Lens submenu, which is named as part W's menu is (part R's R1). */
+function lensKindItem(page: Page, view: Outline, place: number): Locator {
+  if (view === "conversation") return menuItem(page, place);
+  return page.getByRole("menu", { name: LENS_WORDS.menu_title }).getByRole("menuitem").nth(place);
+}
+
+/** Opens the menu of lens kinds of the focused row `row` in `view` from the keyboard, as a reader
+ *  does: in Conversation `f` to the row's Lens act and Enter; in Graph, where the act is the node
+ *  menu's last entry and leaves the row (part R's R1), `m`, End and Enter. `message` names a row
+ *  that offers no Lens act in Conversation. */
+async function openLensKinds(
+  page: Page,
+  row: Locator,
+  view: Outline,
+  message: string
+): Promise<void> {
+  if (view === "conversation") {
+    await pressFTo(page, lensAct(row), message);
+  } else {
+    await page.keyboard.press("m");
+    await page.keyboard.press("End");
+  }
+  await page.keyboard.press("Enter");
+}
+
 /** The one lens the newest read holds that `before` did not, once a read holds it. */
 async function newLens(
   tree: TreeAnswerWatch,
@@ -435,6 +461,8 @@ async function landOn(
  * roots at its node's parent, the last invocation's included, may draw no row for `target`.
  * `what` names the node as the messages name it ("the open question", "statement 2"). Answers
  * the new lens's read id.
+ * In Graph the Lens act is the node menu's last entry (part R's R1), which `m`, End and Enter open
+ * (`openLensKinds`).
  */
 async function invokeThroughMenu(
   page: Page,
@@ -454,10 +482,9 @@ async function invokeThroughMenu(
   const before = new Set(lensIdsIn(held));
   const targetId = await drawnIn(page, view, target, what);
   const row = await focusRow(page, targetId);
-  await pressFTo(page, lensAct(row), inView(view, `${what}'s row offers no Lens act`));
-  await page.keyboard.press("Enter");
+  await openLensKinds(page, row, view, inView(view, `${what}'s row offers no Lens act`));
   await expect(
-    menuItem(page, 0),
+    lensKindItem(page, view, 0),
     inView(view, `the Lens menu on ${what} lists no kind`)
   ).toBeFocused();
   await page.keyboard.press("Enter");
@@ -1679,14 +1706,14 @@ test("the first load adds no request for lenses and reads a chain only at a pres
       page,
       await drawnIn(page, "graph", ids.preMortem, "the pre-mortem")
     );
-    await pressFTo(
+    await openLensKinds(
       page,
-      lensAct(graphPreMortem),
+      graphPreMortem,
+      "graph",
       inView("graph", "the pre-mortem's row offers no Lens act")
     );
-    await page.keyboard.press("Enter");
     await expect(
-      menuItem(page, 0),
+      lensKindItem(page, "graph", 0),
       inView("graph", "the opening of the menu lists no kind")
     ).toBeFocused();
     await expectInvocationReads(
