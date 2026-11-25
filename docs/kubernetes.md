@@ -2779,6 +2779,46 @@ Rolling forward does not undo that: such an issue's row still reads `default`, s
 That lasts until the issue's next run, whose first step passes the plan over, or until the issue leaves the workflow, which ends the run.
 Rolling forward again also costs the window the other way: an issue the earlier release drew while it ran reads the empty word afterwards and runs as an issue with no experiment does.
 
+#### Rolling back the release that names the variant on each step record
+
+This release adds no outbox kind and no migration.
+Where a draw put an issue in an experiment's group, by an arm that sets `plan`, it writes that experiment and the variant drawn as two more members, `experiment` and `variant`, of the issue's `step_record` rows, and the daemon sends the two after the record, on the record's experiment route (`PUT /api/v1/issues/{key}/steps/{id}/experiment`), from the same row.
+A draw of the `memory` experiment, or of an experiment whose arms set no `plan`, was never on a record, so the rollback costs it nothing.
+The daemon and Dispatch deploy in either order: a Dispatch without the experiment route takes the record on its step route or its rating route, answers the experiment route `404 NOT_FOUND` "no route for …", and the row waits as a role holders' publication does ([Rolling back the release that publishes each issue's role sessions to Dispatch](#rolling-back-the-release-that-publishes-each-issues-role-sessions-to-dispatch)), logging `outbox row waits` and no ERROR line, until Dispatch has the route.
+Each run of a waiting row sends the record again before the variant, which changes nothing Dispatch holds, since Dispatch keeps each field a record already holds.
+The daemon also keeps each start's whole write in `step_starts.record`, so a kept start carries the two members too.
+
+**A queued row and a kept start must lose the pair before the earlier image is pinned.**
+An earlier release decodes an outbox payload strictly (`record.DecodeOutboxPayload`, `DisallowUnknownFields`) and knows neither `experiment` nor `variant`, so a `step_record` row still carrying them fails its decode at every attempt, logs the failure each time and is retried on its backoff until the roll forward, and its record reaches Dispatch only where this release's run had already written it.
+A kept start can become such a row later.
+A rollback past the release that records each step re-arms that release's roll forward ([Rolling back the release that records each step](#rolling-back-the-release-that-records-each-step)).
+At the next roll forward, `20261117064152_step_starts_roll_forward` copies the kept start of each run an earlier release ended into a new `step_record` row.
+Every image from the release that records each step on applies that migration, so a release older than this one would refuse such a row at every attempt.
+Run this with the daemon of the project that rolls back stopped, before its earlier image is pinned, with `<PROJECT>` replaced by the project's key: `project` in its `legion.yaml`, the part of each of its issue keys before the hyphen, such as `LEGION`:
+
+```sql
+-- The experiment and the variant of the step records one project still has queued.
+update outbox set payload = payload - 'experiment' - 'variant'
+where kind = 'step_record' and (payload ? 'experiment' or payload ? 'variant')
+  and split_part(issue, '-', 1) = '<PROJECT>';
+-- The experiment and the variant of the starts one project keeps.
+update step_starts set record = record - 'experiment' - 'variant'
+where (record ? 'experiment' or record ? 'variant')
+  and split_part(issue, '-', 1) = '<PROJECT>';
+```
+
+This block is the one source of its statements.
+`internal/store`'s `TestTheStepVariantWayBackLeavesWhatTheReleaseBeforeReads` runs it over queued rows and kept starts of two projects, from the copy `internal/store/step_variant_way_back_extract.txt`, and reads each row and each kept start of the project that rolls back as the release before this one reads it and each of the other project's as this release left it; `internal/textcheck`'s `TestTheStepVariantWayBackExtractIsTheGuidesBlock` holds that copy to this block, so change the two in one commit.
+
+The block deletes no row and changes no other member of a payload or a kept start, so each row keeps its retry state and then writes its record, with its rating where it carries one, under the earlier release.
+Each project rolls back on its own, as for the release that rates each plan ([Rolling back the release that rates each plan](#rolling-back-the-release-that-rates-each-plan)): each statement names the project, and a daemon left on this release still sends its own variants.
+What it costs is the variant of each of those records that had not reached Dispatch: the read of that issue's steps and the read of the project's finished issues name no variant for that run, and nothing else of the issue changes.
+An end the daemon writes later from a kept start the block changed names no variant either.
+That costs nothing more: Dispatch keeps the variant the run's start sent, so a read misses it only where that start's own variant had not reached Dispatch.
+The records the earlier release writes while it runs name no variant either, and nothing writes them again after the roll forward.
+Where the earlier release wrote every record of an issue's newest run, those two reads name no variant for that run after the roll forward.
+A variant that reached Dispatch before the rollback stays there; its row can still be queued when the daemon stopped, or failed to record the row as done, after the write (it runs such a row again when its lease expires, `settle` in `daemon/outbox.go`).
+
 #### Rolling back the release that lets the owning architect's status stand
 
 This release takes the owning architect's `done`, `backlog`, `icebox` or `triage` on a child as it takes a person's move.
@@ -9321,7 +9361,7 @@ each issue's pod (every role of it alike) and the image probe's.
   The controller is in no memory group whatever the mode says, since a memory group is a tree's and the controller runs in none;
   a role of a tree drawn `none` is told exactly what it was told before the block existed; and a block with no `instructions` appends nothing.
   The launch follows the record, not the mode:
-  a tree the daemon drew into the memory group keeps its overlays and its instructions while the block still names them, whatever the mode is now, so `mode: off` stops new draws and takes memory from no tree already running with it.
+  a tree the daemon drew into the memory group keeps its overlays and its instructions while the block still names them, whatever the mode is now, so `mode: off` gives every new tree no arm and takes memory from no tree already running with it.
   Taking the files away is removing them from the block.
   The memory overlays take part in everything `role_config_files` takes part in:
   the mount check at load (a file under no `pod.volume_mounts` mount is refused, naming `projects.<KEY>.memory.config_files`), the image probe's per-role value (they are passed for every workflow role and never for the controller, and a file the probe cannot read refuses the boot), the pod drift, and what a kept pod's role is told.
@@ -9348,7 +9388,11 @@ each issue's pod (every role of it alike) and the image probe's.
 - **`projects.<KEY>.experiments`** declares the experiments the project draws its trees and its issues into, as a mapping of an experiment's name to its block, read and kept in the file's order.
   An experiment's name is 1 to 32 characters of `a-z`, `0-9` and `-`, and the project names it once:
   every draw records it.
-  `mode` is `off`, `on` or `random`: `off` draws for no unit and is what a block with no mode gets, `on` gives every new unit the arm `on_variant` names, and `random` draws among the arms by their weights (`crypto/rand`).
+  `mode` is `off`, `on` or `random`, and a block with no mode gets `off`.
+  `off` gives every new unit no arm, and the daemon records that unit at the empty arm, with the mode `off` and the instant.
+  The record keeps that arm as `""`, and `legion state --json` shows `""` too.
+  The plain `legion state` line prints it as `none`.
+  `on` gives every new unit the arm `on_variant` names, and `random` draws among the arms by their weights (`crypto/rand`).
   `unit` is `tree`, the default, which draws once for a whole tree and gives every issue of it the same arm, or `issue`, which draws for each issue of the project on its own.
   `roles` lists the issue roles whose launches load the experiment's arms, each once, and every issue role where the block names none: a launch of a role the list leaves out loads none of this experiment's overlays or instructions while its unit keeps the arm it drew (the operator's and the role's own overlays, and other experiments' arms that reach it, still apply), so an experiment can leave the roles that judge the work (the reviewer, the tester, the architect who accepts it) out of what it changes.
   `variants` are the arms it compares, and a mode other than `off` needs at least two of them, since a draw among one arm measures nothing.
@@ -9402,7 +9446,7 @@ each issue's pod (every role of it alike) and the image probe's.
   A unit opened before an experiment was declared holds no row for it and runs in no arm of it.
   An operator's spawn whose tree has no issue record records no answer and runs in no arm; nothing is refused and no record is invented.
   The launch follows the record, not the mode:
-  a unit the daemon drew into an arm keeps that arm's overlays and its instructions while the project's file still names the arm, whatever the mode is now, so moving a mode to `off` stops new draws and takes nothing from a unit already running.
+  a unit the daemon drew into an arm keeps that arm's overlays and its instructions while the project's file still names the arm, whatever the mode is now, so moving a mode to `off` gives every new unit no arm and takes nothing from a unit already running.
   A unit whose recorded arm the file no longer names runs as a unit in no experiment does, and its row stays, so naming the arm again gives the unit the arm it was drawn into.
 
 - **What a role of a drawn unit is given.**

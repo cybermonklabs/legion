@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"testing"
-	"time"
 
 	natsgo "github.com/nats-io/nats.go"
 
@@ -45,36 +44,64 @@ func ServerCopiesKey(t testing.TB, conn *natsgo.Conn, dstBucket, dstKey, srcBuck
 
 // ServerCopyRefused sends the direct get ServerCopiesKey sends - a copy of srcKey's record onto
 // dstKey, its reply dstKey's subject - for a copy the server refuses to store, and fails the test
-// unless dstBucket's stream still holds no newer message on dstKey's subject once span, the
-// caller's, has passed (testwait.Span, for the reason refusedCopyUnread gives). A copy of a record
-// this build wrote (bound to its key by a conditional write) carries that write's stored
-// Nats-Expected-Last-Subject-Sequence, so the server stores it only where dstKey's subject holds
-// that many messages; onto a key that holds another session's record it is refused, and a
-// direct-get copy can never overwrite a different occupied key this way. It returns dstKey's
+// unless dstBucket's stream holds no newer message on dstKey's subject once it has taken the copy.
+// A copy of a record this build wrote (bound to its key by a conditional write) carries that
+// write's stored Nats-Expected-Last-Subject-Sequence, so the server stores it only where dstKey's
+// subject holds that many messages; onto a key that holds another session's record it is refused,
+// and a direct-get copy can never overwrite a different occupied key this way. It returns dstKey's
 // unchanged newest sequence.
-func ServerCopyRefused(t testing.TB, conn *natsgo.Conn, dstBucket, dstKey, srcBucket, srcKey string, span time.Duration) uint64 {
+//
+// The stream's verdict is read with no span. A subscriber of dstKey's subject receives the server's
+// copy, which the stream's subscription took in the same publish; then a publish to the same subject
+// that the stream must refuse (an expected last subject sequence it cannot hold) is answered only
+// once the stream has worked every message queued before it, the copy among them, and stores
+// nothing. A wait of 2 s (before) could pass with a wrongly stored copy still on its way on a loaded
+// machine, where ServerWritesKey's own copies take longer. That order holds on a stream of one copy,
+// whose server works its subject's messages one at a time and refuses the marker with the wrong last
+// sequence (10071) only after the copy; the leader of a stream of more copies can answer 10164 while
+// the copy is still being stored. So the helper requires dstBucket's stream to hold one copy, and the
+// marker's refusal to be 10071.
+func ServerCopyRefused(t testing.TB, conn *natsgo.Conn, dstBucket, dstKey, srcBucket, srcKey string) uint64 {
 	t.Helper()
 	before := LastSequence(t, conn, dstBucket, dstKey)
 	request := "$JS.API.DIRECT.GET.KV_" + srcBucket
 	data := []byte(`{"last_by_subj":"` + KVSubject(srcBucket, srcKey) + `"}`)
+	copies, err := conn.SubscribeSync(KVSubject(dstBucket, dstKey))
+	if err != nil {
+		t.Fatalf("subscribe to %s: %v", KVSubject(dstBucket, dstKey), err)
+	}
+	defer func() { _ = copies.Unsubscribe() }()
 	if err := conn.PublishRequest(request, KVSubject(dstBucket, dstKey), data); err != nil {
 		t.Fatalf("send %s answering to %s: %v", request, KVSubject(dstBucket, dstKey), err)
 	}
 	if err := conn.FlushWithContext(Context(t)); err != nil {
 		t.Fatalf("flush %s: %v", request, err)
 	}
-	testwait.Span(t, span, refusedCopyUnread)
+	if _, err := copies.NextMsgWithContext(testwait.Context(t)); err != nil {
+		t.Fatalf("the server's copy of %s onto %s never reached its subject: %v", KVSubject(srcBucket, srcKey), KVSubject(dstBucket, dstKey), err)
+	}
+	js, err := conn.JetStream(MaxWait(t))
+	if err != nil {
+		t.Fatalf("JetStream: %v", err)
+	}
+	if info, err := js.StreamInfo("KV_" + dstBucket); err != nil {
+		t.Fatalf("read the stream of %s: %v", dstBucket, err)
+	} else if info.Config.Replicas > 1 {
+		t.Fatalf("ServerCopyRefused proves its order on a stream of one copy; KV_%s has %d", dstBucket, info.Config.Replicas)
+	}
+	marker := natsgo.ExpectLastSequencePerSubject(before + 1<<40)
+	var api *natsgo.APIError
+	if _, err := js.Publish(KVSubject(dstBucket, dstKey), nil, marker); err == nil {
+		t.Fatalf("the stream stored a marker on %s that expects a sequence it cannot hold", KVSubject(dstBucket, dstKey))
+	} else if !errors.As(err, &api) || api.ErrorCode != natsgo.JSErrCodeStreamWrongLastSequence {
+		t.Fatalf("the marker on %s after the copy: %v, want the stream's wrong-last-sequence refusal (10071)", KVSubject(dstBucket, dstKey), err)
+	}
 	if stored := LastSequence(t, conn, dstBucket, dstKey); stored != before {
 		t.Fatalf("the server stored a copy of %s under %s at sequence %d, want it refused and %s left at %d",
 			KVSubject(srcBucket, srcKey), KVSubject(dstBucket, dstKey), stored, KVSubject(dstBucket, dstKey), before)
 	}
 	return before
 }
-
-// refusedCopyUnread is the why of ServerCopyRefused's span: no state the test can read records the
-// refusal, and no later action's effect is ordered after it.
-const refusedCopyUnread = "no state the test can read records the refusal: a stream answers a publish it refuses on the publish's reply subject, and the server publishes its answer to a direct get with none; " +
-	"and no later action's effect is ordered after it: the server answers the direct get on a path of its own, apart from what the test sends after it, and a marker write to the bucket would put a record there that the code under test reads"
 
 // StreamInfo is the request for stream's info, answered with a JSON document.
 func StreamInfo(stream string) string { return "$JS.API.STREAM.INFO." + stream }
@@ -164,7 +191,8 @@ type newestSequence uint64
 func (s newestSequence) String() string { return fmt.Sprintf("newest sequence %d", uint64(s)) }
 
 // LastSequence is the stream sequence of the newest message bucket's stream holds for key, read
-// from the stream's leader, and 0 when it holds none.
+// from the stream's leader, and 0 when it holds none. The read waits as long as MaxWait's, since one
+// cut at nats.go's own 5 s would fail the test on a loaded machine.
 func LastSequence(t testing.TB, conn *natsgo.Conn, bucket, key string) uint64 {
 	t.Helper()
 	js, err := conn.JetStream(MaxWait(t))

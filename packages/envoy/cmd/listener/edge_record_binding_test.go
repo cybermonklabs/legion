@@ -153,7 +153,7 @@ func TestAnEdgeReadsNoScopeFromAForgedSessionRecord(t *testing.T) {
 		// edge's reading of a forged record would be reopened, and this row fails. Two seconds, main's
 		// span, is how long the refusal is watched for: ServerCopyRefused says why no state of the
 		// server and no later action reaches it.
-		testnats.ServerCopyRefused(t, conn, bus.SessionBucket, pub, bus.SessionBucket, priv, 2*time.Second)
+		testnats.ServerCopyRefused(t, conn, bus.SessionBucket, pub, bus.SessionBucket, priv)
 		entry, err := rig.deps.sessions.Refresh(context.Background(), pub)
 		if err != nil || entry.MachineID == "" || !slices.Contains(entry.Projects, "PUB") {
 			t.Fatalf("S_pub after the refused copy reads %+v (%v), want its own PUB record", entry, err)

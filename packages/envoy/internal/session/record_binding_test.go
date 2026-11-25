@@ -112,7 +112,7 @@ func TestASessionRecordNamingAnotherKeyReadsAbsent(t *testing.T) {
 	// never overwrite a different session's live record, and S_pub keeps its own. Two seconds, main's
 	// span, is how long the refusal is watched for: ServerCopyRefused says why no state of the server
 	// and no later action reaches it.
-	testnats.ServerCopyRefused(t, client.Conn, bus.SessionBucket, "ses_pub", bus.SessionBucket, "ses_priv", 2*time.Second)
+	testnats.ServerCopyRefused(t, client.Conn, bus.SessionBucket, "ses_pub", bus.SessionBucket, "ses_priv")
 	if entry, err := r.Refresh(context.Background(), "ses_pub"); err != nil || entry.MachineID != "shared-a" {
 		t.Fatalf("Refresh(ses_pub) after the refused copy = %+v, %v; want its own record, machine shared-a", entry, err)
 	}

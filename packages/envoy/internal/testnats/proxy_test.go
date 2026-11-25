@@ -56,8 +56,26 @@ func TestAProxyRelaysUntilCutAndAgainOnceRestored(t *testing.T) {
 		refused.Close()
 		t.Fatal("a client connected through a cut proxy")
 	}
-	testwait.Quiet(t, "the client's reconnect through a cut proxy", reconnected, 300*time.Millisecond,
-		"the state that would let a reconnect through is the proxy's listener, which the refused dial above reads but which says nothing about an attempt nats.go makes on its own schedule; no later action's effect orders after such an attempt, since nats.go reports a reconnect attempt only when its dial could not connect, and a cut proxy's dial connects and is then closed; and the client does real network I/O, which synctest cannot hold")
+	// The client tried to reconnect and the cut proxy refused it, which the proxy's own count of
+	// refused dials says with no span: the row's own dial through the cut proxy, just above, is one,
+	// and any later one is the client's reconnect. A window of 300 ms (before) could pass before the
+	// client's first reconnect, whose wait is 50 ms plus up to 100 ms of jitter and a handshake, came
+	// at all on a loaded machine. A reconnect that comes first ends the wait and fails the row then,
+	// so a cut proxy that relays the client's reconnect fails it at once, not at the test's deadline.
+	var through bool
+	testwait.Until(t, "the cut proxy to refuse the client's reconnect", func() (int, bool) {
+		select {
+		case <-reconnected:
+			through = true
+			return 0, true
+		default:
+		}
+		refused := proxy.refusedDials()
+		return refused, refused >= 2
+	})
+	if through {
+		t.Fatal("the client reconnected through a cut proxy")
+	}
 
 	proxy.Restore()
 	testwait.Receive(t, "the client's reconnect after the restore", reconnected)
