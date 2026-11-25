@@ -1,6 +1,10 @@
 package workflow
 
 import (
+	"net/http"
+	"reflect"
+	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -124,5 +128,27 @@ func TestOnlyTheStepsWorkerMovesItsIssueBack(t *testing.T) {
 			}
 			assertWalksAt(t, pool, engine, root.Key, phase.Step, stepPlace(2))
 		})
+	}
+}
+
+// A move's refusal names the old and current issue-wide entries, not their distance as a count
+// of entries missed by the requesting role.
+func TestAStaleMoveBackReportsItsTwoEntryIdentities(t *testing.T) {
+	refusal := staleBackwardMove("LEGION-208", claim.RoleTester, phase.Testing, 9, 2)
+	if refusal.Status != http.StatusConflict || refusal.Code != "BACKWARD_REFUSED" {
+		t.Fatalf("stale move refusal = %+v, want 409 BACKWARD_REFUSED", refusal)
+	}
+	for _, receiver := range []string{"LEGION-208", string(claim.RoleTester), string(phase.Testing)} {
+		if !strings.Contains(refusal.Message, receiver) {
+			t.Fatalf("stale move refusal names no receiver %q: %s", receiver, refusal.Message)
+		}
+	}
+	reason, _, _ := strings.Cut(refusal.Message, ". ")
+	numbers := make(map[string]int)
+	for _, number := range regexp.MustCompile(`[0-9]+`).FindAllString(reason, -1) {
+		numbers[number]++
+	}
+	if want := (map[string]int{"208": 1, "2": 1, "9": 1}); !reflect.DeepEqual(numbers, want) {
+		t.Fatalf("stale move refusal reports numeric values %v, want only receiver and entry identities %v: %s", numbers, want, reason)
 	}
 }

@@ -2334,8 +2334,8 @@ func BehindEntryClause(recordBacked bool, commit string, pr *record.PullRequest,
 //
 // clause says what refused this completion (BehindEntryClause).
 func StaleEntry(issue string, role claim.Role, p phase.Phase, current, serving int64, pending *supervise.Delivery, clause string) *Refusal {
-	stale := fmt.Sprintf("%s handed the %s phase %s again: this completion is of entry %d, which is %d behind the entry %d the phase is on, and %s; nothing was recorded",
-		issue, role, p, serving, current-serving, current, clause)
+	stale := fmt.Sprintf("%s handed the %s phase %s again: this completion is of entry %d, not the phase's current entry %d, and %s; nothing was recorded",
+		issue, role, p, serving, current, clause)
 	if pending != nil && pending.Entry == current {
 		stale = fmt.Sprintf("%s, and your turn began before the daemon's task for entry %d (%s) reached this session", stale, current, pending.ID)
 	}

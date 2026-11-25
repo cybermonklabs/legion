@@ -2807,9 +2807,9 @@ func (e *Engine) backward(ctx context.Context, tx pgx.Tx, fact intake.BackwardMo
 // the current entry's task, owed to its claim, comes by itself.
 func staleBackwardMove(issue string, requester claim.Role, p phase.Phase, current, served int64) *intake.Refusal {
 	return &intake.Refusal{Status: 409, Code: "BACKWARD_REFUSED", Message: fmt.Sprintf(
-		"%s handed the %s phase %s again: this move back is of entry %d, which is %d behind the entry %d the phase is on, so it changed nothing. "+
+		"%s handed the %s phase %s again: this move back is of entry %d, not the phase's current entry %d, so it changed nothing. "+
 			"End this turn without moving the issue. The task of the entry the phase is on is owed to this claim, and the daemon sends it by itself: judge that task's work at the head it names, and move the issue back in its turn if that work calls for it",
-		issue, requester, p, served, current-served, current)}
+		issue, requester, p, served, current)}
 }
 
 // endChildrenFirst is what the refusals over children still in the workflow, sign_off's and
