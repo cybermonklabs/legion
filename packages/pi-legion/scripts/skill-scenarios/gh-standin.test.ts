@@ -165,7 +165,10 @@ test("a press moves the world to its state, and a route with `when` answers only
   });
   expect(call("--version")).toMatchObject({ code: 0, out: "gh version 2.98.0\n" });
   // The rig's move between two turns (rig.sh's fix_settle), read by the next call.
-  writeFileSync(fixtures, JSON.stringify({ ...JSON.parse(readFileSync(fixtures, "utf8")), state: "settled" }));
+  writeFileSync(
+    fixtures,
+    JSON.stringify({ ...JSON.parse(readFileSync(fixtures, "utf8")), state: "settled" })
+  );
   expect(call("run", "view", "44")).toEqual({ code: 0, out: "settled\n", state: "settled" });
   // No route of the state names the press: the stand-in's loud failure, not an answer of another.
   expect(call("run", "rerun", "44").code).toBe(97);

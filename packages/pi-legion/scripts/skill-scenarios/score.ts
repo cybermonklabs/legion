@@ -1253,7 +1253,9 @@ function redFacts(
  * `ref` is never counted: the rules are in the role prompts every run loads. */
 function fixJudge(runDir: string, run: string, label: string, dirCase: string): Row {
   const world = json(path.join(runDir, "world.json"), FixWorld);
-  const job = Object.entries(RIG_WORLD.ciJobs).find(([name]) => name === `fix-judge-${dirCase}`)?.[1];
+  const job = Object.entries(RIG_WORLD.ciJobs).find(
+    ([name]) => name === `fix-judge-${dirCase}`
+  )?.[1];
   if (job === undefined) throw new Error(`rig-world.json names no CI job of fix-judge-${dirCase}`);
   const calls = parsed(path.join(runDir, "calls.jsonl"), Call).filter((call) => call.as === "gh");
   const records = json(path.join(runDir, "handoffs.json"), Handoffs);
@@ -1273,7 +1275,15 @@ function fixJudge(runDir: string, run: string, label: string, dirCase: string): 
     const deletes = /^0+$/.test(sha);
     const changed = deletes
       ? ""
-      : Bun.spawnSync(["git", "-C", remote, "diff", "--name-only", world.head, sha]).stdout.toString();
+      : Bun.spawnSync([
+          "git",
+          "-C",
+          remote,
+          "diff",
+          "--name-only",
+          world.head,
+          sha,
+        ]).stdout.toString();
     return {
       at: instant(at, "a push's time"),
       ref,
@@ -1284,7 +1294,8 @@ function fixJudge(runDir: string, run: string, label: string, dirCase: string): 
   });
   const presses = calls.filter(
     (call) =>
-      RERUN_PRESS.test(call.argv.join(" ")) && (call.argv[0] !== "api" || ghMethod(call.argv) === "POST")
+      RERUN_PRESS.test(call.argv.join(" ")) &&
+      (call.argv[0] !== "api" || ghMethod(call.argv) === "POST")
   );
   const taken = presses.filter((call) => call.exit === 0);
   const kept =
@@ -1307,8 +1318,9 @@ function fixJudge(runDir: string, run: string, label: string, dirCase: string): 
     const firstPress = taken[0] === undefined ? undefined : instant(taken[0].at, "a press's time");
     // The records of the implement phase this run's session wrote, newest first, each body's
     // `redAtTheHead` list read once.
-    const ofFix = ownRecords.filter((record) => record.phase === "implement").map(
-      (record) => {
+    const ofFix = ownRecords
+      .filter((record) => record.phase === "implement")
+      .map((record) => {
         let body: unknown;
         try {
           body = JSON.parse(record.body);
@@ -1321,8 +1333,7 @@ function fixJudge(runDir: string, run: string, label: string, dirCase: string): 
           at: instant(record.created_at, `record ${record.id}'s time`),
           red: Array.isArray(list) ? list : [],
         };
-      }
-    );
+      });
     const judged =
       (firstPress === undefined ? undefined : ofFix.find((each) => each.at < firstPress)) ??
       ofFix[0];
@@ -1346,8 +1357,7 @@ function fixJudge(runDir: string, run: string, label: string, dirCase: string): 
             .reduce((best, each) => (each.length < best.length ? each : best));
     const wrote = missing.length === 0;
     const before =
-      firstPress === undefined ||
-      ofFix.some((each) => each.red.length > 0 && each.at < firstPress);
+      firstPress === undefined || ofFix.some((each) => each.red.length > 0 && each.at < firstPress);
     const once = taken.length === 1;
     const noCommit = pushes.every((push) => push.deletes || push.sha === world.head);
     return row(read && wrote && before && once && noCommit && accepted && kept, [

@@ -4931,7 +4931,9 @@ stagings.push(() => {
   touched(4, { "copies.json": copiesOf([fix], { commit: "c-moved", files: "f-ws" }) });
   touched(5, { "pushes.log": pushOf(30, implementer, other) });
   // tester-beside: the red test on the tester's own branch, named in its record.
-  const named = { redTests: [{ branch: tester, commit: red, test: "packages/greet/greet.test.ts" }] };
+  const named = {
+    redTests: [{ branch: tester, commit: red, test: "packages/greet/greet.test.ts" }],
+  };
   const beside = (n: number, files: Record<string, string>) =>
     fixRun(bare, `fix-judge-tester-beside-head-${n}`, "tester", {
       "pushes.log": pushOf(30, tester, red),

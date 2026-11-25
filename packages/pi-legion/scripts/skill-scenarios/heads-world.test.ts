@@ -373,9 +373,15 @@ test("every run and reading of k1 the heads worlds record holds only words the p
 // from the implementer's record alone), and a settlement that serves no second attempt or reaches
 // no Dispatch.
 test("fix-judge: #702 on legion/<issue>, k-ci's job failed at its head, each world's records, and the settlement of a re-run", async () => {
+  // The hook's ports and NATS, which restoreEnvironment puts back after each test.
+  process.env.DISPATCH_E2E_PORT = "18777";
+  process.env.FAKE_GITHUB_PORT = "18778";
+  process.env.DISPATCH_E2E_NATS_URLS = "nats://127.0.0.1:1";
   const records: Record<string, string[]> = {};
   for (const which of ["unrelated-test", "touched-test", "tester-beside"]) {
-    const job = Object.entries(RIG_WORLD.ciJobs).find(([name]) => name === `fix-judge-${which}`)?.[1];
+    const job = Object.entries(RIG_WORLD.ciJobs).find(
+      ([name]) => name === `fix-judge-${which}`
+    )?.[1];
     if (job?.rerun === undefined) throw new Error(`rig-world.json names no re-run of ${which}`);
     const { calls } = await world(which, "fix-judge");
     const content = String(
@@ -409,7 +415,10 @@ test("fix-judge: #702 on legion/<issue>, k-ci's job failed at its head, each wor
     const dir = dirOf(`settle-${which}`);
     const fixtureFile = path.join(dir, "fixture.json");
     const headsFile = path.join(dir, "heads.json");
-    writeFileSync(fixtureFile, JSON.stringify({ issue: "LWEVAL-7", title: "t", verification: "v" }));
+    writeFileSync(
+      fixtureFile,
+      JSON.stringify({ issue: "LWEVAL-7", title: "t", verification: "v" })
+    );
     writeFileSync(headsFile, JSON.stringify({ "702": "a".repeat(40) }));
     await heads.headsSettle(fixtureFile, headsFile, `fix-judge-${which}`);
     expect(settled.map((call) => call.path)).toEqual(["/__fixture/repos"]);

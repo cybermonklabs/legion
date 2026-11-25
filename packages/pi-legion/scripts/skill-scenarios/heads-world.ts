@@ -578,12 +578,7 @@ export async function headsEvents(file: string, headsFile: string, world: string
 /** The pull request `pr` of the run's issue as the GitHub stand-in serves it, at `head`: on the
  * branch legion/<issue>-<pr>, or in a world of fix-judge (`fix`) on the issue's own branch
  * legion/<issue>, the branch of the task a fix pushes once at its end. */
-function pullSeed(
-  fixture: z.infer<typeof HeadsFixture>,
-  pr: string,
-  head: string,
-  fix: boolean
-) {
+function pullSeed(fixture: z.infer<typeof HeadsFixture>, pr: string, head: string, fix: boolean) {
   return {
     head_sha: head,
     state: "open",
