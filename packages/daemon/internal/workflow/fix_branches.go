@@ -110,7 +110,7 @@ func (e *Engine) UpdatePushes(ctx context.Context, tx pgx.Tx, key string) (map[c
 			return nil, err
 		}
 		role := RoleFor(at)
-		if start.Run != record.RunOpen || role == claim.RoleReviewer {
+		if role == claim.RoleReviewer {
 			continue
 		}
 		branch := start.PushBranch
