@@ -1091,11 +1091,15 @@ func TestSessionConsumerUnsubscribeWritesTheTopicsStoredWhenItHoldsTheLock(t *te
 // A relay restart that begins while a registration is between its filter and its interest row
 // waits for that row: the registration holds the session's consumer lock from the one to the other
 // (registerPass), so the restart rebuilds the filter from the row the registration wrote and
-// never from the row it was about to replace. A restart in that window sets the filter back to a
-// row without the topic the registration is answered 200 for, and nothing restores the messages
-// published on that topic meanwhile: the registration's own write then matches its plan, so it
-// answers 200 and plans no further pass, the session entry's ConsumerHoldsStored reads the mark
-// alone, and the session's next heartbeat puts the topic back but not the messages.
+// never from the row it was about to replace. Without the lock, a restart in that window sets the
+// filter back to a row without the topic the registration is answered 200 for, and the
+// registration's own repair after its entry (confirmRegistered, which registerPass calls before
+// the registration answers) reads the newest row and sets the filter back to what that row
+// builds; in this rig a message stored on the topic while the filter lacked it is still the
+// consumer's once the filter holds the topic again. So the row passes while the lock or that
+// repair holds: it fails on a fault of the lock only when the repair is gone too, and then at
+// requireFilters, not at awaitHeld, which fails only on a message the consumer does not hold, such
+// as one stored outside its filter.
 func TestSessionConsumerRegistrationHoldsTheLockFromItsFilterToItsRow(t *testing.T) {
 	t.Parallel()
 	// Unowned: this task relays nothing, so the restart below is the session's only one and the
