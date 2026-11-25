@@ -24,8 +24,10 @@ const approvalDir = envoyDir + "/internal/cipher/approval"
 const varies = "(varies)"
 
 // refusalWriters is each API function that answers a refusal, called (w, status, code, message,
-// …), with the type of the body it answers when that body carries more than code and error.
-var refusalWriters = map[string]string{"writeError": "", "writePageRefusal": "pageRefusal"}
+// …), with the type of the body it answers when that body carries more than code and error. The
+// NATS writer hold's routes answer every refusal through writeHoldRefusal, whose body names its
+// code in error, as the operator's client reads it.
+var refusalWriters = map[string]string{"writeError": "", "writePageRefusal": "pageRefusal", "writeHoldRefusal": "holdRefusal"}
 
 // pageAnswerers is each method of another of the broker's packages that answers a request the
 // API package is serving, with the directory of the package declaring it. A table is needed
@@ -148,6 +150,7 @@ var credentialLabels = map[string]string{
 	"serviceAuth":      "Service login ServiceAccount token",
 	"edgeListenerAuth": "Edge listener identity token",
 	"signInAuth":       "Broker sign-in session",
+	"operatorAuth":     "NATS writer hold operator's platform token",
 }
 
 // readAuthClasses reads each adapter a route uses: its doc comment, the routeAuth constant it
@@ -437,7 +440,7 @@ func (g *graph) collect(file *ast.File, body ast.Node, params *ast.FieldList) (f
 				}
 			case g.funcs.declares(fun.Name):
 				s.kind, s.callee = siteCall, fun.Name
-				if (fun.Name == "readJSON" || fun.Name == "readCarriedBody") && len(call.Args) > 2 {
+				if (fun.Name == "readJSON" || fun.Name == "readCarriedBody" || fun.Name == "readHoldBody") && len(call.Args) > 2 {
 					if u, ok := call.Args[2].(*ast.UnaryExpr); ok {
 						if id, ok := u.X.(*ast.Ident); ok {
 							s.bodyType = locals[id.Name]

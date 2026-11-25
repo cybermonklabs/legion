@@ -18,6 +18,7 @@ import (
 // suspend of every role at the member's old generation. The outbox decides whether each role's
 // claim still stands in that tree when its row runs.
 func TestAnAdoptionQueuesTheOldTreesStopOfEachClaimItLeavesThere(t *testing.T) {
+	t.Parallel()
 	const closedRoot, member, liveRoot = "LEGION-207", "LEGION-208", "LEGION-300"
 	pool := migratedPool(t)
 	now := time.Date(2026, 11, 18, 23, 0, 0, 0, time.UTC)

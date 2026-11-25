@@ -23,6 +23,7 @@ const (
 	authService
 	authEdgeListener
 	authSignIn
+	authOperator
 )
 
 // caller is who server.authenticate proved a request came from. Which field is set follows from
@@ -43,6 +44,9 @@ type caller struct {
 	// signIn is the broker sign-in session a request to the approval page carries, the zero
 	// approval.Session when it carries none that is live.
 	signIn approval.Session
+	// operator is the account of the NATS writer hold's operator, the operator entry of
+	// BROKER_NATS_SERVICES whose platform token authenticated the request.
+	operator string
 	// edge is the edge-listener entry of BROKER_NATS_SERVICES whose account the identity token
 	// that authenticated the request names: the projects it may ask about.
 	edge EdgeListener
@@ -271,6 +275,27 @@ func edgeListenerAuth(h func(*server, http.ResponseWriter, *http.Request, EdgeLi
 func signInAuth(h func(*approval.Page, http.ResponseWriter, *http.Request, approval.Session)) routeHandler {
 	return routeHandler{auth: authSignIn, serve: func(s *server, w http.ResponseWriter, r *http.Request, who caller) {
 		h(s.deps.Approval, w, r, who.signIn)
+	}}
+}
+
+// operatorAuth is a route of the NATS writer hold, for its one caller: the operator entry of
+// BROKER_NATS_SERVICES, presenting its own platform token (Authorization: Bearer), the
+// Kubernetes ServiceAccount token for the NATS audience that the auth service verifies the
+// operator's connection by. The token is verified with the auth service's own verifier
+// (NATSHold.OperatorToken), held to the hour the auth service holds every service's token to, and
+// must name the operator entry's account; anything else, every other entry's token and a
+// person's broker token among them, is 403 not_operator. A person's broker token is also every
+// session that person's agents run, so it cannot single out one operator. Every route of the
+// class spends its source address's bucket first, the one the account class spends
+// (authenticate), so a flood of forged tokens costs no verification. The handler is given the
+// operator's account, which every row it writes names as its writer.
+//
+// It is a class of its own rather than a power of accountAuth's because the operator is no caller
+// BROKER_API_ACCOUNTS lists: its authority is the operator entry of the NATS auth service's list,
+// and its token is minted only under a person's approved release of the operator's credential.
+func operatorAuth(h func(*server, http.ResponseWriter, *http.Request, string)) routeHandler {
+	return routeHandler{auth: authOperator, serve: func(s *server, w http.ResponseWriter, r *http.Request, who caller) {
+		h(s, w, r, who.operator)
 	}}
 }
 
@@ -691,5 +716,77 @@ func routes() []apiRoute {
 		// probe: a liveness probe on it would have the kubelet kill the container in the middle of
 		// the drain, dropping the requests the pod was draining.
 		{http.MethodGet, "/healthz", public((*server).healthz)},
+		// Read the NATS writer hold's row: its gen, phase, hold id, reason, who wrote it and when,
+		// and the time the operator signed it with its signature, which the operator's commands
+		// verify before they act on it; 404 no_row while there is none, and 409 below_floor for a
+		// verified row this replica's floor of the row reads as an older row put back or another
+		// row at the gen it served (holdRowFloor, a signedrecord.Floor).
+		{http.MethodGet, "/v1/nats-hold", operatorAuth((*server).readNATSHold)},
+		// Move the writer hold's row, in one statement with its log row, from the gen the body
+		// names to one above it: released to prepare with a new hold id, never empty and never one
+		// an earlier hold held; prepare to held with the same hold id; prepare or held to released
+		// with the same hold id, which the row keeps. The body is signed by a key of
+		// BROKER_NATS_HOLD_SIGNING_KEYS over the gen it will store (400 bad_signature otherwise).
+		// A move from an older row put back is 409 gen_mismatch with no row, and one from another
+		// row at the gen the floor took (a fork), or whose gen the log already holds (a row put back
+		// below the log), 409 below_floor with no row; a gen the row no longer holds is 409
+		// gen_mismatch and a hold id not the row's 409 hold_mismatch, each with the row, and any
+		// other move 400 bad_transition. A row signed more than five minutes from the broker's
+		// clock, or more than five minutes before the latest signing time the floor took or the
+		// log's verified entries hold, is 409 clock_skew, judged before the write, storing
+		// nothing. The move commits before it answers, so every decision of the auth service that
+		// starts after the answer reads the new phase.
+		{http.MethodPut, "/v1/nats-hold", operatorAuth((*server).moveNATSHold)},
+		// Write the writer hold's row while there is none, the first row or one a database admin
+		// deleted, signed within five minutes of the broker's clock, the floor's latest time and
+		// the log's (409 clock_skew otherwise, storing nothing), judged by the log's latest entry,
+		// which must verify (409 below_floor otherwise, storing nothing): held with a hold id, only
+		// after a prepare or held entry of that hold id, or released, only after a released entry,
+		// a prepare entry of the hold id it names (409 hold_mismatch otherwise, naming that hold,
+		// so the prepared hold is not left where no command reaches it), or a held one whose hold's
+		// signed journal shows it ended (400 bad_transition otherwise, so no restore frees the
+		// clients mid-hold, and a hold the log shows ended is not held again); and, whatever the
+		// latest entry, never while any hold's journal, an ended hold's included, is below the
+		// record floor, does not verify, or holds an entry whose hold row the verified log does
+		// not hold or that names none (409 below_floor), nor while a hold's journal shows hold set
+		// done, or hold set not done with the hold's held entry in the log, and no end (a done
+		// hold release or hold abort, or a verified released entry naming the hold while its
+		// journal shows hold release's or hold abort's intent as that command's latest entry and
+		// no other intent pending) (400 bad_transition), each naming the hold, the log's latest
+		// entry, and the key id of a signature whose key the list no longer holds; at one above
+		// the highest gen nats_hold_log holds (1 for an empty log), signed over that gen. Another
+		// gen is 409 gen_mismatch naming restore_gen, the gen to sign afresh, since the operator's
+		// commands cannot read the log; a row that is there is 409 row_exists.
+		{http.MethodPost, "/v1/nats-hold/restore", operatorAuth((*server).restoreNATSHold)},
+		// Write one record of the hold the row names, whatever its phase: its cohort, its
+		// conversion's saved set, its journal or its selection-recovery inputs, signed over the
+		// gen it will store. expected_gen 0 inserts a record that is not there, and any other gen
+		// updates the record that holds it, one above; a record moved since is 409 gen_mismatch,
+		// and so is a write storing a gen at or below the record's floor (recordFloors), an insert
+		// of a key the routes deleted while its signed delete verifies, and a hold id other than
+		// the row's 409 hold_mismatch.
+		{http.MethodPut, "/v1/nats-hold/records", operatorAuth((*server).putNATSHoldRecord)},
+		// List one hold's records of one kind (?hold_id= and ?kind=), each with its gen, when it
+		// was stored and its signature; a record below its floor, or one the floor has seen that
+		// is now absent with no signed delete of it that verifies, is 409 below_floor.
+		{http.MethodGet, "/v1/nats-hold/records", operatorAuth((*server).readNATSHoldRecords)},
+		// Delete the cohort record of the hold the row names (?hold_id=, ?kind=cohort, ?key=,
+		// ?gen=, ?sig=), for hold abort from prepare, which deletes it before it writes released,
+		// and for hold abort on a row lost in prepare and restored released: signed over the
+		// record's current gen (400 bad_signature otherwise), only while the row is prepare with
+		// that hold id, or released with it while that hold's done record verifies and shows
+		// prepare, or there is no done record (409 hold_mismatch otherwise), and only at that gen
+		// (409 gen_mismatch otherwise). The same statement keeps the signed delete beside the
+		// records, so every replica reads the cohort as deleted. No other kind is deleted, so the
+		// journal outlives an abort.
+		{http.MethodDelete, "/v1/nats-hold/records", operatorAuth((*server).deleteNATSHoldCohort)},
+		// Write one family's cutover row, done by the hold's conversion or rolled_back by its
+		// rollback, with hold_gen the hold row's current gen, only while the row is held with the
+		// body's hold id (409 hold_mismatch, with the row, otherwise). The body is signed over that
+		// gen, which the operator reads and verifies just before it writes; a signature over any
+		// other gen is 400 bad_signature.
+		{http.MethodPut, "/v1/nats-hold/cutover", operatorAuth((*server).putNATSHoldCutover)},
+		// List every family's cutover row, each with its signature.
+		{http.MethodGet, "/v1/nats-hold/cutover", operatorAuth((*server).readNATSHoldCutovers)},
 	}
 }

@@ -4,13 +4,18 @@ package ciphertest
 
 import (
 	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/google/uuid"
 
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
@@ -104,6 +109,109 @@ func TestASignInsCredentialEnrolsASessionOnTheRig(t *testing.T) {
 	if status != http.StatusCreated {
 		t.Fatalf("a session's enrollment under the credential of %s's sign-in answered %d %s, want 201", rig.Operator, status, strings.TrimSpace(string(body)))
 	}
+}
+
+// TestTheRigIssuesTokensOfTheLifeItIsGiven: a Rig built WithAccessLifetime issues access tokens
+// of that life, which is what a trade's expires_in says, and one built without the option issues
+// them for fifteen minutes, BROKER_ACCESS_TOKEN_SECONDS' default, as it always has.
+//
+// The OAuth library counts expires_in down from the moment it set the token's expiry to the
+// moment it writes the answer, in whole seconds rounded down, so a trade answers the life it was
+// given less the part of a second, or more, that the trade itself took: 419 for 420. The bound
+// below is that: no more than the life, and no less than the life less the trade's own length,
+// rounded up.
+func TestTheRigIssuesTokensOfTheLifeItIsGiven(t *testing.T) {
+	for _, c := range []struct {
+		name    string
+		options []Option
+		want    int64
+	}{
+		{"WithAccessLifetime(420s)", []Option{WithAccessLifetime(420 * time.Second)}, 420},
+		{"no option", nil, 900},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			rig := NewRig(t, c.options...)
+			before := time.Now()
+			answer, _ := tradeAs(t, rig, ExchangeAccount)
+			took := int64((time.Since(before) + time.Second - 1) / time.Second)
+			if answer.ExpiresIn > c.want || answer.ExpiresIn < c.want-took {
+				t.Fatalf("a trade at a Rig built with %s answered expires_in %d, want %d less at most the %ds the trade took", c.name, answer.ExpiresIn, c.want, took)
+			}
+		})
+	}
+}
+
+// TestTheRigGrantsTheDaemonItsFixedSession: a pod of DaemonExchangeAccount trades its subject
+// token, naming no session, for a token the broker reads back as the session
+// legion-daemon:EXAMPLE of project EXAMPLE, acting for the Rig's Operator, which is the token a
+// daemon writes Dispatch with; a pod of OtherProjectAccount trades for other-project-worker of
+// project OTHER, for the same person.
+func TestTheRigGrantsTheDaemonItsFixedSession(t *testing.T) {
+	rig := NewRig(t)
+	for _, c := range []struct {
+		account, session, project string
+	}{
+		{DaemonExchangeAccount, "legion-daemon:EXAMPLE", "EXAMPLE"},
+		{OtherProjectAccount, "other-project-worker", "OTHER"},
+	} {
+		_, read := tradeAs(t, rig, c.account)
+		if !read.Active || read.Session != c.session || read.Person != rig.Operator ||
+			read.ProjectScope != oauthwire.ProjectScopeNamed || len(read.Projects) != 1 || read.Projects[0] != c.project {
+			t.Errorf("%s's token reads back as %+v, want a live token of session %s, person %s and the one project %s",
+				c.account, read, c.session, rig.Operator, c.project)
+		}
+	}
+}
+
+// exchangeAnswer is what this file reads of a trade's answer.
+type exchangeAnswer struct {
+	AccessToken string `json:"access_token"`
+	ExpiresIn   int64  `json:"expires_in"`
+}
+
+// tradeAs is one trade at the Rig's token endpoint as a pod of account makes it: its subject
+// token, naming no session, proved with a fresh key through cipherclient's DPoP signer. It
+// answers the trade's answer and what the broker's introspection reads the minted token back as
+// (Rig.Introspect), and fails t on any refusal.
+func tradeAs(t *testing.T, rig *Rig, account string) (exchangeAnswer, oauthwire.Introspection) {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	form := url.Values{
+		"grant_type":         {cipherclient.GrantTypeTokenExchange},
+		"client_id":          {oauthwire.ExchangeClientID},
+		"subject_token":      {rig.MintSubjectToken(t, account, uuid.NewString())},
+		"subject_token_type": {oauthwire.SubjectTokenTypeKubernetes},
+	}
+	proved := &http.Client{Transport: cipherclient.NewDPoPTransport(key, http.DefaultTransport)}
+	status, body := postForm(t, proved, rig.URL+cipherclient.TokenPath, form)
+	var answer exchangeAnswer
+	if err := json.Unmarshal(body, &answer); err != nil || status != http.StatusOK || answer.AccessToken == "" {
+		t.Fatalf("%s's trade = %d %s, want 200 and an access token", account, status, body)
+	}
+	return answer, rig.Introspect(t, answer.AccessToken)
+}
+
+// postForm posts form to target through client, answering the status and the body.
+func postForm(t *testing.T, client *http.Client, target string, form url.Values) (int, []byte) {
+	t.Helper()
+	request, err := http.NewRequest(http.MethodPost, target, strings.NewReader(form.Encode()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	response, err := client.Do(request)
+	if err != nil {
+		t.Fatalf("POST %s: %v", target, err)
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatalf("read the answer of POST %s: %v", target, err)
+	}
+	return response.StatusCode, body
 }
 
 // TestTheRigsRegistryServesThePolicysMetrics: Rig.Registry holds the policy's metrics as the

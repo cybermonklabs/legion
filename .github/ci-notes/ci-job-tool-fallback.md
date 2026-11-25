@@ -11,7 +11,7 @@ In the text moved here, "this file" refers to the workflow,
 
 ## The steps of ci.yaml's tool-fallback job, in a file of their own
 
-The steps of ci.yaml's `tool-fallback` job, in a file of its own.
+The steps of `.github/workflows/ci.yaml#tool-fallback` job, in a file of its own.
 ci.yaml's job of the same id calls this file, and that caller keeps `needs: [changes, ci-images]`
 and the whole `if:` that decides whether these steps run, so this file carries no `if:` of its
 own. The notes on that job,
@@ -28,8 +28,7 @@ case of this job a reading of an install rather than of the Actions cache.
 
 The job's last step reports ci-ok for the caller: on a merge-group run of the queue's front
 group that this job's own result decides, it posts the failing ci-ok at once
-(.github/actions/ci-ok-report), as every job of ci.yaml ends. `ci-ok-changes` carries ci.yaml's
-`toJSON(needs.changes)` for it.
+(.github/actions/ci-ok-report), as every job of ci.yaml ends. `ci-ok-changes` carries `.github/workflows/ci.yaml#toJSON(needs.changes)` for it.
 
 ## The job's budget, and the bound every install step carries
 

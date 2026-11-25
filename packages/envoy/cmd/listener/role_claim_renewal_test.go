@@ -159,6 +159,11 @@ func TestAnAdoptingRegistrationNamesItsProcessOnAClaimThatNamesNone(t *testing.T
 	}
 }
 
+// Serial: it holds a wall-clock bound close to what it spends, the route's own sendRequestBudget
+// (3.5 s) over the CPU work of 1,609 topics under the race detector, which parallel load pushed
+// past (3.66-3.98 s; envoy-go-race jobs 139014454657, 139027938105, 139028491225 and
+// 139049385849).
+//
 // The largest registration production has seen (802 topics, 2026-11-16) is a holder following a
 // few hundred Dispatch issues, each as `<KEY>` and `<KEY>.>`, with the per-kind topics of one
 // issue that its `<KEY>.>` already holds, and the lane topic of the role it holds. This case
@@ -174,7 +179,6 @@ func TestAnAdoptingRegistrationNamesItsProcessOnAClaimThatNamesNone(t *testing.T
 // registration was answered 200 and its renewal's claim read ran out of time, so the claim was
 // never renewed while its holder kept registering.
 func TestARegistrationOfTheLargestShapeInProductionStillRenewsItsClaim(t *testing.T) {
-	t.Parallel()
 	const (
 		role      = "legion-controller"
 		sessionID = "ses_largest_holder"

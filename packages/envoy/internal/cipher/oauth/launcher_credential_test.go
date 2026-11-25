@@ -25,10 +25,10 @@ func machineForm(t *testing.T, f *signInFixture, session string) url.Values {
 // TestATradeThatDeclinesItsLauncherCredentialLeavesNoRow is the shape of a TypeScript client's
 // machine trade: a caller that wants a Dispatch access token and nothing else sends
 // launcher_credential=false and is answered one, with no launcher credential minted for it and
-// nothing in the answer naming one. Each of those clients makes a key per process and per session,
-// so a trade that asked would leave a row on the operator's machine-logins list for every
-// `dispatch` call, every hook run and every session of a long-lived process, and nothing removes
-// those rows.
+// nothing in the answer naming one. Each of those clients proves a key of one process, or a pod
+// role's own agent-secrets key, so a trade that asked would leave a row on the operator's
+// machine-logins list for every `dispatch` call, every hook run and every session of a long-lived
+// process, and nothing removes those rows.
 func TestATradeThatDeclinesItsLauncherCredentialLeavesNoRow(t *testing.T) {
 	f := newSignInFixture(t)
 	key := newKey(t)

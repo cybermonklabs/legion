@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { dispatchToolSchema, dispatchToolSpecs, zodSchemaApi } from "@legion/contracts";
 import { z } from "zod";
+import { fakeDispatchFetch } from "../../test/fake-dispatch";
+import { bearerCredential } from "../bearer";
 import {
   commandFlags,
   commandHelp,
@@ -10,6 +12,8 @@ import {
   parseCommand,
   toolForCommand,
 } from "../dispatch-command";
+import { executeDispatchTool } from "../dispatch-execute";
+import { projectBody } from "./dispatch-command-surface-responses";
 
 const noFiles = {
   readText: (path: string): string => {
@@ -57,8 +61,8 @@ describe("the dispatch command surface", () => {
     }
   });
 
-  test("names map both ways for all 41 tools, and no two flags of one command collide", () => {
-    expect(dispatchToolSpecs).toHaveLength(41);
+  test("names map both ways for all 43 tools, and no two flags of one command collide", () => {
+    expect(dispatchToolSpecs).toHaveLength(43);
     for (const spec of dispatchToolSpecs) {
       expect(toolForCommand(commandName(spec.name))).toBe(spec.name);
       const flags = commandFlags(spec.name);
@@ -136,6 +140,23 @@ describe("the dispatch command surface", () => {
       args: { key: "SMOKE684", name: "Smoke" },
       dryRun: false,
     });
+  });
+
+  test("dispatch project-update takes the project and on or off as one flag each", () => {
+    expect(commandName("dispatch_project_update")).toBe("project-update");
+    expect(commandFlags("dispatch_project_update")).toEqual(
+      expect.arrayContaining(["--project", "--proven-sessions"])
+    );
+    for (const setting of ["on", "off"]) {
+      expect(
+        parseCommand(["project-update", "--project", "CORE", "--proven-sessions", setting], noFiles)
+      ).toEqual({
+        kind: "call",
+        tool: "dispatch_project_update",
+        args: { project: "CORE", proven_sessions: setting },
+        dryRun: false,
+      });
+    }
   });
 
   // --labels-add, repeated, is the call's labels_add, which adds labels and keeps the issue's
@@ -595,6 +616,104 @@ describe("a bare - given to a text flag", () => {
       kind: "refused",
       tool: "dispatch_result",
       problems: [bareDash("--run"), "unknown flag --runn"],
+    });
+  });
+});
+
+// `dispatch project-update` turns a project's proven-sessions setting on with a PUT and off with a
+// DELETE of `/api/v1/projects/{key}/proven-sessions`, and prints the setting as Dispatch answered
+// it; `dispatch projects` marks each project that has it on. Each case drives `executeDispatchTool`
+// over the shared fake Dispatch (`test/fake-dispatch.ts`) as a fetch.
+describe("dispatch project-update and the proven-sessions line of dispatch projects", () => {
+  const config = {
+    enabled: true,
+    url: "http://dispatch.test",
+    credential: bearerCredential("secret"),
+    error: null,
+  };
+
+  /** `tool` with `args` over a fake Dispatch that answers every request with `answer()`. */
+  function run(tool: string, args: Record<string, unknown>, answer: () => Response) {
+    const dispatch = fakeDispatchFetch({ handler: answer });
+    const result = executeDispatchTool({
+      tool,
+      args,
+      cwd: "/workspace",
+      host: "omp",
+      sessionId: "session-1",
+      config,
+      env: {},
+      exec: async (file, argv) => {
+        throw new Error(`unexpected command: ${file} ${argv.join(" ")}`);
+      },
+      fetchImpl: dispatch.fetchImpl,
+    });
+    return { result, requests: dispatch.calls };
+  }
+
+  test("on sends PUT /api/v1/projects/CORE/proven-sessions as the session, and prints the answered setting", async () => {
+    const { result, requests } = run(
+      "dispatch_project_update",
+      { project: "CORE", proven_sessions: "on" },
+      () => Response.json(projectBody(true))
+    );
+
+    const answered = await result;
+
+    expect(requests.map((call) => `${call.method} ${call.url.pathname}`)).toEqual([
+      "PUT /api/v1/projects/CORE/proven-sessions",
+    ]);
+    expect(JSON.parse(requests[0]?.body ?? "")).toMatchObject({
+      actor: { kind: "session", id: "session-1" },
+    });
+    expect(answered.text).toBe("Project CORE (Core): proven sessions on.");
+    expect(answered.details).toEqual({ project: "CORE", proven_sessions: true });
+  });
+
+  test("off sends DELETE /api/v1/projects/CORE/proven-sessions, and prints the answered setting", async () => {
+    const { result, requests } = run(
+      "dispatch_project_update",
+      { project: "CORE", proven_sessions: "off" },
+      () => Response.json(projectBody(false))
+    );
+
+    const answered = await result;
+
+    expect(requests.map((call) => `${call.method} ${call.url.pathname}`)).toEqual([
+      "DELETE /api/v1/projects/CORE/proven-sessions",
+    ]);
+    expect(answered.text).toBe("Project CORE (Core): proven sessions off.");
+    expect(answered.details).toEqual({ project: "CORE", proven_sessions: false });
+  });
+
+  test("a refusal prints the server's code before its message", async () => {
+    for (const [setting, code, message] of [
+      ["off", "OAUTH_SCOPE_REQUIRED", "this route needs the person scope"],
+      ["on", "PROJECT_SCOPE", "this token is scoped to project OPS"],
+    ] as const) {
+      const { result } = run(
+        "dispatch_project_update",
+        { project: "CORE", proven_sessions: setting },
+        () => Response.json({ code, error: message }, { status: 403 })
+      );
+
+      await expect(result, setting).rejects.toThrow(`${code}: ${message}`);
+    }
+  });
+
+  test("dispatch projects prints proven sessions on only for a project whose row has it", async () => {
+    const { result } = run("dispatch_projects", {}, () =>
+      Response.json([projectBody(true), { ...projectBody(false), key: "OPS", name: "Ops" }])
+    );
+
+    const answered = await result;
+
+    expect(answered.text).toBe("CORE Core proven sessions on\nOPS Ops");
+    expect(answered.details).toEqual({
+      projects: [
+        { key: "CORE", name: "Core" },
+        { key: "OPS", name: "Ops" },
+      ],
     });
   });
 });
