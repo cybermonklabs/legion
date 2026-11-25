@@ -99,6 +99,14 @@ func TestNearCopyChecksRecordEveryAnswerOfTheGate(t *testing.T) {
 			t.Fatalf("row %d = %+v, want %+v (all rows %+v)", index, got[index], expected[index], got)
 		}
 	}
+	// Every read answered, so each row, the refusal's too, ends at the score step and holds how
+	// long its read took.
+	for index, check := range page.Checks {
+		if check.ReadMS == nil || *check.ReadMS < 0 || deref(check.ReadStage) != nearCopyStageScore {
+			t.Fatalf("row %d holds read_ms set %t, read_stage %q, want a read time and %q",
+				index, check.ReadMS != nil, deref(check.ReadStage), nearCopyStageScore)
+		}
+	}
 
 	refused := page.Checks[1]
 	if refused.Spec != nil || refused.Title != title {
@@ -197,6 +205,16 @@ func TestNearCopyChecksRecordACheckNotMadeAndNoneForAnExternalCreate(t *testing.
 	if row.Outcome != nearCopyNotMade || row.Reason == nil || *row.Reason != nearCopyNotMadeBound ||
 		!row.Force || row.Issue == nil || *row.Issue != unchecked.Key || len(row.Candidates) != 0 {
 		t.Fatalf("unchecked row = %+v", row)
+	}
+	// The read waited on the term pick's statistics, which the lock holds, until its bound ended
+	// it: its row names that step and a read time of at least the bound (-1 below: none).
+	readMS := -1
+	if row.ReadMS != nil {
+		readMS = *row.ReadMS
+	}
+	if deref(row.ReadStage) != nearCopyStageTerms || readMS < 200 {
+		t.Fatalf("unchecked row holds read_stage %q and read_ms %d, want %q and at least 200",
+			deref(row.ReadStage), readMS, nearCopyStageTerms)
 	}
 }
 
