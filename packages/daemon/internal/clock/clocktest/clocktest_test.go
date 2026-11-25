@@ -77,11 +77,11 @@ func TestATimerDueAtItsArmFiresAsItIsArmed(t *testing.T) {
 	if got := len(channel.C()); got != 1 {
 		t.Errorf("a channel timer of no wait holds %d values as it is armed, want its firing", got)
 	}
-	if channel.Stop() {
-		t.Error("Stop of a timer that fired as it was armed reported it armed")
+	if !channel.Stop() {
+		t.Error("Stop of a timer that fired as it was armed, its value not received, reported false, as time.Timer's does not")
 	}
 	if channel.Reset(-time.Second) {
-		t.Error("Reset of a fired timer reported it armed")
+		t.Error("Reset of a stopped timer reported it armed")
 	}
 	if got := <-channel.C(); !got.Equal(epoch.Add(-time.Second)) {
 		t.Errorf("the timer reset to an overdue moment sent %s, want %s", got, epoch.Add(-time.Second))
@@ -126,55 +126,6 @@ func TestAwaitArmedReturnsThePendingDeadlines(t *testing.T) {
 	cancel()
 	if armed := c.Armed(); !slices.Equal(armed, want[1:2]) {
 		t.Errorf("armed after the sleep and the cancel: %v, want %v", armed, want[1:2])
-	}
-}
-
-// SetWhen asks its question of the fake's present and every pending deadline, in order, and moves
-// only when the answer says to, then as Set does. A timer the code arms while the question is
-// asked is armed after it, from the moment the move reached (here, a move that fires nothing, the
-// moment it ends at): one armed between a reading of Armed and a Set is armed before the move,
-// and here would have fired in it.
-func TestSetWhenMovesOnItsAnswerWithNoTimerArmedBetweenTheQuestionAndTheMove(t *testing.T) {
-	c := clocktest.New(epoch)
-	due := c.After(2 * time.Second)
-	c.AfterFunc(5*time.Second, func() {})
-	pending := []time.Time{epoch.Add(2 * time.Second), epoch.Add(5 * time.Second)}
-
-	var asked time.Time
-	var read []time.Time
-	armed, moved := c.SetWhen(func(now time.Time, armed []time.Time) (time.Time, bool) {
-		asked, read = now, armed
-		return now.Add(3 * time.Second), false
-	})
-	if moved || !asked.Equal(epoch) || !slices.Equal(read, pending) || !slices.Equal(armed, pending) {
-		t.Fatalf("SetWhen = %v, %t after asking at %s of %v; want no move, asked at %s of %v", armed, moved, asked, read, epoch, pending)
-	}
-	if now := c.Now(); !now.Equal(epoch) || len(due) != 0 {
-		t.Fatalf("after an answer of no the fake reads %s with %d values sent, want %s and none", now, len(due), epoch)
-	}
-
-	arming := make(chan (<-chan time.Time), 1)
-	if _, moved := c.SetWhen(func(now time.Time, _ []time.Time) (time.Time, bool) {
-		go func() { arming <- c.After(500 * time.Millisecond) }()
-		return now.Add(time.Second), true
-	}); !moved {
-		t.Fatal("SetWhen did not move on an answer of yes")
-	}
-	armedBetween := testwait.Receive(t, "the timer armed while the question was asked", arming)
-	want := append([]time.Time{epoch.Add(1500 * time.Millisecond)}, pending...)
-	if now, armed := c.Now(), c.Armed(); !now.Equal(epoch.Add(time.Second)) || !slices.Equal(armed, want) || len(armedBetween) != 0 {
-		t.Fatalf("after the move the fake reads %s with %v armed, the timer armed during the question holding %d values; want %s, %v and none",
-			now, armed, len(armedBetween), epoch.Add(time.Second), want)
-	}
-
-	if _, moved := c.SetWhen(func(now time.Time, _ []time.Time) (time.Time, bool) { return now.Add(2 * time.Second), true }); !moved {
-		t.Fatal("SetWhen did not move on an answer of yes")
-	}
-	if len(due) != 1 || len(armedBetween) != 1 {
-		t.Fatalf("a move to %s sent %d values on the timer due at %s and %d on the one due at %s, want one each", epoch.Add(3*time.Second), len(due), pending[0], len(armedBetween), want[0])
-	}
-	if armed := c.Armed(); !slices.Equal(armed, pending[1:]) {
-		t.Errorf("armed after the move: %v, want only the timer due past it, %v", armed, pending[1:])
 	}
 }
 
@@ -278,38 +229,11 @@ func TestADeadlineContextEndsWithItsParentsCancel(t *testing.T) {
 	}
 }
 
-// Held reads the wall clock plus what Advance and Set added, and its timers fire on those moves.
-func TestHeldFollowsTheWallClockPlusWhatWasAdded(t *testing.T) {
-	c := clocktest.Held()
-	within := func(what string, got, from, to time.Time) {
-		t.Helper()
-		if got.Before(from) || got.After(to) {
-			t.Errorf("%s: the held fake reads %s, want between %s and %s", what, got, from, to)
-		}
-	}
-	before := time.Now()
-	now := c.Now()
-	within("unmoved", now, before, time.Now())
-
-	fired := false
-	c.AfterFunc(time.Hour, func() { fired = true })
-	before = time.Now()
-	c.Advance(time.Hour)
-	now = c.Now()
-	within("an hour on", now, before.Add(time.Hour), time.Now().Add(time.Hour))
-	if !fired {
-		t.Error("Advance by an hour did not fire the timer armed for an hour")
-	}
-
-	at := time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
-	before = time.Now()
-	c.Set(at)
-	now = c.Now()
-	within("set back to noon", now, at, at.Add(time.Since(before)))
-}
-
-// Stop disarms a timer and says whether it did; Reset arms it again and says whether it was armed,
-// and no receive after either reads a value the timer sent before it.
+// Stop disarms a timer and says whether it stopped it; Reset arms it again and says what Stop would
+// have; and no receive after either reads a value the timer sent before it. A timer that fired and
+// whose value nobody received counts as stopped, as time.Timer's does since Go 1.23
+// (runtime/time.go, timerchandrain): Stop and Reset take the value back and report true, so
+// `if !t.Stop() { <-t.C() }` returns at once rather than waiting for the value Stop took.
 func TestStopAndReset(t *testing.T) {
 	c := clocktest.New(epoch)
 	timer := c.NewTimer(time.Minute)
@@ -332,13 +256,42 @@ func TestStopAndReset(t *testing.T) {
 		t.Errorf("armed after the Resets: %v, want the last one's deadline only", armed)
 	}
 	c.Advance(30 * time.Second)
-	if timer.Stop() {
-		t.Error("Stop of a fired timer reported it armed")
+	if !timer.Stop() {
+		t.Error("Stop of a timer that fired, its value not received, reported false, as time.Timer's does not")
 	}
 	select {
 	case got := <-timer.C():
 		t.Errorf("a receive after Stop read %s, a value sent before it", got)
 	default:
+	}
+	if timer.Stop() {
+		t.Error("a Stop after the value was taken back reported the timer armed")
+	}
+
+	// The idiom code written for time.Timer uses, on a timer that fired unread.
+	timer.Reset(time.Minute)
+	c.Advance(time.Minute)
+	idiom := make(chan struct{})
+	go func() {
+		defer close(idiom)
+		if !timer.Stop() {
+			<-timer.C()
+		}
+	}()
+	testwait.Receive(t, "`if !t.Stop() { <-t.C() }` on a timer that fired unread", idiom)
+
+	// A timer that fired and whose value was received is not stopped by Stop.
+	timer.Reset(time.Minute)
+	c.Advance(time.Minute)
+	testwait.Receive(t, "the value of a timer the fake fired", timer.C())
+	if timer.Stop() {
+		t.Error("Stop of a timer whose value was received reported it stopped")
+	}
+
+	timer.Reset(time.Minute)
+	c.Advance(time.Minute)
+	if !timer.Reset(time.Minute) {
+		t.Error("Reset of a timer that fired, its value not received, reported false, as time.Timer's does not")
 	}
 
 	timer.Reset(time.Minute)
@@ -358,5 +311,12 @@ func TestStopAndReset(t *testing.T) {
 	c.Advance(time.Hour)
 	if ran {
 		t.Error("a stopped AfterFunc ran")
+	}
+
+	// An AfterFunc that ran is not stopped by Stop, as time.Timer's is not.
+	fired := c.AfterFunc(time.Minute, func() {})
+	c.Advance(time.Minute)
+	if fired.Stop() {
+		t.Error("Stop of an AfterFunc that ran reported it stopped")
 	}
 }

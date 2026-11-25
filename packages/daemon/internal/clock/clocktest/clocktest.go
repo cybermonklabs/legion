@@ -1,15 +1,11 @@
-// Package clocktest is the daemon's one fake clock: a clock.Clock that moves only when the test
-// moves it, and that tells the test what the code has armed on it.
-// packages/daemon/internal/clock/clocktest and packages/envoy/internal/clock/clocktest hold the same
-// code, because Go's internal rule keeps one module from importing the other's (packages/envoy/infra
-// imports Envoy's through its replace), so a change to one is made to the other.
+// Package clocktest is the fake for clock.Clock: a clock that moves only when the test moves it,
+// and that tells the test what the code has armed on it.
 //
-// # Two fakes
+// # The fake
 //
-// New is a fake whose Now stands at the moment it was given until the test moves it. Held is a
-// fake whose Now reads the wall clock plus what the test has added, for code that stamps times a
-// database compares with its own now(), or reads back. Either moves only by Advance or Set, and no
-// timer of either fires by itself: a fake that is never moved is a clock whose timers never fire.
+// New is a fake whose Now stands at the moment it was given until the test moves it. It moves only
+// by Advance or Set, and no timer of it fires by itself: a fake that is never moved is a clock
+// whose timers never fire.
 //
 // # Moving it
 //
@@ -36,12 +32,6 @@
 // deadline only once the code has armed it, and a failure names what the test expected and the
 // deadlines it saw.
 //
-// SetWhen reads the fake's present and its pending deadlines, asks a question of them and makes
-// the move the answer names, under one hold of the fake's lock. A test that reads Armed and then
-// calls Set leaves a gap between the two: a timer the code arms in it is pending when the move
-// begins, though the reading that decided the move never saw it. SetWhen leaves no such gap: a
-// timer the code arms while it runs is armed after the question, at the moment the move reached.
-//
 // # Deadline contexts
 //
 // WithTimeout and WithDeadline give a context that ends once the fake reaches its deadline, with
@@ -53,7 +43,6 @@
 package clocktest
 
 import (
-	"cmp"
 	"context"
 	"fmt"
 	"slices"
@@ -65,16 +54,13 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
-// Fake is a clock.Clock that moves only by Advance and Set. Its zero value is not ready; New and
-// Held make one.
+// Fake is a clock.Clock that moves only by Advance and Set. Its zero value is not ready; New makes
+// one.
 type Fake struct {
-	mu sync.Mutex
-	// held is whether Now reads the wall clock plus added (Held) rather than now (New).
-	held  bool
-	now   time.Time
-	added time.Duration
-	// arms counts every arm, so the timers due together fire in the order they were armed.
-	arms    uint64
+	mu  sync.Mutex
+	now time.Time
+	// pending is every armed timer in the order it was armed: an arm appends, and a fire, a Stop
+	// or a Reset removes in place, so the timers due together fire in the order they were armed.
 	pending []*timer
 }
 
@@ -83,28 +69,10 @@ var _ clock.Clock = (*Fake)(nil)
 // New is a fake whose Now is start until the test moves it.
 func New(start time.Time) *Fake { return &Fake{now: start} }
 
-// Held is a fake whose Now is the wall clock plus what Advance and Set have added.
-func Held() *Fake { return &Fake{held: true} }
-
 func (c *Fake) Now() time.Time {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.nowLocked()
-}
-
-func (c *Fake) nowLocked() time.Time {
-	if c.held {
-		return time.Now().Add(c.added)
-	}
 	return c.now
-}
-
-func (c *Fake) setLocked(at time.Time) {
-	if c.held {
-		c.added = at.Sub(time.Now())
-		return
-	}
-	c.now = at
 }
 
 // Advance moves the fake d forward, firing every timer due by then. A fake moves back only by Set.
@@ -113,7 +81,7 @@ func (c *Fake) Advance(d time.Duration) {
 		panic(fmt.Sprintf("clocktest: Advance(%v): a fake moves back only by Set", d))
 	}
 	c.mu.Lock()
-	target := c.nowLocked().Add(d)
+	target := c.now.Add(d)
 	c.mu.Unlock()
 	c.moveTo(target)
 }
@@ -122,41 +90,19 @@ func (c *Fake) Advance(d time.Duration) {
 // deadline it was armed for, so a move back fires none that a later move had not reached.
 func (c *Fake) Set(at time.Time) { c.moveTo(at) }
 
-// SetWhen moves the fake as Set does to the moment to names, when to reports true. to is asked
-// of the fake's present and of every pending deadline, earliest first (Armed), under the hold of
-// the fake's lock that the move begins with, so no timer is armed, fired or stopped between the
-// question and the move's start. to runs under that lock, so it must not call the fake, nor wait
-// for anything that does. SetWhen returns the deadlines to was asked of and whether it moved.
-func (c *Fake) SetWhen(to func(now time.Time, armed []time.Time) (time.Time, bool)) ([]time.Time, bool) {
-	c.mu.Lock()
-	armed := c.armedLocked()
-	target, move := to(c.nowLocked(), armed)
-	if !move {
-		c.mu.Unlock()
-		return armed, false
-	}
-	c.moveLocked(target)
-	return armed, true
-}
-
+// moveTo fires each timer due by target in turn and leaves the fake at target. Each pass takes the
+// lock (the loop's post statement takes it again), and the last lets it go.
 func (c *Fake) moveTo(target time.Time) {
-	c.mu.Lock()
-	c.moveLocked(target)
-}
-
-// moveLocked is moveTo begun under the hold of the lock its caller took: each later pass takes
-// the lock again (the loop's post statement), and the last lets it go.
-func (c *Fake) moveLocked(target time.Time) {
-	for ; ; c.mu.Lock() {
+	for c.mu.Lock(); ; c.mu.Lock() {
 		next := c.dueLocked(target)
 		if next == nil {
-			c.setLocked(target)
+			c.now = target
 			c.mu.Unlock()
 			return
 		}
 		c.disarmLocked(next)
-		if next.at.After(c.nowLocked()) {
-			c.setLocked(next.at)
+		if next.at.After(c.now) {
+			c.now = next.at
 		}
 		if next.c != nil {
 			// Under the lock, so a Stop or Reset that returned before it never leaves this value
@@ -184,14 +130,11 @@ func (c *Fake) moveLocked(target time.Time) {
 }
 
 // dueLocked is the pending timer due earliest by target, the earliest armed among those due
-// together, or nil.
+// together (pending is in arm order), or nil.
 func (c *Fake) dueLocked(target time.Time) *timer {
 	var next *timer
 	for _, t := range c.pending {
-		if t.at.After(target) {
-			continue
-		}
-		if next == nil || t.at.Before(next.at) || (t.at.Equal(next.at) && t.seq < next.seq) {
+		if !t.at.After(target) && (next == nil || t.at.Before(next.at)) {
 			next = t
 		}
 	}
@@ -206,21 +149,12 @@ func (c *Fake) Armed() []time.Time {
 }
 
 func (c *Fake) armedLocked() []time.Time {
-	pending := make([]*timer, len(c.pending))
+	deadlines := make([]time.Time, len(c.pending))
 	for i, t := range c.pending {
-		// A copy, so the sort below leaves the fake's own list as it stands.
-		pending[i] = &timer{at: t.at, seq: t.seq}
-	}
-	slices.SortFunc(pending, func(a, b *timer) int {
-		if order := a.at.Compare(b.at); order != 0 {
-			return order
-		}
-		return cmp.Compare(a.seq, b.seq)
-	})
-	deadlines := make([]time.Time, len(pending))
-	for i, t := range pending {
 		deadlines[i] = t.at
 	}
+	// Stable, so the deadlines due together stay in the order they were armed.
+	slices.SortStableFunc(deadlines, time.Time.Compare)
 	return deadlines
 }
 
@@ -274,7 +208,7 @@ func (c *Fake) WithDeadline(ctx context.Context, at time.Time) (context.Context,
 // lock, so no move lands between the two.
 func (c *Fake) arm(t *timer, due func(now time.Time) time.Time) {
 	c.mu.Lock()
-	fire := c.placeLocked(t, due(c.nowLocked()))
+	fire := c.placeLocked(t, due(c.now))
 	c.mu.Unlock()
 	fire()
 }
@@ -284,14 +218,11 @@ func (c *Fake) arm(t *timer, due func(now time.Time) time.Time) {
 // function it answers, which the caller runs once it has let the lock go, starts an AfterFunc's
 // function on a goroutine of its own, not waited for, or ends a deadline context.
 func (c *Fake) placeLocked(t *timer, at time.Time) func() {
-	c.arms++
-	t.at, t.seq = at, c.arms
-	if at.After(c.nowLocked()) {
-		t.armed = true
+	t.at = at
+	if at.After(c.now) {
 		c.pending = append(c.pending, t)
 		return func() {}
 	}
-	t.armed = false
 	switch {
 	case t.c != nil:
 		select {
@@ -306,63 +237,65 @@ func (c *Fake) placeLocked(t *timer, at time.Time) func() {
 	}
 }
 
-func (c *Fake) disarmLocked(t *timer) {
-	t.armed = false
-	if i := slices.Index(c.pending, t); i >= 0 {
-		c.pending = slices.Delete(c.pending, i, i+1)
+// disarmLocked takes t out of the pending timers, and reports whether it was there.
+func (c *Fake) disarmLocked(t *timer) bool {
+	i := slices.Index(c.pending, t)
+	if i < 0 {
+		return false
 	}
+	c.pending = slices.Delete(c.pending, i, i+1)
+	return true
 }
 
 // timer is one arm on a Fake: a channel timer when c is set, otherwise f, run on a goroutine of
 // its own when own is set (AfterFunc) and inline when not (a deadline context's end).
 type timer struct {
-	fake  *Fake
-	at    time.Time
-	seq   uint64
-	armed bool
-	c     chan time.Time
-	f     func()
-	own   bool
+	fake *Fake
+	at   time.Time
+	c    chan time.Time
+	f    func()
+	own  bool
 }
 
 func (t *timer) C() <-chan time.Time { return t.c }
 
+// Stop reports true for a timer it disarmed and for one whose value nobody received, which it
+// takes back, as time.Timer's Stop does since Go 1.23 (runtime/time.go, timerchandrain): a move
+// disarms a channel timer and leaves its value in the channel, so the timer is not pending, yet
+// `if !t.Stop() { <-t.C() }` must not wait for the value this call took.
 func (t *timer) Stop() bool {
 	c := t.fake
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	was := t.armed
-	if was {
-		c.disarmLocked(t)
-	}
-	t.drainLocked()
-	return was
+	armed := c.disarmLocked(t)
+	drained := t.drainLocked()
+	return armed || drained
 }
 
+// Reset arms the timer again for d from now, and reports what Stop would have.
 func (t *timer) Reset(d time.Duration) bool {
 	c := t.fake
 	c.mu.Lock()
-	was := t.armed
-	if was {
-		c.disarmLocked(t)
-	}
-	t.drainLocked()
-	at := c.nowLocked().Add(d)
-	fire := c.placeLocked(t, at)
+	armed := c.disarmLocked(t)
+	drained := t.drainLocked()
+	fire := c.placeLocked(t, c.now.Add(d))
 	c.mu.Unlock()
 	fire()
-	return was
+	return armed || drained
 }
 
 // drainLocked takes a value the timer sent and nobody received, so no receive after a Stop or a
-// Reset reads a firing from before it, as time.Timer promises since Go 1.23.
-func (t *timer) drainLocked() {
+// Reset reads a firing from before it, as time.Timer promises since Go 1.23, and reports whether
+// there was one.
+func (t *timer) drainLocked() bool {
 	if t.c == nil {
-		return
+		return false
 	}
 	select {
 	case <-t.c:
+		return true
 	default:
+		return false
 	}
 }
 
