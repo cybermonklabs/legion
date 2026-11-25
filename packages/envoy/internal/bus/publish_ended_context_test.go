@@ -187,8 +187,9 @@ func TestAPublishConfirmedWithASpentDeadlinePublishesNothing(t *testing.T) {
 		t.Fatalf("publishConfirmed whose window ended after its publish = %v, want the spent window's error, not ErrWindowEndedBeforePublish", lateErr)
 	}
 
-	// No span of its own: an answer can come late on a loaded machine with nothing wrong.
-	live := testwait.Context(t)
+	// No span of its own: an answer can come late on a loaded machine with nothing wrong. forgedWait,
+	// since publishConfirmed reads a context with no deadline (-timeout 0) as a spent window.
+	live := forgedWait(t)
 	if err := client.publishConfirmed(live, conn, &nats.Msg{Subject: subject, Data: []byte("{}")}, publish); err != nil {
 		t.Fatalf("publishConfirmed with a deadline ahead: %v", err)
 	}

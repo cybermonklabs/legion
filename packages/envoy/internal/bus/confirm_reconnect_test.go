@@ -15,7 +15,6 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/testport"
-	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // denyThenDrop serves a NATS client: it answers the handshake, then answers the first publish's
@@ -102,7 +101,8 @@ func TestConfirmPublishedRefusesADenialAReconnectCleared(t *testing.T) {
 		t.Fatalf("publish: %v", err)
 	}
 	// No span of its own: the flush's answer can come late on a loaded machine with nothing wrong.
-	if err := conn.FlushWithContext(testwait.Context(t)); err != nil {
+	// forgedWait, since FlushWithContext refuses a context with no deadline (-timeout 0).
+	if err := conn.FlushWithContext(forgedWait(t)); err != nil {
 		t.Fatalf("flush: %v", err)
 	}
 	// nats.go queues the disconnect callback after the reconnect has cleared the last error
@@ -141,7 +141,8 @@ func TestConfirmPublishedRefusesADenialACompletedReconnectCleared(t *testing.T) 
 		t.Fatalf("publish: %v", err)
 	}
 	// No span of its own: the flush's answer can come late on a loaded machine with nothing wrong.
-	if err := conn.FlushWithContext(testwait.Context(t)); err != nil {
+	// forgedWait, since FlushWithContext refuses a context with no deadline (-timeout 0).
+	if err := conn.FlushWithContext(forgedWait(t)); err != nil {
 		t.Fatalf("flush: %v", err)
 	}
 	// nats.go queues the reconnect callback once the new connection is marked connected.
@@ -265,8 +266,9 @@ func TestPublishConfirmedReadsTheStateBeforeThePublish(t *testing.T) {
 		return conn.Flush()
 	}
 
-	// No span of its own: an answer can come late on a loaded machine with nothing wrong.
-	ctx := testwait.Context(t)
+	// No span of its own: an answer can come late on a loaded machine with nothing wrong. forgedWait,
+	// since publishConfirmed reads a context with no deadline (-timeout 0) as a spent window.
+	ctx := forgedWait(t)
 	err := client.publishConfirmed(ctx, conn, &nats.Msg{Subject: subject, Data: []byte("{}")}, answered)
 	if !errors.Is(err, ErrPublishDenied) {
 		t.Fatalf("a publish the server denied while it ran returned %v, want ErrPublishDenied", err)
