@@ -104,16 +104,16 @@ func TestAMessageRowAPostTriedIsNoOpenWindow(t *testing.T) {
 	}
 }
 
-// heldMessageBarrier stops the first HeldMessage call that finds no open window until release is
-// closed, after its own store call returned, and signals arrived for each such call.
+// heldMessageBarrier stops the first HookPromptsMessage call that finds no open window until
+// release is closed, after its own store call returned, and signals arrived for each such call.
 type heldMessageBarrier struct {
 	record.Store
 	arrived chan struct{}
 	release chan struct{}
 }
 
-func (s *heldMessageBarrier) HeldMessage(ctx context.Context, tx pgx.Tx, issue, opening string, now, since time.Time) (record.OutboxRow, bool, error) {
-	row, found, err := s.Store.HeldMessage(ctx, tx, issue, opening, now, since)
+func (s *heldMessageBarrier) HookPromptsMessage(ctx context.Context, tx pgx.Tx, issue string, role claim.Role, now, since time.Time) (record.OutboxRow, bool, error) {
+	row, found, err := s.Store.HookPromptsMessage(ctx, tx, issue, role, now, since)
 	if err != nil || found {
 		return row, found, err
 	}
@@ -187,5 +187,50 @@ func TestTwoPromptsThatEndTogetherOpenOneWindow(t *testing.T) {
 			}
 			requireSays(t, held[0].body, firedHook.Prompt, loopHook.Prompt)
 		})
+	}
+}
+
+// The message window of one role's undelivered prompts is found by the data its row carries, the
+// role and the prompts it names, and never by its words. A window whose body holds other words,
+// as a release that words the message otherwise writes it, still takes the role's next prompt,
+// and a held message that opens and closes with this release's words but carries no such data is
+// no window and is left as it is. Each half is the other's control: a lookup that took any held
+// message of the issue would add the prompt to the second, and one by the words would miss the
+// first. The head that found the window by its first sentence added the second prompt to the
+// message with no data.
+func TestAHookPromptWindowIsFoundByItsDataAndNotByItsWords(t *testing.T) {
+	t.Parallel()
+	runner, _, pool := hookRunner(t, &holderPublisher{})
+	ctx := context.Background()
+	cause := &hookPromptUndelivered{why: "the implementer's claim failed", cause: notify.ErrNoHolder}
+	if err := runner.finishRefused(ctx, leasedOutboxRow(t, pool, runner.records, mustOutboxRow(t, "LEGION-208", firedHook, time.Now())), cause); err != nil {
+		t.Fatal(err)
+	}
+	var window int64
+	if err := pool.QueryRow(ctx, `select id from outbox where issue = 'LEGION-208' and kind = $1`, string(record.OutboxKindDispatchMessage)).Scan(&window); err != nil {
+		t.Fatalf("UNKNOWN: the first prompt's end wrote no one message row to test: %v", err)
+	}
+	const otherWords = "An earlier release worded this message otherwise.\n\nIts closing was other words as well."
+	if _, err := pool.Exec(ctx, `update outbox set payload = jsonb_set(payload, '{body}', to_jsonb($2::text)) where id = $1`, window, otherWords); err != nil {
+		t.Fatalf("reword the window: %v", err)
+	}
+	const wordsAlone = "Legion hook prompts to the implementer of LEGION-208 were not delivered. Somebody quoted it.\n\n" +
+		"No session of the implementer received these words, and the daemon will not send them again."
+	enqueueOutbox(t, pool, runner.records, mustOutboxRow(t, "LEGION-208", record.MessagePost{Body: wordsAlone}, time.Now().Add(time.Hour)))
+
+	if err := runner.finishRefused(ctx, leasedOutboxRow(t, pool, runner.records, mustOutboxRow(t, "LEGION-208", loopHook, time.Now())), cause); err != nil {
+		t.Fatal(err)
+	}
+	held := heldMessages(t, pool)
+	if len(held) != 2 {
+		t.Fatalf("the outbox holds messages %+v, want the window and the message with no data, and no third", held)
+	}
+	if held[1].body != wordsAlone {
+		t.Fatalf("the message that carries no hook-prompt data took the prompt: its body is now\n\t%s", held[1].body)
+	}
+	requireSays(t, held[0].body, firedHook.Prompt, loopHook.Prompt)
+	var named int
+	if err := pool.QueryRow(ctx, `select coalesce(jsonb_array_length(payload->'hook_prompts'->'paragraphs'), 0) from outbox where id = $1`, window).Scan(&named); err != nil || named != 2 {
+		t.Fatalf("the window's data names %d prompts (%v), want both", named, err)
 	}
 }

@@ -3542,26 +3542,26 @@ func (s *Postgres) FinishLeasedOutbox(ctx context.Context, tx pgx.Tx, id int64, 
 	return nil
 }
 
-func (s *Postgres) HeldMessage(ctx context.Context, tx pgx.Tx, issue, opening string, now, since time.Time) (OutboxRow, bool, error) {
+func (s *Postgres) HookPromptsMessage(ctx context.Context, tx pgx.Tx, issue string, role claim.Role, now, since time.Time) (OutboxRow, bool, error) {
 	// The window's lock first, held to the end of tx: a transaction that finds no window and
 	// writes one commits before the next look at the same window runs, so two finishes never both
 	// find none.
-	if _, err := tx.Exec(ctx, `select pg_advisory_xact_lock(hashtextextended($1, 0))`, "held-message:"+issue+":"+opening); err != nil {
-		return OutboxRow{}, false, fmt.Errorf("lock the held message of %s: %w", issue, err)
+	if _, err := tx.Exec(ctx, `select pg_advisory_xact_lock(hashtextextended($1, 0))`, "hook-prompts-message:"+issue+":"+string(role)); err != nil {
+		return OutboxRow{}, false, fmt.Errorf("lock the message of %s's undelivered hook prompts on %s: %w", role, issue, err)
 	}
 	// The lease test is read again once the row's lock is held (READ COMMITTED), so a run that
 	// leased the row while this waited for it leaves it out.
 	row, err := scanOutbox(tx.QueryRow(ctx, `select `+outboxColumns+` from outbox
-		where kind = $1 and issue = $2 and left(payload->>'body', length($3)) = $3
+		where kind = $1 and issue = $2 and payload->'hook_prompts'->>'role' = $3
 			and attempts = 0 and created_at > $5
 			and next_at > $4 and (lease_until is null or lease_until <= $4)
 		order by id limit 1 for update`,
-		string(OutboxKindDispatchMessage), issue, opening, now, since))
+		string(OutboxKindDispatchMessage), issue, string(role), now, since))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return OutboxRow{}, false, nil
 	}
 	if err != nil {
-		return OutboxRow{}, false, fmt.Errorf("read the held message of %s: %w", issue, err)
+		return OutboxRow{}, false, fmt.Errorf("read the message of %s's undelivered hook prompts on %s: %w", role, issue, err)
 	}
 	return row, true, nil
 }

@@ -34,22 +34,40 @@ import (
 // here: one left out lets the daemon release the
 // issue's pod out from under the row that was just written for one of its roles, and that role
 // never reads it. An update ask holds the pod only while its row is pending, which is one attempt
-// where the publish goes through or finds no holder.
+// where the publish goes through or finds no holder. A hook prompt's row waits up to an hour for a
+// session to hold its role (the daemon's hookPromptUnheld and hookPromptHoldBound), and holds the
+// pod for that wait only while its role has a claim this pod answers (idleWaitingRow).
 var idleWaitingKinds = []string{"supervise", "notice", "hook_prompt", "update_ask", "merge_queue_read", "merge_queue_removal",
 	"conflict_confirm", "merge_forward"}
 
 // idleWaitingRow is the predicate, over the outbox with idleWaitingKinds as $2, of a row that
 // waits for a role of the pod, and so holds the pod and cancels its release at the boundary
 // (readIdleView, IssueReleaseStop), and, where it is a start, at the teardown (IssueRelease): a
-// row of one of those kinds, but a start queued for news of the approved design alone
-// (record.SuperviseRequest.News, which its payload writes as `"news": true`). Such a start
-// reaches only a claim already given its phase's entry, and the claim an idle release suspended
-// is one: the start resumes it as any start does, so a release under the start loses nothing, and
-// the role comes back with its news. And such a start can wait a long time. A merger's waits for
-// its tree's design gate for the whole time the gate stays closed (the daemon's
-// mergerWaitsForTheDesignGate), and any one waits behind a task its claim has not finished
-// (supervise's queue). A pod held for it would stand idle for all that time.
-const idleWaitingRow = `kind = any($2) and not (kind = 'supervise' and coalesce(payload->>'news', '') = 'true')`
+// row of one of those kinds, but two rows that a release under them takes nothing from.
+//
+// A start queued for news of the approved design alone (record.SuperviseRequest.News, which its
+// payload writes as `"news": true`). Such a start reaches only a claim already given its phase's
+// entry, and the claim an idle release suspended is one: the start resumes it as any start does,
+// so a release under the start loses nothing, and the role comes back with its news. And such a
+// start can wait a long time. A merger's waits for its tree's design gate for the whole time the
+// gate stays closed (the daemon's mergerWaitsForTheDesignGate), and any one waits behind a task
+// its claim has not finished (supervise's queue). A pod held for it would stand idle for all that
+// time.
+//
+// A hook prompt (record.HookPrompt) to a role that has no claim on the issue, or whose claim
+// failed, was retired or was suspended for any cause but an idle release. Such a role comes back
+// only by a start or a person's resume, and either brings a pod of its own, so a release under
+// the row loses it nothing: the row waits on and ends undelivered, with a message on the issue,
+// once its hour has passed (the daemon's hookPromptEnded). A pod held for it would stand idle for
+// that hour. A claim that runs or is starting holds the pod, since its session is in this pod or
+// coming to it, and so does a claim an idle release suspended, since the row's own first attempt
+// wakes it (the daemon's wakeForDelivery). The row's attempts go on either way, about one a minute
+// on its backoff, and the Envoy listener answers each `404` with a WARN request line, a refusal
+// exception and a role wake report.
+const idleWaitingRow = `kind = any($2) and not (kind = 'supervise' and coalesce(payload->>'news', '') = 'true')
+	and not (kind = 'hook_prompt' and not exists (select 1 from claims c
+		where c.issue = outbox.issue and c.role = outbox.payload->>'role'
+			and (c.state not in ('suspended', 'failed', 'retired') or (c.state = 'suspended' and c.suspended_by = 'released'))))`
 
 // IdleReleaseRow is one outbox row a release writes, encoded by its caller (record.NewOutboxRow),
 // in the order the issue's lifecycle lane runs them: the check of the workspace for unpushed

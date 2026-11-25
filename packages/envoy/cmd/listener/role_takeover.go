@@ -695,10 +695,12 @@ func isWithdrawnFrame(item contracts.Envelope, msgID, role string) bool {
 }
 
 // withdrawLateForward withdraws forwarded, the role message stored late at seq on its holder's
-// own subject (roles.ForwardStoredTooLate), from every takeover copy of it. A late-stored forward
-// is answered 504 when its withdrawal mark lands first (withdrawn), 200 when a takeover's copy
-// landed first (not withdrawn), and 503 maybe_stored when no mark can be published at all (err),
-// in sendToRole.
+// own subject (roles.ForwardStoredTooLate), from every takeover copy of it, when holder no longer
+// holds the role. In sendToRole a late-stored forward is answered 200 when the role's claim, read
+// from the leader, still names holder (not withdrawn, and no mark published); 503 maybe_stored
+// when that claim cannot be read, or no mark can be published at all (err); 504 when its
+// withdrawal mark lands first (withdrawn); and 200 when a takeover's copy landed first (not
+// withdrawn).
 //
 // It publishes the frame's withdrawal mark (withdrawnFrame) to role's kept lane under the message
 // id that a takeover pass's copy and the session relay's copy of that frame take
@@ -706,7 +708,11 @@ func isWithdrawnFrame(item contracts.Envelope, msgID, role string) bool {
 // comes first, which one stands:
 //   - A mark stored first leaves no copy of the frame to store while the stream remembers the id
 //     (contracts.DeliveryDuplicateWindow, 72 hours, longer than any takeover record's life,
-//     takeoverRecordLife). The sender's retry is then the message's one delivery: withdrawn.
+//     takeoverRecordLife): withdrawn. The sender's retry resolves the holder afresh and is the
+//     message's delivery, unless the role is back with holder by then: that retry's forward
+//     takes the withdrawn frame's Nats-Msg-Id, the stream answers it as a duplicate of that
+//     frame, and the send is answered 200 for a frame no takeover will copy, which no session
+//     reads if holder's relay acknowledged it while another session held the role.
 //   - A copy stored first answers the mark as a duplicate. The copy is already on the kept lane,
 //     which the walk hands the role's holder: not withdrawn.
 //

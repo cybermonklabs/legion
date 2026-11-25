@@ -2582,15 +2582,16 @@ type Store interface {
 	// finish: a stale lease is ErrOutboxLeaseLost, so the caller rolls that effect back rather than
 	// committing it beside the replacement worker's own.
 	FinishLeasedOutbox(ctx context.Context, tx pgx.Tx, id int64, leaseToken string) error
-	// HeldMessage takes tx's lock on issue's window of opening, held until tx ends, then reads and
-	// locks the Dispatch message row of issue whose body begins with opening and that is an open
-	// window: never attempted, made after since, due after now, and under no live lease, so no run
-	// has it. It answers the oldest such row and true, or false when the outbox holds none. A row
-	// a post already tried is no open window, though it is held for its retry: the retry may find
-	// the post made and add nothing it carries. A row it answers can be rewritten in the same tx
+	// HookPromptsMessage takes tx's lock on the window of role's undelivered hook prompts on issue,
+	// held until tx ends, then reads and locks the Dispatch message row of issue whose payload
+	// names role's undelivered hook prompts (MessagePost.HookPrompts) and that is an open window:
+	// never attempted, made after since, due after now, and under no live lease, so no run has it.
+	// It answers the oldest such row and true, or false when the outbox holds none. A row a post
+	// already tried is no open window, though it is held for its retry: the retry may find the
+	// post made and add nothing it carries. A row it answers can be rewritten in the same tx
 	// (ReplaceMessage) before it runs, and a transaction that finds none and writes one commits
 	// before the next look at that window, so two finishes never both find none.
-	HeldMessage(ctx context.Context, tx pgx.Tx, issue, opening string, now, since time.Time) (OutboxRow, bool, error)
+	HookPromptsMessage(ctx context.Context, tx pgx.Tx, issue string, role claim.Role, now, since time.Time) (OutboxRow, bool, error)
 	// ReplaceMessage writes message, validated as a message of issue, as the payload of the
 	// Dispatch message row id, leaving when it is due as it is.
 	ReplaceMessage(ctx context.Context, tx pgx.Tx, id int64, issue string, message MessagePost) error

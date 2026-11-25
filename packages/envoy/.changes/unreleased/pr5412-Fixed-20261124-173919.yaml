@@ -14,13 +14,18 @@ body: |-
   whose forward the stream stores for its holder later than `roles.ForwardFenceAge` and the route's
   3.5 s budget after the listener read that holder was answered `200`, though the holder may have
   lost the role and a takeover could copy the forward to the next holder beside the sender's own
-  retry. The listener now withdraws such a forward: it publishes a withdrawal mark to the role's
-  kept lane under the message id a takeover's copy of the forward takes, and the stream's duplicate
-  window decides which landed first. The send is answered `504 delivery_failed`, wrapping
-  `roles.ErrForwardStoredTooLate`, when the mark landed first, so the retry is the one delivery;
-  `200` when a copy landed first and is on its way; and `503 maybe_stored` when no mark can be
-  published, which can give the holder a second copy under a new event id if a later pass copies
-  the forward and the sender retries. The kept lane's walk ends a mark and forwards it to no one.
+  retry. The listener now reads the role's claim from the leader first. When the claim still names
+  that holder, the holder reads the forward from its own subject and the send is answered `200`.
+  When it names another session or none, the listener withdraws the forward: it publishes a
+  withdrawal mark to the role's kept lane under the message id a takeover's copy of the forward
+  takes, and the stream's duplicate window decides which landed first. The send is answered
+  `504 delivery_failed`, wrapping `roles.ErrForwardStoredTooLate`, when the mark landed first, so
+  the sender's retry resolves the holder again; `200` when a copy landed first and is on its way;
+  and `503 maybe_stored` when the claim cannot be read or no mark can be published, which can give
+  the holder a second copy under a new event id if a later pass copies the forward and the sender
+  retries. The kept lane's walk ends a mark and forwards it to no one. A mark is told by the
+  takeover-copy message id that only the listener sets, so no dedupe key a sender chooses makes
+  one.
 time: 2026-11-24T17:39:19Z
 custom:
     Issue: pr5412

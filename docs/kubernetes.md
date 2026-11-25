@@ -2940,6 +2940,23 @@ Nothing else of this release needs a rollback step.
 The state's own key, `admission.held`, is served by the new daemon alone: no row holds it, no pod reads it from a queue, and the route already strips it for a caller whose plugin is below the contract that added it (`api.stateFor`, `withoutHeld`).
 This change writes no column and runs no migration, so no dump and no `alter table` belong here.
 
+#### Rolling back the release that names undelivered hook prompts on the issue
+
+This release holds a hook prompt the Envoy listener refuses to keep in the prompt's own outbox row, and names each prompt that ends undelivered in a Dispatch message on the issue, held for an hour so that every prompt to the same role that ends in that hour joins it ([Idle release](#idle-release), the bullet on a message published to the role topic).
+The held message's outbox row carries a new field, `hook_prompts`, beside its `body`: the role and the prompts the message names, which is how the next prompt's end finds it.
+An earlier release decodes an outbox payload strictly (`DisallowUnknownFields` in `record/outbox.go`) and knows no such field, so a held message still queued at the rollback fails on its backoff for ever and the issue never gets it.
+Run this with the daemon stopped, before the earlier image is pinned:
+
+```sql
+update outbox set payload = payload - 'hook_prompts' where kind = 'dispatch_message' and payload ? 'hook_prompts';
+```
+
+The strip costs the message nothing: its `body` holds the text this release wrote from the field at its last write, and the earlier release posts that body when the row comes due.
+
+Roll the Envoy listener back before the daemon.
+An earlier daemon ends a hook prompt's row at the `404` a listener of this release answers it, and the prompt is lost (`scripts/e2e/hook-prompt-two-builds.sh`); an earlier listener keeps the prompt for the role's next holder, as the earlier daemon expects.
+This change writes no column and runs no migration, so no dump and no `alter table` belong here.
+
 #### Rolling back the release that frees the slot past review
 
 This release adds two columns to `issues`: `moved_at` (`20261111010031_issue_moved_at`), when the daemon last saw that issue move, and `tree_stalled_told_at` (`20261111041503_tree_stalled_told_at`), the movement a tree's stalled notice was told at.
@@ -7972,8 +7989,9 @@ The wakes are these:
 
 - a message published to the role topic of a role of the pod, which the Envoy listener holds and reports to the daemon.
   Envoy keeps it for one hour, until the `kept_until` its publish answers with, and it reaches the woken role if the role is back inside that hour.
-  If it is not, Envoy drops it, and Envoy sends the publish's sender session a message that names it, unless it dropped it more than an hour late.
-  A publish that names no sender session is not kept: Envoy answers it `404`, since nothing could tell its sender if the copy expired, and it still wakes the role.
+  If it is not, Envoy drops it, and when the publish named a sender session, Envoy sends that session a message that names it, unless it dropped it more than an hour late.
+  A publish through Envoy's API (`POST /v1/messages/publish`) that names no sender session is not kept: Envoy answers it `404`, since nothing could tell its sender if the copy expired, and it still wakes the role.
+  Envoy still keeps a copy that names no sender session in two other ways, and drops it at the end of its hour with a WARN line and a count on `envoy_role_kept_expired_total` but no message to anyone: a message published straight onto the role's NATS subject, and a person's message that Dispatch sent to a session whose role moved to another session, or to none, before the send arrived.
   While it has at least 20 minutes of its hour left and no live session holds the role, the listener's sweep reports it again every five minutes.
   One sent with `keep: false` is not kept, and it still wakes the role, so the sender's next try reaches a session that is running.
   The daemon sets `keep: false` on each of its publishes but one, a hook prompt, which it publishes with `keep: true` and no sender session, so Envoy keeps it for no role with no live holder and the hook prompt's outbox row keeps it instead.
@@ -7982,11 +8000,15 @@ The wakes are these:
   While the wake pacing holds such a resume for its turn, the claim reads `launching` with no process, and each of these messages waits rather than publishing, because a kept copy's hour runs from its publish and can end before the pod starts.
   It looks again at its turn or five minutes later, whichever comes first, so a park that ends early, through an operator's resume or a restart, delays the message by five minutes at most.
   A hook prompt is then published once the resume has launched, while the woken session has not claimed its role yet, so Envoy answers it `404`, and its row tries again on its backoff until the woken session holds the role and takes it; a merge-queue removal message and a merge-forward message wait the same way until the woken session holds the role.
-  A hook prompt's row waits while its role's wake is in flight, and otherwise for one hour from the later of the hook's firing and the role's last ready; a role whose claim failed or was retired is never published to, and the row ends at once.
-  An ended prompt is named in a message on the issue that says, for each prompt, the hook, the move back the prompt was for, why it was not delivered and its words, and that no session received them.
-  That message is held for one hour from the first such end, and every prompt to the same role on the same issue that ends in that hour is added to it, so a role that is not coming gets one message an hour; the held message is the outbox row itself, so a restart of the daemon inside the hour adds to the same message.
-  A listener of an earlier release kept a hook prompt for the role's next holder and answered `202`, and the row ended there.
-  A daemon of an earlier release ends the row at the `404` of a listener that refuses the keep, so the prompt is lost: the daemon that waits ships to every deployment that publishes to the listener before that listener does (`scripts/e2e/hook-prompt-two-builds.sh` proves both outcomes).
+
+  - A hook prompt's row waits while its role's wake is in flight, and otherwise for one hour from the later of the hook's firing and the role's last ready; a role whose claim failed or was retired is never published to, and the row ends at once.
+    The waiting row holds the pod from idle release only while its role has a claim on the issue that runs, is starting, or was suspended by an idle release, which the row's own first attempt wakes.
+    A row whose role has no claim, or whose claim was suspended for any other cause, holds no pod: such a role comes back only by a start or a person's resume, and either brings a pod of its own.
+    Either way the row tries again about once a minute on its backoff, so a role that does not come costs about 60 attempts in the hour, and Envoy answers each with a `404`, a WARN request line naming the outcome `role_no_source_session`, a refusal exception and a role wake report.
+    An ended prompt is named in a message on the issue that says, for each prompt, the hook, the move back the prompt was for, why it was not delivered and its words, and that no session received them.
+    That message is held for one hour from the first such end, and every prompt to the same role on the same issue that ends in that hour is added to it, so a role that is not coming gets one message an hour; the held message is the outbox row itself, so a restart of the daemon inside the hour adds to the same message.
+    A listener of an earlier release kept a hook prompt for the role's next holder and answered `202`, and the row ended there.
+    A daemon of an earlier release ends the row at the `404` of a listener that refuses the keep, so the prompt is lost: the daemon that waits ships to every deployment that publishes to the listener before that listener does (`scripts/e2e/hook-prompt-two-builds.sh` proves both outcomes).
 
 - a message sent to the agent subject of a released session: an Envoy direct message, a person's answer, comment or message that a Dispatch claim routes to that session, or a person's targeted message that Dispatch queued on that subject itself because no store of the listener's held the session;
 

@@ -279,7 +279,7 @@ A counted message costs its sender one where the route stores it, may have store
 a wake for it, whatever it answers (`senderCharge`). So a send to a target with no entry costs
 one once the route reports its wake. A role send's `504` costs one whether or not a forward went
 out, also when the window ended before the first forward (`roleSend.timedOut`), and so does its
-`503` for a window that ended with its forward in process (`roleSend.endedInProcess`). A role send
+`503` for a window that ended with its forward in process (`roleSend.maybeStored`). A role send
 costs one for a forward the stream confirmed, also one it answered as a duplicate. The listener does
 not tell a `504` that forwarded nothing from one whose forward the stream may hold. A `503` after
 the listener sent the message to the stream and the write's acknowledgement did not arrive in time
@@ -500,24 +500,29 @@ that failed or ran out of time, a publish or flush to the server that failed or 
 stream did not acknowledge storing the forward,
 `bus.ErrForwardNotStored`). A forward the stream stored later than `roles.ForwardFenceAge` and the
 route's 3.5 s budget after the resolution that chose its holder (`roles.ForwardStoredTooLate`)
-may sit on a holder that lost the role. The route withdraws it before it answers
-(`withdrawLateForward`). It publishes a withdrawal mark to the role's kept lane under the
-`Nats-Msg-Id` that a takeover pass's or the session relay's copy of that frame takes, and the
-stream's own duplicate window (72 hours, longer than any takeover record's life) decides which
-landed first. When the mark landed first, no copy of the frame can store, and the send is
-answered `504 delivery_failed` with an error that wraps `roles.ErrForwardStoredTooLate`; the
-sender's retry is the message's one delivery. When a copy landed first, the mark comes back a
-duplicate, the copy is already on the kept lane, and the send is answered `200`. When no mark
-can be published at all, the send is answered `503` with `code: "maybe_stored"` and
-`Retry-After: 1`. That branch can give the role's holder a second copy under a new event id if a
-later pass copies the forward and the sender retries: that duplicate is accepted in place of a
-loss nothing reports. Nothing is deleted: the forward stays on the holder's subject and the mark
-on the kept lane, where the walk ends it with an Info line and forwards it to no one. A send whose
-last attempt ended while the stream still refused its forward as in process is answered instead
-`503` with `code: "maybe_stored"`, `Retry-After: 1` and the error `envoy: an earlier attempt of
-this message is still being stored: <reason>`, recorded `earlier_attempt_in_process`: the stream
-may yet store the earlier forward for the holder (`roleSend.endedInProcess`). The route publishes
-no exception: its sender has the answer.
+may sit on a holder that lost the role. The route reads the role's claim from the role bucket
+stream's leader before it answers (`withdrawLateForward`). When the claim still names the
+forward's holder, the holder reads the forward from its own subject, a takeover copies it should
+the holder lose the role later, and the send is answered `200`. When the claim names another
+session or none, the route withdraws the forward. It publishes a withdrawal mark to the role's
+kept lane under the `Nats-Msg-Id` that a takeover pass's or the session relay's copy of that frame
+takes, and the stream's own duplicate window (72 hours, longer than any takeover record's life)
+decides which landed first. When the mark landed first, no copy of the frame can store, and the
+send is answered `504 delivery_failed` with an error that wraps `roles.ErrForwardStoredTooLate`;
+the sender's retry resolves the holder again and is the message's delivery, unless the role is
+back with the forward's holder by then, when the retry meets the withdrawn frame as a duplicate
+and is answered `200` for a frame no takeover copies. When a copy landed first, the mark comes
+back a duplicate, the copy is already on the kept lane, and the send is answered `200`. When the
+claim cannot be read, or no mark can be published at all, the send is answered `503` with
+`code: "maybe_stored"` and `Retry-After: 1`. That branch can give the role's holder a second copy
+under a new event id if a later pass copies the forward and the sender retries: that duplicate is
+accepted in place of a loss nothing reports. Nothing is deleted: the forward stays on the holder's
+subject and the mark on the kept lane, where the walk ends it with an Info line and forwards it to
+no one. A send whose last attempt ended while the stream still refused its forward as in process
+is answered instead `503` with `code: "maybe_stored"`, `Retry-After: 1` and the error `envoy: an
+earlier attempt of this message is still being stored: <reason>`, recorded
+`earlier_attempt_in_process`: the stream may yet store the earlier forward for the holder
+(`roleSend.maybeStored`). The route publishes no exception: its sender has the answer.
 
 The listener keeps a role message on a stored subject of its own,
 `notifications.envoy.kept.role.<role>`. No session may register that subject, and no consumer of

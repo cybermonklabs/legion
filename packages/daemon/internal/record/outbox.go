@@ -281,9 +281,26 @@ func (ClaimRelease) OutboxKind() OutboxKind { return OutboxKindClaimRelease }
 // must still decode and still put its document up. It, MessageArtifact and the outbox's upload
 // can go once no daemon of a release before this one shares the database and no unsent
 // dispatch_message row holds an artifact.
+//
+// HookPrompts, when set, makes the message the one that names the undelivered hook prompts to one
+// role of the issue (UndeliveredHookPrompts), and Body is the text the daemon rendered from it at
+// its last write. A release before this field refuses a row that carries it
+// (DisallowUnknownFields), so a rollback strips it first (docs/kubernetes.md, "Rolling back the
+// release that names undelivered hook prompts on the issue"); Body then posts as it stands.
 type MessagePost struct {
-	Body     string           `json:"body"`
-	Artifact *MessageArtifact `json:"artifact,omitempty"`
+	Body        string                  `json:"body"`
+	Artifact    *MessageArtifact        `json:"artifact,omitempty"`
+	HookPrompts *UndeliveredHookPrompts `json:"hook_prompts,omitempty"`
+}
+
+// UndeliveredHookPrompts is what the message on an issue that names its undelivered hook prompts
+// to one role holds as data (the daemon's tellHookPromptUndelivered): the role, which is how that
+// role's open message is found (Store.HookPromptsMessage), and one paragraph for each prompt it
+// names, in the order they ended. The daemon renders the message's Body from it each time it
+// writes the row, so the row posts as any message posts.
+type UndeliveredHookPrompts struct {
+	Role       claim.Role `json:"role"`
+	Paragraphs []string   `json:"paragraphs"`
 }
 
 // MessageArtifact is the markdown document a message links. Name is the slug Dispatch files it
@@ -2380,6 +2397,13 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 			}
 			if len(artifact.Content) > MaxMessageArtifactBytes {
 				return fmt.Errorf("a message's artifact %s holds %d bytes, more than the %d of one Dispatch document", artifact.Name, len(artifact.Content), MaxMessageArtifactBytes)
+			}
+		}
+		// The role is how the message is found again (Store.HookPromptsMessage), and a message
+		// that names no prompt names nothing.
+		if prompts := value.HookPrompts; prompts != nil {
+			if prompts.Role == "" || len(prompts.Paragraphs) == 0 || value.Artifact != nil {
+				return fmt.Errorf("a message of undelivered hook prompts requires its role and at least one prompt, and carries no artifact")
 			}
 		}
 	case GateSeed, LingerClose, IssueBranch, CheckBound, ClaimRelease, DesignNewsReconcile:

@@ -188,7 +188,7 @@ published still gets it when it reconnects
 | Topic | What it is |
 | --- | --- |
 | `notifications.agent.<session_id>` | One session's inbox. Direct messages, ask follow-ups, replies in threads it wrote in, comments on documents it wrote, a person's answers, comments and messages on an issue it has claimed, comments on an issue with no route and no session claim whose spec it wrote, and claim changes arrive here. |
-| `notifications.role.<role>` | A role, held by one session at a time. You publish to it; the listener forwards each message to the current holder's inbox and answers once the stream stored that forward, which the holder reads from its own consumer. When no live session holds the role, because nobody claims it or its holder stopped answering, the listener keeps the message for one hour and answers that it kept it, and until when. The next session to hold the role live in that hour gets it, and a holder that stopped answering keeps its role. If no session takes the message in that hour, the listener drops it and sends your session a message that names it, unless it dropped it more than an hour late. A publish that names no session of yours is not kept: it is refused `404`, since nothing could tell you if the copy expired. |
+| `notifications.role.<role>` | A role, held by one session at a time. You publish to it; the listener forwards each message to the current holder's inbox and answers once the stream stored that forward, which the holder reads from its own consumer. When no live session holds the role, because nobody claims it or its holder stopped answering, the listener keeps the message for one hour and answers that it kept it, and until when. The next session to hold the role live in that hour gets it, and a holder that stopped answering keeps its role. If no session takes the message in that hour, the listener drops it and, when the publish named your session, sends your session a message that names it, unless it dropped it more than an hour late. A publish through the API that names no session of yours is not kept: it is refused `404`, since nothing could tell you if the copy expired. A message published straight onto NATS that names no session is still kept, and dropped at the end of its hour with no word to anyone. |
 | `notifications.dispatch.issue.<KEY>.>` | Every event of one Dispatch issue. |
 | `notifications.github.<owner>.<repo>.pr.<n>.>` | Every event of one pull request. |
 | `notifications.legion.<project>.controller` | A Legion project's controller. |
@@ -241,10 +241,12 @@ behind refuses no message a live holder can take. If the holder does not take th
 `504` naming the holder, with the reason `delivery_failed`, and that message is not kept: send it
 again, and the listener reads the holder again. A forward stored so long after the listener read
 the role's holder that the holder may have lost the role meanwhile is answered by what the
-listener finds when it withdraws it: `504` when the withdrawal stood, so your retry is the one
-delivery; `200` when the role's next holder already has a copy on its way; and `503` with
-`code: "maybe_stored"` when the withdrawal could not be made, where a retry may give the holder
-the message twice under two event ids. A role
+listener finds: `200` when the role's claim still names that holder, which reads the forward
+itself; `504` when the claim names another session or none and the listener withdrew the
+forward, so send it again; `200` when the role's next holder already has a
+copy on its way; and `503` with `code: "maybe_stored"` when the listener could not read the claim
+or make the withdrawal, where a retry may give the holder the message twice under two event ids.
+A role
 message published straight onto NATS, not through the API, is kept the same way when no live
 session holds the role, and also when the listener could not read the role's claim, in which
 case it is forwarded once a later read finds a `live` holder inside the message's hour, with no
