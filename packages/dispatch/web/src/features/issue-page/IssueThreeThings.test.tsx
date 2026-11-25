@@ -26,6 +26,7 @@ import { IssueTree } from "./IssueTree";
 import { presetPath } from "./issue-address";
 import { buildIssueTree, type TreeNode } from "./issue-tree";
 import { useIssueNames } from "./one-line";
+import * as outlineReads from "./outline-reads";
 import {
   type CheckState,
   CONTROL_LABELS,
@@ -1073,6 +1074,48 @@ test("under a words filter the Contents pane's rows wait for the names, and coun
     }
   } finally {
     blocks.mockRestore();
+    names.mockRestore();
+  }
+});
+
+// The outline's reads as their module defines them, read before a case's spy stands in for the
+// module's export, which every import of it reads from then on.
+const useOutlineReadsItself = outlineReads.useOutlineReads;
+
+// R2: a words filter changes what the Contents slot lists, never what a thread produced. The
+// slot draws the list from the filter's view of the tree, and reads which messages produced a
+// node over the whole tree: under `?q=quokka` the view keeps the reader's message, whose words
+// hold the word, and drops the statement under it, which holds none, and the list still holds
+// the message. No read the tree is built from places a statement under a message, so the
+// outline's reads answer here with a tree that holds one.
+test("the Contents slot under a words filter keeps a message the reader wrote that produced a node", () => {
+  const statement = treeNode("spec#b-r1", "requirement", { text: "The page draws the list." });
+  const message = treeNode("message-mine", "message", {
+    author: { id: "alice", kind: "user" },
+    children: [statement],
+    held: 1,
+    text: "Please add a quokka statement.",
+  });
+  const root = treeNode(KEY, "issue", { children: [message], held: 2 });
+  const reads = spyOn(outlineReads, "useOutlineReads").mockImplementation((issue) => ({
+    ...useOutlineReadsItself(issue),
+    root,
+  }));
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  try {
+    const view = drawContents(seededClient(), issueDetails(), "/?q=quokka");
+    try {
+      expect(
+        [...view.container.querySelectorAll("[data-contents-entry]")].map((entry) =>
+          entry.getAttribute("data-contents-entry")
+        ),
+        "the Contents list under the words filter does not hold the reader's message"
+      ).toEqual([message.id]);
+    } finally {
+      view.unmount();
+    }
+  } finally {
+    reads.mockRestore();
     names.mockRestore();
   }
 });

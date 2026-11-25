@@ -69,21 +69,25 @@ async function specSlugOf(artifactId: string): Promise<string> {
 
 /**
  * A parent and its child, each with a spec of its own, in the project the issue-layout seeds
- * make: the parent's two statements, then the child's summary and its two statements, each in
- * words of its own. The child's Spec view draws its own two statements and none of its parent's
- * (R6; `useIssueTree.ts` reads the issue's own coverage). `e2e/issue-layout-seed.ts`'s seeds
- * give a parent no spec, so none of them can show that.
+ * make: the parent's summary and its two statements, then the child's summary and its two
+ * statements, each in words of its own. The child's Spec view draws its own two statements and
+ * none of its parent's (R6; `useIssueTree.ts` reads the issue's own coverage).
+ * `e2e/issue-layout-seed.ts`'s seeds give a parent no spec, so none of them can show that. An
+ * issue created under an ancestor whose spec holds a statement may hold none of its own
+ * (`REQUIREMENT_BELONGS_TO_ANCESTOR`), so the child is created while its parent's spec holds its
+ * summary alone, and the parent's two statements are written after the summary once the child
+ * stands.
  */
 export async function seedChildWithSpec(): Promise<ChildWithSpecSeed> {
   await createProject({ key: PROJECT, name: "Issue layout" });
   const parentRequirements = ["r-parent-1", "r-parent-2"] as const;
+  const parentSummary = "summary";
   const parent = await createIssue({
     force: true,
     project: PROJECT,
-    spec: `${[
-      statementBlock(parentRequirements[0], "The release ships on one day for every customer."),
-      statementBlock(parentRequirements[1], "The release can be rolled back within ten minutes."),
-    ].join("\n\n")}\n`,
+    spec:
+      `:::callout{#${parentSummary} title="What this issue is"}\n` +
+      "Every part of the spring release ships together.\n:::\n",
     title: "The spring release ships as one",
   });
   const childRequirements = ["r-child-1", "r-child-2"] as const;
@@ -99,6 +103,13 @@ export async function seedChildWithSpec(): Promise<ChildWithSpecSeed> {
       statementBlock(childRequirements[1], "The notes are published an hour before the release."),
     ].join("\n\n")}\n`,
     title: "The release notes ship with the spring release",
+  });
+  const parentStatements = [
+    statementBlock(parentRequirements[0], "The release ships on one day for every customer."),
+    statementBlock(parentRequirements[1], "The release can be rolled back within ten minutes."),
+  ].join("\n\n");
+  await editArtifact(parent.primary_artifact_id, {
+    ops: [{ after: `block:${parentSummary}`, markdown: parentStatements, op: "insert" }],
   });
   return {
     child: {
