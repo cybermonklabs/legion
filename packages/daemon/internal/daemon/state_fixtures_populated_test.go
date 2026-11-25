@@ -95,8 +95,8 @@ func populatedPodLocator(token claim.Token, issue string, generation uint64) *ru
 //     released and the daemon keeps no record of: its chain reaches LEGION-208's live tree.
 //   - LEGION-216, a root that has never run, queued behind LEGION-211 and blocked by LEGION-210.
 //   - LEGION-218 and LEGION-219, reviewing roots whose rounds wait on GitHub's merge state: the
-//     first for GitHub's first answer, its architect suspended by the operator; the second stuck on
-//     `blocked` and told of it, its architect retired by the close of the run before.
+//     first for GitHub's first answer, its architect suspended by the operator; the second held
+//     `behind` its base and told of it, its architect retired by the close of the run before.
 func populatedRecord(s *seeding) {
 	issue := func(key, tree string, ph phase.Phase, status, repo string, generation uint64, seq int64) record.Issue {
 		branch := "main"
@@ -175,7 +175,7 @@ func populatedRecord(s *seeding) {
 
 	// LEGION-218 and LEGION-219: reviewing roots. Each reviewer's completion is the newest movement
 	// of its tree; LEGION-219's first read after the approval took its merge state from unread to
-	// `blocked`, which moved it once more.
+	// `behind`, which moved it once more.
 	waiting := issue("LEGION-218", "LEGION-218", phase.Reviewing, "needs_review", "acme/widgets", 1, 10)
 	stuck := issue("LEGION-219", "LEGION-219", phase.Reviewing, "needs_review", "zeta/tools", 3, 11)
 
@@ -286,7 +286,7 @@ func populatedRecord(s *seeding) {
 	// record.Store.PutPullRequest), each on its issue's branch (claim.IssueBranch) into its
 	// repository's default branch: LEGION-208's merge state a review the repository requires holds;
 	// LEGION-218's unread since the push; LEGION-219's head stood two days, every read since the first
-	// after the approval answered `blocked`, the last a minute before this state, and two of the
+	// after the approval answered `behind`, the last a minute before this state, and two of the
 	// fence's runs are stamped with the head.
 	for _, pr := range []record.PullRequest{
 		{Issue: "LEGION-207", Repo: "acme/widgets", Number: 1239, HeadSHA: "7d1e4f2a9c3b5e8d0a6f2c4b8e1d3a5f7c9b2e40", State: record.PullRequestMerged},
@@ -295,7 +295,7 @@ func populatedRecord(s *seeding) {
 		{Issue: "LEGION-218", Repo: "acme/widgets", Number: 1251, HeadSHA: "6c2f8a0d4b7e13952a8c0f6d3b5e9172c4a8d063",
 			State: record.PullRequestOpen, HeadUpdatedAt: at(22, 8, 58, 40)},
 		{Issue: "LEGION-219", Repo: "zeta/tools", Number: 642, HeadSHA: "0f5a7c2e9b48d1630a7f2c8e4b6d0915a3c7e284",
-			State: record.PullRequestOpen, MergeState: record.MergeStateBlocked, HeadUpdatedAt: at(20, 14, 5, 33), StateReadAt: at(22, 9, 16, 12),
+			State: record.PullRequestOpen, MergeState: record.MergeStateBehind, HeadUpdatedAt: at(20, 14, 5, 33), StateReadAt: at(22, 9, 16, 12),
 			CheckRuns: []record.AttemptRun{
 				{Name: "test", ID: 38230245501, Head: "0f5a7c2e9b48d1630a7f2c8e4b6d0915a3c7e284"},
 				{Name: "lint", ID: 38230245502, Head: "0f5a7c2e9b48d1630a7f2c8e4b6d0915a3c7e284"},
@@ -383,7 +383,7 @@ func populatedClaims(s *seeding, rows populatedRows) {
 		// tellStuckMergeState), which the decision's two marks record.
 		{Issue: "LEGION-219", Role: claim.RoleReviewer, Claim: token("LEGION-219", claim.RoleReviewer), Pass: 2, Rounds: 1, Entry: 2,
 			Decision: &record.ReviewDecision{State: "approved", Head: "0f5a7c2e9b48d1630a7f2c8e4b6d0915a3c7e284",
-				ToldStuckHead: "0f5a7c2e9b48d1630a7f2c8e4b6d0915a3c7e284", ToldStuckState: record.MergeStateBlocked}},
+				ToldStuckHead: "0f5a7c2e9b48d1630a7f2c8e4b6d0915a3c7e284", ToldStuckState: record.MergeStateBehind}},
 	} {
 		s.in("the phases row of "+row.Issue+" "+string(row.Role), func(ctx context.Context, tx pgx.Tx) error { return s.records.PutPhase(ctx, tx, row) })
 	}

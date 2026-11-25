@@ -10,6 +10,7 @@ import (
 // base in the row to derive one from: the column takes the empty value, which reads as "not
 // recorded yet" and matches no base push, and the daemon's next read of the pull request fills it.
 func TestAPullRequestRecordedBefore20261029120300HasNoBase(t *testing.T) {
+	t.Parallel()
 	store := emptyStore(t)
 	ctx := context.Background()
 	migrateThrough(t, store, 20261029120200)

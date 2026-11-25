@@ -1281,6 +1281,13 @@ func parseTextValue(node ast.Node, value []byte, marks []Mark) string {
 			return string(value)
 		}
 	}
+	// A raw text outside code is an autolink put back as the text it showed, inside a
+	// `dispatch://` address (keepAddressesWhole). Only the tokenizer's comes back raw, its source
+	// as written, as it showed linked and as the engine shows it; the transform's comes back
+	// decoded, as its label was.
+	if text, ok := node.(*ast.Text); ok && text.IsRaw() {
+		return string(value)
+	}
 	decoded := decodeMarkdownText(value)
 	if strings.IndexByte(decoded, '\n') < 0 || insideImage(node) {
 		return decoded

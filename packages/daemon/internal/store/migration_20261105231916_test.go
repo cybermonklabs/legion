@@ -26,6 +26,7 @@ const productionCheckRoleAndWakeVersion = 20261105231916
 // row would refuse this release's boot; the check's other rows, check_bound and check_look, are
 // left where they are, since their executors are still there.
 func TestTheProductionCheckTakesItsRoleAndWakeWith20261105231916(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, productionCheckRoleAndWakeVersion-1)
@@ -153,6 +154,7 @@ func TestTheProductionCheckTakesItsRoleAndWakeWith20261105231916(t *testing.T) {
 // check instance beside the look, since a later merge of the same issue replaces the check and
 // counts its looks from one again.
 func TestTheServingCheckLookColumnsArriveEmptyWith20261105231916(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, productionCheckRoleAndWakeVersion-1)

@@ -15,6 +15,7 @@ import "testing"
 // takeover of a claim an idle release suspended takes the pod's earlier work off that claim fails
 // every row; no row of the order table fails under it.
 func TestATakenOverReleasedRoleIsNamedWhereALaterPodOfItsKeptVolumeWent(t *testing.T) {
+	t.Parallel()
 	for _, kind := range []memberKind{daemonTakeoverKeptHeld, operatorTakeoverKeptHeld} {
 		for _, end := range []roundPodEnd{endPodGone, endRecreated, endRecreatedRefusing} {
 			t.Run(string(kind.takenOverBy())+": "+end.String(), func(t *testing.T) {
