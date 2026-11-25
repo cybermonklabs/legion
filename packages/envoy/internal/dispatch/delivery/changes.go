@@ -34,9 +34,10 @@ import (
 // rewrite of a settings change, its rebuild of a span or a verified rebuild's flip, or its
 // publishing of the default repositories (EvalDaysWrittenBySettingsRewrite,
 // EvalDaysWrittenByRebuild, EvalDaysWrittenByDefaults). An eval_days row of no eval, whose Repo
-// and Ref are empty, is the refresher's word that the day rows stand at the delivery settings a
-// change of the settings row named (SettingsApplied below): it carries the settings rewrite's
-// RunKind and no span.
+// and Ref are empty, is the refresher's word that the day rows stand at the delivery settings in
+// the commit that moves the deploy repository recorded with them, or records them first in a page
+// that read a change of the settings row (SettingsApplied below): it carries the settings
+// rewrite's RunKind and no span.
 //
 // An issue_filings row holds none either: Repo carries the project key and Ref the filed issue's
 // key (migration 20261117100019). TOld and TNew are the filing's filed_at before and after: an
@@ -81,12 +82,14 @@ const (
 // where every other change waits the quiet that gathers a burst into one recompute.
 //
 // It is also the RunKind of the eval_days change of no eval (SettingsApplied): the one change the
-// refresher's page logs once the day rows stand at the delivery settings a change of the settings
-// row named, in the rewrite's transaction where it rewrote rows and in the page's commit where
-// the change moved none (a move of the deploy repository, which a read chooses rows by). An evals
-// view reads the settings and the rows together, so it is recomputed for this change, at once, and
-// not for the change of the settings row itself, which it would answer from rows not yet
-// rewritten.
+// refresher logs where the commit that brings the day rows to the delivery settings moves the
+// deploy repository recorded with them, which a read of every project's evals chooses rows by, or
+// records them first: the rewrite's transaction where it rewrote rows, and the page's commit where
+// the change moved none. An evals view reads the deploy repository and the rows together, so it is
+// recomputed for this change, at once, and not for the change of the settings row itself, which it
+// would answer from rows not yet rewritten. A change that moves rows and not the deploy repository
+// logs none: the rewrite's own changes, each under the project of an eval it moved, wake the views
+// it moves.
 const EvalDaysWrittenBySettingsRewrite = "settings_rewrite"
 
 // EvalDaysWrittenByRebuild is the RunKind of an eval_days change that the refresher's rebuild of a

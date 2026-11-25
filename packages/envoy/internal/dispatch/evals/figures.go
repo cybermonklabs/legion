@@ -1164,6 +1164,10 @@ func readFigureGroups(ctx context.Context, q delivery.Querier, scope figureScope
 	if err != nil {
 		return nil, err
 	}
+	if times := figureTimesIn(ctx); times != nil {
+		times.reads++
+		times.rows += len(rows)
+	}
 	byEval := map[string][]WindowRow{}
 	for _, row := range rows {
 		byEval[row.EvalID] = append(byEval[row.EvalID], row)
@@ -1191,17 +1195,29 @@ func refoldFigures(ctx context.Context, tx pgx.Tx, scope figureScope, entries ma
 }
 
 // refoldMoved is refoldFigures, and answers, by eval, the span of the days whose figures it folded
-// again, none where no day's rows had moved.
+// again, none where no day's rows had moved. It adds how long each of its three parts took to the
+// figureTimes ctx carries, where it carries one.
 func refoldMoved(ctx context.Context, tx pgx.Tx, scope figureScope, entries map[string]Entry, spans ...map[string]daySpan) (map[string]daySpan, error) {
+	times := figureTimesIn(ctx)
+	if times == nil {
+		times = &figureTimes{}
+	}
+	began := time.Now()
 	moved, err := movedFigureDays(ctx, tx, scope, entries, spans...)
+	times.moved += time.Since(began)
 	if err != nil || len(moved) == 0 {
 		return nil, err
 	}
+	began = time.Now()
 	plan, err := readFigurePlan(ctx, tx, scope, entries, moved)
+	times.plan += time.Since(began)
 	if err != nil {
 		return nil, err
 	}
-	if err := plan.foldAndWrite(ctx, tx, scope, min(runtime.GOMAXPROCS(0), figureFoldWorkers)); err != nil {
+	began = time.Now()
+	err = plan.foldAndWrite(ctx, tx, scope, min(runtime.GOMAXPROCS(0), figureFoldWorkers))
+	times.fold += time.Since(began)
+	if err != nil {
 		return nil, err
 	}
 	folded := map[string]daySpan{}
@@ -1211,6 +1227,31 @@ func refoldMoved(ctx context.Context, tx pgx.Tx, scope figureScope, entries map[
 		}
 	}
 	return folded, nil
+}
+
+// figureTimes is what the folds of stored figures one transaction makes (foldFiguresInTx) spent
+// in the parts of each project's fold (refoldMoved), summed over the projects it folds: the reads
+// of the moved days (movedFigureDays), the reads of the rows the folds fold (readFigurePlan), with
+// how many statements those sent (DayWindowIn, one a cut of a deploy repository, readFigureGroups)
+// and how many rows they answered, and the folds and their writes (figurePlan.foldAndWrite). A
+// writer that logs them carries one on the context it folds under (withFigureTimes), and a fold
+// on a context that carries none times nothing.
+type figureTimes struct {
+	moved, plan, fold time.Duration
+	reads, rows       int
+}
+
+type figureTimesKey struct{}
+
+// withFigureTimes is ctx carrying times, which the folds made under it add to.
+func withFigureTimes(ctx context.Context, times *figureTimes) context.Context {
+	return context.WithValue(ctx, figureTimesKey{}, times)
+}
+
+// figureTimesIn is the figureTimes ctx carries, nil for none.
+func figureTimesIn(ctx context.Context) *figureTimes {
+	times, _ := ctx.Value(figureTimesKey{}).(*figureTimes)
+	return times
 }
 
 // foldFiguresInTx is the stored figures' part of a write of day rows by build, in tx, the write's

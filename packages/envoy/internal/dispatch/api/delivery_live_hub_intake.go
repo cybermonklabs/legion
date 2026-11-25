@@ -412,10 +412,8 @@ func (h *deliveryHub) markChangesLocked(g *hubGeneration, changes []delivery.Cha
 // for its first answer, a settings rewrite's, a rebuild's and a publishing of the defaults'
 // (markChangesLocked). The quiet gathers a burst of changes into one recompute, and a rewrite, a
 // rebuild or a publishing has no burst left to gather, since the refresher writes what it moves in
-// one transaction, whose changes arrive in one drain. Its page has meanwhile waited for the pass
-// itself: at ten times INFRA's size on c3d nodes the pass commits 1.2-1.7 s after the settings
-// write, and a quiet of 250 ms after it, with a recompute of about 40 ms, brought a change of
-// production_job_names to the page in 1.49-1.93 s, against the 2 s R14 bounds it to.
+// one transaction, whose changes arrive in one drain. Its page has meanwhile waited for the
+// refresher's pass, which shares with the recompute the 2 s R14 gives the change.
 func (h *deliveryHub) markDirtyLocked(g *hubGeneration, view *deliveryView, now time.Time, cause string) {
 	if !view.dirty {
 		view.dirty, view.firstDirty, view.cause = true, now, cause
@@ -437,14 +435,20 @@ func (h *deliveryHub) markDirtyLocked(g *hubGeneration, view *deliveryView, now 
 // figures (deliveryLiveClasses.evalVersions), so a version of one of those marks them here.
 //
 // A change of the delivery settings row marks no evals view. Such a view reads the settings and
-// the day rows together: the deploy repository chooses the rows of the evals that read it
-// (evals.DeployRepoOf), and the judged names are what the refresher built the rows under. A
-// recompute at the settings change would answer the new settings over rows the refresher has not
-// rewritten yet, a state the inputs never had where one save moves the deploy repository and a
-// judged name together. The refresher's page that reads the change logs, in the transaction that
-// leaves the rows standing at the settings (its rewrite's, or its own commit where the change
-// moved no row), one eval_days change of no eval (delivery.SettingsApplied), which marks every
-// evals view, at once (markChangesLocked).
+// the day rows together: the deploy repository recorded with the rows chooses the rows of the
+// evals that read it (evals.DeployRepoIn, evals.DeployRepoOf), the one setting the list read
+// takes, and the judged names are what the refresher built the rows under. A recompute at the
+// settings change would answer the new settings over rows the refresher has not rewritten yet, a
+// state the inputs never had where one save moves the deploy repository and a judged name
+// together. The refresher's commit that brings the rows to the settings marks what it moved: its
+// rewrite's eval_days changes, one of each eval whose rows moved under that eval's project, mark
+// the evals views of the projects whose rows moved, and, where the recorded deploy repository
+// moved, the commit that records it (the rewrite's, or the page's where no row moved) logs one
+// eval_days change of no eval (delivery.SettingsApplied), which marks every evals view. Each marks
+// at once (markChangesLocked). A change that moves no row and not the deploy repository moves
+// nothing an evals view reads, and marks none. A delivery view reads the saved settings row
+// itself (delivery.GetSettings), so the row's change marks every one (touchedByDeliveryRow), and
+// neither the rewrite's eval_days changes nor the settings applied marks any.
 func (view *deliveryView) touchedBy(change delivery.Change, now time.Time) bool {
 	switch change.Kind {
 	case delivery.ChangeKindIssueFacts:
@@ -470,7 +474,8 @@ func (view *deliveryView) touchedBy(change delivery.Change, now time.Time) bool 
 		// fact, a filing, the settings row) was logged: a view woken by the input would read the
 		// rows before the rewrite, and the eval_days change of the rewrite is what wakes it. The
 		// eval_days change of no eval is the refresher's word that the rows stand at the delivery
-		// settings (delivery.SettingsApplied), which every evals view reads, whatever its project.
+		// settings under a deploy repository that moved (delivery.SettingsApplied), which every
+		// evals view reads, whatever its project.
 		//
 		// A new version of an eval a delivery view reads (its definition or one of its series)
 		// marks every view of that kind too, and readings and day rows mark none: the timeline's

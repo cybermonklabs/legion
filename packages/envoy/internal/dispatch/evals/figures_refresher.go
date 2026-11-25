@@ -72,6 +72,7 @@ func (r *refresh) figuresPass(ctx context.Context, walksPending bool, page int) 
 	if err := r.figureChanges(ctx, page); err != nil {
 		return false, err
 	}
+	r.report.parts.mark(partFigureChanges)
 	if walksPending {
 		return false, nil
 	}

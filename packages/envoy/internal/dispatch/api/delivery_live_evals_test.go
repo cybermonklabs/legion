@@ -86,13 +86,15 @@ func requireTheListRead(t *testing.T, handler http.Handler, project string, body
 
 // TestAnEvalChangeTouchesTheEvalsViewsOfItsProjectAlone: a reading, a version of a definition and a
 // day row each mark the evals views of their eval's project and no other view at all, and no other
-// kind of change marks an evals view but a change of the delivery settings row, which marks every
-// evals view: the deploy repository it can move chooses the rows an evals view reads of the evals
-// that read it, and a move writes no day row. A filing marks no view: the refresher's rewrite of
-// the day's rows is what wakes the evals view. None of the four kinds reaches the delivery switch's
-// closing `return true`, which would mark every timeline, measures and pipeline view. The versions
-// that mark a delivery view, those of the evals it judges or ranks by, are
-// TestAVersionOfAnEvalADeliveryViewReadsMarksIt's; rework-share is none of them.
+// kind of change marks an evals view but the refresher's word that the rows stand at the delivery
+// settings under a deploy repository that moved (delivery.SettingsApplied), which marks every
+// evals view: that repository chooses the rows an evals view reads of the evals that read it, and
+// its move writes no day row. A change of the settings row itself marks no evals view, and every
+// timeline, measures and pipeline view, each of which reads the saved settings row. A filing marks
+// no view: the refresher's rewrite of the day's rows is what wakes the evals view. None of the four
+// kinds reaches the delivery switch's closing `return true`, which would mark every timeline,
+// measures and pipeline view. The versions that mark a delivery view, those of the evals it judges
+// or ranks by, are TestAVersionOfAnEvalADeliveryViewReadsMarksIt's; rework-share is none of them.
 func TestAnEvalChangeTouchesTheEvalsViewsOfItsProjectAlone(t *testing.T) {
 	now := time.Date(2026, 11, 13, 12, 0, 0, 0, time.UTC)
 	today := measures.Midnight(now)
@@ -160,10 +162,11 @@ func TestAnEvalChangeTouchesTheEvalsViewsOfItsProjectAlone(t *testing.T) {
 			}
 		}
 	}
-	// A change of the delivery settings row marks no evals view: such a view reads the settings and
-	// the day rows together, and the refresher's word that the rows stand at the settings
-	// (delivery.SettingsApplied), an eval_days change of no eval, marks every one of them and no
-	// other view.
+	// A change of the delivery settings row marks no evals view: such a view reads the deploy
+	// repository recorded with the day rows, and the refresher's word that the rows stand at the
+	// settings under a deploy repository that moved (delivery.SettingsApplied), an eval_days change
+	// of no eval, marks every one of them and no other view. It marks every view that reads the
+	// delivery rows, each of which reads the saved settings row itself (delivery.GetSettings).
 	settingsRow := delivery.Change{Seq: 2, Kind: "settings"}
 	applied := delivery.Change{Seq: 3, Kind: delivery.ChangeKindEvalDays, RunKind: delivery.EvalDaysWrittenBySettingsRewrite}
 	if !delivery.SettingsApplied(applied) || !delivery.EvalDaysImmediate(applied) {
@@ -172,14 +175,16 @@ func TestAnEvalChangeTouchesTheEvalsViewsOfItsProjectAlone(t *testing.T) {
 	}
 	for _, view := range views {
 		evalsPage := view.view.spec.kind == evalsView
-		if evalsPage && view.view.touchedBy(settingsRow, now) {
-			t.Errorf("a change of the delivery settings row marks %s, whose rows the refresher has not brought to the settings yet", view.what)
+		readsDelivery := view.view.spec.classes().reads == viewReadsDelivery
+		if got := view.view.touchedBy(settingsRow, now); got != readsDelivery {
+			t.Errorf("a change of the delivery settings row: touchedBy(%s) = %t, want %t: it marks the views that read the saved settings and no evals view, whose rows the refresher has not brought to the settings yet",
+				view.what, got, readsDelivery)
 		}
 		if got := view.view.touchedBy(applied, now); got != evalsPage {
 			t.Errorf("the settings applied: touchedBy(%s) = %t, want %t", view.what, got, evalsPage)
 		}
 	}
-	t.Logf("issue_filings marks %d of %d views; %d changes of every other kind make %d marks of an evals view; the settings row's marks no evals view, and the settings applied every one and no other view",
+	t.Logf("issue_filings marks %d of %d views; %d changes of every other kind make %d marks of an evals view; the settings row's marks every delivery view and no evals view, and the settings applied every evals view and no other view",
 		filingMarks, len(views), len(others), evalsMarks)
 }
 
@@ -535,6 +540,192 @@ func TestAnEvalWriteRecomputesTheEvalsViewsOfItsProjectAlone(t *testing.T) {
 	sent("the unowned-p0 row", map[string][]string{"a": {"INFRA/unowned-p0"}, "b": {"INFRA/unowned-p0"}})
 }
 
+// TestASettingsSaveRecomputesTheEvalsViewsItMoves: over the refreshed history whose second
+// repository holds deploy runs of its own, with four evals views open on a clock that stands still
+// (two of the main project's, a window and the same window with a compare range, and the same two
+// of the second project's, whose evals no pull request of the history counts for), three saves of
+// the delivery settings, each followed by the refresher's passes:
+//
+//   - a production job name no run holds, beside the one that is, moves no row and not the deploy
+//     repository: the passes log no eval_days change, no evals view is recomputed, and none is sent
+//     anything;
+//   - the production rule moved to a job no run holds: the rewrite moves the main project's rows,
+//     its eval_days changes name no view of the second project and none is of no eval, so each
+//     view of the main project is recomputed once, at once, and sent one delta that lands on the
+//     route's body, and no view of the second project is recomputed;
+//   - the deploy repository moved to the second repository: the page's commit says that the rows
+//     stand at the settings (delivery.SettingsApplied), the passes' one eval_days change, which
+//     recomputes every evals view of both projects once, at once, and what it sends lands on the
+//     route's body.
+//
+// Before, every settings save the refresher answered marked every evals view of every project.
+func TestASettingsSaveRecomputesTheEvalsViewsItMoves(t *testing.T) {
+	var other string
+	page := newRefreshedEvalsPage(t, nil, deployRunsInTheSecondRepository(t, &other))
+	rig, main, second := page.rig, page.fixture.Project, page.fixture.SecondProject
+	today := measures.Midnight(page.now)
+	window := evalsDays(today.AddDate(0, 0, -27), today.AddDate(0, 0, 1))
+	compare := url.Values{"compare_from": {today.AddDate(0, 0, -55).Format(time.RFC3339)}, "compare_to": {today.AddDate(0, 0, -27).Format(time.RFC3339)}}.Encode()
+	type openView struct {
+		project, query string
+		frame          DeliveryLiveView
+		conn           *fakeLiveConn
+		held           json.RawMessage
+	}
+	views := map[string]*openView{
+		"e": {project: main, frame: page.frame, conn: page.conn, held: page.held},
+		"c": {project: main, query: compare, frame: evalsLiveView(main, window, compare)},
+		"x": {project: second, frame: evalsLiveView(second, window, "")},
+		"y": {project: second, query: compare, frame: evalsLiveView(second, window, compare)},
+	}
+	subs := slices.Sorted(maps.Keys(views))
+	subOf := map[string]string{}
+	for _, sub := range subs {
+		view := views[sub]
+		spec, refusal := parseDeliveryLiveView(view.frame)
+		if refusal != nil {
+			t.Fatalf("read the view of %s: %+v", sub, refusal)
+		}
+		subOf[spec.key] = sub
+		if view.conn == nil {
+			view.conn = newFakeLiveConn()
+			rig.hub.Subscribe(view.conn, subscribeFrame(sub, view.frame))
+			view.held = view.conn.snapshot(t, sub).Body
+		}
+	}
+	for _, sub := range subs {
+		rig.quiesce(t, views[sub].frame)
+	}
+	// sent applies each delta sub's page was sent to the body it holds, requires that the body then
+	// is the route's, and answers how many there were. The hub queues every frame it owes before it
+	// owes nothing (settle), so what is not queued now is not owed.
+	sent := func(what, sub string) int {
+		t.Helper()
+		view := views[sub]
+		for deltas := 0; ; deltas++ {
+			select {
+			case frame := <-view.conn.frames:
+				delta, ok := frame.frame.(DeliveryLiveDelta)
+				if !ok || delta.Sub != sub {
+					raw, _ := json.Marshal(frame.frame)
+					t.Fatalf("%s: %s was sent %s, want a delta of its own", what, sub, raw)
+				}
+				view.held = applyLiveDelta(t, evalsView, view.held, delta)
+			default:
+				route := getBody(t, rig.handler, evalsTarget(t, view.project, view.held, view.query))
+				if got, want := liveComparable(t, mustEncodeLive(t, evalsView, view.held)), liveComparable(t, mustEncodeLive(t, evalsView, route)); !reflect.DeepEqual(got, want) {
+					t.Errorf("%s: %s does not hold the route's body:\nheld: %v\nGET:  %v", what, sub, got, want)
+				}
+				return deltas
+			}
+		}
+	}
+	for _, sub := range subs {
+		if n := sent("the views' first answers", sub); n != 0 {
+			t.Fatalf("%s was sent %d deltas after its snapshot, before any save", sub, n)
+		}
+	}
+	// save saves the settings change makes, runs the refresher's passes, and waits until the hub
+	// owes nothing for what they logged; it answers the eval_days changes the passes logged and
+	// how many times each view was recomputed, failing the test where one was recomputed for
+	// another cause than the refresher's settings rewrite.
+	save := func(what string, change func(*delivery.DeliverySettings)) ([]delivery.Change, map[string]int) {
+		t.Helper()
+		settings, err := delivery.GetSettings(t.Context(), rig.database.Pool)
+		if err != nil {
+			t.Fatalf("%s: read the delivery settings: %v", what, err)
+		}
+		change(&settings)
+		if _, err := delivery.PutSettings(t.Context(), rig.database.Pool, settings, model.Actor{Kind: "user", ID: "alice"}); err != nil {
+			t.Fatalf("%s: save the delivery settings: %v", what, err)
+		}
+		before, mark := latestChange(t, rig.database), rig.mark()
+		page.refresh(t)
+		if _, err := delivery.DrainPending(t.Context(), rig.database.Pool); err != nil {
+			t.Fatalf("%s: drain the change log's outbox: %v", what, err)
+		}
+		logged, err := delivery.ChangesSince(t.Context(), rig.database.Pool, before, 100000)
+		if err != nil {
+			t.Fatalf("%s: read the changes the passes logged: %v", what, err)
+		}
+		var changes []delivery.Change
+		for _, change := range logged {
+			if change.Kind == delivery.ChangeKindEvalDays {
+				changes = append(changes, change)
+			}
+		}
+		rig.hub.catchUpNow()
+		rig.clock.Advance(viewMaxWait)
+		rig.settle(t)
+		recomputed := map[string]int{}
+		rig.mu.Lock()
+		defer rig.mu.Unlock()
+		for _, note := range rig.notes[mark:] {
+			sub, ok := subOf[note.view]
+			if note.what != "recompute begin" || !ok {
+				continue
+			}
+			recomputed[sub]++
+			if note.cause != deliveryCauseSettingsRewrite {
+				t.Errorf("%s: %s was recomputed for %s, want %s", what, sub, note.cause, deliveryCauseSettingsRewrite)
+			}
+		}
+		return changes, recomputed
+	}
+
+	what := "a production job name no run holds"
+	changes, recomputed := save(what, func(s *delivery.DeliverySettings) {
+		s.ProductionJobNames = append(slices.Clone(s.ProductionJobNames), "release / a name no run holds")
+	})
+	if len(changes) != 0 {
+		t.Errorf("%s: the passes logged the eval_days changes %+v, want none: it moves no row and not the deploy repository", what, changes)
+	}
+	if len(recomputed) != 0 {
+		t.Errorf("%s recomputed the evals views %v, want none", what, recomputed)
+	}
+	for _, sub := range subs {
+		if n := sent(what, sub); n != 0 {
+			t.Errorf("%s sent %s %d deltas, want none", what, sub, n)
+		}
+	}
+	t.Logf("%s logged no eval_days change and recomputed no evals view", what)
+
+	what = "the production rule moved to a job no run holds"
+	changes, recomputed = save(what, func(s *delivery.DeliverySettings) { s.ProductionJobNames = []string{"release / a job no run holds"} })
+	if !slices.ContainsFunc(changes, func(change delivery.Change) bool { return change.Repo == main }) {
+		t.Fatalf("%s: the passes logged the eval_days changes %+v, and the check needs a rewrite that moves %s's rows", what, changes, main)
+	}
+	for _, change := range changes {
+		if delivery.SettingsApplied(change) || change.Repo == second {
+			t.Errorf("%s: the passes logged the eval_days change %+v, want none of no eval and none of %s", what, change, second)
+		}
+	}
+	for sub, want := range map[string]int{"e": 1, "c": 1, "x": 0, "y": 0} {
+		if recomputed[sub] != want {
+			t.Errorf("%s recomputed %s %d times, want %d", what, sub, recomputed[sub], want)
+		}
+		if n := sent(what, sub); n != want {
+			t.Errorf("%s sent %s %d deltas, want %d", what, sub, n, want)
+		}
+	}
+	t.Logf("%s logged %d eval_days changes and recomputed the evals views %v", what, len(changes), recomputed)
+
+	what = "the deploy repository moved to " + other
+	changes, recomputed = save(what, func(s *delivery.DeliverySettings) { s.DeployRepo = other })
+	if len(changes) != 1 || !delivery.SettingsApplied(changes[0]) {
+		t.Errorf("%s: the passes logged the eval_days changes %+v, want the settings applied alone", what, changes)
+	}
+	for _, sub := range subs {
+		if recomputed[sub] != 1 {
+			t.Errorf("%s recomputed %s %d times, want once", what, sub, recomputed[sub])
+		}
+		if n := sent(what, sub); n > 1 {
+			t.Errorf("%s sent %s %d deltas, want at most one", what, sub, n)
+		}
+	}
+	t.Logf("%s logged the settings applied and recomputed the evals views %v", what, recomputed)
+}
+
 // TestAnEvalsViewsSnapshotIsTheListRead: an evals view's snapshot is, byte for byte, the body
 // GET /api/v1/projects/{key}/evals answers for its project, the days its window covers and the
 // rest of its query: a custom range with a compare range, and a preset with a kind, a repository
@@ -732,15 +923,16 @@ func markEvalsView(start time.Time, steps []evalsMarkStep) *deliveryView {
 // carries the rewrite's mark, is due at its own mark rather than viewQuiet after it (dueAt), with
 // its own cause, whatever came before it. A settings change marks no evals view (touchedBy), so the
 // rewrite is due at once 100 ms after it as 45 s after it, after a recompute of the view since the
-// settings change as with none, where the change moved no day row (the settings applied), and with
-// no settings change heard before it, as by a page that subscribed between the settings write and
-// the rewrite's commit. A failed read's retry still holds the rewrite back, and a view being
-// computed is due nowhere until that recompute ends, and the rewrite then at once.
+// settings change as with none, where the change moved the deploy repository and no day row (the
+// settings applied), and with no settings change heard before it, as by a page that subscribed
+// between the settings write and the rewrite's commit. A failed read's retry still holds the
+// rewrite back, and a view being computed is due nowhere until that recompute ends, and the
+// rewrite then at once.
 func TestASettingsRewriteIsRecomputedAtOnce(t *testing.T) {
 	start := time.Date(2026, 11, 13, 12, 0, 0, 0, time.UTC)
 	settings, rewrite := delivery.ChangeKindSettings, evalsRewrite
-	// The refresher's pass commits 1.2-1.7 s after the settings write at ten times INFRA's size;
-	// a larger history's, or one a loaded database holds back, can take far longer.
+	// pass is a refresher's pass that commits within the 2 s R14 gives the settings write, slow one
+	// that a larger history, or a loaded database, holds back far longer.
 	pass, slow := 1500*time.Millisecond, 45*time.Second
 	cases := []struct {
 		name  string

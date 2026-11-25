@@ -13,10 +13,12 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 )
 
-// work recomputes g's dirty views and the expired ones, one at a time, and keeps the freshness
-// verdict on its threshold, until g ends. One timer, re-armed after every pass, wakes it at the
-// earliest moment a view is due or the reconciled sources cross their threshold; nothing else
-// wakes it but a mark.
+// work recomputes g's dirty views and the expired ones, and keeps the freshness verdict on its
+// threshold, until g ends: each delivery view, Legion view and expiry itself, one at a time, and
+// each evals view on a goroutine of its own, up to evalsRecomputes at once (recomputeAside). One
+// timer, re-armed after every pass, wakes it at the earliest moment a view is due or the reconciled
+// sources cross their threshold; nothing else wakes it but a mark and the end of an evals view's
+// recompute, after which a mark made during it falls due (dueAt).
 func (h *deliveryHub) work(g *hubGeneration) {
 	select {
 	case <-g.ctx.Done():
@@ -52,7 +54,9 @@ func (h *deliveryHub) work(g *hubGeneration) {
 	}
 }
 
-// runDue recomputes, or narrows, the view that is due earliest, and is false when none is due.
+// runDue recomputes, or narrows, the view that is due earliest, and is false when none is due or
+// when g ended while an evals view waited for a slot. An evals view is set computing before the
+// lock is let go, so no later pass picks it while its recompute waits for a slot or runs.
 func (h *deliveryHub) runDue(g *hubGeneration) bool {
 	now := h.clock.Now()
 	h.mu.Lock()
@@ -65,15 +69,48 @@ func (h *deliveryHub) runDue(g *hubGeneration) bool {
 			due, dueAt, cause = view, at, why
 		}
 	}
+	aside := due != nil && cause != deliveryCauseExpiry && due.spec.classes().reads == viewReadsEvals
+	if aside {
+		due.computing = true
+	}
 	h.mu.Unlock()
 	switch {
 	case due == nil:
 		return false
 	case cause == deliveryCauseExpiry:
 		h.expire(g, due)
+	case aside:
+		return h.recomputeAside(g, due, cause)
 	default:
 		h.recompute(g, due, cause)
 	}
+	return true
+}
+
+// recomputeAside recomputes view, an evals view runDue set computing, on a goroutine of its own
+// once one of g's evalsRecomputes slots is free, and is false where g ended first, leaving view
+// computed by none. The goroutine frees its slot once recompute has ended and wakes the worker:
+// a mark made during the recompute left view dirty, and computing kept it due nowhere until then
+// (dueAt). Each recompute's read takes a pool mark of its own (readContext), so the reads that run
+// at once refuse each other no connection. A view is computed by one recompute at a time, which
+// sends its frames in the hold of the lock that ends it, so the deltas of one view go out in the
+// order of its reads.
+func (h *deliveryHub) recomputeAside(g *hubGeneration, view *deliveryView, cause string) bool {
+	select {
+	case g.evalsSlots <- struct{}{}:
+	case <-g.ctx.Done():
+		h.mu.Lock()
+		view.computing = false
+		h.mu.Unlock()
+		return false
+	}
+	h.running.Add(1)
+	go func() {
+		defer h.running.Done()
+		h.recompute(g, view, cause)
+		<-g.evalsSlots
+		signal(g.wakeWork)
+	}()
 	return true
 }
 
