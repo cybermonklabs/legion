@@ -49,7 +49,8 @@ type settlementReconciliation struct {
 	// document's ask (copiedAskSources), which it logs once it commits (logCopiedBlocks).
 	copied []copiedBlock
 	// copiedFrom records each ask block's classified source, empty for a block that is not a copy.
-	// Settlement states the relation after the block index plans the block nodes.
+	// Settlement states the relation after the block index plans the block nodes, and retracts it
+	// from each other block of the document that holds one (claimCopies).
 	copiedFrom map[string]string
 	// indexedAskBlocks are the blocks this settlement indexed or found indexed, whose author the
 	// room forgets as it commits (consumeAskAuthorsLocked) and whose durable author its transaction
@@ -151,36 +152,61 @@ func (r *settlementReconciliation) causedByEvent(events []model.Event) (map[int]
 }
 
 // claimCopies states each ask block's copy source from settlement's classification, not from
-// browser attributes. An empty source retracts the current relation. The source document is
-// read through the source ask's own part_of, not stored as another fact.
+// browser attributes, on each ask block whose node the document's block index holds once this
+// settlement's own indexing is written: an empty source retracts the current relation. It reads
+// once which blocks of the document hold a copied_from now (refs.DocumentCopiedFrom), and retracts
+// the relation from each of them that is no longer an ask block - one a person retyped, or one this
+// settlement's version drops - so a settlement of a document that holds no ask block now still
+// retracts the copied_from of a block that was a copy. A claim that restates what the node holds
+// appends nothing (graphstore.Claim). The source document is read through the source ask's own
+// part_of, not stored as another fact.
 func (r *settlementReconciliation) claimCopies(ctx context.Context, tx pgx.Tx, artifactID string, who model.Actor, at time.Time) (func(*store.WriteBatch, int64) error, error) {
-	if len(r.copiedFrom) == 0 {
+	standing, err := refs.DocumentCopiedFrom(ctx, tx, artifactID)
+	if err != nil {
+		return nil, fmt.Errorf("read the copies the blocks of %s hold: %w", artifactID, err)
+	}
+	if len(r.copiedFrom) == 0 && len(standing) == 0 {
 		return nil, nil
 	}
+	// Only an ask block is claimed where the block index holds its node. A block that holds a
+	// copied_from has its node, so its retraction needs no index.
 	var index refs.BlockIndex
-	var held bool
-	if ledger := queueFor(ctx, tx); ledger != nil {
-		index, held = ledger.blockIndexes[artifactID]
-	}
-	if !held {
-		var err error
-		index, err = refs.ReadBlockIndex(ctx, tx, artifactID)
-		if err != nil {
-			return nil, fmt.Errorf("read the nodes of the ask blocks of %s: %w", artifactID, err)
+	if len(r.copiedFrom) > 0 {
+		var held bool
+		if ledger := queueFor(ctx, tx); ledger != nil {
+			index, held = ledger.blockIndexes[artifactID]
+		}
+		if !held {
+			index, err = refs.ReadBlockIndex(ctx, tx, artifactID)
+			if err != nil {
+				return nil, fmt.Errorf("read the nodes of the ask blocks of %s: %w", artifactID, err)
+			}
 		}
 	}
 	address, err := addressOfDocument(ctx, tx, artifactID)
 	if err != nil {
 		return nil, err
 	}
+	blocks := make([]string, 0, len(r.copiedFrom)+len(standing))
+	for blockID := range r.copiedFrom {
+		blocks = append(blocks, blockID)
+	}
+	for blockID := range standing {
+		if _, asked := r.copiedFrom[blockID]; !asked {
+			blocks = append(blocks, blockID)
+		}
+	}
+	slices.Sort(blocks)
 	var claims []graphstore.Claim
-	for _, blockID := range slices.Sorted(maps.Keys(r.copiedFrom)) {
-		if !index.HasNode(blockID) {
+	for _, blockID := range blocks {
+		// A block that is no longer an ask block has no source: its claim retracts.
+		source, asked := r.copiedFrom[blockID]
+		if asked && !index.HasNode(blockID) {
 			continue
 		}
 		claims = append(claims, graphstore.Claim{
 			FromKind: refs.BlockNodeKind, FromID: address.RefKey + "#" + blockID,
-			Kind: graphstore.TupleCopiedFrom, ToKind: graphstore.KindAsk, ToID: r.copiedFrom[blockID],
+			Kind: graphstore.TupleCopiedFrom, ToKind: graphstore.KindAsk, ToID: source,
 			At: at, Who: who,
 		})
 	}

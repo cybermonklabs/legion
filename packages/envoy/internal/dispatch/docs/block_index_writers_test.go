@@ -577,7 +577,11 @@ var indexPasses = map[string]string{
 	// that value's retraction once the block reads again. It reads the value each node holds only
 	// to state what moved, never a side of a projection to mend the other.
 	"docs/ask_blocks.go#stateInvalidReasons": "the readability the settlement's reconciliation read of the document's ask blocks, and the invalid value each of their asks' nodes holds",
-	"docs/ask_blocks.go#claimCopies":         "the source asks settlement classified as copies of other documents' asks",
+	// A settlement states on each copy's block node the ask its classification read it a copy of,
+	// and retracts the copied_from of each block that holds one and is no longer an ask block. It
+	// reads the copied_from each block node holds only to find those blocks, a relation no table
+	// projects, never a side of a projection to mend the other.
+	"docs/ask_blocks.go#claimCopies": "the source asks settlement classified as copies of other documents' asks, and the copied_from each block node of the document holds",
 	// The catch-up of a follow a process of the release before recorded: the follower rows that
 	// build wrote, stated on the ask's node where the node does not state them yet.
 	"asks/followers.go#CatchUpFollower": "the follower rows another build recorded and what the ask's node already states of them",

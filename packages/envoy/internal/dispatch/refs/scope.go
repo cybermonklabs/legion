@@ -582,6 +582,22 @@ func questionMap(ctx context.Context, q Queryer, who *model.Actor, doc string) (
 // that holds no standing copied_from is absent, so a version the release before wrote, whose copy
 // no settlement of this build has claimed, is read from its line instead (questionMap).
 func copiedFromTuples(ctx context.Context, q Queryer, doc string, blocks []string) (map[string]string, error) {
+	return readCopiedFrom(ctx, q, doc, ` and d.block_id = any($2::text[])`, blocks)
+}
+
+// DocumentCopiedFrom is copiedFromTuples for every block of document doc whose block node the
+// document's block index holds, whatever the block's type now: the ask each such node's
+// copied_from tuple names as it stands now, keyed by block id. Settlement reads it once, to retract
+// the copied_from of each block that is no longer an ask block copying an ask (docs'
+// claimCopies): one a person retyped, or one the settlement's version drops.
+func DocumentCopiedFrom(ctx context.Context, q Queryer, doc string) (map[string]string, error) {
+	return readCopiedFrom(ctx, q, doc, "")
+}
+
+// readCopiedFrom is the one read of copiedFromTuples and DocumentCopiedFrom: each document_blocks
+// row d of document doc that names a node, cut by narrow, a further condition on d that binds args
+// from $2 on, with the ask that node's newest copied_from tuple names while that tuple asserts.
+func readCopiedFrom(ctx context.Context, q Queryer, doc, narrow string, args ...any) (map[string]string, error) {
 	rows, err := q.Query(ctx, `
 		select d.block_id, c.to_id
 		from document_blocks d
@@ -589,8 +605,8 @@ func copiedFromTuples(ctx context.Context, q Queryer, doc string, blocks []strin
 		`t.from_kind = d.node_kind and t.from_id = d.node_address and t.kind = '`+graphstore.TupleCopiedFrom+`'
 			  and t.to_kind = '`+graphstore.KindAsk+`'`)+`
 		) c
-		where d.artifact_id = $1::uuid and d.block_id = any($2::text[]) and d.node_address is not null and c.asserted
-	`, doc, blocks)
+		where d.artifact_id = $1::uuid and d.node_address is not null and c.asserted`+narrow+`
+	`, append([]any{doc}, args...)...)
 	if err != nil {
 		return nil, err
 	}
