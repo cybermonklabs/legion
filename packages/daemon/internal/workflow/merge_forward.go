@@ -349,7 +349,12 @@ func (e *Engine) holdSentWorker(ctx context.Context, tx pgx.Tx, issue record.Iss
 	if !record.InWorkflow(issue) {
 		return nil
 	}
-	pr, err := e.store.PullRequest(ctx, tx, issue.Key)
+	// Only the worker a hold of the phase reaches can be held, which the issue alone says, so the
+	// pull request is read for that worker alone.
+	if worker, reaches := record.MergeForwardWorker(record.MergeForwardHold, record.StandsAt(issue)); !reaches || worker != role {
+		return nil
+	}
+	pr, err := e.store.PullRequestRow(ctx, tx, issue.Key)
 	if err != nil || pr == nil || pr.State != record.PullRequestOpen {
 		return err
 	}
@@ -421,8 +426,8 @@ func askAgain(ctx context.Context, store record.Store, tx pgx.Tx, issue record.I
 // told the ask once, whichever of the row's end and the launch's ready comes first. told is a
 // launch whose own session the listener stored the message for, read before the publish, and 0
 // where the listener named no holder: the executor publishes the ask only once the launch it reads
-// has registered its session, and ends the row as delivered only where the listener stored it for
-// that session (the daemon's deliverHeld), so a copy an earlier launch's session took credits no
+// has registered its session, and does not end the row as delivered where the listener stored it
+// for another session (the daemon's deliverHeld), so a copy an earlier launch's session took credits no
 // later launch, and a launch that came up and took the publish between that read and the publish
 // is told the ask again here. No launch is left untold.
 func MergeForwardAskEnded(ctx context.Context, store record.Store, tx pgx.Tx, key string, role claim.Role, head string, told, launch uint64, now time.Time) (bool, error) {
@@ -811,21 +816,25 @@ type mergedForwardFence struct {
 // that head or the newest that landed, and the instruction Wait names. A phase that ends with a
 // handoff record is told to write it again, its `head` set to the head it completes at.
 func (f mergedForwardFence) Message() string {
-	clause := fmt.Sprintf("is at head %s, and a merge of %s forward replaced that head with head %s", f.Replaced, f.Base, f.Landed)
+	var clause string
 	if f.Replaced == "" {
 		clause = fmt.Sprintf("names no head, so it says nothing about which head its work judged, and a merge of %s forward landed at head %s",
 			f.Base, f.Landed)
+	} else {
+		clause = fmt.Sprintf("is at head %s, and a merge of %s forward replaced that head with head %s", f.Replaced, f.Base, f.Landed)
 	}
 	again := "complete again at that head"
 	if word, _, ok := phase.Handoff(f.Reported); ok {
 		again = fmt.Sprintf("write this phase's handoff again with `dispatch handoff-write --issue %s --phase %s --body-file <file>`, its `head` set to that head, and complete again naming it",
 			f.Issue, word)
 	}
-	next := fmt.Sprintf("Pull request #%d stands at head %s now. Read what the merge changed with `git show --remerge-diff %s`, do the phase's work at head %s, then %s; this completion changed nothing",
-		f.Number, f.Head, f.Landed, f.Head, again)
+	var next string
 	if f.Wait {
 		next = fmt.Sprintf("Pull request #%d stands at head %s now, and the merge of %s forward onto head %s is asked and has not landed. Wait for the daemon's message that this merge landed, do the phase's work at the new head that message names, then %s; this completion changed nothing",
 			f.Number, f.Head, f.Base, f.Head, again)
+	} else {
+		next = fmt.Sprintf("Pull request #%d stands at head %s now. Read what the merge changed with `git show --remerge-diff %s`, do the phase's work at head %s, then %s; this completion changed nothing",
+			f.Number, f.Head, f.Landed, f.Head, again)
 	}
 	return fmt.Sprintf("the %s's completion of phase %s of %s %s. %s", f.Role, f.Reported, f.Issue, clause, next)
 }

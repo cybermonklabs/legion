@@ -155,14 +155,21 @@ func askToldOnce(t *testing.T, pool *store.Pool, publisher *holderPublisher, ask
 	if rows := outboxRowsOfKind(t, pool, "LEGION-208", record.OutboxKindMergeForward); rows != 0 {
 		t.Errorf("the outbox holds %d merge-forward rows of LEGION-208, want none: no second ask", rows)
 	}
+	if sent := recordedSentLaunch(t, pool); sent != launch {
+		t.Errorf("the record's ask was sent at launch %d, want launch %d, the one it was told to", sent, launch)
+	}
+}
+
+// recordedSentLaunch is the launch the record's ask of LEGION-208 keeps as the one it was told to
+// (record.MergeForward.SentLaunch), 0 for none.
+func recordedSentLaunch(t *testing.T, pool *store.Pool) uint64 {
+	t.Helper()
 	var sent uint64
 	if err := pool.QueryRow(context.Background(), `select coalesce((merge_forward->>'sentLaunch')::bigint, 0) from pull_requests where issue = 'LEGION-208'`).
 		Scan(&sent); err != nil {
 		t.Fatalf("read the record's ask: %v", err)
 	}
-	if sent != launch {
-		t.Errorf("the record's ask was sent at launch %d, want launch %d, the one it was told to", sent, launch)
-	}
+	return sent
 }
 
 // The ask's own row wakes the released implementer, and the woken launch comes ready while the row
@@ -311,6 +318,55 @@ func TestAnAskWhoseFailedClaimIsRetriedBeforeItsRowEndsReachesTheNewLaunch(t *te
 	askToldOnce(t, pool, publisher, owedAsk, machine.Claim().Generation)
 }
 
+// retriedIntoAFreshSession is the operator's retry of machine's failed claim into launch 2, whose
+// resume of the session the claim records the runtime refuses (runtime.ErrSessionFileMissing), so
+// launch 2 forgets that session and starts a fresh one in the same launch (supervise's startFresh).
+// It fails the test unless launch 2 is launching with no session recorded.
+func retriedIntoAFreshSession(t *testing.T, runner *outbox, machine *supervise.Machine) {
+	t.Helper()
+	failed := machine.Claim()
+	runner.supervisor.deps.Runtime.(*fake.Runtime).ScriptResume(fake.SpawnResult{Err: fmt.Errorf("resume %s: %w: the session table holds no such session",
+		failed.Token, runtime.ErrSessionFileMissing)})
+	if err := machine.Handle(context.Background(), supervise.RequestOperatorRetry{Claim: failed.Token}); err != nil {
+		t.Fatalf("the operator's retry of the %s: %v", failed.Role, err)
+	}
+	machine.Wait()
+	if launching := machine.Claim(); launching.State != supervise.StateLaunching || launching.Generation != 2 || launching.Session != "" {
+		t.Fatalf("after the retry the %s is %s at launch %d recording session %q, want launch 2 launching a fresh session",
+			failed.Role, launching.State, launching.Generation, launching.Session)
+	}
+}
+
+// freshSessionTold brings machine's launch 2 up on fresh, a session its claim never recorded,
+// which registers and comes ready; runs the row's attempts while the session of launch 1 still
+// holds the role, then once fresh holds it; and answers how many times fresh was told want.
+func freshSessionTold(t *testing.T, runner *outbox, publisher *holderPublisher, machine *supervise.Machine, fresh, want string) int {
+	t.Helper()
+	token := machine.Claim().Token
+	for _, ev := range []supervise.Event{
+		supervise.StreamHello{Claim: token, Generation: 2},
+		supervise.RequestRegister{Claim: token, Generation: 2, Session: fresh, SessionFile: t.TempDir() + "/fresh.jsonl"},
+		supervise.RequestReady{Claim: token, Generation: 2, Session: fresh},
+	} {
+		if err := machine.Handle(context.Background(), ev); err != nil {
+			t.Fatalf("bring up the %s's launch 2: handle %T: %v", machine.Claim().Role, ev, err)
+		}
+	}
+	machine.Wait()
+	drainAt(t, runner, 10*time.Minute, "an attempt while the old session still holds the role")
+	publisher.holdBy(func() string { return fresh })
+	drainAt(t, runner, 20*time.Minute, "an attempt once the fresh session holds the role")
+	drainAt(t, runner, 30*time.Minute, "a later attempt")
+	_, delivered := publisher.snapshot()
+	told := 0
+	for _, published := range delivered {
+		if published.message == want && published.holder == fresh {
+			told++
+		}
+	}
+	return told
+}
+
 // The ask's row runs while the implementer's launch 2 is still coming up and the listener still
 // names the session of launch 1 as the role's holder: that session's process died, and its clean
 // stop at the listener has not landed (the daemon's stop of a session is asynchronous and may
@@ -322,71 +378,19 @@ func TestAnAskWhoseFailedClaimIsRetriedBeforeItsRowEndsReachesTheNewLaunch(t *te
 // fresh session told nothing.
 func TestAnAskReachesTheFreshSessionOfTheLaunchWhileTheOldSessionHoldsTheRole(t *testing.T) {
 	t.Parallel()
-	const freshSession = "ses-fresh-implementer"
-	publisher := &holderPublisher{}
-	asked := implementersAsk()
-	runner, sup, pool, _ := mergeForwardRunnerAt(t, publisher, phase.Testing, workflow.PhaseStatus(phase.Testing), record.PullRequestOpen, &asked)
-	engine := workflow.New(runner.records, workflow.Config{Project: "legion", Repositories: testRepositories}, quietLogger())
-	sup.OnDurableState((&workflowRuntime{pool: pool, records: runner.records, handlers: []intake.Handler{engine}, log: quietLogger()}).terminal)
-	token := mustClaimToken(t, "LEGION-208", claim.RoleImplementer)
-	machine, _, err := sup.Create(context.Background(), supervise.Claim{Token: token, Project: "legion", Tree: "LEGION-208",
-		Issue: "LEGION-208", Role: claim.RoleImplementer, Generation: 1, ServingGeneration: 1, State: supervise.StateFailed,
-		Failure: "deaths with work outstanding ran out", Session: "ses-implementer", SessionFile: t.TempDir() + "/session.jsonl"}, "")
-	if err != nil {
-		t.Fatalf("create the failed implementer's claim: %v", err)
-	}
-	sup.deps.Conns.(*fake.Conns).Register(token, fake.NewConn())
-	enqueueOutbox(t, pool, runner.records, mustOutboxRow(t, "LEGION-208", owedAsk, time.Now().Add(-time.Minute)))
+	runner, pool, publisher, machine := failedWithTheAsk(t, phase.Testing, implementersAsk(), owedAsk)
 	publisher.holdBy(func() string { return "ses-implementer" })
-
-	sup.deps.Runtime.(*fake.Runtime).ScriptResume(fake.SpawnResult{Err: fmt.Errorf("resume %s: %w: the session table holds no such session",
-		token, runtime.ErrSessionFileMissing)})
-	if err := machine.Handle(context.Background(), supervise.RequestOperatorRetry{Claim: token}); err != nil {
-		t.Fatalf("the operator's retry of the implementer: %v", err)
-	}
-	machine.Wait()
-	launching := machine.Claim()
-	if launching.State != supervise.StateLaunching || launching.Generation != 2 || launching.Session != "" {
-		t.Fatalf("after the retry the implementer is %s at launch %d recording session %q, want launch 2 launching a fresh session",
-			launching.State, launching.Generation, launching.Session)
-	}
+	retriedIntoAFreshSession(t, runner, machine)
 	drainAt(t, runner, 0, "the ask's attempt while launch 2 comes up")
-
-	for _, ev := range []supervise.Event{
-		supervise.StreamHello{Claim: token, Generation: 2},
-		supervise.RequestRegister{Claim: token, Generation: 2, Session: freshSession, SessionFile: t.TempDir() + "/fresh.jsonl"},
-		supervise.RequestReady{Claim: token, Generation: 2, Session: freshSession},
-	} {
-		if err := machine.Handle(context.Background(), ev); err != nil {
-			t.Fatalf("bring up the implementer's launch 2: handle %T: %v", ev, err)
-		}
-	}
-	machine.Wait()
-	drainAt(t, runner, 10*time.Minute, "an attempt while the old session still holds the role")
-	publisher.holdBy(func() string { return freshSession })
-	drainAt(t, runner, 20*time.Minute, "an attempt once the fresh session holds the role")
-	drainAt(t, runner, 30*time.Minute, "a later attempt")
-
-	_, delivered := publisher.snapshot()
 	want := owedAsk.Message("LEGION-208", record.PullRequest{Repo: "acme/widgets"})
-	var fresh int
-	for _, published := range delivered {
-		if published.message == want && published.holder == freshSession {
-			fresh++
-		}
-	}
-	if fresh != 1 {
-		t.Errorf("the fresh session of launch 2 was told the ask %d times (every delivery: %+v), want once", fresh, delivered)
+	if told := freshSessionTold(t, runner, publisher, machine, "ses-fresh-implementer", want); told != 1 {
+		_, delivered := publisher.snapshot()
+		t.Errorf("the fresh session of launch 2 was told the ask %d times (every delivery: %+v), want once", told, delivered)
 	}
 	if rows := outboxRowsOfKind(t, pool, "LEGION-208", record.OutboxKindMergeForward); rows != 0 {
 		t.Errorf("the outbox holds %d merge-forward rows of LEGION-208, want none", rows)
 	}
-	var sent uint64
-	if err := pool.QueryRow(context.Background(), `select coalesce((merge_forward->>'sentLaunch')::bigint, 0) from pull_requests where issue = 'LEGION-208'`).
-		Scan(&sent); err != nil {
-		t.Fatalf("read the record's ask: %v", err)
-	}
-	if sent != 2 {
+	if sent := recordedSentLaunch(t, pool); sent != 2 {
 		t.Errorf("the record's ask was told launch %d, want launch 2", sent)
 	}
 }
@@ -400,7 +404,6 @@ func TestAnAskReachesTheFreshSessionOfTheLaunchWhileTheOldSessionHoldsTheRole(t 
 // took would leave the merger never told that its pull request left the merge queue.
 func TestARemovalReachesTheFreshSessionOfTheMergersLaunchWhileTheOldSessionHoldsTheRole(t *testing.T) {
 	t.Parallel()
-	const freshSession = "ses-fresh-merger"
 	publisher := &holderPublisher{}
 	runner, sup, pool, _ := mergeForwardRunnerAt(t, publisher, phase.Merging, workflow.PhaseStatus(phase.Merging), record.PullRequestOpen, nil)
 	token := mustClaimToken(t, "LEGION-208", claim.RoleMerger)
@@ -413,44 +416,12 @@ func TestARemovalReachesTheFreshSessionOfTheMergersLaunchWhileTheOldSessionHolds
 	sup.deps.Conns.(*fake.Conns).Register(token, fake.NewConn())
 	removal := record.MergeQueueRemoval{Number: 86, Head: "sha-1"}
 	publisher.holdBy(func() string { return "ses-merger" })
-	sup.deps.Runtime.(*fake.Runtime).ScriptResume(fake.SpawnResult{Err: fmt.Errorf("resume %s: %w: the session table holds no such session",
-		token, runtime.ErrSessionFileMissing)})
-	if err := machine.Handle(context.Background(), supervise.RequestOperatorRetry{Claim: token}); err != nil {
-		t.Fatalf("the operator's retry of the merger: %v", err)
-	}
-	machine.Wait()
-	if launching := machine.Claim(); launching.State != supervise.StateLaunching || launching.Generation != 2 || launching.Session != "" {
-		t.Fatalf("after the retry the merger is %s at launch %d recording session %q, want launch 2 launching a fresh session",
-			launching.State, launching.Generation, launching.Session)
-	}
+	retriedIntoAFreshSession(t, runner, machine)
 	enqueueOutbox(t, pool, runner.records, mustOutboxRow(t, "LEGION-208", removal, time.Now().Add(-time.Minute)))
 	drainAt(t, runner, 0, "the removal's attempt while launch 2 comes up")
-
-	for _, ev := range []supervise.Event{
-		supervise.StreamHello{Claim: token, Generation: 2},
-		supervise.RequestRegister{Claim: token, Generation: 2, Session: freshSession, SessionFile: t.TempDir() + "/fresh.jsonl"},
-		supervise.RequestReady{Claim: token, Generation: 2, Session: freshSession},
-	} {
-		if err := machine.Handle(context.Background(), ev); err != nil {
-			t.Fatalf("bring up the merger's launch 2: handle %T: %v", ev, err)
-		}
-	}
-	machine.Wait()
-	drainAt(t, runner, 10*time.Minute, "an attempt while the old session still holds the role")
-	publisher.holdBy(func() string { return freshSession })
-	drainAt(t, runner, 20*time.Minute, "an attempt once the fresh session holds the role")
-	drainAt(t, runner, 30*time.Minute, "a later attempt")
-
-	_, delivered := publisher.snapshot()
-	want := removal.Message("LEGION-208", "acme/widgets")
-	var fresh int
-	for _, published := range delivered {
-		if published.message == want && published.holder == freshSession {
-			fresh++
-		}
-	}
-	if fresh != 1 {
-		t.Errorf("the fresh session of the merger's launch 2 was told the removal %d times (every delivery: %+v), want once", fresh, delivered)
+	if told := freshSessionTold(t, runner, publisher, machine, "ses-fresh-merger", removal.Message("LEGION-208", "acme/widgets")); told != 1 {
+		_, delivered := publisher.snapshot()
+		t.Errorf("the fresh session of the merger's launch 2 was told the removal %d times (every delivery: %+v), want once", told, delivered)
 	}
 	if rows := outboxRowsOfKind(t, pool, "LEGION-208", record.OutboxKindMergeQueueRemoval); rows != 0 {
 		t.Errorf("the outbox holds %d merge-queue removal rows of LEGION-208, want none", rows)
@@ -616,12 +587,7 @@ func toldAtTwoLaunches(t *testing.T, pool *store.Pool, publisher *holderPublishe
 	if rows := outboxRowsOfKind(t, pool, "LEGION-208", record.OutboxKindMergeForward); rows != 0 {
 		t.Errorf("the outbox holds %d merge-forward rows of LEGION-208, want none", rows)
 	}
-	var sent uint64
-	if err := pool.QueryRow(context.Background(), `select coalesce((merge_forward->>'sentLaunch')::bigint, 0) from pull_requests where issue = 'LEGION-208'`).
-		Scan(&sent); err != nil {
-		t.Fatalf("read the record's ask: %v", err)
-	}
-	if sent != second {
+	if sent := recordedSentLaunch(t, pool); sent != second {
 		t.Errorf("the record's ask was told launch %d, want launch %d", sent, second)
 	}
 }

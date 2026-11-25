@@ -19,10 +19,10 @@ body: |-
   launch, unless a row of it is still queued for that role; that row's end, delivered or not, reads
   the role's claim again and sends the ask to a later launch the row did not reach, so a launch that
   comes ready while the row ends is told too. A merge forward's message is published only once the
-  role's current launch has registered its session, and is delivered only where Envoy stored it for
-  that session: a copy Envoy stored for the session of an earlier launch, whose stop has not yet
-  reached Envoy, tells the new launch nothing, so the row waits until the new session holds the
-  role. The record's ask keeps the launch it was delivered or
+  role's current launch has registered its session, and is not taken as delivered where Envoy says
+  it stored it for another session: a copy Envoy stored for the session of an earlier launch, whose
+  stop has not yet reached Envoy, tells the new launch nothing, so the row waits until the new
+  session holds the role. The record's ask keeps the launch it was delivered or
   sent to (`sentLaunch`), and a failed claim's notice tells the owning architect. One case can be
   told two times: a launch that resumes the session of an earlier launch, where the message was
   stored for that session. Envoy stores a message for a session, and it cannot say which launch read
@@ -31,6 +31,11 @@ body: |-
   launch and its publish is told once: the copy is stored for its session, which is not the one
   the daemon read, so the row waits and ends at the next attempt, which Envoy answers with that
   copy. A worker held at the ready of a launch that resumes its session reads the hold two times.
+  A merge-queue removal is held to the merger's launch the same way: it is published only once
+  the merger's current launch has registered its session, and is not taken as delivered where
+  Envoy says it stored it for another session, so a merger whose launch starts a fresh session
+  while the session of an earlier launch still holds the role is told of the removal once, in the
+  new session.
   The news of an approved design to the architect that holds an issue in
   `accepting` names, as its move-back targets, the phases of the task's steps before the acceptance.
 

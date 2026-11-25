@@ -225,7 +225,8 @@ func queuedRowCovers(run record.RoleRun, root record.Issue, current phase.Phase)
 // owedEntryRoles): the whole row, below the skips above, so a ready this function passes over
 // costs no query and the row the rule is weighed against is the row whose work is sent. A claim
 // behind that entry — the entry it was given is under the row's and no queued start carries that
-// entry (OwedEntry) — is sent the work of that entry at that entry (SendOwedEntry), which is the
+// entry (OwedEntry) — is sent the work of that entry at that entry (sendOwedEntry, unmarked as
+// SendOwedEntry sends it; claimReady holds the worker itself), which is the
 // task the transition wrote when it raised the number. It is sent that rather than the phase's
 // resume task because the resume says to carry the existing phase work on, and the work of an
 // entry this claim was never given is work it does not have; the resume would also spend the turn

@@ -265,7 +265,6 @@ func TestAWorkerStartedAgainWhileTheMergeIsOpenIsHeld(t *testing.T) {
 // tester is held; the ready of the tester's launch 2, with no move and no retry, holds it again.
 // The asked implementer's own ready holds nobody, and a ready once the merge landed holds nobody.
 func TestAWorkerRelaunchedWhileTheMergeIsOpenIsHeldAtItsReady(t *testing.T) {
-	why := record.ConflictCheckNotGreen
 	for _, tc := range []struct {
 		name   string
 		landed bool
@@ -277,21 +276,16 @@ func TestAWorkerRelaunchedWhileTheMergeIsOpenIsHeldAtItsReady(t *testing.T) {
 		{name: "control: a relaunch once the merge landed holds nobody", landed: true, ready: claim.RoleTester},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			pool := seedConflictIssue(t, phase.Testing, "testing", settledGreen("lint"))
-			confirmsConflict(t, pool, &record.BaseRules{Required: []string{"ci"}})
-			if got, want := mergeForwardMessages(t, pool), []record.MergeForwardMessage{implementerAsked(phase.Testing, why),
-				heldIn(claim.RoleTester, phase.Testing, why)}; !reflect.DeepEqual(got, want) {
-				t.Fatalf("after the confirmed conflict the merge-forward messages are %+v, want %+v", got, want)
-			}
+			pool := testerHeldWhileTheImplementerMerges(t)
 			if tc.landed {
 				landsMergeForward(t, pool)
 			}
 			before := len(mergeForwardMessages(t, pool))
 			applyRefusingNothing(t, pool, readsAfter(3*time.Minute), intake.ClaimReady{Issue: "LEGION-208", Role: tc.ready, Launch: 2})
 			var held []string
-			for _, told := range toldWho(mergeForwardMessages(t, pool)[before:]) {
-				if told == "tester hold" || told == "implementer hold" {
-					held = append(held, told)
+			for _, message := range mergeForwardMessages(t, pool)[before:] {
+				if message.Step == record.MergeForwardHold {
+					held = append(held, string(message.Role)+" "+string(message.Step))
 				}
 			}
 			if !reflect.DeepEqual(held, tc.want) {
@@ -299,6 +293,22 @@ func TestAWorkerRelaunchedWhileTheMergeIsOpenIsHeldAtItsReady(t *testing.T) {
 			}
 		})
 	}
+}
+
+// testerHeldWhileTheImplementerMerges is LEGION-208 on the default steps in testing, whose head
+// GitHub confirms conflicting with a base that requires a green ci: the implementer is asked to
+// merge the base forward, and the tester is held. It fails the test unless those are the two
+// merge-forward messages written.
+func testerHeldWhileTheImplementerMerges(t *testing.T) *pgxpool.Pool {
+	t.Helper()
+	why := record.ConflictCheckNotGreen
+	pool := seedConflictIssue(t, phase.Testing, "testing", settledGreen("lint"))
+	confirmsConflict(t, pool, &record.BaseRules{Required: []string{"ci"}})
+	if got, want := mergeForwardMessages(t, pool), []record.MergeForwardMessage{implementerAsked(phase.Testing, why),
+		heldIn(claim.RoleTester, phase.Testing, why)}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("after the confirmed conflict the merge-forward messages are %+v, want %+v", got, want)
+	}
+	return pool
 }
 
 // A worker the daemon sends its phase's work again while another role's merge forward of the head
@@ -323,12 +333,7 @@ func TestAWorkerSentItsWorkAgainWhileTheMergeIsOpenIsHeld(t *testing.T) {
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			pool := seedConflictIssue(t, phase.Testing, "testing", settledGreen("lint"))
-			confirmsConflict(t, pool, &record.BaseRules{Required: []string{"ci"}})
-			if got, want := mergeForwardMessages(t, pool), []record.MergeForwardMessage{implementerAsked(phase.Testing, why),
-				heldIn(claim.RoleTester, phase.Testing, why)}; !reflect.DeepEqual(got, want) {
-				t.Fatalf("after the confirmed conflict the merge-forward messages are %+v, want %+v", got, want)
-			}
+			pool := testerHeldWhileTheImplementerMerges(t)
 			engine := readsAfter(3 * time.Minute)
 			applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
 				issue, err := engine.store.Issue(ctx, tx, "LEGION-208")

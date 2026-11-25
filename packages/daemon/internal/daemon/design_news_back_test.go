@@ -43,7 +43,7 @@ func (r *newsReconcileRig) planSteps(key string, position int, words ...string) 
 // alone. The root architect's summary reads them for a member it answers itself
 // (workflow.NewsYouAnswer) and for no other member. A member in accepting whose task holds no step
 // before an acceptance is an error, so no news goes out whose answer names no move back. Read from
-// the default steps, the answer would name the first row's phases on every row.
+// the default steps, the answer would name the first case's phases in every case.
 func TestTheAcceptingAnswerReadsTheTasksStepsBeforeTheAcceptance(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {

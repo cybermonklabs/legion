@@ -617,8 +617,9 @@ func (e *Engine) SendOwedEntry(ctx context.Context, tx pgx.Tx, issue record.Issu
 	return e.holdSentWorker(ctx, tx, issue, role)
 }
 
-// sendOwedEntry is the body SendOwedEntry, the builder of the boot's resume by rule and of the
-// cutover's repair of a merger the `awaiting_merge` cutover left released (resume.go's
+// sendOwedEntry is the send SendOwedEntry makes before its hold, and the one the ready of a launch
+// (readyWorkerTask), which holds the worker itself, the builder of the boot's resume by rule and of
+// the cutover's repair of a merger the `awaiting_merge` cutover left released (resume.go's
 // startSuspendedOwner) and the silence repair (silence.go's repairSilence) share, with the marks
 // of the door the start comes through (startMarks). A mark names that door and not the task's
 // text, so what a claim behind its entry is sent is composed in one place however the start is

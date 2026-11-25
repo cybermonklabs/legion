@@ -26,7 +26,7 @@ import (
 // holderPublisher is the listener as a role publish meets it: a role topic in absent has no live
 // holder, and the publish is refused as the listener refuses it (notify.ErrNoHolder); any other
 // publish is delivered, and recorded in order with the holder it was stored for. holder names the
-// session that holds a topic's role, the session the listener's 200 names
+// session that holds every role topic, the session the listener's 200 names
 // (notify.Publisher.Publish); nil names none, as a listener that does not say. keeps is whether
 // the listener keeps a kept publish (PublishKept) for a claim whose holder is not live, as the
 // listener of cybermonklabs/legion#4079 does: with it, a kept publish to a topic in absent is kept
@@ -36,7 +36,7 @@ import (
 type holderPublisher struct {
 	mu        sync.Mutex
 	absent    map[string]bool
-	holder    func(topic string) string
+	holder    func() string
 	keeps     bool
 	attempts  int
 	delivered []outboxPublish
@@ -67,7 +67,7 @@ func (p *holderPublisher) answer(published *outboxPublish) (bool, error) {
 		return false, fmt.Errorf("publish notice to %s: listener returned 404 Not Found: {\"reason\":\"unclaimed\"}: %w", published.topic, notify.ErrNoHolder)
 	}
 	if p.holder != nil {
-		published.holder = p.holder(published.topic)
+		published.holder = p.holder()
 	}
 	p.delivered = append(p.delivered, *published)
 	return false, nil
@@ -77,7 +77,7 @@ func (p *holderPublisher) answer(published *outboxPublish) (bool, error) {
 func (p *holderPublisher) holdBy(session func() string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.holder = func(string) string { return session() }
+	p.holder = session
 }
 
 func (p *holderPublisher) setAbsent(topics ...string) {

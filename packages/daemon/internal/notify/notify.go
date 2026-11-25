@@ -369,7 +369,8 @@ type SessionRegistration struct {
 }
 
 // answerBodyLimit bounds the body of a listener's answer this client decodes (a 200):
-// ReadSessionRegistration's entry, and RoleHolder's live holder. It is deliberately not
+// ReadSessionRegistration's entry, RoleHolder's live holder, and the session a publish's 200 says
+// it stored the message for (storedFor). It is deliberately not
 // refusalBodyLimit, which bounds an error body. A listener that predates the registration view
 // selector ignores it and answers the whole session row — its topics, its roles, its
 // capabilities — and a role lookup's 200 carries the holder's title, dir and capabilities; nothing

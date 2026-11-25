@@ -120,8 +120,10 @@ func (r *outbox) mergeQueueRead(ctx context.Context, row record.OutboxRow, paylo
 // merger of this removal: its pull request waits out of the queue with nobody to enqueue it again
 // or send the issue back, and a merger whose pod was released would learn of it only when the
 // release's backstop wakes it (backstop_minutes, an hour by default). So the row is delivered as
-// deliverHeld delivers a held message: a released merger is woken, and the row waits until a
-// session holds the merger's role.
+// deliverHeld delivers a held message: a released merger is woken, and the row waits until the
+// session of the merger's current launch holds the role. A copy stored for the session of an
+// earlier launch, whose stop has not reached the listener, would tell the merger of the new launch
+// nothing.
 //
 // Each attempt first finishes the row undelivered, with one log line naming why, once the issue
 // has left merging at the row's head (mergingAt, the read row's own rule); what follows - a claim
@@ -154,18 +156,18 @@ func (r *outbox) mergeQueueRemoval(ctx context.Context, row record.OutboxRow, pa
 	return r.deliverHeld(ctx, row, heldMessage{issue: issue, token: token, role: claim.RoleMerger,
 		what: "the merge-queue removal of " + row.Issue, message: payload.Message(row.Issue, pr.Repo), attributes: attributes,
 		claimEnded: "outbox merge-queue removal finished undelivered: the merger's claim has failed or retired",
-		delivered:  "outbox merge-queue removal delivered to the merger", toLaunch: true})
+		delivered:  "outbox merge-queue removal delivered to the merger"})
 }
 
 // heldMessage is one message a row delivers to a role of its issue and holds until a session of
 // that role takes it (deliverHeld): the issue, the role's claim token and the role, what names the
 // message in the row's waits and errors ("the merge-queue removal of LEGION-208"), the text
 // published, the attributes of the row's log lines, and the two lines the delivery itself logs: the
-// row's end on a claim that failed or retired, and the delivery. toLaunch says the message is for
-// the session of the role's current launch (a merge forward's): it is published only once that
-// launch has registered its session, and delivered only once the listener stores it for that
-// session (deliverHeld). end, where set, is the row's end itself, which deletes the row: told is
-// the launch whose session the listener stored the message for, and 0 for the end at a claim that
+// row's end on a claim that failed or retired, and the delivery. Each message is for the session
+// of the role's current launch: it is published only once that launch has registered its session,
+// and it is delivered unless the listener names a session other than the one the claim records
+// (deliverHeld). end, where set, is the row's end itself, which deletes the row: told is the
+// launch whose session the listener stored the message for, and 0 for the end at a claim that
 // failed or retired, or where the listener named no holder (a merge-forward ask's,
 // endMergeForwardAsk). nil leaves the row's end to its settle.
 type heldMessage struct {
@@ -177,7 +179,6 @@ type heldMessage struct {
 	attributes []any
 	claimEnded string
 	delivered  string
-	toLaunch   bool
 	end        func(ctx context.Context, told uint64) error
 }
 
@@ -205,14 +206,14 @@ type heldMessage struct {
 // delivery mode (notify.ErrRefusedByHolder), and a forward the listener's own NATS grant denies
 // (notify.ErrPublishDenied).
 //
-// A message toLaunch is for the session of the role's current launch, and the listener's word is
-// the one evidence of who took it: its 200 names the session it stored the message for
-// (notify.Publisher.Publish). A launch still coming up (launchUnregistered) can resume the
+// Each message is for the session of the role's current launch, and the listener's word is the one
+// evidence of who took it: its 200 names the session it stored the message for
+// (notify.Publisher.Publish). A launch still coming up (supervise.Unregistered) can resume the
 // session the claim records or start a fresh one in the same launch (supervise's startFresh), and
 // the listener can still name the session of an earlier launch whose clean stop has not landed,
-// so such a message waits while the launch has not registered its session, and once it has, it
-// is delivered only where the listener stored it for that session, the one the claim records, as
-// the daemon's forget reads the listener's holder (supervise's mayForget). A copy stored for
+// so the message waits while the launch has not registered its session, and once it has, it is
+// delivered unless the listener names a session other than the one the claim records, as the
+// daemon's forget reads the listener's holder (supervise's mayForget). A copy stored for
 // another session tells this launch nothing: the row waits, and its next attempt under the same
 // key is answered from the listener's record while that session still holds the role, and
 // forwarded to this launch's session once it claims the role (the listener's
@@ -263,20 +264,20 @@ func (r *outbox) deliverHeld(ctx context.Context, row record.OutboxRow, m heldMe
 		return wait.Errorf("%s waits for its %s's released pod to come back", m.what, m.role)
 	}
 	launch := r.supervisedClaim(m.token)
-	if m.toLaunch && launchUnregistered(launch.State) {
+	if supervise.Unregistered(launch.State) {
 		return wait.Errorf("%s waits for its %s's launch %d, which is %s, to register its session: a publish now would reach an earlier launch's session or none",
 			m.what, m.role, launch.Generation, launch.State)
 	}
 	holder, published := r.publishTo(ctx, notify.RoleTopicPrefix+string(m.token), m.message, m.message, record.OutboxKey(row.ID))
 	switch {
-	case published == nil && m.toLaunch && holder != "" && launch.Session != "" && holder != launch.Session:
+	case published == nil && holder != "" && launch.Session != "" && !launch.HoldsSession(holder):
 		return wait.Errorf("%s was stored for session %s, which is not %s, the session of its %s's launch %d: it waits for that session to hold the role",
 			m.what, holder, launch.Session, m.role, launch.Generation)
 	case published == nil:
 		r.log.Info(m.delivered, m.attributes...)
 		if m.end != nil {
 			var told uint64
-			if holder != "" && holder == launch.Session {
+			if holder != "" && launch.HoldsSession(holder) {
 				told = launch.Generation
 			}
 			return m.end(ctx, told)
@@ -288,19 +289,6 @@ func (r *outbox) deliverHeld(ctx context.Context, row record.OutboxRow, m heldMe
 		return wait.Errorf("%s waits for its %s, whose session the listener reports %s: %w", m.what, m.role, notify.StateUnresponsive, published)
 	}
 	return fmt.Errorf("publish %s to its %s: %w", m.what, m.role, published)
-}
-
-// launchUnregistered says whether a claim in state has a launch whose agent has not registered its
-// session: nothing launched yet (queued), a launch a crashed daemon left unreconciled
-// (launch_uncertain), or one still coming up (launching, shim_connected). Such a launch can still
-// resume the session the claim records or start a fresh one (supervise's startFresh), so the
-// session it will run is not known.
-func launchUnregistered(state supervise.ClaimState) bool {
-	switch state {
-	case supervise.StateQueued, supervise.StateLaunchUncertain, supervise.StateLaunching, supervise.StateShimConnected:
-		return true
-	}
-	return false
 }
 
 // mergingAt reads, in one transaction, what a merge-queue row reads of its issue before it acts:
