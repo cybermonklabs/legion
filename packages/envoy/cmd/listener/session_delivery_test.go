@@ -1018,7 +1018,7 @@ func TestSessionConsumerRegistrationWritesTheTopicsStoredWhenItHoldsTheLock(t *t
 	// is given the test's deadline (budgetsUntilTheDeadline), or the hold spends the route's 3.5 s
 	// and the registration answers 503 for the machine's speed, as main did in 5 of 40 runs at a
 	// load of 1,262.
-	budgetsUntilTheDeadline(t, rig)
+	budgetsUntilTheDeadline(t, rig.deps)
 
 	unlock := rig.deps.consumers.locks.lock(sessionID)
 	answered := postAsync(rig, "/v1/interests/subscribe", consumerRegistration(sessionID, "epoch-1"))

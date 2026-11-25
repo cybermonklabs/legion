@@ -98,6 +98,65 @@ func TestReduceFilterSubjects(t *testing.T) {
 	}
 }
 
+// INFRA-1555. A registration reduces its topics to its consumer's filters (SessionConsumerFilters)
+// inside its own 3.5 s budget, and its role claim renewal runs on what that leaves. At the largest
+// registration production had seen, the reduction spent that budget: it went back to the first
+// pair after every subject it dropped, so the renewal's claim read ran out of time on every
+// heartbeat and the holder's claim was never renewed. The reduction now goes on from a drop
+// (reduceFilterPairs), so it weighs no pair twice.
+//
+// This case holds that by the pairs the reduction weighs (reduceFilterSubjects), which are the
+// same on every machine, and not by a clock. cmd/listener's
+// TestARegistrationOfTheLargestShapeInProductionStillRenewsItsClaim held it by the registration's
+// own budget until that row's time was found to go mostly to the in-process, race-built NATS
+// server's own check of the consumer's filters (server.checkConsumerCfg), not to the listener, so
+// its verdict was the runner's load. The topics are that row's (largestRegistrationInProduction),
+// in every form a registration reduces them in: the per-kind topics of one issue that sorts among
+// the others are contained by its `<KEY>.>` and dropped mid-scan, where a scan that went back to
+// the first pair would weigh every pair before them again.
+func TestReducingTheLargestRegistrationInProductionWeighsEachPairOnce(t *testing.T) {
+	t.Parallel()
+	topics := largestRegistrationInProduction()
+	var forms []string
+	for _, topic := range topics {
+		forms = append(forms, contracts.TopicForms(topic)...)
+	}
+	filters, weighed := reduceFilterSubjects(forms)
+	if want := SessionConsumerFilters(topics); !slices.Equal(filters, want) {
+		t.Fatalf("the forms reduced here give %d filters and a registration's (SessionConsumerFilters) %d: this case is not weighing the list a registration reduces", len(filters), len(want))
+	}
+	subjects := len(slices.Compact(slices.Sorted(slices.Values(forms))))
+	if subjects == len(filters) {
+		t.Fatalf("UNKNOWN: the %d subjects reduced to as many filters, so nothing was dropped, and a scan that went back to the first pair at a drop would weigh no pair twice: this case cannot tell the two apart", subjects)
+	}
+	pairs := subjects * (subjects - 1) / 2
+	t.Logf("%d topics, %d subjects in all their forms, %d pairs; the reduction dropped %d subjects and weighed %d pairs", len(topics), subjects, pairs, subjects-len(filters), weighed)
+	if weighed > pairs {
+		t.Fatalf("the reduction of %d subjects weighed %d pairs, %.1f times the %d pairs there are: it weighed some pair again, as a scan that goes back to the first pair after a drop does (INFRA-1555)",
+			subjects, weighed, float64(weighed)/float64(pairs), pairs)
+	}
+}
+
+// largestRegistrationInProduction is the topics of cmd/listener's
+// TestARegistrationOfTheLargestShapeInProductionStillRenewsItsClaim with the agent subject the
+// registration adds to them: about twice the largest registration production has seen (802
+// topics, 2026-11-16), a holder following 800 Dispatch issues, each as `<KEY>` and `<KEY>.>`, with
+// the per-kind topics of one issue that sorts among the others and that its `<KEY>.>` already
+// holds, and the lane of the role it holds.
+func largestRegistrationInProduction() []string {
+	const issues = 800
+	topics := make([]string, 0, 2*issues+10)
+	for issue := range issues {
+		topic := fmt.Sprintf("notifications.dispatch.issue.K-%d", issue)
+		topics = append(topics, topic, topic+".>")
+	}
+	for _, kind := range []string{"message", "issue", "comment", "ask"} {
+		topic := "notifications.dispatch.issue.K-400." + kind
+		topics = append(topics, topic, topic+".>")
+	}
+	return append(topics, contracts.RoleTopicPrefix+"legion-controller", contracts.LegacyAgentSubject("ses_largest_holder"))
+}
+
 func TestSessionConsumerName(t *testing.T) {
 	t.Parallel()
 	if name, ok := SessionConsumerName("ses_abc-123"); !ok || name != "s-ses_abc-123" {

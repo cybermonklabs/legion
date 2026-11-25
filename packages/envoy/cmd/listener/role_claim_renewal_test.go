@@ -25,9 +25,11 @@ import (
 
 // roleClaimRenewalRig is the registration route over one role bucket, with the bucket itself
 // beside it: a case seeds the claim it is about as a record, as a build that wrote it before
-// this one left it, and reads back what the registration made of it.
+// this one left it, and reads back what the registration made of it. deps is the route's own, for
+// a case that changes its bounds before it registers (budgetsUntilTheDeadline).
 type roleClaimRenewalRig struct {
 	t         *testing.T
+	deps      *listenerDeps
 	registry  *store.Registry
 	roleKV    natsgo.KeyValue
 	logs      *bytes.Buffer
@@ -45,6 +47,7 @@ func newRoleClaimRenewalRig(t *testing.T) *roleClaimRenewalRig {
 	deps := withRoleClaimDrain(t, &listenerDeps{client: setupPublishTestClient(t), registry: registry, sessions: sessions, consumers: setupSessionConsumers(t, nil)})
 	return &roleClaimRenewalRig{
 		t:         t,
+		deps:      deps,
 		registry:  registry,
 		roleKV:    registryRoleKV(t, registry),
 		logs:      logs,
@@ -167,12 +170,22 @@ func TestAnAdoptingRegistrationNamesItsProcessOnAClaimThatNamesNone(t *testing.T
 // others, as production's did, and not first: each is then found contained only after the pairs
 // before it are weighed.
 //
-// What it guards: a registration's own work must leave its renewal the budget the renewal runs on.
-// The renewal runs after the registration's topic work, on what is left of the request's
-// sendRequestBudget. Work that grows with the number of topics, such as reducing them to the
-// consumer's filters (bus.ReduceFilterSubjects), spent that budget in production: every
-// registration was answered 200 and its renewal's claim read ran out of time, so the claim was
-// never renewed while its holder kept registering.
+// What it guards (INFRA-1555): a registration of that size renews its claim. The renewal runs
+// after the registration's topic work, on what is left of the request's sendRequestBudget, and in
+// production reducing the topics to the consumer's filters (bus.ReduceFilterSubjects) spent that
+// budget: every registration was answered 200 and its renewal's claim read ran out of time, so
+// the claim was never renewed while its holder kept registering.
+//
+// So this case holds what the registration writes, on a budget that is what is left of the test
+// binary's deadline (budgetsUntilTheDeadline), and the reduction's cost is held where it can be
+// counted: internal/bus's TestReducingTheLargestRegistrationInProductionWeighsEachPairOnce counts
+// the pairs the reduction weighs, and fails on the reduction INFRA-1555 found. This case once ran
+// on the route's own 3.5 s and 5 s instead, and under the race detector its time went mostly to
+// the in-process, race-built NATS server's own check of the consumer's 1,600 filters
+// (server.checkConsumerCfg, subjectIsSubsetMatch), not to the listener: on 4 CPUs beside 16 busy
+// loops it answered 503 at 5.06 s in 3 runs of 3 with the reduction as it is now, and CI's merge
+// queue removed pull requests that changed nothing here. Those bounds measured the runner, not the
+// renewal; a row that puts them back is the same measurement again.
 func TestARegistrationOfTheLargestShapeInProductionStillRenewsItsClaim(t *testing.T) {
 	t.Parallel()
 	const (
@@ -200,16 +213,13 @@ func TestARegistrationOfTheLargestShapeInProductionStillRenewsItsClaim(t *testin
 		t.Fatalf("encode the registration: %v", err)
 	}
 	rig := newRoleClaimRenewalRig(t)
+	budgetsUntilTheDeadline(t, rig.deps)
 	seeded := rig.seed(role, lapsedClaim(sessionID, ""))
 
 	registered := time.Now()
 	recorder := httptest.NewRecorder()
 	rig.subscribe.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/interests/subscribe", bytes.NewReader(body)))
-	took := time.Since(registered)
-	// The renewal runs inside the registration, so the budget it had left is at least the budget
-	// less the whole registration's time.
-	t.Logf("registered %d topics in %s: at least %s of the %s budget was left when the renewal ran",
-		len(topics), took.Round(time.Millisecond), (sendRequestBudget - took).Round(time.Millisecond), sendRequestBudget)
+	t.Logf("registered %d topics in %s", len(topics), time.Since(registered).Round(time.Millisecond))
 
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("the registration of %d topics was answered %d %s, want 200", len(topics), recorder.Code, strings.TrimSpace(recorder.Body.String()))
