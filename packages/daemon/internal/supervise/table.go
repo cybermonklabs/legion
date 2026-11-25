@@ -443,14 +443,20 @@ type RequestSpawn struct {
 	// launches is the fault the pacing exists to fix, and a wake let through by default would
 	// put it back one caller at a time.
 	Exempt bool
-	// Turn is a moment the caller has already reserved for this launch in the wake pacing, which
-	// the gate takes in place of reserving one of its own (revive, launchAfter, reserveWake), and
-	// the zero time for every caller but one: the boot's relaunch of the launches the previous
-	// daemon left waiting (internal/daemon's launchUnfinished), which reserves their turns one by
-	// one in the order their claims' work was owed before it posts them all at once, so the queue
-	// a restart rebuilds keeps the order the previous daemon was draining (dispatch://INFRA-5482).
-	// A launch the gate does not reach — refused, or held by a project pause — leaves that moment
-	// spent, as a dropped wake leaves its token spent (wakepace.Limiter.Reserve).
+	// Turn is a moment the caller has already reserved for this launch in the wake pacing, and the
+	// zero time for every caller but one: the boot's relaunch of the launches the previous daemon
+	// left waiting (internal/daemon's launchUnfinished), which hands the turns out in the order its
+	// claims' work was owed before it posts every launch at once, so the queue a restart rebuilds
+	// keeps the order the previous daemon was draining (dispatch://INFRA-5482).
+	//
+	// The rule the gate holds a carried turn to (revive, launchAfter, reserveWake), stated here
+	// alone: a turn still to come is the launch's turn, and it parks for it; one the launch reached
+	// less than one interval late (WakePace.Interval) is its turn late, and it runs at once; one it
+	// reached one interval or more late is reserved a turn afresh, and the spent turn stays
+	// charged, as a dropped wake's does (wakepace.Limiter.Reserve), since every launch the caller
+	// posted together that reached its gate that late would otherwise run in one instant, outside
+	// the rate and the burst. The gate logs the last case. A launch the gate does not reach —
+	// refused, or held by a project pause — leaves its turn spent the same way.
 	Turn time.Time
 }
 
@@ -2620,6 +2626,10 @@ func spawn(m *Machine, ctx context.Context, ev Event) error {
 // leaves a claim no ready will ever come for, and from here that looks exactly like an agent slow
 // to boot. A registration whose plugin still differs from the daemon's is relaunched at once and
 // refused (staleRegistration): the agent that just registered is not the one that relaunch starts.
+//
+// The registering process's pod is one an agent of the claim registered a session in, so it goes
+// in the claim's set (Claim.RegisteredPods) and stays there, whatever the claim does next. A
+// process in no pod (a tmux pane) adds nothing.
 func register(m *Machine, ctx context.Context, ev Event) error {
 	r := ev.(RequestRegister)
 	if err := checkSessionNames(r.Session, r.SessionFile); err != nil {
@@ -2629,6 +2639,7 @@ func register(m *Machine, ctx context.Context, ev Event) error {
 		return err
 	}
 	m.claim.Session, m.claim.SessionFile = r.Session, r.SessionFile
+	m.registeredPods.add(locatorPod(m.claim.Locator))
 	m.claim.AgentResumeGeneration = 0
 	m.claim.CapabilityHash = bytes.Clone(r.CapabilityHash)
 	m.claim.PluginContract = r.PluginContract
@@ -2678,8 +2689,8 @@ func reregister(m *Machine, ctx context.Context, ev Event) error {
 }
 
 // ready is the agent saying it can be prompted. The time is kept on the claim (Claim.LastReady),
-// since it is what dates the death's cause beside it — a death older than this ready is one the
-// agent running now has survived (machine.go's Claim).
+// since a death recorded before this ready (Claim.LastDeathAt) is one the agent running now has
+// survived (machine.go's Claim).
 func ready(m *Machine, ctx context.Context, _ Event) error {
 	m.claim.State = StateReady
 	// The cause of a forget is kept for the launches of the fresh agent until it comes up
@@ -2690,7 +2701,9 @@ func ready(m *Machine, ctx context.Context, _ Event) error {
 	// episode they measure ended when this agent came up (Claim.PendingCause,
 	// Claim.LastStartFailure). A start failure kept past it would read, on a claim launching
 	// again later, as the reason it is not running now (dispatch://INFRA-5463).
-	m.claim.Budgets.LaunchFailures, m.claim.PendingCause, m.claim.LastStartFailure = 0, "", ""
+	// The start failure's time goes with it (Claim.LastStartFailureAt).
+	m.claim.Budgets.LaunchFailures, m.claim.PendingCause = 0, ""
+	m.claim.LastStartFailure, m.claim.LastStartFailureAt = "", time.Time{}
 	m.disarm(TimerRegistration)
 	if m.held != nil {
 		return m.suspendHeld(ctx)

@@ -1,0 +1,54 @@
+kind: Changed
+body: |-
+  After a push to a base branch, the daemon reads the merge state of the pull requests on that base
+  that the push owes a read in batches: GraphQL queries that ask for those pull requests alone, by
+  number, five to a query, where it made one REST read, `GET /pulls/{number}`, of each pull
+  request before. Which pull requests a push owes a read is unchanged. A query that runs out of
+  GitHub's time (a 502 near its 10 s, or GitHub's "couldn't respond to your request in time") is
+  asked again one pull request at a time, and a pull request whose own query timed out is asked
+  for alone until GitHub answers it; a query GitHub fails at once is a read that answered nothing,
+  read again on the ladder. Each query's answers are applied as they come, and a pull request
+  GitHub answers with an error of its own leaves the others in its query answered. A pull request
+  GitHub still answers `unknown` for is read again on its own ladder: five reads half a minute
+  apart in the push's climb, and then after one, two, four and eight minutes and every ten minutes
+  after, counted from its climb or from the moment a climb of its own handed it over, until GitHub
+  answers a state, its head moves or it closes. It is read once it is due and never before, in the
+  same query as the others due then, and a climb of other pull requests on its base leaves its
+  ladder as it is. A climb of one pull request, after a head push, a review round that waits on
+  GitHub or a restart, still reads that pull request alone, and hands a head GitHub still answers
+  `unknown` for to its base's reads with the pull request its last read held, with no second read
+  of the daemon's database between them. A read of the climb that fails after GitHub answered
+  `unknown` (the database's read or GitHub's, as GitHub answers 403 once the REST budget is spent)
+  hands that head to its base's reads too, and so does a read whose answer the database fails to
+  record, whatever GitHub answered. The base's reads keep a pull request whose record they fail to
+  read, or whose answer they fail to record, and read it at its next turn. Each answer is stamped
+  with the time its own query was answered, so an answer older than one the record holds changes
+  nothing. The query asks GitHub for each pull request's base too, so a pull request moved to
+  another base is recorded and read on that base.
+
+  The queries of every base of an installation's repositories go one at a time, and after each
+  the next waits (1 - share) / share of the time it took, at most 15 minutes, where share is the
+  new `github_graphql_share` key (0.5 by default: a pause as long as the query took). GitHub allows
+  an installation 60 seconds of query processing time in 60 seconds, shared by every daemon that
+  reads with that installation, so a deployment sets the key near 1 divided by the number of
+  those daemons: about 0.25 where four daemons share one installation of the implement App. A
+  value below 0.01 (one daemon in a hundred) or above 1, and one that is not a finite number, is
+  refused. Each query carries an installation token minted in its own turn, after the
+  installation's hold and pace, so no hold outlasts the token, and the mint is bounded as the query
+  is, at 30 seconds. A rate limit any of the queries meets holds them all as long as GitHub asks
+  (its Retry-After, its reset, or a minute for the secondary limit named by its message alone),
+  before any other query, including a 200 whose
+  errors carry the secondary limit's Retry-After or message. A limit met again less than the last
+  hold's length after that hold ended holds twice the longer of GitHub's wait and the last hold,
+  up to 15 minutes and never less than GitHub asks. The first query GitHub answers without a limit
+  ends that backoff; a query that reaches no answer of GitHub's (a failed connection, its own
+  deadline, a token that could not be minted) leaves it as it stands. Each read is logged as
+  before, and each query logs
+  `github: read the merge state of pull requests on a base by number` with how many pull requests
+  it asked for and how many GitHub answered.
+
+  The daemon's reads of a pull request (`GET /pulls/{number}`) and of its base's rules
+  (`GET /rules/branches/{base}`, `GET /branches/{base}`) are conditional: each sends the ETag of
+  the last answer for the same URL, and GitHub's `304 Not Modified`, which counts against no rate
+  limit, is read as that answer. The batch queries spend the implement App installation's GraphQL
+  budget, one point a query, which GitHub keeps apart from its REST budget.

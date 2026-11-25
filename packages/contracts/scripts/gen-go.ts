@@ -6,6 +6,7 @@ import {
   DEFAULT_ISSUE_PAGE_LIMIT,
   DELETED_POST_DELIVERY_ERROR,
   DELIVERY_DUPLICATE_WINDOW_MS,
+  DISPATCH_AS_OF_TOKEN_NOT_SERVED,
   DISPATCH_EVENT_TYPES,
   DISPATCH_LOGIN_CHANGED,
   DISPATCH_LOGIN_HEADER,
@@ -30,6 +31,7 @@ import {
   IDEMPOTENCY_LEASE_MS,
   IDEMPOTENCY_REPLAYED_HEADER,
   ISSUE_CLAIM_UNRESPONSIVE_GRACE_MS,
+  ISSUE_LABEL_MAX,
   ISSUE_TITLE_MAX,
   LIVE_SOCKET_MAX_AGE_CLOSE,
   LIVE_SOCKET_MAX_AGE_MS,
@@ -38,6 +40,8 @@ import {
   MAX_BROADCAST_RECIPIENTS,
   MAX_ISSUE_ADVANCES,
   MAX_ISSUE_BLOCKERS,
+  MAX_ISSUE_COMPONENTS,
+  MAX_ISSUE_LABELS,
   MAX_ISSUE_PAGE_LIMIT,
   POST_HISTORY_PAGE_LIMIT,
   PROJECT_NAME_MAX,
@@ -116,6 +120,7 @@ import {
   legacyDispatchIssueSubject,
   legionControllerNoticeSubject,
   legionWakeSubject,
+  MESSAGE_NOT_SENT_PREFIX,
   NO_PROJECT,
   roleSubject,
   SUBJECT_MAX_BYTES,
@@ -336,6 +341,15 @@ func UncapturedTopicRefusal(topic, sessionID string) string {
 	return ${uncapturedTopicRefusalText}
 }
 
+// MessageNotSentPrefix opens the error of the 503 POST /v1/messages/send and POST
+// /v1/messages/publish answer for a message the bus refused before it sent anything, because the
+// deployed stream does not capture a topic this build stores (bus.ErrSubjectNotDeployed): nothing
+// was stored, and the same message may be sent again once the stream captures the topic. Generated
+// from MESSAGE_NOT_SENT_PREFIX in packages/contracts, which envoy-client's transport reads to tell
+// this answer from a 5xx after which the message may have been stored, so the listener and the
+// client cannot word it apart.
+const MessageNotSentPrefix = ${JSON.stringify(MESSAGE_NOT_SENT_PREFIX)}
+
 // DeliveryDuplicateWindow is how long a repeated delivery is recognised as a duplicate, by the
 // notification stream and by every host that reads it. Generated from
 // DELIVERY_DUPLICATE_WINDOW_MS in packages/contracts, whose doc comment states the retry promise
@@ -503,6 +517,18 @@ const MaxIssueBlockers = ${MAX_ISSUE_BLOCKERS}
 // MAX_ISSUE_ADVANCES in packages/contracts so the server's refusal and every client's bound are
 // one number.
 const MaxIssueAdvances = ${MAX_ISSUE_ADVANCES}
+
+// MaxIssueLabels is the most labels one issue holds, and the most one labels or labels_add input
+// names before deduplication, and IssueLabelMax the longest label, in UTF-16 units. Generated from
+// MAX_ISSUE_LABELS and ISSUE_LABEL_MAX in packages/contracts so the server's refusals and the
+// issue tools' bounds are one number each.
+const MaxIssueLabels = ${MAX_ISSUE_LABELS}
+const IssueLabelMax = ${ISSUE_LABEL_MAX}
+
+// MaxIssueComponents bounds the ids of a components input of mode explicit before deduplication.
+// Generated from MAX_ISSUE_COMPONENTS in packages/contracts so the server's refusal and the issue
+// tools' bound are one number.
+const MaxIssueComponents = ${MAX_ISSUE_COMPONENTS}
 
 // MaxIssuePageLimit is the most issues one page of GET /api/v1/issues holds, and
 // DefaultIssuePageLimit the page size when a caller pages with offset alone. Generated from
@@ -725,17 +751,25 @@ const DispatchLoginChanged = ${JSON.stringify(DISPATCH_LOGIN_CHANGED)}
 const IDAmbiguous = ${JSON.stringify(ID_AMBIGUOUS)}
 
 // DispatchSignInRequired is the code of the 403 for a write by a broker-issued access token that
-// names a session and a service but no person: the machine holding it has signed nobody in.
+// names a session and a service but no person under the project scope person: the machine
+// holding it has signed nobody in.
 // Generated from DISPATCH_SIGN_IN_REQUIRED in packages/contracts so the server's refusal and
 // every client's reading of it cannot drift apart.
 const DispatchSignInRequired = ${JSON.stringify(DISPATCH_SIGN_IN_REQUIRED)}
 
-// DispatchReadOnlyToken is the code of the 403 for a request by a broker-issued access token
-// that holds only the scope read, to a route the read list does not name: the route ran nothing,
-// and the request wrote only the row of its spent DPoP proof. Generated from
+// DispatchReadOnlyToken is the code of the 403 for a request by a read-only token (any token that
+// holds read, a broker's or a personal one) to a route outside the read class: the route ran
+// nothing, and the request wrote only the record of the token's use. Generated from
 // DISPATCH_READ_ONLY_TOKEN in packages/contracts so the server's refusal and every client's
 // reading of it cannot drift apart.
 const DispatchReadOnlyToken = ${JSON.stringify(DISPATCH_READ_ONLY_TOKEN)}
+
+// DispatchAsOfTokenNotServed is the code of the 403 for a request by a read-only token that
+// carries a cut (as_of) to a read route other than GET /api/v1/whoami: no build serves a read at
+// a past time yet, so the route ran nothing rather than answer with the present. Generated from
+// DISPATCH_AS_OF_TOKEN_NOT_SERVED in packages/contracts so the server's refusal and every
+// client's reading of it cannot drift apart.
+const DispatchAsOfTokenNotServed = ${JSON.stringify(DISPATCH_AS_OF_TOKEN_NOT_SERVED)}
 
 func NowMillis() int64 {
 	return time.Now().UnixMilli()

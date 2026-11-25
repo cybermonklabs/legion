@@ -25,7 +25,8 @@ related_issues:
 # A jj-only driver with main's file as the negative control is the proof shape without the rig
 
 On 2026-09-13 Sami withdrew the Legion smoke rig ("Please shutdown the goddamn legion smoke. It's
-pointless and it has led to destructive actions twice now."). No scratch daemon, tmux server, or
+pointless and it has led to destructive actions twice now.", relayed verbatim in
+https://github.com/cybermonklabs/legion/pull/1022#issuecomment-5658482554). No scratch daemon, tmux server, or
 NATS of any kind may be started for a proof. The `E2E (implementer)` line still has to name a real
 surface, a command, an observation, a head, and a negative control (LEGION-53), and a green unit
 suite is not it. For a change to `packages/workspace` provisioning, the accepted shape is a

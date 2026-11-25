@@ -191,6 +191,17 @@ Apps' installations on it, its name and default branch, and Dispatch's webhook A
   - `Succeeded without checking the capability list (its legion CLI predates the check)`: the image's
     `legion` is older than this daemon's capability check. Build the image from this daemon's
     commit.
+  - `… does not take --session-id (omp-session-id=absent …)`, `… could not read whether its Oh My
+    Pi … takes --session-id …` or `… its legion CLI predates the omp-session-id mark …`:
+    `runtime.kubernetes.agent_secrets.exchange_audience` is set, so the daemon starts each new Oh My
+    Pi role with `--session-id <id>`, and the image's Oh My Pi does not take that flag, or nothing
+    shows that it does. The third message comes from an image whose `legion` speaks this daemon's
+    contract but prints no `omp-session-id` mark. An image whose `legion` is older than this release
+    is refused for its daemon contract instead (the first cause above). Use a worker image with an
+    Oh My Pi from the cybermonklabs/oh-my-pi release `v18.18.6-sami.20261117-074351` or a later
+    one, and a `legion` from this daemon's release or a later one, or unset `exchange_audience`.
+    The Oh My Pi that this release's `.omp-pin` names is that release or a later one, so an image
+    built on that pin passes.
   - `… refused role <role>'s Oh My Pi overlays: <file> cannot be read: …` (or `Oh My Pi refuses
     <file>: error: …`, quoting Oh My Pi's own error): a file `role_config_files` names for that
     role is not in the mount you gave it, or Oh My Pi cannot parse it. Add the key to the ConfigMap
@@ -378,17 +389,24 @@ Check, in order:
    counts the issues the daemon has started, not trees). A parent whose own first phase waits for its open children
    is in `blocked`, with each child it waits for.
 
-   Each waiting issue's own `waitingLine` says where it stands and why: `part`, `returned` for
+   Each waiting issue's own `waitingLine` says where it stands and why: `priority`, the priority
+   that placed it, its own, else its tree root's (0 for P0 to 3 for P3, or null for one that waits
+   after P3); `part`, `returned` for
    an issue whose work came back or `starting` for one that has not started; `kind`;
-   `partPlace` and `partLength` within that part; `holdsSlot`, true where it holds its
+   `partPlace` and `partLength` within its priority and part; `holdsSlot`, true where it holds its
    admission slot already and so waits for no free one; `since`, or the `rootRank`, `ownRank`
    and `rootKey` that placed it; and `reason`, the daemon's own sentence. Plain `legion state`
    prints that sentence for the first ten waiting issues under the `admission:` counts, each
    line reading `<KEY> <place> of <N>, <part>: <reason>`, and then `and <N> more`. It prints
    `waiting line: none` while nothing waits, and
    `waiting line: the daemon sent no reasons at this caller's contract` where the daemon served
-   this caller no sentence. An issue that has not started stands behind every issue whose work
-   came back, whatever its board rank, so that order is no fault to chase.
+   this caller no sentence. The line is ordered by Dispatch priority first, P0 to P3 and then the
+   issues with no priority; within one priority, an issue that has not started stands behind every
+   issue whose work came back, whatever its board rank, so that order is no fault to chase. An
+   issue waits behind every issue of a higher priority, whatever its part: `waitingLine.priority`
+   is the priority it waits at, and `issues.<KEY>.priority` is its own, so a child whose own is
+   null waits at its tree root's. A priority changed in Dispatch moves the issue at the next
+   admission pass, and priority takes no slot back from work that runs.
 
 5. **GitHub refuses its branch.** Before the architect starts, the daemon creates the issue's
    branch, `legion/<KEY>`, on GitHub in the issue's recorded repository at its recorded default
@@ -435,11 +453,11 @@ approval on a deployment that gates no step, or when the last gated step was tak
 issue in `awaiting_person` keeps its admission slot
 ([Admission and the `legion` label](/legion/legion/concepts/#admission-and-the-legion-label));
 once it is answered it stands in `admission.waiting` too,
-among the issues whose work came back, oldest first, until the pass that resumes it. That resume
+within its priority, among the issues whose work came back, oldest first, until the pass that resumes it. That resume
 takes no further slot, so it happens however full the cap is, whether or not the design gate has
 opened. While the root stands in the line, `waitingLine` on the
-issue gives its place in the line and the line's length, its `part` `returned`, its `kind`
-`answered`, its `holdsSlot` true and a `reason` saying a person answered it and that it holds
+issue gives its place in the line and the line's length, its `priority`, its `part` `returned`,
+its `kind` `answered`, its `holdsSlot` true and a `reason` saying a person answered it and that it holds
 its slot already, and its `why.state` is `waiting`. Nothing is sent to its architect about
 the wait, and the daemon resumes the root by itself on that pass, so neither the
 place nor the wait is anything to act on.
@@ -891,8 +909,11 @@ claim launching with no process, and the relaunches of processes the previous da
 back into the pacing in one order, the order their tasks were queued, the oldest first, so among
 those a claim that waited before the restart goes ahead of work owed after it; the stale-plugin
 pass takes its turns as it reaches the gate, and while the project is paused the unfinished
-launches wait for the resume instead. Read what the pacing still holds before you act on anything
-below:
+launches wait for the resume instead. A relaunch that reaches its gate an interval or more after
+the turn the boot gave it — its admission waits behind every other launch's — is reserved a turn
+afresh, at the back of the queue unless the pacing has drained, and the daemon logs `supervise:
+this launch reached the wake gate an interval or more after the turn its caller reserved` with the
+moment it is now `due`. Read what the pacing still holds before you act on anything below:
 
 ```sh
 legion state --config legion.yaml --json | jq '.wakesWaiting'
@@ -1715,10 +1736,11 @@ the tester or the reviewer, is told to stop writing the workspace and not to com
 the old head, and is then told the new head, and `workflow: the merge forward landed`
 names both heads. A completion of the phase the issue stands in that names a head a merge
 forward replaced, the head an earlier merge forward replaced included, or that names no head once
-a merge forward landed, is refused `HANDOFF_HEAD_MERGED_FORWARD`, with nothing recorded, and is
-made again at the new head; a completion of a phase the issue has already left is recorded as
-before. Where the task's reviewer step already ran, the reviewer is asked to read the merge and
-approve the new head. A red check sends nothing back from anywhere.
+a merge forward landed, is refused `HANDOFF_HEAD_MERGED_FORWARD` and moves nothing; the daemon
+keeps the refusal, so the same call again is answered `HANDOFF_ALREADY_RECORDED`, and the
+completion is made again at the new head. A completion of a phase the issue has already left is
+recorded as before. Where the task's reviewer step already ran, the reviewer is asked to read
+the merge and approve the new head. A red check sends nothing back from anywhere.
 
 The pull request's state as the daemon sees it:
 

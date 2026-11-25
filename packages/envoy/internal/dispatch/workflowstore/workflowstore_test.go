@@ -567,7 +567,7 @@ func TestTwoEndsOfAStartedRunAtOneTimeKeepTheFirst(t *testing.T) {
 	if pid == 0 {
 		t.Fatalf("begin the second end: %v", <-answered)
 	}
-	if err, early := storetest.WaitForQueuedBehind(t, first, pid, answered, 30*time.Second); early {
+	if err, early := storetest.WaitForQueuedBehind(t, first, pid, answered); early {
 		t.Fatalf("the second end answered %v before it waited for the first", err)
 	}
 	if err := first.Commit(ctx); err != nil {

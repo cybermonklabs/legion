@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -455,12 +456,14 @@ func (c *liveClaimant) endTurn() {
 // liveGitHub is GitHub's REST API for acme/widgets as a live proof's daemon reads it: the one
 // pull request at the head the driver last pushed, with its base and the `mergeable` the driver
 // last set, true until it sets one (conflicts; readPullRequest), the `mergeable_state` a proof
-// sets (mergeState), and its reviews as none (readReviews). It also answers what a launch and a
-// disarm read: any repository, with the proof's base as its default branch, and a GraphQL root
-// that knows no pull request. Anything else is answered 404 unless the proof's also answers it, so
-// a read the proof did not foresee fails the step that waited on it rather than reaching
-// github.com. A liveIssueProof starts it with serveGitHub; late_completion_live_test.go, whose
-// panes are real, starts one of its own.
+// sets (mergeState), and its reviews as none (readReviews). Its GraphQL endpoint answers a batch's
+// query of pull requests by number (the daemon's chunkQuery) with each it serves, as GraphQL
+// spells the same answer (liveBatchNode), null for any other, and every other query as knowing no
+// pull request. It also answers what a launch and a disarm read: any repository, with
+// the proof's base as its default branch. Anything else is answered 404 unless the proof's also
+// answers it, so a read the proof did not foresee fails the step that waited on it rather than
+// reaching github.com. A liveIssueProof starts it with serveGitHub; late_completion_live_test.go,
+// whose panes are real, starts one of its own.
 type liveGitHub struct {
 	t      *testing.T
 	url    string
@@ -510,6 +513,10 @@ func (g *liveGitHub) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if req.Method == http.MethodPost && req.URL.Path == "/graphql" {
+		if asked, batch := liveBatchQuery(req); batch {
+			_, _ = io.WriteString(w, liveBatchAnswer(g.t, asked, g.batchNodes()))
+			return
+		}
 		_, _ = io.WriteString(w, `{"data":{"repository":{"pullRequest":null}}}`)
 		return
 	}
@@ -518,6 +525,27 @@ func (g *liveGitHub) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	}
 	w.WriteHeader(http.StatusNotFound)
 	_, _ = io.WriteString(w, `{"message":"Not Found"}`)
+}
+
+// batchNodes is every pull request the stand-in answers, by number, as the batch query spells
+// each (liveBatchNode): its own pull request, on its base, and each one a proof's also answers at
+// /pulls/<number> in GET /pulls/{number}'s shape.
+func (g *liveGitHub) batchNodes() map[int]map[string]any {
+	nodes := map[int]map[string]any{g.number: liveBatchNode(g.number, g.sha, "legion/"+g.key, g.base, !g.conflicting, g.mergeState)}
+	for path, answer := range g.also {
+		number, isPull := strings.CutPrefix(path, "/pulls/")
+		pull, isObject := answer.(map[string]any)
+		if !isPull || strings.Contains(number, "/") || !isObject {
+			continue
+		}
+		onto, _ := pull["base"].(map[string]string)
+		head, _ := pull["head"].(map[string]string)
+		n, _ := pull["number"].(int)
+		mergeable, _ := pull["mergeable"].(bool)
+		state, _ := pull["mergeable_state"].(string)
+		nodes[n] = liveBatchNode(n, head["sha"], head["ref"], onto["ref"], mergeable, state)
+	}
+	return nodes
 }
 
 // answer writes the stand-in's answer to a GET of path, and says whether it had one.
@@ -571,4 +599,59 @@ func firstLine(task string) string {
 		line = line[:120] + "…"
 	}
 	return line
+}
+
+// liveBatchQuery reads req, a POST to the GraphQL endpoint, as a batch's query of pull requests by
+// number (the daemon's chunkQuery), and answers the numbers it asks for and whether it is one: any
+// other query is none.
+func liveBatchQuery(req *http.Request) ([]int, bool) {
+	var sent struct {
+		Query string `json:"query"`
+	}
+	if json.NewDecoder(req.Body).Decode(&sent) != nil {
+		return nil, false
+	}
+	var asked []int
+	for _, match := range liveAlias.FindAllStringSubmatch(sent.Query, -1) {
+		number, _ := strconv.Atoi(match[1])
+		asked = append(asked, number)
+	}
+	return asked, len(asked) > 0
+}
+
+// liveAlias is one pull request a batch's query asks for by number, under its alias.
+var liveAlias = regexp.MustCompile(`\w+: pullRequest\(number: (\d+)\)`)
+
+// liveBatchNode is one open pull request as the batch query answers it: number at head on branch,
+// on base, GitHub's `mergeable` as GraphQL spells it (MERGEABLE or CONFLICTING), and its merge
+// state in GraphQL's capitals, none where the REST answer carries none.
+func liveBatchNode(number int, head, branch, base string, mergeable bool, state string) map[string]any {
+	spelled := "CONFLICTING"
+	if mergeable {
+		spelled = "MERGEABLE"
+	}
+	node := map[string]any{"number": number, "state": "OPEN", "headRefOid": head, "headRefName": branch, "baseRefName": base, "mergeable": spelled}
+	if state != "" {
+		node["mergeStateStatus"] = strings.ToUpper(state)
+	}
+	return node
+}
+
+// liveBatchAnswer is the batch query's answer to asked: each number nodes holds under its alias
+// (the daemon's pullAlias), and null for each other.
+func liveBatchAnswer(t *testing.T, asked []int, nodes map[int]map[string]any) string {
+	t.Helper()
+	repository := map[string]any{}
+	for _, number := range asked {
+		var node any
+		if found, ok := nodes[number]; ok {
+			node = found
+		}
+		repository[pullAlias(number)] = node
+	}
+	body, err := json.Marshal(map[string]any{"data": map[string]any{"repository": repository}})
+	if err != nil {
+		t.Errorf("encode the batch answer: %v", err)
+	}
+	return string(body)
 }

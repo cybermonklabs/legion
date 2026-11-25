@@ -47,6 +47,8 @@ import type {
   IssueAskThreadRow,
   IssueReferencesAnswer,
   NewIssueSettings,
+  ParentStatusConflictIssue,
+  StatusChangeEntry,
   TargetCandidate,
   UserIssueState,
 } from "./types";
@@ -90,6 +92,8 @@ interface ErrorPayload {
   error?: string;
   state?: UserIssueState;
   candidates?: readonly ErrorCandidate[];
+  issues?: readonly ParentStatusConflictIssue[] | null;
+  changed?: readonly StatusChangeEntry[] | null;
 }
 
 export class ApiError extends Error {
@@ -100,6 +104,14 @@ export class ApiError extends Error {
    *  choice; the shape of each entry follows `code` (`ErrorCandidate`). Undefined for a refusal
    *  that listed nothing, which is almost all of them. */
   readonly candidates: readonly ErrorCandidate[] | undefined;
+  /** The issues a `409 PARENT_STATUS_CONFLICT` names: each one whose status the write would put
+   *  out of line with its parent's or its children's, with its status and whether it is the
+   *  parent or a child. Undefined for every other refusal. */
+  readonly issues: readonly ParentStatusConflictIssue[] | undefined;
+  /** What a refused `POST /api/v1/issues/{key}/status-change` changed before the refusal: the
+   *  entry of each step that committed, in the order the steps ran. Empty when no step did, and
+   *  undefined for a refusal of any other route. */
+  readonly changed: readonly StatusChangeEntry[] | undefined;
   /** How long the server asked the caller to wait before trying again (`Retry-After` in
    *  delta-seconds, as Dispatch sends with a 503 refusing excess load), in milliseconds;
    *  undefined when the response carried none. */
@@ -112,6 +124,8 @@ export class ApiError extends Error {
     this.status = status;
     this.state = payload.state;
     this.candidates = payload.candidates;
+    this.issues = payload.issues ?? undefined;
+    this.changed = payload.changed ?? undefined;
     this.retryAfterMs = retryAfterMs;
   }
 }
@@ -550,6 +564,17 @@ function readUrl<P extends PathsOf<"get">>(pattern: P, params: PathParams<Op<P, 
 /** `PATCH /api/v1/issues/{key}`: one change of an issue's fields (`patchIssue`). */
 export function issuePatchRequest(key: string, input: Body<"/api/v1/issues/{key}", "patch">) {
   return writeRequest("patch", "/api/v1/issues/{key}", { key }, input);
+}
+
+/** `POST /api/v1/issues/{key}/status-change`: an issue's status with what happens to the issues
+ *  under it or above it (`include_children`, `unlink_children`, `include_parent`), so that each
+ *  parent's status stays in line with its children's. With `dry_run` it writes nothing and
+ *  answers what the call would change, or the refusal the call would get. */
+export function statusChangeRequest(
+  key: string,
+  input: Body<"/api/v1/issues/{key}/status-change", "post">
+) {
+  return writeRequest("post", "/api/v1/issues/{key}/status-change", { key }, input);
 }
 
 /** `POST /api/v1/agents/{session_id}/messages`: a person's message to one session

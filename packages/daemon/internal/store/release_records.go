@@ -10,10 +10,9 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// PodRelease is one release of an issue pod: which roles were in it, when their claims were
-// suspended as released, and how large the workspace bundle it saved was. It is the row every
-// resume of that pod hangs from, so a reader can pair a release with what woke it and how long
-// the agent waited.
+// PodRelease is one release of an issue pod: which roles were in it and when their claims were
+// suspended as released. It is the row every resume of that pod hangs from, so a reader can pair
+// a release with what woke it and how long the agent waited.
 type PodRelease struct {
 	// ID is the row's own id, which the store fills.
 	ID int64
@@ -26,9 +25,15 @@ type PodRelease struct {
 	Roles []string
 	// At is when the release completed.
 	At time.Time
-	// BundleBytes is the size of the bundle the release saved; zero when it saved none because
-	// the workspace held nothing unpushed.
+	// BundleBytes is the size of the git bundle of unpushed work an earlier release saved, which
+	// pod_releases.bundle_bytes keeps for the rows those releases wrote. No release saves one
+	// now, so every release this daemon records writes zero; the column stays because the release
+	// before still writes it, and a rollback runs that release over this table.
 	BundleBytes int
+	// Release is the id of the release's mark (issue_releases.id) the record stands for,
+	// pod_releases.issue_release_id; zero for a record that names no mark. A release is recorded
+	// once per mark (RecordPodRelease), and a record read back names the mark it was written with.
+	Release int64
 }
 
 // PodResume is one wake of a released pod and what it cost: which wake brought it back, when the
@@ -108,23 +113,36 @@ type PodReleaseRecords struct {
 // of releases is complete without reading any resume. It ends every hold streak of that pod: the
 // pod is gone, so whatever was keeping it is over, and a pod held again after it comes back is
 // a streak of its own.
-func (s *Store) RecordPodRelease(ctx context.Context, rel PodRelease) (int64, error) {
+//
+// A record that names its release's mark (rel.Release) is written once per mark
+// (pod_releases_one_per_issue_release): the teardown records the release and clears the mark in
+// transactions of their own, so a teardown that failed, or whose daemon died, between the two runs
+// again and records the release again. That second write takes the record the first one wrote,
+// answers its id with wrote false and ends no streak, since the first one ended them. wrote is
+// true where this call wrote the row, which a record that names no mark always does.
+func (s *Store) RecordPodRelease(ctx context.Context, rel PodRelease) (id int64, wrote bool, err error) {
 	if rel.Project == "" || rel.Issue == "" {
-		return 0, errors.New("a pod release record needs its project and issue")
+		return 0, false, errors.New("a pod release record needs its project and issue")
 	}
-	var id int64
-	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
-		if err := tx.QueryRow(ctx, `insert into pod_releases (project, issue, generation, roles, at, bundle_bytes)
-			values ($1, $2, $3, $4, $5, $6) returning id`,
-			rel.Project, rel.Issue, int64(rel.Generation), strings.Join(rel.Roles, ","), rel.At, rel.BundleBytes).Scan(&id); err != nil {
+	err = Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		wrote = false
+		err := tx.QueryRow(ctx, `insert into pod_releases (project, issue, generation, roles, at, bundle_bytes, issue_release_id)
+			values ($1, $2, $3, $4, $5, $6, nullif($7::bigint, 0))
+			on conflict (issue_release_id) where issue_release_id is not null do nothing returning id`,
+			rel.Project, rel.Issue, int64(rel.Generation), strings.Join(rel.Roles, ","), rel.At, rel.BundleBytes, rel.Release).Scan(&id)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return tx.QueryRow(ctx, `select id from pod_releases where issue_release_id = $1`, rel.Release).Scan(&id)
+		}
+		if err != nil {
 			return err
 		}
+		wrote = true
 		return endPodHoldStreaks(ctx, tx, rel.Project, rel.Issue, "")
 	})
 	if err != nil {
-		return 0, fmt.Errorf("record the release of %s: %w", rel.Issue, err)
+		return 0, false, fmt.Errorf("record the release of %s: %w", rel.Issue, err)
 	}
-	return id, nil
+	return id, wrote, nil
 }
 
 // MarkPodResumeReady stamps when the replacement pod was Ready. It is written once, by the first
@@ -321,6 +339,39 @@ func openPodHold(ctx context.Context, tx pgx.Tx, project, issue string) (bool, e
 	return holding, nil
 }
 
+// StandingPodHoldsTx is the standing hold of each pod of project, keyed by its issue, read
+// through the caller's transaction: the hold streak of that pod that no pass, release or other
+// reason has ended. The state route reads it in its own snapshot, so the holds it shows and every
+// other fact of that state come from one moment, and it is one statement for the whole project
+// rather than one read per issue.
+//
+// A pod holds one running streak at most, because RecordPodHold ends every other reason's
+// streak in the transaction that records a reason. The rows that were running when
+// 20261102154500_pod_hold_streaks gave a streak its end were all left running, one per reason a
+// pod was ever held for, so a pod may still carry more than one; the read answers the streak of
+// the newest pass, which is the reason the rule read last. A row's detail is answered whole:
+// what of it a reader is shown is that reader's to cut.
+func (s *Store) StandingPodHoldsTx(ctx context.Context, tx pgx.Tx, project string) (map[string]PodHold, error) {
+	rows, err := tx.Query(ctx, `select distinct on (issue) id, project, issue, reason, detail, first_at, at, passes
+		from pod_holds where project = $1 and not ended order by issue, at desc, id desc`, project)
+	if err != nil {
+		return nil, fmt.Errorf("read the standing pod holds of %s: %w", project, err)
+	}
+	defer rows.Close()
+	holds := map[string]PodHold{}
+	for rows.Next() {
+		var h PodHold
+		if err := rows.Scan(&h.ID, &h.Project, &h.Issue, &h.Reason, &h.Detail, &h.FirstAt, &h.At, &h.Passes); err != nil {
+			return nil, fmt.Errorf("read the standing pod holds of %s: %w", project, err)
+		}
+		holds[h.Issue] = h
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read the standing pod holds of %s: %w", project, err)
+	}
+	return holds, nil
+}
+
 // endPodHoldStreaks marks the running streaks of the pod ended through the caller's transaction.
 // A streak already ended is left as it is, so its first_at, at and passes stay what the passes
 // of that streak made them.
@@ -340,7 +391,7 @@ func (s *Store) PodReleaseRecords(ctx context.Context, project string, since tim
 
 func podReleaseRecords(ctx context.Context, tx pgx.Tx, project string, since time.Time) (PodReleaseRecords, error) {
 	var out PodReleaseRecords
-	releases, err := tx.Query(ctx, `select id, project, issue, generation, roles, at, bundle_bytes
+	releases, err := tx.Query(ctx, `select id, project, issue, generation, roles, at, bundle_bytes, coalesce(issue_release_id, 0)
 		from pod_releases where project = $1 and at >= $2 order by id`, project, since)
 	if err != nil {
 		return out, fmt.Errorf("read the release records of %s: %w", project, err)
@@ -349,7 +400,7 @@ func podReleaseRecords(ctx context.Context, tx pgx.Tx, project string, since tim
 		var r PodRelease
 		var generation int64
 		var roles string
-		if err := releases.Scan(&r.ID, &r.Project, &r.Issue, &generation, &roles, &r.At, &r.BundleBytes); err != nil {
+		if err := releases.Scan(&r.ID, &r.Project, &r.Issue, &generation, &roles, &r.At, &r.BundleBytes, &r.Release); err != nil {
 			releases.Close()
 			return out, fmt.Errorf("read the release records of %s: %w", project, err)
 		}

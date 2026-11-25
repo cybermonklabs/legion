@@ -1092,9 +1092,9 @@ describe("tester-proof", () => {
     const dir = freshDir("seed");
     const file = path.join(dir, "fixture.json");
     await seed.testerProofIssue(file);
-    const body = { schemaVersion: 1, phase: "implement", issue: "LWEVAL-2" };
-    writeFileSync(path.join(dir, "implement.json"), JSON.stringify(body));
     const commit = "1111111111111111111111111111111111111111";
+    const body = { head: commit };
+    writeFileSync(path.join(dir, "implement.json"), JSON.stringify(body));
     await seed.implementHandoff(file, path.join(dir, "implement.json"), commit);
     expect(dispatch.handoffs).toEqual([
       expect.objectContaining({

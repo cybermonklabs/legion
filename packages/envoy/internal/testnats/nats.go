@@ -67,16 +67,29 @@ var (
 	sharedMu      sync.Mutex
 	shared        *accountServer
 	sharedCleanup *sharedTB
+	// startAccounts is how many accounts the shared server declares when it starts: firstAccounts,
+	// unless the package's TestMain asked for more (Accounts).
+	startAccounts = firstAccounts
 )
 
-// firstAccounts is how many accounts the shared server starts with. Every time a test asks for
-// one past them, the server doubles them by a reload: a server's start time grows faster than its
-// account count (0.9 s for 1,000 on a loaded devbox, 26 s for 5,000). The reload's wait,
-// connectTimeout, caps that growth: at half a CPU, doubling 4,096 accounts took 36 s and 65 s in
-// two measurements, so the test that asks for account 4,097 fails. A package run takes one account
-// for each test and subtest that asks (103 for cmd/listener, 64 for internal/store), so -count=40
-// of cmd/listener in one binary reaches the ceiling.
+// firstAccounts is how many accounts the shared server starts with unless its package asks for
+// more (Accounts). Every time a test asks for one past them, the server doubles them by a reload: a
+// server's start time grows faster than its account count (0.9 s for 1,000 on a loaded devbox, 26 s
+// for 5,000). The reload's wait, connectTimeout, caps that growth: at half a CPU, doubling 4,096
+// accounts took 36 s and 65 s in two measurements, so the test that asks for account 4,097 fails.
+// A reload also holds every client of the server at a message boundary until it ends (0.61 s for
+// 256 to 512 accounts, 1.68 s for 512 to 1,024, measured in #5188's review), which a test running
+// beside it pays inside its own bounds. A package run takes one account for each test and subtest
+// that asks: about 600 for cmd/listener, which therefore starts with Accounts(1024).
 const firstAccounts = 256
+
+// MainOption is a setting of Main.
+type MainOption func()
+
+// Accounts makes the package's shared server declare n accounts when it starts, rather than
+// firstAccounts, for a package whose run asks for more than firstAccounts: none of its tests then
+// waits behind a reload that declares more while other tests run beside it.
+func Accounts(n int) MainOption { return func() { startAccounts = n } }
 
 // init runs in every test binary that imports this package, whichever helper its tests use. Every
 // server these helpers start has no users unless a test configures some, and nats.go refuses an
@@ -90,8 +103,11 @@ func init() {
 
 // Main runs the package's tests, then shuts the shared server down and removes its store if a test
 // started it, and returns the exit code. A package whose tests use URL calls it from TestMain:
-// os.Exit(testnats.Main(m)).
-func Main(m *testing.M) int {
+// os.Exit(testnats.Main(m)), with options such as Accounts.
+func Main(m *testing.M, options ...MainOption) int {
+	for _, option := range options {
+		option()
+	}
 	mainRuns = true
 	code := m.Run()
 	if sharedCleanup != nil {
@@ -140,7 +156,7 @@ func sharedServer(t testing.TB) *accountServer {
 			attempt.run()
 		}
 	}()
-	server := startShared(attempt, firstAccounts)
+	server := startShared(attempt, startAccounts)
 	started = true
 	shared, sharedCleanup = server, attempt
 	return server

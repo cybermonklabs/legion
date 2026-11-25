@@ -78,15 +78,23 @@ const targetNode = `coalesce(item_block.kind, case when r.to_kind = 'block' then
 
 // oneRowPerNode ends both statements of the read. far holds a row for each link: the node at its
 // far end (node_kind, node_id), its kind, and its via at the near end. It leaves out the issue and
-// its own content, the rows (kind, id) that own selects, read once into an array, and keeps one
-// row for each other node: the distinct kinds of its links in order, and its lowest via, the
-// least pair of via kind and via id as arrays compare, element by element in the database's order.
+// its own content, the rows of own, the relation that holds them as (kind, id), and keeps one row
+// for each other node: the distinct kinds of its links in order, and its lowest via, the least
+// pair of via kind and via id as arrays compare, element by element in the database's order.
+//
+// It leaves them out by an anti-join, `not exists` over own, and not by a test of each row against
+// an array of own's rows. Postgres pushed the array's test into each arm of the links, and it does
+// not hash an array an InitPlan reads, so it compared each link with every row of own in turn. On
+// a copy of a dispatch:local database seeded at production's size, for an issue with 2,041 own
+// targets, the in statement read 5,000 links in 3.44-3.48 s, past the route's 2 s budget, and its
+// plan spent 2.58 s of 2.67 s in that test; with the anti-join, which Postgres plans as a Merge
+// Anti Join, it read them in 0.27-0.36 s.
 func oneRowPerNode(own string) string {
 	return `
 		select f.node_kind, f.node_id, array_agg(distinct f.kind order by f.kind),
 		       (min(array[f.via_kind, f.via_id]))[1], (min(array[f.via_kind, f.via_id]))[2]
 		from far f
-		where not (row(f.node_kind, f.node_id) = any(array(` + own + `)))
+		where not exists (select 1 from ` + own + ` x where x.kind = f.node_kind and x.id = f.node_id)
 		group by f.node_kind, f.node_id`
 }
 
@@ -215,7 +223,7 @@ var linksOutQuery = sync.OnceValue(func() string {
 			where (` + documentTarget + ` or r.to_kind not in ('artifact', 'block'))
 			  and (r.to_kind not in ` + itemBlockKinds + ` or item_block.id is not null)
 			  and ` + VisibleEnd("r.to_kind", "r.to_id", true, "$2") + `
-		)` + oneRowPerNode(`select row(o.kind, o.id) from own o`)
+		)` + oneRowPerNode(`own`)
 })
 
 // linksInQuery is the in statement of the references read of the issue whose key is $1, as the
@@ -313,7 +321,7 @@ var linksInQuery = sync.OnceValue(func() string {
 			` + itemBlockHeld + `
 			where r.node_id is not null
 			  and ` + VisibleEnd("r.node_kind", "r.node_id", true, "$2") + `
-		)` + oneRowPerNode(`select row(t.kind, t.id) from targets t`)
+		)` + oneRowPerNode(`targets`)
 })
 
 // ClosureTag starts every statement Closure sends, so that the query text pg_stat_activity shows

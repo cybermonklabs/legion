@@ -1181,11 +1181,16 @@ func (s *server) search(w http.ResponseWriter, r *http.Request) {
 	// text: runSearch stamps that on the response itself, true only where the fallback ran.
 	response.Query.Operators = reading.operators()
 	response.Filters = searchAppliedFilters(parameters)
-	// Where each ask hit stands is read for this route alone: the write-time suggestions
-	// (relatedSearch) rank the same bodies but never show it. TookMS counts the read.
+	// Where each ask hit stands, and who wrote each comment, message and ask hit, is read for this
+	// route alone: the write-time suggestions (relatedSearch) rank the same bodies but never show
+	// either. TookMS counts the reads.
 	started := time.Now()
 	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
 	if err := s.attachAskStates(r.Context(), s.deps.Store.Pool, response.Results, reader); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	if err := attachItemAuthors(r.Context(), s.deps.Store.Pool, response.Results); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}

@@ -1,0 +1,14 @@
+kind: Removed
+body: |-
+  The idle release keeps no saved workspace. It no longer saves a released pod's unpushed work as a
+  git bundle in the daemon's database, the next pod's launcher no longer restores one, and no pod is
+  held under `bundle_unrestored`. The worker shim's `bundle-workspace` frame, the launcher's
+  `launcher_bundle` frames and `LEGION_WORKSPACE_RESTORED` are gone; a `launcher_restored` report
+  from a launcher an earlier release started is logged and dropped. Migration
+  `20261123050533_idle_release_keeps_no_workspace` drops `workspace_bundles` and adds
+  `idle_release_declines`; its header carries the way back, which a rollback runs with every daemon
+  of the database stopped (docs/kubernetes.md, "Rolling back the release that keeps no saved
+  workspace"). Copy out any `workspace_bundles` row worth keeping before the upgrade.
+time: 2026-11-21T16:00:00Z
+custom:
+  Issue: idle-release-keeps-no-workspace

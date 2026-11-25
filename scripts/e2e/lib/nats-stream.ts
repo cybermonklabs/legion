@@ -104,7 +104,7 @@ async function main(): Promise<void> {
   // the operator's shell resolves it (operator-nats-seed.ts).
   let seed: NatsSeed | undefined;
   try {
-    seed = operatorNatsSeed(url, "<nats-url>", process.env, process.cwd());
+    seed = await operatorNatsSeed(url, "<nats-url>", process.env, process.cwd());
   } catch (error) {
     refuse(messageFor(error));
   }
