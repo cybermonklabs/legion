@@ -1,7 +1,7 @@
 # The merge gate: review and the production check
 
 Read it when you review or approve, or work a look of a closed issue's production check.
-Your role prompt gives the review submission, its footer, the thread rule, the CI read and the forward-merge confirmation; this page gives the rest.
+Your role prompt gives the review submission, its footer, the thread rule, the CI read and the forward-merge confirmation.
 The merger's steps are all in its role prompt.
 
 ## The reviewer
@@ -11,7 +11,7 @@ The merger's steps are all in its role prompt.
    Each agent reviews only the diff its task supplies: name in each task the commit, the head and `git diff <sha> <head>`, or the whole change.
    The last two sentences of your task, `Last reviewed commit: <sha>.` and `Review entry: <n>.`, are the daemon's; your role prompt says how to read them.
 3. A result that carries no report, or that names another place for it, is a failed run, not a verdict: run that agent again, or read its transcript.
-   Reading its diff yourself in its place answers the rubric from a bare verdict.
+   Reading the agent's diff yourself and recording that in its place is the same as answering the rubric from a bare verdict.
    When you can do neither, that half of the round has no review: tell the architect, do not approve, and wait with a `WAITING` line naming what you wait on until it answers.
 4. A `CHANGES` from either half is answered in the review: its findings are carried into a `REQUEST_CHANGES`, or each finding is recorded with why it does not stand.
    Your `APPROVE` needs both halves run at the reviewed head, or both `Thermo` rows reading `not run` because the diff the round reads touches no runtime code.
@@ -73,7 +73,7 @@ Cases 2, 3, 4 and 6 end: tell the architect, do not approve, and wait with a `WA
 ### The issue's checks
 
 - Approval is gated by the issue's own `before_merge` checks, as your role prompt says;
-  a `ci_check` check as `skill://legion-worker/references/ci-checks.md` says, and a running fix's check, or its job's red, holds none.
+  a `ci_check` check as `skill://legion-worker/references/ci-checks.md` says, a running fix's check none.
   With no earlier tester step, the implementer's evidence for each is what you read.
   A check whose `run` is a whole test suite with no pass standing is a finding for the architect: wait for its rewrite, and request no changes for it.
 
