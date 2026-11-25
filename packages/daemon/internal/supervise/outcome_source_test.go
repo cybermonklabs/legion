@@ -32,8 +32,9 @@ import (
 // read, or internal/claudebridge, which writes the busy refusal; no site holds the busy refusal's
 // words but the refusal itself — none in this package, the stream or the runtime, and none in the
 // bridge but its constant and the refusal it writes; every charge names a declared member; and no
-// function but a charge function writes a budget counter except to reset it to zero
-// (budgetResets names each that may). Delete a check here when the compiler comes to hold it.
+// function but a charge function writes a budget counter except to set it back, to zero or to one
+// attempt short of its limit (budgetResets names each that may). Delete a check here when the
+// compiler comes to hold it.
 //
 // The negative control of the check c-the-outcome-is-not-a-string, in dispatch://INFRA-3136's
 // verification.md, names each shape of a match this test claims to find, and
@@ -205,10 +206,10 @@ func TestOutcomeSourceHoldsThePolicyAtItsSites(t *testing.T) {
 					case slices.Contains(chargeFunctions, fn.Name.Name):
 					case budgetResets[fn.Name.Name] != "":
 						if !write.reset {
-							t.Errorf("%s writes a budget counter other than to zero: %s may only reset the counters, and a charge is the charge functions' alone, which ask the policy (Charges)", where, fn.Name.Name)
+							t.Errorf("%s writes a budget counter other than back down: %s may only set the counters back, to zero or to one attempt short of each spent limit (Budgets.OneAttemptLeft), and a charge is the charge functions' alone, which ask the policy (Charges)", where, fn.Name.Name)
 						}
 					default:
-						t.Errorf("%s writes a budget counter: only the charge functions (%s) count against a budget, each asking the policy (Charges), and only the resets listed in budgetResets set one back to zero", where, strings.Join(chargeFunctions, ", "))
+						t.Errorf("%s writes a budget counter: only the charge functions (%s) count against a budget, each asking the policy (Charges), and only the resets listed in budgetResets set one back down", where, strings.Join(chargeFunctions, ", "))
 					}
 				}
 			}
@@ -231,14 +232,15 @@ func TestOutcomeSourceHoldsThePolicyAtItsSites(t *testing.T) {
 var chargeFunctions = []string{"chargePrompt", "chargeDeath", "relaunchAfterFailure", "chargeLaunch"}
 
 // budgetResets are the functions besides the charge functions that may write a budget counter, and
-// each may write one only to zero: a reset is the end of what a budget measures, which is no event
-// the policy is asked about.
+// each may write one only back down: to zero, or to the answer of Budgets.OneAttemptLeft, which
+// takes each spent counter to one short of its limit and keeps every other. A reset is the end of
+// what a budget measures, which is no event the policy is asked about.
 var budgetResets = map[string]string{
 	"confirmCarrying": "a started turn of the task resets the prompt failures and the prompt retirements (Budgets, PromptFailures and PromptRetires)",
 	"ready":           "the agent's ready resets the launch failures, since the launch it measured came up (Budgets, LaunchFailures)",
 	"turnEnded":       "a turn that ends normally resets the deaths, since the agent got through the work they were charged against (Budgets, Deaths)",
 	"retirePending":   "the task's retirement resets the deaths charged against it, in the same write (Budgets, Deaths)",
-	"retry":           "an operator's retry of a failed claim starts every budget again from nothing (RequestRetry)",
+	"retry":           "an operator's retry of a failed claim starts every budget again from nothing, or with one attempt left of each budget the failure spent (RequestRetry, Budgets.OneAttemptLeft)",
 }
 
 // The packages this test reads, by import path.
@@ -274,7 +276,7 @@ func (s *goSource) budgetCounters(t *testing.T) map[types.Object]bool {
 }
 
 // budgetWrite is one statement writing a budget counter: target is what it writes, and reset
-// whether it writes zero by plain assignment.
+// whether it sets the counters back down by plain assignment (lowers).
 type budgetWrite struct {
 	target ast.Expr
 	reset  bool
@@ -307,7 +309,7 @@ func (s *goSource) budgetWrites(body *ast.BlockStmt, counters map[types.Object]b
 				}
 				reset := false
 				if node.Tok == gotoken.ASSIGN && len(node.Lhs) == len(node.Rhs) {
-					reset = s.isZero(node.Rhs[i])
+					reset = s.lowers(node.Rhs[i], map[types.Object]bool{})
 				}
 				found = append(found, budgetWrite{target: target, reset: reset})
 			}
@@ -325,6 +327,41 @@ func (s *goSource) isZero(expr ast.Expr) bool {
 	}
 	literal, ok := expr.(*ast.CompositeLit)
 	return ok && len(literal.Elts) == 0
+}
+
+// lowers is whether expr sets the budget counters it is written to back down and raises none: zero
+// (isZero), the answer of Budgets.OneAttemptLeft, which takes each spent counter to one short of
+// its limit and keeps the others, or a variable whose every value is one of these. seen holds the
+// variables already followed, so a variable given its own value is read once.
+func (s *goSource) lowers(expr ast.Expr, seen map[types.Object]bool) bool {
+	expr = ast.Unparen(expr)
+	if s.isZero(expr) {
+		return true
+	}
+	if call, ok := expr.(*ast.CallExpr); ok {
+		fn := s.callee(call)
+		if fn == nil || fn.Pkg() != s.pkg || fn.Name() != "OneAttemptLeft" {
+			return false
+		}
+		recv := fn.Type().(*types.Signature).Recv()
+		return recv != nil && isNamed(recv.Type(), s.pkg.Path(), "Budgets")
+	}
+	ident, ok := expr.(*ast.Ident)
+	if !ok {
+		return false
+	}
+	object := s.info.ObjectOf(ident)
+	values := s.assignments()[object]
+	if object == nil || seen[object] || len(values) == 0 {
+		return object != nil && seen[object]
+	}
+	seen[object] = true
+	for _, value := range values {
+		if !s.lowers(value, seen) {
+			return false
+		}
+	}
+	return true
 }
 
 // goSource is one package's non-test source, type-checked (testtypes.CheckPackage), with its files
