@@ -15,7 +15,11 @@ GATE = gate("envoy_go_checks", "envoy-go-checks", reads=reads(
      "the vendored archive's sha256 and renders it"),
     # The helm the cluster suite's render runs, installed by its own step from the helm row.
     (".github/actions/install-helm/**", at("envoy-go-checks", "./.github/actions/install-helm")),
-    (".github/ci-tools.yaml", ".github/actions/install-helm/action.yml:30-31 installs the tarball of the helm row"),
-    (".github/scripts/ci-tools.sh", ".github/actions/install-helm/action.yml:21 sources it, and ci_tools_fetch "
+    (".github/ci-tools.yaml", "`.github/actions/install-helm/action.yml#ci_tools_fetch` installs the tarball of the helm row"),
+    (".github/scripts/ci-tools.sh", "`.github/actions/install-helm/action.yml#$GITHUB_ACTION_PATH/../../scripts/ci-tools.sh` sources it, and ci_tools_fetch "
                                     "reads that row's two sources"),
+    # Every script harness step queues its harness through the pool, and the wait step is the
+    # verdict on them, so a change to the pool must start this job.
+    (".github/scripts/harness-pool.sh",
+     f"{at('envoy-go-checks', HARNESS_POOL_WAIT_STEP)}, and each harness step above it queues its harness through it"),
 ) + setup_go("envoy-go-checks", f"{ENVOY}/go.mod") + bun_job("envoy-go-checks"))

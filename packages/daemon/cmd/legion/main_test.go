@@ -1790,7 +1790,9 @@ func TestPlainStateSummarizesTheHeldLifecycleRows(t *testing.T) {
 // An operator reading plain `legion state` is told which agents are in a tool call right now:
 // each by issue and role with the call its stream named and when that call started, read from
 // each claim view's `step`. A call whose end the daemon received is over, so the claim that made
-// it is in none; with no agent in a call the line says so.
+// it is in none; with no agent in a call the line says so. Only a working claim's agent is in a
+// turn: a retired or suspended claim keeps the step it was last in on its record, on purpose, so
+// a call open there is no agent in a call, and the line names only the working claims.
 func TestPlainStateSummarizesTheAgentsInAToolCall(t *testing.T) {
 	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
 		`"admission":{"cap":2,"active":[],"waiting":[]},"pendingStatusWrites":[]`
@@ -1800,11 +1802,28 @@ func TestPlainStateSummarizesTheAgentsInAToolCall(t *testing.T) {
 		`"callId":"toolu_impl_3","argsBytes":128,"argsHash":"9b2e45c0d1f8a673","startedAt":"2026-09-23T01:14:00Z"}`
 	ended := `"step":{"at":"2026-09-23T01:12:00Z","turnStartedAt":"2026-09-23T01:10:00Z","tool":"read",` +
 		`"callId":"toolu_arch_2","argsBytes":74,"argsHash":"3f7c1a9d62b40e58","startedAt":"2026-09-23T01:11:00Z","endedAt":"2026-09-23T01:12:00Z"}`
-	stepping := `{"LEGION-208":{"key":"LEGION-208","generation":1,"phase":"implementing","status":"in_progress",` +
-		`"architect":{"session":"ses_a","state":"working","pluginContract":0,` + ended + `},` +
-		`"workers":{"implementer":{"claim":{"session":"ses_i","state":"working","pluginContract":0,` + open + `},"rounds":1}}}}`
-	idle := `{"LEGION-208":{"key":"LEGION-208","generation":1,"phase":"implementing","status":"in_progress",` +
-		`"architect":{"session":"ses_a","state":"working","pluginContract":0,` + ended + `},"workers":{}}}`
+	// claim is one claim view in a state with a step; issue is LEGION-208 with its architect's
+	// claim and, unless implementer is empty, an implementer's claim on its first round. Each row
+	// below names only its claims' states and steps.
+	claim := func(session, state, step string) string {
+		return `{"session":"` + session + `","state":"` + state + `","pluginContract":0,` + step + `}`
+	}
+	issue := func(architect, implementer string) string {
+		workers := `{}`
+		if implementer != "" {
+			workers = `{"implementer":{"claim":` + implementer + `,"rounds":1}}`
+		}
+		return `{"LEGION-208":{"key":"LEGION-208","generation":1,"phase":"implementing","status":"in_progress",` +
+			`"architect":` + architect + `,"workers":` + workers + `}}`
+	}
+	stepping := issue(claim("ses_a", "working", ended), claim("ses_i", "working", open))
+	idle := issue(claim("ses_a", "working", ended), "")
+	// The architect's claim is retired and the implementer's working, each with a call that has a
+	// start and no end: the retired claim's call is the one its record kept, not an agent in one.
+	openArchitect := `"step":{"at":"2026-09-22T18:40:00Z","turnStartedAt":"2026-09-22T18:30:00Z","tool":"edit",` +
+		`"callId":"toolu_arch_7","argsBytes":96,"argsHash":"5d0e8a1c7b3f2946","startedAt":"2026-09-22T18:40:00Z"}`
+	retiredBeside := issue(claim("ses_a", "retired", openArchitect), claim("ses_i", "working", open))
+	noneWorking := issue(claim("ses_a", "retired", openArchitect), claim("ses_i", "suspended", open))
 	for _, tc := range []struct {
 		name, issues, want string
 	}{
@@ -1812,6 +1831,16 @@ func TestPlainStateSummarizesTheAgentsInAToolCall(t *testing.T) {
 			name:   "one agent in a call, one whose call ended",
 			issues: stepping,
 			want:   "agents in a tool call: 1 — LEGION-208 implementer \"bash toolu_impl_3 since 2026-09-23T01:14:00Z\"\n",
+		},
+		{
+			name:   "a working claim in a call beside a retired claim whose record keeps one",
+			issues: retiredBeside,
+			want:   "agents in a tool call: 1 — LEGION-208 implementer \"bash toolu_impl_3 since 2026-09-23T01:14:00Z\"\n",
+		},
+		{
+			name:   "open calls only on retired and suspended claims",
+			issues: noneWorking,
+			want:   "agents in a tool call: none\n",
 		},
 		{name: "every call ended", issues: idle, want: "agents in a tool call: none\n"},
 		{name: "no issues", issues: `{}`, want: "agents in a tool call: none\n"},
@@ -2145,10 +2174,10 @@ func TestTheShippedWordsNameTheWaitingLineCount(t *testing.T) {
 // it exists to catch. (INFRA-2554.)
 func TestTheShippedWordsNameTheWaitingLineBlock(t *testing.T) {
 	const (
-		returned = "Its work came back at 2026-10-03T09:58:11Z. It is 1st of 1 issue whose work came back," +
-			" and it takes the free slots first."
-		starting = "It has not started. It is 1st of 1 issue that has not started, by its own Dispatch rank," +
-			" and 1 issue whose work came back stands ahead of all of them."
+		returned = "Its work came back at 2026-10-03T09:58:11Z. It waits at P1, its own priority. It is 1st of 1 issue at P1 whose work came back," +
+			" and it takes the free slots before the issues at P1 that have not started."
+		starting = "It has not started. It waits at P1, its own priority. It is 1st of 1 issue at P1 that has not started, by its own Dispatch rank," +
+			" and 1 issue at P1 whose work came back stands ahead of all of them."
 	)
 	waiting := []string{"WIDGETS-14", "WIDGETS-15"}
 	issues := map[string]api.Issue{

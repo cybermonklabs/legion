@@ -213,15 +213,17 @@ func pane() error {
 	return json.NewEncoder(os.Stdout).Encode(res)
 }
 
-// rigOwner is the one GitHub owner of the rig's project, a placeholder whose directory of the gh
-// bundle holds the rig's token.
-const rigOwner = "skills-rig"
+// rigOwner is the one GitHub owner of the rig's project, the owner of rigRepository, a placeholder
+// whose directory of the gh bundle holds the rig's token.
+const rigOwner = "example"
 
 // rigRepository and rigDefaultBranch are the repository and default branch a rig worker's
-// addressing names, as a real pane's does for its issue; the branch is not `main`, since the skills
-// tell a worker never to assume one.
+// addressing names, as a real pane's does for its issue. They are the tester-proof world's, which
+// rig.sh names again: rigRepository must equal rig.sh's `worker_repo`, and rigDefaultBranch
+// rig.sh's `worker_default_branch`. The branch is not `main`, since the skills tell a worker never
+// to assume one.
 const (
-	rigRepository    = rigOwner + "/project"
+	rigRepository    = rigOwner + "/widgets"
 	rigDefaultBranch = "trunk"
 )
 

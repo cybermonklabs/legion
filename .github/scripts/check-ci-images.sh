@@ -56,7 +56,7 @@
 #      reads the whole string, not the eight characters alone.
 #   3. a version this repository pins elsewhere that no row carries: no `oven/bun` row at the
 #      version `.bun-version` locks, with or without the `-slim` suffix, or no `library/golang`
-#      row at `ARG GO_VERSION` of packages/daemon/docker/worker.Dockerfile. A row for another
+#      row at `packages/daemon/docker/worker.Dockerfile#ARG GO_VERSION`. A row for another
 #      version is admitted, so raising Bun or Go is two commits: the new version's row first,
 #      which ci.yaml's ci-images job copies, then the pin and every FROM. One commit holding
 #      both would let a consumer job pull the new digest while that same run's copy is still

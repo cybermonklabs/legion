@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"os"
 	"os/exec"
@@ -196,7 +197,7 @@ func TestLegionGhPrintsNoTokenOfAURLScopedGitConfigKey(t *testing.T) {
 			t.Fatalf("git %v: %v: %s", args, err, out)
 		}
 	}
-	err := ghRepoGitConfigRefusal(env)
+	err := ghRepoGitConfigRefusal(context.Background(), env)
 	if err == nil {
 		t.Fatal("ghRepoGitConfigRefusal = nil, want the key refused")
 	}
@@ -236,7 +237,7 @@ func TestReadGitRemotesNamesAnUnreadableLineByItsRemoteAlone(t *testing.T) {
 					t.Fatalf("git %v: %v: %s", args, err, out)
 				}
 			}
-			_, err := readGitRemotes()
+			_, err := readGitRemotes(context.Background())
 			if err == nil {
 				t.Fatal("readGitRemotes = nil error, want the line refused")
 			}

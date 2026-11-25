@@ -33,6 +33,11 @@ import (
 // turns on. The number is arbitrary and fixed: only agreement matters.
 const migrateLock int64 = 1208001
 
+// pingAfterIdle is how long a connection sits idle in the pool before an acquire pings it, which
+// is pgxpool's own default (pgx v5.13.0 pgxpool/pool.go:278-279). PoolConfig's ShouldPing keeps it
+// for every acquire but a bounded one, whose BEGIN is the check (Pool.BeginTx).
+const pingAfterIdle = time.Second
+
 // sessionResetBound bounds each step that ends apply's hold on a migration's connection: the reset
 // of the connection's session, and the close of a connection whose reset failed
 // (releaseMigrationConn). Five seconds. Each step is one or two round trips to a server that has
@@ -112,6 +117,16 @@ func Open(ctx context.Context, dsn string) (*Store, error) {
 // test that builds a pool of its own does too (testpg.ClonePool), so what the test writes passes
 // the rule the daemon's writes pass.
 //
+// It gives a bounded transaction's connection the bounds BoundAfterAcquire states. A dial such a
+// transaction waits for runs under the transaction's write bound: BeforeConnect lowers the connect
+// timeout pgxpool gives every dial (two minutes where dsn names none) to it, reading the bound
+// from the dial's context, which keeps the values of the acquiring one (puddle's constructor
+// context). And it pings no connection a bounded transaction is handed: that transaction's BEGIN,
+// under its write bound, is the check, and Pool.BeginTx replaces a connection the BEGIN finds the
+// server closed, as the ping would. Without these a database that stops answering in the middle of
+// a dial or a ping held such a transaction for the whole of its wait in the pool's queue. Every
+// other connection keeps pgxpool's own dial timeout and its ping after pingAfterIdle.
+//
 // It refuses a dsn whose default_query_exec_mode is exec or simple_protocol. The codec rule picks
 // the text rule or the JSON rule by the type of each parameter, and pgx learns that type from the
 // server only in the three other modes: cache_statement (pgx's default), cache_describe and
@@ -131,6 +146,15 @@ func PoolConfig(dsn string) (*pgxpool.Config, error) {
 		mode = "simple_protocol"
 	default:
 		config.AfterConnect = registerStorableCodecs
+		config.BeforeConnect = func(ctx context.Context, connConfig *pgx.ConnConfig) error {
+			if bound := afterAcquireOf(ctx); bound != nil && bound.write < connConfig.ConnectTimeout {
+				connConfig.ConnectTimeout = bound.write
+			}
+			return nil
+		}
+		config.ShouldPing = func(ctx context.Context, params pgxpool.ShouldPingParams) bool {
+			return afterAcquireOf(ctx) == nil && params.IdleDuration > pingAfterIdle
+		}
 		return config, nil
 	}
 	return nil, fmt.Errorf("default_query_exec_mode=%s is refused: the store's text rule needs the type "+

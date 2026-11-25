@@ -237,6 +237,7 @@ func defaultsFor(port int) Config {
 		PromptRetireLimit:                       2,
 		WorkerWakesPerMinute:                    8,
 		WorkerWakeBurst:                         1,
+		GitHubGraphQLShare:                      0.5,
 		EnvoyURL:                                "http://127.0.0.1:9020",
 		NatsURLs:                                []string{"nats://127.0.0.1:4222"},
 		DispatchURL:                             "http://127.0.0.1:8080",

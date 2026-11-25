@@ -15,6 +15,7 @@ import (
 // blocks again, name a block by its text, and, where the batch's own text names one block, the id
 // that block carries now.
 func TestAPreconditionRefusedForARemovedBlockNamesTheWayBack(t *testing.T) {
+	t.Parallel()
 	tree, err := parseInput("# Title\n\nIntro, as another session reworded it.\n\nTail.\n")
 	if err != nil {
 		t.Fatal(err)
@@ -58,6 +59,7 @@ func TestAPreconditionRefusedForARemovedBlockNamesTheWayBack(t *testing.T) {
 // A block guard covers an insert or a move whose anchor is a block id or a quote: the batch names
 // the anchor block, and a move names the block it relocates as well.
 func TestPreconditionBlocksCoverInsertAndMove(t *testing.T) {
+	t.Parallel()
 	tree, err := parseInput("# Title\n\nIntro.\n\nTail.\n")
 	if err != nil {
 		t.Fatal(err)
@@ -116,6 +118,7 @@ func TestPreconditionBlocksCoverInsertAndMove(t *testing.T) {
 // An operation whose anchor names no block of its own - the document's edges, a heading - is the
 // one a block guard cannot cover, and its refusal says what guards it instead.
 func TestPreconditionBlocksRefuseAnAnchorThatNamesNoBlock(t *testing.T) {
+	t.Parallel()
 	tree, err := parseInput("# Title\n\nIntro.\n")
 	if err != nil {
 		t.Fatal(err)
@@ -137,6 +140,7 @@ func TestPreconditionBlocksRefuseAnAnchorThatNamesNoBlock(t *testing.T) {
 // A block id an operation wrote that the document does not carry is refused by the quote form of
 // the field it stood in, since the words are what the caller still has.
 func TestBlockAnchorNotFoundNamesTheQuoteForm(t *testing.T) {
+	t.Parallel()
 	tree, err := parseInput("# Title\n\nIntro.\n")
 	if err != nil {
 		t.Fatal(err)
@@ -182,6 +186,7 @@ func TestBlockAnchorNotFoundNamesTheQuoteForm(t *testing.T) {
 // the refusal of its block id names the id that block carries now, so the caller can write the
 // operation again without reading the document. Text two blocks hold names neither.
 func TestBlockNotFoundNamesTheBlockHoldingTheQuotedText(t *testing.T) {
+	t.Parallel()
 	tree, err := parseInput("# Title\n\nIntro.\n\nIntro.\n")
 	if err != nil {
 		t.Fatal(err)

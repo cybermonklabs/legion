@@ -302,7 +302,7 @@ func (m *Machine) reserveWake(ctx context.Context, exempt bool, turn time.Time, 
 	// (markPluginRelaunch, runWake, wake.pluginMark). A launch that runs above leaves it on the
 	// machine, where the launch itself commits it (launchNow, commitPluginRelaunch).
 	return m.parkWake(ctx, &wake{at: at, reserved: now, kind: kind, state: m.claim.State, paid: true, run: run, again: again,
-		pluginMark: m.takePluginRelaunch()}, at.Sub(now))
+		pluginMark: m.takePluginRelaunch()})
 }
 
 // gatePaces is the gate's rule for a launch no request exempts and no project pause holds
@@ -326,9 +326,9 @@ func PacedLaunch(deps *Deps, c *Claim) bool {
 	return gatePaces(deps, controller)
 }
 
-// parkWake is the park the gate and the re-park share (reserveWake, reparkWake): TimerWake is
-// armed for after — what is left of the wait — and waiting waits on the machine (waitOnMachine),
-// which is what reserveWake states.
+// parkWake is the park the gate, the re-park and the pause's let-out share (reserveWake,
+// reparkWake, letOutHeldLaunch): TimerWake is armed at the wake's turn, waiting.at (armAt), and
+// waiting waits on the machine (waitOnMachine), which is what reserveWake states.
 //
 // The credit of the refresh gate this machine may hold outlives a park of this lane's own kind
 // and no other (endRefreshLane, dispatch://INFRA-2712 R1): that wake is the one the credit was
@@ -345,8 +345,8 @@ func PacedLaunch(deps *Deps, c *Claim) bool {
 // (refreshPlugin, staleRegistration, judge, probe, backstopStalledTurn, letGo). A path that
 // raises one later is held to the rule by ending its decision, with nothing for this park to
 // remember (endRefreshLane).
-func (m *Machine) parkWake(ctx context.Context, waiting *wake, after time.Duration) error {
-	m.arm(TimerWake, after, "")
+func (m *Machine) parkWake(ctx context.Context, waiting *wake) error {
+	m.armAt(TimerWake, waiting.at, "")
 	return m.waitOnMachine(ctx, waiting)
 }
 
@@ -375,7 +375,7 @@ func (m *Machine) takeEarlierTurn(turn time.Time) bool {
 	m.log.Info("supervise: the relaunch a report of the recorded death parked takes the turn the boot reserved for it",
 		"due", w.at, "turn", turn)
 	w.at = turn
-	m.arm(TimerWake, max(turn.Sub(now), 0), "")
+	m.armAt(TimerWake, turn, "")
 	return true
 }
 
@@ -851,8 +851,8 @@ func (m *Machine) runDroppedLaunchForRetry(ctx context.Context, ev Event, droppe
 // (Handle, after both the named ignore's refusal and the row that acted): the claim is in the
 // state the gate found, with no process and no wake of its own, which is where a refusal, an
 // ignore and a forget-session each leave it — and the launch the wake holds is still owed. It is
-// parked again by the park the gate itself makes (parkWake), at the same release moment, for
-// whatever is left of the wait: the token was taken once, so this costs nothing and the wakes
+// parked again by the park the gate itself makes (parkWake), at the same release moment, which
+// fires at once if it has passed: the token was taken once, so this costs nothing and the wakes
 // behind it keep their turns.
 //
 // A claim that records a process takes no wake back, which is what the locator in the guard
@@ -876,7 +876,7 @@ func (m *Machine) reparkWake(ctx context.Context, dropped *wake) {
 	if dropped.pause != 0 {
 		err = m.pauseGate(ctx, dropped, dropped.pause)
 	} else {
-		err = m.parkWake(ctx, dropped, max(dropped.at.Sub(m.deps.Clock.Now()), 0))
+		err = m.parkWake(ctx, dropped)
 	}
 	if err != nil {
 		m.log.Warn("supervise: the wake that keeps its turn could not be written; it waits in memory alone",

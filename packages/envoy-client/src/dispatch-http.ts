@@ -73,6 +73,8 @@ import type {
   ResolveAskInput,
   SearchResponse,
   SessionAnswersResponse,
+  StatusChangeAnswer,
+  StatusChangeInput,
   Suggestions,
   UpdateIssueInput,
   Version,
@@ -131,16 +133,32 @@ export class DispatchServiceError extends Error {
    * false for an answer something in Dispatch's place wrote (`DispatchGatewayError`).
    */
   readonly fromDispatch: boolean = true;
+  readonly candidates: DispatchServiceErrorShape["candidates"] | undefined;
+  readonly current: DispatchServiceErrorShape["current"] | undefined;
+  readonly mismatches: DispatchServiceErrorShape["mismatches"] | undefined;
+  /** A `409 PARENT_STATUS_CONFLICT`'s issues: each one the write would leave out of line. */
+  readonly issues: DispatchServiceErrorShape["issues"] | undefined;
+  /** A status change's refusal: the entry of each step that wrote before it. */
+  readonly changed: DispatchServiceErrorShape["changed"] | undefined;
 
   constructor(
     readonly code: string,
     readonly status: number,
     message: string,
-    readonly candidates?: DispatchServiceErrorShape["candidates"],
-    readonly current?: DispatchServiceErrorShape["current"],
-    readonly mismatches?: DispatchServiceErrorShape["mismatches"]
+    /** The members of Dispatch's refusal beside its message that a caller reads off the error:
+     *  its answer's JSON, or another refusal whose members it keeps. */
+    details: {
+      readonly [Member in "candidates" | "changed" | "current" | "issues" | "mismatches"]?:
+        | DispatchServiceErrorShape[Member]
+        | undefined;
+    } = {}
   ) {
     super(message);
+    this.candidates = details.candidates;
+    this.current = details.current;
+    this.mismatches = details.mismatches;
+    this.issues = details.issues;
+    this.changed = details.changed;
   }
 }
 
@@ -414,6 +432,23 @@ function resultDryRunNoRouteRefusal(baseUrl: string, route: string): DispatchSer
     `Dispatch at ${urlForText(baseUrl, DISPATCH_URL_SETTING)} answered no route for ${route} each ` +
       "time the dry run was sent: this build is older than a result's dry run, so it cannot show " +
       "the pull-request body line before the record. Nothing was recorded."
+  );
+}
+
+/**
+ * What `changeIssueStatus` throws once the Dispatch at `baseUrl` answered no route for `route` each
+ * time the write was sent: a build older than the status change route. The code and status are
+ * that answer's. The PATCH is never sent in its place, since a PATCH takes no option and would
+ * write the status without what the option asks for, so the message says that nothing changed.
+ */
+function statusChangeNoRouteRefusal(baseUrl: string, route: string): DispatchServiceError {
+  return new DispatchServiceError(
+    "NOT_FOUND",
+    404,
+    `Dispatch at ${urlForText(baseUrl, DISPATCH_URL_SETTING)} answered no route for ${route} each ` +
+      "time the status change was sent. This build is older than that route, so it takes no " +
+      "include_children, unlink_children or include_parent, and nothing changed. No PATCH was " +
+      "sent in its place, since a PATCH would write the status without the option."
   );
 }
 
@@ -1210,6 +1245,28 @@ export class DispatchClient {
     return this.#json("PATCH", ["api", "v1", "issues", await this.#resolveIssue(issue)], input);
   }
 
+  /**
+   * `POST /api/v1/issues/{key}/status-change`: writes the issue's status and, with an option, what
+   * happens to the open issues under it or to the issues above it, so each parent's status stays
+   * in line with its children's. The answer is the issue and one `changed` entry for each issue
+   * whose status or parent the call changed, in the order the steps ran. A refusal carries
+   * `changed` too: the entries of the steps that wrote before it (`DispatchServiceError`).
+   *
+   * A build without the route answers no route each time the write is sent (`#write` asks again
+   * as for every write), and this then throws `statusChangeNoRouteRefusal`'s refusal. No PATCH is
+   * sent in its place, since a PATCH would write the status without the option.
+   */
+  async changeIssueStatus(issue: string, input: StatusChangeInput): Promise<StatusChangeAnswer> {
+    const path = ["api", "v1", "issues", await this.#resolveIssue(issue), "status-change"];
+    try {
+      return await this.#json("POST", path, input);
+    } catch (error) {
+      throw this.#refusalOfNoRoute(error, path, (route) =>
+        statusChangeNoRouteRefusal(this.#baseUrl, route)
+      );
+    }
+  }
+
   /** `POST /api/v1/issues/{key}/claim`: this session takes the issue. 409 ISSUE_CLAIMED when a
    *  running session, or any human, holds it; 409 CLAIM_CONTENDED when the holder changed twice
    *  while the request ran, so nothing was applied. The answer's `legion_managed_status` says
@@ -1560,9 +1617,9 @@ export class DispatchClient {
     try {
       return await this.#json("POST", path, body);
     } catch (error) {
-      if (!(error instanceof DispatchNoRouteError) && !isNoRoute(error)) throw error;
-      const route = `POST /${path.map((segment) => encodeURIComponent(segment)).join("/")}`;
-      throw reviewNoRouteRefusal(this.#baseUrl, route, version);
+      throw this.#refusalOfNoRoute(error, path, (route) =>
+        reviewNoRouteRefusal(this.#baseUrl, route, version)
+      );
     }
   }
 
@@ -1589,9 +1646,9 @@ export class DispatchClient {
     try {
       return await this.#writingNothing<CheckResultDryRun>(path, input, { writes: false });
     } catch (error) {
-      if (!(error instanceof DispatchNoRouteError) && !isNoRoute(error)) throw error;
-      const route = `POST /${path.map((segment) => encodeURIComponent(segment)).join("/")}`;
-      throw resultDryRunNoRouteRefusal(this.#baseUrl, route);
+      throw this.#refusalOfNoRoute(error, path, (route) =>
+        resultDryRunNoRouteRefusal(this.#baseUrl, route)
+      );
     }
   }
 
@@ -2165,6 +2222,18 @@ export class DispatchClient {
       signal: signal === undefined ? this.#signal : AbortSignal.any([this.#signal, signal]),
       sleep: this.#sleep,
     });
+  }
+
+  /** What the catch of a `POST` of `path` throws: the refusal `refuse` writes for that route where
+   *  `error` is an answer of no route each time it was sent (a build older than the route), else
+   *  `error` as it came. It returns rather than throws, so the throw stays at the catch. */
+  #refusalOfNoRoute(
+    error: unknown,
+    path: readonly string[],
+    refuse: (route: string) => DispatchServiceError
+  ): unknown {
+    if (!(error instanceof DispatchNoRouteError) && !isNoRoute(error)) return error;
+    return refuse(`POST /${path.map((segment) => encodeURIComponent(segment)).join("/")}`);
   }
 
   /**
@@ -2799,9 +2868,7 @@ export class DispatchClient {
           error.code ?? `HTTP_${response.status}`,
           response.status,
           error.error,
-          error.candidates,
-          error.current,
-          error.mismatches
+          error
         );
       }
       throw this.#gatewayError(method, url, response, text, "Dispatch's error JSON");
