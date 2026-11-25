@@ -1,9 +1,11 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, beforeAll, expect, test } from "bun:test";
 import { QueryClient } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: user-event has no form for a cancelable beforeinput, paste, drop, cut or composition event, nor for a key whose default prevention is read.
 import { act, fireEvent, type RenderResult, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
+import type { DisplayTree } from "../../../api/types";
+import { warmMarkdownRenderer } from "../../refs/markdown-engine";
 import { node, SPEC_DOCUMENT } from "../decisions-filter/decisions-fixtures";
 import type { NodeType } from "../page-words";
 import { blockNodeId } from "../tree-drafts";
@@ -24,6 +26,10 @@ import {
 import { caretIn } from "./read-only-caret";
 import { SelectionComment } from "./SelectionComment";
 import { TEXT_COMPOSER_ATTRIBUTE } from "./TextMargin";
+
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 /**
  * R6: Enter on the row of a read-only node puts a caret in its words, where a person reads,
@@ -62,12 +68,17 @@ afterEach(() => {
 
 /** The row of a comment of the issue, drawn by hand in the outline: the node, its row and its
  *  words element. */
-function drawComment(text = "Words of the comment."): {
+function drawComment(
+  text = "Words of the comment.",
+  tree?: DisplayTree
+): {
   readonly row: HTMLElement;
-  readonly view: ReturnType<typeof drawTree>;
+  readonly view: RenderResult;
   readonly words: HTMLElement;
 } {
-  const view = drawTree([node({ id: "post", text, type: "comment" })]);
+  const view = drawTree([
+    node({ id: "post", text, ...(tree === undefined ? {} : { tree }), type: "comment" }),
+  ]);
   return { ...located(view, "post"), view };
 }
 
@@ -106,12 +117,15 @@ function lacksCaret(words: HTMLElement): boolean {
 /** Puts the caret in `row` and says it did, so a case that asserts what the caret does not do
  *  fails where it is not set. Answers what takes it away. */
 function setCaret(row: HTMLElement, words: HTMLElement): () => void {
-  const away = caretIn(row);
-  expect(away, "caretIn answers no function that takes the caret away").not.toBeNull();
+  const holder: { away: (() => void) | null } = { away: null };
+  act(() => {
+    holder.away = caretIn(row);
+  });
+  expect(holder.away, "caretIn answers no function that takes the caret away").not.toBeNull();
   expect(hasCaret(words), "caretIn sets no contenteditable, inputmode and aria-readonly").toBe(
     true
   );
-  return away as () => void;
+  return holder.away as () => void;
 }
 
 test("row focused, Enter on an ask, comment, message, lens, finding, risk, constraint or result: the caret is at the start of the text, with its three attributes", () => {
@@ -124,7 +138,10 @@ test("row focused, Enter on an ask, comment, message, lens, finding, risk, const
   for (const kind of READ_ONLY_KINDS) {
     const { row, words } = located(view, `${kind}-row`);
     act(() => row.focus());
-    caretIn(row);
+    const holder: { away: (() => void) | null } = { away: null };
+    act(() => {
+      holder.away = caretIn(row);
+    });
     const selection = window.getSelection();
     const atStart =
       selection?.isCollapsed === true &&
@@ -132,6 +149,7 @@ test("row focused, Enter on an ask, comment, message, lens, finding, risk, const
       selection.anchorNode !== null &&
       words.contains(selection.anchorNode);
     if (!hasCaret(words) || !atStart) failed.push(kind);
+    holder.away?.();
     clearSelection();
   }
   expect(failed, "the kinds whose row has no caret at the start of its text").toEqual([]);
@@ -281,20 +299,57 @@ test("caret, $mod+Alt+m with a selection: the composer of the selection table op
       ).not.toBeNull();
     });
   } finally {
+    await client.cancelQueries();
     view.finish();
     client.clear();
   }
 });
 
 test("caret, a press on a link in the text: the link is followed", () => {
-  const { row, view, words } = drawComment("See [the docs](https://docs.example.test/page).");
+  const linkTree: DisplayTree = {
+    content: [
+      {
+        content: [
+          { text: "See ", type: "text" },
+          {
+            marks: [{ attrs: { href: "https://docs.example.test/page" }, type: "link" }],
+            text: "the docs",
+            type: "text",
+          },
+          { text: ".", type: "text" },
+        ],
+        type: "paragraph",
+      },
+    ],
+    type: "doc",
+  };
+  const { row, view, words } = drawComment(
+    "See [the docs](https://docs.example.test/page).",
+    linkTree
+  );
   setCaret(row, words);
   const link = words.querySelector<HTMLAnchorElement>("a[href]");
   expect(link, "the row's words draw no link").not.toBeNull();
-  const press = (link as HTMLAnchorElement).dispatchEvent(
-    new MouseEvent("click", { bubbles: true, cancelable: true })
-  );
-  expect(press, "the press on the link was cancelled, so the browser follows nothing").toBe(true);
+  // Catch the click after the row's handlers ran: we read whether `caretIn` left it uncanceled,
+  // then cancel happy-dom's own navigation so `window.location` stays on the test origin for the
+  // tests after this one.
+  let canceledByCaret: boolean | undefined;
+  const catchNavigation = (event: MouseEvent) => {
+    canceledByCaret = event.defaultPrevented;
+    event.preventDefault();
+  };
+  document.addEventListener("click", catchNavigation);
+  try {
+    (link as HTMLAnchorElement).dispatchEvent(
+      new MouseEvent("click", { bubbles: true, cancelable: true })
+    );
+  } finally {
+    document.removeEventListener("click", catchNavigation);
+  }
+  expect(
+    canceledByCaret,
+    "the press on the link was cancelled, so the browser follows nothing"
+  ).toBe(false);
   expect(words.textContent, "the press changed the text").toContain("the docs");
   view.unmount();
 });
@@ -331,6 +386,7 @@ test("caret, the tree read is read again: the caret stays in the same node's tex
     expect(again.words, "the re-read replaced the node's words element").toBe(words);
     expect(hasCaret(again.words), "the re-read took the caret's attributes away").toBe(true);
   } finally {
+    await client.cancelQueries();
     view.finish();
     client.clear();
   }

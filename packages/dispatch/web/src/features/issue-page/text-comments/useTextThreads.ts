@@ -83,7 +83,7 @@ const builtThreads = new WeakMap<
  * sheet that asks with the same answer and the same reads, each the same object, get the value
  * built first. The values are held by the answer, so they go with it.
  */
-function viewThreadsOf(answer: TreeAnswer, reads: IssueTreeReads): ViewThreads {
+export function viewThreadsOf(answer: TreeAnswer, reads: IssueTreeReads): ViewThreads {
   const held = builtThreads.get(answer) ?? [];
   const found = held.find((one) => READ_NAMES.every((name) => one.reads[name] === reads[name]));
   if (found !== undefined) return found.view;
@@ -104,6 +104,31 @@ function viewThreadsOf(answer: TreeAnswer, reads: IssueTreeReads): ViewThreads {
   return view;
 }
 
+/**
+ * The reads the threads of `issue` are built from beside a tree read's answer, each watched by an
+ * observer that is never enabled (no request of its own): the asks, comments, coverage, decisions,
+ * messages and results reads and the reader's login, which `useIssueTree` reads. One value while
+ * no read answers anew; undefined while no issue is given, as before the page's issue read has
+ * answered.
+ */
+export function useThreadReads(issue: IssueDetails | undefined): IssueTreeReads | undefined {
+  const key = issue?.key ?? "";
+  const asks = useQuery({ ...issueAskThreadsQuery(key), enabled: false }).data;
+  const comments = useQuery({ ...issueCommentsQuery(key), enabled: false }).data;
+  const coverage = useQuery({ ...issueCoverageQuery(key), enabled: false }).data;
+  const decisions = useQuery({ ...issueDecisionsQuery(key, true), enabled: false }).data;
+  const messages = useQuery({ ...issueMessagesQuery(key), enabled: false }).data;
+  const results = useQuery({ ...issueResultsQuery(key), enabled: false }).data;
+  const viewer = useQuery({ ...whoAmIQuery(), enabled: false }).data?.login;
+  return useMemo(
+    () =>
+      issue === undefined
+        ? undefined
+        : { asks, comments, coverage, decisions, issue, messages, results, viewer },
+    [asks, comments, coverage, decisions, issue, messages, results, viewer]
+  );
+}
+
 /** The threads on text of the view `preset` of `issue` draws, from the reads the page holds. */
 export function useTextThreads(issue: IssueDetails, preset: Preset): ViewThreads {
   const key = issue.key;
@@ -119,19 +144,10 @@ export function useTextThreads(issue: IssueDetails, preset: Preset): ViewThreads
   }).data;
   const answer =
     filter !== undefined ? viewAnswer : outline !== undefined ? outlineAnswer : undefined;
-  const asks = useQuery({ ...issueAskThreadsQuery(key), enabled: false }).data;
-  const comments = useQuery({ ...issueCommentsQuery(key), enabled: false }).data;
-  const coverage = useQuery({ ...issueCoverageQuery(key), enabled: false }).data;
-  const decisions = useQuery({ ...issueDecisionsQuery(key, true), enabled: false }).data;
-  const messages = useQuery({ ...issueMessagesQuery(key), enabled: false }).data;
-  const results = useQuery({ ...issueResultsQuery(key), enabled: false }).data;
-  const viewer = useQuery({ ...whoAmIQuery(), enabled: false }).data?.login;
-  const reads = useMemo<IssueTreeReads>(
-    () => ({ asks, comments, coverage, decisions, issue, messages, results, viewer }),
-    [asks, comments, coverage, decisions, issue, messages, results, viewer]
-  );
+  const reads = useThreadReads(issue);
   return useMemo(
-    () => (answer === undefined ? NO_VIEW_THREADS : viewThreadsOf(answer, reads)),
+    () =>
+      answer === undefined || reads === undefined ? NO_VIEW_THREADS : viewThreadsOf(answer, reads),
     [answer, reads]
   );
 }
@@ -142,16 +158,18 @@ export function useTextThreads(issue: IssueDetails, preset: Preset): ViewThreads
  * issue, read the view's threads by. The issue's read is the page's own (`IssueOutlinePage`),
  * which holds its answer before the stage draws a row, so this observer sends no request of its
  * own there; where nothing has read it - a part of the page drawn alone - it reads it once.
- * Undefined off an issue's address and until the read answers.
+ * Undefined off an issue's address and until the read answers. With `read` false it only watches
+ * the cache and sends no request, where nothing has read the issue: what the address target
+ * (`thread-address.ts`) does, since every address of the page asks for it.
  */
-export function useStageIssue():
-  | { readonly issue: IssueDetails; readonly preset: Preset }
-  | undefined {
+export function useStageIssue(
+  read = true
+): { readonly issue: IssueDetails; readonly preset: Preset } | undefined {
   const { hash, pathname, search } = useLocation();
   const route = parseIssuePath(pathname, search);
   const issue = useQuery({
     ...issueQuery(route?.key),
-    enabled: route !== undefined,
+    enabled: read && route !== undefined,
     refetchOnMount: false,
   }).data;
   if (route === undefined || issue === undefined) return undefined;

@@ -59,6 +59,23 @@ export interface TextThread {
   readonly thread: Thread;
 }
 
+/**
+ * Whether the item `id` names is in `thread`: its root, a reply in it, or a lens under one of its
+ * comments, or a finding or a risk under such a lens, by the node's own id or its id in the tree
+ * read (`?node=` names a lens by the latter). What an address of R8 and R7's landing name.
+ */
+export function threadHolds(thread: TextThread, id: string): boolean {
+  const card = thread.thread;
+  if (card.root.comment.id === id || card.replies.some((reply) => reply.id === id)) return true;
+  for (const lenses of thread.lenses.values()) if (nodesHold(lenses, id)) return true;
+  return false;
+}
+
+/** Whether `id` is the id, or the read id, of one of `nodes` or of a node under one. */
+function nodesHold(nodes: readonly TreeNode[], id: string): boolean {
+  return nodes.some((node) => node.id === id || node.readId === id || nodesHold(node.children, id));
+}
+
 /** The threads of one drawn node, in the order of their words. */
 export interface NodeThreads {
   /** The tree id of the node's stored parent (its read parent, else its nearest drawn ancestor,

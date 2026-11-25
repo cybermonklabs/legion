@@ -1,10 +1,11 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { type ReactNode, useCallback, useMemo, useState } from "react";
+import { type ReactNode, useCallback, useContext, useMemo, useState } from "react";
 
 import { api, type WriteBounds } from "../../../api/client";
 import { whoAmIQuery } from "../../../api/queries";
 import type { Anchor, Comment, IssueDetails } from "../../../api/types";
 import { commentWritten } from "../../../api/write-events";
+import { pageRowActs } from "../../../theme/classes";
 import type { CarriedBlockIds, SaveCommentEdit } from "../../conversation/send-request";
 import { marginReplySendKey } from "../../margin/margin-context";
 import { ThreadCard } from "../../margin/ThreadCard";
@@ -18,12 +19,14 @@ import { EVENT_FRESH } from "../../refs/reference-target";
 import type { TreeNode } from "../issue-tree";
 import { LensChain } from "../lenses/LensChain";
 import { LensLines } from "../lenses/LensLines";
+import { LensActContext, LensMenu, lensActFor } from "../lenses/LensMenu";
 import { NODE_ROW_LAYOUT, RowMargin, type Tone } from "../NodeRow";
 import { authorText, pageChrome } from "../page-structure";
 import { authorKind, isReader, LENS_WORDS } from "../page-words";
 import { RowText } from "../RowText";
 import { issueCommentsQuery } from "../useIssueTree";
 import type { TextThread } from "./text-threads";
+import { threadCommentNode } from "./thread-node";
 
 /**
  * One thread on text as the column draws it beside its node (R4), and each node's sheet below
@@ -195,13 +198,42 @@ export function TextThreadCard({
       // Under each comment of the thread, its lenses (R7): the card's one place under each
       // comment's own body, which the margin fills with deliveries where an owner has them.
       renderDeliveries={(comment: ThreadComment) => (
-        <ThreadLenses lenses={thread.lenses.get(comment.id)} />
+        <>
+          <ThreadActs comment={comment} kind={thread.kind} />
+          <ThreadLenses lenses={thread.lenses.get(comment.id)} />
+        </>
       )}
       replyMutationKey={marginReplySendKey(card.key)}
       savingCommentEditId={host.savingCommentEditId}
       thread={card}
       viewerLogin={host.viewerLogin}
     />
+  );
+}
+
+/**
+ * The acts of one comment of a thread that its row would carry (R7): part W's Lens, drawn under
+ * the comment, above its lenses, in Conversation and in Graph, where `LensActContext` holds the
+ * act (the column provides it from `useLensAct()`, `TextMargin.tsx`), and in no other view. It is
+ * invoked on the comment's own address, which a `TreeNode` of the comment carries
+ * (`threadCommentNode`), and takes a place in the tab order, as the card's other controls do.
+ * "Write a criterion" is part Y's act, which a later gate mounts here.
+ */
+function ThreadActs({
+  comment,
+  kind,
+}: {
+  readonly comment: ThreadComment;
+  readonly kind: TextThread["kind"];
+}): ReactNode {
+  const act = useContext(LensActContext);
+  if (act === undefined) return null;
+  const node = threadCommentNode(comment, kind, act.issueKey);
+  if (!lensActFor(node, act)) return null;
+  return (
+    <p className={`mt-1 ${pageRowActs}`} data-thread-acts="">
+      <LensMenu node={node} tabStops />
+    </p>
   );
 }
 
@@ -234,7 +266,12 @@ function LensRow({ node }: { readonly node: TreeNode }): ReactNode {
   const agentText = useAgentText();
   const reader = useQuery({ ...whoAmIQuery(), ...EVENT_FRESH }).data?.login;
   return (
-    <li className="min-w-0" data-thread-lens={node.id} data-thread-lens-type={node.type}>
+    <li
+      className="min-w-0"
+      data-thread-lens={node.id}
+      data-thread-lens-read={node.readId}
+      data-thread-lens-type={node.type}
+    >
       <div className={NODE_ROW_LAYOUT.box}>
         <span aria-hidden="true" className={NODE_ROW_LAYOUT.bullet} />
         <div className={NODE_ROW_LAYOUT.content}>

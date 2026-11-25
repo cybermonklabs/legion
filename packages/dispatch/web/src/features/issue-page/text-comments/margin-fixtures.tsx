@@ -3,7 +3,13 @@ import { QueryClient } from "@tanstack/react-query";
 import { act, type RenderResult, render, waitFor } from "@testing-library/react";
 import { http } from "msw";
 import { type ReactNode, useMemo, useState } from "react";
-import { MemoryRouter, type NavigateFunction, useLocation, useNavigate } from "react-router-dom";
+import {
+  type Location,
+  MemoryRouter,
+  type NavigateFunction,
+  useLocation,
+  useNavigate,
+} from "react-router-dom";
 
 import { graphNode } from "../../../__tests__/graph-fixture";
 import { answerRequests } from "../../../__tests__/network";
@@ -93,7 +99,9 @@ export interface TextThreadSeed {
   readonly quote: string;
 }
 
-function threadOn(
+/** A comment of the issue's reader, alice, on the words `quote` of `block` of `document`,
+ *  written `at` minutes past the hour. */
+export function threadOn(
   id: string,
   document: { readonly id: string; readonly slug: string },
   block: string,
@@ -397,12 +405,15 @@ export function windowOf(initial: number): {
 export interface PageHold {
   /** The Details drawer the shell holds, where the case gave the page one. */
   drawer?: MarginDrawer;
+  /** The router's location as the page last drew it. */
+  location?: Location;
   /** Moves the router, as a followed link does. */
   navigate?: NavigateFunction;
 }
 
 /** Holds the router's `navigate` for the case, inside the router. */
 function NavigateProbe({ held }: { held: PageHold }): ReactNode {
+  held.location = useLocation();
   held.navigate = useNavigate();
   return null;
 }

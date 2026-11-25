@@ -20,6 +20,7 @@ import { useMediaQuery } from "../../shell/useDialog";
 import { outlineItemRoute } from "../address-target";
 import { CONTENTS_PANE_QUERY } from "../contents-frame";
 import { type IssueAddress, issueAddress } from "../issue-address";
+import { LensActContext, useLensAct } from "../lenses/LensMenu";
 import { useMarginDrawer } from "../margin-slot";
 import { NoTooltips } from "../NoTooltips";
 import { authorText } from "../page-structure";
@@ -31,7 +32,7 @@ import { highlightThreadWords, type ThreadWords } from "./highlights";
 import { SelectionComposer, type TextComposerOutcome, wordsKeyOf } from "./SelectionComposer";
 import { itemBlocksOf, type QuotedNode, rangeOf } from "./selection-quote";
 import { TextThreadCard, useThreadCardHost } from "./TextThreadCard";
-import type { NodeThreads, TextThread } from "./text-threads";
+import { type NodeThreads, type TextThread, threadHolds } from "./text-threads";
 import { useTextThreads, type ViewThreads } from "./useTextThreads";
 
 /**
@@ -277,12 +278,6 @@ function rowOrder(stage: Element, threads: ReadonlyMap<string, NodeThreads>): st
   return order;
 }
 
-/** Whether the item `id` names is the root of `thread` or a reply in it. */
-function threadHolds(thread: TextThread, id: string): boolean {
-  const card = thread.thread;
-  return card.root.comment.id === id || card.replies.some((reply) => reply.id === id);
-}
-
 /** What the column finds a box's words by in its node's row: the quote, which match of it, the
  *  item's block it is in, and whether the words left the node's text, which places the box at
  *  the row's first line. */
@@ -336,6 +331,10 @@ function Column({
   readonly view: ViewThreads;
 }): ReactNode {
   const host = useThreadCardHost(issue);
+  // The Lens act each comment of a thread carries in Conversation and Graph (R7): the column is
+  // outside the tree's rows, which provide it to theirs (`TreeRows.tsx`), so it provides it to its
+  // cards from the same hook. In every other view there is none.
+  const lensAct = useLensAct();
   const closeDetails = useCloseDetails();
   // While Details is open the column keeps its width and draws nothing: its boxes are hidden and
   // out of the page's reach, so Tab reaches none of them (R2).
@@ -369,7 +368,12 @@ function Column({
   // of the outline (`outlineItemRoute`), or the one it marks beside the document it opens
   // (`documentItem`), where the old page's landing sends an item of a document's words.
   const following = useFollowing();
-  const named = outlineItemRoute(route, search, address)?.id ?? address.documentItem?.id;
+  // A lens invoked from a thread lands as `?node=<its read id>` (R7), which names no row of the
+  // outline but the lens drawn in its thread's card.
+  const named =
+    outlineItemRoute(route, search, address)?.id ??
+    address.documentItem?.id ??
+    (address.target?.kind === "node" ? address.target.id : undefined);
   const namedThread =
     named === undefined ? undefined : placed.find(({ thread }) => threadHolds(thread, named));
   const [landing, setLanding] = useState<Landing>();
@@ -521,10 +525,15 @@ function Column({
     const card = list.current?.querySelector<HTMLElement>(
       `[data-margin-item="${CSS.escape(thread.key)}"]`
     );
+    // The thread's root takes the focus as the card, a reply as its row, and a lens as its own
+    // row, which the card draws under the comment it was invoked on.
+    const lens = card?.querySelector<HTMLElement>(
+      `[data-thread-lens="${CSS.escape(landing.id)}"], [data-thread-lens-read="${CSS.escape(landing.id)}"]`
+    );
     const target =
       thread.root.comment.id === landing.id
         ? card
-        : card?.querySelector<HTMLElement>('li[data-reply][aria-current="true"]');
+        : (lens ?? card?.querySelector<HTMLElement>('li[data-reply][aria-current="true"]'));
     if (target === null || target === undefined) return;
     landed.current = landing.following;
     if (!target.hasAttribute("tabindex")) target.tabIndex = -1;
@@ -635,23 +644,25 @@ function Column({
           {/* The threads' stored text is the authors' (R4), as `IssueMarginCards` marks the
               margin's cards. */}
           <div className="contents" {...authorText}>
-            {placed.map(({ nodeId, parent, thread }) => (
-              <div
-                className="absolute inset-x-0"
-                data-text-thread={thread.thread.key}
-                data-text-thread-parent={parent}
-                key={thread.thread.key}
-                {...{ [THREAD_NODE_ATTRIBUTE]: nodeId }}
-              >
-                <TextThreadCard
-                  host={host}
-                  thread={thread}
-                  {...(currentReply?.thread === thread.thread.key
-                    ? { currentReplyId: currentReply.id }
-                    : {})}
-                />
-              </div>
-            ))}
+            <LensActContext.Provider value={lensAct}>
+              {placed.map(({ nodeId, parent, thread }) => (
+                <div
+                  className="absolute inset-x-0"
+                  data-text-thread={thread.thread.key}
+                  data-text-thread-parent={parent}
+                  key={thread.thread.key}
+                  {...{ [THREAD_NODE_ATTRIBUTE]: nodeId }}
+                >
+                  <TextThreadCard
+                    host={host}
+                    thread={thread}
+                    {...(currentReply?.thread === thread.thread.key
+                      ? { currentReplyId: currentReply.id }
+                      : {})}
+                  />
+                </div>
+              ))}
+            </LensActContext.Provider>
             {request === undefined ? null : (
               <div
                 className="absolute inset-x-0"

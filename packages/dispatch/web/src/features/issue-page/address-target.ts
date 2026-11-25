@@ -21,6 +21,7 @@ import {
 } from "./issue-address";
 import type { TreeNode } from "./issue-tree";
 import { useFollowing } from "./slots/following";
+import { useThreadReveal } from "./text-comments/thread-address";
 
 /** The node an address names, read against the tree (`useAddressTarget`). Each field is one
  *  value for as long as the address and the tree say the same; the object holding them is new
@@ -62,6 +63,11 @@ export function useAddressTarget(
   }, [targetDocument, targetId, targetKind]);
   const reveal = useMemo(() => pathToTarget(root, target), [root, target]);
   const named = useMemo(() => namedBy(reveal), [reveal]);
+  // An item of a thread on text is no row, so no chain above names it: the node its thread stands
+  // by is what the address lands on (R8, `text-comments/thread-address.ts`).
+  const onText = useThreadReveal(root, target, reveal);
+  const onTextNamed = useMemo(() => namedBy(onText), [onText]);
+  if (onText !== undefined) return { named: onTextNamed, reveal: onText, target };
   return { named, reveal, target };
 }
 
