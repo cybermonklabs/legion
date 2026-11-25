@@ -67,10 +67,12 @@ func (s *server) putUploadedFile(w http.ResponseWriter, r *http.Request, kind, s
 }
 
 // refuseUploadBeforeItsObject answers, from the pool and locking nothing, the refusal
-// storeArtifact's transaction would make of a file or image upload to target under name: a
-// project that does not exist, an artifact the name or slug finds whose kind is not kind, a new
-// artifact whose name or reference key is past its bound, or a first upload naming a token
-// (namesToken), which storeArtifact's one statement of that rule refuses (uploadNoTokenRefusal).
+// storeArtifact's transaction would make of a file or image upload to target under name, in the
+// order it makes them: a project that does not exist; for an artifact the name or slug finds, a
+// retired one (readRetiredDocumentRefusal), then one whose kind is not kind; for a new artifact, a
+// name past its bound, a name on an issue that is a decisions document's (decisionsAreNodes), a
+// reference key past its bound, or a first upload naming a token (namesToken), which
+// storeArtifact's one statement of that rule refuses (uploadNoTokenRefusal).
 // It reads as that transaction reads, so the two refuse alike whenever nothing writes the owner's
 // artifacts between them. With no refusal it answers the id of the artifact the upload writes a
 // version of, "" for a new one, for the check of the token the upload names (refuseFileBase).
@@ -83,6 +85,9 @@ func (s *server) refuseUploadBeforeItsObject(ctx context.Context, target artifac
 	}
 	artifact, err := lookupArtifactByNameOrSlug(ctx, pool, target, name)
 	if err == nil {
+		if artifact.Retired {
+			return "", readRetiredDocumentRefusal(ctx, pool, artifact, name)
+		}
 		if artifact.Kind != kind {
 			return "", artifactKindMismatch(name, artifact, kind)
 		}
@@ -92,6 +97,9 @@ func (s *server) refuseUploadBeforeItsObject(ctx context.Context, target artifac
 		return "", err
 	}
 	if refusal := newArtifactNameRefusal(name); refusal != nil {
+		return "", refusal
+	}
+	if refusal := decisionsAreNodes(target, name); refusal != nil {
 		return "", refusal
 	}
 	slug, err := s.nextArtifactSlug(ctx, pool, target, name)
