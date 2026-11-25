@@ -94,14 +94,7 @@ func TestAWrappedEmbedderIsStillPaced(t *testing.T) {
 func requireRenewedThroughTheSlowestWait(t *testing.T, deps Deps, late time.Duration) {
 	t.Helper()
 	ctx := context.Background()
-	// The first call takes the pace's one token at once; then the pace is backed off to its
-	// slowest, as failing canaries back it off, and the next call waits that whole interval.
-	if _, err := deps.embedDocuments(ctx, []string{"first"}, nil); err != nil {
-		t.Fatalf("first call: %v", err)
-	}
-	for deps.pace.Interval() < retry.MaxDelay {
-		deps.pace.BackOff()
-	}
+	backOffPace(t, deps, retry.MaxDelay)
 	started := time.Now()
 	renewal := newClaimRenewal(deps, []pendingRow{{kind: "issue", id: "pace", text: "second"}}, started.Add(-late))
 	claimed := []time.Time{renewal.last}
@@ -121,6 +114,22 @@ func requireRenewedThroughTheSlowestWait(t *testing.T, deps Deps, late time.Dura
 			t.Errorf("the claim renewed at %v was next renewed or sent at %v, %v later: past renewClaimInterval (%v), within %v of claimWindow (%v); renewals at %v",
 				claimed[i].Sub(started), until.Sub(started), gap, renewClaimInterval, claimWindow-gap, claimWindow, offsets(claimed, started))
 		}
+	}
+}
+
+// backOffPace makes deps' pace hold its next call interval, as failing canaries back it off: a
+// first call, which deps' embedder must answer at once, takes the pace's one token, and the pace
+// is backed off to interval.
+func backOffPace(t *testing.T, deps Deps, interval time.Duration) {
+	t.Helper()
+	if _, err := deps.embedDocuments(context.Background(), []string{"first"}, nil); err != nil {
+		t.Fatalf("first call: %v", err)
+	}
+	for deps.pace.Interval() < interval {
+		deps.pace.BackOff()
+	}
+	if got := deps.pace.Interval(); got != interval {
+		t.Fatalf("the pace holds a call %v, want %v", got, interval)
 	}
 }
 

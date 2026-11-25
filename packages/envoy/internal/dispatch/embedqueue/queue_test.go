@@ -1356,12 +1356,10 @@ type claimLeftEmbedder struct {
 func (e *claimLeftEmbedder) Embed(ctx context.Context, texts []string, _ embed.InputType) ([][]float32, error) {
 	e.calls++
 	if e.calls == 1 {
-		var seconds float64
 		e.err = e.database.Pool.QueryRow(ctx, `
-			select extract(epoch from min(next_attempt_at) - now())::float8 from embeddings
+			select min(next_attempt_at) - now() from embeddings
 			where kind = 'issue' and id = any($1::text[])`, e.ids,
-		).Scan(&seconds)
-		e.left = time.Duration(seconds * float64(time.Second))
+		).Scan(&e.left)
 	}
 	return fakeVectors(len(texts)), nil
 }
@@ -1419,7 +1417,7 @@ func TestAClaimIsDatedBeforeTheScanThatMadeIt(t *testing.T) {
 		t.Fatalf("%d calls; reading the claim in the first: %v", embedder.calls, embedder.err)
 	}
 	if floor := claimWindow - scanHeld/2; embedder.left < floor {
-		t.Errorf("the first call went out with %v left on its claim, want at least %v: a claim dated after its scan reads %v younger than it is, and is not renewed before the call", embedder.left, floor, scanHeld)
+		t.Errorf("the first call went out with %v left on its claim, want at least %v: no renewal came before the call, though the claim was older than renewClaimInterval (%v) once the scan returned", embedder.left, floor, renewClaimInterval)
 	}
 }
 

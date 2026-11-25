@@ -36,7 +36,6 @@ func TestACallThatCouldOutliveItsClaimRenewsItFirst(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
-				ctx := context.Background()
 				silent := &silentEmbedder{}
 				deps := tc.deps(silent)
 				if tc.held > 0 {
@@ -50,7 +49,7 @@ func TestACallThatCouldOutliveItsClaimRenewsItFirst(t *testing.T) {
 					claimed = append(claimed, time.Now())
 					return nil
 				}
-				_, err := deps.embedDocuments(ctx, []string{"slow"}, renewal)
+				_, err := deps.embedDocuments(context.Background(), []string{"slow"}, renewal)
 				ended := time.Now()
 				if !errors.Is(err, context.DeadlineExceeded) || !embed.IsOutage(err) || embed.IsThrottled(err) {
 					t.Errorf("the call ended with %v (outage %v, throttled %v), want the context's deadline as an outage", err, embed.IsOutage(err), embed.IsThrottled(err))
@@ -70,24 +69,15 @@ func TestACallThatCouldOutliveItsClaimRenewsItFirst(t *testing.T) {
 	}
 }
 
-// requirePaceHolds makes deps' pace hold its next call held: a first call takes the pace's one
-// token at once, and the pace is backed off to held, as failing canaries back it off. held must
-// lie between claimWindow less callSlack less callBound, past which a call that runs to callBound
-// needs its own renewal, and renewClaimInterval, at which the wait would renew the claim itself.
+// requirePaceHolds makes deps' pace hold its next call held (backOffPace). held must lie between
+// claimWindow less callSlack less callBound, past which a call that runs to callBound needs its
+// own renewal, and renewClaimInterval, at which the wait would renew the claim itself.
 func requirePaceHolds(t *testing.T, deps Deps, held time.Duration) {
 	t.Helper()
 	if held <= claimWindow-callSlack-callBound || held >= renewClaimInterval {
 		t.Fatalf("a hold of %v tests no call's renewal: want one past %v and short of renewClaimInterval (%v)", held, claimWindow-callSlack-callBound, renewClaimInterval)
 	}
-	if _, err := deps.embedDocuments(context.Background(), []string{"first"}, nil); err != nil {
-		t.Fatalf("first call: %v", err)
-	}
-	for deps.pace.Interval() < held {
-		deps.pace.BackOff()
-	}
-	if got := deps.pace.Interval(); got != held {
-		t.Fatalf("the pace holds a call %v, want %v", got, held)
-	}
+	backOffPace(t, deps, held)
 }
 
 // A Bedrock call that gets no answer ends at the queue's bound (callBound) with the context's
