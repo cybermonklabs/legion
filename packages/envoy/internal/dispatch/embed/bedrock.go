@@ -31,15 +31,17 @@ const (
 	// bedrockBackgroundTokensPerMinute is two thirds of the account's Cohere Embed v4 quota of
 	// 300,000 tokens a minute, left to background work; the other third is live search's.
 	bedrockBackgroundTokensPerMinute = 200_000
-	// bedrockMaxBatchBytes is Limits().MaxBatchBytes: the most bytes of text (BoundedBytes) one
-	// background call carries, chosen to keep the call inside embedqueue's callBound (60 s), the
-	// only bound a Bedrock call has. It is no measurement of Bedrock, whose rate this repository
-	// has not measured: it is Azure's measured rate for the same model applied to Bedrock. A
-	// Cohere token is at least one byte, so 320,000 bytes is at most 320,000 tokens, about 20 s at
-	// the slowest rate Azure was measured embedding (azureMaxBatchBytes), a third of the bound.
-	// What embedqueue's rows prove is the grouping, not the time: a group at this edge is split
-	// rather than cut off, and a group past it never reaches the call.
-	bedrockMaxBatchBytes = 320_000
+	// bedrockMaxBatchBytes is Limits().MaxBatchBytes: Azure's byte budget for the same model
+	// (azureMaxBatchBytes), because Bedrock's own rate is not measured. It keeps a group inside
+	// embedqueue's callBound, the only bound a Bedrock call has, only while Bedrock embeds at least
+	// bedrockMaxBatchBytes ÷ callBound tokens a second: at one token a byte, the most a group can
+	// cost, 320,000 in 60 s, about 5,300, a third of Azure's slowest measured rate (16,152). If
+	// Bedrock is slower, the largest group runs out at the bound, which is an outage (embedqueue's
+	// boundedCall), and is bisected until each half fits (bisectSplit): a budget set too large
+	// costs wasted calls and their token reservations, not rows. What embedqueue's rows prove is the
+	// grouping: a text that would cross the edge starts the next group whole, never cut to fit, and
+	// no group past the budget reaches the call.
+	bedrockMaxBatchBytes = azureMaxBatchBytes
 )
 
 // BedrockClient calls Cohere Embed v4 on AWS Bedrock (InvokeModel).

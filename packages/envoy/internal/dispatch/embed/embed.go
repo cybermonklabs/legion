@@ -97,17 +97,16 @@ const (
 	InputQuery    InputType = "search_query"
 )
 
-// Limits are one place's own numbers: its batch limit, the bytes one background call carries and
-// its quota's background share. Only Bedrock's byte budget is sized from another place's
-// measurement, since Bedrock's own rate is not measured (bedrockMaxBatchBytes).
+// Limits are one place's numbers: its batch limit, the bytes one background call carries and its
+// quota's background share.
 type Limits struct {
 	// MaxBatchTexts is the most texts one Embed call accepts.
 	MaxBatchTexts int
 	// MaxBatchBytes is the most UTF-8 bytes of text (BoundedBytes, summed over the call's texts)
 	// one background Embed call carries, so the call finishes inside the time the embedding queue
-	// gives it (embedqueue's callBound, 60 s, which is also Azure's own azureRequestTimeout); 0
-	// means no budget, and only MaxBatchTexts and the queue's token ceiling bound a call. The
-	// client does not enforce it: embedqueue's chunkForBudget sizes every call it makes to fit.
+	// gives it (embedqueue's callBound); 0 means no budget, and only MaxBatchTexts and the queue's
+	// token ceiling bound a call. The client does not enforce it: embedqueue's chunkForBudget sizes
+	// every call it makes to fit.
 	MaxBatchBytes int
 	// BackgroundTokensPerMinute is the most estimated tokens (EstimateTokens) a minute
 	// background work may spend, leaving the rest of the place's quota to live search queries.
