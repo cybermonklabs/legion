@@ -563,9 +563,11 @@ Every other Dispatch command is outside the gate, and its text posts unreviewed:
 
 The gate reads the arguments from the command's own `--dry-run`. It runs the dry run with
 `DISPATCH_DRY_RUN_LOCAL=1`, and the CLI then checks the arguments alone. Without that variable,
-`dispatch artifact --dry-run` asks Dispatch how it would store inline text. The call itself runs
-without the variable. It asks Dispatch that question and refuses a text that Dispatch would store
-under another spelling. So the gate's dry run stores nothing and contacts no Dispatch server, and
+`dispatch artifact --dry-run` asks Dispatch to check the text as the call does: how it would store
+inline text, or what it refuses of a Markdown `--path` file's bytes. The call itself runs without
+the variable. It asks Dispatch the same questions and refuses a text that Dispatch would store
+under another spelling, or that an upload refuses for the text alone. So the gate's dry run stores
+nothing and contacts no Dispatch server, and
 a slow one most likely means a busy machine. The reads, the dry
 run and the `cd`'s `pwd -P` probe, take at most half the call's deadline: the first run of each
 is cut at 20 s, or sooner when that half ends sooner, and a run cut there is run once more with

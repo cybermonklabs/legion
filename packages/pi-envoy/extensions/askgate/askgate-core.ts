@@ -60,9 +60,11 @@
 //     JSON it prints. The reads (the dry run, and the `cd`'s `pwd -P` probe) run with
 //     DISPATCH_DRY_RUN_LOCAL=1 added to that environment (`spawnDryRun`), which the probe
 //     ignores: the CLI's dry run then checks the arguments alone and contacts no Dispatch server,
-//     where `dispatch artifact --dry-run` otherwise asks Dispatch how it would store inline text.
-//     The call runs without the variable and itself refuses a text Dispatch would store under
-//     another spelling, so the gate's read needs no round trip. The reads take at most half
+//     where `dispatch artifact --dry-run` otherwise asks Dispatch to check the text as the call
+//     does: how it would store inline text, or what it refuses of a Markdown `--path` file's
+//     bytes. The call runs without the variable and itself refuses a text Dispatch would store
+//     under another spelling or refuses for the text alone, so the gate's read needs no round
+//     trip. The reads take at most half
 //     the call's deadline: the first run of each is cut at 20 s, or sooner when that half ends
 //     sooner, and a run cut there is run once more with what is left of that half, when at
 //     least 2 s of it is left (`DRY_RUN_TIMEOUT_MS`). A dry-run that fails, times out again or
@@ -1825,10 +1827,12 @@ export interface UnreadableCommand {
  * pipes, and so its answer, open until the limit. The script gets `env` with
  * DISPATCH_DRY_RUN_LOCAL=1 added: under it the CLI's dry run of an upload
  * (`dispatch artifact --dry-run`) checks the arguments alone and asks Dispatch nothing, where it
- * otherwise asks how Dispatch would store inline text (POST /api/v1/markdown/round-trip). The
- * variable leaves a `dispatch result` record's dry run asking Dispatch, as it did before, and the
- * gate reviews no `result`. The gate reads arguments, and the call makes that round trip itself
- * and refuses a text Dispatch would store under another spelling, so the read needs none. The
+ * otherwise asks Dispatch to check the text as the call does: how it would store inline text
+ * (POST /api/v1/markdown/round-trip), or what it refuses of a Markdown `--path` file's bytes
+ * (POST /api/v1/markdown/file-round-trip). The variable leaves a `dispatch result` record's dry
+ * run asking Dispatch, as it did before, and the gate reviews no `result`. The gate reads
+ * arguments, and the call makes those round trips itself and refuses a text Dispatch would store
+ * under another spelling or refuses for the text alone, so the read needs none. The
  * `cd`'s `pwd -P` probe, the other script the gate runs here, ignores the variable. The call
  * never gets it: Oh My Pi runs the call in its own environment, and `env` is copied here, not
  * changed. A `dispatch` older than the variable ignores it and asks nothing either way.
