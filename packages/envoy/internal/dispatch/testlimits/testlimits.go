@@ -27,8 +27,10 @@ import (
 )
 
 // MaxProcessesAtOnce is the most Dispatch server processes one test binary runs at once against
-// one Postgres. The count is the binary's, not one test's: one `go test` binary is what one lane's
-// server serves, and parallel root tests in it share that server. A process counts from its start
+// one Postgres. The count is the binary's, not one test's: parallel root tests in the binary share
+// its slots. It is not the server's: a lane can run other package binaries on the same server at
+// once (envoy-go's unit step runs cmd/dispatch's untagged tests beside the module's other
+// packages), and their connections take none of these slots. A process counts from its start
 // until it exits, which is what it holds connections for. Every start takes one of this many slots
 // first (dispatchSlots, cmd/dispatch/process_slots_test.go, says how), and a test that asks for
 // more at once is refused by name.
