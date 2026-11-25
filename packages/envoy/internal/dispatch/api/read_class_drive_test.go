@@ -45,6 +45,11 @@ type rowDrive struct {
 	// stored, for a GET that writes, counts the rows its write stores: none before the drive and
 	// one after it. Its $names are filled as the target's are.
 	stored string
+	// sendLast, for a GET that writes, is a drive whose read reaches the state the other drives
+	// of its registry write for, so it is sent after them (TestEveryGETThatWritesMakesItsWrite):
+	// sent first, it would make their writes before their own reads. The order is stated here,
+	// not read from where the routes are declared, which is by pattern and says nothing of this.
+	sendLast bool
 }
 
 // statementOf is a statement a drive must see: pattern matched case-insensitively across lines.
@@ -252,11 +257,11 @@ var readRowDrives = map[string]rowDrive{
 // getWriteDrives is the drive of every GET row of the table that writes (readWritesState), keyed
 // as readRowDrives is: the request that makes the write the row's WriteNote names, on the seeded
 // store. Each delivery read is sent at a window holding a deploy run with no production job of
-// its own, the newest run the timeline's and the oldest the pipeline's, and they are sent in the
-// table's order, the pipeline last: the timeline and the measures each read only the window
-// around their own run, and the pipeline reads seven days, which hold all three, and firstToWarn
-// writes once per process for each run (delivery.go), so a pipeline read sent first would warn
-// of the other two rows' runs before their own reads.
+// its own, the newest run the timeline's and the oldest the pipeline's, and the pipeline is sent
+// last (sendLast): the timeline and the measures each read only the window around their own run,
+// and the pipeline reads seven days, which hold all three, and firstToWarn writes once per
+// process for each run (delivery.go), so a pipeline read sent first would warn of the other two
+// rows' runs before their own reads.
 var getWriteDrives = map[string]rowDrive{
 	"GET /api/v1/delivery/timeline": {
 		target:    "/api/v1/delivery/timeline?from=$timelineFrom&to=$timelineTo",
@@ -272,6 +277,7 @@ var getWriteDrives = map[string]rowDrive{
 		target:    "/api/v1/delivery/pipeline?at=$pipelineAt",
 		statement: statementOf(`\binsert\s+into\s+delivery_run_warnings\b`),
 		stored:    "select count(*) from delivery_run_warnings where run_id = $pipelineRun",
+		sendLast:  true,
 	},
 	"GET /api/v1/going/requests/{id}/stream": {
 		target:    "/api/v1/going/requests/$going/stream",
@@ -706,11 +712,20 @@ func statementList(statements []drivenStatement) string {
 // deploy run with no production job that is its own. It runs on the drive rig (newDriveRig) with
 // only the state those writes read (driveWorld.seedWrites), not the whole seeded store. Each is
 // sent in a window as the reads are, which must hold that write, and the store must hold none of
-// the row's rows before it and one after. The rows run in the table's order, which is the order
-// getWriteDrives's runs need.
+// the row's rows before it and one after. The rows run in the table's order but for the drives
+// marked sendLast, which run after the others, the order getWriteDrives's runs need.
 func TestEveryGETThatWritesMakesItsWrite(t *testing.T) {
 	t.Parallel()
 	rows, drives := drivenRows(t, readWritesState)
+	slices.SortStableFunc(rows, func(a, b string) int {
+		switch {
+		case drives[a].sendLast == drives[b].sendLast:
+			return 0
+		case drives[a].sendLast:
+			return 1
+		}
+		return -1
+	})
 	world := newDriveRig(t)
 	world.seedWrites(t)
 	writer := world.brokerSend("the writing token", world.writer)
