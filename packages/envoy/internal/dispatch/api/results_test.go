@@ -4914,9 +4914,9 @@ func TestAReadOnlyResultsReadStoresNothingAndAnswersAsAWriter(t *testing.T) {
 
 		readOnly, writer := readOnlyThenWriter(t, rig, github, issue.Key, readOnlyDrive{
 			pullAsks: 1,
-			// The writer stores the pull request's head row and records its attribution to the
-			// issue: one event.
-			stored: storedRows{heads: 1, events: 1},
+			// The writer stores the pull request's head row, which records no event: the
+			// statement gives the row its issue at each read, so no write moves an attribution.
+			stored: storedRows{heads: 1},
 		})
 		for _, answered := range []struct {
 			who  string
@@ -4969,9 +4969,9 @@ func TestAReadOnlyResultsReadStoresNothingAndAnswersAsAWriter(t *testing.T) {
 		readOnly, writer := readOnlyThenWriter(t, rig, github, issue.Key, readOnlyDrive{
 			pullAsks:    1,
 			compareAsks: 2,
-			// The head row and its attribution event, and three branch answers: the merge's own
-			// yes and the two compare reads'. A branch answer records no event at the base.
-			stored: storedRows{heads: 1, branches: 3, events: 1},
+			// The head row, which records no event, and three branch answers: the merge's own yes
+			// and the two compare reads'. A branch answer records no event at the base.
+			stored: storedRows{heads: 1, branches: 3},
 		})
 		for _, answered := range []struct {
 			who  string

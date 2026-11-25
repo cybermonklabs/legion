@@ -62,7 +62,9 @@ func TestAReadOnlyResultsReadAnswersAsAWriterInEveryState(t *testing.T) {
 		if stands.Basis == nil || stands.Basis.PullRequest == nil || *stands.Basis.PullRequest != 41 {
 			t.Errorf("the writer stands the result at %+v, want pull request 41", stands.Basis)
 		}
-		read.callsNone(t)
+		// A commit a stored row heads is read through all the same: GitHub can name a second pull
+		// request at that head (R6 of the results lookup), so the writer asks GitHub for it.
+		read.calls(t, parityPulls, 1)
 	})
 
 	// pushed is the state rows 2 to 5 read: the issue's check k1 holds a result at
@@ -107,12 +109,13 @@ func TestAReadOnlyResultsReadAnswersAsAWriterInEveryState(t *testing.T) {
 	t.Run("2 a result at a commit no stored pull request heads, beside the issue's head no stored row holds", func(t *testing.T) {
 		pair, issue := pushedPast(t)
 		read := pair.read(t, issue, "the first read")
-		// The writer asks GitHub for behindHeadCommit and stores pull request 61, whose head is
-		// headCommit. headCommit is then headed by a row, so it asks GitHub nothing for it. The
-		// bases are read again after the read-through (plan D32), so both results are answered on
-		// the heads as they stand after it.
+		// The writer asks GitHub for both commits: behindHeadCommit, where GitHub names pull
+		// request 61, whose head is headCommit, and headCommit, which a row heads by then and is
+		// read through all the same (R6 of the results lookup). The bases are read after the
+		// read-throughs (plan D32), so both results are answered on the heads as they stand after
+		// them.
 		fromPull61(t, pair, read)
-		read.calls(t, parityPulls, 1)
+		read.calls(t, parityPulls, 2)
 	})
 
 	t.Run("3 as row 2, read again", func(t *testing.T) {
@@ -121,10 +124,10 @@ func TestAReadOnlyResultsReadAnswersAsAWriterInEveryState(t *testing.T) {
 		pair.clock.advance(time.Minute)
 		second := pair.read(t, issue, "the second read")
 		// The read-only read stored nothing and took no claim, so the writer's read at this
-		// moment, on the same rows, asks GitHub for behindHeadCommit again and learns pull
-		// request 61 at this read.
+		// moment, on the same rows, asks GitHub for both commits again and learns pull request 61
+		// at this read.
 		fromPull61(t, pair, second)
-		second.calls(t, parityPulls, 1)
+		second.calls(t, parityPulls, 2)
 		if bases := checkOf(t, second.writer, "k3").ComparedWith; len(bases) != 1 || bases[0].LearnedAt == nil ||
 			bases[0].LearnedAt.Kind != model.BasisLearnedReadAt || !bases[0].LearnedAt.At.Equal(pair.clock.now()) {
 			t.Errorf("the writer's k3 compared with %+v, want pull request 61 alone, read at the second read, %s", bases, pair.clock.now())
@@ -168,18 +171,19 @@ func TestAReadOnlyResultsReadAnswersAsAWriterInEveryState(t *testing.T) {
 		// The settle is made by a writer's read, on every stack: it reads behindHeadCommit
 		// through, stores pull request 61, whose head is another commit, and settles
 		// behindHeadCommit for delivery.CommitPullSettledFor (server.commitPulls.Settle, in
-		// comparisonReader.readThroughHead).
+		// comparisonReader.readThroughHead). It reads headCommit through too (R6).
 		settled := pair.writersRead(t, issue, "the writer's read that settles behindHeadCommit")
-		settled.calls(t, parityPulls, 1)
+		settled.calls(t, parityPulls, 2)
 		// The read is past the claim's span and inside the settle's.
 		pair.clock.advance(delivery.CommitPullReadStaleAfter)
 
 		read := pair.read(t, issue, "the read inside the writer's settle")
-		// The settle refuses a read-through of behindHeadCommit, and the stored row of 61 heads
-		// headCommit, so the stored rows answer. The default-branch cache entry the writer's read
-		// put lapsed with the claim's span, so the read's one call is the repository's own read.
+		// The settle refuses a read-through of behindHeadCommit, and the claim of headCommit has
+		// passed, so headCommit is read through again (R6). The default-branch cache entry the
+		// writer's read put lapsed with the claim's span, so the read's other call is the
+		// repository's own read.
 		fromPull61(t, pair, read)
-		if want := map[string]int{parityRepository: 1}; !maps.Equal(read.writerCalls, want) {
+		if want := map[string]int{parityRepository: 1, parityPulls: 1}; !maps.Equal(read.writerCalls, want) {
 			t.Errorf("the writer's read made the GitHub calls %v, want %v", read.writerCalls, want)
 		}
 	})
@@ -450,8 +454,9 @@ func TestAReadOnlyResultsReadAnswersAsAWriterInEveryState(t *testing.T) {
 		// From here GitHub names two pull requests for the result's commit: 61, headed at it and
 		// titled after the issue, which its title attributes; and 62, whose title, body and
 		// branch name no issue, so its commit messages are read, and GitHub refuses that read
-		// for a rate limit. The read-through answers 61's row with the refusal
-		// (delivery.Attributor.ReadCommitPulls), and the writer's read stores that row.
+		// for a rate limit. The writer's read-through stores each row and its texts before it
+		// reads that row's messages (delivery.storePullRequestFacts), and stores no issue: the
+		// statement gives 61 its issue at each read from its texts.
 		pair.github.answersPulls(func(string) string {
 			return "[" + parityOpenPullTitled(61, headCommit, issue+" the work") + "," +
 				parityOpenPullTitled(62, newHeadCommit, "Tidy the build") + "]"
@@ -461,9 +466,13 @@ func TestAReadOnlyResultsReadAnswersAsAWriterInEveryState(t *testing.T) {
 		read := pair.read(t, issue, "the first read")
 		read.calls(t, parityPulls, 1)
 		read.calls(t, parityPullCommits, 1)
-		// The writer's partial store: the row of 61 and nothing of 62. The read-only read answers
-		// what the writer answers on it.
-		want := map[string]bool{fmt.Sprintf("pull request head %s#61 at %s, base main, open, issue %s", parityRepo, headCommit, issue): true}
+		standsAtBasis(t, read.writer, "k1", pair.writer.ids[0], fmt.Sprintf("pull request 61 at %.7s", headCommit))
+		// The writer's store: the rows of 61 and 62, with no stored issue. The read-only read
+		// answers what the writer answers on them.
+		want := map[string]bool{
+			fmt.Sprintf("pull request head %s#61 at %s, base main, open, issue none", parityRepo, headCommit):    true,
+			fmt.Sprintf("pull request head %s#62 at %s, base main, open, issue none", parityRepo, newHeadCommit): true,
+		}
 		if held := parityRows(t, pair.writer.rig.database); !maps.Equal(held, want) {
 			t.Errorf("the writer's read left the rows %v, want %v", slices.Sorted(maps.Keys(held)), slices.Sorted(maps.Keys(want)))
 		}
@@ -483,15 +492,15 @@ func TestAReadOnlyResultsReadAnswersAsAWriterInEveryState(t *testing.T) {
 		pair.github.answersPulls(func(string) string { return parityOpenPull(5, headCommit, issue) })
 
 		read := pair.read(t, issue, "the first read")
-		// The upsert's event-time guard refuses GitHub's answer (delivery.upsertHeadRow), so the
-		// stored row answers: k1 compares with 5 at newHeadCommit, and its result is at another
-		// commit.
-		bases := checkOf(t, read.writer, "k1").ComparedWith
-		if names := parityBases(checkOf(t, read.writer, "k1")); !slices.Equal(names, []string{fmt.Sprintf("pull request 5 at %.7s", newHeadCommit)}) ||
-			bases[0].LearnedAt == nil || !bases[0].LearnedAt.At.Equal(stored) {
-			t.Errorf("the writer's k1 compared with %+v, want pull request 5 at %.7s alone, learned at %s", bases, newHeadCommit, stored)
+		// The stored row holds no mark of a read of GitHub (storeParityHead writes it as a write
+		// of the release before did), so GitHub's answer applies over it whatever the two times
+		// (delivery.upsertHeadRow), and the trigger pull_request_heads_older_read owes a read of
+		// 5, since the row the answer replaced was newer: 5's head is not read, k1 compares with
+		// nothing, and its result is not known.
+		if compared := checkOf(t, read.writer, "k1"); compared.ComparedNothing != model.ReasonHeadNotRead {
+			t.Errorf("the writer's k1 compared with %v (%q), want nothing, %q", parityBases(compared), compared.ComparedNothing, model.ReasonHeadNotRead)
 		}
-		standsAt(t, read.writer, "k1", pair.writer.ids[0], "the writer's result", model.CommitOtherCommit, false)
+		standsAt(t, read.writer, "k1", pair.writer.ids[0], "the writer's result", model.CommitUnknown, false)
 		read.calls(t, parityPulls, 1)
 	})
 
@@ -1523,15 +1532,25 @@ func parityInProcess(stack *parityStack) string {
 	return fmt.Sprintf("%+v\n%+v", &stack.rig.served.commitPulls, &stack.rig.served.branches)
 }
 
-// parityStored is every pull_request_heads and branch_commits row database holds, whole, one row a
-// line in one order, and how many events it holds.
+// parityStored is every row of each table a writer's results read writes, whole, one row a line in
+// one order, and how many events it holds: the pull request heads and their texts, the branch
+// answers, the reads owed and the claims of a commit's read-through every process shares. Two
+// columns are left out, each a reader's wall clock that two reads never share and that orders
+// nothing: a head's github_read_at and its texts' read_at. A row's github_read_order stays, so a
+// read that took a place in the order of reads leaves its mark here.
 func parityStored(t *testing.T, database *store.Store) string {
 	t.Helper()
 	var stored string
 	if err := database.Pool.QueryRow(context.Background(), `
 		select coalesce(string_agg(row, E'\n' order by row), '')
 		from (
-			select 'pull request head ' || to_jsonb(head)::text as row from pull_request_heads head
+			select 'pull request head ' || (to_jsonb(head) - 'github_read_at')::text as row from pull_request_heads head
+			union all
+			select 'texts ' || (to_jsonb(texts) - 'read_at')::text from pull_request_texts texts
+			union all
+			select 'owed read ' || to_jsonb(owed)::text from pull_request_reads_owed owed
+			union all
+			select 'commit claim ' || to_jsonb(claim)::text from commit_pull_reads claim
 			union all
 			select 'branch answer ' || to_jsonb(answer)::text from branch_commits answer
 			union all

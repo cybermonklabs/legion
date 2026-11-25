@@ -29,13 +29,16 @@ import (
 //
 // What a rolled-back transaction leaves: no row of any table, and no NOTIFY (a notification is
 // sent only when its transaction commits). Every write the read-throughs make goes through that
-// transaction; their reads
-// of GitHub are made outside it, so no transaction is held open across a call to GitHub, and each
-// one holds the row locks of the request's writes for the milliseconds of one read. A read-only
-// read takes no place in the order of reads (startRead): it reads the place the last read took
-// and advances no sequence (peekRead), which orders its answers against every stored row as the
-// place it would take orders them (the trigger pull_request_heads_older_read compares the places
-// with `<`).
+// transaction; their reads of GitHub are made outside it, so no transaction is held open across a
+// call to GitHub, and each one holds the row locks of the request's writes for the milliseconds of
+// one read. A read-only read takes no place in the order of reads (startRead): it reads the place
+// the last read took and advances no sequence (peekRead), which orders its answers against every
+// stored row as the place it would take orders them (the trigger pull_request_heads_older_read
+// compares the places with `<`). One thing outlives the rollback: where a write made again owes a
+// read (the triggers of pull_request_heads), the owe's revision is a value of
+// pull_request_reads_owed_revision_seq, which PostgreSQL never gives back. That leaves a gap in
+// the sequence, which no reader reads: a revision is compared only with itself (settleOwedRead),
+// and a place only with another place.
 
 // HeadAnswers is what one read-only caller's results read learned from GitHub and stored nowhere:
 // each write a writer's read would have made with it, in the order the read made them, as the
