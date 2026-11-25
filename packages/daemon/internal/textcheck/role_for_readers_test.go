@@ -66,9 +66,12 @@ type roleForReader struct {
 // child's failed architect again and the accepting step's run (ReturnFromChildren, through start
 // and startStandingStep in internal/workflow's effects.go), and the stop holds accepting with no
 // role told (StopForChildren), since the architect's notice tells it. The release of a hold reads
-// the held phase's role twice (retryPhase), for the entry that phase stands on and for the
-// restart, and a held phase is never admitted. The owner walk reads no role: where it starts is its
-// caller's to say (record.NoticeStartsAtParent, for a notice).
+// the held phase's role for the restart (retryPhase), and a held phase is never admitted. The
+// entry the phase's role stands on is read for R9's exemption of a move out of retro or merging
+// (samePhaseExempt) only past record.OpenChildHolds, by the stop and by the guard on a start of
+// the phase the issue stands in, so it reads accepting's architect at most and never admitted's.
+// The owner walk reads no role: where it starts is its caller's to say
+// (record.NoticeStartsAtParent, for a notice).
 //
 // A reader this list does not hold fails the test, so a new one is decided rather than taking
 // whatever RoleFor answers at admitted.
@@ -87,6 +90,7 @@ var roleForReaders = map[roleForSite]roleForReader{
 	{file: "internal/workflow/awaiting_children.go", fn: "Engine.StopForChildren"}:    {calls: 1, test: "TestTheAdmissionPassStopsAStartedParentAnOpenChildHolds"},
 	{file: "internal/workflow/awaiting_children.go", fn: "undeliveredStart"}:          {calls: 1, test: "TestTheAdmissionPassStopsAStartedParentAnOpenChildHolds"},
 	{file: "internal/workflow/awaiting_children.go", fn: "Engine.ReturnFromChildren"}: {calls: 1, test: "TestAParentWhosePullRequestMergedGoesBackToTheStartItHeld"},
+	{file: "internal/workflow/awaiting_children.go", fn: "Engine.samePhaseExempt"}:    {calls: 1, test: "TestParentWaitsHoldsEveryPhaseStart"},
 	{file: "internal/workflow/catch_up.go", fn: "Engine.readyWorkerTask"}:             {calls: 1, test: "TestArchitectUnchangedByAReadyWorkerOfAnIssueAtAdmitted"},
 	{file: "internal/workflow/design_news.go", fn: "memberWords"}:                     {calls: 1, test: "TestTheRootArchitectsSummaryNamesEachMemberAsTheRecordStandsAtItsSend"},
 	{file: "internal/workflow/effects.go", fn: "HeldNotice"}:                          {calls: 1, test: "TestACarriedRootResumesFromTheApprovedHeadAndTheHold"},
@@ -95,7 +99,7 @@ var roleForReaders = map[roleForSite]roleForReader{
 	{file: "internal/workflow/engine.go", fn: "Engine.claimFailed"}:                   {calls: 1, test: "TestAnArchitectsClaimFailedHoldsNoIssueAndWritesNoHeldNotice"},
 	{file: "internal/workflow/engine.go", fn: "Engine.leftItsPhase"}:                  {calls: 1, test: "TestArchitectUnchangedByAWorkersCompletionAtAdmitted"},
 	{file: "internal/workflow/engine.go", fn: "Engine.restartPhase"}:                  {calls: 1, test: "TestTheOperatorsRestartOfAPhaseStartsItsWorkerWithThePhasesTask"},
-	{file: "internal/workflow/engine.go", fn: "Engine.retryPhase"}:                    {calls: 2, test: "TestTheOperatorsRestartOfAPhaseStartsItsWorkerWithThePhasesTask"},
+	{file: "internal/workflow/engine.go", fn: "Engine.retryPhase"}:                    {calls: 1, test: "TestTheOperatorsRestartOfAPhaseStartsItsWorkerWithThePhasesTask"},
 	{file: "internal/workflow/engine.go", fn: "backwardRefusal"}:                      {calls: 2, test: "TestArchitectUnchangedByABackwardMoveFromAdmitted"},
 	{file: "internal/workflow/engine.go", fn: "Engine.transition"}:                    {calls: 2, test: "TestAnApprovalMovesTheIssueIntoAcceptingStartingNobody"},
 	{file: "internal/workflow/engine.go", fn: "noticeFor"}:                            {calls: 3, test: "TestThePhaseFinishedNoticeOutOfAdmittedCarriesNoRole"},

@@ -894,8 +894,8 @@ func (w *workflowRuntime) queueGatedStepsPublish(ctx context.Context) error {
 // otherwise, and run on each root's lifecycle lane once the outbox attaches. An issue Dispatch
 // shows done is left out by the read (record.GatedIssues), as its gates are left out of the
 // publication. A restart loop that queues a second seed beside one still waiting costs one more
-// read of Dispatch: the seed's fact is the step, the request and what the read found, so it
-// applies once.
+// read of Dispatch: the seed's fact is the step, the request, the registration it reads for and
+// what the read found, so it applies once.
 func (w *workflowRuntime) queueRecordedGatesPublish(ctx context.Context) error {
 	now := time.Now().UTC()
 	queued := 0

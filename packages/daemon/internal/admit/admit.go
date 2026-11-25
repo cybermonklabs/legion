@@ -3243,13 +3243,13 @@ func promotedByEarlierRelease(root record.Issue, holds bool) bool {
 // (dispatch://INFRA-3320) holds a mid-phase member's start at the root's promotion or at the pass
 // that finds the tree running first, and judges each member before any role of it comes back. The
 // return holds the phase worker's start where it makes that start (workflow's
-// StartPromotedWorker), and stops the member instead where StartFor finds a queued start or live
-// claim, and where the member stands in accepting, whose role is an architect that no phase start
-// brings back here (workflow's StopPromotedWorker). A member R9 holds moves to awaiting_children,
-// brings no other role back and starts no step. The promotion alone exempts k12's "a root handed
-// over from another tree carrying its slot in `implementing` (`record.QueuedRoot`)": carriedSlot is
-// that exemption whole, as the promotion read it of root, and false on every other return. The
-// next pass stops that root as any started parent with an open child (childrenWaits).
+// StartPromotedWorker), and judges every other member through workflow's StopPromotedWorker, which
+// moves only a member that stands in a phase R9 holds (record.OpenChildHolds). A member R9 holds
+// moves to awaiting_children, brings no other role back and starts no step. The promotion alone
+// exempts k12's "a root handed over from another tree carrying its slot in `implementing`
+// (`record.QueuedRoot`)": carriedSlot is that exemption whole, as the promotion read it of root,
+// and false on every other return. The next pass stops that root as any started parent with an
+// open child (childrenWaits).
 //
 // root is the tree's root as returnOwedMembers has it, and issues the pass's own records, which
 // carry that root as the pass read it. The caller passes both and appends nothing: the root is
@@ -3393,18 +3393,17 @@ func (a *Admission) startMidPhaseMembers(ctx context.Context, tx pgx.Tx, root re
 		}
 		// R9 judges the member before any role of it comes back. The phase's own worker, found
 		// once among the member's roles, has its start held where the return makes that start
-		// (StartPromotedWorker), and the member is stopped instead where StartFor finds that
-		// worker started or queued already; a member in accepting, whose role is an architect
-		// that no phase start brings back here, is stopped the same way (StopPromotedWorker). A
-		// member R9 holds has moved to awaiting_children: it brings back no other role and starts
-		// no step, whether its start was new or already written.
+		// (StartPromotedWorker); every other member is judged by StopPromotedWorker, which moves
+		// only a member that stands in a phase R9 holds. A member R9 holds has moved to
+		// awaiting_children: it brings back no other role and starts no step, whether its start
+		// was new or already written.
 		var held bool
 		var err error
 		owned := slices.IndexFunc(standing.roles, func(r roleToken) bool { return r.role == standing.owner })
 		switch {
 		case owned >= 0 && workflow.StartFor(runs[standing.roles[owned].token], root, member.Generation, member.Phase):
 			held, err = a.engine.StartPromotedWorker(ctx, tx, member, standing.owner, standing.carriedSlot)
-		case owned >= 0 || member.Phase == phase.Accepting:
+		default:
 			held, err = a.engine.StopPromotedWorker(ctx, tx, member, owed[member.Key])
 		}
 		if err != nil {
