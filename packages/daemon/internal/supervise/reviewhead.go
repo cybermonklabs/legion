@@ -125,8 +125,12 @@ func relaunchAtReviewHead(m *Machine, ctx context.Context, ev Event) error {
 // review): such a message reaches the reviewer's session through Envoy, not through a send of
 // this machine, and is published only while this holds. A reviewer that is not ready, idle or in
 // a turn holds nothing: a process still launching is waited for, and the launch reads the
-// record's head itself. It takes the lock only when the lock is free, and answers ErrMachineBusy
-// otherwise, as PublishUpdateAsk does, so the outbox never waits on a launch in flight.
+// record's head itself. Nor does a reviewer whose task waits for a reason of the daemon's
+// (Deps.DeliveryWaits), which sendPending asks before the head: its issue pod runs another image,
+// so its relaunch would be refused there (internal/daemon's reviewerPods), and the message waits
+// for the process the pod's replacement starts, with no relaunch raised. It takes the lock only
+// when the lock is free, and answers ErrMachineBusy otherwise, as PublishUpdateAsk does, so the
+// outbox never waits on a launch in flight.
 func (m *Machine) ReviewHeadHolds(ctx context.Context) (bool, error) {
 	if !m.mu.TryLock() {
 		return false, ErrMachineBusy
@@ -134,6 +138,9 @@ func (m *Machine) ReviewHeadHolds(ctx context.Context) (bool, error) {
 	defer m.unlock()
 	switch m.claim.State {
 	case StateReady, StateIdle, StateWorking:
+		if m.claim.Role == claim.RoleReviewer && m.deps.DeliveryWaits != nil && m.deps.DeliveryWaits(m.claim) {
+			return false, nil
+		}
 		return m.reviewHeadHolds(ctx)
 	}
 	return m.claim.Role != claim.RoleReviewer, nil

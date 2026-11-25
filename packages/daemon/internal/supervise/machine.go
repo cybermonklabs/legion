@@ -1032,7 +1032,8 @@ type Deps struct {
 	// that nothing of the claim records: a reviewer works only in an issue pod on the configured
 	// image, so a task for a reviewer whose pod runs another image waits for the pod that
 	// replaces it (internal/daemon's reviewerPods). The task stays pending and charged nothing,
-	// and the next decision asks again (sendPending). nil holds no delivery back.
+	// and the next decision asks again (sendPending). A message the daemon holds for a reviewer
+	// waits on it too (ReviewHeadHolds). nil holds no delivery back.
 	DeliveryWaits func(c Claim) bool
 	// ReviewHead is the head of issue's pull request as the daemon's record holds it now, ""
 	// where it records none (internal/daemon's workflowRuntime.reviewHead): the head a reviewer's
