@@ -9,15 +9,16 @@ body: |-
   `unguarded_blocks` lists each block the guard does not cover as `{id, token}` at the token it
   carries now, and its `error` names each id and says to compare that token with the one the
   caller's own read listed: where they match, the caller adds the block to its guard at the token
-  it read and sends the edit again, and where they differ, another writer changed the block, so
-  the caller reads the document again before it removes it. A list, a list item or a quote a
-  removal empties of blocks the guard covers holds nothing of its own but its attributes, which no
-  listed token covers, so it is taken, and a `delete` of an item's whole text whose one nested list
-  takes the item's place removes that text alone, so a guard on its paragraph takes it. A guard
-  that names a block is held to its token. The answer's `unguarded_blocks` names each typed block
-  a `replace`'s `with` of blocks rewrote in place under its own id that the guard did not name, at
-  the token it carried before the edit. A task item's checked mark is in no listed block's token,
-  so a guard does not see it change.
+  it read and sends the edit again, and where they differ, or the caller's read listed no token
+  for the block, another writer changed or added the block, so the caller reads the document
+  again before it removes it. A list, a list item or a quote a removal empties of blocks the guard
+  covers holds nothing of its own but its attributes, which no listed token covers, so it is
+  taken, and a `delete` of an item's whole text whose one nested list takes the item's place
+  removes that text alone, so a guard on its paragraph takes it. A guard that names a block is
+  held to its token. The answer's `unguarded_blocks` names each typed block a `replace`'s `with`
+  of blocks rewrote in place under its own id that the guard did not name, at the token it
+  carried before the edit. A task item's checked mark is in no listed block's token, so a guard
+  does not see it change.
 time: 2026-11-19T20:30:00Z
 custom:
     Issue: pr2697

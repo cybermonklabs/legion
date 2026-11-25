@@ -530,6 +530,67 @@ func TestAMarkerDeleteGuardedOnItsParagraphAloneAfterANestedChangeIsRefusedThenS
 	}
 }
 
+// A marker delete guarded on the item's paragraph alone, read while the item held only that
+// paragraph, is refused 409 PRECONDITION_FAILED with nothing written after another writer added a
+// list under the item: its unguarded_blocks names the added list at the token it carries now, a
+// block the caller's read listed no token for, and its error says that such a block was changed
+// or added by another writer since that read, so the caller reads the document again rather than
+// send the refusal's token. That read lists the added list, and the other writer's list is still
+// in the document (INFRA-341).
+func TestAMarkerDeleteGuardedOnItsParagraphAloneAfterANestedListWasAddedIsRefusedThenReadAgain(t *testing.T) {
+	t.Parallel()
+	handler, _, _ := preconditionTestHandler(t)
+	issue := createInteractionIssue(t, handler, "TEST", "Marker delete after an added list", "- Parent\n- Other\n")
+	artifact := issue.PrimaryArtifactID
+	read := listedBlocks(t, handler, artifact)
+	parent := listedBlock(t, handler, artifact, "paragraph", "Parent")
+	// An insert of a list anchored on the item's text would join the item's own list as a sibling
+	// item (pmdoc.ListBoundary), so the other writer puts the list under the item with a replace of
+	// the item's text by that text and the list.
+	writer := dispatchRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+artifact+"/edits", map[string]any{
+		"ops": []map[string]string{{"op": "replace", "find": "Parent", "with": "Parent\n\n- Child, added by another writer"}},
+	}, "alice")
+	if writer.Code != http.StatusOK {
+		t.Fatalf("the other writer's nested list: status=%d body=%s", writer.Code, writer.Body.String())
+	}
+	changed := readDocumentPrecondition(t, handler, artifact)
+	if want := "- Parent\n  - Child, added by another writer\n- Other\n"; changed.Markdown != want {
+		t.Fatalf("document after the other writer's replace = %q, want %q, a list nested under Parent", changed.Markdown, want)
+	}
+	added := listedBlock(t, handler, artifact, "bullet_list", "- Child, added by another writer")
+	for _, block := range read {
+		if block.ID == added.ID {
+			t.Fatalf("the caller's read listed %s before the other writer added it: %#v", added.ID, read)
+		}
+	}
+	response := blockGuardedEdit(t, handler, artifact, map[string]string{"op": "delete", "find": "- Parent"}, parent)
+	if !refusedUnguarded(t, response, changed.Token, added) {
+		t.Fatalf("a marker delete guarded on the item's paragraph alone, after another writer added a list under it: status=%d body=%s, "+
+			"want 409 PRECONDITION_FAILED naming the added list %s at its token now, %s", response.Code, response.Body.String(), added.ID, added.Token)
+	}
+	const unlisted = "if they differ, or your read listed no token for it, another writer changed or added it since your read, " +
+		"so read the document again before you remove it"
+	if refusal := decodeBody[documentPreconditionConflict](t, response).Error; !strings.Contains(refusal, unlisted) {
+		t.Fatalf("the refusal's error = %q, want it to say %q", refusal, unlisted)
+	}
+
+	// The caller's read listed no token for the added list, so it reads the document again, as the
+	// refusal says: the refused delete wrote nothing, the other writer's list is still there, and
+	// the read lists it.
+	if got := readDocumentPrecondition(t, handler, artifact).Markdown; got != changed.Markdown {
+		t.Fatalf("the document read again after the refused delete = %q, want the other writer's %q", got, changed.Markdown)
+	}
+	listed := false
+	for _, block := range listedBlocks(t, handler, artifact) {
+		if block.ID == added.ID && block.Token == added.Token {
+			listed = true
+		}
+	}
+	if !listed {
+		t.Fatalf("the blocks read again do not list the added list %s at %s", added.ID, added.Token)
+	}
+}
+
 // A marker delete guarded on the item's paragraph alone, with no other writer about, is refused
 // too, with nothing written: the refusal names the nested list the delete would remove at the
 // token it carries now, the same token the caller's own read listed for it. Sent again with the

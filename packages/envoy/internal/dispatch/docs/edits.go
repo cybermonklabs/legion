@@ -599,9 +599,9 @@ type ErrPreconditionFailed struct {
 	// Unguarded is each block an edit under a block guard removes that the guard does not cover,
 	// with the token it carries now (requirePreconditionCoverage). That token is for the caller
 	// to compare with the token its own read listed, never to send: where the two match, a guard
-	// naming the block at the token read takes the edit; where they differ, another writer
-	// changed the block since that read, and the caller reads the document again. It is empty
-	// for a stale token.
+	// naming the block at the token read takes the edit; where they differ, or the read listed no
+	// token for the block, another writer changed or added it since that read, and the caller
+	// reads the document again. It is empty for a stale token.
 	Unguarded []model.EditBlockPrecondition
 }
 
@@ -627,7 +627,8 @@ func (e *ErrPreconditionFailed) Error() string {
 // unguardedReason is why an edit under a block guard is refused for the blocks it removes that
 // the guard does not cover (ErrPreconditionFailed.Unguarded), naming each by its id, and how the
 // caller answers it: by comparing the token the refusal gives each, the one it carries now, with
-// the token its own read listed, and sending the edit again only where they match.
+// the token its own read listed, sending the edit again only where they match, and reading the
+// document again where they differ or the read listed no token for a block.
 func unguardedReason(blocks []model.EditBlockPrecondition) string {
 	ids := make([]string, len(blocks))
 	for index, block := range blocks {
@@ -636,14 +637,16 @@ func unguardedReason(blocks []model.EditBlockPrecondition) string {
 	if len(ids) == 1 {
 		return fmt.Sprintf("the edit removes block %s, which the block guard does not cover; "+
 			"compare the token this refusal gives it with the token your own read listed for it: "+
-			"if they match, name it in the guard at the token you read and send the edit again, "+
-			"and if they differ, another writer changed it since your read, "+
+			"if they match, name it in the guard at the token you read and send the edit again; "+
+			"if they differ, or your read listed no token for it, "+
+			"another writer changed or added it since your read, "+
 			"so read the document again before you remove it", ids[0])
 	}
 	return fmt.Sprintf("the edit removes blocks %s, which the block guard does not cover; "+
 		"compare the token this refusal gives each with the token your own read listed for it: "+
-		"if all match, name them in the guard at the tokens you read and send the edit again, "+
-		"and if one differs, another writer changed that block since your read, "+
+		"if all match, name them in the guard at the tokens you read and send the edit again; "+
+		"if one differs, or your read listed no token for one, "+
+		"another writer changed or added that block since your read, "+
 		"so read the document again before you remove it", strings.Join(ids, ", "))
 }
 
@@ -870,17 +873,18 @@ func checkEditPrecondition(tree *pmdoc.Node, precondition model.EditPrecondition
 // (pmdoc.UncoveredBlocks): it is refused as a stale token is (ErrPreconditionFailed.Unguarded),
 // with nothing written, and the refusal names each such block with the token it carries now. The
 // caller compares that token with the token its own read listed: where they match, it adds the
-// block to its guard at the token it read and sends the edit again; where they differ, another
-// writer changed the block since that read, and the caller reads the document again before it
-// removes it. A list, a list item or a quote the removal empties of blocks the guard covers holds
-// nothing of its own but its attributes, which no listed token covers, so it is taken. A guard
-// that names a block is held to its token as to any other block (checkEditPrecondition). A typed
-// block a replace's with rewrites in place under its own id is not refused: the edit answers each
-// such block the guard does not name, with the token it carried before the edit rewrote it
-// (unguarded), for the caller to compare with the token its own read listed, and naming them in
-// the guard refuses the edit when one of them changed. A block the tree the batch starts from
-// does not hold - one an earlier insert of the batch wrote - has no token a caller read, so the
-// guard is not refused for it and none is answered for it.
+// block to its guard at the token it read and sends the edit again; where they differ, or its read
+// listed no token for the block, another writer changed or added the block since that read, and
+// the caller reads the document again before it removes it. A list, a list item or a quote the
+// removal empties of blocks the guard covers holds nothing of its own but its attributes, which
+// no listed token covers, so it is taken. A guard that names a block is held to its token as to
+// any other block (checkEditPrecondition). A typed block a replace's with rewrites in place under
+// its own id is not refused: the edit answers each such block the guard does not name, with the
+// token it carried before the edit rewrote it (unguarded), for the caller to compare with the
+// token its own read listed, and naming them in the guard refuses the edit when one of them
+// changed. A block the tree the batch starts from does not hold - one an earlier insert of the
+// batch wrote - has no token a caller read, so the guard is not refused for it and none is
+// answered for it.
 func requirePreconditionCoverage(tree *batchTree, ops []model.EditOp, precondition model.EditPrecondition, before string) (unguarded []model.EditBlockPrecondition, err error) {
 	if precondition.Document != "" {
 		return nil, nil
