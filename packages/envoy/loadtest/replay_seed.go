@@ -168,8 +168,7 @@ type replaySeeder struct {
 }
 
 // seedError stops the seed: a refusal that is not transient, named by step, logged id, status and
-// Dispatch's error code, never the body. The code is Dispatch's word, held as redact.RemoteText,
-// which prints only the rule's reading of it under every verb.
+// Dispatch's error code, never the body.
 type seedError struct {
 	step, logged string
 	status       int

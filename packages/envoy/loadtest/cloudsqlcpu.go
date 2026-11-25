@@ -180,8 +180,6 @@ func cloudsqlMetadataToken(ctx context.Context, client *http.Client, tokenURL st
 	req.Header.Set("Metadata-Flavor", "Google")
 	resp, err := client.Do(req)
 	if err != nil {
-		// net/http's text names tokenURL with the user name of its user information and quotes a
-		// Location that does not parse, so the failure prints as redact.Cause reads it.
 		return "", fmt.Errorf("the metadata server at %s gave no access token: %w", redactURL(tokenURL), redact.Cause(err, tokenURL))
 	}
 	defer resp.Body.Close()

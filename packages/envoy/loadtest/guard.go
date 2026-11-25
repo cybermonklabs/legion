@@ -805,8 +805,6 @@ func checkNATSServerName(ctx context.Context, client *http.Client, monURL, name 
 		return errors.New("guard: nats check failed: the NATS monitor URL is not an absolute URL with a host (it is not printed)")
 	}
 	varzURL := joined.String()
-	// The server name is the monitor's words, so it is compared as it came and printed as the rule
-	// reads it.
 	var varz struct {
 		ServerName redact.RemoteText `json:"server_name"`
 	}
