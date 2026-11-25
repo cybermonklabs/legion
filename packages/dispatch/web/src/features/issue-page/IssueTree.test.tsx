@@ -6810,7 +6810,11 @@ test("a focused decision's state fact reads Kept by or Changed by and carries wh
   });
 
   await user.keyboard("j");
-  await waitFor(() => expect(focusedRow(view.container)).toBe("spec#b-d2"));
+  await waitFor(() =>
+    expect(focusedRow(view.container), "j does not move the focus to the changed decision").toBe(
+      "spec#b-d2"
+    )
+  );
   expect(view.focusedNode()).toMatchObject({
     state: "Changed by",
     stateBy: { id: "bob", kind: "user" },

@@ -1570,7 +1570,11 @@ test("a failed read's line takes the focus the empty tree holds, and the focus s
     await waitFor(() =>
       expect(opened.client.getQueryData<readonly unknown[]>(["asks", KEY])).toEqual([])
     );
-    await waitFor(() => expect(document.activeElement).toBe(rowOf(opened, D("minor"))));
+    await waitFor(() =>
+      expect(document.activeElement, "the focus is not on the minor decision").toBe(
+        rowOf(opened, D("minor"))
+      )
+    );
     opened.again({ children: [openAsk("q-open"), decisionNode("minor")] });
     await waitFor(() => expect(rowsOfPart(opened, "open_questions")).toEqual(["q-open"]));
     expect(document.activeElement).toBe(rowOf(opened, D("minor")));
@@ -2773,7 +2777,11 @@ test("a list that holds only the foot gives the focus to its first row, and to t
   const user = userEvent.setup();
   expect(document.activeElement).toBe(document.body);
   const view = renderBody(FOOT_ONLY);
-  await waitFor(() => expect(document.activeElement).toBe(rowOf(view, D("minor"))));
+  await waitFor(() =>
+    expect(document.activeElement, "the focus is not on the foot's first row").toBe(
+      rowOf(view, D("minor"))
+    )
+  );
 
   await act(async () => (document.activeElement as HTMLElement).blur());
   expect(focusedRow(view)).toBeUndefined();
@@ -2791,7 +2799,11 @@ test("a list that holds only the foot gives the focus to its first row, and to t
   // control of a folded foot, the list drawing no row, a question's row drawn later takes it,
   // where the stage would have put it.
   const early = renderBody(FOOT_ONLY);
-  await waitFor(() => expect(document.activeElement).toBe(rowOf(early, D("minor"))));
+  await waitFor(() =>
+    expect(document.activeElement, "the focus is not on the foot's first row").toBe(
+      rowOf(early, D("minor"))
+    )
+  );
   await user.click(footControlOf(early) as HTMLElement);
   await act(async () => (document.activeElement as HTMLElement).blur());
   await act(async () => early.getByRole("tree", { name: CONTROL_LABELS.tree }).focus());
@@ -2809,7 +2821,11 @@ test("a list that holds only the foot gives the focus to its first row, and to t
   const tied = treeAnswer([decision("minor", { decision: { links: [shaped(specRef("s1"))] } })]);
   for (const placed of ["the control", "the row"] as const) {
     const left = renderBody(tieable);
-    await waitFor(() => expect(document.activeElement).toBe(rowOf(left, D("minor"))));
+    await waitFor(() =>
+      expect(document.activeElement, "the focus is not on the foot's first row").toBe(
+        rowOf(left, D("minor"))
+      )
+    );
     if (placed === "the control") {
       await user.tab({ shift: true });
       expect(document.activeElement).toBe(footControlOf(left));
@@ -2829,7 +2845,11 @@ test("a list that holds only the foot gives the focus to its first row, and to t
   // A reader who presses the control keeps the focus on it, though the press folds the foot's
   // rows, and the next press draws them again.
   const pressed = renderBody(FOOT_ONLY);
-  await waitFor(() => expect(document.activeElement).toBe(rowOf(pressed, D("minor"))));
+  await waitFor(() =>
+    expect(document.activeElement, "the focus is not on the foot's first row").toBe(
+      rowOf(pressed, D("minor"))
+    )
+  );
   await user.click(footControlOf(pressed) as HTMLElement);
   expect(rowsOfPart(pressed, "agents")).toEqual([]);
   expect(document.activeElement).toBe(footControlOf(pressed));
@@ -2939,7 +2959,9 @@ test("each press of the count of what waits goes to the next thing that waits", 
         ])
       )
     );
-    await waitFor(() => expect(focusedRow(early)).toBe(D("first")));
+    await waitFor(() =>
+      expect(focusedRow(early), "the focus is not on the first decision").toBe(D("first"))
+    );
   } finally {
     outside.remove();
   }
@@ -3490,7 +3512,9 @@ test("each part draws 20 entries at a time, with the count left", async () => {
   expect(drawnIn("agents")).toEqual({ count: "45", next: nextWords(20, 25), rows: foot(20) });
   await user.click(nextControlOf(view, "open_questions") as HTMLElement);
   expect(drawnIn("open_questions")).toEqual({ count: "45", next: null, rows: questions(45) });
-  await waitFor(() => expect(focusedRow(view)).toBe("q41"));
+  await waitFor(() =>
+    expect(focusedRow(view), "the last press does not focus the first entry it drew").toBe("q41")
+  );
 
   // The foot by the pointer, then by the keyboard; the questions draw what they drew.
   await user.click(nextControlOf(view, "agents") as HTMLElement);
@@ -3498,7 +3522,11 @@ test("each part draws 20 entries at a time, with the count left", async () => {
   expect(document.activeElement).toBe(nextControlOf(view, "agents"));
   await user.keyboard(" ");
   expect(drawnIn("agents")).toEqual({ count: "45", next: null, rows: foot(45) });
-  await waitFor(() => expect(focusedRow(view)).toBe(D("foot41")));
+  await waitFor(() =>
+    expect(focusedRow(view), "the last press does not focus the first entry it drew").toBe(
+      D("foot41")
+    )
+  );
   expect(drawnIn("open_questions")).toEqual({ count: "45", next: null, rows: questions(45) });
   expect(drawnIn("review")).toEqual({ count: "20", next: null, rows: ids.review.map(D) });
   view.unmount();
@@ -3513,7 +3541,11 @@ test("an entry the view goes to on a later page draws the pages up to it", async
 
   // The address names the foot's 30th decision.
   const addressed = renderBody(issue, { reveal: D("foot30") });
-  await waitFor(() => expect(focusedRow(addressed)).toBe(D("foot30")));
+  await waitFor(() =>
+    expect(focusedRow(addressed), "the address does not reach the 30th foot entry").toBe(
+      D("foot30")
+    )
+  );
   expect(rowsOfPart(addressed, "agents")).toEqual(ids.foot.slice(0, 40).map(D));
   expect(words(nextControlOf(addressed, "agents"))).toBe(nextWords(5, 5));
   expect(rowsOfPart(addressed, "open_questions")).toEqual(ids.questions.slice(0, 20));
@@ -3521,7 +3553,9 @@ test("an entry the view goes to on a later page draws the pages up to it", async
 
   // The Contents pane's list goes to the 30th question.
   const asked = renderBody(issue, { request: { focusBranch: false, id: "q30", seq: 1 } });
-  await waitFor(() => expect(focusedRow(asked)).toBe("q30"));
+  await waitFor(() =>
+    expect(focusedRow(asked), "the Contents go-to does not reach the 30th question").toBe("q30")
+  );
   expect(rowsOfPart(asked, "open_questions")).toEqual(ids.questions.slice(0, 40));
   expect(rowsOfPart(asked, "agents")).toEqual(ids.foot.slice(0, 20).map(D));
   asked.unmount();
@@ -3530,16 +3564,26 @@ test("an entry the view goes to on a later page draws the pages up to it", async
   const keyed = renderBody(issue);
   await act(async () => rowOf(keyed, "q20").focus());
   await user.keyboard("q");
-  await waitFor(() => expect(focusedRow(keyed)).toBe("q21"));
+  await waitFor(() =>
+    expect(focusedRow(keyed), "the next-question key does not reach the 21st question").toBe("q21")
+  );
   expect(rowsOfPart(keyed, "open_questions")).toEqual(ids.questions.slice(0, 40));
   keyed.unmount();
 
   // The header's count, pressed 30 times, goes to the 30th question that waits.
   const counted = renderBody(issue, { waitingPress: 1 });
-  await waitFor(() => expect(focusedRow(counted)).toBe("q01"));
+  await waitFor(() =>
+    expect(focusedRow(counted), "the count's first press does not reach the first question").toBe(
+      "q01"
+    )
+  );
   for (let press = 2; press <= 30; press += 1) {
     counted.again({ waitingPress: press });
-    await waitFor(() => expect(focusedRow(counted)).toBe(ids.questions[press - 1]));
+    await waitFor(() =>
+      expect(focusedRow(counted), `the count's press ${press} does not reach its question`).toBe(
+        ids.questions[press - 1]
+      )
+    );
   }
   expect(rowsOfPart(counted, "open_questions")).toEqual(ids.questions.slice(0, 40));
   counted.unmount();

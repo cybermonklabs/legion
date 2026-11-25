@@ -412,7 +412,11 @@ test("the header mounted again past 30 s sends none of its count's reads, nor th
   try {
     // The login is the one the shell already holds, the coverage, the comments and the tree are
     // each sent once, and the decisions are not sent at all.
-    await waitFor(() => expect(sent()).toEqual([0, 0, 1, 1, 1]));
+    await waitFor(() =>
+      expect(sent(), "the header did not send each of its count's reads once").toEqual([
+        0, 0, 1, 1, 1,
+      ])
+    );
     await waitFor(() => expect(listProjects).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(queryClient.isFetching()).toBe(0));
     const issueReads = getIssue.mock.calls.length;
