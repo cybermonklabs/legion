@@ -68,13 +68,14 @@ func readBatchRequest(t *testing.T, r *http.Request) []int {
 	return numbers
 }
 
-// batchNode is one pull request as the by-number query answers it: open on main at head, with
-// GitHub's `mergeable` and `mergeStateStatus` in GraphQL's capitals, no review request open, and
-// the head's rollup SUCCESS, as GitHub answers a pull request whose checks are done and that asks
-// nobody for a review. A test that needs another count or rollup sets it on the node.
+// batchNode is one pull request as the by-number query answers it: open on main at answeredBase
+// and at head, with GitHub's `mergeable` and `mergeStateStatus` in GraphQL's capitals, no review
+// request open, and the head's rollup SUCCESS, as GitHub answers a pull request whose checks are
+// done and that asks nobody for a review. A test that needs another count or rollup sets it on
+// the node.
 func batchNode(number int, head, mergeable, state string) map[string]any {
 	return map[string]any{"number": number, "state": "OPEN", "headRefOid": head, "headRefName": fmt.Sprintf("legion/CAPTURE-%d", number-85),
-		"baseRefName": "main", "mergeable": mergeable, "mergeStateStatus": state,
+		"baseRefName": "main", "baseRefOid": answeredBase, "mergeable": mergeable, "mergeStateStatus": state,
 		"reviewRequests": map[string]any{"totalCount": 0}, "commits": rollupOf(head, "SUCCESS")}
 }
 
@@ -146,8 +147,9 @@ func batchAnswer(t *testing.T, asked []int, nodes ...map[string]any) string {
 
 // graphQLAnswerOf is rest, an answer to GET /pulls/86, as the by-number query answers the same
 // pull request when asked: GitHub's `mergeable` null, true and false are UNKNOWN, MERGEABLE and
-// CONFLICTING, its `mergeStateStatus` is the `mergeable_state` in capitals, and its base and head
-// are the REST answer's. An answer that is no 2xx is the query's own status and body.
+// CONFLICTING, its `mergeStateStatus` is the `mergeable_state` in capitals, and its base, base
+// commit and head are the REST answer's. An answer that is no 2xx is the query's own status and
+// body.
 func graphQLAnswerOf(t *testing.T, rest pullAnswer, asked []int) (int, string) {
 	t.Helper()
 	if rest.status >= http.StatusMultipleChoices {
@@ -170,7 +172,7 @@ func graphQLAnswerOf(t *testing.T, rest pullAnswer, asked []int) (int, string) {
 		state = "CLOSED"
 	}
 	node := batchNode(pull.Number, pull.Head.SHA, mergeable, strings.ToUpper(pull.MergeableState))
-	node["state"], node["headRefName"], node["baseRefName"] = state, pull.Head.Ref, pull.Base.Ref
+	node["state"], node["headRefName"], node["baseRefName"], node["baseRefOid"] = state, pull.Head.Ref, pull.Base.Ref, pull.Base.SHA
 	if count := pull.reviewsRequested(); count != nil {
 		node["reviewRequests"] = map[string]any{"totalCount": *count}
 	}
@@ -433,6 +435,38 @@ func TestABatchAnswerIsStampedWithItsOwnChunksTime(t *testing.T) {
 	if pr.Mergeability != record.MergeabilityConflicting || pr.MergeState != record.MergeStateDirty || pr.ConflictRead == nil || pr.ConflictRead.Head != "head-86" {
 		t.Fatalf("86 holds %s/%s with first read %+v, want the newer CONFLICTING read standing: the first chunk's answer is older than it",
 			pr.Mergeability, pr.MergeState, pr.ConflictRead)
+	}
+}
+
+// A base's batch read carries the base commit GitHub's answer names, as the read of one pull
+// request does (TestAPullRequestReadCarriesTheBaseCommitGitHubNames): each pull request's
+// `baseRefOid` is applied on its mergeability fact beside its base branch, a clean answer's and a
+// conflicting one's alike.
+func TestABaseBatchReadCarriesTheBaseCommitGitHubNames(t *testing.T) {
+	t.Parallel()
+	pool := isolatedOutboxPool(t)
+	seedOnMain(t, pool, "CAPTURE-1", 86, phase.Testing, "testing", "U")
+	seedOnMain(t, pool, "CAPTURE-2", 87, phase.Testing, "testing", "V")
+	rig := newBatchRig(t, pool, func(_ int32, asked []int, _ http.Header) (int, string) {
+		return http.StatusOK, batchAnswer(t, asked, batchNode(86, "head-86", "MERGEABLE", "CLEAN"), batchNode(87, "head-87", "CONFLICTING", "DIRTY"))
+	})
+	facts := &outboxFactHandler{}
+	rig.w.handlers = append(rig.w.handlers, facts)
+
+	pushOntoMain(t, pool, rig.w, "main-2")
+	testwait.Eventually(t, "both answers applied and the batch ended", func() bool {
+		return len(mergeabilityFacts(facts)) >= 2 && rig.ended()
+	})
+	want := map[int]record.Mergeability{86: record.MergeabilityMergeable, 87: record.MergeabilityConflicting}
+	answered := map[int]bool{}
+	for _, read := range mergeabilityFacts(facts) {
+		if read.Mergeable != want[read.Number] || read.HeadSHA != fmt.Sprintf("head-%d", read.Number) || read.Base != "main" || read.BaseSHA != answeredBase {
+			t.Errorf("the batch applied %+v for #%d, want %s of head-%d on main at base commit %s", read, read.Number, want[read.Number], read.Number, answeredBase)
+		}
+		answered[read.Number] = true
+	}
+	if !answered[86] || !answered[87] {
+		t.Fatalf("the batch applied answers for %v, want both 86 and 87", answered)
 	}
 }
 

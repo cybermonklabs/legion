@@ -153,10 +153,30 @@ func (e *Engine) logDroppedSettlement(ctx context.Context, fact intake.PullReque
 // engine's clock where a fact carries none, so tests control it.
 const conflictConfirmWait = time.Minute
 
+// mergeStateReadLine is the line mergeability writes, once its fact commits, for each read of a
+// pull request's merge state whose pull request the record holds: whatever GitHub answered -
+// clean, a conflict or `unknown` - and whatever the engine then decides of it, a read it drops for
+// a head the record has left or for being older than the read the record holds included. It names
+// the issue, the repository and the pull request; the head GitHub answered for (head) and the one
+// the record stands at (recordedHead); the base branch GitHub named, else the record's (base); the
+// base commit GitHub's answer names (baseSha, intake.PullRequestMergeability.BaseSHA), empty where
+// it names none; GitHub's mergeability and merge state; and the moment the reader had the answer
+// in hand (readAt), zero for a fact that carries none. The base commit is the one the answer names,
+// not one GitHub says it computed the mergeability against (record.ConflictRead).
+//
+// A line is a read whose fact committed, not every call made to GitHub: a read whose fact rolled
+// back writes none, and its caller reads again; a fact applied again under an event id already
+// applied writes none, since no handler runs for it; a read of a pull request the record does not
+// hold writes none; and a fact minted by something that read no GitHub - a test's, or the replay's
+// made-up conflict (internal/replay's conflictFor) - writes one all the same.
+const mergeStateReadLine = "workflow: GitHub's merge state of a pull request was read"
+
 // mergeability records what GitHub's last read found for whether the pull request's head can be
 // merged into its base (intake.PullRequestMergeability, readPullRequest's own GitHub answer), and
 // acts on a conflict only once a second read has confirmed it and R0's decision says the head
-// must be merged forward now (classify.ConflictNeedsMerge).
+// must be merged forward now (classify.ConflictNeedsMerge). Each read of a pull request the record
+// holds is logged before anything is decided of it, the reads dropped below included
+// (mergeStateReadLine, dispatch://INFRA-3199/spec R9).
 //
 // A head that conflicts with its base is judged in two reads (dispatch://INFRA-4374 R2). GitHub
 // computes mergeability in a background job and can answer CONFLICTING about a base it has not
@@ -245,6 +265,13 @@ func (e *Engine) mergeability(ctx context.Context, tx pgx.Tx, fact intake.PullRe
 	if err != nil || pr == nil {
 		return intake.Result{}, err
 	}
+	base := pr.Base
+	if fact.Base != "" {
+		base = fact.Base
+	}
+	e.logOnCommit(ctx, mergeStateReadLine,
+		"issue", pr.Issue, "repo", pr.Repo, "pullRequest", pr.Number, "head", fact.HeadSHA, "recordedHead", pr.HeadSHA,
+		"base", base, "baseSha", fact.BaseSHA, "mergeable", string(fact.Mergeable), "mergeState", string(fact.MergeState), "readAt", fact.ReadAt)
 	if fact.HeadSHA != pr.HeadSHA {
 		e.logOnCommit(ctx, "workflow: GitHub's merge state answered for a head the pull request has moved past; the read is dropped",
 			"issue", pr.Issue, "pullRequest", pr.Number, "answered", fact.HeadSHA, "head", pr.HeadSHA,
@@ -256,10 +283,6 @@ func (e *Engine) mergeability(ctx context.Context, tx pgx.Tx, fact intake.PullRe
 			"issue", pr.Issue, "pullRequest", pr.Number, "head", pr.HeadSHA, "readAt", fact.ReadAt, "stateReadAt", pr.StateReadAt,
 			"mergeable", string(fact.Mergeable), "mergeState", string(fact.MergeState))
 		return intake.Result{}, nil
-	}
-	base := pr.Base
-	if fact.Base != "" {
-		base = fact.Base
 	}
 	readAt := fact.ReadAt
 	if readAt.IsZero() {

@@ -892,6 +892,13 @@ func (PullRequestChecks) namedIssue() (string, bool) { return "", false }
 // head (workflow's mergeability): a read is one round trip to GitHub, a push can land during it,
 // and a verdict about another head's tree says nothing about this one.
 //
+// BaseSHA is the base commit GitHub's answer names: the same answer's `base.sha` on a GET
+// /pulls/{number}, and `baseRefOid` on a base's batch query, empty where GitHub names none. It
+// decides nothing and is recorded nowhere; the engine logs it with the read (workflow's
+// mergeStateReadLine), so a window collected later can name the base of each read. It is the
+// commit the answer names and no more: GitHub does not say it is the base commit its
+// mergeability was computed against (record.ConflictRead).
+//
 // ReadAt is the moment the reader had GitHub's answer in hand, taken from the reader's own clock
 // rather than from the clock of whoever applies the fact: the engine takes no clock of its own, so
 // what it records is the time of the read rather than the time of the apply, and its tests stay
@@ -916,6 +923,7 @@ type PullRequestMergeability struct {
 	Repo       string
 	Number     int
 	Base       string
+	BaseSHA    string
 	HeadSHA    string
 	Mergeable  record.Mergeability
 	MergeState record.MergeState

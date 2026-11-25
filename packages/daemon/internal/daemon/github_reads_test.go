@@ -319,3 +319,57 @@ func TestThePerIssueReadRecordsGitHubsMergeStateForTheHead(t *testing.T) {
 		})
 	}
 }
+
+// mergeabilityFacts is every intake.PullRequestMergeability facts recorded, in the order applied.
+func mergeabilityFacts(facts *outboxFactHandler) []intake.PullRequestMergeability {
+	var reads []intake.PullRequestMergeability
+	for _, fact := range facts.facts() {
+		if read, ok := fact.(intake.PullRequestMergeability); ok {
+			reads = append(reads, read)
+		}
+	}
+	return reads
+}
+
+// A read of a pull request carries the base commit GitHub's answer names, which the workflow logs
+// with the read (workflow's mergeStateReadLine, dispatch://INFRA-3199/spec R9): the per-issue
+// read's GET /pulls/{number} applies its `base.sha` on the mergeability fact beside the base
+// branch, whatever GitHub answered - clean, conflicting, or not computed yet. A REST answer of a
+// `blocked`, MERGEABLE head is replaced by the GraphQL answer the read asks next
+// (readWholeAnswer), so its fact carries that answer's `baseRefOid`, here a newer base commit than
+// the REST answer named.
+func TestAPullRequestReadCarriesTheBaseCommitGitHubNames(t *testing.T) {
+	t.Parallel()
+	blocked := func(base string) pullAnswer {
+		return pullAnswer{body: `{"number":86,"state":"open","base":{"ref":"main","sha":"` + base + `"},"head":{"ref":"legion/CAPTURE-1","sha":"code"},` +
+			`"mergeable":true,"mergeable_state":"blocked","requested_reviewers":[],"requested_teams":[]}`}
+	}
+	always := func(answer pullAnswer) func(int32) pullAnswer { return func(int32) pullAnswer { return answer } }
+	for _, tc := range []struct {
+		name   string
+		answer func(read int32) pullAnswer
+		want   record.Mergeability
+	}{
+		{"clean", always(cleanPull), record.MergeabilityMergeable},
+		{"conflicting", always(conflictingPull), record.MergeabilityConflicting},
+		{"not computed yet", always(unknownPull), record.MergeabilityUnknown},
+		{"blocked, its verdict read again in GraphQL", func(read int32) pullAnswer {
+			if read == 1 {
+				return blocked("main-before")
+			}
+			return blocked(answeredBase)
+		}, record.MergeabilityMergeable},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			rig := newReadRig(t, captureInTesting, tc.answer)
+			facts := &outboxFactHandler{}
+			rig.w.handlers = append(rig.w.handlers, facts)
+			readCapture(t, rig.w)
+			reads := mergeabilityFacts(facts)
+			if len(reads) != 1 || reads[0].Mergeable != tc.want || reads[0].HeadSHA != "code" || reads[0].Base != "main" || reads[0].BaseSHA != answeredBase {
+				t.Fatalf("the read applied %+v, want one mergeability %s of head code on main at base commit %s", reads, tc.want, answeredBase)
+			}
+		})
+	}
+}
