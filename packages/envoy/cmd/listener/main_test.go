@@ -5138,15 +5138,17 @@ func setupTestNATS(t *testing.T) *bus.Client {
 // something the whole process shares (t.Setenv, the log package's output, the default logger, the
 // entries of takeoverUnrecordedWarnings a test asserts on), that hold a wall-clock bound within a
 // second or two of what they wait for (a close, a probe count, a recovery, a relay's receipt wait
-// of 500 ms), or that hold their own work to a production budget (a registration of production's
-// largest shape, whose renewal must run inside the route's 3.5 s: beside seven others on a
-// four-core runner that work gets a fraction of a core). Those stay serial and run before the
-// rest. The natslive rows keep the choice each already made: the nine of relay_socket_live_test.go
-// are parallel, the others serial. A test here spends most of its time waiting on NATS, a listener
-// process or Postgres, not on a core, and each has a JetStream account of its own (testnats.URL)
-// or a server of its own. go test's default of GOMAXPROCS is four on CI's arm runner, but hundreds
-// on a dev box, where every test's account, rig and Dispatch database at once would swamp the one
-// shared server. TestMain (testmain_test.go) sets it.
+// of 500 ms), or whose bound times CPU work the test makes the listener do, close enough to the
+// bound that sharing four cores with seven other tests takes it past: the registration of
+// production's largest shape (role_claim_renewal_test.go) takes about 0.7 s under -race alone
+// against the route's 3.5 s, and beside seven others on CI ran past it (answered after 3.6 to
+// 4.5 s in the runs that failed). Those stay serial and run before the rest. The natslive rows
+// keep the choice each already made: the nine of relay_socket_live_test.go are parallel, the
+// others serial. A test here spends most of its time waiting on NATS, a listener process or
+// Postgres, not on a core, and each has a JetStream account of its own (testnats.URL) or a server
+// of its own. go test's default of GOMAXPROCS is four on CI's arm runner, but hundreds on a dev
+// box, where every test's account, rig and Dispatch database at once would swamp the one shared
+// server. TestMain (testmain_test.go) sets it.
 //
 // go test parses its flags inside m.Run, so a -parallel on the command line still wins.
 const listenerTestParallelism = 8
