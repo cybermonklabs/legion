@@ -153,4 +153,9 @@ type Listing struct {
 	// Versions maps each version id to its labels or state, as the store names them; nil unless
 	// the read set ReadOptions.Versions. Version, when set, is one of its keys.
 	Versions map[string][]string
+	// Duplicates is the Source of every secret that holds this ID, Source's own among them, where
+	// more than one does: a store whose names are not unique (on 1Password, two active items of
+	// one title) lists such a name once, with this mark, and the policy refuses it naming each
+	// (policy.ReasonNameDuplicated). It is nil where one secret holds the ID.
+	Duplicates []string
 }
