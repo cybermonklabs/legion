@@ -1884,7 +1884,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Every run of every step of the issue's workflow, task by task in the order of each task's first run, each task's runs in the order they ran: {issue, tasks: [{task, steps}]}, each step {id, issue, task, step, kind, role, type, agent, session, model, generation, attempt, started_at, ended_at, result, returned_to, report, rating, rating_reason}, its attempt its place among the issue's runs of the same task, step and kind from 1, and rating and rating_reason a retro's alone. A closed issue's read too, an issue no step ran on reads with tasks [], and a key no issue carries is 404 NOT_FOUND, as the issue's own read answers it. */
+    /** @description Every run of every step of the issue's workflow, task by task in the order of each task's first run, each task's runs in the order they ran: {issue, tasks: [{task, steps}]}, each step {id, issue, task, step, kind, role, type, agent, session, model, set_model, answers, generation, attempt, started_at, ended_at, result, returned_to, report, rating, rating_reason}, its attempt its place among the issue's runs of the same task, step and kind from 1, and rating and rating_reason a retro's alone. model is the model that answered the agent last, and set_model the model its role set, "" for none. answers lists each model that answered, each {model, calls}, null where the record does not know them, and [] for a run with no call. A closed issue's read too, an issue no step ran on reads with tasks [], and a key no issue carries is 404 NOT_FOUND, as the issue's own read answers it. */
     get: operations["getApiV1IssuesByKeySteps"];
     put?: never;
     post?: never;
@@ -1902,7 +1902,7 @@ export interface paths {
       cookie?: never;
     };
     get?: never;
-    /** @description Write one run of one step of the issue's workflow {actor, task?, step?, kind?, role?, type?, agent?, session?, model?, generation?, started_at?, ended_at?, result?, returned_to?, report?}: the Legion daemon writes it at the run's start and at its end under one id, the uuid it derives for the run. Each field the record does not hold yet is set and every field it holds is left, but returned_to, which only the write that sets the result sets, so a start and an end land in either order and a write sent again changes nothing; a field left out or null states nothing, and so does an empty text, while returned_to 0 names place 0, the retro's. The first write of a run names its task, step, kind, role and generation. The actor must be session legion-daemon:<PROJECT> of the issue's project (403 STEP_WRITER otherwise); a bearer caller names its own session, so any caller whose credential proves no session can name that one. A closed issue takes a write too, and no write appends an issue event. Answers 200 with the record as it stands after the write and its attempt. A value outside its form is 400 STEP_INPUT naming the field, an id whose record is a run of another issue 409 STEP_OTHER_ISSUE, and an issue Dispatch does not know 404 ISSUE_NOT_FOUND. */
+    /** @description Write one run of one step of the issue's workflow {actor, task?, step?, kind?, role?, type?, agent?, session?, model?, set_model?, answers?, generation?, started_at?, ended_at?, result?, returned_to?, report?}: the Legion daemon writes it at the run's start and at its end under one id, the uuid it derives for the run. Each field the record does not hold yet is set and every field it holds is left, but returned_to, which only the write that sets the result sets, so a start and an end land in either order and a write sent again changes nothing; a field left out or null states nothing, and so does an empty text, while returned_to 0 names place 0, the retro's. The first write of a run names its task, step, kind, role and generation. set_model names the model the role set its agent to. answers lists each model that answered the agent's calls during the run, each {model, calls}. It holds at most 16 entries, each model once with 1 call or more, or the write is 400 STEP_INPUT. answers [] states a run whose agent made no call. The actor must be session legion-daemon:<PROJECT> of the issue's project (403 STEP_WRITER otherwise); a bearer caller names its own session, so any caller whose credential proves no session can name that one. A closed issue takes a write too, and no write appends an issue event. Answers 200 with the record as it stands after the write and its attempt. A value outside its form is 400 STEP_INPUT naming the field, an id whose record is a run of another issue 409 STEP_OTHER_ISSUE, and an issue Dispatch does not know 404 ISSUE_NOT_FOUND. */
     put: operations["putApiV1IssuesByKeyStepsById"];
     post?: never;
     delete?: never;
@@ -1919,7 +1919,7 @@ export interface paths {
       cookie?: never;
     };
     get?: never;
-    /** @description Write the rating of a retro's run {actor, rating, rating_reason, task?, step?, kind?, role?, type?, agent?, session?, model?, generation?, started_at?, ended_at?, result?, returned_to?, report?}: rating, 1 to 5, is how well the plan the issue ran fit its work in the view of the agent that did the retro, and rating_reason its reason, not blank and at most 2000 characters counted as Unicode code points. The Legion daemon writes it under the id of the retro's run, with the fields PUT /api/v1/issues/{key}/steps/{id} takes, which make the record where the retro's start and end have not landed yet; each field the record does not hold yet is set and every field it holds is left, but returned_to, which only the write that sets the result sets, so the rating is written once and lands before or after the retro's end. The actor must be session legion-daemon:<PROJECT> of the issue's project (403 STEP_WRITER otherwise); a bearer caller names its own session, so any caller whose credential proves no session can name that one. A closed issue takes it, and no write appends an issue event. Answers 200 with the record as it stands after the write and its attempt. A rating or reason left out or outside its form, and a record that is not a retro's, are 400 STEP_INPUT naming the field; an id whose record is a run of another issue is 409 STEP_OTHER_ISSUE, and an issue Dispatch does not know 404 ISSUE_NOT_FOUND. */
+    /** @description Write the rating of a retro's run {actor, rating, rating_reason, task?, step?, kind?, role?, type?, agent?, session?, model?, set_model?, answers?, generation?, started_at?, ended_at?, result?, returned_to?, report?}: rating, 1 to 5, is how well the plan the issue ran fit its work in the view of the agent that did the retro, and rating_reason its reason, not blank and at most 2000 characters counted as Unicode code points. The Legion daemon writes it under the id of the retro's run, with the fields PUT /api/v1/issues/{key}/steps/{id} takes, which make the record where the retro's start and end have not landed yet; each field the record does not hold yet is set and every field it holds is left, but returned_to, which only the write that sets the result sets, so the rating is written once and lands before or after the retro's end. The actor must be session legion-daemon:<PROJECT> of the issue's project (403 STEP_WRITER otherwise); a bearer caller names its own session, so any caller whose credential proves no session can name that one. A closed issue takes it, and no write appends an issue event. Answers 200 with the record as it stands after the write and its attempt. A rating or reason left out or outside its form, and a record that is not a retro's, are 400 STEP_INPUT naming the field; an id whose record is a run of another issue is 409 STEP_OTHER_ISSUE, and an issue Dispatch does not know 404 ISSUE_NOT_FOUND. */
     put: operations["putApiV1IssuesByKeyStepsByIdRating"];
     post?: never;
     delete?: never;
@@ -2900,7 +2900,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Each finished issue of the project, one whose status is done and whose closed_at is set, newest close first, its close within [since, until) where ?since= and ?until= (RFC 3339) name either bound: {project, issues: [{issue, title, closed_at, plan, ratings, started_at, ended_at, duration_seconds, failed_steps}]}. plan is the plan of the issue's newest run as the Legion daemon wrote it {id, issue, generation, source, artifact_id, version, tasks: [{id, steps}]}, null for an issue with none; ratings is the rating of each of its retros, in the order they ran, {rating, reason, step_id, ended_at}; started_at is the earliest start of its step records, ended_at the latest end and duration_seconds the whole seconds between them, each null where no record holds one, and duration_seconds null too where that end is before that start, a time Dispatch cannot count; failed_steps counts its step records of kind step that failed. It writes nothing. 404 PROJECT_NOT_FOUND for a project Dispatch does not hold, 400 INVALID_QUERY for a bound that is no RFC 3339 time or a since not before its until. */
+    /** @description Each finished issue of the project, one whose status is done and whose closed_at is set, newest close first, its close within [since, until) where ?since= and ?until= (RFC 3339) name either bound: {project, issues: [{issue, title, closed_at, plan, ratings, started_at, ended_at, duration_seconds, failed_steps, set_model_steps}]}. plan is the plan of the issue's newest run as the Legion daemon wrote it {id, issue, generation, source, artifact_id, version, tasks: [{id, steps}]}, null for an issue with none; ratings is the rating of each of its retros, in the order they ran, {rating, reason, step_id, ended_at}; started_at is the earliest start of its step records, ended_at the latest end and duration_seconds the whole seconds between them, each null where no record holds one, and duration_seconds null too where that end is before that start, a time Dispatch cannot count; failed_steps counts its step records of kind step that failed. set_model_steps {on, off, unknown} counts its step records that name an agent, each record in one count. on counts those that name a set model, know their counts and name no other model. off counts those that name a set model, know their counts and name another model. unknown counts every other one. It writes nothing. 404 PROJECT_NOT_FOUND for a project Dispatch does not hold, 400 INVALID_QUERY for a bound that is no RFC 3339 time or a since not before its until. */
     get: operations["getApiV1ProjectsByKeyPlans"];
     put?: never;
     post?: never;
@@ -5106,6 +5106,7 @@ export interface components {
       issue: string;
       plan: components["schemas"]["PlanRecord"] | null;
       ratings: components["schemas"]["PlanRating"][] | null;
+      set_model_steps: components["schemas"]["SetModelSteps"];
       /** Format: date-time */
       started_at: null | string;
       title: string;
@@ -6846,6 +6847,11 @@ export interface components {
       since: string;
       total: number;
     };
+    SetModelSteps: {
+      off: number;
+      on: number;
+      unknown: number;
+    };
     SlowWriteInput: {
       /** Format: int64 */
       delay_ms?: number;
@@ -6896,9 +6902,20 @@ export interface components {
       code: string;
       error: string;
     };
+    StepAnswer: {
+      /** Format: int64 */
+      calls: number;
+      model: string;
+    };
+    StepAnswerInput: {
+      /** Format: int64 */
+      calls: number;
+      model: string;
+    };
     StepRatingInput: {
       actor?: components["schemas"]["Actor"] | null;
       agent?: null | string;
+      answers?: null | components["schemas"]["StepAnswerInput"][];
       /** Format: date-time */
       ended_at?: null | string;
       generation?: null | number;
@@ -6913,6 +6930,7 @@ export interface components {
       returned_to?: null | number;
       role?: null | string;
       session?: null | string;
+      set_model?: null | string;
       /** Format: date-time */
       started_at?: null | string;
       step?: null | number;
@@ -6921,6 +6939,7 @@ export interface components {
     };
     StepRecord: {
       agent: string;
+      answers: components["schemas"]["StepAnswer"][] | null;
       attempt: number;
       /** Format: date-time */
       ended_at: null | string;
@@ -6939,6 +6958,7 @@ export interface components {
       returned_to: null | number;
       role: string;
       session: string;
+      set_model: string;
       /** Format: date-time */
       started_at: null | string;
       step: number;
@@ -6948,6 +6968,7 @@ export interface components {
     StepRecordInput: {
       actor?: components["schemas"]["Actor"] | null;
       agent?: null | string;
+      answers?: null | components["schemas"]["StepAnswerInput"][];
       /** Format: date-time */
       ended_at?: null | string;
       generation?: null | number;
@@ -6960,6 +6981,7 @@ export interface components {
       returned_to?: null | number;
       role?: null | string;
       session?: null | string;
+      set_model?: null | string;
       /** Format: date-time */
       started_at?: null | string;
       step?: null | number;
@@ -15952,6 +15974,7 @@ export type SearchResult = components["schemas"]["SearchResult"];
 export type SessionAnswer = components["schemas"]["SessionAnswer"];
 export type SessionAnswerAsk = components["schemas"]["SessionAnswerAsk"];
 export type SessionAnswersResponse = components["schemas"]["SessionAnswersResponse"];
+export type SetModelSteps = components["schemas"]["SetModelSteps"];
 export type SlowWriteInput = components["schemas"]["SlowWriteInput"];
 export type StandingReview = components["schemas"]["StandingReview"];
 export type StateResponse = components["schemas"]["StateResponse"];
@@ -15960,6 +15983,8 @@ export type StatusChangeConflict = components["schemas"]["StatusChangeConflict"]
 export type StatusChangeEntry = components["schemas"]["StatusChangeEntry"];
 export type StatusChangeInput = components["schemas"]["StatusChangeInput"];
 export type StatusChangeRefusal = components["schemas"]["StatusChangeRefusal"];
+export type StepAnswer = components["schemas"]["StepAnswer"];
+export type StepAnswerInput = components["schemas"]["StepAnswerInput"];
 export type StepRatingInput = components["schemas"]["StepRatingInput"];
 export type StepRecord = components["schemas"]["StepRecord"];
 export type StepRecordInput = components["schemas"]["StepRecordInput"];
