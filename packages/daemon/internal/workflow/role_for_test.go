@@ -33,6 +33,7 @@ var roleForAnswers = map[phase.Phase]claim.Role{
 // forwarder of the same name answers what it answers. The phases come from phase.All, so the test
 // reads the whole phase set the daemon writes and not a list of its own.
 func TestRoleForAnswersEveryPhaseOfPhaseAll(t *testing.T) {
+	t.Parallel()
 	for _, p := range phase.All {
 		want, written := roleForAnswers[p]
 		if !written {
