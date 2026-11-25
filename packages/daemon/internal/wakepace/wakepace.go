@@ -12,6 +12,15 @@
 // limiter does not push its next reservation out, so the spacing between one paced wake and the
 // next would not hold — and its float token arithmetic would not reproduce the exact instants this
 // package's tests assert, which is why the daemon paces its wakes here instead.
+//
+// A Pacer puts two queues in front of one Limiter, so that a wake that must not wait behind a
+// restart's backlog — one for a role with an Envoy message waiting, which Envoy keeps for a role
+// only an hour, or the relaunch of a role whose own process died — goes ahead of the rest. The one
+// token bucket keeps the rate: the queues decide only which wake takes each turn it gives, never
+// how many turns a minute there are. A share of one turn in four keeps the other queue moving, so a
+// wave of message wakes slows the rest rather than starving it. A waiting wake holds a place in its
+// queue, not a moment, because the moments a limiter has handed out live on in its callers' timers
+// and rows, and moving a wake ahead of them would cost a write for every wake it passed.
 package wakepace
 
 import (
