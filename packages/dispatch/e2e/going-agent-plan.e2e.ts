@@ -338,10 +338,10 @@ test("a plan with rows on the page and in the card shows each in its place", asy
     await expect(planRows(planOnPage(page))).toHaveCount(1);
     await expect(planOnPage(page)).toContainText("Raise the great dome");
     await expect(planRows(planCard(page))).toHaveCount(1);
-    // Nothing routes, claims or follows the dome here, so the row names whom Dispatch tells of
-    // the message in words, in the form every message row has.
+    // Nothing routes, claims or follows the dome here, so the row says the message reaches no
+    // session, in the form every message row has.
     await expect(planRows(planCard(page))).toContainText(
-      `Message to the agents that follow ${split.second}`
+      `Message to no session on ${split.second}`
     );
   });
 });

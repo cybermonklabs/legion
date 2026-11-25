@@ -584,8 +584,9 @@ test("a new issue row shows New, its title, its fields on one line and its spec 
 // to a session and a broadcast have (review m5): the session or the role the issue sends its
 // messages to, the session that holds its claim and the sessions that follow it, read from the
 // issue and its subscribers (`eventDestinations`, outbox/publisher.go) - one by its name, more by
-// their count with the sessions under it. Where the page cannot read who follows the issue, or
-// knows nobody the message reaches, the row says whom Dispatch tells of it in words.
+// their count with the sessions under it, and "no session" where the page read them all and the
+// server finds none either. Where the page cannot read who follows the issue, or the server finds
+// a session the page does not know of, the row says whom Dispatch tells of it in words.
 test("message rows say whom they reach and how, show the whole text, and say they cannot be undone", async () => {
   const read = spyOn(api, "getIssue").mockImplementation(async (key: string) => {
     const unrouted = { ...issueFixture, claim: null, key, route: null, route_holder: null };
@@ -599,7 +600,7 @@ test("message rows say whom they reach and how, show the whole text, and say the
     return key === "DEMO-3" || key === "DEMO-4" ? { ...unrouted, route: "session:s-1" } : unrouted;
   });
   const followed = spyOn(api, "getIssueSubscribers").mockImplementation(async (key: string) => {
-    if (key === "DEMO-4") {
+    if (key === "DEMO-4" || key === "DEMO-6") {
       throw new ApiError(503, { code: "ENVOY_UNAVAILABLE", error: "the listener did not answer" });
     }
     // The session DEMO-3 routes to follows it too, and is one session of the three.
@@ -614,14 +615,14 @@ test("message rows say whom they reach and how, show the whole text, and say the
         }))
       : [];
   });
-  const onIssue = (number: number, issue: string, body: string) =>
+  const onIssue = (number: number, issue: string, body: string, waits = ["message"]) =>
     row(number, {
       arguments: { body, issue },
       class: "message",
       issue,
       item: issue,
       tool: "dispatch_message",
-      waits: ["message"],
+      waits,
     });
   const restore = await openPlan(
     planOf([
@@ -650,12 +651,16 @@ test("message rows say whom they reach and how, show the whole text, and say the
       onIssue(3, "DEMO-2", "The split is yours."),
       onIssue(4, "DEMO-3", "The split is done."),
       onIssue(5, "DEMO-4", "The split waits."),
+      // The server finds a session the event reaches, as a reply reaches the session that wrote
+      // the message it answers, which the page does not read.
+      onIssue(6, "DEMO-5", "Thanks, that answers it.", ["message", "delivers_to_session"]),
+      onIssue(7, "DEMO-6", "The split is late."),
     ])
   );
   try {
     renderWithQueries(<Card />);
     await screen.findByTestId("going-plan-card-rows");
-    expect(screen.getByTestId("going-plan-title")).toHaveTextContent("Send 6 messages");
+    expect(screen.getByTestId("going-plan-title")).toHaveTextContent("Send 8 messages");
     const toSession = drawnRow(0);
     // The issue a message is on is that issue's chip, as an answer names it.
     const toSessionLine = within(toSession).getByTestId("going-plan-message");
@@ -674,12 +679,12 @@ test("message rows say whom they reach and how, show the whole text, and say the
     expect(
       within(within(broadcast).getByTestId("going-plan-sessions")).getAllByRole("listitem")
     ).toHaveLength(4);
-    // No route, no claim and nobody who follows it: the row says whom Dispatch tells, in words,
-    // and names no delivery, as a message on an issue has none.
+    // No route, no claim and nobody who follows it, and the server finds no session either: the
+    // row says so in the same form, and names no delivery, as a message on an issue has none.
     await waitFor(() => expect(followed).toHaveBeenCalledWith("DEMO-1"));
     await waitFor(() =>
       expect(within(drawnRow(2)).getByTestId("going-plan-message")).toHaveTextContent(
-        /^Message to the agents that follow DEMO-1In progressThe issue DEMO-1$/u
+        /^Message to no session on DEMO-1In progressThe issue DEMO-1$/u
       )
     );
     expect(within(drawnRow(2)).queryByTestId("going-plan-sessions")).toBeNull();
@@ -705,7 +710,19 @@ test("message rows say whom they reach and how, show the whole text, and say the
         /^Message to .+ and the agents that follow DEMO-4/u
       )
     );
-    for (const number of [0, 1, 2, 3, 4, 5]) {
+    // The page finds nobody, but the server finds a session: whom, the page does not know.
+    await waitFor(() =>
+      expect(within(drawnRow(6)).getByTestId("going-plan-message")).toHaveTextContent(
+        /^Message to the agents that follow DEMO-5In progressThe issue DEMO-5$/u
+      )
+    );
+    // Nothing routes or claims DEMO-6, and who follows it cannot be read.
+    await waitFor(() =>
+      expect(within(drawnRow(7)).getByTestId("going-plan-message")).toHaveTextContent(
+        /^Message to the agents that follow DEMO-6In progressThe issue DEMO-6$/u
+      )
+    );
+    for (const number of [0, 1, 2, 3, 4, 5, 6, 7]) {
       expect(within(drawnRow(number)).getByTestId("going-plan-final")).toHaveTextContent(
         "Cannot be undone once sent"
       );
@@ -1389,6 +1406,13 @@ test("Undo on the card reverts the run, names a value someone else changed, and 
     await screen.findByTestId("going-plan-card-rows");
     expect(screen.getByTestId("going-plan-title")).toHaveTextContent("Applied 3 changes");
     expect(within(drawnRow(2)).getByTestId("going-plan-row-state")).toHaveTextContent("Sent");
+    // The message row reads in the applied card as it reads while the plan waits: nothing routes,
+    // claims or follows DEMO-1, so it reaches no session.
+    await waitFor(() =>
+      expect(within(drawnRow(2)).getByTestId("going-plan-message")).toHaveTextContent(
+        /^Message to no session on DEMO-1In progressThe issue DEMO-1$/u
+      )
+    );
     expect(screen.getByTestId("going-undo-button")).toHaveTextContent(/^Undo 2 changes$/u);
     await user.click(screen.getByTestId("going-undo-button"));
     await waitFor(() => expect(undo).toHaveBeenCalledWith("run-1", undefined, keyedAttempt));

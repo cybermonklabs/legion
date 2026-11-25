@@ -158,6 +158,14 @@ const BOUND_WORDS: Readonly<Record<string, string>> = {
   TIME_BUDGET: "time limit",
 };
 
+/** Whether `reason`, a stop's, is the bound that cut the reply of the run's latest model call at
+ *  the output tokens a call of its level may write (`OUTPUT_TOKEN_BUDGET`, `Level.cut` in
+ *  `going/agent/levels.go`): the agent keeps the text that call wrote, which ends where the cut
+ *  fell, mid-sentence as often as not. */
+export function cutsReply(reason: string): boolean {
+  return reasonCode(reason) === "OUTPUT_TOKEN_BUDGET";
+}
+
 /** How long the model was busy, "52s" of a time bound's reason that says so ("…, and the model
  *  was busy for 52s of it; …", `busyWords` in `going/agent/levels.go`): the agent's pacer held
  *  the run's model calls for more than half its time. */

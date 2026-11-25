@@ -82,6 +82,7 @@ import {
   ROW_MARKS,
   type RowChange,
   type RowMark,
+  reachesNoSession,
   removalWords,
   reviewWords,
   rowChanges,
@@ -726,21 +727,25 @@ function MessageTo({
 }
 
 /**
- * Whom a message on an issue's conversation reaches (`messageReach`), read from the issue as it
- * stands and from the sessions that follow it, in the form a message to a session and a broadcast
- * have, while the plan waits and once it ran alike: one session by its name, "Message to
- * ‹session› on DEMO-15"; more by their count, "Message to 3 sessions on DEMO-15", with the
- * sessions under it; a role no session is known to hold by its name, "the planner". Where the
- * page cannot read who follows the issue, or knows nobody the message reaches, it says whom
- * Dispatch tells of it in words: "Message to the agents that follow DEMO-15", after whoever the
- * issue's own read names. A message on an issue names no delivery, so the line says none.
+ * Whom a message on an issue's conversation, `row`, reaches (`messageReach`), read from the issue
+ * as it stands and from the sessions that follow it, in the form a message to a session and a
+ * broadcast have, while the plan waits and once it ran alike: one session by its name, "Message
+ * to ‹session› on DEMO-15"; more by their count, "Message to 3 sessions on DEMO-15", with the
+ * sessions under it; a role no session is known to hold by its name, "the planner"; and none,
+ * "Message to no session on DEMO-15", where the page and the server both know it reaches none
+ * (`reachesNoSession`). Where the page cannot read who follows the issue, or the server finds a
+ * session the page does not know, it says whom Dispatch tells of it in words: "Message to the
+ * agents that follow DEMO-15", after whoever the issue's own read names. A message on an issue
+ * names no delivery, so the line says none.
  */
 function IssueMessageTo({
   delivery,
   issue,
+  row,
 }: {
   readonly delivery: string;
   readonly issue: string;
+  readonly row: GoingPlanRow;
 }): ReactNode {
   const read = useQuery(issueQuery(issue)).data;
   // The sessions that follow the issue, under the key the issue's header and an ask's card read
@@ -761,6 +766,8 @@ function IssueMessageTo({
     named.push(`${reach.sessions.length} sessions`);
   } else if (only !== undefined) {
     named.push(<AgentName kind="static" sessionId={only} storedTitle={undefined} />);
+  } else if (reachesNoSession(reach, row)) {
+    named.push("no session");
   }
   const followersInWords = !reach.followersKnown || named.length === 0;
   return (
@@ -830,7 +837,7 @@ function MessageBody({
   } else if (onIssue === "") {
     to = <MessageTo delivery={delivery} sessions={[]} to="Message in its conversation" />;
   } else {
-    to = <IssueMessageTo delivery={delivery} issue={onIssue} />;
+    to = <IssueMessageTo delivery={delivery} issue={onIssue} row={row} />;
   }
   return (
     <div className="space-y-1">

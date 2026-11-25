@@ -534,6 +534,26 @@ export function messageReach(
   };
 }
 
+/** The reason the server gives for a row whose event, once written, reaches an agent session
+ *  (`goingWaitsDelivery`, going_modes.go): `outbox.WouldDeliver` found one. */
+const DELIVERS_TO_SESSION = "delivers_to_session";
+
+/**
+ * Whether a message on an issue's conversation, `row`, reaches no agent session, as far as the
+ * page and the server know it (`reach`): the page read the issue and the sessions that follow it,
+ * and none of them names a session or a role, and the server's read of the row finds no session
+ * its event reaches either (`DELIVERS_TO_SESSION`). The server reads more than the page does: a
+ * reply reaches the session that wrote the message it answers, which the page does not read.
+ */
+export function reachesNoSession(reach: MessageReach, row: GoingPlanRow): boolean {
+  return (
+    reach.followersKnown &&
+    reach.sessions.length === 0 &&
+    reach.role === undefined &&
+    !(row.waits ?? []).includes(DELIVERS_TO_SESSION)
+  );
+}
+
 /** The words a row posts or sends, which the row shows whole: a message's, a comment's, a
  *  question's; "" for a row that posts none. */
 export function rowText(row: GoingPlanRow): string {

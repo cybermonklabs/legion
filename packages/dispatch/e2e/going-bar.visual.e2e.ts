@@ -810,12 +810,13 @@ const barRows: readonly BarRow[] = [
     // State 7. Scripts a run that proposes, in a slow turn, two changes and a message on an issue,
     // then answers once they ran. The message is on the eyepiece and to no session: a message to
     // an agent that ran here would reach the workspace's live session, whose pages the pages'
-    // rows shoot. Nothing routes, claims or follows the eyepiece, so its row names whom Dispatch
-    // tells in words, in the form every message row has. The row approves with Enter, with the
-    // clock set forward to 16:40, since the applied title says when; then it presses Undo, which
-    // takes both changes back and leaves the message sent, which its row says, so the run reads
-    // undone and the line its steps fold into still says what the run did. Each shot waits for
-    // the finder scope's chip to read its title as the change, then the Undo, left it.
+    // rows shoot. Nothing routes, claims or follows the eyepiece, so its row says it reaches no
+    // session, in the form every message row has, and reads the same in the card that waits and
+    // in the card that ran. The row approves with Enter, with the clock set forward to 16:40,
+    // since the applied title says when; then it presses Undo, which takes both changes back and
+    // leaves the message sent, which its row says, so the run reads undone and the line its steps
+    // fold into still says what the run did. Each shot waits for the finder scope's chip to read
+    // its title as the change, then the Undo, left it.
     fixedDay: true,
     reach: async (page, seed) => {
       const words = "raise the eyepiece and rename the finder scope";
@@ -842,6 +843,10 @@ const barRows: readonly BarRow[] = [
           words,
         },
       ]);
+      // The message row names whom it reaches, the issue it is on by its chip, and no delivery,
+      // since a message on an issue has none.
+      const message = planCard(page).getByTestId("going-plan-message");
+      const reachesNoSession = new RegExp(`^Message to no session on ${eyepiece}(?!\\d)`);
       await openTheBar(page, seed);
       await askTheAgent(page, words);
       await expect(newestRun(page)).toHaveAttribute("data-state", "waiting", {
@@ -850,6 +855,7 @@ const barRows: readonly BarRow[] = [
       await expect(planCard(page)).toHaveAttribute("data-state", "waiting", {
         timeout: RUN_STEPS_MS,
       });
+      await expect(message).toHaveText(reachesNoSession);
       await page.clock.setSystemTime(AT_4_40_PM);
       await searchBox(page).focus();
       await searchBox(page).press("Enter");
@@ -861,9 +867,7 @@ const barRows: readonly BarRow[] = [
       );
       // Undo names what Dispatch says it can take back: the two changes, never the message.
       await expect(planCard(page).getByTestId("going-undo-button")).toHaveText("Undo 2 changes");
-      await expect(planCard(page).getByTestId("going-plan-message")).toHaveText(
-        new RegExp(`^Message to the agents that follow ${eyepiece}(?!\\d)`)
-      );
+      await expect(message).toHaveText(reachesNoSession);
       const fold = newestRun(page).getByTestId("going-steps-fold");
       await expect(fold).toHaveAccessibleName(/^Worked for \d+ s · applied 3 changes$/);
       const finderChip = planCard(page)
@@ -934,7 +938,8 @@ const barRows: readonly BarRow[] = [
     // limit with that text kept. It is the one bound that keeps what the agent found so far: a
     // run that spends its model calls or its time ends with no reply of its own, since a reply
     // in prose that calls no tool ends the turn done (going/agent's run.go, `saveReply`). So the
-    // bound's card stands under the findings, as the design draws it. The second reads one issue
+    // bound's card stands under the findings, as the design draws it, and the findings end with
+    // "…", since the cut fell mid-sentence (review M3). The second reads one issue
     // in a slow turn and then streams without end, and the row stops it with Escape; the third
     // is answered 500 twice, the call and its one retry, so it fails. The three end in one card
     // with one next step - Continue at the bound and after the Stop, Try again after the failure
@@ -975,10 +980,12 @@ const barRows: readonly BarRow[] = [
         "false"
       );
       await expect(newestRun(page).getByTestId("going-step")).toHaveCount(0);
-      // What the agent found so far stands above the card, the issue it names as its chip.
+      // What the agent found so far stands above the card, the issue it names as its chip; the
+      // cut fell mid-sentence, so the text ends with "…".
       const findings = newestRun(page).getByTestId("going-run-answer");
       await expect(findings).toContainText("One issue is ready to start,");
-      await expect(findings).toContainText("The next one waits on");
+      await expect(findings).toHaveText(/ The next one waits on…$/);
+      await expect(findings).toHaveAttribute("data-cut", "true");
       await chipsRead(findings, 1);
       await expect(newestRun(page).getByTestId("going-run-state")).toHaveText(
         "Stopped at Fast's reply length limit · read 2 items so far"

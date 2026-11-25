@@ -233,6 +233,62 @@ test("a bound shows the answer found so far above its card, its steps folded", a
   }
 });
 
+/** The read of the runs below. */
+const READ_DEMO_2: readonly [string, unknown] = [
+  "tool",
+  { items: ["DEMO-2"], kind: "read", label: "Read DEMO-2", step: 2, tool: "read" },
+];
+
+/** The end of a run its reply length limit stopped: the bound that cuts the reply of the run's
+ *  latest model call at its output tokens (`OUTPUT_TOKEN_BUDGET`, `Level.cut`). */
+const STOPPED_AT_REPLY_LENGTH: readonly [string, unknown] = [
+  "end",
+  {
+    offers: ["continue"],
+    reason:
+      "OUTPUT_TOKEN_BUDGET: a model call of this run wrote the 4000 tokens a call of a fast run may; Continue starts a follow-up with a new budget",
+    state: "stopped",
+  },
+];
+
+// A run stopped at its reply length limit keeps the text its last model call wrote, which ends
+// where the cut fell: that text ends with "…" where it is drawn, so it never reads as whole
+// (review M3).
+test("an answer the reply length limit cut ends with an ellipsis", async () => {
+  const restore = await showRun("stopped", [
+    READ_DEMO_2,
+    ["reply", { labels: [], text: "DEMO-2 is ready. The next one waits on \n", tools: [] }],
+    STOPPED_AT_REPLY_LENGTH,
+  ]);
+  try {
+    await screen.findByTestId("going-run-bound");
+    const answer = screen.getByTestId("going-run-answer");
+    await waitFor(() => expect(answer.textContent).toBe("DEMO-2 is ready. The next one waits on…"));
+    expect(answer).toHaveAttribute("data-cut", "true");
+  } finally {
+    restore();
+  }
+});
+
+// The call the bound cut wrote no text: the answer an earlier call wrote is whole, and keeps no
+// mark.
+test("an answer an earlier call wrote keeps no ellipsis when the reply length limit cut a later call", async () => {
+  const restore = await showRun("stopped", [
+    READ_DEMO_2,
+    ["reply", { labels: [], text: "DEMO-2 waits on its mount.", tools: [] }],
+    ["reply", { labels: [], text: "", tools: [] }],
+    STOPPED_AT_REPLY_LENGTH,
+  ]);
+  try {
+    await screen.findByTestId("going-run-bound");
+    const answer = screen.getByTestId("going-run-answer");
+    await waitFor(() => expect(answer.textContent).toBe("DEMO-2 waits on its mount."));
+    expect(answer).not.toHaveAttribute("data-cut");
+  } finally {
+    restore();
+  }
+});
+
 // A bound stops a run with no answer: its steps fold into one line as an answered run's do, and
 // that line and the card count what the run read from the same steps, so they never disagree.
 test("a bound is a grey card with what the run did so far, Continue and Continue in Deep", async () => {

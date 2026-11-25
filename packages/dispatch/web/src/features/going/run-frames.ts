@@ -64,6 +64,11 @@ export interface RunFrames {
   readonly steps: readonly RunStep[];
   /** The prose of each reply that called no tool, in order: the last is the answer. */
   readonly replies: readonly string[];
+  /** Whether the newest reply frame wrote the answer: the run's latest model call wrote the last
+   *  of `replies`, and no reply with calls or with no prose came after it. A bound that cut that
+   *  call's reply at its output tokens (`cutsReply`) cut the answer then, which ends where the cut
+   *  fell. */
+  readonly answerLast: boolean;
   /** The prose the model wrote beside the calls that run now, which the bar shows as their
    *  header line while they run: the first call frame's of a model call, then its reply's. It is
    *  no part of the answer. */
@@ -91,6 +96,7 @@ export interface RunFrames {
 
 /** A run that has just started, with no frame yet. */
 export const STARTED_RUN: RunFrames = {
+  answerLast: false,
   blocks: [],
   callsHeader: "",
   end: undefined,
@@ -253,6 +259,7 @@ export function withRunFrame(run: RunFrames, name: string, data: unknown): RunFr
       const calls = tools.length > 0;
       return {
         ...run,
+        answerLast: !calls && reply !== "",
         callsHeader: calls ? reply : "",
         replies: calls || reply === "" ? run.replies : [...run.replies, reply],
         state: runNext(run.state, "step").state,

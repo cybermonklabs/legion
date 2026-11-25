@@ -46,7 +46,14 @@ import {
 import { PlanCard } from "./PlanRows";
 import { appliedWords, undoneStateWords, undoRecord } from "./plan-rows";
 import { RunUndo } from "./RunUndo";
-import { type EndWords, endWords, type RunState, runEnded, WITHDRAWN_WORDS } from "./run-states";
+import {
+  cutsReply,
+  type EndWords,
+  endWords,
+  type RunState,
+  runEnded,
+  WITHDRAWN_WORDS,
+} from "./run-states";
 import { foldWords, RunTimer, StepSection } from "./step-section/StepSection";
 import { type PlanAnswering, usePlan } from "./usePlan";
 
@@ -328,7 +335,8 @@ interface WholeBlock {
  *  can still take that change back, which the card then offers, or tried and could not. A message
  *  is sent, not undone, and counts as no change that stays: its row says so. A run that stopped
  *  or failed keeps its steps folded, as an answered run does, and shows any answer it wrote above
- *  how it ended (rule 3: fold the work, never the result). A withdrawn run (`runWithdrawal`)
+ *  how it ended (rule 3: fold the work, never the result), an answer its reply length limit cut
+ *  ending with "…". A withdrawn run (`runWithdrawal`)
  *  draws its withdrawal's one line in place of its steps, its answer and its blocks, which may
  *  quote the deleted post: one another writer's delete withdrew, that line alone; one its own
  *  plan's delete withdrew, its plan's card too, whose rows and results show no word of a deleted
@@ -401,7 +409,12 @@ function RunTurn({
   // A call with no words draws no line, and nor does a change of an approved plan, which its
   // row's tick on the plan's card shows.
   const steps = run.frames.steps.filter((step) => step.label !== "" && step.kind !== "write");
-  const ended = endWords(state, endReason(run), run.record.level, foldWords(steps));
+  const reason = endReason(run);
+  const ended = endWords(state, reason, run.record.level, foldWords(steps));
+  // A bound that cut the reply of the run's latest model call at its output tokens cut the
+  // answer, where that call wrote it: the text ends where the cut fell, mid-sentence as often as
+  // not, so it ends with "…" where it is drawn and never reads as whole (review M3).
+  const cut = answer !== undefined && run.frames.answerLast && cutsReply(reason);
   const shownPlan = plan.plan;
   const planWords = shownPlan === undefined ? undefined : appliedWords(shownPlan);
   return (
@@ -441,10 +454,16 @@ function RunTurn({
         // of chips draws no bullet beside each (design v3, state 4).
         <div
           className={`text-sm ${undone ? textMutedOnSurface : textPrimaryOnSurface} [&_li:has(>a:first-child>[data-testid=item-chip])]:list-none [&_li:has(>p:first-child>a:first-child>[data-testid=item-chip])]:list-none`}
+          data-cut={cut ? "true" : undefined}
           data-testid="going-run-answer"
           data-undone={undone ? "true" : undefined}
         >
-          <MarkdownBody chips markdown={answer} referenceText="" softBreaks="line" />
+          <MarkdownBody
+            chips
+            markdown={cut ? `${answer.trimEnd()}…` : answer}
+            referenceText=""
+            softBreaks="line"
+          />
         </div>
       )}
       {run.frames.withheld > 0 ? (
