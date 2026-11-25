@@ -1169,11 +1169,18 @@ A root architect's approval message ([The design gate](/legion/legion/concepts/#
 reaches the model as a `system` message inside the conversation only where the model takes one.
 Oh My Pi's model catalogue gives that to Opus 4.8 and later, Fable 5 and later, Mythos 5 and later,
 Sonnet 5.5 and later, and Haiku 5.5, on the `anthropic` provider whatever its base URL, and on the
-`google-vertex` and `cloudflare-ai-gateway` providers. On any other model, after a fallback for
-example, Oh My Pi sends the message as a user message at the same place. pi-legion then logs one
-line for each session and model, which names the model:
-`legion: session <id> runs on <provider>/<model>, which takes no system message inside the
-conversation, so Oh My Pi sends the approval message as a user message`.
+`google-vertex` and `cloudflare-ai-gateway` providers.
+On any other model, after a fallback for example, pi-legion puts the message at the end of the request's top-level system prompt, and no message of the conversation holds it.
+On an Anthropic request, that is a new last text block of `system`.
+On a chat completion, it is the end of the last leading `system` or `developer` message.
+On a Responses request, it is the end of `instructions`, or of the last leading `developer` item.
+
+Each request of the architect's own session to such a model carries the message, the requests of a side turn and of a compaction in the session included.
+A compaction on the provider's server sends no text of pi-legion, and the next request of the conversation carries the message again.
+When such a model's answer to the first request that carried the message of a version is saved, the session records the entry `legion-approval-top-level`.
+The entry names the version, the model and the key of that answer, and the session holds one such entry for each version and model.
+pi-legion logs no line for such a model.
+When the conversation returns to a model that takes a `system` message, each copy placed before goes back to its place, with the same bytes.
 
 Oh My Pi adds a date reminder at the end of a request when the date or the working directory
 changed since the conversation's last request. On the request that places a new approval message,

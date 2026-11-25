@@ -449,6 +449,13 @@ A merger that the hold stopped starts again only after the daemon records what c
 A worker can keep a task that an operator gave it before the hold stopped it, where no turn took that task.
 When the gate opens, the daemon sends that task first, and then the task that names the version that closed the gate.
 
+Under `work`, the daemon tells no architect to start its own acceptance (`acceptance:owner`) while the gate is closed.
+The notice that an issue waits in `accepting` for that acceptance waits, and a catch-up names no such issue.
+The architect's other notices go meanwhile.
+When the gate opens, the daemon sends that notice for each issue that stands in `accepting`.
+The daemon records a step that an architect reports while the gate is closed, such as its sign-off or a move back.
+The start that the report makes waits for the opening, as every phase start does.
+
 Under both holds, the daemon wakes a merger whose idle pod it released for the close message, so
 that the merger can take its pull request out of GitHub's merge queue. This wake is the one start
 of a merger that the closed gate lets through. The words of a hook to a released merger do not
@@ -485,6 +492,8 @@ the signed thinking of later replies stays bound to an unchanged prefix. After a
 the message out, whether Oh My Pi compacts on the provider's server or in the session, the next
 request has it last again. A fresh session does the same. The session records each placed copy as
 the entry `legion-approval-sent`.
+On a model that takes no `system` message inside the conversation, pi-legion puts the message at the end of the request's top-level system prompt instead.
+No message of the conversation then holds it, and the session records the entry `legion-approval-top-level` once for each version and model.
 
 A changes request ends the approval, and a later approval replaces it. The plugin then places no
 new copy of the old version, but a copy it already placed stays where it is, because removing it

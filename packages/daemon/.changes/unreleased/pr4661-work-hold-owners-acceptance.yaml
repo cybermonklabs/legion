@@ -1,0 +1,14 @@
+kind: Added
+custom:
+  Issue: pr4661
+body: |-
+  Under `gates.hold: work`, the daemon tells no architect to start its own acceptance while the
+  tree's design gate is closed. The notice that an issue waits in `accepting` for that acceptance
+  (in the default steps, the reviewer's approval) waits, and every later notice to the architect
+  goes. A catch-up names no issue that waits for that acceptance, a catch-up composed before the
+  gate closed included. When the gate opens, the daemon sends that notice for each issue that
+  stands in `accepting`, also to an architect that got it before the gate closed. The daemon
+  records an architect's sign-off or move back while the gate is closed, and the start that it
+  makes waits for the opening, as every phase start of the tree does. Under `work`, the
+  architect's close message ends `Your own work goes on, and a step that you report starts nothing
+  until every gated step stands open again.` Under `merge`, nothing of this changes.

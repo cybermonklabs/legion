@@ -526,6 +526,11 @@ its pull request out of GitHub's merge queue. A released worker that is not a me
 the hold took it over at once. The architects go on, and their close message ends
 `Your own work goes on, and a step that you report starts nothing until every gated step stands open again.`
 
+While the gate is closed, the daemon tells no architect to start its own acceptance.
+The notice that an issue waits in `accepting` for that acceptance waits, and a catch-up names no such issue.
+Every other notice to the architect goes.
+The daemon records an architect's sign-off or move back, and the start that it makes waits for the opening.
+
 - `legion state --json` shows `why.state` `held` on each issue at a phase worker's phase, and
   `why.reason` names the version that closed the gate: `Its phase is <phase>, and the work hold
   holds the work of its tree <root> until every gated step stands open again: version <n> of its
@@ -541,6 +546,7 @@ version that closed the gate, carries the open message, and tells the worker to 
 already did, since a tool call may not have finished. An exact undo opens the gate only when the
 undo is written, so the edit stops the work until then.
 The task also carries the news of the approved version that the worker is owed, after its work.
+Each architect then gets the notice of each issue that waits in `accepting` for its acceptance.
 A merger that the hold stopped starts again only after the daemon records what changed in the approved version, which can take a few attempts to read Dispatch.
 
 An operator's own `legion claims resume` or `legion claims retry` of a stopped claim starts it,
@@ -1135,6 +1141,8 @@ is `legion-<project>-<issue, lowercased>-<role>`, as `legion claims list` shows.
   ```sh
   legion claims retry --config legion.yaml --operator-token-file operator-token --claim legion-widgets-widgets-14-architect
   ```
+
+  While the tree's design gate is closed under `gates.hold: work`, the catch-up names none of those issues: the daemon sends their notices when the gate opens ([A tree's work stopped after its spec changed](#a-trees-work-stopped-after-its-spec-changed)).
 
   When a tree's architect and its workers failed together, retry the architect first: the held
   workers are its to retry once it runs.

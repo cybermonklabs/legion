@@ -13,5 +13,9 @@ body: |-
   again. A side turn, the handoff prompt, a compaction's own request and a `task` subagent get no
   new placement. On the one request where Oh My Pi's date reminder would follow a new placement,
   the plugin moves the reminder to where the next request has it, so the message stays last. On a
-  model that takes no `system` message inside the conversation, Oh My Pi sends the message as a
-  user message, and the plugin logs one warning for each session and model.
+  model that takes no `system` message inside the conversation, after a fallback for example, the
+  plugin puts the message at the end of the request's top-level system prompt, and no message of
+  the conversation holds it. When that model's answer to the first request that carried the
+  message of a version is saved, the session records the entry `legion-approval-top-level` with
+  the version, the model and the key of that answer, once for each version and model. A return to
+  a model that takes a `system` message puts each earlier copy back at its place.
