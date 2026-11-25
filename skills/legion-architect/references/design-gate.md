@@ -33,9 +33,14 @@ whole suite is the CI job that runs it.
    never `ci-ok`, which passes when jobs it did not select were skipped
    (`.github/scripts/ci-ok.sh`).
 2. Name it as GitHub writes it: `<caller> / <job>` for a job of a called workflow (`test / test`).
-3. A held-back job needs its label (`full-ci` or `lane:<output>`) on the pull request while a
+3. Where the repository runs a job only in its merge queue, and no label runs it on a pull
+   request, the merge group is that job's only run. Write no `before_merge` check whose proof is
+   that job, and never ask a role for a run of it at the head it hands off. A check that must name
+   that job's result is `after_merge`, and it reads the merge group of the merged commit. Where a
+   label does run the job on a pull request, item 4 holds instead and the check names that label.
+4. A held-back job needs its label (`full-ci` or `lane:<output>`) on the pull request while a
    check names it; without it the check reads `absent` or `skipped`.
-4. Write in `negative_control` the case inside that job that fails when the property breaks: a
+5. Write in `negative_control` the case inside that job that fails when the property breaks: a
    step with `continue-on-error` keeps its job green.
 
 ## Which steps are gated
