@@ -16,10 +16,10 @@ import { type DrawnRow, nodeRows, parentOfRow, tree } from "./issue-page-g";
  *
  * - **The tree** `role="tree"` named `CONTROL_LABELS.tree` (`issue-page-g.ts`'s `tree`), its
  *   rows `treeitem`s carrying `aria-level`, and the one row with `tabindex="0"`, its tab stop. A
- *   row of the outline carries `data-row-key`, which `NodeRow.tsx` draws and no view's row does
- *   but a statement of the Spec view, which carries it for the outline's editing and which
- *   `outlineRows` leaves out: every view draws a tree of its own, so a tree is no sign that the
- *   outline is drawn.
+ *   row of the outline carries `data-row-key`, which `NodeRow.tsx` draws; a view's rows may
+ *   carry it too (the Spec view's statements do, for the outline's editing), so the outline's
+ *   rows are read inside its own body, `[data-issue-body]`: every view draws a tree of its own,
+ *   so a tree is no sign that the outline is drawn.
  * - **The stage** the outline is drawn in: the column `[data-testid="issue-column"]` that holds
  *   the stage and the foot (`IssueOutlinePage.tsx`).
  * - **A row's bullet** `[data-node-bullet]`: its column, or its fold control where its node holds
@@ -57,9 +57,8 @@ const SELECTORS = {
   nodeGlyph: "svg[data-glyph]",
   nodeRow: "[data-node-row]",
   nodeTag: "[data-node-margin] [data-node-tag]",
-  /** A row of the outline, and of no view's tree. */
-  // A Spec statement carries the row key too, for the outline's editing, but is no outline row.
-  outlineRow: "[data-node-row][data-row-key]:not([data-spec-body] *)",
+  /** A row of the outline, read inside the outline's own body, which no view's tree is drawn in. */
+  outlineRow: "[data-issue-body] [data-node-row][data-row-key]",
   presetRow: '[data-testid="issue-presets"]',
   stage: '[data-testid="issue-column"]',
   tree: '[role="tree"]',
