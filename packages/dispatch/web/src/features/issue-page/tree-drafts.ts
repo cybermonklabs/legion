@@ -1,25 +1,12 @@
 import { parseBlockPointerValue, referenceSpans } from "@legion/contracts";
 
-import { artifactAtAddress, primarySpec, roleDocument } from "../../api/issue-cache";
-import type {
-  Actor,
-  Artifact,
-  Ask,
-  Decision,
-  DisplayTree,
-  IssueChild,
-  IssueDetails,
-  ReferenceTarget,
-} from "../../api/types";
+import { primarySpec, roleDocument } from "../../api/issue-cache";
+import type { Actor, Ask, Decision, DisplayTree, IssueChild } from "../../api/types";
 import { compareTimestamps } from "../../lib/timestamps";
 import { decisionsDocumentId } from "../decision-card/change-anchor";
-import { storedReading } from "../decision-card/stored-reading";
-import { type AgentText, actorLabelText } from "../refs/AgentName";
 import { deletedLineText, type PostDeletion, postDeletion } from "../refs/post-marks";
-import type { ReferenceNameReading } from "../refs/reference-names";
 import { buildDispatchReference, issueOrDocumentTitle, parseNodeReference } from "../refs/routes";
 import { type TextSource, textSourceOf } from "../refs/text-references";
-import { firstWordedBlock } from "../refs/tree-fragment";
 import { agentsOnlyIds } from "./agents-only";
 import { checkFacts, resultFacts } from "./check-facts";
 import {
@@ -45,13 +32,12 @@ import {
   type DecisionState,
   type GapKind,
   NODE_STATE_WORDS,
-  NODE_TYPE_NAMES,
   NODE_TYPES,
   type NodeState,
   type NodeType,
-  PRESET_NAMES,
 } from "./page-words";
-import { blockNodeId, checkStanding, coverageStatements, nodeIdOf } from "./statement-rules";
+import { blockNodeId, checkStanding, coverageStatements } from "./statement-rules";
+import { ACTOR, documentReading, type TreeContext } from "./target-naming";
 
 /**
  * One draft node per read of the issue page, for `buildIssueTree` to place.
@@ -159,306 +145,6 @@ export const ROOT_ORDER = {
   decision: 1000,
   requirement: 2000,
 } as const;
-
-/** What every builder needs of the reads: how this issue addresses a node, and what a reference
- *  points at. Held as one value so the placement and the names are read the same way everywhere. */
-export interface TreeContext {
-  /** A chip naming what `reference` points at, by the one batched reference read and the
-   *  issue's own documents (`treeContext`): one chip per reference, the same value on every
-   *  call. */
-  readonly chipOf: (reference: string) => NodeChip;
-  /** The words of the stored excerpt the batched reference read names `reference`'s target by
-   *  (`ReferenceTarget.name`), with a typed block's directive left out (`blockWords`); `""` for
-   *  a target the read has not answered for and for one nothing answers to now. It is a block's
-   *  source, cut at 480 runes and unread, so no chip draws it: it is where a node's citations
-   *  are read from beside its words, and a block's words where the read sent no reading. */
-  readonly excerptOf: (reference: string) => string;
-  readonly key: string;
-  /** The node `reference` names, as this issue addresses it; undefined for anything else. */
-  readonly nodeIdOf: (reference: string) => string | undefined;
-  /** The slug of the issue's spec (`primarySpec`), `""` for an issue with none. */
-  readonly specSlug: string;
-  /** The slug of one document of the issue, by its artifact id. */
-  readonly slugOf: (artifactId: string) => string | undefined;
-  /** The server's reading of what `reference` points at, where the batched reference read sent
-   *  one: a typed block's own inner content, whole, references kept (`ReferenceTarget.text_tree`). */
-  readonly treeOf: (reference: string) => DisplayTree | undefined;
-  /** The reader's login, which an open question waits on where its turn is theirs; undefined
-   *  until the login resolves, and nothing waits on nobody. */
-  readonly viewer: string | undefined;
-}
-
-/**
- * The reads as every builder reads them: the tree's (`buildIssueTree`) and the page's published
- * names (`targetNaming`) both, so a chip and a link name one target by one rule and cannot drift
- * apart.
- *
- * A chip carries how its target is named (`NodeChip.reading`), and never the target's words:
- * the page publishes each reading and the shared reader projects it (`refs/reference-names.tsx`),
- * as a title drawn over one record, so no word of a name is written by a reader of this page's
- * own, and markup is never a word of one (R21). The name is the one a link to the target reads
- * (R8), and a chip cuts it again where it draws it (`issue-tree.ts`'s `chipName`).
- *
- * - **A target nothing answers to now** by nothing, which the chip draws as gone. A short
- *   reference two or more targets carry the id of is such a target, which the read answers
- *   `ambiguous` as well, and its chip carries `ambiguous` so it can draw the reference as
- *   written rather than as a target deleted.
- * - **A block** - the reference names one, or the read answers that its target is one - by the
- *   server's reading of its whole text (`ReferenceTarget.text_tree`), as a link to it titles it
- *   (R8); a chip names it by the first block of that reading that holds any words instead, so a
- *   decision's chip is its own heading (`refs/reference-names.tsx`'s `chipLineReading`). Where
- *   the read answered and sent no reading, or one that holds no words, a block of this issue
- *   whose document the tree read is named by the page's word for its kind (`NODE_TYPE_NAMES`),
- *   never by its id (R22), and so is one whose words project to none (`fallback`); another
- *   issue's block, whose kind no read of this page gives, by nothing, and a surface reads it
- *   itself. A block the read has not answered for yet has no name either, which the chip draws
- *   as not yet named (`NodeChip.answered`). The read's `name` for a block is its stored excerpt,
- *   which is the block's source: a typed block's directive and the markdown its words are
- *   written in are markup and no word of it (R21).
- * - **A whole document** - a `spec` or an `artifact` reference naming no block - by the name a
- *   link to it reads (R8, `issueOrDocumentTitle`): an issue's spec by the issue's title, and any
- *   other document by its own name, which is its file name, each read as one text run
- *   (`titleReading`), as a title is. This issue's documents are titled by the issue read, and
- *   another issue's by the batched read: its spec by that issue's title, which the page asks the
- *   read for beside every whole spec it holds (`useIssueTree.ts`'s `treeReferences`), where the
- *   read answered for the issue, and its document by the read's name for it. A document nothing
- *   titles is named by the page's word for a document. The reading carries the page's word for the
- *   document as well (`ReferenceNameReading.chipWord`, `documentWord`), which every chip draws
- *   in place of its name, a tie's and one in place in a node's words: a chip never draws a
- *   document's file name (decision 39).
- * - **An issue** - the read answers that its target is one - by its title, which is no markdown,
- *   read as one text run (`titleReading`), so nothing in it is parsed. The issue and each child
- *   the issue read lists are named by their whole titles, which that read holds, so their chips
- *   draw the very title their rows draw. Any other issue is named by the read's name for it,
- *   which is the first 240 characters of its title (the server's `refs.excerptRunes`). An issue
- *   the read has not answered for yet has no name, as a block has none.
- * - **Anything else** by the read's `name` for it. An ask's, a comment's and a message's name is
- *   the question or the body as stored, which is markdown whose marks are no word of it (R21),
- *   and the read sends no reading of it, so it is named from the reading of its stored text in
- *   the shape of the server's (`storedReading`), whose words are the server's for every text that
- *   holds none of three things (`STORED_TEXT_PARSE`): an HTML comment an agent's comment ends
- *   with is no word of it. A comment or a message the read marks deleted
- *   (`ReferenceTarget.deleted_at`) is named by the deleted line's words (`deletedLineText`),
- *   never by the emptied body, which is no words at all, as a link to it is
- *   (`reference-target.ts`'s `useReferenceLabel`); the model reads no agent registry, so the
- *   line names the actor as `AgentName` does before the registry answers (`actorLabelText`),
- *   where a link names a listed session by its registry title. A component's name is a title,
- *   which is no markdown, and is drawn as the read gives it.
- *
- * A chip carries the marks the read answers for a post (`NodeChip.deletedAt`, `deletedBy`,
- * `editedAt`), and its reading is of the words alone: a place that draws the name of an edited
- * one, a comment, a message or a block of either, cuts the words to its own length and marks what
- * the cut left, so no cut takes the mark. The row's chip draws the mark as an element of its own
- * (`NodeRow.tsx`'s `Chip`, with `EditedMark`), and a place that names the post in one string
- * writes it with `editedName`.
- */
-export function treeContext(reads: IssueTreeReads): TreeContext {
-  const key = reads.issue.key;
-  const artifacts = reads.issue.artifacts ?? [];
-  const slugs = new Map(artifacts.map((artifact) => [artifact.id, artifact.slug]));
-  const spec = primarySpec(reads.issue);
-  const specSlug = spec?.slug ?? "";
-  const names = new Map((reads.targets ?? []).map((target) => [target.ref, target]));
-  // The kind of each typed block of the documents the tree read, by its node id, which is all a
-  // chip can say of a block of this issue the read sent no words for.
-  const types: readonly string[] = NODE_TYPES;
-  const kinds = new Map<string, NodeType>();
-  for (const document of reads.documents ?? []) {
-    const slug = slugs.get(document.artifactId);
-    if (slug === undefined) continue;
-    for (const block of document.blocks) {
-      if (types.includes(block.type)) {
-        kinds.set(blockNodeId(slug, block.id), block.type as NodeType);
-      }
-    }
-  }
-  const nodeIdOfReference = nodeIdOf(reads.issue);
-  // The whole title of the issue and of each child the issue read lists, by its own address:
-  // the names read cuts a title to its first 240 characters, and the issue read holds these
-  // whole, as the rows draw them.
-  const titles = new Map<string, string>([
-    [buildDispatchReference({ key, kind: "issue" }), reads.issue.title],
-    ...(reads.issue.children ?? []).map((child): [string, string] => [
-      buildDispatchReference({ key: child.key, kind: "issue" }),
-      child.title,
-    ]),
-  ]);
-  // The issue `issueKey` as a link to it is titled: by its whole title where the issue read holds
-  // it, and else by the batched read's name for it, where that read answered for the issue. The
-  // page asks it for the issue of every whole spec the tree holds (`useIssueTree.ts`'s
-  // `treeReferences`), so another issue's spec is titled as a link to it is.
-  const titledIssue = (issueKey: string): { readonly title: string } | undefined => {
-    const reference = buildDispatchReference({ key: issueKey, kind: "issue" });
-    const whole = titles.get(reference);
-    if (whole !== undefined) return { title: whole };
-    const answered = names.get(reference);
-    return answered?.kind === "issue" && !answered.gone ? { title: answered.name } : undefined;
-  };
-  const readingOf = (
-    reference: string,
-    target: ReferenceTarget | undefined,
-    deleted: PostDeletion | null
-  ): ReferenceNameReading | undefined => {
-    const route = parseNodeReference(reference);
-    const block = route !== undefined && "block" in route ? route.block : undefined;
-    if (block !== undefined || target?.kind === "block") {
-      if (target === undefined) return undefined;
-      const kind = kinds.get(nodeIdOfReference(reference) ?? "");
-      const word = kind === undefined ? undefined : NODE_TYPE_NAMES[kind];
-      const whole = target.text_tree;
-      if (whole === undefined || firstWordedBlock(whole) === undefined) {
-        return word === undefined ? undefined : { words: word };
-      }
-      return word === undefined ? { tree: whole } : { fallback: word, tree: whole };
-    }
-    // A block of it returned above, so this is the document itself: one of this issue's by the
-    // issue read, and another issue's by what the batched read answered for it.
-    if (route?.kind === "spec" || route?.kind === "artifact") {
-      const own =
-        route.key !== key
-          ? undefined
-          : route.kind === "spec"
-            ? spec
-            : artifactAtAddress(artifacts, route.slug);
-      const answered = target?.kind === "artifact" ? target : undefined;
-      return documentReading(
-        reads.issue,
-        own,
-        issueOrDocumentTitle(route, titledIssue(route.key), own ?? answered)
-      );
-    }
-    if (target === undefined) return undefined;
-    if (target.kind === "ask" || target.kind === "comment" || target.kind === "message") {
-      return deleted === null
-        ? { tree: storedReading(target.name, target) }
-        : { words: deletedLineText(deleted, ACTOR) };
-    }
-    if (target.kind === "issue") {
-      return { tree: titleReading(titles.get(reference) ?? target.name) };
-    }
-    const words = blockWords(target.name);
-    return words === "" ? undefined : { words };
-  };
-  // One chip per reference, made the first time it is asked for: a tree asks once for every
-  // citation of a target, and no caller changes a chip - its fields are read-only (`NodeChip`),
-  // and a caller that adds one, a `needs` label or a link's `stale`, spreads it into a chip of
-  // its own - so every place that cites the target holds the same one.
-  const chips = new Map<string, NodeChip>();
-  return {
-    chipOf: (reference: string): NodeChip => {
-      const held = chips.get(reference);
-      if (held !== undefined) return held;
-      const target = names.get(reference);
-      const gone = target?.gone ?? false;
-      const deleted = postDeletion(target);
-      // A deleted post's deleted line already says what became of its text, so it carries no
-      // edit mark.
-      const edited = deleted === null ? target?.edited_at : undefined;
-      const reading = gone ? undefined : readingOf(reference, target, deleted);
-      const chip: NodeChip = {
-        ...(target?.ambiguous === true ? { ambiguous: true } : {}),
-        answered: target !== undefined,
-        ...(deleted === null ? {} : { deletedAt: deleted.at }),
-        ...(deleted === null || deleted.by === null ? {} : { deletedBy: deleted.by }),
-        ...(edited === undefined ? {} : { editedAt: edited }),
-        gone,
-        ...(reading === undefined ? {} : { reading }),
-        ref: reference,
-      };
-      chips.set(reference, chip);
-      return chip;
-    },
-    excerptOf: (reference: string): string => {
-      const target = names.get(reference);
-      return target === undefined || target.gone ? "" : blockWords(target.name);
-    },
-    key,
-    nodeIdOf: nodeIdOfReference,
-    specSlug,
-    slugOf: (artifactId: string) => slugs.get(artifactId),
-    treeOf: (reference: string) => names.get(reference)?.text_tree,
-    viewer: reads.viewer,
-  };
-}
-
-/**
- * How the page names a whole document: by `title`, the title a link to it reads
- * (`issueOrDocumentTitle`), read as one text run (`titleReading`), which the page publishes for
- * every plain line to read (R8), with the page's word for it (`documentWord`), which every chip
- * draws in that name's place (`chipWord`), since a chip never draws a document's file name
- * (decision 39). `own` is the document of `issue` the reference names, if any. A document
- * nothing titles is published by that word as well.
- */
-function documentReading(
-  issue: IssueDetails,
-  own: Pick<Artifact, "id"> | undefined,
-  title: string | undefined
-): ReferenceNameReading {
-  const chipWord = documentWord(issue, own);
-  return title === undefined
-    ? { chipWord, words: chipWord }
-    : { chipWord, tree: titleReading(title) };
-}
-
-/**
- * The page's word for one document of the issue, which a chip naming the whole document draws
- * (`documentReading`): the name of the filter that draws what it holds (`PRESET_NAMES`) for the
- * spec and for the plan, Verification and decisions documents, and the page's word for a
- * document (`NODE_TYPE_NAMES.document`) for any other, another issue's included (`undefined`),
- * since another issue's document plays no part of this one. A link and every line read a
- * document by its own name, which is its file name, `spec.md` (R8); a chip never draws it
- * (decision 39). A chip the page has given no word yet draws this rule as far as an address and
- * the row's issue say it (`node-row-chip.ts`'s `documentWord`).
- *
- * Which document plays which part is the issue read's answer and nothing else: the id it names
- * for each (`primary_artifact_id`, `plan_artifact_id`, `verification_artifact_id`,
- * `decisions_artifact_id`), read by `primarySpec` and `roleDocument`, the rule the tree reads the
- * documents' blocks by (`useIssueTree.ts`). Where the issue names no id for a part - none
- * (`""`), or a Dispatch older than that part (absent) - no document plays it, and a document
- * flagged `primary` or carrying that part's `role` is named by the page's word for a document:
- * a chip naming "Spec" or "Decisions" opens a document whose blocks the tree reads as that part.
- */
-function documentWord(issue: IssueDetails, document: Pick<Artifact, "id"> | undefined): string {
-  if (document === undefined) return NODE_TYPE_NAMES.document;
-  if (document.id === primarySpec(issue)?.id) return PRESET_NAMES.spec;
-  for (const role of ["plan", "verification", "decisions"] as const) {
-    if (document.id === roleDocument(issue, role)?.id) return PRESET_NAMES[role];
-  }
-  return NODE_TYPE_NAMES.document;
-}
-
-/** A directive's own opening line, `:::plan_task{#t1 serves="…"}`, and its closing fence. */
-const DIRECTIVE_OPENER = /^:{3,}[a-z_]/;
-const DIRECTIVE_FENCE = /^:{3,}\s*$/;
-
-/**
- * The words of the name the batched reference read gives a target (`ReferenceTarget.name`).
- * The read names a document's block by its stored excerpt, which is the block's source: a typed
- * block is a directive, so its excerpt opens on the directive's line - its type and its
- * attributes - and, where the excerpt holds the whole block, ends on its closing fence. Both are
- * markup and no word of the block (R21), so they are left out. Any other name is left as the
- * read gives it.
- */
-export function blockWords(name: string): string {
-  const lines = name.trimEnd().split("\n");
-  if (!DIRECTIVE_OPENER.test(lines[0] ?? "")) return name;
-  lines.shift();
-  if (DIRECTIVE_FENCE.test(lines.at(-1) ?? "")) lines.pop();
-  return lines.join("\n").trim();
-}
-
-/** A title as the page reads it: a reading of one paragraph holding the title as one text run,
- *  so nothing in it is parsed, since a title is no markdown: a parse would read
- *  `1. Migrate the table` as a list item with no label, and leave out the marks of
- *  ``Add `x` flag``. The line of the issue and of a child issue is projected from it
- *  (`issue-tree.ts`'s `lineReading`), and so is the name of a chip naming an issue
- *  (`treeContext`), so a row and a chip read one title by one rule. */
-export function titleReading(title: string): DisplayTree {
-  return {
-    content: [{ content: [{ text: title, type: "text" }], type: "paragraph" }],
-    type: "doc",
-  };
-}
 
 /** Every draft the reads hold, by its node id. */
 export function treeDrafts(reads: IssueTreeReads, context: TreeContext): Map<string, Draft> {
@@ -807,10 +493,6 @@ interface Turn {
   /** The node it answers, `null` for a root turn under the issue. */
   readonly replyTo: string | null;
 }
-
-/** How the model names the actor of a delete: as `AgentName` names one before the agent
- *  registry answers (`actorLabelText`), since the model is pure and reads no registry. */
-const ACTOR: Pick<AgentText, "label"> = { label: actorLabelText };
 
 /**
  * The line a deleted comment's or message's node holds in place of its body: the words

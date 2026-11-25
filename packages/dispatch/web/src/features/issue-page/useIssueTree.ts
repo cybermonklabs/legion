@@ -22,9 +22,9 @@ import {
   nodeWords,
   type TreeAsk,
   type TreeNode,
-  targetNaming,
 } from "./issue-tree";
 import { citedReferences } from "./row-references";
+import { targetNaming } from "./target-naming";
 import { askState } from "./tree-drafts";
 
 /** The issue's tree, and how far the reads it is built from have got. */

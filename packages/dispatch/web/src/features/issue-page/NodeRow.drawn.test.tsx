@@ -42,14 +42,8 @@ import {
   KEY,
   shaped,
 } from "./decisions-filter/decisions-fixtures";
-import {
-  FIRST_LINE_LIMIT,
-  type IssueTreeReads,
-  type NodeChip,
-  type ParentLine,
-  type TreeNode,
-  targetNaming,
-} from "./issue-tree";
+import { FIRST_LINE_LIMIT } from "./first-line";
+import type { IssueTreeReads, NodeChip, ParentLine, TreeNode } from "./issue-tree";
 import { KeepOpen, NodeOptions, NodeRow, useRowOnScreen } from "./NodeRow";
 import { NoTooltips } from "./NoTooltips";
 import * as nodeRowChip from "./node-row-chip";
@@ -70,7 +64,7 @@ import {
 import { publishedChips, publishedNames } from "./projection-fixture";
 import { RowText } from "./RowText";
 import { ProvidersSlot } from "./slots/providers";
-import { treeContext } from "./tree-drafts";
+import { targetNaming, treeContext } from "./target-naming";
 import { nodesInOrder } from "./tree-keys";
 import { treeDocumentIds, useIssueTree } from "./useIssueTree";
 import { overflowing, wordsScrollRules, wordsScrollSheet } from "./words-scroll-fixtures";

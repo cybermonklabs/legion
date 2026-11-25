@@ -23,14 +23,9 @@ import { type PublishedReferences, ReferenceNamesProvider } from "../../refs/ref
 import { KeymapProvider } from "../../shell/KeymapProvider";
 import { useKeymapScope } from "../../shell/keymap";
 import { artifact, issueDetails } from "../decisions-filter/decisions-fixtures";
+import { firstLineOf } from "../first-line";
 import { FocusedNodeProvider, useFocusedNode } from "../focused-node";
-import {
-  firstLineOf,
-  type IssueTreeReads,
-  type NodeChip,
-  type ParentLine,
-  type TreeNode,
-} from "../issue-tree";
+import type { IssueTreeReads, NodeChip, ParentLine, TreeNode } from "../issue-tree";
 import { FirstLine } from "../node-line";
 import { NO_FAILED_READS } from "../outline-reads";
 import {
@@ -53,7 +48,7 @@ import { ProvidersSlot } from "../slots/providers";
 import { ViewStage } from "../slots/stage";
 import { ViewPlanSlot } from "../slots/view-plan";
 import { blockNodeId } from "../statement-rules";
-import { treeContext } from "../tree-drafts";
+import { treeContext } from "../target-naming";
 import { issueAsksQuery } from "../useIssueTree";
 import { PlanFilterBody, type PlanRead, type PlanReads } from "./PlanFilterBody";
 

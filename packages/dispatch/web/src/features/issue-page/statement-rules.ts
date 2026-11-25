@@ -1,5 +1,5 @@
 import { primarySpec } from "../../api/issue-cache";
-import type { CheckBlock, CheckResult, IssueCoverage } from "../../api/types";
+import type { CheckBlock, CheckResult, DisplayTree, IssueCoverage } from "../../api/types";
 import { compareTimestamps, isTimestamp } from "../../lib/timestamps";
 import { parseNodeReference } from "../refs/routes";
 import type { IssueTreeReads, TreeNode } from "./issue-tree";
@@ -8,8 +8,8 @@ import type { CheckState, StatementState } from "./page-words";
 /**
  * The pure rules the tree and Dashboard both read: how the issue addresses a node (`nodeIdOf`,
  * `blockNodeId`), which references name a statement of the review list (`coverageStatements`),
- * how a check stands (`checkStanding`) and how a statement stands over its checks
- * (`statementState`).
+ * how a check stands (`checkStanding`), how a statement stands over its checks
+ * (`statementState`), and how a title is read as one text run (`titleReading`).
  *
  * They hold no React, make no request, and import no code of the tree's model - `tree-drafts.ts`,
  * `issue-tree.ts`, `useIssueTree.ts` - only its types, so Dashboard reads the one rule the tree
@@ -270,4 +270,17 @@ export function statementState(checks: readonly Pick<CheckReading, "state">[]): 
   if (checks.every((check) => check.state === "passed")) return "met";
   if (checks.some((check) => check.state === "failed")) return "not_met";
   return "unknown";
+}
+
+/** A title as the page reads it: a reading of one paragraph holding the title as one text run,
+ *  so nothing in it is parsed, since a title is no markdown: a parse would read
+ *  `1. Migrate the table` as a list item with no label, and leave out the marks of
+ *  ``Add `x` flag``. The line of the issue and of a child issue is projected from it
+ *  (`issue-tree.ts`'s `lineReading`), and so is the name of a chip naming an issue
+ *  (`treeContext`), so a row and a chip read one title by one rule. */
+export function titleReading(title: string): DisplayTree {
+  return {
+    content: [{ content: [{ text: title, type: "text" }], type: "paragraph" }],
+    type: "doc",
+  };
 }
