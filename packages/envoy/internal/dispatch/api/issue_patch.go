@@ -141,6 +141,10 @@ type issueWriteCallStep struct {
 	// call's last step (issueWriteResult.closed), so that no fence of the call reads the events of
 	// the sweep. Only the named issue's own step sets it.
 	sweepsLater bool
+	// options is the options of the status change that the step is a step of, which writeIssue
+	// puts on the step's one-step plan. So the step's own check of R26 and R24 reads the options
+	// that the planning check read (planStatusChangeUnderLocks). A step of R25's fix carries none.
+	options statusChangeOptions
 }
 
 // issueWriteFence is the fence of a status change that sent expected_sequence: the sequence it
@@ -492,13 +496,18 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 	// the owner locks the write holds. R26 (legion_status_scope.go) judges the write first, and R24
 	// (parent_status_rule.go) judges it after R26, so where both refuse, the code is R26's. With the
 	// parent-status rule off the plan is unjudged, so R24 reads no conflict that the write would
-	// not refuse.
+	// not refuse. The plan of a step of a status change carries the call's options
+	// (issueWriteCallStep.options), so R26 judges an architect's write of the step as the planning
+	// check judged it. A PATCH carries none.
 	var statusAfter *string
 	if input.Status != nil {
 		statusAfter = &status
 	}
 	plan := issueWritePlanOfPatch(before, statusAfter, parentProvided, parent, labelsAfter)
 	plan.unjudged = !s.deps.ParentStatusRule.On()
+	if step != nil {
+		plan.options = step.options
+	}
 	conflict, err := s.refuseIssueWritePlan(ctx, tx, call.writer, plan)
 	if err != nil {
 		return issueWriteResult{}, err

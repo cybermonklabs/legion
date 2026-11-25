@@ -129,12 +129,14 @@ type statusChangeConflict struct {
 	Changed []statusChangeEntry         `json:"changed"`
 }
 
-// statusChange is a status change's body as the route checked it.
+// statusChange is a status change's body as the route checked it. Its options
+// (statusChangeOptions) ride on the plan and on each step's write, so every check of the call
+// reads them.
 type statusChange struct {
-	status                                         string
-	includeChildren, unlinkChildren, includeParent bool
-	dryRun                                         bool
-	expectedSeq                                    *int64
+	status string
+	statusChangeOptions
+	dryRun      bool
+	expectedSeq *int64
 }
 
 // parseStatusChange checks the body: a status of the lifecycle, and at most one of the two
@@ -152,12 +154,14 @@ func parseStatusChange(input statusChangeInput) (statusChange, error) {
 			"include_children and unlink_children cannot both be set: pick what happens to the open issues under the issue")
 	}
 	return statusChange{
-		status:          status,
-		includeChildren: input.IncludeChildren,
-		unlinkChildren:  input.UnlinkChildren,
-		includeParent:   input.IncludeParent,
-		dryRun:          input.DryRun,
-		expectedSeq:     input.ExpectedSeq,
+		status: status,
+		statusChangeOptions: statusChangeOptions{
+			includeChildren: input.IncludeChildren,
+			unlinkChildren:  input.UnlinkChildren,
+			includeParent:   input.IncludeParent,
+		},
+		dryRun:      input.DryRun,
+		expectedSeq: input.ExpectedSeq,
 	}, nil
 }
 
@@ -437,7 +441,7 @@ func (s *server) planStatusChangeUnderLocks(
 	if err != nil {
 		return statusChangePlan{}, nil, err
 	}
-	writes := issueWritePlan{steps: make([]issueWriteStep, 0, len(steps)), includeChildren: change.includeChildren}
+	writes := issueWritePlan{steps: make([]issueWriteStep, 0, len(steps)), options: change.statusChangeOptions}
 	for index := range steps {
 		row := rows[steps[index].key]
 		steps[index].title, steps[index].lastSeq = row.title, row.lastSeq
@@ -762,7 +766,8 @@ func (run *statusChangeRun) finish(issue model.Issue) error {
 // call is the write of one step: the status or the unlink the step writes, as the caller writes
 // it, and, for a step an option makes, the comment of Dispatch's system actor that names the call
 // and what the write changed (issueWriteCallStep.moved). claim is the request key's claim of a
-// keyed call, nil for a call with no key.
+// keyed call, nil for a call with no key. The step carries the call's options, so the step's own
+// check judges it with the options that the planning check read (issueWriteCallStep.options).
 func (run *statusChangeRun) call(step statusChangeStep, fence *issueWriteFence, claim *requestKeyClaim) issueWriteCall {
 	call := issueWriteCall{
 		writer:        run.writer,
@@ -770,7 +775,9 @@ func (run *statusChangeRun) call(step statusChangeStep, fence *issueWriteFence, 
 		callerProject: run.callerProject,
 		outliving:     run.outliving,
 		adviceRoute:   statusChangeRoute,
-		step:          &issueWriteCallStep{named: run.key, fence: fence, claim: claim, sweepsLater: step.key == run.key},
+		step: &issueWriteCallStep{
+			named: run.key, fence: fence, claim: claim, sweepsLater: step.key == run.key, options: run.change.statusChangeOptions,
+		},
 	}
 	if step.reparent {
 		call.unlinkFrom(run.key)

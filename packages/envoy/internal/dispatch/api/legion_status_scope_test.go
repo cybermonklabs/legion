@@ -7,6 +7,12 @@
 // with 403 LEGION_STATUS_SCOPE_REQUIRED, and the issue keeps its status, labels, parent and
 // events (requireLegionIssueUnchanged).
 //
+// One write is taken from a credential that holds neither scope: the owning architect's status
+// write. A broker-issued token whose session the daemon's own token published as the architect of
+// an issue above the written issue, in that issue's project, writes done, backlog, icebox or
+// triage (TestTheOwningArchitectsProvenSessionWritesAnIssueUnderIt), and nothing else of the three
+// writes (TestTheArchitectsWriteTakesOnlyTheFourStatuses).
+//
 // The tests send their writes from the credentials of one inventory (newLegionStatusRig), so each
 // test reads the same list of the credentials that R26 refuses and the credentials it lets through.
 // The tests need DISPATCH_TEST_DATABASE_URL, as every test of this package that opens a store.
@@ -74,6 +80,8 @@ type legionStatusRig struct {
 	credentials []legionCredential
 	// made counts the issues the rig made, so that each title is a new one.
 	made int
+	// otherProject is that the rig made legionOtherProject (otherProjectIssue).
+	otherProject bool
 }
 
 // newLegionStatusRig builds the server with R26's setting on or off (newLegionStatusRigOn).
@@ -249,9 +257,14 @@ func requireRefused(t *testing.T, response *httptest.ResponseRecorder, status in
 	}
 }
 
+// legionArchitectReason is the sentence that each R26 refusal carries: the one write that R26
+// lets through from a credential that holds neither scope (legionStatusScopeRefusal).
+const legionArchitectReason = "An architect of an issue above writes done, backlog, icebox or triage once its claim is ready"
+
 // requireLegionStatusRefusal fails unless response is R26's refusal: 403
-// LEGION_STATUS_SCOPE_REQUIRED, a message that names the legion-status scope, and the challenge
-// RFC 6750 gives a credential that lacks that scope.
+// LEGION_STATUS_SCOPE_REQUIRED, a message that names the legion-status scope and says that an
+// architect of an issue above writes done, backlog, icebox or triage once its claim is ready, and
+// the challenge RFC 6750 gives a credential that lacks that scope.
 func requireLegionStatusRefusal(t *testing.T, response *httptest.ResponseRecorder) {
 	t.Helper()
 	requireRefused(t, response, http.StatusForbidden, codeLegionStatusScopeRequired)
@@ -259,6 +272,9 @@ func requireLegionStatusRefusal(t *testing.T, response *httptest.ResponseRecorde
 	_ = json.Unmarshal(response.Body.Bytes(), &refusal)
 	if !strings.Contains(refusal.Error, "legion-status") {
 		t.Errorf("the refusal's message %q names no legion-status scope", refusal.Error)
+	}
+	if !strings.Contains(refusal.Error, legionArchitectReason) {
+		t.Errorf("the refusal's message %q does not say %q", refusal.Error, legionArchitectReason)
 	}
 	if got, want := response.Header().Get("WWW-Authenticate"), `Bearer error="insufficient_scope", scope="legion-status"`; got != want {
 		t.Errorf("the refusal's challenge = %q, want %q", got, want)
@@ -767,7 +783,10 @@ func TestACallIsJudgedByTheLabelsAndChainBeforeAndAfterIt(t *testing.T) {
 // a closed issue takes no parent. After a refused move, a status write on the issue is refused
 // too: the issue is still a Legion issue, so two calls cannot do what one may not. A move under
 // another labelled root, or under an unlabelled child of one, is taken. A move of an issue under
-// the issue below it is PARENT_INPUT, which comes before R26, and changes nothing.
+// the issue below it is PARENT_INPUT, which comes before R26, and changes nothing. A move under
+// a labelled issue of another project is refused from the shared token, and the issue keeps its
+// parent: the legion walk climbs only within the issue's own project, so that label makes it no
+// Legion issue. A browser sign-in makes the same move.
 func TestAParentChangeThatLeavesNoLabelledAncestorNeedsTheScope(t *testing.T) {
 	rig := newLegionStatusRig(t, true)
 	writes, fixture := legionParentMoves(t, rig)
@@ -823,6 +842,21 @@ func TestAParentChangeThatLeavesNoLabelledAncestorNeedsTheScope(t *testing.T) {
 				requireLegionIssueUnchanged(t, rig.database, below, belowBefore)
 			})
 		}
+	})
+
+	t.Run("a move under a labelled issue of another project", func(t *testing.T) {
+		other := rig.otherProjectIssue(t, []string{"legion"})
+		key := rig.issue(t, nil, fixture.middle, "backlog")
+		before := readLegionIssue(t, rig.database, key)
+		refused := rig.credential(t, legionSharedToken).send(t, http.MethodPatch, "/api/v1/issues/"+key, map[string]any{"parent": other})
+		requireLegionStatusRefusal(t, refused)
+		requireLegionIssueUnchanged(t, rig.database, key, before)
+		// The control: a credential that holds a scope makes the same move.
+		moved := rig.credential(t, legionBrowserSignIn).send(t, http.MethodPatch, "/api/v1/issues/"+key, map[string]any{"parent": other})
+		if moved.Code != http.StatusOK {
+			t.Fatalf("a browser sign-in moves %s under %s: status=%d body=%s", key, other, moved.Code, moved.Body.String())
+		}
+		hasParent(other)(t, readLegionIssue(t, rig.database, key))
 	})
 }
 
@@ -1052,7 +1086,9 @@ func TestTheFixIsNotRefusedWithBothSettingsOn(t *testing.T) {
 // labelled root, and on an issue under a root labelled Legion, and taken on the same issues of an
 // unlabelled chain. On the issue parentDepthCap links under the labelled root, the same write is
 // taken from every credential that holds a scope. The negative control of the plan's proof reads
-// this test: a guard that read the issue's own labels alone fails it.
+// this test: a guard that read the issue's own labels alone fails it. The chain is the issue's own
+// project's: the shared token's status write on an issue whose only labelled ancestor is of
+// another project is taken.
 func TestAnIssueUnderALabelledIssueIsALegionIssue(t *testing.T) {
 	rig := newLegionStatusRig(t, true)
 	shared := rig.credential(t, legionSharedToken)
@@ -1067,6 +1103,10 @@ func TestAnIssueUnderALabelledIssueIsALegionIssue(t *testing.T) {
 			rig.send(t, shared, legionWrite{judged: false, make: func(*testing.T, *legionStatusRig) legionPatch { return statusWrite(key, "todo") }})
 		})
 	}
+	t.Run("under an unlabelled issue whose parent is a labelled issue of another project", func(t *testing.T) {
+		key := rig.issue(t, nil, rig.issue(t, nil, rig.otherProjectIssue(t, []string{"legion"}), ""), "")
+		rig.send(t, shared, legionWrite{judged: false, make: func(*testing.T, *legionStatusRig) legionPatch { return statusWrite(key, "todo") }})
+	})
 	t.Run(fmt.Sprintf("%d links under a labelled root, from a credential that holds a scope", parentDepthCap), func(t *testing.T) {
 		statuses := []string{"backlog", "icebox", "in_progress", "todo"}
 		taken := 0
@@ -1118,4 +1158,389 @@ func TestTheLegionStatusRefusalWaitsForItsSetting(t *testing.T) {
 	if judged == 0 {
 		t.Fatal("no write R26 judges was sent, so the setting's absence proved nothing")
 	}
+}
+
+// legionOtherProject is a project beside brokerTestProject. A parent may be an issue of another
+// project (validateIssueParent), and the legion walk and the owning architect's walk climb only
+// within the written issue's own project.
+const legionOtherProject = "OTH"
+
+// otherProjectIssue makes, as a person, a root issue of legionOtherProject with labels, and the
+// project itself first, as the rig makes brokerTestProject, when the rig has not made it yet.
+func (rig *legionStatusRig) otherProjectIssue(t *testing.T, labels []string) string {
+	t.Helper()
+	if !rig.otherProject {
+		if created := rig.asPerson(t, http.MethodPost, "/api/v1/projects", map[string]any{
+			"key": legionOtherProject, "name": "Other",
+		}); created.Code != http.StatusCreated {
+			t.Fatalf("create project %s as a person: status=%d body=%s", legionOtherProject, created.Code, created.Body.String())
+		}
+		rig.otherProject = true
+	}
+	created := rig.asPerson(t, http.MethodPost, "/api/v1/issues", map[string]any{
+		"project": legionOtherProject, "title": rig.title(), "labels": labels, "force": true,
+	})
+	if created.Code != http.StatusCreated {
+		t.Fatalf("make an issue of %s as a person: status=%d body=%s", legionOtherProject, created.Code, created.Body.String())
+	}
+	return decodeBody[model.Issue](t, created).Key
+}
+
+// brokerCredential readies a broker-issued token on the rig's stub broker and answers its
+// credential: liveNamedToken, a token of brokerTestProject that acts for brokerTestPerson and
+// holds no scope, with shape applied to it. Each call presents a token and a key of its own, so
+// no answer that the server keeps for one token answers another.
+func (rig *legionStatusRig) brokerCredential(t *testing.T, name string, shape func(answer *ciphertoken.Introspection)) legionCredential {
+	t.Helper()
+	caller := newBrokerCaller(t)
+	answer := liveNamedToken(caller.jkt)
+	shape(&answer)
+	token := "token." + caller.jkt
+	rig.broker.Says(token, answer)
+	return legionCredential{name: name, verdict: legionRefused, send: func(t *testing.T, method, path string, body map[string]any) *httptest.ResponseRecorder {
+		return rig.serve(caller.presenting(t, method, path, token, body))
+	}}
+}
+
+// provenSession is a broker-issued token of brokerTestProject that proves session and holds no
+// scope: the token an architect's claim presents once it is ready. R26 refuses it every write of a
+// Legion issue but the owning architect's.
+func (rig *legionStatusRig) provenSession(t *testing.T, session string) legionCredential {
+	t.Helper()
+	return rig.brokerCredential(t, "the broker token of "+session, func(answer *ciphertoken.Introspection) { answer.Session = session })
+}
+
+// publishRoles publishes holders as the role holders of issue from the daemon's own broker
+// token, so that each pair is marked (putIssueRoleHolders).
+func (rig *legionStatusRig) publishRoles(t *testing.T, issue string, holders ...issueRoleHolder) {
+	t.Helper()
+	if holders == nil {
+		holders = []issueRoleHolder{}
+	}
+	published := rig.credential(t, legionDaemonToken).send(t, http.MethodPut, "/api/v1/issues/"+issue+"/role-holders", map[string]any{"holders": holders})
+	if published.Code != http.StatusOK {
+		t.Fatalf("the daemon's own token publishes %v on %s: status=%d body=%s", holders, issue, published.Code, published.Body.String())
+	}
+}
+
+// architectOf is the pair that names session as an issue's architect.
+func architectOf(session string) issueRoleHolder {
+	return issueRoleHolder{Role: "architect", Session: session}
+}
+
+// legionArchitectStatuses are the four statuses that the owning architect writes.
+var legionArchitectStatuses = []string{"done", "backlog", "icebox", model.IssueStatusTriage}
+
+// legionStatusRoute is one of the two routes that write an issue's status, by the path that
+// writes the status of key.
+type legionStatusRoute struct {
+	name   string
+	method string
+	path   func(key string) string
+}
+
+// legionStatusRoutes are the PATCH and the status-change route.
+var legionStatusRoutes = []legionStatusRoute{
+	{name: "the PATCH", method: http.MethodPatch, path: func(key string) string { return "/api/v1/issues/" + key }},
+	{name: "the status-change route", method: http.MethodPost, path: legionStatusChangePath},
+}
+
+// legionStatusChangePath is the status-change route of key.
+func legionStatusChangePath(key string) string { return "/api/v1/issues/" + key + "/status-change" }
+
+// requireLegionCallTaken fails unless response is 200 and each issue of want holds its status.
+func requireLegionCallTaken(t *testing.T, database *store.Store, response *httptest.ResponseRecorder, want map[string]string) {
+	t.Helper()
+	if response.Code != http.StatusOK {
+		t.Errorf("status=%d body=%s, want 200: the server takes the owning architect's write", response.Code, response.Body.String())
+		return
+	}
+	for key, status := range want {
+		hasStatus(status)(t, readLegionIssue(t, database, key))
+	}
+}
+
+// requireLegionCallRefused sends a call and fails unless the answer is R26's refusal and no issue
+// of issues changes its status, labels, parent or last_seq, or gets an event or a comment.
+func requireLegionCallRefused(t *testing.T, database *store.Store, issues []string, send func() *httptest.ResponseRecorder) {
+	t.Helper()
+	before := readLegionCall(t, database, issues)
+	requireLegionStatusRefusal(t, send())
+	requireLegionCallUnchanged(t, database, issues, before)
+}
+
+// TestTheOwningArchitectsProvenSessionWritesAnIssueUnderIt holds the owning architect's write of
+// R26 (check k41 of dispatch://INFRA-4732), with the setting on. Dispatch takes done, backlog,
+// icebox or triage on an unlabelled issue under a labelled one, from the PATCH and from the
+// status-change route, and backlog, icebox or triage with include_children, from a broker-issued
+// token whose proven session the daemon's latest publication names as the architect of an issue
+// above it: the parent's and the grandparent's alike, over issues with no stored set of their
+// own, and an include_children that reaches the issues under a sub-architect's issue, that issue
+// included. After a person moves the issue from under one labelled parent to under another, the
+// new parent's architect's done is taken and the old parent's is refused.
+//
+// It refuses with LEGION_STATUS_SCOPE_REQUIRED, and no issue changes, the same write from the
+// session that holds the architect role of the issue itself, of a sibling or of a sibling's
+// child; from a session that holds another role of the parent; from a session that the newest
+// publication dropped; from a personal token without the person scope that names the architect's
+// session in its body's actor or with ?session=; and from the architect of a labelled issue of
+// another project above the issue, whose token is of the issue's own project. A pair that the
+// daemon's own token did not store, inserted unmarked as an older build would, names no
+// architect, and once the daemon's own token publishes the same set the architect's write is
+// taken. Each refusal says that an architect of an issue above writes done, backlog, icebox or
+// triage once its claim is ready (requireLegionStatusRefusal).
+func TestTheOwningArchitectsProvenSessionWritesAnIssueUnderIt(t *testing.T) {
+	rig := newLegionStatusRig(t, true)
+	parent := rig.issue(t, []string{"legion"}, "", "in_progress")
+	rig.publishRoles(t, parent, architectOf("ses_parent_architect"), issueRoleHolder{Role: "planner", Session: "ses_parent_planner"})
+	parentsArchitect := rig.provenSession(t, "ses_parent_architect")
+
+	t.Run("the parent's architect", func(t *testing.T) {
+		for _, route := range legionStatusRoutes {
+			for _, status := range legionArchitectStatuses {
+				t.Run(route.name+" writes "+status, func(t *testing.T) {
+					child := rig.issue(t, nil, parent, "todo")
+					response := parentsArchitect.send(t, route.method, route.path(child), map[string]any{"status": status})
+					requireLegionCallTaken(t, rig.database, response, map[string]string{child: status})
+				})
+			}
+		}
+	})
+
+	t.Run("the grandparent's architect, over a parent with no stored set", func(t *testing.T) {
+		grandparent := rig.issue(t, []string{"legion"}, "", "in_progress")
+		rig.publishRoles(t, grandparent, architectOf("ses_grandparent_architect"))
+		architect := rig.provenSession(t, "ses_grandparent_architect")
+		middle := rig.issue(t, nil, grandparent, "in_progress")
+		for _, route := range legionStatusRoutes {
+			for _, status := range legionArchitectStatuses {
+				t.Run(route.name+" writes "+status, func(t *testing.T) {
+					child := rig.issue(t, nil, middle, "todo")
+					response := architect.send(t, route.method, route.path(child), map[string]any{"status": status})
+					requireLegionCallTaken(t, rig.database, response, map[string]string{child: status})
+				})
+			}
+		}
+	})
+
+	t.Run("include_children over a sub-architect's issue", func(t *testing.T) {
+		for _, status := range legionArchitectStatuses[1:] {
+			t.Run(status, func(t *testing.T) {
+				named := rig.issue(t, nil, parent, "todo")
+				sub := rig.issue(t, nil, named, "todo")
+				rig.publishRoles(t, sub, architectOf("ses_sub_architect"))
+				under := rig.issue(t, nil, sub, "todo")
+				response := parentsArchitect.send(t, http.MethodPost, legionStatusChangePath(named), map[string]any{"status": status, "include_children": true})
+				requireLegionCallTaken(t, rig.database, response, map[string]string{named: status, sub: status, under: status})
+			})
+		}
+	})
+
+	t.Run("after a move from under one labelled parent to under another", func(t *testing.T) {
+		first, second := rig.issue(t, []string{"legion"}, "", "in_progress"), rig.issue(t, []string{"legion"}, "", "in_progress")
+		rig.publishRoles(t, first, architectOf("ses_first_architect"))
+		rig.publishRoles(t, second, architectOf("ses_second_architect"))
+		moved := rig.issue(t, nil, first, "todo")
+		if response := rig.asPerson(t, http.MethodPatch, "/api/v1/issues/"+moved, map[string]any{"parent": second}); response.Code != http.StatusOK {
+			t.Fatalf("move %s under %s as a person: status=%d body=%s", moved, second, response.Code, response.Body.String())
+		}
+		firstArchitect := rig.provenSession(t, "ses_first_architect")
+		requireLegionCallRefused(t, rig.database, []string{moved}, func() *httptest.ResponseRecorder {
+			return firstArchitect.send(t, http.MethodPatch, "/api/v1/issues/"+moved, map[string]any{"status": "done"})
+		})
+		response := rig.provenSession(t, "ses_second_architect").send(t, http.MethodPatch, "/api/v1/issues/"+moved, map[string]any{"status": "done"})
+		requireLegionCallTaken(t, rig.database, response, map[string]string{moved: "done"})
+	})
+
+	t.Run("from a session that is no architect of an issue above", func(t *testing.T) {
+		child := rig.issue(t, nil, parent, "todo")
+		sibling := rig.issue(t, nil, parent, "todo")
+		siblingsChild := rig.issue(t, nil, sibling, "todo")
+		rig.publishRoles(t, child, architectOf("ses_own_architect"))
+		rig.publishRoles(t, sibling, architectOf("ses_sibling_architect"))
+		rig.publishRoles(t, siblingsChild, architectOf("ses_siblings_child_architect"))
+		for _, holder := range []struct{ name, session string }{
+			{"the architect of the issue itself", "ses_own_architect"},
+			{"the architect of a sibling", "ses_sibling_architect"},
+			{"the architect of a sibling's child", "ses_siblings_child_architect"},
+			{"the planner of the parent", "ses_parent_planner"},
+		} {
+			t.Run(holder.name, func(t *testing.T) {
+				credential := rig.provenSession(t, holder.session)
+				for _, route := range legionStatusRoutes {
+					requireLegionCallRefused(t, rig.database, []string{child}, func() *httptest.ResponseRecorder {
+						return credential.send(t, route.method, route.path(child), map[string]any{"status": "done"})
+					})
+				}
+			})
+		}
+	})
+
+	t.Run("from a session the newest publication dropped", func(t *testing.T) {
+		issue := rig.issue(t, []string{"legion"}, "", "in_progress")
+		rig.publishRoles(t, issue, architectOf("ses_dropped_architect"))
+		dropped := rig.provenSession(t, "ses_dropped_architect")
+		child := rig.issue(t, nil, issue, "todo")
+		requireLegionCallTaken(t, rig.database, dropped.send(t, http.MethodPatch, "/api/v1/issues/"+child, map[string]any{"status": "backlog"}),
+			map[string]string{child: "backlog"})
+		rig.publishRoles(t, issue, architectOf("ses_next_architect"))
+		for _, route := range legionStatusRoutes {
+			requireLegionCallRefused(t, rig.database, []string{child}, func() *httptest.ResponseRecorder {
+				return dropped.send(t, route.method, route.path(child), map[string]any{"status": "done"})
+			})
+		}
+		requireLegionCallTaken(t, rig.database, rig.provenSession(t, "ses_next_architect").send(t, http.MethodPatch, "/api/v1/issues/"+child, map[string]any{"status": "done"}),
+			map[string]string{child: "done"})
+	})
+
+	t.Run("from a personal token without the person scope that names the architect's session", func(t *testing.T) {
+		token := personalTokenHolding(t, rig.database)
+		child := rig.issue(t, nil, parent, "todo")
+		architect := map[string]any{"kind": "session", "id": "ses_parent_architect"}
+		for _, route := range legionStatusRoutes {
+			t.Run(route.name+" in its body's actor", func(t *testing.T) {
+				requireLegionCallRefused(t, rig.database, []string{child}, func() *httptest.ResponseRecorder {
+					return rig.serve(brokerRequest(t, route.method, route.path(child), map[string]any{"status": "done", "actor": architect}, "Bearer "+token, ""))
+				})
+			})
+			t.Run(route.name+" with ?session=", func(t *testing.T) {
+				requireLegionCallRefused(t, rig.database, []string{child}, func() *httptest.ResponseRecorder {
+					return rig.serve(brokerRequest(t, route.method, route.path(child)+"?session=ses_parent_architect",
+						map[string]any{"status": "done", "actor": sessionActor()}, "Bearer "+token, ""))
+				})
+			})
+		}
+	})
+
+	t.Run("a pair that the daemon's own token did not store", func(t *testing.T) {
+		issue := rig.issue(t, []string{"legion"}, "", "in_progress")
+		if _, err := rig.database.Pool.Exec(context.Background(), `
+			insert into issue_role_holders (issue_key, role, session) values ($1, 'architect', 'ses_unmarked_architect')
+		`, issue); err != nil {
+			t.Fatalf("insert a pair as an older build does: %v", err)
+		}
+		architect := rig.provenSession(t, "ses_unmarked_architect")
+		child := rig.issue(t, nil, issue, "todo")
+		for _, route := range legionStatusRoutes {
+			requireLegionCallRefused(t, rig.database, []string{child}, func() *httptest.ResponseRecorder {
+				return architect.send(t, route.method, route.path(child), map[string]any{"status": "done"})
+			})
+		}
+		rig.publishRoles(t, issue, architectOf("ses_unmarked_architect"))
+		requireLegionCallTaken(t, rig.database, architect.send(t, http.MethodPatch, "/api/v1/issues/"+child, map[string]any{"status": "done"}),
+			map[string]string{child: "done"})
+	})
+
+	t.Run("the architect of a labelled issue of another project above it", func(t *testing.T) {
+		other := rig.otherProjectIssue(t, []string{"legion"})
+		otherDaemon := rig.brokerCredential(t, "the daemon's broker token of "+legionOtherProject, func(answer *ciphertoken.Introspection) {
+			answer.Session, answer.Scope = legionDaemonSessionPrefix+legionOtherProject, ciphertoken.ScopeLegionStatus
+			answer.Projects = []string{legionOtherProject}
+		})
+		holders := []issueRoleHolder{architectOf("ses_other_architect")}
+		if published := otherDaemon.send(t, http.MethodPut, "/api/v1/issues/"+other+"/role-holders", map[string]any{"holders": holders}); published.Code != http.StatusOK {
+			t.Fatalf("the daemon of %s publishes %v on %s: status=%d body=%s", legionOtherProject, holders, other, published.Code, published.Body.String())
+		}
+		middle := rig.issue(t, []string{"legion"}, other, "in_progress")
+		child := rig.issue(t, nil, middle, "todo")
+		architect := rig.provenSession(t, "ses_other_architect")
+		for _, route := range legionStatusRoutes {
+			requireLegionCallRefused(t, rig.database, []string{child}, func() *httptest.ResponseRecorder {
+				return architect.send(t, route.method, route.path(child), map[string]any{"status": "done"})
+			})
+		}
+	})
+}
+
+// TestTheArchitectsWriteTakesOnlyTheFourStatuses: from the parent's architect, with the setting
+// on, each status in work, done with include_children, unlink_children (of a labelled child, which
+// stays a Legion issue as a root) and include_parent, over an ancestor not in work and with every
+// ancestor in work, are refused with LEGION_STATUS_SCOPE_REQUIRED, and no issue changes. Each
+// part of a step that R26 judges besides its status stays refused to the architect: its done sent
+// with a move to no parent, or with a move under an unlabelled root that it is the architect of
+// too, and its done sent with the removal of the legion label; its label removal alone and its
+// move out alone. The same done alone is taken on each of those issues.
+func TestTheArchitectsWriteTakesOnlyTheFourStatuses(t *testing.T) {
+	rig := newLegionStatusRig(t, true)
+	parent := rig.issue(t, []string{"legion"}, "", "in_progress")
+	rig.publishRoles(t, parent, architectOf("ses_parent_architect"))
+	architect := rig.provenSession(t, "ses_parent_architect")
+
+	t.Run("a status in work", func(t *testing.T) {
+		for _, status := range []string{"todo", "in_progress", "testing", "needs_review", "retro"} {
+			t.Run(status, func(t *testing.T) {
+				child := rig.issue(t, nil, parent, "backlog")
+				for _, route := range legionStatusRoutes {
+					requireLegionCallRefused(t, rig.database, []string{child}, func() *httptest.ResponseRecorder {
+						return architect.send(t, route.method, route.path(child), map[string]any{"status": status})
+					})
+				}
+			})
+		}
+	})
+
+	t.Run("an option", func(t *testing.T) {
+		for _, call := range []struct {
+			name string
+			// make makes the issues of the call under parent, and answers the issue the call names,
+			// the call's body and every issue the call can change.
+			make func(t *testing.T) (string, map[string]any, []string)
+		}{
+			{"done with include_children", func(t *testing.T) (string, map[string]any, []string) {
+				named := rig.issue(t, nil, parent, "todo")
+				under := rig.issue(t, nil, named, "todo")
+				return named, map[string]any{"status": "done", "include_children": true}, []string{named, under}
+			}},
+			{"unlink_children of a labelled child", func(t *testing.T) (string, map[string]any, []string) {
+				named := rig.issue(t, nil, parent, "todo")
+				child := rig.issue(t, []string{"legion"}, named, "todo")
+				return named, map[string]any{"status": "backlog", "unlink_children": true}, []string{named, child}
+			}},
+			{"include_parent over an ancestor not in work", func(t *testing.T) (string, map[string]any, []string) {
+				middle := rig.issue(t, nil, parent, "backlog")
+				named := rig.issue(t, nil, middle, "backlog")
+				return named, map[string]any{"status": "backlog", "include_parent": true}, []string{parent, middle, named}
+			}},
+			{"include_parent with every ancestor in work", func(t *testing.T) (string, map[string]any, []string) {
+				named := rig.issue(t, nil, parent, "todo")
+				return named, map[string]any{"status": "done", "include_parent": true}, []string{parent, named}
+			}},
+		} {
+			t.Run(call.name, func(t *testing.T) {
+				named, body, issues := call.make(t)
+				requireLegionCallRefused(t, rig.database, issues, func() *httptest.ResponseRecorder {
+					return architect.send(t, http.MethodPost, legionStatusChangePath(named), body)
+				})
+			})
+		}
+	})
+
+	t.Run("a part beside the status that stays refused", func(t *testing.T) {
+		unlabelled := rig.issue(t, nil, parent, "todo")
+		labelled := rig.issue(t, []string{"legion"}, parent, "todo")
+		ownRoot := rig.issue(t, nil, "", "in_progress")
+		rig.publishRoles(t, ownRoot, architectOf("ses_parent_architect"))
+		for _, write := range []struct {
+			name string
+			key  string
+			body map[string]any
+		}{
+			{"done with a move to no parent", unlabelled, map[string]any{"status": "done", "parent": nil}},
+			{"done with a move under an unlabelled root it is the architect of too", unlabelled, map[string]any{"status": "done", "parent": ownRoot}},
+			{"done with the removal of the legion label", labelled, map[string]any{"status": "done", "labels": []string{}}},
+			{"the removal of the legion label alone", labelled, map[string]any{"labels": []string{}}},
+			{"a move out alone", unlabelled, map[string]any{"parent": nil}},
+		} {
+			t.Run(write.name, func(t *testing.T) {
+				requireLegionCallRefused(t, rig.database, []string{write.key}, func() *httptest.ResponseRecorder {
+					return architect.send(t, http.MethodPatch, "/api/v1/issues/"+write.key, write.body)
+				})
+			})
+		}
+		// The control: the same done alone is taken, so each refusal above is the other part's.
+		for _, key := range []string{unlabelled, labelled} {
+			requireLegionCallTaken(t, rig.database, architect.send(t, http.MethodPatch, "/api/v1/issues/"+key, map[string]any{"status": "done"}),
+				map[string]string{key: "done"})
+		}
+	})
 }

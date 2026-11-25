@@ -98,14 +98,30 @@ func parentStatusFixWriter() issueWriter {
 	return issueWriter{actor: parentStatusRuleActor, system: true}
 }
 
+// statusChangeOptions is the three options of a status change (POST
+// /api/v1/issues/{key}/status-change): include_children, unlink_children and include_parent. Each
+// check of a plan reads them: R24's refusal of include_children with done from a token, and R26's
+// owning architect's write, which the options narrow (legion_status_scope.go). A PATCH and R25's
+// fix carry none.
+type statusChangeOptions struct {
+	// includeChildren is that the call moves the open issues under the issue it names with that
+	// issue.
+	includeChildren bool
+	// unlinkChildren is that the call removes each open child from the issue it names.
+	unlinkChildren bool
+	// includeParent is that the call moves each ancestor that is not in work to in_progress.
+	includeParent bool
+}
+
 // issueWritePlan is a write of one or more issues, step by step, as refuseIssueWritePlan judges it
 // before the first step writes. A step may write the status, the parent, the labels, or none of
 // them (the plan of a PATCH that writes the title alone).
 type issueWritePlan struct {
 	steps []issueWriteStep
-	// includeChildren is that the call moves the open issues under the issue it names with that
-	// issue (the status-change route's include_children). The PATCH never sets it.
-	includeChildren bool
+	// options is the options of the status change that the plan is, or of the status change that
+	// the plan's one step is a step of (issueWriteCallStep.options). A PATCH and R25's fix carry
+	// none.
+	options statusChangeOptions
 	// unjudged is that the caller refuses no conflict with R24, so refuseIssueWritePlan reads
 	// none: the PATCH's plan with the rule off. The route and the fix never set it, since a dry
 	// run answers the conflict whatever the setting and the fix writes with the rule on.
@@ -265,7 +281,7 @@ func (s *server) refuseIssueWritePlan(ctx context.Context, q pgx.Tx, writer issu
 	if err := refuseLegionStatusWrite(ctx, q, s.deps.LegionStatusScope, writer, plan); err != nil {
 		return nil, err
 	}
-	if plan.includeChildren && !writer.human && plan.writesStatus("done") {
+	if plan.options.includeChildren && !writer.human && plan.writesStatus("done") {
 		return nil, errorf(http.StatusForbidden, "BROWSER_SIGN_IN_REQUIRED",
 			"Only a person who is signed in at a browser can close the open issues under an issue together with it (include_children with done). This request presents a token.")
 	}

@@ -1194,7 +1194,10 @@ export const dispatchToolSpecs = [
       "go together. On a Legion issue, where Dispatch runs with " +
       "DISPATCH_LEGION_STATUS_SCOPE on, it refuses a status write, the removal of the legion label, " +
       "and a move out from under every labelled issue (403 LEGION_STATUS_SCOPE_REQUIRED) unless the " +
-      "credential holds the person or legion-status scope. A non-empty external_links is " +
+      "credential holds the person or legion-status scope. The one exception is an architect of an " +
+      "issue above, once its claim is ready: its own broker token writes the status done, backlog, " +
+      "icebox or triage (not done with include_children, and with neither unlink_children nor " +
+      "include_parent). A non-empty external_links is " +
       "merged into the issue's existing links by URL, so linking the pull request you just opened " +
       "keeps every earlier link; an empty external_links removes every link instead. components " +
       "replaces the issue's own attachment. Closing an issue " +
@@ -1378,7 +1381,9 @@ export const dispatchToolSpecs = [
       "dispatch issue-update, or Legion's daemon on an issue it runs. On such an issue, where " +
       "Dispatch runs with DISPATCH_LEGION_STATUS_SCOPE on, it refuses a status write from a " +
       "credential that holds neither the person nor the legion-status scope " +
-      "(403 LEGION_STATUS_SCOPE_REQUIRED). Otherwise the daemon undoes a status that anyone else " +
+      "(403 LEGION_STATUS_SCOPE_REQUIRED), but an architect of an issue above writes done, backlog, " +
+      "icebox or triage with its own broker token once its claim is ready. Otherwise the daemon " +
+      "undoes a status that anyone else " +
       "writes. A claim is released by its holder or any human, and by " +
       "any agent once the holder's session is no longer running. " +
       ISSUE_REFERENCE,
