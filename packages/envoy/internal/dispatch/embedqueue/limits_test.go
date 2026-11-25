@@ -14,9 +14,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/credentials"
-
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/embed/embedtest"
 	"github.com/sjawhar/envoy/internal/dispatch/retry"
@@ -281,14 +278,10 @@ func azureClientFor(t *testing.T, server *httptest.Server) *embed.AzureClient {
 	return client
 }
 
-// bedrockClientFor is a real BedrockClient that calls server, with static fake credentials (nothing
-// on server's side checks the signature) and the AWS SDK's own retries off.
+// bedrockClientFor is a real BedrockClient that calls server, from a test's fake AWS configuration
+// (embedtest.BedrockConfig).
 func bedrockClientFor(server *httptest.Server) *embed.BedrockClient {
-	return embed.NewBedrockWithConfig(aws.Config{
-		Region:      "us-west-2",
-		Credentials: credentials.NewStaticCredentialsProvider("test-access-key", "test-secret-key", ""),
-		Retryer:     func() aws.Retryer { return aws.NopRetryer{} },
-	}, embed.WithBaseEndpoint(server.URL))
+	return embed.NewBedrockWithConfig(embedtest.BedrockConfig(), embed.WithBaseEndpoint(server.URL))
 }
 
 // embeddingStates is each issue row's id with whether it is embedded, its confirmed failures and
