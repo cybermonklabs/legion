@@ -1,0 +1,244 @@
+#!/usr/bin/env bash
+# Measures in production the time the server takes to answer the priorities read in each of its two
+# forms (the check c-both-forms-production): the p90 of the access log's `elapsed_ms` over three
+# hours of production's own reads of GET /api/v1/priorities, read back from the deployment's
+# container logs. It sends no read of the priorities itself.
+#
+# Inputs: DISPATCH_URL (the deployed Dispatch), MERGE_SHA (the merge commit the fleet must carry)
+# and LOGGING_PROJECT (the project that holds the deployment's container logs), all three
+# required; and FLEET_SINCE, the time an earlier look printed, from which the three hours run.
+# WINDOW_START, which only the check's negative control sets, is the start of the three hours: the
+# look then skips the test of the fleet's commit and the wait for it.
+#
+# A look: /healthz's `fleet_commit`, the commit every live server process serves, must carry
+# MERGE_SHA by GitHub's compare (`identical` or `ahead`); the three hours from FLEET_SINCE must have
+# passed; then `gcloud logging read` gives the access log lines of route /api/v1/priorities in those
+# hours, and the look keeps those of `method=GET` and `status=200`. A line carries no query string,
+# so its `bytes`, the bytes sent after compression, tell the two forms apart: a line below 2,048
+# bytes is the summary (`?summary=true`, two counts and no row), and one at or above it is the full
+# read. Each form's p90 is the value at rank ceil(0.9 n) of its lines' `elapsed_ms` in ascending
+# order.
+#
+# Output: for each form, `the full read: p90 N ms over M reads, at most 200 ms` or `..., over 200
+# ms` and `the full read: smallest S bytes, largest L bytes`, the same two for `the summary`, and
+# `<form>: M reads, fewer than 200` for a form the three hours hold fewer than 200 reads of. A look
+# that waits ends on `read again at or after <time> with FLEET_SINCE=<time>` (WINDOW_START=<time>
+# under WINDOW_START), which names the value the next look takes.
+#
+# Exit codes: 0 both forms at most 200 ms over at least 200 reads each; 1 a form over 200 ms; 2 the
+# look cannot measure (an input unset or malformed, no answer from /healthz, a log read that
+# failed, a line of the route without its fields); 3 a look that waits (a fleet that does not carry
+# the merge or serves no one commit, a compare GitHub does not answer, three hours still to come,
+# or a form with fewer than 200 reads). Exit 1 comes before exit 3.
+
+# shellcheck disable=SC2016 # the single-quoted jq filters name jq variables, not shell ones
+set -euo pipefail
+set +x
+
+usage() {
+  cat >&2 <<'USAGE'
+Usage: DISPATCH_URL=<deployed Dispatch> MERGE_SHA=<merge commit> \
+         LOGGING_PROJECT=<project of the container logs> [FLEET_SINCE=<time>] \
+         priorities-production.sh
+       (FLEET_SINCE as an earlier look printed it, YYYY-MM-DDTHH:MM:SSZ; WINDOW_START=<time> in
+       its place is for the check's negative control alone)
+USAGE
+}
+
+# shellcheck source-path=SCRIPTDIR source=lib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+require_env DISPATCH_URL MERGE_SHA LOGGING_PROJECT
+require_commands curl date gcloud gh jq sort
+
+# cannot_measure WHY: the look cannot measure (exit 2).
+cannot_measure() {
+  printf '%s\n' "$1" >&2
+  exit 2
+}
+
+readonly base="${DISPATCH_URL%/}"
+readonly merge="$MERGE_SHA"
+[[ "$merge" =~ ^[0-9a-f]{40}$ ]] || cannot_measure "MERGE_SHA is $merge, not a commit's 40 hex digits"
+[[ -z "${FLEET_SINCE:-}" || -z "${WINDOW_START:-}" ]] ||
+  cannot_measure "FLEET_SINCE and WINDOW_START both name the start of the three hours: set one"
+
+readonly route=/api/v1/priorities
+readonly forms=(full summary)
+declare -rA title=([full]='the full read' [summary]='the summary')
+readonly summary_below=2048 bound_ms=200 reads_wanted=200 window_s=10800 max_time_s=60
+readonly time_pattern='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$'
+
+work_dir
+trap 'rm -rf "$work"' EXIT
+
+# now: the host's clock, in seconds since the epoch.
+now() {
+  local seconds
+  seconds="$(date -u +%s)"
+  [[ "$seconds" =~ ^[0-9]+$ ]] || cannot_measure "date -u +%s answered $seconds, not a count of seconds"
+  printf '%s' "$seconds"
+}
+# stamp SECONDS: the time SECONDS after the epoch, as this script prints a time.
+stamp() { jq -rn --argjson s "$1" '$s | todateiso8601'; }
+# epoch NAME: sets `epoch_s` to the time the variable NAME holds, in seconds since the epoch. A
+# time this script does not print cannot be measured against.
+epoch() {
+  [[ "${!1}" =~ $time_pattern ]] ||
+    cannot_measure "$1 is ${!1}, not a time as this script prints one (YYYY-MM-DDTHH:MM:SSZ)"
+  epoch_s="$(jq -rn --arg t "${!1}" '$t | fromdateiso8601 | floor')"
+}
+
+# p90 FILE: the p90 of the numbers FILE holds, one a line: the value at rank ceil(0.9 n) of them in
+# ascending order.
+p90() {
+  local -a sorted
+  mapfile -t sorted < <(sort -n "$1")
+  local rank=$(((9 * ${#sorted[@]} + 9) / 10))
+  printf '%s' "${sorted[rank - 1]}"
+}
+
+if [[ -n "${WINDOW_START:-}" ]]; then
+  # The negative control: the three hours it names, whatever commit the fleet serves.
+  epoch WINDOW_START
+  start_s="$epoch_s"
+  since_name=WINDOW_START
+  printf "WINDOW_START=%s: this look reads the three hours from that time and skips the test of the fleet's commit\n" \
+    "$WINDOW_START"
+  now_s="$(now)"
+  if ((now_s < start_s + window_s)); then
+    printf 'the three hours from %s end at %s, which is still to come: read again at or after that time with WINDOW_START=%s\n' \
+      "$WINDOW_START" "$(stamp $((start_s + window_s)))" "$WINDOW_START"
+    exit 3
+  fi
+else
+  [[ -z "${FLEET_SINCE:-}" ]] || epoch FLEET_SINCE
+
+  # First: the commit every live server process serves, and whether it carries the merge.
+  code="$(curl --compressed --max-time "$max_time_s" -sS -o "$work/healthz" -w '%{http_code}' \
+    "$base/healthz" 2>"$work/curl" </dev/null)" || code=000
+  [[ "$code" =~ ^[0-9]{3}$ && "$code" != 000 ]] ||
+    cannot_measure "GET $base/healthz got no answer: $(head -c 300 "$work/curl" | tr '\n' ' ')"
+  fleet="$(jq -r '.fleet_commit // empty' "$work/healthz" 2>/dev/null)" || fleet=''
+  if [[ ! "$fleet" =~ ^[0-9a-f]{40}$ ]]; then
+    printf "production's fleet serves no one commit: GET /healthz answered HTTP %s with fleet_commit %s\n" \
+      "$code" "${fleet:-null}"
+    exit 3
+  fi
+  readonly fleet
+  if ! compared="$(gh api "repos/cybermonklabs/legion/compare/$merge...$fleet" --jq .status \
+    2>"$work/gh" </dev/null)"; then
+    printf 'GitHub did not answer whether %s carries %s: %s\n' "$fleet" "$merge" \
+      "$(head -c 300 "$work/gh" | tr '\n' ' ')"
+    exit 3
+  fi
+  case "$compared" in
+    identical | ahead) ;;
+    behind | diverged)
+      printf "production's fleet serves %s, which does not carry %s (GitHub's compare: %s)\n" \
+        "$fleet" "$merge" "$compared"
+      exit 3
+      ;;
+    *)
+      printf "GitHub's compare of %s with %s answered %s, which says neither way whether it carries it\n" \
+        "$merge" "$fleet" "${compared:-nothing}"
+      exit 3
+      ;;
+  esac
+
+  # Second: the three hours from FLEET_SINCE, or from now where no earlier look named it.
+  now_s="$(now)"
+  if [[ -n "${FLEET_SINCE:-}" ]]; then
+    start_s="$epoch_s"
+  else
+    start_s="$now_s"
+  fi
+  since_name=FLEET_SINCE
+  if ((now_s < start_s + window_s)); then
+    printf "production's fleet serves %s, which carries the merge: read again at or after %s with FLEET_SINCE=%s\n" \
+      "$fleet" "$(stamp $((start_s + window_s)))" "$(stamp "$start_s")"
+    exit 3
+  fi
+  printf "production's fleet serves %s, which carries %s (GitHub's compare: %s): this look reads the three hours from %s\n" \
+    "$fleet" "$merge" "$compared" "$(stamp "$start_s")"
+fi
+readonly start_s since_name
+readonly end_s=$((start_s + window_s))
+start="$(stamp "$start_s")"
+end="$(stamp "$end_s")"
+readonly start end
+
+# Third: the access log lines of the route in those three hours.
+printf -v filter '%s AND %s AND %s AND %s AND %s AND %s' \
+  'resource.type="k8s_container"' \
+  'resource.labels.namespace_name="dispatch"' \
+  'textPayload:"msg=\"dispatch: request\""' \
+  "textPayload:\"route=$route \"" \
+  "timestamp>=\"$start\"" \
+  "timestamp<\"$end\""
+readonly filter
+gcloud logging read "$filter" --project "$LOGGING_PROJECT" --format='value(textPayload)' \
+  >"$work/log" 2>"$work/gcloud" </dev/null ||
+  cannot_measure "gcloud logging read failed: $(head -c 600 "$work/gcloud" | tr '\n' ' ')"
+
+# Fourth: the lines of GET answered 200, each form told by its bytes. The fields before `path` are
+# the first a line holds, and `status`, `elapsed_ms` and `bytes` the last but `credential` and
+# `aborted`, so each is read where the handler writes it and never out of a quoted user agent.
+readonly head_fields=' msg="dispatch: request" method=([^ ]*) route=([^ ]*) path='
+readonly tail_fields='^.* status=([0-9]+) elapsed_ms=([0-9]+) bytes=([0-9]+) '
+declare -A reads=() smallest=() largest=()
+for form in "${forms[@]}"; do
+  reads[$form]=0 smallest[$form]='' largest[$form]=''
+  : >"$work/elapsed-$form"
+done
+lines=0
+kept=0
+while IFS= read -r line || [[ -n "$line" ]]; do
+  line=" $line "
+  [[ "$line" =~ $head_fields && "${BASH_REMATCH[2]}" == "$route" ]] || continue
+  method="${BASH_REMATCH[1]}"
+  lines=$((lines + 1))
+  if [[ ! "$line" =~ $tail_fields ]]; then
+    at=unknown
+    [[ ! "$line" =~ ^\ time=([^ ]+)\  ]] || at="${BASH_REMATCH[1]}"
+    cannot_measure "the line of $route at $at holds no status, elapsed_ms and bytes"
+  fi
+  status=$((10#${BASH_REMATCH[1]}))
+  elapsed=$((10#${BASH_REMATCH[2]}))
+  bytes=$((10#${BASH_REMATCH[3]}))
+  [[ "$method" == GET ]] && ((status == 200)) || continue
+  kept=$((kept + 1))
+  if ((bytes < summary_below)); then form=summary; else form=full; fi
+  printf '%d\n' "$elapsed" >>"$work/elapsed-$form"
+  reads[$form]=$((reads[$form] + 1))
+  [[ -n "${smallest[$form]}" ]] && ((smallest[$form] <= bytes)) || smallest[$form]=$bytes
+  [[ -n "${largest[$form]}" ]] && ((largest[$form] >= bytes)) || largest[$form]=$bytes
+done <"$work/log"
+printf 'the log from %s to %s holds %d lines of route %s, %d of them GET answered 200\n' \
+  "$start" "$end" "$lines" "$route" "$kept"
+
+# Fifth: each form's p90 by the server's clock.
+failed=0 short=0
+for form in "${forms[@]}"; do
+  name="${title[$form]}"
+  if ((reads[$form] > 0)); then
+    value="$(p90 "$work/elapsed-$form")"
+    if ((value > bound_ms)); then
+      verdict=over
+      failed=1
+    else
+      verdict='at most'
+    fi
+    printf '%s: p90 %d ms over %d reads, %s %d ms\n' "$name" "$value" "${reads[$form]}" "$verdict" "$bound_ms"
+    printf '%s: smallest %d bytes, largest %d bytes\n' "$name" "${smallest[$form]}" "${largest[$form]}"
+  fi
+  if ((reads[$form] < reads_wanted)); then
+    printf '%s: %d reads, fewer than %d\n' "$name" "${reads[$form]}" "$reads_wanted"
+    short=1
+  fi
+done
+
+((failed == 0)) || exit 1
+if ((short)); then
+  printf 'read again at or after %s with %s=%s\n' "$(stamp $((end_s + window_s)))" "$since_name" "$end"
+  exit 3
+fi
