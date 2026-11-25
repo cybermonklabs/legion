@@ -567,8 +567,8 @@ func TestOneReadAnswersEveryRelationToThePersonsNode(t *testing.T) {
 // tuple into or out of their node that an event at or below the answered horizon appended puts its
 // node among the read's entries, whatever that event's type and issue. A comment of theirs written
 // while no other transaction is open is an entry of the next read. A comment written to them while
-// a transaction that took an id stays open on the cluster (holdClusterTransactionID) is above the
-// horizon the read answers then and no entry of it, and is an entry once that transaction ends.
+// an event write of Dispatch's own database stays open (holdEventWrite) is above the horizon the
+// read answers then and no entry of it, and is an entry once that write ends.
 func meInboxAtTheHorizon(t *testing.T) {
 	live := true
 	sent := []map[string]any{}
@@ -669,23 +669,24 @@ func meInboxAtTheHorizon(t *testing.T) {
 			own.ID, writeEventOf(t, database, "comment.created", own.ID), next.Horizon)
 	}
 
-	// A comment written to them while a transaction holding an id is open is above the horizon
-	// the read answers, until that transaction ends.
-	release := holdClusterTransactionID(t)
-	held := createThreadComment(t, handler, issue.Key, map[string]any{"body": "Bob writes while a transaction is open.", "reply_to": thread.ID}, "bob")
+	// A comment written to them while an event write of the server's database is open is above the
+	// horizon the read answers, until that write ends: the horizon waits on no other transaction
+	// (events.Horizon).
+	release := holdEventWrite(t, database)
+	held := createThreadComment(t, handler, issue.Key, map[string]any{"body": "Bob writes while an event write is open.", "reply_to": thread.ID}, "bob")
 	event := writeEventOf(t, database, "comment.created", held.ID)
 	during := readMeInboxAs(t, handler, person, nil)
 	if during.Horizon >= event {
-		t.Errorf("while a transaction holding an id is open the read answers horizon %d, at or above the event %d of the comment %s written to the person meanwhile",
+		t.Errorf("while an event write is open the read answers horizon %d, at or above the event %d of the comment %s written to the person meanwhile",
 			during.Horizon, event, held.ID)
 	}
 	if meInboxHolds(during, graphstore.KindComment, held.ID) {
-		t.Errorf("the read whose horizon is %d answers the comment %s written to the person while a transaction held the horizon, whose event %d is above it",
+		t.Errorf("the read whose horizon is %d answers the comment %s written to the person while an event write held the horizon, whose event %d is above it",
 			during.Horizon, held.ID, event)
 	}
 	release()
 	if after := readMeInboxAs(t, handler, person, nil); !meInboxHolds(after, graphstore.KindComment, held.ID) {
-		t.Errorf("once the open transaction ended the read answers horizon %d and no entry for the comment %s, whose event is %d",
+		t.Errorf("once the open event write ended the read answers horizon %d and no entry for the comment %s, whose event is %d",
 			after.Horizon, held.ID, event)
 	}
 }
