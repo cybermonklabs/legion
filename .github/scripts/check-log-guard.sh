@@ -12,9 +12,11 @@
 # What it reads: each `run:` of every file of .github/workflows and of each composite action under
 # .github/actions, and each shell script of this repository such a step runs, split into simple
 # commands by .github/scripts/shell_commands.py's scanner (quote aware, a `$(…)` its own command,
-# `${{ … }}` read as a word). A here-document's body is commands where a shell reads it as its
-# script (`bash <<'EOT'`), and text elsewhere, but with an unquoted delimiter its `$(…)` and
-# backtick substitutions are commands, as are those inside arithmetic (`$(( $(cmd) ))`). A command
+# `${{ … }}` read as a word). A here-document's body is commands where a shell of its line reads it
+# as its script (`bash <<'EOT'`, `cat <<'EOT' | bash`, `setsid bash <<'EOT'`, `bash /dev/stdin
+# <<'EOT'`), and text elsewhere, but with an unquoted delimiter its `$(…)` and backtick
+# substitutions are commands, as are those inside arithmetic (`$(( $(cmd) ))`) and an array's
+# values (`files=(<(cmd))`). A command
 # is routed when its first word, past `VAR=value` assignments and keywords, is one of WRAPPERS, or
 # when its line is the guarded pipeline group `{ …; } 2>&1 | ci_log_guard cat`. A command that is
 # not routed is a finding when its command word (or, through a runner of RUNNERS, `sh -c`,
@@ -37,12 +39,16 @@
 #
 # It refuses, naming the file, the job, the step and the command (for a script, the script and the
 # first step that runs it):
-#   1. a finding no row of the allow list names (file, job, step, client), and
+#   1. a finding no row of the allow list names (file, job, step, client);
 #   2. a row of the allow list that names no finding, or that gives no reason: a row outliving its
-#      step would let the next step of that name through unread.
-# Its last line counts what it could not read: the steps under a shell other than bash or sh, and
-# each word naming a `.sh` that no file of this repository answers (a script a harness writes at
-# run time, such as `"$work/x.sh"`, or a copy of one in a fixture tree), which `unresolved` lists.
+#      step would let the next step of that name through unread;
+#   3. a word naming a `.sh` that no file of this repository answers (a script a harness writes at
+#      run time, such as `"$work/x.sh"`, or a copy of one in a fixture tree) that no row of
+#      .github/log-guard-unread.tsv names (file, word) with the reason it needs no reading, so a
+#      script the walk stops finding fails rather than passes unread; and
+#   4. a row of that list whose word is read now, or gone.
+# Its last line counts the steps under a shell other than bash or sh, which it does not read, and
+# the unread words, which `unresolved` lists.
 #
 # It does not read: a program in another language, a command a variable names, and a client run
 # under a wrapper this check does not name.
@@ -66,11 +72,14 @@ import sys
 from pathlib import Path
 
 import yaml
-from shell_commands import (ASSIGNMENT, EXPRESSION, INTERPRETERS, SKIP_WORDS, Scanner, command_of,
-                            quoted_line_starts, without_heredocs)
+from shell_commands import (ASSIGNMENT, EXPRESSION, INTERPRETERS, RUNNERS, SKIP_WORDS, Scanner, command_of,
+                            quoted_line_starts, strip_runner, without_heredocs)
 
 MODE = sys.argv[1]
 ALLOW = Path(".github/log-guard-allow.tsv")
+# The script names no file answers, each with the reason the check need not read it (an absent file
+# lists none).
+UNREAD = Path(".github/log-guard-unread.tsv")
 WRAPPERS = ("ci_log_guard", "ci_log_guard_stderr")
 # env and time are runners here (RUNNERS), read with their options, not keywords shed before the
 # command.
@@ -117,12 +126,8 @@ VALUED = {"go": {"-C"}, "git": {"-C", "-c", "--git-dir", "--work-tree"},
 class RawScanner(Scanner):
     """shell_commands' scanner, keeping each simple command's words as written."""
 
-    def end_command(self) -> None:
-        self.end_word()
-        if self.words:
-            self.commands.append(self.words)
-        self.words = []
-        self.redirect_target = False
+    def record(self, words: list) -> None:
+        self.commands.append(words)
 
 
 def commands(run: str) -> list:
@@ -340,35 +345,8 @@ def loose_stderr_guards(run: str) -> list:
     return loose
 
 
-# Commands that run the words after them, each with its options that take a value (their value is
-# skipped with them) and the number of plain words it takes before the command (timeout's
-# duration). env also takes `NAME=value` words; `command -v` and `command -V` look a name up rather
-# than run it.
-RUNNERS = {
-    "sudo": ({"-u", "-g", "-C", "-h", "-p", "-U", "-r", "-t", "-D", "-R", "--user", "--group", "--chdir",
-              "--host", "--prompt", "--other-user", "--role", "--type", "--close-from"}, 0),
-    "timeout": ({"-s", "--signal", "-k", "--kill-after"}, 1),
-    "nice": ({"-n", "--adjustment"}, 0),
-    "nohup": (set(), 0),
-    "stdbuf": ({"-i", "-o", "-e", "--input", "--output", "--error"}, 0),
-    "xargs": ({"-n", "-L", "-P", "-I", "-s", "-d", "-E", "-a", "--max-args", "--max-lines", "--max-procs",
-               "--replace", "--delimiter", "--eof", "--arg-file", "--max-chars"}, 0),
-    "env": ({"-u", "--unset", "-C", "--chdir", "-S", "--split-string"}, 0),
-    "command": (set(), 0),
-    "time": (set(), 0),
-    # flock takes its lock file before the command (`flock x git fetch`), and runs a `-c` string as
-    # sh -c does (run_commands); ionice, setsid and unshare run the words after their options.
-    "flock": ({"-w", "--wait", "--timeout", "-E", "--conflict-exit-code"}, 1),
-    "ionice": ({"-c", "--class", "-n", "--classdata", "-p", "--pid", "-P", "--pgid", "-u", "--uid"}, 0),
-    "setsid": (set(), 0),
-    "unshare": ({"-S", "--setuid", "-G", "--setgroups", "-R", "--root", "-w", "--wd", "--map-user", "--map-group",
-                 "--propagation", "--kill-child"}, 0),
-    # .github/scripts/gh-read.sh's two: each runs the command after it, and prints the stderr of
-    # every run it ends on itself (unless --stderr names a file), outside any block, so a step that
-    # calls one is read as calling the client.
-    "gh_wait_reset": ({"--stderr"}, 0),
-    "gh_read": ({"--stderr"}, 0),
-}
+# The commands that run the words after them are shell_commands.RUNNERS, which the here-document
+# reader shares: a runner one of them reads and the other misses is a command one check passes.
 # find runs the words after each of these, up to `;` or `+`.
 FIND_EXEC = ("-exec", "-execdir", "-ok", "-okdir")
 
@@ -379,20 +357,11 @@ def run_commands(words: list) -> list:
     reads through the interpreter and its flags), and behind find's -exec."""
     words = list(words)
     while words and words[0].rsplit("/", 1)[-1] in RUNNERS:
-        runner = words.pop(0).rsplit("/", 1)[-1]
-        valued, plain = RUNNERS[runner]
-        if runner == "command" and words and words[0] in ("-v", "-V"):
+        if words[0].rsplit("/", 1)[-1] == "command" and words[1:2] and words[1] in ("-v", "-V"):
             return []
-        while words and words[0].startswith("-") and words[0] != "-":
-            flag = words.pop(0)
-            if runner == "flock" and flag in ("-c", "--command") and words:
-                return [run for inner in command_of(["sh", "-c", words[0]]) for run in run_commands(inner)]
-            if flag in valued and words:
-                words.pop(0)
-        while runner == "env" and words and ASSIGNMENT.match(words[0]):
-            words.pop(0)
-        del words[:plain]
+        runner = strip_runner(words)
         if runner == "flock" and len(words) > 1 and words[0] in ("-c", "--command"):
+            # flock [options] <lock file> -c <string> runs the string as sh -c does.
             return [run for inner in command_of(["sh", "-c", words[1]]) for run in run_commands(inner)]
     if not words:
         return []
@@ -604,6 +573,27 @@ for number, line in enumerate(ALLOW.read_text().split("\n"), 1):
         continue
     rows[tuple(fields[:4])] = number
 
+listed = {}
+for number, line in enumerate(UNREAD.read_text().split("\n") if UNREAD.is_file() else [], 1):
+    if not line.strip() or line.startswith("#"):
+        continue
+    fields = line.split("\t")
+    if len(fields) != 3 or not fields[2].strip():
+        problems.append(f"::error file={UNREAD},line={number}::row {number} is not file, script name and a reason, "
+                        f"tab-separated, with the reason given: a row says why its script needs no reading")
+        continue
+    listed[tuple(fields[:2])] = number
+for (file, word), runner in sorted(unresolved.items()):
+    if (file, word) not in listed:
+        problems.append(f"::error file={file}::{file} runs `{word}`, a script no file of this repository answers, so "
+                        f"this check cannot read it: name it by a path the check resolves, or add a row to {UNREAD} "
+                        f"saying why it needs no reading")
+for (file, word), number in sorted(listed.items(), key=lambda item: item[1]):
+    if (file, word) not in unresolved:
+        problems.append(f"::error file={UNREAD},line={number}::row {number} names `{word}` in {file}, and no script "
+                        f"name there now goes unread (it names a file the check reads, or {file} no longer holds it): "
+                        f"remove the row")
+
 for key in sorted(findings):
     if key not in rows:
         file, job, label, client = key
@@ -625,7 +615,7 @@ for problem in problems:
     print(problem)
 print(f"check-log-guard: {len(files)} files and {len(scripts)} scripts, {len(findings)} unguarded network commands, "
       f"every one on {ALLOW}; {unread} steps under another shell not read, and {len(unresolved)} script names "
-      f"no file of this repository answers not read (`check-log-guard.sh unresolved` lists them)" if not problems
+      f"no file of this repository answers not read, every one on {UNREAD}" if not problems
       else f"::error::check-log-guard: {len(problems)} problem(s)")
 sys.exit(1 if problems else 0)
 PY

@@ -7,6 +7,7 @@ on:
       - '.github/workflows/**'
       - '.github/actions/**'
       - '.github/log-guard-allow.tsv'
+      - '.github/log-guard-unread.tsv'
       - '.github/scripts/check-log-guard.sh'
       - '.github/scripts/shell_commands.py'
       - '**/*.sh'

@@ -9,6 +9,7 @@ GATE = harness("log_guard_test", "Test the check that every network command a st
     (f"{SCRIPTS}/shell_commands.py", "the command scanner the check imports, symlinked in beside it"),
     (f"{SCRIPTS}/ci-log-guard.sh", "check-log-guard.test.sh sources it to run the reader's forms under bash"),
     (".github/log-guard-allow.tsv", "check-log-guard.test.sh runs the check over a copy of this repository's .github"),
+    (".github/log-guard-unread.tsv", "check-log-guard.test.sh runs the check over a copy of this repository's .github"),
     (".github/workflows/**", "check-log-guard.test.sh runs the check over a copy of this repository's .github"),
     (".github/actions/**", "check-log-guard.test.sh runs the check over a copy of this repository's .github"),
     ("**/*.sh", "check-log-guard.test.sh runs the check over a copy of every script a step runs, which it reads"),

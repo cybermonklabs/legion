@@ -573,6 +573,21 @@ add_publish_step "$root" $'      - name: Print a here-document\n        run: |\n
 run_check "$root"
 check "a quoted body a shell does not read exits 0" "$(is "$status" 0)"
 
+# The forms main's reader read as commands and the here-document reader first missed (review
+# 6052147931): a process substitution among an array's values, an array whose quoted `(` hides
+# the lines up to a later `)`, a shell after the pipe a here-document feeds, a shell given
+# /dev/stdin, and a shell behind setsid or timeout's long option. Each runs bunx in a credentialed
+# job, and each is refused by name.
+echo "case: dependency code in the forms a shell runs from an array or a here-document, in a credentialed job"
+root=$(fixture heredoc-and-array-forms)
+add_publish_step "$root" $'      - name: Array process substitution\n        run: files=(<(bunx evil-package))\n      - name: Array quoted paren\n        run: |\n          x=("(")\n          bunx evil-package\n          # )\n      - name: Pipe to a shell\n        run: |\n          cat <<\'EOT\' | bash\n          bunx evil-package\n          EOT\n      - name: Shell given stdin\n        run: |\n          bash /dev/stdin <<\'EOT\'\n          bunx evil-package\n          EOT\n      - name: Shell behind setsid\n        run: |\n          setsid bash <<\'EOT\'\n          bunx evil-package\n          EOT\n      - name: Shell behind timeout\n        run: |\n          timeout --signal KILL 5m bash <<\'EOT\'\n          bunx evil-package\n          EOT\n'
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+for step in 'Array process substitution' 'Array quoted paren' 'Pipe to a shell' 'Shell given stdin' \
+  'Shell behind setsid' 'Shell behind timeout'; do
+  check "names bunx in '$step'" "$(contains "$out" "holds a credential, but step '$step' runs [^;]*'bunx'")"
+done
+
 echo "case: a built binary under out/ in a credentialed job"
 root=$(fixture out-path)
 add_publish_step "$root" $'      - name: Smoke test\n        run: out/legion version\n'

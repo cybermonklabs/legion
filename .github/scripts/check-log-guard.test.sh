@@ -27,13 +27,15 @@ run_check() {
   out=$("$1/.github/scripts/check-log-guard.sh" 2>&1) || status=$?
 }
 
-# fixture <name> <workflow run: body> [<allow rows>]: a tree holding the check, one workflow whose
-# one step runs the body, and an allow list of the rows given.
+# fixture <name> <workflow run: body> [<allow rows>]: a tree holding the check, the guard library a
+# step sources (a script the check reads, so a step that sources it names a file), one workflow
+# whose one step runs the body, and an allow list of the rows given.
 fixture() {
   local root="$work/$1"
   mkdir -p "$root/.github/scripts" "$root/.github/workflows" "$root/.github/actions"
   ln -s "$script_dir/check-log-guard.sh" "$root/.github/scripts/check-log-guard.sh"
   ln -s "$script_dir/shell_commands.py" "$root/.github/scripts/shell_commands.py"
+  ln -s "$script_dir/ci-log-guard.sh" "$root/.github/scripts/ci-log-guard.sh"
   {
     printf 'on: push\njobs:\n  app:\n    runs-on: ubuntu-24.04\n    steps:\n      - name: Fetch\n        run: |\n'
     # shellcheck disable=SC2001 # every line of a multi-line body
@@ -63,7 +65,8 @@ check "the tree as it is passes" "$(is "$status" 0)"
 [ "$status" = 0 ] || printf '%s\n' "$out"
 check "and says how many commands it read" "$(contains "$out" 'unguarded network commands, every one on')"
 check "and that it read the scripts the steps run" "$(contains "$out" ' files and [1-9][0-9]* scripts, ')"
-check "and how many script names it found no file for" "$(contains "$out" ' and [0-9][0-9]* script names no file')"
+check "and that every script name no file answers is on the reviewed list" \
+  "$(contains "$out" ' and [0-9][0-9]* script names no file of this repository answers not read, every one on .github/log-guard-unread.tsv$')"
 cat >>"$work/repo/.github/workflows/ci-job-test.yaml" <<'YAML'
   planted:
     runs-on: ubuntu-24.04
@@ -187,12 +190,34 @@ for found in ".github/scripts/by-variable.sh $by_fetch runs .git fetch origin ma
   check "names \`${found%% *}\`" "$(contains "$out" "::the script $found")"
 done
 check "and counts five problems" "$(contains "$out" '^::error::check-log-guard: 5 problem(s)$')"
+# A script a step writes at run time is no file of the tree. Unlisted, it fails by name, so a
+# script the walk stops finding cannot pass unread; listed with its reason, it passes and is
+# counted; and a listed name the check now reads, or one no step holds, fails as a stale row.
+echo "case: a script name no file answers fails unless the unread list names it, and a stale row fails"
 root=$(fixture made-at-run-time "$(printf '%s\n' 'work=$(mktemp -d)' '"$work/made.sh"')")
 run_check "$root"
-check "a script the step writes at run time passes" "$(is "$status" 0)"
-check "counted as one name it found no file for" "$(contains "$out" ' and 1 script names no file')"
+check "unlisted, it fails" "$(is "$status" 1)"
+check "naming the file and the word" \
+  "$(contains "$out" '^::error file=.github/workflows/app.yaml::.github/workflows/app.yaml runs .\$work/made.sh., a script no file of this repository answers')"
+check "and counts that one problem" "$(contains "$out" '^::error::check-log-guard: 1 problem(s)$')"
 check "which \`unresolved\` lists" \
   "$(contains "$("$root/.github/scripts/check-log-guard.sh" unresolved 2>&1)" $'^.github/workflows/app.yaml\t\\$work/made.sh$')"
+printf '# rows\n.github/workflows/app.yaml\t$work/made.sh\tthe step writes it at run time\n' >"$root/.github/log-guard-unread.tsv"
+run_check "$root"
+check "listed with its reason, it passes" "$(is "$status" 0)"
+check "counted as one name on the list" \
+  "$(contains "$out" ' and 1 script names no file of this repository answers not read, every one on')"
+printf '# rows\n.github/workflows/app.yaml\t$work/made.sh\t\n' >"$root/.github/log-guard-unread.tsv"
+run_check "$root"
+check "a row with no reason fails" "$(contains "$out" '^::error file=.github/log-guard-unread.tsv,line=2::row 2 is not file, script name and a reason')"
+mkdir -p "$root/scripts"
+printf 'echo made\n' >"$root/scripts/made.sh"
+printf '# rows\n.github/workflows/app.yaml\tscripts/made.sh\tit used to be written at run time\n' >"$root/.github/log-guard-unread.tsv"
+sed -i 's|"\$work/made.sh"|scripts/made.sh|' "$root/.github/workflows/app.yaml"
+run_check "$root"
+check "a listed name the check now reads fails" "$(is "$status" 1)"
+check "naming the row" \
+  "$(contains "$out" '^::error file=.github/log-guard-unread.tsv,line=2::row 2 names .scripts/made.sh. in .github/workflows/app.yaml, and no script name there now goes unread')"
 
 echo "case: a client behind flock, ionice, setsid or unshare fails by name"
 root=$(fixture more-runners "$(cat <<'SH'
@@ -247,11 +272,18 @@ check "and nothing else" "$(contains "$out" '^::error::check-log-guard: 1 proble
 # string, a word after a `$(…)`, a case pattern, a quoted here-document's body, the name of a
 # function `()` defines and arithmetic's `<<` run nothing; the command inside the case item does,
 # and so does `command curl`, which skips the function. A here-document a shell reads as its
-# script runs its lines, and an unquoted one's substitutions run, as do arithmetic's. A
+# script runs its lines, whether the shell stands before the `<<` or after a pipe, behind a runner
+# or given /dev/stdin, and an unquoted one's substitutions run, as do arithmetic's. An array's
+# values end at the first unquoted `)`, and a process substitution among them runs. A
 # ci_log_guard_stderr call in a string that a line before opened is text, and one after the string
 # closes is a call.
 echo "case: the forms that run no command read as none, and those that run one as one, as bash runs them"
 cat >"$work/forms.sh" <<'SH'
+files=(<(curl -sS https://example.com/e))
+wait $!
+x=("(")
+curl -sS https://example.com/f
+# )
 v=$'curl -sS https://example.com/a \' still quoted'
 v=curl
 echo "$(printf x)" gh api repos/o/r
@@ -277,6 +309,18 @@ cat <<'EOF' >/dev/null
 $(gh api repos/o/w)
 EOF
 n=$(( $(jq -n 1) + 1 ))
+cat <<'EOT' | bash
+curl -sS https://example.com/g
+EOT
+bash /dev/stdin <<'EOT'
+curl -sS https://example.com/h
+EOT
+setsid bash <<'EOT'
+curl -sS https://example.com/i
+EOT
+timeout --signal KILL 5m bash <<'EOT'
+curl -sS https://example.com/j
+EOT
 SH
 mkdir -p "$work/bin"
 for client in curl gh jq; do
@@ -285,7 +329,8 @@ for client in curl gh jq; do
 done
 : >"$work/ran"
 (cd "$work" && PATH="$work/bin:$PATH" bash -c ". '$script_dir/ci-log-guard.sh'; . ./forms.sh" >/dev/null 2>&1)
-check "bash runs gh, gh, curl, curl, gh and jq" "$(is "$(tr '\n' ' ' <"$work/ran")" "gh gh curl curl gh jq ")"
+check "bash runs gh three times, curl eight and jq once" \
+  "$(is "$(sort "$work/ran" | uniq -c | tr -s ' \n' ' ')" " 8 curl 3 gh 1 jq ")"
 root=$(fixture forms "$(cat "$work/forms.sh")")
 run_check "$root"
 check "fails" "$(is "$status" 1)"
@@ -294,9 +339,12 @@ check "names the command curl" "$(contains "$out" 'step "Fetch" runs .command cu
 check "names the curl of the body bash reads" "$(contains "$out" 'step "Fetch" runs .curl -sS https://example.com/d.')"
 check "names the gh of the unquoted body's substitution" "$(contains "$out" 'step "Fetch" runs .gh api repos/o/v.')"
 check "and not the quoted body's" "$(is "$(contains "$out" 'repos/o/w')" false)"
+for form in e f g h i j; do
+  check "names the curl of form $form" "$(contains "$out" "step \"Fetch\" runs .curl -sS https://example.com/$form.")"
+done
 check "names the stderr guard after the string, and not the one inside it" \
   "$(contains "$out" 'runs .ci_log_guard_stderr gh api repos/o/t" ; ci_log_guard_stderr gh api repos/o/u.: ci_log_guard_stderr blocks only stderr')"
-check "and nothing else" "$(contains "$out" '^::error::check-log-guard: 5 problem(s)$')"
+check "and nothing else" "$(contains "$out" '^::error::check-log-guard: 11 problem(s)$')"
 
 echo "case: each routed form passes"
 root=$(fixture routed "$(cat <<'SH'

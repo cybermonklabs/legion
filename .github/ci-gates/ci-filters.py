@@ -56,6 +56,7 @@ GATE = gate("ci_filters", "ci-filters", runs=[
     # step of them runs, and holds what it finds to its allow list, so a change to any of those,
     # or to the check and its scanner, must start this job, which runs it on a pull request.
     (".github/log-guard-allow.tsv", at("ci-filters", LOG_GUARD_CHECK_STEP)),
+    (".github/log-guard-unread.tsv", at("ci-filters", LOG_GUARD_CHECK_STEP)),
     (".github/scripts/check-log-guard.sh", at("ci-filters", LOG_GUARD_CHECK_STEP)),
     (".github/scripts/shell_commands.py", f"{at('ci-filters', LOG_GUARD_CHECK_STEP)}: the scanner the check "
                                           "imports"),
