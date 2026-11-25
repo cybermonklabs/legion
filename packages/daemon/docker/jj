@@ -1,8 +1,9 @@
 #!/bin/sh
 # The jj first on a pod's PATH, /opt/legion/bin/jj (worker.Dockerfile). Every command runs the
 # real jj, /usr/local/bin/jj, a `jj git push` through `legion jj --real` (below). What this wrapper
-# adds is that jj's push reaches the remote only through Legion's git wrapper, and that each
-# commit a `jj git push` sends has the author of the role its Legion-Role trailer names.
+# adds is that jj's push reaches the remote only through Legion's git wrapper, and that a commit
+# a `jj git push` sends gets the author of the role its Legion-Role trailer names, where
+# packages/daemon/cmd/legion/jj.go's rules let it.
 #
 # jj makes a push by shelling out to a git (`git -c core.fsmonitor=false … --git-dir <dir> push
 # --porcelain --no-verify …`, measured with jj 0.45.1-sami and 0.46.0-sami): the `git` on its

@@ -588,8 +588,11 @@ jj rebases such a commit when it sits above a commit that the step rewrote, whic
 commit id and the step's identity as committer, and it keeps its author.
 A commit with an empty author whose trailer names a role of the table gets that role's author
 too, and `jj git push` still refuses one with no such trailer.
-The step adds no refusal of its own: a jj command of the step that fails stops the push with
-jj's error.
+The step adds no refusal of its own.
+A jj command of the step that fails stops the push with jj's error and exit status, but for a dry
+run that it cannot read (below), a read of a revision argument that jj refuses, after which that
+argument goes to the push as written, and a rewrite that jj refuses because its commit exists
+already, where that commit stands for one the push names (below).
 Where it cannot read the dry run, it prints one line, and the push runs as written, but where a
 metaedit of the step ran first, such as the fill of an empty author, after which each revision
 argument is held to its set as above, and with `--ignore-working-copy` where the step took its

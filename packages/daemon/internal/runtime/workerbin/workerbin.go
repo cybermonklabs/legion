@@ -8,11 +8,12 @@
 // trailers and runs the next git on PATH after bin, a host's own git wrapper included. An agent's
 // jj is bin's jj, which runs that legion's `legion jj --after <bin>`: it expands a command as jj
 // does, through jj's aliases and ui.default-command, and before a `jj git push`, or a command that
-// jj expands into one, it runs the push step, which sets the author of each commit the push sends
-// from the commit's Legion-Role trailer; then it runs the next jj on PATH after bin, a host's own
-// jj wrapper included. Install writes no git where the first git on the inherited PATH is the
-// image's own git wrapper, which hands a commit to `legion git` itself, and no jj where the next jj
-// is the image's own jj wrapper, which expands each command itself and hands a push to `legion jj`.
+// jj expands into one, it runs the push step, which sets the author of a commit the push sends from
+// the commit's Legion-Role trailer, where its rules let it; then it runs the next jj on PATH after
+// bin, a host's own jj wrapper included. Install writes no git where the first git on the inherited
+// PATH is the image's own git wrapper, which hands a commit to `legion git` itself, and no jj where
+// the next jj is the image's own jj wrapper, which expands each command itself and hands a push to
+// `legion jj`.
 // A pod installs nothing: the image carries its own gh, git and jj wrappers in /opt/legion/bin,
 // which its PATH names first (packages/daemon/docker/gh, the script Install writes for the image's
 // legion, packages/daemon/docker/git and packages/daemon/docker/jj).
