@@ -122,8 +122,7 @@ func (c dispatchCoverage) readCoverage(ctx context.Context) (model.SearchCoverag
 // shownEmbedder is one member of the embedder the coverage report names as the model type holds
 // it (model.SearchCoverage.Identity, a *string): the rule's reading of Dispatch's words, and nil
 // where the report answered null, which is what a deployment with no embedder answers and the
-// one thing the gate decides on. The member's absence is the box pointer's own, read from the
-// body the member came in, rather than from a second decode of it into the model type.
+// one thing the gate decides on.
 func shownEmbedder(held *redact.RemoteText) *string {
 	if held == nil {
 		return nil
