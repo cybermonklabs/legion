@@ -857,3 +857,30 @@ func (r *Runtime) AdoptWorkingCopy(ctx context.Context, loc runtime.Locator, id 
 	}
 	return nil
 }
+
+// StartAtBranch has the agent's shim start the working copy of the pane's own workspace at the
+// issue's branch (workspace.StartAtBranch, which the shim runs) over the claim's connection,
+// bounded by runtime.StartAtBranchTimeout. The recorded process must still verify, as for an
+// adoption: the connection is its.
+func (r *Runtime) StartAtBranch(ctx context.Context, loc runtime.Locator, at runtime.StartAt) (runtime.StartedAt, error) {
+	pane, inc, err := r.paneOf(loc)
+	if err != nil {
+		return runtime.StartedAt{}, err
+	}
+	v, err := r.verifyPane(ctx, pane, inc)
+	if err != nil {
+		return runtime.StartedAt{}, fmt.Errorf("start %s's working copy at %s: %w", loc.Claim, at.Bookmark, err)
+	}
+	if !v.verified() {
+		return runtime.StartedAt{}, fmt.Errorf("start %s's working copy at %s: %s", loc.Claim, at.Bookmark, describeVerdict(pane, inc, v))
+	}
+	conn, ok := r.conns.Conn(loc.Claim)
+	if !ok {
+		return runtime.StartedAt{}, fmt.Errorf("start %s's working copy at %s: the claim has no connection to ask over", loc.Claim, at.Bookmark)
+	}
+	started, err := conn.StartAtBranch(ctx, at, runtime.StartAtBranchTimeout)
+	if err != nil {
+		return runtime.StartedAt{}, fmt.Errorf("start %s's working copy at %s: %w", loc.Claim, at.Bookmark, err)
+	}
+	return started, nil
+}

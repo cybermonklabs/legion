@@ -29,6 +29,13 @@ type Adoption struct {
 	Timeout  time.Duration
 }
 
+// StartAtBranchRequest is one start of the working copy at a branch the daemon asked the agent's
+// side for.
+type StartAtBranchRequest struct {
+	StartAt runtime.StartAt
+	Timeout time.Duration
+}
+
 // WorkspaceWorkRead is one workspace read the daemon asked the agent's side to make.
 type WorkspaceWorkRead struct {
 	Issue   string
@@ -48,6 +55,8 @@ type Conn struct {
 	mu          sync.Mutex
 	prompts     []Prompt
 	adoptions   []Adoption
+	startAts    []StartAtBranchRequest
+	started     runtime.StartedAt
 	compactions []Compaction
 	compactGate chan struct{}
 	// compactsHeld is how many Compact calls wait at compactGate now (CompactsHeld).
@@ -127,6 +136,32 @@ func (c *Conn) AdoptWorkingCopy(_ context.Context, id runtime.GitIdentity, timeo
 	defer c.mu.Unlock()
 	c.adoptions = append(c.adoptions, Adoption{Identity: id, Timeout: timeout})
 	return c.failures["AdoptWorkingCopy"]
+}
+
+// StartAtBranch records the start the daemon asked for and answers what AnswerStartAtBranch
+// scripted, or FailStartAtBranch's error.
+func (c *Conn) StartAtBranch(_ context.Context, at runtime.StartAt, timeout time.Duration) (runtime.StartedAt, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.startAts = append(c.startAts, StartAtBranchRequest{StartAt: at, Timeout: timeout})
+	if err := c.failures["StartAtBranch"]; err != nil {
+		return runtime.StartedAt{}, err
+	}
+	return c.started, nil
+}
+
+// AnswerStartAtBranch makes every later StartAtBranch that does not fail answer started.
+func (c *Conn) AnswerStartAtBranch(started runtime.StartedAt) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.started = started
+}
+
+// StartAts is every start at a branch asked over this connection, in order.
+func (c *Conn) StartAts() []StartAtBranchRequest {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]StartAtBranchRequest(nil), c.startAts...)
 }
 
 // Compact answers the daemon asking Oh My Pi to compact the session, recording what it asked
@@ -342,6 +377,9 @@ func (c *Conn) FailShutdown(err error) { c.fail("Shutdown", err) }
 
 // FailAdoptWorkingCopy makes every later AdoptWorkingCopy return err.
 func (c *Conn) FailAdoptWorkingCopy(err error) { c.fail("AdoptWorkingCopy", err) }
+
+// FailStartAtBranch makes every later StartAtBranch return err; nil clears it.
+func (c *Conn) FailStartAtBranch(err error) { c.fail("StartAtBranch", err) }
 
 // FailAgentSecretsToken makes every later AgentSecretsToken return err; nil clears it.
 func (c *Conn) FailAgentSecretsToken(err error) { c.fail("AgentSecretsToken", err) }

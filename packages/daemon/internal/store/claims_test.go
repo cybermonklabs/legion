@@ -305,6 +305,38 @@ func TestADeliveryCarriesTheFactThatItNamesItsReviewRound(t *testing.T) {
 	}
 }
 
+// Where a next change's first task starts the working copy (supervise.Delivery.StartAt) reaches
+// the store with the delivery and comes back from it: before the start, with what the start
+// answered, and with the mark that the architect was told of a refusal. A restart between the
+// queue and the send reads the start back and makes it first. A task that starts nothing reads
+// back with none, also over a delivery that had one.
+func TestADeliveryKeepsItsStartAtBranchThroughARestart(t *testing.T) {
+	ctx := context.Background()
+	store := migratedStore(t)
+	c := tmuxClaim("legion-LEGION-213-implementer")
+	if err := store.PutClaim(ctx, c); err != nil {
+		t.Fatalf("put claim: %v", err)
+	}
+	branch := runtime.StartAt{Bookmark: "legion/LEGION-213", Base: "main"}
+	started := runtime.StartedAt{Moved: true, From: strings.Repeat("a", 40), At: strings.Repeat("b", 40), BehindBase: true}
+	queued := at(1)
+	for _, put := range []supervise.Delivery{
+		{ID: "outbox:7", Task: "Implement the next change.", Phase: phase.Implementing, QueuedAt: queued, StartAt: supervise.StartAt{StartAt: branch}},
+		{ID: "outbox:7", Task: "Implement the next change.", Phase: phase.Implementing, QueuedAt: queued, StartAt: supervise.StartAt{StartAt: branch, Told: true}},
+		{ID: "outbox:7", Task: "Implement the next change.", Phase: phase.Implementing, QueuedAt: queued, StartAt: supervise.StartAt{StartAt: branch, Started: &started, Told: true}},
+		{ID: "outbox:8", Task: "Continue. Phase: implementing.", Phase: phase.Implementing, QueuedAt: queued},
+	} {
+		if err := store.PutDelivery(ctx, c.Token, put); err != nil {
+			t.Fatalf("put the delivery %s: %v", put.ID, err)
+		}
+		got := onlyClaim(t, store).Pending
+		if got == nil || got.ID != put.ID || got.StartAt.StartAt != put.StartAt.StartAt || got.StartAt.Told != put.StartAt.Told ||
+			(got.StartAt.Started == nil) != (put.StartAt.Started == nil) || got.StartAt.Started != nil && *got.StartAt.Started != *put.StartAt.Started {
+			t.Fatalf("the delivery read back = %+v, want %s with the start %+v", got, put.ID, put.StartAt)
+		}
+	}
+}
+
 // The phase a task was queued for is what says the task is still the work to do, and it has to
 // survive the path that rewrites the delivery: a prompt refused or unanswered is re-put under a
 // new id, and a restart then reads the delivery back from this table. A phase lost on either side

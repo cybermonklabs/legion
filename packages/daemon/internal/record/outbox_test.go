@@ -1212,6 +1212,8 @@ func TestAPublishedNoticeIsStillAValidOutboxPayload(t *testing.T) {
 		{Kind: "retro-held", Role: claim.RoleImplementer, Phase: phase.Retro,
 			Reason: "LEGION-208 passed its last step, and Legion holds it before its retro while these issues beneath it are still in the workflow: LEGION-209. A parent is accepted only once no issue beneath it is still in the workflow. Run each one to done, or end it; Legion starts the retro when the last one leaves. " +
 				StatusNotTakenYet + " " + EndChildRule},
+		{Kind: "next-change-workspace", Role: claim.RoleImplementer, Phase: phase.Implementing,
+			Reason: "The implementer's first task of the next change of LEGION-208 waits. Its shim did not start the working copy at legion/LEGION-208. The shim answered: Bookmark legion/LEGION-208 is conflicted."},
 		{Kind: VolumeNearFullNotice, Role: claim.RoleArchitect,
 			Reason: "the volume LEGION-208's roles share on pod pod-uid was still above its low mark when the sweep ended",
 			Volume: &VolumeNearFull{PodUID: "pod-uid", Trimmer: "trim-1", Episode: 2, RaisedBy: "rise",

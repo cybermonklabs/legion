@@ -17,13 +17,14 @@ import (
 // goroutine of its own (answer), the context every such command runs on, which the shim ends at
 // its own end and waits out before Run returns (endCommands, drainCommands), and the start of
 // every command that runs in the role's workspace (openWorkspace). The workspace read is a
-// command of this kind too and lives in workspace_work.go.
+// command of this kind too and lives in workspace_work.go, and so is the start of a next change's
+// working copy at its branch, in start_at_branch.go.
 
-// answer runs one frame's answer — the adoption, the workspace read — in a goroutine of its own,
-// so the connection's reader never waits on the git and jj it starts, and counts it so that Run
-// waits for it before it returns (drainCommands). Every one of them is dispatched from
-// fromDaemon, which the reader calls one frame at a time, so a command is counted before the
-// frame after it is read. Two counts are kept: commandRuns, which the drain waits on, and
+// answer runs one frame's answer — the adoption, the workspace read, the start at the branch — in
+// a goroutine of its own, so the connection's reader never waits on the git and jj it starts, and
+// counts it so that Run waits for it before it returns (drainCommands). Every one of them is
+// dispatched from fromDaemon, which the reader calls one frame at a time, so a command is counted
+// before the frame after it is read. Two counts are kept: commandRuns, which the drain waits on, and
 // commandsInFlight, which says whether there is anything to wait for at all. The second is
 // lowered first, so a count of 0 means every command has returned and nothing but the
 // goroutines' own last line is left.
@@ -123,17 +124,18 @@ type openedWorkspace struct {
 }
 
 // openWorkspace is the one start of every request a shim answers in its role's workspace: the
-// read (readWorkspaceWork) and the adoption (runAdoption). The workspace is the one the shim's
-// environment names in LEGION_WORKSPACE, which the runtime sets on every role, and the jj is the
-// one of PATH, which the pane's or pod's own shell runs, since no runtime pins it on a pane or a
-// pod. env is the environment the request's commands run with: the shim's own (s.cfg.Env) for the
-// read, and for the adoption that environment with the requested identity added (JJ_USER,
-// JJ_EMAIL). The budget is a bound on the shim's command context (s.commands) rather than a
-// context of its own, so the shim's own end ends the request's commands at once and a command that
-// outlives the budget is still reported as a timeout. The caller calls done once its commands have
-// run. verb is what the caller does to the workspace ("read", "adopt"), which both refusals name:
-// "no workspace to <verb>" for a shim with no LEGION_WORKSPACE, and "no jj to <verb> the
-// workspace with" for a PATH with no jj.
+// read (readWorkspaceWork), the adoption (runAdoption) and the start at the branch
+// (runStartAtBranch). The workspace is the one the shim's environment names in LEGION_WORKSPACE,
+// which the runtime sets on every role, and the jj is the one of PATH, which the pane's or pod's
+// own shell runs, since no runtime pins it on a pane or a pod. env is the environment the
+// request's commands run with: the shim's own (s.cfg.Env) for the read and the start, and for the
+// adoption that environment with the requested identity added (JJ_USER, JJ_EMAIL). The budget is a
+// bound on the shim's command context (s.commands) rather than a context of its own, so the shim's
+// own end ends the request's commands at once and a command that outlives the budget is still
+// reported as a timeout. The caller calls done once its commands have run. verb is what the caller
+// does to the workspace ("read", "adopt", "start"), which both refusals name: "no workspace to
+// <verb>" for a shim with no LEGION_WORKSPACE, and "no jj to <verb> the workspace with" for a PATH
+// with no jj.
 func (s *shim) openWorkspace(verb string, env []string, budget time.Duration) (opened openedWorkspace, done context.CancelFunc, err error) {
 	dir := envValue(s.cfg.Env, "LEGION_WORKSPACE")
 	if dir == "" {

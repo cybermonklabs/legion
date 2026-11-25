@@ -95,6 +95,11 @@ type Runtime interface {
 	// with, in the place the working copy actually lives (which under a sandbox is not a
 	// directory the daemon can see).
 	AdoptWorkingCopy(ctx context.Context, loc Locator, id GitIdentity) error
+	// StartAtBranch has the shim of loc's process start the working copy every role of its issue
+	// shares at the issue's branch, which the daemon moved for the issue's next change, and
+	// answers what the shim did, before that role's first task of the change. A refusal of the
+	// shim's own is ErrStartAtRefused.
+	StartAtBranch(ctx context.Context, loc Locator, at StartAt) (StartedAt, error)
 	// ProvisionsWorkspaces is whether the runtime provisions each claim's workspace where its
 	// process runs (a pod's init containers, on the issue's own volume). When it does, the daemon
 	// provisions and removes none on its own host.
@@ -334,6 +339,32 @@ type WorkspaceWork struct {
 	Commits []string
 	// Count is how many work commits there are in all, those Commits lists included.
 	Count int
+}
+
+// StartAtBranchTimeout is how long the agent's side is given to start a next change's working copy
+// at its branch (Runtime.StartAtBranch): a fetch of two branches and three jj commands. It is the
+// runtimes' budget for the request, not a setting, as WorkspaceWorkTimeout is: a start that cannot
+// finish in this long is a send that fails and is tried again, not one the daemon waits longer for.
+const StartAtBranchTimeout = 2 * time.Minute
+
+// StartAt names where a next change's first task starts the working copy every role of its issue
+// shares: Bookmark, the issue's branch, which the daemon moved for the change, and Base, the branch
+// the issue's last pull request merged into (workspace.StartAtBranch).
+type StartAt struct {
+	Bookmark string `json:"bookmark"`
+	Base     string `json:"base"`
+}
+
+// StartedAt is what the shim did with the working copy (Runtime.StartAtBranch): whether it started
+// a new working copy on the branch (Moved), the working copy's commit before (From), the branch's
+// commit the working copy stands on now (At), and whether origin's base holds a commit the branch
+// does not (BehindBase), which the role then merges forward before it works. From and At are
+// commit ids: the shim's answer is held to that shape (shimwire.StartAtBranchResult.Validate).
+type StartedAt struct {
+	Moved      bool   `json:"moved"`
+	From       string `json:"from"`
+	At         string `json:"at"`
+	BehindBase bool   `json:"behindBase"`
 }
 
 // HoldsWork is whether the read found work: a change in the working copy, or a commit origin does
