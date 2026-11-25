@@ -160,8 +160,9 @@ type fakeWrite struct {
 // and `clean` once it has, which is what a ruleset that requires the check answers; pull request
 // 86's commits, one for each head it stood at (history), oldest first, each made by the
 // implementer's session unless messages gives its message, as GitHub's compare of the base and a
-// head lists them, and none at all where noCommits is set, as GitHub answers a compare it cannot
-// serve; the branch pull request 86 merges into (base86, main where it is ""), whose tip holds the
+// head lists them, and none at all where compareStatus is set, which GitHub's answer to the compare
+// then is (502 where it fails the request, 404 or 422 where it cannot serve that compare); the
+// branch pull request 86 merges into (base86, main where it is ""), whose tip holds the
 // first parentCommits commits of history, so a compare with that branch lists only the commits after
 // them while a compare with main lists them all; any other pull request named in pulls, whose reads it
 // counts in pullReads; and the open pull requests at a commit (GET /commits/{sha}/pulls): pull
@@ -178,7 +179,7 @@ type verdictGitHub struct {
 	parentCommits int
 	history       []string
 	messages      map[string]string
-	noCommits     bool
+	compareStatus int
 	runs          []fakeRun
 	statuses      []fakeStatus
 	writes        []fakeWrite
@@ -302,8 +303,8 @@ func (g *verdictGitHub) serve(t *testing.T) http.HandlerFunc {
 			commits, reached := g.commitsTo(head)
 			base86 := fakePull{base: g.base86}.baseRef()
 			switch {
-			case g.noCommits:
-				http.Error(w, `{"message":"Server Error"}`, http.StatusBadGateway)
+			case g.compareStatus != 0:
+				http.Error(w, fmt.Sprintf(`{"message":%q}`, http.StatusText(g.compareStatus)), g.compareStatus)
 				return
 			case !ranged || base != "main" && base != base86 || !reached:
 				http.Error(w, `{"message":"Not Found"}`, http.StatusNotFound)
@@ -366,8 +367,9 @@ func (g *verdictGitHub) serve(t *testing.T) http.HandlerFunc {
 			listed := []map[string]any{}
 			for _, run := range g.runs {
 				if run.Head == parts[1] && run.Name == r.URL.Query().Get("check_name") {
-					listed = append(listed, map[string]any{"id": run.ID, "head_sha": run.Head, "name": run.Name,
-						"status": "completed", "conclusion": run.Conclusion, "app": map[string]any{"id": run.appID(), "slug": run.App}})
+					listed = append(listed, map[string]any{"id": run.ID, "head_sha": run.Head, "name": run.Name, "status": "completed",
+						"conclusion": run.Conclusion, "app": map[string]any{"id": run.appID(), "slug": run.App},
+						"output": map[string]any{"title": run.Title, "summary": run.Summary}})
 				}
 			}
 			answer(map[string]any{"total_count": len(listed), "check_runs": listed})
@@ -2004,7 +2006,7 @@ func TestLegionVerdictUnreadCommitsHaveNoReader(t *testing.T) {
 		name   string
 		github func(*verdictGitHub)
 	}{
-		{"GitHub answers no list", func(g *verdictGitHub) { g.noCommits = true }},
+		{"GitHub answers no list", func(g *verdictGitHub) { g.compareStatus = http.StatusBadGateway }},
 		{"the list does not reach H", func(g *verdictGitHub) { g.history = []string{"code-0"} }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -2024,6 +2026,57 @@ func TestLegionVerdictUnreadCommitsHaveNoReader(t *testing.T) {
 
 // changeUnreadLine is what the writer logs when it cannot read the change's commits.
 const changeUnreadLine = "verdict: the change's commits could not be read, so no commit has a reader"
+
+// unreadReviewersCommit seeds CAPTURE-1 in accepting on the default steps, every step but the
+// owner's acceptance passed at code, where the tester's claim and the owner's record no session:
+// the reviewer's own commit code then has no reader once the owner accepts code.
+func unreadReviewersCommit(t *testing.T, pool *store.Pool) {
+	t.Helper()
+	acceptingAtCode(t, pool)
+	seedStepStart(t, pool, planwords.DefaultTask, testerStep, captureTester, true)
+	dropClaimSessions(t, pool, captureArchitect)
+}
+
+// R4 (the run's summary names each commit with no reader, and the merger reads its title): the run's
+// title and summary follow the decision of the head, not its conclusion alone, so a new reason of a
+// failure whose conclusion stays is written over the run. Here the reviewer's own commit code has
+// no reader once the owner accepts it. First the failure stands for another reason: a person's
+// request for changes before the owner's acceptance, which names no reason; or the change GitHub
+// did not serve, refused (404) or with no answer (502), which a later read serves. Then the writer
+// writes the run's title and summary again, naming code.
+func TestLegionVerdictANewReasonOfAFailureIsWrittenOverItsRun(t *testing.T) {
+	t.Run("a person's request for changes, then a commit with no reader", func(t *testing.T) {
+		rig := newVerdictRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, unreadReviewersCommit)
+		rig.github.mu.Lock()
+		rig.github.messages["code"] = commitOf(captureReviewerSession)
+		rig.github.mu.Unlock()
+		rig.review(t, personsReview(1, "changes_requested"))
+		rig.written(t)
+		if run := rig.soleRun(t, "code", "failure"); run.Title != "legion-verdict: failure" {
+			t.Fatalf("the run's title is %q, want legion-verdict: failure: a person refused code before every step passed there", run.Title)
+		}
+		rig.apply(t, rig.signOff(t))
+		rig.written(t)
+		rig.noReader(t, "code", wantNoReaderOpening, "code")
+	})
+	for _, status := range []int{http.StatusNotFound, http.StatusBadGateway} {
+		t.Run(fmt.Sprintf("a compare GitHub answered %d, then a commit with no reader", status), func(t *testing.T) {
+			rig := newVerdictRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, unreadReviewersCommit)
+			rig.github.mu.Lock()
+			rig.github.messages["code"] = commitOf(captureReviewerSession)
+			rig.github.compareStatus = status
+			rig.github.mu.Unlock()
+			rig.apply(t, rig.signOff(t))
+			rig.written(t)
+			rig.github.mu.Lock()
+			rig.github.compareStatus = 0
+			rig.github.mu.Unlock()
+			rig.checkState(t, "code", "k1", verdict.StateYes)
+			rig.written(t)
+			rig.noReader(t, "code", wantNoReaderOpening, "code")
+		})
+	}
+}
 
 // Every Omp-Session line of a commit's message names a session the Omp-Session test reads, in any
 // case of its key and wherever it stands, as a squash can carry it into the body of another: the

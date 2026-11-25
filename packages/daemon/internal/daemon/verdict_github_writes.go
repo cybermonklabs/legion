@@ -31,11 +31,16 @@ func (w *workflowRuntime) wroteSuccess(ctx context.Context, target verdictTarget
 }
 
 // listedCheckRun is one check run as GitHub lists a commit's (GET /commits/{ref}/check-runs): its
-// id, its conclusion and the id of the App that made it, which a rename of the App leaves as it is.
+// id, its conclusion, the title and summary of its output, and the id of the App that made it,
+// which a rename of the App leaves as it is.
 type listedCheckRun struct {
 	ID         int64  `json:"id"`
 	Conclusion string `json:"conclusion"`
-	App        struct {
+	Output     struct {
+		Title   string `json:"title"`
+		Summary string `json:"summary"`
+	} `json:"output"`
+	App struct {
 		ID int64 `json:"id"`
 	} `json:"app"`
 }
@@ -61,8 +66,11 @@ type listedStatus struct {
 // show is the head's conclusion, or failure where the head has none (spec R19):
 //   - each run of the App the record does not hold is updated to it, whatever it shows, and so
 //     becomes one the record holds;
-//   - each run the record holds is updated to it where GitHub shows it at another conclusion,
-//     whether the daemon's own write left it there or another token of the App wrote over it;
+//   - each run the record holds is updated to it where GitHub shows it at another conclusion, or
+//     with another title or summary than the head's decision gives it (verdictOutput), as when the
+//     reason of a failure changes and its conclusion does not: the merger reads the title, and the
+//     summary names each commit with no reader (spec R4). That holds whether the daemon's own write
+//     left the run so or another token of the App wrote over it;
 //   - a run of the daemon's own is created only where the head has a conclusion and no run of the
 //     App is there at all;
 //   - the newest legion-verdict status the App's bot created gets a status of the daemon's own over
@@ -113,6 +121,7 @@ func (w *workflowRuntime) writeDecidedChanged(ctx context.Context, target verdic
 	if over == verdict.None {
 		over = verdict.Failure
 	}
+	output := verdictOutput(decided, over)
 	shown, changed := false, false
 	for _, run := range runs {
 		if run.App.ID != w.verdicts.appID {
@@ -121,7 +130,7 @@ func (w *workflowRuntime) writeDecidedChanged(ctx context.Context, target verdic
 		shown = true
 		foreign := run.ID
 		if ownRuns[run.ID] {
-			if run.Conclusion == string(over) {
+			if run.Conclusion == string(over) && run.Output.Title == output["title"] && run.Output.Summary == output["summary"] {
 				continue
 			}
 			foreign = 0

@@ -478,9 +478,10 @@ func TestLegionVerdictSweepAsksNoMergeStateReadOfAnUnchangedSuccessHead(t *testi
 // verdict stands and to success where R4's verdict stands, with no run of its own beside it; a
 // status the App's bot created gets a newer status of the daemon's own with that state. Each such
 // write is in the record and in a legion_verdict_write line naming the foreign id. A run the record
-// holds is left as it is, and so is a run or a status another account made. The same holds on a
-// merge group's commit, and on a legion/<KEY> head of another project's issue, where this daemon
-// holds no step of that issue, so no verdict stands (R4).
+// holds is left as it is where it shows the head's conclusion and output, and gets the head's
+// output again where it does not (R4); a run or a status another account made is left as it is.
+// The same holds on a merge group's commit, and on a legion/<KEY> head of another project's issue,
+// where this daemon holds no step of that issue, so no verdict stands (R4).
 func TestTheSweepWritesOverAForeignLegionVerdict(t *testing.T) {
 	foreignWrite := func(t *testing.T, rig *sweepRig, head string, kind store.VerdictWriteKind, foreign int64, conclusion string) {
 		t.Helper()
@@ -532,6 +533,7 @@ func TestTheSweepWritesOverAForeignLegionVerdict(t *testing.T) {
 		foreignWrite(t, rig, "out-1", store.VerdictWriteStatus, 600, "failure")
 	})
 	t.Run("a run the record holds is left as it is", func(t *testing.T) {
+		// The run is the daemon's own success, with the output the daemon wrote it with.
 		rig := newSweepRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, func(t *testing.T, pool *store.Pool) {
 			seedOutside(true)(t, pool)
 			inStore(t, pool, func(ctx context.Context, tx pgx.Tx) error {
@@ -540,10 +542,29 @@ func TestTheSweepWritesOverAForeignLegionVerdict(t *testing.T) {
 				return err
 			})
 		}, openOutside)
-		rig.foreign([]fakeRun{{ID: 700, Head: "out-1", Name: verdict.CheckName, Conclusion: "success", App: verdictAppSlug}}, nil)
+		rig.foreign([]fakeRun{{ID: 700, Head: "out-1", Name: verdict.CheckName, Conclusion: "success", App: verdictAppSlug,
+			Title: "legion-verdict: success", Summary: "The Legion daemon wrote this from the verdicts it records at this outside head."}}, nil)
 		rig.swept(t)
 		if writes, _ := rig.github.recorded(); len(writes) != 0 {
 			t.Fatalf("writes = %+v, want none over the run the record holds", writes)
+		}
+	})
+	t.Run("a run the record holds with another output gets the head's output again", func(t *testing.T) {
+		rig := newSweepRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, func(t *testing.T, pool *store.Pool) {
+			seedOutside(true)(t, pool)
+			inStore(t, pool, func(ctx context.Context, tx pgx.Tx) error {
+				_, err := store.RecordVerdictWriteTx(ctx, tx, store.VerdictWrite{Repository: widgets, Head: "out-1", Kind: store.VerdictWriteCheckRun,
+					GitHubID: 700, Conclusion: store.VerdictConclusionSuccess, WrittenAt: recordedAt})
+				return err
+			})
+		}, openOutside)
+		rig.foreign([]fakeRun{{ID: 700, Head: "out-1", Name: verdict.CheckName, Conclusion: "success", App: verdictAppSlug,
+			Title: "legion-verdict: failure (a commit with no reader)", Summary: "Each check reads yes"}}, nil)
+		rig.swept(t)
+		runs := rig.github.legionRuns("out-1")
+		if len(runs) != 1 || runs[0].Conclusion != "success" || runs[0].Title != "legion-verdict: success" ||
+			runs[0].Summary != "The Legion daemon wrote this from the verdicts it records at this outside head." {
+			t.Fatalf("legion-verdict runs on out-1 = %+v, want run 700 at success with the output of a success", runs)
 		}
 	})
 	t.Run("a run on a merge group's commit turns to the group's conclusion", func(t *testing.T) {
