@@ -368,6 +368,16 @@ var topLevelKeys = func() []keyDescriptor {
 			Positive:    &positiveKey{Value: 3600, Duration: func(c *Config) *time.Duration { return &c.ControllerWakeInterval }},
 		},
 		{
+			Name: "controller_turn_bound_minutes", Default: "`90`", RequiredBy: "no",
+			Description: "Under `controller: daemon`, how many minutes a turn of the project's controller may stay open, whether or not steps still arrive in it, before the daemon ends that launch as its stall backstop ends one and counts the end against the session; the next launch resumes the session, and a second such end with no finished turn between starts a fresh session. Decimals allowed; `0` turns the rule off.",
+			Read:        reads(readMinutesOrOff, func(f *fileConfig, v *time.Duration) { f.ControllerTurnBound = v }),
+		},
+		{
+			Name: "controller_session_max_age_hours", Default: "`72`", RequiredBy: "no",
+			Description: "Under `controller: daemon`, how many hours old, read from its session id, the project controller's session may grow before the daemon replaces it with a fresh session at a look that finds the controller idle, with no turn open and no task waiting; the fresh session is told which session it replaces and why. Decimals allowed; `0` turns the rule off.",
+			Read:        reads(readHoursOrOff, func(f *fileConfig, v *time.Duration) { f.ControllerSessionMaxAge = v }),
+		},
+		{
 			Name: "launch_failure_limit", RequiredBy: "no",
 			Description: "How many failed launches, and deaths of a ready agent while it had work outstanding, a claim takes before the daemon fails it.",
 			Positive:    &positiveKey{Value: 3, Count: func(c *Config) *int { return &c.LaunchFailureLimit }},
