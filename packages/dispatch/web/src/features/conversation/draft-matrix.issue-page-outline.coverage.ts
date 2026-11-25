@@ -66,7 +66,6 @@ export const coverage: readonly CoverageEntry[] = [
     cells(`${HOST} · Write on the issue instead, the issue keeping a comment of its own`)
   ),
   ...answers(`WriteLine | ${WRITE_MOUNT} | form | outline={look}`, { reason: REASONS[7] }),
-  ...answers("WriteLine | - | form | (place.phone) ? …", { reason: REASONS[7] }),
   ...answers(
     `WriteLine | ${WRITE_MOUNT} | lifetime | <MentionComposer mutationKey={writer.sendKey}>`,
     cells(`${HOST} · the page reloaded, then back`)
@@ -93,7 +92,6 @@ export const coverage: readonly CoverageEntry[] = [
     cells(`${EDITING} · issue left, then Edit again`)
   ),
   ...answers(`EditLine | ${EDIT_MOUNT} | form | outline={look}`, { reason: REASONS[7] }),
-  ...answers("EditLine | - | form | (place.phone) ? …", { reason: REASONS[7] }),
   ...answers(
     `EditLine | ${EDIT_MOUNT} | lifetime | <MentionComposer mutationKey={mutationKey}>`,
     cells(`${EDITING} · the page reloaded, then Edit again`)

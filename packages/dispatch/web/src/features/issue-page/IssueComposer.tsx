@@ -52,6 +52,21 @@ const KINDS: readonly OutlineKind[] = [
   },
 ];
 
+/** The line's placeholder for each thing it writes, wide and on a phone, where a shorter one fits
+ *  the field whole (R1, R3, R11; the tester's findings F2 and F9). */
+const PLACEHOLDERS = {
+  edit: [CONTROL_LABELS.edit_placeholder, CONTROL_LABELS.edit_placeholder_phone],
+  issue: [CONTROL_LABELS.issue_placeholder, CONTROL_LABELS.issue_placeholder_phone],
+  reply: [CONTROL_LABELS.reply_placeholder, CONTROL_LABELS.reply_placeholder_phone],
+  statement: [CONTROL_LABELS.statement_placeholder, CONTROL_LABELS.statement_placeholder_phone],
+} as const;
+
+/** The placeholder of a line that writes `target`, in its phone form where `phone`. */
+function placeholderOf(target: keyof typeof PLACEHOLDERS, phone: boolean): string {
+  const [wide, narrow] = PLACEHOLDERS[target];
+  return phone ? narrow : wide;
+}
+
 /** Where the box stands on the page, as the slot reads it off the address (`slots/foot.tsx`). */
 export interface BoxPlace {
   /** A document is open in place of the outline (`IssueAddress.document`). */
@@ -269,8 +284,8 @@ function WriteLine({
 }): ReactNode {
   const { reply, statement } = writer;
   // A statement's comment carries the statement's document, its whole words and its row alone,
-  // never the item a Reply aimed the line with, so a send held over a refusal or a reload stores
-  // those three fields and never the statement's tree.
+  // never the author a Reply aimed the line with, so a send held over a refusal or a reload
+  // stores those three fields and nothing more.
   const anchor = useMemo(
     () =>
       statement === undefined
@@ -325,18 +340,10 @@ function WriteLine({
     end,
     kept: { issue: ANSWER_LINES.kept_on_issue, statement: ANSWER_LINES.kept_on_statement },
     kinds: writesKinds ? KINDS : [],
-    placeholder:
-      statement !== undefined
-        ? place.phone
-          ? CONTROL_LABELS.statement_placeholder_phone
-          : CONTROL_LABELS.statement_placeholder
-        : reply !== null
-          ? place.phone
-            ? CONTROL_LABELS.reply_placeholder_phone
-            : CONTROL_LABELS.reply_placeholder
-          : place.phone
-            ? CONTROL_LABELS.issue_placeholder_phone
-            : CONTROL_LABELS.issue_placeholder,
+    placeholder: placeholderOf(
+      statement !== undefined ? "statement" : reply !== null ? "reply" : "issue",
+      place.phone
+    ),
     retry: CONTROL_LABELS.retry,
     send: CONTROL_LABELS.send,
     sending: ANSWER_LINES.sending,
@@ -358,9 +365,9 @@ function WriteLine({
         />
       ) : statement === undefined ? undefined : (
         // The statement's own author, where its row carries one; none for a statement taken up
-        // from a held send, which keeps no row's item.
+        // from a held send, which keeps no author.
         <TargetNamed
-          author={statement.item?.author}
+          author={statement.author}
           doing={CONTROL_LABELS.replying_to}
           kind="requirement"
         />
@@ -450,9 +457,7 @@ function EditLine({
     cancelReply: CONTROL_LABELS.write_on_issue,
     end: back,
     kinds: [],
-    placeholder: place.phone
-      ? CONTROL_LABELS.edit_placeholder_phone
-      : CONTROL_LABELS.edit_placeholder,
+    placeholder: placeholderOf("edit", place.phone),
     retry: CONTROL_LABELS.retry,
     send: CONTROL_LABELS.save,
     sending: ANSWER_LINES.saving_field,
@@ -480,9 +485,11 @@ function EditLine({
 
 /**
  * What a target line says of its target (R3, R5, R11): what the line does to it - "Replying to:"
- * or "Editing:" - the target's author, where the line knows one, and the page's word for its
- * kind, with a middle dot between the two. It draws none of the target's words: the entry stands
- * whole in its own row, and an edited comment's words stand whole in the field.
+ * or "Editing:" - the target's author, where the line knows one, named as the page names an
+ * author (`AgentName`'s `author`), so a person who acted through a session reads as their row
+ * names them, and the page's word for its kind, with a middle dot between the two. It draws none
+ * of the target's words: the entry stands whole in its own row, and an edited comment's words
+ * stand whole in the field.
  */
 function TargetNamed({
   author,
@@ -499,7 +506,7 @@ function TargetNamed({
       {author === undefined ? null : (
         <>
           <b className="font-semibold text-page-ink">
-            <AgentName actor={author} inline />
+            <AgentName actor={author} author inline />
           </b>{" "}
           <span aria-hidden="true">·</span>{" "}
         </>

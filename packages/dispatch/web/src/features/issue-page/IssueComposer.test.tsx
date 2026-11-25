@@ -58,13 +58,14 @@ import {
   STATEMENT_QUOTE,
   STATEMENT_REWRITTEN,
   statementNode,
+  targetNamed,
   targetWords,
   writeField,
 } from "./composer-fixture";
 import { FOOT_HEIGHT_PROPERTY } from "./identity-block";
 import type { TreeNode } from "./issue-tree";
 import type { OutlineWriter } from "./outline-writer";
-import { ANSWER_LINES, CONTROL_LABELS, NODE_TYPE_NAMES } from "./page-words";
+import { ANSWER_LINES, AUTHOR_KIND_WORDS, CONTROL_LABELS } from "./page-words";
 
 /**
  * The new issue page's one box to write in, drawn as
@@ -137,6 +138,24 @@ function holdFrames(): { readonly release: () => void; readonly run: () => void 
       }
     },
   };
+}
+
+/** Opens the edit of comment `id`, its words `body`, on `page`'s writer, the page's frames held
+ *  while the edit draws and run inside `act` after (`holdFrames`): the writer puts the caret in
+ *  the edit's field on a frame (`OutlineWriter.focus`), once the edit is drawn. The page gets its
+ *  own frames back whether or not the edit draws. */
+async function editHoldingFrames(
+  page: Pick<BoxPage, "writer">,
+  id: string,
+  body: string
+): Promise<void> {
+  const frames = holdFrames();
+  try {
+    await act(async () => page.writer().edit(id, body));
+    act(() => frames.run());
+  } finally {
+    frames.release();
+  }
 }
 
 /** The kinds the drawn line shows as chips, in their order, each with whether it is pressed: the
@@ -296,11 +315,8 @@ test("under a view or a document the box is hidden until the reader asks to writ
   // ending them hides it again.
   page.redraw({ documentOpen: true });
   // The writer puts the caret in the line's field on a frame, once the edit is drawn
-  // (`OutlineWriter.focus`): the frames are held while the edit draws and run inside `act` after.
-  const frames = holdFrames();
-  await act(async () => page.writer().edit("comment-2", "My own words"));
-  act(() => frames.run());
-  frames.release();
+  // (`OutlineWriter.focus`), so the edit is opened with the frames held (`editHoldingFrames`).
+  await editHoldingFrames(page, "comment-2", "My own words");
   await waitFor(() =>
     expect(within(composerBox()).getByRole("textbox", { name: "Edit comment" })).toHaveFocus()
   );
@@ -1145,7 +1161,7 @@ test("an edit saves the comment's words", async () => {
   });
   await waitFor(() => expect(field).toHaveFocus());
   expect(field.value).toBe("My own words");
-  expect(targetWords()).toBe(`${CONTROL_LABELS.editing} ${READER} · ${NODE_TYPE_NAMES.comment}`);
+  expect(targetWords()).toBe(targetNamed(CONTROL_LABELS.editing, READER, "comment"));
   expect(kinds()).toEqual([]);
   expect(within(composerBox()).getByRole("button", { name: CONTROL_LABELS.save })).toBeTruthy();
 
@@ -1311,11 +1327,8 @@ test("a comment typed in the box is still there after an edit ends", async () =>
   await user.keyboard("Half a thought");
 
   // An edit, left with Escape. The writer puts the caret in the edit's field on a frame, which
-  // takes it from the write line's field: the frames are held and run inside `act`.
-  const frames = holdFrames();
-  await act(async () => page.writer().edit("comment-2", "My own words"));
-  act(() => frames.run());
-  frames.release();
+  // takes it from the write line's field, so the edit is opened with the frames held.
+  await editHoldingFrames(page, "comment-2", "My own words");
   const edit = within(composerBox()).getByRole("textbox", { name: "Edit comment" });
   await waitFor(() => expect(edit).toHaveFocus());
   expect(writeField().closest("[hidden]")).not.toBeNull();
@@ -1828,6 +1841,26 @@ test("the target line names the entry by its author and its kind, and draws none
     expect(page.writer().reply?.id, row).toBe(row);
     expect(targetWords(), row).not.toContain(words);
   }
+});
+
+// R3: the target line names a person who acted through a session as the page names an author
+// (`useAgentText().author`), as the row of their comment names them: by their login and the
+// page's words for an act made through an agent, not by the session's id.
+test("the target line names a person who acted through a session as the page names an author", async () => {
+  const user = userEvent.setup();
+  const through: Actor = { act: { session: PLANNER.id }, id: "bob", kind: "user" };
+  const words = "Written through the planner";
+  reads.comments.push(commentRecord("comment-4", through, words));
+  const root = outline();
+  const drawn = { ...root, children: [...root.children, commentNode("comment-4", through, words)] };
+  const page = renderPage({}, drawn);
+  await page.press(user, "comment-4", "r");
+  await waitFor(() =>
+    expect(targetWords()).toBe(
+      replyingTo(`bob, acting through ${AUTHOR_KIND_WORDS.agent}`, "comment")
+    )
+  );
+  expect(page.writer().reply?.id).toBe("comment-4");
 });
 
 /** The classes of `element` and of everything inside it that are a colour of the dashboard's

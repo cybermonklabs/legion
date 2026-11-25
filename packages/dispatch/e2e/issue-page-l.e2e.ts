@@ -1,5 +1,6 @@
 import type { Locator, Page } from "@playwright/test";
 
+import type { ArtifactBlock } from "../web/src/api/types";
 import {
   ANSWER_LINES,
   CONTROL_LABELS,
@@ -72,6 +73,7 @@ import {
   seedStatements,
   seedUnreadIssue,
   sendFromComposer,
+  sendWithKeys,
   wordsInField,
 } from "./issue-page-l";
 import { withIssuePage } from "./issue-page-option";
@@ -562,15 +564,6 @@ test("what the reader sends from the box is drawn, in view and focused, wherever
         .toBe(true);
       return id;
     };
-    /** Sends `words` from the box with the keyboard alone: `r` on node `id`'s row, the words,
-     *  Enter. */
-    const sendWithKeys = async (id: string, words: string): Promise<void> => {
-      await focusRow(page, id);
-      await page.keyboard.press("r");
-      await expect(composerField(page), "r put no caret in the box").toBeFocused();
-      await page.keyboard.type(words);
-      await page.keyboard.press("Enter");
-    };
 
     // A reply under a thread the reader folded with its head's own fold control: `r`, the words,
     // Enter. The outline opens the thread folded, so its head unfolds it first.
@@ -585,7 +578,7 @@ test("what the reader sends from the box is drawn, in view and focused, wherever
       nodeRow(page, seeded.first),
       "the thread is open after its head's fold control, so a reply under it proves nothing about the fold"
     ).toHaveCount(0);
-    await sendWithKeys(seeded.head, "A reply under the folded thread.");
+    await sendWithKeys(page, seeded.head, "A reply under the folded thread.");
     const reply = await expectLandedOn("A reply under the folded thread.", "a reply under a fold");
     expect(await parentOfRow(page, reply), "the reply is not drawn under the row it answers").toBe(
       seeded.head
@@ -604,7 +597,7 @@ test("what the reader sends from the box is drawn, in view and focused, wherever
       .toBe(seeded.answeredAsk);
 
     // A reply under an answered question.
-    await sendWithKeys(seeded.answeredAsk, "A word under the answered question.");
+    await sendWithKeys(page, seeded.answeredAsk, "A word under the answered question.");
     const under = await expectLandedOn(
       "A word under the answered question.",
       "a reply under an answered question"
@@ -643,12 +636,8 @@ test("a send with the keyboard leaves the focus on the reader's row of the outli
     await gotoIssue(page, `/issues/${seeded.key}`);
     await expectIssuePageDrawn(page);
     // The answered question is the outline's second row: the thread's head is its first.
-    await focusRow(page, seeded.answeredAsk);
-    await page.keyboard.press("r");
-    await expect(composerField(page), "r put no caret in the box").toBeFocused();
     const words = "A reply sent with the keys alone.";
-    await page.keyboard.type(words);
-    await page.keyboard.press("Enter");
+    await sendWithKeys(page, seeded.answeredAsk, words);
     const reply = (await commentWithBody(seeded.key, undefined, words)).id;
     await expect
       .poll(() => focusedNodeId(page), {
@@ -913,10 +902,12 @@ test("the box at the foot is one line at rest, and says where a reply goes @phon
         composerTarget(page),
         `a on the open question draws a target line in the box at ${at}`
       ).toHaveCount(0);
-      await expect(
-        composer(page).locator("[data-answer-option]"),
-        `a on the open question draws an option in the box at ${at}`
-      ).toHaveCount(0);
+      for (const option of ["Left", "Right"]) {
+        await expect(
+          composer(page).getByRole("button", { exact: true, name: option }),
+          `a on the open question draws an option in the box at ${at}`
+        ).toHaveCount(0);
+      }
       await expect(
         composer(page).getByRole("textbox", { exact: true, name: CONTROL_LABELS.answer }),
         `a on the open question draws an answer field in the box at ${at}`
@@ -1619,7 +1610,8 @@ function statementCases(seeded: StatementsSeed): {
  * statement, and draws none of `one.drawsNone` and no address, since the statement stands whole
  * in its own row; the placeholder is the statement's own; the box sends the statement's whole
  * words as the anchor's quote and no occurrence, and Dispatch stores the comment anchored in the
- * spec to the statement's block, or a block inside it, with that quote; the focus is back on the
+ * spec to the statement's block, or a block inside it, with that quote, as `blocks`, the spec's
+ * blocks, which the caller reads once, since no comment changes them; the focus is back on the
  * statement's row; and, once the page's read of the issue's comments holds the comment, no row of
  * it is drawn under the statement, since the margin beside a statement draws a comment on its
  * text.
@@ -1627,7 +1619,8 @@ function statementCases(seeded: StatementsSeed): {
 async function commentOnStatement(
   page: Page,
   seeded: StatementsSeed,
-  one: StatementCase
+  one: StatementCase,
+  blocks: readonly ArtifactBlock[]
 ): Promise<void> {
   const statement = blockNode(seeded.specSlug, one.block);
   await expect(nodeRow(page, statement), `${one.what} draws no row`).toHaveCount(1);
@@ -1689,7 +1682,6 @@ async function commentOnStatement(
     comment.anchor?.quote,
     `the comment on ${one.what} is not anchored by the statement's whole words`
   ).toBe(one.quote);
-  const blocks = await getArtifactBlocks(seeded.specArtifactId);
   const range = blocks.find((block) => block.id === one.block);
   const anchored = blocks.find((block) => block.id === comment.anchor?.block_id);
   expect(
@@ -1733,8 +1725,9 @@ test("r on a statement writes a comment on its text", async ({ browser }) => {
     await gotoIssue(page, `/issues/${seeded.key}`);
     await expectIssuePageDrawn(page);
     const { cites, two } = statementCases(seeded);
+    const blocks = await getArtifactBlocks(seeded.specArtifactId);
     for (const one of [cites, two]) {
-      await commentOnStatement(page, seeded, one);
+      await commentOnStatement(page, seeded, one, blocks);
 
       // The box's next send is a comment on the issue, with no anchor.
       await expect(composerTarget(page), "the box still names the statement").toHaveCount(0);
@@ -1853,11 +1846,16 @@ test.skip("r on a statement in the Spec view writes a comment on its text @owed"
   await phase(browser, seedStatements, async (page, seeded) => {
     await gotoIssue(page, `/issues/${seeded.key}/spec`);
     await expectActivePreset(page, PRESET_NAMES.spec);
-    await commentOnStatement(page, seeded, {
-      ...statementCases(seeded).two,
-      what: "the Spec view's statement of two paragraphs",
-      words: "A comment on the statement from the Spec view.",
-    });
+    await commentOnStatement(
+      page,
+      seeded,
+      {
+        ...statementCases(seeded).two,
+        what: "the Spec view's statement of two paragraphs",
+        words: "A comment on the statement from the Spec view.",
+      },
+      await getArtifactBlocks(seeded.specArtifactId)
+    );
   });
 });
 

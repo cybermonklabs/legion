@@ -432,12 +432,17 @@ export function targetWords(): string | null {
   return line?.firstElementChild?.textContent ?? null;
 }
 
-/** What the target line reads for a reply, or for a comment on a statement: "Replying to:", the
- *  name of the target's author where the line names one, and the page's word for its kind, a
- *  middle dot between the two. */
-export function replyingTo(author: string | undefined, kind: NodeType): string {
+/** What the target line reads: what the line does to its target (`doing`: "Replying to:" or
+ *  "Editing:"), the name of the target's author where the line names one, and the page's word
+ *  for its kind, a middle dot between the two. */
+export function targetNamed(doing: string, author: string | undefined, kind: NodeType): string {
   const named = author === undefined ? [] : [author, "·"];
-  return [CONTROL_LABELS.replying_to, ...named, NODE_TYPE_NAMES[kind]].join(" ");
+  return [doing, ...named, NODE_TYPE_NAMES[kind]].join(" ");
+}
+
+/** What the target line reads for a reply, or for a comment on a statement (`targetNamed`). */
+export function replyingTo(author: string | undefined, kind: NodeType): string {
+  return targetNamed(CONTROL_LABELS.replying_to, author, kind);
 }
 
 /** The lines the box draws of the drafts it keeps for other targets than the one it shows, in

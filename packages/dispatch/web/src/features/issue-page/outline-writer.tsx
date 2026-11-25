@@ -24,10 +24,11 @@ import { issueAsksQuery, issueCommentsQuery, issueMessagesQuery } from "./useIss
  * of the outline, and what it is written to. With nothing set it writes a new comment on the
  * issue, or a question with the Question chip pressed. A row's Reply - its control, or `r` - sets
  * it to reply to that row, and an open question's Answer - its control, one of its options, or
- * `a` - sets it to answer that question; Escape, or the line's own control, sets it back.
+ * `a` - sets it to answer that question, which the ask's own body takes and the line does not;
+ * Escape, or the line's own control, sets it back.
  *
  * The state lives above the outline and the line both, because each sets it and both draw it:
- * a row draws the options the reader picked as picked, and the line names what it answers.
+ * a row draws the options the reader picked as picked, and the line names what it replies to.
  */
 export interface OutlineWriter {
   /** The open question the line answers; undefined while it answers none. */
@@ -111,11 +112,11 @@ export type WriterKind = "ask" | "comment";
  */
 export interface Landing {
   /** `newest`: the reader's newest node under `under` - the reply, the comment or the question
-   *  they just wrote; `self`: `under`'s own row - the question they answered, whose answer is
-   *  drawn on its row, and the comment they edited. */
+   *  they just wrote; `self`: `under`'s own row - the statement a comment on its text was
+   *  written on, which draws no row for it, and the comment they edited. */
   readonly to: "newest" | "self";
-  /** What the write was made under: the item the line replied to or answered, or the comment
-   *  it edited; undefined for a write on the issue itself. */
+  /** What the write was made under: the item the line replied to, the statement it commented
+   *  on, or the comment it edited; undefined for a write on the issue itself. */
   readonly under:
     | { readonly id: string; readonly kind: "ask" | "comment" | "message" | "statement" }
     | undefined;
@@ -203,8 +204,8 @@ export function OutlineWriterProvider({
   const comments = useQuery({ ...issueCommentsQuery(issueKey), ...EVENT_FRESH });
   const messages = useQuery({ ...issueMessagesQuery(issueKey), ...EVENT_FRESH });
   const focus = useCallback(() => {
-    // The field that is drawn: the line keeps its write field mounted, hidden, while it answers
-    // a question or edits a comment (`IssueComposer.tsx`), and a hidden field takes no caret.
+    // The field that is drawn: the line keeps its write field mounted, hidden, while it edits a
+    // comment (`IssueComposer.tsx`), and a hidden field takes no caret.
     const place = (left: number) => {
       const field = [...document.querySelectorAll<HTMLTextAreaElement>(COMPOSER_FIELD)].find(
         (one) => one.closest("[hidden]") === null
@@ -507,7 +508,7 @@ export interface ReplyItem {
  *  (`isStatement`), and never one of another document. It is no entry of the conversation, so
  *  what the line writes to it is a comment on the issue anchored to the statement, never a
  *  reply, and its row takes no thread read mark, since `conversationItem` answers none for it. */
-export interface StatementItem extends Pick<TreeNode, "author" | "source" | "text" | "tree"> {
+export interface StatementItem extends Pick<TreeNode, "author" | "text" | "tree"> {
   /** The document the statement is a block of, by the slug its node id names it by, which the
    *  server's `AnchorInput.artifact` takes as it takes an artifact's id. */
   readonly artifact: string;
@@ -524,30 +525,30 @@ export interface StatementItem extends Pick<TreeNode, "author" | "source" | "tex
  * a `StatementAnchor` - the document and the statement's whole words, with no occurrence, so
  * words the document holds twice are refused by the server (`ErrTargetAmbiguous`) rather than
  * anchored to the wrong block, and the statement's row, which a send from the line lands on -
- * and the item a Reply on that row aimed the line at, where one did. The box hands its composer
- * (`MentionComposer`'s `outline.anchor`) the anchor alone, so a held send stores those three
- * fields and never the statement's tree, and a line that mounts again over the send takes the
- * statement up with no item and still lands on its row.
+ * and the author of the row a Reply aimed the line from, where that row carries one. The box
+ * hands its composer (`MentionComposer`'s `outline.anchor`) the anchor alone, so a held send
+ * stores those three fields and never the statement's author, and a line that mounts again over
+ * the send takes the statement up with no author and still lands on its row.
  */
 export interface StatementTarget extends StatementAnchor {
-  /** The statement's row as a Reply on it handed it (`replyTo`): its author, which the target
-   *  line names, the words the row draws, the reading they were drawn from and their record.
-   *  Absent where the line took the statement up from a held send, whose target line names no
-   *  author. */
-  readonly item?: StatementItem;
+  /** The author the statement's row names (`TreeNode.author`), which the target line names.
+   *  Absent where the row carries none, and where the line took the statement up from a held
+   *  send, whose target line names no author. */
+  readonly author?: Actor;
   /** The statement's whole words as the server matches a quote against them: `wordsOf` its
    *  reading (`refs/tree-fragment.ts`), else its stored text where its read sent no reading. */
   readonly quote: string;
 }
 
 /** The statement the line comments on once a Reply on `item`'s row aims it there: the row's
- *  document, its whole words as the server matches a quote against them (`StatementTarget.quote`)
- *  and the row itself. The box reads the same rule off every statement row of the outline, so a
- *  draft it keeps for a statement is gone once no row reads as that statement any more. */
+ *  document, its author where it carries one, its whole words as the server matches a quote
+ *  against them (`StatementTarget.quote`) and the row itself. The box reads the same rule off
+ *  every statement row of the outline, so a draft it keeps for a statement is gone once no row
+ *  reads as that statement any more. */
 export function statementTargetOf(item: StatementItem): StatementTarget {
   return {
     artifact: item.artifact,
-    item,
+    ...(item.author === undefined ? {} : { author: item.author }),
     quote: item.tree === undefined ? item.text : wordsOf(item.tree),
     row: item.id,
   };
@@ -580,7 +581,6 @@ function statementItemOf(node: TreeNode): StatementItem | undefined {
     ...(node.author === undefined ? {} : { author: node.author }),
     id: node.id,
     kind: "statement",
-    ...(node.source === undefined ? {} : { source: node.source }),
     text: node.text,
     ...(node.tree === undefined ? {} : { tree: node.tree }),
   };

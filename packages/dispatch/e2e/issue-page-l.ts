@@ -89,6 +89,16 @@ export async function replyFromRow(page: Page, id: string, text: string): Promis
   await sendFromComposer(page, text);
 }
 
+/** Sends `words` from the box with the keyboard alone: `r` on node `id`'s row, the words, Enter.
+ *  Fails unless `r` puts the caret in the box. */
+export async function sendWithKeys(page: Page, id: string, words: string): Promise<void> {
+  await focusRow(page, id);
+  await page.keyboard.press("r");
+  await expect(composerField(page), "r put no caret in the box").toBeFocused();
+  await page.keyboard.type(words);
+  await page.keyboard.press("Enter");
+}
+
 /**
  * Whether `row` is on screen and clear of the box: I's `onScreen` (inside the viewport, under
  * what stays at the top of the screen and above the height the box publishes), and its bottom at
@@ -225,6 +235,21 @@ const AGENT = {
   as: "agent" as const,
 };
 
+/** Writes `count` one-line comments on issue `key` as `WRITER`, the `at`th of them reading
+ *  "Comment <at> of <of>, written by bob.", and hands back their ids, oldest first. */
+async function writeComments(key: string, count: number, of: string): Promise<string[]> {
+  const comments: string[] = [];
+  for (let at = 1; at <= count; at += 1) {
+    const comment = await createComment(
+      key,
+      { body: `Comment ${at} of ${of}, written by bob.` },
+      { login: WRITER }
+    );
+    comments.push(comment.id);
+  }
+  return comments;
+}
+
 export interface FortyCommentsSeed {
   /** The forty comments' ids, oldest first: the last is the outline's last row. */
   readonly comments: readonly string[];
@@ -255,15 +280,7 @@ export async function seedFortyComments(): Promise<FortyCommentsSeed> {
     },
     AGENT
   );
-  const comments: string[] = [];
-  for (let at = 1; at <= 40; at += 1) {
-    const comment = await createComment(
-      issue.key,
-      { body: `Comment ${at} of forty, written by bob.` },
-      { login: WRITER }
-    );
-    comments.push(comment.id);
-  }
+  const comments = await writeComments(issue.key, 40, "forty");
   return { comments, key: issue.key, question: question.id };
 }
 
@@ -390,15 +407,7 @@ export async function seedPastFifty(): Promise<PastFiftySeed> {
     { force: true, project: PROJECT, title: "More comments than the outline draws at once" },
     { login: WRITER }
   );
-  const comments: string[] = [];
-  for (let at = 1; at <= PAST_FIFTY; at += 1) {
-    const comment = await createComment(
-      issue.key,
-      { body: `Comment ${at} of ${PAST_FIFTY}, written by bob.` },
-      { login: WRITER }
-    );
-    comments.push(comment.id);
-  }
+  const comments = await writeComments(issue.key, PAST_FIFTY, `${PAST_FIFTY}`);
   return { comments, key: issue.key };
 }
 

@@ -14,7 +14,7 @@ import { MarginProvider } from "../margin/margin-context";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { useKeymapScope } from "../shell/keymap";
-import { KEY, node, SPEC_SOURCE, STATEMENT_WORDS } from "./composer-fixture";
+import { BOB, KEY, node, SPEC_SOURCE, STATEMENT_WORDS } from "./composer-fixture";
 import { IssueTree } from "./IssueTree";
 import type { TreeNode } from "./issue-tree";
 import {
@@ -131,10 +131,10 @@ beforeAll(async () => {
 });
 
 // R11 and decision 74: a statement is a target of the writer. Its item names the document by
-// the slug its node id holds and the block, with the words and the source its row draws; the
-// writer holds the anchor's quote, the statement's whole words as the server matches them, and
-// no reply, answer or edit beside it. Every other aim, and setting the line back to the issue,
-// ends it; and while a send of the line's own is out, nothing moves it, as nothing moves a reply.
+// the slug its node id holds and the block, with the words its row draws; the writer holds the
+// anchor's quote, the statement's whole words as the server matches them, and no reply, answer
+// or edit beside it. Every other aim, and setting the line back to the issue, ends it; and while
+// a send of the line's own is out, nothing moves it, as nothing moves a reply.
 test("r on a statement aims the writer at it, and every other aim ends it", async () => {
   const user = userEvent.setup();
   const tree = displayTree(STATEMENT_WORDS);
@@ -181,7 +181,6 @@ test("r on a statement aims the writer at it, and every other aim ends it", asyn
     artifact: "spec",
     id: "spec#b-r1",
     kind: "statement",
-    source: SPEC_SOURCE,
     text: STATEMENT_WORDS,
     tree,
   };
@@ -194,20 +193,18 @@ test("r on a statement aims the writer at it, and every other aim ends it", asyn
   });
   // A statement whose row carries an author hands it on with the item, for the box's target line
   // to name; one whose row carries none hands none.
-  const bob = { id: "bob", kind: "user" } as const;
-  expect(replyItemOf({ ...unread, author: bob })).toEqual({
+  expect(replyItemOf({ ...unread, author: BOB })).toEqual({
     artifact: "spec",
-    author: bob,
+    author: BOB,
     id: "spec#b-r2",
     kind: "statement",
     text: "The box takes the focus.",
   });
   expect(replyItemOf(statement)).not.toHaveProperty("author");
   // The statement's words with no mark of markdown, its two paragraphs one space apart, and its
-  // row, which a comment on it lands on.
+  // row, which a comment on it lands on. Its row carries no author, so the writer holds none.
   const aimed: StatementTarget = {
     artifact: "spec",
-    item,
     quote: "The page draws one box. It sits at the foot.",
     row: "spec#b-r1",
   };
@@ -335,12 +332,14 @@ test("r on a statement aims the writer at it, and every other aim ends it", asyn
 // change of answer, an Edit - leaves the writer on that statement, so the refused words are
 // neither replaced by another target's seed nor sent under another target, as a refused reply
 // holds its reply (`redirectedReplyTarget`). A writer that mounts again over the refused send
-// takes its statement up from it - the document, the words and the row the send keeps - and a
-// Reply on that same statement takes its row's whole target again.
+// takes its statement up from it - the document, the words and the row the send keeps, and no
+// author - and a Reply on that same statement takes its row's whole target again, the author its
+// row names with it.
 test("a refused comment on a statement holds the writer on it, and a writer mounted again takes it up", async () => {
   const tree = displayTree(STATEMENT_WORDS);
   if (tree === undefined) throw new Error("the engine read no statement");
   const statement = node({
+    author: BOB,
     id: "spec#b-r1",
     reference: `dispatch://${KEY}/spec#b-r1`,
     source: SPEC_SOURCE,
@@ -387,14 +386,7 @@ test("a refused comment on a statement holds the writer on it, and a writer moun
   ];
   const aimed: StatementTarget = {
     artifact: "spec",
-    item: {
-      artifact: "spec",
-      id: "spec#b-r1",
-      kind: "statement",
-      source: SPEC_SOURCE,
-      text: STATEMENT_WORDS,
-      tree,
-    },
+    author: BOB,
     quote: "The page draws one box. It sits at the foot.",
     row: "spec#b-r1",
   };
