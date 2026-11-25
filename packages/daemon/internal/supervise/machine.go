@@ -1300,9 +1300,10 @@ func (d Deps) check() error {
 // of any outage worth the name. A database that stops answering holds the machine's lock for up to
 // about twice this per bounded call that holds a connection, and for at most defaultClaimAcquire,
 // this and the commit's settle together (37 s) for one that queues first, the bounds
-// store.BoundAfterAcquire states. A call this bound cuts after the pool handed it a connection is
-// made once more at once (write, claimWriteTries, cutByBound), so such a write holds the lock for up
-// to twice that before it is owed; a call whose queue wait ran out is owed at once.
+// store.BoundAfterAcquire states. A call this bound cuts after the database was handed it (its
+// BEGIN answered) is made once more at once (write, claimWriteTries, cutByBound), so such a write
+// holds the lock for up to twice that before it is owed; a dial, a queue wait or a BEGIN the bound
+// cut is owed at once.
 // The write a second cut leaves is not lost: a bare context deadline is a write the server never
 // answered, which writeOwed owes, so the claim write is marked and made again at the claim's next
 // decision (owes, repair).
@@ -4600,26 +4601,40 @@ func (m *Machine) forgetSend() {
 // nothing after it. The deadline is what keeps a database that has stopped answering from holding
 // the machine's lock for the length of the outage.
 //
-// A call the deadline cut short while the decision's own context still runs is made once more, at
-// once, under a fresh deadline (claimWriteTries, cutByBound): one write a loaded database answered
-// past defaultClaimWrite then costs its decision nothing. Before, such a write was owed and made
-// again only at the claim's next decision, and the decisions that wait on their write came back
-// far later than the database did: a launch whose write as launching was cut was tried again at
-// the probe interval (writeTry, relaunchAtProbe), and the boot's release of an uncertain launch at
-// the daemon's next orphan sweep (ReleaseUncertainLaunch; dispatch://INFRA-3904). Every call that
-// comes here can be made twice, because a cut call's commit may have landed whatever its answer
-// said, which is why the repair already makes it again (writeOwed). A second cut is owed as every
-// write the database did not take is (owes, repair). A failure that is not such a cut — a
-// connection that broke, a statement refused, a refusal of the store's own, and a write whose wait
-// in the store's pool queue ran out its bound (defaultClaimAcquire), which the database never began
-// — is answered at once and is not made again here, so an outage that refuses connections, or a
-// pool that admits no write, costs each write no second try.
+// A call the deadline cut short after the database was handed it, while the decision's own context
+// still runs, is made once more, at once, under a fresh deadline (claimWriteTries, cutByBound): one
+// write a loaded database answered past defaultClaimWrite then costs its decision nothing. Before,
+// such a write was owed and made again only at the claim's next decision, and the decisions that
+// wait on their write came back far later than the database did: a launch whose write as launching
+// was cut was tried again at the probe interval (writeTry, relaunchAtProbe), and the boot's release
+// of an uncertain launch at the daemon's next orphan sweep (ReleaseUncertainLaunch;
+// dispatch://INFRA-3904). A call made again may have been applied the first time, whatever its
+// answer said, which is why the repair already makes such a write again (writeOwed); a call whose
+// answer is what the first try changed is not made again (writeOnce). A second cut is owed as every
+// write the database did not take is (owes, repair). Any other failure — a dial the bound cut, a
+// wait in the store's pool queue that ran out its bound (defaultClaimAcquire), a connection that
+// broke or was refused, a statement refused, a refusal of the store's own — is answered at once
+// and is not made again here: none of them reached the database, or the database answered it, so
+// a database that answers no dial, or a pool that admits no write, costs each write one bound.
 func (m *Machine) write(ctx context.Context, call func(context.Context) error) error {
+	return m.writeTries(ctx, claimWriteTries, call)
+}
+
+// writeOnce is write for a call whose answer reads what its first try changed, made at most once: a
+// second try after a cut whose first try was applied would answer as though the first had changed
+// nothing. Its one caller is ReleaseNames, whose ReleaseHolds answers the names it freed.
+func (m *Machine) writeOnce(ctx context.Context, call func(context.Context) error) error {
+	return m.writeTries(ctx, 1, call)
+}
+
+// writeTries makes call under the claim-write deadline (bounded) up to tries times, the later tries
+// only after a cut of a call the database was handed (cutByBound).
+func (m *Machine) writeTries(ctx context.Context, tries int, call func(context.Context) error) error {
 	for try := 1; ; try++ {
 		writing, cancel := m.bounded(ctx)
 		err := call(writing)
 		cancel()
-		if err == nil || try == claimWriteTries || !cutByBound(ctx, err) {
+		if err == nil || try >= tries || !cutByBound(ctx, err) {
 			return err
 		}
 		m.log.Warn(claimWriteAgainLine, "try", try, "bound", m.deps.claimWrite(), "error", err)
@@ -4632,19 +4647,18 @@ func (m *Machine) write(ctx context.Context, call func(context.Context) error) e
 // holding its lock through a third bound.
 const claimWriteTries = 2
 
-// cutByBound is whether err is a store call that the claim-write bound ended after the database
-// was handed it (bounded): a deadline, while the decision's own context still runs, that is not
-// the end of the call's wait in the store's pool queue. The store answers that wait's end with an
-// error that answers QueueWait (store's errAcquireBound); such a write never reached the database,
-// and waiting the queue's 30 s again would hold the machine's lock a minute for a pool that admits
-// nothing, so it is owed at once. A call the daemon's stop ended carries the stop's cancellation,
-// or a deadline once ctx has ended, and is not made again either: the daemon is going.
+// cutByBound is whether err is a store call that the claim-write bound ended after the database was
+// handed it: a deadline, while the decision's own context still runs, on an error that answers
+// WriteBegun. The store marks every error of a transaction whose BEGIN the database answered so
+// (store's writeBegun) and no error before that, so a dial the bound cut, a wait in the pool's
+// queue that ran out, and a BEGIN that never came back are not made again: the database was never
+// handed the write, and a second try would hold the machine's lock another bound for a database
+// that answers nothing. This reads a fact the store states, not the absence of one. A call the
+// daemon's stop ended carries the stop's cancellation, or a deadline once ctx has ended, and is
+// not made again either: the daemon is going.
 func cutByBound(ctx context.Context, err error) bool {
-	var queued interface{ QueueWait() bool }
-	if errors.As(err, &queued) && queued.QueueWait() {
-		return false
-	}
-	return ctx.Err() == nil && errors.Is(err, context.DeadlineExceeded)
+	var begun interface{ WriteBegun() bool }
+	return ctx.Err() == nil && errors.Is(err, context.DeadlineExceeded) && errors.As(err, &begun) && begun.WriteBegun()
 }
 
 // bounded is ctx for one bounded store call of a decision: the wait in the store's pool queue

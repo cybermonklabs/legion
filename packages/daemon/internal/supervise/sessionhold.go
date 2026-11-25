@@ -253,7 +253,9 @@ func (m *Machine) ReleaseNames(ctx context.Context) (ReleasedNames, error) {
 	if mark {
 		c.Abandoned.Released, released.Abandoned = m.deps.Clock.Now(), a.Session
 	}
-	err = m.write(ctx, func(ctx context.Context) error {
+	// Made once (writeOnce): a second try after a cut whose first try freed the names would free
+	// none and answer an empty Freed as a success, losing the names the first try freed.
+	err = m.writeOnce(ctx, func(ctx context.Context) error {
 		var err error
 		released.Freed, err = m.deps.Store.ReleaseHolds(ctx, c, free)
 		return err

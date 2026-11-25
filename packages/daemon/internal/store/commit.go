@@ -160,21 +160,33 @@ func (b *afterAcquire) notBegun(ctx, acquiring context.Context, err error) error
 }
 
 // errAcquireBound is a bounded transaction (BoundAfterAcquire) that waited its whole acquire bound
-// in the pool's queue and was handed no connection. It answers QueueWait, which supervise reads
-// (its cutByBound) to tell a write the pool never began, which it leaves owed at once, from a
-// write the database answered past its write bound, which it makes once more: supervise cannot
-// import this package.
-var errAcquireBound error = acquireBoundError{}
+// in the pool's queue and was handed no connection.
+var errAcquireBound = errors.New("store: the pool handed out no connection within the wait for one")
 
-// acquireBoundError is errAcquireBound's type.
-type acquireBoundError struct{}
-
-func (acquireBoundError) Error() string {
-	return "store: the pool handed out no connection within the wait for one"
+// writeBegun is err, an error of a transaction whose BEGIN the database answered, marked as one
+// (WriteBegun): the database was handed the write, so the write may have been applied however its
+// answer ended. Every error TransactWith answers once its transaction has begun carries the mark,
+// and no error before it does: a dial, a wait in the pool's queue or a BEGIN that the write bound
+// or the acquire bound cut never reached the write. supervise reads the mark (its cutByBound) to
+// make again, once, a claim write its bound cut after the database was handed it, and only that:
+// supervise cannot import this package. nil stays nil.
+func writeBegun(err error) error {
+	if err == nil {
+		return nil
+	}
+	return begunError{err}
 }
 
-// QueueWait reports that the bound which ended the call was its wait in the pool's queue.
-func (acquireBoundError) QueueWait() bool { return true }
+// begunError is writeBegun's mark around the error it carries, which errors.Is and errors.As still
+// read through it.
+type begunError struct{ err error }
+
+func (e begunError) Error() string { return e.err.Error() }
+
+func (e begunError) Unwrap() error { return e.err }
+
+// WriteBegun reports that the transaction the error ended had begun.
+func (begunError) WriteBegun() bool { return true }
 
 // commitHooksKey is the context key a TransactWith scope lives under. It is named only where a
 // scope is stored or read: TransactWith stores the one scope that holds hooks, scopeOf reads it,
@@ -323,17 +335,21 @@ func ReadOnly[T any](ctx context.Context, pool TxPool, what string, read func(ct
 //     transaction committed (watchOutcome).
 //
 // So a caller whose context ends waits at most CommitSettleBound more for its commit's outcome.
-func TransactWith(ctx context.Context, pool TxPool, options pgx.TxOptions, write func(ctx context.Context, tx pgx.Tx) error) error {
+//
+// Every error it answers once the transaction has begun, a join's included, carries writeBegun's
+// mark; an error of the BEGIN itself, or of the wait and the dial before it, does not.
+func TransactWith(ctx context.Context, pool TxPool, options pgx.TxOptions, write func(ctx context.Context, tx pgx.Tx) error) (err error) {
 	bound := afterAcquireOf(ctx)
 	if open := scopeOf(ctx); open != nil && open.writing.Load() {
 		joining, stop := bound.writing(ctx)
 		defer stop()
-		return open.join(joining, pool, options, write)
+		return writeBegun(open.join(joining, pool, options, write))
 	}
 	tx, err := pool.BeginTx(ctx, options)
 	if err != nil {
 		return err
 	}
+	defer func() { err = writeBegun(err) }()
 	ctx, stopBound := bound.running(ctx, tx)
 	defer stopBound()
 	committing, stop := commitContext(ctx)
