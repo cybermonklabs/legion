@@ -47,13 +47,19 @@ const ServingFloor = 46
 // TestSupportedContractsAreTheNumberedEntriesFromTheFloorUp (`version_test.go`) reads the entry
 // headers out of version.go and holds this list to them in both directions.
 //
-// 193, 202, 205, 213, 219, 220, 228, 246, 250, 256, 275, 297 and 298 are constants rather than
-// their numbers, because the entries that added them name them. A renumber changes that entry, its
-// constant and this list together: moving either one alone would describe a shape at a contract
-// no entry declares. The last entry is strandedTokenContract, after deploymentRolesContract, which
-// follows dispatchCredentialContract. The other entries above 193 follow them as numbers: 199, 217
-// and 232.
-var SupportedContracts = []int{46, 48, 49, 51, 52, 53, 54, 55, 56, 57, 58, 59, 62, 64, 68, 73, 75, 85, 86, 87, 94, 98, 104, 111, 123, 132, 133, 137, 141, 144, 146, 151, 152, 160, 168, 178, 188, 189, shapedAnswersContract, 199, repositoriesLiveContract, childRouteRemovedContract, cachesSourceContract, 217, OwnerPlanContract, assignmentPlanContract, intakeGiveUpsContract, 232, podHoldContract, priorityContract, causeTimesContract, dispatchCredentialContract, deploymentRolesContract, strandedTokenContract}
+// 193, 202, 205, 213, 219, 220, 228, 246, 250, 256, 275 and 297 are constants rather than their
+// numbers, because the entries that added them name them (shapedAnswersContract, the shaped
+// answers' entry; repositoriesLiveContract, dispatch://INFRA-4401's; childRouteRemovedContract,
+// dispatch://INFRA-3178's; cachesSourceContract, dispatch://INFRA-4036's; OwnerPlanContract, the
+// owner's plan's; assignmentPlanContract, the experiment group's; priorityContract, the waiting
+// line's priority's; intakeGiveUpsContract, dispatch://INFRA-1575's; podHoldContract, the pod
+// hold's; causeTimesContract, the claim views' cause times, #5349's; dispatchCredentialContract,
+// the Dispatch credential's; and deploymentRolesContract, the deployment roles', the last entry): a
+// renumber of any of those entries moves its constant and this list with it, and moving one alone
+// would describe a shape at a contract no entry declares. The other entries above 193 follow them
+// as numbers: 199 is version.go's entry for INFRA-4605, 217 its entry for dispatch://INFRA-3531
+// and dispatch://INFRA-4567, and 232 its entry for dispatch://INFRA-4508.
+var SupportedContracts = []int{46, 48, 49, 51, 52, 53, 54, 55, 56, 57, 58, 59, 62, 64, 68, 73, 75, 85, 86, 87, 94, 98, 104, 111, 123, 132, 133, 137, 141, 144, 146, 151, 152, 160, 168, 178, 188, 189, shapedAnswersContract, 199, repositoriesLiveContract, childRouteRemovedContract, cachesSourceContract, 217, OwnerPlanContract, assignmentPlanContract, intakeGiveUpsContract, 232, podHoldContract, priorityContract, causeTimesContract, dispatchCredentialContract, deploymentRolesContract}
 
 // AnswerID names one answer a plugin parses. It is stable: every write of this package goes
 // through `shapeAnswer(id, …)`, so the id outlives the route that happens to carry the answer
@@ -343,15 +349,6 @@ var stateEnumeratedFields = []EnumeratedField{
 	// LEGION_CLAIM_STATES). The architect's view and each worker's carry the one field.
 	{Answer: AnswerState, KeyPath: "issues.*.architect.state", Values: claimViewStates},
 	{Answer: AnswerState, KeyPath: "issues.*.workers.*.claim.state", Values: claimViewStates},
-	// An issue's other claims (api.Issue.OtherClaims, contract 298) carry the same claim view, so
-	// each of its enumerated fields is declared again under `otherClaims`. The key arrived at 298
-	// and a caller below it is served no `otherClaims` at all (shaping.go's withoutClaimTokens), so
-	// each list is recorded from that contract (arrivedWith).
-	{Answer: AnswerState, KeyPath: "issues.*.otherClaims.*.claim.state", Values: arrivedWith(strandedTokenContract, claimViewStates)},
-	{Answer: AnswerState, KeyPath: "issues.*.otherClaims.*.claim.updateState", Values: arrivedWith(strandedTokenContract, updateStates)},
-	{Answer: AnswerState, KeyPath: "issues.*.otherClaims.*.claim.failure.cause", Values: arrivedWith(strandedTokenContract, failureCauses)},
-	{Answer: AnswerState, KeyPath: "issues.*.otherClaims.*.claim.pendingCause", Values: arrivedWith(strandedTokenContract, failureCauses)},
-	{Answer: AnswerState, KeyPath: "issues.*.otherClaims.*.claim.pendingTask.phase", Values: arrivedWith(strandedTokenContract, workflowPhases)},
 	// `updateState` of a claim view, where the claim's update round stands
 	// (api.ClaimView.UpdateState). shapedAnswersContract's own key, served down below that
 	// contract with the rest of the round report (shaping.go's withoutClaimRoundReport).
