@@ -22,14 +22,7 @@ import {
   userHeaders,
 } from "./api";
 import { seedWholeIssue, type WholeIssueSeed } from "./issue-layout-seed";
-import {
-  asPlanner,
-  awaitBlockAsk,
-  HEAD_SHA,
-  pause,
-  readTree,
-  recorderActor,
-} from "./issue-layout-seed-support";
+import { asPlanner, HEAD_SHA, pause, readTree, recorderActor } from "./issue-layout-seed-support";
 import { OPEN_QUESTION_BLOCK_ID, requirementText } from "./issue-layout-seed-text";
 import { issuePage, presetCount, presetRow } from "./issue-page";
 import { type Gate, OWED_BY } from "./issue-page-t-tree";
@@ -406,7 +399,7 @@ export interface NodeStateIds {
    *  stays live. */
   readonly openQuestion: string;
   /** The block `OVERTAKEN_QUESTION_ID`, by which the page draws its question's one row: the block
-   *  stays live, and the ask it was indexed into (`NodeStateSeed.questionAskId`), which waits on
+   *  stays live, and the ask it was indexed into (`NodeStateSeed.overtakenAskId`), which waits on
    *  alice, is overtaken. */
   readonly overtakenQuestion: string;
   readonly planTask1: string;
@@ -437,17 +430,17 @@ export interface NodeStateIds {
 export const PROPOSED_NODES = ["statement7", "check2", "decision1", "planTask1"] as const;
 export const OVERTAKEN_NODES = ["statement8", "planTask2", "check4", "waitingDecision"] as const;
 
-/** The questions whose state `seedNodeStates` writes by their ask's address. A question written
- *  as an `ask` block is two nodes of the tree read, the block and the ask indexed from it: the
- *  ask's node is the question, whose state the page draws on the question's one row, and the
- *  block is only its place in the spec, which stays live. */
-export const QUESTIONS = ["overtakenQuestion", "proposedQuestion"] as const;
+/** The questions whose state `seedNodeStates` writes by their ask's address, by the state each is
+ *  written at. A question written as an `ask` block is two nodes of the tree read, the block and
+ *  the ask indexed from it: the ask's node is the question, whose state the page draws on the
+ *  question's one row, and the block is only its place in the spec, which stays live. */
+export const QUESTIONS = { overtakenQuestion: "overtaken", proposedQuestion: "proposed" } as const;
 
 /** One node `seedNodeStates` writes the state of. */
 type StatedNode =
   | (typeof PROPOSED_NODES)[number]
   | (typeof OVERTAKEN_NODES)[number]
-  | (typeof QUESTIONS)[number];
+  | keyof typeof QUESTIONS;
 
 /** What `seedNodeStates` wrote on the issue `whole` made. */
 export interface NodeStateSeed {
@@ -458,12 +451,12 @@ export interface NodeStateSeed {
   readonly answer: IssueTreeRead;
   readonly ids: NodeStateIds;
   readonly lens: LensInvoked;
+  /** The id of the ask the overtaken question was indexed into: the read id of its ask's node, and
+   *  what `/asks/<id>` names it by. */
+  readonly overtakenAskId: string;
   /** The id of the ask the proposed question was indexed into: the read id of its ask's node, and
    *  what `/asks/<id>` names it by. */
   readonly proposedAskId: string;
-  /** The id of the ask the overtaken question was indexed into: the read id of its ask's node, and
-   *  what `/asks/<id>` names it by. */
-  readonly questionAskId: string;
   readonly whole: WholeIssueSeed;
 }
 
@@ -557,11 +550,20 @@ export async function seedNodeStates(whole: WholeIssueSeed): Promise<NodeStateSe
     asPlanner
   );
   expect(asked.applied, "the spec does not take the questions made overtaken and proposed").toBe(1);
-  const questionAskId = await awaitBlockAsk(key, OVERTAKEN_QUESTION_ID);
-  const proposedAskId = await awaitBlockAsk(key, PROPOSED_QUESTION_ID);
-  const proposedAsk = ((await getIssue(key)).open_asks ?? []).find(
-    (ask) => ask.id === proposedAskId
+  // Both questions go in in one edit, so one read of the issue that holds both their asks names
+  // each, and whom the proposed one waits on.
+  const [overtakenAsk, proposedAsk] = await readUntil(
+    async () => {
+      const open = (await getIssue(key)).open_asks ?? [];
+      return [OVERTAKEN_QUESTION_ID, PROPOSED_QUESTION_ID].map((block) =>
+        open.find((ask) => ask.block_id === block)
+      );
+    },
+    (found) => found.every((ask) => ask !== undefined),
+    `the issue read of ${key} never holds the asks of the questions made overtaken and proposed`
   );
+  const overtakenAskId = overtakenAsk?.id ?? "";
+  const proposedAskId = proposedAsk?.id ?? "";
   expect(
     { on: proposedAsk?.waiting_on, person: proposedAsk?.waiting_on_person },
     "the second question is no open question that waits on alice"
@@ -570,7 +572,7 @@ export async function seedNodeStates(whole: WholeIssueSeed): Promise<NodeStateSe
   // the node a `parent` pointer takes (`conversationKinds`), and the one whose state the page
   // draws on the question's one row, drawn from its block.
   const askAddress = (id: string) => buildDispatchReference({ id, key, kind: "ask" });
-  const parent = askAddress(questionAskId);
+  const parent = askAddress(overtakenAskId);
   const under = await editArtifact(
     whole.specArtifactId,
     {
@@ -635,7 +637,7 @@ export async function seedNodeStates(whole: WholeIssueSeed): Promise<NodeStateSe
     QUESTION_CRITERION_ID,
     QUESTION_STATEMENT_ID,
   ];
-  const asks = [questionAskId, proposedAskId];
+  const asks = [overtakenAskId, proposedAskId];
   const before = await readUntil(
     () => readTree(key, null),
     (read) => {
@@ -694,7 +696,7 @@ export async function seedNodeStates(whole: WholeIssueSeed): Promise<NodeStateSe
     check2: addressIn(nodes.check2, key),
     check4: addressIn(nodes.check4, key),
     decision1: addressIn(nodes.decision1, key),
-    overtakenQuestion: askAddress(questionAskId),
+    overtakenQuestion: askAddress(overtakenAskId),
     planTask1: addressIn(nodes.planTask1, key),
     planTask2: addressIn(nodes.planTask2, key),
     proposedQuestion: askAddress(proposedAskId),
@@ -711,11 +713,13 @@ export async function seedNodeStates(whole: WholeIssueSeed): Promise<NodeStateSe
   });
   for (const name of PROPOSED_NODES) await writeNodeState(key, addresses[name], "proposed");
   for (const name of OVERTAKEN_NODES) await writeNodeState(key, addresses[name], "overtaken");
-  const questions = [
-    ["overtakenQuestion", questionAskId, "overtaken"],
-    ["proposedQuestion", proposedAskId, "proposed"],
-  ] as const satisfies readonly (readonly [(typeof QUESTIONS)[number], string, WrittenState])[];
-  for (const [name, , state] of questions) await writeNodeState(key, addresses[name], state);
+  const askIds: Readonly<Record<keyof typeof QUESTIONS, string>> = {
+    overtakenQuestion: overtakenAskId,
+    proposedQuestion: proposedAskId,
+  };
+  for (const name of Object.keys(QUESTIONS) as (keyof typeof QUESTIONS)[]) {
+    await writeNodeState(key, addresses[name], QUESTIONS[name]);
+  }
 
   const answer = await readTree(key, null);
   const stateOf = (id: string) => answer.nodes?.find((one) => one.id === id)?.state;
@@ -729,10 +733,12 @@ export async function seedNodeStates(whole: WholeIssueSeed): Promise<NodeStateSe
       "overtaken"
     );
   }
-  for (const [name, askId, state] of questions) {
-    expect(stateOf(askId), `the tree read does not answer ${name}'s ask's node ${state}`).toBe(
-      state
-    );
+  for (const name of Object.keys(QUESTIONS) as (keyof typeof QUESTIONS)[]) {
+    const state = QUESTIONS[name];
+    expect(
+      stateOf(askIds[name]),
+      `the tree read does not answer ${name}'s ask's node ${state}`
+    ).toBe(state);
     expect(stateOf(nodes[name].id), `the tree read does not answer ${name}'s block live`).toBe(
       "live"
     );
@@ -758,7 +764,7 @@ export async function seedNodeStates(whole: WholeIssueSeed): Promise<NodeStateSe
     expect(
       answer.nodes?.find((one) => one.id === id)?.parent?.id,
       `the tree read does not stand the ${what} under the overtaken question's ask`
-    ).toBe(questionAskId);
+    ).toBe(overtakenAskId);
   }
   return {
     addresses,
@@ -784,8 +790,8 @@ export async function seedNodeStates(whole: WholeIssueSeed): Promise<NodeStateSe
       waitingDecision: nodes.waitingDecision.id,
     },
     lens,
+    overtakenAskId,
     proposedAskId,
-    questionAskId,
     whole,
   };
 }
@@ -1229,6 +1235,19 @@ export function closedIdsOf(answer: IssueTreeRead): ReadonlySet<string> {
   return new Set((answer.nodes ?? []).filter((node) => closedOf(node)).map((node) => node.id));
 }
 
+/** The rows of the page's tree as it opened, read once it draws a row: the caller waited for its
+ *  load to settle. */
+async function rowsAsOpened(page: Page): Promise<TreeItem[]> {
+  await expect
+    .poll(async () => (await treeItemsDrawn(page)).length, {
+      message: "the page draws no row of the outline to read its folds on",
+    })
+    .toBeGreaterThan(0);
+  // The caller waited for its load to settle, and the poll above for a row, so one read of the
+  // rows is the page as it opened.
+  return treeItemsDrawn(page);
+}
+
 /**
  * Whether the page opens with every node drawn open (part T's R11), read once, on the page as it
  * opened and before any press, of the issue whose tree read is `answer`: no row of a node that is
@@ -1239,15 +1258,8 @@ export function closedIdsOf(answer: IssueTreeRead): ReadonlySet<string> {
  * node folded fails the readings of that node and does not turn them owed.
  */
 export async function drawnOpenGate(page: Page, answer: IssueTreeRead): Promise<Gate> {
-  await expect
-    .poll(async () => (await treeItemsDrawn(page)).length, {
-      message: "the page draws no row of the outline to read its folds on",
-    })
-    .toBeGreaterThan(0);
   const closed = closedIdsOf(answer);
-  // The caller waited for its load to settle, and the poll above for a row, so one read of the
-  // rows is the page as it opened.
-  const rows = (await treeItemsDrawn(page)).filter(
+  const rows = (await rowsAsOpened(page)).filter(
     (item) => item.readId === null || !closed.has(item.readId)
   );
   // A branch below the drawn levels stands as one line the moment the rows are drawn, so this
@@ -1300,15 +1312,8 @@ export async function openOnLoadGate(
   page: Page,
   { answer, levels, readId, treeId, what }: PlaceOnLoad
 ): Promise<Gate> {
-  await expect
-    .poll(async () => (await treeItemsDrawn(page)).length, {
-      message: "the page draws no row of the outline to read its folds on",
-    })
-    .toBeGreaterThan(0);
   const closed = new Set([...closedIdsOf(answer)].map(treeId));
-  // The caller waited for its load to settle, and the poll above for a row, so one read of the
-  // rows is the page as it opened.
-  const rows = await treeItemsDrawn(page);
+  const rows = await rowsAsOpened(page);
   // A node whose row the load does not draw stands in no place an opening draws the rows of.
   const level = rows.find((item) => item.readId === readId)?.level ?? Number.POSITIVE_INFINITY;
   const within = level < levels;
