@@ -658,6 +658,11 @@ func TestEveryRolePartCarriesItsGuidanceRule(t *testing.T) {
 		// the work back to an implementer who cannot cure it. The final gate points at that rule.
 		{"reviewer.md", "Wait for a `ci_check` run still going or unread, and send a name no run answers to the architect."},
 		{"reviewer.md", "A `ci_check` check with no pass takes the end-of-round rule above, with its three cases."},
+		// A held-back job without its label has no run of the name a check gives it: a job of a
+		// called workflow whose caller is skipped never starts. That is the implementer's to cure
+		// with the label, so the reviewer requests changes for it rather than send it on as a
+		// check with wrong words (skill://legion-worker/references/ci-checks.md).
+		{"reviewer.md", "A `ci_check` check that names a job held back without its label has no pass standing even when no run answers its name: request changes for it, since the label cures it."},
 	} {
 		if !strings.Contains(rolePart(t, pin.file), pin.rule) {
 			t.Errorf("%s does not contain %q", pin.file, pin.rule)

@@ -247,6 +247,7 @@ func TestAClaimWhoseRoleStoreStopsAnsweringIsAnsweredInsideTheBudget(t *testing.
 // of store answers, a store answer wrapped alone, and a store answer wrapped with its detail by one
 // fmt.Errorf (an unreadable record and its decode error) are each still the store's answer.
 func TestAJoinedStoreErrorIsTheStoresAnswerOnlyWhenEveryPartIs(t *testing.T) {
+	t.Parallel()
 	dropped := &net.OpError{Op: "read", Net: "tcp", Err: errors.New("connection reset by peer")}
 	for _, c := range []struct {
 		name     string

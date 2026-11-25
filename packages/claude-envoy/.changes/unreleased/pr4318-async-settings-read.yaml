@@ -1,0 +1,10 @@
+kind: Fixed
+body: |-
+  A `!` token command in envoy.json no longer holds the channel server or a hook while it runs: the
+  server's start, a delivery's reply, the router of a person's messages, the session hook and
+  `envoy-send` each wait for the settings read without stopping the process's timers, deliveries
+  and NATS pings for up to the command's 10 s. The files they read (envoy.json, a token file, a
+  Legion pane's boot token file) are read without holding the process either.
+time: 2026-11-17T12:31:04Z
+custom:
+  Issue: pr4318

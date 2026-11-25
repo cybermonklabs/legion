@@ -587,6 +587,19 @@ test("a tester's fail sends return_to as returnTo", async () => {
   expect(posted.at(-1)).not.toHaveProperty("returnTo");
 });
 
+// The description is where the tester reads what its fail may carry and what the daemon refuses:
+// the field and the daemon's three codes, each by name.
+test("the description names return_to and the daemon's three refusals of it", () => {
+  const description = legionToolDescription({ envoyPublish: "envoy_publish" });
+  const missing = namesMissing(description, [
+    "`return_to`",
+    "RETURN_TO_NEEDS_FAIL",
+    "INVALID_RETURN_TO",
+    "RETURN_REFUSED",
+  ]);
+  expect(missing).toEqual([]);
+});
+
 // A host that carries request_backward_move or read_build states it in its own text with the
 // sentence `PHASE_OP_SENTENCES` gives it. The move's sentence names the move's fields, each
 // backticked, and accepting, the phase an architect moves its issue back from; the build's names

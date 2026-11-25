@@ -33,9 +33,9 @@
 // that role. A marker planted in the snapshot would need a write between the boot's New and the
 // launch's read of the parts, and this rig has no such moment: New rewrites every snapshot file
 // that does not hold its embedded bytes, and the boot relaunches the three seeded claims at once.
-// The unit tests of internal/prompts compose each role's parts, but none of them starts a
-// process, so none says a role process was ever launched with them, and that is what this proof
-// is for.
+// The unit tests of internal/prompts compose each role's parts (prompts_test.go's composition
+// table and common_part_test.go's planted markers), but none of them starts a process, so none
+// says a role process was ever launched with them, and that is what this proof is for.
 //
 // The daemon is the whole daemon: run, the function `legion start` calls, through this package's
 // own whole-daemon harness (startDaemonWithin) over the live-proof fixture (live_proof_test.go).
