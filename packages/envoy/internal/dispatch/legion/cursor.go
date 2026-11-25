@@ -177,13 +177,9 @@ type cursor struct {
 	previousStateURL *string
 	foreignStateIDs  []string
 	// releasedHolders is the stream sequence of each message whose hold of the owed read a write of
-	// the setting that named another URL, or a delete of the setting, ended (settingWritten),
-	// whatever daemon the cursor followed, none included: the newest last, maxReleasedHolders at
-	// the most, and empty, never nil, for none. Each is finished unapplied at its next delivery
-	// while the project has a setting, and that delivery takes its own sequence out and no other
-	// (releases, endHold). After a delete, a record can stay until maxReleasedHolders newer records
-	// push it out (reset). Past maxReleasedHolders the oldest record goes: its message is judged as
-	// any other.
+	// the setting that named another URL, or a delete of the setting, ended (settingWritten): the
+	// newest last, maxReleasedHolders at the most, and empty, never nil, for none. reset holds the
+	// rule of when a record is added and when it goes; endHold takes one out.
 	releasedHolders []int64
 }
 
@@ -192,12 +188,8 @@ type cursor struct {
 // read again, at most once a ReadRetryAfter.
 const maxForeignStores = 8
 
-// maxReleasedHolders is how many messages a cursor records as released (releasedHolders): each a
-// message whose hold a write of another URL or a delete of the setting ended, until its next
-// delivery while the project has a setting; after a delete, a record whose message comes back
-// before a new setting can stay until newer records push it out. Past it the oldest record goes
-// (reset): that message is judged as any message at its next delivery, which applies nothing of a
-// store other than the cursor's, and it may hold a read again from a count of 1.
+// maxReleasedHolders is how many records of released holders a cursor keeps (releasedHolders, by
+// the rule cursor.reset holds).
 const maxReleasedHolders = 8
 
 // maxSkippedStores is how many stores a cursor keeps the highest sequence skipped past
@@ -494,10 +486,9 @@ func (c cursor) marking(stateID string) []string {
 	return marked(c.foreignStateIDs, stateID, maxForeignStores)
 }
 
-// releases reports whether the message at stream sequence seq is one whose hold of the owed read a
-// write of the setting ended (releasedHolders). Its record goes at the message's next delivery
-// while the project has a setting, and after a delete can stay until maxReleasedHolders newer
-// records push it out (cursor.reset). 0, a message with no JetStream metadata, is none.
+// releases reports whether the message at stream sequence seq is among the cursor's released
+// holders (releasedHolders, by the rule cursor.reset holds). 0, a message with no JetStream
+// metadata, is none.
 func (c cursor) releases(seq int64) bool {
 	return seq != 0 && slices.Contains(c.releasedHolders, seq)
 }
@@ -762,8 +753,12 @@ func resetCursor(ctx context.Context, tx pgx.Tx, project, before, stateURL strin
 //     its next delivery, which takes its own record out and no other, and marks its store as no
 //     daemon of the project unless it is the store recorded below or the cursor's own
 //     (cursor.releases, endHold). While the project has no setting, its messages are dropped
-//     before the cursor is read, so such a record stays (DeleteSettings). Past maxReleasedHolders
-//     the oldest record goes (marked): that message is judged as any message at its next delivery.
+//     before the cursor is read, so after a delete a record can stay until maxReleasedHolders
+//     newer records push it out; a take-over's replay can deliver its message again after a new
+//     setting, and that delivery takes the record out (DeleteSettings). Past maxReleasedHolders
+//     the oldest record goes (marked): that message is judged as any message at its next
+//     delivery, which applies nothing of a store other than the cursor's, and it may hold a read
+//     again from a count of 1.
 //   - previousStateID and previousStateURL are none where the write names the URL recorded there
 //     (row 6.4): the daemon recorded is the setting's again, and its messages are judged as the
 //     setting's daemon's. They are c's store and URL where c followed a URL other than the

@@ -203,10 +203,7 @@ func fetchWhole(ctx context.Context, setting Settings, started time.Time, now fu
 // through it, and the intake itself calls readWhole. Its intake is built as NewIntake builds one,
 // with every map, but for the durable (newIntake). Its record clears every reason the project's
 // cursor owes as it begins, as the record of a read the read rule makes does (owedRead.clears). It
-// answers an error only for a cursor it could not read, for the write of the read's start, which
-// empties the skipped sequences, that the database refused, for a record the database refused,
-// refused again as a failed read, and for a context that ended, and records nothing but the read's
-// start when the setting no longer names setting.StateURL by the time it is written.
+// answers readWhole's error, or the error of the cursor it could not read (position).
 func ReadWhole(ctx context.Context, pool *store.Pool, setting Settings, reason string) error {
 	in := newIntake(pool, nil)
 	_, current, _, err := in.position(ctx, setting.Project)
