@@ -1432,6 +1432,21 @@ test("the negative control: cat of a key file, ls of the runner's home and of /o
       heard: 0,
       planted: false,
     });
+    // Every tree the sandbox makes read-only after it makes it stays so: the runner's home made
+    // again in its hidden tree, that tree, the sandbox's own /mnt and its home there. Each write
+    // gets EROFS, so the bind remounts hold as the file system's own read-only flag would.
+    for (const target of [
+      path.join(home, "planted"),
+      path.join(path.dirname(home), "planted"),
+      "/mnt/planted",
+      "/mnt/home/planted",
+    ]) {
+      const wrote = await ran(`touch ${target}`);
+      expect({ target, wrote }).toEqual({
+        target,
+        wrote: { output: `touch: cannot touch '${target}': Read-only file system\n`, exitCode: 1 },
+      });
+    }
     // A call the rule refuses runs nothing.
     const curl = "curl -s https://gateway.example.test/v1/messages";
     expect(readOnlyCall("bash", { command: curl })).toBe(false);

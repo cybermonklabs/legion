@@ -2031,7 +2031,15 @@ function mountName(target: string): string {
  *  standard error (SANDBOX_LACKS) and no command run; then SANDBOX_READY, and the command, its
  *  standard error joined to its output, its HOME `sessionhome` where one is given, with no
  *  capability (setpriv), so it can neither unmount what hides a directory nor mount anything, nor
- *  gain one. A step that fails says which on standard error, and no command runs. */
+ *  gain one. A step that fails says which on standard error, and no command runs.
+ *
+ *  Each mount made read-only after it is made (the home tree, /mnt) is made so by its own flag, a
+ *  bind remount, `-n` (no userspace mount table, which lives under the hidden /run) and `-T` the
+ *  setup's own, then empty, table (so the machine's /etc/fstab, which on GitHub's runner names
+ *  /mnt, is not read). A remount of the file system itself fails on Linux with Ubuntu 24.04's
+ *  util-linux 2.39.3 (EINVAL): libmount takes its options from the mount table, where a tmpfs
+ *  made in this user namespace names its owner by an id the namespace does not map (measured in
+ *  a grade Job on Linux 6.8, util-linux 2.39.3; gVisor with util-linux 2.41.5 takes it). */
 const SANDBOX_SETUP = `copyfs=$1 mode=$2 cwd=$3 jjfs=$4 wrapper=$5 jjconfig=$6 home=$7 hometree=$8 command=$9 programs=\${10} sessionhome=\${11} homedir=\${12} homebind=\${13} homebindname=\${14}
 shift 14
 fail() { printf '%s\\n' "$1" >&2; exit 125; }
@@ -2067,13 +2075,13 @@ homemounted=
 mount -a -T /mnt/fstab || fail "mount the copy and hide the directories that hold the pod's credentials"
 : > /mnt/fstab
 if [ -n "$homemounted" ]; then
-  { mkdir -p "$home" && mount -o remount,ro "$hometree"; } || fail "make the runner's home again, empty"
+  { mkdir -p "$home" && mount -n -T /mnt/fstab -o remount,bind,ro "$hometree"; } || fail "make the runner's home again, empty"
 fi
 if [ -n "$jjfs" ]; then
   { printf '%s' "$wrapper" > /mnt/bin/jj && chmod 0755 /mnt/bin/jj; } || fail "write jj's wrapper"
 fi
 printf '%s' "$jjconfig" > ${SANDBOX_JJ_CONFIG} || fail "write jj's configuration"
-mount -o remount,ro /mnt || fail "make its /mnt read-only"
+mount -n -T /mnt/fstab -o remount,bind,ro /mnt || fail "make its /mnt read-only"
 hostname checkout 2>/dev/null
 cd -P "${CHECKOUT_MOUNT}/$cwd" || fail "enter the working directory"
 for program in $programs; do
