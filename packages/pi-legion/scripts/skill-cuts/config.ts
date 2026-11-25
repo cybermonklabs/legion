@@ -6,7 +6,7 @@
  * it leaves out and the repositories its copies map to) comes from this file at run time and never
  * from a committed file. The real file is kept outside the repository.
  *
- * Keys (only the last four are optional):
+ * Keys (only the last six are optional):
  *   owners          GitHub owners whose repositories the copy lister reads
  *   stores          the session stores the count reads: `{name, context}`, `name` the database
  *                   name, `context` `devbox` or `legion:<PROJECT>` (whose sessions the store holds)
@@ -49,6 +49,18 @@
  *                  records no listing by the pin at the session's start against that version
  *                  (POOL_VERSION_RULE); without this key such pools are installed as the dev box's
  *                  installers install them.
+ *   registries     (optional) `{host, tokenCommand}`: a registry the runner reads an image's
+ *                  config from with a token (pod-image.ts, `registryImageConfig`; a public GHCR
+ *                  image of a host not listed is read with the anonymous token GHCR gives): `host`
+ *                  the registry's host (with its port, if any), `tokenCommand` the argv of a
+ *                  program whose standard output, trimmed, is the registry's Bearer token. The
+ *                  program runs once per process, and the token is kept in memory alone, never
+ *                  printed.
+ *   deploymentImages  (optional) `{repository, dockerfile}`: an image the deployment repository
+ *                  builds on a worker image: `repository` the image's reference without tag or
+ *                  digest, `dockerfile` the path in the deployment repository of the Dockerfile it
+ *                  is built from. build.ts takes such an image's worker commit from the base that
+ *                  Dockerfile names, once the images confirm it (LEGION_IMAGE_RULE).
  *
  * A file that is not JSON, or that misses a key, holds a key not above or holds a value of the
  * wrong shape, is refused with one line per fault, each naming the key.
@@ -98,6 +110,26 @@ export const Clone = z.strictObject({
 });
 export type Clone = z.infer<typeof Clone>;
 
+/** A registry the runner reads with a token (the key `registries`): its host, and the argv of
+ *  the program that prints the token. */
+export const Registry = z.strictObject({
+  host: z.string().regex(/^[A-Za-z0-9.-]+(?::\d+)?$/, {
+    error: "a registry host, such as registry.example.test",
+  }),
+  tokenCommand: z.array(z.string().min(1)).min(1),
+});
+export type Registry = z.infer<typeof Registry>;
+
+/** An image the deployment repository builds on a worker image (the key `deploymentImages`): its
+ *  reference without tag or digest, and its Dockerfile's path in the deployment repository. */
+export const DeploymentImage = z.strictObject({
+  repository: z.string().regex(/^[a-z0-9.-]+(?::\d+)?(?:\/[a-z0-9._-]+)+$/, {
+    error: "an image reference without tag or digest, such as registry.example.test/acme/worker",
+  }),
+  dockerfile: CheckoutDirectory,
+});
+export type DeploymentImage = z.infer<typeof DeploymentImage>;
+
 export const SkillCutsConfig = z
   .strictObject({
     owners: z
@@ -142,6 +174,8 @@ export const SkillCutsConfig = z
         }),
       })
       .optional(),
+    registries: z.array(Registry).optional(),
+    deploymentImages: z.array(DeploymentImage).optional(),
   })
   .refine((config) => Date.parse(config.windowStart) < Date.parse(config.windowEnd), {
     error: "windowEnd must be after windowStart",

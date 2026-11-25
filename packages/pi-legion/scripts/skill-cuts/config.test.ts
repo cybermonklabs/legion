@@ -9,7 +9,7 @@ import { loadConfig, parseConfig, SkillCutsConfig, storeNamed } from "./config";
 // configuration F7's capture used.
 
 /** A configuration with every required key, each a made-up value; it leaves out the optional
- *  keys, devboxClaudeConfigDir, clones, sessionPod and ompPin. */
+ *  keys, devboxClaudeConfigDir, clones, sessionPod, ompPin, registries and deploymentImages. */
 function valid(): Record<string, unknown> {
   return {
     owners: ["acme", "acme-labs"],
@@ -50,7 +50,9 @@ test.each(
       key !== "devboxClaudeConfigDir" &&
       key !== "clones" &&
       key !== "sessionPod" &&
-      key !== "ompPin"
+      key !== "ompPin" &&
+      key !== "registries" &&
+      key !== "deploymentImages"
   )
 )("a configuration without %s is refused by name", (key) => {
   const value = valid();
@@ -72,6 +74,44 @@ test("sessionPod accepts a deployment pin and two repository-relative Dockerfile
   expect(
     refusal({ ...valid(), sessionPod: { ...sessionPod, dockerfile: "../Dockerfile" } })
   ).toContain("sessionPod.dockerfile:");
+});
+
+// Catches: a registry the runner reads with a token, or an image a deployment builds, stated in a
+// shape the readers cannot use (a host with a path, a token command of no program, an image
+// reference with its tag or digest, a Dockerfile outside the repository) loaded as if it could.
+test("registries and deploymentImages are optional; a host with its token command and an image repository with its Dockerfile load, and any other is refused by name", () => {
+  const registry = { host: "registry.example.test", tokenCommand: ["acme-token", "print"] };
+  const deployed = {
+    repository: "registry.example.test/acme/deploy/worker",
+    dockerfile: "images/worker.Dockerfile",
+  };
+  expect(parseConfig(valid()).registries).toBeUndefined();
+  expect(parseConfig(valid()).deploymentImages).toBeUndefined();
+  const config = parseConfig({ ...valid(), registries: [registry], deploymentImages: [deployed] });
+  expect(config.registries).toEqual([registry]);
+  expect(config.deploymentImages).toEqual([deployed]);
+  expect(
+    parseConfig({ ...valid(), registries: [{ ...registry, host: "registry.example.test:5000" }] })
+      .registries
+  ).toHaveLength(1);
+  expect(
+    refusal({ ...valid(), registries: [{ ...registry, host: "registry.example.test/v2" }] })
+  ).toContain("registries[0].host: a registry host, such as registry.example.test");
+  expect(refusal({ ...valid(), registries: [{ ...registry, tokenCommand: [] }] })).toContain(
+    "registries[0].tokenCommand:"
+  );
+  for (const repository of [
+    `${deployed.repository}:latest`,
+    `${deployed.repository}@sha256:${"a".repeat(64)}`,
+    "worker",
+  ]) {
+    expect(refusal({ ...valid(), deploymentImages: [{ ...deployed, repository }] })).toContain(
+      "deploymentImages[0].repository: an image reference without tag or digest, such as registry.example.test/acme/worker"
+    );
+  }
+  expect(
+    refusal({ ...valid(), deploymentImages: [{ ...deployed, dockerfile: "../Dockerfile" }] })
+  ).toContain("deploymentImages[0].dockerfile:");
 });
 
 // Catches: a dev box's Oh My Pi pin the pool version rule cannot read (a file outside the

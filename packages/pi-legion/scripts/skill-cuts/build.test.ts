@@ -52,6 +52,7 @@ import {
 import { mtimeRange } from "./countsql";
 import { blindOrder } from "./judge";
 import { loadProfile, recordedLines } from "./load";
+import type { ImageConfig } from "./pod-image";
 import { psqlRows } from "./psql-rows";
 import { READER_TRIES } from "./readers";
 import {
@@ -1646,7 +1647,11 @@ const io = (lines: string[]): BuildIo => ({
   npm: async (name, version) => TARBALLS[`${name}@${version}`]?.(),
   // The suite's worker images carry the label of the commit its repositories are read at (SHA),
   // since an image no source dates is left out and never read at its repository's default branch.
-  imageConfig: async () => ({ env: [], labels: { "org.opencontainers.image.revision": SHA } }),
+  imageConfig: async () => ({
+    env: [],
+    labels: { "org.opencontainers.image.revision": SHA },
+    diffIds: [],
+  }),
   gh: async (args) => {
     ghCalls.push([...args]);
     const route = args.find((arg) => arg.startsWith("repos/")) ?? "";
@@ -5717,12 +5722,14 @@ test("build-tasks with no bound writes the pinned bytes: the tasks, the summary,
   // The summary records their profiles. The profile files keep the same bytes. The profiles
   // summary counts a subagents.sql query for each of the two session tasks, read before its
   // profile is built (sessionQueries 2); one query of their store after both was counted before.
+  // The profiles summary quotes LEGION_IMAGE_RULE, which now states the deployment-built image's
+  // step.
   expect(digests).toEqual({
     "model tasks": "7065771b7768b39f531ae513e501837a0837349affe5672950558cdaf8230f9e",
     "model summary": "830ba5a3c2d161a489386c91ee25396de33d21df9deabfb10e8e915059c49c48",
     "model printed": "8d8a65fe70015b199ecc51a86a5803ef39c5cacbddbe124b22460e6d36a2971b",
     "profiles tasks": "c29cedaadf7a508a1449548b98da93ab14b079a002eb834365c81cc2f70e79f6",
-    "profiles summary": "85dc0b754ac23142309d9268e69f3483ed1396ad30610b6a0ee508bbc5b4fd0a",
+    "profiles summary": "37da5b74d367f4d9667b0aa410b1cb3f6a4fb5d6c61c752cffc9f42d6189cd7c",
     "profiles printed": "9ceae9fd265f889f404904ada8fe26a18ca2cbde3e9141337bd67b87b1aa1b0b",
     "profiles profiles": "26bf1079e50926d2c9e1bdc9482bca041b0a71392fb091f4352c437ab81932c4",
   });
@@ -5760,6 +5767,9 @@ function changedStore(
 const POD_BASE = `ghcr.io/acme/worker@sha256:${"1".repeat(64)}`;
 const POD_PIN = `registry.example/acme/session@sha256:${"2".repeat(64)}`;
 const POD_BUILD = "d5".repeat(20);
+/** The rootfs.diff_ids of POD_BASE, and those of POD_PIN, built on it: POD_BASE's and one more. */
+const POD_LAYERS = [1, 2, 3].map((n) => `sha256:${String(n).repeat(64)}`);
+const POD_PIN_LAYERS = [...POD_LAYERS, `sha256:${"4".repeat(64)}`];
 
 async function podProfile(
   name: string,
@@ -5769,7 +5779,15 @@ async function podProfile(
     label = true,
     legion = false,
     readAt,
-  }: { task?: boolean; label?: boolean; legion?: boolean; readAt?: string } = {}
+    pinLayers = POD_PIN_LAYERS,
+  }: {
+    task?: boolean;
+    label?: boolean;
+    legion?: boolean;
+    readAt?: string;
+    /** The rootfs.diff_ids the registry gives of POD_PIN; no config of it when `unread`. */
+    pinLayers?: readonly string[] | "unread";
+  } = {}
 ) {
   const file = `/home/fixture/.omp/${profileName === "" ? "" : `profiles/${profileName}/`}agent/sessions/--work--/${name}.jsonl`;
   const db = legion ? "store_b" : "store_a";
@@ -5808,10 +5826,12 @@ async function podProfile(
   const options: BuildIo = {
     ...standin,
     imageConfig: async (image: string) => {
+      if (image === POD_PIN)
+        return pinLayers === "unread" ? undefined : { env: [], labels: {}, diffIds: pinLayers };
       expect(image).toBe(POD_BASE);
       const labels: Record<string, string> = {};
       if (label) labels["org.opencontainers.image.revision"] = IMAGE_SHA;
-      return { env: ["OMP_PROFILE=legion"], labels };
+      return { env: ["OMP_PROFILE=legion"], labels, diffIds: POD_LAYERS };
     },
     gh: async (args: readonly string[]) => {
       const route = args.find((arg) => arg.startsWith("repos/")) ?? "";
@@ -5887,8 +5907,11 @@ async function podProfile(
     ],
     options
   );
-  const profile = code === EXIT.ok ? loadCases(out, old)[0]?.profile : undefined;
-  return { code, profile, lines };
+  const [built] = code === EXIT.ok ? loadCases(out, old) : [];
+  const evidence = Object.fromEntries(
+    built?.evidence?.map((each) => [each.item, each.source]) ?? []
+  );
+  return { code, profile: built?.profile, lines, evidence };
 }
 
 test("session context row 1: only a default-root session uses the dev box's installers", async () => {
@@ -5926,6 +5949,31 @@ test("session context row 5: without an OCI revision or pin evidence the pod is 
   expect(result.code).toBe(EXIT.failed);
   expect(result.lines.join("\n")).toContain("not measurable");
 }, 60_000);
+
+// Catches: a session pod read at the commit of the base its Dockerfile's ARG default names,
+// though a build can pass another base: the pinned image was never read, so an image built on
+// another base was taken for one built on that base.
+test("session context row 7: a pinned image whose rootfs.diff_ids do not start with its base's is not measurable, naming its digest and the mismatch; one whose do builds as before", async () => {
+  const pinDigest = `sha256:${"2".repeat(64)}`;
+  const other = [POD_LAYERS[0] ?? "", `sha256:${"9".repeat(64)}`, ...POD_PIN_LAYERS.slice(2)];
+  const mismatch = await podProfile("pin-other-base", "legion", { pinLayers: other });
+  expect(mismatch.code).toBe(EXIT.failed);
+  expect(mismatch.lines.join("\n")).toContain(
+    `pod profile not measurable: pods/Dockerfile at ${POD_BUILD} names the base ${POD_BASE}, but the 3 rootfs.diff_ids of ${POD_BASE} are not the first 3 of the 4 of ${POD_PIN} (entry 2 differs), so the pinned image ${pinDigest} is not built on it`
+  );
+  const unread = await podProfile("pin-unread", "legion", { pinLayers: "unread" });
+  expect(unread.code).toBe(EXIT.failed);
+  expect(unread.lines.join("\n")).toContain(
+    `pod profile not measurable: the runner cannot read the OCI config of the pinned image ${pinDigest} (${POD_PIN}) from its registry, so it cannot confirm that the image is built on ${POD_BASE}, the base pods/Dockerfile at ${POD_BUILD} names`
+  );
+  const matched = await podProfile("pin-same-base", "legion");
+  expect(matched.profile?.skills.map(({ name, commit }) => [name, commit])).toEqual(
+    ["alpha", "beta", "omicron"].map((name) => [name, IMAGE_SHA])
+  );
+  expect(matched.evidence?.["session pod profile legion"]).toContain(
+    `pods/Dockerfile at that commit uses ${POD_BASE}; the 3 rootfs.diff_ids of ${POD_BASE} are the first 3 of the 4 of ${POD_PIN}, so the pinned image is built on it.`
+  );
+}, 120_000);
 
 // Catches: vskills-293's porting-released-proofs, whose read of the project's own
 // .claude/skills/porting-released-proofs/SKILL.md the context rule placed at a plugin holding a skill
@@ -6912,8 +6960,11 @@ function attestationOf(commit: string): string {
  *  of acme/skills (`<name> <commit>`) and plugins of it (`<name> <commit> <path>`), and the
  *  sources of its evidence items of the worker image's and the daemon image's commits. `labels`
  *  are the OCI config labels the registry gives each image (no config when undefined, as for an
- *  image it does not hold), and `registryReads` the images asked; `refused` says the build is
- *  expected to leave the case out (exit 1) instead of writing it. */
+ *  image it does not hold), `images` the whole config it gives an image it names, over `labels`,
+ *  and `registryReads` the images asked; `deploymentImages` the configuration's key of that name
+ *  (the suite's configuration when undefined); `gh` answers a route it knows before the suite's
+ *  answers; `refused` says the build is expected to leave the case out (exit 1) instead of
+ *  writing it. */
 async function reprofiledLegion(
   name: string,
   answers: {
@@ -6921,6 +6972,12 @@ async function reprofiledLegion(
     readonly project?: string;
     readonly attested: Readonly<Record<string, string>>;
     readonly labels?: Readonly<Record<string, string>>;
+    readonly images?: Readonly<Record<string, ImageConfig>>;
+    readonly deploymentImages?: readonly {
+      readonly repository: string;
+      readonly dockerfile: string;
+    }[];
+    readonly gh?: (route: string, args: readonly string[]) => GhResult | undefined;
     readonly refused?: true;
   }
 ) {
@@ -6934,19 +6991,39 @@ async function reprofiledLegion(
   const standin = io(lines);
   const registryReads: string[] = [];
   const missing = { code: 1, stdout: "", stderr: "gh: Not Found (HTTP 404)\n" };
+  let configFile = config;
+  if (answers.deploymentImages !== undefined) {
+    configFile = path.join(dir, "skill-cuts.json");
+    writeFileSync(
+      configFile,
+      JSON.stringify({
+        ...JSON.parse(readFileSync(config, "utf8")),
+        deploymentImages: answers.deploymentImages,
+      })
+    );
+  }
   const code = await main(
     [
-      ...["build-cases", "--config", config, "--old", old, "--copies", copiesDir],
+      ...["build-cases", "--config", configFile, "--old", old, "--copies", copiesDir],
       ...["--count", countDir, "--reprofile", from, "--out", fresh],
     ],
     {
       ...standin,
       imageConfig: async (image) => {
         registryReads.push(image);
-        return answers.labels === undefined ? undefined : { env: [], labels: answers.labels };
+        const own = answers.images?.[image];
+        if (own !== undefined) return own;
+        return answers.labels === undefined
+          ? undefined
+          : { env: [], labels: answers.labels, diffIds: [] };
       },
       gh: async (args) => {
         const route = args.find((arg) => arg.startsWith("repos/")) ?? "";
+        const known = answers.gh?.(route, args);
+        if (known !== undefined) {
+          ghCalls.push([...args]);
+          return known;
+        }
         if (route === "repos/acme/infra/contents/legion/Pulumi.prod.yaml") {
           ghCalls.push([...args]);
           return answers.pulumi !== undefined && args.includes(`ref=${SHA}`)
@@ -7078,6 +7155,142 @@ describe("build-cases --reprofile of a Legion pane whose project file names its 
       `${own} gives the project ACME the daemonImage ${daemonImage}; ${names(DAEMON, DAEMON_SHA)}, so the role prompt is composed from acme/skills at ${DAEMON_SHA}: the Legion daemon`
     );
   }, 60_000);
+});
+
+// Catches: a project image that the deployment built on a worker image in a private registry
+// (its labels name the deployment's commit, not the worker repository's) left out as not
+// measurable; and a Dockerfile's ARG default taken for the image's base, though a build can pass
+// another: the images' rootfs.diff_ids confirm it, not the manifests' layer digests, which differ
+// where the builder compressed a layer again.
+describe("build-cases --reprofile of a Legion pane whose image the deployment built on a worker image", () => {
+  const layer = (n: number) => `sha256:${String(n).repeat(64)}`;
+  const REPOSITORY = "registry.example.test/acme/deploy/worker";
+  const A = "a".repeat(64);
+  const B = "b".repeat(64);
+  const IMAGE = `${REPOSITORY}@sha256:${A}`;
+  const BASE = `ghcr.io/acme/worker@sha256:${B}`;
+  /** The commit of acme/infra (the suite's deployment) the image was built at. */
+  const REVISION = "de".repeat(20);
+  const VERSION = "sha-dededededede";
+  const DOCKERFILE = "images/worker.Dockerfile";
+  const RECIPE = `ARG LEGION_WORKER=${BASE}\nFROM \${LEGION_WORKER}\nRUN echo the deployment's layer\n`;
+  const LAYERS = [1, 2, 3, 4, 5].map(layer);
+  const own = `acme/infra:legion/projects/10-ACME.yaml at ${SHA} gives the project ACME the image ${IMAGE}, whose digest has no build provenance that names a commit (gh api repos/acme/skills/attestations/sha256:${A}), and the OCI config of ${IMAGE}, read from its registry by digest, labels org.opencontainers.image.revision ${REVISION} and org.opencontainers.image.version ${VERSION}, which name no commit or release tag of acme/skills`;
+  const step = `the configuration's deploymentImages names ${REPOSITORY}, an image acme/infra builds on a worker image`;
+  const labelled = `${step}: the OCI config of ${IMAGE} labels org.opencontainers.image.source https://github.com/acme/infra and org.opencontainers.image.revision ${REVISION}, a commit of acme/infra (gh api repos/acme/infra/commits?sha=${REVISION}&until=`;
+  const recipe = `acme/infra:${DOCKERFILE} at ${REVISION} (gh api repos/acme/infra/contents/${DOCKERFILE}?ref=${REVISION}) builds its final stage on ${BASE}`;
+  const notKnown =
+    "pod profile not measurable: the worker image's commit of acme/skills is not known, and the repository's default branch is a guess, so the profile is not built: ";
+  const rule = ": a Legion pod runs the worker image";
+
+  /** The legion case built again with ACME's project file naming IMAGE, the registry giving
+   *  IMAGE's config (its source label `source`) and BASE's (its diff ids `baseLayers`, its
+   *  revision label IMAGE_SHA), acme/infra holding REVISION and RECIPE at it, and the
+   *  configuration's deploymentImages naming `listed` with DOCKERFILE. */
+  const built = (
+    name: string,
+    {
+      source = "https://github.com/acme/infra",
+      baseLayers = LAYERS.slice(0, 3),
+      listed = REPOSITORY,
+      refused,
+    }: {
+      source?: string;
+      baseLayers?: readonly string[];
+      listed?: string;
+      refused?: true;
+    } = {}
+  ) =>
+    reprofiledLegion(`deployed-${name}`, {
+      project: `key: ACME\ninstructions: acme.md\nimage: ${IMAGE}\n`,
+      attested: {},
+      images: {
+        [IMAGE]: {
+          env: [],
+          labels: {
+            "org.opencontainers.image.source": source,
+            "org.opencontainers.image.revision": REVISION,
+            "org.opencontainers.image.version": VERSION,
+          },
+          diffIds: LAYERS,
+        },
+        [BASE]: {
+          env: [],
+          labels: { "org.opencontainers.image.revision": IMAGE_SHA },
+          diffIds: baseLayers,
+        },
+      },
+      deploymentImages: [{ repository: listed, dockerfile: DOCKERFILE }],
+      gh: (route, args) => {
+        const ok = (stdout: string): GhResult => ({ code: 0, stdout, stderr: "" });
+        if (route.startsWith(`repos/acme/infra/commits?sha=${REVISION}&`))
+          return ok(`${REVISION}\n`);
+        if (route === `repos/acme/infra/contents/${DOCKERFILE}` && args.includes(`ref=${REVISION}`))
+          return ok(RECIPE);
+        return undefined;
+      },
+      ...(refused === undefined ? {} : { refused }),
+    });
+
+  test("an image the configuration lists, whose labels name the deployment's commit, takes the commit of the base its Dockerfile there names, once the base's diff ids are the first of the image's", async () => {
+    const result = await built("base");
+    expect(result.skills).toEqual([
+      `alpha ${IMAGE_SHA}`,
+      `beta ${IMAGE_SHA}`,
+      `omicron ${IMAGE_SHA}`,
+    ]);
+    expect(result.plugins).toContain(`pi-acme ${IMAGE_SHA} packages/pi-acme`);
+    expect(result.registryReads).toContain(BASE);
+    expect(result.worker).toStartWith(`${own}; ${labelled}`);
+    expect(result.worker).toContain(
+      `); ${recipe}; the 3 rootfs.diff_ids of ${BASE} are the first 3 of the 5 of ${IMAGE}, so the image is built on it; the base's digest has no build provenance that names a commit (gh api repos/acme/skills/attestations/sha256:${B}); the OCI config of ${BASE}, read from its registry by digest, labels org.opencontainers.image.revision ${IMAGE_SHA}, a commit of acme/skills (gh api repos/acme/skills/commits?sha=${IMAGE_SHA}&until=`
+    );
+    expect(result.worker).toContain(
+      `), so the image's units of acme/skills are read at ${IMAGE_SHA}${rule}`
+    );
+  }, 120_000);
+
+  test("a base whose diff ids are not the first of the image's leaves the case out, naming the mismatch", async () => {
+    const result = await built("mismatch", {
+      baseLayers: [layer(1), layer(9), layer(3)],
+      refused: true,
+    });
+    expect({ code: result.code, written: result.written }).toEqual({
+      code: EXIT.failed,
+      written: false,
+    });
+    expect(result.said).toContain(`${notKnown}${own}; ${labelled}`);
+    expect(result.said).toContain(
+      `); ${recipe}, but the 3 rootfs.diff_ids of ${BASE} are not the first 3 of the 5 of ${IMAGE} (entry 2 differs), so ${IMAGE} is not built on the base the Dockerfile names${rule}`
+    );
+  }, 120_000);
+
+  test("an image whose source label names another repository than the deployment leaves the case out, naming the label", async () => {
+    const result = await built("source", {
+      source: "https://github.com/acme/other",
+      refused: true,
+    });
+    expect({ code: result.code, written: result.written }).toEqual({
+      code: EXIT.failed,
+      written: false,
+    });
+    expect(result.said).toContain(
+      `${notKnown}${own}; ${step}, but the OCI config of ${IMAGE} labels org.opencontainers.image.source https://github.com/acme/other, not the deployment's https://github.com/acme/infra${rule}`
+    );
+    expect(result.registryReads).not.toContain(BASE);
+  }, 120_000);
+
+  test("an image the configuration does not list is left out as before: its Dockerfile and its base are not read", async () => {
+    const result = await built("unlisted", { listed: `${REPOSITORY}-other`, refused: true });
+    expect({ code: result.code, written: result.written }).toEqual({
+      code: EXIT.failed,
+      written: false,
+    });
+    expect(result.said).toContain(
+      `${notKnown}${own}, and no comment line is right above its image: line${rule}`
+    );
+    expect(result.registryReads).not.toContain(BASE);
+  }, 120_000);
 });
 
 // Catches: a SKILL.md read GitHub refused for its primary rate limit ("API rate limit exceeded

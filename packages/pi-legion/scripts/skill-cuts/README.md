@@ -22,7 +22,7 @@ change what the agent does. Two such things did, and the runner now removes both
 
 Every private value (the owners, the session stores, the gateway's address, the paths left out, the
 repositories copies map to, the dev box's Claude Code config directory, the clones made by hand on
-a dev box) comes from the `--config
+a dev box, the registries read with a token and the images a deployment builds) comes from the `--config
 <skill-cuts.json>` file at run time (`config.ts` says each key). No file here names one. The
 gateway key comes from `--key-file`, read inside the process that uses it, never printed, logged
 or written. The behaviour test and the load test read the skill texts from directories and the
@@ -854,7 +854,10 @@ profile. Only a default-profile session in a `devbox` store gets the dev-box ins
 
 For a named profile in a `devbox` store, the builder reads the session-pod image pin at the
 root's prompt build. It reads the Dockerfile of the pinned image's build, even if the pin
-moved back to an older image. It uses the base worker's OCI revision or the commit recorded
+moved back to an older image.
+It confirms the base that Dockerfile's final stage names from the images: the base's `rootfs.diff_ids` must be the first entries of the pinned image's, since a build can pass another base than the Dockerfile's `ARG` default, and diff ids, unlike the manifests' layer digests, do not change where the build compressed a base layer again.
+A pinned image the runner cannot read, or one whose diff ids do not start with the base's, leaves the case out as not measurable, naming the pinned image's digest and why.
+It uses the base worker's OCI revision or the commit recorded
 with the pin. It reads the staged skills at that commit for packages the image links into
 the profile. It leaves out a case if the evidence cannot identify the image or its commit.
 A separate profile with no known plugin links or explicit extensions gets project skills, not
@@ -864,6 +867,15 @@ Set `sessionPod` in the private configuration to enable the image lookup. `repos
 the deployment repository. `pinFile` and `pinKey` locate its image pin, and `dockerfile` names
 the image recipe in that repository. `workerRepository` and `workerDockerfile` locate the base's
 source. Use paths relative to their repositories.
+
+Set `registries` in the private configuration to read images in a registry other than public GHCR.
+Each entry is `{"host": "registry.example.test", "tokenCommand": ["<program>", "<argument>"]}`.
+The runner runs `tokenCommand` once per process and sends its standard output, trimmed, as the Bearer token on that host's `/v2/` reads of an image's manifest and config blob.
+It keeps the token in memory alone, and never prints it or puts it in an error message.
+A host that no entry names, other than GHCR, is not read.
+Set `deploymentImages` to name the images that the deployment repository builds on a worker image.
+Each entry is `{"repository": "registry.example.test/acme/deploy/worker", "dockerfile": "images/worker.Dockerfile"}`: the image's reference without tag or digest, and the path of its Dockerfile in the deployment repository.
+A Legion pod's image of such a repository takes the commit of the worker image it is built on (below).
 
 `build-tasks --profiles-out` and `build-tasks --reprofile` use the same rule. A task whose pod
 image cannot be identified is not measurable. Case and task `context` labels keep their existing
@@ -1080,12 +1092,21 @@ repos/<repository>/attestations/sha256:<digest>`, the `gitCommit` of its first r
 dependency). For an image whose digest has no provenance there (GitHub answers 404, as for an
 image that a deployment builds on the Legion image in another registry), the image itself decides:
 the build reads its OCI config from the registry by digest (the manifest and the config blob of a
-public GHCR image, with the anonymous pull token the registry gives; no layer is pulled). The
+public GHCR image, with the anonymous pull token the registry gives, or of an image in a registry
+the configuration's `registries` names, with its token; no layer is pulled). The
 `org.opencontainers.image.revision` label decides when it is a commit of the repository. Else the
 `org.opencontainers.image.version` label decides, as the release tag `v<version>` or
 `<name>-v<version>` (the first words of the image's name, the longest first) that the repository
 has, at the tag's last commit at or before the read. A label that names no commit or tag of the
-repository decides nothing. Failing that, the comment lines right above its `image:` line decide,
+repository decides nothing.
+Failing that, an image of a repository that the configuration's `deploymentImages` names, which the deployment builds on a worker image, takes the commit of that worker image.
+Its `org.opencontainers.image.source` label must name the deployment, and its `org.opencontainers.image.revision` label a commit the deployment holds at or before its read.
+The Dockerfile the entry names, read at that commit, must build its final stage on a digest-pinned base (a literal `FROM`, or the default of the `ARG` it names).
+A Dockerfile's `ARG` default is no proof of the base, since a build can pass another, so the images confirm it: the base's `rootfs.diff_ids` must be the first entries of the image's.
+Diff ids are the digests of the layers uncompressed, and they stay the same in an image built on the base; the manifests' layer digests are of the compressed layers, and differ where the build compressed a base layer again, so they are not compared.
+The commit is then the base's: the one its digest's build provenance in the repository names, else the one its labels name.
+Where a step fails, the image's commit is not known, and the evidence names the step and why.
+For any other image, failing the labels, the comment lines right above its `image:` line decide,
 by the first of their words, in their order, that names a commit:
 an image digest whose provenance names one (the base the image was built on), a commit of the
 repository (a word of 7 to 40 hex digits, letters and digits both), or a tag of the repository (a
