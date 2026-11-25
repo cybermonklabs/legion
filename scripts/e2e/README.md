@@ -5678,6 +5678,7 @@ The client is `executePhaseOp` with `createLegionDaemonClient`, run under Bun by
 
 - `control-client-look-unnamed` sends a report without `check_opened_at`.
   It must throw `409 CHECK_LOOK_NOT_SERVED`, and the operator's `legion state --json` must still show look 1 open.
+
 - `client-look-named` reads the opening time from the task the fake runtime received, never from the store.
   A `pending` with that `check_opened_at` and a `wake_at` must answer `{}`.
   The same CLI must show the check still open, `lookOpen: false`, and `nextWakeAt` equal to the wake.
