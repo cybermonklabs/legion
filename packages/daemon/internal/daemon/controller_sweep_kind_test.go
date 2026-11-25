@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/stream"
 )
@@ -97,7 +98,7 @@ func controllerSweepKindRuntime(ctx context.Context, cfg config.Config, listener
 	if err != nil {
 		return nil, err
 	}
-	opts, err := sandboxOptions(cfg, k, project, "placeholder-dispatch-token", lookup(nil), log)
+	opts, err := sandboxOptions(cfg, k, project, sandbox.DispatchCredential{Bearer: "placeholder-dispatch-token"}, lookup(nil), log)
 	if err != nil {
 		return nil, fmt.Errorf("sandboxOptions: %w", err)
 	}

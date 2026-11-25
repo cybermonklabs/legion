@@ -23,6 +23,28 @@
       ]
     },
     {
+      "tool": "dispatch_api",
+      "call": "valid",
+      "args": {
+        "path": "/api/v1/issues/DSP-1/events?limit=200"
+      },
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/v1/issues/DSP-1/events?limit=200",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret"
+          },
+          "body": null
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "[]"
+      ]
+    },
+    {
       "tool": "dispatch_architecture_sync",
       "call": "valid",
       "args": {
