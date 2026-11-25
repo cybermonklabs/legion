@@ -406,8 +406,11 @@ function reviewNoRouteRefusal(
   version: number
 ): DispatchServiceError {
   const shown = urlForText(baseUrl, DISPATCH_URL_SETTING);
-  // Its health route, by the URL where that prints, and by its path on that server otherwise.
-  const health = isCleanUrl(baseUrl) ? `${baseUrl}/healthz` : "/healthz on that server";
+  // Its health route joined onto the URL's path (`joinUrl`, which a clean URL never fails) where
+  // that URL prints, and by its path on that server otherwise.
+  const health = isCleanUrl(baseUrl)
+    ? joinUrl(baseUrl, "healthz").toString()
+    : "/healthz on that server";
   return new DispatchServiceError(
     "NOT_FOUND",
     404,
