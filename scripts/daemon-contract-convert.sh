@@ -175,12 +175,14 @@ STATE_GOLDENS = (f"{FIXTURES}/state.json", f"{FIXTURES}/state-narrowed-repositor
 REQUEST_SHAPES = f"{FIXTURES}/request-shapes.json"
 WHOLE_COPIES = tuple(f"{FIXTURES}/{name}" for name in (
     "version.json", "contract-shapes.json", "request-shapes.json", "answers.json", "enumerated-fields.json"))
-ENTRY_FILE = re.compile(r"(?:^|/)contract_\d{14}_[a-z0-9]+(?:-[a-z0-9]+)*(?:_test)?\.go$")
+# An entry's slug: words of lowercase letters and digits joined by hyphens.
+SLUG_WORDS = r"[a-z0-9]+(?:-[a-z0-9]+)*"
+SLUG = re.compile(rf"^{SLUG_WORDS}$")
+ENTRY_FILE = re.compile(rf"(?:^|/)contract_\d{{14}}_{SLUG_WORDS}(?:_test)?\.go$")
 HEADER = re.compile(r"^// (\d+): (.*)$")
 # The first line of an entry file's text, as entry_file and scripts/daemon-contract-entry.sh write it.
-ENTRY_HEADER = re.compile(r"^// \d{14} [a-z0-9]+(?:-[a-z0-9]+)*:(?: (.*))?$")
+ENTRY_HEADER = re.compile(rf"^// \d{{14}} {SLUG_WORDS}:(?: (.*))?$")
 CONST_LINE = re.compile(r"^const DaemonAPIVersion = (\d+)\s*$", re.M)
-SLUG = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 
 # Each frozen table of the base, by the variable it is (or, for the rows enumeratedFields()
 # appends, the function), and the field of contractEntry its rows move to. valueStrips' rows name
