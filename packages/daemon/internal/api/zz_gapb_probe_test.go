@@ -5,6 +5,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -30,7 +31,8 @@ import (
 // The "newer plugin" rows repeat the four bodies from a tester whose plugin registered at a
 // contract above this daemon's, on a daemon that relaunches no stale plugin (the Kubernetes
 // degraded mode), which is the case where such a plugin can hold a grant here at all: a daemon
-// that can relaunch refuses the registration itself with 409.
+// that can relaunch refuses the registration itself with 409. Each request states its plugin's
+// contract in `Legion-Plugin-Contract`, as every plugin from shapedAnswersContract on does.
 //
 // Control: the first body of each group (a move back to implementing) must be taken and must move
 // the stored phase to implementing, else the test fails, so a harness that never reaches the
@@ -61,10 +63,14 @@ func TestZZGapBProbe(t *testing.T) {
 				}
 				before := recordedChild(t, h, root).Phase
 				factsBefore := len(facts.recorded())
-				got := h.request(http.MethodPost, "/legion/v1/phase/backward", body, nil)
+				stated := DaemonAPIVersion()
+				if group.newerPlugin {
+					stated++
+				}
+				got := h.request(http.MethodPost, "/legion/v1/phase/backward", body, http.Header{pluginContractHeader: {strconv.Itoa(stated)}})
 				after := recordedChild(t, h, root).Phase
-				t.Logf("PROBE %s/%s: recorded plugin contract %d; request %v", group.name, b.name, h.stored(tester.token).PluginContract, b.extra)
-				t.Logf("PROBE %s/%s: status %d %s", group.name, b.name, got.Code, http.StatusText(got.Code))
+				t.Logf("PROBE %s/%s: recorded plugin contract %d, stated %d; request %v", group.name, b.name, h.stored(tester.token).PluginContract, stated, b.extra)
+				t.Logf("PROBE %s/%s: status %d %s; Legion-Daemon-Contract %q", group.name, b.name, got.Code, http.StatusText(got.Code), got.Header().Get("Legion-Daemon-Contract"))
 				t.Logf("PROBE %s/%s: body %s", group.name, b.name, got.Body.String())
 				t.Logf("PROBE %s/%s: phase before %s, after %s; facts applied by the call %d", group.name, b.name, before, after, len(facts.recorded())-factsBefore)
 				if b.control && (got.Code != http.StatusOK || after != phase.Implementing) {
