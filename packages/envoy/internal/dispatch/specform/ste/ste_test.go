@@ -177,11 +177,12 @@ func TestRotationsJoinTheVerbsOfTexts(t *testing.T) {
 // would keep of one: the held texts followed by more texts that add no set to a group, each held text
 // again and texts made of the parts of different held texts, each group's part of one, in an order of
 // their own, give the same Held, so its value holds nothing of a text but the sets of its groups.
-// HeldOf allocates no more for heldCopiesTexts texts followed by heldCopies copies of them than for
-// those texts alone, less than a byte for each copy where a copy of a text takes 8, so it keeps no
-// copy of the texts, in its value or outside it. And its Rotations, asked after the caller's slice
-// of held texts is written over and other texts are read into another Held, is still the answer
-// for its own, so it reads neither the caller's texts again nor texts that another HeldOf read. And
+// HeldOf allocates no more for heldTexts texts followed by heldMixed texts made of their groups'
+// parts, at least half of them distinct, than for those texts alone, less than a byte for each
+// added text where a copy of one takes 8, so it keeps no copy of the texts, repeated or distinct,
+// in its value or outside it. And its Rotations, asked after the caller's slice of held texts is
+// written over and other texts are read into another Held, is still the answer for its own, so it
+// reads neither the caller's texts again nor texts that another HeldOf read. And
 // its Rotations is Rotations as its comment defines it, each held text read for each set of own
 // verbs: for 20,000 sets of own verbs and of 0 to 40 held texts, drawn at random from the verbs of
 // the synonym groups, the two agree. The cases hold groups that a held text uses each verb of and
@@ -203,16 +204,32 @@ func TestHeldReadsTheHeldTextsOnceAsRotationsReadsThemEach(t *testing.T) {
 		every |= group
 	}
 	draw := func(random *rand.Rand) Verbs { return Verbs(random.Uint64()&random.Uint64()) & every }
-	texts, drawTexts := make([]Verbs, heldCopiesTexts), rand.New(rand.NewPCG(4179, 22))
+	// mixed is a text that adds no set of verbs to a group of held's: the part of each group of a
+	// text of held drawn for that group.
+	mixed := func(random *rand.Rand, held []Verbs) Verbs {
+		var text Verbs
+		for _, group := range rules.groups {
+			text |= held[random.IntN(len(held))] & group
+		}
+		return text
+	}
+	texts, drawTexts := make([]Verbs, heldTexts), rand.New(rand.NewPCG(4179, 22))
 	for index := range texts {
 		texts[index] = draw(drawTexts)
 	}
-	copies := slices.Repeat(texts, heldCopies+1)
-	heldSink = HeldOf(copies)
-	alone, withCopies := heldAllocates(texts), heldAllocates(copies)
-	if grown := int64(withCopies) - int64(alone); grown >= int64(len(copies)-len(texts)) {
-		t.Errorf("HeldOf allocates %d bytes for %d texts and %d for them followed by %d copies, %d more: want less than a byte for each copy, as a Held that keeps no copy of its texts allocates",
-			alone, len(texts), withCopies, len(copies)-len(texts), grown)
+	more, distinct := slices.Clone(texts), map[Verbs]bool{}
+	for range heldMixed {
+		text := mixed(drawTexts, texts)
+		more, distinct[text] = append(more, text), true
+	}
+	if len(distinct) < heldMixed/2 {
+		t.Fatalf("the %d texts made of the groups' parts of %d texts hold %d distinct texts, want at least half: the allocation check reads too little", heldMixed, len(texts), len(distinct))
+	}
+	heldSink = HeldOf(more)
+	alone, withMore := heldAllocates(texts), heldAllocates(more)
+	if grown := int64(withMore) - int64(alone); grown >= int64(heldMixed) {
+		t.Errorf("HeldOf allocates %d bytes for %d texts and %d for them followed by %d texts made of their groups' parts (%d distinct), %d more: want less than a byte for each, as a Held that keeps no copy of its texts allocates",
+			alone, len(texts), withMore, heldMixed, len(distinct), grown)
 	}
 	random := rand.New(rand.NewPCG(4179, 21))
 	rotated, kept := 0, 0
@@ -228,11 +245,7 @@ func TestHeldReadsTheHeldTextsOnceAsRotationsReadsThemEach(t *testing.T) {
 		// made of the part of each group of a held text drawn for that group.
 		more := slices.Concat(held, held)
 		for range held {
-			var mixed Verbs
-			for _, group := range rules.groups {
-				mixed |= held[random.IntN(len(held))] & group
-			}
-			more = append(more, mixed)
+			more = append(more, mixed(random, held))
 		}
 		random.Shuffle(len(more), func(a, b int) { more[a], more[b] = more[b], more[a] })
 		if again := HeldOf(slices.Concat(held, more)); !reflect.DeepEqual(again, read) {
@@ -257,18 +270,19 @@ func TestHeldReadsTheHeldTextsOnceAsRotationsReadsThemEach(t *testing.T) {
 			kept++
 		}
 	}
-	t.Logf("HeldOf allocates %d bytes for %d texts and %d for them and %d copies; 20,000 cases: %d rotate a group, %d rotate none where the verbs together use two of a group",
-		alone, len(texts), withCopies, len(copies)-len(texts), rotated, kept)
+	t.Logf("HeldOf allocates %d bytes for %d texts and %d for them and %d texts made of their parts (%d distinct); 20,000 cases: %d rotate a group, %d rotate none where the verbs together use two of a group",
+		alone, len(texts), withMore, heldMixed, len(distinct), rotated, kept)
 	if rotated == 0 || kept == 0 {
 		t.Errorf("%d cases rotate a group and %d rotate none beside two verbs of a group: the test reads too little", rotated, kept)
 	}
 }
 
-// heldCopiesTexts is how many texts the allocation check of Held draws, and heldCopies how many
-// copies of them follow them: a copy of them all would take 8 bytes for each, over 5 MiB.
+// heldTexts is how many texts the allocation check of Held draws, and heldMixed how many texts made
+// of their groups' parts follow them: a copy of the distinct ones would take 8 bytes for each, over
+// 64 KiB.
 const (
-	heldCopiesTexts = 40
-	heldCopies      = 16_384
+	heldTexts = 40
+	heldMixed = 16_384
 )
 
 // heldSink keeps each Held that heldAllocates reads, so that no allocation of HeldOf is left out.
