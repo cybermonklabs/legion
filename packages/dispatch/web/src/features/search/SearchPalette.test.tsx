@@ -265,7 +265,9 @@ test("groups the hits by kind with marked snippets, names each hit's issue once,
 // directive, so its tree holds them as paragraph text, a soft break between them a space. The
 // snippet line draws that tree with no fence and no attribute syntax: `table. A page is ready
 // once its plan loads`, its highlight kept, and its link as the words around it (review A2): no
-// anchor and no link look inside the row, whose own Enter and click are its one action.
+// anchor, no link look (`data-link-look="text"`, which styles.css's link look skips) and no tab
+// stop inside the row, whose own Enter and click are its one action, so a click on the link's
+// words opens the hit.
 test("a document hit's snippet shows no directive fence or attributes a cut window left, its highlight kept and its link as text", async () => {
   await warmMarkdownRenderer();
   const user = userOnFakeClock();
@@ -304,7 +306,7 @@ test("a document hit's snippet shows no directive fence or attributes a cut wind
   );
   const view = renderPalette();
   try {
-    await searchFor(user, "plan");
+    const input = await searchFor(user, "plan");
     const option = within(screen.getByRole("group", { name: "Documents" })).getByRole("option");
     const snippet = within(option).getByTestId("search-hit-snippet");
     const body = snippet.querySelector<HTMLElement>("[data-markdown-preview]");
@@ -317,7 +319,26 @@ test("a document hit's snippet shows no directive fence or attributes a cut wind
     expect(body.textContent).not.toMatch(/:::|plan_task|serves=|[{}"]/u);
     expect(within(body).getByText("plan", { selector: "mark" })).toBeTruthy();
     expect(option.querySelector("a")).toBeNull();
-    expect(body.querySelector("[data-markdown-link]")).toBeNull();
+    const link = within(body).getByText("A page");
+    expect(link.tagName).toBe("SPAN");
+    expect(link).toHaveAttribute("data-markdown-link", "");
+    expect(link).toHaveAttribute("data-link-look", "text");
+    expect(link).not.toHaveAttribute("tabindex");
+    // Tab walks the dialog's own controls round to the box and never stops in the row.
+    expect(document.activeElement).toBe(input);
+    const stops: (Element | null)[] = [];
+    do {
+      await user.tab();
+      stops.push(document.activeElement);
+    } while (document.activeElement !== input && stops.length < 50);
+    expect(document.activeElement).toBe(input);
+    expect(
+      stops.flatMap((stop) => (stop !== null && option.contains(stop) ? [stop.outerHTML] : []))
+    ).toEqual([]);
+    await user.click(link);
+    expect(screen.getByTestId("current-route").textContent).toBe(
+      "/issues/LEGION-2/artifact/plan?q=plan"
+    );
   } finally {
     search.mockRestore();
     view.unmount();

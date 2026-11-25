@@ -319,15 +319,31 @@ async function rowsUnderTheBar(surface: Locator): Promise<void> {
 
 /** Presses that line, which scrolls to the rows, then the scroll's end, so every row kind of the
  *  plan has stood above the bar and the line and shadow are gone: the bar shows no cue because
- *  nothing stands under it. */
+ *  nothing stands under it. At the end the bar is the card's last part, not pinned: the
+ *  conversation's own foot padding stands below it. So the scroll is at its end, and no row of
+ *  the card meets the bar. */
 async function scrollPlanToItsEnd(surface: Locator): Promise<void> {
+  const view = surface.getByTestId("going-conversation-view");
+  const actions = surface.getByTestId("going-plan-actions");
   await surface.getByTestId("going-plan-more").click();
-  await surface.getByTestId("going-conversation-view").evaluate((view) => {
-    view.scrollTop = view.scrollHeight;
+  await view.evaluate((scroll) => {
+    scroll.scrollTop = scroll.scrollHeight;
   });
   await expect(surface.getByTestId("going-plan-more")).toHaveCount(0);
-  await expect(surface.getByTestId("going-plan-actions")).not.toHaveClass(/shadow-/u);
-  await approvePinned(surface);
+  await expect(actions).not.toHaveClass(/shadow-/u);
+  await expect
+    .poll(
+      () => view.evaluate((scroll) => scroll.scrollHeight - scroll.clientHeight - scroll.scrollTop),
+      { message: "how far the conversation's scroll stands from its end" }
+    )
+    .toBeLessThanOrEqual(1);
+  const approve = await actions.boundingBox();
+  for (const [index, row] of (await planRows(surface).all()).entries()) {
+    expect(
+      boxesMeet(await row.boundingBox(), approve),
+      `the plan's row ${index + 1} meets its Approve bar at the scroll's end`
+    ).toBe(false);
+  }
 }
 
 /** Whether two boxes a locator measured share any point. A box that is not drawn is refused: the

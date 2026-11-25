@@ -125,9 +125,10 @@ const paintOneLine: PaintMarkdown = (element, parsed, serializer) => {
  * margin card's toggle - so a link inside it is a link in a link: a click on it would follow the
  * inner link and the outer control at once, and it would be a second tab stop inside a tooltip.
  * The words, their formatting and a reference's `data-dispatch-ref` (its hover card) stay; the
- * host is the one thing a click or a key press follows. Each link that is `inert` keeps
- * Typography's link look (`data-markdown-link`, styles.css), so a reference still reads as one;
- * one that is `text` reads as the words around it. Answers each replaced link's span, so a
+ * host is the one thing a click or a key press follows. Each link becomes a span marked
+ * `data-markdown-link`, which keeps Typography's link look (styles.css), so a reference still
+ * reads as one; one whose look is `text` is marked `data-link-look="text"` too, which the link
+ * look skips, so it reads as the words around it. Answers each replaced link's span, so a
  * reference's portal can follow its words into it.
  */
 function inertLinks(root: HTMLElement, look: "inert" | "text"): Map<HTMLElement, HTMLElement> {
@@ -139,7 +140,8 @@ function inertLinks(root: HTMLElement, look: "inert" | "text"): Map<HTMLElement,
         span.setAttribute(name, value);
       }
     }
-    if (look === "inert") span.setAttribute("data-markdown-link", "");
+    span.setAttribute("data-markdown-link", "");
+    if (look === "text") span.setAttribute("data-link-look", "text");
     span.append(...link.childNodes);
     link.replaceWith(span);
     replaced.set(link, span);
@@ -207,8 +209,8 @@ export function MarkdownPreview({
   lead?: string;
   lines: 1 | 2 | 3;
   /** `inert` (the default) renders every link as link-styled text; `text` renders it as the words
-   *  around it, with no link look; `live` keeps them links, for a host whose own control is a
-   *  toggle. */
+   *  around it, with no link look (the same inert span, marked `data-link-look="text"` too);
+   *  `live` keeps them links, for a host whose own control is a toggle. */
   links?: "inert" | "text" | "live";
   markdown: string;
   /** The record this text is - the ask, comment, message or document version whose text it is

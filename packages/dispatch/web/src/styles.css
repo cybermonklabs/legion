@@ -1177,8 +1177,10 @@ html:has([data-issue-page]) {
 
 /* A `MarkdownPreview` sits inside a control (a link, a search option, a card's toggle), so its
    links are inert spans (`data-markdown-link`) rather than nested `<a>`s; they keep Typography's
-   own `a` look so a reference still reads as one. */
-.dispatch-markdown [data-markdown-link] {
+   own `a` look so a reference still reads as one. A preview whose host's own click is its one
+   action (a search hit) marks its spans `data-link-look="text"` too, and they read as the words
+   around them. */
+.dispatch-markdown [data-markdown-link]:not([data-link-look="text"]) {
   color: var(--tw-prose-links);
   font-weight: 500;
   text-decoration: underline;

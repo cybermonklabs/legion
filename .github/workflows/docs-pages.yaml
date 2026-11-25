@@ -142,6 +142,7 @@ on:
       - 'packages/envoy/going/*'
       - 'packages/envoy/going/agent/*'
       - 'packages/envoy/going/agentwire/**'
+      - 'packages/envoy/going/chips/**'
       - 'packages/envoy/internal/buildversion/**'
       - 'packages/envoy/internal/bus/*'
       - 'packages/envoy/internal/cipher/answer/**'

@@ -243,21 +243,38 @@ test("a Dispatch picture shows as its thumbnail beside its caption, a link only 
 
 // A host whose own Enter and click are a row's one action - a search hit - draws each link of its
 // preview as the words around it (`links="text"`): no anchor, which would compete with the row,
-// and no link look, which would offer a second action. A reference still reads as its title. The
-// default keeps the link look on the same words.
+// and no link look, which would offer a second action. Each is still the preview's inert link
+// span (`data-markdown-link`), a reference's keeping its hover card (`data-dispatch-ref`) and
+// reading as its title, and is marked `data-link-look="text"`, which the link look (styles.css)
+// skips. The default keeps the link look on the same words, so its spans carry no such mark.
 test("a link in text mode is plain text: no anchor and no link look, a reference still by its title", async () => {
   const getIssueSummary = spyOn(api, "getIssueSummary").mockResolvedValue(issue);
   const markdown = "Read [the plan](https://example.com/plan) and dispatch://CORE-1 today.";
   const { preview, rerender, view } = renderPreview({ lines: 1, links: "text", markdown });
+  const links = () =>
+    Array.from(preview().querySelectorAll("[data-markdown-link]"), (link) => ({
+      look: link.getAttribute("data-link-look"),
+      reference: link.getAttribute("data-dispatch-ref"),
+      text: link.textContent,
+    }));
   try {
     await waitFor(() => expect(preview()).toHaveTextContent("Design decision"));
     expect(words(preview())).toBe("Read the plan and CORE-1 Design decision today.");
     expect(preview().querySelector("a")).toBeNull();
-    expect(preview().querySelector("[data-markdown-link]")).toBeNull();
+    expect(links()).toEqual([
+      { look: "text", reference: null, text: "the plan" },
+      { look: "text", reference: "dispatch://CORE-1", text: "CORE-1 Design decision" },
+    ]);
 
     rerender({ lines: 1, markdown });
-    await waitFor(() => expect(preview().querySelectorAll("[data-markdown-link]")).toHaveLength(2));
+    await waitFor(() =>
+      expect(links()).toEqual([
+        { look: null, reference: null, text: "the plan" },
+        { look: null, reference: "dispatch://CORE-1", text: "CORE-1 Design decision" },
+      ])
+    );
     expect(preview().querySelector("a")).toBeNull();
+    expect(preview().querySelector("[data-link-look]")).toBeNull();
   } finally {
     view.unmount();
     getIssueSummary.mockRestore();
