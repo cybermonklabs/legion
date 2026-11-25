@@ -232,6 +232,37 @@ describe("install_model_route", () => {
     );
   });
 
+  // An Oh My Pi config that disables a provider by name disables a models.yml block of that name
+  // too, so a box whose gateway block is named `anthropic` would leave the agents no model.
+  test("provider whose block is named after a built-in provider leaves that provider enabled", () => {
+    const dir = profileDir();
+    const file = path.join(work, `models-${profiles}-anthropic.yml`);
+    writeFileSync(
+      file,
+      [
+        "providers:",
+        "  anthropic:",
+        "    baseUrl: http://gateway.internal.example:4000",
+        '    apiKey: "!cat /run/user/1000/box/gateway-key"',
+        "    api: anthropic-messages",
+        "",
+      ].join("\n")
+    );
+    const { code, stderr } = route(dir, {
+      LEGION_E2E_MODEL_ROUTE: "provider",
+      LEGION_E2E_MODEL_PROVIDER_FILE: file,
+      LEGION_E2E_MODEL_PROVIDER: "anthropic",
+    });
+    expect({ code, stderr: code === 0 ? "" : stderr }).toEqual({ code: 0, stderr: "" });
+    const config = readFileSync(
+      path.join(dir, "home/.omp/profiles/skills-test/agent/config.yml"),
+      "utf8"
+    );
+    expect(config).toContain("enabledModels:\n  - anthropic/claude-opus-4-8\n");
+    expect(config).toContain("disabledProviders:\n  - amazon-bedrock\n");
+    expect(config).not.toContain("  - anthropic\n");
+  });
+
   test("provider without LEGION_E2E_MODEL_PROVIDER_FILE fails, naming the variable", () => {
     const dir = profileDir();
     const { code, stderr } = route(dir, {
@@ -607,6 +638,144 @@ describe("next_run", () => {
   // Catches: a first batch that fails because $work/runs does not exist yet.
   test("1 when the label has no run of the scenario", () => {
     expect(next(freshDir("numbering-empty"), "spec-rewrite", "s1").stdout).toBe("1\n");
+  });
+});
+
+// A batch given SKILL_SCENARIOS_POSTGRES_URL makes each run's database on that server
+// (own_dispatch), and names the server in its notes, its failures and each run's dispatch.json.
+describe("safe_url", () => {
+  const pgUrl = path.join(root, "packages/envoy/scripts/lib/pg-url.sh");
+  // Catches: a note, a failure message or a run's dispatch.json that prints the password of a
+  // server the operator gave, in a Postgres URL's user info as libpq reads it (to the first `@`,
+  // a `?` in the password included), in its `password=` or `sslpassword=` parameter (its key
+  // percent-decoded, as libpq reads `%70assword=`), or in a NATS
+  // URL's user info as Go's net/url reads it (to the last `@`); a query left with a dangling `?`
+  // or `&`; a safe_url that changes a URL with no password in it; and a URL pg-url.sh refuses (a
+  // raw `@` in its hosts) printed as it is, where safe_url prints a placeholder.
+  test("safe_url drops the password of a URL and keeps the rest", () => {
+    expect(
+      bash(`. ${JSON.stringify(pgUrl)}\n${fn("safe_url")}\nfor url; do safe_url "$url"; done`, [
+        "postgres://u:p@h:1/d",
+        "postgres://u@h:1/d",
+        "nats://127.0.0.1:4222",
+        "postgres://u:?@127.0.0.1:5433/legion_test",
+        "postgres://u@localhost:5432@10.1.2.3/db",
+        "postgres://u@127.0.0.1:5433/d?sslmode=disable&password=p&application_name=x",
+        "postgresql://u@127.0.0.1:5433/d?sslpassword=p",
+        "postgres://u:p@127.0.0.1:5433/d?password=p&sslmode=disable",
+        "nats://u:p@ss@127.0.0.1:4222",
+        "postgres://u@127.0.0.1:5433/d?%70assword=p&sslmode=disable",
+      ])
+    ).toEqual({
+      code: 0,
+      stdout:
+        "postgres://u@h:1/d\npostgres://u@h:1/d\nnats://127.0.0.1:4222\n" +
+        "postgres://u@127.0.0.1:5433/legion_test\n" +
+        "<a Postgres URL pg-url.sh refuses>\n" +
+        "postgres://u@127.0.0.1:5433/d?sslmode=disable&application_name=x\n" +
+        "postgresql://u@127.0.0.1:5433/d\n" +
+        "postgres://u@127.0.0.1:5433/d?sslmode=disable\n" +
+        "nats://u@127.0.0.1:4222\n" +
+        "postgres://u@127.0.0.1:5433/d?sslmode=disable\n",
+      stderr: "-: refused a Postgres URL: a host holds a raw @ (the URL is not printed)\n",
+    });
+  });
+});
+
+// services_up reads a given SKILL_SCENARIOS_POSTGRES_URL before anything connects to that server
+// or the batch writes the URL anywhere. python3 with libpq: its guards read the URL with this
+// host's libpq (scripts/e2e/lib/loopback-dsn.py), which refuses every URL where it finds none.
+const withoutPython = skipWithout("python3");
+const withoutLibpq =
+  !withoutPython &&
+  Bun.spawnSync([
+    "python3",
+    "-c",
+    "import ctypes.util, sys; sys.exit(ctypes.util.find_library('pq') is None)",
+  ]).exitCode !== 0;
+if (withoutLibpq) {
+  console.warn(
+    `Skipped the services_up rows in ${import.meta.path}. services_up reads a given Postgres ` +
+      `URL with libpq, and ctypes.util.find_library("pq") finds none on this host; install libpq5.`
+  );
+}
+describe.skipIf(withoutPython || withoutLibpq)("services_up", () => {
+  const pgUrl = path.join(root, "packages/envoy/scripts/lib/pg-url.sh");
+  const loopbackDsn = path.join(root, "scripts/e2e/lib/loopback-dsn.sh");
+  /** services_up given URL and a NATS, in a services directory of its own, with a psql first on
+   * PATH that appends to psql.log each time it runs. until_true runs its command once, so a URL
+   * that passed every check would reach psql at once. Answers services_up's status and standard
+   * error, whether psql ran, and what the services directory holds. */
+  function up(url: string) {
+    const dir = freshDir("services-up");
+    const bin = path.join(dir, "bin");
+    const log = path.join(dir, "psql.log");
+    const services = path.join(dir, "services");
+    mkdirSync(bin);
+    mkdirSync(services);
+    writeFileSync(path.join(bin, "psql"), `#!/bin/sh\necho ran >>${JSON.stringify(log)}\n`, {
+      mode: 0o755,
+    });
+    const result = bash(
+      `set -euo pipefail\n. "$1"\n. "$2"\n${fn("fail")}\n${fn("given_services")}\n` +
+        `${fn("safe_url")}\n${fn("pg_sql")}\n${fn("services_up")}\n` +
+        `until_true() { shift 2; "$@"; }\n` +
+        `S=$3\nservices_env=$S/env\nservices_postgres=$S/postgres-url\nservices_up`,
+      [pgUrl, loopbackDsn, services],
+      {
+        PATH: `${bin}:${childEnv.PATH}`,
+        SKILL_SCENARIOS_POSTGRES_URL: url,
+        SKILL_SCENARIOS_NATS_URL: "nats://127.0.0.1:4222",
+      }
+    );
+    return {
+      code: result.code,
+      stderr: result.stderr,
+      psqlRan: existsSync(log),
+      written: readdirSync(services),
+    };
+  }
+  const host = (name: string) =>
+    `SKILL_SCENARIOS_POSTGRES_URL must name 127.0.0.1, localhost or ::1: libpq reads the host ${name}, and each run creates a database there`;
+  const sslpassword =
+    "SKILL_SCENARIOS_POSTGRES_URL holds an sslpassword parameter, a client key's passphrase, whose value this line does not print: pg_sql takes only the password out of the URL it gives psql, so psql's arguments, which every user of this machine can read, would hold the passphrase";
+
+  // Catches: a services_up that connects to, or writes into its services file, a given URL that
+  // its checks refuse, because a check is gone or runs after the write or the first psql: a host
+  // that is not loopback, the `localhost?x@evil.example` shape whose host libpq reads as
+  // evil.example (scripts/e2e/lib/loopback-dsn.sh), a key=value connection string, an
+  // `sslpassword` parameter (its key percent-decoded too), a URL pg-url.sh refuses (a raw `@` in
+  // its path, which pg-url.sh names on its own line first), and a value run_database_url refuses
+  // to write into each run's connection string (a newline, which it refuses in a password the same
+  // way). Each refusal is the one its own check prints, and holds no password.
+  test("refuses a URL the runs cannot use before psql runs or the URL is written", () => {
+    for (const [url, refusal, before = ""] of [
+      ["postgres://u:p@db.example:5432/postgres", host("db.example")],
+      ["postgres://localhost?x:p@evil.example:5432/postgres", host("evil.example")],
+      [
+        "host=127.0.0.1 port=5432 user=u password=p dbname=postgres",
+        "SKILL_SCENARIOS_POSTGRES_URL is not a postgres:// or postgresql:// URL: the batch names the server in its notes and in each run's dispatch.json, and it can take a password out of a URL alone, never out of a key=value connection string",
+      ],
+      ["postgres://u:p@127.0.0.1:5432/postgres?sslmode=require&sslpassword=x", sslpassword],
+      ["postgresql://u@localhost:5432/postgres?%73slpassword=x&sslmode=require", sslpassword],
+      [
+        "postgres://u@127.0.0.1:5432/post@gres",
+        "SKILL_SCENARIOS_POSTGRES_URL is a URL pg-url.sh refuses, for the reason on the line above: pg_sql and safe_url take its password out with pg-url.sh, so the batch could neither reach that server nor name it",
+        "-: refused a Postgres URL: an @ sits between the first / and the ? (the URL is not printed)\n",
+      ],
+      [
+        "postgres://u@localhost:5432/postgres?application_name=x%0A",
+        "SKILL_SCENARIOS_POSTGRES_URL gives application_name U+000A, a character that does not print: it reaches the rewritten connection string, where a caller writes that string into a file, and this refusal prints no value that holds one",
+      ],
+    ]) {
+      expect({ url, ...up(url) }).toEqual({
+        url,
+        code: 1,
+        stderr: `${before}skill-scenarios: ${refusal}\n`,
+        psqlRan: false,
+        written: [],
+      });
+    }
   });
 });
 
@@ -1370,7 +1539,11 @@ printf 'eyJhbGciOiJub25lIn0.%s.c2ln\\n' "$payload"
         path.join(scripts, "rig.sh"),
         readFileSync(path.join(import.meta.dir, "rig.sh"))
       );
-      for (const file of [".omp-pin", "skills/asd-ste100/SKILL.md"]) {
+      for (const file of [
+        ".omp-pin",
+        "skills/asd-ste100/SKILL.md",
+        "packages/envoy/scripts/lib/pg-url.sh",
+      ]) {
         mkdirSync(path.dirname(path.join(top, file)), { recursive: true });
         writeFileSync(path.join(top, file), readFileSync(path.join(root, file)));
       }
@@ -1452,6 +1625,99 @@ sleep() { command sleep 0.05; }`;
     expect(readFileSync(path.join(run, "seen"), "utf8")).toBe(
       `${bin}/pin/bin/omp -p The person answered your asks on LWEVAL-2. --continue --session-dir ${run}/sessions\nexit=0\n`
     );
+  });
+});
+
+// The tester-proof world's gh routes (worker_routes), answered by the run's gh stand-in. A tester
+// finds its pull request with the worker prompt's lookup, `gh pr list --repo <the issue's
+// repository> --head legion/<issue> --state open --json number --jq '.[0].number'`
+// (packages/daemon/internal/prompts/go/worker-common.md).
+describe("worker_routes", () => {
+  const pr = {
+    number: 1001,
+    url: "https://github.com/example/widgets/pull/1001",
+    headRefName: "legion/LWEVAL-1",
+    headRefOid: "099b05dc19f7f7e5058e791d16ae05f0b123a2cc",
+    body: "Dispatch: LWEVAL-1",
+  };
+  /** The run directory whose fixtures.json holds worker_routes' routes for `pr`: made by the first
+   * call, inside a test, since the file's work directory is made in a hook, and read by every call
+   * after it, since no call here edits a body. */
+  let run: string | undefined;
+  /** `gh <args>` answered by the gh stand-in from worker_routes' fixtures.json for `pr`. */
+  function gh(...args: string[]) {
+    if (run === undefined) {
+      run = freshDir("worker-routes");
+      const routes = bash(`${fn("worker_routes")}\nworker_routes "$1" >"$2/fixtures.json"`, [
+        JSON.stringify(pr),
+        run,
+      ]);
+      expect(routes).toEqual({ code: 0, stdout: "", stderr: "" });
+    }
+    const result = Bun.spawnSync(
+      [process.execPath, path.join(import.meta.dir, "gh-standin.ts"), "gh", ...args],
+      { env: { ...childEnv, SKILL_SCENARIO_RUN: run } }
+    );
+    return {
+      code: result.exitCode,
+      stdout: result.stdout.toString(),
+      stderr: result.stderr.toString(),
+    };
+  }
+
+  // Catches: a world whose stand-in answers the prompt's lookup of the pull request with a 404,
+  // after which a tester took the pull request to be unreachable and left its body unedited; and a
+  // list of the open pull requests with no head that answers none, which tells a tester that lists
+  // the repository's pull requests that none exists.
+  test("a list of the PR's branch, or of no head, lists the PR, picked to the fields asked", () => {
+    expect(
+      gh(
+        "pr",
+        "list",
+        "--repo",
+        "example/widgets",
+        "--head",
+        "legion/LWEVAL-1",
+        "--state",
+        "open",
+        "--json",
+        "number",
+        "--jq",
+        ".[0].number"
+      )
+    ).toEqual({ code: 0, stdout: "1001\n", stderr: "" });
+    for (const filter of [
+      ["--head", "legion/LWEVAL-1", "--state", "open"],
+      ["--head=legion/LWEVAL-1", "--state", "open"],
+      ["-H", "legion/LWEVAL-1", "--state", "open"],
+      ["--state", "open"],
+    ]) {
+      expect(gh("pr", "list", ...filter, "--json", "number,headRefOid")).toEqual({
+        code: 0,
+        stdout: `[{"number":1001,"headRefOid":"${pr.headRefOid}"}]\n`,
+        stderr: "",
+      });
+    }
+  });
+
+  // Catches: a list of another branch, or of the closed or merged pull requests (on the PR's own
+  // branch too), that names the fixture's open PR, or that fails where GitHub answers an empty
+  // list.
+  test("a list of any other head, or of closed or merged pull requests, is empty", () => {
+    for (const filter of [
+      ["--head", "legion/LWEVAL-10"],
+      ["--head", "legion/LWEVAL-2"],
+      ["--state", "closed"],
+      ["-s", "merged"],
+      ["--head", "legion/LWEVAL-1", "--state", "closed"],
+      ["--state", "merged", "--head", "legion/LWEVAL-1"],
+    ]) {
+      expect(gh("pr", "list", ...filter, "--json", "number")).toEqual({
+        code: 0,
+        stdout: "[]\n",
+        stderr: "",
+      });
+    }
   });
 });
 
@@ -1922,59 +2188,94 @@ describe("launch_env", () => {
   });
 });
 
-describe("the outside-services mode", () => {
-  // Catches: a batch in a pod with no Docker that still starts a container, or makes a run's
-  // database somewhere other than the server it was given.
-  test("the outside-services mode makes each database with psql and starts no container", () => {
-    const dir = freshDir("outside");
-    const bin = freshDir("outside-bin");
+// A batch given SKILL_SCENARIOS_POSTGRES_URL and SKILL_SCENARIOS_NATS_URL, as scored-job.sh gives
+// it the runner pod's own: services_up, then own_dispatch in each run. Its guards read the URL with
+// libpq through python3, as the services_up rows above do.
+describe.skipIf(withoutPython || withoutLibpq)("a batch given its Postgres and NATS", () => {
+  // Catches: a batch in a pod with no Docker that still starts a container; a batch that sizes
+  // the given Postgres for more runs than it runs at once, which refuses an owner-walk batch (one
+  // run at a time) on the pod's server; a run's database made somewhere other than the server it
+  // was given, or its Dispatch started on another database or from another checkout than the
+  // label's; a dispatch.json that names the server with its password; and a run whose label entry
+  // gets no login to that server (pg_url, which label_texts gives it as LEGION_TEST_PG_DSN).
+  test("services_up starts no container, and each run's database is made with psql on that server", () => {
+    const dir = freshDir("given");
+    const bin = freshDir("given-bin");
     const calls = path.join(dir, "calls");
-    for (const tool of ["psql", "docker"])
-      writeFileSync(
-        path.join(bin, tool),
-        `#!/bin/sh\necho "${tool} $*" >>${calls}\n[ ${tool} = psql ]\n`,
-        { mode: 0o755 }
-      );
-    const dsn = "postgres://rig@127.0.0.1:5999/postgres?sslmode=disable";
+    const stub = (tool: string, body = "") =>
+      writeFileSync(path.join(bin, tool), `#!/bin/sh\necho "${tool} $*" >>${calls}\n${body}`, {
+        mode: 0o755,
+      });
+    stub("psql", 'case "$*" in *"SHOW max_connections"*) echo 200 ;; esac\n');
+    stub("docker", "exit 1\n");
+    stub("bun");
+    const url = "postgres://rig:pw@127.0.0.1:5999/postgres?sslmode=disable";
+    const login = "postgres://rig@127.0.0.1:5999/postgres?sslmode=disable";
     const script = [
-      "root=$1 R=$2 evidence=$2 work=$2 timeout_hook=",
-      defs("fail", "note"),
-      '. "$root/scripts/e2e/lib/rig.sh"',
-      defs("services_stores", "make_run_database", "database_url"),
-      "services_stores",
-      "make_run_database run_owner_walk_root_b_claude_head_1",
-      "make_run_database run_owner_walk_root_b_claude_head_2",
-      'printf "%s\\n" "$pg_url" "$pg_server" "$nats_url" "$(database_url run_x)"',
+      "set -euo pipefail",
+      '. "$1"',
+      '. "$2"',
+      defs("fail", "note", "given_services", "safe_url", "pg_sql", "services_up", "own_dispatch"),
+      'until_true() { shift 2; "$@"; }',
+      "connections_needed() { per_run=117; needs=$((per_run * parallel + 20)); }",
+      'nats_ready() { echo "nats_ready $1" >>"$calls"; }',
+      "listener_up() { envoy_port=1; }",
+      'start_dispatch() { echo "start_dispatch $1 | $2" >>"$calls"; dispatch_port=1; }',
+      "root=$3 here=$3/packages/pi-legion/scripts/skill-scenarios S=$4/services calls=$4/calls tag=t",
+      'mkdir -p "$S"',
+      "services_env=$S/env services_postgres=$S/postgres-url",
+      'if [ $# -ge 5 ]; then services_up "$5"; else services_up; fi',
+      'for R in "$4/runs/owner-walk-root-B-claude-head-1" "$4/runs/owner-walk-root-B-claude-head-2"; do',
+      '  mkdir -p "$R"',
+      "  pg_url=''",
+      "  own_dispatch project /label/checkout",
+      '  echo "pg_url $pg_url" >>"$calls"',
+      '  jq -c . "$R/dispatch.json" >>"$calls"',
+      "done",
     ].join("\n");
-    const env = { PATH: `${bin}:${childEnv.PATH}`, SKILL_SCENARIOS_PG_DSN: dsn };
-    const result = bash(script, [root, dir], {
-      ...env,
+    const env = {
+      PATH: `${bin}:${childEnv.PATH}`,
+      SKILL_SCENARIOS_POSTGRES_URL: url,
       SKILL_SCENARIOS_NATS_URL: "nats://127.0.0.1:4999",
-    });
+    };
+    const pgUrl = path.join(root, "packages/envoy/scripts/lib/pg-url.sh");
+    const loopbackDsn = path.join(root, "scripts/e2e/lib/loopback-dsn.sh");
+    const result = bash(script, [pgUrl, loopbackDsn, root, dir, "1"], env);
     expect({ code: result.code, stderr: result.code === 0 ? "" : result.stderr }).toEqual({
       code: 0,
       stderr: "",
     });
-    expect(result.stdout.trim().split("\n").slice(-4)).toEqual([
-      dsn,
-      "postgres://127.0.0.1:5999",
-      "nats://127.0.0.1:4999",
-      "postgres://rig@127.0.0.1:5999/run_x?sslmode=disable",
-    ]);
-    expect(readFileSync(calls, "utf8")).toBe(
-      [
-        `psql ${dsn} -qtAc select 1`,
-        `psql ${dsn} -v ON_ERROR_STOP=1 -qc CREATE DATABASE run_owner_walk_root_b_claude_head_1`,
-        `psql ${dsn} -v ON_ERROR_STOP=1 -qc CREATE DATABASE run_owner_walk_root_b_claude_head_2`,
-        "",
-      ].join("\n")
+    expect(result.stdout).toContain(
+      `services up: listener :1, NATS nats://127.0.0.1:4999, Postgres ${login}`
     );
-    // One of the two alone is refused, naming both.
-    const half = bash(script, [root, freshDir("outside-half")], env);
-    expect(half.code).toBe(1);
-    expect(half.stderr).toContain(
-      "takes SKILL_SCENARIOS_PG_DSN and SKILL_SCENARIOS_NATS_URL together"
-    );
+    const seen = readFileSync(calls, "utf8").trimEnd().split("\n");
+    expect(seen.filter((line) => line.startsWith("docker "))).toEqual([]);
+    expect(seen).toContain("nats_ready nats://127.0.0.1:4999");
+    const runs = ["run_owner_walk_root_b_claude_head_1", "run_owner_walk_root_b_claude_head_2"];
+    for (const run of runs) {
+      expect(seen.filter((line) => line.endsWith(` -c CREATE DATABASE ${run}`))).toEqual([
+        `psql ${login} -X -q -w -v ON_ERROR_STOP=1 -A -t -F \t -c CREATE DATABASE ${run}`,
+      ]);
+      const started = seen.filter((line) => line.includes(`dbname='${run}'`));
+      expect(started).toHaveLength(1);
+      expect(started[0]).toStartWith("start_dispatch ");
+      expect(started[0]).toEndWith(" | /label/checkout");
+      expect(seen).toContain(
+        JSON.stringify({ postgres: login, database: run, port: 1, url: "http://127.0.0.1:1" })
+      );
+    }
+    const logins = seen.filter((line) => line.startsWith("pg_url "));
+    expect(logins).toEqual([`pg_url ${url}`, `pg_url ${url}`]);
+
+    // The same server sized for SKILL_SCENARIOS_PARALLEL's default of 5 runs at once is refused
+    // before any run, since it admits one; and one of the two URLs alone gives no servers.
+    const five = bash(script, [pgUrl, loopbackDsn, root, freshDir("given-five")], env);
+    expect(five.code).toBe(1);
+    expect(five.stderr).toContain("SKILL_SCENARIOS_PARALLEL is 5");
+    const half = bash(`${defs("given_services")}\ngiven_services || echo none`, [], {
+      SKILL_SCENARIOS_POSTGRES_URL: url,
+    });
+    expect(half).toEqual({ code: 0, stdout: "none\n", stderr: "" });
   });
 });
 
@@ -2023,9 +2324,10 @@ describe("install_provider_route's two new forms", () => {
         },
       },
     });
-    expect(readFileSync(path.join(agent, "config.yml"), "utf8")).toContain(
-      "  default: gateway-openai/openai/gpt-6.1-sol\n"
-    );
+    const config = readFileSync(path.join(agent, "config.yml"), "utf8");
+    expect(config).toContain("  default: gateway-openai/openai/gpt-6.1-sol\n");
+    // The built-in openai provider is disabled, so no session falls back to it without a word.
+    expect(config).toContain("\n  - openai\n");
     for (const [api, apiKey, refusal] of [
       [
         "openai-responses",
@@ -2773,7 +3075,7 @@ printf '%s\n' "$*" >>"$work/rig-calls"
 case $1 in
 batch-scored)
   printf 'case=%s model=%s route=%s provider=%s pg=%s nats=%s omp=%s plans=%s\n' "$SKILL_SCENARIOS_OWNER_WALK_CASE" "$SKILL_SCENARIOS_MODEL" \
-    "$LEGION_E2E_MODEL_ROUTE" "$LEGION_E2E_MODEL_PROVIDER" "$SKILL_SCENARIOS_PG_DSN" "$SKILL_SCENARIOS_NATS_URL" "$SKILL_SCENARIOS_OMP" "$SKILL_SCENARIOS_PLANS_ANSWER" >>"$work/rig-env"
+    "$LEGION_E2E_MODEL_ROUTE" "$LEGION_E2E_MODEL_PROVIDER" "$SKILL_SCENARIOS_POSTGRES_URL" "$SKILL_SCENARIOS_NATS_URL" "$SKILL_SCENARIOS_OMP" "$SKILL_SCENARIOS_PLANS_ANSWER" >>"$work/rig-env"
   mkdir -p "$work/runs/owner-walk-$SKILL_SCENARIOS_OWNER_WALK_CASE-$4-1" "$work/runs/owner-walk-$SKILL_SCENARIOS_OWNER_WALK_CASE-$4-2/logs"
   echo '{"outcome":"scored"}' >"$work/runs/owner-walk-$SKILL_SCENARIOS_OWNER_WALK_CASE-$4-1/row.json"
   echo '{"outcome":"rig-error"}' >"$work/runs/owner-walk-$SKILL_SCENARIOS_OWNER_WALK_CASE-$4-2/row.json"

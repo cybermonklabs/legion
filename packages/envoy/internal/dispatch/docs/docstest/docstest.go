@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"sync"
 	"testing"
@@ -23,6 +24,7 @@ import (
 	ygsync "github.com/reearth/ygo/sync"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs/crafted"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // The Hocuspocus message kinds a Peer reads and writes: the outer type after the document's name.
@@ -105,21 +107,65 @@ type authReply struct {
 // Dial connects a peer to artifactID's room at url, the document websocket's full address with its
 // schema_version, with header naming the caller, starts its reader, and asks the room for what doc
 // lacks. doc is the peer's copy of the document: a new one, or the copy a reconnecting browser
-// kept. The room's answer arrives on Answers. The connection closes when t ends.
+// kept. The room's answer arrives on Answers. The connection closes when t ends. The handshake
+// carries no span of its own: its one bound is the test binary's deadline less dialMargin, so a
+// room a loaded machine answers late still opens the peer, and one that never answers fails the
+// test by name, as the deadline's error.
 func Dial(t testing.TB, url string, header http.Header, artifactID string, doc *crdt.Doc) *Peer {
 	t.Helper()
-	peer, err := DialContext(context.Background(), url, header, artifactID, doc)
+	ctx := context.Background()
+	if test, ok := t.(interface{ Deadline() (time.Time, bool) }); ok {
+		if deadline, bounded := test.Deadline(); bounded {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithDeadline(ctx, deadline.Add(-dialMargin))
+			defer cancel()
+		}
+	}
+	peer, err := DialContext(ctx, url, header, artifactID, doc)
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(peer.Close)
+	testcleanup.Add(t, peer.Close)
 	return peer
 }
 
-// DialContext is Dial for a caller that is not a test, such as a load driver: ctx bounds the
-// connection's opening, a failure is returned, and the caller closes the peer.
+// dialMargin is how long before the test binary's deadline Dial gives up on the handshake, the
+// margin testwait's waits leave: the time the failing test's cleanups and the failure itself have
+// to run in before go test's alarm.
+const dialMargin = 30 * time.Second
+
+// DialContext is Dial for a caller that is not a test, such as a load driver: ctx alone bounds the
+// connection's opening (gorilla's own 45 s handshake bound is dropped), a failure is returned, and
+// the caller closes the peer. Gorilla uses ctx only for the TCP connect and its deadline, not for
+// its read of the upgrade's answer, so the raw connection is closed when ctx ends while the
+// handshake is under way, and left alone once it is done.
 func DialContext(ctx context.Context, url string, header http.Header, artifactID string, doc *crdt.Doc) (*Peer, error) {
-	connection, response, err := gws.DefaultDialer.DialContext(ctx, url, header)
+	dialer := *gws.DefaultDialer
+	dialer.HandshakeTimeout = 0
+	var (
+		mu   sync.Mutex
+		stop func() bool
+	)
+	dialer.NetDialContext = func(dialCtx context.Context, network, address string) (net.Conn, error) {
+		var plain net.Dialer
+		raw, err := plain.DialContext(dialCtx, network, address)
+		if err != nil {
+			return nil, err
+		}
+		mu.Lock()
+		stop = context.AfterFunc(ctx, func() { raw.Close() })
+		mu.Unlock()
+		return raw, nil
+	}
+	connection, response, err := dialer.DialContext(ctx, url, header)
+	mu.Lock()
+	detach := stop
+	mu.Unlock()
+	if detach != nil && !detach() && err == nil {
+		// ctx ended as the handshake finished: its close of the raw connection already ran.
+		connection.Close()
+		err = fmt.Errorf("the handshake's context ended: %w", context.Cause(ctx))
+	}
 	if err != nil {
 		if response != nil {
 			// A refused handshake's response carries the server's reason in its status and body.

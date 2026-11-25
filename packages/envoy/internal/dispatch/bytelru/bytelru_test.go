@@ -1,7 +1,10 @@
 package bytelru
 
 import (
+	"crypto/sha256"
+	"encoding/binary"
 	"fmt"
+	"runtime"
 	"testing"
 )
 
@@ -133,5 +136,55 @@ func TestTheCacheChargesAtLeastTheValuesOwnBytes(t *testing.T) {
 	cache.PutSize("understated", make([]byte, 32), 1)
 	if held := cache.Held(); held != 32 {
 		t.Errorf("a 32-byte value charged 1 byte counts %d, want its own 32", held)
+	}
+}
+
+// An entry costs the heap no more after the cache has turned over for long than when the cache
+// was first full. A Go map keeps the slot of a deleted key as a tombstone and splits its tables
+// rather than reuse every one, so a map that is never made afresh (renewItems) grows under a
+// cache that evicts for long to several times the slots its keys fill, and a fixed charge for the
+// entry itself (pmdoc's displayCacheEntryBytes) stops covering it. The keys are SHA-256 sums, as
+// the display trees' are, and every value is one shared byte, so the heap the cache holds is its
+// entries, their list elements and its map. On go1.27.3 linux/amd64 each entry held 241-249 bytes
+// when the cache was first full; after 40 turnovers it held 250-251 bytes, and 373 bytes when the
+// map was never made afresh.
+func TestAnEntryCostsNoMoreHeapAfterTheCacheTurnsOverForLong(t *testing.T) {
+	type key struct {
+		sum  [sha256.Size]byte
+		mode int
+	}
+	const charged = 256
+	const entries = 30_000
+	live := func() int64 {
+		runtime.GC()
+		runtime.GC()
+		var stats runtime.MemStats
+		runtime.ReadMemStats(&stats)
+		return int64(stats.HeapAlloc)
+	}
+	value := []byte{1}
+	before := live()
+	cache := New[key, []byte](entries * charged)
+	put := func(number int) {
+		var k key
+		binary.LittleEndian.PutUint64(k.sum[:], uint64(number))
+		k.sum = sha256.Sum256(k.sum[:8])
+		cache.PutSize(k, value, charged)
+	}
+	for number := range entries {
+		put(number)
+	}
+	full := live() - before
+	for number := entries; number < 41*entries; number++ {
+		put(number)
+	}
+	turned := live() - before
+	// The cache is held past the reading, so the collection that reads it cannot free it.
+	runtime.KeepAlive(cache)
+	t.Logf("%d entries hold %.1f bytes each when the cache is first full and %.1f after it has turned over 40 times",
+		entries, float64(full)/entries, float64(turned)/entries)
+	if grown := turned - full; grown > 64*entries {
+		t.Errorf("after 40 turnovers the cache's %d entries hold %d bytes more than when it was first full, %.1f an entry, want at most 64 an entry: its map grows the longer it evicts",
+			entries, grown, float64(grown)/entries)
 	}
 }

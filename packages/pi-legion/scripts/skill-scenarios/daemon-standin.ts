@@ -47,12 +47,15 @@
  * report's activity, `{at, backgroundWork, phase}`, with no claim token, session id or secret.
  *
  * Usage: `bun daemon-standin.ts <port> <log file> <boot token file> <project> <issue> <role>
- * [<phase>] [--tree <root>] [--issues <file>] [--label <checkout>] [--dispatch <url> <token file>]`
+ * <repository> <default branch> [<phase>] [--tree <root>] [--issues <file>] [--label <checkout>]
+ * [--dispatch <url> <token file>]`
  *
  * - The claim is `<role>` of `<issue>` in the tree of `<root>`, `<issue>` itself without `--tree`.
  *   Its issue stands in the phase its role works (daemon-pane.go's `phase`), or in `<phase>` for a
  *   role that works none (the architect, which daemon-pane.go's `phase` refuses), whose phase ends
  *   with no handoff record.
+ * - Every issue the state document holds is on `<repository>` and its `<default branch>`: rig.sh's
+ *   tester-proof world, or the world an owner's run walks.
  * - `--issues` names the world's issues, `{key, tree, phase, status}` (`StandinIssues`), which the
  *   state and the record route answer beside the claim's. An issue in no phase is one the daemon
  *   records nothing of, so neither names it. A file that gives the claim's issue another tree or
@@ -100,21 +103,22 @@ import {
 
 const GRANT_TTL_MS = 60_000;
 const USAGE =
-  "usage: bun daemon-standin.ts <port> <log file> <boot token file> <project> <issue> <role> [<phase>] [--tree <root>] [--issues <file>] [--label <checkout>] [--dispatch <url> <token file>]";
+  "usage: bun daemon-standin.ts <port> <log file> <boot token file> <project> <issue> <role> <repository> <default branch> [<phase>] [--tree <root>] [--issues <file>] [--label <checkout>] [--dispatch <url> <token file>]";
 
 function refuse(message: string): never {
   console.error(message);
   process.exit(2);
 }
 
-// The command line: six or seven words, then the options.
+// The command line: eight or nine words, then the options.
 const words = Bun.argv.slice(2);
 const firstOption = words.findIndex((word) => word.startsWith("--"));
 const positional = firstOption < 0 ? words : words.slice(0, firstOption);
-if (positional.length < 6 || positional.length > 7) refuse(USAGE);
-const [portArg, logFile, bootTokenFile, project, issue, role] = positional;
-/** The seventh word: the phase of a role that works none, absent for one that works a phase. */
-const phaseArg: string | undefined = positional[6];
+if (positional.length < 8 || positional.length > 9) refuse(USAGE);
+const [portArg, logFile, bootTokenFile, project, issue, role, repository, defaultBranch] =
+  positional;
+/** The ninth word: the phase of a role that works none, absent for one that works a phase. */
+const phaseArg: string | undefined = positional[8];
 const options: {
   tree?: string;
   issues?: string;
@@ -164,7 +168,7 @@ const TREE = options.tree ?? issue;
 
 const startedAt = new Date().toISOString();
 /** The phase the issue is in and the word of the handoff record it ends with, empty when none: the
- * phase the role works, or the one the seventh argument names, with no handoff record. */
+ * phase the role works, or the one the ninth argument names, with no handoff record. */
 const [PHASE = "", HANDOFF_WORD = ""] =
   phaseArg === undefined
     ? runDaemonPane(DAEMON_MODULE, ["phase", role]).split("\n")
@@ -240,8 +244,8 @@ const RECORDED = [
 ];
 
 /** `GET /legion/v1/state`: the issues the daemon records, each admitted in its phase, in its tree,
- * on the rig's one repository; the claim's in PHASE (the phase its role works, through
- * daemon-pane.go, or the seventh argument's).
+ * on the repository and default branch the command line names; the claim's in PHASE (the phase
+ * its role works, `workflow.RoleFor` through daemon-pane.go, or the ninth argument's).
  * `capabilities` is the deployment's capability report, `strandedClaims` the claims nothing will
  * wake, `heldOutboxRows` the lifecycle rows held behind their issues' running ones, `consumers`
  * the lag of the daemon's durable consumers and `repositories` the repositories the live records
@@ -270,8 +274,8 @@ const stateParse = LegionStateResponse.safeParse({
         phase: each.phase,
         status: each.status,
         tree: each.tree,
-        repo: "sjawhar/legion-smoke",
-        defaultBranch: "main",
+        repo: repository,
+        defaultBranch,
         workers: {},
       },
     ])
@@ -282,7 +286,7 @@ const stateParse = LegionStateResponse.safeParse({
   wakesWaiting: [],
   capabilities: [],
   repositories: {
-    live: [{ repo: "sjawhar/legion-smoke", apps: { implement: true, review: true } }],
+    live: [{ repo: repository, apps: { implement: true, review: true } }],
     withoutWebhookApp: [],
     caches: [],
   },

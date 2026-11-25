@@ -33,6 +33,11 @@ const freshDir = temporaryDirectories("daemon-standin");
 
 /** A Legion project token: lower-case letters and digits (`isLegionProjectToken`). */
 const PROJECT = "skillsstandin";
+/** The repository and default branch the stand-in's state puts every issue on: its seventh and
+ *  eighth words. */
+const REPOSITORY = "example/widgets";
+const DEFAULT_BRANCH = "trunk";
+const REPO = [REPOSITORY, DEFAULT_BRANCH] as const;
 
 interface Standin {
   readonly url: string;
@@ -311,6 +316,7 @@ test("register_plan reads the version from Dispatch and answers what the label's
         PROJECT,
         "LWEVAL-7",
         "architect",
+        ...REPO,
         "admitted",
         "--label",
         label,
@@ -386,7 +392,7 @@ test("register_plan answers 500 naming the entry's exit and its stderr's last li
     const flags = ["--label", label, "--dispatch", dispatch.url, tokenFile];
     await withStandin(
       dir,
-      [PROJECT, "LWEVAL-7", "architect", "admitted", ...flags],
+      [PROJECT, "LWEVAL-7", "architect", ...REPO, "admitted", ...flags],
       async (standin) => {
         const claim = await register(standin);
         const body = {
@@ -407,20 +413,24 @@ test("register_plan answers 500 naming the entry's exit and its stderr's last li
 
     // A stand-in given no label and no Dispatch cannot ask the label, so it says so.
     const bare = freshDir();
-    await withStandin(bare, [PROJECT, "LWEVAL-7", "architect", "admitted"], async (standin) => {
-      const claim = await register(standin);
-      const body = {
-        grantId: await grant(standin, claim),
-        issue: "LWEVAL-8",
-        artifactId,
-        version: 1,
-      };
-      const response = await post(standin, "/legion/v1/plans/register", body);
-      expect(response.status).toBe(500);
-      const { error } = LegionErrorResponse.parse(await response.json());
-      expect(error).toContain("--label");
-      expect(error).toContain("--dispatch");
-    });
+    await withStandin(
+      bare,
+      [PROJECT, "LWEVAL-7", "architect", ...REPO, "admitted"],
+      async (standin) => {
+        const claim = await register(standin);
+        const body = {
+          grantId: await grant(standin, claim),
+          issue: "LWEVAL-8",
+          artifactId,
+          version: 1,
+        };
+        const response = await post(standin, "/legion/v1/plans/register", body);
+        expect(response.status).toBe(500);
+        const { error } = LegionErrorResponse.parse(await response.json());
+        expect(error).toContain("--label");
+        expect(error).toContain("--dispatch");
+      }
+    );
   } finally {
     dispatch.server.stop(true);
   }
@@ -462,7 +472,7 @@ async function withPlanCheck(
   try {
     await withStandin(
       dir,
-      [PROJECT, "LWEVAL-7", "architect", "admitted", ...flags],
+      [PROJECT, "LWEVAL-7", "architect", ...REPO, "admitted", ...flags],
       async (standin) => {
         const claim = await register(standin);
         const registerPlan = async (version: number): Promise<Response> =>
@@ -602,40 +612,44 @@ test("register_plan answers 500 for a label answer whose status no response carr
 // left out of the log.
 test("a sign_off and a move back are logged with their bodies", async () => {
   const dir = freshDir();
-  await withStandin(dir, [PROJECT, "LWEVAL-7", "architect", "accepting"], async (standin) => {
-    const claim = await register(standin);
-    const grantId = await grant(standin, claim);
-    const signOff = { grantId, issue: "LWEVAL-7" };
-    const signed = await post(standin, "/legion/v1/signoff", signOff);
-    expect(signed.status).toBe(200);
-    expect(await signed.json()).toEqual({});
-    const backward = {
-      grantId,
-      to: "implementing",
-      reason: `planted ${randomUUID()}`,
-      issue: "LWEVAL-7",
-    };
-    const moved = await post(standin, "/legion/v1/phase/backward", backward);
-    expect(moved.status).toBe(200);
-    expect(await moved.json()).toEqual({});
-    expect(lineOf(standin, "/legion/v1/signoff")).toMatchObject({
-      status: 200,
-      grantId,
-      body: signOff,
-    });
-    expect(lineOf(standin, "/legion/v1/phase/backward")).toMatchObject({
-      status: 200,
-      grantId,
-      body: backward,
-    });
+  await withStandin(
+    dir,
+    [PROJECT, "LWEVAL-7", "architect", ...REPO, "accepting"],
+    async (standin) => {
+      const claim = await register(standin);
+      const grantId = await grant(standin, claim);
+      const signOff = { grantId, issue: "LWEVAL-7" };
+      const signed = await post(standin, "/legion/v1/signoff", signOff);
+      expect(signed.status).toBe(200);
+      expect(await signed.json()).toEqual({});
+      const backward = {
+        grantId,
+        to: "implementing",
+        reason: `planted ${randomUUID()}`,
+        issue: "LWEVAL-7",
+      };
+      const moved = await post(standin, "/legion/v1/phase/backward", backward);
+      expect(moved.status).toBe(200);
+      expect(await moved.json()).toEqual({});
+      expect(lineOf(standin, "/legion/v1/signoff")).toMatchObject({
+        status: 200,
+        grantId,
+        body: signOff,
+      });
+      expect(lineOf(standin, "/legion/v1/phase/backward")).toMatchObject({
+        status: 200,
+        grantId,
+        body: backward,
+      });
 
-    // A body the schema refuses: a field LegionSignOffRequest does not name.
-    const odd = await post(standin, "/legion/v1/signoff", { ...signOff, extra: "x" });
-    expect(odd.status).toBe(400);
-    expect(LegionErrorResponse.parse(await odd.json()).error).toContain("LegionSignOffRequest");
-    const signOffLines = logLines(standin).filter((line) => line.path === "/legion/v1/signoff");
-    expect(signOffLines.map((line) => line.status)).toEqual([200, 400]);
-  });
+      // A body the schema refuses: a field LegionSignOffRequest does not name.
+      const odd = await post(standin, "/legion/v1/signoff", { ...signOff, extra: "x" });
+      expect(odd.status).toBe(400);
+      expect(LegionErrorResponse.parse(await odd.json()).error).toContain("LegionSignOffRequest");
+      const signOffLines = logLines(standin).filter((line) => line.path === "/legion/v1/signoff");
+      expect(signOffLines.map((line) => line.status)).toEqual([200, 400]);
+    }
+  );
 });
 
 // Catches: an activity report answered 404 (the rig's end of a run waits on it), its log line
@@ -643,41 +657,47 @@ test("a sign_off and a move back are logged with their bodies", async () => {
 // token, the session id or the secret in its body.
 test("an activity report is answered and logged with its backgroundWork", async () => {
   const dir = freshDir();
-  await withStandin(dir, [PROJECT, "LWEVAL-7", "architect", "admitted"], async (standin) => {
-    const claim = await register(standin);
-    const activity = {
-      at: new Date().toISOString(),
-      backgroundWork: { running: true, kinds: ["async-job"] },
-      phase: { nextReminderAt: "2026-11-24T12:05:00Z" },
-    };
-    const report = {
-      claimToken: claim.claimToken,
-      sessionId: SESSION,
-      secret: claim.secret,
-      activity,
-    };
-    const answered = await post(standin, "/legion/v1/claims/activity", report);
-    expect(answered.status).toBe(204);
-    expect(await answered.text()).toBe("");
+  await withStandin(
+    dir,
+    [PROJECT, "LWEVAL-7", "architect", ...REPO, "admitted"],
+    async (standin) => {
+      const claim = await register(standin);
+      const activity = {
+        at: new Date().toISOString(),
+        backgroundWork: { running: true, kinds: ["async-job"] },
+        phase: { nextReminderAt: "2026-11-24T12:05:00Z" },
+      };
+      const report = {
+        claimToken: claim.claimToken,
+        sessionId: SESSION,
+        secret: claim.secret,
+        activity,
+      };
+      const answered = await post(standin, "/legion/v1/claims/activity", report);
+      expect(answered.status).toBe(204);
+      expect(await answered.text()).toBe("");
 
-    const line = lineOf(standin, "/legion/v1/claims/activity");
-    expect(line.status).toBe(204);
-    expect(line.body).toEqual(activity);
-    expect(JSON.stringify(line.body)).not.toContain(claim.secret);
-    expect(JSON.stringify(line.body)).not.toContain(claim.claimToken);
-    expect(JSON.stringify(line.body)).not.toContain(SESSION);
+      const line = lineOf(standin, "/legion/v1/claims/activity");
+      expect(line.status).toBe(204);
+      expect(line.body).toEqual(activity);
+      expect(JSON.stringify(line.body)).not.toContain(claim.secret);
+      expect(JSON.stringify(line.body)).not.toContain(claim.claimToken);
+      expect(JSON.stringify(line.body)).not.toContain(SESSION);
 
-    // Another session's secret is refused, and a report without its activity does not parse.
-    const foreign = await post(standin, "/legion/v1/claims/activity", {
-      ...report,
-      secret: fixtureSecret("other"),
-    });
-    expect(foreign.status).toBe(403);
-    const { activity: _, ...bare } = report;
-    const empty = await post(standin, "/legion/v1/claims/activity", bare);
-    expect(empty.status).toBe(400);
-    expect(LegionErrorResponse.parse(await empty.json()).error).toContain("LegionActivityRequest");
-  });
+      // Another session's secret is refused, and a report without its activity does not parse.
+      const foreign = await post(standin, "/legion/v1/claims/activity", {
+        ...report,
+        secret: fixtureSecret("other"),
+      });
+      expect(foreign.status).toBe(403);
+      const { activity: _, ...bare } = report;
+      const empty = await post(standin, "/legion/v1/claims/activity", bare);
+      expect(empty.status).toBe(400);
+      expect(LegionErrorResponse.parse(await empty.json()).error).toContain(
+        "LegionActivityRequest"
+      );
+    }
+  );
 });
 
 // Catches: a header that states the rig's own plugin's contract when the run's label is another
@@ -688,7 +708,7 @@ test("the health header states the label's contract, not the rig's", async () =>
   const { label } = plantLabel(dir, contract);
   await withStandin(
     dir,
-    [PROJECT, "LWEVAL-7", "architect", "admitted", "--label", label],
+    [PROJECT, "LWEVAL-7", "architect", ...REPO, "admitted", "--label", label],
     async (standin) => {
       const health = await fetch(`${standin.url}/healthz`);
       expect(health.status).toBe(200);
@@ -702,8 +722,8 @@ test("the health header states the label's contract, not the rig's", async () =>
 });
 
 // Catches: a state that holds the claim's issue alone, gives an issue its own key as its tree when
-// the world names another, or records an issue the world holds in no phase, which a daemon never
-// records.
+// the world names another, records an issue the world holds in no phase, which a daemon never
+// records, or puts an issue on another repository or default branch than the command line names.
 test("the state lists the world's issues with their tree", async () => {
   const dir = freshDir();
   const issuesFile = path.join(dir, "issues.json");
@@ -721,6 +741,7 @@ test("the state lists the world's issues with their tree", async () => {
       PROJECT,
       "LWEVAL-2",
       "architect",
+      ...REPO,
       "implementing",
       "--tree",
       "LWEVAL-1",
@@ -736,7 +757,13 @@ test("the state lists the world's issues with their tree", async () => {
       const issues = state.issues ?? {};
       expect(Object.keys(issues).sort()).toEqual(["LWEVAL-1", "LWEVAL-2"]);
       for (const key of ["LWEVAL-1", "LWEVAL-2"]) {
-        expect(issues[key]).toMatchObject({ key, tree: "LWEVAL-1", phase: "implementing" });
+        expect(issues[key]).toMatchObject({
+          key,
+          tree: "LWEVAL-1",
+          phase: "implementing",
+          repo: REPOSITORY,
+          defaultBranch: DEFAULT_BRANCH,
+        });
       }
       expect(state.admission?.trees).toEqual(["LWEVAL-1"]);
       const unrecorded = await fetch(`${standin.url}/legion/v1/issues/LWEVAL-3/record`);
@@ -760,6 +787,7 @@ test("an --issues file that gives the claim's issue another phase or tree is ref
     PROJECT,
     "LWEVAL-7",
     "architect",
+    ...REPO,
     "accepting",
     "--issues",
     issuesFile,
@@ -771,6 +799,7 @@ test("an --issues file that gives the claim's issue another phase or tree is ref
     PROJECT,
     "LWEVAL-7",
     "architect",
+    ...REPO,
     "implementing",
     "--tree",
     "LWEVAL-1",
@@ -787,36 +816,40 @@ test("an --issues file that gives the claim's issue another phase or tree is ref
 // a refused one included.
 test("tasks/stop, release_children's waves/release and gates/register answer {} with a 200 and log the body", async () => {
   const dir = freshDir();
-  await withStandin(dir, [PROJECT, "LWEVAL-7", "architect", "admitted"], async (standin) => {
-    const claim = await register(standin);
-    const grantId = await grant(standin, claim);
-    const bodies = {
-      "/legion/v1/tasks/stop": { grantId, issue: "LWEVAL-8", task: "rig-task" },
-      "/legion/v1/waves/release": { grantId, issues: ["LWEVAL-8"] },
-      "/legion/v1/gates/register": {
-        grantId,
-        issue: "LWEVAL-7",
-        artifactId: randomUUID(),
-        version: 2,
-        step: "spec",
-      },
-    };
-    for (const [route, body] of Object.entries(bodies)) {
-      const response = await post(standin, route, body);
-      expect(response.status).toBe(200);
-      expect(await response.json()).toEqual({});
-      expect(lineOf(standin, route)).toMatchObject({ status: 200, grantId, body });
-    }
+  await withStandin(
+    dir,
+    [PROJECT, "LWEVAL-7", "architect", ...REPO, "admitted"],
+    async (standin) => {
+      const claim = await register(standin);
+      const grantId = await grant(standin, claim);
+      const bodies = {
+        "/legion/v1/tasks/stop": { grantId, issue: "LWEVAL-8", task: "rig-task" },
+        "/legion/v1/waves/release": { grantId, issues: ["LWEVAL-8"] },
+        "/legion/v1/gates/register": {
+          grantId,
+          issue: "LWEVAL-7",
+          artifactId: randomUUID(),
+          version: 2,
+          step: "spec",
+        },
+      };
+      for (const [route, body] of Object.entries(bodies)) {
+        const response = await post(standin, route, body);
+        expect(response.status).toBe(200);
+        expect(await response.json()).toEqual({});
+        expect(lineOf(standin, route)).toMatchObject({ status: 200, grantId, body });
+      }
 
-    // A grant the stand-in never minted is refused, and its line still keeps the body.
-    const unknown = { grantId: randomUUID(), issue: "LWEVAL-8", task: "rig-task" };
-    expect((await post(standin, "/legion/v1/tasks/stop", unknown)).status).toBe(403);
-    expect(
-      logLines(standin)
-        .filter((line) => line.path === "/legion/v1/tasks/stop")
-        .at(-1)
-    ).toMatchObject({ status: 403, body: unknown });
-  });
+      // A grant the stand-in never minted is refused, and its line still keeps the body.
+      const unknown = { grantId: randomUUID(), issue: "LWEVAL-8", task: "rig-task" };
+      expect((await post(standin, "/legion/v1/tasks/stop", unknown)).status).toBe(403);
+      expect(
+        logLines(standin)
+          .filter((line) => line.path === "/legion/v1/tasks/stop")
+          .at(-1)
+      ).toMatchObject({ status: 403, body: unknown });
+    }
+  );
 });
 
 // Catches: a record route that answers the claim's issue in another phase than the one its role
@@ -836,7 +869,7 @@ test.skipIf(skipGo)(
     );
     await withStandin(
       dir,
-      [PROJECT, "LWEVAL-4", "tester", "--issues", issuesFile],
+      [PROJECT, "LWEVAL-4", "tester", ...REPO, "--issues", issuesFile],
       async (standin) => {
         const phaseNow = async (): Promise<string> => {
           const answered = await fetch(`${standin.url}/legion/v1/issues/LWEVAL-4/record`);
@@ -875,20 +908,30 @@ test.skipIf(skipGo)(
   GO_BOUND
 );
 
-// Catches: a change that breaks rig.sh's call of today (run_tester_proof: six arguments and no
-// option), which serves a tester's one issue in its own tree, with the rig's own contract.
+// Catches: a change that breaks rig.sh's tester call (run_tester_proof: eight arguments, the
+// world's repository and default branch last, and no option), which serves a tester's one issue in
+// its own tree, on that repository and branch, with the rig's own contract; and a call that leaves
+// out the repository and branch served, where the stand-in must refuse it.
 test.skipIf(skipGo)(
-  "the old six-argument call serves a tester's claim as before, with the rig's own contract",
+  "rig.sh's eight-argument tester call serves a tester's claim on its repository, with the rig's own contract",
   async () => {
     const dir = freshDir();
-    await withStandin(dir, [PROJECT, "LWEVAL-5", "tester"], async (standin) => {
+    const short = refused(freshDir(), [PROJECT, "LWEVAL-5", "tester"]);
+    expect(short.code).toBe(2);
+    expect(short.stderr).toContain("<repository> <default branch>");
+    await withStandin(dir, [PROJECT, "LWEVAL-5", "tester", ...REPO], async (standin) => {
       const claim = await register(standin);
       expect(claim).toMatchObject({ tree: "LWEVAL-5", issue: "LWEVAL-5" });
       const state = LegionStateResponse.parse(
         await (await fetch(`${standin.url}/legion/v1/state`)).json()
       );
       expect(Object.keys(state.issues ?? {})).toEqual(["LWEVAL-5"]);
-      expect(state.issues?.["LWEVAL-5"]).toMatchObject({ tree: "LWEVAL-5", phase: "testing" });
+      expect(state.issues?.["LWEVAL-5"]).toMatchObject({
+        tree: "LWEVAL-5",
+        phase: "testing",
+        repo: REPOSITORY,
+        defaultBranch: DEFAULT_BRANCH,
+      });
       const health = await fetch(`${standin.url}/healthz`);
       expect(health.headers.get("Legion-Daemon-Contract")).toBe(
         String(pkg.legion.daemonApiVersion)

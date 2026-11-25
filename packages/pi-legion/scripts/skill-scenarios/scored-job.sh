@@ -21,11 +21,12 @@
 # a time.
 #
 # In order: `bun install --frozen-lockfile`; the pod's own Postgres and NATS (LEGION_TEST_PG_DSN,
-# LEGION_TEST_NATS_URL) as the rig's outside-services mode, and its Oh My Pi (LEGION_TEST_OMP) as
-# SKILL_SCENARIOS_OMP, each unless the variable of the rig's own is set; the capture of a real plans
-# read at the label checkout (rig.sh plans-capture), whose answer every run's proxy serves, its
-# keys mapped to the run's; each label's tree and profile; each case's batch; then the rows, the
-# reach lines and the cells.
+# LEGION_TEST_NATS_URL) as the rig's SKILL_SCENARIOS_POSTGRES_URL and SKILL_SCENARIOS_NATS_URL, so
+# the batch starts no container, and its Oh My Pi (LEGION_TEST_OMP) as SKILL_SCENARIOS_OMP, each
+# unless the variable of the rig's own is set; the capture of a real plans read at the label
+# checkout (rig.sh plans-capture), whose answer every run's proxy serves, its keys mapped to the
+# run's; each label's tree and profile; each case's batch; then the rows, the reach lines and the
+# cells.
 #
 # The model: SKILL_SCENARIOS_MODEL=standin runs every turn on the model stand-in (model-standin.ts).
 # Without it, the gateway, on the family's block of a provider file the Job writes: `gateway`
@@ -118,8 +119,8 @@ case_count() { if [ -n "$count" ]; then echo "$count"; else sed -n "s/^$1 //p" <
 
 # The pod's own services and Oh My Pi, as the rig's inputs.
 export SKILL_SCENARIOS_WORK=${SKILL_SCENARIOS_WORK:-${TMPDIR:-/tmp}/scored-job}
-if [ -z "${SKILL_SCENARIOS_PG_DSN:-}${SKILL_SCENARIOS_NATS_URL:-}" ] && [ -n "${LEGION_TEST_PG_DSN:-}" ] && [ -n "${LEGION_TEST_NATS_URL:-}" ]; then
-  export SKILL_SCENARIOS_PG_DSN=$LEGION_TEST_PG_DSN SKILL_SCENARIOS_NATS_URL=$LEGION_TEST_NATS_URL
+if [ -z "${SKILL_SCENARIOS_POSTGRES_URL:-}${SKILL_SCENARIOS_NATS_URL:-}" ] && [ -n "${LEGION_TEST_PG_DSN:-}" ] && [ -n "${LEGION_TEST_NATS_URL:-}" ]; then
+  export SKILL_SCENARIOS_POSTGRES_URL=$LEGION_TEST_PG_DSN SKILL_SCENARIOS_NATS_URL=$LEGION_TEST_NATS_URL
 fi
 if [ -z "${SKILL_SCENARIOS_OMP:-}" ] && [ -n "${LEGION_TEST_OMP:-}" ]; then export SKILL_SCENARIOS_OMP=$LEGION_TEST_OMP; fi
 mkdir -p "$SKILL_SCENARIOS_WORK"
