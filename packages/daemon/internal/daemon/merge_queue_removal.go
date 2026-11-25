@@ -19,15 +19,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
-// The states GitHub documents for a pull request (githubPullRequest.State), as GitHub writes them.
-const (
-	pullOpen   = "open"
-	pullClosed = "closed"
-)
-
-// pullStates are those states, the closed set a line names one of.
-var pullStates = []string{pullOpen, pullClosed}
-
 // mergeQueueRead runs a merge-queue read (record.MergeQueueRead): the daemon's one read of a pull
 // request that GitHub reported leaving the merge queue at the row's head. GitHub's event names no
 // reason for the removal, and GitHub's merge queue reports a removal in the same second as the
