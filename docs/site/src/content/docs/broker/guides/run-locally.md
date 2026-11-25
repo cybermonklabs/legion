@@ -83,6 +83,8 @@ dev-broker: ready.
   export AGENT_SECRETS_OPERATOR_FILE=/tmp/agent-secrets-dev.nkqDjj/operator
   export AGENT_SECRETS_MACHINE_FILE=/tmp/agent-secrets-dev.nkqDjj/machine.json
   export AGENT_SECRETS_STATE_FILE=/tmp/agent-secrets-dev.nkqDjj/sessions.json
+  export AGENT_SECRETS_SIGNIN_DIR=/tmp/agent-secrets-dev.nkqDjj/signins
+  export AGENT_SECRETS_MACHINE_IDENTITY=
   export DEV_BROKER_DIR=/tmp/agent-secrets-dev.nkqDjj
   export DEV_BROKER_METRICS_URL=http://127.0.0.1:42175/metrics
   export DEV_BROKER_POD_UID=eb9d903e-d8bb-404f-a9c7-d4e61fe28b75
@@ -132,7 +134,12 @@ helper's socket, its operator file (the Dispatch login the helper's machine logi
 `ada@example.com`) and its
 machine file (the login the helper keeps across restarts) in the stack's workdir, so the helper
 never touches one already running for your user, or your own machine's login, and nothing lands in
-your current directory. Check that `type agent-secrets` names the workdir's `bin/`: a tool manager
+your current directory. The exports name a sign-in store in the workdir (`AGENT_SECRETS_SIGNIN_DIR`),
+which holds no sign-in, and no machine identity (`AGENT_SECRETS_MACHINE_IDENTITY` empty), whatever
+your shell set before. `agent-secrets` takes a person's sign-in before the helper, so with your own
+`agent-secrets login` the session below would sign as you at this broker, which refuses it; and a
+helper given your machine's identity would trade it here and keep its key in your own
+`~/.config/agent-secrets`. Check that `type agent-secrets` names the workdir's `bin/`: a tool manager
 that puts its own directories first on `PATH` at every prompt runs an installed `agent-secrets`
 instead.
 

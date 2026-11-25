@@ -175,6 +175,16 @@
 # and an export that named only the socket would leave this helper writing the records of the
 # helper installed under this HOME, whose named sessions' signing keys are in them.
 #
+# The exports also name a sign-in store in WORK_DIR (AGENT_SECRETS_SIGNIN_DIR, which nothing
+# here creates, so it holds no sign-in) and no machine identity (AGENT_SECRETS_MACHINE_IDENTITY
+# empty), since a shell of a person who uses another broker can carry both. The clients take a
+# person's sign-in before the helper (cmd/cipher/chain.go), so with that person's store a session
+# registered here signs as that person at this broker, which takes no Google sign-in, and every
+# call of the session is refused. With that identity the helper trades this machine's own token
+# at this broker, and keeps the key it trades with under HOME, beside the installed helper's
+# machine login. This stack's helper holds the machine login its operator approves, and nothing
+# else.
+#
 # DEV_BROKER_GCP_PREFIX and DEV_BROKER_GCP_KMS_KEY_NAME, set together, make the broker's store
 # Google Cloud Secret Manager (BROKER_SECRETS_STORE=gcp-secret-manager) under that secrets prefix
 # (projects/<project number>/secrets/<id prefix>) and that agent-secrets key, with an empty fake
@@ -861,6 +871,8 @@ dev-broker: ready.
   export AGENT_SECRETS_OPERATOR_FILE=$OPERATOR_FILE
   export AGENT_SECRETS_MACHINE_FILE=$WORK_DIR/machine.json
   export AGENT_SECRETS_STATE_FILE=$WORK_DIR/sessions.json
+  export AGENT_SECRETS_SIGNIN_DIR=$WORK_DIR/signins
+  export AGENT_SECRETS_MACHINE_IDENTITY=
   export DEV_BROKER_DIR=$WORK_DIR
   export DEV_BROKER_METRICS_URL=$METRICS_URL
   export DEV_BROKER_POD_UID=$POD_UID

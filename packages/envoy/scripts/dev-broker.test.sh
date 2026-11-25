@@ -55,10 +55,12 @@
 # DEV_BROKER_PROXIED_GITHUB_IP puts the proxied GitHub on that address's port 443 and points the
 # proxy at it, and DEV_BROKER_GITHUB_PERMISSIONS reaches the stands one owner at a time; (m)
 # DEV_BROKER_BROKER_BIN is the broker started, and no broker is built; (n) each of those two
-# settings, malformed, is refused with exit 2 before anything is created; and (o) lib/pg-url.sh
+# settings, malformed, is refused with exit 2 before anything is created; (o) lib/pg-url.sh
 # gives psql a URL without its password and the password, decoded, in PGPASSWORD, so a
 # DEV_BROKER_POSTGRES_URL run's password is in no argument of any call it makes and no line it
-# prints.
+# prints; and (p) each instance's exports, pasted into a shell that carries a person's own
+# sign-in store and machine identity, name a sign-in store in that instance's workdir and no
+# machine identity.
 set -euo pipefail
 
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
@@ -679,6 +681,22 @@ assert_instance_isolated() {
     exit 1
   fi
   printf 'PASS: %s signs people in to its broker at that same issuer, with a 0600 secret it never prints, and names its broker'"'"'s approval page\n' "$label"
+
+  # The exports name this run's own sign-in store and no machine identity, whatever the shell
+  # they are pasted into carried before (dev-broker.sh's header says what each of a person's own
+  # would do to a session here). Pasted into a shell that carries a person's own of both, they
+  # leave the run's.
+  local exports pasted
+  exports="$(sed -n 's/^  \(export [A-Z][A-Z_0-9]*=.*\)$/\1/p' "$log_file")"
+  # shellcheck disable=SC2016 # the pasted shell expands both variables, after the exports ran
+  pasted="$(env AGENT_SECRETS_SIGNIN_DIR=/the-persons-own/signins AGENT_SECRETS_MACHINE_IDENTITY=metadata \
+    bash -c "${exports}"$'\n''printf "%s|%s" "$AGENT_SECRETS_SIGNIN_DIR" "${AGENT_SECRETS_MACHINE_IDENTITY:-none}"' || true)"
+  if [[ "$pasted" != "${workdir}/signins|none" ]]; then
+    cat "$log_file" >&2
+    echo "FAIL: $label's exports, pasted into a shell with a person's own sign-in store and machine identity, leave AGENT_SECRETS_SIGNIN_DIR|AGENT_SECRETS_MACHINE_IDENTITY at '${pasted}'; want '${workdir}/signins|none'" >&2
+    exit 1
+  fi
+  printf 'PASS: %s exports a sign-in store of its own and no machine identity, so a pasted shell takes neither from the person\n' "$label"
 
   # The read entry's pod token. The issuer mints it for the reader account at the exchange's own
   # audience, the one the exchange token carries, into the workdir's read-token, and binds it to a
