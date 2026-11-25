@@ -1261,8 +1261,12 @@ const runRecords: Check = {
   run: rigRecords,
 };
 
-/** Each `mount --bind <source> <target>` of a line, each word as the line writes it. */
-const BIND = /\bmount --bind ("[^"]*"|\S+) ("[^"]*"|\S+)/g;
+/** Each `mount --bind <source> <target>` of a line, each word as the line writes it: a word in
+ * double quotes, a command substitution in it included (`"$(machine "$p")"`), or a bare word. */
+const BIND =
+  /\bmount --bind ("(?:[^"$]|\$\([^()]*\)|\$)*"|\S+) ("(?:[^"$]|\$\([^()]*\)|\$)*"|\S+)/g;
+/** private_world's holder, `h=<dir>`, the directory of /dev/shm it binds each shown path into. */
+const HOLDER = /^h=(\/dev\/shm\/[\w.-]+)$/m;
 const worldContent = grepCheck({
   name: "an agent's world: a path the namespace fills with the rig's own content",
   class:
@@ -1270,12 +1274,17 @@ const worldContent = grepCheck({
   files: () => [rig("rig.sh")],
   pattern: /\bmount --bind /,
   reading:
-    "grep rig.sh for each `mount --bind <source> <target>` a run's namespace or its probe makes (private_world, namespace_probe)",
-  rule: "a bind onto the holder (a target under /dev/shm, which the agent's world drops), a bind of the holder's copy of a path back onto that path (a source `/dev/shm/$<n>`), and the run's own <run>/tmp bound onto /tmp (the README's world section) are true statements; a bind of any other source is an instance: the agent reads there what the rig made, where production's pane reads the host's own file, as it read an empty file bound over the system git configuration because the worker image had none, until INFRA's image carried one",
-  verdict: ({ text }) => {
+    "grep rig.sh for each `mount --bind <source> <target>` a run's namespace or its probe makes (private_world, namespace_probe), and read private_world's holder, its `h=` assignment",
+  rule: "a bind onto the holder (a target `$h/...`, where private_world assigns `h` a directory under /dev/shm, which the agent's world drops, or a target under /dev/shm), a bind of the holder's copy of a path back onto that path (a source `$h/$<n>`), and the run's own <run>/tmp bound onto /tmp (the README's world section) are true statements; a bind of any other source is an instance: the agent reads there what the rig made, where production's pane reads the host's own file, as it read an empty file bound over the system git configuration because the worker image had none, until INFRA's image carried one",
+  verdict: ({ text }, tree) => {
     const word = (written: string) => written.replace(/^"|"$/g, "");
+    const holder = HOLDER.exec(tree.text(rig("rig.sh")))?.[1];
     for (const [, source = "", target = ""] of text.matchAll(BIND)) {
-      if (word(target).startsWith("/dev/shm/") || /^\/dev\/shm\/\$\w+$/.test(word(source)))
+      if (word(target).startsWith("/dev/shm/")) continue;
+      if (
+        holder !== undefined &&
+        (word(target).startsWith("$h/") || /^\$h\/\$\w+$/.test(word(source)))
+      )
         continue;
       if (word(source) === "$R/tmp" && word(target) === "/tmp") continue;
       return instance(
@@ -1283,7 +1292,7 @@ const worldContent = grepCheck({
       );
     }
     return holds(
-      "each bind holds a path in the holder, binds the holder's copy back at its own path, or binds the run's own /tmp"
+      `each bind holds a path in the holder (${holder ?? "/dev/shm"}), binds the holder's copy back at its own path, or binds the run's own /tmp`
     );
   },
 });

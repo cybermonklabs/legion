@@ -97,7 +97,8 @@
 #                                                  <dir> (read-only but for <dir>/<output> and
 #                                                  <dir>/sessions), or, where the batch's services
 #                                                  are given, in the pod, in a namespace that
-#                                                  shows <dir> and a HOME of its own (cmd_judge_omp),
+#                                                  shows <dir>, read-write whole (no mount onto
+#                                                  a file), and a HOME of its own (cmd_judge_omp),
 #                                                  output to <dir>/out.txt, the model and thinking
 #                                                  level to <dir>/judge-model.txt
 #   rig.sh class-search [<checkout>]               every class of defect INFRA-764's review
@@ -1731,17 +1732,22 @@ stop_run() {
 shared_scratch=(/tmp)
 
 # scratch_before records the entries this user owns at the top of each shared_scratch directory
-# when the run starts, to $R/scratch-before.txt, so scratch_clean can tell what the run made.
+# when the run starts, to $R/logs/scratch-before.txt, so scratch_clean can tell what the run made.
+# The record names what anything else on the machine left in /tmp, other test suites' scratch
+# among it, so it goes in the run's logs, which the agent's world hides (world_paths' `hide`) and
+# launch's guard does not read as the agent's world: at the top of the run it was both, and on a
+# host whose /tmp held a suite's `skill-scenarios-*` directory the guard refused every launch.
 scratch_before() {
   local dir
   for dir in "${shared_scratch[@]}"; do
     find "$dir" -mindepth 1 -maxdepth 1 -user "$(id -u)" -printf '%p\n' 2>/dev/null || true
-  done >"$R/scratch-before.txt"
+  done >"$R/logs/scratch-before.txt"
 }
 
 # scratch_clean, at a run's end, records each entry this user owns at the top of a shared_scratch
 # directory that was not there when the run started (scratch_before), with its modification time,
-# to $R/scratch-created.txt (`<epoch seconds> <path>`, one a line), which health.ts reads as a
+# to $R/logs/scratch-created.txt (`<epoch seconds> <path>`, one a line), beside scratch_before's
+# record and hidden with it, since it names the machine's /tmp too; health.ts reads each line as a
 # write of the run. It deletes nothing: an entry that appeared during the run may be anything else
 # this user ran on the machine meanwhile, not the run's, and the run's agent never writes the
 # machine's /tmp, whose place its namespace gives $R/tmp (launch, private_world). This holds for
@@ -1750,18 +1756,18 @@ scratch_before() {
 # At any other parallelism this records nothing and says so.
 # shellcheck disable=SC2329 # stop_run, an exit trap, runs it
 scratch_clean() {
-  [ -n "${R:-}" ] && [ -f "$R/scratch-before.txt" ] || return 0
+  [ -n "${R:-}" ] && [ -f "$R/logs/scratch-before.txt" ] || return 0
   if [ "${SKILL_SCENARIOS_PARALLEL:-5}" != 1 ]; then
     note "${R##*/}: recorded nothing of ${shared_scratch[*]}: only serial runs (SKILL_SCENARIOS_PARALLEL=1) record what a run made there"
     return 0
   fi
   local dir line
-  : >"$R/scratch-created.txt"
+  : >"$R/logs/scratch-created.txt"
   for dir in "${shared_scratch[@]}"; do
     find "$dir" -mindepth 1 -maxdepth 1 -user "$(id -u)" -printf '%T@ %p\n' 2>/dev/null || true
   done | while IFS= read -r line; do
-    ! grep -qxF -- "${line#* }" "$R/scratch-before.txt" || continue
-    printf '%s\n' "$line" >>"$R/scratch-created.txt"
+    ! grep -qxF -- "${line#* }" "$R/logs/scratch-before.txt" || continue
+    printf '%s\n' "$line" >>"$R/logs/scratch-created.txt"
   done
 }
 

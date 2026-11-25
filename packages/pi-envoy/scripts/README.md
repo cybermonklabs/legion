@@ -404,8 +404,8 @@ the run's own database (`run_database_url`), and the two readers that open that 
 Bun.SQL, `seed.ts pull-request` and the head watcher, get that string as a `postgres://` URL with
 each value percent-encoded (`rig.sh`'s `conninfo_url`), never the given URL's own text, of which
 Bun can read another host than libpq does.
-A judge always runs in a Docker container. Every container a batch or a judge starts has CPU and
-memory limits. It runs a mise of
+A judge runs in a Docker container, unless both service URLs are given, when it runs in the pod
+(below). Every container a batch or a judge starts has CPU and memory limits. It runs a mise of
 its own, never the caller's, since a worker pod's image carries none (the image's `tools` stage
 alone installs mise): `rig.sh profile`, `live-read`, `batch` and `judge-omp` fetch it with `curl`
 at the worker image's own pin, `packages/daemon/docker/worker.Dockerfile`'s `ARG MISE_VERSION` and
@@ -433,7 +433,14 @@ tester-proof run's agent get that URL. That is the environment only: an agent re
 filesystem, the other label's checkout included, so `score.ts` does not score a run that read
 outside its own label. A judge is held tighter: `rig.sh judge-omp` runs each one in a Docker
 container that sees only its own directory, read-only but for its one answer file and its
-transcript, so a judge cannot read the run's transcript or another judge's input. On the key-file
+transcript, so a judge cannot read the run's transcript or another judge's input. Where both
+`SKILL_SCENARIOS_POSTGRES_URL` and `SKILL_SCENARIOS_NATS_URL` are given, as in a Legion pod, which
+has no Docker, the judge runs in the pod instead, in a namespace of its own built as a run's
+agent's is (below), under `env -i`, with a HOME and a `/tmp` of its own beside its directory, and
+sees its directory, its key directory and its Oh My Pi alone. There its directory is read-write
+as a whole, since the pod's namespace cannot mount onto a single file, where the container makes
+only the answer file and `sessions/` writable; `judge.ts` reads the one answer file and nothing
+else of the directory. Its CPU and memory are bound by the pod's alone. On the key-file
 route the container reads the key file itself. On the gateway route the gateway's key command runs
 on the host, once for each judge, because it needs the operator's home and session bus. The
 container gets only the token, from an owner-only file that is removed when the judge ends. On the
@@ -829,8 +836,9 @@ Dispatch's head, by the head watcher's `<run>/logs/heads.log`, and the branch st
 the record stored; no tool call names a path under another run's directory;
 no tool call reads a path another of the runs given wrote last before the read, or, for a run from
 before the rig gave each run a namespace (one with no `<run>/namespace.txt`), a `/tmp` entry that
-was there before the run (its `scratch-before.txt`, or the `--tmp-snapshot` file of `/tmp` entries
-taken before the
+was there before the run (its `<run>/logs/scratch-before.txt`, which the agent's world hides, or
+for a run recorded before 2026-11-25 its `<run>/scratch-before.txt`, or the `--tmp-snapshot` file
+of `/tmp` entries taken before the
 batch); no tool call names a path its world hides (by the world the run recorded for its
 namespace, `<run>/namespace.txt`: under the scratch root, the issue workspaces, the work
 directory or any label's checkout, the other runs' given included) outside its own directory,

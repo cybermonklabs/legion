@@ -483,8 +483,9 @@ interface Run {
   readonly writes: readonly Access[];
   /** Every path a tool call of the run reads (`readsOf`). */
   readonly reads: readonly Access[];
-  /** The entries at the top of the shared scratch when the run started, from
-   * <run>/scratch-before.txt (rig.sh's scratch_before); undefined for a run with no record. */
+  /** The entries at the top of the shared scratch when the run started, from its
+   * scratch-before.txt (rig.sh's scratch_before, `scratchRecords`); undefined for a run with no
+   * record. */
   readonly before: readonly string[] | undefined;
 }
 
@@ -621,8 +622,8 @@ export function loadRun(
         return reached === undefined ? [] : [{ ...call, path: reached }];
       })
     ),
-    before: existsSync(path.join(dir, "scratch-before.txt"))
-      ? readFileSync(path.join(dir, "scratch-before.txt"), "utf8")
+    before: existsSync(path.join(scratchRecords(dir), "scratch-before.txt"))
+      ? readFileSync(path.join(scratchRecords(dir), "scratch-before.txt"), "utf8")
           .split("\n")
           .filter((line) => line !== "")
       : undefined,
@@ -4999,12 +5000,26 @@ export function writtenBy(tool: string, args: ToolArgs): string[] {
   return tool === "write" || tool === "edit" ? namedPaths(tool, args) : [];
 }
 
+/** The directory of a run's two records of the machine's shared scratch, scratch-before.txt and
+ * scratch-created.txt (rig.sh's scratch_before and scratch_clean): <run>/logs, which the agent's
+ * world hides and launch's guard passes over, for a run whose logs hold either, and the run's own
+ * directory for a run recorded before 2026-11-25, which wrote both at its top, where the agent
+ * read them and the guard refused a launch on another suite's /tmp name in them. */
+function scratchRecords(dir: string): string {
+  const logs = path.join(dir, "logs");
+  return ["scratch-before.txt", "scratch-created.txt"].some((name) =>
+    existsSync(path.join(logs, name))
+  )
+    ? logs
+    : dir;
+}
+
 /** What the run wrote outside its own directory, its HOME and its TMPDIR (`writable`): every path
  * a tool call writes there (`writtenBy`), read as the run's namespace mounts it (`reachedIn`), so
  * a write into a namespace's /tmp is one into the run's own <run>/tmp and none of these, and a
  * write into a tmpfs of the agent's launch alone (/dev/shm, a covered path) is none either, since
  * the machine keeps nothing of it; and every entry rig.sh's scratch_clean found had appeared in
- * the machine's shared scratch while the run ran (<run>/scratch-created.txt, `<epoch seconds>
+ * the machine's shared scratch while the run ran (its scratch-created.txt, `<epoch seconds>
  * <path>`), which rig.sh reads outside the namespace and is the machine's path as it stands,
  * whoever wrote it (`appearedOnly`). A run's own writes are no verdict on it; another run that
  * reads one is (`otherRunWrite`). */
@@ -5013,7 +5028,7 @@ function writesOf(
   calls: readonly { file: string; tool: string; args: ToolArgs; at: number }[],
   writable: readonly string[]
 ): Access[] {
-  const created = path.join(run.dir, "scratch-created.txt");
+  const created = path.join(scratchRecords(run.dir), "scratch-created.txt");
   return [
     ...calls.flatMap((call) =>
       writtenBy(call.tool, call.args).flatMap((written) => {
@@ -5057,11 +5072,11 @@ const SHARED_SCRATCH = ["/tmp"];
  *   - a shared scratch entry from before the run, for a run that ran in no namespace, whose /tmp
  *     was the machine's: the path is under SHARED_SCRATCH, no run given wrote it before the
  *     read, and it was there when the run started: its entry at the top of the directory is in
- *     <run>/scratch-before.txt (rig.sh's scratch_before) and is none the run made itself
- *     (scratch-created.txt). A run with no such record (one from before the rig kept it) is held
- *     to its transcripts alone: a shared scratch path it reads, that no run given wrote before
- *     the read, counts as there before it, which also counts a read of a path that was never
- *     there.
+ *     its scratch-before.txt (rig.sh's scratch_before, `scratchRecords`) and is none the run
+ *     made itself (scratch-created.txt). A run with no such record (one from before the rig kept
+ *     it) is held to its transcripts alone: a shared scratch path it reads, that no run given
+ *     wrote before the read, counts as there before it, which also counts a read of a path that
+ *     was never there.
  * A run in a namespace reads none of the machine's /tmp, whatever that held when the run
  * started: a path it reads under /tmp is its own <run>/tmp or one its world shows (`mounted`),
  * its own directory among them where the work directory is itself under /tmp, so the second
