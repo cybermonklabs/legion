@@ -7856,7 +7856,7 @@ mode_landed() {
                 fi
             fi
             published=0
-            while IFS=$'\t' read -r path sentence; do
+            while IFS=$'\x1f' read -r path sentence; do
                 published=$((published + 1))
                 if [ -z "$path" ] || [ -z "$sentence" ]; then
                     bad_proof=$((bad_proof + 1))
@@ -7870,7 +7870,7 @@ mode_landed() {
                     bad_proof=$((bad_proof + 1))
                     fail landed-proof "the landed step '$title' published '$sentence' in $path, and this tree's $path does not carry it, so the step is not in the tree"
                 fi
-            done < <(printf '%s' "$entry" | jq -r '.published // [] | if type == "array" then .[] else empty end | [(.path // ""), (.sentence // "")] | @tsv')
+            done < <(printf '%s' "$entry" | jq -r '.published // [] | if type == "array" then .[] else empty end | [(.path // ""), (.sentence // "")] | join("\u001f")')
             [ "$published" -gt 0 ] || {
                 bad_proof=$((bad_proof + 1))
                 if [ -n "$merged_in" ]; then
@@ -8418,10 +8418,10 @@ mode_published() {
             missing=$((missing + 1))
             fail published-tree "sources.json's landed list names no step, so no landed step is read at its commit"
         }
-        while IFS=$'\t' read -r title state; do
+        while IFS=$'\x1f' read -r title state; do
             missing=$((missing + 1))
             fail published-tree "the step '$title' of sources.json's landed list has the state '$state', and a step's state is landed, not_landed or refuted"
-        done < <(jq -r '.landed[]? | select(.state != "landed" and .state != "not_landed" and .state != "refuted") | [(.title // ""), (.state // "")] | @tsv' "$EVIDENCE/sources.json")
+        done < <(jq -r '.landed[]? | select(.state != "landed" and .state != "not_landed" and .state != "refuted") | [(.title // ""), (.state // "")] | join("\u001f")' "$EVIDENCE/sources.json")
         while IFS= read -r title; do
             missing=$((missing + 1))
             fail published-tree "the landed step '$title' lists no sentence in sources.json, so nothing of it is read at its commit"
@@ -8457,7 +8457,7 @@ mode_published() {
                 said="of this pull request commits $commit, which the default branch's history at $head does not hold, and is read at $at, the one commit of that history's first parents whose subject ends '(#$pr)'"
                 ;;
             esac
-            while IFS=$'\t' read -r path sentence; do
+            while IFS=$'\x1f' read -r path sentence; do
                 git -C "$clone" show "$at:$path" >"$work/published" 2>/dev/null || {
                     missing=$((missing + 1))
                     fail published-tree "the landed step '$title' $said, and that commit does not carry $path"
@@ -8467,7 +8467,7 @@ mode_published() {
                     missing=$((missing + 1))
                     fail published-tree "the landed step '$title' $said, and $path at that commit does not carry its sentence '$sentence'"
                 }
-            done < <(jq -r --argjson i "$index" '.landed[$i].published[]? | [.path, .sentence] | @tsv' "$EVIDENCE/sources.json")
+            done < <(jq -r --argjson i "$index" '.landed[$i].published[]? | [(.path // ""), (.sentence // "")] | join("\u001f")' "$EVIDENCE/sources.json")
         done < <(jq -r "$landed_rows" "$EVIDENCE/sources.json")
         [ "$squashed" -eq 0 ] || read_at_squash=", or, for the $squashed of this pull request whose own commit that history does not hold, at $squash, the one commit of its first parents whose subject ends '(#$pr)'"
         not_landed="$(jq -r --arg q "'" '[.landed[]? | select(.state != "landed") | $q + (.title // "") + $q] | join(", ")' "$EVIDENCE/sources.json")"
