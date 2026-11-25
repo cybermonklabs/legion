@@ -52,7 +52,8 @@ type deliverySubscription struct {
 // changes, and a page keeps the last one it was sent, so a socket that was down at a change, or a
 // page that held no delivery view then, would otherwise show the old one for good. Nothing follows
 // before the hub knows a verdict: the first is set silently, from the read that answers the first
-// snapshot (recompute).
+// snapshot, and the verdict of a freshness row the hub heard while that read ran follows it when
+// the two differ (recompute).
 // While delivery is not configured the sub is told DELIVERY_NOT_CONFIGURED once and stays open,
 // and the settings' first save answers its snapshot. A sub id conn already holds is replaced. The
 // first sub of a hub with none starts a generation (deliveryHub); once the server's lifetime has
@@ -249,8 +250,10 @@ type hubGeneration struct {
 	// for. The relay subscription is taken apart (seedEvents), so neither waits on the horizon.
 	ready chan struct{}
 	// Each wake holds at most one pending signal: what it asks for covers every signal before it.
-	wakeWork, wakeChanges, connected chan struct{}
-	barrier                          chan chan struct{}
+	// wakeFreshness asks the intake to read the freshness row again once a read of it after a
+	// LISTEN failed (readFreshness).
+	wakeWork, wakeChanges, wakeFreshness, connected chan struct{}
+	barrier                                         chan chan struct{}
 	// feeds hands the intake the relay subscription seedEvents took. It has no slot: a hand-over
 	// completes only as the intake takes it, so a subscription is always either the intake's, which
 	// it cancels as it returns, or still seedEvents', which cancels it once g has ended. A slot
@@ -269,10 +272,13 @@ type hubGeneration struct {
 	// p0 is the open P0 issues (OpenP0Keys), kept current from issue event payloads.
 	p0 map[string]struct{}
 	// fresh is the freshness row as last heard, and sent the verdict last sent; known is false
-	// until the first recompute sets them, silently.
+	// until the first recompute sets them, silently. heard counts the freshness rows applied from a
+	// notification or from the read after a LISTEN (hearFreshnessLocked), so a read that began
+	// before one of them leaves the row it applied in place (readFreshness, recompute).
 	fresh deliveryFreshnessHeard
 	sent  deliveryFreshnessVerdict
 	known bool
+	heard int64
 }
 
 // hubClock is the hub's clock, a narrowing of clock.Clock: clock.Real in production and a test's
@@ -441,7 +447,7 @@ func (h *deliveryHub) startLocked() *hubGeneration {
 	g := &hubGeneration{
 		ctx: ctx, stop: stop,
 		ready:    make(chan struct{}),
-		wakeWork: make(chan struct{}, 1), wakeChanges: make(chan struct{}, 1), connected: make(chan struct{}, 1),
+		wakeWork: make(chan struct{}, 1), wakeChanges: make(chan struct{}, 1), wakeFreshness: make(chan struct{}, 1), connected: make(chan struct{}, 1),
 		barrier: make(chan chan struct{}),
 		feeds:   make(chan hubEventFeed),
 		views:   map[string]*deliveryView{},

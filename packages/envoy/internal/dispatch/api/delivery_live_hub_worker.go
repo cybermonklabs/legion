@@ -151,7 +151,7 @@ func (h *deliveryHub) recompute(g *hubGeneration, view *deliveryView, cause stri
 	started := time.Now()
 	h.mu.Lock()
 	view.computing = true
-	spec, epoch := view.spec, g.epoch
+	spec, epoch, heard := view.spec, g.epoch, g.heard
 	h.mu.Unlock()
 	h.note(deliveryHubNote{what: "recompute begin", view: spec.key, cause: cause})
 
@@ -202,13 +202,21 @@ func (h *deliveryHub) recompute(g *hubGeneration, view *deliveryView, cause stri
 			break
 		}
 		if !g.known {
-			// The first verdict is set silently, from the first settings read.
+			// The first verdict is the read's, which the body just sent carries, so it is set
+			// silently. A freshness row heard since the recompute began (heard) is kept in place
+			// of the read's, which may be older: the notifications, in commit order, and the read
+			// after each LISTEN reach the newest row without it (readFreshness). The kept row is
+			// judged against the read's, so the subs the body answered are sent its verdict.
+			kept := g.fresh
 			g.fresh = deliveryFreshnessHeard{
 				lastEventAt: read.settings.LastEventAt, lastReconcileAt: read.settings.LastReconcileAt,
 				lastError: read.settings.LastError, unfetchable: read.unfetchable,
 			}
-			g.sent = g.verdictLocked(now)
-			g.known = true
+			g.sent, g.known = g.verdictLocked(now), true
+			if g.heard != heard {
+				g.fresh.lastEventAt, g.fresh.lastReconcileAt, g.fresh.lastError = kept.lastEventAt, kept.lastReconcileAt, kept.lastError
+				h.judgeLocked(g, now)
+			}
 		} else {
 			g.fresh.unfetchable = read.unfetchable
 			h.judgeLocked(g, now)

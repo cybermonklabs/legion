@@ -2916,6 +2916,149 @@ func TestAReconcilePassThatFindsNothingNewSendsNothing(t *testing.T) {
 	rig.requireNothingSent(t, conn, "a reconcile pass that found nothing new")
 }
 
+// freshnessRange is a custom measures range, which has no expiry, so nothing but its answers and
+// the verdict reaches a conn that follows it.
+func freshnessRange() DeliveryLiveView {
+	return measuresRange(time.Date(2024, 6, 1, 0, 0, 0, 0, time.UTC), time.Date(2024, 6, 8, 0, 0, 0, 0, time.UTC), "")
+}
+
+// A freshness-only write (a reconcile pass, its error, a GitHub event) logs no delivery change and
+// reaches the hub only as a delivery_freshness notification, which Postgres sends only to a
+// connection that listens as the write commits. A generation's first recompute does not wait for
+// its listener's first LISTEN, so a pass recorded between the two is notified to no connection of
+// the hub's, and the hub hears it by reading the freshness row after that LISTEN (readFreshness).
+// The listener's dials are held here until the pass has committed. The pass before it is past the
+// stale threshold, so the page's first answer names the reconciled sources stale, and only a hub
+// that heard the new pass sends the page the verdict that clears them.
+func TestAPassRecordedBeforeTheListenersFirstListenReachesThePage(t *testing.T) {
+	t.Parallel()
+	recorded := make(chan struct{})
+	rig := newHubRig(t, func(hub *deliveryHub) {
+		dial := hub.dial
+		hub.dial = func(ctx context.Context) (*pgx.Conn, error) {
+			select {
+			case <-recorded:
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+			return dial(ctx)
+		}
+	})
+	seedHubSettings(t, rig.database)
+	pool := rig.database.Pool
+	if err := delivery.RecordReconcileSuccess(t.Context(), pool, rig.clock.Now().Add(-deliveryStaleAfter-time.Minute)); err != nil {
+		t.Fatalf("record a pass past the stale threshold: %v", err)
+	}
+	conn := newFakeLiveConn()
+	rig.hub.Subscribe(conn, subscribeFrame("m", freshnessRange()))
+	conn.snapshot(t, "m")
+
+	passed := rig.clock.Now()
+	if err := delivery.RecordReconcileSuccess(t.Context(), pool, passed); err != nil {
+		t.Fatalf("record the pass: %v", err)
+	}
+	close(recorded)
+	fresh := conn.freshness(t, "the freshness frame of the pass recorded before the listener's first LISTEN")
+	if at := fresh.Freshness.LastReconcileAt; at == nil || at.Before(passed.Truncate(time.Microsecond)) || len(fresh.Stale) != 0 || fresh.Freshness.LastError != nil {
+		t.Fatalf("the pass's freshness frame = %+v, want last_reconcile_at at %v, nothing stale and no last_error", fresh, passed)
+	}
+	rig.requireNothingSent(t, conn, "the pass's freshness frame")
+}
+
+// A freshness-only write committed while the listener has no connection is notified to no
+// connection of the hub's either, and the catch-up of the change log after the reconnection finds
+// no change it logged: the hub hears it by reading the freshness row after the new LISTEN
+// (readFreshness). The listener's connection is ended here, and its next dial held, until a
+// reconcile error has committed; only a hub that heard it sends the page the verdict naming it.
+func TestAReconcileErrorRecordedWhileTheListenerWasDownReachesThePage(t *testing.T) {
+	t.Parallel()
+	var blind atomic.Bool
+	recorded := make(chan struct{})
+	// The listener's own connections, so the test ends the one it listens on by its backend's pid
+	// (terminateListener). A dial is recorded only once the hold lets it through, so a dial the
+	// hold keeps is none that terminateListener waits for.
+	var dials listenerDials
+	rig := newHubRig(t, func(hub *deliveryHub) {
+		dial := dials.wrap(hub.dial)
+		hub.dial = func(ctx context.Context) (*pgx.Conn, error) {
+			if blind.Load() {
+				select {
+				case <-recorded:
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				}
+			}
+			return dial(ctx)
+		}
+	})
+	seedHubSettings(t, rig.database)
+	conn := newFakeLiveConn()
+	rig.hub.Subscribe(conn, subscribeFrame("m", freshnessRange()))
+	conn.snapshot(t, "m")
+	rig.waitFor(t, 0, "the listener's first connection", listenerConnected)
+	start := rig.mark()
+
+	blind.Store(true)
+	terminateListener(t, rig.database, &dials)
+	if err := delivery.RecordReconcileError(t.Context(), rig.database.Pool, "GitHub answered 502"); err != nil {
+		t.Fatalf("record a reconcile error: %v", err)
+	}
+	close(recorded)
+	rig.waitFor(t, start, "the listener's reconnection", listenerConnected)
+	fresh := conn.freshness(t, "the freshness frame naming the error recorded while the listener was down")
+	if fresh.Freshness.LastError == nil || *fresh.Freshness.LastError != "GitHub answered 502" || len(fresh.Stale) != 0 {
+		t.Fatalf("the error's freshness frame = %+v, want last_error \"GitHub answered 502\" and nothing stale", fresh)
+	}
+	rig.requireNothingSent(t, conn, "the error's freshness frame")
+}
+
+// The first recompute sets the hub's first verdict from its own read of the settings, while the
+// listener may already apply a freshness notification: one applied after that read and before
+// the recompute installs its answer is of a newer row, and an install that put the read's row in
+// its place would keep the older verdict on every page until the next freshness write. The first
+// recompute is held here once its read has returned (the "recompute read" note, made before the
+// install takes the hub's lock) until the hub has heard a reconcile error recorded then; the page,
+// answered with the read's verdict, is then sent the error's.
+func TestAReconcileErrorHeardDuringTheFirstRecomputesReadReachesThePage(t *testing.T) {
+	t.Parallel()
+	read, release := make(chan struct{}), make(chan struct{})
+	var hold sync.Once
+	rig := newHubRig(t, func(hub *deliveryHub) {
+		observe := hub.observe
+		hub.observe = func(note deliveryHubNote) {
+			observe(note)
+			if note.what == "recompute read" {
+				hold.Do(func() {
+					close(read)
+					select {
+					case <-release:
+					case <-hub.lifetime.Done():
+					}
+				})
+			}
+		}
+	})
+	seedHubSettings(t, rig.database)
+	conn := newFakeLiveConn()
+	rig.hub.Subscribe(conn, subscribeFrame("m", freshnessRange()))
+	testwait.Receive(t, "the first recompute's read", read)
+	// The listener listens before the error is written, so the hub hears it as a notification.
+	rig.waitFor(t, 0, "the listener's connection", listenerConnected)
+	if err := delivery.RecordReconcileError(t.Context(), rig.database.Pool, "GitHub answered 502"); err != nil {
+		t.Fatalf("record a reconcile error: %v", err)
+	}
+	rig.waitFreshnessHeard(t, "the hub to hear the error recorded while the first recompute held its read", func(heard deliveryFreshnessHeard) bool {
+		return heard.lastError != nil && *heard.lastError == "GitHub answered 502"
+	})
+	close(release)
+	conn.snapshot(t, "m")
+	fresh := conn.freshness(t, "the freshness frame naming the error heard while the first recompute read")
+	if fresh.Freshness.LastError == nil || *fresh.Freshness.LastError != "GitHub answered 502" || len(fresh.Stale) != 0 {
+		t.Fatalf("the error's freshness frame = %+v, want last_error \"GitHub answered 502\" and nothing stale", fresh)
+	}
+	rig.requireNothingSent(t, conn, "the error's freshness frame")
+}
+
 // TestARecomputeAfterTiedRowsAreWrittenAgainSendsNothing: a reconcile pass writes a failed run's
 // jobs and the pull requests a deploy shipped again as they were, which logs no change but puts each
 // row's new version after the rest of its table. The jobs started and finished together and the

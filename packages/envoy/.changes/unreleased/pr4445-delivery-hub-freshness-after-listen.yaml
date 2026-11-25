@@ -1,0 +1,10 @@
+kind: Fixed
+body: |-
+  An open Delivery or Pipeline page could keep a freshness verdict older than the last reconcile
+  pass: it could go on naming sources stale after a pass, or miss the error a pass recorded. A
+  pass writes only the freshness of the delivery settings, which reaches the live hub as a database
+  notification alone, and the database sends that notification only while the hub's listener is
+  listening. A pass whose write landed while the listener was reconnecting, or before it first
+  listened, was never heard, and the page kept the old verdict until the next write. The hub now
+  reads the freshness again each time its listener starts listening, and keeps a freshness it heard
+  while it read a page's first answer, so the page is sent the verdict of the last pass.
