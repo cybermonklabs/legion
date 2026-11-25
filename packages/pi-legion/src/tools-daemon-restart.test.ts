@@ -166,7 +166,7 @@ function toolFor(
     onUpdateAnswered: () => undefined,
     handoffReport: async () => ({ handoffId: HANDOFF_ID, handoffVersion: 1, commit: COMMIT }),
     branchHead: async () => "",
-    dispatch: () => {
+    dispatch: async () => {
       throw new Error("no Dispatch read expected");
     },
     restartClock: { now: clock.now, sleep: clock.sleep },

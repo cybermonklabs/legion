@@ -102,7 +102,7 @@ const tool = createLegionTool({
   onUpdateAnswered: () => undefined,
   handoffReport: () => unexpected("handoff report"),
   branchHead: () => unexpected("branch head"),
-  dispatch: () => board,
+  dispatch: async () => board,
 });
 const result = await tool.execute("k8", input.call, undefined, undefined, context);
 const text = result.content

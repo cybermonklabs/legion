@@ -974,7 +974,7 @@ export default function legionExtension(pi: PiApi): void {
           )(phase, role),
         branchHead: () => findPushedBranchHead({ env: process.env }),
         // The file pi-envoy's session reads: Oh My Pi's rule, in the same process.
-        dispatch: () => {
+        dispatch: async () => {
           const config = activeDispatchSettings(
             (
               await sessionDispatchSettings(sessionConfigFile("omp", process.env), process.env, {
