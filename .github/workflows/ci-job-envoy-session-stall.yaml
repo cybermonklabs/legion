@@ -82,7 +82,12 @@ jobs:
       # slowest of its twelve green runs on this branch from d62604fd to a467c066, at b202d173),
       # less 2 s for the steps that run after a failed step (the ci-ok report and the post
       # steps), less the 30 s kept for the afterAll's stop: 1 100 s.
-      # Readings: (the implementer writes them after the load campaign)
+      # Six times the slowest hook or row is past that room, so the room decides. Readings, at the
+      # calibrated load (the 96 rung; Jobs of the cluster's `builds` namespace, two CPUs, 8 GiB):
+      # the stack's start, the file's beforeAll, 249 197.32 ms over 20 runs (Job
+      # infra-1580-krows-kfh-tgvmp, 218 busy loops, row A 33.5 s, 2026-11-22); the file's rows, 20
+      # of 20, the slowest row of a run 51 811 ms (infra-1580-r31nsa-229pk, -r31nsb-kc799, 106 and
+      # 209 busy loops, row A 34.2 s and 36.3 s, at aa63d194).
       - name: Stall test of envoy-client's NATS connection options
         run: bun test --timeout 1100000 --preload @legion/test-fixtures/row-deadline src/__tests__/nats-stall.test.ts
         working-directory: packages/envoy-client
@@ -101,7 +106,13 @@ jobs:
       # slowest of its twelve green runs on this branch from d62604fd to a467c066, at a61f3fc7),
       # less 2 s for the steps that run after a failed step (the ci-ok report and the post
       # steps), less the 30 s kept for the afterAll: 932 s, of which the guard takes 930 s.
-      # Readings: (the implementer writes them after the load campaign)
+      # Six times the slowest hook or row is past that room, so the room decides. Readings, at the
+      # calibrated load (the 96 rung; Jobs of the cluster's `builds` namespace, two CPUs, 8 GiB):
+      # the stack's start, the file's beforeAll, 249 197.32 ms over 20 runs (Job
+      # infra-1580-krows-kfh-tgvmp, 218 busy loops, row A 33.5 s, 2026-11-22); the file's rows, 20
+      # of 20, the slowest row of a run 63 435 ms, most of it the 60 s gone horizon the killed
+      # session's row waits out (infra-1580-r31ssa-5kddl, -r31ssb-766d8, 140 busy loops each, row A
+      # 35.8 s and 38.0 s, at aa63d194).
       - name: Session state rig of a stalled session
         run: bun test --timeout 930000 --preload @legion/test-fixtures/row-deadline ./test/session-stall.ts
         working-directory: packages/envoy-client
@@ -114,7 +125,12 @@ jobs:
       # a61f3fc7), less 2 s for the steps that run after a failed step (the ci-ok report and the
       # post steps), less the 30 s kept for the afterAll's stop and the teardown: 849 s, of which
       # the guard takes 840 s.
-      # Readings: (the implementer writes them after the load campaign)
+      # Six times the slowest hook or row is past that room, so the room decides. Readings, at the
+      # calibrated load (the 96 rung; Jobs of the cluster's `builds` namespace, two CPUs, 8 GiB):
+      # the stack's start, the describe's beforeAll, 249 197.32 ms over 20 runs (Job
+      # infra-1580-krows-kfh-tgvmp, 218 busy loops, row A 33.5 s, 2026-11-22); the freeze row, 20
+      # of 20, 37 195 ms at its slowest (infra-1580-r31fza-gtvqp, -r31fzb-g2kvs, 140 busy loops
+      # each, row A 31.8 s and 35.2 s, at 0cda68aa).
       - name: Stall test of pi-envoy
         run: bun run test extensions/envoy.test.ts -t "NATS path freezes" --timeout 840000
         working-directory: packages/pi-envoy
@@ -124,7 +140,12 @@ jobs:
       # a61f3fc7), less 2 s for the steps that run after a failed step (the ci-ok report and the
       # post steps), less the 30 s kept for the afterAll's stop and the teardown: 817 s, of which
       # the guard takes 810 s.
-      # Readings: (the implementer writes them after the load campaign)
+      # Six times the slowest hook or row is past that room, so the room decides. Readings, at the
+      # calibrated load (the 96 rung; Jobs of the cluster's `builds` namespace, two CPUs, 8 GiB):
+      # the stack's start, the file's beforeAll, 249 197.32 ms over 20 runs (Job
+      # infra-1580-krows-kfh-tgvmp, 218 busy loops, row A 33.5 s, 2026-11-22); the file's rows, 20
+      # of 20, the slowest row of a run 116 955 ms (infra-1580-r31cea-6sxq2, -r31ceb-jsbc8, 70 and
+      # 65 busy loops, row A 35.9 s and 39.9 s, at 68bbae35).
       - name: Stall test of claude-envoy
         run: bun test --timeout=810000 --preload @legion/test-fixtures/row-deadline tests/envoy-channel-stall.test.ts
         working-directory: packages/claude-envoy

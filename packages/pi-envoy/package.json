@@ -22,6 +22,9 @@
     "dist",
     "bin"
   ],
+  "//": [
+    "test: --timeout 390000 is the pi-envoy job's room for one hang: its timeout-minutes 15 less the 505 s its workflow records (.github/workflows/ci-job-pi-envoy.yaml), 395 s. Six times the slowest row this command runs is past that room, so the room decides. Readings over 20 runs each under the calibrated load, in Jobs of the cluster's builds namespace (two CPUs, 8 GiB, 59 to 175 busy loops for the 96 rung, row A 31.5 s to 37.5 s): envoy.test.ts run whole at the 96 rung, every row 20 of 20, its slowest the session-pod row, 142 672 ms, and the PTY row, 63 062 ms (infra-1580-r31w1 to -r31w10, at 0cda68aa); askgate.test.ts run whole at the 96 rung, every row 20 of 20 but the seven real-CLI rows, which meet the gate's own 20 s DRY_RUN_TIMEOUT_MS there, its slowest run 46 802 ms (-r31aw-hpdf2, at 467641a8); those seven at their rung, 48, 20 of 20 each, at most 16 795 ms (-r31e48-wdhzr, -r31e48b-hwrrh); the leading cd row at the 240 rung, 80 402 ms (-r31lcd-zk5f2); the dry-run kill row at the 160 rung, 3 438 ms, and the markdown-upload row at the 80 rung, 38 188 ms (-r31drk-9f7vc); envoy-relay-socket.test.ts at the 96 rung, 55 904 ms (-r31rs-gcfr7). A row that sets its own limit keeps main's: envoy.test.ts's eight 30_000 rows and its NATS_START_HOOK_MS and NATS_STOP_HOOK_MS hooks, and askgate.test.ts's eleven 30_000 rows."
+  ],
   "scripts": {
     "build": "bun build extensions/envoy.ts --outdir dist --target bun --format esm --external @oh-my-pi/pi-ai --external @oh-my-pi/pi-coding-agent --external @oh-my-pi/pi-tui --external @oh-my-pi/pi-utils && ../envoy-client/scripts/build-dispatch-cli.sh dist",
     "prepack": "../../scripts/pi-plugin-prepack.sh",
