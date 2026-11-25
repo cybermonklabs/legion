@@ -139,13 +139,14 @@ function showRow(
 }
 
 /** What an open shows whole and keeps shown (`MultiSelect`'s `opening`): the highlight and the
- *  search it starts with (`active`, `query`); the rows it last showed that highlight among
- *  (`among`), null until the commit that draws that search and highlight, since the open's own
- *  commit still draws the ones the list last closed on; and what watches the list's box for a
- *  change of its size (`resized`), null until the open's effects have run. From that commit the
- *  open keeps its highlighted row shown until the reader moves on in the list or it closes. An
- *  open that highlights no row of its own keeps nothing: a multi-select's, a single pick's with
- *  no value, and a typed character's, whose highlight falls to the first row it matches. */
+ *  search it starts with (`active`, `query`); the rows it last showed that highlight among, each
+ *  by its value and the text it draws (`among`), null until the commit that draws that search and
+ *  highlight, since the open's own commit still draws the ones the list last closed on; and what
+ *  watches the list's box for a change of its size (`resized`), null until the open's effects have
+ *  run. From that commit the open keeps its highlighted row shown until the reader moves on in
+ *  the list or it closes. An open that highlights no row of its own keeps nothing: a
+ *  multi-select's, a single pick's with no value, and a typed character's, whose highlight falls
+ *  to the first row it matches. */
 interface Opening {
   readonly active: string | undefined;
   among: readonly string[] | null;
@@ -695,26 +696,41 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
   // commit right after it, before anything paints. So a list that closed on a search opens with
   // its picked row shown whole among every option again, not where it stood among the few that
   // search left. From that commit the open keeps its row shown until the reader moves on in the
-  // list or the list closes: every later commit that changes the rows shows the highlighted row
-  // whole again, whether its row changed there or not, and so does a change of the list box's own
-  // size (the effect below). The issue's Assignee list reads its people only once it is opened,
-  // so it opens on Unassigned and the assignee, and when the people came the assignee moved to its
-  // place among everyone, still the highlighted row, below the rows its box shows. Each move of
-  // the reader's in the list ends that before the row it moves to is shown (`letGo`): an arrow,
-  // Home or End, a menu's digit, a word typed, a press or a tap in the list outside its text box,
-  // and a scroll of their own (the effect below). An open that highlights no row of its own keeps
-  // nothing (`Opening`).
+  // list or the list closes: every later commit that changes the rows, or the text one of them
+  // draws, shows the highlighted row whole again, whether its row changed there or not, and so
+  // does a change of the list box's own size (the effect below). The issue's Assignee list reads
+  // its people only once it is opened, so it opens on Unassigned and the assignee, and when the
+  // people came the assignee moved to its place among everyone, still the highlighted row, below
+  // the rows its box shows. A host's label or detail of a row can answer otherwise once a read has
+  // come, with the same rows: a longer label wraps and makes its row taller while the box keeps
+  // its size. Each move of the reader's in the list ends that before the row it moves to is shown
+  // (`letGo`): an arrow, Home or End, a menu's digit, a word typed, a press or a tap in the list
+  // outside its text box, and a scroll of their own (the effect below). An open that highlights no
+  // row of its own keeps nothing (`Opening`).
   useLayoutEffect(() => {
     const opened = opening.current;
+    // Each row by its value and the text it draws, the Create row's label or an option's label and
+    // detail, written as JSON so that two different rows never read the same; read only while an
+    // open keeps its row shown.
+    const drawn =
+      opened === null
+        ? []
+        : rows.map((row) =>
+            JSON.stringify(
+              row === createValue
+                ? [row, createLabel(row)]
+                : [row, labelOf(row), optionDetail?.(row)]
+            )
+          );
     if (opened !== null && opened.among === null) {
       if (opened.query !== query || opened.active !== activeValue) return;
       if (opened.active === undefined) letGo(opening);
-      else opened.among = rows;
+      else opened.among = drawn;
     } else if (
       opened !== null &&
-      (opened.among?.length !== rows.length || opened.among.some((row, at) => row !== rows[at]))
+      (opened.among?.length !== drawn.length || opened.among.some((row, at) => row !== drawn[at]))
     ) {
-      opened.among = rows;
+      opened.among = drawn;
     } else if (activeId === shownRow.current) return;
     shownRow.current = activeId;
     showRow(activeId, headRef.current, footRef.current);

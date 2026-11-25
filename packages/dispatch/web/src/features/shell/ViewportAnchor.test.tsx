@@ -1303,14 +1303,21 @@ function NarrowedByControlRow(): ReactNode {
   );
 }
 
-// The reader takes the list's only narrowing off from the keyboard with the window scrolled so the
-// control row's Filter trigger, 44 px tall, stands 20 px above the window's top. The row hands the
-// focus to Filter, and lands it as every component hand-off lands its control: no scroll of the
-// engine's own, and a control partly cut scrolled to its nearest edge. The anchor then puts the
-// row back where the commit found it, which leaves Filter as cut as before, so the landing shows
-// it whole again once the commit is done. A plain `focus()` scrolled it in Chromium and Firefox
-// only to have the anchor undo that scroll.
-test("the control row's chips hand-off shows its landing whole again after the anchor puts the row back where the commit found it", async () => {
+/**
+ * The reader takes the only narrowing of `NarrowedByControlRow` off from the keyboard, with the
+ * control row 60 px down the page and 104 px tall, its Filter trigger at `filter`, and the window
+ * scrolled to `scrolled`. Expects the focus on Filter, the scrolls into view and of the window to
+ * be `moves`, in order, and Filter's top at the window's top once the press is done.
+ */
+async function expectChipsHandOff({
+  filter: filterAt,
+  moves: expected,
+  scrolled,
+}: {
+  readonly filter: () => DOMRect;
+  readonly moves: unknown[];
+  readonly scrolled: number;
+}): Promise<void> {
   const user = userEvent.setup();
   const view = render(<NarrowedByControlRow />);
   // Every scroll into view and every scroll of the window, in order: a scroll into view moves the
@@ -1332,30 +1339,47 @@ test("the control row's chips hand-off shows its landing whole again after the a
     scrollBy(x as number, y as number);
   }) as typeof window.scrollBy;
   try {
-    // The control row stands 60 px down the page, its Filter on its first line; the window is
-    // scrolled to 80 px.
     const row = document.querySelector(`[data-control="${CONTROL.controlRow}"]`);
     const filter = screen.getByRole("button", { name: "Filter" });
     if (row === null) throw new Error("no control row is drawn");
     row.getBoundingClientRect = () => new DOMRect(0, 60 - window.scrollY, 100, 104);
-    filter.getBoundingClientRect = () => new DOMRect(0, 60 - window.scrollY, 100, 44);
-    setScrollY(80);
+    filter.getBoundingClientRect = filterAt;
+    setScrollY(scrolled);
     screen.getByRole("button", { name: "Remove Type: question filter" }).focus();
 
     await user.keyboard("{Enter}");
     expect(filter).toHaveFocus();
-    expect(moves).toEqual([
-      { of: "Filter", options: { block: "nearest", inline: "nearest" }, scroll: "into view" },
-      // The anchor puts the row back where the commit found it, 20 px above the window's top.
-      { by: 20, scroll: "window" },
-      { of: "Filter", options: { block: "nearest", inline: "nearest" }, scroll: "into view" },
-    ]);
+    expect(moves).toEqual(expected);
     expect(filter.getBoundingClientRect().top).toBe(0);
   } finally {
     scrolls.mockRestore();
     disarm();
     view.unmount();
   }
+}
+
+// The reader takes the list's only narrowing off from the keyboard with the window scrolled so the
+// control row's Filter trigger, 44 px tall, stands 20 px above the window's top. The row hands the
+// focus to Filter and lands it with `landWhole` (`components/focus-place.ts`): no scroll of the
+// engine's own, and a control not wholly in sight scrolled to its nearest edge, one wholly out of
+// sight as well, where a component's own hand-off (`landFirstInSight`) lands only a control in
+// sight and shows only one partly cut. This is the partly cut case. The anchor then puts the row
+// back where the commit found it, which leaves Filter as cut as before, so the landing shows it
+// whole again once the commit is done. A plain `focus()` scrolled it in Chromium and Firefox only
+// to have the anchor undo that scroll.
+test("the control row's chips hand-off shows its landing whole again after the anchor puts the row back where the commit found it", async () => {
+  // The control row stands 60 px down the page, its Filter on its first line; the window is
+  // scrolled to 80 px.
+  await expectChipsHandOff({
+    filter: () => new DOMRect(0, 60 - window.scrollY, 100, 44),
+    moves: [
+      { of: "Filter", options: { block: "nearest", inline: "nearest" }, scroll: "into view" },
+      // The anchor puts the row back where the commit found it, 20 px above the window's top.
+      { by: 20, scroll: "window" },
+      { of: "Filter", options: { block: "nearest", inline: "nearest" }, scroll: "into view" },
+    ],
+    scrolled: 80,
+  });
 });
 
 // The same press with the window scrolled so far that the Filter trigger stands wholly above the
@@ -1365,49 +1389,16 @@ test("the control row's chips hand-off shows its landing whole again after the a
 // commit found it, which takes Filter out of sight again. The landing showed only a control partly
 // in sight, and left this one where it stood, out of sight.
 test("the control row's chips hand-off shows a landing wholly out of sight at its nearest edge, again after the anchor puts the row back", async () => {
-  const user = userEvent.setup();
-  const view = render(<NarrowedByControlRow />);
-  // Every scroll into view and every scroll of the window, in order: a scroll into view moves the
-  // window the least that shows the element whole, as `{ block: "nearest" }` does.
-  const moves: unknown[] = [];
-  const scrolls = spyOn(Element.prototype, "scrollIntoView").mockImplementation(function (
-    this: Element,
-    options?: boolean | ScrollIntoViewOptions
-  ) {
-    moves.push({ of: this.textContent, options, scroll: "into view" });
-    const box = this.getBoundingClientRect();
-    if (box.top < 0) setScrollY(window.scrollY + box.top);
-    else if (box.bottom > VIEWPORT_HEIGHT)
-      setScrollY(window.scrollY + box.bottom - VIEWPORT_HEIGHT);
-  });
-  const scrollBy = window.scrollBy;
-  window.scrollBy = ((x: number | ScrollToOptions, y?: number) => {
-    moves.push({ by: typeof x === "number" ? y : x.top, scroll: "window" });
-    scrollBy(x as number, y as number);
-  }) as typeof window.scrollBy;
-  try {
-    // The control row stands 60 px down the page, its Filter on its first line; the window is
-    // scrolled to 200 px.
-    const row = document.querySelector(`[data-control="${CONTROL.controlRow}"]`);
-    const filter = screen.getByRole("button", { name: "Filter" });
-    if (row === null) throw new Error("no control row is drawn");
-    row.getBoundingClientRect = () => new DOMRect(0, 60 - window.scrollY, 100, 104);
-    filter.getBoundingClientRect = () => new DOMRect(0, 60 - window.scrollY, 100, 44);
-    setScrollY(200);
-    screen.getByRole("button", { name: "Remove Type: question filter" }).focus();
-
-    await user.keyboard("{Enter}");
-    expect(filter).toHaveFocus();
-    expect(moves).toEqual([
+  // The control row stands 60 px down the page, its Filter on its first line; the window is
+  // scrolled to 200 px.
+  await expectChipsHandOff({
+    filter: () => new DOMRect(0, 60 - window.scrollY, 100, 44),
+    moves: [
       { of: "Filter", options: { block: "nearest", inline: "nearest" }, scroll: "into view" },
       // The anchor puts the row back where the commit found it, 140 px above the window's top.
       { by: 140, scroll: "window" },
       { of: "Filter", options: { block: "nearest", inline: "nearest" }, scroll: "into view" },
-    ]);
-    expect(filter.getBoundingClientRect().top).toBe(0);
-  } finally {
-    scrolls.mockRestore();
-    disarm();
-    view.unmount();
-  }
+    ],
+    scrolled: 200,
+  });
 });

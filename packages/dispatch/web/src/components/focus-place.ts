@@ -1353,9 +1353,9 @@ export function controlsLikeRow(row: Element, control: Element, from: Element): 
   return alike ? [same, first] : [first];
 }
 
-/** Focuses `target` without a scroll: a region's own stop (`focusOwnStop`), and the control the
- *  Agents page hands a pin's moved focus to (`controlsLikeRow`). Answers whether it took the
- *  focus. */
+/** Focuses `target` without a scroll: a hand-off's landing (`land`), a region's own stop
+ *  (`focusOwnStop`), and the control the Agents page hands a pin's moved focus to
+ *  (`controlsLikeRow`). Answers whether it took the focus. */
 export function focusNoScroll(target: HTMLElement): boolean {
   target.focus({ preventScroll: true });
   return document.activeElement === target;

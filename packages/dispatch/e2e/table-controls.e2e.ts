@@ -8393,6 +8393,56 @@ function nearestEdgeTop(top: number, height: number, viewTop: number, viewBottom
   return top < viewTop === fits ? viewTop : viewBottom - height;
 }
 
+// The row above reads the reading column's scroll at 1440, where its threads' replies are one
+// line: the column then cannot scroll, and that reading proves nothing. Here each reply is as tall
+// as forty paragraphs, so the column overflows the 900 px window, and the row fails where the
+// column cannot scroll. The same press takes away the focused Dismiss, so the same clause of the
+// `webkit` and `firefox` projects as the row above: the page-own focus row
+// (e2e/playwright.config.ts).
+test("a thread's Dismiss in the Inbox's list leaves a reading column that can scroll where it stood, at 1440 @firefox @webkit", async ({
+  page,
+}) => {
+  await createProject({ key: "CORE", name: "Core" });
+  await page.setViewportSize({ height: 900, width: 1440 });
+  const issue = await createIssue({ project: "CORE", title: "Mirror lag with a long reply" });
+  const reply = Array.from({ length: 40 }, (_, line) => `Line ${line + 1} of the report.`).join(
+    "\n\n"
+  );
+  for (const word of ["first", "second", "third"]) {
+    await seedCommentThread(issue.key, `Is the ${word} mirror caught up?`, reply);
+  }
+  await page.goto("/");
+  const dismissable = page
+    .locator("[data-inbox-row]")
+    .filter({ has: page.locator("[data-inbox-dismiss]") });
+  await expect(dismissable.nth(2)).toBeVisible();
+  // One read of the order: the wait above found three thread rows drawn, newest first.
+  const target = (await dismissable.first().getAttribute("data-inbox-row")) ?? "";
+  const row = page.locator(`[data-inbox-row="${target}"]`);
+  await row.locator("[data-inbox-dismiss]").focus();
+  await nextFrames(page);
+  const column = page.getByTestId("inbox-pane-scroller");
+  /** Where the reading column stands and how far it can scroll. */
+  const standing = () =>
+    column.evaluate((box) => ({
+      farthest: Math.round(box.scrollHeight - box.clientHeight),
+      top: Math.round(box.scrollTop),
+    }));
+  const before = await standing();
+  expect(before.farthest, "the reading column can scroll before the press").toBeGreaterThan(0);
+  await page.keyboard.press("Enter");
+  await expect(row).toHaveCount(0);
+  // A scroll lands over frames, so the column is read once it holds still.
+  await settledScrollTop(column);
+  const now = await standing();
+  // A column the page clamped stands at its farthest scroll now, and stood farther before.
+  const clamped = now.top >= now.farthest - 1 && before.top > now.farthest;
+  expect(
+    Math.abs(now.top - before.top) <= 1 || clamped,
+    `after Enter on the first thread's Dismiss the reading column scrolled from ${before.top} to ${now.top} px (farthest ${before.farthest} -> ${now.farthest})`
+  ).toBe(true);
+});
+
 /** Where the keyboard focus is, read once: the focused element's tag and name, whether it is the
  *  body, whether it stands inside an element `inside` matches (a CSS selector, or none), whether
  *  its box stands wholly inside the window, whether, taller than the window less its scroll

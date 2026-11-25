@@ -4089,18 +4089,10 @@ test("a bulk Snooze by x and b focuses no row with a scroll, and the row after t
   }
 });
 
-/** How tall `layRowsDown` draws each row. */
-const LAID_ROW_PX = 100;
-
-/** Lays the Inbox's rows down a page the window scrolls, as happy-dom does not: each row and its
- *  mark `LAID_ROW_PX` tall, stacked in the order the list draws them below `above()`, the height
- *  of what stands above the rows now, less `window.scrollY`. The list's own box (the anchor's
- *  root) starts where the rows do. `window.scrollY` starts at `scrollY`, and `window.scrollBy`
- *  moves it, so a row the list's own scroll keeping (`ViewportAnchor`) holds in place moves the
- *  window. Every other element keeps happy-dom's own box. Answers the function that gives
- *  happy-dom its own boxes and scroll back. */
-function layRowsDown(scrollY: number, above: () => number = () => 0): () => void {
-  const real = Element.prototype.getBoundingClientRect;
+/** Starts `window.scrollY` at `scrollY` and makes `window.scrollBy` move it, as happy-dom does
+ *  not, for `layRowsDown` and `layItemsDown`. Answers the function that gives the window its own
+ *  `scrollY` and `scrollBy` back. */
+function scrollWindowFrom(scrollY: number): () => void {
   const scrollYWas = Object.getOwnPropertyDescriptor(window, "scrollY");
   const scrollByWas = window.scrollBy;
   const scrollTo = (value: number) =>
@@ -4110,6 +4102,29 @@ function layRowsDown(scrollY: number, above: () => number = () => 0): () => void
     const by = typeof x === "number" ? y : x.top;
     if (by !== undefined) scrollTo(window.scrollY + by);
   }) as typeof window.scrollBy;
+  return () => {
+    window.scrollBy = scrollByWas;
+    if (scrollYWas === undefined) {
+      Reflect.deleteProperty(window, "scrollY");
+    } else {
+      Object.defineProperty(window, "scrollY", scrollYWas);
+    }
+  };
+}
+
+/** How tall `layRowsDown` draws each row. */
+const LAID_ROW_PX = 100;
+
+/** Lays the Inbox's rows down a page the window scrolls, as happy-dom does not: each row and its
+ *  mark `LAID_ROW_PX` tall, stacked in the order the list draws them below `above()`, the height
+ *  of what stands above the rows now, less `window.scrollY`. The list's own box (the anchor's
+ *  root) starts where the rows do. `window.scrollY` starts at `scrollY`, and `window.scrollBy`
+ *  moves it (`scrollWindowFrom`), so a row the list's own scroll keeping (`ViewportAnchor`) holds
+ *  in place moves the window. Every other element keeps happy-dom's own box. Answers the function
+ *  that gives happy-dom its own boxes and scroll back. */
+function layRowsDown(scrollY: number, above: () => number = () => 0): () => void {
+  const real = Element.prototype.getBoundingClientRect;
+  const scrolled = scrollWindowFrom(scrollY);
   const rect = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
     this: Element
   ) {
@@ -4127,12 +4142,7 @@ function layRowsDown(scrollY: number, above: () => number = () => 0): () => void
   });
   return () => {
     rect.mockRestore();
-    window.scrollBy = scrollByWas;
-    if (scrollYWas === undefined) {
-      Reflect.deleteProperty(window, "scrollY");
-    } else {
-      Object.defineProperty(window, "scrollY", scrollYWas);
-    }
+    scrolled();
   };
 }
 
@@ -4599,20 +4609,12 @@ const LAID_HEADING_PX = 40;
  *  the order the list draws them from the page's top, less `window.scrollY`, and every element in
  *  an item given that item's box. The list's own box (the anchor's root) holds them all, and a
  *  point of the window names the item drawn there (`document.elementFromPoint`). `window.scrollY`
- *  starts at `scrollY`, and `window.scrollBy` moves it, so a row the list's anchor holds in place
- *  moves the window. Answers the function that gives happy-dom its own boxes, points and scroll
- *  back. */
+ *  starts at `scrollY`, and `window.scrollBy` moves it (`scrollWindowFrom`), so a row the list's
+ *  anchor holds in place moves the window. Answers the function that gives happy-dom its own
+ *  boxes, points and scroll back. */
 function layItemsDown(scrollY: number): () => void {
   const real = Element.prototype.getBoundingClientRect;
-  const scrollYWas = Object.getOwnPropertyDescriptor(window, "scrollY");
-  const scrollByWas = window.scrollBy;
-  const scrollTo = (value: number) =>
-    Object.defineProperty(window, "scrollY", { configurable: true, value, writable: true });
-  scrollTo(scrollY);
-  window.scrollBy = ((x: number | ScrollToOptions, y?: number) => {
-    const by = typeof x === "number" ? y : x.top;
-    if (by !== undefined) scrollTo(window.scrollY + by);
-  }) as typeof window.scrollBy;
+  const scrolled = scrollWindowFrom(scrollY);
   /** Each item of the list with its top and bottom on the page, in the list's order. */
   const laid = () => {
     let bottom = 0;
@@ -4642,12 +4644,7 @@ function layItemsDown(scrollY: number): () => void {
   return () => {
     rect.mockRestore();
     point.mockRestore();
-    window.scrollBy = scrollByWas;
-    if (scrollYWas === undefined) {
-      Reflect.deleteProperty(window, "scrollY");
-    } else {
-      Object.defineProperty(window, "scrollY", scrollYWas);
-    }
+    scrolled();
   };
 }
 

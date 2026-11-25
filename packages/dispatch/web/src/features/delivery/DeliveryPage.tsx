@@ -331,9 +331,11 @@ function LanesSwitch({
 
 /** Coloured by Parent agent: which values get their own colour and lane, busiest first. The rest
  *  share one Other colour and lane; with none chosen, the colours and lanes are the facet's usual.
- *  A value's count is drawn only while `counted` holds, the page's word that the answer on screen
- *  is the one for the address: while a new filter's read is out the previous answer stays on
- *  screen, and its counts are not this filter's. */
+ *  A value's count is of every pull request of the window, with no facet or search applied
+ *  (`deliveryColorCounts` in Dispatch's `api/delivery.go`), so a facet or a search changes none.
+ *  It is drawn only while `counted` holds, the page's word that the answer on screen is the one
+ *  for the address: while a read is out the previous answer stays on screen, and where the
+ *  address names another window, its counts are the previous window's. */
 function OwnColourPicker({
   counted,
   counts,
