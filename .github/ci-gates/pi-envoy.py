@@ -17,6 +17,7 @@ GATE = gate("pi_envoy", "pi-envoy", reads=reads(
     ("scripts/third-party-notices.ts", "`scripts/pi-plugin-prepack.sh#$root/scripts/third-party-notices.ts` writes dist/THIRD_PARTY_NOTICES with it, for each plugin"),
     ("scripts/e2e/lib/pack-plugin.sh", "`packages/pi-envoy/scripts/prepack.test.ts#the packed tarball` packs with it"),
 ) + envoy_client_dep("packages/pi-envoy/tsconfig.json paths @legion/envoy-client/*; `packages/pi-envoy/extensions/envoy.ts#@legion/envoy-client/` imports")
+  + dispatch_api_types(at("pi-envoy", "Typecheck pi-envoy"))
   + install_omp("pi-envoy") + bun_job("pi-envoy"))
 GATE = with_reads(GATE, [
     Read('packages/daemon/internal/prompts/**', "filter pi_envoy held packages/daemon/internal/prompts/** by hand before the filters were computed: it selected 1 file(s) no other read of this gate declares", but=('**/*_test.go',)),

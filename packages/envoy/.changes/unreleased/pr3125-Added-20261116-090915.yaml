@@ -1,0 +1,5 @@
+kind: Added
+body: 'A comment event whose comment replies to an ask carries the display tree of that ask''s question under `payload.ask_question` in the envelope''s `trees` map, beside `payload.body`: on the REST event lists only under `Dispatch-Trees: 1`, and always on a live frame, so the Activity line "replied to …" draws the question without parsing it.'
+time: 2026-11-16T09:09:15.946012768Z
+custom:
+    Issue: pr3125

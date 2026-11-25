@@ -28,4 +28,4 @@ GATE = gate("pi_legion_build", "pi-legion-build", reads=reads(
     ("docs/site/src/content/docs/**", f"{at('pi-legion-build', 'Check the skills against their guard')}: `packages/pi-legion/src/skills-guard.test.ts#the guides say only a review that requests changes counts a round` reads the Legion guides under it"),
 ) + envoy_client_dep("packages/pi-legion/tsconfig.json paths @legion/envoy-client/*; scripts/skill-scenarios/*.ts "
                      "import @legion/envoy-client/*")
-  + bun_job("pi-legion-build"))
+  + dispatch_api_types(at("pi-legion-build", "Typecheck pi-legion")) + bun_job("pi-legion-build"))

@@ -105,7 +105,7 @@ func (r *seedRun) writeDocument(ctx context.Context, tx pgx.Tx, index int) error
 	// write phase of anyone's, so the plan's statements run at once, as a batch of their own
 	// (refs.IndexBlocks). The targets the plan moves are counted by nobody: the seed appends no
 	// event for a document write, which is what names them.
-	_, _, blockWrite, err := refs.IndexBlocks(ctx, tx, document.ID, document.Versions, versionAt, latest, blocks, located, nil)
+	_, _, blockWrite, err := refs.IndexBlocks(ctx, tx, document.ID, document.Versions, versionAt, latest, blocks, located, nil, serverURL)
 	if err != nil {
 		return fmt.Errorf("index blocks: %w", err)
 	}
@@ -124,7 +124,8 @@ func (r *seedRun) writeDocument(ctx context.Context, tx pgx.Tx, index int) error
 	// The document's own references are reconciled after its blocks, as the server's own version
 	// write reconciles them (docs.indexRenderedVersion): the block mentions of a first indexing
 	// date from the document's refs row for their target, so they are written while the document
-	// holds no refs row yet, and take this version's time.
+	// holds no refs row yet, and take this version's time. Its blocks are indexed, so the
+	// reconciliation settles the document's row of the forms queue too.
 	replacement, err := refs.PlanReplace(ctx, tx, "artifact", document.ID, text.Refs(located), &versionAt)
 	if err != nil {
 		return fmt.Errorf("index references: %w", err)
@@ -136,8 +137,8 @@ func (r *seedRun) writeDocument(ctx context.Context, tx pgx.Tx, index int) error
 	// on the data set would rewrite. They are queued after the reconciliation, whose rows the
 	// update reads (refs.QueueRecordExcerpts).
 	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
-		replacement.Queue(b)
-		refs.QueueRecordExcerpts(b, document.ID, document.Versions, refs.MentionExcerpts(latest, blocks, located))
+		replacement.SettlingForms().Queue(b)
+		refs.QueueRecordExcerpts(b, document.ID, document.Versions, refs.MentionExcerpts(latest, blocks, located, serverURL))
 		return nil
 	}); err != nil {
 		return fmt.Errorf("index references: %w", err)
