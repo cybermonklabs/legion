@@ -501,8 +501,9 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 
 	// The pull requests this change of the links decides the issue of: a pull request is the
 	// issue's while the issue links it (R19 of the spec of several open pull requests), so each is
-	// judged again in this transaction from what Dispatch stored of it (delivery.LinksChanged),
-	// with no read of GitHub: a link a person makes by hand is answered from what Dispatch holds.
+	// judged again in this transaction from what Dispatch stored of it
+	// (delivery.Attributor.LinksChanged), with no read of GitHub: a link a person makes by hand is
+	// answered from what Dispatch holds.
 	var changedHeads []delivery.HeadOfChangedLink
 	if input.ExternalLinks != nil {
 		deleted, err := tx.Query(r.Context(), `delete from issue_external_links where issue_key = $1 returning url`, key)

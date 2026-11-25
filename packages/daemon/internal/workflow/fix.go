@@ -767,7 +767,7 @@ type rowMove struct {
 	target  phase.Phase
 	handoff record.PhaseRow
 	pr      *record.PullRequest
-	reason  string
+	why     moveWhy
 }
 
 // wayMove is a move the way after a fix makes (afterFix), which its context carries: moveTo is the
@@ -833,7 +833,7 @@ func (e *Engine) copyMoveAfterFix(ctx context.Context, tx pgx.Tx, issue record.I
 // return is counted by the way after the fix, which is the one return. A move the way after a fix
 // makes itself is the row's (wayMove).
 func (e *Engine) besideFix(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, trigger TriggerKind, target phase.Phase, row Row,
-	handoff record.PhaseRow, pr *record.PullRequest, reason string) (bool, error) {
+	handoff record.PhaseRow, pr *record.PullRequest, why moveWhy) (bool, error) {
 	if _, way := ctx.Value(wayMoveKey{}).(wayMove); way || !w.Stored {
 		return false, nil
 	}
@@ -870,7 +870,7 @@ func (e *Engine) besideFix(ctx context.Context, tx pgx.Tx, issue record.Issue, w
 		return false, err
 	}
 	if !open {
-		return true, e.afterFix(ctx, tx, issue, w, &rowMove{trigger: trigger, target: target, handoff: handoff, pr: pr, reason: reason})
+		return true, e.afterFix(ctx, tx, issue, w, &rowMove{trigger: trigger, target: target, handoff: handoff, pr: pr, why: why})
 	}
 	if gotReport {
 		if err := e.tellImplementer(ctx, tx, issue, fmt.Sprintf("The %s of step %d reports: %s. Its report is %s. It is part of your fix.",
@@ -960,7 +960,7 @@ func (e *Engine) afterFix(ctx context.Context, tx pgx.Tx, issue record.Issue, w 
 		if pending == nil {
 			return nil
 		}
-		return e.transition(context.WithValue(ctx, wayMoveKey{}, wayMove{}), tx, issue, pending.trigger, pending.target, pending.handoff, pending.pr, pending.reason)
+		return e.transition(context.WithValue(ctx, wayMoveKey{}, wayMove{}), tx, issue, pending.trigger, pending.target, pending.handoff, pending.pr, pending.why)
 	}
 	ctx = context.WithValue(context.WithValue(ctx, wayMoveKey{}, wayMove{moveTo: head}), moverKey{}, mover{fix: fix.Fix})
 	handoff, err := e.phaseRow(ctx, tx, issue.Key, claim.RoleImplementer)
@@ -994,7 +994,7 @@ func (e *Engine) moveFromHold(ctx context.Context, tx pgx.Tx, issue record.Issue
 		}
 	}
 	if target != issue.Phase {
-		return e.transition(ctx, tx, issue, TriggerBackward, target, handoff, pr, reason)
+		return e.transition(ctx, tx, issue, TriggerBackward, target, handoff, pr, moveWhy{Reason: reason})
 	}
 	if err := e.recordPass(ctx, tx, issue, w.Task, rerunFrom, target, pr); err != nil {
 		return err

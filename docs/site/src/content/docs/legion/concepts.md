@@ -217,6 +217,13 @@ its earlier owner gave: at its first step Legion deletes that plan, logs
 `workflow: a plan of an earlier owner is not taken`, and tells the issue's architect once, in a
 `plan-not-taken` notice, which version it did not take and which plan the step runs instead, the
 new owner's or the default steps.
+An issue that a project's experiment drew into a group whose issues run the project's default
+steps (an arm's `plan: default`) takes no plan from its owner: once the daemon records it, the
+owner's `register_plan` and `stop_task` are answered `409 PLAN_NOT_TAKEN`, naming the group, and
+a plan its owner or an earlier owner gave before is deleted at its first step, logged for each
+version as `workflow: a plan is not taken: the issue's group runs the project's default steps`,
+never as an earlier owner's line above, and told in the same `plan-not-taken` notice, which names
+each version and the group and offers no `register_plan`.
 
 A step a plan leaves out hands its duty on. With no tester step, the implementer's own results
 against the issue's checks are the evidence, and a reviewer step refuses to approve while any of

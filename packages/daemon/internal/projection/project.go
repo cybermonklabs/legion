@@ -626,7 +626,7 @@ func assignmentViews(assignments map[string][]record.Assignment, key, tree strin
 	}
 	views := make([]api.AssignmentView, len(rows))
 	for i, row := range rows {
-		views[i] = api.AssignmentView{Experiment: row.Experiment, Variant: row.Variant, Mode: row.Mode, DrawnAt: row.DrawnAt}
+		views[i] = api.AssignmentView{Experiment: row.Experiment, Variant: row.Variant, Mode: row.Mode, DrawnAt: row.DrawnAt, Plan: row.Plan}
 	}
 	slices.SortStableFunc(views, func(a, b api.AssignmentView) int {
 		return cmp.Or(cmp.Compare(place(a.Experiment), place(b.Experiment)), cmp.Compare(a.Experiment, b.Experiment))

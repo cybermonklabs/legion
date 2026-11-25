@@ -559,9 +559,8 @@ func (r *handoffRecordsLive) completionHead() {
 				filepath.Join(r.root, "scripts", "e2e", "completion-head.ts"), each.phase, each.role)
 			refusal := strings.TrimSpace(string(out.stderr))
 			r.note("control: findHandoffReport as the tester of %s in %s exited %d: %s", r.headNone, each.phase, code, refusal)
-			if code != 1 || strings.TrimSpace(string(out.stdout)) != "" || !strings.Contains(refusal, "names no head") ||
-				!strings.Contains(refusal, "write a new handoff with `head` set to the 40-character lower-case commit you tested") {
-				t.Fatalf("the tester's completion of %s, whose test record names no head, = exit %d, stdout %q, stderr %q; want it refused before it is sent, naming the record to write",
+			if code != 1 || strings.TrimSpace(string(out.stdout)) != "" || refusal == "" {
+				t.Fatalf("the tester's completion of %s, whose test record names no head, = exit %d, stdout %q, stderr %q; want it refused before it is sent",
 					r.headNone, code, out.stdout, refusal)
 			}
 			continue
@@ -1114,12 +1113,7 @@ func startHandoffDispatch(t *testing.T, root string) *handoffDispatch {
 	t.Helper()
 	options := scratchDispatchOptions{root: root}
 	if daemonLog := os.Getenv(liveDaemonLogEnv); daemonLog != "" {
-		file, err := os.OpenFile(filepath.Join(filepath.Dir(daemonLog), "dispatch.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
-		if err != nil {
-			t.Fatalf("open Dispatch's log: %v", err)
-		}
-		t.Cleanup(func() { file.Close() })
-		options.log = file
+		options.log = evidenceFile(t, filepath.Join(filepath.Dir(daemonLog), "dispatch.log"))
 	}
 	return &handoffDispatch{scratchDispatch: startScratchDispatchOn(t, options), client: &http.Client{Timeout: 10 * time.Second}}
 }

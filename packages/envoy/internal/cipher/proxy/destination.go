@@ -3,7 +3,8 @@
 // requests the proxy sends to an address inside the broker's own cluster in place of the host's
 // own address - in production Dispatch's public host and Dispatch's in-cluster URL. What is here
 // is all of it: the setting as the proxy holds it, its own transport, the host it serves
-// (toDestination), the addresses every dial to it may open and why none may (upstreamAddresses),
+// (toDestination), the addresses every dial to it may open and why none may (upstreamAddresses,
+// with the rule of one address, PrivateUpstreamRefusal, which the broker's start reads too),
 // the dial itself (dialUpstream), and what the command is told when the destination is refused or
 // does not answer, which names the rule and never the destination's in-cluster name or address.
 // serveConnect and serveBound decide when a request is the destination's; this file decides
@@ -26,8 +27,8 @@ import (
 
 // PrivateUpstream is one bound host and the URL its requests are sent to in place of the host's own
 // address: in production Dispatch's public host and its address inside the cluster
-// (BROKER_AIRLOCK_PRIVATE_UPSTREAM). The broker's start holds it to the one host the rules entry
-// DISPATCH_RESULTS_TOKEN binds, exactly and alone, of kind dpop with an allow list
+// (BROKER_AIRLOCK_PRIVATE_UPSTREAM). The broker's start holds it to the one host the proxy block of
+// the profile DISPATCH_RESULTS_TOKEN binds, exactly and alone, of kind dpop with an allow list
 // (config.AirlockResultRules), and the URL to a scheme and a host with no user, path or query.
 type PrivateUpstream struct {
 	// Host is the bound host, in lower case with no port, as a CONNECT's host is compared.
@@ -83,12 +84,8 @@ func (s *Server) destination() (host, port string) {
 // upstreamAddresses answers the addresses the private destination's host has, the ones every dial
 // to it opens, and why the proxy may dial none of them. It is checkedAddresses turned the other
 // way, for the one host the broker's settings name as inside its own cluster: each address, read as
-// checkedAddresses reads it (netaddr.Canonical), must be one localRule refuses - private,
-// 100.64.0.0/10 or inside the cluster ranges - so the exception reaches no address the proxy would
-// tunnel to for a command; and none may be one netaddr.DestinationRefusal names - loopback,
-// link-local, unspecified, multicast or a cloud metadata server's IPv6 address - where the broker's
-// own pod and the node's metadata server answer and no destination of the broker's does. A name
-// refused for one of its addresses is refused whole, as checkedAddresses refuses one.
+// checkedAddresses reads it (netaddr.Canonical), is held to PrivateUpstreamRefusal. A name refused
+// for one of its addresses is refused whole, as checkedAddresses refuses one.
 //
 // The refusal is written twice. The broker's line of a dial that did not happen (logDialFailure)
 // names the destination's host and the address; the error answered, which reaches the command
@@ -117,17 +114,35 @@ func (s *Server) upstreamAddresses(ctx context.Context) ([]netip.Addr, error) {
 		return addrs, nil
 	}
 	for _, addr := range addrs {
-		why := netaddr.DestinationRefusal(addr)
-		if why == "" && localRule(addr, s.clusterRanges) == "" {
-			why = "an address which this proxy would also tunnel to: list its range in BROKER_AIRLOCK_CLUSTER_RANGES"
-		}
-		if why != "" {
+		if why := PrivateUpstreamRefusal(addr, s.clusterRanges); why != "" {
 			s.logDialFailure(ctx, host, port, net.JoinHostPort(addr.String(), port), len(addrs), dialRefused,
 				fmt.Sprintf("the private upstream %s resolves to %s, %s", host, addr, why))
 			return nil, destinationRefused("the private destination resolves to " + why)
 		}
 	}
 	return addrs, nil
+}
+
+// PrivateUpstreamRefusal answers why addr can be no address of the private destination
+// (BROKER_AIRLOCK_PRIVATE_UPSTREAM) on a broker whose cluster ranges are clusterRanges
+// (Options.ClusterRanges, BROKER_AIRLOCK_CLUSTER_RANGES), or "" for an address every dial to the
+// destination may open. The answer completes "... resolves to". addr must be one localRule refuses
+// - private, 100.64.0.0/10 or inside the cluster ranges - so the exception reaches no address the
+// proxy would tunnel to for a command; and it may be none netaddr.DestinationRefusal names -
+// loopback, link-local, unspecified, multicast, the IPv4 broadcast address or a cloud metadata
+// server's IPv6 address - where the broker's own pod and the node's metadata server answer, or no
+// one service does, and no destination of the broker's does.
+// It reads addr as netaddr.Canonical reads it. The dial (upstreamAddresses) reads it for each
+// address the destination's host resolves to, and config's start check reads it for a URL whose
+// host is an address, so the start takes no address literal the dial refuses.
+func PrivateUpstreamRefusal(addr netip.Addr, clusterRanges []netip.Prefix) string {
+	if why := netaddr.DestinationRefusal(addr); why != "" {
+		return why
+	}
+	if localRule(addr, clusterRanges) == "" {
+		return "an address which this proxy would also tunnel to: list its range in BROKER_AIRLOCK_CLUSTER_RANGES"
+	}
+	return ""
 }
 
 // destinationRefused is the error of a private destination the proxy will not dial, as the

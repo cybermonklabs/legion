@@ -156,9 +156,9 @@ var ClaimRecordFields = []RecordFieldDecision{
 	{Field: "LastDeathCause", Column: ColumnAgents, Keys: []string{"lastDeathCause"},
 		Reason: "why the claim's process was last found gone, which an architect deciding a retry from an escalation reads"},
 	{Field: "LastStartFailure", Column: ColumnAgents, Keys: []string{"lastStartFailure"},
-		Reason: "why the last start produced no running agent, which is a different fault from a process that died and is read as one"},
+		Reason: "why the claim's last start produced no ready agent, dropped once an agent is ready, which is a different fault from a process that died and is read as one"},
 	{Field: "LastReady", Column: ColumnAgents, Keys: []string{"lastReady"},
-		Reason: "when the agent last said it could be prompted, which is what dates the two causes above"},
+		Reason: "when the agent last said it could be prompted, which is what dates the death's cause above"},
 	{Field: "TurnOutcomes", Column: ColumnWithheld,
 		Reason: "the window the run of refused turns is derived from, whose count reaches a reader as the failure's own sentence"},
 	{Field: "Abandoned", Column: ColumnWithheld,
@@ -240,4 +240,6 @@ var AssignmentRecordFields = []RecordFieldDecision{
 		Reason: "when the draw was made, absent where the row records none: it is how a reader tells a unit a hand-over settled at no arm from one that was drawn, and what the issue's `memoryDrawnAt` carries for the row named `memory`"},
 	{Field: "Carried", Column: ColumnWithheld,
 		Reason: "the record's mark of a row a hand-over wrote rather than a draw: what a reader of the state measures is the arm the unit ran under, and a carried row names that arm as a drawn one does"},
+	{Field: "Plan", Column: ColumnAgents, Keys: []string{"plan"},
+		Reason: "the group the arm set when the issue was drawn, which the issue runs on for its whole life: the workflow reads it at the issue's first step and at register_plan and stop_task, and the project's file can change an arm's plan or rename the arm after the draw, so a reader takes the group from the record and never from the settings; it is absent where the arm named none"},
 }

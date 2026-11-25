@@ -232,7 +232,7 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 	// what the issue's three memory fields are read off (memoryOf).
 	drawn := record.Assignment{
 		Experiment: "memory", Unit: "tree", Variant: "memory", Mode: "random",
-		DrawnAt: &drawnAt, Carried: true,
+		DrawnAt: &drawnAt, Carried: true, Plan: "default",
 	}
 
 	token := claim.Token("legion-legion-legion-500-implementer")
@@ -331,7 +331,7 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 			"updateReasons":     current.UpdateReasons,
 			"updateState":       api.UpdateStateAnswered,
 			"providerErrorRun":  current.ProviderErrorRun,
-			// The turn times and the two causes, with the ready that dates them: the view
+			// The turn times and the two causes, with the ready that dates the death: the view
 			// carries each as the record holds it.
 			"lastTurnStart":    current.LastTurnStart,
 			"lastTurnEnd":      current.LastTurnEnd,
@@ -409,7 +409,7 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 			"memoryDrawnAt":  drawn.DrawnAt,
 			"assignments": []map[string]any{{
 				"experiment": drawn.Experiment, "variant": drawn.Variant,
-				"mode": drawn.Mode, "drawnAt": drawn.DrawnAt,
+				"mode": drawn.Mode, "drawnAt": drawn.DrawnAt, "plan": drawn.Plan,
 			}},
 		})
 		if got, wanted := canonical(t, document), canonical(t, want); got != wanted {
@@ -431,7 +431,7 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 
 		want := wire(t, map[string]any{
 			"experiment": drawn.Experiment, "variant": drawn.Variant,
-			"mode": drawn.Mode, "drawnAt": drawn.DrawnAt,
+			"mode": drawn.Mode, "drawnAt": drawn.DrawnAt, "plan": drawn.Plan,
 		})
 		if got, wanted := canonical(t, document), canonical(t, want); got != wanted {
 			t.Errorf("the assignment view is %s, want the record's own values, %s", got, wanted)

@@ -96,7 +96,7 @@ func (r *fixRig) moveFact(trigger TriggerKind, target phase.Phase, handoff recor
 		if err != nil {
 			return err
 		}
-		if err := r.engine.transition(ctx, tx, issue, trigger, target, handoff, pr, "the step test's move"); err != nil {
+		if err := r.engine.transition(ctx, tx, issue, trigger, target, handoff, pr, moveWhy{Reason: "the step test's move"}); err != nil {
 			return err
 		}
 		return r.engine.fixRule(ctx, tx, issue.Key)
