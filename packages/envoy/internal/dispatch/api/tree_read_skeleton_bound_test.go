@@ -608,8 +608,10 @@ func skeletonBaseDecides(t *testing.T, commit string) bool {
 // spec, its Verification document, its plan, its other documents, its asks, of which the writer
 // answers skeletonAnswered, and its comments, each a person's, so each comment is a conversation
 // node (R2). Each role document holds the census's typed blocks, or skeletonViewBlocks where the
-// census gives none, and the spec skeletonDecisions decision blocks where decides is true.
-func seedSkeleton(t *testing.T, s *readCostServer, decides bool) []*skeletonIssue {
+// census gives none, and the spec skeletonDecisions decision blocks where decides is true. conn
+// reads what the serving build still owes (waitSkeletonOwed), which each spec waits out before a
+// check cites it.
+func seedSkeleton(t *testing.T, s *readCostServer, conn *pgx.Conn, decides bool) []*skeletonIssue {
 	t.Helper()
 	started := time.Now()
 	for _, person := range []string{readCostReader, readCostWriter} {
@@ -627,7 +629,7 @@ func seedSkeleton(t *testing.T, s *readCostServer, decides bool) []*skeletonIssu
 			spec += skeletonTyped(refs.DecisionSupertag, "d", skeletonDecisions, none)
 		}
 		issue.key = createReadCostIssue(t, s, skeletonProject, "The issue of "+shape.name, spec, readCostWriter)
-		issue.spec = waitSkeletonSpecIndexed(t, s, issue.key, "r1")
+		issue.spec = skeletonSpecIndexed(t, s, conn, issue.key)
 		serves := func(string) string {
 			return ` serves="` + refs.BlockRef("dispatch://"+issue.key+"/spec", "r1") + `" surface="cli" run="go test ./..."`
 		}
@@ -670,35 +672,19 @@ func seedSkeleton(t *testing.T, s *readCostServer, decides bool) []*skeletonIssu
 	return issues
 }
 
-// waitSkeletonSpecIndexed answers the artifact id of key's spec once the serving build's block
-// index holds the spec's block want, polling every skeletonOwedPoll for skeletonOwedWait. A spec of
-// more blocks than a write indexes in its own request, the largest spec's, is left to the block
-// index's reconciliation, and until a tick indexes it the build refuses a pointer at one of its
-// blocks, which the Verification document's checks are.
-func waitSkeletonSpecIndexed(t *testing.T, s *readCostServer, key, want string) string {
+// skeletonSpecIndexed answers the artifact id of key's spec once the serving build owes no
+// document its block index (waitSkeletonOwed). A spec of more blocks than a write indexes in its
+// own request, the largest spec's, is left to the block index's reconciliation, and until a tick
+// indexes it that build refuses a pointer at one of its blocks, which each check of the
+// Verification document is. The blocks read answers the document's text and not the index, so it
+// cannot say when that pointer is admitted.
+func skeletonSpecIndexed(t *testing.T, s *readCostServer, conn *pgx.Conn, key string) string {
 	t.Helper()
 	var read struct {
 		PrimaryArtifactID string `json:"primary_artifact_id"`
 	}
 	s.read(t, "read "+key, "/api/v1/issues/"+key, &read)
-	why := ""
-	held := testwait.Holds(skeletonOwedWait, skeletonOwedPoll, func() bool {
-		answer, err := s.write(http.MethodGet, "/api/v1/artifacts/"+read.PrimaryArtifactID+"/blocks", readCostReader, nil, http.StatusOK)
-		if err != nil {
-			why = err.Error()
-			return false
-		}
-		var blocks []readCostBlock
-		if err := json.Unmarshal(answer.body, &blocks); err != nil {
-			why = fmt.Sprintf("decode the blocks of %s's spec: %v", key, err)
-			return false
-		}
-		why = fmt.Sprintf("the blocks read of %s's spec answers %d blocks and no %s", key, len(blocks), want)
-		return slices.ContainsFunc(blocks, func(block readCostBlock) bool { return block.ID == want })
-	})
-	if !held {
-		t.Fatalf("the spec of %s was not indexed within %s: %s", key, skeletonOwedWait, why)
-	}
+	waitSkeletonOwed(t, conn, "spec of "+key, nil)
 	return read.PrimaryArtifactID
 }
 
@@ -1622,7 +1608,7 @@ func TestTheTreeReadAnswersTheSkeletonWithinItsBounds(t *testing.T) {
 
 	// ───── first: the corpus and the old page, on the release before ─────
 	base := startSkeletonServer(t, client, "the release before ("+baseCommit+")", baseBinary, baseCommit, databaseURL, listener)
-	issues := seedSkeleton(t, base, decides)
+	issues := seedSkeleton(t, base, conn, decides)
 	waitSkeletonOwed(t, conn, "release before's corpus", nil)
 	statements.waitWindowsOwed(t, "release before")
 	skeletonAnalyze(t, conn, "old side")
