@@ -44,6 +44,17 @@ const (
 // the walk's share of both (prioritiesStatementPlan.walk), each part's time and shared buffers
 // (prioritiesStatementPlan.partsRead), and its plan. It fails on a wrong answer, on JIT not off,
 // on a database time it cannot read and on a read under another plan.
+//
+// It also holds the shape of each read, and prints it for each form and plan, as c-both-forms'
+// step reads it:
+//
+//	c-both-forms: shape: form=<full|summary> plan=<generic|custom> statements=<n> round_trips=<n> event_probes=<n>
+//
+// statements and round_trips are what the server sent for the counted read, as the trace of
+// TestPrioritiesReadSpeed counts them (speedTrace), and event_probes the runs of every scan of
+// events_issue_key_seq_key in the read's plans (prioritiesStatementPlan.eventProbes). The seed ran
+// the fill, so this is the steady state: the test fails where a form sends other than 2
+// statements in 2 round trips, and where it probes an event.
 func TestThePrioritiesReadAnswersWithinItsBoundOnEveryPlan(t *testing.T) {
 	// Not parallel: it times reads with a wall clock and reads shared-buffer counts, and the
 	// clock, the cores and Postgres's shared buffers are the whole process's and server's, which
@@ -67,7 +78,7 @@ func measurePrioritiesRead(t *testing.T, corpus readCorpus, served prioritiesRea
 	t.Helper()
 	target := form.target(nil)
 	described := form.called + " under " + served.plan.called
-	answer, statements := served.warm(t, target)
+	answer, statements, roundTrips := served.warm(t, target)
 	if faults := readCorpusAnswerFaults(decodeBody[model.Priorities](t, answer), form.summary); len(faults) > 0 {
 		t.Fatalf("%s answers what the corpus was not built to answer, so its time would show nothing: %v", described, faults)
 	}
@@ -123,5 +134,22 @@ func measurePrioritiesRead(t *testing.T, corpus readCorpus, served prioritiesRea
 			(counted.executing+counted.planned)/float64(counted.calls), counted.executing/float64(counted.calls), counted.planned/float64(counted.calls), counted.calls,
 			plan.milliseconds, plan.planning, plan.buffers(), plan.hit, plan.read, plan.walk(), indentPlan(plan.text))
 		t.Logf("c-both-forms: parts: form=%s plan=%s %s: %s", form.name, served.plan.name, statement.name, plan.partsRead())
+	}
+
+	probes := 0.0
+	for _, plan := range plans {
+		probes += plan.eventProbes
+	}
+	fmt.Printf("c-both-forms: shape: form=%s plan=%s statements=%d round_trips=%d event_probes=%.0f\n",
+		form.name, served.plan.name, len(statements), roundTrips, probes)
+	wantStatements := priorityBodyStatements
+	if form.summary {
+		wantStatements = prioritySummaryStatements
+	}
+	if len(statements) != wantStatements || roundTrips != priorityReadRoundTrips {
+		t.Errorf("%s sends %d statements in %d round trips, want %d in %d", form.called, len(statements), roundTrips, wantStatements, priorityReadRoundTrips)
+	}
+	if probes != 0 {
+		t.Errorf("%s under %s probes %s %.0f times, want 0 in steady state", form.called, served.plan.called, newestEventIndex, probes)
 	}
 }

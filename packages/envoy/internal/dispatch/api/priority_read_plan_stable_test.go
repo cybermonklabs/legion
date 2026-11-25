@@ -51,7 +51,7 @@ func TestThePrioritiesReadKeepsItsPlansWithAProjectNamed(t *testing.T) {
 		read := make([][]prioritiesReadStatement, len(servers))
 		plans := make([][]prioritiesStatementPlan, len(servers))
 		for index, served := range servers {
-			_, read[index] = served.warm(t, target)
+			_, read[index], _ = served.warm(t, target)
 			served.requirePlansRun(t, read[index], prioritiesReadWarmReads)
 			for _, statement := range read[index] {
 				plans[index] = append(plans[index], served.explain(t, statement))

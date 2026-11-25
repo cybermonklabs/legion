@@ -111,9 +111,10 @@ func newPrioritiesReadServer(t *testing.T, database *store.Store, plan prioritie
 }
 
 // counted makes one GET of target as alice on a context the trace counts, holds it to 200 OK,
-// and answers the response and every statement the server sent for it, in the order it sent
-// them, each with the arguments it was sent with.
-func (s prioritiesReadServer) counted(t *testing.T, target string) (*httptest.ResponseRecorder, []speedStatement) {
+// and answers the response, every statement the server sent for it, in the order it sent them,
+// each with the arguments it was sent with, and the round trips it sent them in, as the trace of
+// TestPrioritiesReadSpeed counts them (speedTrace).
+func (s prioritiesReadServer) counted(t *testing.T, target string) (*httptest.ResponseRecorder, []speedStatement, int) {
 	t.Helper()
 	s.trace.take()
 	request := httptest.NewRequestWithContext(context.WithValue(context.Background(), countedRead{}, true), http.MethodGet, target, nil)
@@ -123,11 +124,11 @@ func (s prioritiesReadServer) counted(t *testing.T, target string) (*httptest.Re
 	if response.Code != http.StatusOK {
 		t.Fatalf("read %s under %s: status=%d body=%.300s", target, s.plan.called, response.Code, response.Body.String())
 	}
-	sent, _ := s.trace.take()
+	sent, roundTrips := s.trace.take()
 	if len(sent) == 0 {
 		t.Fatalf("read %s under %s: the trace saw no statement, so nothing would be read of it", target, s.plan.called)
 	}
-	return response, sent
+	return response, sent, roundTrips
 }
 
 // read is one GET of target as alice, held to 200 OK, and the time the server took to answer it,
@@ -144,15 +145,15 @@ func (s prioritiesReadServer) read(t *testing.T, target string) time.Duration {
 }
 
 // warm makes the first, counted read of target and the reads after it, prioritiesReadWarmReads
-// in all, and answers the first's response and the statements it sent, named
-// (prioritiesReadStatements).
-func (s prioritiesReadServer) warm(t *testing.T, target string) (*httptest.ResponseRecorder, []prioritiesReadStatement) {
+// in all, and answers the first's response, the statements it sent, named
+// (prioritiesReadStatements), and the round trips it sent them in.
+func (s prioritiesReadServer) warm(t *testing.T, target string) (*httptest.ResponseRecorder, []prioritiesReadStatement, int) {
 	t.Helper()
-	response, sent := s.counted(t, target)
+	response, sent, roundTrips := s.counted(t, target)
 	for range prioritiesReadWarmReads - 1 {
 		s.read(t, target)
 	}
-	return response, prioritiesReadStatements(sent)
+	return response, prioritiesReadStatements(sent), roundTrips
 }
 
 // prioritiesReadStatement is one statement a read sent, with the name a line gives it.
@@ -219,12 +220,16 @@ func (s prioritiesReadServer) requirePlansRun(t *testing.T, statements []priorit
 // once (InitPlan), with its time and shared buffers. A node's counts take in every node below it,
 // and a materialized CTE runs inside whichever node first reads it, so a part's counts take in
 // those of every CTE it was the first to read.
+//
+// The event probes are the runs of each scan of events_issue_key_seq_key (newestEventIndex), the
+// Actual Loops of every node that names it: the newest event's reads of an event of last_seq.
 type prioritiesStatementPlan struct {
 	milliseconds, planning float64
 	hit, read              float64
 	walks                  int
 	walkMilliseconds       float64
 	walkBuffers            float64
+	eventProbes            float64
 	parts                  []prioritiesPlanPart
 	text                   string
 }
@@ -322,6 +327,9 @@ func (s prioritiesReadServer) explain(t *testing.T, statement prioritiesReadStat
 				name: node.SubplanName, node: node.NodeType, loops: node.Loops,
 				milliseconds: node.TotalTime * node.Loops, buffers: node.SharedHitBlocks + node.SharedReadBlocks,
 			})
+		}
+		if node.IndexName == newestEventIndex {
+			reading.eventProbes += node.Loops
 		}
 		for _, child := range node.Plans {
 			visit(child)
