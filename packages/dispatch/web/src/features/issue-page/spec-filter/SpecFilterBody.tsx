@@ -255,14 +255,15 @@ export function SpecFilterBody({
   // held a run whose cell draws no decision may yet have one, so nothing says that none did.
   const decidedHeld = decisionsHeld && asksHeld;
   // Each line of the reads that stand failed (`standsFailed`), in the page's words for such a
-  // read (`STATE_LINES`), under the key it is drawn by: the coverage's and the spec's blocks' as
-  // the statements', the results' and the Verification document's blocks' as the results', which
-  // leave every statement unmarked alike, then the Spec view read's as the decisions', and the
-  // asks'. A line stays, its Retry busy, while a read of it that stands failed runs again, until
-  // the read answers. A line's Retry asks again the reads of that line that stand failed
-  // (`failed`), and no other, and none of them while it is read again already. Each read of a
-  // line is paired with its key's hash (`lineRead`), and each line carries how many times its
-  // reads have been refused since it last stood (`useLineRefusals`), which keys its alert.
+  // read (`STATE_LINES`), under the key it is drawn by: the coverage's, the spec's blocks' and
+  // the Spec view read's as the statements' - one line for that read, which the decisions come
+  // from (decision 450) - the results' and the Verification document's blocks' as the results',
+  // which leave every statement unmarked alike, and the asks'. A line stays, its Retry busy,
+  // while a read of it that stands failed runs again, until the read answers. A line's Retry
+  // asks again the reads of that line that stand failed (`failed`), and no other, and none of
+  // them while it is read again already. Each read of a line is paired with its key's hash
+  // (`lineRead`), and each line carries how many times its reads have been refused since it last
+  // stood (`useLineRefusals`), which keys its alert.
   // The names read's line (`namesFailure`) comes after all of these, as the outline draws it
   // last (`outline-reads.ts`): the tree reads the names last, once no read it is built from is
   // still out, and gives that line's state itself.
@@ -270,17 +271,16 @@ export function SpecFilterBody({
     {
       line: "statements",
       message: STATE_LINES.statements_unreadable,
-      reads: [lineRead(coverageQuery, coverageRead), lineRead(treeQuery, specBlocksRead)],
+      reads: [
+        lineRead(coverageQuery, coverageRead),
+        lineRead(treeQuery, specBlocksRead),
+        lineRead(specQuery, decisionsRead),
+      ],
     },
     {
       line: "results",
       message: STATE_LINES.spec_results_unreadable,
       reads: [lineRead(resultsQuery, resultsRead), lineRead(treeQuery, checksRead)],
-    },
-    {
-      line: "decisions",
-      message: STATE_LINES.issue_decisions_unreadable,
-      reads: [lineRead(specQuery, decisionsRead)],
     },
     {
       line: "asks",

@@ -744,7 +744,7 @@ test("the column says no decision shaped a statement only once the decisions are
   const failed = drawBody(issueTree([statement("r1")]), [], { specView: "failed" });
   try {
     await waitFor(() =>
-      expect(failed.view.container.textContent).toContain(STATE_LINES.issue_decisions_unreadable)
+      expect(failed.view.container.textContent).toContain(STATE_LINES.statements_unreadable)
     );
     expect(textsOf(failed.view, "[data-spec-nothing]")).toEqual([]);
   } finally {
@@ -753,9 +753,39 @@ test("the column says no decision shaped a statement only once the decisions are
   }
 });
 
+// Decision 450: a refused Spec view read is one failure, which the view says once, in the
+// statements' line with that line's one Retry. The column's decisions come from the same read, so
+// a line of their own would say the one failure twice.
+test("a failed Spec view read draws one message, the statements', and no decision line's", async () => {
+  const user = userEvent.setup();
+  const { read, view } = drawBody(issueTree([statement("r1")]), [], { specView: "failed" });
+  try {
+    const line = await waitFor(() => alertSaying(view, STATE_LINES.statements_unreadable));
+    expect(
+      textsOf(view, '[data-failed-read] [role="alert"]'),
+      "the one refused read was not said once, as the statements'"
+    ).toEqual([STATE_LINES.statements_unreadable]);
+    expect(view.container.textContent).not.toContain(STATE_LINES.issue_decisions_unreadable);
+    expect(
+      view.container.querySelectorAll("[data-failed-read] button"),
+      "the statements' line holds other than its one Retry"
+    ).toHaveLength(1);
+    read.treeStands("specView", "answered");
+    const before = askedOf(read);
+    await user.click(within(line).getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(view.container.querySelector('[role="alert"]')).toBeNull());
+    expect(askedOf(read).specView, "the Retry did not ask the Spec view read once").toBe(
+      before.specView + 1
+    );
+  } finally {
+    view.unmount();
+    read.mockRestore();
+  }
+});
+
 // The Spec view read and the asks read can each be out, answered or failed when the body is
 // drawn, with the statements' reads answered, and the column draws only what the reads that
-// answered say: the line that its decisions could not be read where the Spec view read failed
+// answered say: the statements' line, and no decisions' line, where the Spec view read failed
 // with nothing held; the line that its open questions could not be read where the asks read
 // failed; and a statement's words that no decision shaped it, and a person's decision beside the
 // statement it shaped, only where both have answered.
@@ -789,9 +819,13 @@ test("every state of the Spec view read and the asks read draws what the column 
           () => {
             const text = view.container.textContent ?? "";
             expect(
-              text.includes(STATE_LINES.issue_decisions_unreadable),
-              `${combination}: whether the column says its decisions could not be read`
+              text.includes(STATE_LINES.statements_unreadable),
+              `${combination}: whether the column says its statements could not be read`
             ).toBe(specView === "failed");
+            expect(
+              text.includes(STATE_LINES.issue_decisions_unreadable),
+              `${combination}: whether the column says its decisions could not be read too`
+            ).toBe(false);
             expect(
               text.includes(STATE_LINES.asks_unreadable),
               `${combination}: whether the column says its open questions could not be read`
@@ -1277,8 +1311,8 @@ test("a failed names read says so in its own line, after the view's own, and its
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
   });
   // Every read the page's tree is built from answered but the Spec view read, which is refused,
-  // so the view draws lines of its own before the names': the statements', since on Spec the
-  // spec's blocks are that read's (`useTreeRead`), and the decisions'.
+  // so the view draws a line of its own before the names': the statements', for the one read the
+  // spec's blocks and the decisions both come from (`useTreeRead`, decision 450).
   client.setQueryData(["whoami"], { kind: "user", login: READER });
   client.setQueryData(issueCoverageQuery(KEY).queryKey, coverageRead([]));
   client.setQueryData(issueResultsQuery(KEY).queryKey, resultsOf([]));
@@ -1306,7 +1340,6 @@ test("a failed names read says so in its own line, after the view's own, and its
     const lines = '[data-spec-body] [data-failed-read] [role="alert"]';
     expect(textsOf(view, lines), "the names' line is not drawn after the view's own").toEqual([
       STATE_LINES.statements_unreadable,
-      STATE_LINES.issue_decisions_unreadable,
       STATE_LINES.names_unreadable,
     ]);
     names.mockResolvedValue({ targets: [] } as never);
@@ -1315,7 +1348,6 @@ test("a failed names read says so in its own line, after the view's own, and its
     await waitFor(() =>
       expect(textsOf(view, lines), "the names' line stayed once the names answered").toEqual([
         STATE_LINES.statements_unreadable,
-        STATE_LINES.issue_decisions_unreadable,
       ])
     );
     expect(names.mock.calls.length, "the names' Retry did not ask the names again").toBeGreaterThan(
@@ -1977,7 +2009,7 @@ test("a read that fails again over the statements and decisions the page holds k
       view.container.querySelector("[data-spec-nothing]"),
       "a failed read again over the held Spec view takes the cell's words away"
     ).not.toBeNull();
-    expect(view.container.textContent).not.toContain(STATE_LINES.issue_decisions_unreadable);
+    expect(view.container.textContent).not.toContain(STATE_LINES.statements_unreadable);
   } finally {
     view.unmount();
     read.mockRestore();
@@ -2230,10 +2262,11 @@ test("the column says no decision shaped a statement only once the asks are read
   }
 });
 
-// R5 and R35: a refused Spec view read, which the column's decisions come from, says so in its
-// own line over the tree, and its Retry asks that read alone again, after which each run's cell
-// draws the decision that shaped it.
-test("a refused Spec view read says so in its own line, and its Retry asks that read alone again", async () => {
+// R5 and R35: a refused Spec view read, which the column's decisions come from, says so in the
+// statements' line over the tree - the one line for that read, with no decisions' line beside it
+// (decision 450) - and its Retry asks that read alone again, after which each run's cell draws
+// the decision that shaped it.
+test("a refused Spec view read says so in the statements' line, and its Retry asks that read alone again", async () => {
   const user = userEvent.setup();
   const made = [
     decision("d1", {
@@ -2247,7 +2280,7 @@ test("a refused Spec view read says so in its own line, and its Retry asks that 
     specView: "failed",
   });
   try {
-    const alert = await waitFor(() => alertSaying(view, STATE_LINES.issue_decisions_unreadable));
+    const alert = await waitFor(() => alertSaying(view, STATE_LINES.statements_unreadable));
     expect(view.container.querySelectorAll('[role="alert"]')).toHaveLength(1);
     expect(view.container.querySelector("[data-spec-cell][data-decision-id]")).toBeNull();
     read.treeStands("specView", "answered");
@@ -2277,14 +2310,14 @@ test("a refused read's line stays, its Retry busy, while the read runs again, an
     specView: "failed",
   });
   try {
-    const line = await waitFor(() => alertSaying(view, STATE_LINES.issue_decisions_unreadable));
+    const line = await waitFor(() => alertSaying(view, STATE_LINES.statements_unreadable));
     // The Spec view read's next run is held until the case answers it.
     const answer = Promise.withResolvers<TreeAnswer>();
     read.tree.mockImplementation((_key, query) =>
       query?.view === "spec" ? answer.promise : Promise.resolve(NO_NODES)
     );
     await user.click(within(line).getByRole("button", { name: "Retry" }));
-    expect(alertSaying(view, STATE_LINES.issue_decisions_unreadable)).toBe(line);
+    expect(alertSaying(view, STATE_LINES.statements_unreadable)).toBe(line);
     expect(within(line).getByRole("button", { name: "Retry" }).getAttribute("aria-busy")).toBe(
       "true"
     );
@@ -2314,7 +2347,7 @@ test("a refused read's alert is said again for a new refusal, and not when its r
     { specView: "failed" }
   );
   try {
-    await waitFor(() => alertSaying(view, STATE_LINES.issue_decisions_unreadable));
+    await waitFor(() => alertSaying(view, STATE_LINES.statements_unreadable));
     // The read is tried once more after a refusal, so a run of it has a second try, which waits
     // while the browser is offline. The body `redraw(true)` alone draws is the same element,
     // which React does not draw again, so its read would keep the options it had: the body is
@@ -2322,7 +2355,7 @@ test("a refused read's alert is said again for a new refusal, and not when its r
     client.setQueryDefaults(viewKey(KEY, "spec"), { retry: 1, retryDelay: 30 });
     redraw(false);
     redraw(true);
-    const line = alertSaying(view, STATE_LINES.issue_decisions_unreadable);
+    const line = alertSaying(view, STATE_LINES.statements_unreadable);
     const first = within(line).getByRole("alert");
     const retry = within(line).getByRole("button", { name: "Retry" });
     // The run's first try starts while the browser is online; the browser goes offline before
@@ -2331,7 +2364,7 @@ test("a refused read's alert is said again for a new refusal, and not when its r
     act(() => onlineManager.setOnline(false));
     await act(() => Bun.sleep(100));
     expect(client.getQueryState(viewKey(KEY, "spec"))?.fetchStatus).toBe("paused");
-    expect(alertSaying(view, STATE_LINES.issue_decisions_unreadable)).toBe(line);
+    expect(alertSaying(view, STATE_LINES.statements_unreadable)).toBe(line);
     expect(
       within(line).getByRole("alert"),
       "a run that paused with no new refusal said the failure again"
@@ -2528,7 +2561,7 @@ test("w on a statement says nothing of a missing decision while the Spec view re
     const { read, view } = drawBody(issueTree([statement("r1")]), [], { specView });
     try {
       if (specView === "failed")
-        await waitFor(() => alertSaying(view, STATE_LINES.issue_decisions_unreadable));
+        await waitFor(() => alertSaying(view, STATE_LINES.statements_unreadable));
       const row = rowOf(view, "spec#b-r1");
       act(() => row.focus());
       await user.keyboard("w");
@@ -2988,14 +3021,12 @@ test("a Retry whose line leaves while another line stays hands the focus to that
   });
   try {
     const results = await waitFor(() => alertSaying(view, STATE_LINES.spec_results_unreadable));
-    const decisions = await waitFor(() =>
-      alertSaying(view, STATE_LINES.issue_decisions_unreadable)
-    );
-    act(() => within(decisions).getByRole("button", { name: "Retry" }).focus());
+    const statements = await waitFor(() => alertSaying(view, STATE_LINES.statements_unreadable));
+    act(() => within(statements).getByRole("button", { name: "Retry" }).focus());
     read.treeStands("specView", "answered");
     await user.keyboard("{Enter}");
     await waitFor(() =>
-      expect(view.container.textContent).not.toContain(STATE_LINES.issue_decisions_unreadable)
+      expect(view.container.textContent).not.toContain(STATE_LINES.statements_unreadable)
     );
     await waitFor(() =>
       expect(document.activeElement).toBe(within(results).getByRole("button", { name: "Retry" }))

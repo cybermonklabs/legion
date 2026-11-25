@@ -719,9 +719,8 @@ export const STATE_LINES = joinWords("STATE_LINES", {
   spec_unreadable: "Could not load the spec.",
   plan_unreadable: "Could not load the plan.",
   verification_unreadable: "Could not load the verification document.",
-  /** What the Spec view and the Decisions view say, beside one Retry, where the reads their
-   *  decisions come from stand failed: the Spec view read, and the tree read with its Decisions
-   *  view (`spec-filter/SpecFilterBody.tsx`, `decisions-filter/DecisionsFilterBody.tsx`). */
+  /** What the Decisions view says, beside one Retry, where the reads its decisions come from stand
+   *  failed: the tree read and its Decisions view (`decisions-filter/DecisionsFilterBody.tsx`). */
   issue_decisions_unreadable: "Could not load this issue's decisions.",
 } as const);
 
