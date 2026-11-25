@@ -162,6 +162,11 @@ func TestABrokerAnswerPrintsNoCredentialItsRequestCarried(t *testing.T) {
 				"grants": []any{map[string]any{"grant_id": echoProof(p), "request_id": echoProof(p)}}}
 		}}, []string{"self"}, 0, false,
 			[]string{"enrollment_id: " + shownEcho, "kind: " + shownEcho, "operator: " + shownEcho, "grant: " + shownEcho + " (request " + shownEcho + ", until this session ends)"}},
+		// projectsWordsOf prints each project the self answer names, alone on the projects line.
+		{"self-projects", map[string]func(string) any{"GET /v1/enrollments/self": func(p string) any {
+			return map[string]any{"enrollment_id": "enr-1", "kind": "session", "lease_expires_at": now, "projects": []string{echoProof(p)}}
+		}}, []string{"self"}, 0, false,
+			[]string{"projects: " + shownEcho}},
 		{"exec-denied", map[string]func(string) any{"POST /v1/requests": func(p string) any {
 			return map[string]any{"request_id": echoProof(p), "state": "denied", "detail": echoProof(p)}
 		}}, exec("SOME_SECRET"), exitDenied, false,
@@ -405,19 +410,29 @@ func TestARereadAnswerPrintsNoProofItEchoes(t *testing.T) {
 		answer func(proof string) map[string]any
 		args   []string
 		shown  []string
+		// stdout reads the broker's line alone (printReread), which the form writes to stdout.
+		stdout bool
 	}{
 		{"reread-reason", held, func(p string) map[string]any {
 			return map[string]any{"name": "HELD_KEY", "served": false, "reason": echoProof(p)}
 		},
-			[]string{"set", "HELD_KEY"}, []string{"(reason=" + shownEcho + ")", "refuses HELD_KEY after the write"}},
+			[]string{"set", "HELD_KEY"}, []string{"(reason=" + shownEcho + ")", "refuses HELD_KEY after the write"}, false},
 		{"reread-type", held, func(p string) map[string]any {
 			return map[string]any{"name": "HELD_KEY", "served": true, "type": echoProof(p)}
 		},
-			[]string{"set", "HELD_KEY"}, []string{"(type " + shownEcho + ")", "serves HELD_KEY as " + shownEcho + ", not a stored secret"}},
+			[]string{"set", "HELD_KEY"}, []string{"(type " + shownEcho + ")", "serves HELD_KEY as " + shownEcho + ", not a stored secret"}, false},
 		{"retag-type", login, func(p string) map[string]any {
 			return map[string]any{"name": "LOGIN_KEY", "served": true, "type": echoProof(p)}
 		},
-			[]string{"retag", "LOGIN_KEY", "--type", policy.TypeGoogleLogin}, []string{"serves LOGIN_KEY as " + shownEcho + ", not " + policy.TypeGoogleLogin}},
+			[]string{"retag", "LOGIN_KEY", "--type", policy.TypeGoogleLogin}, []string{"serves LOGIN_KEY as " + shownEcho + ", not " + policy.TypeGoogleLogin}, false},
+		{"print-reread-reason", held, func(p string) map[string]any {
+			return map[string]any{"name": "HELD_KEY", "served": false, "reason": echoProof(p)}
+		},
+			[]string{"set", "HELD_KEY"}, []string{"broker: refusing HELD_KEY from ", "(reason=" + shownEcho + ")"}, true},
+		{"print-reread-type", held, func(p string) map[string]any {
+			return map[string]any{"name": "HELD_KEY", "served": true, "type": echoProof(p)}
+		},
+			[]string{"set", "HELD_KEY"}, []string{"broker: serving HELD_KEY from ", "(type " + shownEcho + ")"}, true},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			var mu sync.Mutex
@@ -449,7 +464,11 @@ func TestARereadAnswerPrintsNoProofItEchoes(t *testing.T) {
 			mu.Lock()
 			carried := append([]string(nil), proofs...)
 			mu.Unlock()
-			requireNoneEchoed(t, row.name, stdout+stderr, carried, row.shown...)
+			out := stdout + stderr
+			if row.stdout {
+				out = stdout
+			}
+			requireNoneEchoed(t, row.name, out, carried, row.shown...)
 			if code != 1 {
 				t.Errorf("exit %d, want 1: stdout %q, stderr %q", code, stdout, stderr)
 			}
