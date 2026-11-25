@@ -99,7 +99,7 @@ interface Ran {
   readonly stderr: string;
 }
 
-/** The prefix of every result grant's airlock placeholder (placeholder.ResultPrefix). */
+/** The prefix of every result grant's airlock placeholder (placeholder.MintedPrefix("result")). */
 const RESULT_PLACEHOLDER_PREFIX = "agent-secrets-placeholder-result-";
 /** The line the proxy logs for each call to a bound host it carried (proxy's callMessage). */
 const CALL_LINE = "airlock proxy: a call to a bound host";
@@ -492,10 +492,10 @@ describe.skipIf(!dispatchStackEnabled)(
 
       // A separate real child receives only the airlock placeholder and uses it on four other
       // routes. The rule allows POST under /api/v1/projects/ and under /api/v1/issues/ alone, so
-      // the proxy refuses the first three itself, before it dials, and says so (Airlock-Forwarded:
-      // false and its Airlock-Code): a POST to /api/v1/issues is under neither prefix. The fourth
-      // is under the first prefix, so the proxy carries it with the run's token and a proof of the
-      // broker's key, and Dispatch's own gate refuses the scope.
+      // the proxy refuses the first three itself, before it dials, and says so
+      // (Cipher-Proxy-Forwarded: false and its Cipher-Proxy-Code): a POST to /api/v1/issues is
+      // under neither prefix. The fourth is under the first prefix, so the proxy carries it with
+      // the run's token and a proof of the broker's key, and Dispatch's own gate refuses the scope.
       const env = running().jobEnv(runAt(at, 106));
       const routes = [
         ["GET", `/api/v1/issues?project=${project}`, null],
@@ -511,8 +511,8 @@ for(const [method,route,body] of ${JSON.stringify(routes)}) {
  const url=resolution.url+route;
  const response=await fetch(url,{method,headers:{...(body===null?{}:{"Content-Type":"application/json"}),...await resolution.credential.headers(method,url)},...(body===null?{}:{body:JSON.stringify(body)})});
  const text=await response.text();
- const forwarded=response.headers.get("Airlock-Forwarded");
- let code=response.headers.get("Airlock-Code");
+ const forwarded=response.headers.get("Cipher-Proxy-Forwarded");
+ let code=response.headers.get("Cipher-Proxy-Code");
  if (forwarded!=="false") { if (!text.startsWith("{")) throw new Error("scope response: "+response.status+" "+text); code=JSON.parse(text).code; }
  answers.push(method+" "+route+": "+response.status+" "+(forwarded==="false"?"airlock":"dispatch")+" "+code);
 }
@@ -757,9 +757,10 @@ console.log(JSON.stringify(answers));
     }, 180_000);
 
     // A5. The private destination is an exception for the one bound host: with the grant's proxy
-    // password, a tunnel to any other address is refused before anything is dialled. A result
-    // grant's own rule answers first (RESULT_GRANT_HOST_ONLY): it carries the write to the host it
-    // binds and nowhere else, so it never reaches the address rules, the cluster ranges among them.
+    // password, a tunnel to any other address is refused before anything is dialled. A minted
+    // grant's own rule answers first (MINTED_GRANT_HOST_ONLY): it carries the write to the host
+    // it binds and nowhere else, so it never reaches the address rules, the cluster ranges among
+    // them.
     test("A5: another private address stays refused", async () => {
       const env = running().jobEnv(runAt("a5".repeat(20), 205));
       const password = await placeholderOf(env);
@@ -769,8 +770,8 @@ console.log(JSON.stringify(answers));
         answers.push({
           target,
           status,
-          forwarded: /\r\nairlock-forwarded:\s*(\S+)/i.exec(text)?.[1] ?? "",
-          code: /\r\nairlock-code:\s*(\S+)/i.exec(text)?.[1] ?? "",
+          forwarded: /\r\ncipher-proxy-forwarded:\s*(\S+)/i.exec(text)?.[1] ?? "",
+          code: /\r\ncipher-proxy-code:\s*(\S+)/i.exec(text)?.[1] ?? "",
           // The address rule's refusal names the setting; the one-host rule answers before it.
           namesTheRanges: text.includes("BROKER_AIRLOCK_CLUSTER_RANGES"),
         });
@@ -781,7 +782,7 @@ console.log(JSON.stringify(answers));
           target,
           status: "HTTP/1.1 403 Forbidden",
           forwarded: "false",
-          code: "RESULT_GRANT_HOST_ONLY",
+          code: "MINTED_GRANT_HOST_ONLY",
           namesTheRanges: false,
         })),
       });
@@ -845,7 +846,7 @@ console.log(JSON.stringify(answers));
  body: ${JSON.stringify(JSON.stringify({ commit: at, check: PROBE_CHECK, verdict: "pass", observed: "A7" }))},
 });
 await response.text();
-console.log(JSON.stringify({ status: response.status, forwarded: response.headers.get("Airlock-Forwarded"), code: response.headers.get("Airlock-Code") }));
+console.log(JSON.stringify({ status: response.status, forwarded: response.headers.get("Cipher-Proxy-Forwarded"), code: response.headers.get("Cipher-Proxy-Code") }));
 `;
       const send = async (
         withPlaceholder: boolean

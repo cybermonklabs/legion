@@ -87,9 +87,9 @@ func sha256Hex(text string) string {
 
 // grantOf is the live grant the placeholder held opens, read as every broker pod reads it: by
 // the placeholder's hash, through the store.
-func (f *exchangeFixture) grantOf(t *testing.T, held string) oauthstore.ResultGrant {
+func (f *exchangeFixture) grantOf(t *testing.T, held string) oauthstore.MintedGrant {
 	t.Helper()
-	grant, err := oauthstore.New(f.pool).ResultGrantByPlaceholder(context.Background(), placeholder.Hash(held))
+	grant, err := oauthstore.New(f.pool).ResultGrants().MintedByPlaceholder(context.Background(), placeholder.Hash(held))
 	if err != nil {
 		t.Fatalf("the grant of the placeholder: %v", err)
 	}
@@ -113,8 +113,8 @@ func TestAResultEntrysRunIsGrantedAPlaceholderAndNoToken(t *testing.T) {
 		t.Errorf("Cache-Control = %q, want no-store", got)
 	}
 	held, _ := body["access_token"].(string)
-	if !strings.HasPrefix(held, placeholder.ResultPrefix) {
-		t.Fatalf("access_token = %q, want a placeholder starting %s", held, placeholder.ResultPrefix)
+	if prefix := placeholder.MintedPrefix(oauthwire.AirlockResultsWord); !strings.HasPrefix(held, prefix) {
+		t.Fatalf("access_token = %q, want a placeholder starting %s", held, prefix)
 	}
 	if body["issued_token_type"] != oauthwire.TokenTypeAirlockPlaceholder || body["token_type"] != "N_A" {
 		t.Errorf("issued_token_type = %v and token_type = %v, want %s and N_A", body["issued_token_type"], body["token_type"], oauthwire.TokenTypeAirlockPlaceholder)
@@ -286,7 +286,7 @@ func TestTheGrantLifetimeIsTheShorterOfFifteenMinutesAndTheAccessLifetime(t *tes
 }
 
 // TestAMintedResultsTokenIsNoSubjectTokenForAnotherExchange: the results token a broker pod mints
-// for a result grant (MintResultToken) is live, bound to the pod's key and to the grant's run, and
+// for a result grant (MintGrantToken) is live, bound to the pod's key and to the grant's run, and
 // ends with the grant; presented as the subject token of another exchange it mints nothing, since
 // the library refuses a client's own token, so the capability the airlock holds never turns into
 // a token of another session. The access lifetime is an hour, longer than the grant's fifteen
@@ -296,9 +296,9 @@ func TestAMintedResultsTokenIsNoSubjectTokenForAnotherExchange(t *testing.T) {
 	run := newKey(t)
 	grant := f.grantOf(t, f.exchanged(t, askingForThePlaceholder(f.resultRunForm(t, "7")), run))
 	pod := newKey(t)
-	minted, err := f.provider.MintResultToken(context.Background(), grant, thumbprint(t, pod))
+	minted, err := f.provider.MintGrantToken(context.Background(), grant, thumbprint(t, pod))
 	if err != nil {
-		t.Fatalf("MintResultToken: %v", err)
+		t.Fatalf("MintGrantToken: %v", err)
 	}
 	answer := f.introspected(t, minted)
 	if !answer.Active || answer.Scope != oauthwire.ScopeResults || answer.Thumbprint != thumbprint(t, pod) || answer.Session != grant.Session ||

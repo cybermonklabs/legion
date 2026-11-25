@@ -83,7 +83,7 @@ func requireOneWriteBatch(t *testing.T, report *storetest.XidReport, writes ...s
 // their writes beside the route's) and a route that writes without one (a message, whose insert,
 // references, event and stamp run as a batch of their own) are both held to it.
 func TestWritePhaseSendsItsStatementsAsOneBatch(t *testing.T) {
-	t.Parallel()
+	// Not parallel: the xid rig measures only in a test that runs alone in the process.
 	f := newXidFixture(t, testServerOptions{}, "")
 	measure := func(t *testing.T, want int, request func(http.Handler) *httptest.ResponseRecorder) *storetest.XidReport {
 		t.Helper()

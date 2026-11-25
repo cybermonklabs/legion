@@ -41,19 +41,31 @@ operate page's "A migration recorded under another file".
 `envoy-broker end-sessions <login>` ends every browser session that login holds on the approval
 page and prints how many it ended;
 it reads the same configuration, binds no listener and applies no migration.
-`envoy-broker profiles check <file> [--against <old file>] [--private-upstream <host>=<url>]`
+`envoy-broker profiles check <file> [--against <old file>] [--private-upstream '<host>=<url> ...' [--cluster-ranges <CIDR prefixes>]]`
 reads a profiles file with the broker's own code and exits non-zero, naming the profile and the
 field or the parse position, when the broker would not serve that file, or when its start check of
-the results profile `DISPATCH_RESULTS_TOKEN` refuses it;
-`--private-upstream` takes the value `BROKER_AIRLOCK_PRIVATE_UPSTREAM` gives the broker, and holds
-that profile to the destination's host as the start does, and without it a file that holds the
-profile prints one line saying that tie was not checked;
+the results profile `DISPATCH_RESULTS_TOKEN`, of kind `dpop`, refuses it;
+`--private-upstream` takes the value `BROKER_PROXY_PRIVATE_UPSTREAM` gives the broker, and holds
+each destination's address to the start's rule: an address no broker takes as a destination
+(loopback, link-local, a metadata server, an IPv6 form that carries an IPv4 address and the rest of
+`netaddr.DestinationNever`) and `localhost` exit 2, as a value the setting does not take;
+`--cluster-ranges` takes the value `BROKER_AIRLOCK_CLUSTER_RANGES` gives the broker and makes that
+rule the start's whole one, so an address outside the private ranges and outside every range given
+exits 2 and one inside a range given passes; without it such an address, which only a broker's
+`BROKER_AIRLOCK_CLUSTER_RANGES` admit, prints one line saying it was not judged against the
+cluster ranges;
 on a file it would serve it prints every field of each profile the file adds and removes against
 the file `--against` names, and each field a profile both files hold changes: its source, tier,
 requesters and `maxGrant`, its GitHub accounts, repositories, permissions and value, its Google
 scopes, and its proxy block's hosts, headers, `allow`, `kind`, `judge` and guidance.
 So a pull request changing the deployment's `profiles.json` leaves a reviewer only the question of
 whether each of those is right for its profile.
+A profile whose proxy block is of kind `dpop`, a capability the broker mints and holds, is held to
+the boot's rules for it: one exact host, a non-empty `allow` list none of whose entries is every path
+(`""` or `/`), the `Authorization` header alone, and no block of another kind on that host.
+Its host must also be one private destination's, which only the broker's own
+`BROKER_PROXY_PRIVATE_UPSTREAM` names: `--private-upstream '<host>=<url> ...'` checks that too, and
+without the flag each such profile gets one line saying its tie to the destination was not checked.
 `profiles check` reads no configuration, opens no database and binds nothing.
 The removed `envoy-broker airlock-check` exits 2 naming `profiles check`.
 

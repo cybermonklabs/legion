@@ -2002,6 +2002,12 @@ either.
   its host up or dialled it, and every attempt was given up for that, so its error says nothing
   about the service; a dial one of whose addresses failed on its own before the command left
   keeps that failure's class).
+  The one exception to `refused` is the private destinations
+  (`BROKER_PROXY_PRIVATE_UPSTREAM`): an allowed request of a host they name is dialled at that host's
+  destination's address only when every address that address resolves to is one this list refuses,
+  and never a loopback, link-local, unspecified, multicast or cloud metadata address, or any
+  tunnelled or translated address (its NAT64, 6to4, Teredo, IPv4-compatible, IPv4-translated or
+  ISATAP form); a tunnel or a plain-HTTP request to those addresses stays `refused`.
   `reason` is the broker's own words. The `address` is the one refused, as `ip:port`, for
   `refused`; empty for `unresolved` and for a lookup that was `cancelled`; and for `unreachable`
   and a dial that was `cancelled`, the addresses dialled, as `ip:port` each, separated by spaces,

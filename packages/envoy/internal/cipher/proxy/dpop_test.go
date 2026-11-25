@@ -1,11 +1,11 @@
 // packages/envoy/internal/cipher/proxy/dpop_test.go
 //
-// The rows of a host whose proxy block is of kind dpop: a CI run's results capability, which the
-// broker mints and holds. The command holds the result grant's placeholder alone and sends it as
-// its one Authorization header, DPoP <placeholder>; the proxy swaps in the run's token, signs a
+// The rows of a host whose rules entry is of kind dpop: a capability the broker mints and holds
+// (requests.MintedKind). The command holds the minted grant's placeholder alone and sends it as
+// its one Authorization header, DPoP <placeholder>; the proxy swaps in the grant's token, signs a
 // DPoP proof of the pod's own key for the bound host's origin, and sends the request without the
 // command's forwarding headers. The rig is rig_test.go's, with the fake grant source holding one
-// result grant of one run.
+// minted grant.
 package proxy
 
 import (
@@ -33,42 +33,44 @@ import (
 	"github.com/sjawhar/envoy/internal/dpopproof"
 )
 
-// The one result grant the dpop rows are served by: the run's grant id and session, the token the
-// broker minted for it, and the check run of its job, which every line of its calls names.
+// The one minted grant the dpop rows are served by: its grant id and session, the token the
+// broker minted for it, and a path its entry allows.
 const (
-	resultsName       = "DISPATCH_RESULTS_TOKEN"
-	resultsGrantID    = "result:00000000-0000-4000-8000-000000000001"
-	resultsSession    = "ci-results:example-org/example-repo/.github/workflows/ci-results.yaml"
-	resultsCheckRunID = "97"
-	runsToken         = "the-runs-results-token-the-broker-minted"
-	resultsPath       = "/api/v1/projects/ACME/results"
+	mintedName    = "TEST_MINTED_TOKEN"
+	mintedGrantID = "testkind:00000000-0000-4000-8000-000000000001"
+	mintedSession = "ses_minted_test"
+	// mintedCheckRunID is the check run of the CI job the grant was made for (the grant's ci
+	// claim), which every line of its calls names.
+	mintedCheckRunID = "97"
+	mintedToken      = "the-token-the-broker-minted-for-the-grant"
+	mintedPath       = "/api/v1/projects/ACME/results"
 )
 
-// resultsPlaceholder is a result grant's placeholder in the shape the broker mints them.
-var resultsPlaceholder = placeholder.ResultPrefix + "QqRrSsTtUuVvWwXxYyZz0123456789ab"
+// mintedPlaceholder is a minted grant's placeholder in the shape the broker mints them.
+var mintedPlaceholder = placeholder.MintedPrefix("testkind") + "QqRrSsTtUuVvWwXxYyZz0123456789ab"
 
-// dpopRules is the proxy's rules (policy.Profiles.ProxyRules) of a broker whose profiles hold
-// DISPATCH_RESULTS_TOKEN: kind dpop, bound to the rig's host, carried in Authorization alone,
-// allowing POST under the projects route.
+// dpopRules is the rules file of a broker whose airlock holds TEST_MINTED_TOKEN: kind dpop,
+// bound to the rig's host, carried in Authorization alone, allowing POST under the projects
+// route.
 func dpopRules() proxyrules.Rules {
 	return proxyrules.Rules{Secrets: []proxyrules.SecretRule{{
-		Name: resultsName, Hosts: []string{boundHost}, Headers: []string{"Authorization"},
+		Name: mintedName, Hosts: []string{boundHost}, Headers: []string{"Authorization"},
 		Allow: []proxyrules.Allow{{Method: http.MethodPost, PathPrefix: "/api/v1/projects/"}},
 		Kind:  proxyrules.KindDPoP,
 	}}}
 }
 
-// resultsConnection is what the broker answers for a result grant's placeholder: the grant, its
-// session and its run, no enrollment, and the one name whose one slot is the placeholder.
-func resultsConnection() requests.AirlockConnection {
+// mintedConnection is what the broker answers for a minted grant's placeholder: the grant, its
+// session, the minted mark, no enrollment, and the one name whose one slot is the placeholder.
+func mintedConnection() requests.AirlockConnection {
 	return requests.AirlockConnection{
-		GrantID: resultsGrantID, SessionID: resultsSession, CheckRunID: resultsCheckRunID,
-		Names: map[string]requests.AirlockGrantName{resultsName: {Slots: map[string]string{requests.SlotValue: resultsPlaceholder}}},
+		GrantID: mintedGrantID, SessionID: mintedSession, CheckRunID: mintedCheckRunID, Minted: true,
+		Names: map[string]requests.AirlockGrantName{mintedName: {Slots: map[string]string{requests.SlotValue: mintedPlaceholder}}},
 	}
 }
 
 // newDPoPRig is the rig behind the dpop rules, with the pod's own key, and the fake grant source
-// holding the one result grant and the token minted for it.
+// holding the one minted grant and the token minted for it.
 func newDPoPRig(t *testing.T) (*rig, *ecdsa.PrivateKey) {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -76,28 +78,29 @@ func newDPoPRig(t *testing.T) (*rig, *ecdsa.PrivateKey) {
 		t.Fatal(err)
 	}
 	r := newRig(t, Options{Rules: dpopRules(), DPoPKey: key})
-	r.grants.setConnection(resultsPlaceholder, resultsConnection())
-	r.grants.setValues(resultsGrantID, storedValues(resultsName, runsToken))
+	r.grants.setConnection(mintedPlaceholder, mintedConnection())
+	r.grants.setValues(mintedGrantID, storedValues(mintedName, mintedToken))
 	return r, key
 }
 
-// postResult is one result write through the proxy, with the headers given as name/value pairs.
-func (r *rig) postResult(headers ...string) (*http.Response, string) {
+// postMinted is one request of the minted grant through the proxy, with the headers given as
+// name/value pairs.
+func (r *rig) postMinted(headers ...string) (*http.Response, string) {
 	r.t.Helper()
-	return r.do(r.client(resultsPlaceholder), http.MethodPost, "https://"+boundHost+resultsPath, `{"verdict":"pass"}`, headers...)
+	return r.do(r.client(mintedPlaceholder), http.MethodPost, "https://"+boundHost+mintedPath, `{"verdict":"pass"}`, headers...)
 }
 
 // refusedAs fails t unless the answer is the proxy's own 403 with code, saying nothing was sent.
 func refusedAs(t *testing.T, what string, answer *http.Response, body, code string) {
 	t.Helper()
-	if answer.StatusCode != http.StatusForbidden || answer.Header.Get("Airlock-Code") != code || answer.Header.Get("Airlock-Forwarded") != "false" {
-		t.Errorf("%s = %d, Airlock-Code %q, Airlock-Forwarded %q (%s); want 403 %s, not forwarded", what, answer.StatusCode, answer.Header.Get("Airlock-Code"), answer.Header.Get("Airlock-Forwarded"), body, code)
+	if answer.StatusCode != http.StatusForbidden || answer.Header.Get("Cipher-Proxy-Code") != code || answer.Header.Get("Cipher-Proxy-Forwarded") != "false" {
+		t.Errorf("%s = %d, Cipher-Proxy-Code %q, Cipher-Proxy-Forwarded %q (%s); want 403 %s, not forwarded", what, answer.StatusCode, answer.Header.Get("Cipher-Proxy-Code"), answer.Header.Get("Cipher-Proxy-Forwarded"), body, code)
 	}
 }
 
 // checkProof fails t unless the request the stand-in received carries one DPoP header: a proof
-// signed by key, naming the method POST, the bound host's origin and the results path, and the
-// hash of the run's token.
+// signed by key, naming the method POST, the bound host's origin and the allowed path, and the
+// hash of the grant's token.
 func checkProof(t *testing.T, seen seenRequest, key *ecdsa.PrivateKey) {
 	t.Helper()
 	proofs := seen.Header.Values("DPoP")
@@ -128,8 +131,8 @@ func checkProof(t *testing.T, seen seenRequest, key *ecdsa.PrivateKey) {
 	if err := json.Unmarshal(payload, &claims); err != nil {
 		t.Fatal(err)
 	}
-	if claims["htm"] != http.MethodPost || claims["htu"] != "https://"+boundHost+resultsPath || claims["ath"] != dpopproof.TokenHash(runsToken) {
-		t.Errorf("the proof's claims = %v, want htm POST, htu https://%s%s and the hash of the run's token", claims, boundHost, resultsPath)
+	if claims["htm"] != http.MethodPost || claims["htu"] != "https://"+boundHost+mintedPath || claims["ath"] != dpopproof.TokenHash(mintedToken) {
+		t.Errorf("the proof's claims = %v, want htm POST, htu https://%s%s and the hash of the grant's token", claims, boundHost, mintedPath)
 	}
 }
 
@@ -145,18 +148,18 @@ func TestARequestWithoutThePlaceholderIsRefused(t *testing.T) {
 	}{
 		{"no Authorization", nil},
 		{"DPoP and another string", []string{"Authorization", "DPoP not-the-placeholder"}},
-		{"the placeholder as a Bearer token", []string{"Authorization", "Bearer " + resultsPlaceholder}},
+		{"the placeholder as a Bearer token", []string{"Authorization", "Bearer " + mintedPlaceholder}},
 	} {
-		answer, body := r.postResult(c.headers...)
+		answer, body := r.postMinted(c.headers...)
 		refusedAs(t, c.name, answer, body, codeNoPlaceholder)
 	}
-	request, err := http.NewRequest(http.MethodPost, "https://"+boundHost+resultsPath, strings.NewReader("{}"))
+	request, err := http.NewRequest(http.MethodPost, "https://"+boundHost+mintedPath, strings.NewReader("{}"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	request.Header.Add("Authorization", "DPoP "+resultsPlaceholder)
+	request.Header.Add("Authorization", "DPoP "+mintedPlaceholder)
 	request.Header.Add("Authorization", "DPoP not-the-placeholder")
-	answer, err := r.client(resultsPlaceholder).Do(request)
+	answer, err := r.client(mintedPlaceholder).Do(request)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -164,7 +167,7 @@ func TestARequestWithoutThePlaceholderIsRefused(t *testing.T) {
 	if seen := r.requests(); len(seen) != 0 {
 		t.Fatalf("the service received %d requests, want none", len(seen))
 	}
-	if answer, body := r.postResult("Authorization", "DPoP "+resultsPlaceholder); answer.StatusCode != http.StatusOK || len(r.requests()) != 1 {
+	if answer, body := r.postMinted("Authorization", "DPoP "+mintedPlaceholder); answer.StatusCode != http.StatusOK || len(r.requests()) != 1 {
 		t.Fatalf("DPoP <placeholder> = %d %s and %d requests received, want 200 and one", answer.StatusCode, body, len(r.requests()))
 	}
 }
@@ -181,7 +184,7 @@ var commandForwardingHeaders = []string{
 // reach it as they were sent.
 func TestADPoPRequestLeavesWithoutTheCommandsForwardingHeaders(t *testing.T) {
 	r, _ := newDPoPRig(t)
-	answer, body := r.postResult(append([]string{"Authorization", "DPoP " + resultsPlaceholder}, commandForwardingHeaders...)...)
+	answer, body := r.postMinted(append([]string{"Authorization", "DPoP " + mintedPlaceholder}, commandForwardingHeaders...)...)
 	if answer.StatusCode != http.StatusOK || len(r.requests()) != 1 {
 		t.Fatalf("the write = %d %s, want 200 and one request received", answer.StatusCode, body)
 	}
@@ -218,7 +221,7 @@ func TestAnUpgradeToADPoPHostIsRefused(t *testing.T) {
 		{"Connection: Upgrade with Upgrade: websocket", []string{"Connection", "Upgrade", "Upgrade", "websocket"}},
 		{"Upgrade: websocket alone", []string{"Upgrade", "websocket"}},
 	} {
-		answer, body := r.postResult(append([]string{"Authorization", "DPoP " + resultsPlaceholder}, c.headers...)...)
+		answer, body := r.postMinted(append([]string{"Authorization", "DPoP " + mintedPlaceholder}, c.headers...)...)
 		refusedAs(t, c.name, answer, body, codeProtocolSwitch)
 	}
 	if seen := r.requests(); len(seen) != 0 {
@@ -227,62 +230,104 @@ func TestAnUpgradeToADPoPHostIsRefused(t *testing.T) {
 }
 
 // TestACommandsOwnDPoPProofNeverReachesDispatch: a write carrying a DPoP header of the command's
-// own reaches the service with one DPoP header, the proof of the pod's key, and the run's token in
+// own reaches the service with one DPoP header, the proof of the pod's key, and the grant's token in
 // Authorization in place of the placeholder.
 func TestACommandsOwnDPoPProofNeverReachesDispatch(t *testing.T) {
 	r, key := newDPoPRig(t)
-	answer, body := r.postResult("Authorization", "DPoP "+resultsPlaceholder, "DPoP", "the.commands.own-proof")
+	answer, body := r.postMinted("Authorization", "DPoP "+mintedPlaceholder, "DPoP", "the.commands.own-proof")
 	if answer.StatusCode != http.StatusOK || len(r.requests()) != 1 {
 		t.Fatalf("the write = %d %s, want 200 and one request received", answer.StatusCode, body)
 	}
 	seen := r.requests()[0]
-	if got := seen.Header.Values("Authorization"); len(got) != 1 || got[0] != "DPoP "+runsToken {
-		t.Fatalf("the service received Authorization %q, want the run's token alone", got)
+	if got := seen.Header.Values("Authorization"); len(got) != 1 || got[0] != "DPoP "+mintedToken {
+		t.Fatalf("the service received Authorization %q, want the grant's token alone", got)
 	}
 	checkProof(t, seen, key)
 }
 
-// TestAProxyLineNamesTheRun: the line of a result write names the grant and the check run of its
-// job, and no enrollment, and a refusal's line names the grant alone as its caller.
-func TestAProxyLineNamesTheRun(t *testing.T) {
-	r, _ := newDPoPRig(t)
-	if answer, body := r.postResult("Authorization", "DPoP "+resultsPlaceholder); answer.StatusCode != http.StatusOK {
-		t.Fatalf("the write = %d %s, want 200", answer.StatusCode, body)
+// TestNoKindLeavesADPoPHostItsKind: under Options.NoKind, the negative control that reads every
+// other entry's kind as none, a dpop host keeps its kind: the allowed write still arrives with one
+// DPoP proof of the pod's key and none of the command's forwarding headers, and a write without
+// the placeholder is still refused 403 NO_PLACEHOLDER with nothing sent.
+func TestNoKindLeavesADPoPHostItsKind(t *testing.T) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
 	}
-	call := r.logs.callsAtLeast(t, 1)[0].fields
-	if call["grant"] != resultsGrantID || call["ci_check_run_id"] != resultsCheckRunID || call["secret"] != resultsName || call["path"] != resultsPath || call["enrollment"] != "" {
-		t.Errorf("the call line = %v, want grant %s, ci_check_run_id %s, secret %s, path %s and no enrollment", call, resultsGrantID, resultsCheckRunID, resultsName, resultsPath)
+	r := newRig(t, Options{Rules: dpopRules(), DPoPKey: key, NoKind: true})
+	r.grants.setConnection(mintedPlaceholder, mintedConnection())
+	r.grants.setValues(mintedGrantID, storedValues(mintedName, mintedToken))
+	answer, body := r.postMinted()
+	refusedAs(t, "a write with no placeholder under NoKind", answer, body, codeNoPlaceholder)
+	answer, body = r.postMinted(append([]string{"Authorization", "DPoP " + mintedPlaceholder}, commandForwardingHeaders...)...)
+	if answer.StatusCode != http.StatusOK || len(r.requests()) != 1 {
+		t.Fatalf("the write under NoKind = %d %s and %d requests received, want 200 and one", answer.StatusCode, body, len(r.requests()))
 	}
-	answer, body := r.postResult()
-	refusedAs(t, "a write with no placeholder", answer, body, codeNoPlaceholder)
-	refusals := r.logs.refusals()
-	if len(refusals) != 1 || refusals[0].fields["caller"] != resultsGrantID || refusals[0].fields["ci_check_run_id"] != resultsCheckRunID {
-		t.Fatalf("the refusal lines = %v, want one naming the caller %s and ci_check_run_id %s", refusals, resultsGrantID, resultsCheckRunID)
+	seen := r.requests()[0]
+	checkProof(t, seen, key)
+	for i := 0; i < len(commandForwardingHeaders); i += 2 {
+		if got := seen.Header.Values(commandForwardingHeaders[i]); len(got) != 0 {
+			t.Errorf("the service received %s %q under NoKind, want it dropped", commandForwardingHeaders[i], got)
+		}
 	}
 }
 
-// TestAProxysOwnAnswerSaysWhetherItForwarded: the proxy's own refusal says Airlock-Forwarded:
-// false and its code, and a forwarded answer says Airlock-Forwarded: true and carries no
-// Airlock-Code, even when the service sent both headers to pass for the proxy.
+// TestAProxyWithNoDPoPKeySendsNothingToADPoPHost: a proxy given no DPoP key can make no proof, so a
+// write to a dpop host is refused 403 NO_VALUE_RELEASED, saying nothing was sent, and the service
+// receives nothing.
+func TestAProxyWithNoDPoPKeySendsNothingToADPoPHost(t *testing.T) {
+	r := newRig(t, Options{Rules: dpopRules()})
+	r.grants.setConnection(mintedPlaceholder, mintedConnection())
+	r.grants.setValues(mintedGrantID, storedValues(mintedName, mintedToken))
+	answer, body := r.postMinted("Authorization", "DPoP "+mintedPlaceholder)
+	refusedAs(t, "a write through a proxy with no DPoP key", answer, body, codeNoValue)
+	if seen := r.requests(); len(seen) != 0 {
+		t.Fatalf("the service received %d requests, want none", len(seen))
+	}
+}
+
+// TestAProxyLineNamesTheGrant: the line of a minted grant's request names the grant, the check
+// run of the CI job it was made for and no enrollment, and a refusal's line names the grant alone
+// as its caller, with that check run.
+func TestAProxyLineNamesTheGrant(t *testing.T) {
+	r, _ := newDPoPRig(t)
+	if answer, body := r.postMinted("Authorization", "DPoP "+mintedPlaceholder); answer.StatusCode != http.StatusOK {
+		t.Fatalf("the write = %d %s, want 200", answer.StatusCode, body)
+	}
+	call := r.logs.callsAtLeast(t, 1)[0].fields
+	if call["grant"] != mintedGrantID || call["ci_check_run_id"] != mintedCheckRunID || call["secret"] != mintedName || call["path"] != mintedPath || call["enrollment"] != "" {
+		t.Errorf("the call line = %v, want grant %s, ci_check_run_id %s, secret %s, path %s and no enrollment", call, mintedGrantID, mintedCheckRunID, mintedName, mintedPath)
+	}
+	answer, body := r.postMinted()
+	refusedAs(t, "a write with no placeholder", answer, body, codeNoPlaceholder)
+	refusals := r.logs.refusals()
+	if len(refusals) != 1 || refusals[0].fields["caller"] != mintedGrantID || refusals[0].fields["ci_check_run_id"] != mintedCheckRunID {
+		t.Fatalf("the refusal lines = %v, want one naming the caller %s and ci_check_run_id %s", refusals, mintedGrantID, mintedCheckRunID)
+	}
+}
+
+// TestAProxysOwnAnswerSaysWhetherItForwarded: the proxy's own refusal says Cipher-Proxy-Forwarded:
+// false and its code, and a forwarded answer says Cipher-Proxy-Forwarded: true and carries no
+// Cipher-Proxy-Code, even when the service sent both headers to pass for the proxy.
 func TestAProxysOwnAnswerSaysWhetherItForwarded(t *testing.T) {
 	r, _ := newDPoPRig(t)
-	answer, body := r.postResult()
+	answer, body := r.postMinted()
 	refusedAs(t, "a write with no placeholder", answer, body, codeNoPlaceholder)
 	r.answerWith(func(w http.ResponseWriter, _ *http.Request, _ proxyrulestest.Request) bool {
-		w.Header().Set("Airlock-Forwarded", "false")
-		w.Header().Set("Airlock-Code", "SPOOFED")
+		w.Header().Set("Cipher-Proxy-Forwarded", "false")
+		w.Header().Set("Cipher-Proxy-Code", "SPOOFED")
 		w.WriteHeader(http.StatusCreated)
 		io.WriteString(w, `{"stored":true}`)
 		return true
 	})
-	answer, body = r.postResult("Authorization", "DPoP "+resultsPlaceholder)
-	if answer.StatusCode != http.StatusCreated || answer.Header.Get("Airlock-Forwarded") != "true" || answer.Header.Values("Airlock-Code") != nil {
-		t.Fatalf("the forwarded answer = %d, Airlock-Forwarded %q, Airlock-Code %q (%s); want 201, true and none", answer.StatusCode, answer.Header.Get("Airlock-Forwarded"), answer.Header.Values("Airlock-Code"), body)
+	answer, body = r.postMinted("Authorization", "DPoP "+mintedPlaceholder)
+	if answer.StatusCode != http.StatusCreated || answer.Header.Get("Cipher-Proxy-Forwarded") != "true" || answer.Header.Values("Cipher-Proxy-Code") != nil {
+		t.Fatalf("the forwarded answer = %d, Cipher-Proxy-Forwarded %q, Cipher-Proxy-Code %q (%s); want 201, true and none", answer.StatusCode, answer.Header.Get("Cipher-Proxy-Forwarded"), answer.Header.Values("Cipher-Proxy-Code"), body)
 	}
 }
 
 // TestAnAnswerAfterTheWriteMayHaveLeftSaysItsOutcomeIsUnknown: an answer the proxy writes after
-// the command's request may have left it says Airlock-Forwarded: unknown, with its code, so the
+// the command's request may have left it says Cipher-Proxy-Forwarded: unknown, with its code, so the
 // command reads it as a write that may have landed and asks again under its key; one written
 // before anything left says false. The rows: the service reads the whole write and aborts its
 // answer, as a reset after the write was sent does (502); the service holds the whole write and
@@ -293,12 +338,12 @@ func TestAnAnswerAfterTheWriteMayHaveLeftSaysItsOutcomeIsUnknown(t *testing.T) {
 		r.answerWith(func(http.ResponseWriter, *http.Request, proxyrulestest.Request) bool {
 			panic(http.ErrAbortHandler)
 		})
-		answer, body := r.postResult("Authorization", "DPoP "+resultsPlaceholder)
+		answer, body := r.postMinted("Authorization", "DPoP "+mintedPlaceholder)
 		if received := len(r.requests()); received != 1 {
 			t.Fatalf("the service received %d writes, want the one", received)
 		}
-		if answer.StatusCode != http.StatusBadGateway || answer.Header.Get("Airlock-Forwarded") != "unknown" || answer.Header.Get("Airlock-Code") != codeUpstream {
-			t.Errorf("a write the service received and whose answer it aborted = %d, Airlock-Forwarded %q, Airlock-Code %q (%s); want 502, unknown, %s", answer.StatusCode, answer.Header.Get("Airlock-Forwarded"), answer.Header.Get("Airlock-Code"), body, codeUpstream)
+		if answer.StatusCode != http.StatusBadGateway || answer.Header.Get("Cipher-Proxy-Forwarded") != "unknown" || answer.Header.Get("Cipher-Proxy-Code") != codeUpstream {
+			t.Errorf("a write the service received and whose answer it aborted = %d, Cipher-Proxy-Forwarded %q, Cipher-Proxy-Code %q (%s); want 502, unknown, %s", answer.StatusCode, answer.Header.Get("Cipher-Proxy-Forwarded"), answer.Header.Get("Cipher-Proxy-Code"), body, codeUpstream)
 		}
 	})
 	t.Run("the grant ended while the service held the write", func(t *testing.T) {
@@ -307,8 +352,8 @@ func TestAnAnswerAfterTheWriteMayHaveLeftSaysItsOutcomeIsUnknown(t *testing.T) {
 			t.Fatal(err)
 		}
 		r := newRig(t, Options{Rules: dpopRules(), DPoPKey: key, Watch: watchFast})
-		r.grants.setConnection(resultsPlaceholder, resultsConnection())
-		r.grants.setValues(resultsGrantID, storedValues(resultsName, runsToken))
+		r.grants.setConnection(mintedPlaceholder, mintedConnection())
+		r.grants.setValues(mintedGrantID, storedValues(mintedName, mintedToken))
 		r.answerWith(func(_ http.ResponseWriter, request *http.Request, _ proxyrulestest.Request) bool {
 			<-request.Context().Done()
 			return true
@@ -319,7 +364,7 @@ func TestAnAnswerAfterTheWriteMayHaveLeftSaysItsOutcomeIsUnknown(t *testing.T) {
 		}
 		done := make(chan result, 1)
 		go func() {
-			answer, body := r.postResult("Authorization", "DPoP "+resultsPlaceholder)
+			answer, body := r.postMinted("Authorization", "DPoP "+mintedPlaceholder)
 			done <- result{answer, body}
 		}()
 		for deadline := time.Now().Add(cutWait); len(r.requests()) == 0; time.Sleep(time.Millisecond) {
@@ -327,26 +372,26 @@ func TestAnAnswerAfterTheWriteMayHaveLeftSaysItsOutcomeIsUnknown(t *testing.T) {
 				t.Fatal("the write never reached the service")
 			}
 		}
-		r.grants.refuseConnection(resultsPlaceholder, requests.ErrGrantNotLive)
+		r.grants.refuseConnection(mintedPlaceholder, requests.ErrGrantNotLive)
 		var got result
 		select {
 		case got = <-done:
 		case <-time.After(2 * cutWait):
 			t.Fatal("the write was not answered after its grant ended")
 		}
-		if got.answer.StatusCode != http.StatusProxyAuthRequired || got.answer.Header.Get("Airlock-Forwarded") != "unknown" || got.answer.Header.Get("Airlock-Code") != codeGrantNotLive {
-			t.Errorf("a write the service held when its grant ended = %d, Airlock-Forwarded %q, Airlock-Code %q (%s); want 407, unknown, %s", got.answer.StatusCode, got.answer.Header.Get("Airlock-Forwarded"), got.answer.Header.Get("Airlock-Code"), got.body, codeGrantNotLive)
+		if got.answer.StatusCode != http.StatusProxyAuthRequired || got.answer.Header.Get("Cipher-Proxy-Forwarded") != "unknown" || got.answer.Header.Get("Cipher-Proxy-Code") != codeGrantNotLive {
+			t.Errorf("a write the service held when its grant ended = %d, Cipher-Proxy-Forwarded %q, Cipher-Proxy-Code %q (%s); want 407, unknown, %s", got.answer.StatusCode, got.answer.Header.Get("Cipher-Proxy-Forwarded"), got.answer.Header.Get("Cipher-Proxy-Code"), got.body, codeGrantNotLive)
 		}
 	})
 	t.Run("a dial that failed sent nothing", func(t *testing.T) {
 		r, _ := newDPoPRig(t)
 		delete(r.dialTo, net.JoinHostPort(boundHost, "443"))
-		answer, body := r.postResult("Authorization", "DPoP "+resultsPlaceholder)
+		answer, body := r.postMinted("Authorization", "DPoP "+mintedPlaceholder)
 		if received := len(r.requests()); received != 0 {
 			t.Fatalf("the service received %d writes, want none", received)
 		}
-		if answer.StatusCode != http.StatusBadGateway || answer.Header.Get("Airlock-Forwarded") != "false" || answer.Header.Get("Airlock-Code") != codeUpstream {
-			t.Errorf("a write whose dial failed = %d, Airlock-Forwarded %q, Airlock-Code %q (%s); want 502, false, %s", answer.StatusCode, answer.Header.Get("Airlock-Forwarded"), answer.Header.Get("Airlock-Code"), body, codeUpstream)
+		if answer.StatusCode != http.StatusBadGateway || answer.Header.Get("Cipher-Proxy-Forwarded") != "false" || answer.Header.Get("Cipher-Proxy-Code") != codeUpstream {
+			t.Errorf("a write whose dial failed = %d, Cipher-Proxy-Forwarded %q, Cipher-Proxy-Code %q (%s); want 502, false, %s", answer.StatusCode, answer.Header.Get("Cipher-Proxy-Forwarded"), answer.Header.Get("Cipher-Proxy-Code"), body, codeUpstream)
 		}
 	})
 	t.Run("a plain-HTTP forward whose service aborted its answer", func(t *testing.T) {
@@ -364,19 +409,19 @@ func TestAnAnswerAfterTheWriteMayHaveLeftSaysItsOutcomeIsUnknown(t *testing.T) {
 		if received.Load() != 1 {
 			t.Fatalf("the plain service received %d requests, want the one", received.Load())
 		}
-		if answer.StatusCode != http.StatusBadGateway || answer.Header.Get("Airlock-Forwarded") != "unknown" || answer.Header.Get("Airlock-Code") != codeUpstream {
-			t.Errorf("a plain request the service received and whose answer it aborted = %d, Airlock-Forwarded %q, Airlock-Code %q (%s); want 502, unknown, %s", answer.StatusCode, answer.Header.Get("Airlock-Forwarded"), answer.Header.Get("Airlock-Code"), body, codeUpstream)
+		if answer.StatusCode != http.StatusBadGateway || answer.Header.Get("Cipher-Proxy-Forwarded") != "unknown" || answer.Header.Get("Cipher-Proxy-Code") != codeUpstream {
+			t.Errorf("a plain request the service received and whose answer it aborted = %d, Cipher-Proxy-Forwarded %q, Cipher-Proxy-Code %q (%s); want 502, unknown, %s", answer.StatusCode, answer.Header.Get("Cipher-Proxy-Forwarded"), answer.Header.Get("Cipher-Proxy-Code"), body, codeUpstream)
 		}
 	})
 }
 
-// TestAResultGrantReachesNoHostItsGrantDoesNotBind: a CI run's result grant carries one write to
-// the one host its grant binds, so its placeholder as the proxy password opens no tunnel and no
-// plain-HTTP forward anywhere else: a CONNECT to a host no entry binds, a CONNECT to the bound host
-// on another port, and a plain-HTTP request to an unbound host are each refused 403
-// RESULT_GRANT_HOST_ONLY, naming the rule, before any dial. A secret grant's CONNECT to the same
+// TestAMintedGrantReachesNoHostItsGrantDoesNotBind: a minted capability's grant carries its
+// requests to the one host its grant binds, so its placeholder as the proxy password opens no
+// tunnel and no plain-HTTP forward anywhere else: a CONNECT to a host no entry binds, a CONNECT to
+// the bound host on another port, and a plain-HTTP request to an unbound host are each refused 403
+// MINTED_GRANT_HOST_ONLY, naming the rule, before any dial. A secret grant's CONNECT to the same
 // unbound host still opens its tunnel, the airlock's rule for every other grant.
-func TestAResultGrantReachesNoHostItsGrantDoesNotBind(t *testing.T) {
+func TestAMintedGrantReachesNoHostItsGrantDoesNotBind(t *testing.T) {
 	r, _ := newDPoPRig(t)
 	plain := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		io.WriteString(w, "the plain service answered")
@@ -384,18 +429,18 @@ func TestAResultGrantReachesNoHostItsGrantDoesNotBind(t *testing.T) {
 	t.Cleanup(plain.Close)
 	r.addresses["plain.example.net"] = []netip.Addr{netip.MustParseAddr("93.184.216.50")}
 	r.dialTo["plain.example.net:80"] = plain.Listener.Addr().String()
-	const rule = "a CI run's result grant carries its write to the host its grant binds and nowhere else"
+	const rule = "a minted capability's grant carries its requests to the host its grant binds and nowhere else"
 	refused := func(what string, answer *http.Response, body string, dialsBefore int64) {
 		t.Helper()
-		if answer.StatusCode != http.StatusForbidden || answer.Header.Get("Airlock-Code") != codeResultHostOnly || !strings.Contains(body, rule) || r.dials.Load() != dialsBefore {
-			t.Errorf("%s with a result grant = %d, Airlock-Code %q (%q) after %d new dial(s); want 403 %s naming the rule, and no dial", what, answer.StatusCode, answer.Header.Get("Airlock-Code"), body, r.dials.Load()-dialsBefore, codeResultHostOnly)
+		if answer.StatusCode != http.StatusForbidden || answer.Header.Get("Cipher-Proxy-Code") != codeMintedHostOnly || !strings.Contains(body, rule) || r.dials.Load() != dialsBefore {
+			t.Errorf("%s with a minted grant = %d, Cipher-Proxy-Code %q (%q) after %d new dial(s); want 403 %s naming the rule, and no dial", what, answer.StatusCode, answer.Header.Get("Cipher-Proxy-Code"), body, r.dials.Load()-dialsBefore, codeMintedHostOnly)
 		}
 	}
 	for _, target := range []string{net.JoinHostPort(echoHost, "443"), net.JoinHostPort(boundHost, "8443")} {
 		before := r.dials.Load()
 		// connectRaw reads the answer's head alone, and a refusal's body is read whole; the body
 		// of a tunnel that opened never ends, so its 200 is judged by its head.
-		answer, _, _ := r.connectRaw(target, basic(resultsPlaceholder))
+		answer, _, _ := r.connectRaw(target, basic(mintedPlaceholder))
 		body := ""
 		if answer.StatusCode != http.StatusOK {
 			body = bodyOf(t, answer)
@@ -403,7 +448,7 @@ func TestAResultGrantReachesNoHostItsGrantDoesNotBind(t *testing.T) {
 		refused("a CONNECT to "+target, answer, body, before)
 	}
 	before := r.dials.Load()
-	answer, body := r.plainRaw("plain.example.net", "/anything", basic(resultsPlaceholder))
+	answer, body := r.plainRaw("plain.example.net", "/anything", basic(mintedPlaceholder))
 	refused("a plain-HTTP request to plain.example.net", answer, body, before)
 
 	// The control: the same tunnel under a secret grant opens, as the airlock blocks nothing it
@@ -426,18 +471,18 @@ func (r *recordingRoundTripper) RoundTrip(req *http.Request) (*http.Response, er
 	return &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: http.NoBody, Request: req}, nil
 }
 
-// TestTheResultTransportSendsNoPlaceholder: the transport behind a dpop host refuses, sending
+// TestTheMintedTransportSendsNoPlaceholder: the transport behind a dpop host refuses, sending
 // nothing, a request whose Authorization is not one DPoP <token> or whose token is a placeholder,
-// a second guard behind the swap; it signs and sends a request carrying the run's token.
-func TestTheResultTransportSendsNoPlaceholder(t *testing.T) {
+// a second guard behind the swap; it signs and sends a request carrying the grant's token.
+func TestTheMintedTransportSendsNoPlaceholder(t *testing.T) {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
 	base := &recordingRoundTripper{}
-	transport := &resultTransport{key: key, origin: "https://" + boundHost, base: base}
-	for _, authorization := range [][]string{nil, {"DPoP " + resultsPlaceholder}, {"Bearer " + runsToken}, {"DPoP " + runsToken, "DPoP " + runsToken}} {
-		request, err := http.NewRequest(http.MethodPost, "https://"+boundHost+resultsPath, nil)
+	transport := &mintedTransport{key: key, origin: "https://" + boundHost, base: base}
+	for _, authorization := range [][]string{nil, {"DPoP " + mintedPlaceholder}, {"Bearer " + mintedToken}, {"DPoP " + mintedToken, "DPoP " + mintedToken}} {
+		request, err := http.NewRequest(http.MethodPost, "https://"+boundHost+mintedPath, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -446,12 +491,12 @@ func TestTheResultTransportSendsNoPlaceholder(t *testing.T) {
 			t.Fatalf("Authorization %q: err = %v and %d sent, want a refusal and nothing sent", authorization, err, base.sent)
 		}
 	}
-	request, err := http.NewRequest(http.MethodPost, "https://"+boundHost+resultsPath, nil)
+	request, err := http.NewRequest(http.MethodPost, "https://"+boundHost+mintedPath, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	request.Header.Set("Authorization", "DPoP "+runsToken)
+	request.Header.Set("Authorization", "DPoP "+mintedToken)
 	if _, err := transport.RoundTrip(request); err != nil || base.sent != 1 || base.last.Header.Get("DPoP") == "" || request.Header.Get("DPoP") != "" {
-		t.Fatalf("the run's token: err = %v, %d sent; want it sent signed, and the caller's request left as it was", err, base.sent)
+		t.Fatalf("the grant's token: err = %v, %d sent; want it sent signed, and the caller's request left as it was", err, base.sent)
 	}
 }

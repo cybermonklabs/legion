@@ -308,8 +308,8 @@ func TestAStartWhoseWorkspaceCannotBeMarkedIsRefusedAndTheUnspentBundleRestoresA
 		if !errors.Is(err, context.Canceled) {
 			t.Fatalf("the first launcher returned %v, want its context's end", err)
 		}
-	case <-time.After(testwait.Bounded(t, 10*time.Second, time.Second)):
-		t.Fatalf("the first launcher did not stop: %s", g.stderr.String())
+	case <-time.After(beforeDeadline(t)):
+		t.Fatalf("the first launcher did not stop after its context ended, to 30 s before the test binary's deadline: %s", g.stderr.String())
 	}
 	if inUse, err := workspace.InUse(ws); inUse || err != nil {
 		t.Fatalf("the cleared workspace reads InUse = %t, %v; want false and no error, since no role started on it", inUse, err)

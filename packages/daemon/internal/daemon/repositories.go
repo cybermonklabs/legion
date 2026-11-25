@@ -944,11 +944,9 @@ func isDue(at, now time.Time) bool { return !at.IsZero() && !at.After(now) }
 //  3. The unread repositories recovered (recoverRepositories), at once when leaveUnread,
 //     leaveForRecovery or readAnswered wakes it (recoverWake, markUnread), and on installReadRetry
 //     while any repository is unread or to recover (unreadReasons, recoveringReasons). While a held
-//     recovery has release waits to tell and time left to recoveryHoldBound (recoveryHoldLeft), the
-//     wait is cut to that time, so the bound is checked when it falls, not up to a backoff later;
-//     such a cut wait does not move the backoff on. Once the bound has passed, a run that did not
-//     tell the waits waits the backoff as any failed run does, so a failure past the bound never
-//     turns the refresher into a busy loop.
+//     recovery has release waits to tell, the wait is cut to the time left to recoveryHoldBound,
+//     or to none once that time is up, until a run begins past the bound; recoveryHoldLeft's doc
+//     has the rule. Such a cut wait does not move the backoff on.
 //  4. The heard set published again (republishHeard), at once when a record's own consumer update
 //     was refused (hearRecorded, heardWake), and on installReadRetry while it fails (heardPending).
 //  5. A held default branch read again (rereadHeldBranches), at the end of each rate limit a
@@ -977,7 +975,7 @@ func (w *workflowRuntime) refreshRepositories(ctx context.Context) {
 		heard.stand(w.heardPending.Load(), now)
 		live.stand(liveFailed, now)
 		recoverAt, cut := recovery.due, false
-		if left, held := w.recoveryHoldLeft(); held && left > 0 && !recoverAt.IsZero() && now.Add(left).Before(recoverAt) {
+		if left, due := w.recoveryHoldLeft(); due && !recoverAt.IsZero() && now.Add(left).Before(recoverAt) {
 			recoverAt, cut = now.Add(left), true
 		}
 		heldAt := w.heldDue()
@@ -1157,14 +1155,24 @@ func (w *workflowRuntime) refreshLive(ctx context.Context) error {
 }
 
 // recoveryHoldLeft is the time left to recoveryHoldBound for a recovery whose listing is held with
-// release waits to tell, zero once the bound has passed, and whether one is. The waits are those of
-// the repositories to recover and of the repositories left unread alike: a pass that would let one
-// of the latter go puts it back while the listing is held (recoverRepositories), and its waits are
-// told at the bound as the former's are, so the refresher's wait is cut to the bound for both.
+// release waits to tell, zero once the bound has passed, and whether a run is due at that time: one
+// is, until a run of the recovery has begun with the bound passed (recoveryBoundChecked). The waits
+// are those of the repositories to recover and of the repositories left unread alike: a pass that
+// would let one of the latter go puts it back while the listing is held (recoverRepositories), and
+// its waits are told at the bound as the former's are, so the refresher's wait is cut to the bound
+// for both.
+//
+// A bound that passed while another job of the refresher ran (a read of the live records, say) is
+// still due: the refresher's wait was cut to it before that job began, and the loop that comes
+// back from the job finds no time left, so the run is due at once. Once a run has begun past the
+// bound, whatever it then meets (a listing that fails, a notice that fails, GitHub failing again),
+// the next run waits the backoff, so a fault past the bound never turns the refresher into a busy
+// loop. A run that begins just before the bound and fails after it is followed by one more run
+// at once, which begins past the bound.
 func (w *workflowRuntime) recoveryHoldLeft() (time.Duration, bool) {
 	w.recoveringMu.Lock()
 	defer w.recoveringMu.Unlock()
-	if w.recoveryHeldSince.IsZero() {
+	if w.recoveryHeldSince.IsZero() || w.recoveryBoundChecked {
 		return 0, false
 	}
 	waits := false
@@ -1249,6 +1257,11 @@ func (w *workflowRuntime) recoveringReasons() []string {
 // fact.
 func (w *workflowRuntime) recoverRepositories(ctx context.Context) {
 	w.recoveringMu.Lock()
+	// A run that begins with the hold's bound passed is the run the bound was due for: the next
+	// one waits the backoff, whatever this one meets (recoveryHoldLeft).
+	if !w.recoveryHeldSince.IsZero() && time.Since(w.recoveryHeldSince) >= recoveryHoldBound {
+		w.recoveryBoundChecked = true
+	}
 	repos := make(map[string]bool, len(w.recovering)+len(w.unread))
 	maps.Copy(repos, w.recovering)
 	for repo := range w.unread {
@@ -1385,7 +1398,7 @@ func (w *workflowRuntime) recoverRepositories(ctx context.Context) {
 	}
 	w.recoveringMu.Lock()
 	if !heldBack {
-		w.recoveryHeldSince = time.Time{}
+		w.recoveryHeldSince, w.recoveryBoundChecked = time.Time{}, false
 	}
 	for _, repo := range answered {
 		delete(w.recovering, repo)

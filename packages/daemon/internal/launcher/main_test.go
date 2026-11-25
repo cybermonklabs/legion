@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
@@ -90,6 +91,78 @@ func TestMain(m *testing.M) {
 		}
 	}
 	os.Exit(m.Run())
+}
+
+// reentry is the arguments that run this test binary's helper test alone, in a process of its own
+// the test starts: the -test.run of that one test, and a -test.timeout that ends reentryMargin
+// before this process's own deadline. The child's own waits end 30 s before that (beforeDeadline)
+// and its cleanups 10 s before (cleanupBeforeDeadline), so a child whose fact never comes fails
+// with its own text, and its parent prints that text, before the parent's own timeout. Under
+// -timeout 0 this process has no deadline, and the child is given none either.
+//
+// So a test waits for a child it re-entered to end with no bound of its own (cmd.Wait,
+// CombinedOutput), or with one that ends after the child's own deadline (runAsPIDOne's ends 30 s
+// after its helper's): the child's -test.timeout ends it, its alarm's goroutine dump in its output,
+// and each child of its own that is re-entered ends before it, so its failure, its cleanups and its
+// alarm all reach the test while the test still waits. A bound of the test's own there,
+// beforeDeadline say, would give up on the child 25 s before the child's own end and kill it
+// without its report. A wait for something the child does short of its end is an ordinary hang
+// guard: the child's own waits end before it, and the case's cleanup ends the child. What the child
+// starts that is not re-entered ends with it only where the child sees to that: a PID namespace the
+// child is PID 1 of, or a parent-death signal, as the role stage's sleep outside the role has.
+//
+// A child started with too little time is still started, with what is left (reentryUntil), and
+// fails at its first wait bounded by beforeDeadline, on a line that names its deadline; a child
+// with no such wait that runs out of time ends at its own alarm, whose panic names its timeout. So
+// no starter checks the time up front: what a child with little time does depends on whether it
+// waits at all.
+func reentry(t *testing.T, helper string) []string {
+	return reentryUntil(reentryEnd(t), helper)
+}
+
+// reentryMargin is how much of its deadline a test keeps back from a child it re-enters: the time
+// it needs to read the child's exit and print what the child said. It is a few seconds rather than
+// beforeDeadline's 30 s, because the child's own waits and cleanups already end before its deadline,
+// so each level of nesting costs 5 s, and a case of a few seconds whose children re-enter twice
+// still runs under a -timeout of a minute or so.
+const reentryMargin = 5 * time.Second
+
+// reentryEnd is when a child this test starts now must end (reentry): reentryMargin before this
+// process's deadline, or the zero time under -timeout 0. A child that the launcher starts by an
+// argv the test does not write, and that has no test of its own to read it from, is handed it in
+// its plan (peerPlan.End).
+func reentryEnd(t *testing.T) time.Time {
+	deadline, ok := t.Deadline()
+	if !ok {
+		return time.Time{}
+	}
+	return deadline.Add(-reentryMargin)
+}
+
+// reentryUntil is reentry for a child that must end by end, the zero time for no end. The timeout
+// is whole seconds, so no command line of the package's gains digits a test reads /proc for (the
+// role stage's detached sleep), and one second at least, so a child started at or after end ends
+// at once rather than with no deadline, which a -test.timeout of 0 would be. The session peer's
+// shim calls it with the end its plan carries.
+func reentryUntil(end time.Time, helper string) []string {
+	args := []string{"-test.run=^" + helper + "$"}
+	if end.IsZero() {
+		return args
+	}
+	return append(args, "-test.timeout="+max(time.Until(end).Truncate(time.Second), time.Second).String())
+}
+
+// exitHelper ends a helper test that runs as a process of its own: with os.Exit(0) when it passed,
+// so the test framework writes nothing more on an output a starter may read as a protocol (the
+// deleter's replies), and through t.FailNow when it failed. A re-entered helper runs without
+// -test.v, so the framework keeps its t.Error lines until the test ends, and os.Exit would end the
+// process with exit 1 and drop them; FailNow ends the test, and the framework writes its
+// `--- FAIL` and those lines on the helper's output, which its starter prints with the rest.
+func exitHelper(t *testing.T) {
+	if t.Failed() {
+		t.FailNow()
+	}
+	os.Exit(0)
 }
 
 // No test of this package can reach the workspace of the pod it runs in. The first two cases fail

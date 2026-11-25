@@ -283,6 +283,7 @@ on:
       - 'packages/envoy/internal/ratelimit/*'
       - 'packages/envoy/internal/cipher/rulehost/*'
       - 'packages/envoy/internal/cipher/logmask/*'
+      - 'packages/envoy/internal/cipher/placeholder/*'
       - 'packages/envoy/internal/weborigin/*'
       - 'packages/dispatch/**'
       - 'scripts/e2e/lib/held-port.py'

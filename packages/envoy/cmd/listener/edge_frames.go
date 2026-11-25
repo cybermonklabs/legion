@@ -113,12 +113,12 @@ func edgeFrameVerdict(repositories *edgeRepositories, sessionID string, projects
 		// on the session's own subject, and a kept or a taken copy of the session's own project's
 		// role keeps the previous holder's subject as its topic; both reach the session on its own
 		// agent subject. The role is read as the session relay, a takeover pass and the kept
-		// lane's walk read it (readRoleFrame): by the exact keys the plugins' transport reads,
-		// past a byte order mark and at any depth, so a frame the session's plugin reads as a
-		// role's message is judged by that role here, whatever encoding/json makes of its other
-		// fields or its case-folded keys. It holds a role lane to the project edgeTopicRule does
-		// (contracts.RoleClaimOf). A message whose role that read cannot tell is no role message,
-		// as the relay sends it, and is judged by its topic below.
+		// lane's walk read it (readRoleFrame): its topic, as the plugins' transport reads it, and
+		// its role mark, each by its exact key, past a byte order mark and at any depth, so a frame
+		// the relay tells a role message is judged by that role here, whatever encoding/json makes
+		// of its other fields or its case-folded keys. It holds a role lane to the project
+		// edgeTopicRule does (contracts.RoleClaimOf). A message whose role that read cannot tell
+		// is no role message, as the relay sends it, and is judged by its topic below.
 		if frame, err := readRoleFrame(data); err == nil && frame.role != "" {
 			if roleOfProjects(frame.role, projects) {
 				return framePasses()
@@ -167,11 +167,12 @@ func ownFrameAgentSubject(sessionID string, projects []string, subject string) b
 	return ownAgentSubject(sessionID, projects, subject) && subject != contracts.AgentTopicPrefix+"*."+sessionID
 }
 
-// edgeAdmissions is the projects of the token each session's latest registration on this replica
-// was admitted on (subscribeHandler), the list the relay holds that session's frames to
-// (sessionRelays.edgeWithholds). It is memory only and is never read back from a record: a session
-// this replica admitted no registration of since it started has none here, and the relay holds its
-// messages in its consumer until it registers through this replica (sessionRelays.relayNATS),
+// edgeAdmissions is the projects of the token each session's latest registration or role claim on
+// this replica was admitted on (subscribeHandler, and the claim's admitHeld in api.go), the list
+// the relay holds that session's frames to (sessionRelays.edgeWithholds). It is memory only and is
+// never read back from a record: a session this replica admitted no registration or role claim of
+// since it started has none here, and the relay holds its messages in its consumer until it
+// registers or claims a role through this replica (sessionRelays.relayNATS),
 // which the plugin does at every heartbeat. An entry is forgotten once its session's record has
 // left the session cache (prune): the map holds the sessions whose records the bucket holds and
 // those admitted within the last edgeAdmissionGrace, each one session id and its token's list, at

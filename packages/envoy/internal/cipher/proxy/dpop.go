@@ -10,12 +10,12 @@ import (
 	"github.com/sjawhar/envoy/internal/dpopproof"
 )
 
-// resultTransport is what a request to a host whose proxy block is of kind dpop leaves the proxy
-// through: a CI run's results capability, which the broker mints for a result grant and holds, so
-// that no process of the run's job ever holds a Dispatch token or the key one is bound to.
-// serveBound has already swapped the run's token in for the placeholder (proxyrules.Rewrite);
-// this signs the DPoP proof that token is bound to, with the pod's own key (Options.DPoPKey), and
-// hands the request to base.
+// mintedTransport is what a request to a host whose rules entry is of kind dpop leaves the proxy
+// through: a capability the broker mints for a grant and holds (requests.MintedKind), so that no
+// process of the command ever holds the access token or the key it is bound to. serveBound has
+// already swapped the grant's token in for the placeholder (proxyrules.Rewrite); this signs the
+// DPoP proof that token is bound to, with the pod's own key (Options.DPoPKey), and hands the
+// request to base.
 //
 // The proof names origin, which is https:// and the bound host, and the request's path, and
 // never the address the request is sent to (dpopproof.Sign): Dispatch checks a proof's htu
@@ -26,7 +26,7 @@ import (
 // Authorization is not exactly one DPoP <token>, or whose token is still a placeholder, is
 // refused with nothing sent, so a swap that ever left the placeholder in, or left a second
 // Authorization beside the token, never reaches Dispatch.
-type resultTransport struct {
+type mintedTransport struct {
 	// key is the pod's DPoP key; nil refuses every request, since no proof can be made.
 	key *ecdsa.PrivateKey
 	// origin is https:// and the bound host, the origin every proof names.
@@ -36,16 +36,16 @@ type resultTransport struct {
 	base http.RoundTripper
 }
 
-// errResultAuthorization is resultTransport's refusal of a request whose Authorization is not one
+// errMintedAuthorization is mintedTransport's refusal of a request whose Authorization is not one
 // DPoP header carrying a token the broker minted.
-var errResultAuthorization = errors.New("the airlock sends a results write only with one Authorization header, DPoP and the run's token, and this one is not that, so nothing was sent")
+var errMintedAuthorization = errors.New("the airlock sends a minted capability's request only with one Authorization header, DPoP and the token the broker minted, and this one is not that, so nothing was sent")
 
-// errNoDPoPKey is resultTransport's refusal when the proxy was given no key to sign with.
-var errNoDPoPKey = errors.New("the broker holds no DPoP key to sign this results write with, so nothing was sent")
+// errNoDPoPKey is mintedTransport's refusal when the proxy was given no key to sign with.
+var errNoDPoPKey = errors.New("the broker holds no DPoP key to sign this request with, so nothing was sent")
 
 // RoundTrip signs r's proof and sends a copy of r: the caller's request is left as it was, as
 // http.RoundTripper asks.
-func (t *resultTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+func (t *mintedTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	values := r.Header.Values("Authorization")
 	token, scheme := "", false
 	if len(values) == 1 {
@@ -53,7 +53,7 @@ func (t *resultTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	}
 	if !scheme || token == "" || strings.HasPrefix(token, placeholder.Prefix) {
 		closeBody(r)
-		return nil, errResultAuthorization
+		return nil, errMintedAuthorization
 	}
 	if t.key == nil {
 		closeBody(r)

@@ -661,17 +661,19 @@ func TestTheLeakCheckInstallsVerificationIsHeldFromThePodsReaperWhileItRuns(t *t
 		err  error
 	}
 	read := make(chan reading, 1)
+	// The bound is read here, on the test's goroutine: beforeDeadline fails t when no time is left.
+	bound := beforeDeadline(t)
 	go func() {
 		// The check is let go on every path, so the install the test waits on below ends.
 		defer func() { _ = os.WriteFile(release, nil, 0o600) }()
 		var pid int
-		if !testwait.Holds(10*time.Second, 10*time.Millisecond, func() bool {
+		if !testwait.Holds(bound, 10*time.Millisecond, func() bool {
 			body, err := os.ReadFile(pidFile)
 			n, convErr := strconv.Atoi(strings.TrimSpace(string(body)))
 			pid = n
 			return err == nil && convErr == nil && pid > 0
 		}) {
-			read <- reading{err: fmt.Errorf("the served check wrote no pid to %s within 10s", pidFile)}
+			read <- reading{err: fmt.Errorf("the served check wrote no pid to %s under the test's hang guard", pidFile)}
 			return
 		}
 		guard.mu.Lock()

@@ -2,7 +2,6 @@ package oauth
 
 import (
 	"context"
-	"errors"
 	"maps"
 	"net/http"
 	"net/url"
@@ -41,12 +40,15 @@ type AirlockSettings struct {
 	CACertificatePEM string
 	// ResultHosts are the hosts DISPATCH_RESULTS_TOKEN's entry binds.
 	ResultHosts []string
-	// EntryDigest is this broker's results entry: the hex SHA-256 of the profile
-	// DISPATCH_RESULTS_TOKEN's fingerprint and the private destination's scheme and host, which
-	// cmd/cipherd computes once at boot (resultEntryDigest) and hands the request machine too
-	// (requests.Machine.ResultEntryDigest). Every grant records it (oauthstore.ResultGrant), and a
-	// broker pod whose own digest differs refuses the grant, so a run's token goes only where the
-	// broker that granted it would have sent it.
+	// EntryDigest is this broker's results entry: config.MintedEntryDigest of the profile
+	// DISPATCH_RESULTS_TOKEN's fingerprint and the private destination of its host's scheme, host
+	// name and port, which cmd/cipherd computes once at boot (resultEntryDigest) and hands the
+	// request machine too (the results kind's requests.MintedKind.EntryDigest). Every grant records
+	// it (oauthstore.MintedGrant.EntryDigest), and a broker pod whose own digest differs refuses
+	// the grant, so a run's token goes only to a destination of the same text as the granting
+	// broker's. The digest binds the destination's name, not an address: where the URL's host is a
+	// name, the address each pod's resolver gives that name is each pod's own, and the proxy holds
+	// it to the destination's address rule (netaddr.DestinationRefusal) at every dial.
 	EntryDigest string
 	// GrantLifetime is BROKER_RESULT_GRANT_TEST_SECONDS, a local stack's own grant lifetime in
 	// place of resultGrantLifetime's; zero for every production start, which refuses the setting.
@@ -92,22 +94,22 @@ func (p *Provider) resultGrantLifetime() time.Duration {
 // the placeholder's hash alone, and the results entry it is made under (AirlockSettings.EntryDigest).
 // The session's access-token expiry is set to the grant's end, so claimSession holds the name until
 // then.
-func (p *Provider) writeResultGrant(ctx context.Context, request oauth2.Requester, session *oauthstore.ExchangeSession) (string, oauthstore.ResultGrant, error) {
-	held, err := placeholder.Mint(placeholder.ResultPrefix)
+func (p *Provider) writeResultGrant(ctx context.Context, request oauth2.Requester, session *oauthstore.ExchangeSession) (string, oauthstore.MintedGrant, error) {
+	held, err := placeholder.Mint(placeholder.MintedPrefix(oauthwire.AirlockResultsWord))
 	if err != nil {
-		return "", oauthstore.ResultGrant{}, err
+		return "", oauthstore.MintedGrant{}, err
 	}
 	name, _ := session.Extra[ClaimSession].(string)
 	expires := time.Now().Add(p.resultGrantLifetime()).UTC().Truncate(time.Microsecond)
 	session.SetExpiresAt(oauth2.AccessToken, expires)
-	grant := oauthstore.ResultGrant{
+	grant := oauthstore.MintedGrant{
 		ID: uuid.NewString(), PlaceholderSHA256: placeholder.Hash(held),
 		Subject: session.Subject, Session: name, Principal: session.Principal,
 		Scopes: []string(request.GetGrantedScopes()), Extra: maps.Clone(session.Extra),
 		EntryDigest: p.airlock.EntryDigest, ExpiresAt: expires,
 	}
 	if err := p.store.CreateResultGrant(ctx, grant); err != nil {
-		return "", oauthstore.ResultGrant{}, err
+		return "", oauthstore.MintedGrant{}, err
 	}
 	return held, grant, nil
 }
@@ -143,7 +145,7 @@ func (p *Provider) grantPlaceholder(ctx, txCtx context.Context, w http.ResponseW
 		"issued_token_type":    oauthwire.TokenTypeAirlockPlaceholder,
 		"token_type":           "N_A",
 		"expires_in":           int64(time.Until(grant.ExpiresAt).Round(time.Second) / time.Second),
-		oauthwire.ExtraGrantID: oauthwire.ResultGrantIDPrefix + grant.ID,
+		oauthwire.ExtraGrantID: oauthwire.AirlockResultsWord + ":" + grant.ID,
 		oauthwire.ExtraAirlock: oauthwire.AirlockRelease{
 			ProxyURL: p.airlock.ProxyURL, CACertificate: p.airlock.CACertificatePEM, ProxyPassword: held,
 			Names: map[string]oauthwire.AirlockName{oauthwire.AirlockResultsName: {
@@ -151,46 +153,4 @@ func (p *Provider) grantPlaceholder(ctx, txCtx context.Context, w http.ResponseW
 			}},
 		},
 	})
-}
-
-// MintResultToken mints the results token this broker pod puts into a result grant's writes
-// (the airlock proxy's resultTransport): an access token of the exchange client holding the
-// grant's decision whole - its principal as subject and username, its granted scopes and its
-// extra claims, the run among them - bound to the pod key whose RFC 7638 thumbprint jkt is, and
-// ending when the grant ends, so a token the broker no longer serves is no longer live at
-// introspection. It is stored as every access token is, by its signature, so the token's text is
-// in no table, and it is minted on the pod that serves the write: no other pod holds the key it is
-// bound to, so a token minted elsewhere could not be used there.
-func (p *Provider) MintResultToken(ctx context.Context, grant oauthstore.ResultGrant, jkt string) (string, error) {
-	if jkt == "" {
-		return "", errors.New("oauth: a result grant's token is minted only bound to the pod's DPoP key")
-	}
-	client, err := p.store.GetClient(ctx, oauthwire.ExchangeClientID)
-	if err != nil {
-		return "", err
-	}
-	session := oauthstore.NewExchangeSession()
-	session.Subject, session.Username = grant.Subject, grant.Principal
-	session.Extra = maps.Clone(grant.Extra)
-	if session.Extra == nil {
-		session.Extra = map[string]any{}
-	}
-	session.SetDPoPJWKThumbprint(jkt)
-	session.SetExpiresAt(oauth2.AccessToken, grant.ExpiresAt)
-	request := oauth2.NewRequest()
-	request.Client = client
-	request.Session = session
-	request.RequestedAt = time.Now().UTC().Truncate(time.Second)
-	request.SetRequestedScopes(grant.Scopes)
-	for _, scope := range grant.Scopes {
-		request.GrantScope(scope)
-	}
-	token, signature, err := p.strategy.GenerateAccessToken(ctx, request)
-	if err != nil {
-		return "", err
-	}
-	if err := p.store.CreateAccessTokenSession(ctx, signature, request); err != nil {
-		return "", err
-	}
-	return token, nil
 }

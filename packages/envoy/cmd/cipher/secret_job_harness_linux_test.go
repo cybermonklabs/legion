@@ -21,40 +21,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/testwait"
 	"golang.org/x/sys/unix"
 )
-
-// promptJobMargin is how long before the test binary's deadline (go test's -timeout) every wait of
-// these tests gives up, and that moment is the one bound they have (waitsGaveUp). A wait polls for
-// a fact it expects: a line on the terminal, a stop, a process's end, the terminal's foreground. A
-// fact that comes ends its wait at once. A fact that never comes fails the test at that moment,
-// with the wait's own text, which says what it waited for and what the terminal showed.
-//
-// No wait has a span of its own, because each span these waits had ran out on a loaded machine
-// before the fact came. A 10 s wait for a terminal line failed 2 runs of this family in 25 on a dev
-// box at a load average of 800 to 1,100 on 288 processors, and one of those tests took 270 s. The
-// minute that replaced it counted the gaps between polls, each gap at most a second, so that a
-// test process the machine held up lost little of it. But when the test process ran and the shell
-// or the helper it waited for was starved, every 50 ms poll counted in full, so the minute was a
-// minute of wall time: beside other packages under load, newPromptShell's wait for bash's first
-// prompt gave up with nothing on the terminal.
-//
-// 30 s is the time a wait that gave up leaves for what must still run before go test's alarm panics
-// the binary: the failing test's cleanups (a SIGKILL of the helper and of bash, and the wait for
-// bash), each later wait of the test, which then fails at once, and the test's report. The alarm
-// prints no running test's log, and without -v a failed subtest's text is printed only once its
-// parent test ends, so a margin those steps outlast loses the text that names the wait.
-const promptJobMargin = 30 * time.Second
-
-// waitsGaveUp reports whether the moment every wait of these tests gives up has passed: the test
-// binary's deadline less promptJobMargin, the clamp testwait.Bounded gives. The day passed to it
-// stands for no bound of the wait's own: Bounded answers what is left before that moment when it is
-// sooner, and the day itself where there is no deadline (-timeout 0), so such a wait never gives
-// up. The helper has the deadline helperTimeout gives it, so its waits give up before the test's.
-func waitsGaveUp(t *testing.T) bool {
-	return testwait.Bounded(t, 24*time.Hour, promptJobMargin) <= 0
-}
 
 // promptShell gives the prompt a parent interactive shell in the same session, so
 // its process group is not orphaned and the kernel really stops it on Ctrl-Z.
@@ -232,7 +200,7 @@ func (s *promptShell) waitFrom(from int, wants ...string) (string, int) {
 }
 
 // helperTimeout is the -test.timeout the helper starts with: what is left of this test binary's
-// deadline less promptJobMargin. So the helper's waits (waitsGaveUp) give up promptJobMargin before
+// deadline less waitMargin. So the helper's waits (waitsGaveUp) give up waitMargin before
 // this process's waits do, and the helper's own text, such as "bash's line editor never took the
 // terminal", is on the terminal while the test still reads it. The helper's alarm comes when this
 // process's waits give up, by which time the test has failed. With no deadline (-timeout 0) the
@@ -242,7 +210,7 @@ func helperTimeout(t *testing.T) string {
 	if !ok {
 		return ""
 	}
-	return " -test.timeout=" + max(time.Until(deadline)-promptJobMargin, time.Millisecond).String()
+	return " -test.timeout=" + max(time.Until(deadline)-waitMargin, time.Millisecond).String()
 }
 
 func (s *promptShell) start(wrapper bool, background bool) {

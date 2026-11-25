@@ -1661,12 +1661,13 @@ type Machine struct {
 	// fires (wakeNow); nil for none. It lives as long as that timer, which letGo disarms with it,
 	// and it is memory only, as relaunch and staleRelaunch are: a restart loses no wake. A
 	// process-less one parked the claim launching with no process, which the boot repairs to
-	// launch_uncertain and relaunches; one over a process still running is posted again by the
-	// boot's own stale-plugin pass, or raised again by the runtime's next observation of a
-	// process that has died. Each is paced again from an empty bucket, and no wake runs twice. A
-	// launch waiting for its issue pod's start is held here too, until the gate's grant fires
-	// TimerPodStart (askPod, wake.park, podStartDue), and a restart finds it as it finds a
-	// process-less wake.
+	// launch_uncertain and relaunches, reserving the relaunches' turns in the order their claims'
+	// work was owed (RequestSpawn.Turn) so the queue it rebuilds keeps the order this one drained;
+	// one over a process still running is posted again by the boot's own stale-plugin pass, or
+	// raised again by the runtime's next observation of a process that has died. Each is paced
+	// again from an empty bucket, and no wake runs twice. A launch waiting for its issue pod's
+	// start is held here too, until the gate's grant fires TimerPodStart (askPod, wake.park,
+	// podStartDue), and a restart finds it as it finds a process-less wake.
 	wake *wake
 	// pluginRelaunch is the intent of the stale-plugin relaunch this machine is raising: the
 	// contract that relaunch is made for and the wake kind its launch waits under
@@ -1846,9 +1847,11 @@ func NewMachine(ctx context.Context, deps Deps, c Claim) (*Machine, error) {
 // event that is stale is logged once and dropped. A suspension of a claim whose agent is in a turn
 // answers ErrSuspendHeld (holdSuspension). A request the wake pacing never makes wait, reaching a
 // claim a paced wake parked with no process, drops that wake before the lookup and is then
-// decided against the state the gate found (dropWakeFor); an operator's task the claim can take,
-// over a launch parked above a process the claim still records, runs that launch first, so the
-// row that queues the task is the row of the claim that launch leaves (runParkedLaunchNow).
+// decided against the state the gate found (dropWakeFor); an operator's retry no row of that state
+// decides — queued, suspended, or launching for a try the pause held after its write — runs the
+// dropped launch itself (runDroppedLaunchForRetry); an operator's task the claim
+// can take, over a launch parked above a process the claim still records, runs that launch first,
+// so the row that queues the task is the row of the claim that launch leaves (runParkedLaunchNow).
 //
 // Handle returns when the decision is made, which includes the runtime call it makes: a stop
 // waits out its grace, a resume waits out the previous incarnation. A caller feeding many claims
@@ -1930,6 +1933,9 @@ func (m *Machine) Handle(ctx context.Context, ev Event) error {
 		return fmt.Errorf("supervise: no row for %s in %s", k.kind, k.state)
 	}
 	if r.act == nil {
+		if ran, err := m.runDroppedLaunchForRetry(ctx, ev, dropped); ran {
+			return err
+		}
 		// The refusal names the state that decided it, which is the state the gate found for a
 		// claim whose wake was just dropped: the re-park moves the claim back to launching after.
 		var refusal error
@@ -2861,7 +2867,7 @@ func (m *Machine) dropStale(event, fence, got, held string) {
 // cause is why the process the claim still records is let go, which the let-go records with
 // what that process ended (letGo, recordEnd); noEnd for a launch that lets none go.
 func (m *Machine) launch(ctx context.Context, cause string) error {
-	return m.launchAfter(ctx, false, false, false, cause)
+	return m.launchAfter(ctx, false, false, false, time.Time{}, cause)
 }
 
 // launchAfter is launch, whose first try waits the backoff when charged: the launch follows a
@@ -2906,12 +2912,17 @@ func (m *Machine) launch(ctx context.Context, cause string) error {
 // in the work the wake gate may run at its turn, never on the machine, where another launch
 // could read it. A retry raised anew from the top — the lifecycle check's (again) and every one
 // relaunchLater arms — is a request's no longer, and passes false.
-func (m *Machine) launchAfter(ctx context.Context, charged, exempt, requested bool, cause string) error {
-	again := func(ctx context.Context) error { return m.launchAfter(ctx, charged, exempt, false, cause) }
+//
+// turn is the moment the request already reserved for this launch in the wake pacing
+// (RequestSpawn.Turn), which the gate takes in place of a reservation of its own, and the zero
+// time for every launch that reserved none. Only the gate reads it, and no field of the machine
+// holds it; a retry raised anew from the top reserves afresh, passing the zero time.
+func (m *Machine) launchAfter(ctx context.Context, charged, exempt, requested bool, turn time.Time, cause string) error {
+	again := func(ctx context.Context) error { return m.launchAfter(ctx, charged, exempt, false, time.Time{}, cause) }
 	if err := m.checkLaunch(ctx); err != nil {
 		return m.relaunchRefused(ctx, again, err)
 	}
-	return m.reserveWake(ctx, exempt, func(ctx context.Context) error {
+	return m.reserveWake(ctx, exempt, turn, func(ctx context.Context) error {
 		return m.launchNow(ctx, charged, exempt, requested, cause)
 	}, again)
 }
@@ -3151,7 +3162,7 @@ func (m *Machine) relaunchAtProbe(l launchTry) {
 // wake.again).
 func (m *Machine) launchFromTop(l launchTry) func(context.Context) error {
 	return m.retryHolding(l.intent, func(ctx context.Context) error {
-		return m.launchAfter(ctx, l.charged, l.exempt, false, noEnd)
+		return m.launchAfter(ctx, l.charged, l.exempt, false, time.Time{}, noEnd)
 	})
 }
 
@@ -3252,7 +3263,9 @@ func (m *Machine) startWaitsForStore(ctx context.Context, cause error, charged, 
 	m.logFarSideError(ctx, slog.LevelError, "supervise: the session store could not answer this start; trying it again every minute, charging nothing",
 		err, "generation", m.claim.Generation, "retry", sessionStoreRetry)
 	m.tellStoreFault(cause)
-	m.relaunchLater(sessionStoreRetry, func(ctx context.Context) error { return m.launchAfter(ctx, charged, exempt, false, noEnd) })
+	m.relaunchLater(sessionStoreRetry, func(ctx context.Context) error {
+		return m.launchAfter(ctx, charged, exempt, false, time.Time{}, noEnd)
+	})
 	return errors.Join(err, m.persist(ctx))
 }
 

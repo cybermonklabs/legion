@@ -1,8 +1,8 @@
 // Package placeholder is the airlock's placeholders: the strings the broker hands a command in
 // place of a value its proxy holds, how they are drawn, and the one form of them any query
-// carries. A secret's release (internal/cipher/requests) and a CI run's result grant
-// (internal/cipher/oauth) mint them, and the broker's log mask (internal/cipher/logmask) reads
-// them out of every line.
+// carries. A secret's release (internal/cipher/requests) and a grant of a capability the broker
+// mints and holds (requests.MintedKind) mint them, and the broker's log mask
+// (internal/cipher/logmask) reads them out of every line.
 package placeholder
 
 import (
@@ -17,10 +17,26 @@ import (
 // recognizable for what it is: a string that stands for a secret rather than a secret.
 const Prefix = "agent-secrets-placeholder-"
 
-// ResultPrefix opens the placeholder of a CI run's result grant. The character after "result" is
-// a hyphen, which no character of Alphabet is, so no placeholder of a secret's release starts with
-// it, and the proxy tells the store that holds a placeholder by its text alone.
-const ResultPrefix = Prefix + "result-"
+// MaxMintedWord is the longest word a minted kind's prefix may hold (MintedPrefix).
+const MaxMintedWord = 16
+
+// MintedPrefix opens the placeholder of a grant of a capability the broker mints and holds
+// (requests.MintedKind): Prefix, the kind's word and a hyphen. The hyphen is no character of
+// Alphabet, so no placeholder of a secret's release starts with a minted prefix, and the proxy
+// tells the store that holds a placeholder by its text alone. word is 1 to MaxMintedWord
+// lower-case ASCII letters, which is what the log mask reads as a kind's word; any other word
+// panics, since every word is a constant of the code that names its kind.
+func MintedPrefix(word string) string {
+	if word == "" || len(word) > MaxMintedWord {
+		panic(fmt.Sprintf("placeholder: a minted kind's word is 1 to %d letters, not %q", MaxMintedWord, word))
+	}
+	for i := range len(word) {
+		if word[i] < 'a' || word[i] > 'z' {
+			panic(fmt.Sprintf("placeholder: a minted kind's word is lower-case ASCII letters, not %q", word))
+		}
+	}
+	return Prefix + word + "-"
+}
 
 // Alphabet and Length are what follows a prefix: 32 characters of 62, so about 190 bits, which
 // nobody guesses and no birthday collision reaches. The broker's log mask reads a placeholder as
@@ -30,7 +46,7 @@ const (
 	Length   = 32
 )
 
-// Mint draws one placeholder opening with prefix, Prefix or ResultPrefix, from crypto/rand.
+// Mint draws one placeholder opening with prefix, Prefix or a MintedPrefix, from crypto/rand.
 //
 // Each character takes its own uniform 64-bit draw reduced modulo 62. 62 does not divide 2^64, so
 // the first 2^64 mod 62 characters of the alphabet are favoured by about one part in 2^58 — a

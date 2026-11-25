@@ -76,15 +76,15 @@ func (s SecretRule) HeaderNames() []string {
 // beside the empty kind of a value a header simply carries. Validate allows no other, and each
 // of them says what the value behind the name is rather than where it may go: an AWS key pair,
 // which the proxy signs a call again with; an azure-login secret, whose federated token is
-// exchanged for an access token; and a capability the broker mints for a CI run and holds. They
-// are here rather than private to each reader because three packages - the proxy's aws.go and
-// azure.go and the broker's own release (internal/cipher/requests) - each held a constant of the
-// same string, and a kind is one wire word for all of them.
+// exchanged for an access token; and a capability the broker mints for a grant of its own and
+// holds. They are here rather than private to each reader because three packages - the proxy's
+// aws.go and azure.go and the broker's own release (internal/cipher/requests) - each held a
+// constant of the same string, and a kind is one wire word for all of them.
 const (
 	KindAWS   = "aws"
 	KindAzure = "azure"
-	// KindDPoP is a capability the broker mints for a CI run and holds; the proxy swaps it in,
-	// signs a DPoP proof of the pod's key, and takes a request to its host only with the
+	// KindDPoP is a capability the broker mints for a grant of its own and holds; the proxy swaps
+	// it in, signs a DPoP proof of the pod's key, and takes a request to its host only with the
 	// placeholder.
 	KindDPoP = "dpop"
 )

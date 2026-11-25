@@ -194,7 +194,6 @@ func newIdleWakeRig(t *testing.T, plans map[string]idleRigPlan, issues ...string
 	rig.kube.onPodReady = rig.podReady
 	rig.kube.onPodGone = rig.pods.podGone
 	rig.kube.run(t)
-	t.Setenv(idleRigURLVariable, rig.agents.url)
 
 	for i, name := range issues {
 		rig.issues = append(rig.issues, rig.seed(name, cfg.Project+"-"+strconv.Itoa(i+1), i))
@@ -292,21 +291,26 @@ func idleRigUser(t *testing.T, pool *store.Pool) string {
 	return pool.Config().ConnConfig.User
 }
 
-// idleRigSessionPassword puts the rig's database password where a launcher's own session client
-// finds it, libpq's PGPASSWORD, which is the only place left for one: that client builds its URL
-// from the endpoint alone (ompsessions.Endpoint.ClientURL), which carries no password, and the
+// idleRigSessionPassword checks that the rig's database password is where a launcher's own session
+// client finds it, libpq's PGPASSWORD, which is the only place left for one: that client builds its
+// URL from the endpoint alone (ompsessions.Endpoint.ClientURL), which carries no password, and the
 // generation's proxy is a byte copy that hands the client's startup packet to the server
 // unchanged, so a server that asks for one refuses the login (`failed SASL auth`, SQLSTATE
 // 28P01) however the proxy's upstream was dialed. A pod's Cloud SQL asks for none — the
 // connector mints the login as it dials and no password is ever written into a pod
 // (internal/sessionproxy) — so this is the rig's stand-in for that identity and no production
-// path reads it, as internal/launcher's sessionDatabaseAt is for that package's tests. A
-// trust-authenticated server, which this repository's own pod serves, names no password, and an
-// empty PGPASSWORD is no setting at all (pgx's parseEnvSettings keeps only what is non-empty),
-// so the rig runs the same against either.
+// path reads it, as internal/launcher's sessionDatabaseAt is for that package's tests. TestMain
+// puts it there once for the whole test binary, from LEGION_TEST_PG_DSN, the server and login
+// every rig's database is cloned on, so the rigs run beside each other, which a t.Setenv refuses;
+// this check fails a rig whose database is on another login. A trust-authenticated server, which
+// this repository's own pod serves, names no password, and an empty PGPASSWORD is no setting at
+// all (pgx's parseEnvSettings keeps only what is non-empty), so the rig runs the same against
+// either.
 func idleRigSessionPassword(t *testing.T, pool *store.Pool) {
 	t.Helper()
-	t.Setenv("PGPASSWORD", pool.Config().ConnConfig.Password)
+	if os.Getenv("PGPASSWORD") != pool.Config().ConnConfig.Password {
+		t.Fatal("PGPASSWORD does not hold the password of the rig's database: TestMain sets it from LEGION_TEST_PG_DSN, and the rig's database is on another login")
+	}
 }
 
 // idleRigHostPort is the rig's Postgres as a dialable address, which the session proxy's upstream
@@ -603,7 +607,7 @@ func (r *idleWakeRig) newRuntime(ctx context.Context, listener *stream.Listener,
 		return []string{strings.Split(liveRepo, "/")[0]}
 	}
 	opts.CacheRepositories = func() []ghrepo.Repository { return nil }
-	opts.Tools.Legion = idleRigLegionTool(r.t, tools)
+	opts.Tools.Legion = idleRigLegionTool(r.t, tools, r.agents.url)
 	opts.Agent = idleRigAgentTool(r.t, tools)
 	opts.DaemonURL = r.cfg.DaemonURL
 	opts.EnvoyURL = r.cfg.EnvoyURL

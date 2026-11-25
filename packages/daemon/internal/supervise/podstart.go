@@ -637,7 +637,7 @@ func (m *Machine) adoptPodLoad() {
 // A restart finds a claim whose launch was parked here stored launching with no process, as it
 // finds one the wake pacing parked over no process: internal/daemon's supervisor.restore writes
 // it launch_uncertain, and relaunchUnfinished, once the boot's reconciliation has proved that no
-// process of it runs, releases it to queued and spawns it again (launchUnfinishedClaim), which
+// process of it runs, releases it to queued and spawns it again (launchUnfinished), which
 // asks the new daemon's empty gate.
 func (m *Machine) askPod(ctx context.Context, l launchTry, token string) (*podHold, bool) {
 	if !m.gated() {

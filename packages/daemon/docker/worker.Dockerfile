@@ -120,15 +120,15 @@ ARG GH_STACK_TOOL=github:github/gh-stack@0.3.0
 # archive of the gh release ARG GH_TOOL names (gh_<version>_linux_amd64.tar.gz of cli/cli). A pin
 # and its digest move in one commit: a bump of .omp-pin, ARG JJ_TOOL or ARG GH_TOOL that leaves its
 # digest fails the tools stage's sha256sum check in that pull request's own worker-image build.
-# Each was read on 2026-11-22 (Oh My Pi's at its 18.18.6-sami.20261122-091943 pin, jj's at its
-# 0.46.0-sami.20261120-120102 pin, gh's at 2.98.0) as the `digest` GitHub's API gives the release
-# asset (`gh api repos/<owner>/<repo>/releases/tags/<tag> --jq '.assets[]'`), and each equals the
-# sha256 of the archive downloaded from the address the tools stage reads. gh's is also its line
-# in the release's gh_<version>_checksums.txt, and `gh attestation verify <archive> --repo
-# cli/cli` verified that archive against cli/cli's deployment.yml workflow; the Oh My Pi and jj
-# releases carry no attestation (the same command answers 404 for both). A bump repeats those
-# reads.
-ARG OMP_SHA256=aef5ca3a44b97bed2e3038f1a2f9f9bbbc4e5ccc2cbd5d85c3a0550bfb0eafc4
+# Oh My Pi's was read on 2026-11-23 at its 18.18.6-sami.20261123-024918 pin, jj's on 2026-11-22 at
+# its 0.46.0-sami.20261120-120102 pin and gh's on 2026-11-22 at 2.98.0, each as the `digest`
+# GitHub's API gives the release asset (`gh api repos/<owner>/<repo>/releases/tags/<tag> --jq
+# '.assets[]'`), and each equals the sha256 of the archive downloaded from the address the tools
+# stage reads. gh's is also its line in the release's gh_<version>_checksums.txt, and `gh
+# attestation verify <archive> --repo cli/cli` verified that archive against cli/cli's
+# deployment.yml workflow; the Oh My Pi and jj releases carry no attestation (the same command
+# answers 404 for both). A bump repeats those reads.
+ARG OMP_SHA256=8ea7415e726e81f4e47d4ba914adf7a8d7c417c05c0a7e66a24023a12ee48a3b
 ARG JJ_SHA256=770b129af434b0b93edfea6de3960a34b82e4f77fda30960aa18f816d543a1de
 ARG GH_SHA256=3b8ac6b30336802fc1a858d7c084e11cdf24ac1a761ca90b68022d7d729208de
 # The SHA-256 of the linux-amd64 binary of the gh-stack release ARG GH_STACK_TOOL names (the release

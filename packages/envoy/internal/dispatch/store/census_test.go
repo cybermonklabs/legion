@@ -1179,10 +1179,78 @@ func TestCensusExemptsTheDropOfTheSentDeliveriesIndexAtAnyTableSize(t *testing.T
 	}
 }
 
+// TestCensusAdmitsTheBackfillIndexes holds the census to admitting the four indexes envoy-dispatch
+// backfill-graph-store reads through for each batch: two on events (20261119020700 on the document
+// and the version an artifact.version event names, 20261119020800 on the comment a comment.created
+// event names), and the two its walks read in their order (20261119020900 on the block rows naming
+// no node, 20261119021000 on the block references naming no node), over production as the release
+// before them leaves it (requireCensusAdmitsLateIndexes): production's events is above the table
+// limit, so only a concurrent build's exemption admits an index on it, and so would a block table
+// that grows past it.
+func TestCensusAdmitsTheBackfillIndexes(t *testing.T) {
+	requireCensusAdmitsLateIndexes(t, 20261119020700, 20261119020800, 20261119020900, 20261119021000)
+}
+
+// requireCensusAdmitsLateIndexes holds the census to admitting each of versions, the ascending
+// versions of migrations that each build one concurrent, non-unique index, over a database that
+// holds every other migration of the shipped set. That is production once a release without them
+// is deployed: they sort before versions that release applied, and the runner applies every
+// version it has not recorded, so its next deploy census holds them alone pending. The limit is
+// one byte, so every table is over it and each is admitted only by a concurrent build's
+// exemption, which the limit never applies to at any size, but only while no earlier pending
+// migration runs a DO block: one voids the exemption of every later pending migration
+// (pgmigrate.Census, laterEventTrigger). Only each entry is read, never the verdict of the whole
+// set, for the reason TestCensusAdmitsTheSplitProjectKeyMigrationsAndRefusesTheOldIndexShape gives.
+func requireCensusAdmitsLateIndexes(t *testing.T, versions ...int) {
+	t.Helper()
+	ctx := context.Background()
+	late := map[int]bool{}
+	for _, version := range versions {
+		late[version] = true
+	}
+	store := openMigratedTestStore(t, versions[0]-1)
+	migrations := shippedMigrations(t)
+	for _, migration := range migrations {
+		if migration.Version < versions[0] || late[migration.Version] {
+			continue
+		}
+		if err := store.applyMigration(ctx, migrations, migration); err != nil {
+			t.Fatalf("apply %s: %v", migration.Name, err)
+		}
+	}
+	report, err := census(ctx, store.Pool.Config().ConnString(), migrationFiles, pgmigrate.CensusOptions{TableLimit: 1})
+	if err != nil {
+		t.Fatalf("census: %v", err)
+	}
+	pending := make([]int, 0, len(report.Pending))
+	for _, entry := range report.Pending {
+		pending = append(pending, entry.Migration.Version)
+		if !late[entry.Migration.Version] {
+			continue
+		}
+		if !entry.ConcurrentIndex || len(entry.Refusals) != 0 {
+			t.Errorf("the census did not admit migration %d as a concurrent index: %+v", entry.Migration.Version, entry)
+		}
+		if len(entry.Tables) == 0 {
+			t.Errorf("%s touches no table, which leaves the limit nothing to exempt it from", entry.Migration.Name)
+		}
+		for _, table := range entry.Tables {
+			if !table.Exists || table.Bytes <= 1 {
+				t.Errorf("%s: %s is %d bytes, which leaves the limit nothing to exempt it from", entry.Migration.Name, table.Name, table.Bytes)
+			}
+		}
+	}
+	if !slices.Equal(pending, versions) {
+		t.Errorf("pending = %v, want %v alone; report:\n%s", pending, versions, reportText(report))
+	}
+}
+
 // blockRefsIndexCensus is the census of the two migrations of block_refs' index of targets - the
 // build of block_refs_to_source (blockRefsSourceIndex) and the drop of block_refs_to, the index it
 // replaces (dropBlockRefsTargetIndex) - over a database at beforeBlockRefsSourceIndex, a version
-// before them, under options; main's 20261120021308_search_text_versions is pending there too.
+// before them, under options; every migration numbered between the two is pending there too, from
+// 20261118115645 to 20261120122700, main's 20261120021308_search_text_versions and the backfill's
+// four indexes (20261119020700 to 20261119021000) among them.
 // Only version's entry is read, never the verdict of the whole set, for the reason
 // TestCensusAdmitsTheSplitProjectKeyMigrationsAndRefusesTheOldIndexShape gives. It answers that
 // entry, and fails the test when that migration is not pending or touches a table of one byte or

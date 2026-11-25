@@ -20,7 +20,6 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/cipher/githubname"
-	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipher/placeholder"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
@@ -42,12 +41,12 @@ var ErrAirlockNoNames = errors.New("this grant holds no airlock name the session
 // words.
 var ErrAirlockValueShape = errors.New("a name of this grant does not hold what its type releases")
 
-// ErrAirlockMintedOnly is readRelease's refusal of a release under a proxy block of kind dpop,
-// before anything of the name is read.
-// A name of that kind is a CI run's results capability, which the broker mints for the run's
-// result grant and holds (resultValues), and never a stored secret: a secret stored under such a
-// name is never released, to the session or to the proxy.
-var ErrAirlockMintedOnly = errors.New("a name of kind dpop is a capability the broker mints for a CI run and holds, never a stored secret's release")
+// ErrMintedOnly is readRelease's refusal of a release under a rules entry of kind dpop,
+// before anything of the name is read. A name of that kind is a capability the broker mints for a
+// grant of its own and holds (MintedKind, mintedValues), and never a stored secret: a secret
+// stored under such a name is never released, to the session or to the proxy, as a value or as a
+// placeholder.
+var ErrMintedOnly = errors.New("a name of kind dpop is a capability the broker mints and holds, never a stored secret's release")
 
 // The slots of a secret. A slot names which value of a secret a placeholder stands for, because
 // one secret can release several values at once and each needs a placeholder of its own:
@@ -145,9 +144,8 @@ func (m *Machine) mintPlaceholders(ctx context.Context, grantID string, expires 
 // a connection of that grant while it lives, it goes when the grant's rows go
 // (deleteSpentPlaceholders), and AirlockConnection answers it among the name's slots.
 func (m *Machine) AirlockAccessPlaceholder(ctx context.Context, grantID, name, slot string) (string, error) {
-	if strings.HasPrefix(grantID, oauthwire.ResultGrantIDPrefix) {
-		// A CI run's result grant holds DISPATCH_RESULTS_TOKEN's one slot, and no exchange is
-		// ever made for it.
+	if _, _, minted := m.mintedKindOfGrant(grantID); minted {
+		// A minted grant holds its kind's one slot, and no exchange is ever made for it.
 		return "", ErrGrantNotLive
 	}
 	if !strings.HasPrefix(slot, SlotAzureAccessPrefix) {
@@ -496,11 +494,15 @@ type AirlockConnection struct {
 	// they cost nothing: the read below already joins the enrollment row.
 	SessionID, RuntimeID string
 	Issue                string // the first Dispatch issue key in the request's own signed reason, "" when it names none
-	// CheckRunID is the check run of the CI job whose result grant this is (the grant's ci claim),
-	// which every line the proxy writes about the grant's calls names; "" for a secret's grant.
+	// CheckRunID is the check run of the CI job a minted grant was made for (the grant's ci claim,
+	// checkRunOf), which every line the proxy writes about the grant's calls names; "" for a
+	// secret's grant and for a minted grant that carries no run.
 	CheckRunID string
-	Expires    *time.Time
-	Names      map[string]AirlockGrantName
+	// Minted marks a grant of a capability the broker mints and holds (MintedKind): it belongs to
+	// no enrollment, and the proxy holds it to the one host its grant binds.
+	Minted  bool
+	Expires *time.Time
+	Names   map[string]AirlockGrantName
 }
 
 // AirlockGrantName is one name a connection may carry: the placeholder of each of its slots, and
@@ -550,8 +552,8 @@ type AirlockGrantName struct {
 // makes besides — the approval chain, the policy re-evaluation, the max-grant and the profile
 // fingerprint — are AirlockValues's, once per grant per pod.
 func (m *Machine) AirlockConnection(ctx context.Context, presented string) (AirlockConnection, error) {
-	if strings.HasPrefix(presented, placeholder.ResultPrefix) {
-		return m.resultConnection(ctx, presented)
+	if kind, minted := m.mintedKindOfPlaceholder(presented); minted {
+		return m.mintedConnection(ctx, kind, presented)
 	}
 	var conn AirlockConnection
 	var reason, decidedBy string
@@ -695,8 +697,8 @@ type AirlockSecret struct {
 // whose chain fails is logged as Values logs it, under at=airlock (GrantChainInvalidMessage),
 // since the proxy refuses it GRANT_CHAIN_INVALID as the session's release does.
 func (m *Machine) AirlockValues(ctx context.Context, grantID string) (map[string]AirlockSecret, string, error) {
-	if id, ok := strings.CutPrefix(grantID, oauthwire.ResultGrantIDPrefix); ok {
-		return m.resultValues(ctx, id)
+	if kind, id, minted := m.mintedKindOfGrant(grantID); minted {
+		return m.mintedValues(ctx, kind, id)
 	}
 	checked, err := m.checkRelease(ctx, grantID, "", "airlock")
 	if err != nil {

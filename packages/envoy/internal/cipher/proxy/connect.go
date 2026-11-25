@@ -1,6 +1,6 @@
 // packages/envoy/internal/cipher/proxy/connect.go
 // The CONNECT ingress: what the proxy does with one CONNECT once its grant is read. The target is
-// read once (portNumber), a CI run's result grant is held to its one bound host (resultHostOnly),
+// read once (portNumber), a minted capability's grant is held to its one bound host (mintedHostOnly),
 // and the connection is then either opened and read by the proxy itself (connectBound), for a host
 // one of the grant's names binds, or carried as bytes it never reads (connectTunnel). serveProxy
 // decides that a request is a CONNECT; what a decrypted request may carry is bound.go's.
@@ -13,11 +13,9 @@ import (
 	"net/http"
 	"net/netip"
 	"strconv"
-	"strings"
 	"sync"
 
 	"github.com/sjawhar/envoy/internal/cipher/netaddr"
-	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
 	"github.com/sjawhar/envoy/internal/fold"
 )
@@ -54,7 +52,7 @@ func (s *Server) serveConnect(w http.ResponseWriter, r *http.Request, placeholde
 	}
 	port = strconv.FormatUint(uint64(connectPort), 10)
 	target = net.JoinHostPort(host, port)
-	if s.resultHostOnly(w, r, grant, host, connectPort) {
+	if s.mintedHostOnly(w, r, grant, host, connectPort) {
 		return
 	}
 	// Whether this CONNECT may be decrypted and read: the (name, slot) pairs of the grant
@@ -65,22 +63,22 @@ func (s *Server) serveConnect(w http.ResponseWriter, r *http.Request, placeholde
 	// An empty answer is a tunnel rather than a refusal, whether it is a host no name binds or
 	// another port of a bound name: the airlock blocks nothing it does not bind (R3), the
 	// proxy reads nothing on such a connection and puts nothing into it, and the command
-	// reaches that service exactly as it reaches every host the rules say nothing about. A CI
-	// run's result grant is the one exception, refused above (resultHostOnly). The
+	// reaches that service exactly as it reaches every host the rules say nothing about. A minted
+	// capability's grant is the one exception, refused above (mintedHostOnly). The
 	// port is in it because every name the decision compares - the CONNECT host, the TLS name
 	// and the Host header - carries no port, so 443 is the only port an entry's hosts speak
 	// about and another port of one name is another service.
 	bound := len(s.candidates(grant, host, connectPort)) > 0
 	// The addresses this name has, read and checked once: the tunnel below dials these and
 	// resolves nothing of its own, and a bound host's requests are checked and dialled the
-	// same way by the transport they go out on (dialChecked). The private destination's bound
-	// host, bound for this grant, is checked where its requests go instead, the destination's
+	// same way by the transport they go out on (dialChecked). A private destination's bound
+	// host, bound for this grant, is checked where its requests go instead, that destination's
 	// own addresses (upstreamAddresses), which its transport checks and dials again for each
 	// request (dialUpstream); its public name is not read, since nothing is sent there. Not
 	// bound for this grant, it is a host like any other.
 	var addrs []netip.Addr
-	if bound && s.toDestination(host) {
-		_, err = s.upstreamAddresses(r.Context())
+	if d := s.destinationOf(host); bound && d != nil {
+		_, err = s.upstreamAddresses(r.Context(), d)
 	} else {
 		addrs, err = s.checkedAddresses(r.Context(), host, port)
 	}
@@ -115,19 +113,19 @@ func portNumber(port string) (uint16, bool) {
 	return uint16(number), true
 }
 
-// resultHostOnly refuses, and answers true for, a CONNECT or a plain-HTTP request of a CI run's
-// result grant (oauthwire.ResultGrantIDPrefix) to anything but the one host its grant binds, on
-// 443: a result grant's work is one write to Dispatch's host, which the proxy decrypts and reads,
-// so its placeholder opens no tunnel and no plain forward to any other host or port, and is no
+// mintedHostOnly refuses, and answers true for, a CONNECT or a plain-HTTP request of a minted
+// capability's grant (requests.AirlockConnection.Minted) to anything but the one host its grant
+// binds, on 443: such a grant's work is requests to that one host, which the proxy decrypts and
+// reads, so its placeholder opens no tunnel and no plain forward to any other host or port, and is no
 // egress password of the broker's address. Every other grant keeps the airlock's rule that it
 // blocks nothing it does not bind. It is answered before anything is resolved or dialled, with
-// codeResultHostOnly and the rule's words.
-func (s *Server) resultHostOnly(w http.ResponseWriter, r *http.Request, grant requests.AirlockConnection, host string, port uint16) bool {
-	if !strings.HasPrefix(grant.GrantID, oauthwire.ResultGrantIDPrefix) || len(s.candidates(grant, host, port)) > 0 {
+// codeMintedHostOnly and the rule's words.
+func (s *Server) mintedHostOnly(w http.ResponseWriter, r *http.Request, grant requests.AirlockConnection, host string, port uint16) bool {
+	if !grant.Minted || len(s.candidates(grant, host, port)) > 0 {
 		return false
 	}
-	s.refuse(w, r, call{grant: grant, host: host}, http.StatusForbidden, codeResultHostOnly,
-		"a CI run's result grant carries its write to the host its grant binds and nowhere else: refusing "+net.JoinHostPort(host, strconv.FormatUint(uint64(port), 10)))
+	s.refuse(w, r, call{grant: grant, host: host}, http.StatusForbidden, codeMintedHostOnly,
+		"a minted capability's grant carries its requests to the host its grant binds and nowhere else: refusing "+net.JoinHostPort(host, strconv.FormatUint(uint64(port), 10)))
 	return true
 }
 

@@ -56,11 +56,18 @@ type PauseStop struct {
 // issue, which the operator's spawn makes under the daemon's own project token, is a session this
 // daemon runs, so the pause holds it as it holds every other claim.
 func (m *Machine) pauseHolds() (int64, bool) {
-	if m.deps.Paused == nil || claim.IsController(m.claim.Role, m.claim.Issue, m.claim.Tree) {
+	return pauseHolding(m.deps.Paused, claim.IsController(m.claim.Role, m.claim.Issue, m.claim.Tree))
+}
+
+// pauseHolding is pauseHolds' rule, for a claim that is the project controller's or not: the open
+// pause paused (Deps.Paused) names, and whether one is open. It is apart from the machine so the
+// rule that says whether the gate paces a launch reads it too (PacedLaunch).
+func pauseHolding(paused func() (int64, bool), controller bool) (int64, bool) {
+	if paused == nil || controller {
 		return 0, false
 	}
-	pause, paused := m.deps.Paused()
-	return pause, paused && pause > 0
+	pause, open := paused()
+	return pause, open && pause > 0
 }
 
 // pauseOpen is whether pause is the project's open pause now (Deps.Paused). A daemon whose project

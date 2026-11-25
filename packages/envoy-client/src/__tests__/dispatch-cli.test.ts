@@ -3078,8 +3078,8 @@ describe("dispatch result --project, as a CI job writes it", () => {
   const proxyUrl = (proxy: StubProxy): string =>
     proxy.url.replace("http://", `http://agent-secrets:${PLACEHOLDER}@`);
   /** The headers the airlock proxy writes on an answer of its own. */
-  const AIRLOCK_FORWARDED = "Airlock-Forwarded";
-  const AIRLOCK_CODE = "Airlock-Code";
+  const AIRLOCK_FORWARDED = "Cipher-Proxy-Forwarded";
+  const AIRLOCK_CODE = "Cipher-Proxy-Code";
 
   // The airlock proxy answers a CONNECT whose password names no live grant with 407, and Bun tells
   // the caller its status line alone (ERR_PROXY_TUNNEL). Nothing went on to Dispatch, so the write
@@ -3200,9 +3200,9 @@ describe("dispatch result --project, as a CI job writes it", () => {
     });
 
   // Inside a connection that was open, the proxy answers a request it refuses before it dials
-  // anything, and says so (`Airlock-Forwarded: false`): the answer reached no service and stored
-  // nothing. It is final, printed with its code and the proxy's words whole, each piece of the
-  // placeholder redacted, and is no write_outcome_unknown.
+  // anything, and says so (`Cipher-Proxy-Forwarded: false`): the answer reached no service and
+  // stored nothing. It is final, printed with its code and the proxy's words whole, each piece of
+  // the placeholder redacted, and is no write_outcome_unknown.
   test("the airlock's refusal inside an open connection prints its code and words and says nothing was stored", async () => {
     const words =
       "airlock: a request to this host carries the grant's placeholder as its one Authorization header, DPoP <placeholder>; this one does not, so nothing was sent (answer 7f3a)";
@@ -3218,8 +3218,8 @@ describe("dispatch result --project, as a CI job writes it", () => {
   });
 
   /** The airlock proxy's own answer written after the write may have left it for Dispatch
-   *  (`Airlock-Forwarded: unknown`): a connection that broke after the write was sent, a grant
-   *  that ended while Dispatch held the call. */
+   *  (`Cipher-Proxy-Forwarded: unknown`): a connection that broke after the write was sent, a
+   *  grant that ended while Dispatch held the call. */
   const airlockAfterSend = (status: number, code: string, words: string) => () =>
     new Response(words, {
       status,
@@ -3231,10 +3231,10 @@ describe("dispatch result --project, as a CI job writes it", () => {
     });
 
   // The proxy's own answer after the write may have reached Dispatch says so
-  // (`Airlock-Forwarded: unknown`): Dispatch may have stored it, so the write is asked again under
-  // its key, which settles it, and ends write_outcome_unknown when nothing settles it within the
-  // bound, never "nothing was stored". The same answer said `false`, written before anything left
-  // the proxy, is the control: final at once, nothing stored.
+  // (`Cipher-Proxy-Forwarded: unknown`): Dispatch may have stored it, so the write is asked again
+  // under its key, which settles it, and ends write_outcome_unknown when nothing settles it within
+  // the bound, never "nothing was stored". The same answer said `false`, written before anything
+  // left the proxy, is the control: final at once, nothing stored.
   test("the airlock's own answer after the write may have left is asked again under the key, and ends write_outcome_unknown", async () => {
     const broke = airlockAfterSend(
       502,

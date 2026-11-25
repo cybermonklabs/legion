@@ -336,18 +336,20 @@ func runNumbersOf(run oauthwire.CIRun) (runNumbers, error) {
 // isProjectsDefaultRepository answers whether repository, the repository GitHub names a run by,
 // is the default repository of project (projects.default_repo), the one repository Dispatch gives
 // a project: a project has one or none (project_default_repository.go), so a project with none is
-// the project of no run. Both names are read under the name the repository is called today
-// (refs.Renames.Canonical over Deps.Renames, and refs.CanonicalRepoSQL over the column), as PUT
+// the project of no run. The stored default is read under the name its repository is called today
+// (refs.CanonicalRepoSQL over the column and Deps.Renames), as PUT
 // /api/v1/projects/{key}/default-repository stores the default, so a default that a build before
 // this one stored under a name its repository was renamed away from is still the run's
-// repository. GitHub spells a repository as its owner does and Dispatch stores the default
-// lowercased (parseIssueRepo), so both sides are compared lowercased, as every comparison of a
-// repository is.
+// repository. The run's repository is compared as the broker authenticated it and never renamed:
+// GitHub names a renamed repository's runs by its new name, so a run named by an old name is a run
+// of a repository made under that name since the rename, which is not the project's. GitHub spells
+// a repository as its owner does and Dispatch stores the default lowercased (parseIssueRepo), so
+// both sides are compared lowercased, as every comparison of a repository is.
 func (s *server) isProjectsDefaultRepository(ctx context.Context, project, repository string) (bool, error) {
 	var isDefault bool
 	if err := s.deps.Store.Pool.QueryRow(ctx, `
 		select exists (select 1 from projects where key = $1 and lower(`+refs.CanonicalRepoSQL(s.deps.Renames, "default_repo")+`) = lower($2))`,
-		project, s.deps.Renames.Canonical(repository)).Scan(&isDefault); err != nil {
+		project, repository).Scan(&isDefault); err != nil {
 		return false, fmt.Errorf("read whether %s is the default repository of %s: %w", repository, project, err)
 	}
 	return isDefault, nil

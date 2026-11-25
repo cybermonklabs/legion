@@ -9,7 +9,9 @@
 package config
 
 import (
+	"crypto/sha256"
 	"crypto/x509"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"maps"
@@ -34,7 +36,6 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/netaddr"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
-	"github.com/sjawhar/envoy/internal/cipher/proxy"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/rulehost"
@@ -314,30 +315,31 @@ type Config struct {
 	// pass silently. Outside a cluster (KUBERNETES_SERVICE_HOST empty or unset), and with no proxy
 	// block, it is optional.
 	AirlockClusterRanges []netip.Prefix
-	// BROKER_AIRLOCK_PRIVATE_UPSTREAM: one <host>=<url> entry, such as
-	// dispatch.example-tailnet.ts.net=http://dispatch.dispatch.svc.cluster.local:8766: the one host
-	// the proxy block of the profile DISPATCH_RESULTS_TOKEN binds, whose allowed requests the proxy
-	// sends to url, an address inside the broker's own cluster, in place of the host's own address.
-	// It is the one exception to the proxy's refusal of private addresses and of
-	// BROKER_AIRLOCK_CLUSTER_RANGES: the proxy dials url's host only when every address it resolves
-	// to is one it refuses every other request - private, 100.64.0.0/10 or inside
-	// BROKER_AIRLOCK_CLUSTER_RANGES - and none is loopback, link-local, unspecified, multicast or a
-	// cloud metadata server's IPv6 address (netaddr.DestinationRefusal), and a tunnel or a
+	// BROKER_PROXY_PRIVATE_UPSTREAM: whitespace-separated <host>=<url> entries, such as
+	// dispatch.example-tailnet.ts.net=http://dispatch.dispatch.svc.cluster.local:8766, one per bound
+	// host: each host a proxy block of kind dpop binds, whose allowed requests the proxy sends to its
+	// own url, an address inside the broker's own cluster, in place of the host's own address. It is
+	// the one exception to the proxy's refusal of private addresses and of
+	// BROKER_AIRLOCK_CLUSTER_RANGES: the proxy dials a url's host only when every address it
+	// resolves to is in a range a destination may be in - private, 100.64.0.0/10 or inside
+	// BROKER_AIRLOCK_CLUSTER_RANGES - and none is loopback, link-local, unspecified, multicast, the
+	// IPv4 broadcast address, in 0.0.0.0/8, a cloud metadata server's IPv6 address, or an IPv6
+	// address that carries an IPv4 address (NAT64, 6to4, Teredo, IPv4-compatible,
+	// IPv4-translated, ISATAP, 64:ff9b:1::/48) (netaddr.DestinationRefusal), and a tunnel or a
 	// plain-HTTP request to those addresses stays refused. The request keeps the host as its Host
-	// header, and the DPoP proof of a dpop entry still names https:// and the host. Unset, the proxy
-	// sends every bound host's request to that host's own address. The start is refused, naming the
-	// setting and the fault and quoting no part of the url a credential can sit in, for more than
-	// one entry, for the setting without BROKER_PROFILES_FILE, for a host that is not one lower-case
-	// host name, for a url that is not http or https, names no host or a port outside 1 to 65535,
-	// or carries a user, a path other than /, a query or a fragment, and for a url whose host every
-	// dial refuses - an address proxy.PrivateUpstreamRefusal refuses on a broker of these
-	// BROKER_AIRLOCK_CLUSTER_RANGES (one the proxy would tunnel to, or one
-	// netaddr.DestinationRefusal names), localhost or a name under .localhost, with or without a
+	// header, and the DPoP proof of a dpop block still names https:// and the host. Unset, the
+	// proxy sends every bound host's request to that host's own address. The start is refused,
+	// naming the setting and the fault and quoting no part of a url a credential can sit in, for a
+	// host named twice, for the setting without BROKER_PROFILES_FILE, for a host that is not one
+	// lower-case host name, for a url that is not http or https, names no host or a port outside 1
+	// to 65535, or carries a user, a path other than /, a query or a fragment, and for a url whose
+	// host every dial refuses - an address netaddr.DestinationRefusal refuses on a broker of these
+	// BROKER_AIRLOCK_CLUSTER_RANGES, localhost or a name under .localhost, with or without a
 	// trailing dot - unless BROKER_AIRLOCK_TEST_DIAL_ALLOW names that host and port; and, where the
-	// broker reads the profiles file (AirlockResultRules), unless the profile DISPATCH_RESULTS_TOKEN
-	// binds the host, exactly and alone, of kind dpop, with a non-empty allow list, carried in
-	// Authorization alone.
-	AirlockPrivateUpstream PrivateUpstream
+	// broker reads the profiles file (ProxyMintedRules), unless every destination's host is bound
+	// by a dpop block, every dpop block binds one destination's host alone, with a non-empty allow
+	// list, carried in Authorization alone, and no block of another kind binds it.
+	ProxyPrivateUpstreams []PrivateUpstream
 	// kubernetesServiceHost is KUBERNETES_SERVICE_HOST as Load read it, which Kubernetes sets in
 	// every container to the address of the cluster's kubernetes Service. It is no setting of the
 	// broker's, so the configuration reference leaves it out. RequireAirlock reads it once the boot
@@ -374,15 +376,15 @@ type Config struct {
 	// the resolver answers. It is how a client that resolves a real name of its own - az, the
 	// AWS client - reaches a stand-in service through the proxy. An entry may name a port
 	// beside the address, <host>=<address>:<port> ([<address>]:<port> for IPv6), which the
-	// proxy dials in place of the port the CONNECT named (AirlockTestDialPorts), so a stand-in
+	// proxy dials in place of the port the CONNECT named (ProxyTestDialPorts), so a stand-in
 	// on loopback needs no privileged port 443. A host named twice is refused, and so is an
 	// address given two ports. For the broker's local stack alone: a production start, which is
 	// one with BROKER_FAKE_SECRETS_FILE unset, is refused naming it.
 	AirlockTestResolve map[string]netip.Addr
-	// AirlockTestDialPorts is the port each address of BROKER_AIRLOCK_TEST_RESOLVE whose entry
+	// ProxyTestDialPorts is the port each address of BROKER_AIRLOCK_TEST_RESOLVE whose entry
 	// named one is dialled at, whatever port the CONNECT named; an address whose entry named no
 	// port is not in it.
-	AirlockTestDialPorts map[netip.Addr]uint16
+	ProxyTestDialPorts map[netip.Addr]uint16
 	// BROKER_AIRLOCK_TEST_KEEP_VALUES: with it true, the airlock proxy keeps a grant's values
 	// across the reread of one of its names and past the five-minute margin before a minted
 	// token's expiry, rather than reading and minting again. It is the negative control of the
@@ -873,8 +875,8 @@ type Config struct {
 	// workflow listed twice under one pattern, and one BROKER_EXCHANGE_WORKFLOWS lists too, are
 	// refused. Needs BROKER_EXCHANGE_GITHUB_ISSUER and BROKER_EXCHANGE_GITHUB_AUDIENCE, whose tokens
 	// its runs present, and BROKER_PROFILES_FILE, whose profile DISPATCH_RESULTS_TOKEN the start
-	// checks (AirlockResultRules): its proxy block binds one exact host,
-	// BROKER_AIRLOCK_PRIVATE_UPSTREAM's. Unset, no run is granted a placeholder.
+	// checks (ResultsEntryRules, ProxyMintedRules): its proxy block is of kind dpop and binds one
+	// exact host, a BROKER_PROXY_PRIVATE_UPSTREAM entry's. Unset, no run is granted a placeholder.
 	ExchangeResultWorkflows []exchange.ResultWorkflowEntry
 	// BROKER_RESULT_GRANT_TEST_SECONDS: how long a result grant lasts, 1 to 900 seconds, in place
 	// of the production lifetime (fifteen minutes, or BROKER_ACCESS_TOKEN_SECONDS when that is
@@ -1937,13 +1939,14 @@ func parseAirlockTestResolve(value string) (map[string]netip.Addr, map[netip.Add
 	return hosts, ports, nil
 }
 
-// parseAirlockClusterRanges reads BROKER_AIRLOCK_CLUSTER_RANGES' comma-separated CIDR prefixes, in
+// ParseAirlockClusterRanges reads BROKER_AIRLOCK_CLUSTER_RANGES' comma-separated CIDR prefixes, in
 // order, each as its network; spaces around a comma are allowed, and a blank value is none. It
 // refuses, naming the element's position and never the element, which could be anything an
 // operator pasted: an empty element, one netip.ParsePrefix does not read, and an IPv4-mapped IPv6
 // prefix, which no address the proxy checks is ever inside, since the proxy reads every address as
-// the IPv4 address it holds.
-func parseAirlockClusterRanges(value string) ([]netip.Prefix, error) {
+// the IPv4 address it holds. Load reads the setting with it, and `profiles check` its
+// --cluster-ranges argument, so both read one form.
+func ParseAirlockClusterRanges(value string) ([]netip.Prefix, error) {
 	const setting = "BROKER_AIRLOCK_CLUSTER_RANGES"
 	if strings.TrimSpace(value) == "" {
 		return nil, nil
@@ -2032,53 +2035,63 @@ func requireClusterRanges(ranges []netip.Prefix, serviceHost string) error {
 		host, strings.Join(named, ", "))
 }
 
-// PrivateUpstream is BROKER_AIRLOCK_PRIVATE_UPSTREAM's one entry: Host, the bound host whose
+// PrivateUpstream is one entry of BROKER_PROXY_PRIVATE_UPSTREAM: Host, the bound host whose
 // allowed requests go to the destination, and URL, the scheme and host (with its port) they go to.
-// The zero value is no destination.
 type PrivateUpstream struct {
 	Host string
 	URL  *url.URL
 }
 
-// privateUpstreamSetting is BROKER_AIRLOCK_PRIVATE_UPSTREAM, which both of its checks name.
-const privateUpstreamSetting = "BROKER_AIRLOCK_PRIVATE_UPSTREAM"
+// privateUpstreamSetting is BROKER_PROXY_PRIVATE_UPSTREAM, which its checks name.
+const privateUpstreamSetting = "BROKER_PROXY_PRIVATE_UPSTREAM"
 
-// ParsePrivateUpstream reads BROKER_AIRLOCK_PRIVATE_UPSTREAM's one <host>=<url> entry; a
-// blank value is none. It refuses, naming the setting and the fault: more than one entry, since
-// the exception is for one host; an entry with no host before its first = or no URL after it; text
-// before the first = that holds "/" (a scheme's "://" or a path) or "@" (a user), which is a URL
-// written with no <host>= before it rather than a host; a host rulehost.Refusal refuses, a "*."
-// pattern or a capital letter, since the proxy compares the host as written with one lower-cased
-// CONNECT host; and a URL that does not parse, carries a user, is not http or https, names no
-// host, names a port outside 1 to 65535, or has a path other than /, a query or a fragment, since
-// the proxy sends each request's own path and query to the URL's scheme, host and port alone. No
-// refusal quotes a part of the URL a credential can sit in - its user, its path, its query or its
-// fragment - or the URL whole, nor text before the first = that holds a URL's user or path: a
-// refusal names the URL's scheme at most, and the start writes it to the broker's log. Load reads
-// the setting with it, and `profiles check` its --private-upstream argument, so both hold the
-// destination to one form.
-func ParsePrivateUpstream(value string) (PrivateUpstream, error) {
-	const setting = privateUpstreamSetting
-	entries := strings.Fields(value)
-	switch len(entries) {
-	case 0:
-		return PrivateUpstream{}, nil
-	case 1:
-	default:
-		return PrivateUpstream{}, fmt.Errorf("%s names %d entries; it takes one <host>=<url> entry, the one bound host whose allowed requests go to a private destination", setting, len(entries))
+// ParsePrivateUpstreams reads BROKER_PROXY_PRIVATE_UPSTREAM's whitespace-separated <host>=<url>
+// entries, in the order written, one private destination per bound host; a blank value is none.
+// Load reads the setting with it, and `profiles check --private-upstream` reads its flag with it,
+// so the two read one form. It refuses, naming the setting and the fault: a host named twice,
+// since each bound host has one destination; an entry with no host before its first = or no URL
+// after it; text before the first = that holds "/" (a scheme's "://" or a path) or "@" (a user),
+// which is a URL written with no <host>= before it rather than a host; a host rulehost.Refusal
+// refuses, a "*." pattern or a capital letter, since the proxy compares the host as written with
+// one lower-cased CONNECT host; and a URL that does not parse, carries a user, is not http or
+// https, names no host, names a port outside 1 to 65535, or has a path other than /, a query or a
+// fragment, since the proxy sends each request's own path and query to the URL's scheme, host and
+// port alone. No refusal quotes a part of the URL a credential can sit in - its user, its path,
+// its query or its fragment - or the URL whole, nor text before the first = that holds a URL's
+// user or path: a refusal names the URL's scheme at most, and the start writes it to the broker's
+// log.
+func ParsePrivateUpstreams(value string) ([]PrivateUpstream, error) {
+	var upstreams []PrivateUpstream
+	for _, entry := range strings.Fields(value) {
+		upstream, err := parsePrivateUpstream(entry)
+		if err != nil {
+			return nil, err
+		}
+		for _, earlier := range upstreams {
+			if earlier.Host == upstream.Host {
+				return nil, fmt.Errorf("%s names the host %s twice; each bound host has one private destination", privateUpstreamSetting, upstream.Host)
+			}
+		}
+		upstreams = append(upstreams, upstream)
 	}
-	host, raw, _ := strings.Cut(entries[0], "=")
+	return upstreams, nil
+}
+
+// parsePrivateUpstream reads one entry of BROKER_PROXY_PRIVATE_UPSTREAM (ParsePrivateUpstreams).
+func parsePrivateUpstream(entry string) (PrivateUpstream, error) {
+	const setting = privateUpstreamSetting
+	host, raw, _ := strings.Cut(entry, "=")
 	if host == "" || raw == "" {
-		return PrivateUpstream{}, fmt.Errorf("%s must be one <host>=<url> entry, with a host before its first = and a URL after it", setting)
+		return PrivateUpstream{}, fmt.Errorf("%s must be <host>=<url> entries, each with a host before its first = and a URL after it", setting)
 	}
 	// A URL with no <host>= before it, such as http://u:password@10.0.0.5:8766/?a=b, reads as the
 	// host "http://u:password@10.0.0.5:8766/?a": its user and password sit in the text, so it is
 	// refused here without being quoted, before the host refusals below quote what they refuse.
 	if strings.ContainsAny(host, "/@") {
-		return PrivateUpstream{}, fmt.Errorf("%s must be one <host>=<url> entry: the text before its first = holds a URL's scheme, user or path (a / or an @), so it names no host; the refusal does not repeat it, since a URL's user can be a credential", setting)
+		return PrivateUpstream{}, fmt.Errorf("%s must be <host>=<url> entries: the text before an entry's first = holds a URL's scheme, user or path (a / or an @), so it names no host; the refusal does not repeat it, since a URL's user can be a credential", setting)
 	}
 	if why := rulehost.Refusal(host); why != "" {
-		return PrivateUpstream{}, fmt.Errorf("%s must name a host a profile's proxy block can bind before its =, got %q, which %s", setting, host, why)
+		return PrivateUpstream{}, fmt.Errorf("%s must name a host an airlock proxy block can bind before its =, got %q, which %s", setting, host, why)
 	}
 	if strings.HasPrefix(host, "*.") || strings.ToLower(host) != host {
 		return PrivateUpstream{}, fmt.Errorf("%s must name its host in lower case, with no \"*.\", since the proxy compares it as written with one lower-cased host, got %q", setting, host)
@@ -2112,19 +2125,21 @@ func portInRange(port string) bool {
 	return err == nil && number != 0
 }
 
-// privateUpstreamDialable refuses, naming the setting, a private destination every dial of the
+// PrivateUpstreamDialable refuses, naming the setting, a private destination every dial of the
 // proxy refuses (proxy.Server.upstreamAddresses), so the broker does not start with a destination
-// no write can reach: a URL whose host is an address proxy.PrivateUpstreamRefusal refuses on a
-// broker of these cluster ranges (BROKER_AIRLOCK_CLUSTER_RANGES) - one the proxy would tunnel to
-// for a command, being neither private nor in 100.64.0.0/10 nor in the ranges, or a loopback,
-// link-local, unspecified, multicast or cloud metadata server's address - which is the dial's own
-// rule, read here rather than written twice; or localhost or a name under .localhost, with or
-// without the root's trailing dot, which resolve to loopback alone (RFC 6761, section 6.3). The
-// one exception is the proxy's own: BROKER_AIRLOCK_TEST_DIAL_ALLOW naming the URL's host and port,
-// the local stack's way to reach a stand-in of Dispatch on loopback, which a production start
-// refuses. A name that resolves elsewhere is the dial's to check, since it can resolve
-// differently at each dial.
-func privateUpstreamDialable(upstream PrivateUpstream, dialAllow []string, clusterRanges []netip.Prefix) error {
+// no request can reach: a URL whose host is an address netaddr.DestinationRefusal refuses on a
+// broker of these cluster ranges (BROKER_AIRLOCK_CLUSTER_RANGES) - one in no range a destination
+// may be in (private, 100.64.0.0/10 or the ranges), or a loopback, link-local, unspecified,
+// multicast, broadcast, 0.0.0.0/8 or cloud metadata server's address, or an IPv6 address that
+// carries an IPv4 address - which is the dial's own rule, read here rather than written twice; or
+// localhost or a name under .localhost, with or without the root's trailing dot, which resolve to
+// loopback alone (RFC 6761, section 6.3). The one exception is the proxy's own:
+// BROKER_AIRLOCK_TEST_DIAL_ALLOW naming the URL's host and port, the local stack's way to reach a
+// stand-in on loopback, which a production start refuses. A name that resolves elsewhere is the
+// dial's to check, since it can resolve differently at each dial. Load runs it for each entry with
+// the broker's dial allow and cluster ranges, and `profiles check --private-upstream` through
+// PrivateUpstreamAddressRules.
+func PrivateUpstreamDialable(upstream PrivateUpstream, dialAllow []string, clusterRanges []netip.Prefix) error {
 	if upstream.URL == nil {
 		return nil
 	}
@@ -2138,111 +2153,191 @@ func privateUpstreamDialable(upstream PrivateUpstream, dialAllow []string, clust
 	if slices.Contains(dialAllow, net.JoinHostPort(host, port)) {
 		return nil
 	}
-	if name := strings.ToLower(strings.TrimSuffix(host, ".")); name == "localhost" || strings.HasSuffix(name, ".localhost") {
-		return fmt.Errorf("%s: the URL after its = names the host %s, which resolves to loopback, an address the airlock never dials", privateUpstreamSetting, host)
-	}
-	if addr, err := netip.ParseAddr(host); err == nil {
-		if why := proxy.PrivateUpstreamRefusal(addr, clusterRanges); why != "" {
-			return fmt.Errorf("%s: the URL after its = names %s, %s", privateUpstreamSetting, netaddr.Canonical(addr), why)
-		}
-	}
-	return nil
-}
-
-// profilesFileSetting is BROKER_PROFILES_FILE, the file whose proxy blocks are the airlock's
-// rules (policy.Profiles.ProxyRules), which every refusal of the results profile names.
-const profilesFileSetting = "BROKER_PROFILES_FILE"
-
-// ResultsEntryRules is every rule of the results capability that the profiles file alone decides,
-// over its proxy blocks (policy.Profiles.ProxyRules): no entry but oauthwire.AirlockResultsName is
-// of kind dpop; and, where that entry exists, it binds one exact host and no "*." name, is of kind
-// dpop, has a non-empty allow list, is carried in Authorization alone, and no other entry binds its
-// host (proxyrules.HostBound, so a "*." entry over it counts). The boot runs it through
-// AirlockResultRules and `profiles check` runs it whatever its arguments.
-//
-// Every broker with an airlock port serves every result grant of the database it shares and mints
-// that grant's token, so a run's token, and a DPoP proof of the pod's own key, go to every host the
-// entry binds: it binds one exact host, Dispatch's, and no other entry binds that host, so that one
-// allow list holds every request that reaches it. Kind dpop is a capability the broker mints for
-// DISPATCH_RESULTS_TOKEN alone, since no grant holds another dpop name and a secret grant's release
-// of one is refused. The entry is of kind dpop, has a non-empty allow list and is carried in the
-// Authorization header alone (an entry naming no headers carries the default, Authorization), so
-// what reaches Dispatch's host carries a token the broker minted and holds, on the routes the allow
-// list names. With no entry of that name and no other entry of kind dpop, any rules pass. Each
-// refusal names BROKER_PROFILES_FILE, the profile and what is wrong.
-func ResultsEntryRules(rules proxyrules.Rules) error {
-	name := oauthwire.AirlockResultsName
-	for _, other := range rules.Secrets {
-		if other.Kind == proxyrules.KindDPoP && other.Name != name {
-			return fmt.Errorf("%s holds the profile %s of kind %s: kind %s is the results capability the broker mints for %s alone, and no grant can hold another name of that kind", profilesFileSetting, other.Name, proxyrules.KindDPoP, proxyrules.KindDPoP, name)
-		}
-	}
-	entry := rules.Lookup(name)
-	if entry == nil {
-		return nil
-	}
-	switch {
-	case len(entry.Hosts) != 1 || strings.HasPrefix(entry.Hosts[0], "*."):
-		return fmt.Errorf("the profile %s of %s must bind one exact host, Dispatch's, and no `*.` name, since the run's token goes to every host it binds; it binds %q", name, profilesFileSetting, entry.Hosts)
-	case entry.Kind != proxyrules.KindDPoP:
-		return fmt.Errorf("the profile %s of %s must be of kind %s, a capability the broker mints and holds, and its kind is %q", name, profilesFileSetting, proxyrules.KindDPoP, entry.Kind)
-	case len(entry.Allow) == 0:
-		return fmt.Errorf("the profile %s of %s must have a non-empty allow list naming the results routes, and it has none", name, profilesFileSetting)
-	}
-	if headers := entry.HeaderNames(); len(headers) != 1 || fold.ASCII(headers[0]) != "authorization" {
-		return fmt.Errorf("the profile %s of %s must be carried in the Authorization header alone, and it names the headers %q", name, profilesFileSetting, headers)
-	}
-	host := fold.ASCII(entry.Hosts[0])
-	for _, other := range rules.Secrets {
-		if other.Name != name && proxyrules.HostBound(other.Hosts, host) {
-			return fmt.Errorf("the profile %s of %s binds the host %s besides %s: exactly one profile may bind %s's host, so that one allow list holds every request that reaches it", other.Name, profilesFileSetting, host, name, name)
-		}
-	}
-	return nil
-}
-
-// AirlockResultRules is the start check of the results capability: ResultsEntryRules, then the
-// settings' part. Result workflows need the entry; a private destination needs the entry; and the
-// entry's one host is the destination's host.
-//
-// cmd/cipherd runs it on every broker, whatever its result entries (resultWorkflows, whether
-// BROKER_EXCHANGE_RESULT_WORKFLOWS names any): every broker with an airlock port serves every
-// result grant of the database it shares, so a pod started with no result entry of its own still
-// sends a run's token to the host the entry binds. No broker setting names Dispatch's public URL;
-// the private destination (BROKER_AIRLOCK_PRIVATE_UPSTREAM) names Dispatch's address inside the
-// cluster, and the proxy sends every allowed request of the destination's host there and nowhere a
-// name resolves to, so the entry is held to the one place Dispatch is named. With no entry, no
-// result entries and no destination, the settings' part passes. agent-secrets result-grant runs a
-// command only when its https DISPATCH_URL names the entry's host, and Dispatch accepts a proof
-// only for its own origin (DISPATCH_SERVER_URL). `profiles check --private-upstream` runs it with
-// the destination it is given and no result entries.
-//
-// The refusal names the setting, the profile and what is wrong, and
-// BROKER_EXCHANGE_RESULT_WORKFLOWS only when it is set. The caller reads the profiles file; Load
-// reads none.
-func AirlockResultRules(rules proxyrules.Rules, upstream PrivateUpstream, resultWorkflows bool) error {
-	if err := ResultsEntryRules(rules); err != nil {
+	addr, err := privateUpstreamAddress(upstream)
+	if err != nil || !addr.IsValid() {
 		return err
 	}
-	name := oauthwire.AirlockResultsName
-	entry := rules.Lookup(name)
-	if entry == nil {
-		switch {
-		case resultWorkflows:
-			return fmt.Errorf("BROKER_EXCHANGE_RESULT_WORKFLOWS needs the profile %s, and %s holds no profile of that name", name, profilesFileSetting)
-		case upstream.Host != "":
-			return fmt.Errorf("%s names the host %s, and %s holds no profile %s to bind it: the private destination takes that profile's allowed requests alone", privateUpstreamSetting, upstream.Host, profilesFileSetting, name)
-		}
-		return nil
-	}
-	host := fold.ASCII(entry.Hosts[0])
-	switch {
-	case upstream.Host == "":
-		return fmt.Errorf("the profile %s of %s binds %s, and %s is unset: the profile's host must be the private destination's, the one setting that names where Dispatch is, so the run's token goes to Dispatch's own address and nowhere a name resolves to", name, profilesFileSetting, host, privateUpstreamSetting)
-	case upstream.Host != host:
-		return fmt.Errorf("the profile %s of %s binds %s, and %s names the host %s: the profile's host must be the private destination's, so the run's token goes to Dispatch's own address and nowhere a name resolves to", name, profilesFileSetting, host, privateUpstreamSetting, upstream.Host)
+	if why := netaddr.DestinationRefusal(addr, clusterRanges); why != "" {
+		return fmt.Errorf("%s: the URL after its = names %s, %s", privateUpstreamSetting, addr, why)
 	}
 	return nil
+}
+
+// PrivateUpstreamAddressRules is the start's check of a private destination's address
+// (PrivateUpstreamDialable) as `profiles check --private-upstream` makes it: the same rule,
+// netaddr.DestinationRefusal. Given the broker's cluster ranges (rangesGiven, clusterRanges as
+// ParseAirlockClusterRanges reads BROKER_AIRLOCK_CLUSTER_RANGES, none for a blank value), it is the
+// start's whole check with those ranges, its refusals in the start's words, and it answers no
+// unjudged address. Without them it reads the part every broker holds whatever its ranges: it
+// refuses, in the start's words and naming the setting, a URL whose host is localhost or a name
+// under .localhost, and one whose host is an address netaddr.DestinationNever names; an address
+// outside the ranges every broker takes (netaddr.DestinationPrivate) is a destination's only on a
+// broker whose BROKER_AIRLOCK_CLUSTER_RANGES hold it, so it answers that address as unjudged, and
+// no error, for the caller to say it did not judge the ranges. A host that is a name is the dial's
+// to check at each dial, as at the start, and answers nothing. The start's one exception,
+// BROKER_AIRLOCK_TEST_DIAL_ALLOW, is the local stack's and a production start refuses it, so it is
+// no exception here.
+func PrivateUpstreamAddressRules(upstream PrivateUpstream, clusterRanges []netip.Prefix, rangesGiven bool) (unjudged netip.Addr, err error) {
+	if rangesGiven {
+		return netip.Addr{}, PrivateUpstreamDialable(upstream, nil, clusterRanges)
+	}
+	addr, err := privateUpstreamAddress(upstream)
+	if err != nil || !addr.IsValid() {
+		return netip.Addr{}, err
+	}
+	if why := netaddr.DestinationNever(addr); why != "" {
+		return netip.Addr{}, fmt.Errorf("%s: the URL after its = names %s, %s", privateUpstreamSetting, addr, why)
+	}
+	if !netaddr.DestinationPrivate(addr) {
+		return addr, nil
+	}
+	return netip.Addr{}, nil
+}
+
+// privateUpstreamAddress is the part of the start's check of a destination's host that reads no
+// setting: the refusal of localhost and of a name under .localhost, with or without the root's
+// trailing dot, which resolve to loopback alone (RFC 6761, section 6.3); and the address of a URL
+// whose host is an address, as netaddr.Canonical reads it, or the zero address for no destination
+// and for a host that is a name, which is the dial's to check.
+func privateUpstreamAddress(upstream PrivateUpstream) (netip.Addr, error) {
+	if upstream.URL == nil {
+		return netip.Addr{}, nil
+	}
+	host := upstream.URL.Hostname()
+	if name := strings.ToLower(strings.TrimSuffix(host, ".")); name == "localhost" || strings.HasSuffix(name, ".localhost") {
+		return netip.Addr{}, fmt.Errorf("%s: the URL after its = names the host %s, which resolves to loopback, an address the airlock never dials", privateUpstreamSetting, host)
+	}
+	if addr, err := netip.ParseAddr(host); err == nil {
+		return netaddr.Canonical(addr), nil
+	}
+	return netip.Addr{}, nil
+}
+
+// profilesFileSetting is BROKER_PROFILES_FILE, which the dpop block checks name as the file the
+// proxy blocks come from.
+const profilesFileSetting = "BROKER_PROFILES_FILE"
+
+// MintedEntryRules is every rule of the proxy blocks of kind dpop that the profiles file alone
+// decides, over its proxy blocks (policy.Profiles.ProxyRules). Each such block is a capability the
+// broker mints and holds (requests.MintedKind), whose token goes to every host the block binds,
+// with a DPoP proof of the broker's own key. So each binds one exact host and no "*." name, has a
+// non-empty allow list, the one list that holds every request of its grant, none of whose entries
+// names the path prefix "" or "/", which is every path; is carried in the Authorization header
+// alone (a block naming no headers carries the default, Authorization); and
+// no block of another kind binds its host (proxyrules.HostBound, so a "*." block over it counts),
+// so that every request that reaches that host through the proxy is a minted grant's, held to its
+// allow list. Two dpop blocks may share one host, each its own capability. The boot runs it through
+// ProxyMintedRules, and `profiles check` runs it whatever its arguments.
+func MintedEntryRules(rules proxyrules.Rules) error {
+	for _, entry := range rules.Secrets {
+		if entry.Kind != proxyrules.KindDPoP {
+			continue
+		}
+		switch {
+		case len(entry.Hosts) != 1 || strings.HasPrefix(entry.Hosts[0], "*."):
+			return fmt.Errorf("the profile %s of %s is of kind %s and must bind one exact host and no `*.` name, since the token the broker mints for its grant goes to every host it binds; it binds %q", entry.Name, profilesFileSetting, proxyrules.KindDPoP, entry.Hosts)
+		case len(entry.Allow) == 0:
+			return fmt.Errorf("the profile %s of %s is of kind %s and must have a non-empty allow list, the one list that holds every request of its grant, and it has none", entry.Name, profilesFileSetting, proxyrules.KindDPoP)
+		}
+		for _, allow := range entry.Allow {
+			if allow.PathPrefix == "" || allow.PathPrefix == "/" {
+				return fmt.Errorf("the profile %s of %s is of kind %s and allows %s on the path prefix %q, which is every path of its host: each allow entry names the routes its grant needs", entry.Name, profilesFileSetting, proxyrules.KindDPoP, allow.Method, allow.PathPrefix)
+			}
+		}
+		if headers := entry.HeaderNames(); len(headers) != 1 || fold.ASCII(headers[0]) != "authorization" {
+			return fmt.Errorf("the profile %s of %s is of kind %s and must be carried in the Authorization header alone, and it names the headers %q", entry.Name, profilesFileSetting, proxyrules.KindDPoP, headers)
+		}
+		host := fold.ASCII(entry.Hosts[0])
+		for _, other := range rules.Secrets {
+			if other.Kind != proxyrules.KindDPoP && proxyrules.HostBound(other.Hosts, host) {
+				return fmt.Errorf("the profile %s of %s binds %s, the host of the profile %s of kind %s: no block of another kind may bind a host a minted capability's token goes to, so that the minted grant's allow list holds every request there", other.Name, profilesFileSetting, host, entry.Name, proxyrules.KindDPoP)
+			}
+		}
+	}
+	return nil
+}
+
+// ProxyMintedRules is the start check of the proxy blocks of kind dpop: MintedEntryRules, then
+// the private destinations' part (BROKER_PROXY_PRIVATE_UPSTREAM). cmd/cipherd runs it on every
+// broker with a profiles file, whatever capabilities it grants itself: every broker with an
+// airlock port serves every minted grant of the database it shares and mints that grant's token,
+// so a pod that grants none still sends a token, and a DPoP proof of its own key, to every host a
+// dpop block binds.
+//
+// A dpop block is held to the one place its service is named. No broker setting names a service's
+// public URL; a private destination names the service's address inside the cluster, and the proxy
+// sends every allowed request of that destination's host there and nowhere a name resolves to. So
+// every dpop block binds one destination's host, dpop blocks need a destination, and each
+// destination needs a dpop block that binds its host, since it takes such blocks' allowed requests
+// alone. With no destination and no dpop block, any rules pass. The refusal names the setting or
+// the profile and what is wrong. The caller reads the profiles file; Load reads none.
+func ProxyMintedRules(rules proxyrules.Rules, upstreams []PrivateUpstream) error {
+	if err := MintedEntryRules(rules); err != nil {
+		return err
+	}
+	bound := map[string]bool{}
+	for _, upstream := range upstreams {
+		bound[upstream.Host] = false
+	}
+	for _, entry := range rules.Secrets {
+		if entry.Kind != proxyrules.KindDPoP {
+			continue
+		}
+		host := fold.ASCII(entry.Hosts[0])
+		if _, named := bound[host]; !named {
+			if len(upstreams) == 0 {
+				return fmt.Errorf("the profile %s of %s is of kind %s and binds %s, and %s is unset: a dpop block's host must be a private destination's, the one setting that names where its service is, so the token the broker mints goes to that service's own address and nowhere a name resolves to", entry.Name, profilesFileSetting, proxyrules.KindDPoP, host, privateUpstreamSetting)
+			}
+			return fmt.Errorf("the profile %s of %s is of kind %s and binds %s, which no entry of %s names: a dpop block's host must be a private destination's, so the token the broker mints goes to that service's own address and nowhere a name resolves to", entry.Name, profilesFileSetting, proxyrules.KindDPoP, host, privateUpstreamSetting)
+		}
+		bound[host] = true
+	}
+	for _, upstream := range upstreams {
+		if !bound[upstream.Host] {
+			return fmt.Errorf("%s names the host %s, and no profile of %s of kind %s binds it: a private destination takes the allowed requests of dpop blocks alone", privateUpstreamSetting, upstream.Host, profilesFileSetting, proxyrules.KindDPoP)
+		}
+	}
+	return nil
+}
+
+// ResultsEntryRules is the results capability's own part of the start check, beside
+// ProxyMintedRules, which holds its block as it holds every dpop block (one exact host, a private
+// destination's, an allow list, Authorization alone, no block of another kind on its host). Where
+// the profile oauthwire.AirlockResultsName has a proxy block, the block is of kind dpop: the broker
+// mints the results token for a CI run's result grant and holds it (requests.MintedKind), and a
+// block of another kind would carry a stored secret of that name. Result entries
+// (BROKER_EXCHANGE_RESULT_WORKFLOWS, resultWorkflows) need that profile, since each result entry's
+// run is granted a placeholder its block carries. With neither, any rules pass. Each refusal names
+// BROKER_PROFILES_FILE and the profile, and BROKER_EXCHANGE_RESULT_WORKFLOWS only when it is set.
+// cmd/cipherd runs it on every broker before ProxyMintedRules, and `profiles check` runs it with no
+// result entries.
+func ResultsEntryRules(rules proxyrules.Rules, resultWorkflows bool) error {
+	name := oauthwire.AirlockResultsName
+	entry := rules.Lookup(name)
+	switch {
+	case entry == nil && resultWorkflows:
+		return fmt.Errorf("BROKER_EXCHANGE_RESULT_WORKFLOWS needs the profile %s, and %s holds no profile of that name", name, profilesFileSetting)
+	case entry != nil && entry.Kind != proxyrules.KindDPoP:
+		return fmt.Errorf("the profile %s of %s must be of kind %s, a capability the broker mints and holds, and its kind is %q", name, profilesFileSetting, proxyrules.KindDPoP, entry.Kind)
+	}
+	return nil
+}
+
+// MintedEntryDigest is the digest a minted grant records of the entry it was made under and that a
+// broker compares with its own before it mints the grant's token (requests.MintedKind.EntryDigest):
+// the SHA-256, in hex, of the dpop block's own digest (policy.Profiles.Digest), a newline, and the
+// scheme and host of the private destination of the block's host as one URL prefix. It is in it because the
+// token goes to the destination's address, not the bound host's, so a broker on the same database
+// with the same block and another destination serves none of the grant. The URL holds no
+// credential (ParsePrivateUpstreams refuses a user, a path, a query and a fragment), and only the
+// hash is stored. It is "" for a block the profiles hold no digest of, or with no destination: a
+// broker whose kind has no digest serves no grant of it.
+func MintedEntryDigest(profileDigest string, upstream PrivateUpstream) string {
+	if profileDigest == "" || upstream.URL == nil {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(profileDigest + "\n" + upstream.URL.Scheme + "://" + upstream.URL.Host))
+	return hex.EncodeToString(sum[:])
 }
 
 // parseAirlockTestAzureAuthority reads BROKER_AIRLOCK_TEST_AZURE_AUTHORITY, the host the proxy
@@ -2508,7 +2603,7 @@ func Load(getenv func(string) string) (Config, error) {
 	if cfg.AirlockTestDialAllow, testSwitchErr = parseAirlockTestDialAllow(getenv("BROKER_AIRLOCK_TEST_DIAL_ALLOW")); testSwitchErr != nil {
 		return Config{}, testSwitchErr
 	}
-	if cfg.AirlockTestResolve, cfg.AirlockTestDialPorts, testSwitchErr = parseAirlockTestResolve(getenv("BROKER_AIRLOCK_TEST_RESOLVE")); testSwitchErr != nil {
+	if cfg.AirlockTestResolve, cfg.ProxyTestDialPorts, testSwitchErr = parseAirlockTestResolve(getenv("BROKER_AIRLOCK_TEST_RESOLVE")); testSwitchErr != nil {
 		return Config{}, testSwitchErr
 	}
 	if cfg.AirlockTestKeepValues, testSwitchErr = testOnlySwitch("BROKER_AIRLOCK_TEST_KEEP_VALUES", getenv("BROKER_AIRLOCK_TEST_KEEP_VALUES")); testSwitchErr != nil {
@@ -2576,21 +2671,24 @@ func Load(getenv func(string) string) (Config, error) {
 	}
 	// The broker cluster's own ranges, read whatever the profiles file says: a list the broker
 	// could not act on is a mistake in the deployment whether or not its airlock is on today.
-	if cfg.AirlockClusterRanges, err = parseAirlockClusterRanges(getenv("BROKER_AIRLOCK_CLUSTER_RANGES")); err != nil {
+	if cfg.AirlockClusterRanges, err = ParseAirlockClusterRanges(getenv("BROKER_AIRLOCK_CLUSTER_RANGES")); err != nil {
 		return Config{}, err
 	}
-	// The private destination, read and held to its form here; the one profile whose proxy block
-	// binds its host, DISPATCH_RESULTS_TOKEN, is checked where the profiles file is read
-	// (AirlockResultRules), since Load reads no file. Without a profiles file no proxy block binds
-	// the host, so the setting would send nothing anywhere.
-	if cfg.AirlockPrivateUpstream, err = ParsePrivateUpstream(getenv(privateUpstreamSetting)); err != nil {
+	// The private destinations, read and held to their form here, each against the start's
+	// address rule with the cluster ranges read above (PrivateUpstreamDialable); the dpop blocks
+	// that bind their hosts are checked where the profiles file is read (ProxyMintedRules), since
+	// Load reads no file. Without a profiles file no proxy block binds a host, so the setting would
+	// send nothing anywhere.
+	if cfg.ProxyPrivateUpstreams, err = ParsePrivateUpstreams(getenv(privateUpstreamSetting)); err != nil {
 		return Config{}, err
 	}
-	if err = privateUpstreamDialable(cfg.AirlockPrivateUpstream, cfg.AirlockTestDialAllow, cfg.AirlockClusterRanges); err != nil {
-		return Config{}, err
+	for _, upstream := range cfg.ProxyPrivateUpstreams {
+		if err = PrivateUpstreamDialable(upstream, cfg.AirlockTestDialAllow, cfg.AirlockClusterRanges); err != nil {
+			return Config{}, err
+		}
 	}
-	if cfg.AirlockPrivateUpstream.Host != "" && cfg.ProfilesFile == "" {
-		return Config{}, fmt.Errorf("%s needs BROKER_PROFILES_FILE: the private destination takes the allowed requests of the one profile whose proxy block binds its host, and with no profiles file no proxy block binds it", privateUpstreamSetting)
+	if len(cfg.ProxyPrivateUpstreams) > 0 && cfg.ProfilesFile == "" {
+		return Config{}, fmt.Errorf("%s needs BROKER_PROFILES_FILE: a private destination takes the allowed requests of the dpop blocks that bind its host, and with no profiles file no proxy block binds it", privateUpstreamSetting)
 	}
 	// Whether the proxy's settings are required is up to the profiles file's contents, which Load
 	// does not read: RequireAirlock is that check, which the boot makes once it has read the file.
@@ -2924,7 +3022,7 @@ func Load(getenv func(string) string) (Config, error) {
 	// A result entry's run is granted a placeholder that only the proxy block of the profile
 	// DISPATCH_RESULTS_TOKEN makes worth anything, so a broker with result workflows and no
 	// profiles file would grant placeholders no proxy honours. The profile itself is checked where
-	// the file is read (AirlockResultRules), since Load reads no file.
+	// the file is read (ResultsEntryRules), since Load reads no file.
 	if len(cfg.ExchangeResultWorkflows) > 0 && cfg.ProfilesFile == "" {
 		return Config{}, fmt.Errorf("BROKER_EXCHANGE_RESULT_WORKFLOWS needs BROKER_PROFILES_FILE: a result entry's run is granted an airlock placeholder, which the proxy block of the profile %s, of kind %s, makes a write to Dispatch", oauthwire.AirlockResultsName, proxyrules.KindDPoP)
 	}

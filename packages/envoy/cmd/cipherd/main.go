@@ -242,17 +242,20 @@ func main() {
 		proxied[i] = rule.Name
 	}
 	fatal(cfg.RequireAirlock(proxied))
-	// The results capability, checked on every broker whatever its result entries
-	// (config.AirlockResultRules): every broker with an airlock port serves every result grant of
-	// the database it shares, so a pod with no result entry of its own still sends a run's token
-	// to the host the profile DISPATCH_RESULTS_TOKEN binds. Its proxy block binds one exact host,
-	// the private destination's, and no other proxy block binds that host or is of kind dpop;
-	// result entries need the profile, and a destination needs it to bind its host.
-	fatal(config.AirlockResultRules(proxyRules, cfg.AirlockPrivateUpstream, len(cfg.ExchangeResultWorkflows) > 0))
+	// The proxy blocks of kind dpop, checked on every broker whatever capabilities it grants
+	// (config.ResultsEntryRules, config.ProxyMintedRules): every broker with an airlock port serves
+	// every minted grant of the database it shares, so a pod that grants none still sends a
+	// grant's token, and a proof of its own key, to every host a dpop block binds. The results
+	// profile DISPATCH_RESULTS_TOKEN is of kind dpop, and result entries need it; each dpop block
+	// binds one exact host, a private destination's, with an allow list, in Authorization alone,
+	// and no block of another kind binds that host; each destination needs a dpop block to bind
+	// its host.
+	fatal(config.ResultsEntryRules(proxyRules, len(cfg.ExchangeResultWorkflows) > 0))
+	fatal(config.ProxyMintedRules(proxyRules, cfg.ProxyPrivateUpstreams))
 	// And the results entry this broker grants and serves result grants under (resultEntryDigest):
-	// the profile and the destination the check above passed, hashed once, which the token
-	// endpoint records in each grant it makes and the request machine compares each grant with.
-	entryDigest := resultEntryDigest(profiles, cfg.AirlockPrivateUpstream)
+	// the profile and the destination the checks above passed, hashed once, which the token
+	// endpoint records in each grant it makes and the results kind compares each grant with.
+	entryDigest := resultEntryDigest(profiles, cfg.ProxyPrivateUpstreams)
 	// And the proxy's certificate authority, built in the same breath and refused the same way:
 	// the key beside the certificate, which the proxy port signs each bound host's certificate
 	// with, and the certificate itself, which every release of a name a proxy block holds back
@@ -767,19 +770,23 @@ func main() {
 	// its AirlockConnection and AirlockValues - and the authority built at the top of main.
 	var proxyServer *proxy.Server
 	if started.AirlockListener != nil {
-		// The pod's own DPoP key: made here, held in this process alone, and the key every
-		// results token this pod mints for a CI run's result grant is bound to, so a token is
-		// of no use without this pod. Its thumbprint is logged once, never the key, so every
-		// results token's binding can be read back to a pod of the broker.
+		// The pod's own DPoP key: made here, held in this process alone, and the key every token
+		// this pod mints for a minted capability's grant is bound to, so such a token is of no use
+		// without this pod. Its thumbprint is logged once, never the key, so every minted token's
+		// binding can be read back to a pod of the broker.
 		podKey, err := proof.NewKey()
 		fatal(err)
 		podThumbprint, err := proof.Thumbprint(&podKey.PublicKey)
 		fatal(err)
-		slog.Info("broker: the airlock's DPoP key", "thumbprint", podThumbprint)
-		reqMachine.ResultGrants, reqMachine.ResultTokens, reqMachine.ResultKey = oauthStore, provider, podThumbprint
-		// The results entry the token endpoint records in each grant: this pod serves a grant
-		// only when the grant's is its own (requests.Machine.ResultEntryDigest).
-		reqMachine.ResultEntryDigest = entryDigest
+		slog.Info("broker: the proxy's DPoP key", "thumbprint", podThumbprint)
+		reqMachine.MintedTokens, reqMachine.MintedKey = provider, podThumbprint
+		// The capabilities this pod mints and holds: the results capability, its grants read from
+		// result_grants, served only under the results entry the token endpoint records in each
+		// grant (requests.MintedKind.EntryDigest).
+		reqMachine.Minted = []requests.MintedKind{{
+			Name: oauthwire.AirlockResultsName, Word: oauthwire.AirlockResultsWord,
+			Grants: oauthStore.ResultGrants(), EntryDigest: entryDigest,
+		}}
 		proxyServer = proxy.New(proxy.Options{
 			Rules:   proxyRules,
 			Grants:  reqMachine,
@@ -794,16 +801,17 @@ func main() {
 			// refuses to dial beside every private address. config.Load has already refused a
 			// start in a cluster whose ranges miss its Service range.
 			ClusterRanges: cfg.AirlockClusterRanges,
-			// The one bound host whose allowed requests go to an address inside the cluster
-			// (BROKER_AIRLOCK_PRIVATE_UPSTREAM), dialled only where ClusterRanges or another rule
-			// refuses every other request; the start above has checked the entry that binds it.
-			PrivateUpstream: proxy.PrivateUpstream{Host: cfg.AirlockPrivateUpstream.Host, URL: cfg.AirlockPrivateUpstream.URL},
+			// The bound hosts whose allowed requests go to an address inside the cluster
+			// (BROKER_PROXY_PRIVATE_UPSTREAM), each dialled only where ClusterRanges or another
+			// rule refuses every other request; the start above has checked the dpop blocks that
+			// bind them.
+			PrivateUpstreams: proxyDestinations(cfg.ProxyPrivateUpstreams),
 			// The local stack's settings for the proxy, every one of them refused on a
 			// production start (refuseAirlockTestSettingsInProduction): where a name is, the
 			// addresses it may dial anyway, the roots it trusts upstream, the two negative
 			// controls, and the stand-in token authority the azure exchange is held to.
 			Resolve:        airlockTestResolver(cfg.AirlockTestResolve),
-			Dial:           airlockTestDial(cfg.AirlockTestDialPorts),
+			Dial:           proxyTestDial(cfg.ProxyTestDialPorts),
 			UpstreamRoots:  airlockTestUpstreamRoots,
 			DialAllow:      cfg.AirlockTestDialAllow,
 			KeepValues:     cfg.AirlockTestKeepValues,
@@ -1201,13 +1209,22 @@ func airlockTestResolver(hosts map[string]netip.Addr) func(context.Context, stri
 	}
 }
 
-// airlockTestDial is the port half of BROKER_AIRLOCK_TEST_RESOLVE as the proxy's Dial: a dial to
+// proxyDestinations is BROKER_PROXY_PRIVATE_UPSTREAM's entries as the proxy takes them.
+func proxyDestinations(upstreams []config.PrivateUpstream) []proxy.PrivateUpstream {
+	destinations := make([]proxy.PrivateUpstream, len(upstreams))
+	for i, upstream := range upstreams {
+		destinations[i] = proxy.PrivateUpstream{Host: upstream.Host, URL: upstream.URL}
+	}
+	return destinations
+}
+
+// proxyTestDial is the port half of BROKER_AIRLOCK_TEST_RESOLVE as the proxy's Dial: a dial to
 // an address whose entry named a port goes to that port, whatever port the CONNECT named, so a
 // stand-in service on loopback needs no privileged port 443; every other dial is a net.Dialer's,
 // as with the setting unset. The proxy hands its Dial an address it resolved and checked, never a
 // name, so the port follows the address the check read. It answers nil for a setting that names
 // no port, which leaves the proxy its own dialer.
-func airlockTestDial(ports map[netip.Addr]uint16) func(context.Context, string, string) (net.Conn, error) {
+func proxyTestDial(ports map[netip.Addr]uint16) func(context.Context, string, string) (net.Conn, error) {
 	if len(ports) == 0 {
 		return nil
 	}

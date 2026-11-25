@@ -114,12 +114,14 @@ func (c *claudeRig) row(path string) (string, bool) {
 	return string(content), ok
 }
 
-// awaitRow waits, past a few saves, for the table to hold want at path.
+// awaitRow waits for the table to hold want at path. The keeper saves every saveInterval, and no
+// case reads how many saves that takes, so the wait is for the row under the test's hang guard; a
+// database read a time, at a pace of its own.
 func (c *claudeRig) awaitRow(path, want string) {
 	c.t.Helper()
 	var got string
 	var ok bool
-	if !testwait.Holds(4*saveInterval, 20*time.Millisecond, func() bool {
+	if !testwait.Holds(beforeDeadline(c.t), 20*time.Millisecond, func() bool {
 		got, ok = c.row(path)
 		return ok && got == want
 	}) {
@@ -230,12 +232,11 @@ func TestAClaudeSaveStopsWhenAnotherWriterMovedTheRow(t *testing.T) {
 		t.Fatal(err)
 	}
 	appendTo(t, c.transcript, "{\"n\":2}\n")
-	deadline := time.Now().Add(4 * saveInterval)
-	for !strings.Contains(c.stderr.String(), "stops saving "+c.transcript) {
-		if time.Now().After(deadline) {
-			t.Fatalf("the launcher logged %q, want it to say it stops saving %s", c.stderr.String(), c.transcript)
-		}
-		time.Sleep(20 * time.Millisecond)
+	// The keeper says so at its next save; when that comes is not the claim.
+	if !testwait.Holds(beforeDeadline(t), 20*time.Millisecond, func() bool {
+		return strings.Contains(c.stderr.String(), "stops saving "+c.transcript)
+	}) {
+		t.Fatalf("the launcher logged %q, want it to say it stops saving %s", c.stderr.String(), c.transcript)
 	}
 	c.stop(1)
 	if got, _ := c.row(c.transcript); got != "{\"n\":1}\n"+other {
@@ -430,7 +431,7 @@ func processRig(t *testing.T) (g *rig, kill func()) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	command := exec.Command(self, "-test.run=^TestLauncherProcess$")
+	command := exec.Command(self, reentry(t, "TestLauncherProcess")...)
 	command.Env = append(os.Environ(), launcherProcessEnv+"=1", "LEGION_LAUNCHER_TEST_ADDRESS=tcp://"+listener.Addr().String(),
 		"LEGION_LAUNCHER_TEST_PRIVATE="+private)
 	// The launcher's output goes to a file rather than a pipe: its child inherits it, and a pipe

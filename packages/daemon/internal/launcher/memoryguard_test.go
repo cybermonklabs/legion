@@ -925,7 +925,7 @@ func TestMemoryGuardSparesTheAgentAndEndsItsCommand(t *testing.T) {
 		cancel()
 		select {
 		case <-done:
-		case <-time.After(10 * time.Second):
+		case <-time.After(cleanupBeforeDeadline(t)):
 			t.Error("the memory guard did not return after its context ended")
 		}
 	})
@@ -1580,7 +1580,7 @@ func (g *rig) dropConnection() {
 	ended := func() int { return strings.Count(g.stderr.String(), "launcher: daemon connection: ") }
 	before := ended()
 	_ = g.roleConn.conn.Close()
-	if !testwait.Holds(testwait.Bounded(g.t, time.Minute, time.Second), testwait.Poll, func() bool { return ended() > before }) {
+	if !testwait.Holds(beforeDeadline(g.t), testwait.Poll, func() bool { return ended() > before }) {
 		g.t.Fatalf("the launcher never saw its connection end; its log: %s", g.stderr.String())
 	}
 }
@@ -3480,7 +3480,7 @@ func TestControllerPodMemoryGuardTurnsOffWhereItCannotReadThePod(t *testing.T) {
 			rig := useGuardPod(t, pod, nil)
 			m, log := controllerManager()
 			serveControllerGuard(t, m, &pidGuard{})
-			if !testwait.Holds(testwait.Bounded(t, time.Minute, time.Second), testwait.Poll, func() bool { return len(guardLines(log, "off ")) > 0 }) {
+			if !testwait.Holds(beforeDeadline(t), testwait.Poll, func() bool { return len(guardLines(log, "off ")) > 0 }) {
 				t.Fatalf("the guard wrote no off line; its log:\n%s", log.String())
 			}
 			if lines := guardLines(log, ""); len(lines) != 1 || !strings.HasPrefix(lines[0], "launcher: memory guard: "+tc.reason) {
@@ -3705,7 +3705,7 @@ func TestControllerPodMemoryGuardRunsInTheRolesDirFormAtTheControllerPodsSetting
 		for what, done := range map[string]<-chan struct{}{"the controller's connection": served, "the memory guard": guarded} {
 			select {
 			case <-done:
-			case <-time.After(30 * time.Second):
+			case <-time.After(cleanupBeforeDeadline(t)):
 				t.Errorf("%s did not return after its context ended; the launcher's log: %s", what, stderr.String())
 			}
 		}
@@ -3779,7 +3779,7 @@ func TestControllerPodMemoryGuardTurnsOffOnAPanicInItsLoopAndTheLauncherServesOn
 	// rig.tick waits for, so the test lets it take this one reading alone.
 	w := rig.pending
 	w.fire <- rig.clock.advance(w.d)
-	if !testwait.Holds(testwait.Bounded(t, time.Minute, time.Second), testwait.Poll, func() bool { return len(guardLines(g.stderr, "off ")) > 0 }) {
+	if !testwait.Holds(beforeDeadline(t), testwait.Poll, func() bool { return len(guardLines(g.stderr, "off ")) > 0 }) {
 		t.Fatalf("the guard wrote no off line after its Observe panicked; the launcher's log:\n%s", g.stderr.String())
 	}
 	want := "launcher: memory guard: off reason=panic: a test's Observe panics at "
@@ -3855,7 +3855,7 @@ func servedKillReport(t *testing.T, cfg Config, report shimwire.LauncherMemoryKi
 		cancel()
 		select {
 		case <-served:
-		case <-time.After(30 * time.Second):
+		case <-time.After(cleanupBeforeDeadline(t)):
 			t.Errorf("the %s's manager did not return after its context ended; its log: %s", m.role, stderr.String())
 		}
 	})
@@ -3963,7 +3963,7 @@ func TestAMicroVMLauncherRaisesTheAgentsWorkAndKeepsItsOwnProcessesAtTheStarting
 		cancel()
 		select {
 		case <-done:
-		case <-time.After(10 * time.Second):
+		case <-time.After(cleanupBeforeDeadline(t)):
 			t.Error("the guest watch did not return after its context ended")
 		}
 	})

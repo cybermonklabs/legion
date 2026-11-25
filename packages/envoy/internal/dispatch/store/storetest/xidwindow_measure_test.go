@@ -4,12 +4,9 @@ package storetest
 
 import (
 	"context"
-	"fmt"
 	"io"
-	"runtime"
 	"runtime/trace"
 	"strings"
-	"sync"
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -104,30 +101,4 @@ func TestAMeasureUnderGoTestTraceSaysSo(t *testing.T) {
 	if ran {
 		t.Error("Measure ran its operation under a trace it could not take its own beside")
 	}
-}
-
-// stoppingTB is a testing.TB whose Fatal, Fatalf and FailNow record why and stop the goroutine that
-// calls them (runtime.Goexit), as a test's own do, without failing the test it wraps.
-type stoppingTB struct {
-	testing.TB
-	mu      sync.Mutex
-	stopped string
-}
-
-func (s *stoppingTB) Fatalf(format string, args ...any) {
-	s.mu.Lock()
-	s.stopped = fmt.Sprintf(format, args...)
-	s.mu.Unlock()
-	runtime.Goexit()
-}
-
-func (s *stoppingTB) Fatal(args ...any) { s.Fatalf("%s", fmt.Sprint(args...)) }
-
-func (s *stoppingTB) FailNow() { s.Fatalf("FailNow") }
-
-// stop is why the TB was stopped, empty when it was not.
-func (s *stoppingTB) stop() string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.stopped
 }

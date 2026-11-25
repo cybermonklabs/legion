@@ -32,6 +32,7 @@ import (
 	"log"
 	"log/slog"
 	"regexp"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 
@@ -49,11 +50,16 @@ const markToken = `"` + Mark + `"`
 // read is one it cannot mask, so none of it is written.
 const NotJSON = `{"severity":"ERROR","message":"broker: a log line that was no JSON object was not written"}`
 
-// prefix is the opening of every placeholder the broker mints, in any case: placeholder.Prefix,
-// and the "result-" of a CI run's result grant (placeholder.ResultPrefix) when it follows, so the
-// characters a result placeholder draws after it are masked as a release's are. Go's case
-// folding also reads ſ as s.
-var prefix = regexp.MustCompile(`(?i)` + regexp.QuoteMeta(placeholder.Prefix) + `(?:` + regexp.QuoteMeta(strings.TrimPrefix(placeholder.ResultPrefix, placeholder.Prefix)) + `)?`)
+// prefix is the prefix every placeholder the broker mints starts with (placeholder.Prefix), in any
+// case: Go's case folding, which also reads ſ as s.
+var prefix = regexp.MustCompile(`(?i)` + regexp.QuoteMeta(placeholder.Prefix))
+
+// mintedWord is a minted kind's word and hyphen (placeholder.MintedPrefix) right after a prefix,
+// in any case, so the characters a minted grant's placeholder draws after them are masked as a
+// release's are. A release's placeholder holds no hyphen, so the word is read only where a kind's
+// prefix put one, and maskText reads it only short of the next prefix, so a prefix written twice
+// is two openings and the word "agent" of the second is never taken for a kind's.
+var mintedWord = regexp.MustCompile(`^(?i)[a-z]{1,` + strconv.Itoa(placeholder.MaxMintedWord) + `}-`)
 
 // Writer is w behind the placeholder mask, for the lines slog's JSON handler writes: each line of
 // each Write is read as one JSON object, each of its strings holding a placeholder is written
@@ -234,6 +240,9 @@ func maskText(text []byte) ([]byte, bool) {
 			limit = openings[i+1][0]
 		}
 		end := opening[1]
+		if word := mintedWord.FindIndex(text[end:limit]); word != nil {
+			end += word[1]
+		}
 		for range placeholder.Length {
 			r, size := utf8.DecodeRune(text[end:limit])
 			if size == 0 || !minted(r) {

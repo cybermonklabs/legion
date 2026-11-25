@@ -20,6 +20,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/sjawhar/envoy/internal/fileowner"
 )
@@ -541,6 +542,11 @@ func airlockProxyURL(release *AirlockRelease) (string, error) {
 // one, is left out, since kept it would send that bound host's requests straight out with a
 // placeholder in them; the nested call then goes to the proxy, which refuses it, and no request of
 // a bound host leaves without the proxy.
+//
+// The inherited list is read as the clients that read it split it, on commas and on white space
+// (Bun's fetch, which `dispatch` runs on, takes `other.test dispatch.example.test` as two
+// entries), so each piece is held to the bound hosts on its own, and the list is written back
+// with commas alone.
 func airlockNoProxy(environ []string, release *AirlockRelease) string {
 	inherited := envValue(environ, "no_proxy")
 	if inherited == "" {
@@ -552,11 +558,11 @@ func airlockNoProxy(environ []string, release *AirlockRelease) string {
 	}
 
 	entries := make([]string, 0, len(airlockFixedNoProxy)+8)
-	for _, entry := range strings.Split(inherited, ",") {
-		entry = strings.TrimSpace(entry)
+	pieces := strings.FieldsFunc(inherited, func(r rune) bool { return r == ',' || unicode.IsSpace(r) })
+	for _, entry := range pieces {
 		// "*" turns the proxy off for everything, so no bound host would reach it. A list that
 		// holds it holds nothing else that matters.
-		if entry == "" || entry == "*" || overlapsBoundHost(entry, bound) {
+		if entry == "*" || overlapsBoundHost(entry, bound) {
 			continue
 		}
 		entries = append(entries, entry)
