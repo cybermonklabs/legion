@@ -62,17 +62,18 @@
 # not read is refused where it stands rather than passed with its fetches unread and a step
 # running it charged nothing for it. So is such a top-level file whose `#!` line names any
 # program but an interpreter OWN_INTERPRETERS gives its suffix, and a `.pyc` that opens `#!`,
-# each a program of another interpreter this check does not read; and a directory there the walk
-# below does not enter, a symbolic link or one of the names it skips. A file there this check
-# does not read as a script, a direct `*.test.sh` harness excepted, named by its literal path, by
-# its name or by a name built from data that ends as its does (unread_named), appears in a
-# step's, an action's or a script's command only where this tree writes one: what an interpreter
-# OWN_INTERPRETERS gives `.py` runs, the filter `jq -f` reads, a command word whose `#!` line
-# names an interpreter OWN_INTERPRETERS gives its suffix, and an argument of a program
-# UNREAD_ARGUMENTS names, none of which runs a file it names; any other place, after any
-# wrapper, as any program's argument, as a redirect's file or in the text of a shell's `-c`, is
-# refused by name
-# (the reading set and unread_uses below; dispatch://INFRA-1545, rounds 37 and 38). One named
+# each a program of another interpreter this check does not read; a top-level file of a suffix
+# NO_HASHBANG names that opens with any `#!` line, a line its compiler cannot read; and a
+# directory there the walk below does not enter, a symbolic link or one of the names it skips. A
+# file there this check does not read as a script, a direct `*.test.sh` harness excepted, named
+# by its literal path, by its name or by a name built from data that ends as its does
+# (unread_named), appears in a step's, an action's or a script's command only where this tree
+# writes one: what an interpreter OWN_INTERPRETERS gives `.py` runs, the filter `jq -f` reads, a
+# command word whose `#!` line names an interpreter OWN_INTERPRETERS gives its suffix, which no
+# file of a suffix NO_HASHBANG names is, and an argument of a program UNREAD_ARGUMENTS names,
+# none of which runs a file it names; any other place, after any wrapper, as any program's
+# argument, as a redirect's file or in the text of a shell's `-c`, is refused by name
+# (the reading set and unread_uses below; dispatch://INFRA-1545, rounds 37, 38 and 68). One named
 # through a pattern is read as the reach under item 1 reads a pattern, at a run's target or where
 # its literal text holds `.github/`, and passes in any other form, as `cd .github/scripts && cat
 # zz-x.p?` does: a stated limit (THE REACH OF THIS CHECK ENDS below).
@@ -141,8 +142,9 @@
 #      `.sh` in a subdirectory or a file with no `.sh` suffix but a top-level file of a suffix
 #      SCRIPT_DATA names and the bytecode Python writes for those, is refused by name whatever it
 #      holds, as WHAT IT READS says, and so is such a top-level file whose `#!` line names
-#      another interpreter than its own (OWN_INTERPRETERS), so no run of one stands to be
-#      charged. And a word naming any file there this check does not read as a script, those
+#      another interpreter than its own (OWN_INTERPRETERS), or any program where its suffix
+#      takes no `#!` line (NO_HASHBANG), so no run of one stands to be charged. And a word
+#      naming any file there this check does not read as a script, those
 #      top-level files and their bytecode among them, in a form unread_named reads, is refused
 #      by name at its
 #      command wherever it is written but in the places WHAT IT READS lists, which are every
@@ -765,6 +767,11 @@
 # the worker image's RUN in packages/daemon/docker/worker.Dockerfile that runs `pnpm --version`,
 # `yarn --version`, `yarnpkg --version` and `pnpx --help` under that file's `retry`, each retried
 # by its author at 120 s, and no rule holds a new one to the floor.
+# It is false for mise too: `mise --version` asks mise.jdx.dev for a newer release unless its
+# environment names CI (mise's show_latest, src/cli/version.rs at v2026.8.12). That read is no
+# download of anything a job uses, and a failed read fails nothing, so the worker image's two
+# calls set CI=true to keep it off the network, and a runner job sets CI itself; no rule holds a
+# new call to either (dispatch://INFRA-1545, round 68).
 #
 # Two verbs are deliberately outside the subject, because R1's subject is a tool, a toolchain or a
 # dependency: `git clone` and `git fetch`, which move this repository's own refs rather than
@@ -937,8 +944,9 @@
 #      round 66, ci_citations_code.go (the Go standard library alone) and ci_citations_code.ts,
 #      which read the files ci_citations.py hands them and fetch nothing. A file of SCRIPT_DATA
 #      whose `#!` line names an interpreter OWN_INTERPRETERS does not give its suffix is no such
-#      program, and is refused, as WHAT IT READS says. And in the heredocs rule 6 does read it
-#      reads a
+#      program, and is refused, as WHAT IT READS says. So is a file of a suffix NO_HASHBANG
+#      names that opens with any `#!` line, since its compiler cannot read that line
+#      (dispatch://INFRA-1545, round 68). And in the heredocs rule 6 does read it reads a
 #      `urlopen` alone, so another urllib call, such as `urllib.request.urlretrieve`, gets no
 #      floor either (dispatch://INFRA-1545, round 38). ci.yaml's ci-images job is this tree's
 #      instance, in its step `Check the package holds every row of .github/ci-images.yaml`: its
@@ -1265,6 +1273,12 @@
 #      pulls, which main writes bare ("Show it, do not retry it"): the forward merge 8b4f9c79
 #      had put it under `retry_fetch`, and review round 37 had it written bare again
 #      (dispatch://INFRA-1545).
+#      Main's #5385 makes two more, outside this check's reach: scripts/e2e/shared-clone-kind.sh's
+#      worker_image reads ghcr.io's anonymous pull token and the manifest of the worker image's
+#      sha- tag, ghcr.io/cybermonklabs/legion-worker, with two bare curls, on every run of its
+#      hosted row in .github/workflows/e2e.yaml. This check reads no script under scripts/e2e, so
+#      EXEMPTIONS names neither, and this text is the one place that names them
+#      (dispatch://INFRA-1545, round 68).
 #      Main's two actionlint steps make two more, each a `docker run` of the pinned actionlint
 #      copy, ghcr.io/cybermonklabs/legion/ci@sha256:b1934ee5…, which pulls it where the runner
 #      does not hold it: 'Check every workflow file with actionlint' in
@@ -1509,7 +1523,8 @@ SCRIPTS = Path(".github/scripts")
 # The files of .github/scripts/ that are no script, and that this check leaves unread where they
 # sit directly in that directory, by their suffix, each beside the files of the tree it covers:
 # but one whose `#!` line names an interpreter OWN_INTERPRETERS does not give its suffix, which is
-# refused as the program of that interpreter it is. Every other file under that directory that it
+# refused as the program of that interpreter it is, and one of a suffix NO_HASHBANG names whose
+# first line is any `#!` line (round 68). Every other file under that directory that it
 # does not read, but a top-level harness, a harness's library and Python's bytecode for those
 # programs, is refused where it stands, and a word naming any file there it does not read but a
 # harness, in a form unread_named reads, is refused in a command anywhere but where this tree
@@ -1525,10 +1540,21 @@ SCRIPT_DATA = (
 # __pycache__, the unread files the reading set does not refuse where they stand (unread_named;
 # dispatch://INFRA-1545, round 38).
 UNREAD_SUFFIXES = SCRIPT_DATA + (".pyc",)
-# What a file of a suffix SCRIPT_DATA names runs under when it is run as a command word: the
-# interpreter its `#!` line must name (interpreter_of), or the shell runs it, or another program
-# does, with no rule reading what it holds (dispatch://INFRA-1545, rounds 38 and 66).
-OWN_INTERPRETERS = {".py": {"python3", "python"}, ".jq": {"jq"}, ".go": {"go"}, ".ts": {"bun"}}
+# The suffixes of SCRIPT_DATA whose programs take no `#!` line, each with the command that runs
+# such a program by its path. Go cannot compile a file that starts with `#`. Under
+# `#!/usr/bin/env go`, `go run x.go` stops at `x.go:1:1: illegal character U+0023 '#'`. Run as a
+# command word, the same file runs `go` with its path as the first argument, which go refuses as an
+# unknown command. So a file of such a suffix that opens with any `#!` line is refused at its line
+# 1, and a command word naming one is refused where it is written (unread_place). Until round 68
+# OWN_INTERPRETERS gave `.go` the interpreter `go`: a `.go` under `#!/usr/bin/env go` passed, and
+# the refusals told a `.go` to open with a first line naming `go` (dispatch://INFRA-1545, round
+# 68).
+NO_HASHBANG = {".go": "go run"}
+# What a file of a suffix SCRIPT_DATA names, but a suffix of NO_HASHBANG, runs under when it is
+# run as a command word: the interpreter its `#!` line must name (interpreter_of), or the shell
+# runs it, or another program does, with no rule reading what it holds (dispatch://INFRA-1545,
+# rounds 38 and 66).
+OWN_INTERPRETERS = {".py": {"python3", "python"}, ".jq": {"jq"}, ".ts": {"bun"}}
 
 HELPER = ".github/scripts/ci-retry.sh"
 # This file, named by the problems it raises about its own lists.
@@ -1666,7 +1692,8 @@ HEREDOC = re.compile(r"<<-?[ \t]*((?:[^\s;&|<>()'\"\\]|\\.|'[^']*'|\"[^\"]*\")+)
 # The consumers a heredoc of this tree is fed to, each of which takes the body as data: Python's
 # program, a `cat` writing it out and a `read` taking its words. A heredoc fed to anything else
 # is refused by name where its body fetches (unread_heredocs; dispatch://INFRA-1545, round 37).
-HEREDOC_DATA = {"python3", "cat", "read"}
+# HEREDOC_UNREAD names them in this order (dispatch://INFRA-1545, round 68).
+HEREDOC_DATA = ("python3", "cat", "read")
 # A command word that is one parameter's value: `$fn`, `${fn}`, `$1`, `"$@"`, `"${@}"` and an
 # array's `"${cmd[@]}"`, quoted or not. A call of a function through one is refused by name where
 # it can hide a fetch (variable_calls; dispatch://INFRA-1545, round 37). Until round 37 it read a
@@ -1776,7 +1803,9 @@ PIPE_INTO_SHELL = re.compile(r"\|&?\s*(?:\S*/)?(?:" + "|".join(sorted(INTERPRETE
 RUNNERS = {"bunx", "npx", "pnpx", "pnpm-dlx"}
 KEYWORDS = {"if", "then", "else", "elif", "fi", "do", "done", "while", "until", "for", "in",
             "case", "esac", "select", "function", "!", "[[", "]]", "{", "}"}
-LOOP_WORDS = {"while", "until", "for", "select"}
+# The reserved words that open a loop, in the order LOOP_WORD_REFUSAL names them
+# (dispatch://INFRA-1545, round 68).
+LOOP_WORDS = ("for", "while", "until", "select")
 # The reserved words after which bash still reads a `{` or a `}` as a group's brace: a brace is a
 # reserved word only where it opens a command or follows these on it, as in `fi }` and `then {`.
 # One written anywhere else is a word of its command, which Scanner's odd_braces names
@@ -1800,8 +1829,9 @@ INFORMATIONAL = {"--version", "--help", "--usage"}
 # The mise subcommands that fetch and say so: each exits 1 when the fetch fails.
 MISE_SUBCOMMANDS = {"install", "use"}
 # Rule 7's subcommands: each exits 0 when it cannot resolve the tool, so none of them is a fetch
-# verb, and a retry around one protects nothing. The check reads them only to refuse that retry.
-MISE_SILENT = {"x", "exec", "up", "upgrade"}
+# verb, and a retry around one protects nothing. The check reads them only to refuse that retry,
+# and that refusal names them in this order (dispatch://INFRA-1545, round 68).
+MISE_SILENT = ("x", "exec", "up", "upgrade")
 CRANE_SUBCOMMANDS = {"copy", "cp", "digest", "config", "pull", "export", "manifest", "blob"}
 UV_SUBCOMMANDS = {"sync", "add", "pip", "tool", "python", "lock", "export"}
 NPM_SUBCOMMANDS = {"install", "ci", "i", "install-test", "add"}
@@ -2798,9 +2828,12 @@ def sets_variable(command: Command, variable: str) -> bool:
 # sleeps.
 BODY_WORDS = {"if", "then", "elif", "else", "fi", "case", "esac", "do", "{", "}", "!", "time"}
 # The one form of a sleep's argument this check prices (sleep_form; dispatch://INFRA-1545, round
-# 45): a literal number, its decimals included, with an optional `s`, `m`, `h` or `d` after it,
-# which GNU sleep multiplies as SUFFIX does and sums over its arguments.
-SLEEP_ARGUMENT = re.compile(r"(\d+(?:\.\d*)?|\.\d+)([smhd]?)")
+# 45): a literal number, its decimals included, with an optional one-letter suffix of SUFFIX after
+# it, which GNU sleep multiplies as SUFFIX does and sums over its arguments. The pattern and the
+# refusals that name those suffixes (SLEEP_SUFFIXES) are built from SUFFIX, so a suffix added to
+# it is read and named alike (dispatch://INFRA-1545, round 68).
+SLEEP_ARGUMENT = re.compile(r"(\d+(?:\.\d*)?|\.\d+)([" + "".join(SUFFIX) + "]?)")
+SLEEP_SUFFIXES = ticked([suffix for suffix in SUFFIX if suffix], "or")
 
 
 def trap_action(reduced: list[str]) -> tuple[str, list[str]] | None:
@@ -3145,7 +3178,7 @@ SLEEP_FORM_REFUSAL = (
     "writes `{sleep}` in the loop opened on line {loop}, and a fetch, or a call of a script that "
     "fetches, is in that loop. This check charges a loop's passes each sleep of its body that "
     "the bare word `sleep` opens and whose arguments are literal numbers, each with an optional "
-    "`s`, `m`, `h` or `d`, summed as sleep sums them and rounded up to a whole second, so `sleep "
+    + SLEEP_SUFFIXES + ", summed as sleep sums them and rounded up to a whole second, so `sleep "
     "5m` is 300 s and `sleep 0.4 0.4` 1 s. {why} {cure} (dispatch://INFRA-1545, round 45)")
 SLEEP_CURE = ("Write its seconds as literal numbers, the most the sleep is to wait, such as "
               "`sleep 300` or `sleep 5m`, which this check charges")
@@ -3162,8 +3195,8 @@ SLEEP_SIGNED = ("Its argument `{word}` is written with a sign, which this check 
                 "seconds, so it charges this sleep nothing.", SLEEP_CURE)
 SLEEP_ENDLESS = ("Its argument `{word}` makes a sleep that never ends, so the step waits for its "
                  "key, which no figure here holds.", SLEEP_CURE)
-SLEEP_NUMBERLESS = ("Its argument `{word}` is no literal number with an optional `s`, `m`, `h` or "
-                    "`d`, so this check charges this sleep nothing.", SLEEP_CURE)
+SLEEP_NUMBERLESS = ("Its argument `{word}` is no literal number with an optional " + SLEEP_SUFFIXES
+                    + ", so this check charges this sleep nothing.", SLEEP_CURE)
 SLEEP_EMPTY = ("It is written with no argument this check reads, so this check charges it "
                "nothing.", SLEEP_CURE)
 # A sleep written in the body of a function, where a loop whose passes this check reads, and that
@@ -3366,7 +3399,7 @@ LOOP_WORD_REFUSAL = (
     "writes `{word}` {how}, where bash does not read it as the reserved word that opens or "
     "closes a loop and this check does, and a fetch, or a call of a script that fetches, is "
     "written in the same text. This check reads a loop from a command whose first word is "
-    "`for`, `while`, `until` or `select` to the next whose first word is `done`, with quotes and "
+    + ticked(list(LOOP_WORDS), "or") + " to the next whose first word is `done`, with quotes and "
     "backslashes removed and the `(`, `)` and `|` of a `case` pattern or an extglob read as the "
     "shell's own operators, so the calls after this word are read as inside or outside a loop "
     "they are not, and charged for passes they do not make or once for passes they do. Write a "
@@ -3375,9 +3408,10 @@ LOOP_WORD_REFUSAL = (
 # the consumer, and the form to write instead (dispatch://INFRA-1545, round 37).
 HEREDOC_UNREAD = (
     "feeds a heredoc to {consumer}, and the body holds a fetch or names a script that fetches. "
-    "This check reads every heredoc's body as data, which it is for `python3`, `cat` and `read` "
-    "with nothing piped into a shell, the consumers this tree writes, so what runs of this one is "
-    "charged nothing. {cure}, or move them into a script under .github/scripts/ and run that")
+    "This check reads every heredoc's body as data, which it is for "
+    + ticked(list(HEREDOC_DATA), "and") + " with nothing piped into a shell, the consumers this "
+    "tree writes, so what runs of this one is charged nothing. {cure}, or move them into a script "
+    "under .github/scripts/ and run that")
 # What the refusal of shell text written in a form other than `bash -c '<text>'`, or holding a
 # loop, a function or an alias, says after naming the step or the script (dispatch://INFRA-1545,
 # round 37).
@@ -3642,7 +3676,7 @@ def structure(commands: list[Command], text: str) -> Loops:
         # `then for x in 1 2; do`, is refused by name rather than read (dispatch://INFRA-1545,
         # round 37).
         lead = next((word for word in command.words
-                     if word not in KEYWORDS - LOOP_WORDS and word != "time"), "")
+                     if word not in KEYWORDS.difference(LOOP_WORDS) and word != "time"), "")
         if first not in LOOP_WORDS and lead in LOOP_WORDS:
             read.odd_loops.append((command.line, LOOP_AFTER_WORD))
         if first in LOOP_WORDS:
@@ -5885,6 +5919,11 @@ scripts = [
 # only where the `#!` line named a shell this check listed, so `#!/bin/busybox sh` and
 # `#!/usr/bin/env mksh` passed in a `.py`, and the second was not refused
 # (dispatch://INFRA-1545, round 38).
+# A top-level file of a suffix NO_HASHBANG names is refused at its line 1 where it opens with any
+# `#!` line, whatever program the line names. Its compiler cannot read that line. Run as a command
+# word, the file is handed to that program, and no rule reads what the program does with it.
+# Until round 68 a `.go` was read as a `.py` is: `#!/usr/bin/env go` passed, and the refusal of
+# `#!/bin/sh` told the file to keep a first line naming `go` (dispatch://INFRA-1545, round 68).
 # Where a file of that directory this check does not read as a script may be written in a
 # command is unread_uses's question. At 172e244f the tree holds no file this refuses: of its 101
 # files under .github/scripts/, 89 are top-level `.sh`, 11 are `.py`, four of them opening
@@ -5932,7 +5971,17 @@ for path in files:
     if path in script_data:
         first, program = interpreter_of(path)
         suffix = Path(path).suffix
-        if program is not None and program not in OWN_INTERPRETERS[suffix]:
+        if program is not None and suffix in NO_HASHBANG:
+            compile_run = NO_HASHBANG[suffix]
+            problem(path, 1,
+                    f"{path} is a `{suffix}` directly in .github/scripts/ whose first line, "
+                    f"`{first}`, is a `#!` line. `{compile_run}` cannot compile a file that "
+                    "starts with `#`, so it cannot run this one. Run as a command word, this file "
+                    f"is handed to `{program}`, and no rule here reads what `{program}` does with "
+                    f"it. Remove the `#!` line: a `{suffix}` there opens with no `#!` line, and a "
+                    f"program of this tree compiles it from its path with `{compile_run}` "
+                    "(dispatch://INFRA-1545, round 68).")
+        elif program is not None and program not in OWN_INTERPRETERS[suffix]:
             problem(path, 1,
                     f"{path} is a `{suffix}` directly in .github/scripts/ whose first line, "
                     f"`{first}`, runs `{program}`, not {interpreters_of(suffix)}: this check "
@@ -6614,8 +6663,9 @@ for site in sites:
     dockerfile = site.path in DOCKERFILES
     if site.silent:
         problem(site.path, site.line,
-                f"{where} is retried, and that retry protects nothing: `mise x`, `mise exec`, "
-                "`mise up` and `mise upgrade` exit 0 when they cannot resolve the tool. `mise x` "
+                f"{where} is retried, and that retry protects nothing: "
+                + ticked([f"mise {sub}" for sub in MISE_SILENT], "and")
+                + " exit 0 when they cannot resolve the tool. `mise x` "
                 "warns (`Failed to resolve tool version list for …`) and then runs whatever "
                 "binary of that name is already on PATH — a different build, at a version nobody "
                 "asked for — and `mise up` says `All tools are up to date` having read nothing. "
@@ -7355,12 +7405,15 @@ VARIABLE_PATTERNS_READ: dict[int, list[tuple[Command, str]]] = {}
 HANDED_ON = re.compile(r"\$(?:@|\{@\}|\{[A-Za-z_]\w*\[@\]\})")
 # A positional parameter as a command word: `$1` to `$9`, `${n}`, `$@`, `$*`, `${@}` and `${*}`.
 POSITIONAL = re.compile(r"\$(?:([1-9])|\{([1-9][0-9]*)\}|[@*]|\{[@*]\})")
+# UNNAMED_RUN names the shells whose operand this check reads as a run, INTERPRETERS', from that
+# list. Until round 68 it named `bash` and `sh` alone of the six (dispatch://INFRA-1545, round 68).
 UNNAMED_RUN = (
     "{does}, {why}, so this check cannot name the script that runs there. This check reads a "
     "run of a script only where the script's literal path is written, as the command word or as "
-    "the operand of `bash`, `sh`, `.` or `source`, and refuses a path built from data, or a file "
-    "written, as the step runs rather than guess what it holds: a script under .github/scripts/ "
-    "that fetches may run there, and its attempts would be charged to no budget. {cure}")
+    "the operand of " + ticked([*sorted(INTERPRETERS), ".", "source"], "or") + ", and refuses a "
+    "path built from data, or a file written, as the step runs rather than guess what it holds: "
+    "a script under .github/scripts/ that fetches may run there, and its attempts would be "
+    "charged to no budget. {cure}")
 # The cure covers what the run can be: the refusal stands where a script of this repository
 # could run, and until round 37's class search it told every such run to write that script's
 # path, where what runs may as well be a tool, whose literal path or bare name is a run this check
@@ -7418,6 +7471,10 @@ UNREAD_ARGUMENTS = NONCALL_COMMANDS | {
 # step's working directory; and the `pkill -f ci-fault-proxy.py` that download-retry-proof.sh
 # runs, where the name is a pattern `pkill` matches against the command lines of running
 # processes, which reads no file.
+# Both texts offer a command word only to a suffix of OWN_INTERPRETERS. A file of a suffix
+# NO_HASHBANG names takes no `#!` line, so no command word runs it. Until round 68 both told a
+# `.go` to run as a command word under a first line naming `go`, a line Go cannot compile
+# (dispatch://INFRA-1545, round 68).
 UNREAD_USE = (
     "writes `{word}` {where}, and it {names}, a file under .github/scripts/ this check does not "
     "read as a script. Such a file appears in a command only where this tree writes one: as what "
@@ -7428,11 +7485,12 @@ UNREAD_USE = (
     + ", none of which runs a file it names. Anywhere else it may run as shell text, be read "
     "into a shell or be copied to a file that runs, and no rule reads what it holds. {cure}")
 UNREAD_CURE = ("Run a Python program with `python3 .github/scripts/<name>.py …` and read a jq "
-               "filter with `jq -f .github/scripts/<name>.jq …`, and run another program there "
-               "by its path, under a first line naming its own interpreter; a shell script goes "
-               "in .github/scripts/<name>.sh, its name lowercase letters, digits and `-`, and "
-               "runs by that path; a `-test-lib.sh` there is a harness's library, which only a "
-               "`.test.sh` harness sources (HARNESS_LIBRARY)")
+               "filter with `jq -f .github/scripts/<name>.jq …`, and run a "
+               + ticked(list(OWN_INTERPRETERS), "or") + " there by its path, under a first line "
+               "naming its own interpreter; a shell script goes in .github/scripts/<name>.sh, its "
+               "name lowercase letters, digits and `-`, and runs by that path; a `-test-lib.sh` "
+               "there is a harness's library, which only a `.test.sh` harness sources "
+               "(HARNESS_LIBRARY)")
 # unseen()'s three reasons, each written once, so that the reason a run is refused with and the
 # key its cure is found under cannot drift apart. A script named with no directory is found by
 # the shell that runs it: `sh x.sh` (dash) through the working directory alone, `bash x.sh`
@@ -7695,8 +7753,9 @@ SHELL_KEY_CURE = ("Write `shell: bash`, or no `shell:`, and leave bash's expansi
 STARTUP_STEP_CURE = ("; and where a step needs the commands a startup file would run, write them "
                      "in that step, where this check reads them")
 # What the cure adds where the setting names a startup file (STARTUP_VARIABLES).
-STARTUP_CURE = ("; and name no startup file in `BASH_ENV` or `ENV`: write the commands of the "
-                "file it names in the step itself, where this check reads them")
+STARTUP_CURE = ("; and name no startup file in " + ticked(sorted(STARTUP_VARIABLES), "or")
+                + ": write the commands of the file it names in the step itself, where this check "
+                "reads them")
 REASON_CURES = {
     WRITTEN_RUN: (
         "Run no file this text writes: write its commands in the step itself, or move them "
@@ -8002,7 +8061,10 @@ def unread_place(words: list[str], at: int | None, start: int, files: list[str],
     OWN_INTERPRETERS gives `.py`, a `.py` or a `.pyc`; the filter `jq -f` or `--from-file` reads, a
     `.jq`; a command word, a file whose `#!` line names an interpreter OWN_INTERPRETERS gives its
     suffix; and an argument of a program of UNREAD_ARGUMENTS, which runs no file it names. Every
-    other place is named."""
+    other place is named. A file of a suffix NO_HASHBANG names is no command word: a command word
+    runs a file through its `#!` line, and its compiler cannot read that line. Until round 68 a
+    `.go` there was told to open with a `#!` line naming its own interpreter
+    (dispatch://INFRA-1545, round 68)."""
     head = PROGRAM.sub("", words[start]).rsplit("/", 1)[-1] if start < len(words) else ""
     suffixes = {Path(file).suffix for file in files} or {Path(maybe or "").suffix}
     if at is None:
@@ -8013,6 +8075,11 @@ def unread_place(words: list[str], at: int | None, start: int, files: list[str],
         if files and all(interpreter_of(file)[1] in OWN_INTERPRETERS.get(Path(file).suffix, ())
                          for file in files):
             return None
+        unopened = [suffix for suffix in NO_HASHBANG if suffix in suffixes]
+        if unopened:
+            return ("as a command word, which runs a file through its `#!` line, a line "
+                    + series([f"`{NO_HASHBANG[suffix]}` cannot compile in a `{suffix}`"
+                              for suffix in unopened], "or"))
         return "as a command word that does not open with a `#!` line naming its own interpreter"
     word = words[at]
     if head in OWN_INTERPRETERS[".py"] and suffixes <= {".py", ".pyc"}:
