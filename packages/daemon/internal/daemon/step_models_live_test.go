@@ -110,8 +110,9 @@ type servedResponse struct {
 	Claim    string `json:"claim"`
 	ID       string `json:"id"`
 	Subagent bool   `json:"subagent"`
-	// Side is a request that is no turn of a conversation: the plugin's own side question, or a
-	// call of another model than the one the pane asks for.
+	// Side is a request that is no turn of a conversation: the plugin's own side question, a
+	// harness's own upkeep call, which offers no tool, or a call of another model than the one the
+	// pane asks for.
 	Side    bool      `json:"side,omitempty"`
 	Asked   string    `json:"asked"`
 	Model   string    `json:"model"`
@@ -242,7 +243,10 @@ func (s *stepModelsStandin) ServeHTTP(w http.ResponseWriter, req *http.Request) 
 	if s.harness == "claude" {
 		served.Subagent = strings.Contains(turn.firstUser, stepModelsSubagentMarker)
 	}
-	served.Side = !served.Subagent && (turn.side || (turn.model != "" && turn.model != s.asked))
+	// Every turn of a session offers the session's tools. A request that offers none is the
+	// harness's own upkeep, no turn of the session: Oh My Pi asks its "routing hint" calls while a
+	// step's turn runs, and one read as a prompt would end that turn in the script.
+	served.Side = !served.Subagent && (turn.side || len(turn.tools) == 0 || (turn.model != "" && turn.model != s.asked))
 
 	var answer stepModelsAnswer
 	var hold, turnEnded bool
@@ -254,8 +258,8 @@ func (s *stepModelsStandin) ServeHTTP(w http.ResponseWriter, req *http.Request) 
 		// names it.
 		answer = s.text("The subagent ran the scratch check and reports that it printed nothing.")
 	case served.Side:
-		// The plugin's own `<btw>` question, or a call of another model: answered as the plugins'
-		// own pane harness answers a side question, and counted by no record.
+		// The plugin's own `<btw>` question, an upkeep call, or a call of another model: answered
+		// as the plugins' own pane harness answers a side question, and counted by no record.
 		answer = s.text("PROCEEDING")
 	default:
 		var script stepModelsStep
