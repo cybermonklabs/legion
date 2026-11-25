@@ -9,7 +9,6 @@ import {
 import { namesMissing, namesWhole } from "@legion/test-fixtures/names-whole";
 import { z } from "zod";
 import { delivered } from "../../test/delivered";
-import { streamStores } from "../stream-topics";
 import {
   envoyToolSpecs,
   MessageMetadataSchema,
@@ -18,7 +17,6 @@ import {
   parseEnvoyToolArguments,
   publishConfirmationText,
   STORED_DELIVERY,
-  STORED_TOPIC_KINDS,
   sendConfirmationText,
   sessionsOnMachine,
   toMessageMetadata,
@@ -143,15 +141,9 @@ describe("envoyToolSpecs", () => {
   });
 
   // The two texts that say what a subscription and a publish reach carry STORED_DELIVERY whole,
-  // and that clause lists STORED_TOPIC_KINDS, each a kind the stream stores, and names the 200 a
-  // stored publish answers. The kinds are one exported array, so the clause and this case read the
-  // same list. It is held one way: a ninth kind the stream comes to store is one this case does
-  // not see, since stream-topics.ts exports no list of its stored prefixes.
-  test("carries the stored-delivery clause, whose topic kinds are each one the stream stores", () => {
-    expect(STORED_TOPIC_KINDS.length).toBeGreaterThan(0);
-    expect(STORED_TOPIC_KINDS.filter((kind) => !streamStores(`notifications.${kind}.x`))).toEqual(
-      []
-    );
+  // which names the 200 a stored publish answers. Its list of kinds is stream-topics.ts's
+  // STORED_TOPIC_KINDS, read from the stream's own prefixes, so no second list exists to hold.
+  test("carries the stored-delivery clause in both tools", () => {
     expect(namesMissing(STORED_DELIVERY, ["200"])).toEqual([]);
     for (const name of ["envoy_subscribe", "envoy_publish"]) {
       const description = envoyToolSpecs.find((spec) => spec.name === name)?.description ?? "";

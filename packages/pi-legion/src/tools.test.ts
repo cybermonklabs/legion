@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { type LegionRole, roleToken } from "@legion/contracts";
+import { daemonContract } from "@legion/contracts/daemon-contract";
 import {
   LEGION_PHASES,
   LEGION_WORKFLOW_PHASES,
@@ -24,6 +25,9 @@ import { namesMissing } from "@legion/test-fixtures/names-whole";
 import { z } from "zod";
 import pkg from "../package.json";
 import { createLegionTool, type LegionToolSession } from "./tools";
+
+/** The contract this build speaks, as `tools.ts` reads it (`daemonContract`): this checkout's. */
+const PLUGIN_CONTRACT = daemonContract(pkg, import.meta.dir);
 
 function context(sessionId = "ses_208"): SessionContext {
   return {
@@ -173,7 +177,7 @@ function goldenDaemon(answers: Readonly<Record<string, string>>, status = 200) {
       : Response.json(daemonFixture(golden), { status });
   }) as typeof fetch;
   const client = createLegionDaemonClient("http://daemon.test", {
-    pluginContract: pkg.legion.daemonApiVersion,
+    pluginContract: PLUGIN_CONTRACT,
     fetch: stub,
   });
   return { posted, daemon: () => client };
@@ -2022,13 +2026,13 @@ test("read_build answers the package and version this process loaded, both contr
   const atImagePath = {
     ...pkg,
     version: "0.0.0-image",
-    legion: { daemonApiVersion: pkg.legion.daemonApiVersion - 1 },
+    legion: { daemonApiVersion: PLUGIN_CONTRACT - 1 },
   };
   await withImageManifest("/opt/legion/pi-legion/package.json", atImagePath, async () => {
     const { createLegionTool: createFreshLegionTool } = (await import(
       TOOLS_LOADED_UNDER_THE_IMAGE_MOCK
     )) as { readonly createLegionTool: typeof createLegionTool };
-    const { calls, daemon } = recordingDaemon({ daemonContract: pkg.legion.daemonApiVersion + 1 });
+    const { calls, daemon } = recordingDaemon({ daemonContract: PLUGIN_CONTRACT + 1 });
     const tool = createFreshLegionTool({
       pi,
       daemon,
@@ -2047,8 +2051,8 @@ test("read_build answers the package and version this process loaded, both contr
       details: {
         plugin: pkg.name,
         version: pkg.version,
-        pluginContract: pkg.legion.daemonApiVersion,
-        daemonContract: pkg.legion.daemonApiVersion + 1,
+        pluginContract: PLUGIN_CONTRACT,
+        daemonContract: PLUGIN_CONTRACT + 1,
         daemonContractNote: null,
       },
     });
@@ -2089,7 +2093,7 @@ test("read_build says the daemon stated no contract, and belongs to the controll
     details: {
       plugin: pkg.name,
       version: pkg.version,
-      pluginContract: pkg.legion.daemonApiVersion,
+      pluginContract: PLUGIN_CONTRACT,
       daemonContract: null,
       daemonContractNote: "the daemon stated no contract",
     },
