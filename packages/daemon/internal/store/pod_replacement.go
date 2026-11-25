@@ -223,7 +223,11 @@ func (s *Store) FinishPodReplacement(ctx context.Context, project, issue, operat
 // record that names a taken target goes. A record that names a taken target beside its own act's
 // target goes, but the target of its own act is not taken by that: the suspension of a pod takes
 // no volume, so the finish of a round's act on the pod takes a launch's record of the Sandbox's
-// delete over that pod, and no other record of that Sandbox.
+// delete over that pod, and no other record of that Sandbox. That launch's delete may not have
+// come yet: the launch suspended the Sandbox over the pod and stopped before it, and the round's
+// finish takes its record all the same, and tells from the read that tells most of the two. When
+// the delete comes, with the next launch's record of it, its finish weighs that record's read, and
+// not the earlier launch's (the Legion reviewer's Minor on #5285 at 4b123279).
 func takenWith(finished PodReplacement, standing []PodReplacement) []PodReplacement {
 	taken := map[runtime.RecordedAct]bool{}
 	for _, target := range finished.Targets() {

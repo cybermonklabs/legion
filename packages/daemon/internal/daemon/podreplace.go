@@ -147,12 +147,15 @@ func (r recordedRead) weight() int {
 // tellingRead is the read the notice of one act tells, of every record the act's finish took (took,
 // oldest first, store.PodReplacementFinish.Took): a read that found work that no branch or tag on
 // origin holds tells over one that failed, and a read that failed over one that found nothing, and
-// of reads that weigh the same the newest tells (the Legion reviewer's item 2 on #5285 at
-// 69e00593). One act can stand under the records of acts made over reads of their own, and the
-// newest of them is not always the last read before the take: a replacement by issue reads outside
-// the pod's launch turn and records before it waits for that turn, so its record can be newer than
-// a launch's whose read named commits. tells is false where every read found nothing: the act owes
-// nobody a notice. A record this daemon cannot read tells nothing.
+// of reads that weigh the same the one of the newest record tells (the Legion reviewer's item 2 on
+// #5285 at 69e00593). One act can stand under the records of acts made over reads of their own,
+// and the newest record is not always the last read before the take: a replacement by issue reads
+// outside the pod's launch turn and records before it waits for that turn, so its record can be
+// newer than a launch's whose read named commits. So the tie between two reads of one weight goes
+// by when each record was written, not by when each read was made, and of two reads that both
+// found work it can tell the one that names fewer commits (the Legion reviewer's Minor on #5285 at
+// 4b123279). tells is false where every read found nothing: the act owes nobody a notice. A
+// record this daemon cannot read tells nothing.
 func tellingRead(took []store.PodReplacement) (read recordedRead, tells bool) {
 	for _, r := range took {
 		var rec replacementRecord
