@@ -14,10 +14,76 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
-// laterBlockState is a state no writer of this release writes: a later release's build
-// marks a requirement proposed. This release serves beside that build during a roll and alone
-// after a rollback, so the block index here meets blocks that build marked.
-const laterBlockState = "proposed"
+// TestAReindexLeavesAProposedRequirementProposed holds the block index to restating every block
+// node it writes (blockNode, graphstore.Node's Restates; spec requirement r-proposed).
+// A requirement a write marked proposed is written again, live, by the pass over a version that
+// changes its words, and stays proposed; the pass over a version that drops it writes it gone;
+// and the pass over a version that restores it writes it live. After each pass the row and the
+// log of its state agree, the log holding one value for each pass that moved the state and none
+// for the pass that kept it, and its visibility is the project's throughout.
+func TestAReindexLeavesAProposedRequirementProposed(t *testing.T) {
+	ctx := context.Background()
+	database := parentDatabase(t)
+	writer := model.Actor{Kind: "user", ID: "alice"}
+	document := newParentDocument(t, database, "PROP", "proposed-md")
+	const requirement = "r-ship"
+
+	withRequirement := func(words string) blockDoc {
+		text := words + "\n"
+		return blockDoc{markdown: text + "bb\n", blocks: []model.ArtifactBlock{
+			{ID: requirement, Type: "requirement", From: 0, To: len(text)},
+			{ID: "b", Type: "paragraph", From: len(text), To: len(text) + len("bb\n")},
+		}}
+	}
+	without := blockDoc{markdown: "bb\n", blocks: []model.ArtifactBlock{
+		{ID: "b", Type: "paragraph", From: 0, To: len("bb\n")},
+	}}
+	index := func(number int, doc blockDoc) versionRecord {
+		t.Helper()
+		record := document.writeVersion(t, number, doc.markdown, writer)
+		if won, _ := document.indexVersion(t, number, doc, record); !won {
+			t.Fatalf("version %d did not become the version the document's blocks stand at", number)
+		}
+		return record
+	}
+
+	first := index(1, withRequirement("We ship it."))
+	requireBlockState(t, document, requirement, graphstore.StateLive, graphstore.VisibilityProject, []string{graphstore.StateLive})
+
+	// A write that owns the state - a plain write, as the state route's is - marks it proposed.
+	if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
+		return graphstore.Write(ctx, tx, []graphstore.Node{{
+			Kind: BlockNodeKind, ID: document.address(requirement), Supertag: BlockSupertag,
+			Visibility: graphstore.VisibilityProject, State: graphstore.StateProposed,
+			MadeAt: first.at.Add(time.Second), MadeBy: writer, SourceEvent: graphstore.NoEvent,
+		}}, nil)
+	}); err != nil {
+		t.Fatalf("mark the requirement proposed: %v", err)
+	}
+	requireBlockState(t, document, requirement, graphstore.StateProposed, graphstore.VisibilityProject,
+		[]string{graphstore.StateLive, graphstore.StateProposed})
+
+	index(2, withRequirement("We ship it today."))
+	if changed := document.changes(t)[requirement]; changed.version != 2 {
+		t.Fatalf("the requirement's text last changed in version %d, want 2: the pass did not write its node again", changed.version)
+	}
+	requireBlockState(t, document, requirement, graphstore.StateProposed, graphstore.VisibilityProject,
+		[]string{graphstore.StateLive, graphstore.StateProposed})
+
+	index(3, without)
+	requireBlockState(t, document, requirement, graphstore.StateGone, graphstore.VisibilityProject,
+		[]string{graphstore.StateLive, graphstore.StateProposed, graphstore.StateGone})
+
+	index(4, withRequirement("We ship it today."))
+	requireBlockState(t, document, requirement, graphstore.StateLive, graphstore.VisibilityProject,
+		[]string{graphstore.StateLive, graphstore.StateProposed, graphstore.StateGone, graphstore.StateLive})
+}
+
+// laterBlockState is the state this build marks a requirement with (graphstore.StateProposed),
+// which cybermonklabs/legion#3178's release meets on the blocks this build marked, since it serves
+// beside this build during a roll and alone after a rollback. Its test of that rule,
+// TestAWriteOfANodeAgainKeepsTheValuesItDoesNotOwn, holds this build's block index too.
+const laterBlockState = graphstore.StateProposed
 
 // TestAWriteOfANodeAgainKeepsTheValuesItDoesNotOwn holds the block index to R8 of
 // this change: a write that writes a node again sets only the values it owns, so the
@@ -98,7 +164,7 @@ func TestAWriteOfANodeAgainKeepsTheValuesItDoesNotOwn(t *testing.T) {
 // markBlockState writes, by SQL, a state of a block's node as a later release's build
 // writes it: one state tuple, an attribute of the node with the value itself as its far end
 // (graphstore.KindValue), carrying the write's time and writer at the sentinel cause, as the
-// store's writer states a base attribute it moved (write.go's queueAppend), and the node
+// store's writer states a base attribute it moved (append.go's queueAppend), and the node
 // row's state moved to match, its cause kept.
 func markBlockState(t *testing.T, document parentDocument, blockID, state string, who model.Actor, at time.Time) {
 	t.Helper()

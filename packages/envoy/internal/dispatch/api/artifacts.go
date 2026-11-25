@@ -24,7 +24,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/files"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
@@ -167,9 +166,16 @@ const issueUploadRoute = http.MethodPost + " /api/v1/issues/{key}/artifacts"
 // stored answer, a first upload still running, one that committed and lost its answer - goes on to
 // that layer whatever the issue's state now: an upload that landed before the issue closed is
 // replayed its 201, and one still running is told KEY_IN_FLIGHT, unspooled, until the first
-// answers.
+// answers. A request whose run withinGoingRun refused and left to its key (goingRunRefused) goes on
+// to that layer before anything here is looked at, so the layer answers it from the key alone, and
+// a key that stops answering between the two looks is answered the run's refusal here as on every
+// other route.
 func (s *server) refuseUploadToAClosedIssue(handler http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if _, refused := r.Context().Value(goingRunRefusedKey{}).(goingRunRefused); refused {
+			handler(w, r)
+			return
+		}
 		requestKey, keyed, err := requestKeyHeader(r)
 		if keyed && err != nil {
 			handler(w, r)
@@ -191,12 +197,8 @@ func (s *server) refuseUploadToAClosedIssue(handler http.HandlerFunc) http.Handl
 		// failed is answered as it always was.
 		var ownerRefusal *apiError
 		if keyed && errors.As(refusal, &ownerRefusal) && ownerRefusal.status < http.StatusInternalServerError {
-			answers, err := s.requestKeyAnswersItself(r.Context(), requestKeyLogin(actor, human), requestKey)
-			if err != nil {
-				// As the keyed layer answers its own failed lookup: under the key, which nothing has
-				// claimed, so the client asks again under it.
-				w.Header().Set(contracts.IdempotencyKeyHeader, requestKey)
-				s.writeHandlerError(w, err)
+			answers, failed := s.lookUpRequestKeyAnswers(r.Context(), w, requestKeyLogin(actor, human), requestKey)
+			if failed {
 				return
 			}
 			if answers {
@@ -602,10 +604,12 @@ func (s *server) writeUploadNoTokenError(w http.ResponseWriter, name string) {
 // and the write is then the zero Uncaused. No row stands at the address, since the slug is free
 // under the owner lock this transaction holds, so a node there that is not gone stands behind no
 // row: a document a build before this one removed, stating nothing, live or at a state a later
-// release marked it with (graphstore.Node's Restates). The write states it gone and then live,
-// both under this upload's event, so the new document's node carries no statement of the removed
-// one's as its own; it states the two itself, so the node write states no state of its own
-// beside them.
+// release marked it with. The write states it gone and then live, both under this upload's event,
+// so the new document's node carries no statement of the removed one's as its own; it states the
+// two itself, so the node write states no state of its own beside them. Such a node is not
+// restated (graphstore.Node's Restates), which would keep the state a later release marked the
+// removed document's node with: its row moves to live with the statements, as the backfill writes
+// a node another row left standing (graphcensus's writeObjectBatch).
 func (s *server) queueNewArtifact(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -635,13 +639,15 @@ func (s *server) queueNewArtifact(
 	}
 	var documentNode graphstore.Uncaused
 	if graphstore.AddressFits(artifact.RefKey) {
-		node := graphstore.ArtifactNode(artifact.RefKey, deref(project), deref(session), actor, artifact.CreatedAt)
+		// The document is the node this create makes (graphstore.Created).
+		node := graphstore.Created(graphstore.ArtifactNode(artifact.RefKey, deref(project), deref(session), actor, artifact.CreatedAt))
 		held, found, err := graphstore.ReadNode(ctx, tx, graphstore.KindArtifact, artifact.RefKey)
 		if err != nil {
 			return model.Artifact{}, graphstore.Uncaused{}, err
 		}
 		var stated []graphstore.Tuple
 		if found && held.State != graphstore.StateGone {
+			node.Restates = false
 			for _, state := range []string{graphstore.StateGone, graphstore.StateLive} {
 				stated = append(stated, graphstore.Tuple{
 					FromKind: graphstore.KindArtifact, FromID: artifact.RefKey,

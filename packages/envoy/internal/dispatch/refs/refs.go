@@ -38,6 +38,12 @@ type Target struct {
 	ID   string
 }
 
+// refsSources is every kind of node a refs row's from_kind names: a document, an ask, a comment
+// and a message, the four sources whose text a write indexes into refs (Replacement) and whose
+// re-index it owes (queueSettleRefsGrammarOwed). None is a standing kind, so a predicate over a
+// refs row's source binds no staleness test (VisibleEnd, NodeKinds).
+var refsSources = KindsOf("artifact", string(ItemAsk), string(ItemComment), string(ItemMessage))
+
 // EditedTargets is what an edit of an ask's question or a comment's body from previous to body
 // moves beside the edges it inserts or deletes, found being body's references. Every edge such a
 // source writes shows the head of its text as its excerpt (Edges, excerptRunes), so when the edit
@@ -798,7 +804,7 @@ func Outgoing(ctx context.Context, q Queryer, who model.Actor, artifactID string
 		  and e.to_kind not in `+itemBlockKinds+`
 		  and (e.to_kind <> 'block' or d.node_id is not null)
 		  and `+VisibleKind("artifact", `(select s.ref_key from artifacts s where s.id = $1::text::uuid)`, "$3")+`
-		  and `+VisibleEnd("e.to_kind", "e.to_id", true, "$3")+`
+		  and `+VisibleEnd(AnyKind, "e.to_kind", "e.to_id", true, "$3")+`
 		  and (e.to_kind <> 'block' or `+VisibleKind("artifact", "a.ref_key", "$3")+`)
 		order by e.to_kind, e.to_id, v.number
 	`, artifactID, nodeKinds, VisibilityArg(who))

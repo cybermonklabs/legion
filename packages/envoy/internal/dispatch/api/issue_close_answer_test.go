@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -22,15 +23,18 @@ import (
 // (whileTheReleaseBeforeServes): on a fleet of one build no block holds an ask's state, so the
 // close and the reopen write nothing into the asks' documents (docs.WriteIssueAskStates), and only
 // while a build that reads an ask's state from its block serves do they write each ask's state into
-// its blocks, the write that refreshes the stale anchor. The reopen moves the issue the close left
-// done, so the two moves run in order against the one issue, not as subtests a reader could run
-// alone, and each failure names the move it came from.
+// its blocks, the write that refreshes the stale anchor. That write also arms each document's room
+// settlement, and a settlement that ran between the patch and the read of the issue would append
+// its own artifact.version and block.repaired events on the issue and move its last_seq past the
+// status event. The settle delay is an hour, so no room timer runs while the test does: the test
+// runs each settlement itself (SettleIssueDocuments) after the move's checks, as
+// TestClosingAnIssueWithdrawsItsOpenAsksAndReopeningRestoresThem does, and the reopen starts from
+// the settled documents the timer would have left. The reopen moves the issue the close left done,
+// so the two moves run in order against the one issue, not as subtests a reader could run alone,
+// and each failure names the move it came from.
 func TestClosingAndReopeningAnswerTheSequenceTheWritePhaseCommitted(t *testing.T) {
-	// Not parallel: it reads the issue right after the move and wants the sequence the move
-	// committed, so it assumes no later event of its own issue lands between the move and that
-	// read. Among this package's parallel tests on CI's runner one did, and the read answered 20
-	// for a close at 19 (job 137359069610).
-	f := newCloseAsksFixture(t)
+	t.Parallel()
+	f := newCloseAsksFixtureSettlingAfter(t, time.Hour)
 	anchored := createThreadComment(t, f.handler, f.issue, map[string]any{
 		"body":   "Does this still hold?",
 		"anchor": map[string]any{"artifact": "spec", "quote": "Context"},
@@ -64,6 +68,10 @@ func TestClosingAndReopeningAnswerTheSequenceTheWritePhaseCommitted(t *testing.T
 		if response.LastSeq != event.seq || event.payloadLastSeq != event.seq || detail.LastSeq != event.seq {
 			t.Fatalf("%s answered last_seq %d and stored %s at seq %d with payload last_seq %d, and a read of the issue answers %d: want all four at %d, the sequence the write phase committed",
 				move.name, response.LastSeq, move.eventType, event.seq, event.payloadLastSeq, detail.LastSeq, event.seq)
+		}
+		// The settlement the move's write left owed, which the room timer would run.
+		if err := f.documents.SettleIssueDocuments(context.Background(), f.issue); err != nil {
+			t.Fatalf("%s: settle the issue's documents: %v", move.name, err)
 		}
 	}
 }

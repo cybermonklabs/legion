@@ -26,6 +26,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -222,6 +223,25 @@ func (s *server) deleteComment(w http.ResponseWriter, r *http.Request) {
 			settled = &written
 		}
 	}
+	// A delete made for a run (store.WithRun, which withinGoingRun puts on a request naming its
+	// run) names the comment as changed by that run (spec requirement r-interaction), as an edit of
+	// its words does. The clear writes the comment's row alone and no node (clearDeletedPostBody),
+	// so the delete writes the comment's node for the run (planCommentChangedForRun), queued after
+	// the row's clear, its mark and every document write the reject and the settle above made, and
+	// what it states right after comment.deleted (graphstore.QueueCaused over
+	// graphstore.LatestEvent, below).
+	commentNode, err := planCommentChangedForRun(r.Context(), tx, comment, deletedAt, actor)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	if err := ledger.Queue(func(b *store.WriteBatch) error {
+		graphstore.QueueNodes(b, commentNode)
+		return nil
+	}); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	// The answer is read here, in the read phase, with the attempts as they stand: the settle
 	// below is queued, so the attempts it settles are set in the answer as it leaves them, and
 	// each one's receipt is built from that. The settle refuses should a row no longer stand as
@@ -294,6 +314,15 @@ func (s *server) deleteComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	events = append(events, event)
+	// The stamp queueLoggedEvent queues with the event appends no event, so the id sequence still
+	// names comment.deleted here, before the settled version's event below.
+	if err := ledger.Queue(func(b *store.WriteBatch) error {
+		graphstore.QueueCaused(b, commentNode, graphstore.LatestEvent)
+		return nil
+	}); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	// The settled version's artifact.version follows the delete's own event, as the settlement's
 	// would have, and carries no diff, as the settlement's carries none.
 	if settled != nil {

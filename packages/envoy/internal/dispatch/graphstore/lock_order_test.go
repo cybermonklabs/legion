@@ -103,6 +103,9 @@ func TestEveryStoreWriteTakesOneLockOrder(t *testing.T) {
 	t.Run("the foreign key check takes no row lock", func(t *testing.T) {
 		requireTheForeignKeyTakesNoRowLock(t, ctx, fixture)
 	})
+	t.Run("two writes of one node for one run name it once, ordered by its row", func(t *testing.T) {
+		requireOneChangedByRunBehindTheNodeRow(t, ctx, fixture)
+	})
 	storetest.RequireNoMarkedCause(t, fixture.database, "every write the lock order test committed")
 }
 
@@ -253,18 +256,14 @@ func requireNoDeadlockBetweenOppositeOrders(t *testing.T, ctx context.Context, f
 	requireCommitted(t, secondDone, "the write given the upper of "+pair.name+" first")
 }
 
-// writeNodesInOneTransaction is one Write of nodes alone, committed: the bare call the race
-// above puts against itself.
-func writeNodesInOneTransaction(ctx context.Context, pool *store.Pool, nodes []Node) error {
-	tx, err := pool.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback(ctx)
-	if err := Write(ctx, tx, nodes, nil); err != nil {
-		return err
-	}
-	return tx.Commit(ctx)
+// writeNodesInOneTransaction is one Write of nodes alone, in a transaction it begins on db (the
+// pool, or a connection the caller holds) and commits (pgx.BeginFunc): the bare call the race
+// above puts against itself, and each write requireOneChangedByRunBehindTheNodeRow makes for its
+// run.
+func writeNodesInOneTransaction(ctx context.Context, db interface {
+	Begin(context.Context) (pgx.Tx, error)
+}, nodes []Node) error {
+	return pgx.BeginFunc(ctx, db, func(tx pgx.Tx) error { return Write(ctx, tx, nodes, nil) })
 }
 
 // requireTheLowestNodeIsTakenFirst holds a write over several nodes to taking them in ascending
@@ -633,6 +632,50 @@ func requireTheForeignKeyTakesNoRowLock(t *testing.T, ctx context.Context, f *lo
 	requireCommitted(t, done, "a write that takes the node's row as the store takes it")
 }
 
+// --- a write made for a run ----------------------------------------------------------------
+
+// requireOneChangedByRunBehindTheNodeRow holds the row of a node two writes made for one run both
+// mark changed, so both queue at the node step. Once the holder lets go both commit, and the node
+// holds one changed_by_run tuple to the run: the second reads, behind the first's hold on the row,
+// the tuple the first committed, and appends none. A write that read what the node holds before
+// it took the node's row would read nothing, as the first did, and append a second.
+func requireOneChangedByRunBehindTheNodeRow(t *testing.T, ctx context.Context, f *lockOrderFixture) {
+	t.Helper()
+	const run = "44444444-4444-4444-8444-444444444444"
+	marked := nodeUpper
+	marked.Changed = true
+	holder, release := beginHolder(t, ctx, f.database)
+	lockNodeRow(t, ctx, holder, marked)
+	var writes []chan error
+	for _, name := range []string{"the first write for the run", "the second write for the run"} {
+		conn, err := f.database.Pool.Acquire(ctx)
+		if err != nil {
+			t.Fatalf("acquire a connection for %s: %v", name, err)
+		}
+		done := make(chan error, 1)
+		go func() {
+			defer conn.Release()
+			done <- writeNodesInOneTransaction(store.WithRun(ctx, run), conn, []Node{marked})
+		}()
+		requireQueued(t, holder, conn, done, name)
+		writes = append(writes, done)
+	}
+	release()
+	requireCommitted(t, writes[0], "the first write for the run")
+	requireCommitted(t, writes[1], "the second write for the run")
+	var named int
+	if err := f.database.Pool.QueryRow(ctx, `
+		select count(*) from graph_tuples
+		where from_kind = $1 and from_id = $2 and kind = $3 and to_kind = $4 and to_id = $5 and asserted
+	`, marked.Kind, marked.ID, TupleChangedByRun, KindInteraction, run).Scan(&named); err != nil {
+		t.Fatalf("count the node's changed_by_run tuples: %v", err)
+	}
+	if named != 1 {
+		t.Fatalf("two writes of %s/%s for run %s appended %d changed_by_run tuples, want 1: the second reads what the node holds once it holds the node's row",
+			marked.Kind, marked.ID, run, named)
+	}
+}
+
 // --- the written order -------------------------------------------------------------------
 
 // lockOrderComment is where this repository's lock order is written: the doc comment on
@@ -643,12 +686,14 @@ const lockOrderComment = "../api/inbox_read.go"
 const lockOrderFunction = "func (s *server) markInboxReadThreads("
 
 // storeLockOrderClauses are this store's five invariants as that comment has to state them, plus
-// the two things it has to say beside them. A phrase missing is the order being written in two
+// the three things it has to say beside them. A phrase missing is the order being written in two
 // places, or in none: a writer that reads the comment would not find this store's steps in it.
 // The revision fence's step is two phrases, the step named and its two locks in their order,
 // because the order of the two is the step: a pass that took the document_block_versions row
 // before its owner would hold the fence while it waited for a writer that holds the owner and
-// waits for the fence.
+// waits for the fence. A frame of a run of the command bar takes a node's own row first, in place
+// of the owner row a run does not have. A write made for a run reads the changed_by_run its nodes
+// hold only behind the rows that order it (requireOneChangedByRunBehindTheNodeRow).
 var storeLockOrderClauses = []string{
 	"the owner's lock comes first, through store.lockowner (store/ownerlock.go) or lockartifactowner (docs/service.go)",
 	"a node's graph_nodes row is written before any projection row whose foreign key names it",
@@ -658,6 +703,8 @@ var storeLockOrderClauses = []string{
 	"takes the document's owner lock, through lockartifactowner or events.lockownerrows, then the document's document_block_versions row `for no key update`",
 	"appending a tuple locks no row of another table",
 	"takes no owner lock at all",
+	"a frame of a run takes the run's interaction graph_nodes row `for no key update` first",
+	"two writes of one node for one run are ordered by what each holds before it reads",
 }
 
 // requireTheWrittenLockOrder reads the lock order off markInboxReadThreads' own doc comment and

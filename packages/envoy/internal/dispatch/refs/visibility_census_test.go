@@ -46,6 +46,11 @@ import (
 // exported read of the store that takes none, from the same source, and holds each one to
 // readsWithoutAViewer, which names it with the reason it answers no reader. A read in neither
 // place fails here, named, and so does an entry of that table that names no such read.
+//
+// Last, it holds the kinds a writer may reserve for its author to what each read of a node answers
+// (requireEachAuthorKindAnswersItsAuthorAlone): a node of each at `project` is read by a second
+// person and an author-only one is not, a lens kind takes no author-only node, and the registry's
+// author flag is on for exactly those kinds.
 func TestEveryNodeKindAnswersAVisibilityPredicate(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
@@ -86,7 +91,17 @@ func TestEveryNodeKindAnswersAVisibilityPredicate(t *testing.T) {
 		var marks, tests int
 		for index, statement := range read.statements {
 			statementMarks := strings.Count(statement, VisibilityMarker)
-			statementTests := strings.Count(statement, ".visibility")
+			// The column every loader selects to answer a node's stored visibility, beside its
+			// stored state (StoredRowOf), reads `visibility` once and tests nothing, and the
+			// registry opens it with a marker of its own; every other `visibility` a statement
+			// reads is a test. A marker is subtracted only where it opens that column, named
+			// stored_visibility, so a marker set beside a test excuses nothing.
+			columns := len(storedVisibilityColumn.FindAllStringIndex(statement, -1))
+			if markers := strings.Count(statement, StoredNodeMarker); markers != columns {
+				t.Errorf("statement %d of the %s read opens %d marker of a stored state and visibility and %d of them opens a stored_visibility column: the marker opens that column alone\n%s",
+					index+1, read.call, markers, columns, statement)
+			}
+			statementTests := strings.Count(statement, ".visibility") - columns
 			marks, tests = marks+statementMarks, tests+statementTests
 			// A statement may bind no predicate where another statement of its read filters
 			// its rows, but a test of `visibility` that no marker opens is a rule the
@@ -140,6 +155,7 @@ func TestEveryNodeKindAnswersAVisibilityPredicate(t *testing.T) {
 				"a read that takes one is held to the predicates above, and a read that is gone needs no reason", function)
 		}
 	}
+	requireEachAuthorKindAnswersItsAuthorAlone(t, ctx, database)
 }
 
 // Why each exported read of the store that takes no acting person binds no visibility
@@ -165,10 +181,12 @@ var readsWithoutAViewer = map[string]string{
 	"BlockChanges":         nodeDetail,
 	"BlockEmbeddingStates": nodeDetail,
 	"BlockIndexing.Cited":  serverWork + " - a version write reads the blocks that cite the blocks its index changes, to count what it moves",
-	"BlockTargets":         serverWork + " - the write of a document checks the block pointers it holds against the blocks they name",
-	"BlockTextAt":          nodeDetail,
-	"BlockTexts": "it reads the text of each block GET /api/v1/reference-targets has already named through TargetNames, " +
-		"which binds each block's predicate, as CurrentBlockText and CurrentItemBlockText read one, and answers nothing of any other node",
+	"BlockRefKinds": serverWork + " - a version write's block index reads the names of the block[] attributes the " +
+		"store's type nodes declare, which only a migration writes, to bind them as a parameter of its own read of the store's tuples",
+	"BlockTargets": serverWork + " - the write of a document checks the block pointers it holds against the blocks they name",
+	"BlockTextAt":  nodeDetail,
+	"CommentsNamingNoNode": serverWork + " - the block-index tick's write of the comments the events after its cursor name " +
+		"reads, under those comments' owner locks, which of their rows name no node",
 	"CountedChanges":       serverWork + " - a write records what its own text cites, as the addresses that text already spells",
 	"CurrentBlockText":     nodeDetail,
 	"CurrentItemBlockText": nodeDetail,
@@ -196,11 +214,15 @@ var readsWithoutAViewer = map[string]string{
 	"OwedItemBlocks":   serverWork,
 	"PendingDocument.Scope": serverWork + " - the document a source whose row is only queued belongs to, which the index-time " +
 		"resolver reads for no person",
-	"PlanBlocks":         serverWork + " - a version write's read phase plans its block index against what the store holds of the document",
-	"PlanDecisionNodes":  serverWork + " - a deferred version write's read phase plans its typed-node pass against what the store holds of the document",
-	"PlanItemIfOwed":     serverWork + " - a write's read phase plans the index an item it writes beside is owed",
-	"PlanOpenedAskTies":  serverWork + " - a settlement's read phase plans the ties of the ask blocks it opened against the document's block index",
-	"PlanReplace":        serverWork + " - a write's read phase plans the reconciliation of a source's references against its edges",
+	"PinnedParent": nodeDetail + " - the lens read names the lenses on a document, a block of one, a block of a comment or a part of an ask " +
+		"it read through Node by the address a lens names that node at, its own pinned to a version of its document or a revision of its item",
+	"PlanBlocks":        serverWork + " - a version write's read phase plans its block index against what the store holds of the document",
+	"PlanDecisionNodes": serverWork + " - a deferred version write's read phase plans its typed-node pass against what the store holds of the document",
+	"PlanItemIfOwed":    serverWork + " - a write's read phase plans the index an item it writes beside is owed",
+	"PlanOpenedAskTies": serverWork + " - a settlement's read phase plans the ties of the ask blocks it opened against the document's block index",
+	"PlanReplace":       serverWork + " - a write's read phase plans the reconciliation of a source's references against its edges",
+	"PreventionRetractions": serverWork + " - the index pass, a retirement and the backfill read the prevented_by tuples at the checks " +
+		"they end, under those checks' owner lock, to retract each; its writer signs the retractions and views nothing",
 	"QueueAskPartIDs":    nodeDetail,
 	"ReadBlockIndex":     serverWork + " - a version write's read phase reads the document's block index it plans against",
 	"ReadIndexedVersion": serverWork + " - a version write's read phase reads the document's address and the version's writer",
@@ -209,6 +231,8 @@ var readsWithoutAViewer = map[string]string{
 	"RemovedBlockNode":   nodeDetail,
 	"ScopeSources":       serverWork,
 	"SourceText":         serverWork,
+	"StaleLensesOn": serverWork + " - a document's removal reads the stale lenses on the removed document to take each " +
+		"gone with all that stands beneath it, those its caller may not see included",
 }
 
 // SeedStoreThroughItsWriters writes the people and agents a running deployment's store holds, as
@@ -281,6 +305,11 @@ func markedKinds(statement string) []string {
 	return kinds
 }
 
+// storedVisibilityColumn is the one read of `visibility` StoredNodeMarker opens: the column a
+// loader selects to answer a node's stored visibility, named stored_visibility beside the column
+// stored_state (StoredRowOf).
+var storedVisibilityColumn = regexp.MustCompile(regexp.QuoteMeta(StoredNodeMarker) + `\w+\.visibility as stored_visibility\b`)
+
 // graphRead is one call of a read of the graph: the exported function that made it, the call
 // as a failure names it, and every statement the call issued, in order.
 type graphRead struct {
@@ -349,6 +378,33 @@ func graphReads(t *testing.T, ctx context.Context, database *store.Store) []grap
 			return database.Pool.SendBatch(ctx, batch).Close()
 		})
 	}
+	// Nodes is Node over a batch, ExcerptedNodes is Nodes with each node's excerpt, and
+	// TargetNames is Nodes with each node's name: one target of every kind, so each kind's loader
+	// issues its statement in the one call. BlockTexts reads each kind of block among them in a
+	// statement of its own and passes every other kind over. A finding's statement binds the
+	// predicate of its kind over the row it reads; a document's block and an item's bind none,
+	// since a caller reads those only once TargetNames has answered them to the reader. So that
+	// read is held to the registry as a whole.
+	everyKind := make([]Target, len(nodeKinds))
+	for index, kind := range nodeKinds {
+		everyKind[index] = Target{Kind: kind, ID: "no-such-node"}
+	}
+	record("Nodes", "Nodes of every kind at once", func() error {
+		_, err := Nodes(ctx, recorder, who, everyKind)
+		return err
+	})
+	record("ExcerptedNodes", "ExcerptedNodes of every kind at once", func() error {
+		_, err := ExcerptedNodes(ctx, recorder, who, everyKind)
+		return err
+	})
+	record("TargetNames", "TargetNames of every kind at once", func() error {
+		_, err := TargetNames(ctx, recorder, who, everyKind)
+		return err
+	})
+	record("BlockTexts", "BlockTexts of every kind at once", func() error {
+		_, err := BlockTexts(ctx, recorder, who, everyKind)
+		return err
+	})
 	record("ReferencedBy", "ReferencedBy of CORE-1/spec", func() error {
 		_, err := ReferencedBy(ctx, recorder, who, "CORE-1/spec")
 		return err
@@ -450,6 +506,10 @@ func graphReads(t *testing.T, ctx context.Context, database *store.Store) []grap
 		_, err := IssueDescendants(ctx, recorder, who, "CORE-1")
 		return err
 	})
+	record("LensCatalogue", "LensCatalogue", func() error {
+		_, err := LensCatalogue(ctx, recorder, who)
+		return err
+	})
 	return reads
 }
 
@@ -487,11 +547,19 @@ func seedBlockLink(t *testing.T, ctx context.Context, database *store.Store) str
 	return artifact
 }
 
+// writerSigned names each exported read of the store whose model.Actor is the writer that signs
+// the facts it answers for a write to append, not a viewer: PreventionRetractions answers the
+// retractions a writer appends, each signed by that writer, and answers them to no reader.
+// storeReads counts such a read among the reads that take no acting person, so
+// readsWithoutAViewer must name it with its reason.
+var writerSigned = []string{"PreventionRetractions"}
+
 // storeReads is every exported function of this package that reads the store, read out of the
 // package's own source rather than kept as a list: one that takes the Queryer it reads on, or
 // the *pgx.Batch it queues its statement in. viewing is those that take a model.Actor beside it,
 // or a *model.Actor where nil is no person (ResolvePrefixes), the reads of the graph for a
-// viewer, and without is the rest. A method is named by its receiver's type and its own name.
+// viewer, and without is the rest, a read of writerSigned among them. A method is named by its
+// receiver's type and its own name.
 func storeReads(t *testing.T) (viewing, without []string) {
 	t.Helper()
 	files, err := filepath.Glob("*.go")
@@ -517,7 +585,7 @@ func storeReads(t *testing.T) (viewing, without []string) {
 				switch types.ExprString(parameter.Type) {
 				case "model.Actor", "*model.Actor":
 					viewer = true
-				case "Queryer", "*pgx.Batch":
+				case "Queryer", "graphstore.Queryer", "*pgx.Batch":
 					queries = true
 				}
 			}
@@ -528,7 +596,7 @@ func storeReads(t *testing.T) (viewing, without []string) {
 			if function.Recv != nil {
 				name = strings.TrimPrefix(types.ExprString(function.Recv.List[0].Type), "*") + "." + name
 			}
-			if viewer {
+			if viewer && !slices.Contains(writerSigned, name) {
 				viewing = append(viewing, name)
 			} else {
 				without = append(without, name)

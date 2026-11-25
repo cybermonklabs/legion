@@ -96,11 +96,13 @@ type BlockIndexTick struct {
 	Comments     int
 	AnotherBuild bool
 	// ObjectNodes is how many issues, documents, asks and messages whose row named no node the
-	// tick wrote the node of, and OrphansGone how many document nodes whose row another build
-	// removed it stated gone, while this build owed the object pass
-	// (writeObjectNodesAnotherBuildWrote).
-	ObjectNodes int
-	OrphansGone int
+	// tick wrote the node of, OrphansGone how many document nodes whose row another build removed
+	// it stated gone, and StaleLensesGone how many nodes of stale lenses - each lens whose recorded
+	// row no longer stands at its document's address, and everything under it - it stated gone,
+	// while this build owed the object pass (writeObjectNodesAnotherBuildWrote).
+	ObjectNodes     int
+	OrphansGone     int
+	StaleLensesGone int
 	// OwedDocuments, OwedTexts, OwedItems and OwedItemBlocks are what is still owed after the tick.
 	OwedDocuments  int
 	OwedTexts      int
@@ -203,7 +205,7 @@ func (s *Service) blockIndexTick(ctx context.Context, cursors BlockIndexCursors,
 	}
 	if tick.Documents > 0 || tick.Items > 0 || tick.ItemBlocks > 0 || tick.Texts > 0 ||
 		tick.Windows > 0 || tick.Retired > 0 || tick.Events > 0 || tick.Marked > 0 || tick.Comments > 0 ||
-		tick.ObjectNodes > 0 || tick.OrphansGone > 0 ||
+		tick.ObjectNodes > 0 || tick.OrphansGone > 0 || tick.StaleLensesGone > 0 ||
 		tick.AnotherBuild != logged.AnotherBuild || tick.LiveAhead != logged.LiveAhead ||
 		tick.OwedDocuments != logged.OwedDocuments || tick.OwedItems != logged.OwedItems ||
 		tick.OwedItemBlocks != logged.OwedItemBlocks || tick.OwedTexts != logged.OwedTexts ||
@@ -215,14 +217,16 @@ func (s *Service) blockIndexTick(ctx context.Context, cursors BlockIndexCursors,
 		// changes - the drain reaching it, or a new backlog starting - and not as it ages.
 		// events= is how many events the tick read after its build's event cursor, marked= and
 		// comments= the documents it marked owed and the comments it gave their nodes from those
-		// events, object_nodes= and orphans_gone= the rows the object pass gave their nodes and the
-		// orphaned document nodes it stated gone, and another_build= whether a live server process
+		// events, object_nodes=, orphans_gone= and stale_lenses_gone= the rows the object pass gave
+		// their nodes, the orphaned document nodes it stated gone and the nodes of stale lenses it
+		// stated gone, and another_build= whether a live server process
 		// of another build served, which decides nothing of which events the tick reads and makes
 		// it owe the object pass (readEventsAfterCursor).
 		slog.Info("dispatch: block index", "documents", tick.Documents, "items", tick.Items,
 			"item_blocks", tick.ItemBlocks, "texts", tick.Texts, "windows", tick.Windows,
 			"retired", tick.Retired, "events", tick.Events, "marked", tick.Marked,
 			"comments", tick.Comments, "object_nodes", tick.ObjectNodes, "orphans_gone", tick.OrphansGone,
+			"stale_lenses_gone", tick.StaleLensesGone,
 			"another_build", tick.AnotherBuild, "owed_documents", tick.OwedDocuments,
 			"owed_items", tick.OwedItems, "owed_item_blocks", tick.OwedItemBlocks,
 			"owed_texts", tick.OwedTexts, "live_ahead", tick.LiveAhead,

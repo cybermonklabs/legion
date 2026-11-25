@@ -170,7 +170,7 @@ func TestTheReferencesReadAnswersAnIssueLinkedIntoByTenThousandBlocks(t *testing
 var linkedIntoReader = model.Actor{Kind: "user", ID: "alice", Proven: true}
 
 // closureRead reads the references of issue as the route reads them, refs.Closure for alice in a
-// transaction of its own on the issue's database, but with no budget (the route's boundedClosure),
+// transaction of its own on the issue's database, but with no budget (the route's inClosureRead),
 // so that the read runs to its end however long it takes, and answers the time refs.Closure took.
 // It fails t unless the read lists each of the issue's linking documents in linked_from.
 func closureRead(t *testing.T, issue linkedIntoIssue) time.Duration {

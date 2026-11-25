@@ -105,10 +105,13 @@ func duplicateNamesAnotherIssue(newTitle string) string {
                  where candidate.key = named.key))`
 }
 
-// duplicateGateRollback bounds the gate's own rollback, which runs after the read whatever
-// happened to it. It is not the read's bound: it ends a rollback the database will not take,
-// so the handler is never held by one.
-const duplicateGateRollback = 2 * time.Second
+// readRollbackBound bounds the rollback of a read transaction that is rolled back on a context of
+// its own, after the read whatever happened to it: the near-copy gate's read
+// (readDuplicateCandidates), whose context is expired exactly when its bound ended the read, and
+// each read inJITOffRead runs - the issue references read, whose context can have expired at its
+// bound, and the references list read. It is not the bound of any of those reads: it ends a
+// rollback the database will not take, so the handler is never held by one.
+const readRollbackBound = 2 * time.Second
 
 // duplicateKeyLexemesQuery is what the issues trigger makes of a key of project $1
 // (0057_issues_search_trigger): the compound lexeme, the project's own word and the number.
@@ -426,7 +429,7 @@ func (s *server) readDuplicateCandidates(
 	// for as long as the server lives. A read held past the bound is the ordinary case here, not
 	// the rare one, since the bound is what ends a slow one.
 	defer func() {
-		rollback, cancel := context.WithTimeout(context.WithoutCancel(ctx), duplicateGateRollback)
+		rollback, cancel := context.WithTimeout(context.WithoutCancel(ctx), readRollbackBound)
 		defer cancel()
 		_ = tx.Rollback(rollback)
 	}()

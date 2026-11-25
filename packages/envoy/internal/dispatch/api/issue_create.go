@@ -493,9 +493,10 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	// server as one batch (store.WriteBatch), the node write first, as createStoredMessage writes
 	// a message's node and row: the node write adds no round trip while the create holds its
 	// transaction id, which the xid window tests count.
+	// Both nodes are ones this write creates (graphstore.Created).
 	issueNodes := graphstore.PlanUncaused([]graphstore.Node{
-		graphstore.IssueNode(key, input.Project, actor, createdAt),
-		graphstore.ArtifactNode(specRef, input.Project, "", actor, createdAt),
+		graphstore.Created(graphstore.IssueNode(key, input.Project, actor, createdAt)),
+		graphstore.Created(graphstore.ArtifactNode(specRef, input.Project, "", actor, createdAt)),
 	}, nil)
 	if err := store.RunWrite(r.Context(), tx, func(b *store.WriteBatch) error {
 		graphstore.QueueNodes(b, issueNodes)

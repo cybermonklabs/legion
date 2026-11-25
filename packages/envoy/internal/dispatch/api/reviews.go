@@ -889,6 +889,9 @@ func (s *server) openApprovalAsk(
 		return nil, nil, err
 	}
 	nodes, facts, marked := graphstore.AskFacts(ask.ID, project, parties, actor, ask.CreatedAt, graphstore.NoEvent, places)
+	// The approval request's ask is the node this write makes, first of the nodes AskFacts
+	// answers (graphstore.Created).
+	nodes[0] = graphstore.Created(nodes[0])
 	askNode := graphstore.PlanUncaused(nodes, facts)
 	if err := ledger.Queue(func(b *store.WriteBatch) error {
 		graphstore.QueueNodes(b, askNode)

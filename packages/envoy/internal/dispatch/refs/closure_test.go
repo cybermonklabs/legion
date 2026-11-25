@@ -17,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -175,11 +176,29 @@ func closureStatementRows(t *testing.T, database *store.Store, statement string,
 	return got
 }
 
+// documentMember is the member the references read answers for the document stored at refKey,
+// read through q, reached at depth 1 through via: kind artifact at the document's own address
+// (ArtifactRef).
+func documentMember(t *testing.T, q Queryer, refKey string, via model.ReferenceVia) Member {
+	t.Helper()
+	var issue, session *string
+	var project, slug, kind string
+	var primary bool
+	if err := q.QueryRow(context.Background(), `
+		select issue_key, coalesce(project_key, ''), session_id, slug, kind, is_primary from artifacts where ref_key = $1
+	`, refKey).Scan(&issue, &project, &session, &slug, &kind, &primary); err != nil {
+		t.Fatalf("read the document at %s: %v", refKey, err)
+	}
+	return Member{Kind: graphstore.KindArtifact, Address: ArtifactRef(issue, project, session, slug, kind, primary),
+		RefKey: refKey, Depth: 1, Via: via}
+}
+
 // Closure's members are main's rows of depth 1 over the same data, each at depth 1 with main's
 // via: a block its document still holds reaches that document, one no version holds reaches
 // nothing, and the documents of the chain past its first, which main's walk answered at depths
-// two to ten, are no member. It reads as somebody who proves no author, and no node of this data
-// is reserved for one, so the predicates it binds leave every row main answered.
+// two to ten, are no member. No document of this data moved, so each member is the document of
+// kind artifact at its own address. It reads as somebody who proves no author, and no node of
+// this data is reserved for one, so the predicates it binds leave every row main answered.
 func TestTheClosureAnswersWhatMainsStatementDid(t *testing.T) {
 	fixture := newClosureFixture(t)
 	wantMembers := mainsDepthOneMembers(t, fixture.database, "CORE-1")
@@ -290,11 +309,12 @@ func lineDiff(got, want []string) string {
 	return fmt.Sprintf("%d missing [%s], %d unexpected [%s]", len(missing), first(missing), len(unexpected), first(unexpected))
 }
 
-// memberLines is each member as "<ref_key> depth <depth> via <kind> <id>", sorted.
+// memberLines is each member as "<ref_key> <kind> <address> depth <depth> via <kind> <id>",
+// sorted.
 func memberLines(members []Member) []string {
 	lines := make([]string, len(members))
 	for index, member := range members {
-		lines[index] = fmt.Sprintf("%s depth %d via %s %s", member.RefKey, member.Depth, member.Via.Kind, member.Via.ID)
+		lines[index] = fmt.Sprintf("%s %s %s depth %d via %s %s", member.RefKey, member.Kind, member.Address, member.Depth, member.Via.Kind, member.Via.ID)
 	}
 	slices.Sort(lines)
 	return lines
@@ -494,13 +514,14 @@ func TestTheReferencesReadReadsOnlyTheIssuesOwnLinks(t *testing.T) {
 }
 
 // mainsDepthOneMembers is main's rows of depth 1 for issueKey, as the members they make, by
-// ref_key.
+// ref_key: no document a fixture compares on moved, so each is the document of kind artifact at
+// its own address (documentMember).
 func mainsDepthOneMembers(t *testing.T, database *store.Store, issueKey string) []Member {
 	t.Helper()
 	members := []Member{}
 	for _, row := range closureStatementRows(t, database, mainClosureQuery, issueKey) {
 		if row.depth == 1 {
-			members = append(members, Member{RefKey: row.refKey, Depth: 1, Via: model.ReferenceVia{Kind: row.viaKind, ID: row.viaID}})
+			members = append(members, documentMember(t, database.Pool, row.refKey, model.ReferenceVia{Kind: row.viaKind, ID: row.viaID}))
 		}
 	}
 	sort.Slice(members, func(left, right int) bool { return members[left].RefKey < members[right].RefKey })

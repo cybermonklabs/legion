@@ -85,17 +85,21 @@ func blockFits(refKey string, nodes []model.ArtifactBlock) ([]bool, int) {
 // The index owns a block's text and its place in its document, not its state or its visibility,
 // so every node it writes restates the block (graphstore.Node's Restates): state is live for a
 // block the version holds and gone for one it dropped, and nothing more. A block already there
-// keeps its visibility, and a block the version holds keeps any state a later release's write
-// marked it with - a requirement marked proposed whose words a version changes stays proposed -
-// while one stored gone, a block a version restores, comes back live. A block the version
-// dropped goes gone whatever it was.
-func blockNode(address string, record IndexedVersion, at time.Time, state, supertag string) graphstore.Node {
+// keeps its visibility, and a block the version holds keeps the state a write marked it with -
+// a proposed requirement whose words a version changes stays proposed - while one stored gone,
+// a block a version restores, comes back live. A block the version dropped goes gone whatever
+// it was.
+//
+// changed marks a block whose words this version added, changed or restored, or which it
+// dropped, so a version written for a run names that block as changed by it (graphstore.Node's
+// Changed); a block the pass writes only because its row names no node yet is not marked.
+func blockNode(address string, record IndexedVersion, at time.Time, state, supertag string, changed bool) graphstore.Node {
 	return graphstore.Node{
 		Kind: BlockNodeKind, ID: address, Supertag: supertag,
 		Visibility: graphstore.VisibilityProject, State: state,
 		Project: record.Project, Parties: record.Parties,
 		MadeAt: at, MadeBy: record.Writer, SourceEvent: graphstore.NoEvent,
-		Restates: true,
+		Restates: true, Changed: changed,
 	}
 }
 
@@ -146,7 +150,7 @@ func BlockInDocument(record IndexedVersion, blockID string, at time.Time, event 
 		return graphstore.Node{}, graphstore.Tuple{}, false
 	}
 	address := blockNodeAddress(record.RefKey, blockID)
-	node = blockNode(address, record, at, graphstore.StateLive, BlockSupertag)
+	node = blockNode(address, record, at, graphstore.StateLive, BlockSupertag, false)
 	node.SourceEvent = event
 	member = membership(address, record.RefKey, at, record.Writer).Tuple
 	member.SourceEvent = event
@@ -233,14 +237,17 @@ func (b *BlockIndexing) planBlockNodes(
 	// planBlockParents states against that node.
 	//
 	// Every node the pass writes restates its block (blockNode): a block this version holds is
-	// written live and keeps a state another write marked it with, so a version that changes a
-	// proposed requirement's words leaves it proposed, and comes back live only from gone.
+	// written live and keeps a state a write marked it with, so a version that changes a
+	// proposed requirement's words leaves it proposed, and comes back live only from gone. A
+	// block whose words this version wrote and a block it dropped are what the version changed,
+	// so each is marked changed, and a version written for a run names it as changed by that run
+	// (graphstore.TupleChangedByRun) where its cause is appended (graphstore.QueueCaused).
 	blockNodes := make([]graphstore.Node, 0, len(b.ids)+len(b.deleted)+len(texts.nodeless))
 	for position, id := range b.ids {
 		if !texts.written[position].fits {
 			continue
 		}
-		blockNodes = append(blockNodes, blockNode(blockNodeAddress(refKey, id), record, versionAt, graphstore.StateLive, typed.supertag(id, b.types[position])))
+		blockNodes = append(blockNodes, blockNode(blockNodeAddress(refKey, id), record, versionAt, graphstore.StateLive, typed.supertag(id, b.types[position]), true))
 	}
 	// Where the store's statement of the document is stale, a block another release's version
 	// dropped has no row left for deleted to name, and its node stands: the store's own
@@ -262,7 +269,8 @@ func (b *BlockIndexing) planBlockNodes(
 	// same rule and no writer of this store states a base attribute of its own. Its node keeps
 	// the supertag it holds, which no version holding the block is left to say. A deleted block
 	// is none of the version's blocks, so blockFits answered nothing of it, and its address is
-	// measured here, once.
+	// measured here, once. A block this version dropped is one it changed (blockNode's changed);
+	// one another release's version dropped is not.
 	gone := b.deleted
 	if len(sinceStated) > 0 {
 		gone = slices.Concat(b.deleted, sinceStated)
@@ -271,7 +279,8 @@ func (b *BlockIndexing) planBlockNodes(
 	if err != nil {
 		return nil, nil, err
 	}
-	for _, id := range gone {
+	goneNodes := make([]string, 0, len(gone))
+	for position, id := range gone {
 		if !blockIDFits(refKey, id) {
 			continue
 		}
@@ -279,7 +288,8 @@ func (b *BlockIndexing) planBlockNodes(
 		if !known {
 			supertag = BlockSupertag
 		}
-		blockNodes = append(blockNodes, blockNode(blockNodeAddress(refKey, id), record, versionAt, graphstore.StateGone, supertag))
+		goneNodes = append(goneNodes, blockNodeAddress(refKey, id))
+		blockNodes = append(blockNodes, blockNode(blockNodeAddress(refKey, id), record, versionAt, graphstore.StateGone, supertag, position < len(b.deleted)))
 	}
 	// A row written before this release names no node: migration 20261109022248 added the
 	// columns and filled none of them, and the backfill has not reached the document or has
@@ -300,8 +310,10 @@ func (b *BlockIndexing) planBlockNodes(
 			continue
 		}
 		address := blockNodeAddress(refKey, block.id)
+		// A block whose row only learns its node here is no block this version changed: it is
+		// not marked (blockNode).
 		if _, stated := texts.changed[block.id]; !stated {
-			blockNodes = append(blockNodes, blockNode(address, record, versionAt, graphstore.StateLive, typed.supertag(block.id, block.typ)))
+			blockNodes = append(blockNodes, blockNode(address, record, versionAt, graphstore.StateLive, typed.supertag(block.id, block.typ), false))
 		}
 		memberships = append(memberships, membership(address, refKey, block.joined, writer))
 	}
@@ -317,6 +329,14 @@ func (b *BlockIndexing) planBlockNodes(
 	// legacy_source_seq: no legacy row states a node's visibility or its state.
 	b.stated = graphstore.PlanUncaused(append(indexed, unwritten(version.Beside.Nodes, indexed)...), nil)
 	b.stated.Tuples = append(b.stated.Tuples, memberships...)
+	// The pointer tuples at the blocks it states gone go with them (retractGonePointers): read
+	// here, in the plan, and appended beside the facts that node write states, under the same
+	// cause, in the same write phase as the node write that states each block gone.
+	retracted, err := retractGonePointers(ctx, q, goneNodes, versionAt, writer)
+	if err != nil {
+		return nil, nil, fmt.Errorf("retract the pointers at the blocks version %d of %s no longer holds: %w", b.version, b.artifactID, err)
+	}
+	b.stated.Tuples = append(b.stated.Tuples, retracted...)
 	// A block whose row the insert writes afresh joins the document there; one whose row was
 	// already there - a block whose text alone changed - keeps that row and the membership it
 	// already states.
@@ -866,25 +886,40 @@ func heldBlockParentDifferences(
 }
 
 // heldLink is one link a block node states beside its membership of its document and its
-// placement: a mention's or a pointer's, under the kind its pair names, to its far end.
-// A reading's authored_by (PlanDecisionNodes) and an ask block copy's copied_from (docs'
-// claimCopies) are no link: no block_refs row projects either, so no pair of a version
-// writes them and no pass that drops a row retracts them.
+// placement, of a kind a pair of a version writes into block_refs (heldLinkKinds): a mention's or
+// a pointer's, under the kind its pair names, to its far end, or a decision's tie. A tuple of any
+// other kind out of a block is no link of the version's: a requirement's constrained_by
+// (graphstore.TupleConstrainedBy, the pointer route's), a changed_by_run a write made for a run
+// appended (graphstore.TupleChangedByRun), a decision's kept_by (the Keep's), a reading's
+// authored_by (PlanDecisionNodes) and an ask block copy's copied_from (docs' claimCopies). No
+// block_refs row projects any of them, so no pair of a version writes them and no pass that drops
+// a row retracts them.
 type heldLink struct{ kind, toKind, toID string }
+
+// heldLinkKinds is true of a tuple t of a kind a pair of a version writes into block_refs, the
+// kinds whose links the release before this one drops by deleting their rows: a mention and a
+// pointer of each `block[]` attribute the store's type nodes declare, which blockRefKinds, a
+// text[] parameter bound to what BlockRefKinds read by a statement of its own in the caller's
+// transaction, holds, and a decision's ties, its decided_by, from_ask and shaped (typedKinds,
+// TypedFacts.pairs). It is the census's own reading of the tuples a block_refs row states
+// (graphcensus's blockRefKinds and tieKinds).
+func heldLinkKinds(blockRefKinds string) string {
+	return `(t.kind = any(` + blockRefKinds + `) or t.kind in (` + store.QuoteLiterals(typedKinds) + `))`
+}
 
 // heldDocumentBlocks is what the store states now of the blocks of the document refKey names, by
 // block id: each block node that states itself a member of the document (an in_document tuple
-// into the document's artifact address) and that the store holds in any state but gone, with
-// every link it states now beside that membership and its placement, read the way the store reads
-// a current relation (graphstore.CurrentTupleRead), in kind and far-end order. A member that
-// states no link is in the map with none, and one whose address does not start with the
-// document's ref_key is no block the pass addresses and is left out.
+// into the document's artifact address) and that the store holds present, at any state but gone,
+// with every link it states now of a kind a version's pairs write (heldLinkKinds), read the way
+// the store reads a current relation (graphstore.CurrentTupleRead), in kind and far-end order. A
+// member that states no such link is in the map with none, and one whose address does not start
+// with the document's ref_key is no block the pass addresses and is left out.
 //
-// The state read is every state but gone, not live alone: a later release marks a block
-// proposed, settled or overtaken, and the index pass keeps such a state unless the pass itself
-// makes the block gone (blockNode). A block in one of those states that another release's
-// version dropped is as gone as a live one, and a read of the live blocks alone would leave it
-// standing in that state for ever, with nothing projecting it.
+// The state read is every state but gone, not live alone: a write marks a block proposed,
+// settled or overtaken, and the index pass keeps such a state unless the pass itself makes the
+// block gone (blockNode). A block in one of those states that another release's version dropped
+// is as gone as a live one, and a read of the live blocks alone would leave it standing in that
+// state for ever, with nothing projecting it.
 //
 // It is the store's own side of the document, and IndexBlocks reads it only where that side is
 // stale (blockStand.stale): another release indexed the document after the store last stated its
@@ -893,10 +928,12 @@ type heldLink struct{ kind, toKind, toID string }
 // the version's render: this read is what the store would otherwise go on asserting against it,
 // as heldBlockParentDifferences is for the parents. The members come through
 // graph_tuples_as_of_in in one probe and each member's links through graph_tuples_as_of_out in
-// one probe a block, in one statement: the links are every kind but two, which proves nothing of
-// graph_tuples_current's predicate, and that index leaves delivered_to out. The kinds and the
-// value kind are written into the text so the planner can prove each index's partial predicate
-// whatever plan it caches.
+// one probe a block, in one statement: the links are the kinds a version's pairs write
+// (heldLinkKinds), a list that proves nothing of graph_tuples_current's predicate, and that index
+// leaves delivered_to out. The typed kinds and the value kind are written into the text, and the
+// block-reference kinds, read first by a statement of their own in the caller's transaction
+// (BlockRefKinds), are bound as one parameter, so the planner can prove each index's partial
+// predicate whatever plan it caches, and the statement reads no attribute node of graph_nodes.
 //
 // Each member probes its own node through graph_nodes' primary key, in a subquery behind an
 // offset 0 the planner cannot flatten. Joined plainly, the planner took `kind = 'block'` alone
@@ -905,6 +942,10 @@ type heldLink struct{ kind, toKind, toID string }
 // that removed 499,500 rows, and a document of 150,000 blocks is the read this pass makes
 // (TestTheHeldDocumentReadProbesEachMembersNodeOnce).
 func heldDocumentBlocks(ctx context.Context, q Queryer, refKey string) (map[string][]heldLink, error) {
+	blockRefKinds, err := BlockRefKinds(ctx, q)
+	if err != nil {
+		return nil, err
+	}
 	rows, err := q.Query(ctx, `
 		select member.id, held.kind, held.to_kind, held.to_id
 		from (
@@ -922,15 +963,13 @@ func heldDocumentBlocks(ctx context.Context, q Queryer, refKey string) (map[stri
 			from (
 				`+graphstore.CurrentTupleRead(`t.kind, t.to_kind, t.to_id`, `t.kind, t.to_kind, t.to_id, t.asserted`,
 		`t.from_kind = '`+BlockNodeKind+`' and t.from_id = member.id
-				  and t.to_kind <> '`+graphstore.KindValue+`'
-				  and t.kind not in ('`+TupleInDocument+`', '`+graphstore.TuplePartOf+`',
-				                     '`+graphstore.TupleAuthoredBy+`', '`+graphstore.TupleCopiedFrom+`')`)+`
+				  and t.to_kind <> '`+graphstore.KindValue+`' and `+heldLinkKinds(`$2::text[]`))+`
 			) current
 			where current.asserted
 		) held on true
 		where node.state <> '`+graphstore.StateGone+`'
 		order by member.id, held.kind, held.to_kind, held.to_id
-	`, refKey)
+	`, refKey, blockRefKinds)
 	if err != nil {
 		return nil, fmt.Errorf("read what the store states of the blocks of %s: %w", refKey, err)
 	}
@@ -956,12 +995,12 @@ func heldDocumentBlocks(ctx context.Context, q Queryer, refKey string) (map[stri
 	return held, rows.Err()
 }
 
-// goneSinceStated is, in id order, each block the store holds in the document in any state but
-// gone (held) that the version holds no node of (nodes, its unique blocks) and that the rows did
-// not hold either (deleted, the blocks of the rows the version dropped, which IndexBlocks states
-// gone itself): a block another release's version dropped after the store last stated the
-// document. That release deleted the block's row and stated nothing, so its node stands, and it is
-// gone exactly as a block the rows dropped is, by the version that does not hold it.
+// goneSinceStated is, in id order, each block the store holds present in the document (held) that
+// the version holds no node of (nodes, its unique blocks) and that the rows did not hold either
+// (deleted, the blocks of the rows the version dropped, which IndexBlocks states gone itself): a
+// block another release's version dropped after the store last stated the document. That release
+// deleted the block's row and stated nothing, so its node stands, and it is gone exactly as a
+// block the rows dropped is, by the version that does not hold it.
 func goneSinceStated(held map[string][]heldLink, nodes []model.ArtifactBlock, deleted []string) []string {
 	if len(held) == 0 {
 		return nil

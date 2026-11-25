@@ -330,7 +330,9 @@ func (l *Ledger) runQueue(ctx context.Context, after func(context.Context) error
 	l.sealed = true
 	queue := l.queue
 	l.queue = nil
-	var batch store.WriteBatch
+	// The batch is built for ctx, so the write phase is made for the run of the command bar ctx
+	// carries (store.WithRun), and the store's writers that queue on it name what it changed.
+	batch := store.NewWriteBatch(ctx)
 	for _, step := range queue {
 		if err := step(&batch); err != nil {
 			return batch.SendFailed(ctx, l.writer, err)

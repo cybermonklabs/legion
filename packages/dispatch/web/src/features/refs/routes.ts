@@ -14,6 +14,7 @@ import type { Artifact } from "../../api/types";
 import { issueProject } from "../../lib/issue-key";
 import { INBOX_ROW_TYPES } from "../inbox/list-row";
 import { EVERYONE_FILTER_VALUE } from "../inbox/sections";
+import { artifactSlugPattern } from "./artifact-slug";
 import {
   type BlockTarget,
   blockFragment,
@@ -22,6 +23,7 @@ import {
   withBlock,
 } from "./block-reference";
 import { referenceSpans } from "./reference-spans";
+import { storeAddressReference } from "./store-address";
 import { pageInBound, routeInBound } from "./target-id";
 
 export type IssueRoute =
@@ -188,8 +190,6 @@ const issueKeyOnlyPattern = new RegExp(`^${issueKeyPattern}$`);
 const projectKeyOnlyPattern = new RegExp(`^${projectKeyPattern}$`);
 const issuePathPattern = new RegExp(`^/issues/(${issueKeyPattern})(?:/(.*))?$`);
 const projectPathPattern = new RegExp(`^/projects/(${projectKeyPattern})(?:/(.*))?$`);
-/** The slug Dispatch gives a document, the one a reference can name. */
-const artifactSlugPattern = "[a-z0-9]+(?:-[a-z0-9]+)*";
 const artifactSlugOnlyPattern = new RegExp(`^${artifactSlugPattern}$`);
 const issueArtifactReferencePattern = new RegExp(
   `^artifact/(${artifactSlugPattern})(?:@v([1-9]\\d*))?$`
@@ -637,7 +637,8 @@ function pageRoutes(
   return { block: id === undefined ? undefined : withBlock(route, id), page: route };
 }
 
-/** A reference a text cites: the `dispatch://` form and the dashboard path it opens. */
+/** A reference a text cites: the `dispatch://` form and the dashboard path it opens, which a
+ *  node with no page of the dashboard has none of. */
 export interface ComposerReference {
   href?: string;
   reference: string;
@@ -645,8 +646,9 @@ export interface ComposerReference {
 
 /**
  * The references body cites, in order of first appearance: every `dispatch://` reference and
- * dashboard URL of `appOrigin` that names an issue, a document or an item. The composer's
- * reference pills and the unfurl cards read text through it.
+ * dashboard URL of `appOrigin` that names an issue, a document or an item, and every
+ * `dispatch://` reference to a node the store addresses by its own id (`storeAddressReference`),
+ * which opens no page. The composer's reference pills and the unfurl cards read text through it.
  */
 export function composerReferences(
   body: string,
@@ -656,15 +658,15 @@ export function composerReferences(
   const seen = new Set<string>();
   for (const { value } of referenceSpans(body)) {
     const route = referenceRouteFromHref(value, appOrigin);
-    if (route === undefined) {
-      continue;
-    }
-    const reference = buildDispatchReference(route);
-    if (seen.has(reference)) {
+    const reference =
+      route === undefined ? storeAddressReference(value) : buildDispatchReference(route);
+    if (reference === undefined || seen.has(reference)) {
       continue;
     }
     seen.add(reference);
-    references.push({ href: buildReferencePath(route), reference });
+    references.push(
+      route === undefined ? { reference } : { href: buildReferencePath(route), reference }
+    );
   }
   return references;
 }

@@ -457,8 +457,8 @@ agent sees it, through the HTTP API and the real `dispatch` CLI
 shell's Dispatch URL, token file and Envoy configuration never reach it). It covers a comment
 citing a block and the block's backlinks, a deleted and restored block, a pinned block reference
 that changes and is removed, `GET /api/v1/block-links` between the blocks of two documents, each
-block's changed version, every block `part_of` its document, a link in a list item, the six facts
-every node carries (`made_by`, `made_at`, `changed_by`, `changed_at`, `parent`, `parent_version`)
+block's changed version, every block `part_of` its document, a link in a list item, six facts
+of every node (`made_by`, `made_at`, `changed_by`, `changed_at`, `parent`, `parent_version`)
 for an issue, a document, a file, a picture, a block, a removed pinned block, an ask, a comment, a
 message, a session and a component, read by its own reference, as an edge's other end and on the
 `Node:` line of `dispatch read`, and the older `GET /api/v1/artifacts/{id}/references` route. It
@@ -772,11 +772,21 @@ who has signed in, so the project may name her.
 was written `bun e2e/run.ts -- <command>`; that program is gone, and the browser suite starts its
 stacks through Playwright's own global setup now, which no shell driver can reach.
 
-All nine drivers source `e2e/acceptance/lib.sh`, the preamble and the check vocabulary they
-share: it refuses an unset input or a missing command with exit 2, reads the bearer from
-`DISPATCH_TOKEN` or `DISPATCH_TOKEN_FILE` without printing it, unsetting both so no process the
-script starts inherits it, and holds the `pass`, `fail`, `skip`, `want_status`, `expect` and
-`query` every driver checks with. `with-harness.sh` is no driver and sources none of it.
+Twenty-five of the twenty-nine drivers in `e2e/acceptance/` source `e2e/acceptance/lib.sh`, the
+preamble and the check vocabulary they share: it refuses an unset input or a missing command with
+exit 2, reads the bearer from `DISPATCH_TOKEN` or `DISPATCH_TOKEN_FILE` without printing it,
+unsetting both so no process the script starts inherits it, and holds the `pass`, `fail`, `skip`,
+`want_status`, `expect` and `query` each of them checks with. Twenty-three source it themselves,
+and four of those (`answer-attribute-removal.sh`, `answered-decisions.sh`, `decision-nodes.sh` and
+`restore-redirects.sh`) source `lib-baseline.sh` beside it; `lens-schema.sh` and
+`node-visibility-census.sh` source `lib-processes.sh`, which sources `lib-baseline.sh`, which
+sources `lib.sh`. The other four source none of it:
+`document-roundtrip.sh` and `omp-roundtrip.sh` check with functions of their own,
+`outside-path-reach.sh` is handed to a person as one file (below), and `outside-edge-refusals.sh`
+is one file that sources nothing (below). `with-harness.sh` is no driver
+and sources none of it, and `lib-baseline.sh`, `lib-processes.sh`, `seed-decisions.sh`,
+`node-visibility-census-lib.sh` and `node-visibility-census-stages.sh`
+(which `node-visibility-census.sh` sources) are files the drivers source, not drivers.
 
 `e2e/acceptance/outside-path-reach.sh` is the driver of the check `c-outside-path-reach`: it
 measures which of our listed addresses a machine reaches over the path given to a person from

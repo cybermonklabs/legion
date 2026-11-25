@@ -149,15 +149,86 @@ func TestTheCensusLeavesOutAMovedToIntoADocumentThatOwesItsBlockIndex(t *testing
 	}
 }
 
-// A moved_to into an ask resolves only to a live ask node, as a copied_from does: the heading of a
-// section that cites an answered ask a person removed from its spec takes one moved_to to that
+// censusLens is the lens writeCensusLens writes.
+const censusLens = "00000000-0000-4000-8000-0000000004a1"
+
+// writeCensusLens writes the lens censusLens at state under CORE-1 through the store's writer,
+// with the tuples beside it: its first write states its part_of, and a write of a lens the store
+// holds moves its state alone, as the state route's write does.
+func writeCensusLens(t *testing.T, database *store.Store, state string, tuples ...graphstore.Tuple) {
+	t.Helper()
+	ctx := context.Background()
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the lens's write: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	at := time.Now().UTC()
+	node, held, err := graphstore.ReadNode(ctx, tx, graphstore.KindLens, censusLens)
+	if err != nil {
+		t.Fatalf("read the lens %s: %v", censusLens, err)
+	}
+	if !held {
+		node = graphstore.Node{Kind: graphstore.KindLens, ID: censusLens, Supertag: graphstore.KindLens,
+			Visibility: graphstore.VisibilityProject, Project: "CORE"}
+		tuples = append(tuples, graphstore.Tuple{FromKind: graphstore.KindLens, FromID: censusLens, Kind: graphstore.TuplePartOf,
+			ToKind: graphstore.KindIssue, ToID: "CORE-1"})
+	}
+	node.State, node.MadeAt, node.MadeBy, node.SourceEvent = state, at, censusWriter, graphstore.NoEvent
+	node.KeepsCause, node.Changed = held, held
+	for index := range tuples {
+		tuples[index].At, tuples[index].Who, tuples[index].SourceEvent, tuples[index].Asserted = at, censusWriter, graphstore.NoEvent, true
+	}
+	if err := graphstore.Write(ctx, tx, []graphstore.Node{node}, tuples); err != nil {
+		t.Fatalf("write the lens %s %s: %v", censusLens, state, err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit the lens's write: %v", err)
+	}
+}
+
+// The pre-mortem conversion moves the address of the document it retires to the lens it wrote in
+// its place (api.ConvertPremortem): one moved_to from the document's address, kind artifact at its
+// ref_key, to that lens. The census reads that far end resolved while the lens stands, as
+// graphstore.MovedTo reads it, so the agreeing store with a converted document reads moved_to
+// tuples=1 unresolved=0, no difference, and passes. Once the lens is gone the same tuple's far end
+// resolves to nothing that stands, and the census refuses.
+func TestTheCensusResolvesADocumentsMoveToItsLens(t *testing.T) {
+	database := storetest.Open(t)
+	seeded := seedAgreeingStore(t, database)
+	writeCensusLens(t, database, graphstore.StateLive, graphstore.Tuple{
+		FromKind: graphstore.KindArtifact, FromID: seeded.document.refKey, Kind: graphstore.TupleMovedTo,
+		ToKind: graphstore.KindLens, ToID: censusLens,
+	})
+
+	report := storeCensusOf(t, database)
+	var printed strings.Builder
+	report.Write(&printed)
+	moved := storeOnlyKind(t, report, graphstore.TupleMovedTo)
+	line := "census: store-only kind=moved_to tuples=1 unresolved=0 left_out=0\n"
+	if moved.Tuples != 1 || moved.Unresolved != 0 || report.Differences() != 0 || report.Refused() || !strings.Contains(printed.String(), line) {
+		t.Fatalf("a document's move to the lens that stands reads %+v, %d difference(s) and refused=%t, want %q, none and a pass:\n%s",
+			moved, report.Differences(), report.Refused(), line, printed.String())
+	}
+
+	writeCensusLens(t, database, graphstore.StateGone)
+	report = storeCensusOf(t, database)
+	moved = storeOnlyKind(t, report, graphstore.TupleMovedTo)
+	if moved.Tuples != 1 || moved.Unresolved != 1 || !report.Refused() {
+		t.Fatalf("a document's move to a lens that is gone reads %+v and refused=%t, want it unresolved and a refusal",
+			moved, report.Refused())
+	}
+}
+
+// A moved_to into an ask resolves only to an ask node that is not gone, as a copied_from does: the
+// heading of a section that cites an answered ask a person removed from its spec takes one moved_to to that
 // ask's node (R9), and a citation of the heading resolves through it. Over the agreeing store and
 // one ask the backfill marked, a moved_to from a heading address into that ask's live node reads
 // tuples=1 unresolved=0 left_out=0, and the census passes. Once the ask's node is stated gone
 // through the store's writer, its asks row still standing, the same far end does not resolve, and
 // the census refuses. A census that resolved such a far end by the asks row alone would read it
 // resolved both times.
-func TestTheCensusResolvesAMovedToIntoAnAskOnlyToALiveAskNode(t *testing.T) {
+func TestTheCensusResolvesAMovedToIntoAnAskOnlyToAnAskNodeNotGone(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
 	seeded := seedAgreeingStore(t, database)

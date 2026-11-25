@@ -55,11 +55,12 @@ func TextSum(text string) string {
 // node a decision shaped, that who may not see is absent. Each answer names its node in NodeKind
 // and NodeID, which no wire shape carries, so a caller that asked for several finds each one.
 //
-// A node is read as a decision when it is a live block node of the `decision` supertag, or an ask
-// node with an `asks` row. A caller lists as decisions the asks a person answered; an ask in any
-// other answer state reads the same way, and the Decisions read takes the links of an open and a
-// declined ask from here too. Any other node, and a node the store does not hold, is left out
-// with no log (isDecision): the Keep reads the node at whatever block it was posted for.
+// A node is read as a decision when it is a block node of the `decision` supertag the store holds
+// present, at any state but gone (the spec's R12), or an ask node with an `asks` row.
+// A caller lists as decisions the asks a person answered; an ask in any other answer state reads
+// the same way, and the Decisions read takes the links of an open and a declined ask from here
+// too. Any other node, and a node the store does not hold, is left out with no log (isDecision):
+// the Keep reads the node at whatever block it was posted for.
 //
 // Each decision answers:
 //
@@ -476,11 +477,11 @@ func staleLink(link model.DecisionLink, changedAt time.Time, changedEvent *int64
 	return changedAfterTie && targetBefore
 }
 
-// isDecision reports whether node is read as a decision: an ask node with an `asks` row, or a live
-// block node of the `decision` supertag.
+// isDecision reports whether node is read as a decision: an ask node with an `asks` row, or a block
+// node of the `decision` supertag present at any state but gone (the spec's R12).
 func (node heldNode) isDecision() bool {
 	return node.kind == graphstore.KindAsk && node.question != nil ||
-		node.kind == refs.BlockNodeKind && node.supertag == refs.DecisionSupertag && node.state == graphstore.StateLive
+		node.kind == refs.BlockNodeKind && node.supertag == refs.DecisionSupertag && node.state != graphstore.StateGone
 }
 
 // decision is node, a decision (isDecision), in model.Decision's shape, with the values it holds

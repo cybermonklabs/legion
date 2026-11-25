@@ -345,7 +345,8 @@ func planMessageNode(
 	default:
 		parties = graphstore.ThreadParties(author, target)
 	}
-	return graphstore.PlanUncaused([]graphstore.Node{graphstore.MessageNode(id, project, parties, author, at)}, nil), nil
+	// The message is the node this write makes (graphstore.Created).
+	return graphstore.PlanUncaused([]graphstore.Node{graphstore.Created(graphstore.MessageNode(id, project, parties, author, at))}, nil), nil
 }
 
 // createStoredMessage writes one message in a single transaction, with it the keyed request's

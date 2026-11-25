@@ -10,14 +10,24 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 )
 
-// Member is a document of an issue's Links, one its own content links to, with that row's via.
-// The read reads one hop, so Depth is always 1; the answer's members field keeps it for the
-// clients that print it.
+// Member is one member of an issue's references read: a document of its Links, one its own
+// content links to, or the lens a linked document's address moved to, with that row's via. The
+// read reads one hop, so Depth is always 1; the answer's members field keeps it for the clients
+// that print it.
 type Member struct {
+	// Kind is the member's kind: graphstore.KindArtifact for a document, or graphstore.KindLens for
+	// the lens a link to a document's own address reaches where that address moved to it, as the
+	// pre-mortem conversion moves the address of the document it retires (api.ConvertPremortem).
+	Kind string
+	// Address is the member's dispatch:// address: the document's (ArtifactRef) or the lens's.
+	Address string
+	// RefKey is the ref_key of the document the link reaches: the member itself, or, for a lens,
+	// the retired document whose address moved to it.
 	RefKey string
 	Depth  int
 	Via    model.ReferenceVia
@@ -25,8 +35,9 @@ type Member struct {
 
 // References is an issue's references read: Links, every node the issue's own content links to;
 // LinkedFrom, every node that links to the issue or to its own content; and Members, the
-// documents of Links. When Closure answers no error, Links and LinkedFrom are never nil, so the
-// answer writes [] for a list with no row.
+// documents of Links, each as the lens its address moved to where it moved to one (Closure). When
+// Closure answers no error, Links and LinkedFrom are never nil, so the answer writes [] for a list
+// with no row.
 type References struct {
 	Members           []Member
 	Links, LinkedFrom []model.ReferenceLink
@@ -115,8 +126,10 @@ func targetNode(document string) string {
 // oneRowPerNode ends both statements of the read. far holds a row for each link: the node at its
 // far end (node_kind, node_id), its kind, and its via at the near end. It leaves out the issue and
 // its own content, the rows of own, the relation that holds them as (kind, id), and keeps one row
-// for each other node: the distinct kinds of its links in order, and its lowest via, the least
-// pair of via kind and via id as arrays compare, element by element in the database's order.
+// for each other node: the distinct kinds of its links in order; its lowest via, the least pair of
+// via kind and via id as arrays compare, element by element in the database's order; and moved,
+// the SQL of the lens the node's address moved to over the node's rows of far (movedDocument), or
+// null::text for a statement that reads no move.
 //
 // It leaves them out by an anti-join, `not exists` over own, and not, as the read did before, by a
 // test of each row against an array of own's rows,
@@ -133,14 +146,31 @@ func targetNode(document string) string {
 // in 931 ms on a 10-CPU build machine, so the time of one read is no proof: api's
 // TestTheReferencesInStatementLeavesTheIssuesOwnNodesOutByAnAntiJoin holds the plan, and that
 // test holds how the time grows with the links (referencesGrowthBound).
-func oneRowPerNode(own string) string {
+func oneRowPerNode(own, moved string) string {
 	return `
 		select f.node_kind, f.node_id, array_agg(distinct f.kind order by f.kind),
-		       (min(array[f.via_kind, f.via_id]))[1], (min(array[f.via_kind, f.via_id]))[2]
+		       (min(array[f.via_kind, f.via_id]))[1], (min(array[f.via_kind, f.via_id]))[2], ` + moved + `
 		from far f
 		where not exists (select 1 from ` + own + ` x where x.kind = f.node_kind and x.id = f.node_id)
 		group by f.node_kind, f.node_id`
 }
+
+// movedDocument is the lens the address of a document the out statement reaches moved to, over
+// that document's rows of far (oneRowPerNode): where one of its links names the document's own
+// address (far's address), the lens block_moved_to reads from that address - the moved_to the
+// pre-mortem conversion appends to the lens it retires the document into - while the lens is not
+// gone, and null for every other node. A link to a block of the document names no address of it,
+// since the move is of the document's own address, so a document linked only at its blocks stays
+// the document. The case calls the function for such a document alone. Whether who may see the
+// lens is the lens's own predicate to say, which Closure binds by resolving the lens beside every
+// other node (resolveNodes) rather than here: bound in this statement, its staleness test
+// (StaleSQL) would be charged to every row the statement groups.
+const movedDocument = `case when f.node_kind = 'artifact' and bool_or(f.address) then block_moved_to(f.node_id) end`
+
+// itemBlockTargets is every kind itemBlockKinds names, a block of an ask, a comment or a message,
+// as the graph addresses each: none is a standing kind, so the predicate over a link's target of
+// one of them binds no staleness test (VisibleEnd, NodeKinds).
+var itemBlockTargets = KindsOf(ItemAsk.BlockKind(), ItemComment.BlockKind(), ItemMessage.BlockKind())
 
 // closureSeen is the parameter both statements of the read bind the acting credential at
 // (VisibilityArg), which every predicate they render names; $1 is the issue's key.
@@ -203,7 +233,9 @@ func blockRefLinked(alias string) string {
 // is named by its ref_key, which a link stores. The issue and its own content are left out (own):
 // the issue by its key, a document by its ref_key and every other source as sources names it. Its
 // rows are one for each node, with the kinds of its links and its lowest via: a document of the
-// issue by its uuid, the id its links are written under, an item by its uuid (oneRowPerNode).
+// issue by its uuid, the id its links are written under, an item by its uuid (oneRowPerNode). A
+// document's row also carries the lens its own address moved to, where a link names that address
+// (far's address, movedDocument).
 //
 // A link is read only where the acting person, whose credential is bound at $2 (closureSeen), may
 // see its source and the block it is read at, as refs.Edges' out read binds them: a source is a
@@ -283,8 +315,8 @@ var linksOutQuery = sync.OnceValue(func() string {
 			union all
 			`) + `
 		),
-		far (node_kind, node_id, kind, via_kind, via_id) as (
-			select ` + targetNode(documentOfTarget) + `, r.kind, r.via_kind, r.via_id
+		far (node_kind, node_id, kind, via_kind, via_id, address) as (
+			select ` + targetNode(documentOfTarget) + `, r.kind, r.via_kind, r.via_id, r.to_kind = 'artifact'
 			from links r
 			` + documentBlockHeld + `
 			` + itemBlockHeld + `
@@ -292,8 +324,8 @@ var linksOutQuery = sync.OnceValue(func() string {
 			  and (r.to_kind not in ` + itemBlockKinds + ` or item_block.id is not null)
 			  and (r.to_kind <> 'block' or ` + VisibleKind(BlockNodeKind, `block_target.node_id`, closureSeen) +
 		` and ` + VisibleKind(string(ItemAsk), `block_target.ask_id`, closureSeen) + `)
-			  and (r.to_kind not in ` + itemBlockKinds + ` or ` + VisibleEnd(`r.to_kind`, `r.to_id`, true, closureSeen) + `)
-		)` + oneRowPerNode(`own`)
+			  and (r.to_kind not in ` + itemBlockKinds + ` or ` + VisibleEnd(itemBlockTargets, `r.to_kind`, `r.to_id`, true, closureSeen) + `)
+		)` + oneRowPerNode(`own`, movedDocument)
 })
 
 // linksInQuery is the in statement of the references read of the issue whose key is $1: every
@@ -395,7 +427,7 @@ var linksInQuery = sync.OnceValue(func() string {
 			from links r
 			` + itemBlockHeld + `
 			where r.node_id is not null
-		)` + oneRowPerNode(`targets`)
+		)` + oneRowPerNode(`targets`, `null::text`)
 })
 
 // ClosureTag starts every statement Closure sends, so that the query text pg_stat_activity shows
@@ -416,11 +448,14 @@ func (q taggedQueryer) QueryRow(ctx context.Context, sql string, args ...any) pg
 }
 
 // linkRow is one row of the out or the in statement: the node at the far end, as resolveNodes
-// addresses it with byRefKey (a document by its ref_key), the kinds of its links and its via.
+// addresses it with byRefKey (a document by its ref_key), the kinds of its links, its via, and,
+// for a document of the out statement whose own address one of its links names, the id of the
+// lens that address moved to (movedDocument), nil for every other row.
 type linkRow struct {
 	kind, id string
 	kinds    []string
 	via      model.ReferenceVia
+	movedTo  *string
 }
 
 // Closure reads the references of the issue whose key is issueKey, one hop in each direction:
@@ -435,9 +470,15 @@ type linkRow struct {
 // that block, and a link to a block that moved reaches the document of the block its moved_to
 // tuples reach (graphstore.MovedTo), or, where a move ends at an ask, the document the ask's row
 // names, the document it was decided in. A retired document's address names its issue
-// (loadArtifactNodes), which Links lists in its place, so it is no member. Every statement it
-// sends, through q, starts with ClosureTag. A link is a mention, or a typed block's pointer of a
-// kind the installed schema declares while the graph read lists it (blockRefLinked): a decision's
+// (loadArtifactNodes), which Links lists in its place, so it is no member. Each member is of kind
+// artifact at the document's own address, but for a link to a document's own address that moved
+// to a lens - the pre-mortem conversion retires a document into one and moves its address there
+// (api.ConvertPremortem): that member is the lens, of kind lens at the lens's address, with the
+// document's ref_key, where who may see both the document and the lens, which resolveNodes reads
+// with the rest. A document whose lens who may not see stays the document, as it reads to a
+// reader who sees no move, so the read says nothing of that lens. Every statement it sends,
+// through q, starts with ClosureTag. A link is a mention, or a typed block's pointer of a kind the
+// installed schema declares while the graph read lists it (blockRefLinked): a decision's
 // decided_by and from_ask, which block_refs holds beside them, are neither and are no link.
 //
 // It answers for who: a link whose source, or the block it is read at, who may not see is no
@@ -459,6 +500,9 @@ func Closure(ctx context.Context, q Queryer, who model.Actor, issueKey string) (
 	for _, rows := range [...][]linkRow{out, in} {
 		for _, row := range rows {
 			lookups = append(lookups, edgeRow{otherKind: row.kind, otherID: row.id})
+			if row.movedTo != nil {
+				lookups = append(lookups, edgeRow{otherKind: graphstore.KindLens, otherID: *row.movedTo})
+			}
 		}
 	}
 	nodes, err := resolveNodes(ctx, tagged, who, true, lookups)
@@ -467,8 +511,18 @@ func Closure(ctx context.Context, q Queryer, who model.Actor, issueKey string) (
 	}
 	members := []Member{}
 	for _, row := range out {
-		if node, found := nodes[[2]string{row.kind, row.id}]; found && node.Kind == "artifact" {
-			members = append(members, Member{RefKey: node.refKey, Depth: 1, Via: row.via})
+		node, found := nodes[[2]string{row.kind, row.id}]
+		if !found {
+			continue
+		}
+		if row.movedTo != nil {
+			if lens, seen := nodes[[2]string{graphstore.KindLens, *row.movedTo}]; seen {
+				members = append(members, Member{Kind: graphstore.KindLens, Address: lens.Ref, RefKey: row.id, Depth: 1, Via: row.via})
+				continue
+			}
+		}
+		if node.Kind == graphstore.KindArtifact {
+			members = append(members, Member{Kind: graphstore.KindArtifact, Address: node.Ref, RefKey: node.refKey, Depth: 1, Via: row.via})
 		}
 	}
 	slices.SortFunc(members, func(left, right Member) int { return strings.Compare(left.RefKey, right.RefKey) })
@@ -491,7 +545,7 @@ func readLinkRows(ctx context.Context, q Queryer, statement string, args []any) 
 	}
 	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (linkRow, error) {
 		var link linkRow
-		err := row.Scan(&link.kind, &link.id, &link.kinds, &link.via.Kind, &link.via.ID)
+		err := row.Scan(&link.kind, &link.id, &link.kinds, &link.via.Kind, &link.via.ID, &link.movedTo)
 		return link, err
 	})
 }

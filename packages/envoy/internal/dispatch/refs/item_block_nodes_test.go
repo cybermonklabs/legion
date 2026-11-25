@@ -177,14 +177,15 @@ func TestAnOlderBuildSkipsItemBlockRows(t *testing.T) {
 	}
 	registry := nodeRegistry
 	previous := maps.Clone(registry)
-	for kind := range previous {
+	for kind, entry := range previous {
 		if slices.Contains(previousReleaseNodeKinds, kind) {
 			continue
 		}
 		// That release resolves no node of the kind. Its key stays, and with it the predicate
 		// VisibleKind binds: the registry answered for every kind then as it does now, and only
 		// the loader is the newer build's.
-		previous[kind] = nil
+		entry.load = nil
+		previous[kind] = entry
 	}
 	nodeRegistry = previous
 	older, err := resolveNodes(ctx, tx, model.Actor{}, false, ends)
@@ -301,7 +302,7 @@ func TestAnItemBlocksLinkReachesItsItem(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read closure: %v", err)
 	}
-	if want := []Member{{RefKey: handbook, Depth: 1, Via: model.ReferenceVia{Kind: "comment", ID: comment}}}; !reflect.DeepEqual(references.Members, want) {
+	if want := []Member{documentMember(t, tx, handbook, model.ReferenceVia{Kind: "comment", ID: comment})}; !reflect.DeepEqual(references.Members, want) {
 		t.Errorf("closure = %#v; want %#v", references.Members, want)
 	}
 	citers, err := ReferencedBy(ctx, tx, model.Actor{}, handbook)
@@ -344,7 +345,7 @@ func TestAnAskOptionsLinkJoinsItsIssuesClosure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read closure: %v", err)
 	}
-	if want := []Member{{RefKey: handbook, Depth: 1, Via: model.ReferenceVia{Kind: "ask", ID: ask.ID}}}; !reflect.DeepEqual(references.Members, want) {
+	if want := []Member{documentMember(t, tx, handbook, model.ReferenceVia{Kind: "ask", ID: ask.ID})}; !reflect.DeepEqual(references.Members, want) {
 		t.Errorf("closure = %#v; want %#v", references.Members, want)
 	}
 }
@@ -452,7 +453,7 @@ func TestBlockTextsReadsEachBlockAsTheOneItemReadsDo(t *testing.T) {
 	for i, read := range reads {
 		targets[i] = read.target
 	}
-	texts, err := BlockTexts(ctx, tx, targets)
+	texts, err := BlockTexts(ctx, tx, model.Actor{Kind: "user", ID: "alice"}, targets)
 	if err != nil {
 		t.Fatalf("read the blocks' texts in one batch: %v", err)
 	}

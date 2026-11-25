@@ -15515,6 +15515,8 @@ describe("executeDispatchTool", () => {
       changed_at: null,
       parent: null,
       parent_version: null,
+      state: "live",
+      visibility: "project",
     });
     const edge = (
       kind: GraphEdgeKind,

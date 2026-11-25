@@ -219,9 +219,11 @@ func requireTheBlockScopeBatchLockOrder(t *testing.T) {
 			Statement: "select 1 from graph_nodes held",
 		}, `select 1 from graph_nodes where kind = $1 and id = $2 for no key update`, refs.BlockNodeKind, address)
 	}
+	// The fill moves the node rows and appends their project tuples in one statement
+	// (graphstore.FillScopes), so that statement is the one that takes the tuple step.
 	tuple := holdWrite(t, database, &lockstep.Hold{
 		Name: addresses[0] + "'s project tuple", Step: lockstep.StepTuple, Taken: true,
-		Statement: "insert into graph_tuples (",
+		Statement: "with filled as (",
 	}, nil, []graphstore.Tuple{{
 		FromKind: refs.BlockNodeKind, FromID: addresses[0], Kind: graphstore.AttributeProject,
 		ToKind: graphstore.KindValue, ToID: "CORE",
@@ -297,7 +299,7 @@ func requireTheCommentScopeBatchLockOrder(t *testing.T) {
 	}, `select 1 from graph_nodes where kind = $1 and id = $2 for no key update`, graphstore.KindComment, comment)
 	tuple := holdWrite(t, database, &lockstep.Hold{
 		Name: "the comment's project tuple", Step: lockstep.StepTuple, Taken: true,
-		Statement: "insert into graph_tuples (",
+		Statement: "with filled as (",
 	}, nil, []graphstore.Tuple{{
 		FromKind: graphstore.KindComment, FromID: comment, Kind: graphstore.AttributeProject,
 		ToKind: graphstore.KindValue, ToID: "SCOP",

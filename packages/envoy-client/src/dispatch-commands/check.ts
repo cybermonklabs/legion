@@ -73,6 +73,8 @@ const issueFreeTools: Readonly<Record<string, true>> = {
   // A session's own conversation belongs to no issue, so the call names the session instead.
   dispatch_send_to_agent: true,
   dispatch_architecture_sync: true,
+  // A node's lenses are read at the node's own address, which names its issue, if any, itself.
+  dispatch_lenses: true,
 };
 
 function canonicalExternalIssueRef(value: string): string {

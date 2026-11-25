@@ -97,9 +97,24 @@ const tables = [
 // installs (pmdoc/schemanodes) and the targets `block_pointer_targets` reads for `graph_edges`,
 // so a reset that took them would leave the instance with no block type at all. `source_event`
 // tells them apart for nothing: the kind does, and that is what these predicates keep.
+//
+// The lens catalogue stays too (migrations 20261123174710 and 20261123174720): each `lens_kind`
+// node with its tuples, its `constrained_by` to its source among them, and each `constraint` node
+// at the far end of one of those with its own tuples, so a driver finds the seeded kinds after a
+// reset. A constraint under an issue, and a lens's `has_kind` into a kind, go with everything else.
+const catalogueSources =
+  "(SELECT source.to_id FROM graph_tuples source WHERE source.from_kind = 'lens_kind'" +
+  " AND source.kind = 'constrained_by' AND source.to_kind = 'constraint')";
+
 const storeDeletes: ReadonlyArray<{ table: string; keep?: string }> = [
-  { table: "graph_tuples", keep: "from_kind IN ('supertag', 'attribute')" },
-  { table: "graph_nodes", keep: "kind IN ('supertag', 'attribute')" },
+  {
+    table: "graph_tuples",
+    keep: `from_kind IN ('supertag', 'attribute', 'lens_kind') OR (from_kind = 'constraint' AND from_id IN ${catalogueSources})`,
+  },
+  {
+    table: "graph_nodes",
+    keep: `kind IN ('supertag', 'attribute', 'lens_kind') OR (kind = 'constraint' AND id IN ${catalogueSources})`,
+  },
 ];
 
 /** `value` as a SQL string literal, with every quote of its own doubled. psql interpolates no

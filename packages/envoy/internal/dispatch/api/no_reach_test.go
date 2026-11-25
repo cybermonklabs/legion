@@ -26,6 +26,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -532,7 +533,10 @@ func readRepositoryFile(t *testing.T, root, path string) string {
 //
 //   - An unauthorized actor: an anonymous request, which every row but a public one refuses.
 //   - An identifier of another project: a route addressing one project's object under another
-//     project's key, which answers that object to nobody.
+//     project's key, which answers that object to nobody. Each route of cybermonklabs/legion#4193
+//     under /issues/{key} is sent a request it would take whole under the object's own issue
+//     (reasoningCrossProject), so its refusal is the issue comparison's 404; one that names no
+//     object of any project answers under the other issue, naming nothing of this project.
 //   - An undeclared traversal parameter: every word a caller would walk the graph with that the
 //     route does not declare, handed to it at once, at objects the route has a row of. A route
 //     that honoured one would answer something else, so the answer must be the answer it gives
@@ -558,8 +562,16 @@ func threeBadRequests(t *testing.T) {
 	}
 
 	owned := seedTwoProjects(t, handler, database)
+	reasoning := reasoningCrossProject(owned)
 	var probed []string
 	for _, route := range rows {
+		name := route.Method + " " + route.Pattern
+		if request, ours := reasoning[name]; ours {
+			delete(reasoning, name)
+			probed = append(probed, name)
+			probeAcrossProjects(t, handler, name, request, owned)
+			continue
+		}
 		target, addressable := crossProjectPath(t, route, owned)
 		if !addressable {
 			continue
@@ -621,6 +633,10 @@ func threeBadRequests(t *testing.T) {
 	}) {
 		t.Errorf("GET /api/v1/projects/TEST/architecture-sources lists %q after the probe, without the source %s it sent under OTH",
 			sourceStrings(sources), owned.architectureSource)
+	}
+	if len(reasoning) > 0 {
+		t.Fatalf("the table holds no row of %v, so the request about another project each was written for went to no route",
+			slices.Sorted(maps.Keys(reasoning)))
 	}
 	if len(probed) < 5 {
 		t.Fatalf("only %d route(s) were probed with another project's identifier, which is too few to prove anything", len(probed))
@@ -739,12 +755,13 @@ func routeProbeQueries(owned crossProject) map[string]string {
 		"GET /api/v1/search/results":         url.Values{"q": {"project"}}.Encode(),
 		"GET /api/v1/references":             url.Values{"to": {"dispatch://" + owned.issue}}.Encode(),
 		"GET /api/v1/references/questions":   url.Values{"kind": {"comment"}, "id": {owned.comment}}.Encode(),
+		"GET /api/v1/reference-targets":      url.Values{"ref": {"dispatch://" + owned.issue, spec}}.Encode(),
 		"GET /api/v1/block-links":            url.Values{"from": {spec}, "to": {spec}}.Encode(),
+		"GET /api/v1/lenses":                 url.Values{"on": {spec}}.Encode(),
 		"GET /api/v1/issues/resolve":         url.Values{"ref": {owned.issue}}.Encode(),
 		"GET /api/v1/asks/open":              url.Values{"project": {"TEST"}}.Encode(),
 		"GET /api/v1/credential-requests":    url.Values{"approver": {"me"}}.Encode(),
 		"GET /api/v1/near-copy-checks":       url.Values{"project": {"TEST"}}.Encode(),
-		"GET /api/v1/reference-targets":      url.Values{"ref": {"dispatch://" + owned.issue}}.Encode(),
 		"GET /api/v1/artifacts/{id}/changes": url.Values{"from": {"1"}, "to": {"2"}}.Encode(),
 	}
 }
@@ -893,18 +910,30 @@ type crossProject struct {
 	architectureSource string
 	// nearCopyCheck is the id of the near-copy gate's record of one of the project's creates.
 	nearCopyCheck string
+	// The nodes of the reasoning kinds under the project's issue, each by its
+	// dispatch:// address and its store id: a trade-off analysis on the spec, at proposed; a
+	// pre-mortem on the spec; and a constraint under the issue.
+	tradeoff, premortem, constraint lensOrConstraint
+}
+
+// lensOrConstraint is one node a reasoning route wrote: its dispatch:// address and its id.
+type lensOrConstraint struct{ address, id string }
+
+// storeAddress is the node's store address, as a /nodes/{id} route takes one: `<kind>/<id>`.
+func (node lensOrConstraint) storeAddress() string {
+	return strings.TrimPrefix(node.address, "dispatch://")
 }
 
 // seedTwoProjects writes one project with an issue, a document of the issue (design.md), a
 // comment, an ask, a message, a run of a step of the issue and a run of its retro, a project
-// document at two versions and a block of each document, an architecture source, and the Legion
-// daemon it names with a read of it; a second project with an issue, which the cross-project
-// probe addresses them under; and one priority, which belongs to neither project and is read at
-// its own id. Under the second project's key the probe sends each route the object of the first
-// its path names (crossProjectPath): design.md to a route of an issue document, the project
-// document to a route of a project document, the message to the message read, the run of a step
-// to the step write, the retro's run to the rating write and the architecture source's repository
-// to the source's removal and its sync.
+// document at two versions and a block of each document, a lens of each of two kinds and a
+// constraint, an architecture source, and the Legion daemon it names with a read of it; a second
+// project with an issue, which the cross-project probe addresses them under; and one priority,
+// which belongs to neither project and is read at its own id. Under the second project's key the
+// probe sends each route the object of the first its path names (crossProjectPath): design.md to a
+// route of an issue document, the project document to a route of a project document, the message
+// to the message read, the run of a step to the step write, the retro's run to the rating write
+// and the architecture source's repository to the source's removal and its sync.
 func seedTwoProjects(t *testing.T, handler http.Handler, database *store.Store) crossProject {
 	t.Helper()
 	createDuplicateTestProject(t, handler, "OTH")
@@ -989,6 +1018,30 @@ func seedTwoProjects(t *testing.T, handler http.Handler, database *store.Store) 
 		t.Fatalf("the project's creates left no near-copy check record, so its read by id has no row to answer")
 	}
 	owned.nearCopyCheck = checks.Checks[0].ID
+	// The nodes of the reasoning kinds, which their routes name by their address in the
+	// path or in the body: a trade-off analysis on the spec, proposed so that a settle has a
+	// proposal to settle, a pre-mortem a risk may stand under, and a constraint of the issue.
+	reasoned := func(path string, body map[string]any) lensOrConstraint {
+		t.Helper()
+		written := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+path, body, "alice")
+		if written.Code != http.StatusCreated {
+			t.Fatalf("seed %s: status=%d body=%s", path, written.Code, written.Body.String())
+		}
+		node := decodeBody[struct {
+			Address string `json:"address"`
+			ID      string `json:"id"`
+		}](t, written)
+		return lensOrConstraint{address: node.Address, id: node.ID}
+	}
+	spec := "dispatch://" + issue.Key + "/spec"
+	owned.tradeoff = reasoned("/lenses", map[string]any{"on": spec, "kind": "trade-off"})
+	owned.premortem = reasoned("/lenses", map[string]any{"on": spec, "kind": graphstore.LensKindPreMortem})
+	owned.constraint = reasoned("/constraints", map[string]any{"standard": "A standard of this project", "reference": "Its own notes"})
+	if proposed := dispatchRequest(t, handler, http.MethodPost,
+		"/api/v1/issues/"+issue.Key+nodePath(owned.tradeoff.storeAddress(), "state"),
+		map[string]any{"state": graphstore.StateProposed}, "alice"); proposed.Code != http.StatusOK {
+		t.Fatalf("seed the proposed trade-off analysis: status=%d body=%s", proposed.Code, proposed.Body.String())
+	}
 	// The Legion board answers 404 LEGION_NOT_CONFIGURED for a project that names no Legion
 	// daemon, and its cards are what the sampler recorded of the daemon a project names. So the
 	// project names one, and a good read of it recorded the project's issue in a phase, written as
@@ -1092,6 +1145,97 @@ func crossProjectPath(t *testing.T, route apiRoute, owned crossProject) (string,
 		return "", false
 	}
 	return pattern, true
+}
+
+// reasoningProbe is one request a route of cybermonklabs/legion#4193 is sent under another
+// project's issue: its target and its body, and what it must answer.
+type reasoningProbe struct {
+	target string
+	body   map[string]any
+	// refused is the code of the 404 the route must refuse the request with, where the request
+	// names a node or a document of this project: the answer of the comparison of that object's
+	// issue with the issue the path names, since the request is one the route takes whole under
+	// the object's own issue. Empty for a route whose request names no object of any project,
+	// which answers under the other project's issue as it answers under its own, and must answer
+	// nothing of this project (ownedNamed).
+	refused string
+}
+
+// reasoningCrossProject is the request each route of cybermonklabs/legion#4193 under /issues/{key}
+// is sent under the other project's issue, about owned's objects. Every route
+// that pull request adds gets one, so each gets all three of threeBadRequests' requests
+// (Verification's c-no-reach): crossProjectPath answers none of the routes that take only {key}
+// and gives a /nodes/{id} route a bare uuid, which decodeNodeAddress refuses before any issue is
+// compared. Each request here is well formed and names a node or a document that exists - a node
+// by its store address, as /nodes/{id} takes one, or by its dispatch:// address in a body - so
+// the only thing wrong with it is the issue.
+func reasoningCrossProject(owned crossProject) map[string]reasoningProbe {
+	under := "/api/v1/issues/" + owned.otherIssue
+	node := func(of lensOrConstraint, route string) string { return under + nodePath(of.storeAddress(), route) }
+	return map[string]reasoningProbe{
+		"POST /api/v1/issues/{key}/lenses": {target: under + "/lenses", refused: "NOT_FOUND",
+			body: map[string]any{"on": "dispatch://" + owned.issue + "/spec", "kind": "trade-off"}},
+		"POST /api/v1/issues/{key}/risks": {target: under + "/risks", refused: "NOT_FOUND", body: map[string]any{
+			"lens": owned.premortem.address, "heading": "A failure.", "early_warning": "A sign.", "prevention": "A guard.",
+		}},
+		"POST /api/v1/issues/{key}/nodes/{id}/findings": {target: node(owned.tradeoff, "findings"), refused: "NOT_FOUND",
+			body: map[string]any{"text": "A finding written under another project's issue."}},
+		"POST /api/v1/issues/{key}/nodes/{id}/pointers": {target: node(owned.tradeoff, "pointers"), refused: "NOT_FOUND",
+			body: map[string]any{"kind": graphstore.TupleHasKind, "action": "retarget", "from": "trade-off", "to": "botec"}},
+		"POST /api/v1/issues/{key}/nodes/{id}/state": {target: node(owned.premortem, "state"), refused: "NOT_FOUND",
+			body: map[string]any{"state": graphstore.StateOvertaken}},
+		"POST /api/v1/issues/{key}/nodes/{id}/settle": {target: node(owned.tradeoff, "settle"), refused: "NOT_FOUND",
+			body: map[string]any{}},
+		"POST /api/v1/issues/{key}/artifacts/{slug}/premortem-convert": {
+			target: under + "/artifacts/" + owned.slug + "/premortem-convert", refused: "ARTIFACT_NOT_FOUND",
+			body: map[string]any{"prevented_by": []any{}, "dry_run": true},
+		},
+		"POST /api/v1/issues/{key}/constraints": {target: under + "/constraints",
+			body: map[string]any{"standard": "A standard of the other project", "reference": "Its notes"}},
+		"GET /api/v1/issues/{key}/constraints": {target: under + "/constraints"},
+		"GET /api/v1/issues/{key}/proposed":    {target: under + "/proposed"},
+	}
+}
+
+// probeAcrossProjects sends route its request under the other project's issue as alice, who may
+// read and write both projects, and holds the answer to what the request says it must be.
+func probeAcrossProjects(t *testing.T, handler http.Handler, route string, request reasoningProbe, owned crossProject) {
+	t.Helper()
+	method, _, _ := strings.Cut(route, " ")
+	var body any
+	if request.body != nil {
+		body = request.body
+	}
+	response := dispatchRequest(t, handler, method, request.target, body, "alice")
+	t.Logf("%s at %s: status=%d body=%s", route, request.target, response.Code, firstLine(response.Body.String()))
+	if request.refused == "" {
+		if response.Code >= 400 {
+			t.Errorf("%s answers %d at %s, under another project's issue: %s; want what it answers under its own",
+				route, response.Code, request.target, firstLine(response.Body.String()))
+		} else if named := ownedNamed(response.Body.String(), owned); named != "" {
+			t.Errorf("%s answers %s under another project's issue, naming %s of this project", route, firstLine(response.Body.String()), named)
+		}
+		return
+	}
+	var refusal struct {
+		Code string `json:"code"`
+	}
+	_ = json.Unmarshal(response.Body.Bytes(), &refusal)
+	if response.Code != http.StatusNotFound || refusal.Code != request.refused {
+		t.Errorf("%s answers %d %s at %s, for an object of another project, want 404 %s",
+			route, response.Code, firstLine(response.Body.String()), request.target, request.refused)
+	}
+}
+
+// ownedNamed is the first thing of owned's project an answer names - its issue, or one of its
+// nodes of the reasoning kinds - and empty where it names none of them.
+func ownedNamed(answer string, owned crossProject) string {
+	for _, named := range []string{owned.issue, owned.tradeoff.id, owned.premortem.id, owned.constraint.id} {
+		if strings.Contains(answer, named) {
+			return named
+		}
+	}
+	return ""
 }
 
 // crossProjectRequest sends one route its cross-project path (crossProjectPath) as a caller the

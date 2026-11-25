@@ -3,6 +3,7 @@ package text
 import (
 	"net/url"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"unicode"
@@ -32,6 +33,23 @@ var artifactSlugPattern = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
 // and no leading zero.
 var versionPattern = regexp.MustCompile(`^[1-9][0-9]*$`)
 
+// The kinds of node a reference names by the node's own id in the store, with no issue key or
+// project in the address (graphstore.KindInteraction and the kinds beside it): where such a node
+// stands is a tuple, so a move changes no address. An interaction, a lens, a risk and a constraint
+// are `dispatch://<kind>/<uuid>`, the uuid as the store writes it (storeUUIDPattern), and a lens
+// kind is `dispatch://lens_kind/<slug>`, its slug as an artifact's is written. A finding of a lens
+// is a block of the lens, `dispatch://lens/<uuid>#b-<block id>` (parseBlock). The dashboard's
+// twin is storeAddressReference in `web/src/features/refs/store-address.ts`, which
+// text-references.ts and the composer read text through.
+var uuidAddressedKinds = []string{"interaction", "lens", "risk", "constraint"}
+
+const lensKindAddressed = "lens_kind"
+
+// storeUUIDPattern is a uuid as the store writes one, uuid.UUID.String's spelling: lowercase hex
+// in five hyphenated groups. No other spelling names a node of those kinds, since the store keys
+// each by this one.
+var storeUUIDPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+
 // ComponentIDPattern is the component id charset (a lowercase slug), the regexp
 // IsComponentID matches; the architecture importer quotes it in its file-name error.
 const ComponentIDPattern = `^[a-z0-9]([a-z0-9-]*[a-z0-9])?$`
@@ -60,18 +78,20 @@ func IsSessionID(value string) bool {
 }
 
 // Ref is a parsed Dispatch target. ID is the issue key for issue references,
-// an artifact slug for artifacts, the item identifier for asks and comments, and
-// the component id for components. Project is set instead of IssueKey for
+// an artifact slug for artifacts, the item identifier for asks and comments, the
+// component id for components, the uuid of an interaction, a lens, a risk or a constraint, and
+// the slug of a lens kind. Project is set instead of IssueKey for
 // unlinked project-document references and for components, and Session instead of
-// both for an artifact an agent's conversation owns (`agent/<session id>/artifact/<slug>`).
+// both for an artifact an agent's conversation owns (`agent/<session id>/artifact/<slug>`); none
+// of the three is set for the kinds a reference names by their store id alone.
 // Document is the slug of the project document an ask or a comment is written on
 // (`dispatch://<PROJECT>/artifact/<slug>/ask/<id>`, and the dashboard address of the same item),
 // the owner such an item has in place of an issue; it is empty for every other reference,
 // an item of an issue's document included, since that item's reference names the issue alone.
 // A block (Kind "block") carries the block's id as written in Block, and in Pin the version or
 // revision a pinned reference (`@v<N>` after the fragment) names, or 0. A block of a document
-// carries its document's fields; a block of an ask, a comment or a message carries the item's
-// kind in Item and the item's fields, its id in ID.
+// carries its document's fields; a block of an ask, a comment or a message, or a finding of a
+// lens, carries the item's kind in Item and the item's fields, its id in ID.
 type Ref struct {
 	Kind     string
 	Item     string
@@ -213,9 +233,10 @@ func trimReference(raw string) string {
 
 // parseDispatch reads a `dispatch://` reference, without its scheme, by the grammar the dashboard's
 // `parseDispatchReference` reads: a slug as written, an `@v` version, an agent's session id as
-// written, an item id decoded as `itemSegment` decodes it, and a `#b-` block of a document, an
-// ask, a comment or a message as parseBlock reads it. A reference holding a control character
-// names nothing.
+// written, an item id decoded as `itemSegment` decodes it, a node of a kind addressed by its store
+// id alone as parseStoreAddress reads it, and a `#b-` block of a document, an ask, a comment or a
+// message, or a finding of a lens, as parseBlock reads it. A reference holding a control
+// character names nothing.
 func parseDispatch(value string) (Ref, bool) {
 	if hasControl(value) {
 		return Ref{}, false
@@ -252,6 +273,9 @@ func parseDispatch(value string) (Ref, bool) {
 	}
 	if key == "agent" {
 		return parseAgentArtifact(tail)
+	}
+	if ref, ok, addressed := parseStoreAddress(key, tail); addressed {
+		return ref, ok
 	}
 	if !projectKeyPattern.MatchString(key) || !found {
 		return Ref{}, false
@@ -298,6 +322,25 @@ func parseAgentArtifact(tail string) (Ref, bool) {
 	return Ref{Kind: "artifact", Session: session, ID: slug}, true
 }
 
+// parseStoreAddress reads a reference to a node of a kind addressed by its store id alone
+// (uuidAddressedKinds, lensKindAddressed): key is the kind and tail what follows its `/`, which
+// is the whole id, a uuid as the store writes it or a lens kind's slug. addressed is false where
+// key is no such kind, and the caller reads the reference by the rest of the grammar.
+func parseStoreAddress(key, tail string) (ref Ref, ok, addressed bool) {
+	switch {
+	case slices.Contains(uuidAddressedKinds, key):
+		ok = storeUUIDPattern.MatchString(tail)
+	case key == lensKindAddressed:
+		ok = artifactSlugPattern.MatchString(tail)
+	default:
+		return Ref{}, false, false
+	}
+	if !ok {
+		return Ref{}, false, true
+	}
+	return Ref{Kind: key, ID: tail}, true, true
+}
+
 // parseArtifactSlug reads a slug as a reference writes it, whole, with an optional `@v` version.
 func parseArtifactSlug(value string) (string, bool) {
 	slug, version, versioned := strings.Cut(value, "@")
@@ -341,10 +384,12 @@ const MaxTargetBytes = 2048
 // block_refs.to_id: an issue's key; a document's ref_key, `<issue key or project>/<slug>` (`spec`
 // for an issue's spec) or `agent/<session id>/<slug>`; a document block's `<document's
 // ref_key>#<block id>`; an ask's, a comment's or a message's block's `<item kind>/<item id>#<block
-// id>` (`comment/<uuid>#b2`, a lowercase kind no issue key, project or `agent/` can be); a
-// component's `<project>/<id>` node address; and an ask's, a comment's or a message's id. A
-// document's version and a block's pin are not part of it: a pinned and an unpinned reference to
-// one block are one target.
+// id>` (`comment/<uuid>#b2`, a lowercase kind no issue key, project or `agent/` can be), and a
+// finding's `lens/<uuid>#<block id>` the same way; a component's `<project>/<id>` node address;
+// an ask's, a comment's or a message's id; and the uuid of an interaction, a lens, a risk or a
+// constraint and the slug of a lens kind, each the id the store keys that node by. A document's
+// version and a block's pin are not part of it: a pinned and an unpinned reference to one block
+// are one target.
 func TargetID(ref Ref) string {
 	switch ref.Kind {
 	case "artifact":
@@ -455,13 +500,14 @@ func CanonicalBlockRef(value string) (Ref, bool) {
 // `PROJECT/artifact/<slug>/ask/<id>`), optionally pinned to revision N of the ask's parts, or a
 // block of a comment (`KEY/comment/<id>`, or a project document's
 // `PROJECT/artifact/<slug>/comment/<id>`), optionally pinned to revision N of that comment, or of
-// an issue's message (`KEY/message/<id>`). A message records no revisions, so a pinned message
-// block is no reference. The id is read with any valid percent-encoding (EncodeBlockID writes
-// one), so `%40` is an `@` in the id and a raw `@` is only ever the pin. Any other fragment, a raw
-// `@` that does not start a well-formed pin, a versioned document, an agent conversation's
-// document, or an id that is empty or does not decode names nothing. (Extract holds the block's id
-// to MaxBlockIDBytes and its whole target id to MaxTargetBytes in text, inBound.) A document
-// version shows only as an `@` in the document part: no key or slug holds one.
+// an issue's message (`KEY/message/<id>`), or a finding of a lens (`lens/<uuid>`). A message
+// records no revisions and a lens records no revision of its findings, so a pinned block of either
+// is no reference. The id is read with any valid percent-encoding (EncodeBlockID writes one), so
+// `%40` is an `@` in the id and a raw `@` is only ever the pin. Any other fragment, a raw `@` that
+// does not start a well-formed pin, a versioned document, an agent conversation's document, or an
+// id that is empty or does not decode names nothing. (Extract holds the block's id to
+// MaxBlockIDBytes and its whole target id to MaxTargetBytes in text, inBound.) A document version
+// shows only as an `@` in the document part: no key or slug holds one.
 func parseBlock(document, fragment string) (Ref, bool) {
 	encoded, ok := strings.CutPrefix(fragment, "b-")
 	if !ok || strings.Contains(document, "@") {
@@ -488,7 +534,7 @@ func parseBlock(document, fragment string) (Ref, bool) {
 	case !ok:
 		return Ref{}, false
 	case ref.Kind == "artifact" && ref.Session == "":
-	case ref.Kind == "ask", ref.Kind == "comment", ref.Kind == "message" && pin == 0:
+	case ref.Kind == "ask", ref.Kind == "comment", ref.Kind == "message" && pin == 0, ref.Kind == "lens" && pin == 0:
 		ref.Item = ref.Kind
 	default:
 		return Ref{}, false

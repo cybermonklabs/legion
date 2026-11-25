@@ -6,10 +6,11 @@ import type { GraphNode, IssueReferences, ReferenceLink } from "./dispatch-api.g
  * document lists built on it.
  */
 
-// GraphEdgeKind is an edge's kind: one of the structural kinds, or the name of a typed block's
-// `block[]` attribute (BlockAttributeSchema), whose pointers are edges of that kind. The block
-// schema decides those names (Go's pmdoc.LinkKinds), so any other string is admitted beside the
-// structural ones, which keep their completion; none of them is ever an attribute's name. The
+// GraphEdgeKind is an edge's kind: one of the structural kinds (Go's model.GraphEdgeKinds, the
+// last six of which the store states with no projection row behind them), or the name of a typed
+// block's `block[]` attribute (BlockAttributeSchema), whose pointers are edges of that kind. The
+// block schema decides those names (Go's pmdoc.LinkKinds), so any other string is admitted beside
+// the structural ones, which keep their completion; none of them is ever an attribute's name. The
 // route table widens the edge's kind to a plain string, so the completion is spelled here.
 export type GraphEdgeKind =
   | "mentions"
@@ -24,6 +25,12 @@ export type GraphEdgeKind =
   | "part_of"
   | "depends_on"
   | "affects"
+  | "changed_by_run"
+  | "has_kind"
+  | "triggered_by"
+  | "constrained_by"
+  | "prevented_by"
+  | "authored_by"
   | (string & {});
 
 /** `GET /api/v1/issues/{key}/references` as either build of Dispatch answers it ("Two builds at

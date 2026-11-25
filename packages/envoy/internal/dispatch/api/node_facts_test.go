@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -112,11 +113,11 @@ func normalizeAt(t *testing.T, what string, at **time.Time, want *time.Time) {
 	*at = want
 }
 
-// requireFactKeys fails unless the node JSON node carries all six facts, made_by and changed_by
-// as arrays even when empty.
+// requireFactKeys fails unless the node JSON node carries all eight facts, made_by and changed_by
+// as arrays even when empty, and state and visibility as one of the values the store holds.
 func requireFactKeys(t *testing.T, what string, node map[string]json.RawMessage) {
 	t.Helper()
-	for _, key := range []string{"made_by", "made_at", "changed_by", "changed_at", "parent", "parent_version"} {
+	for _, key := range []string{"made_by", "made_at", "changed_by", "changed_at", "parent", "parent_version", "state", "visibility"} {
 		value, present := node[key]
 		if !present {
 			t.Fatalf("%s node has no %s: %v", what, key, node)
@@ -124,11 +125,22 @@ func requireFactKeys(t *testing.T, what string, node map[string]json.RawMessage)
 		if (key == "made_by" || key == "changed_by") && !strings.HasPrefix(string(value), "[") {
 			t.Fatalf("%s node's %s = %s, want an array", what, key, value)
 		}
+		var stored string
+		switch key {
+		case "state":
+			if err := json.Unmarshal(value, &stored); err != nil || !slices.Contains(graphstore.NodeStates(), stored) {
+				t.Fatalf("%s node's state = %s, want one of %v", what, value, graphstore.NodeStates())
+			}
+		case "visibility":
+			if err := json.Unmarshal(value, &stored); err != nil || (stored != graphstore.VisibilityProject && stored != graphstore.VisibilityAuthor) {
+				t.Fatalf("%s node's visibility = %s, want %s or %s", what, value, graphstore.VisibilityProject, graphstore.VisibilityAuthor)
+			}
+		}
 	}
 }
 
 // readGraph is GET /api/v1/references?query, failing unless its node and every edge's node and
-// block carry all six facts on the wire.
+// block carry all eight facts on the wire.
 func readGraph(t *testing.T, handler http.Handler, query url.Values) model.GraphReferences {
 	t.Helper()
 	response := graphRequest(t, handler, query)

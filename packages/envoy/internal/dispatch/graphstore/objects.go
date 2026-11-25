@@ -80,13 +80,28 @@ func MessageNode(id, project string, parties []string, who model.Actor, at time.
 	return objectNode(KindMessage, id, SupertagMessage, project, parties, who, at)
 }
 
+// objectNode is the node of an issue, a document, an ask or a message as the write that stores it
+// states it. Each of those writers - a create, an upload, the seed, the backfill of the nodes an
+// older build wrote without a project (internal/dispatch/graphcensus) - writes the node for its
+// address, its project and its parties, and owns neither its state nor its visibility, which a
+// later write may mark (a proposed issue, say). So the node restates the object (Node.Restates):
+// one written again keeps what the store holds of both, unless it was gone, when it comes back
+// live.
 func objectNode(kind, id, supertag, project string, parties []string, who model.Actor, at time.Time) Node {
 	return Node{
 		Kind: kind, ID: id, Supertag: supertag,
 		Visibility: VisibilityProject, State: StateLive,
 		Project: project, Parties: parties,
 		MadeAt: at, MadeBy: who, SourceEvent: NoEvent,
+		Restates: true,
 	}
+}
+
+// Created is node marked as the node its write creates (Node's Changed), as a create states each
+// node it makes: a create made for a run names the node it makes as changed by that run.
+func Created(node Node) Node {
+	node.Changed = true
+	return node
 }
 
 // ArtifactRefKey is the address an artifacts row takes, exactly as the artifacts_ref_key trigger
@@ -161,13 +176,37 @@ var ErrBadParty = errors.New("a party is empty or holds white space")
 // named, or neither found, answers nothing, which a writer then states nothing of.
 func ScopeOf(ctx context.Context, q Queryer, issueKey, artifactID *string) (project string, parties []string, err error) {
 	var projectKey, session *string
-	if err := q.QueryRow(ctx, `
-		select coalesce((select project_key from issues where key = $1), a.project_key), a.session_id
-		from (select 1) as one
-		left join artifacts a on a.id = $2::uuid
-	`, issueKey, artifactID).Scan(&projectKey, &session); err != nil {
+	if err := q.QueryRow(ctx, `select `+scopeRead, issueKey, artifactID).Scan(&projectKey, &session); err != nil {
 		return "", nil, fmt.Errorf("read the project of what an item belongs to: %w", err)
 	}
+	project, parties = rowScope(projectKey, session)
+	return project, parties, nil
+}
+
+// CommentScopeOf is ScopeOf of a comment that belongs to issueKey or artifactID, read in the same
+// statement as whether the comment's row names its node (comments.node_kind): a comment left out
+// of the store, or one a process of the release before wrote and the backfill has not stated yet,
+// names none. It is the one read of an edit of a comment's words and of a comment's delete, each
+// made for a run (api's planCommentChangedForRun, for editComment and deleteComment).
+func CommentScopeOf(ctx context.Context, q Queryer, commentID string, issueKey, artifactID *string) (stored bool, project string, parties []string, err error) {
+	var projectKey, session *string
+	if err := q.QueryRow(ctx, `select (select node_kind is not null from comments where id = $3), `+scopeRead,
+		issueKey, artifactID, commentID).Scan(&stored, &projectKey, &session); err != nil {
+		return false, "", nil, fmt.Errorf("read whether the comment %s names its node, and the project of what it belongs to: %w", commentID, err)
+	}
+	project, parties = rowScope(projectKey, session)
+	return stored, project, parties, nil
+}
+
+// scopeRead is the select list and the source of ScopeOf's read, the issue's key bound at $1 and
+// the document's id at $2: the issue's project, else the document's, and the document's session.
+const scopeRead = `coalesce((select project_key from issues where key = $1), a.project_key), a.session_id
+		from (select 1) as one
+		left join artifacts a on a.id = $2::uuid`
+
+// rowScope is the scope ScopeOf answers for the project and the session its read found, either
+// nil where the row holds none.
+func rowScope(projectKey, session *string) (project string, parties []string) {
 	var owner, conversation string
 	if projectKey != nil {
 		owner = *projectKey
@@ -175,8 +214,7 @@ func ScopeOf(ctx context.Context, q Queryer, issueKey, artifactID *string) (proj
 	if session != nil {
 		conversation = *session
 	}
-	project, parties = SessionScope(owner, conversation)
-	return project, parties, nil
+	return SessionScope(owner, conversation)
 }
 
 // ThreadParties is the parties a message on no issue is between, read off its thread's root: who

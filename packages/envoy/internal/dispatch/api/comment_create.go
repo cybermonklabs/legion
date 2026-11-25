@@ -47,7 +47,12 @@ type commentInput struct {
 	Suggestion *struct {
 		ReplaceWith string `json:"replace_with"`
 	} `json:"suggestion"`
-	Actor *model.Actor `json:"actor"`
+	// Visibility is who the comment is for (graphstore.VisibilityFor): `project`, which no
+	// visibility means too, writes it for everyone who reads the project; `author` is refused by
+	// the store, 400 VISIBILITY_NOT_ADMITTED naming the kind, because not every read of a comment
+	// binds the visibility predicate, and nothing of the comment is stored.
+	Visibility string       `json:"visibility" enum:"project,author"`
+	Actor      *model.Actor `json:"actor"`
 }
 
 // storedSuggestion is a suggestion as the create writes it into the row's suggestion column: the
@@ -752,6 +757,21 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 	if !ok {
 		return
 	}
+	// The visibility the request asks for is decided by the credential that proved the caller, as
+	// the reasoning write decides it (writeReasoningNodes), and never by the session a bearer's
+	// body names: that session proves nobody. A request that asks for none is project-visible.
+	visibility := graphstore.VisibilityProject
+	if input.Visibility != "" {
+		proving, ok := s.actingReader(w, r)
+		if !ok {
+			return
+		}
+		var err error
+		if visibility, err = graphstore.VisibilityFor(input.Visibility, proving); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+	}
 	if input.Suggestion == nil && strings.TrimSpace(input.Body) == "" {
 		writeError(w, "INVALID_COMMENT", http.StatusBadRequest, "comment body is required")
 		return
@@ -878,7 +898,7 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 		ReplyTo: input.ReplyTo, Answers: threadTarget.Answers, AskID: input.AskID, Turn: turn, Suggestion: suggestion,
 		Mentions: mentions, Deliveries: []model.CommentDelivery{}, RepliesToBlock: threadTarget.ReplyBlock.nodeID(),
 	}
-	stored, err := queueCommentRow(r.Context(), tx, ledger, &comment, projectionKind)
+	stored, err := queueCommentRow(r.Context(), tx, ledger, &comment, visibility, projectionKind)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -1136,7 +1156,7 @@ func (s *server) queueIssueComment(
 		ID: id, IssueKey: owner.IssueKey, Author: author, Body: body,
 		Mentions: []model.Mention{}, Deliveries: []model.CommentDelivery{},
 	}
-	stored, err := queueCommentRow(ctx, tx, ledger, &comment, "")
+	stored, err := queueCommentRow(ctx, tx, ledger, &comment, graphstore.VisibilityProject, "")
 	if err != nil {
 		return nil, "", err
 	}
@@ -1155,12 +1175,13 @@ func commentRowID(ctx context.Context, tx pgx.Tx) (string, error) {
 	return id, err
 }
 
-// queueCommentRow queues on ledger the comment's node and then the insert of comment's row, which
-// names that node, and writes the row's created_at into comment. It answers what the comment is in
-// the node and tuple store (commentStored), whose facts wait for the comment's event
-// (queueCommentCreated). Its caller holds the owner lock that every comment insert takes first:
-// the comment route's (lockCommentOwner), or that of the issue write that leaves the comment
-// (writeIssue, lockIssueOwners).
+// queueCommentRow queues on ledger the comment's node, at visibility, and then the insert of
+// comment's row, which names that node, and writes the row's created_at into comment. It answers
+// what the comment is in the node and tuple store (commentStored), whose facts wait for the
+// comment's event (queueCommentCreated). Its caller holds the owner lock that every comment insert
+// takes first: the comment route's (lockCommentOwner), or that of the issue write that leaves the
+// comment (writeIssue, lockIssueOwners). visibility is what graphstore.VisibilityFor answered the
+// comment route's request, and graphstore.VisibilityProject for a comment an issue write leaves.
 //
 // The row's suggestion column holds comment's suggestion with suggestionKind, the kind its mark
 // recorded (storedSuggestion), which the delete reads (loadStoredSuggestion). Every caller states
@@ -1177,7 +1198,7 @@ func commentRowID(ctx context.Context, tx pgx.Tx) (string, error) {
 // row's created_at against its node's made_at, and graph_edges answers a comment's edges from the
 // row before its kind's cutover and from the tuples after it.
 func queueCommentRow(
-	ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, comment *model.Comment, suggestionKind string,
+	ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, comment *model.Comment, visibility, suggestionKind string,
 ) (commentStoreWrite, error) {
 	author, err := encodeJSON(comment.Author)
 	if err != nil {
@@ -1208,7 +1229,7 @@ func queueCommentRow(
 	if err != nil {
 		return commentStoreWrite{}, err
 	}
-	stored, err := commentStored(ctx, tx, comment.ID, comment.Author, comment.CreatedAt, comment.Anchor, comment.ArtifactID, project, parties)
+	stored, err := commentStored(ctx, tx, comment.ID, comment.Author, comment.CreatedAt, visibility, comment.Anchor, comment.ArtifactID, project, parties)
 	if err != nil {
 		return commentStoreWrite{}, err
 	}
@@ -1284,8 +1305,8 @@ func (s *server) queueCommentCreated(
 	// takes the author's person node and their session node in one statement in ascending (kind,
 	// id): a follow before it would take the session first and leave the person to that
 	// statement, which is the pair in the other order, and two such writes racing over a session
-	// and an owner the store holds neither of would deadlock (R17). The follow is planned here,
-	// in the read phase, under the owner lock the comment's write holds over the ask's thread
+	// and an owner the store holds neither of would deadlock. The follow is planned here, in the
+	// read phase, under the owner lock the comment's write holds over the ask's thread
 	// (asks.PlanFollowAuthor), and queued in that step.
 	var follow asks.PlannedFollow
 	if comment.AskID != nil {
@@ -1332,22 +1353,28 @@ type commentStoreWrite struct {
 	// unprojected is a comment any of whose relation ends is past the store's address bound: it
 	// has no node and no tuples, and its row's node columns stay null, so the old comments arm of
 	// graph_edges answers every one of its edges rather than the tuple arm answering it without
-	// the edge the bound would drop (R22).
+	// the edge the bound would drop.
 	unprojected bool
 }
 
-// commentStored is what the comment rowID states (graphstore.CommentFacts): its node,
-// project-visible and live, in project or between parties (graphstore.ScopeOf of what it belongs
-// to), made by its author at the row's own created_at, and the artifact it is anchored to and the
+// commentStored is what the comment rowID states (graphstore.CommentFacts): its node, at
+// visibility and live, in project or between parties (graphstore.ScopeOf of what it belongs to),
+// made by its author at the row's own created_at, and the artifact it is anchored to and the
 // artifact that owns it, each stated only where the comment has one. Both relations name the
 // artifact by its address, which is its ref_key, so the two artifacts' addresses are read here, in
 // the caller's read phase, in one statement.
+//
+// visibility is what graphstore.VisibilityFor answered the request, and the store refuses a
+// comment reserved for its author (graphstore.ErrVisibilityNotAdmitted) when writeNode writes it.
+// A comment left out of the store (unprojected) reaches no node write, so it is held to that same
+// rule here, and a comment asked for `author` is refused whichever way it would be stored.
 func commentStored(
 	ctx context.Context,
 	tx pgx.Tx,
 	rowID string,
 	author model.Actor,
 	at time.Time,
+	visibility string,
 	anchor *model.Anchor,
 	ownerArtifactID *string,
 	project string,
@@ -1379,10 +1406,17 @@ func commentStored(
 	// arm answers both of its edges (graph_edges). The census counts it in the past-bound class.
 	if (anchorAddress != "" && !graphstore.AddressFits(anchorAddress)) ||
 		(ownerAddress != "" && !graphstore.AddressFits(ownerAddress)) {
+		if err := graphstore.CheckVisibilityAdmitted(graphstore.KindComment, rowID, visibility); err != nil {
+			return commentStoreWrite{}, err
+		}
 		return commentStoreWrite{unprojected: true}, nil
 	}
 	node, tuples := graphstore.CommentFacts(nil, rowID, author, at, graphstore.NoEvent, anchorAddress, ownerAddress, project, parties)
-	return commentStoreWrite{written: graphstore.PlanUncaused([]graphstore.Node{node}, tuples)}, nil
+	node.Visibility = visibility
+	// The comment is the node this write creates (graphstore.Created), named changed by a run
+	// where its cause is appended (caused); its author's node, which graphstore.QueueAuthored
+	// writes, is never marked.
+	return commentStoreWrite{written: graphstore.PlanUncaused([]graphstore.Node{graphstore.Created(node)}, tuples)}, nil
 }
 
 // rowNode is the node columns a comment's row names: the comment kind and the comment's own id,

@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -477,6 +478,7 @@ func TestReferencesToABlockListOnlyLinksNamingIt(t *testing.T) {
 		Document: specRef, ChangedVersion: 1, Text: shipIt("Ship it."),
 		MadeBy: alice, MadeAt: &changedAt, ChangedBy: alice, ChangedAt: &changedAt,
 		Parent: &model.NodeParent{Kind: "artifact", ID: issue.PrimaryArtifactID, Ref: specRef}, ParentVersion: new(1),
+		State: graphstore.StateLive, Visibility: graphstore.VisibilityProject,
 	}
 	// Version 1 made the block and last changed it: both times are its.
 	normalizeAt(t, "block node made_at", &toBlock.Node.MadeAt, &changedAt)
@@ -862,11 +864,12 @@ func TestAPinnedReferenceToADeletedBlockSaysItWasRemoved(t *testing.T) {
 	alice := []model.Actor{{Kind: "user", ID: "alice", Proven: true}}
 	madeAt, removedAt := versionOf(t, database, issue.PrimaryArtifactID, 1).CreatedAt, versionOf(t, database, issue.PrimaryArtifactID, deleted.Number).CreatedAt
 	// Version 1 made the block, the deletion is its last change, and version 2, the latest indexed
-	// before it, is the last that held it.
+	// before it, is the last that held it. The index pass that deleted it stated its node gone.
 	want := model.GraphNode{
 		Kind: "block", ID: issue.Key + "/spec#ship_it", BlockID: "ship_it", IssueKey: &issueKey, Project: "CORE", Ref: blockRef, Document: specRef,
 		MadeBy: alice, MadeAt: &madeAt, ChangedBy: alice, ChangedAt: &removedAt,
 		Parent: &model.NodeParent{Kind: "artifact", ID: issue.PrimaryArtifactID, Ref: specRef}, ParentVersion: new(deleted.Number - 1),
+		State: graphstore.StateGone, Visibility: graphstore.VisibilityProject,
 		Pin: &model.BlockPin{Version: 2, Ref: blockRef + "@v2", Text: shipIt("Ship it now."), State: "removed", RemovedVersion: deleted.Number},
 	}
 	got := decodeBody[model.GraphReferences](t, response).Node

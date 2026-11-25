@@ -215,6 +215,131 @@ func graphstoreDrives(t *testing.T) []StoreDrive {
 	}}
 }
 
+// The drives of the lens catalogue's writer, of the backfill's passes over what a process of the
+// release before leaves of a run and of a prevented_by, and of the block-index tick's sweep of the
+// lenses such a process leaves stale when it removes a document, each a site no drive over the
+// seeded history or the API runs.
+const (
+	addLensKindDrive      = "graphstore/lens_catalogue.go#AddLensKind"
+	owedRunDrive          = "graphcensus/backfill.go#writeOwedRun"
+	runFramesDrive        = "graphcensus/backfill.go#writeRunFrames"
+	goneRunDrive          = "graphcensus/backfill.go#writeGoneRun"
+	endedPreventionsDrive = "graphcensus/backfill.go#writeEndedPreventions"
+	staleLensSweepDrive   = "graphcensus/orphans.go#StateStaleLensesGone"
+)
+
+// runAndCatalogueDrives are those drives, over a database of their own, one after another: a kind
+// added to the lens catalogue as `envoy-dispatch lens-kind-add` adds one, its lens_kind node and
+// the constraint node of its source, which the term lens_kind counts; then the backfill's passes
+// over the rows a process of the release before writes of a run during a roll (olderPodRun): the
+// node of a run it recorded with no node, written through graphstore.WriteRun with a frame value of
+// its one frame, which the terms interaction and frame count, and the node of its asker, the first
+// write of alice in this database, which the term person counts; the value of a frame it appended
+// to a run this build gave its node, which the term frame counts; and the gone state of a run whose
+// row it deleted, which the term interaction counts. Then the backfill's retraction of the
+// prevented_by at a check of a document that process retired and at a check its version dropped
+// (seedEndedPreventions), which the term risk counts. Last, the block-index tick's sweep of the
+// stale lenses (StateStaleLensesGone) over one lens on a document that process removed, stating
+// nothing (seedOrphan): the lens's gone state, which the term lens counts.
+func runAndCatalogueDrives(t *testing.T) []StoreDrive {
+	t.Helper()
+	database := storetest.Open(t)
+	ctx := context.Background()
+	alice := model.Actor{Kind: "user", ID: "alice"}
+	pass := func(backfill func(context.Context, *store.Store) (KindBackfill, error)) func(*testing.T) {
+		return func(t *testing.T) {
+			t.Helper()
+			if done, err := backfill(ctx, database); err != nil {
+				t.Fatalf("backfill the %s kind: %v", done.Kind, err)
+			} else if done.Rows == 0 {
+				t.Fatalf("the backfill of the %s kind wrote nothing, where the drive readied a row it owes", done.Kind)
+			}
+		}
+	}
+	return []StoreDrive{{
+		Name: addLensKindDrive, Sites: []string{"graphstore/lens_catalogue.go#AddLensKind"},
+		Database: database,
+		Drive: func(t *testing.T) {
+			if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
+				_, err := graphstore.AddLensKind(ctx, tx, graphstore.LensKind{
+					ID: "sizing-kind", Words: "Weigh what the store holds against what it costs.",
+					Source: "The sizing of the store", Reference: "its tuples a day",
+				}, time.Now().UTC())
+				return err
+			}); err != nil {
+				t.Fatalf("add a kind to the lens catalogue: %v", err)
+			}
+		},
+		Counts: map[StoredKind][]string{
+			{graphstore.KindLensKind, graphstore.AttributeVisibility}:   {graphstore.KindLensKind},
+			{graphstore.KindLensKind, graphstore.AttributeState}:        {graphstore.KindLensKind},
+			{graphstore.KindLensKind, graphstore.AttributeWords}:        {graphstore.KindLensKind},
+			{graphstore.KindLensKind, graphstore.TupleConstrainedBy}:    {graphstore.KindLensKind},
+			{graphstore.KindConstraint, graphstore.AttributeVisibility}: {graphstore.KindLensKind},
+			{graphstore.KindConstraint, graphstore.AttributeState}:      {graphstore.KindLensKind},
+			{graphstore.KindConstraint, graphstore.AttributeStandard}:   {graphstore.KindLensKind},
+			{graphstore.KindConstraint, graphstore.AttributeReference}:  {graphstore.KindLensKind},
+		},
+	}, {
+		Name: owedRunDrive, Sites: []string{"graphcensus/backfill.go#writeOwedRun", "graphstore/interaction.go#WriteRun"},
+		Database: database,
+		Ready:    func(t *testing.T) { olderPodRun(t, database, alice, "CORE", "who answers this?", "Half an answer.") },
+		Drive:    pass(backfillRuns),
+		Counts: map[StoredKind][]string{
+			{graphstore.KindInteraction, graphstore.AttributeVisibility}: {graphstore.KindInteraction},
+			{graphstore.KindInteraction, graphstore.AttributeState}:      {graphstore.KindInteraction},
+			{graphstore.KindInteraction, graphstore.AttributeProject}:    {graphstore.KindInteraction},
+			{graphstore.KindInteraction, graphstore.AttributeWords}:      {graphstore.KindInteraction},
+			{graphstore.KindInteraction, graphstore.AttributeEndsAt}:     {graphstore.KindInteraction},
+			{graphstore.KindInteraction, graphstore.AttributeSource}:     {graphstore.KindInteraction},
+			{graphstore.KindInteraction, graphstore.TupleAuthoredBy}:     {graphstore.KindInteraction},
+			{graphstore.KindInteraction, graphstore.AttributeFrame}:      {graphstore.AttributeFrame},
+			{graphstore.KindPerson, graphstore.AttributeVisibility}:      {graphstore.KindPerson},
+			{graphstore.KindPerson, graphstore.AttributeState}:           {graphstore.KindPerson},
+		},
+	}, {
+		Name: runFramesDrive, Sites: []string{"graphcensus/backfill.go#writeRunFrames"},
+		Database: database,
+		Ready: func(t *testing.T) {
+			framed := olderPodRun(t, database, alice, "", "and this one?", "One ")
+			giveRunItsNode(t, database, framed)
+			appendOlderPodFrame(t, database, framed, 2, "two.")
+		},
+		Drive:  pass(backfillRunFrames),
+		Counts: map[StoredKind][]string{{graphstore.KindInteraction, graphstore.AttributeFrame}: {graphstore.AttributeFrame}},
+	}, {
+		Name: goneRunDrive, Sites: []string{"graphcensus/backfill.go#writeGoneRun"},
+		Database: database,
+		Ready: func(t *testing.T) {
+			deleted := olderPodRun(t, database, alice, "", "asked and deleted an hour on", "Gone ")
+			giveRunItsNode(t, database, deleted)
+			if _, err := database.Pool.Exec(ctx, `delete from going_requests where id = $1::uuid`, deleted); err != nil {
+				t.Fatalf("delete run %s as an older pod's sweep does: %v", deleted, err)
+			}
+		},
+		Drive:  pass(backfillGoneRuns),
+		Counts: map[StoredKind][]string{{graphstore.KindInteraction, graphstore.AttributeState}: {graphstore.KindInteraction}},
+	}, {
+		Name: endedPreventionsDrive, Sites: []string{"graphcensus/backfill.go#writeEndedPreventions"},
+		Database: database,
+		Ready:    func(t *testing.T) { seedEndedPreventions(t, database) },
+		Drive:    pass(backfillEndedPreventions),
+		Counts:   map[StoredKind][]string{{graphstore.KindRisk, graphstore.TuplePreventedBy}: {graphstore.KindRisk}},
+	}, {
+		Name: staleLensSweepDrive, Sites: []string{"graphcensus/orphans.go#StateStaleLensesGone", "graphstore/write.go#WriteState"},
+		Database: database,
+		Ready: func(t *testing.T) {
+			seedOrphan(t, database, "lensed-md", "00000000-0000-4000-8000-0000000005a1")
+		},
+		Drive: func(t *testing.T) {
+			if stated, err := StateStaleLensesGone(ctx, database); err != nil || stated != 1 {
+				t.Fatalf("the sweep of the stale lenses stated %d nodes gone (%v), want the one stale lens", stated, err)
+			}
+		},
+		Counts: map[StoredKind][]string{{graphstore.KindLens, graphstore.AttributeState}: {graphstore.KindLens}},
+	}}
+}
+
 // The drives of the boot step's ask passes (backfillAsks, backfillAskFollowers), each over the
 // rows a build before the store wrote.
 const (

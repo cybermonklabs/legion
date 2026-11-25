@@ -39,7 +39,7 @@ func BlockTextAt(ctx context.Context, q Queryer, artifactID, blockID string, ver
 		       (select min(version) from document_indexed_versions where artifact_id = $1),
 		       (select text from document_block_texts where artifact_id = $1 and block_id = $2 and version <= $3
 		        order by version desc limit 1),
-		       (select max(version) from document_block_texts where artifact_id = $1 and block_id = $2 and text is null)
+		       `+removedAtSQL("$1", "$2")+`
 	`, artifactID, blockID, version).Scan(&read.Exists, &read.Indexed, &earliest, &read.Text, &removed); err != nil {
 		return BlockVersion{}, fmt.Errorf("read block %q of %s at version %d: %w", blockID, artifactID, version, err)
 	}
@@ -53,6 +53,15 @@ func BlockTextAt(ctx context.Context, q Queryer, artifactID, blockID string, ver
 		read.RemovedVersion = *removed
 	}
 	return read, nil
+}
+
+// removedAtSQL is the latest version of document artifact that recorded block block deleted, as
+// a scalar expression over the SQL artifact and block, null where none did: BlockVersion's
+// RemovedVersion, and the version below which a lens on a block no current version holds names
+// it (pinnedParentSQL).
+func removedAtSQL(artifact, block string) string {
+	return `(select max(removal.version) from document_block_texts removal
+		where removal.artifact_id = ` + artifact + ` and removal.block_id = ` + block + ` and removal.text is null)`
 }
 
 // CurrentBlockText is the whole text of block blockID of document artifactID as its latest

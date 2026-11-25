@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -333,6 +335,27 @@ func (s *server) editComment(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	// An edit of a comment's words made for a run (store.WithRun, which withinGoingRun puts on a
+	// request naming its run) names the comment as changed by that run where it changed them
+	// (spec requirement r-interaction). Nothing else this route writes reaches the comment's node,
+	// so it writes that node for the run (planCommentChangedForRun). The node write is queued after
+	// the row's update, its references and its mark, and what it states right after comment.edited
+	// (graphstore.QueueCaused over graphstore.LatestEvent), as an issue's own field write does
+	// (writeIssue).
+	var commentNode graphstore.Uncaused
+	if previousBody != comment.Body {
+		if commentNode, err = planCommentChangedForRun(r.Context(), tx, comment, editedAt, actor); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		if err := ledger.Queue(func(b *store.WriteBatch) error {
+			graphstore.QueueNodes(b, commentNode)
+			return nil
+		}); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+	}
 	payload, logins, err := s.commentCorrectionPayload(r.Context(), tx, &comment, artifactName, referenceChanges)
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -352,6 +375,15 @@ func (s *server) editComment(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	// The stamp queueLoggedEvent queues with the event appends no event, so the id sequence still
+	// names comment.edited here.
+	if err := ledger.Queue(func(b *store.WriteBatch) error {
+		graphstore.QueueCaused(b, commentNode, graphstore.LatestEvent)
+		return nil
+	}); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	if err := ledger.Commit(r.Context()); err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -359,6 +391,36 @@ func (s *server) editComment(w http.ResponseWriter, r *http.Request) {
 	s.publish(r.Context(), *event)
 	s.storeDisplayTrees(r.Context(), comment.ID, input.Body)
 	WriteJSON(w, http.StatusOK, newShapedComment(comment, wantsDisplayTrees(r)))
+}
+
+// planCommentChangedForRun plans the write of comment's node that names it changed at at by by,
+// for the run ctx carries (graphstore.PlanChangedForRun), for a write of the comment's row that
+// reaches no node of the store: an edit of its words (editComment) and its delete
+// (deleteComment), each made for a run (store.WithRun, which withinGoingRun puts on a request
+// naming its run). The comment is a node of the store where its row names its node
+// (comments.node_kind), which a comment left out of the store (commentStored's unprojected), or
+// one a process of the release before wrote and the backfill has not stated yet, does not, and has
+// none for a run to name. That column is read here, in the caller's read phase and for a run
+// alone, under the owner lock every writer of the comment holds, in the one statement that reads
+// the scope of what the comment belongs to (graphstore.CommentScopeOf). The node is the one the
+// create and the backfill write (graphstore.CommentFacts' node): in that project, or between those
+// parties, made by its author at its created_at. Its relations stand as they were stated and are
+// stated again by nobody. It answers the zero Uncaused, for which QueueNodes and QueueCaused queue
+// nothing, for no run and for a comment the store holds no node of. The caller queues the node
+// write (graphstore.QueueNodes) after its row's write and every document write it makes, and what
+// it states right after its own event (graphstore.QueueCaused over graphstore.LatestEvent).
+func planCommentChangedForRun(ctx context.Context, tx pgx.Tx, comment model.Comment, at time.Time, by model.Actor) (graphstore.Uncaused, error) {
+	if store.RunOf(ctx) == "" {
+		return graphstore.Uncaused{}, nil
+	}
+	stored, project, parties, err := graphstore.CommentScopeOf(ctx, tx, comment.ID, comment.IssueKey, comment.ArtifactID)
+	if err != nil || !stored {
+		return graphstore.Uncaused{}, err
+	}
+	return graphstore.PlanChangedForRun(ctx, at, by, func() (graphstore.Node, error) {
+		node, _ := graphstore.CommentFacts(nil, comment.ID, comment.Author, comment.CreatedAt, graphstore.NoEvent, "", "", project, parties)
+		return node, nil
+	})
 }
 
 // recordOrphanedCommentAnchor records on the comment's row what a document write just found:

@@ -371,7 +371,7 @@ const issueMovedColumns = `moved.created_at, moved.actor`
 // event, so a listing without the key pays nothing for the read and one with it pays for its
 // parked rows alone. An issue standing in any other status answers null although it may once
 // have been moved there, since the cells say how the issue came to stand where it stands.
-var issueMovedJoin = backlogMoveLateral("i", `$14::boolean and i.status in (`+sqlStringList(priorityBacklogStatuses)+`)`)
+var issueMovedJoin = backlogMoveLateral("i", `$14::boolean and i.status in (`+store.QuoteLiterals(priorityBacklogStatuses)+`)`)
 
 // issueSummaryJoins resolve the seven values a listing row carries beside the issue's own
 // columns, each for every issue of `subjects` at once rather than for one row at a time, and the

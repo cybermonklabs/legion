@@ -30,6 +30,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/prioritystore"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // priorityInFlightStatuses are the four statuses work is running in, which is what the first
@@ -43,6 +44,8 @@ import (
 // Both are the lifecycle's own groupings (model.IssueStatusesInFlight, model.IssueStatusesParked)
 // rather than a list of this file's own, because the seeded corpus reports the same two faults
 // over the same two groupings (cmd/dispatch-seed) and the two readings have to ask one thing.
+// A statement writes them as literals (store.QuoteLiterals): both are status constants, never a
+// value a request carried, so nothing those literals hold comes from outside the binary.
 var (
 	priorityInFlightStatuses = model.IssueStatusesInFlight
 	priorityBacklogStatuses  = model.IssueStatusesParked
@@ -59,17 +62,6 @@ const priorityClosedWindow = "7 days"
 // priorityNoneWritten is the sentence the answer carries when no priority is live: the route then
 // answers 200 with an empty list rather than an error, and the page draws this.
 const priorityNoneWritten = "No priority is live now, so the list is empty. Write one, then say which work advances it."
-
-// sqlStringList writes values as the literal list an `in` clause takes. Its callers pass this
-// file's own status constants and never a value a request carried, so nothing it writes comes
-// from outside the binary.
-func sqlStringList(values []string) string {
-	quoted := make([]string, len(values))
-	for index, value := range values {
-		quoted[index] = "'" + value + "'"
-	}
-	return strings.Join(quoted, ", ")
-}
 
 // priorityRelationsQuery reads the `advances` relation of every live priority as it stands now,
 // one row per (issue, priority): the newest tuple of each pair, kept when it asserts the
@@ -190,7 +182,7 @@ func priorityUnplacedQuery(summary bool) string {
 		select i.key, i.title, i.project_key, i.status, i.assignee, i.claimed_by, i.claimed_at, i.updated_at
 		from issues i
 		where i.closed_at is null
-			and i.status in (` + sqlStringList(priorityInFlightStatuses) + `)
+			and i.status in (` + store.QuoteLiterals(priorityInFlightStatuses) + `)
 			and ` + priorityProjectFilter + `
 			and not exists (select 1 from members m where m.key = i.key)
 	)`
@@ -236,7 +228,7 @@ func priorityBacklogQuery(summary bool) string {
 		select distinct s.key
 		from stated s join issues i on i.key = s.key
 		where i.closed_at is null
-			and i.status in (` + sqlStringList(priorityBacklogStatuses) + `)
+			and i.status in (` + store.QuoteLiterals(priorityBacklogStatuses) + `)
 			and ` + priorityProjectFilter + `
 	), ` + advancesOriginTerms("stated", "backlog_keys") + `, in_backlog as (
 		select i.key, i.title, i.project_key, i.status, i.assignee, i.claimed_by, i.claimed_at, i.updated_at
@@ -293,7 +285,7 @@ func backlogMoveLateral(issue, gate string) string {
 			from events e
 			where ` + gate + `e.issue_key = ` + issue + `.key and e.type = 'issue.updated'
 				and e.payload->'changed' @> '"status"'::jsonb
-				and e.payload->>'status' in (` + sqlStringList(priorityBacklogStatuses) + `)
+				and e.payload->>'status' in (` + store.QuoteLiterals(priorityBacklogStatuses) + `)
 			order by e.seq desc
 			limit 1
 		) moved on true`

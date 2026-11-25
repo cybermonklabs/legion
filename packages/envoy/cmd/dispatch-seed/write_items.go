@@ -464,8 +464,8 @@ func (r *seedRun) commentStoreWrite(from, to int) ([]graphstore.Node, []graphsto
 			}
 		}
 		var node graphstore.Node
-		node, tuples = graphstore.CommentFacts(tuples, comment.ID, seedAuthor, comment.CreatedAt, graphstore.NoEvent, anchor, owner,
-			r.itemProject(comment.Issue, comment.Document), nil)
+		node, tuples = graphstore.CommentFacts(tuples, comment.ID, seedAuthor, comment.CreatedAt, graphstore.NoEvent,
+			anchor, owner, r.itemProject(comment.Issue, comment.Document), nil)
 		nodes = append(nodes, node)
 		made, facts, _ := graphstore.AuthorFacts(graphstore.KindComment, comment.ID, seedAuthor, comment.CreatedAt, graphstore.NoEvent)
 		if index == from {

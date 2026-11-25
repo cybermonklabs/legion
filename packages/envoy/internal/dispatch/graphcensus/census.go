@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -14,7 +13,6 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
-	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/pgmigrate"
@@ -29,8 +27,8 @@ const reportedDifferences = 20
 //
 // rows is a select of (row_label, node_kind, node_address, digest): one row per projection row,
 // naming the node that row says it projects and digesting the fields the row and its node
-// share. nodes is a select of (id, digest): one row per node of the kind, at any state,
-// digesting the same fields as the store holds them; the census reads those not gone
+// share. nodes is a select of (id, digest): one row per node of the kind, digesting the same
+// fields as the store holds them, of which the census compares those the store holds present
 // (presentNodes). The census holds the two against each other in both directions, so a row with
 // no node and a node with no row are each a difference.
 //
@@ -57,7 +55,7 @@ type projection struct {
 	// tuples, where it is set, holds the kind triple by triple, over the triple of holding node,
 	// tuple kind and far end, and nodes is unused. It is a
 	// select of (from_kind, from_id, kind, to_kind, to_id): one row per relation of the kind a
-	// live node states now (heldTuples). rows then answers (row_label, node_kind, node_address,
+	// present node states now (heldTuples). rows then answers (row_label, node_kind, node_address,
 	// kind, to_kind, to_id): one row per relation a projection row states, of the node it names.
 	// A row no tuple states is a difference named at the row, and a tuple no row projects one
 	// named at the tuple, so a tuple moved to the wrong far end reads as the row it left and the
@@ -74,13 +72,10 @@ type projection struct {
 	// each kind's names once: its arms read the store's log, the largest table, and the person and
 	// session kinds would otherwise each read them in their own names.
 	authored bool
-	// linked says rows and nodes read as $1 the tuple kinds a block's link is held under: the
-	// pointer attributes the installed block schema declares and `mentions` (blockLinkKinds).
-	linked bool
 	// pastBound counts the addresses this kind's row side names that are past the store's bound
 	// (graphstore.MaxAddressBytes), which the writers left unprojected on purpose: it is a full
-	// `select count(*)`, reads $1 where names is set or linked, and is empty for a kind no
-	// address of which can pass the bound. The census reports the count as a class of its own and
+	// `select count(*)`, reads $1 where names is set, and is empty for a kind no address of which
+	// can pass the bound. The census reports the count as a class of its own and
 	// excludes those addresses from both comparisons, so a row no store entry answers by design
 	// is no difference.
 	pastBound string
@@ -94,7 +89,7 @@ type projection struct {
 	// own, which the handoff's list for the root names as the test of the three old arms. Empty
 	// for a kind whose row names no node only by a defect.
 	unmarked string
-	// owed is a predicate over node.id, a live node of the kind (for a kind held triple by
+	// owed is a predicate over node.id, a present node of the kind (for a kind held triple by
 	// triple, the node holding the tuple), that holds where the node's row is owed by a writer
 	// that has not run yet rather than missing: such a node is no node-side difference. Empty for
 	// a kind whose every node has its row from the write that stated it.
@@ -105,15 +100,20 @@ type projection struct {
 	// row-side difference. Empty for a kind every writer of whose rows deletes a row in the write
 	// that ends its node.
 	rowOwed string
-	// emptyAgrees says a kind that holds no row, no live node and no unmarked row is no refusal:
+	// emptyAgrees says a kind that holds no row, no present node and no unmarked row is no refusal:
 	// one of the tie kinds, a decision's, a reading's and an answered or
 	// followed ask's, which a deployment holds none of until an agent writes a decision or a
 	// person answers an ask. Every other kind is one every store holds rows of, and checking
 	// none of it refuses.
 	emptyAgrees bool
+	// mayBeEmpty says a deployment can hold no row of this kind - no run of the command bar, no
+	// lens - so a census that checked zero rows of it proves nothing of it and refuses nothing for
+	// it either (Unpopulated leaves it out). The run and frame kinds and the visibility and state
+	// kinds of a run, a lens, a finding, a risk, a constraint and a lens kind are such kinds.
+	mayBeEmpty bool
 }
 
-// KindReport is one kind's census: how many rows and how many nodes not gone it read, and what
+// KindReport is one kind's census: how many rows and how many present nodes it read, and what
 // the two said about each other.
 type KindReport struct {
 	Kind, NodeKind, Table, Note string
@@ -134,12 +134,14 @@ type KindReport struct {
 	// own, and Unmarked is how many there are, none of them a difference (projection.unmarked).
 	CountsUnmarked bool
 	Unmarked       int64
-	// EmptyAgrees says a kind that read no row, no live node and no unmarked row is no refusal
+	// EmptyAgrees says a kind that read no row, no present node and no unmarked row is no refusal
 	// (projection.emptyAgrees).
 	EmptyAgrees bool
+	// MayBeEmpty is the kind's projection.mayBeEmpty: zero rows of it refuse nothing.
+	MayBeEmpty bool
 }
 
-// Empty reports whether the kind read no row, no live node and no unmarked row, and so holds
+// Empty reports whether the kind read no row, no present node and no unmarked row, and so holds
 // nothing to compare. A table whose rows all name no node yet holds rows still: they are the
 // earlier release's, which the census cannot hold to a node until the backfill marks them.
 func (k KindReport) Empty() bool { return k.Rows == 0 && k.Nodes == 0 && k.Unmarked == 0 }
@@ -239,11 +241,12 @@ func (r *StoreReport) Differences() int64 {
 }
 
 // Unpopulated is every kind the census checked no row of, in the order it read them, but a kind
-// that may be empty (KindReport.EmptyAgrees) and is: no row, no live node and no unmarked row.
+// that may be empty (KindReport.EmptyAgrees) and is: no row, no present node and no unmarked row;
+// and but a kind a deployment may hold none of (KindReport.MayBeEmpty).
 func (r *StoreReport) Unpopulated() []string {
 	var empty []string
 	for _, kind := range r.Kinds {
-		if kind.Rows == 0 && !(kind.EmptyAgrees && kind.Empty()) {
+		if kind.Rows == 0 && !kind.MayBeEmpty && !(kind.EmptyAgrees && kind.Empty()) {
 			empty = append(empty, kind.Kind)
 		}
 	}
@@ -255,10 +258,14 @@ func (r *StoreReport) Unpopulated() []string {
 // far end of a kind no table projects resolves. A total over the kinds is no such proof: two
 // empty sides of one kind agree, and one kind's rows say nothing about another's, so a census
 // whose comments carried every row would pass while it proved nothing of the blocks, the roles or
-// the sessions. One of the tie kinds is the one exception: no row, no node and no
+// the sessions. One of the tie kinds is one exception: no row, no node and no
 // unmarked row of it is a store nothing of that kind was written to yet, and is no refusal
 // (projection.emptyAgrees). A table of the earlier release whose rows no backfill has marked yet
-// is not that store: its kind checked no row while rows stand, and it refuses.
+// is not that store: its kind checked no row while rows stand, and it refuses. A kind a
+// deployment may hold none of - a run and its frames, and the visibility and state of a run, a
+// lens, a finding, a risk, a constraint and a lens kind - is the other: it
+// refuses nothing on zero rows alone (projection.mayBeEmpty); a driver over a corpus that holds
+// them still reads the count.
 //
 // A database the store does not exist in yet (Absent) has nothing to census. The sizing is taken
 // on just such a database (R4 reads before the first migration), and the sizing refuses nothing
@@ -272,12 +279,15 @@ func (r *StoreReport) Refused() bool {
 }
 
 // The kinds the census holds the store to. The first three are the kinds a table projects, each
-// with that table; the four after them are the people and the agents, which no table projects;
-// the eight after those are the ties of decisions, readings and asks
-// that block_refs, document_blocks, asks and ask_followers project; and the six after those are
-// the same ties as graph_edges answers them (edgeProjection), each one that view answers.
+// with that table; the two after them are the runs of the command bar and their frames, which
+// going_requests and going_events project; the four after those are the people and the agents,
+// which no table projects; the eight after those are the ties of decisions, readings and asks
+// that block_refs, document_blocks, asks and ask_followers project; the six after those are the
+// same ties as graph_edges answers them (edgeProjection), each one that view answers; and the last
+// six are the visibility and the state of each run, lens, finding, risk, constraint and lens kind,
+// held to the store's own record of them (baseAttributeCensus).
 //
-// Each of the first three holds a row to the tuples that answer it as well as to its node row.
+// Each of the first five holds a row to the tuples that answer it as well as to its node row.
 // A row that names its node is answered from the tuples by graph_edges, refs.Edges and
 // refs.BacklinkCounts (migration 20261109215947), so a link whose tuple is missing or retracted
 // is gone from every read while the node row still stands, and a census of the node rows alone
@@ -292,6 +302,25 @@ func (r *StoreReport) Refused() bool {
 // a session named past it is no node either. Each row side leaves those addresses out and counts
 // them as a class of its own (pastBound), so the census reports no difference the writers made on
 // purpose, in both directions.
+//
+// The two block kinds hold a block to what refs.IndexBlocks projects of it and to nothing else. A
+// block of a lens's finding (graphstore.FindingIDSQL) is a block node no document holds, so no
+// table projects it and neither block kind reads it. And a tuple another writer states out of a
+// block - a requirement's constrained_by, a changed_by_run, a finding's authored_by - is no link a
+// block_refs row names, so the block_ref kind reads only the kinds that writer projects into
+// block_refs (blockRefKinds, read from the store inside the census's own snapshot) and the block
+// kind only a block's placement.
+//
+// A run of the command bar is an interaction node, which going_requests projects, and each of
+// its frames a frame value of that node, which a going_events row projects
+// (spec requirement r-interaction): the interaction kind holds a row to its node and
+// its authored_by, and the frame kind every frame a run's rows hold to every frame value its node
+// holds. A run is readable for one hour; then the sweep states its node gone and removes its rows
+// (api's sweepGoingRequests), and a run whose rows a process of the release before deleted an hour
+// old is a node the sweep and the backfill state gone (backfillGoneRuns): a gone node no row may
+// project, which presentNodes reads past, so it is no difference either way. The node's source is
+// the table that projects it, going_requests, which no column of the row holds: the row side
+// states it as that constant, beside the columns the node's other attributes are held to.
 var projections = []projection{{
 	name:     graphstore.KindComment,
 	nodeKind: graphstore.KindComment,
@@ -304,15 +333,13 @@ var projections = []projection{{
 		       md5(c.created_at::text || '|' || c.author::text || '|' || ` + statedLinks(
 		`'`+graphstore.TupleAnchoredTo+`>artifact:' || anchor.ref_key`,
 		`'`+graphstore.TupleOwnedBy+`>artifact:' || owner.ref_key`,
-		`case when c.author->>'kind' <> '`+graphstore.KindSession+`'
-		           or octet_length(coalesce(c.author->>'id', '')) <= `+addressBound+`
-		      then '`+graphstore.TupleAuthoredBy+`>' || `+commentAuthor+` end`,
+		authoredLink("c.author"),
 	) + `)
 		from comments c` + refs.CommentStoreJoins + `
 		where ` + refs.CommentInTheStore,
 	nodes: `
 		select n.id, md5(n.made_at::text || '|' || n.made_by::text || '|' || ` + currentLinks(graphstore.KindComment,
-		`t.kind in ('`+graphstore.TupleAnchoredTo+`', '`+graphstore.TupleOwnedBy+`', '`+graphstore.TupleAuthoredBy+`')`) + `)
+		kindIn("t.kind", commentLinkKinds)) + `)
 		from graph_nodes n where n.kind = '` + graphstore.KindComment + `'`,
 	pastBound: `
 		select count(*) from comments c` + refs.CommentStoreJoins + `
@@ -323,10 +350,10 @@ var projections = []projection{{
 	name:     "block",
 	nodeKind: refs.BlockNodeKind,
 	table:    "document_blocks",
-	note: "one node per row, blocks past the address bound aside; the digest is the row's document and the block" +
-		" its parent_block_id names, or the document where it names none, against the in_document and part_of" +
-		" tuples the node states now, a block with no part_of telling itself from one the document holds directly" +
-		" and a part_of to an ask's node read as the ask's block in the node's own document",
+	note: "one node per row, blocks past the address bound and the blocks of a lens's finding aside; the digest is" +
+		" the row's document and the block its parent_block_id names, or the document where it names none, against" +
+		" the in_document and part_of tuples the node states now, a block with no part_of telling itself from one" +
+		" the document holds directly and a part_of to an ask's node read as the ask's block in the node's own document",
 	rows: `
 		select 'block ' || d.node_id, d.node_kind, d.node_address,
 		       md5(d.node_id || '|' || ` + statedLinks(
@@ -337,9 +364,11 @@ var projections = []projection{{
 		from document_blocks d
 		join artifacts a on a.id = d.artifact_id
 		where octet_length(d.node_id) <= ` + addressBound,
+	// A finding of a lens is a block no document holds, so no document_blocks row projects it
+	// (graphstore.FindingIDSQL).
 	nodes: `
-		select n.id, md5(n.id || '|' || ` + placedLinks(`t.kind in ('`+refs.TupleInDocument+`', '`+graphstore.TuplePartOf+`')`) + `)
-		from graph_nodes n where n.kind = '` + refs.BlockNodeKind + `'`,
+		select n.id, md5(n.id || '|' || ` + placedLinks(kindIn("t.kind", blockPlacementKinds)) + `)
+		from graph_nodes n where n.kind = '` + refs.BlockNodeKind + `' and not ` + graphstore.FindingIDSQL("n.id"),
 	pastBound: `
 		select count(*) from document_blocks d where octet_length(d.node_id) > ` + addressBound,
 	owed:    typedNodeOwed,
@@ -349,17 +378,17 @@ var projections = []projection{{
 	nodeKind: refs.BlockNodeKind,
 	table:    "block_refs",
 	note: "a row is one link out of a block and its node is that block's, so several rows share one node:" +
-		" the node side is every live block node that states a pointer or a mention now, whether a row" +
-		" names it or not, and the digest is every pointer and mention the rows of that block name against" +
-		" every such link its node states now; a row an ask's node holds, and a decision's shaped, from_ask" +
-		" and decided_by, are no part of this kind",
-	// The kinds are the pointer attributes the installed block schema declares and `mentions`
-	// (blockLinkKinds), bound as $1 rather than spelled, since the schema a census reads under is
-	// the store's and not only the one this binary embeds. A row marked with an ask's node is the
-	// ask's shaped, which hangs on that node and not on the block (refs.TypedFacts.pairs), and a
-	// decision's shaped, from_ask and decided_by are ties held triple by triple by kinds of their
-	// own: none of them is a link of the block this kind holds rows to.
-	linked: true,
+		" the node side is every block node not gone, a lens's finding aside, that states a link now of a kind" +
+		" refs.IndexBlocks writes into block_refs (a mention, or a pointer of a block[] attribute the store's" +
+		" type nodes declare, at any state), whether a row names it or not, and the digest is every link the" +
+		" rows of that block name against every such link its node states now; a row an ask's node holds, and" +
+		" a decision's shaped, from_ask and decided_by, are no part of this kind",
+	// The kinds are blockRefKinds, read from the store's own type nodes inside the census's
+	// snapshot, since the schema a census reads under is the store's and not only the one this
+	// binary embeds. A row marked with an ask's node is the ask's shaped, which hangs on that node
+	// and not on the block (refs.TypedFacts.pairs), and a decision's shaped, from_ask and
+	// decided_by are ties held triple by triple by kinds of their own: none of them is a link of
+	// the block this kind holds rows to.
 	rows: `
 		select 'block_ref ' || r.from_node || ' ' || r.kind || ' -> ' || r.to_kind || ' ' || r.to_id,
 		       r.node_kind, r.node_address, md5(r.from_node || '|' || named.links)
@@ -370,36 +399,99 @@ var projections = []projection{{
 			                  order by b.kind || '>' || b.to_kind || ':' || b.to_id) as links
 			from block_refs b
 			where octet_length(b.from_node) <= ` + addressBound + ` and octet_length(b.to_id) <= ` + addressBound + `
-			  and b.kind = any($1::text[]) and b.node_kind is distinct from '` + graphstore.KindAsk + `'
+			  and b.kind in (` + blockRefKinds + `) and b.node_kind is distinct from '` + graphstore.KindAsk + `'
 			group by b.from_node
 		) named on named.from_node = r.from_node
 		where octet_length(r.from_node) <= ` + addressBound + ` and octet_length(r.to_id) <= ` + addressBound + `
-		  and r.kind = any($1::text[]) and r.node_kind is distinct from '` + graphstore.KindAsk + `'`,
+		  and r.kind in (` + blockRefKinds + `) and r.node_kind is distinct from '` + graphstore.KindAsk + `'`,
 	// Every block node is read, and not only those a row names: a mention or a pointer the store
 	// states out of a block no block_refs row names is a link graph_edges answers, and a node
 	// side that began at the rows could never find it. A block whose only links are of other
-	// kinds - its placement, its from_ask, its decided_by - states no link here and is no node
-	// of this kind; the block kind holds its placement.
+	// kinds - its placement, its from_ask, its decided_by, or tuples no block_refs row projects -
+	// states no link here and is no node of this kind; the block kind holds its placement. A
+	// finding of a lens is a block no document holds, so no block_refs row names it.
 	nodes: `
 		select held.id, md5(held.id || '|' || held.links)
 		from (
-			select n.id, ` + currentLinks(refs.BlockNodeKind, `t.kind = any($1::text[])`) + ` as links
-			from graph_nodes n where n.kind = '` + refs.BlockNodeKind + `'
+			select n.id, ` + currentLinks(refs.BlockNodeKind, `t.kind in (`+blockRefKinds+`)`) + ` as links
+			from graph_nodes n where n.kind = '` + refs.BlockNodeKind + `' and not ` + graphstore.FindingIDSQL("n.id") + `
 		) held
 		where held.links <> ''`,
 	pastBound: `
 		select count(*) from block_refs r
 		where (octet_length(r.from_node) > ` + addressBound + ` or octet_length(r.to_id) > ` + addressBound + `)
-		  and r.kind = any($1::text[]) and r.node_kind is distinct from '` + graphstore.KindAsk + `'`,
+		  and r.kind in (` + blockRefKinds + `) and r.node_kind is distinct from '` + graphstore.KindAsk + `'`,
 	rowOwed: typedRowOwed,
+}, {
+	name:     graphstore.KindInteraction,
+	nodeKind: graphstore.KindInteraction,
+	table:    "going_requests",
+	note: "one node per row; the digest is the row's author, project, words, created_at and ends_at, the source" +
+		" going_requests and the author graphstore.AuthorOf reads off it, against the node's made_by, project, words," +
+		" made_at, ends_at and source and the authored_by tuple it states now; a run whose row is gone is a gone node," +
+		" no difference",
+	rows: `
+		select 'interaction ' || r.id::text, '` + graphstore.KindInteraction + `', r.id::text,
+		       md5(r.author::text || '|' || r.project || '|' || r.words || '|' || r.created_at::text
+		           || '|' || r.ends_at::text || '|' || '` + graphstore.SourceGoingRequests + `'
+		           || '|' || ` + statedLinks(authoredLink("r.author")) + `)
+		from going_requests r`,
+	nodes: `
+		select n.id, md5(n.made_by::text || '|' || coalesce(n.project_key, '')
+		                 || '|' || coalesce(n.attributes->>'` + graphstore.AttributeWords + `', '')
+		                 || '|' || n.made_at::text
+		                 || '|' || coalesce((n.attributes->>'` + graphstore.AttributeEndsAt + `')::timestamptz::text, '')
+		                 || '|' || coalesce(n.attributes->>'` + graphstore.AttributeSource + `', '')
+		                 || '|' || ` + currentLinks(graphstore.KindInteraction, kindIn("t.kind", runLinkKinds)) + `)
+		from graph_nodes n where n.kind = '` + graphstore.KindInteraction + `'`,
+	mayBeEmpty: true,
+}, {
+	name:     graphstore.AttributeFrame,
+	nodeKind: graphstore.KindInteraction,
+	table:    "going_events",
+	note: "a row is one frame of a run and its node is the run's interaction, so several rows share one node: the" +
+		" node side is every interaction not gone that holds a frame value, and the digest is every frame the" +
+		" rows of that run hold, each its sequence, name and data as graphstore.FrameValueSQL writes it, against" +
+		" every frame value its node holds",
+	rows: `
+		select '` + graphstore.AttributeFrame + ` ' || e.request_id::text || ' ' || e.sequence, '` + graphstore.KindInteraction + `',
+		       e.request_id::text, run.digest
+		from going_events e
+		join (
+			select f.request_id,
+			       md5(string_agg(` + graphstore.FrameValueSQL("f.sequence", "f.name", "f.data") + `, E'\n' order by f.sequence)) as digest
+			from going_events f
+			group by f.request_id
+		) run on run.request_id = e.request_id`,
+	// A frame value is never retracted, and two writes of one frame state the same text, which
+	// the distinct reads once; two values at one sequence are two frames, and the digest says so.
+	nodes: `
+		select held.id, md5(held.frames)
+		from (
+			select n.id, (
+				select string_agg(framed.value, E'\n' order by framed.sequence)
+				from (
+					select distinct t.to_id as value, (t.to_id::jsonb->>'sequence')::integer as sequence
+					from graph_tuples t
+					where t.from_kind = '` + graphstore.KindInteraction + `' and t.from_id = n.id
+					  and t.kind = '` + graphstore.AttributeFrame + `' and t.to_kind = '` + graphstore.KindValue + `'
+					  and t.asserted
+				) framed
+			) as frames
+			from graph_nodes n where n.kind = '` + graphstore.KindInteraction + `'
+		) held
+		where held.frames is not null`,
+	mayBeEmpty: true,
 }, {
 	name:     graphstore.KindPerson,
 	nodeKind: graphstore.KindPerson,
-	table:    "comments.author, asks.author, asks.answer, block_refs.decided_by, graph_tuples.kept_by, events.payload",
+	table: "comments.author, going_requests.author, asks.author, asks.answer, block_refs.decided_by," +
+		" graph_tuples.kept_by, events.payload, graph_nodes.made_by",
 	note: "no table projects a person, so the row side is the people the projected tables name as authors," +
 		" the owner of each session the server proved that wrote one, the person each ask's answer names and each" +
-		" answer the store took ever named, who wrote each decision and reading and their proved owners, and" +
-		" each person a decision's Keep ever named",
+		" answer the store took ever named, who wrote each decision and reading and their proved owners, each" +
+		" person a decision's Keep ever named, the author of each run, and the author of each lens, finding, risk" +
+		" and constraint, and of each run whose row is gone, that states its authored_by",
 	names:    `select p.login from (` + commentPeople(censusAuthors) + `) p`,
 	authored: true,
 	rows: `
@@ -410,11 +502,13 @@ var projections = []projection{{
 }, {
 	name:     graphstore.KindSession,
 	nodeKind: graphstore.KindSession,
-	table:    "comments.author, comment_deliveries, message_deliveries, comment_fallback_copies, asks.author, ask_followers, block_refs.decided_by, events.payload",
+	table: "comments.author, going_requests.author, comment_deliveries, message_deliveries, comment_fallback_copies," +
+		" asks.author, ask_followers, block_refs.decided_by, events.payload, graph_nodes.made_by",
 	note: "no table projects a session, so the row side is the sessions those tables name as authors, as reached," +
-		" as askers, as followers and as who wrote a decision or a reading, and every session an ask.opened" +
-		" event named as the asker, an ask.follower_added event named or a comment.delivery receipt says the" +
-		" listener took an attempt to",
+		" as askers, as followers and as who wrote a decision or a reading, the author of each run, the author of" +
+		" each lens, finding, risk and constraint, and of each run whose row is gone, that states its" +
+		" authored_by, and every session an ask.opened event named as the asker, an ask.follower_added event" +
+		" named or a comment.delivery receipt says the listener took an attempt to",
 	names:    `select s.id from (` + recordedSessions(censusAuthors) + `) s`,
 	authored: true,
 	rows: `
@@ -460,20 +554,20 @@ var projections = []projection{{
 	tieProjection(refs.TupleShaped,
 		"a decision's shaped, and an ask's, which hangs on the ask's node: the row side is every shaped row of"+
 			" block_refs as the triple of the node it names, shaped and its block, against every shaped tuple a"+
-			" live block or ask node states now", refs.BlockNodeKind, graphstore.KindAsk),
+			" block or ask node not gone states now", refs.BlockNodeKind, graphstore.KindAsk),
 	tieProjection(refs.TupleFromAsk,
 		"a decision's from_ask: the row side is every from_ask row of block_refs as the triple of the"+
-			" decision's node, from_ask and its ask, against every from_ask a live block node states now", refs.BlockNodeKind),
+			" decision's node, from_ask and its ask, against every from_ask a block node not gone states now", refs.BlockNodeKind),
 	tieProjection(graphstore.TupleDecidedBy,
 		"a decision's decided_by: the row side is every decided_by row of block_refs as the triple of the"+
-			" decision's node, decided_by and its person or session, against every decided_by a live block node"+
-			" states now", refs.BlockNodeKind),
+			" decision's node, decided_by and its person or session, against every decided_by a block node not"+
+			" gone states now", refs.BlockNodeKind),
 	{
 		name:     graphstore.TupleFollowedBy,
 		nodeKind: graphstore.KindAsk,
 		table:    "ask_followers",
 		note: "an ask's followers: the row side is every marked ask_followers row as the triple of the ask's node" +
-			" it names, followed_by and its session, against every followed_by a live ask node states now",
+			" it names, followed_by and its session, against every followed_by an ask node not gone states now",
 		rows: `
 		select 'ask_follower ' || f.ask_id::text || ' ' || f.session_id, f.node_kind, f.node_address,
 		       '` + graphstore.TupleFollowedBy + `', '` + graphstore.KindSession + `', f.session_id
@@ -490,8 +584,8 @@ var projections = []projection{{
 		nodeKind: refs.BlockNodeKind,
 		table:    "document_blocks.parent_block_id",
 		note: "the parent of each reading: the row side is the document_blocks row of every reading's node as the" +
-			" triple of that node, part_of and the block its parent_block_id names, against the part_of every live" +
-			" reading's node states now, a part_of to an ask's node read as the ask's block in the node's own document",
+			" triple of that node, part_of and the block its parent_block_id names, against the part_of every" +
+			" reading's node not gone states now, a part_of to an ask's node read as the ask's block in the node's own document",
 		rows: `
 		select 'reading ' || d.node_id, d.node_kind, d.node_address, '` + graphstore.TuplePartOf + `',
 		       case when d.parent_block_id is null then 'artifact' else '` + refs.BlockNodeKind + `' end,
@@ -508,14 +602,14 @@ var projections = []projection{{
 	askProjection("ask_parent", "asks.block_artifact_id, asks.artifact_id",
 		"an ask's placement: the row side is every marked asks row as the triples of its node, part_of and the"+
 			" document holding its block, and owned_by and the document owning it, against the part_of and owned_by"+
-			" every live ask node states now",
+			" every ask node not gone states now",
 		`(document.id is not null or owner.id is not null)`,
 		[]string{`'` + graphstore.TuplePartOf + `', 'artifact', document.ref_key`, `'` + graphstore.TupleOwnedBy + `', 'artifact', owner.ref_key`},
 		`t.kind in ('`+graphstore.TuplePartOf+`', '`+graphstore.TupleOwnedBy+`')`),
 	askProjection("ask_anchor", "asks.block_artifact_id, asks.anchor",
 		"an ask's anchor: the row side is every marked asks row whose block's document or anchor names a"+
 			" document, as the triple of its node, anchored_to and that document, against the anchored_to every"+
-			" live ask node states now",
+			" ask node not gone states now",
 		`anchor.id is not null`,
 		[]string{`'` + graphstore.TupleAnchoredTo + `', 'artifact', anchor.ref_key`},
 		`t.kind = '`+graphstore.TupleAnchoredTo+`'`),
@@ -573,41 +667,143 @@ var projections = []projection{{
 	edgeProjection(refs.TupleShaped+edgeSuffix, refs.TupleShaped,
 		"graph_edges' shaped: the row side is every shaped edge graph_edges answers out of a block or ask node not"+
 			" gone, read node by node, as the triple of that node, shaped and its far end, against every shaped tuple"+
-			" a live block or ask node states now, an edge the old arm answers from a row past the bound aside",
+			" a block or ask node not gone states now, an edge the old arm answers from a row past the bound aside",
 		tieEdgePastBound, tiePastBound(refs.TupleShaped), refs.BlockNodeKind, graphstore.KindAsk),
 	edgeProjection(refs.TupleFromAsk+edgeSuffix, refs.TupleFromAsk,
 		"graph_edges' from_ask: the row side is every from_ask edge graph_edges answers out of a block node not"+
 			" gone, read node by node, as the triple of that node, from_ask and its ask, against every from_ask a"+
-			" live block node states now, an edge the old arm answers from a row past the bound aside",
+			" block node not gone states now, an edge the old arm answers from a row past the bound aside",
 		tieEdgePastBound, tiePastBound(refs.TupleFromAsk), refs.BlockNodeKind),
 	edgeProjection(graphstore.TupleDecidedBy+edgeSuffix, graphstore.TupleDecidedBy,
 		"graph_edges' decided_by: the row side is every decided_by edge graph_edges answers out of a block node"+
 			" not gone, read node by node, as the triple of that node, decided_by and its person or session, against"+
-			" every decided_by a live block node states now, an edge the old arm answers from a row past the bound aside",
+			" every decided_by a block node not gone states now, an edge the old arm answers from a row past the bound aside",
 		tieEdgePastBound, tiePastBound(graphstore.TupleDecidedBy), refs.BlockNodeKind),
 	edgeProjection(graphstore.TupleFollowedBy+edgeSuffix, graphstore.TupleFollowedBy,
 		"graph_edges' followed_by: the row side is every followed_by edge graph_edges answers out of an ask node"+
 			" not gone, read node by node, as the triple of that node, followed_by and its session, against every"+
-			" followed_by a live ask node states now, an edge the old arm answers from an unmarked row aside",
+			" followed_by an ask node not gone states now, an edge the old arm answers from an unmarked row aside",
 		followerRowUnmarked, `
 		select count(*) from ask_followers f where octet_length(f.session_id) > `+addressBound, graphstore.KindAsk),
 	edgeProjection("ask_parent"+edgeSuffix, graphstore.TupleOwnedBy,
 		"graph_edges' half of an ask's placement, its owned_by: the row side is every owned_by edge graph_edges"+
 			" answers out of an ask node not gone, read node by node, as the triple of that node, owned_by and the"+
-			" document owning it, against every owned_by a live ask node states now; no arm of graph_edges answers"+
+			" document owning it, against every owned_by an ask node not gone states now; no arm of graph_edges answers"+
 			" an ask's part_of, which ask_parent holds against asks alone; an edge the old arm answers from an unmarked"+
 			" row aside", askRowUnmarked, askPastBound, graphstore.KindAsk),
 	edgeProjection("ask_anchor"+edgeSuffix, graphstore.TupleAnchoredTo,
 		"graph_edges' anchor of an ask: the row side is every anchored_to edge graph_edges answers out of an ask"+
 			" node not gone, read node by node, as the triple of that node, anchored_to and its document, against"+
-			" every anchored_to a live ask node states now, an edge the old arm answers from an unmarked row aside",
+			" every anchored_to an ask node not gone states now, an edge the old arm answers from an unmarked row aside",
 		askRowUnmarked, askPastBound, graphstore.KindAsk),
+	baseAttributeCensus(graphstore.KindInteraction, graphstore.KindInteraction, nil, graphstore.VisibilityAuthor),
+	baseAttributeCensus(graphstore.KindLens, graphstore.KindLens, nil, ""),
+	baseAttributeCensus("finding", refs.BlockNodeKind, graphstore.FindingIDSQL, ""),
+	baseAttributeCensus(graphstore.KindRisk, graphstore.KindRisk, nil, ""),
+	baseAttributeCensus(graphstore.KindConstraint, graphstore.KindConstraint, nil, ""),
+	baseAttributeCensus(graphstore.KindLensKind, graphstore.KindLensKind, nil, graphstore.VisibilityProject),
 }
 
 // addressBound is the store's address bound (graphstore.MaxAddressBytes) as a statement spells
 // it. It is written into the text rather than bound as a parameter because each side is spliced
 // into a statement of its own and one shared constant keeps the two sides reading the same bound.
 var addressBound = strconv.Itoa(graphstore.MaxAddressBytes)
+
+// The tuple kinds a comment's, a block's and a run's projection rows state of their node, which
+// the census digests against the tuples of those kinds the node states now (currentLinks,
+// placedLinks): a comment's anchor, its owner and its author; a block's document and the block or
+// document holding it; and a run's author. tieKinds are the ties of a decision that block_refs
+// projects, which kinds of their own hold triple by triple (tieProjection). A block_refs row of a
+// block states the kinds blockRefKinds reads out of the store.
+var (
+	commentLinkKinds    = []string{graphstore.TupleAnchoredTo, graphstore.TupleOwnedBy, graphstore.TupleAuthoredBy}
+	blockPlacementKinds = []string{refs.TupleInDocument, graphstore.TuplePartOf}
+	runLinkKinds        = []string{graphstore.TupleAuthoredBy}
+	tieKinds            = []string{refs.TupleShaped, refs.TupleFromAsk, graphstore.TupleDecidedBy}
+)
+
+// blockRefKinds is a select of every tuple kind the block_ref kind holds a block's rows and its
+// node to: every kind refs.IndexBlocks writes into block_refs (refs.BlockRefKindsSQL, a mention or
+// a pointer of a block[] attribute the store's type nodes declare, at any state), but the ties of
+// a decision a kind of their own holds triple by triple (tieProjection): a decision's shaped is a
+// pointer of its block, and held here as well it would read a correct row of a drifted decision as
+// a difference, every row of that block sharing one digest.
+var blockRefKinds = `select linked.kind from (` + refs.BlockRefKindsSQL + `) linked (kind)
+			where not ` + kindIn("linked.kind", tieKinds)
+
+// kindIn is true of the kind column - a node's, a tuple's or an edge's - whose value is one of
+// kinds, a non-empty list of this build's constants (store.QuoteLiterals).
+func kindIn(column string, kinds []string) string {
+	return column + ` in (` + store.QuoteLiterals(kinds) + `)`
+}
+
+// baseAttributeCensus is the census of the visibility and the state each node of one kind - a
+// run, a lens, a finding, a risk, a constraint or a lens kind - carries, name the kind as the
+// report names it and nodeKind the kind the store keys its nodes by, narrowed by narrow over a
+// node id where it is not nil (a finding is a block node whose id names its lens). A node's row is
+// the projection of its own base-attribute tuples (cybermonklabs/legion#3178's R8), and no table
+// projects these kinds, so the store's own record stands on the row side: for each node that
+// states either attribute, the newest tuple of each, read as graphstore.CurrentValue reads one,
+// against the node row's visibility and state columns. A column with no tuple behind it is a node
+// no row projects, a tuple whose node has no row is a row naming a node the store does not hold,
+// and a column that differs from its newest tuple is a row and a node that disagree; a node whose
+// newest state is gone is held to a row at gone as the other kinds are (presentNodes,
+// rowDifferences). The digest names each attribute and carries its value's md5, never a value of
+// any other attribute.
+//
+// fixed is the one visibility R1 gives every node of the kind - author for a run, project for a
+// lens kind - or empty for a kind whose nodes take either. The row side states it kept, and the
+// node side reads whether the node's column keeps it, so a node at any other visibility is a
+// difference even where its tuple says the same.
+func baseAttributeCensus(name, nodeKind string, narrow func(id string) string, fixed string) projection {
+	// narrowed is narrow's predicate over id, and true where narrow is nil.
+	narrowed := func(id string) string {
+		if narrow == nil {
+			return "true"
+		}
+		return narrow(id)
+	}
+	newest := func(attribute string) string {
+		return `(select case when v.asserted then v.to_id end from graph_tuples v
+				where v.from_kind = '` + nodeKind + `' and v.from_id = keyed.id and v.kind = '` + attribute + `'
+				  and v.to_kind = '` + graphstore.KindValue + `'
+				order by v.seq desc limit 1)`
+	}
+	digest := func(visibility, state string) string {
+		return `'` + graphstore.AttributeVisibility + `:' || coalesce(md5(` + visibility + `), 'none')
+		       || ' ` + graphstore.AttributeState + `:' || coalesce(md5(` + state + `), 'none')`
+	}
+	rowFixed, nodeFixed, note := "", "", ""
+	if fixed != "" {
+		rowFixed = ` || ' visibility_fixed:kept'`
+		nodeFixed = ` || ' visibility_fixed:' || case when n.visibility = '` + fixed + `' then 'kept' else 'broken' end`
+		note = ", and a node at any visibility but " + fixed + ", which R1 fixes for the kind, is a difference"
+	}
+	return projection{
+		name:     name + "_visibility_state",
+		nodeKind: nodeKind,
+		table:    "graph_tuples",
+		note: "no table projects a " + name + ", so the row side is the store's own record of each node's visibility and" +
+			" state, the newest tuple of each, against the graph_nodes columns; a column with no tuple, a tuple with no" +
+			" node row and a column that differs from its newest tuple are each a difference" + note,
+		rows: `
+		select '` + name + ` ' || held.id, '` + nodeKind + `', held.id, ` + digest("held.visibility", "held.state") + rowFixed + `
+		from (
+			select keyed.id, ` + newest(graphstore.AttributeVisibility) + ` as visibility,
+			       ` + newest(graphstore.AttributeState) + ` as state
+			from (
+				select distinct t.from_id as id from graph_tuples t
+				where t.from_kind = '` + nodeKind + `' and t.to_kind = '` + graphstore.KindValue + `'
+				  and ` + kindIn("t.kind", []string{graphstore.AttributeVisibility, graphstore.AttributeState}) + ` and ` + narrowed("t.from_id") + `
+			) keyed
+		) held
+		where held.state is distinct from '` + graphstore.StateGone + `'`,
+		nodes: `
+		select n.id, ` + digest("n.visibility", "n.state") + nodeFixed + `
+		from graph_nodes n where n.kind = '` + nodeKind + `' and ` + narrowed("n.id"),
+		mayBeEmpty: true,
+	}
+}
 
 // statedLinks is the links a projection row states, as one value its digest can carry: links are
 // SQL expressions over the row, each answering one link written kind>to_kind:to_id, or null where
@@ -642,7 +838,7 @@ func currentLinks(fromKind, kinds string) string {
 }
 
 // heldTuples is the store side of a kind held triple by triple (projection.tuples): every
-// relation a live node of one of holders states now under the tuple kinds the predicate kinds
+// relation a present node of one of holders states now under the tuple kinds the predicate kinds
 // selects (written over t.kind), read as a statement reads a current relation, the newest tuple
 // per (kind, far end) kept while it asserts (graphstore.CurrentTupleRead), each as (from_kind,
 // from_id, kind, to_kind, to_id). Each node's relations are read through graph_tuples_current,
@@ -656,7 +852,7 @@ func heldTuples(kinds string, holders ...string) string {
 		`t.from_kind = n.kind and t.from_id = n.id
 		  and t.to_kind <> '`+graphstore.KindValue+`' and `+kinds) + `
 		) held
-		where n.kind in ('` + strings.Join(holders, `', '`) + `') and n.state = '` + graphstore.StateLive + `'
+		where ` + kindIn("n.kind", holders) + ` and n.state <> '` + graphstore.StateGone + `'
 		  and held.asserted`
 }
 
@@ -692,7 +888,7 @@ func placedLinks(kinds string) string {
 	 ) placed)`
 }
 
-// readingParents is reading_parent's store side (heldTuples' shape): the part_of every live
+// readingParents is reading_parent's store side (heldTuples' shape): the part_of every present
 // reading's node states now, a part_of to an ask's node read as placedLinks reads it, as the
 // block of the reading's own document that holds the ask.
 var readingParents = `
@@ -709,7 +905,7 @@ var readingParents = `
 			select case when held.to_kind = '` + graphstore.KindAsk + `' then ` + askBlockID(`held.to_id`) + ` end as block_id
 		) placed
 		where n.kind = '` + refs.BlockNodeKind + `' and n.supertag = '` + refs.ReadingSupertag + `'
-		  and n.state = '` + graphstore.StateLive + `' and held.asserted`
+		  and n.state <> '` + graphstore.StateGone + `' and held.asserted`
 
 // typedNodeOwed is the owed predicate (projection.owed) of a kind whose node may be a decision's
 // or a reading's. A document that still owes its block index (document_block_versions.version
@@ -766,7 +962,7 @@ var tieEdgePastBound = `(octet_length(edge.to_id) > ` + addressBound + `)`
 // decision's shaped, from_ask or decided_by, and an ask's shaped - held triple by triple
 // (projection.tuples): each row is the triple of the node that states its tie (node_kind,
 // node_address: the decision's block node, or for an ask block's shaped the ask's node,
-// refs.TypedFacts.pairs), kind and its far end, against every tuple of kind a live node of one of
+// refs.TypedFacts.pairs), kind and its far end, against every tuple of kind a present node of one of
 // holders states now. So a tuple that reaches the wrong node is a row no tuple states and a tuple
 // no row projects, and not a count that still matches, and a row of the same node whose tuple
 // stands is no difference. A row that names no node is a difference, as a block_ref row's is:
@@ -792,13 +988,15 @@ const edgeSuffix = "_edge"
 // edgeProjection is one tie of decisions, readings and asks as graph_edges answers it, held
 // triple by triple (projection.tuples) as tieProjection holds block_refs: each row is an edge the
 // view answers out of a node of one of holders (graphEdgesOut), as the triple of that node, kind
-// and its far end, against every tuple of kind a live node of one of holders states now. So an
+// and its far end, against every tuple of kind a node of one of holders that is not gone states
+// now. So an
 // edge the view answers that no tuple states is a row no tuple states, a tuple the view answers no
 // edge for is a tuple no row projects, and an edge that reaches the wrong node reads as both.
 //
-// The view's newest definition (store/migrations/20261121034242_graph_edges_asks_and_tuple_arm_filter.up.sql,
-// 20261116094101's arms with 20261120122700's filter of the tuple arm) answers
-// each of these ties from one arm, which the projection row decides. For a row that names its
+// The view's last restatement (store/migrations/20261121104002_graph_edges_store_class_last.up.sql:
+// 20261116094101's arms with 20261120122700's filter of the tuple arm, and 20261117020856's class
+// `store` and lens_block arm, which answer none of these ties) answers each of these ties from one
+// arm, which the projection row decides. For a row that names its
 // node, the tuple arm answers the newest tuple of the triple while it asserts, out of a node not
 // gone: shaped, from_ask and decided_by out of a block node, and shaped out of an ask's node, while
 // a block_refs row of that node, kind and far end stands (a block's pointer only while its target
@@ -846,18 +1044,23 @@ const (
 // probes take: without it the planner pulls the probe up into the join, and an arm that is a
 // subquery - the tuple arm's newest tuple of each triple - takes the node's kind and id as a
 // filter over every tuple of that kind rather than as the keys of its index, read again for each
-// node. Fenced, each arm keys its own index with the node's kind and id. An edge an old arm
-// answers out of a row whose ask the store holds no node of yet is no row of this read either.
+// node. Fenced, each arm keys its own index with the node's kind and id. The probe also names the
+// holders' kinds as constants, the kinds n.kind takes, so an arm whose from_kind is a constant of
+// another kind - the arm out of a finding of a lens, whose from_kind is lens_block - is cut from
+// the plan rather than kept in it, scan and all, behind a test of n.kind for each node. An edge an
+// old arm answers out of a row whose ask the store holds no node of yet is no row of this read
+// either.
 func graphEdgesOut(kind, unmarked string, holders ...string) string {
 	read := `
 		select 'graph_edges ' || n.kind || ':' || n.id, n.kind, n.id, edge.kind, edge.to_kind, edge.to_id
 		from graph_nodes n
 		cross join lateral (
 			select e.kind, e.to_kind, e.to_id from graph_edges e
-			where e.from_kind = n.kind and e.from_id = n.id and e.kind = '` + kind + `'
+			where e.from_kind = n.kind and ` + kindIn("e.from_kind", holders) + `
+			  and e.from_id = n.id and e.kind = '` + kind + `'
 			offset 0
 		) edge
-		where n.kind in ('` + strings.Join(holders, `', '`) + `') and n.state <> '` + graphstore.StateGone + `'`
+		where ` + kindIn("n.kind", holders) + ` and n.state <> '` + graphstore.StateGone + `'`
 	if unmarked != "" {
 		read += `
 		  and not ` + unmarked
@@ -924,14 +1127,31 @@ func askProjection(name, table, note, member string, links []string, kinds strin
 // empty where it names nobody. It reads `asks k`.
 const answerer = `coalesce(user_threads_login(k.answer->>'user'), '')`
 
+// authorNode is the far end of the authored_by tuple a row whose author is the jsonb actor states,
+// written kind:id: the node graphstore.AuthorOf reads off the actor the row stored (actorAuthor),
+// and null for an actor that names nobody, whose row states no authored_by at all.
+func authorNode(actor string) string {
+	return `array_to_string(` + actorAuthor(actor) + `, ':')`
+}
+
+// authoredLink is the authored_by link a row whose author is the jsonb actor states, as
+// statedLinks takes one: kind>to_kind:to_id, null for an actor naming nobody and for a session
+// past the store's bound, of whom the writer states nothing (graphstore.AuthorFacts).
+func authoredLink(actor string) string {
+	return `case when ` + actor + `->>'kind' <> '` + graphstore.KindSession + `'
+		           or octet_length(coalesce(` + actor + `->>'id', '')) <= ` + addressBound + `
+		      then '` + graphstore.TupleAuthoredBy + `>' || ` + authorNode(actor) + ` end`
+}
+
 // actorAuthor is the node graphstore.AuthorOf reads off a stored actor, the SQL expression actor,
 // as one value: an array of two, the node's kind and its id, or null for an actor that names
 // nobody. The login an actor of kind user carries is a person, and so is the owner a personal
 // token's actor carries, each canonicalised the way user_threads_login canonicalises a login
 // (migration 0095, which is model.CanonicalLogin in SQL); a session's id is the session. It is
-// spelled once here for the readings of who wrote a comment: the far end of the authored_by a row
-// states (commentAuthor), the people a comment names (commentWriterPeople) and the person whose
-// aliases the sizing counts (sizingWritesWith).
+// spelled once here for every reading of who wrote a row: the far end of the authored_by a
+// comment's or a run's row states (authorNode, which authoredLink reads for the census and the
+// sizing alike), the people a comment names (commentWriterPeople) and the person whose aliases
+// the sizing counts (sizingWritesWith).
 func actorAuthor(actor string) string {
 	return `case
 			when ` + actor + `->>'kind' = 'user' and coalesce(` + actor + `->>'id', '') <> ''
@@ -942,11 +1162,6 @@ func actorAuthor(actor string) string {
 				then array['` + graphstore.KindPerson + `', user_threads_login(` + actor + `->>'owner')]
 		end`
 }
-
-// commentAuthor is the far end of the authored_by tuple a comment row states, written kind:id:
-// the node graphstore.AuthorOf reads off the actor the row stored (actorAuthor), and null for an
-// actor that names nobody, whose comment states no authored_by at all.
-var commentAuthor = `array_to_string(` + actorAuthor("c.author") + `, ':')`
 
 // commentWriters are the comments the store holds, each as the actor that wrote it and the time it
 // was written: every comments row the store holds (refs.CommentInTheStore). It is who wrote a
@@ -1022,10 +1237,15 @@ func provedSessionOwner(actor string) string {
 // join, so the planner keys the index rather than reading the table whole.
 //
 // Who wrote each decision, reading and ask the store holds an authored_by or decided_by of names
-// people too, and so does every person an ask's answer ever named (storedAuthors, read as the
-// relation authors names: censusAuthors where the census binds what it read once, inlineAuthors
-// where a statement reads it itself), and so does the owner the server proved of each such writer
-// that is a session (storedOwners).
+// people too, and so does every person an ask's answer ever named, and every author of a lens, a
+// finding, a risk or a constraint and of a run whose row is gone (storedAuthors, read as
+// the relation authors names: censusAuthors where the census binds what it read once,
+// inlineAuthors where a statement reads it itself), and so does the owner the server proved of
+// each such writer that is a session (storedOwners).
+//
+// The authors of the runs going_requests holds are read off each row's author by the same two
+// rules as a comment's, since the run's writer (graphstore.InteractionFacts) states its author
+// through graphstore.AuthorFacts as the comment path does.
 func commentPeople(authors string) string {
 	return `
 	select distinct user_threads_login(author.login) as login
@@ -1033,20 +1253,18 @@ func commentPeople(authors string) string {
 		select named.login
 		from (` + commentWriterPeople + `) named
 		union all
-		select case
-			when k.author->>'kind' = 'user' and coalesce(k.author->>'id', '') <> '' then k.author->>'id'
-			when k.author->>'kind' = 'session' and coalesce(k.author->>'id', '') <> '' then null
-			when coalesce(k.author->>'owner', '') <> '' then k.author->>'owner'
-		end
-		from asks k where k.node_kind is not null
-		union all
-		select k.author->>'owner'
+		select asker.login
 		from asks k
-		where k.node_kind is not null and k.author->>'kind' = 'session' and coalesce(k.author->>'id', '') <> ''
-		  and k.author->'act'->>'session' = k.author->>'id'
-		  and octet_length(k.author->>'id') <= ` + addressBound + `
+		cross join lateral (values (` + authorLogin("k.author") + `),
+			(case when ` + provedSessionOwner("k.author") + ` then k.author->>'owner' end)) asker (login)
+		where k.node_kind is not null
 		union all
 		select k.answer->>'user' from asks k where k.node_kind is not null and k.answer is not null
+		union all
+		select runner.login
+		from going_requests r
+		cross join lateral (values (` + authorLogin("r.author") + `),
+			(case when ` + provedSessionOwner("r.author") + ` then r.author->>'owner' end)) runner (login)
 		union all
 		select stored.id from ` + authors + ` where stored.kind = '` + graphstore.KindPerson + `'
 		union all
@@ -1055,6 +1273,37 @@ func commentPeople(authors string) string {
 	where author.login is not null and user_threads_login(author.login) <> ''`
 }
 
+// authorLogin is the login of the person graphstore.AuthorOf names of the actor a jsonb column
+// holds, uncanonicalised, and null for an actor it names a session of or nobody.
+func authorLogin(actor string) string {
+	return `case
+			when ` + actor + `->>'kind' = 'user' and coalesce(` + actor + `->>'id', '') <> '' then ` + actor + `->>'id'
+			when ` + actor + `->>'kind' = 'session' and coalesce(` + actor + `->>'id', '') <> '' then null
+			when coalesce(` + actor + `->>'owner', '') <> '' then ` + actor + `->>'owner'
+		end`
+}
+
+// reasoningAuthored is the author every lens, finding (graphstore.FindingIDSQL), risk and
+// constraint states now, as (kind, id, at) (storedAuthors): the far end of its current
+// authored_by into a person or a session. Their one writer (api's writeReasoningNodes)
+// states that tuple to the writer graphstore.AuthorOf names of the node's made_by, and that
+// writer's own node beside it (graphstore.AuthorFacts), whatever the credential proved (spec v46
+// R12), so the far end is a person or a session the store owes a node, and the owner the server
+// proved of a session is read off its alias_of (storedOwners). A node written on the shared
+// bearer, or by a pod on a session its body names, names that session, which is so on both sides;
+// a node whose made_by names only a workload states none, and that workload is on neither.
+var reasoningAuthored = currentAuthors(`(` + kindIn("held.kind", []string{graphstore.KindLens, graphstore.KindRisk, graphstore.KindConstraint}) +
+	` or (held.kind = '` + refs.BlockNodeKind + `' and ` + graphstore.FindingIDSQL("held.id") + `))`)
+
+// goneRunsAuthored is the author every run whose row is gone states now - one the sweep stated gone
+// and removed the rows of an hour after it was asked (api's sweepGoingRequests), or one a process
+// of the release before deleted an hour old during a roll, whose interaction the sweep or the
+// backfill stated gone (backfillGoneRuns) - in the shape of reasoningAuthored. The row that named
+// the author went with the run, so the store's own record of the writer stands on the row side, as
+// it does for a reasoning node: an author's node is history and stays, and without this a person
+// whose one write was such a run would read as a node no row projects.
+var goneRunsAuthored = currentAuthors(`held.kind = '` + graphstore.KindInteraction + `' and held.state = '` + graphstore.StateGone + `'`)
+
 // storedAuthors are who wrote the decisions and the readings of every document, and every ask the
 // store names an author of, as (kind, id, at): each a person or a session, whose node the writer
 // writes beside the tie that names it (refs.PlanBlocks, refs.PlanDecisionNodes and
@@ -1062,7 +1311,7 @@ func commentPeople(authors string) string {
 // decided_by, which its block_refs row projects, and that row is what is read for it. A reading's
 // author is the far end
 // of its authored_by, which no table projects (the tuple table), so the
-// row read for it is the tuple itself, the authored_by each live reading's node states now, as
+// row read for it is the tuple itself, the authored_by each reading's node not gone states now, as
 // graph_edges' tuple arm would answer it. An ask's author is read the same way, off the
 // authored_by every ask node states now: an ask one of whose documents is past the store's bound
 // keeps a row that names no node (graphstore.AskPlaces.Fit), which the ask author arms of
@@ -1085,6 +1334,10 @@ func commentPeople(authors string) string {
 // of the person and session kinds (censusAuthors), so its two reads of the log cost one statement
 // a census whatever plan the planner takes for them; the backfill's session pass reads it inside
 // its own statement (inlineAuthors).
+//
+// The authors of the reasoning nodes and of the runs whose row is gone (reasoningAuthored,
+// goneRunsAuthored) are read here too, so the person and session row sides read them bound as
+// well and read the log for them no more than for the rest.
 var storedAuthors = `
 	select r.to_kind as kind, r.to_id as id, r.created_at as at
 	from block_refs r
@@ -1094,6 +1347,10 @@ var storedAuthors = `
 	` + currentAuthors(`held.kind = '`+refs.BlockNodeKind+`' and held.supertag = '`+refs.ReadingSupertag+`'`) + `
 	union all
 	` + currentAuthors(`held.kind = '`+graphstore.KindAsk+`'`) + `
+	union all
+	` + reasoningAuthored + `
+	union all
+	` + goneRunsAuthored + `
 	union all
 	` + writtenHistory + `
 	union all
@@ -1205,6 +1462,9 @@ func storedOwners(authors string) string {
 //
 // Only the comments the store holds name a session here (commentWriters), for the reason
 // commentWriterPeople binds the same: a comment left out of the store records no author at all.
+// The author of a run going_requests holds is a session here where the row's author is one, and
+// the author of a reasoning node, or of a run whose row is gone, where its authored_by names one
+// (storedAuthors).
 //
 // It is one definition read by two: the census's session row side and the backfill's session
 // pass (backfillSessions), so the sessions the backfill gives a node are exactly the sessions the
@@ -1217,6 +1477,9 @@ func recordedSessions(authors string) string {
 		select written.actor->>'id' as id, null::bigint as event, written.at
 		from (` + commentWriters + `) written
 		where written.actor->>'kind' = 'session' and coalesce(written.actor->>'id', '') <> ''
+		union all
+		select r.author->>'id', null, r.created_at from going_requests r
+		where r.author->>'kind' = 'session' and coalesce(r.author->>'id', '') <> ''
 		union all
 		select d.session_id, null, d.created_at from comment_deliveries d
 		where coalesce(d.session_id, '') <> '' and d.state in ` + model.DeliveryTakenStatesSQL + `
@@ -1354,7 +1617,8 @@ func readStoredAuthors(ctx context.Context, tx pgx.Tx) (*storedWriters, error) {
 //
 // A difference is reported by its cause and by the row it was found at, in both directions: a
 // projection row naming no node, naming a node the store does not hold or naming one it holds
-// gone; a row whose shared fields disagree with its node's; and a node not gone no row projects.
+// gone; a row whose shared fields disagree with its node's; and a node the store holds present
+// that no row projects, named with its state.
 //
 // Two writes can state one fact twice by design and nothing here reads wrong for it: a tuple at
 // the source_event sentinel is outside both repeat keys, and the backfill writes every fact it
@@ -1484,7 +1748,7 @@ func currentOutOfNodes(name string, nearKinds, kinds []string) string {
 			` + graphstore.CurrentTupleRead(`t.kind, t.to_kind, t.to_id`,
 		`t.from_kind, t.from_id, t.kind, t.to_kind, t.to_id, t.asserted`,
 		`t.from_kind = near.from_kind and t.from_id = near.from_id
-			  and t.kind in ('`+strings.Join(kinds, `', '`)+`') and t.to_kind <> '`+graphstore.KindValue+`'`) + `
+			  and `+kindIn("t.kind", kinds)+` and t.to_kind <> '`+graphstore.KindValue+`'`) + `
 		) held
 		where held.asserted
 	)`
@@ -1506,7 +1770,7 @@ func statedOutOfNodes(name string, nearKinds, kinds []string) string {
 		cross join lateral (
 			select 1 from graph_tuples t
 			where t.from_kind = near.from_kind and t.from_id = near.from_id
-			  and t.kind in ('` + strings.Join(kinds, `', '`) + `') and t.to_kind <> '` + graphstore.KindValue + `'
+			  and ` + kindIn("t.kind", kinds) + ` and t.to_kind <> '` + graphstore.KindValue + `'
 			limit 1
 		) stated
 	)`
@@ -1546,15 +1810,18 @@ func relationNodes(name string, nearKinds []string) string {
 // storeOnlyRead counts, in one statement, every relation of the three kinds no table projects
 // that the store states now - the newest tuple of each (near end, far end), kept while it asserts
 // - and those of them whose far end does not resolve: a copied_from (a copy's block to the ask it
-// was copied from, graphstore.TupleCopiedFrom) resolves to a live ask node; a moved_to
-// (graphstore.TupleMovedTo) to a block that stands, which is one a document_blocks row holds,
-// reached at once or through more moved_to tuples, a cycle reaching none, or to a live ask node,
-// as a copied_from does, which ends a chain (the heading of a section that cites an answered ask
-// a person removed from its spec); and a removed_by (graphstore.TupleRemovedBy, an ask's node to
-// the person who took its block out) to a person node of the store. A far end is followed through
-// one tuple fewer than graphstore.MovedToHops, since the tuple that names it is the first of the
-// chain a citation of its near end is read through (graphstore.MovedTo), so a far end that
-// resolves here is one every resolver reaches from that near end.
+// was copied from, graphstore.TupleCopiedFrom) resolves to an ask node that is not gone; a
+// moved_to (graphstore.TupleMovedTo) to a block that stands, which is one a document_blocks row
+// holds, reached at once or through more moved_to tuples, a cycle reaching none, or to an ask
+// node that is not gone, as a copied_from does, which ends a chain (the heading of a section that
+// cites an answered ask a person removed from its spec); and a removed_by
+// (graphstore.TupleRemovedBy, an ask's node to the person who took its block out) to a person node
+// of the store. A far end is followed through one tuple fewer than graphstore.MovedToHops, since
+// the tuple that names it is the first of the chain a citation of its near end is read through
+// (graphstore.MovedTo), so a far end that resolves here is one every resolver reaches from that
+// near end. A moved_to from a document's address - the pre-mortem conversion's, from the document
+// it retires to the lens it wrote in its place - resolves to that lens where it is not gone, as
+// graphstore.MovedTo reads it, and moves no further.
 //
 // A moved_to whose chain reaches no block that stands but reaches an address in a document that
 // still owes its block index (document_block_versions.version null, as typedNodeOwed reads it) is
@@ -1562,14 +1829,14 @@ func relationNodes(name string, nearKinds []string) string {
 // a block its latest version holds - one past the deferral bound, or one a build before wrote
 // during the roll - and the block-index reconciliation writes it.
 //
-// The read takes the three kinds' tuples out of every block and ask node the log holds
+// The read takes the three kinds' tuples out of every block, ask and document node the log holds
 // (currentOutOfNodes), the near ends their writers state them out of - a copied_from and a
-// moved_to out of a block, a removed_by out of an ask's node - through graph_tuples_current, one
-// probe per node, and a store that holds none of them reads three zero counts. It states that
-// index's to_kind predicate, which leaves out no tuple of any of them, since none of their far
-// ends is a value.
+// moved_to out of a block, a moved_to out of a document's address, a removed_by out of an ask's
+// node - through graph_tuples_current, one probe per node, and a store that holds none of them
+// reads three zero counts. It states that index's to_kind predicate, which leaves out no tuple of
+// any of them, since none of their far ends is a value.
 var storeOnlyRead = `
-	with recursive ` + currentOutOfNodes("stated", []string{refs.BlockNodeKind, graphstore.KindAsk},
+	with recursive ` + currentOutOfNodes("stated", []string{refs.BlockNodeKind, graphstore.KindAsk, graphstore.KindArtifact},
 	[]string{graphstore.TupleCopiedFrom, graphstore.TupleMovedTo, graphstore.TupleRemovedBy}) + `,
 	followed (start, kind, address, hops, path) as (
 		select far.to_id, far.to_kind, far.to_id, 0, array[far.to_id]
@@ -1586,7 +1853,7 @@ var storeOnlyRead = `
 		where f.kind = '` + refs.BlockNodeKind + `' and exists (select 1 from document_blocks d where d.node_id = f.address)
 		   or f.kind = '` + graphstore.KindAsk + `' and exists (
 			select 1 from graph_nodes ask where ask.kind = '` + graphstore.KindAsk + `' and ask.id = f.address
-			  and ask.state = '` + graphstore.StateLive + `')
+			  and ask.state <> '` + graphstore.StateGone + `')
 	),
 	owing as (
 		select distinct f.start from followed f
@@ -1599,11 +1866,14 @@ var storeOnlyRead = `
 		select s.kind, case s.kind
 			when '` + graphstore.TupleCopiedFrom + `' then s.to_kind = '` + graphstore.KindAsk + `' and exists (
 				select 1 from graph_nodes ask where ask.kind = '` + graphstore.KindAsk + `' and ask.id = s.to_id
-				  and ask.state = '` + graphstore.StateLive + `')
+				  and ask.state <> '` + graphstore.StateGone + `')
 			when '` + graphstore.TupleRemovedBy + `' then s.to_kind = '` + graphstore.KindPerson + `' and exists (
 				select 1 from graph_nodes person where person.kind = '` + graphstore.KindPerson + `' and person.id = s.to_id)
-			else s.to_kind in ('` + refs.BlockNodeKind + `', '` + graphstore.KindAsk + `')
-			  and exists (select 1 from standing where standing.start = s.to_id)
+			else (s.to_kind in ('` + refs.BlockNodeKind + `', '` + graphstore.KindAsk + `')
+			  and exists (select 1 from standing where standing.start = s.to_id))
+			  or (s.from_kind = '` + graphstore.KindArtifact + `' and s.to_kind = '` + graphstore.KindLens + `' and exists (
+				select 1 from graph_nodes lens where lens.kind = '` + graphstore.KindLens + `' and lens.id = s.to_id
+				  and lens.state <> '` + graphstore.StateGone + `'))
 		end as resolves,
 		s.kind = '` + graphstore.TupleMovedTo + `' and s.to_kind = '` + refs.BlockNodeKind + `'
 		  and exists (select 1 from owing where owing.start = s.to_id) as left_out
@@ -1662,9 +1932,6 @@ func censusOfKinds(ctx context.Context, tx pgx.Tx, afterKind func(ctx context.Co
 			}
 			args = []any{names}
 		}
-		if held.linked {
-			args = []any{blockLinkKinds()}
-		}
 		kind, err := censusOfKind(ctx, tx, held, args)
 		if err != nil {
 			return nil, err
@@ -1679,29 +1946,17 @@ func censusOfKinds(ctx context.Context, tx pgx.Tx, afterKind func(ctx context.Co
 	return kinds, nil
 }
 
-// blockLinkKinds is the tuple kinds a block's link is held under, which the block_ref kind holds
-// its rows and its nodes to: each pointer attribute the installed block schema declares
-// (pmdoc.LinkKinds) and `mentions`, but the ties of a decision a kind of their own holds triple
-// by triple (tieProjection): a decision's shaped is a pointer of its block, and held here as well
-// it would read a correct row of a drifted decision as a difference, every row of that block
-// sharing one digest.
-func blockLinkKinds() []string {
-	return slices.DeleteFunc(append(pmdoc.LinkKinds(), "mentions"), func(kind string) bool {
-		return kind == refs.TupleShaped || kind == refs.TupleFromAsk || kind == graphstore.TupleDecidedBy
-	})
-}
-
-// censusOfKind reads one kind: how many rows and nodes not gone there are, and the differences in
+// censusOfKind reads one kind: how many rows and present nodes there are, and the differences in
 // each direction with the first reportedDifferences of them. args are what the kind's rows bind,
-// none but for a kind that binds its names (projection.names) or its link kinds
-// (projection.linked).
+// none but for a kind that binds its names (projection.names).
 //
 // The four counts are four scalar subqueries of one statement rather than four round trips, so
-// a census of seven kinds costs seven reads here and not twenty-eight. Each subquery is the
-// statement it was on its own, so each is planned and streamed exactly as before.
+// a census costs one read a kind here and not four. Each subquery is the statement it was on its
+// own, so each is planned and streamed exactly as before.
 func censusOfKind(ctx context.Context, tx pgx.Tx, held projection, args []any) (KindReport, error) {
 	kind := KindReport{Kind: held.name, NodeKind: held.nodeKind, Table: held.table, Note: held.note,
-		Triples: held.tuples != "", CountsUnmarked: held.unmarked != "", EmptyAgrees: held.emptyAgrees}
+		Triples: held.tuples != "", CountsUnmarked: held.unmarked != "", EmptyAgrees: held.emptyAgrees,
+		MayBeEmpty: held.mayBeEmpty}
 	read := sidesOf(held)
 	// pastBound and unmarked are each a scalar `select count(*)`, so each is read directly rather
 	// than wrapped in a count of its own row; a kind without the class reads zero.
@@ -1837,7 +2092,7 @@ func tripleRowDifferences(held projection) string {
 		select case
 			when row.node_kind is null or row.node_address is null then 'the row names no node'
 			when node.kind is null then 'the row names a node the store does not hold'
-			when node.state <> '` + graphstore.StateLive + `'
+			when node.state = '` + graphstore.StateGone + `'
 				then 'the row names a node the store holds ' || node.state
 			else 'a row no tuple states'
 		end,
@@ -1845,7 +2100,7 @@ func tripleRowDifferences(held projection) string {
 		from (` + held.rows + `) row (row_label, node_kind, node_address, kind, to_kind, to_id)
 		left join graph_nodes node on node.kind = row.node_kind and node.id = row.node_address
 		where (row.node_kind is null or row.node_address is null or node.kind is null
-		   or node.state <> '` + graphstore.StateLive + `'
+		   or node.state = '` + graphstore.StateGone + `'
 		   or not exists (
 			select 1 from (` + held.tuples + `) stated (from_kind, from_id, kind, to_kind, to_id)
 			where stated.from_kind = row.node_kind and stated.from_id = row.node_address
@@ -1920,6 +2175,8 @@ func (r *StoreReport) write(w io.Writer, verbose bool) {
 		switch {
 		case kind.EmptyAgrees && kind.Empty():
 			fmt.Fprintf(w, "census: store kind=%s holds no row and no %s: nothing of it is written yet, which is no refusal\n", kind.Kind, side)
+		case kind.Rows == 0 && kind.MayBeEmpty:
+			fmt.Fprintf(w, "census: store kind=%s checked no row, so the census proves nothing of it; a deployment may hold none, so it refuses nothing\n", kind.Kind)
 		case kind.Rows == 0:
 			fmt.Fprintf(w, "census: store kind=%s checked no row, so the census proves nothing of it\n", kind.Kind)
 		}

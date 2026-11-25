@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -829,8 +830,49 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 			payload.ThreadLogins = movedLogins(nil, movedAssignees...)
 		}
 	}
+	// An issue's own field write made for a run (store.WithRun, which withinGoingRun puts on a
+	// request naming its run) names the issue as changed by that run when it changed a field of
+	// it (spec requirement r-interaction), as changedFields, which compares every field
+	// this write core writes, says; a write that sent only values the issue already held appends
+	// its event with nothing changed and names no change. Nothing else it writes reaches the
+	// store but the comment a call leaves (queueIssueComment), which states its own node, so it
+	// writes the issue's node as the create and the backfill write it
+	// (graphstore.IssueNode), made by the issue's creator at its created_at, the two columns of the
+	// issue's row the backfill reads them from (graphcensus/projects_backfill.go's objectKinds),
+	// and names it changed now by its writer (graphstore.PlanChangedForRun, which plans nothing for
+	// no run).
+	// The node write is queued here, after every row and document write the patch queued above,
+	// and what it states right after the issue's own event (graphstore.QueueCaused over
+	// graphstore.LatestEvent), as the create's is.
+	var issueNode graphstore.Uncaused
+	if len(changedFields) > 0 {
+		issueNode, err = graphstore.PlanChangedForRun(ctx, time.Now().UTC(), actor, func() (graphstore.Node, error) {
+			// The backfill decodes created_by into a model.Actor, so a stored JSON null is the
+			// zero actor there, and here.
+			var creator model.Actor
+			if before.CreatedBy != nil {
+				creator = *before.CreatedBy
+			}
+			return graphstore.IssueNode(key, before.Project, creator, before.CreatedAt), nil
+		})
+		if err != nil {
+			return issueWriteResult{}, err
+		}
+		if err := ledger.Queue(func(b *store.WriteBatch) error {
+			graphstore.QueueNodes(b, issueNode)
+			return nil
+		}); err != nil {
+			return issueWriteResult{}, err
+		}
+	}
 	event, err := s.queueLoggedEvent(ledger, issueOwner(key).event(eventType, actor, payload), logins, "", "")
 	if err != nil {
+		return issueWriteResult{}, err
+	}
+	if err := ledger.Queue(func(b *store.WriteBatch) error {
+		graphstore.QueueCaused(b, issueNode, graphstore.LatestEvent)
+		return nil
+	}); err != nil {
 		return issueWriteResult{}, err
 	}
 	appended = append(appended, event)

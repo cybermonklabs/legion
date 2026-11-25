@@ -9,9 +9,7 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
-	"net/http"
 	"os/exec"
 	"regexp"
 	"slices"
@@ -114,9 +112,9 @@ func TestTwoBuildsLeaveADocumentsNodeTheCensusNamesAndItsCureClears(t *testing.T
 	}
 
 	t.Run("this build makes a document and the previous build removes it", func(t *testing.T) {
-		document := makeUntouchedDocument(t, current, issue, "Removed by the previous build.md")
+		document := makeTypedDocument(t, current, builds.currentName(), issue, "Removed by the previous build.md")
 		requireDocumentNodeState(t, builds, document.ref, graphstore.StateLive)
-		removeUntouchedDocument(t, previous, document)
+		removeTypedDocument(t, previous, builds.previousName(), document)
 		if writesNodes {
 			requireDocumentNodeState(t, builds, document.ref, graphstore.StateGone)
 			census := runTwoBuildStoreCensus(t, builds)
@@ -136,10 +134,10 @@ func TestTwoBuildsLeaveADocumentsNodeTheCensusNamesAndItsCureClears(t *testing.T
 	})
 
 	t.Run("this build removes a document and the previous build makes it again", func(t *testing.T) {
-		removed := makeUntouchedDocument(t, current, issue, "Made again.md")
-		removeUntouchedDocument(t, current, removed)
+		removed := makeTypedDocument(t, current, builds.currentName(), issue, "Made again.md")
+		removeTypedDocument(t, current, builds.currentName(), removed)
 		requireDocumentNodeState(t, builds, removed.ref, graphstore.StateGone)
-		again := makeUntouchedDocument(t, previous, issue, "Made again.md")
+		again := makeTypedDocument(t, previous, builds.previousName(), issue, "Made again.md")
 		if again.ref != removed.ref {
 			t.Fatalf("the %s made the document at %s, want the removed one's address %s, so this row proves nothing",
 				builds.previousName(), again.ref, removed.ref)
@@ -148,9 +146,9 @@ func TestTwoBuildsLeaveADocumentsNodeTheCensusNamesAndItsCureClears(t *testing.T
 	})
 
 	t.Run("the previous build removes this build's document and this build makes it again", func(t *testing.T) {
-		document := makeUntouchedDocument(t, current, issue, "Made again here.md")
-		removeUntouchedDocument(t, previous, document)
-		again := makeUntouchedDocument(t, current, issue, "Made again here.md")
+		document := makeTypedDocument(t, current, builds.currentName(), issue, "Made again here.md")
+		removeTypedDocument(t, previous, builds.previousName(), document)
+		again := makeTypedDocument(t, current, builds.currentName(), issue, "Made again here.md")
 		if again.ref != document.ref {
 			t.Fatalf("this build made the document at %s, want the removed one's address %s, so this row proves nothing", again.ref, document.ref)
 		}
@@ -159,9 +157,9 @@ func TestTwoBuildsLeaveADocumentsNodeTheCensusNamesAndItsCureClears(t *testing.T
 	})
 
 	t.Run("the previous build removes this build's document and makes it again", func(t *testing.T) {
-		document := makeUntouchedDocument(t, current, issue, "Made again there.md")
-		removeUntouchedDocument(t, previous, document)
-		again := makeUntouchedDocument(t, previous, issue, "Made again there.md")
+		document := makeTypedDocument(t, current, builds.currentName(), issue, "Made again there.md")
+		removeTypedDocument(t, previous, builds.previousName(), document)
+		again := makeTypedDocument(t, previous, builds.previousName(), issue, "Made again there.md")
 		if again.ref != document.ref {
 			t.Fatalf("the %s made the document at %s, want the removed one's address %s, so this row proves nothing",
 				builds.previousName(), again.ref, document.ref)
@@ -246,9 +244,9 @@ func previousWritesDocumentNodes(t *testing.T, builds *twoBuilds) bool {
 	project := uniqueProjectKey(t, "NWR")
 	previous.createProject(t, project, "Which writer of document nodes the previous build is")
 	issue, _ := createDocument(t, previous, project, "A document the previous build makes and removes alone", "The spec.\n")
-	probe := makeUntouchedDocument(t, previous, issue, "Which writer the previous build is.md")
+	probe := makeTypedDocument(t, previous, builds.previousName(), issue, "Which writer the previous build is.md")
 	made := documentNodeState(t, builds, probe.ref)
-	removeUntouchedDocument(t, previous, probe)
+	removeTypedDocument(t, previous, builds.previousName(), probe)
 	removed := documentNodeState(t, builds, probe.ref)
 	switch {
 	case made == noDocumentNode && removed == noDocumentNode:
@@ -260,32 +258,6 @@ func previousWritesDocumentNodes(t *testing.T, builds *twoBuilds) bool {
 	t.Fatalf("the %s left the node of a document it made %s, and %s once it removed the document; want no node both times, from a build before document nodes, or live then gone, from one that writes them",
 		builds.previousName(), made, removed)
 	return false
-}
-
-// untouchedDocument is a document made by typing a title and never written in, the one kind the
-// removal route removes: its id and the address its node is written under.
-type untouchedDocument struct{ id, ref string }
-
-// makeUntouchedDocument makes one of the issue's documents through p by typing its title.
-func makeUntouchedDocument(t *testing.T, p *dispatchProcess, issue, name string) untouchedDocument {
-	t.Helper()
-	made := p.call(t, http.MethodPost, "/api/v1/issues/"+issue+"/artifacts", jsonBody(t, map[string]string{"name": name}), http.StatusCreated)
-	var answer struct {
-		Artifact struct {
-			ID     string `json:"id"`
-			RefKey string `json:"ref_key"`
-		} `json:"artifact"`
-	}
-	if err := json.Unmarshal(made, &answer); err != nil || answer.Artifact.ID == "" || answer.Artifact.RefKey == "" {
-		t.Fatalf("make %q on %s: %v: %s", name, issue, err, made)
-	}
-	return untouchedDocument{id: answer.Artifact.ID, ref: answer.Artifact.RefKey}
-}
-
-// removeUntouchedDocument removes the document through p.
-func removeUntouchedDocument(t *testing.T, p *dispatchProcess, document untouchedDocument) {
-	t.Helper()
-	p.call(t, http.MethodDelete, "/api/v1/artifacts/"+document.id, "", http.StatusNoContent)
 }
 
 // noDocumentNode is what documentNodeState reads for an address the store holds no node at.

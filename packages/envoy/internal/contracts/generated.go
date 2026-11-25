@@ -257,12 +257,25 @@ const GoingModelCallMax = 4
 // apart.
 const GoingWordsMax = 2000
 
-// GoingRunWindow is how long one run may take, measured from the POST that started it, and
-// GoingRequestTTL how long a run's rows are kept, so a reader that reconnects still finds its
-// answer. Generated from GOING_RUN_MS and GOING_REQUEST_TTL_MS in packages/contracts so the
-// server's windows and the page's account of them cannot drift apart.
+// GoingRunWindow is how long one run may take, measured from the POST that started it. Generated
+// from GOING_RUN_MS in packages/contracts so the server's window and the page's account of it
+// cannot drift apart.
 const GoingRunWindow = 30000 * time.Millisecond
+
+// GoingRequestTTL is how long a run is readable, from its POST, by its going_requests row's
+// created_at: then the sweep states the run's node gone and removes its rows, and the node, its
+// words and its frames stay in the store. Generated from GOING_REQUEST_TTL_MS in packages/contracts.
 const GoingRequestTTL = 3600000 * time.Millisecond
+
+// GoingRunHeader is the request header a write made for a run names the run in: its uuid. The
+// server holds the run to the caller's whole credential and to its window before the write runs,
+// and the nodes a write it accepts creates or changes each carry a changed_by_run tuple to the
+// run's interaction. A write sent again under the Idempotency-Key of a write already committed is
+// answered that committed answer, even after the run has ended, and nothing runs again. The key's
+// comparison of the two requests includes this header, so the key reused with another run, or
+// with none, is 422 KEY_REUSED. Generated from GOING_RUN_HEADER in packages/contracts so the
+// server's check and every caller that sends the header name it once.
+const GoingRunHeader = "Dispatch-Going-Run"
 
 // MaxIssueBlockers bounds blocked_by input before deduplication. Generated from
 // MAX_ISSUE_BLOCKERS in packages/contracts so the server and tool schemas share the limit.

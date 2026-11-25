@@ -99,14 +99,14 @@ type attributeAttributes struct {
 	pmdoc.BlockAttributeSchema
 }
 
-// Read builds the block schema from the store's nodes: every live supertag node that declares
-// itself a block type, with the attributes its `attribute_of` tuples name, in the order each
-// node records. The version is the highest its types carry, so a type added at a new version
-// raises the schema's own. Each attribute is declared under the name its node carries, the name
-// a document writes it under, and never under its store name: the node ask/answer_state is
-// ask's `state`, as blocks.json declares it. It names no node and no mark of the Proof schema:
-// the store holds the typed blocks alone, and pmdoc.Install takes the nodes and marks from the
-// build's own manifest.
+// Read builds the block schema from the store's nodes: every supertag node the store holds at
+// any state but gone that declares itself a block type, with the attributes its `attribute_of`
+// tuples name, in the order each node records. The version is the highest its types carry, so a
+// type added at a new version raises the schema's own. Each attribute is declared under the
+// name its node carries, the name a document writes it under, and never under its store name:
+// the node ask/answer_state is ask's `state`, as blocks.json declares it. It names no node and
+// no mark of the Proof schema: the store holds the typed blocks alone, and pmdoc.Install takes
+// the nodes and marks from the build's own manifest.
 //
 // It refuses a store holding no block type, since installing that would leave the server
 // unable to read a single typed block, and a node it cannot decode. Everything else it cannot
@@ -155,7 +155,7 @@ func read(ctx context.Context, q graphstore.Queryer) (pmdoc.BlockSchema, error) 
 	var types []placed
 	var value pmdoc.BlockSchema
 	for _, node := range supertags {
-		if node.State != graphstore.StateLive {
+		if node.State == graphstore.StateGone {
 			continue
 		}
 		var carried supertagAttributes
@@ -198,16 +198,22 @@ func read(ctx context.Context, q graphstore.Queryer) (pmdoc.BlockSchema, error) 
 	return value, nil
 }
 
-// readAttributeNodes answers every live attribute node by its address, so the tuples out of one
-// supertag are resolved without a read per attribute.
+// readAttributeNodes answers every attribute node the store holds (any state but gone) by its
+// address, so the tuples out of one supertag are resolved without a read per attribute.
 func readAttributeNodes(ctx context.Context, q graphstore.Queryer) (map[string]attributeAttributes, error) {
 	nodes, err := graphstore.NodesOfKind(ctx, q, KindAttribute)
 	if err != nil {
 		return nil, err
 	}
+	return heldAttributes(nodes)
+}
+
+// heldAttributes is what each of nodes, the attribute nodes of the store, carries, by its address,
+// leaving out a node the store holds gone.
+func heldAttributes(nodes []graphstore.Node) (map[string]attributeAttributes, error) {
 	held := make(map[string]attributeAttributes, len(nodes))
 	for _, node := range nodes {
-		if node.State != graphstore.StateLive {
+		if node.State == graphstore.StateGone {
 			continue
 		}
 		var carried attributeAttributes
@@ -221,41 +227,45 @@ func readAttributeNodes(ctx context.Context, q graphstore.Queryer) (map[string]a
 
 // typeAttributes is one type's attributes, in the order the nodes record, read through the
 // `attribute_of` tuples pointing at its supertag. An attribute node the tuple names and the
-// store no longer holds live is left out, as the current set of a retracted tuple would be.
+// store holds gone, or no longer holds, is left out, as the current set of a retracted tuple
+// would be.
 func typeAttributes(ctx context.Context, q graphstore.Queryer, name string, held map[string]attributeAttributes) (pmdoc.BlockAttributes, error) {
 	tuples, err := graphstore.CurrentIn(ctx, q, KindSupertag, name, []string{TupleAttributeOf})
 	if err != nil {
 		return nil, err
 	}
-	type placed struct {
-		position  int
-		attribute pmdoc.BlockAttribute
-	}
-	var attributes []placed
+	var tied []string
 	for _, tuple := range tuples {
-		if tuple.FromKind != KindAttribute {
-			continue
+		if tuple.FromKind == KindAttribute {
+			tied = append(tied, tuple.FromID)
 		}
-		carried, live := held[tuple.FromID]
-		if !live {
-			continue
-		}
-		attributes = append(attributes, placed{position: carried.Position, attribute: pmdoc.BlockAttribute{
-			Name:                 carried.Name,
-			BlockAttributeSchema: carried.BlockAttributeSchema,
-		}})
 	}
-	sort.SliceStable(attributes, func(left, right int) bool {
-		if attributes[left].position != attributes[right].position {
-			return attributes[left].position < attributes[right].position
-		}
-		return attributes[left].attribute.Name < attributes[right].attribute.Name
-	})
-	declared := make(pmdoc.BlockAttributes, len(attributes))
-	for index, held := range attributes {
-		declared[index] = held.attribute
+	ordered := orderedAttributes(tied, held)
+	declared := make(pmdoc.BlockAttributes, len(ordered))
+	for index, attribute := range ordered {
+		declared[index] = pmdoc.BlockAttribute{Name: attribute.Name, BlockAttributeSchema: attribute.BlockAttributeSchema}
 	}
 	return declared, nil
+}
+
+// orderedAttributes is the attribute nodes of one type, the ids its `attribute_of` tuples come
+// from, in the order the nodes record - by position, then by name - leaving out an id held does
+// not hold: the order of a type's attributes in the block schema (typeAttributes) and among the
+// store's own types (StoreTypesIn) alike.
+func orderedAttributes(ids []string, held map[string]attributeAttributes) []attributeAttributes {
+	ordered := make([]attributeAttributes, 0, len(ids))
+	for _, id := range ids {
+		if attribute, present := held[id]; present {
+			ordered = append(ordered, attribute)
+		}
+	}
+	sort.SliceStable(ordered, func(left, right int) bool {
+		if ordered[left].Position != ordered[right].Position {
+			return ordered[left].Position < ordered[right].Position
+		}
+		return ordered[left].Name < ordered[right].Name
+	})
+	return ordered
 }
 
 // decodeNodeAttributes reads a node's attributes column into the shape its kind carries. The

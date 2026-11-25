@@ -364,9 +364,10 @@ var (
 // block's node kind is its owner's block kind - `block` for a document's, `<kind>_block` for a
 // comment's, an ask's or a message's (refs.ItemKind.BlockKind) - and its id is the address the
 // store keys it by: `<ref_key>#<block>` for a document's block, `<kind>/<uuid>#<block>` for an
-// item's (refs.ParseItemBlockNode).
+// item's (refs.ParseItemBlockNode). None of those is a finding of a lens, or any other standing
+// kind, so the predicate binds no staleness test (refs.NodeKinds).
 func searchPageAndTailSQL(legsSource string, seen int) string {
-	visibleBlock := refs.VisibleEnd(`case r.kind when 'document' then 'block' else r.kind || '_block' end`,
+	visibleBlock := refs.VisibleEnd(searchBlockKinds, `case r.kind when 'document' then 'block' else r.kind || '_block' end`,
 		`case r.kind when 'document' then ar.ref_key else r.kind || '/' || r.id end || '#' || covered.block_id`,
 		true, searchParam(seen))
 	return fmt.Sprintf(`page as (
@@ -515,12 +516,14 @@ with q as (select
 // the registry's predicate here (refs.VisibleEnd, over the arms' own kind and id) reaches
 // every keyword arm at once; a meaning arm binds its own besides, because its candidate CTE
 // cuts to its limit before this filter ever sees a row. A search row's kind is the reader's
-// word for it, and `document` is the node kind `artifact`.
+// word for it, and `document` is the node kind `artifact`. A row is an issue, a document, an ask,
+// a comment or a message (searchRowKinds), none of them a standing kind, so the predicate binds no
+// staleness test (refs.NodeKinds).
 //
 // The arms are a union whose first select names every column, so the derived table the filter
 // reads carries those names on to ranked below unchanged.
 func searchKindsCTE(arms, exclude string, seen int) string {
-	visible := refs.VisibleEnd(`case arms.kind when 'document' then 'artifact' else arms.kind end`, `arms.id::text`, false, searchParam(seen))
+	visible := refs.VisibleEnd(searchRowKinds, `case arms.kind when 'document' then 'artifact' else arms.kind end`, `arms.id::text`, false, searchParam(seen))
 	if exclude != "" {
 		visible = `not (` + exclude + `) and ` + visible
 	}
@@ -534,6 +537,14 @@ func searchKindsCTE(arms, exclude string, seen int) string {
 func searchParam(number int) string {
 	return "$" + strconv.Itoa(number)
 }
+
+// searchRowKinds is the node kind of every row a search arm answers, as the graph addresses it:
+// an issue, a document, an ask, a comment and a message. searchBlockKinds is the node kind of every
+// block a meaning hit can name: a document's block and each item kind's (refs.ItemKind.BlockKind).
+var (
+	searchRowKinds   = refs.KindsOf("issue", "artifact", string(refs.ItemAsk), string(refs.ItemComment), string(refs.ItemMessage))
+	searchBlockKinds = refs.KindsOf(refs.BlockNodeKind, refs.ItemAsk.BlockKind(), refs.ItemComment.BlockKind(), refs.ItemMessage.BlockKind())
+)
 
 // searchQueryBody is searchQuery after its q, over keywordLegs (searchKeywordLegs), fused (the
 // "fused" CTE scoring what the legs matched, searchFusedSQL or relatedFusedSQL) and without or

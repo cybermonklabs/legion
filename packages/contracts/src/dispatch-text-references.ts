@@ -233,6 +233,48 @@ const WRITTEN: readonly DispatchTextReferenceRow[] = [
     body: "See https://dispatch.test/issues/CORE-1/asks/22222222-2222-4222-8222-222222222222#b-b3 here.",
     refs: ["dispatch://CORE-1/ask/22222222-2222-4222-8222-222222222222#b-b3"],
   },
+  // A node the store addresses by its own id, with no issue key in the address, since where it
+  // stands is a tuple: an interaction, a lens, a risk and a constraint by the uuid the store
+  // writes, a lens kind by its slug, and a finding of a lens as a block of the lens, which a lens
+  // records no revision of. The dashboard has no page for any of them, so no renderer links one.
+  {
+    body: "Ran dispatch://interaction/7c1e0000-0000-4000-8000-000000000001 and dispatch://lens/7c1e0000-0000-4000-8000-000000000002.",
+    refs: [
+      "dispatch://interaction/7c1e0000-0000-4000-8000-000000000001",
+      "dispatch://lens/7c1e0000-0000-4000-8000-000000000002",
+    ],
+    links: [],
+  },
+  {
+    body: "**dispatch://risk/7c1e0000-0000-4000-8000-000000000003** (dispatch://constraint/7c1e0000-0000-4000-8000-000000000004)",
+    refs: [
+      "dispatch://risk/7c1e0000-0000-4000-8000-000000000003",
+      "dispatch://constraint/7c1e0000-0000-4000-8000-000000000004",
+    ],
+    links: [],
+  },
+  {
+    body: "Of the kind dispatch://lens_kind/pre-mortem.",
+    refs: ["dispatch://lens_kind/pre-mortem"],
+    links: [],
+  },
+  {
+    body: "Found in dispatch://lens/7c1e0000-0000-4000-8000-000000000002#b-f%c3%a9-1.",
+    refs: ["dispatch://lens/7c1e0000-0000-4000-8000-000000000002#b-f%C3%A9-1"],
+    links: [],
+  },
+  {
+    body: "See `dispatch://lens/7c1e0000-0000-4000-8000-000000000002` here.",
+    refs: ["dispatch://lens/7c1e0000-0000-4000-8000-000000000002"],
+    links: [],
+  },
+  // None of these: a pinned finding, a uuid in capitals or written short, anything after the
+  // uuid, a lens kind written in capitals or with an underscore, a block of a risk, an issue key
+  // in front of the kind, and no id at all.
+  {
+    body: "Not one: dispatch://lens/7c1e0000-0000-4000-8000-000000000002#b-x@v1, dispatch://lens/7C1E0000-0000-4000-8000-000000000002, dispatch://lens/7c1e0000, dispatch://risk/7c1e0000-0000-4000-8000-000000000003/x, dispatch://lens_kind/Pre-mortem, dispatch://lens_kind/pre_mortem, dispatch://risk/7c1e0000-0000-4000-8000-000000000003#b-x, dispatch://CORE-1/lens/7c1e0000-0000-4000-8000-000000000002 and dispatch://interaction/ here.",
+    refs: [],
+  },
   // No block: an empty id, another fragment, a versioned document, an issue, an id that is not
   // UTF-8 or decodes to a control character.
   { body: "dispatch://CORE-1/spec#b-", refs: [] },
@@ -862,11 +904,14 @@ function inCodeRow(written: string, body: string): DispatchTextReferenceRow {
  * emphasis and strikethrough delimiters and unbalanced closing parenthesis after it are dropped.
  * External URLs cite nothing, and neither does a reference whose target id, as the server stores
  * the edge to it, is past MAX_REFERENCE_TARGET_BYTES. A block reference is its document's, ask's,
- * comment's or issue message's reference, `#b-` and the block id as `encodeBlockId` writes it
- * (readers take any percent-encoding; an id past MAX_BLOCK_ID_BYTES names nothing), optionally
+ * comment's, issue message's or lens's reference, `#b-` and the block id as `encodeBlockId` writes
+ * it (readers take any percent-encoding; an id past MAX_BLOCK_ID_BYTES names nothing), optionally
  * pinned to version N of the document, or to revision N of the comment or of the ask's parts, by
- * a trailing `@v<N>` (a message records no revisions, so a pinned message block names nothing);
- * each `refs` entry for one is written that canonical way.
+ * a trailing `@v<N>` (a message records no revisions and a lens records no revision of its
+ * findings, so a pinned block of either names nothing); each `refs` entry for one is written that
+ * canonical way. A node the store addresses by its own id carries no issue key:
+ * `dispatch://<kind>/<uuid>` for an interaction, a lens, a risk and a constraint, the uuid in
+ * lowercase as the store writes it, and `dispatch://lens_kind/<slug>` for a lens kind.
  *
  * A text also cites what it writes bare: an issue key (`CORE-12`) that names an existing issue,
  * as `dispatch://CORE-12`, and `#` with the id of a question block of the text's document, as

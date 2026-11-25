@@ -1728,8 +1728,10 @@ A process that finds it held tries again
   Its tick records its period in `duty_passes`, so one process serves each period however many run, and `DISPATCH_TEST_CI_RECONCILE_INTERVAL` replaces the 5 minutes for an end-to-end test.
   That interval is the pass's own bound too: a pass that cannot cover every head within it ends there, logs its line and leaves the cursor for the pass after it, so the lease is free when the next pass is due (CI reconcile, above).
 
-- The keyed writes' maintenance sweep (`api.RunMaintenanceSweep`, lease `suggestion-outcomes`, `api.MaintenanceSweepInterval`) deletes the `Idempotency-Key` rows past their 24 hours, ends and clears the answer runs the going routes leave behind (Answering a question, below), and then sends every delivery a process that died left owed (Keyed writes, below), once a minute across the processes:
+- The keyed writes' maintenance sweep (`api.RunMaintenanceSweep`, lease `suggestion-outcomes`, `api.MaintenanceSweepInterval`) deletes the `Idempotency-Key` rows past their 24 hours, ends the answer runs the going routes leave behind, states gone each run asked more than an hour ago and removes its rows (Answering a question, below), and then sends every delivery a process that died left owed (Keyed writes, below), once a minute across the processes:
   its pass records its period in `duty_passes` like the timers above, so the other process's tick inside a period already served skips.
+  Once it has ended the overdue runs, it reads the runs whose `going_requests` row is more than an hour old (`goingRunsPastTheHour`), and the `interaction` nodes of the source `going_requests`, not gone and more than an hour old, whose row a process of the release before deleted (`goingRowlessRuns`, through `graph_nodes_interaction_live`, migration `20261122230407`), each read at most 200 runs a pass (`goingGoneBatch`), and states each run's node gone and removes its rows in a transaction of its own (`goRunGone`).
+  It logs `dispatch: the going sweep stated the runs past the hour gone` where it did anything, with how many runs of the first read it stated gone (`runs_stated_gone`), how many runs' rows it removed (`rows_removed`) and how many nodes of the second read it stated gone (`rowless_nodes_stated_gone`).
   `DISPATCH_TEST_MAINTENANCE_SWEEP_INTERVAL` replaces the minute for an end-to-end test, and a deployment never sets it.
   No notification replaces this timer, which is why it is the one piece of maintenance that stayed one:
   a key passes its window by the clock alone, an answer run passes its own by the clock too, and a delivery is owed because the process holding it died, which commits nothing to announce.
@@ -2533,6 +2535,12 @@ the release before this one reads `state = 'sent'`, and the wider index carries 
 `drop index` takes `ACCESS EXCLUSIVE` on `message_deliveries` for the instant it unlinks the index, inside the runner's transaction, and it reads no row of the table.
 Both censuses answer `0`: an index build and an index drop each refuse and rewrite no row.
 A failed concurrent build leaves an INVALID index of the new name on `message_deliveries`, which the runner drops with `DROP INDEX CONCURRENTLY` and builds again on the next boot, so one failed build stops no later boot.
+
+Migration `20261122230407_graph_nodes_interaction_live_index` creates `graph_nodes_interaction_live` on `graph_nodes (made_at)`, partial on the `interaction` kind, on every state but `gone` and on the `source` `going_requests`, the index the maintenance sweep reads the runs past the hour whose row is gone through (`goingRowlessRuns`, Background loops, above).
+The gone nodes grow with every question asked, so without the index that read is a scan of every interaction ever written, each minute; the index holds the runs not gone, about an hour of them, and its key is the moment the run was asked, which the read bounds an hour back and orders by (`api.TestTheSweepReadsOfTheRunsPastTheHourAreBounded` holds the read to it, in the plan Postgres builds for the sweep's values and in the generic plan a prepared statement settles on).
+It is built `concurrently`, outside the runner's transaction (`-- pgmigrate:non-transactional`), as every later index on `graph_nodes` is, and nothing depends on it; `20261122230407_graph_nodes_interaction_live_index.down.sql` is the by-hand script that drops it, after which that read scans `graph_nodes` again.
+Its census answers `0`.
+Migration `20261122230406_interaction_source` writes the `attribute` node `interaction/source`, kind `string`, the fourth of the interaction type's attributes, with its tuples and its `attribute_of` tuple to the `interaction` supertag, as `20261123174710` writes `words`, `ends_at` and `frame`, in literal rows; its census answers `0`.
 
 Migration `0142_item_blocks` creates the tables behind the blocks of a comment or message as graph nodes ("Reference graph" below):
 `comment_blocks`, `message_blocks`, `comment_block_texts`, `comment_block_state`, `message_block_state`, `comment_block_refs` and `message_block_refs`, each with a foreign key to `comments` or `messages` that cascades, with their indexes, among them the partial `comment_block_state_owed` and `message_block_state_owed` through which the block-index reconciliation reads what is owed.
@@ -3620,9 +3628,9 @@ It records the read sequence that snapshot saw, the highest `graph_tuples.seq` i
 It reads that sequence inside its own transaction, so the sequence names the commit every count it prints answers, and not the end of the log when the census finishes.
 The summary line after the kinds prints it last, `census: store rows_checked=<rows> differences=<differences> read_seq=<seq>`, in plain digits where the counts carry thousands separators, since it is a position to hold against `graph_tuples.seq` and not a count.
 
-For each projected kind it counts the nodes the store holds at any state but `gone` against the projection rows, in both directions, and reports each difference by its cause and by the row it was found at:
-a row naming no node, a row naming a node the store does not hold, a row naming one the store holds `gone` — which is the separate assertion that no gone node holds a projection row — a row whose shared fields disagree with its node's, and a node no row projects, named with the state it is at (`a live node no row projects`).
-A state a later release adds, such as `proposed`, is a node a row projects as one at `live` is, so a build of this release reads no difference for it during a roll or after a rollback.
+For each projected kind it counts every node whose `state` is not `gone` against the projection rows, in both directions, and reports each difference by its cause and by the row it was found at.
+A node at `proposed`, `settled` or `overtaken` is a node a row projects as one at `live` is (cybermonklabs/legion#4193), so a move between those values reads as no lost node.
+The differences are a row naming no node, a row naming a node the store does not hold, a row naming one the store holds `gone` — which is the separate assertion that no gone node holds a projection row — a row whose shared fields disagree with its node's, and a node no row projects, named with its state (`a live node no row projects`, `a proposed node no row projects`).
 The shared fields are digested rather than printed, and for the three projected kinds they include the tuples that answer the row, read as the store reads a current relation (the newest tuple per kind and far end, kept while it asserts), and not the node row alone:
 a row that names its node is answered from the tuples by `graph_edges`, `refs.Edges` and `refs.BacklinkCounts`, so a missing or retracted tuple takes a link out of every read while each node row still stands.
 A comment's `created_at`, `author`, the artifact its `anchor` names, the artifact its `artifact_id` names and the author `graphstore.AuthorOf` reads off `author` are held against its node's `made_at` and `made_by` and its current `anchored_to`, `owned_by` and `authored_by` tuples.
@@ -3631,11 +3639,20 @@ A block that states no parent at all digests differently from one the document h
 The kinds are:
 
 - `comment` against `comments`, `block` against `document_blocks` and `block_ref` against `block_refs`, the three kinds a table projects, whose counts the report prints.
-  A `block_refs` row is one link out of a block and its node is that block's, so several rows share one node: that kind's node side is every live block node that states a link now other than its `in_document` and `part_of`, whether a row names it or not, and every row of a block is held, as the set of links that block's rows name, against every such link its node states now, so a link with no tuple, a tuple with no row and a link out of a block no `block_refs` row names are all read.
+  A block of a lens's finding, a block node whose id begins `lens/`, is in neither block kind: no document holds it and no table projects it.
+  A `block_refs` row is one link out of a block and its node is that block's, so several rows share one node: that kind's node side is every block node not `gone` that states a link now of a kind `refs.IndexBlocks` writes into `block_refs`, whether a row names it or not, and every row of a block is held, as the set of links that block's rows name, against every such link its node states now, so a link with no tuple, a tuple with no row and a link out of a block no `block_refs` row names are all read.
+  Those kinds are `mentions` and the name of every `block[]` attribute node the store holds, at any state (`refs.BlockRefKindsSQL`), but a decision's `shaped`, `from_ask` and `decided_by`, read inside the census's own snapshot rather than from the schema the process installed: a build older than the store installs no attribute above its version, and an attribute node stated `gone` is installed by none, while the `block_refs` rows of that kind stand until their documents are indexed again.
+  A tuple of any other kind out of a block — its `in_document` and `part_of`, or one another writer states of it, such as a requirement's `constrained_by` — is in neither side of `block_ref`.
   A block whose address is past the store's address bound (`graphstore.MaxAddressBytes`, which `refs.MaxBlockNodeBytes` is), and a `block_refs` row whose far end is past it, are no node and no tuple of the store by design, and both sides leave those rows out.
 
+- `interaction` against `going_requests` and `frame` against `going_events`, a run of the command bar and its frames (cybermonklabs/legion#4193).
+  A run's digest is the row's `author`, `project`, `words`, `created_at` and `ends_at`, the `source` `going_requests`, which no column of the row holds and the row side states as that constant, and the author `graphstore.AuthorOf` reads off `author`, against the node's `made_by`, project, `words`, `made_at`, `ends_at` and `source` and its current `authored_by`.
+  A `going_events` row is one frame and its node is its run's, so several rows share one node, as with `block_ref`: each row of a run is held, as every frame its run's rows hold - each its sequence, name and data as `graphstore.FrameValueSQL` writes it - against every `frame` value the node holds; the node side is every interaction that holds a frame value.
+  A run is readable for one hour; then the sweep states its node `gone` and removes its rows, and a run whose rows a process of the release before deleted an hour old is a node the sweep and the backfill state `gone`: a gone node no row projects, which is no difference.
+  A deployment can hold no run, so a census that checked zero rows of either says so on the kind's line and refuses nothing for it; a corpus seeded with runs is held to its counts by its own driver.
+
 - `person`, `session`, `role` and a role's page, which no table projects.
-  Their row side is the actors and sessions the projected tables and the delivery records name: the people and sessions `comments.author` names as `graphstore.AuthorOf` reads an actor, the sessions `comment_deliveries` and `message_deliveries` recorded reaching, and the roles `comment_deliveries.target`, `messages.target` and `issues.route` address now, with one page per role.
+  Their row side is the actors and sessions the projected tables and the delivery records name: the people and sessions `comments.author` and `going_requests.author` name as `graphstore.AuthorOf` reads an actor, and those the `made_by` of each lens, finding, risk and constraint that holds an asserted `authored_by` names the same way (`graphcensus`'s `reasoningAuthored`; a node written on the shared bearer, or by a pod on a session its body names, names that session, so the session is on both sides, and a node whose `made_by` names only a workload states none, so that workload is on neither), and of each run at `gone` that holds one, whose row the sweep removed an hour after it was asked or a process of the release before deleted (`goneRunsAuthored`), the sessions `comment_deliveries` and `message_deliveries` recorded reaching, and the roles `comment_deliveries.target`, `messages.target` and `issues.route` address now, with one page per role.
   A role's row side also holds every role an event of the log ever addressed: the `route` of every `issue.created`, `issue.updated` and `issue.closed` event, the `target` of every `message.created` and `message.answered` event, and the `target` of each mention a `comment.created` event names.
   A node is history and never goes, so an issue routed to one role and then re-routed to another still owes the first its node and its page, and the census reads the route history the events hold rather than only the current route.
   The publisher writes a role's node and its page from those same fields of each event it publishes, whether or not it routed anything to the role: a route an agent's write sets, which wakes nobody, a targeted message's role, which no route reaches, and a role a comment mentions on an issue routed elsewhere.
@@ -3646,11 +3663,18 @@ The kinds are:
   An address past the store's bound is no part of the store on purpose: a role name longer than the bound is no node and no page, a comment anchored to or owned by a document whose `ref_key` is longer states no such tuple, and a session named past it is no node either.
   The census leaves each such address out of both comparisons and counts it as a class of its own, reporting the count as `addresses_past_bound` on the kind's line rather than as a difference, in both directions.
 
+- The visibility and the state of each node of the kinds `interaction`, `lens`, a finding (a `block` node whose id names its lens), `risk`, `constraint` and `lens_kind`, one kind each, `<kind>_visibility_state`.
+  No table projects these, and a node's row is the projection of its own base-attribute tuples, so the row side is the store's own record: for each node that states either attribute, the newest `visibility` tuple and the newest `state` tuple, against the row's `visibility` and `state` columns, both ways.
+  A column with no tuple behind it, a tuple whose node has no row and a column that differs from its newest tuple are each a difference, named by the node's kind and address and by the attribute, the digest carrying each attribute's name and its value's md5; an `interaction` at any visibility but `author`, and a `lens_kind` at any but `project`, are differences too, whatever their tuples say.
+  A node whose newest state is `gone` is held to its row at `gone`, as every other kind is.
+  A deployment can hold none of these, so zero rows of one refuse nothing.
+
 - The project of every node: `issue`, `artifact`, `ask`, `message`, `comment` and `block`, the kinds whose node names the project a read of it is limited by (`graphstore.Node`'s `Project`), or, for an object no project owns, the parties it is between (`Parties`).
   Each row of those kinds is held to what its node must carry, by the rule its writer follows (`graphcensus.scopedRows`): an issue's project; a document's project, or its conversation's session for a conversation's file; an ask's and a comment's issue's project, else its document's, else that document's conversation; a message's issue's project, or, on no issue, the parties of its thread's root (`graphstore.ThreadParties`: who wrote the root, and the session it was sent to); a block's document's.
   It prints one line per kind, `census: project kind=<kind> rows=<n> missing=<n> gone=<n> differs=<n> unscoped=<n> orphaned=<n>`: a row whose node the store does not hold, a row whose node is gone (a node at any other state, a later release's `proposed` included, is there) or is another row's, a row whose node names another project or other parties than the row's, a row whose node names neither, and a node no row stands behind.
   A second line per kind, `census: project past_bound kind=<kind> addresses=<n>`, counts its rows whose address is past the store's bound - a document whose `ref_key` is, a block whose address is, a comment on such a document - which no writer projects; they are in no count of the first line and no finding, as the store lines' `addresses_past_bound=` are.
-  `gone` and `orphaned` are read for an issue, a document, an ask and a message, whose rows only their own creates write and only a document's removal deletes; the store census above reads both directions for a comment and a block.
+
+- `gone` and `orphaned` are read for an issue, a document, an ask and a message, whose rows only their own creates write and only a document's removal deletes; the store census above reads both directions for a comment and a block.
   A document the removal can take - one of an issue that is not its spec, plays no role and is a document - gives up its address to the next document of that issue and name, so a node there may be an earlier row's: the census reads the newest state statement a create, removal or backfill made as this row's only when the row's own `artifact.created` caused it, or when it is at the sentinel and the row has no such event; a later release's mark is passed over.
   Every release appends that event for such a document, so no shared time makes an earlier row's statement read as a later one's.
   Every other document keeps its address while the store holds it, and a node not `gone` is enough for it; not all of them record an `artifact.created` of their own (`issue.created` records a spec, and a conversation's upload appends no event).
@@ -3661,7 +3685,7 @@ The kinds are:
   An address past the store's bound is left out, as its writer leaves it out of the store.
 
 - The tie kinds of decisions, readings and asks, each but `ask_answer` held triple by triple — the triple of holding node, tuple kind and far end — so a tuple that reaches the wrong node is a difference and not a count that still matches:
-  `shaped`, `from_ask` and `decided_by` against `block_refs`, each row as the triple of the node it names (`node_kind`, `node_address`: a decision's block node, or for an ask block's `shaped` the ask's node), its kind and its far end, against every such tuple a live node states now;
+  `shaped`, `from_ask` and `decided_by` against `block_refs`, each row as the triple of the node it names (`node_kind`, `node_address`: a decision's block node, or for an ask block's `shaped` the ask's node), its kind and its far end, against every such tuple a node not `gone` states now;
   `followed_by` against `ask_followers`, `ask_parent` (the ask's `part_of` and `owned_by`) and `ask_anchor` (its `anchored_to`) against `asks`, each marked row by the ask's node;
   `reading_parent`, the `document_blocks.parent_block_id` of every reading's node against its `part_of`;
   and `ask_answer`, which sets each marked ask row's answer, selection, answer time and answerer beside the `answer`, `selected` and `answered_at` values and the `answered_by` and `decided_by` its node holds now, character for character (a selection is compared as the labels its JSON holds).
@@ -3675,14 +3699,14 @@ The kinds are:
   The writers of decisions, readings and asks are read once a run, in one statement, and bound into every statement that reads the person and session rows, as the roles are; `backfill-graph-store` reads the same definition in its own statement.
 
 - `graph_edges` against the store, for each of those ties it answers, each a kind of its own named after the tie with `_edge` and printed with `table=graph_edges` on the line a kind held triple by triple prints: `shaped_edge`, `from_ask_edge`, `decided_by_edge`, `followed_by_edge`, `ask_parent_edge` and `ask_anchor_edge`.
-  Each row is an edge the view answers out of a block or ask node not `gone`, read node by node with the view probed by the node's kind and id, as the triple of that node, the kind and its far end, against every such tuple a live node states now, so an edge the view answers to the wrong far end reads as a row no tuple states, `difference at graph_edges block:<block> shaped -> block <address>: a row no tuple states`, beside the tuple it no longer answers.
+  Each row is an edge the view answers out of a block or ask node not `gone`, read node by node with the view probed by the node's kind and id, as the triple of that node, the kind and its far end, against every such tuple a node not `gone` states now, so an edge the view answers to the wrong far end reads as a row no tuple states, `difference at graph_edges block:<block> shaped -> block <address>: a row no tuple states`, beside the tuple it no longer answers.
   No arm of `graph_edges` answers a reading's `part_of` or an ask's, so `reading_parent` has no such kind and `ask_parent_edge` holds an ask's `owned_by` alone; `ask_answer` is values, which the view answers none of.
   An edge an old arm answers from an `asks` or `ask_followers` row that names no node — one a process of the release before wrote, or one the ask's writer leaves unmarked because a document it names is past the store's bound, while it writes the ask's node all the same — is no row of these kinds, as that row is none of the kinds above: `ask_parent_edge` and `ask_anchor_edge` count the asks past the bound as `addresses_past_bound`, and `followed_by_edge` the followers past it.
   A deployment holds none of these kinds until somebody writes one, so one with no row and no tuple is no refusal, as a tie kind's is.
 
-- `copied_from`, `moved_to` and `removed_by`, which no table projects, on `census: store-only kind=<kind> tuples=<n> unresolved=<n> left_out=<n>` lines: how many the store states now, how many of those reach a far end that does not resolve — a `copied_from` to a live ask node, a `moved_to` to a block a `document_blocks` row holds, at once or through at most seven more `moved_to` tuples, so a citation of its near end resolves within the eight a resolver follows (`graphstore.MovedTo`), or to a live ask node, as a `copied_from` does, which ends the chain (the heading of a section that cites an answered ask a person removed), and a `removed_by` to a person node — and how many reach a far end in a document that still owes its block index, which holds no row yet for a block its latest version holds and which the census leaves out.
+- `copied_from`, `moved_to` and `removed_by`, which no table projects, on `census: store-only kind=<kind> tuples=<n> unresolved=<n> left_out=<n>` lines: how many the store states now, how many of those reach a far end that does not resolve — a `copied_from` to an ask node not `gone`; a `moved_to` to a block a `document_blocks` row holds, at once or through at most seven more `moved_to` tuples, so a citation of its near end resolves within the eight a resolver follows (`graphstore.MovedTo`), or to an ask node not `gone`, as a `copied_from` does, which ends the chain (the heading of a section that cites an answered ask a person removed); a `moved_to` from a document's address, which the pre-mortem conversion writes from the document it retires, to the lens it wrote in the document's place, not `gone`, where that move stops; and a `removed_by` to a person node — and how many reach a far end in a document that still owes its block index, which holds no row yet for a block its latest version holds and which the census leaves out.
   An unresolved far end refuses the census; a count does not, and neither does a far end left out.
-  The read takes the three kinds' tuples through `graph_tuples_current`, an index of the store's own set, rather than reading `graph_tuples` whole: it walks every block and ask node that states a relation, one probe of that index per node, and reads each one's tuples of the three kinds through one more probe.
+  The read takes the three kinds' tuples through `graph_tuples_current`, an index of the store's own set, rather than reading `graph_tuples` whole: it walks every block, ask and document node that states a relation (a `moved_to` leaves a block, or the address of a document the pre-mortem conversion retired), one probe of that index per node, and reads each one's tuples of the three kinds through one more probe.
   A writer states these kinds without stating the node they leave, so the walk reads the nodes off the log rather than off `graph_nodes`.
 
 - The restore of answered asks to their specs, before it moves anything, over the work `graphcensus.ReadRestoreWork` finds: each answered `question` ask whose row names its issue's spec and whose block the spec does not hold as an ask block (it returns under its old address), and each ask block a decisions document holds, whatever its ask's state (it moves into the spec), leaving out a document that still owes its block index.
@@ -3695,7 +3719,7 @@ The kinds are:
   Neither line refuses the census: the returning set counts before the restore by design, and a citation of the moved set is a finding the driver that watches it holds to zero, since a decisions document may hold a citation of a section an edit deleted before this release.
 
 It passes only when it checked more than zero rows of every kind it covers and found zero differences in both directions, and every store-only far end resolves.
-A total over the kinds is no such proof: two empty sides of one kind agree, so a kind that checked no row prints `census: store kind=<kind> checked no row` and the verdict refuses naming it, but for a tie kind of decisions, readings and asks that holds no row, no node and no unmarked row.
+A total over the kinds is no such proof: two empty sides of one kind agree, so a kind that checked no row prints `census: store kind=<kind> checked no row` and the verdict refuses naming it, but for a tie kind of decisions, readings and asks that holds no row, no node and no unmarked row, and for a kind a deployment can hold none of (a run, its frames, and each `<kind>_visibility_state`), whose line adds that it refuses nothing.
 A database that is not a store of this build holds no kind to read: where `graph_nodes` does not exist, or a migration this binary embeds is not yet applied (an earlier release's store, before this build migrates it), the census prints `census: store absent (<reason>)` and refuses, since it read nothing; with `--sizing` it runs the growth pass all the same and exits 0.
 
 Two writes can state one fact twice by design and nothing reads wrong for it — a tuple at the `source_event` sentinel is outside both repeat keys, and the backfill writes every fact it cannot date from a row's own event at that sentinel — so the census counts nodes and projection rows, and of a kind held triple by triple each relation the store states now once, never tuple rows.
@@ -3713,7 +3737,7 @@ Where a write states facts beyond its node, each such fact is a term of its own,
 
 - `asks-child`, the child that moves decisions, readings, asks and their answers: an ask's `answer_state`, question, options, `authored_by`, `anchored_to`, `owned_by` and `part_of` the document holding its block that `ask.opened` states, and what its other `ask.*` events state, an edit, an answer with its `answered_by` and `decided_by`, a resolution and the retraction a reopen makes of it, and a follower; a Keep; an ask block copy's `copied_from` (`ask_copy`), an ask node's `invalid` reason and its retraction (`ask_invalid`, over `block.invalid`), and a person's `removed_by` of an answered ask's block and its retraction (`ask_removal`); a moved block's `moved_to` (`block_move`, assumed, since the decisions step's conversion writes them once over a backlog no table dates); and an agent's decision and its reading.
 
-- `lenses-child`, the child that moves interactions, lenses, lens kinds, constraints and risks: an interaction and its frames, a lens and its finding blocks, a lens kind, a constraint and a risk.
+- `lenses-child`, the child that moves interactions, lenses, lens kinds, constraints and risks: an interaction and its frames, a lens and its finding blocks, a lens kind, a constraint and a risk; and a retired pre-mortem document's `moved_to` to the lens the pre-mortem conversion writes in its place (`document_move`, assumed, since the conversion writes it once a document over a backlog no table dates).
 
 Each term a table can count is read from tables that exist before this branch's first migration, so the growth pass runs on a database the store does not exist in yet, which is where R4 takes its readings; there the census prints `census: store absent` and passes on the growth pass alone, which refuses nothing.
 No such table holds a block's parent, so the moved parents are counted by parsing each version the block index indexed in the window beside the one it indexed before, placing the blocks as `refs.PlaceBlocks` places them, and matching the two versions' blocks by their text, since a version's markdown names no paragraph's id; blocks of one document with equal text are matched in document order, so that term is exact except there, and its share line carries `versions_read=` and `versions_unreadable=`.
@@ -3759,6 +3783,12 @@ Once every row of a kind the store can hold names its node, the run reports that
 It then gives every role the census's row side names, in a row now or in an event, and that has no node its node, its page and the page's `part_of` the role, as the publisher writes them for the events it publishes: the publisher writes none for an event it published before it wrote roles, so without this pass every role an older database names is a census difference.
 The input is the census's own role row side, so the roles the pass gives a node are exactly the roles the census holds to one; each role's node is caused by the first event that named it, or by the sentinel for a role only a row names, and a role that already holds both nodes is left alone.
 The report counts them on its `kind=role` line, and `remaining=` is how many roles the census names still lack a node or a page.
+
+It then mends what a process of the release before writes of a run of the command bar during a roll and after a rollback: it records a run with no `interaction` node, appends a frame with no `frame` value, and deletes a run an hour old, row and frames, leaving its node.
+Each is found by an anti-join, row by row, and not by a marker, and each run is written in a transaction of its own under the frame path's lock order, read again under its locks: a run with no node gets it from its row through `graphstore.WriteRun`, with a `frame` value of every frame (`kind=interaction`); a frame whose run holds no `frame` value of its sequence gets one, after the run's node row (`kind=frame`); and an interaction whose row is gone is stated `gone` (`kind=interaction_gone`).
+Run it after a roll that crossed this release, and after a rollback to the release before and back, then `envoy-dispatch census --store`.
+The same pass gives each run recorded before this release its node, with a `frame` value of every frame its row holds, since no migration writes a run's node.
+It also retracts each `prevented_by` a process of the release before left asserted at a check it dropped or at a check of a document it retired, which that release retracts nowhere, and counts them on its `kind=prevented_by_retracted` line.
 
 It then writes a live node for every issue, document, ask and message written before its kind's writer wrote one, or created by an earlier build at an address whose node is gone, or whose node names neither a project nor parties, and gives every comment and block node written before a node named its project that project, or its conversation's party.
 Each pass walks only the rows its marker does not mark - a node not `gone` naming a project or parties for an issue, a document, an ask and a message, whose rows name no node in a column of their own, and for a document the removal can take such a node whose newest create, removal or backfill statement is the row's own (as the census above reads it), and the node's own `project_key` and `parties` for a comment and a block - and writes the marker in the transaction that states the facts, so a second run writes nothing.
@@ -3839,15 +3869,23 @@ The migration's census answers `0`: the two tables are new and hold no row at de
 That release also writes an issue, a document, an ask and a message with no node, a file it uploads to an agent's conversation appends no event at all, and its removal of a document states nothing, so the node this build wrote for it stands behind no row.
 So the tick records in its cursor's row that its build owes the object pass (`block_index_event_cursors.object_nodes_owed_at`, in the statement that moves the cursor) and then runs it, on four kinds of tick.
 One is a tick that finds a process of another build serving, and the first tick that finds none after one did (`block_index_event_cursors.another_build_seen`, which each tick writes in the same statement), whichever process of the build runs it.
-Another is a tick whose events create a row with no node or remove a document whose node still stands (`graphcensus.EventsOweObjectPass`): `issue.created`, `artifact.created`, `ask.opened`, `message.created`, `message.answered` or `artifact.removed`; the two builds share one block-index lease, so a process of that release whose ticks come first in each period can hold every period while it serves, and this build's next tick then finds it gone and its rows named only by their events.
+Another is a tick whose events create a row with no node or remove a document whose node still stands, or name the address of a document on whose node a lens that is not `gone` stands stale (`graphcensus.EventsOweObjectPass`): `issue.created`, `artifact.created`, `ask.opened`, `message.created`, `message.answered` or `artifact.removed`; the two builds share one block-index lease, so a process of that release whose ticks come first in each period can hold every period while it serves, and this build's next tick then finds it gone and its rows named only by their events.
 That read takes only the rows those events name, through their unique keys: 2 to 3 ms over 50 events and 8 ms over 1,000 at production's row counts.
 The others are each process's first tick with a proven horizon, since a process that starts may follow a release that wrote while none of this build's ran, and a tick once 10 minutes have passed since the process's last pass finished.
 A pass a tick runs before any horizon is proven, while another build serves, is not the process's pass: no cursor row records it, so the first tick with a proven horizon still owes one, which reads what the other build did after it.
 A file uploaded to an agent's conversation appends no event, so such a file waits that long and one tick at most for its node, and the census names it `missing` meanwhile.
 The pass writes, through the backfill's own batch, the node of every row its marker does not mark (`graphcensus.WriteOwedObjectNodes`, which reads rows, not events), and states gone every document node the census reads as `orphaned` at an issue's address (`graphcensus.StateOrphanedGone`), as this build's own removal states it: the node as it stands, gone, under that release's own `artifact.removed` event, stated by the block-index tick, so the store keeps every statement it held and a removed document's history is the same whichever build served the removal.
+The sweep states nothing beneath the document's node `gone`: a document any release removes holds one empty version, whose index holds no block, so what stands under its node is the lenses invoked on it, which are stale, with what stands under each, and the stale sweep below takes those `gone`.
+
+A lens on a document, or on a block of one, records the row of that document: every write that places the lens there, the invoke and a move under a new parent alike, states in its own transaction the `artifacts.id` of the row the `artifacts` table holds at the document's address as the write runs - for a block, the address before the `#` of the block's id, and never the node the block stands under - a value of the lens, `artifact_id` (`graphstore.AttributeArtifactID`, which migration `20261123174710` declares on `lens` beside `verdict`), and a move off a document retracts it.
+The rule sits in the store's write of the lens's `part_of` tuple (`queueLensArtifactIDs`, beside the pointer check `QueueWrite` and `QueueCaused` plan), so no route places a lens without it, and the arms of a spliced write refuse a lens's `part_of` (`refusePointersInArms`); a write that places a lens on a document at whose address no row stands, one queued behind a removal under the issue's owner lock, is refused (`graphstore.ErrNoDocumentRow`), which the lens route answers `409 NODE_GONE`, naming the document by its `ref_key`.
+A lens is stale where no row with its recorded id stands at its document's address - the row is gone, or another row stands there - and every node whose `part_of` walk reaches a stale lens is stale with it (`refs.StaleSQL`, the one test of it, which the predicate of the lens, finding, risk and constraint kinds binds beside each read's test of `state <> 'gone'`).
+Every read answers a stale node as it answers a `gone` one, `404 NOT_FOUND` by its address and absent from every list, chain and count, and every write on one or under it is `409 NODE_GONE`; a lens on a retired document, or on a block a version removed, is not stale, since the row stands.
+So whatever build removed a document, and whatever build made a row at its address since, no read answers the removed document's lenses.
+After the orphan sweep the tick states every stale lens `gone` in the store, each with its whole `part_of` subtree, whatever the state of the node at its document's address, in one transaction of its own (`graphcensus.StateStaleLensesGone`, which opens it), and `DELETE /api/v1/artifacts/{id}` states the stale lenses on the removed document's node `gone` the same way, after the row's delete, in the transaction that deletes the row (`refs.StaleLensesOn` and `graphstore.WriteState`).
 So a roll leaves no project-owned row without its node and no such node without its row, with no second `backfill-graph-store` and no other command run by hand.
 No writer of this build commits a node before its row: each writes it in the transaction that writes its row, and the pass writes one only for a row that stands under the owner locks it takes; the sweep takes the issue's owner lock, then the node's row, and reads under that lock whether a row stands, so a create that commits a row meanwhile keeps its node.
-A tick writes at most 4 batches and states at most 20 nodes gone, and a kind that fails holds back neither the other kinds nor the sweep; a pass that fails or stops with work left keeps the debt, which only a pass that finishes clears, so whichever process of the build holds the lease next runs it again, and the tick's line carries `object_nodes=` and `orphans_gone=`.
+A tick's pass writes at most 4 batches and its sweep states at most 20 orphaned document nodes `gone`; neither bound covers the stale lenses, which the tick states `gone` with their whole subtrees in one transaction however many there are; a kind that fails holds back neither the other kinds nor the sweep; a pass that fails or stops with work left keeps the debt, which only a pass that finishes clears, so whichever process of the build holds the lease next runs it again, and the tick's line carries `object_nodes=`, `orphans_gone=` and `stale_lenses_gone=`.
 A row whose node the store holds in another project, live or gone, which no writer makes since a node's project never moves, is left by the pass and the backfill alike while every other row is written; it holds back no debt, the tick logs it at error, and the census names the row for a person to read.
 Such a row, and a row between a party the store refuses, spends none of the 4 batches and opens no transaction: the pass leaves it before it writes the batch it falls in, and each pass reads it again, two index reads for each 200 of them.
 The pass reads the four tables whole and the document nodes through `artifacts`' and `issues`' unique keys: at production's row counts (2,000 issues, 4,000 documents, 8,000 asks and 6,000 messages, a tenth of `dispatch-seed --scale 1`'s) a write pass with nothing to write took 97 to 190 ms and the orphan read 7 to 8 ms, and at ten times them 0.9 to 1.8 s, with one run of seven at 8.6 s, and 30 to 35 ms.
@@ -3878,6 +3916,26 @@ The pointer pass skips a link whose block's node the store does not hold or hold
 So a run interrupted anywhere carries on from where it stopped, and a run over tables whose every row names its node writes no node, no tuple and no node column (`TestASecondBackfillWritesNothingOverMarkedRows`).
 It migrates the database first, as the other backfills do, and exits 1 when it skipped a row or left one naming no node.
 
+### Adding a lens kind
+
+`envoy-dispatch lens-kind-add --id <slug> --words <text> --source <text> --reference <text>` adds one lens kind with its source; the usage text is in the command (`lens_kind_add.go`).
+It writes, in one transaction through `graphstore.AddLensKind`, the `lens_kind` node `dispatch://lens_kind/<slug>` with its words, a `constraint` node holding the source and its reference, and the one `constrained_by` tuple between them, the shape the seed of migrations `20261123174710` and `20261123174720` writes.
+An id the catalogue holds is refused, exit 1, and nothing is written; every server answers the new kind on its next `GET /api/v1/schema/blocks` and takes it on a lens's `has_kind`, with no restart and no block schema version moved.
+
+### Converting a pre-mortem
+
+`envoy-dispatch premortem-convert --issue <KEY> --artifact <slug> --prevented-by <file> [--dry-run]` converts the pre-mortem document `<slug>` of issue `<KEY>` into nodes, against `DATABASE_URL`, in one transaction, as the server's own credential (`api.PremortemConverter`); the usage text, the map file's format among it, is in the command (`premortem_convert.go`).
+It runs `api.ConvertPremortem` (`internal/dispatch/api/premortem_convert.go`), the one conversion, which `POST /api/v1/issues/{key}/artifacts/{slug}/premortem-convert` runs too, and prints its report as JSON.
+The conversion first takes, in one `events.LockOwnerRows` call, the issue's owner lock, the issue owning the document, and the owner lock of the document of every check its lines name (`lockReasoningOwners`), the lock a retirement and the index pass that marks a block `gone` take first, so neither can commit between its read of a check and its commit.
+It reads the document's newest version, appends a `moved_to` tuple from the document's address, kind `artifact` at its `ref_key`, to the lens it is about to write, and retires the document through `docs.RetireDocument`, the one retire path, with the reason `converted into the pre-mortem lens <lens address>`: the document leaves its issue's document list, takes no new text (`409 DOCUMENT_RETIRED`), and one `document.retired` event records it, which the route publishes once its transaction commits and which reaches every server's stream from the commit when the command writes it.
+Nobody runs a retired document's checks, so the retirement retracts, in its transaction and under that event, each `prevented_by` tuple the store asserts at a block of the document (`retiredPreventions`), and the store refuses any `prevented_by` to one after it.
+Then it writes through `writeReasoningNodes` at no event one lens of kind `pre-mortem` under the issue, whose verdict is the document's verdict followed by its two closing sections, "What a world-class implementation looks like" and "The smallest first slice that proves the model", word for word, and under it one risk for risk 0 and each numbered risk, each with its heading, its early warning and its prevention and a `prevented_by` tuple to each check its line names, a check of any issue of the issue's project.
+Its old address then answers the lens: `GET /api/v1/references?to=<the document's address>` names the lens as its node, as a moved block's old address names the block it moved to, and the references read of an issue whose content links to the document's address (`GET /api/v1/issues/{key}/references`) holds the lens as a member of `kind` `lens` at the lens's `address`, whose `artifact` is the retired document; both read the tuple through `block_moved_to`, which migration `20261117042519_block_moved_to_lens` widens to a document's address and its lens.
+`GET /api/v1/block-links` takes its two documents by id and reads no address, so it follows no move: a retired document keeps its row, its versions and its blocks, and the links to them read as before.
+A line of any other shape, a number the document does not hold, a number twice, a risk the document holds with no line, and an address that names no `check` block that is not `gone` are refused, exit 1, naming the line, and nothing is written; so is a document that is none, holds no verdict, risk or closing section, or was retired by anything but a conversion.
+A line naming a check of another project, a check of a retired document, or a check of the document being converted, which the conversion has retired by the time it writes the risks, is refused by the store's rule on `prevented_by` (`graphstore`'s `pointerRules`) as the write runs, exit 1, naming the line, its risk and the check by its address, with `--dry-run` as without it, and nothing is written: the document stays unretired.
+`--dry-run` runs every write in a savepoint it rolls back and prints what the conversion would write, with no address; a document whose address carries a `moved_to` tuple already is reported converted, naming its lens, and nothing is written.
+
 ### The view over the store
 
 Migration `20261109215947_graph_edges_tuples` re-states `graph_edges` with one arm over the current tuples and a `node_kind is null` test on each of the four arms whose relations the store now writes.
@@ -3886,12 +3944,24 @@ It renders a block's `in_document` as the `part_of` to its document the view has
 the tuple's `at` is the row's `created_at` and its `legacy_source_seq` the row's `source_seq`.
 No other kind the store writes is an edge of this view — `authored_by`, `delivered_to`, `held_by`, the alias tuples, `attribute_of`, and a session's or a page's `part_of` — and a `part_of` whose source is a block is left out too, since the view has no block-to-block row and a top-level block would otherwise be rendered twice.
 
+Migration `20261117020856_graph_edges_asks_and_store_class` (cybermonklabs/legion#4193) is that child's one statement of the view.
+It re-states the arm list of `20261116094101_graph_edges_asks` (cybermonklabs/legion#4173) with one class more in the tuple arm, `store`, which joins no projection row: `changed_by_run`, `has_kind`, `triggered_by`, `constrained_by` and `prevented_by` out of any node, and `part_of` and `authored_by` out of an `interaction`, a `lens`, a `risk` or a `constraint`, the relations the store holds with no table behind them.
+The class is tested before the block-reference class, so a requirement block's `constrained_by` is not looked for in `block_refs`; every other row keeps its class, a comment's `authored_by` and a session's, a page's or a block's `part_of` stay out of the view, and `refs.TupleKinds`, which the announcer writes, lists the seven kinds beside the earlier ones.
+
+It also adds one arm over the current tuples: every relation of the class `store` out of a finding of a lens — a block node whose id names its lens, `lens/<uuid>#<block id>` — answered with the literal from_kind `lens_block`, the kind the read registry and every reference know a finding by, at the finding's own id, by the tuple arm's own rules.
+The tuple arm's class `store` leaves out a tuple out of such a block, so no relation is answered twice; no finding exists before this release writes one, so the arm drops no row a build of the release before reads, and the read registry maps the predicate of `lens_block` onto the store's `block` row at that id.
+
+The two changes are one migration because a migrate pass applies each file in its own transaction, in version order, and applies a file below a version the database already holds: a re-statement from an arm list without `20261116094101`'s would leave a database already at `20261116094101` without the `node_kind is null` tests on the two `asks` arms and the `ask_followers` arm and the tuple arm's cases for an ask's relations, which a live build reads, until a later file put them back.
+
+Migration `20261121104002_graph_edges_store_class_last` is the view's last restatement: the arm list of `20261121034242_graph_edges_asks_and_tuple_arm_filter`, whose tuple arm keeps only the kinds it renders before its `distinct on` sorts them, with `20261117020856`'s class `store` and its `lens_block` arm.
+From empty a database runs `20261117020856` before `20261121034242`, and a database that ran `20261121034242` first runs `20261117020856` after it, but each runs `20261121104002` after both, so every database ends on its definition, the arm list a later migration re-states from.
+
 Each row decides which arm answers it: each of the four old arms answers only the rows of its own table whose `node_kind` is null, and the tuple arm answers an edge of those kinds only while the projection row that names it carries its node — the `document_blocks` row of the block for `in_document`, the `block_refs` row of the pair for a pointer or a mention, and the `comments` row of the comment for `anchored_to` and `owned_by`.
 One transaction writes both sides of a row — the writer that states a row's tuples names its node on the row — so the view answers each row exactly once, at every point of the backfill and not only at its end, and a row a previous release wrote during a roll, a row written after a rollback and a block past `refs.MaxBlockNodeBytes` each keep their answer from the old arm.
 The join is what keeps a rollback whole, since a build of the previous release retracts nothing in the store: a row it deletes leaves its tuple standing and answers from neither arm, and a row it deletes and writes again with no node answers once, from its old arm.
 The arm also answers no row for a node whose current `state` is `gone`, the test the backfill's pointer guard takes too, and a pointer a version dropped is retracted in the same statement that deletes its `block_refs` row.
 `refs.BacklinkCounts` moves the same four arms the same way, each reading its own table for the rows that name no node and the tuples, through the same join, for the rest, so a count and the list behind it cannot disagree.
-A pointer's allowed targets come from the attribute node once the store answers it (`block_pointer_targets`), read as `pmdoc/schemanodes.Read` installs the schema: through the current `attribute_of` tuple and from a live attribute node, so a change to an attribute's `targets` reaches every link of that attribute with no pass over documents nobody edits.
+A pointer's allowed targets come from the attribute node once the store answers it (`block_pointer_targets`), read as `pmdoc/schemanodes.Read` installs the schema: through the current `attribute_of` tuple and from an attribute node that is not `gone` (migration `20261116081010_block_pointer_targets_present` replaced the function's test of `state = 'live'` with that one and nothing else), so a change to an attribute's `targets` reaches every link of that attribute with no pass over documents nobody edits.
 The reads of the `block_refs` rows themselves, a document's links out (`refs.Edges`) and `refs.BlockLinks`, make the same test of a row that names its node (`refs.blockRefListed`), so no reader lists a link another hides; a row that names no node keeps the `to_types` its index copied.
 `TestGraphEdgesLosesEveryArmOverAMovedKind` reads the arm list back out of the catalogue and reads the whole view, the previous release's view over the same rows and each arm on its own before the backfill, after it, beside rows a previous release wrote and after a rollback that deletes and rewrites rows, with every backlink count and the store census beside them.
 
@@ -3940,14 +4010,14 @@ migration `0032_refs_provenance` gives each edge a `kind`, `created_at`, and `so
 The name of a typed block's `block[]` attribute is an edge kind too:
 each block the attribute points at is an edge of that kind from the typed block (migration `20261101144855`, Database migrations above).
 `GET /api/v1/references?to=<ref>` lists everything that points at a node and `?from=<ref>` everything it points to, cross-project.
-A row whose other end is a node kind the running build does not know (a newer build's, read during a rolling deploy) is left out of every list and every count that build serves (`nodeRegistry`, `refs/graph.go`, names the kinds it knows).
+A row whose other end is a node kind the running build does not know (a newer build's, read during a rolling deploy) is left out of every list and every count that build serves (`nodeRegistry`, `refs/visibility.go`, names the kinds it knows).
 The migration refuses to run when an ask or comment anchor carries a non-uuid `artifact_id`.
 
 Each block of a document is a node of the graph too (migration `0121`).
 Its reference is the document's with `#b-` and the block's id, percent-encoded as `encodeBlockId` (`@legion/contracts`) writes it:
 `dispatch://KEY/spec#b-<id>`, `dispatch://KEY/artifact/<slug>#b-<id>` or `dispatch://PROJECT/artifact/<slug>#b-<id>`.
 Text cites a block only while its id holds at most 256 bytes decoded (`text.MaxBlockIDBytes`), and any node only while its target id, the id its edge is stored under (`text.TargetID`:
-an issue's key, a document's `<KEY or PROJECT>/<slug>`, a document block's `<KEY or PROJECT>/<slug>#<id>`, a comment's or message's block's or an ask's part's `<item kind>/<item id>#<id>` (`ask/<ask uuid>#<part id>`), an ask's, a comment's or a message's id), holds at most 2048 bytes (`text.MaxTargetBytes`), since `refs` and `block_refs` hold it in B-tree keys and neither a slug nor an item id has a bound of its own:
+an issue's key, a document's `<KEY or PROJECT>/<slug>`, a document block's `<KEY or PROJECT>/<slug>#<id>`, a comment's or message's block's, an ask's part's or a lens's finding's `<item kind>/<item id>#<id>` (`ask/<ask uuid>#<part id>`, `lens/<lens uuid>#<id>`), an ask's, a comment's or a message's id, and an interaction's, a lens's, a risk's or a constraint's uuid or a lens kind's slug), holds at most 2048 bytes (`text.MaxTargetBytes`), since `refs` and `block_refs` hold it in B-tree keys and neither a slug nor an item id has a bound of its own:
 text citing past either is written with no edge.
 The bounds decide only what the graph indexes.
 Every write is taken whatever the length of a block id it names (a seeded spec, an upload, an `insert`, a rebuild, an accepted suggestion, a browser's edit);
@@ -4003,6 +4073,10 @@ a reply to a comment names a block of that comment, whether or not the comment's
 A reference to a part no current revision of the ask holds is `404 NOT_FOUND` `no part "<part>" in ask <id>`.
 An ask any build writes is owed a part index (`20261101143212`'s trigger on `asks`), which the same block-index reconciliation drains.
 
+A node the node and tuple store addresses by its own id carries no issue key in its reference, since where it stands is a `part_of` tuple and a move changes no address:
+`dispatch://interaction/<uuid>`, `dispatch://lens/<uuid>`, `dispatch://risk/<uuid>` and `dispatch://constraint/<uuid>`, the uuid in lowercase as the store writes it, `dispatch://lens_kind/<slug>`, and a lens's finding, `dispatch://lens/<uuid>#b-<id>`, which takes no pin, since a lens records no revision of its findings (`text.ParseRef`, and the dashboard's reader, both held to `DISPATCH_TEXT_REFERENCES`).
+The dashboard has no page for any of them, so no renderer links one, and a read answers a node of such a kind only once the build registers that kind in `nodeRegistry`, as for every kind (above).
+
 ```bash
 DATABASE_URL=postgres://... envoy-dispatch rebuild-refs
 ```
@@ -4019,13 +4093,16 @@ a session id holding a `/`, `?`, `#` or whitespace names nothing.
 `graph_edges` has no structural edge for such a file (no `attached_to`, since it belongs to no issue):
 it appears in the graph through the mentions that cite it.
 
-Every node the graph reads carries six facts, whatever its kind:
-`made_by` and `made_at` (who made it and when), `changed_by` and `changed_at` (who last changed its own text or fields and when, its maker while nothing has changed it since), `parent` (`{kind, id, ref?}`, the node it belongs to, `id` that node's own id) and `parent_version` (the version of that parent it belongs to:
+Every node the graph reads carries eight facts, whatever its kind:
+`made_by` and `made_at` (who made it and when), `changed_by` and `changed_at` (who last changed its own text or fields and when, its maker while nothing has changed it since), `parent` (`{kind, id, ref?}`, the node it belongs to, `id` that node's own id), `parent_version` (the version of that parent it belongs to:
 for a document's block its changed version, for a comment's block its changed revision;
-for an ask or comment written on a document the version its anchor names, for a block ask the version that first held its block, for an approval request the version it named when it opened, else the version current when it was written).
+for an ask or comment written on a document the version its anchor names, for a block ask the version that first held its block, for an approval request the version it named when it opened, else the version current when it was written),
+and `state` and `visibility`, the node's state (`live`, `gone`, `proposed`, `settled` or `overtaken`) and who reads it (`project`, or `author` for a node reserved for its author, which its author alone reads), as the node and tuple store holds them, and `live` and `project` for a node the store holds no row of.
 A reply that names a block is part of that block.
-A fact Dispatch never recorded is `[]` for an actor list and `null` otherwise:
+A fact Dispatch never recorded is `[]` for an actor list and `null` for a time, a parent or a version, and `state` and `visibility` always hold a value:
 a session has none, a component's makers are never recorded and its times only from this release on, a document block's maker, and a block ask's version, are known only when the block is in the document's first version or Dispatch indexed the version before the one that first held it, and a comment block's making time is not known for a block found at the first indexing of a comment already edited by then (each kind's loader in `nodeRegistry`, `refs/visibility.go`, reads its sources).
+A node's `kind` is one of the kinds a read of the graph answers, the kinds the server's read registry holds a loader for (`refs.ResolvableKinds`), and the OpenAPI document closes `GraphNode.kind` over them, so a reader that meets a kind it does not know, a newer build's, skips that node.
+The registry's `supertag` and `attribute`, the block schema's nodes, have a predicate and no loader, so no answer carries a node of either kind and the enum leaves them out.
 Migrations `0130`-`0134` (Database migrations above) add what the facts read:
 the version current when an unanchored comment or ask is written on a document, recorded at insert and filled for the rows already stored, and `component_facts`, which every import keeps.
 `dispatch read` prints the facts of the node it reads on a `Node:` line, before `Referenced by:`.
@@ -4315,12 +4392,42 @@ An answer is cut at 120 words with `cut`, one the model wrote no text for at all
 
 A run has 30 seconds, and that window belongs to the record:
 `going_requests.ends_at` is written by the `POST`, never held as a timer in the process running the answer.
-A pod that dies mid-run therefore stores no terminal frame, and the next reader on any pod ends the stream itself with `error` `ANSWER_DID_NOT_ARRIVE`, as the maintenance sweep does for a run nobody reads (Background loops, above), which also deletes a run an hour old.
+A pod that dies mid-run therefore stores no terminal frame, and the next reader on any pod ends the stream itself with `error` `ANSWER_DID_NOT_ARRIVE`, as the maintenance sweep does for a run nobody reads (Background loops, above).
+A run is readable for one hour, by its `going_requests` row's `created_at` (`contracts.GoingRequestTTL`), as in the release before;
+then the maintenance sweep states its `interaction` node `gone` and removes its `going_requests` and `going_events` rows, and the node, its `words`, its `frame` values and every tuple into it, a `changed_by_run` among them, stay in the store, read by nobody: its address and its stream answer it as a run nobody holds, and no edge names it (`sweepGoingRequests`).
+The sweep takes a run's interaction node row first and then its `going_requests` row, the order every frame takes them in, and deletes no row of `graph_nodes` or `graph_tuples`;
+a run with no node yet gets its node from its row first and is stated `gone` with it, and the sweep states `gone` too the node of a run whose rows a process of the release before deleted an hour old during a roll or after a rollback, as `envoy-dispatch backfill-graph-store` does.
+A frame of a run the sweep removed finds no run and stores nothing.
 At that moment the running answer, a reader and the sweep may each try to end one run, so the table settles which of them does rather than whichever is first:
 `going_events` carries a partial unique index over the run for a terminal frame name, every terminal write is an insert that does nothing on a conflict, and the writer that loses reads the stored frame and reports that one.
 So a reader sees exactly one ending, never two and never none.
 
+A run is a node of the store (cybermonklabs/legion#4193), and its two tables are that node's projections.
+The `POST` writes, in its one transaction, an `interaction` node at the run's own uuid, addressed `dispatch://interaction/<uuid>`, reserved for its author, made by the whole credential that asked and carrying the run's `words`, its `ends_at`, its `source`, `going_requests`, and its project, with its `authored_by` tuple and the author's own `person` or `session` node where that credential names one, and only then the `going_requests` row, whose `author` column is the node's `made_by`.
+Each frame is a transaction of its own:
+it takes the run's interaction node row `for no key update` first, so two frames of one run take sequences one after the other with no gap, and reads the next sequence in a statement of its own once it holds that row, one probe of the `(request_id, sequence)` key and one of the terminal index (`goingNextFrame`);
+then, in one round trip, it appends one `frame` value tuple of the node holding the frame as the jsonb text `{"data": …, "name": …, "sequence": …}` (`graphstore.FrameValueSQL`) and writes its `going_events` row; a row that conflicts rolls its value back with it.
+A run a pod of the release before recorded with no node gets its node from its row, with a `frame` value of every frame that pod stored, before this build writes its first frame of it (`graphstore.WriteRun`); `backfill-graph-store` writes the same of every run recorded before this release, and of every run and frame such a pod writes during a roll or after a rollback (Backfilling the node and tuple store, above).
+That frame writes the node under the run's `going_requests` row, which `graphstore.WriteRun` takes `for no key update`, and the node it writes no other transaction can see, let alone hold, until it commits; where another write committed the node first and another transaction holds it, a frame of the run or the backfill, the frame lets its transaction go and begins again, taking the node's row first (`lockGoingRun`), so no frame waits on a node's row while it holds the run's.
+The sweep, which holds a run's node row and then deletes the run's row, waits on the frame's hold of that row, so a frame that waited for the node there would wait on the sweep as the sweep waits on it; the restart is what keeps that from happening, and it costs the frame one more transaction.
+A read of the graph answers an interaction to the credential that asked it and to nobody else, with its words as its excerpt, cut at 240 runes as every edge's excerpt is, and under no issue, and a run whose author is nobody to nobody; a read of the run's own address, `dispatch://interaction/<uuid>` (`GET /api/v1/references?to=` or `?from=`), answers its words whole as the node's `text`, behind the same predicate.
+A read of that address answers the node's `frames` too, each `frame` value as `{sequence, name, data}` in sequence order, behind the same predicate; an edge at the run carries none of them, and no other kind of node carries the member.
+
+A write made for a run names the run in the `Dispatch-Going-Run` request header (`contracts.GoingRunHeader`), and `api.GoingCaller` sends it on every write it makes for its `Run`.
+`withinGoingRun` (`api/going_run_header.go`) reads the header once per `POST`, `PATCH`, `PUT` or `DELETE`, inside the project and session scope checks and outside the key layer: the run must be one the record holds, live (`now() < ends_at`, whatever frames it has stored) and the caller's whole credential's (`graphstore.NamesCredential` and `model.Actor.SameCredential`), and anything else, a header that is no uuid or is sent twice among it, answers `404 GOING_REQUEST_NOT_FOUND`, the stream's answer for a run nobody holds, before the write runs, so nothing is stored and no key is claimed.
+A repeat is answered before its run is checked: a `POST` or `PATCH` sent again under the `Idempotency-Key` of a write already answered is answered from that key, so a retry after the run has ended reads the write it made rather than the refusal.
+Where the run is refused and the key holds an answer (`requestKeyAnswersItself`), the request goes on to the key layer with no run, and that layer answers it from the key alone and never runs its handler (`answerRefusedRun`): the stored answer or the route's replay, `409 KEY_IN_FLIGHT` for a first request still running, and the refusal where the key no longer holds an answer, so no write is made for a run the check refused, and a refused request whose key holds nothing claims none.
+The key's digest holds the run header (Keyed writes, below), so a repeat that names another run, or none, is `422 KEY_REUSED`.
+A run the check admits rides on the request's context (`store.WithRun`), every write batch built on that context carries it (`store.NewWriteBatch`), and `graphstore.QueueWrite` and `graphstore.QueueCaused`, which `graphstore.Write` and `graphstore.Caused` run, append one `changed_by_run` tuple from each node the write marks changed to `interaction/<uuid>`, in the write's own transaction and under its own cause, once for each node and run: the comment a comment write creates, each block whose words a version adds, changes or restores and each it drops, the issue, document, ask and message nodes their creates make, the issue's node an issue's own `PATCH /api/v1/issues/{key}` writes when it changes any field (written for a run alone, restating the issue, under the `PATCH`'s own event), the ask whose answer state `asks.Settle` writes (an answer, a resolution, a decline, an issue's close or reopen), the ask a follow or an unfollow states its `followed_by` out of, the reasoning nodes, the node a pointer goes out of and the node whose state moves, and never an author's `person` or `session` node.
+An edit of an ask's words (`PATCH /api/v1/asks/{id}`) or of a comment's words (`PATCH /api/v1/comments/{id}`) writes no store node of its own, so for a run alone, and only when its words changed, it writes the ask's or the comment's node as the issue's `PATCH` writes the issue's, restating it under its own `ask.edited` or `comment.edited` event, and that node is marked; a comment whose row names no node is no node of the store, and its edit writes none.
+An edit of an issue message's words (`PATCH /api/v1/messages/{id}`, only when its words changed) and the delete of a comment or an issue message (`DELETE /api/v1/comments/{id}`, `DELETE /api/v1/messages/{id}`) write the post's row alone in the same way, so for a run alone each writes the post's node too, restating it under its own `message.edited`, `comment.deleted` or `message.deleted` event, and that node is marked; the delete leaves the node live, as it leaves the row in its thread.
+`DELETE /api/v1/artifacts/{id}` states the removed document's node gone and retracts each `changed_by_run` out of it, in the one write that states it gone (`removeArtifact`, under the document's owner lock), so a run counts no document that has gone, and a document made again under the same title, which takes the same node, names no run but its own.
+After it deletes the row, in the same transaction, it states every lens on the document gone - each is stale once the row it recorded is deleted (`refs.StaleSQL`) - with all that stands under each, at every depth, those the person may not see included, each with one state tuple the person writes: it reads the stale lenses on the document's node (`refs.StaleLensesOn`) and states them gone with all beneath each (`graphstore.WriteState`), as the block-index tick's sweep after its orphan sweep does for every stale lens (`graphcensus.StateStaleLensesGone`), so no lens on a document that is no more reads live with nothing to stand on.
+A write on a context with no run appends none, so the block-index reconciliation tick, which indexes a version of more than 2,000 blocks or one with no rendering out of its request, names no run.
+A document's settlement carries no run either (`docs.Service.settleRoomWithin`), even the one an issue's close runs on the closer's context before it closes (`settleIssueBeforeClose`): it saves what the room's writers left in it, so the asks it retracts or restores and the blocks it indexes name no run.
+
 The delete of a comment or an issue message whose text a run gave its model ends that run's stream for every reader after it, as the stream route's description in `GET /api/v1` says (`goingWithdrawal`, `internal/dispatch/api/going.go`).
+A read of the run's own address answers the same as the node's `frames`: the one withdrawal frame the stream writes, `error` with `ANSWER_WITHDRAWN`, at the sequence of the run's ending, or at the sequence its ending would take where the run has stored none, and none of the frames the run stored; the read writes nothing, and the two read one test of the delete (`graphstore.RunWithdrawnSQL`, `interactionFrames` in `internal/dispatch/refs/interaction_nodes.go`).
 
 ## Keyed writes
 
@@ -4360,7 +4467,7 @@ Each item below names a status and code, then its meaning.
 
 - The first answer, with `Idempotency-Replayed: ?1`
 
-  A repeat under a key whose first request finished, with the same method, route, path values, query, media type and body:
+  A repeat under a key whose first request finished, with the same run named in `Dispatch-Going-Run` (or none), method, route, path values, query, media type and body:
   the stored status, every header the first answer set and its body, and nothing runs again.
   What a repeat answers on each route, and when a kept answer is not replayed, is `IDEMPOTENCY_KEY_HEADER`'s description in `packages/contracts/src/dispatch-api-limits.ts`.
 
@@ -5048,6 +5155,17 @@ Each item below names a path with its method and identity, then its purpose.
 
   Everyone who has signed in, as `{users: [{login}]}` sorted by email — the assignee picker's options.
 
+- `/api/v1/people/{login}/nodes?limit=&offset=` (GET; cookie, trusted header, or bearer; needs the `person` scope)
+
+  One person's page: what they wrote and what reached them, newest first, read from the node and tuple store — each node whose current `authored_by` tuple names the person, and each whose `delivered_to` tuple names a session the server proved theirs (`alias_of`), held to its own kind's visibility predicate and left out while it is `gone`.
+  The answer is `{person, rows, total, limit, offset}`, `person` the login as `model.CanonicalLogin` writes it, each row `{kind, id, relations, title, created_at, href, state, visibility}`:
+  `relations` the tuples that put the node there (`authored_by`, `delivered_to` or both), `title` the first line of its text, `href` the dashboard path it opens at, and `state` and `visibility` what the store holds for the node (`live` and `project` where it holds no row), so a node reserved for its author is listed to its author alone, who reads `author` there.
+  It takes `limit` (1–200, default 50) and `offset` and no kind, filter or edge to walk, and lists comments, the lenses, findings, risks and constraints that stand under an issue (opening that issue's page), and runs of the command bar (`interaction`, titled by the first line of their words and opening nothing, `href` empty), skipping a node of a kind it cannot open;
+  a run is listed to the credential that asked it alone, so a person's cookie lists none of what their personal token asked, and the token none of what the cookie asked.
+  It answers `200` only where the store holds the person and the person holds at least one node the reader may see, or where the reader is that person, answered with what they may see, and no rows where they hold nothing;
+  any other login is `404 NOT_FOUND`, byte for byte what a login nobody holds answers, so the read tells nobody whether that person exists, signed in or wrote anything, and a person whose only node is reserved for its author has no page another reader can open.
+  The deployment's shared token is `403 OAUTH_SCOPE_REQUIRED`.
+
 - `/api/v1/whoami` (GET; cookie, trusted header, bearer, or a broker-issued DPoP token)
 
   Who the server takes the caller for: `{kind: "user", login, scopes}` for a person (`login` their lowercase email), `{kind: "agent", owner, service, session, project, scopes, cut, sign_in_required}` for every other credential (`owner` is a personal token's owner or a broker-issued token's person, by lowercase email, null for the shared token and for a broker-issued token that names a service;
@@ -5147,12 +5265,13 @@ Each item below names a path with its method and identity, then its purpose.
 
 - `/api/v1/going/catalogue` (GET; cookie, trusted header, or bearer)
 
-  The catalogue of operations an agent may propose on Dispatch's graph: every tool spec that writes but one, of the specs agents already operate Dispatch with (`packages/contracts/src/dispatch-tools.ts`); the route's own description carries both counts, read from what the build holds.
-  The one it leaves out is `dispatch_review`, on purpose: a review records an approval or a changes request in a person's name, and the loop that proposes operations on the graph must never propose one.
+  The catalogue of operations an agent may propose on Dispatch's graph: the dispatch tools that write, of the tool specs agents already operate Dispatch with (`packages/contracts/src/dispatch-tools.ts`); the route's own description carries both counts, read from what the build holds.
+  The tools that write and that it leaves out are `dispatch_review`, `dispatch_settle`, `dispatch_state` and `dispatch_premortem_convert`, on purpose: the first three each record or undo a person's decision - a review an approval or a changes request in a person's name, a settle written by a person's credential that the person settled a proposal, a state write a move of a node out of `settled`, which undoes a settle, or into `gone`, which is final - and the pre-mortem conversion retires a document once, and the loop that proposes operations on the graph must never propose one.
   Each action carries `action` (the tool's own name, such as `dispatch_issue`), its `description` (the tool spec's own, whole and unchanged, which is what a model chooses on), the `routes` it writes, each a `method` and a `pattern` of this table, the `relations` its verbs write (each a structural edge kind or a `block[]` attribute of a typed block), its `request` (the tool's own argument schema) and an `example` call that schema accepts.
-  The catalogue is under the count where a model's choice falls apart, so it is read whole: it takes no query and serves no page.
+  The catalogue is read whole: it takes no query and serves no page.
+  How a model's choice among the actions holds up as the list grows is unmeasured.
   A tool naming a row this table does not hold, a row the table does not class as a write, a placeholder no argument of the tool fills, or a relation in neither edge family makes the server refuse to mount the table.
-  A write no catalogue action performs is named by the catalogue's own test instead: most are work still to do rather than an error, and the review route is kept out on purpose.
+  A write no catalogue action performs is named by the catalogue's own test instead: most are work still to do rather than an error, and the review routes, the settle, the state write and the pre-mortem conversion are kept out on purpose.
 
 - `/api/v1/projects/{key}/related?title=&text=&exclude_issue=&exclude_issues=&keywords_only=` (GET, POST; cookie, trusted header, or bearer)
 
@@ -5195,8 +5314,9 @@ Each item below names a path with its method and identity, then its purpose.
   The issue and its own content are in neither list, nor is a node that only a structural edge joins to the issue, such as its parent or a child.
   Each list is in the order of the node's kind, then its id, and is `[]` when it has no row.
   `members` is the documents of `links`, each with its versions and its row's via, and `truncated` is false: a member's `depth` is always 1, since the read reads one hop, and both fields stay for the clients that read them.
+  Each member carries its `kind` and `address`: `artifact` and the document's address, or, where a link names the address of a document the pre-mortem conversion retired, `lens` and the address of the lens its `moved_to` reaches, while the reader may see that lens, the member's `artifact` then the retired document, which `links` lists as its issue; a link to a block of that document names no address of it.
   Every statement of the read shares one 2 s budget, and a read that reaches it reads nothing and answers `503 REFERENCES_TIMEOUT`, to be asked again later.
-  An `If-None-Match` value equal to the response ETag returns `304`; the ETag moves when a row of either list changes, as a new link into the issue's content or an edit of a linked node changes one.
+  An `If-None-Match` value equal to the response ETag returns `304`; the ETag moves when a row of either list changes, as a new link into the issue's content or an edit of a linked node changes one, and when a member's address moves, as a conversion into a lens moves it.
   `versions=latest` leaves each member's `artifact.versions` holding only its latest version and carries its own ETag;
   absent, empty or `all` is the full answer; any other value, or `versions` given more than once, is `400 INVALID_QUERY`.
 
@@ -5216,7 +5336,7 @@ Each item below names a path with its method and identity, then its purpose.
   `since=<events.id>` keeps mentions introduced after it (structural edges excluded).
   The answer is `{node, edges}`, the node read and its edges.
   Each edge carries the other `node`, an `excerpt` (the containing block for a document mention), `created_at`, and `source_seq`.
-  The node read, each edge's `node` and each edge's `block` carry the six facts of every node, `made_by`, `made_at`, `changed_by`, `changed_at`, `parent` and `parent_version` ([Reference graph](#reference-graph)).
+  The node read, each edge's `node` and each edge's `block` carry the eight facts of every node, `made_by`, `made_at`, `changed_by`, `changed_at`, `parent`, `parent_version`, `state` and `visibility` ([Reference graph](#reference-graph)).
   What is listed, and from where:
 
   - A mention a block of a document holds is listed from that block (`node.kind` `block`, `node.document` its document);
@@ -5226,6 +5346,8 @@ Each item below names a path with its method and identity, then its purpose.
 
   - A block reference (`#b-<id>`) names a `block` node carrying its whole current `text`;
     pinned to a version (`#b-<id>@v<N>`; for a comment's block, a revision of the comment, and for an ask's part, a revision of the ask's parts) it also carries `pin` (`version`, `ref`, the block's `text` at that version, `state` `unchanged`, `changed` or `removed`, and `removed_version`), and a removed block answers no edges.
+
+  - A document's address whose `moved_to` reaches a lens that stands - the pre-mortem conversion moves the address of the document it retires to the lens it writes in its place - names that lens as `node` (`movedDocumentNode`), and the edges listed beside it are the document's citations; a lens the caller may not see leaves the address answering as it would with no move.
 
   - `400 INVALID_REFERENCE` / `INVALID_SINCE`, `INVALID_REFERENCE` too for a message block pinned with `@v<N>` (a message numbers no revisions, so there is nothing to pin);
     `404` for a node that does not exist, a block no current version or revision holds (unpinned;
@@ -5245,9 +5367,32 @@ Each item below names a path with its method and identity, then its purpose.
   The links from blocks of the document `from` names to blocks of the document `to` names (an issue's spec or document, or a project's document;
   one document may be both), each reference read whatever its length:
   `{from, to, links}`, each link with its `kind`, both block nodes, and the `created_at` and `created_version` at which the source block first held it, newest first;
-  `from`, `to` and every link's two blocks carry the six facts of every node ([Reference graph](#reference-graph)).
+  `from`, `to` and every link's two blocks carry the eight facts of every node ([Reference graph](#reference-graph)).
   A link is listed only while both blocks are current blocks of their documents, and a typed block's `block[]` pointer only while its target has a type the attribute allows.
   `400 INVALID_REFERENCE` when either is not a document reference; `404 NOT_FOUND` for a document that does not exist.
+
+- `/api/v1/lenses?on=` (GET; cookie, trusted header, or bearer)
+
+  The lenses invoked on one node, and each chain of triggered lenses they stand in (`api/lens_read.go`).
+  `on` is the node's `dispatch://` address, or its store address as the `/nodes/{id}` routes take one, of any node the caller may see of a kind a lens stands on (`lensStandsOnKinds`: an issue, a document or a block of one, an ask, a comment or a message or a block of one, a lens, a finding, a risk or a constraint), of an issue or of none; a block no current version of its document, or no current revision of its ask or comment, holds is read at the version or the revision its `#b-<id>@v<N>` address pins, as `GET /api/v1/references` reads one (`pinnedBlockNode`, `pinnedItemBlockNode`), and a retired document's address reads the document itself, as `GET /api/v1/block-links` reads one (`documentAtAddress`); an address that names no node, a node of any other kind (a person, a session, a role or a page among them, refused before the store is read, so the answer says nothing of whether one exists), a node nobody holds and a node the caller may not see are one `404 NOT_FOUND`, in the same words but the address, and an empty `on` is `400 INVALID_QUERY`.
+  It takes no other query: nothing chooses a kind, an edge or a depth.
+  Answers `{on, lens, lenses, chains}`: `on` the node read (address, kind, state and visibility), its address the one a lens on it names it by; `lens` the node itself, whole, where it is a lens, so either end of a trigger reads the other, and null otherwise; `lenses` the lenses whose `part_of` tuple points at the node, in the order they were invoked, the `seq` of each one's first `part_of` tuple (`graphstore.InvokedSeqSQL`), asserted or since retracted, so neither a later write of a lens's row nor a move of the lens to another parent, which appends a later `part_of`, moves it.
+  What it answers of each lens and of each chain:
+
+  - Each lens carries its address `dispatch://lens/<uuid>`, its `kind` (`{id, words}`, the `lens_kind` its `has_kind` tuple names), `on` (the node it stands on), `author` (the person or session its `authored_by` tuple names: the session the body named on the shared bearer, null where the write named only a workload), `created_at`, `verdict`, `state`, `visibility`, `triggered_by` (the lenses its `triggered_by` tuples point at) and `triggered` (the lenses whose `triggered_by` tuples point at it), each by address in the order the tuples were written, since the store holds `triggered_by` as many-valued.
+    A block a version removes, a retired document and a block of one are history for a lens on them and no node taken `gone` (spec requirement r-proposed): neither the index pass nor the retirement takes the lens to `gone`, and its `on` names the node at the version of its document that last held it, `dispatch://KEY/artifact/<slug>#b-<id>@v<N>` or `dispatch://KEY/artifact/<slug>@v<N>` (`refs.PinnedParent`), as the node `GET /api/v1/references` answers for the lens names it as its `parent`, with `N` as its `parent_version`.
+    A block of a comment or a part of an ask that a later revision of its item removes is history in the same way: the lens on it stays live, and its `on` and its `parent` name the block at the revision before the one that removed it, the last that held it, `dispatch://KEY/comment/<uuid>#b-<id>@v<N>` or `dispatch://KEY/ask/<uuid>#b-<id>@v<N>`, with `N` as its `parent_version`, and `GET /api/v1/lenses?on=` that address reads the block at that revision (`pinnedItemBlockNode`), as `GET /api/v1/references` does, and lists the lens on it.
+    So no lens on one reads `on` or `parent` null.
+    Its `findings` come in rank order, each `{address, text, rank, state, visibility}`, `rank` being the `seq` of its `part_of` tuple, a sparse key; its `risks` in the order of their `part_of` tuples, each `{address, heading, early_warning, prevention, prevented_by, state, visibility}`, `prevented_by` the address of each check that prevents it and `[]` where none does.
+
+  - A chain is `{lenses, stopped_at}`: the lenses joined to one another by `triggered_by` tuples the caller may see, walked both ways, breadth first, and listed whole in the order they were invoked; a visited set lists each lens once, so a lens is in one chain at most.
+    A lens is triggered only by a lens invoked before it, in that same order (`graphstore`'s `pointerRules`), so no `triggered_by` tuple closes a cycle.
+    A chain starts only at a lens the read answers in its own right (the node itself where it is a lens, then each lens on the node, in that order) that holds no `triggered_by` tuple the caller may see to another of those lenses, and the chains come in the order they started; the first of those lenses invoked in each chain is one, so each of them starts a chain or stands in one, but those past a cut.
+    A chain lists at most `lensChainDepth` (50) lenses, the depth counted in lenses: past them `stopped_at` names the first lens the walk reached and did not list; a chain of exactly 50 has `stopped_at` null.
+    The lenses past that cut start no chain of their own: a walk that reaches a lens an earlier chain's walk visited answers no chain, and no lens but one a chain starts at begins a walk, so the read of a chain of 60 lenses on the node answers 50 of them in all, across every chain, and names the 51st.
+    A chain holds two lenses or more.
+
+  - A lens, a finding or a risk the caller may not see is in no list, no chain and no count, and no chain passes through a lens the caller may not see, so a lens reached only through one is in none of that caller's chains.
 
 - `/api/v1/issues` (POST; cookie, trusted header, or bearer)
 
@@ -5464,6 +5609,9 @@ Each item below names a path with its method and identity, then its purpose.
   A reply may name the block of the comment `reply_to` names that it answers, `reply_to_block` (`b2`), checked against that comment before `reply_to` climbs to its thread's head, and against that comment even when the climb reaches an ask;
   with `ask_id` instead of `reply_to` it names a part of that ask.
   `400 INVALID_COMMENT` with neither `reply_to` nor `ask_id`, and for a block or part the named item does not hold now.
+  `visibility` is optional: `project`, or none, writes the comment as every comment is written, for every reader its issue or document has;
+  `author` is `400 VISIBILITY_NOT_ADMITTED`, naming the kind `comment`, because not every read of a comment binds the visibility predicate, and on the deployment's shared bearer `403 AUTHOR_NAMES_NOBODY`;
+  any other word is `400 INVALID_ATTRIBUTE_VALUE`, and each refusal stores nothing.
   The delivery callback `POST /api/v1/comments/{id}/reply` takes `reply_to_block` for a block of comment `{id}`, never for a part of the ask its thread hangs under.
   A `reply_to` naming a comment its author deleted is `409 POST_DELETED`, the refusal every write that would add to a deleted post takes, read from the parent the create already locks and so before the named block is looked for;
   a reply written before the delete keeps its text and its place.
@@ -5726,12 +5874,15 @@ Each item below names a path with its method and identity, then its purpose.
 
   What each requirement of the issue's spec lacks: `{issue, spec_artifact_id, has_plan, requirements, gaps}`.
 
-  A requirement is a `requirement` block of the spec, and `requirements` lists them in document order, each with its block reference, its words, and how many `check` and `plan_task` blocks name it in `serves`.
+  A requirement is a `requirement` block of the spec, and `requirements` lists them in document order, each with its block reference, its words, its block's node `state` (read from `graph_nodes` in one statement with the predicate bound, `live` where the store holds no row), and how many `check` and `plan_task` blocks name it in `serves`.
 
   A block counts when it is in any document of the issue or of any descendant issue, at any status;
   the descendants are one recursive `child_of` walk bounded by `refs.IssueDepthCap` (`refs.IssueDescendants`).
+  A `check` or a `plan_task` block at node `state` `proposed` is a question still open and serves nothing yet, so it is not counted while it stays `proposed`;
+  its state is read in the same statement, through the block kind's predicate for the reader (`queueServingBlockCounts`), so a block the reader may not see is counted as `live`.
 
   `gaps` is one line per gap, `<block id> has no check` and `<block id> has no plan task`, the second only once the issue has a plan document, or the single line `the spec marks no requirements` for a spec that marks none.
+  A requirement at `proposed` is a question still open and raises neither gap, here or in an approval request's answer (`missingCheckGaps`); one at `settled` or `live` is counted as every requirement is.
 
   Nothing is ever refused for a gap.
 
@@ -5797,6 +5948,111 @@ Each item below names a path with its method and identity, then its purpose.
 - `/api/v1/handoffs/{id}` (GET; cookie, trusted header, or bearer)
 
   One handoff by id with its body; `404 HANDOFF_NOT_FOUND` when there is none, `400 HANDOFF_ID_INPUT` for an id that is not a uuid.
+
+- `/api/v1/issues/{key}/lenses` (POST; cookie, trusted header, or bearer)
+
+  Invoke a lens on one node of the issue, `{on, kind, verdict?, findings?, triggered_by?, visibility?}`: one analysis of one kind of the lens catalogue, a `lens` node of the node and tuple store.
+  `on` is the `dispatch://` address, or the store address `/nodes/{id}` takes, of a node the caller may see under the issue: the issue itself, a document or a block of one, an ask, a comment or a message or a block of one, or a lens, a finding, a risk or a constraint of the issue.
+  The lens stands on that node by its `part_of` tuple and holds one `has_kind` tuple to the `lens_kind` node `kind` names; `GET /api/v1/schema/blocks` lists the kinds under `lens_kinds`.
+  `verdict` is stored as the lens's verdict, `triggered_by` is a `triggered_by` tuple to the lens of the issue it names, and each of `findings` is one finding: a `block` node under the lens at a random block id, addressed `dispatch://lens/<uuid>#b-<id>`, ranked in the order it was written.
+  `visibility: "author"` keeps the lens and its findings to their author, and is `403 AUTHOR_NAMES_NOBODY` on a credential that proves no author, the deployment's shared bearer.
+  With no `visibility` the lens and its findings take the visibility of the node it is invoked on; `visibility: "project"` on a node reserved for its author is `400 VISIBILITY_WIDER_THAN_PARENT`, naming the lens and that node, and stores nothing.
+  A missing kind is `400 LENS_KIND_REQUIRED`, an id no `lens_kind` node holds `400 INVALID_POINTER`, and an `on` or a `triggered_by` the caller may not see under the issue `404 NOT_FOUND`; an `on` the caller may see that is gone is `409 NODE_GONE`, naming it, since `gone` is final, while a gone `triggered_by`, a far end, is that `404`; a refused write stores nothing.
+  The write appends no event and sends no delivery.
+  Answers `201` with the lens: its address `dispatch://lens/<uuid>`, `kind`, `on`, `verdict`, `triggered_by`, `author` (the person or session its `authored_by` tuple names: the session the body named on the shared bearer, null where the write named only a workload), `created_at`, `state`, `visibility`, and each finding with its address, text, author, state and visibility.
+
+- `/api/v1/issues/{key}/nodes/{id}/findings` (POST; cookie, trusted header, or bearer)
+
+  Add one finding to the lens `{id}` names, `{text, visibility?}`: a `block` node under the lens at a random block id, after every finding it holds.
+  `{id}` is the lens's store address under the issue (`lens/<uuid>`, or its `dispatch://` address), percent-encoded as one path segment.
+  `visibility: "author"` keeps the finding to its author, and is `403 AUTHOR_NAMES_NOBODY` on a credential that proves no author.
+  With no `visibility` the finding takes its lens's; `visibility: "project"` under a lens reserved for its author is `400 VISIBILITY_WIDER_THAN_PARENT`, naming the finding and the lens, and stores nothing.
+  A node the caller may not see under the issue is `404 NOT_FOUND`, a gone one `409 NODE_GONE`, naming it (`findWrittenNode`), a node that is no lens `400 INVALID_POINTER`, and an empty text `400 FINDING_INPUT`.
+  Answers `201` with the finding: its address, `id`, `block_id`, its lens's address, `text`, `author`, `created_at`, `state` and `visibility`.
+
+- `/api/v1/issues/{key}/risks` (POST; cookie, trusted header, or bearer)
+
+  Write one risk under a pre-mortem lens of the issue, `{lens, heading, early_warning, prevention, prevented_by?, visibility?}`: the failure it names, the sign it is seen coming by and what keeps it from happening, as attributes of the risk, under the lens by its `part_of` tuple.
+  `prevented_by` is the address of a check block that covers the risk, of any issue of the issue's project, a `prevented_by` tuple, read as the pointer route reads its far end (`pointerEnd`).
+  The store holds a risk to a lens of kind `pre-mortem` and its `prevented_by` to a check of the risk's own project in a document that is not retired: a lens of any other kind, a node that is no lens, a `prevented_by` at a block that is no check, a `prevented_by` at a check of another project and a `prevented_by` at a check of a retired document, whose checks nobody runs, each naming the check by its address, are `400 INVALID_POINTER`, the first saying a risk belongs under a lens of kind pre-mortem.
+  A blank field is `400 RISK_INPUT`, a lens the caller may not see under the issue, or a check the caller may not see in any issue, `404 NOT_FOUND`, as one that does not exist, and a gone lens `409 NODE_GONE`, naming it.
+  With no `visibility` the risk takes its lens's; `visibility: "project"` under a lens reserved for its author is `400 VISIBILITY_WIDER_THAN_PARENT`, naming the risk and the lens, and stores nothing.
+  Answers `201` with the risk: its address `dispatch://risk/<uuid>`, `lens`, `heading`, `early_warning`, `prevention`, `prevented_by` (each check's address), `author`, `created_at`, `state` and `visibility`.
+
+- `/api/v1/issues/{key}/constraints` (GET, POST; cookie, trusted header, or bearer)
+
+  POST writes one constraint under the issue, `{standard, reference}` or `{measurement, value, taken_where}`, with `visibility?`: what forced a requirement from outside the conversation, as attributes of the constraint, under the issue by its `part_of` tuple.
+  A body that is neither shape, leaves a field of its shape blank or names fields of both is `400 CONSTRAINT_INPUT`.
+  A requirement points at a constraint through `POST /api/v1/issues/{key}/nodes/{id}/pointers` (`constrained_by`).
+  GET answers `{issue, constraints}`: the constraints under the issue the caller may see, in the order they were written there, each with its address `dispatch://constraint/<uuid>`, `id`, `standard`, `reference`, `measurement`, `value` and `taken_where` (null where it holds none), `author`, `created_at`, `state` and `visibility`.
+  A constraint reserved for its author is in its author's list alone, and an issue Dispatch does not hold is `404 NOT_FOUND`.
+
+- `/api/v1/issues/{key}/nodes/{id}/pointers` (POST; cookie, trusted header, or bearer)
+
+  Append, retract or retarget one pointer tuple out of the node `{id}` names, `{kind, action, to, from?}`; `{id}` is the node's store address under the issue, percent-encoded as one path segment.
+  `kind` is `has_kind` (a lens to its `lens_kind`, `to` and `from` being `lens_kind` ids), `triggered_by` (a lens to a lens of the issue invoked before it, which asked for it), `constrained_by` (a requirement block to a constraint of the issue or of the catalogue) or `prevented_by` (a risk to a check block of any issue of the issue's project, `to` and a retarget's `from` alike, as the pre-mortem conversion writes one).
+  `append` asserts a tuple at `to`, `retract` retracts the one at `to`, and `retarget` moves the one at `from` to `to`, retracting the old and asserting the new in one write and touching no `part_of` tuple.
+  The store holds each tuple to its type rule: a far end of the wrong type, a `prevented_by` at a check of another project than the risk's or of a retired document, naming the check by its address, a `triggered_by` at the lens itself or at a lens not invoked before it (the `seq` of each lens's first `part_of` tuple, the order the lens read answers), naming both lenses by address, and a lens left with no kind are `400 INVALID_POINTER`, so no `triggered_by` closes a cycle, and a second `has_kind` or a retarget of a pre-mortem's kind away from `pre-mortem` is `409 POINTER_ALREADY_ASSERTED`, one body whatever hangs under the lens.
+  A node or a far end the caller may not see under the issue (a `prevented_by`'s check in any issue), a far end that is gone, and a tuple to retract or retarget that the node does not hold, are `404 NOT_FOUND`, a check the caller may not see answering as one nobody holds; a gone node `{id}` is `409 NODE_GONE`, naming it, since `gone` is final; `part_of`, which moves through the node's parent route, or any other kind or action, is `400 POINTER_INPUT`.
+  Answers `200 {node, kind, action, to, from}`, each end with its address, kind, state and visibility, and `from` null but for a retarget.
+
+- `/api/v1/issues/{key}/nodes/{id}/state` (POST; cookie, trusted header, or bearer)
+
+  Write the node state of the node `{id}` names, `{state, actor?}`; `{id}` is the node's store address under the issue (`<ref_key>#<block id>` for a block of a document, `lens/<uuid>`, or its whole `dispatch://` address), percent-encoded as one path segment (`api/node_state.go`, `writeNodeStateRoute`, whose body the settle below shares: `writeNodeStateAs`).
+  The value is checked first (`graphstore.CheckAttributeValue`): a word that is none of `live`, `gone`, `proposed`, `settled` and `overtaken` is `400 INVALID_ATTRIBUTE_VALUE`, naming the attribute `state` and the word, and nothing is read or stored.
+  A node the caller may not see under the issue is `404 NOT_FOUND`, in `FindNodeUnderIssue`'s words, gone or not.
+  It writes `proposed`, `overtaken` and `live` on any node the store holds that is not `gone`, but not on the block of an `:::ask` block of a document, and `gone` only on a lens, a finding, a risk or a constraint, since a document's own write removes its block.
+  The write appends one `state` tuple on each node it moves, written by the caller - a person's as the person it acts for (`actingPerson`), whichever of her credentials made it, as the settle's is - through `graphstore.Write` and at no event, so every read of the node answers the new state at once; a write of the state the node holds appends nothing.
+  The node's row keeps the `source_event` it held (`graphstore.Node.KeepsCause`): a write of the state is no cause of the node's other facts, so the next index pass of a block's document does not stamp its event on a block that version did not change.
+  Answers `200 {node: {address, kind, state, visibility}, previous}`, `previous` the state it held before.
+
+  - `gone` is final: every write on a gone node is `409 NODE_GONE`, naming the node (`nodeGone`), because `proposed`, `overtaken` or `live` would bring it back, and a block of a document a version dropped would then read as a present block no version holds; the settle and the reasoning routes' writes on a gone node answer the same (`findWrittenNode`).
+    The write that takes a lens, a finding, a risk or a constraint to `gone` takes its whole current `part_of` subtree to `gone` in the same transaction: each node whose current `part_of` points at it, each node whose current `part_of` points at one of those, and so on at every depth, whatever its kind - a finding, a risk, or a lens invoked on a lens, a finding, a risk or a constraint - those the caller may not see included, each with one `state` tuple written by the caller (`writeNodeState`, `graphstore.WriteState`, one recursive statement however deep the tree), so no read by its own address answers one of them once the node above it is gone.
+    A write that found its lens, or the node it is written on, before such a write committed reads it again under the issue's owner lock and is refused `409 NODE_GONE` (`refuseGoneParents`, `refuseGoneNode` in `api/reasoning_write.go`), so nothing is written under a gone lens.
+    A write that found the far end of its tuple under the issue - the lens a lens is triggered by, a `triggered_by`'s lens or a `constrained_by`'s constraint - reads it again under that lock too, and one such a write took gone answers the `404 NOT_FOUND` an address nobody holds answers (`refuseGoneFarEnds`), so no tuple points at a gone node.
+    A stale node - a lens whose recorded `artifact_id` no longer stands at its document's address, and every node under it (`refs.StaleSQL`) - is a gone node to each of these writes: `409 NODE_GONE` on it or under it, and the `404 NOT_FOUND` as a far end (`goneNodeUnderIssueQuery`, `storedGone`).
+
+  - `409 NODE_STATE_NOT_WRITABLE`, naming the node's kind, its state and the value asked for, refuses `settled` (the settle below writes it) and `gone` on a block of a document or on an issue, a document, an ask, a comment or a message.
+    A block of an ask, a comment or a message is no node the store holds, since no writer writes a `graph_nodes` row for one: every read answers it `live`, and every value on it is that `409`, saying so (`itemBlockRefusal`).
+
+  - A write on the block of an `:::ask` block of a document returns `409 ASK_HOLDS_STATE` and writes nothing, naming the ask whose node holds the question's state (the block's own ask or the source ask for a copy) by its `dispatch://<KEY>/ask/<uuid>` address, or saying no ask holds the question yet (`askHoldsState`).
+    A write by the ask's own address, `ask/<uuid>` or `dispatch://<KEY>/ask/<uuid>`, writes the ask's node as it writes any other, so one question holds one state.
+
+  - A move of a lens, a finding, a risk or a constraint into `gone` is a person's alone - a browser's cookie, or a token holding the `person` scope - because it takes what the caller may not see: any other caller, the node's own author included, is `403 STATE_NOT_PERMITTED` naming the node, in the same words whatever stands under it, since the refusal reads nothing under the node (`goneNotPermitted`), and an agent marks a node it wrote `overtaken` instead.
+    Any other move of a node into or out of `proposed` or `settled`, other than the settle itself, takes the settle's caller rule (`takesTheSettleRule`, `maySettle`): a person makes it on any node, and any other caller only on a node whose recorded author, its `made_by`, is the author its credential proves, by the one author rule (`graphstore.SameAuthor`); any other caller is `403 STATE_NOT_PERMITTED`, naming the node, and nothing is stored.
+    A move out of `settled` undoes what a settle decided, a move out of `proposed` ends a proposal and counts a proposed check or plan task as serving its requirement as a settle would, and a move into `proposed` takes a requirement's gaps out of the coverage read and the approval request, so none of them is open to a caller who could not settle the node, and the deployment's shared agent token, which proves no author, makes none of them.
+    A write of the state a node already holds moves nothing and appends nothing, so it takes no caller rule.
+
+- `/api/v1/issues/{key}/nodes/{id}/settle` (POST; cookie, trusted header, or bearer)
+
+  Settle the proposed node `{id}` names, `{actor?}` (an empty body too): one `state` tuple at `settled`, written by the caller, at no event (`settleNode`).
+  A node the caller may not see under the issue is `404 NOT_FOUND`, the bytes a node nobody wrote answers but for the id.
+  A gone node is `409 NODE_GONE`, naming it.
+  A settle on the block of an `:::ask` block returns `409 ASK_HOLDS_STATE` and writes nothing, naming the ask whose node holds the question's state (the block's own ask or the source ask for a copy) or saying no ask holds it yet (`askHoldsState`).
+  Any other node not at `proposed` is `409 NODE_NOT_PROPOSED`.
+  A person settles any proposal - a browser's cookie, or a token holding the `person` scope, whose settle is written as the person it acts for (`actingPerson`) - and any other caller only a proposal whose recorded author, its `made_by`, is the author its credential proves, by the one author rule (`maySettle`, `graphstore.SameAuthor`, the Go half of `graphstore.AuthorIsSQL`): the same person for a personal token or a broker session that names a person, the same session for a broker session that names none (`model.Actor.Proven`), and the same workload for a pod's service-account token; any other caller is `403 SETTLE_NOT_PERMITTED`, naming the node.
+  A block's author is the writer of the version that first held the block, never whoever marked it proposed; the deployment's shared agent token proves no author, so it settles nothing.
+  Answers `200 {node: {address, kind, state, visibility}, previous}`.
+
+- `/api/v1/issues/{key}/proposed` (GET; cookie, trusted header, or bearer)
+
+  The nodes under the issue at node state `proposed` that the caller may see, `{issue, nodes}`, each `{node, excerpt}`: `node` the `GraphNode` every read answers (kind, address, state, visibility and the rest) and `excerpt` the words an edge at it shows, null where it has none (`listIssueProposed`).
+  A node under the issue is one whose standing issue is `{key}` (`refs.StandingIssueSQL`): the issue itself, its documents and their blocks, its asks, comments and messages and their blocks, and the lenses, findings, risks and constraints standing under one of those, in the order of their kind and their id.
+  The read takes the store's rows at `proposed` through the partial index `graph_nodes_proposed` (migration `20261116172615`), binds each row's own predicate, and answers each through its kind's loader (`refs.ExcerptedNodes`).
+  It takes no query; an issue Dispatch does not hold is `404 NOT_FOUND`.
+
+- `/api/v1/issues/{key}/artifacts/{slug}/premortem-convert` (POST; cookie, trusted header, or bearer)
+
+  Convert the issue's pre-mortem document `{slug}`, by slug, into nodes, once (`api/premortem_convert.go`, `convertPremortemRoute`), `{prevented_by, dry_run?, actor?}`, in the request's one transaction as the credential that proved the caller; `envoy-dispatch premortem-convert` runs the same `api.ConvertPremortem` (above, "Converting a pre-mortem").
+  It first appends a `moved_to` tuple from the document's address to the lens it is about to write and retires the document through `docs.RetireDocument`, which retracts each `prevented_by` at a check of the document, publishing its one `document.retired` event, whose reason names the lens, once the request commits; then it writes one lens of kind `pre-mortem` under the issue, whose verdict is the document's verdict followed by its two closing sections word for word, one risk under it for risk 0 and each numbered risk of the newest version with its heading, early warning and prevention, and a `prevented_by` tuple to each check its entry names.
+  `prevented_by` is one entry `{risk, checks, reason}` for each risk the document holds, `checks` the `dispatch://` addresses of check blocks of any issue of the issue's project, `[]` for none; the handler reads each entry on its own (`decodePremortemEntries`).
+  `400 ARTIFACT_INPUT`, naming the entry by its position from 1 and its risk number, or the risk no entry names, refuses an entry of the wrong shape or type, a blank reason or check, a number the document does not hold, a number twice, a risk with no entry, and an address that names no `check` block that is not `gone` and that the caller may see; a body that is not JSON is `400 INVALID_JSON`, no document `{slug}` of the issue `404 ARTIFACT_NOT_FOUND`, and a document with no verdict, risk or closing section, or one something other than a conversion retired, `400 ARTIFACT_INPUT`.
+  An entry naming a check of another project, of a retired document, or of the document `{slug}` itself, which the conversion retires before it writes the risks, is `400 INVALID_POINTER`, naming the entry, its risk and the check by its address, with `dry_run` as without it: the store's rule on `prevented_by` refuses the write, which is rolled back, and the document stays unretired.
+  Each writes nothing.
+  `dry_run` runs every write in a savepoint that is rolled back and answers what the call would write, with no address.
+  A document whose address carries a `moved_to` tuple already answers `200`, writes nothing and names its lens.
+  The route has no row in the going catalogue: it retires a document once, and the loop that proposes operations must never propose it.
+  Answers `200` `PremortemReport`: `{document {address, id, version, moved_to}, dry_run, already_converted, lens {address, kind, on, verdict}, risks [{number, address, heading, early_warning, prevention, prevented_by, reason}], summary}`.
 
 - `/api/v1/issues/{key}/artifacts` (GET, POST; cookie, trusted header, or bearer)
 
@@ -5961,6 +6217,7 @@ Each item below names a path with its method and identity, then its purpose.
 - `/api/v1/artifacts/{id}/comments` (GET, POST; cookie, trusted header, or bearer)
 
   List or create comments and suggestions on an unlinked document.
+  The create takes `visibility` as `POST /api/v1/issues/{key}/comments` does, with the same refusals.
 
 - `/api/v1/artifacts/{id}/events` (GET; cookie, trusted header, or bearer)
 
@@ -6210,6 +6467,38 @@ Each item below names a status and code, then its meaning.
   — fewer than 8 characters, or not hex — gets the answer it has always had.
   The ids this covers are an ask's, a comment's, a message's, a document's and a document block's;
   an id in a request body (`reply_to`, `ask_id`, `in_reply_to`) and the `artifact=` filters are read whole, since the programs that write them hold the whole id.
+
+- `400 INVALID_ATTRIBUTE_VALUE`
+
+  A write states a node's `state` at a value none of `live`, `gone`, `proposed`, `settled` and `overtaken`, or its `visibility` at one neither `project` nor `author`, a comment's `visibility` among them.
+  The message names the attribute, the value and the values it takes (`the node visibility "public" is none of project, author`); nothing is written.
+
+- `403 AUTHOR_NAMES_NOBODY`
+
+  A write asks for `visibility` `author` on a credential that proves no author, the deployment's shared bearer, whose every holder presents one value, so the node would be nobody's to read; nothing is written.
+  The going POST refuses the same asker `403 GOING_ASKER_NAMES_NOBODY`, and both decide by `graphstore.ProvesAuthor`.
+
+- `400 VISIBILITY_NOT_ADMITTED`
+
+  A write asks for `visibility` `author` on a node of a kind that takes no node reserved for its author, because not every read of that kind binds the visibility predicate: every kind but those the read registry flags (`authorOnly` on an entry of `refs.nodeRegistry`, which `refs` hands to `graphstore.AdmitAuthorOnly`), a comment among them.
+  The message names the kind (`the node kind comment takes no node reserved for its author, …`); nothing is written.
+
+- `400 VISIBILITY_WIDER_THAN_PARENT`
+
+  A write places a node every reader of its project may see under or on a node reserved for its author: a `part_of` tuple out of a node that is not reserved for its author at a lens, a finding, a risk or a constraint that is (`graphstore.ErrVisibilityWiderThanParent`, checked in the write's own transaction, whichever writer appends the tuple).
+  A lens invoked with `visibility: "project"` on such a node, and a risk written so under such a lens, are refused it; a write that names no visibility takes its parent's.
+  The message names the node the write drew and the node it would stand under or on, each by its `dispatch://` address; nothing is written.
+
+- `400 INVALID_POINTER`
+
+  A pointer tuple a write states is at a node its type rule does not allow: a `has_kind` other than from a lens to a lens kind, a `triggered_by` other than from a lens to a lens invoked before it, a `constrained_by` other than from a requirement block or a lens kind to a constraint, a `prevented_by` other than from a risk to a check block of the risk's own project in a document that is not retired, or a risk's `part_of` to anything but a lens of kind `pre-mortem`;
+  or a lens's `has_kind` is retracted with none asserted in its place.
+  The message names the tuple kind, the near end, the far end's kind and what the rule allows, for a check of another project both projects and the check by its address, for a check of a retired document the check by its address, and for a `triggered_by` both lenses by address; nothing is written.
+
+- `409 POINTER_ALREADY_ASSERTED`
+
+  A write asserts a second `has_kind` of a lens, which holds exactly one kind and is retargeted rather than given another, or retracts or moves the `pre-mortem` kind of a lens, which a pre-mortem keeps; a move to `pre-mortem` is taken.
+  The body is one for each case, whatever hangs under the lens, so it tells nothing of a risk the caller may not see; nothing is written.
 
 ## Document errors
 

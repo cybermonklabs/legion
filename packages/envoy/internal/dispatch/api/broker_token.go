@@ -204,12 +204,14 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 	actor := model.Actor{
 		Kind: "session",
 		ID:   caller.Session,
-		// The broker proved this session, so the credential already names the agent behind the
-		// request and no request body has to name it, and the actor is Proven. A read-only token
-		// is marked as one, with the cut it reads at, which are what refuseReadOnlyToken reads, and
-		// the project scope is carried as its base word (ciphertoken.Caller.ProjectScope), which is
-		// how writeNeedsASignedInPerson tells an account entry's token naming no person from a
-		// machine's nobody signed in on.
+		// The broker proved this session, with or without a person behind it, so the credential
+		// already names the agent behind the request and no request body has to name it, and the
+		// actor is Proven: on the credential that acts and on every actor recorded from it
+		// (bearerSessionActor), so the one author rule tells it from a session a body named. A
+		// read-only token is marked as one, with the cut it reads at, which are what
+		// refuseReadOnlyToken reads, and the project scope is carried as its base word
+		// (ciphertoken.Caller.ProjectScope), which is how writeNeedsASignedInPerson tells an
+		// account entry's token naming no person from a machine's nobody signed in on.
 		Credential: &model.Credential{Scopes: scopes, Session: caller.Session, ReadOnly: caller.ReadOnly, Cut: caller.Cut, ProjectScope: caller.ProjectScope},
 		Proven:     true,
 	}

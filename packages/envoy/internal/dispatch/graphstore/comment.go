@@ -27,6 +27,12 @@ const (
 // artifact's address, its ref_key, and is stated only where the comment has one: an empty
 // address states none, as graph_edges' own join drops an anchor no artifact row answers.
 //
+// The request that writes a comment sets on the node the visibility its body asked for, as
+// VisibilityFor answered it (api's commentStored); the seed and the backfill keep the project
+// visibility. A comment is a kind no node of which the store takes reserved for its author
+// (AdmitAuthorOnly), so a comment at VisibilityAuthor is refused by the write it reaches, with a
+// VisibilityNotAdmittedError naming the kind, and nothing of it is stored.
+//
 // It is the one statement of these facts, which the request that writes a comment
 // (api.commentStored), the seed and the backfill of the comments written before the store
 // existed all write. None of them states the node's base attributes: Write states them for a

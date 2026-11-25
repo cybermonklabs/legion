@@ -30,7 +30,7 @@ const heldDocumentPlanBlocks = 1000
 // off, under each plan-cache mode the plan must read each member's node by its own key through
 // graph_nodes_pkey, once (explaintest.RequireEachRowProbedOnce).
 //
-// The statement is the one the read sends, with the argument it binds (explaintest.RecordedTx).
+// The statement is the one the read sends, with the arguments it binds (explaintest.RecordedTx).
 // The control is that statement with its join to graph_nodes as it stood before
 // (heldDocumentJoinBefore), which the planner served with `kind = 'block'` for the index's
 // condition, reading every block node again for each member: it must plan and run, and the check
@@ -51,7 +51,7 @@ func TestTheHeldDocumentReadProbesEachMembersNodeOnce(t *testing.T) {
 	tuples := make([]graphstore.Tuple, 0, 2*heldDocumentPlanBlocks)
 	for index := range heldDocumentPlanBlocks {
 		address := blockNodeAddress(refKey, fmt.Sprintf("b%05d", index))
-		node := blockNode(address, IndexedVersion{RefKey: refKey, Writer: who}, at, graphstore.StateLive, BlockSupertag)
+		node := blockNode(address, IndexedVersion{RefKey: refKey, Writer: who}, at, graphstore.StateLive, BlockSupertag, false)
 		node.SourceEvent = cause
 		nodes = append(nodes, node)
 		tuples = append(tuples,

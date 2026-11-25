@@ -17,7 +17,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
@@ -59,9 +58,15 @@ const referencesSinceWait = time.Second
 // structural edges. Cross-project by design: no project filter. A block reference names a
 // block node carrying its whole current text; one pinned to a version of its document, or a
 // revision of its ask's parts or of its comment, also reads the block as that version or revision
-// recorded it (blockReferenceNode, itemBlockReferenceNode). A ?kind= this build does not emit - a
-// newer build's, during a release - has no edges here, and the answer lists it in unknown_kinds
-// rather than refusing the read.
+// recorded it (blockReferenceNode, itemBlockReferenceNode). A finding of a lens
+// (`dispatch://lens/<uuid>#b-<id>`) is the registry's lens_block node, read as a lens, a risk or a
+// constraint is (refs.Node). A document's address that moved to a lens - the pre-mortem
+// conversion retires a document and moves its address to the lens it writes in its place - answers
+// that lens (movedDocumentNode), as a moved block's old address answers the block it moved to. A
+// ?kind= this build does not emit - a newer build's, during a release - has no edges here, and the
+// answer lists it in unknown_kinds rather than refusing the read. The edges, with the excerpts of
+// their document mentions, are read with JIT off (inReferencesListRead); the node is read before
+// them on the pool.
 //
 // A since read keeps only mentions whose event is at or below the safe horizon
 // (events.Horizon), at or below which every event is final. A poller passes the highest
@@ -103,7 +108,10 @@ func (s *server) getReferences(w http.ResponseWriter, r *http.Request) {
 		query.Kind, query.ID = target.Kind, target.ID
 	}
 	var node model.GraphNode
-	if ref.Kind == "block" {
+	// A finding of a lens is a block of no document and of no item: no version or revision of one
+	// is on record and no reference pins one (text.ParseRef reads none), so it is read at its
+	// address as any node of the registry is, through its own kind's predicate.
+	if ref.Kind == "block" && query.Kind != graphstore.KindLensBlock {
 		if ref.Item != "" {
 			node, err = s.itemBlockReferenceNode(r.Context(), who, query, ref)
 		} else {
@@ -134,10 +142,18 @@ func (s *server) getReferences(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		var found bool
-		node, found, err = refs.Node(r.Context(), s.deps.Store.Pool, who, query.Kind, query.ID, query.Direction == "in")
-		if err != nil {
-			s.writeHandlerError(w, err)
-			return
+		if query.Direction == "in" && ref.Kind == "artifact" {
+			if node, found, err = s.movedDocumentNode(r.Context(), who, query.ID); err != nil {
+				s.writeHandlerError(w, err)
+				return
+			}
+		}
+		if !found {
+			node, found, err = refs.Node(r.Context(), s.deps.Store.Pool, who, query.Kind, query.ID, query.Direction == "in")
+			if err != nil {
+				s.writeHandlerError(w, err)
+				return
+			}
 		}
 		if !found {
 			s.writeHandlerError(w, errorf(http.StatusNotFound, "NOT_FOUND", "no %s at %s", query.Kind, query.ID))
@@ -146,27 +162,23 @@ func (s *server) getReferences(w http.ResponseWriter, r *http.Request) {
 	}
 	// When this build knows none of the kinds the caller named, no edge is of them; refs.Edges
 	// with no Kinds would read every kind.
-	edges := []model.GraphEdge{}
-	if len(query.Kinds) > 0 || len(unknownKinds) == 0 {
-		if query.Since != nil {
-			safe, err := s.sinceHorizon(r.Context())
-			if err != nil {
-				s.writeHandlerError(w, err)
-				return
-			}
-			query.Through = &safe
-		}
-		edges, err = refs.Edges(r.Context(), s.deps.Store.Pool, who, query)
+	readEdges := len(query.Kinds) > 0 || len(unknownKinds) == 0
+	if readEdges && query.Since != nil {
+		safe, err := s.sinceHorizon(r.Context())
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
+		query.Through = &safe
 	}
-	if query.Direction == "in" {
-		if err := s.documentMentionExcerpts(r.Context(), who, query, edges); err != nil {
+	edges := []model.GraphEdge{}
+	if readEdges {
+		read, err := s.inReferencesListRead(r.Context(), who, query)
+		if err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
+		edges = read
 	}
 	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
 	answer := graphReferencesRead{Node: graphNodeRead{GraphNode: node}, Edges: edges, UnknownKinds: unknownKinds}
@@ -337,7 +349,7 @@ func (s *server) sinceHorizon(ctx context.Context) (int64, error) {
 func (s *server) blockReferenceNode(ctx context.Context, who model.Actor, query refs.Query, ref text.Ref) (model.GraphNode, error) {
 	pool := s.deps.Store.Pool
 	documentKey, _, _ := strings.Cut(query.ID, "#")
-	document, found, err := s.documentAtAddress(ctx, who, documentKey)
+	document, found, err := documentAtAddress(ctx, pool, who, documentKey)
 	if err != nil {
 		return model.GraphNode{}, err
 	}
@@ -355,7 +367,18 @@ func (s *server) blockReferenceNode(ctx context.Context, who model.Actor, query 
 		node.Text, err = refs.CurrentBlockText(ctx, pool, document.ID, ref.Block)
 		return node, err
 	}
-	at, err := refs.BlockTextAt(ctx, pool, document.ID, ref.Block, ref.Pin)
+	return pinnedBlockNode(ctx, pool, who, document, node, current, query.ID, ref)
+}
+
+// pinnedBlockNode is block nodeID of document read at the version ref pins (ref.Pin is not 0), as
+// a reference pinned to it reads it (blockReferenceNode), where node and current are what refs.Node
+// answered for nodeID: the block with what that version recorded of it (model.BlockPin). A
+// block no current version holds is the node RemovedBlockNode builds, and a pin to a version the
+// document lacks, to one whose blocks are not on record or to one that did not hold the block
+// answers 404, each saying which. The lens read reads a pinned address the same way
+// (lensReadNode).
+func pinnedBlockNode(ctx context.Context, q refs.Queryer, who model.Actor, document, node model.GraphNode, current bool, nodeID string, ref text.Ref) (model.GraphNode, error) {
+	at, err := refs.BlockTextAt(ctx, q, document.ID, ref.Block, ref.Pin)
 	if err != nil {
 		return model.GraphNode{}, err
 	}
@@ -367,9 +390,9 @@ func (s *server) blockReferenceNode(ctx context.Context, who model.Actor, query 
 	// hold it, and its text, its removal and its existence stay unsaid.
 	hidden := false
 	if !current && at.Text != nil {
-		if err := pool.QueryRow(ctx, `select not `+refs.VisibleKind("block", "$1", "$2"),
-			query.ID, refs.VisibilityArg(who)).Scan(&hidden); err != nil {
-			return model.GraphNode{}, fmt.Errorf("read whether the reader may see block %s: %w", query.ID, err)
+		if err := q.QueryRow(ctx, `select not `+refs.VisibleKind("block", "$1", "$2"),
+			nodeID, refs.VisibilityArg(who)).Scan(&hidden); err != nil {
+			return model.GraphNode{}, fmt.Errorf("read whether the reader may see block %s: %w", nodeID, err)
 		}
 	}
 	switch {
@@ -386,14 +409,14 @@ func (s *server) blockReferenceNode(ctx context.Context, who model.Actor, query 
 	pin := &model.BlockPin{Version: ref.Pin, Ref: blockRef + "@v" + strconv.Itoa(ref.Pin), Text: *at.Text}
 	if !current {
 		pin.State, pin.RemovedVersion = "removed", at.RemovedVersion
-		removed, err := refs.RemovedBlockNode(ctx, pool, document, query.ID, ref.Block, at.RemovedVersion)
+		removed, err := refs.RemovedBlockNode(ctx, q, document, nodeID, ref.Block, at.RemovedVersion)
 		if err != nil {
 			return model.GraphNode{}, err
 		}
 		removed.Pin = pin
 		return removed, nil
 	}
-	if node.Text, err = refs.CurrentBlockText(ctx, pool, document.ID, ref.Block); err != nil {
+	if node.Text, err = refs.CurrentBlockText(ctx, q, document.ID, ref.Block); err != nil {
 		return model.GraphNode{}, err
 	}
 	pin.State = "unchanged"
@@ -445,21 +468,38 @@ func (s *server) movedBlockNode(ctx context.Context, who model.Actor, address st
 	return node, err
 }
 
+// movedDocumentNode is the lens the address of the document stored at refKey moved to: the lens
+// the pre-mortem conversion wrote in the place of the document it retired (api.ConvertPremortem),
+// which the moved_to from the document's address reaches (graphstore.MovedTo). It is answered as a
+// moved block's old address answers the block it reached (movedBlockNode): the node the move
+// reaches, named by its own address, and the edges the read lists beside it are those at the
+// address asked, the citations of the document. found is false where the address moved to no lens
+// that stands, and where who may not see the lens, and the read then answers the address as it
+// would with no move - the document, or a retired document's issue (refs.loadArtifactNodes) - so
+// a move says nothing of a lens the reader may not see.
+func (s *server) movedDocumentNode(ctx context.Context, who model.Actor, refKey string) (model.GraphNode, bool, error) {
+	pool := s.deps.Store.Pool
+	reached, moved, err := graphstore.MovedTo(ctx, pool, refKey)
+	if err != nil || !moved {
+		return model.GraphNode{}, false, err
+	}
+	return refs.Node(ctx, pool, who, graphstore.KindLens, reached.Lens, true)
+}
+
 // documentAtAddress is the document stored at refKey, as a read of its blocks needs it: the node
 // refs.Node answers for the address, or, where the address is a retired document's, which refs
 // answers as the document's issue (refs.loadArtifactNodes), the document itself, read by its uuid,
 // since a retired document's blocks and versions stay readable.
-func (s *server) documentAtAddress(ctx context.Context, who model.Actor, refKey string) (model.GraphNode, bool, error) {
-	pool := s.deps.Store.Pool
-	document, found, err := refs.Node(ctx, pool, who, graphstore.KindArtifact, refKey, true)
+func documentAtAddress(ctx context.Context, q refs.Queryer, who model.Actor, refKey string) (model.GraphNode, bool, error) {
+	document, found, err := refs.Node(ctx, q, who, graphstore.KindArtifact, refKey, true)
 	if err != nil || !found || document.Kind == graphstore.KindArtifact {
 		return document, found, err
 	}
 	var id string
-	if err := pool.QueryRow(ctx, `select id::text from artifacts where ref_key = $1`, refKey).Scan(&id); err != nil {
+	if err := q.QueryRow(ctx, `select id::text from artifacts where ref_key = $1`, refKey).Scan(&id); err != nil {
 		return model.GraphNode{}, false, fmt.Errorf("read the retired document at %s: %w", refKey, err)
 	}
-	return refs.Node(ctx, pool, who, graphstore.KindArtifact, id, false)
+	return refs.Node(ctx, q, who, graphstore.KindArtifact, id, false)
 }
 
 // itemBlockReferenceNode is the block node ref, a part of an ask or a block of a comment or a
@@ -502,26 +542,39 @@ func (s *server) itemBlockReferenceNode(ctx context.Context, who model.Actor, qu
 	}
 	if ref.Pin == 0 {
 		if !current {
-			return model.GraphNode{}, s.itemBlockNotFound(ctx, kind, item.ID,
+			return model.GraphNode{}, itemBlockNotFound(ctx, pool, kind, item.ID,
 				fmt.Sprintf("no %s %q in %s %s", noun, ref.Block, ref.Item, item.ID))
 		}
 		return node, nil
 	}
-	at, err := refs.ItemBlockAt(ctx, pool, kind, item.ID, ref.Block, ref.Pin)
+	return pinnedItemBlockNode(ctx, pool, who, item, node, current, query.ID, ref)
+}
+
+// pinnedItemBlockNode is block nodeID of item, an ask or a comment, read at the revision ref pins
+// (ref.Pin is not 0), as a reference pinned to it reads it (itemBlockReferenceNode), where node and
+// current are what refs.Node answered for nodeID, its text the current one: the block with what
+// that revision recorded of it (model.BlockPin). A block no current revision holds is the node
+// refs.RemovedItemBlockNode builds, and a pin past the item's current revision or to one that did
+// not hold the block answers 404, each saying which. The lens read reads a pinned address of an
+// item's block the same way (lensReadNode).
+func pinnedItemBlockNode(ctx context.Context, q refs.Queryer, who model.Actor, item, node model.GraphNode, current bool, nodeID string, ref text.Ref) (model.GraphNode, error) {
+	kind := refs.ItemKind(ref.Item)
+	noun := itemBlockNoun(ref.Item)
+	at, err := refs.ItemBlockAt(ctx, q, kind, item.ID, ref.Block, ref.Pin)
 	if err != nil {
 		return model.GraphNode{}, err
 	}
 	switch {
 	case ref.Pin > at.Current:
-		return model.GraphNode{}, s.itemBlockNotFound(ctx, kind, item.ID,
+		return model.GraphNode{}, itemBlockNotFound(ctx, q, kind, item.ID,
 			fmt.Sprintf("no revision %d of %s %s; its current revision is %d", ref.Pin, ref.Item, item.ID, at.Current))
 	case at.Text == nil:
-		return model.GraphNode{}, s.itemBlockNotFound(ctx, kind, item.ID,
+		return model.GraphNode{}, itemBlockNotFound(ctx, q, kind, item.ID,
 			fmt.Sprintf("no %s %q in %s %s at revision %d", noun, ref.Block, ref.Item, item.ID, ref.Pin))
 	}
 	pin := &model.BlockPin{Version: ref.Pin, Ref: refs.BlockRef(item.Ref, ref.Block) + "@v" + strconv.Itoa(ref.Pin), Text: *at.Text}
 	if !current {
-		removed, held, err := refs.RemovedItemBlockNode(ctx, pool, who, kind, query.ID, at.RemovedRevision)
+		removed, held, err := refs.RemovedItemBlockNode(ctx, q, who, kind, nodeID, at.RemovedRevision)
 		if err != nil {
 			return model.GraphNode{}, err
 		}
@@ -557,10 +610,12 @@ func itemBlockNoun(kind string) string {
 // say that the block is missing and leave the deletion unsaid, where every read of the post
 // says that it is deleted. The status stays 404: the reference names a node no read can give,
 // which is what NOT_FOUND says here, and the words match deletedPostError's
-// (handler_errors.go), written again here under that 404. The mark is read on this path alone, so a reference to a
-// block that is there costs no query for it.
-func (s *server) itemBlockNotFound(ctx context.Context, kind refs.ItemKind, itemID, missing string) error {
-	deleted, err := s.postIsDeleted(ctx, kind, itemID)
+// (handler_errors.go), written again here under that 404. The mark is read on this path alone, so
+// a reference to a block that is there costs no query for it, and through q, the queryer the read
+// that missed the block reads with, so the lens read's reads of a pinned block
+// (pinnedItemBlockNode, from lensReadNode) take it on their own transaction.
+func itemBlockNotFound(ctx context.Context, q refs.Queryer, kind refs.ItemKind, itemID, missing string) error {
+	deleted, err := postIsDeleted(ctx, q, kind, itemID)
 	if err != nil {
 		return err
 	}
@@ -577,7 +632,7 @@ func (s *server) itemBlockNotFound(ctx context.Context, kind refs.ItemKind, item
 // storage (refs.ItemKind.ItemTable), as postHistoryOwner reads it. A row deleted outright
 // between the caller's read and this one answers false, and the caller's own refusal then
 // stands as it wrote it.
-func (s *server) postIsDeleted(ctx context.Context, kind refs.ItemKind, itemID string) (bool, error) {
+func postIsDeleted(ctx context.Context, q refs.Queryer, kind refs.ItemKind, itemID string) (bool, error) {
 	if kind != refs.ItemComment && kind != refs.ItemMessage {
 		return false, nil
 	}
@@ -586,7 +641,7 @@ func (s *server) postIsDeleted(ctx context.Context, kind refs.ItemKind, itemID s
 		return false, err
 	}
 	var deleted bool
-	if err := s.deps.Store.Pool.QueryRow(ctx, `
+	if err := q.QueryRow(ctx, `
 		select deleted_at is not null from `+items+` where id = $1
 	`, itemID).Scan(&deleted); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -624,7 +679,7 @@ func parseRequestRef(raw, serverURL string) (text.Ref, error) {
 	if pinsAMessageBlock(raw, serverURL) {
 		return text.Ref{}, errorf(http.StatusBadRequest, "INVALID_REFERENCE", "%q pins a block of a message, which records no revisions; name the block without @v<N>", raw)
 	}
-	return text.Ref{}, errorf(http.StatusBadRequest, "INVALID_REFERENCE", "%q is not a dispatch:// reference to an issue, document, block, ask, comment, message, or component", raw)
+	return text.Ref{}, errorf(http.StatusBadRequest, "INVALID_REFERENCE", "%q is not a dispatch:// reference to an issue, document, block, ask, comment, message, component, interaction, lens, lens finding, risk, constraint, or lens kind", raw)
 }
 
 // parseReferencesQuery turns ?to=|?from=, ?kind=, and ?since= into an edge query addressed the
@@ -688,16 +743,44 @@ func parseReferencesQuery(r *http.Request, serverURL string) (refs.Query, text.R
 	return query, ref, unknownKinds, nil
 }
 
+// inReferencesListRead is getReferences's list: query's edges (refs.Edges), with, on an inbound
+// read, the excerpts stored on the document mentions among them (documentMentionExcerpts), all
+// read in a read transaction of its own whose first statement sets jit off (inJITOffRead).
+//
+// JIT is off because compiling the read's statement over graph_edges (readEdgeRows) costs more
+// than running it: with JIT on, which compiled 451 functions for each call, it took 136.5 ms a
+// call, and with JIT off 21.6 to 27.8 ms (the root's c-read-cost). Production's
+// database is Cloud SQL, which runs no JIT, so the setting makes the read on a deployment with its
+// own Postgres what it is in production. No statement of this read carries a tag, so the setting
+// carries none either. The read has no budget: referencesClosureBound is the closure's alone.
+// TestTheReferencesListReadRunsWithJITOff holds the route's read to it on a session that starts at
+// jit = on.
+func (s *server) inReferencesListRead(ctx context.Context, who model.Actor, query refs.Query) ([]model.GraphEdge, error) {
+	edges := []model.GraphEdge{}
+	err := s.inJITOffRead(ctx, "", func(tx pgx.Tx) error {
+		var err error
+		if edges, err = refs.Edges(ctx, tx, who, query); err != nil {
+			return err
+		}
+		if query.Direction == "in" {
+			return documentMentionExcerpts(ctx, tx, who, query, edges)
+		}
+		return nil
+	})
+	return edges, err
+}
+
 // documentMentionExcerpts replaces the excerpt of every mention written by a document with the
-// excerpt stored when the mention was indexed (refs.RecordExcerpts): the block holding the mention,
-// its id a #b-<id> jump target, and its markdown. The route reads no document: a mention whose
-// excerpt the reconciliation has not stored yet, is owed a fresh one, or lies in no block keeps
-// the document's name. The reconciliation serves the next stored block only after it records a
-// non-null excerpt_version. During the deploy that ships migration 0092, a stale excerpt whose
-// version is still set is served until the reconciliation marks it owed (refs.StoredExcerpts).
-// The excerpts are read for who, so one whose document or block who may not see is none.
-func (s *server) documentMentionExcerpts(ctx context.Context, who model.Actor, query refs.Query, edges []model.GraphEdge) error {
-	stored, err := refs.StoredExcerpts(ctx, s.deps.Store.Pool, who, query.Kind, query.ID)
+// excerpt stored when the mention was indexed (refs.RecordExcerpts), read through q: the block
+// holding the mention, its id a #b-<id> jump target, and its markdown. The route reads no
+// document: a mention whose excerpt the reconciliation has not stored yet, is owed a fresh one, or
+// lies in no block keeps the document's name. The reconciliation serves the next stored block
+// only after it records a non-null excerpt_version. During the deploy that ships migration 0092, a
+// stale excerpt whose version is still set is served until the reconciliation marks it owed
+// (refs.StoredExcerpts). The excerpts are read for who, so one whose document or block who may
+// not see is none.
+func documentMentionExcerpts(ctx context.Context, q refs.Queryer, who model.Actor, query refs.Query, edges []model.GraphEdge) error {
+	stored, err := refs.StoredExcerpts(ctx, q, who, query.Kind, query.ID)
 	if err != nil {
 		return err
 	}
@@ -718,11 +801,13 @@ func (s *server) documentMentionExcerpts(ctx context.Context, who model.Actor, q
 // the issue or to its own content, each written [] when it has no row and never null. members are
 // the documents of links, each read whole by its ref_key, at depth 1 and with its row's via, and
 // truncated is false, since a read of one hop is never cut: both stay for the clients of the build
-// before, which read them alone. The read runs under referencesClosureBound (boundedClosure);
-// loadIssue before it and loadArtifactsByRefKey after it read by key on the pool, outside the
-// bound. ?versions=latest leaves each member's artifact.versions holding only its latest version,
-// under its own ETag; absent, empty or all is the full answer. A repeated versions is refused
-// rather than read by its first value.
+// before, which read them alone. Each member carries its kind and address: artifact and the
+// document's own, or lens and the lens's where a link names the address of a document the
+// pre-mortem conversion moved to a lens, its artifact then the retired document. The read runs
+// under referencesClosureBound (inClosureRead); loadIssue before it and loadArtifactsByRefKey
+// after it read by key on the pool, outside the bound. ?versions=latest leaves each member's
+// artifact.versions holding only its latest version, under its own ETag; absent, empty or all is
+// the full answer. A repeated versions is refused rather than read by its first value.
 func (s *server) getIssueReferences(w http.ResponseWriter, r *http.Request) {
 	who, ok := s.actingReader(w, r)
 	if !ok {
@@ -749,7 +834,7 @@ func (s *server) getIssueReferences(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	closure, err := s.boundedClosure(r.Context(), who, issue.Key)
+	closure, err := s.inClosureRead(r.Context(), who, issue.Key)
 	if err != nil {
 		if closureBoundHit(err) {
 			s.writeHandlerError(w, errorf(http.StatusServiceUnavailable, "REFERENCES_TIMEOUT",
@@ -777,6 +862,8 @@ func (s *server) getIssueReferences(w http.ResponseWriter, r *http.Request) {
 		}
 		members = append(members, model.ReferenceMember{
 			Artifact: *artifact,
+			Kind:     closureMember.Kind,
+			Address:  closureMember.Address,
 			Depth:    closureMember.Depth,
 			Via:      closureMember.Via,
 		})
@@ -799,112 +886,6 @@ func (s *server) getIssueReferences(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(answer.Bytes())
-}
-
-// referencesClosureBound is the budget every statement of one GET of an issue's references shares
-// (boundedClosure). A read that reaches it answers 503 REFERENCES_TIMEOUT, which the CLI prints as
-// references unavailable, rather than holding a connection and a CPU for as long as the read
-// takes. On 2026-11-20 from 00:27Z the eight-hop walk this read replaced held Dispatch's Cloud SQL
-// instance at full CPU: every `dispatch read --issue` and the Artifacts tab ask for it, and Query
-// Insights gave that one statement 31,299 s of execution in 20 minutes, 12 times every other
-// statement together (cybermonklabs/legion#4554).
-const referencesClosureBound = 2 * time.Second
-
-// boundedClosure runs refs.Closure, as who reads it, in a read transaction of its own, through
-// closureBudget, so that every statement of the read - the out and in statements and each loader
-// that names their nodes - runs under what is left of referencesClosureBound since the read
-// started. One statement_timeout of the whole bound for the transaction would not hold the bound:
-// the read sends several statements, whose sum can pass the context's deadline with none past the
-// bound, and at that deadline pgx closes the connection while the server's statement runs on (its
-// default BuildContextWatcherHandler, as outbox/lease.go records). The context, a second past the
-// bound, stays as the last guard, for a wait no statement_timeout covers, such as the begin's. The
-// rollback runs on a context of its own, as the near-copy gate's does (duplicates.go): the read's
-// context has expired exactly when the rollback matters, and pgx answers a rollback on an expired
-// context by destroying the connection instead of returning it to the pool.
-func (s *server) boundedClosure(ctx context.Context, who model.Actor, issueKey string) (refs.References, error) {
-	started := time.Now()
-	ctx, cancel := context.WithTimeout(ctx, referencesClosureBound+time.Second)
-	defer cancel()
-	tx, err := s.begin(ctx)
-	if err != nil {
-		return refs.References{}, err
-	}
-	defer func() {
-		rollback, cancelRollback := context.WithTimeout(context.WithoutCancel(ctx), duplicateGateRollback)
-		defer cancelRollback()
-		_ = tx.Rollback(rollback)
-	}()
-	return refs.Closure(ctx, closureBudget{tx: tx, started: started}, who, issueKey)
-}
-
-// closureBudget is boundedClosure's transaction tx as refs.Closure reads it (refs.Queryer). Before
-// each statement it passes on, it gives that statement what is left of referencesClosureBound
-// since started, the start of the read (setStatementBudget), so a statement that waits, on a lock
-// or for the CPU, takes its wait out of the time of every statement after it. It answers the
-// budget's refusal in place of a statement it does not send.
-type closureBudget struct {
-	tx      pgx.Tx
-	started time.Time
-}
-
-func (b closureBudget) Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error) {
-	if err := b.spend(ctx); err != nil {
-		return nil, err
-	}
-	return b.tx.Query(ctx, sql, args...)
-}
-
-func (b closureBudget) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
-	if err := b.spend(ctx); err != nil {
-		return refusedRow{err: err}
-	}
-	return b.tx.QueryRow(ctx, sql, args...)
-}
-
-// spend gives the next statement of the read what is left of referencesClosureBound since
-// started (setStatementBudget).
-func (b closureBudget) spend(ctx context.Context) error {
-	return setStatementBudget(ctx, b.tx, referencesClosureBound-time.Since(b.started))
-}
-
-// refusedRow is the row closureBudget answers for a statement it did not send: its Scan answers
-// the refusal.
-type refusedRow struct{ err error }
-
-func (r refusedRow) Scan(...any) error { return r.err }
-
-// errClosureBudgetSpent is setStatementBudget's answer when less than a millisecond of
-// referencesClosureBound is left before a statement of boundedClosure's read: the read is at its
-// bound, and the route answers it as it answers a statement Postgres cancelled there.
-var errClosureBudgetSpent = errors.New("the reference closure's budget has less than 1ms left")
-
-// setStatementBudget gives the next statement of boundedClosure's transaction tx what is left of
-// referencesClosureBound, left, so that the statements of the read share the one bound rather
-// than each having it whole. It sets statement_timeout for the rest of tx to the whole
-// milliseconds of left, rounded down, 1ms at 1 ms left, with
-// `select set_config('statement_timeout', $1, true)` after refs.ClosureTag, which starts every
-// statement of the read, so that pg_stat_activity names this statement as the read's too. Under
-// 1 ms left it sends no statement and answers errClosureBudgetSpent, which closureBoundHit reads
-// as the bound, because the timeout rounded down would be 0, and a statement_timeout of 0 turns
-// the timeout off.
-func setStatementBudget(ctx context.Context, tx pgx.Tx, left time.Duration) error {
-	milliseconds := left.Milliseconds()
-	if milliseconds < 1 {
-		return errClosureBudgetSpent
-	}
-	_, err := tx.Exec(ctx, refs.ClosureTag+"select set_config('statement_timeout', $1, true)", strconv.FormatInt(milliseconds, 10)+"ms")
-	return err
-}
-
-// closureBoundHit says whether boundedClosure's read ended at its bound: Postgres cancelled a
-// statement at the statement_timeout its budget set (SQLSTATE 57014), the budget had less than a
-// millisecond left for the next statement (errClosureBudgetSpent), or the context expired first.
-func closureBoundHit(err error) bool {
-	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, errClosureBudgetSpent) {
-		return true
-	}
-	var pgError *pgconn.PgError
-	return errors.As(err, &pgError) && pgError.Code == "57014" // query_canceled
 }
 
 func (s *server) getArtifactReferences(w http.ResponseWriter, r *http.Request) {
@@ -940,14 +921,15 @@ func (s *server) getArtifactReferences(w http.ResponseWriter, r *http.Request) {
 // anything this issue holds moving with it. A member is a document of another owner (no member
 // is one of this issue's own documents, refs.Closure), and that owner's writes append their
 // events there: a rename of the document (artifact.renamed, renameArtifact) changes the
-// member's artifact.name, and the delete of a comment whose accepted suggestion named a version
-// after the comment's body renames that version (renameAcceptedVersion), while this issue's
-// event sequence, the closure and each member's latest version stand still. A row of links or
-// linked_from carries its node's name, last change and parent, and another node's new link to
-// the issue adds a row, none of which moves the issue's own sequence either. A token over those
-// would answer a reader holding it 304 over the old words; a token over the answer moves with
-// every byte a reader is shown, and the build before, which writes neither list, writes other
-// bytes for the same issue, so the two builds never share an ETag.
+// member's artifact.name, the delete of a comment whose accepted suggestion named a version
+// after the comment's body renames that version (renameAcceptedVersion), and a document's
+// conversion into a lens moves the member's address with no new version of it, while this
+// issue's event sequence, the closure and each member's latest version stand still. A row of
+// links or linked_from carries its node's name, last change and parent, and another node's new
+// link to the issue adds a row, none of which moves the issue's own sequence either. A token
+// over those would answer a reader holding it 304 over the old words; a token over the answer
+// moves with every byte a reader is shown, and the build before, which writes neither list,
+// writes other bytes for the same issue, so the two builds never share an ETag.
 func referencesETag(answer []byte, latestOnly bool) string {
 	hash := sha256.New()
 	if latestOnly {

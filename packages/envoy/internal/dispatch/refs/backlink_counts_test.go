@@ -365,6 +365,16 @@ func newBacklinkFixture(t *testing.T) backlinkFixture {
 		{"message_block", removedMessageBlock},
 		{"ask_block", askPart},
 		{"ask_block", removedAskPart},
+		// The two kinds of the lens catalogue, which the seed holds (migration 20261123174710):
+		// a kind and the constraint that is its source, each named by a mention as any node is.
+		{"lens_kind", "pre-mortem"},
+		{"constraint", "5eed0000-1e45-4000-8000-000000000001"},
+		// A lens, a finding of it and a risk under it (writeBacklinkReasoning), and a run of the
+		// command bar (its node is written below), each named by a mention as any node is.
+		{"lens", backlinkLens},
+		{"lens_block", backlinkFinding},
+		{"risk", backlinkRisk},
+		{"interaction", "22222222-2222-4222-8222-222222222222"},
 	} {
 		insertReference(t, tx, "comment", citingComment, target[0], target[1])
 	}
@@ -373,6 +383,44 @@ func newBacklinkFixture(t *testing.T) backlinkFixture {
 	// A source of a node kind this build cannot address, written straight into refs as a newer
 	// build would leave it: the mention arm's from_kind filter is what keeps it out of a count.
 	insertReference(t, tx, "future", "x#y", "issue", "CORE-1")
+	// graph_tuples, the view's store class: an authored_by out of a lens to the person and out of
+	// an interaction to the session, which the view answers from the tuples alone. Both are kinds
+	// this build resolves, so each edge counts on its author (authoredByReasoning). The interaction
+	// is written project-visible, as no run is, because the oracle reads the view with no
+	// predicate: a run reserved for its author would be in the view's count and in no reader's.
+	for _, authored := range []struct{ fromKind, fromID, toKind, toID string }{
+		{"lens", backlinkLens, "person", "person-backlink@example.com"},
+		{"interaction", "22222222-2222-4222-8222-222222222222", "session", "session-backlink"},
+	} {
+		execFixture(t, tx, "write the "+authored.fromKind+" node", `
+			insert into graph_nodes (kind, id, supertag, visibility, state, made_at, made_by, source_event)
+			values ($1, $2, $1, 'project', 'live', now(), '{"kind":"user","id":"alice"}', 0)
+		`, authored.fromKind, authored.fromID)
+		execFixture(t, tx, "write the "+authored.fromKind+"'s authored_by", `
+			insert into graph_tuples (from_kind, from_id, kind, to_kind, to_id, at, who, source_event)
+			values ($1, $2, 'authored_by', $3, $4, now(), '{"kind":"user","id":"alice"}', 0)
+		`, authored.fromKind, authored.fromID, authored.toKind, authored.toID)
+	}
+	// A has_kind out of the same lens to a kind of the catalogue, which the view answers from the
+	// tuples alone, as it answers the seed's constrained_by from each kind to its source: a lens
+	// kind's count holds the lens, and a constraint's count holds the lens kind whose source it is.
+	execFixture(t, tx, "write the lens's has_kind", `
+		insert into graph_tuples (from_kind, from_id, kind, to_kind, to_id, at, who, source_event)
+		values ('lens', $1, 'has_kind', 'lens_kind', 'pre-mortem', now(), '{"kind":"user","id":"alice"}', 0)
+	`, backlinkLens)
+	writeBacklinkReasoning(t, tx, specRef, specBlock, commentBlock)
+	// The changed_by_run of what a write made for that run changed: a lens, a finding of it and a
+	// risk under it, each answered from the tuples alone and counted on the run's node
+	// (changedByRun), the finding as the lens_block its own arm writes it as; and one out of the
+	// lens the store holds gone, which neither reading counts.
+	for _, changed := range []struct{ fromKind, fromID string }{
+		{"lens", backlinkLens}, {"block", backlinkFinding}, {"risk", backlinkRisk}, {"lens", backlinkGoneLens},
+	} {
+		execFixture(t, tx, "write the changed_by_run of "+changed.fromKind+" "+changed.fromID, `
+			insert into graph_tuples (from_kind, from_id, kind, to_kind, to_id, at, who, source_event)
+			values ($1, $2, 'changed_by_run', 'interaction', '22222222-2222-4222-8222-222222222222', now(), '{"kind":"user","id":"alice"}', 0)
+		`, changed.fromKind, changed.fromID)
+	}
 
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatalf("commit fixture: %v", err)
@@ -709,6 +757,10 @@ var graphViewArms = []graphViewArm{
 	// reads true: every select item of it is a column, so it is a mention arm to this test, and
 	// mentionBacklinkArms reads graph_tuples for exactly that reason.
 	{table: "graph_tuples"},
+	// The store's arm over the relations out of a finding of a lens, which writes its from_kind,
+	// lens_block, as a literal and every other item as a column (migration 20261117020856): its
+	// edges are counted by the arms of the store alone (storedFrom) that name a lens_block.
+	{table: "graph_tuples", fromKind: "lens_block"},
 	{table: "document_blocks", fromKind: "block", kind: "part_of", toKind: "artifact"},
 	{table: "comment_blocks", fromKind: "comment_block", kind: "part_of", toKind: "comment"},
 	{table: "message_blocks", fromKind: "message_block", kind: "part_of", toKind: "message"},
@@ -747,10 +799,14 @@ func TestTheGraphViewGainsNoArmTheBacklinkCountDoesNotKnow(t *testing.T) {
 	// An arm whose to_kind is a literal is a structural arm, and backlinkArms must declare it
 	// under that kind with that edge kind. They are compared as multisets because one kind can
 	// hold the same edge kind twice: an artifact is anchored_to and owned_by from both asks and
-	// comments.
+	// comments. An arm of the store alone (storedFrom) counts rows of the view's tuple arm, whose
+	// to_kind is a column and which graphViewArms holds as graph_tuples, so it is none of them.
 	var declared, viewed []string
 	for kind, arms := range backlinkArms {
 		for _, arm := range arms {
+			if len(arm.storedFrom) > 0 {
+				continue
+			}
 			declared = append(declared, kind+"/"+arm.kind)
 		}
 	}

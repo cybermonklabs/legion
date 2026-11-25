@@ -121,3 +121,15 @@ func (r RepoURLRule) RewriteSQL(url string) string {
 func QuoteLiteral(s string) string {
 	return `'` + strings.ReplaceAll(s, `'`, `''`) + `'`
 }
+
+// QuoteLiterals is values as the list of SQL string literals an `in` list takes: each value
+// through QuoteLiteral, in the order of values, joined with a comma and a space. Like
+// QuoteLiteral, it is for text a statement is built from once, such as a list of kinds or
+// statuses, where a bound parameter does not go.
+func QuoteLiterals(values []string) string {
+	quoted := make([]string, len(values))
+	for index, value := range values {
+		quoted[index] = QuoteLiteral(value)
+	}
+	return strings.Join(quoted, ", ")
+}

@@ -797,12 +797,13 @@ func assertStoreCensusAgrees(t *testing.T, database *store.Store) {
 // graphArmCount guards that the census reads every arm. It is the arm list of
 // 20261109215947_graph_edges_tuples: the 27 arms 20261105014808 restated it with, the comment
 // answers arm among them, and the one arm over the store's current tuples that migration adds.
-// 20261121034242_graph_edges_asks_and_tuple_arm_filter, the last migration to restate
-// graph_edges, keeps that list, with 20261116094101's tests on the asks and ask_followers arms
-// and 20261120122700's filter of the tuple arm. Each of the seven arms over a kind the store now
-// writes answers only the rows of its table that name no node, and the seed names the node of
-// every row it writes, so those seven answer nothing here (armGatedPerRow).
-const graphArmCount = 28
+// 20261121104002_graph_edges_store_class_last, the last migration to restate graph_edges, keeps
+// that list, with 20261116094101's tests on the asks and ask_followers arms, 20261120122700's
+// filter of the tuple arm and 20261117020856's class `store` in it, and adds 20261117020856's arm
+// over the relations out of a finding of a lens: 29 arms. Each of the seven arms over a kind the
+// store now writes answers only the rows of its table that name no node, and the seed names the
+// node of every row it writes, so those seven answer nothing here (armGatedPerRow).
+const graphArmCount = 29
 
 var (
 	armKindLiteral   = regexp.MustCompile(`'([a-z_]+)'::text AS kind`)
@@ -812,6 +813,11 @@ var (
 // armGatedPerRow matches one of the seven arms over a kind the node and tuple store writes: the
 // test that keeps it to the rows of its own table that name no node.
 var armGatedPerRow = regexp.MustCompile(`node_kind IS NULL`)
+
+// armOfAFinding matches the arm that answers the relations out of a finding of a lens, which it
+// names by the literal from_kind lens_block. The seed writes no lens and so no finding, the work
+// of a person or an agent reasoning about an issue, so that arm holds no row here.
+var armOfAFinding = regexp.MustCompile(`'lens_block'::text AS from_kind`)
 
 // assertEveryGraphArmHoldsRows runs each arm of graph_edges as its own query and holds it to at
 // least one row, and holds each (kind, to_kind) pair the view's literals define to a non-zero
@@ -829,7 +835,7 @@ func assertEveryGraphArmHoldsRows(t *testing.T, database *store.Store) {
 	}
 	arms := strings.Split(definition, "UNION ALL")
 	if len(arms) != graphArmCount {
-		t.Fatalf("graph_edges has %d arms, not the %d migration 20261109215947 restates it with; read the view and update the test",
+		t.Fatalf("graph_edges has %d arms, not the %d 20261121104002, the last migration to restate it, states; read the view and update the test",
 			len(arms), graphArmCount)
 	}
 	pairs := map[[2]string]bool{}
@@ -843,6 +849,9 @@ func assertEveryGraphArmHoldsRows(t *testing.T, database *store.Store) {
 		case rows > 0:
 		case armGatedPerRow.MatchString(arm):
 			t.Logf("arm %d of graph_edges answers no row: it answers the rows of its table that name no node, and every row the seed writes names one, so the store's own arm answers them:\n%s",
+				index+1, arm)
+		case armOfAFinding.MatchString(arm):
+			t.Logf("arm %d of graph_edges answers no row: it answers the relations out of a finding of a lens, and the seed writes no lens:\n%s",
 				index+1, arm)
 		default:
 			t.Errorf("arm %d of graph_edges holds no row:\n%s", index+1, arm)

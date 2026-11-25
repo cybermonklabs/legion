@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -273,6 +274,9 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 		return
 	}
 	nodes, facts, marked := graphstore.AskFacts(rowID, project, parties, actor, ask.CreatedAt, graphstore.NoEvent, places)
+	// The ask is the node this create makes, first of the nodes AskFacts answers
+	// (graphstore.Created).
+	nodes[0] = graphstore.Created(nodes[0])
 	askNode := graphstore.PlanUncaused(nodes, facts)
 	if err := ledger.Queue(func(b *store.WriteBatch) error {
 		graphstore.QueueNodes(b, askNode)
@@ -630,12 +634,55 @@ func (s *server) editAsk(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	// An edit of an ask's words made for a run (store.WithRun, which withinGoingRun puts on a
+	// request naming its run) names the ask as changed by that run where it changed them
+	// (spec requirement r-interaction): its question, or the words of an option
+	// (askWordsChanged); an edit of its urgency or of multiple alone changes no fact the store
+	// holds of the ask and no words of it, and names no change. Nothing else this route writes
+	// reaches the ask's node, so it writes that node as the create and the backfill write it
+	// (graphstore.AskNode): in the project, or between the parties, of what it is asked on
+	// (graphstore.ScopeOf, read here in the read phase), made by its asker at its created_at, and
+	// names it changed at its edited_at by its writer (graphstore.PlanChangedForRun, which reads
+	// and plans nothing for no run). The node write is queued after the row's update and the
+	// parts the edit queued above, and what it states right after ask.edited
+	// (graphstore.QueueCaused over graphstore.LatestEvent), as an issue's own field write does
+	// (writeIssue).
+	var askNode graphstore.Uncaused
+	if askWordsChanged(previous, ask) {
+		askNode, err = graphstore.PlanChangedForRun(documentCtx, editedAt, actor, func() (graphstore.Node, error) {
+			project, parties, err := graphstore.ScopeOf(documentCtx, tx, ask.IssueKey, ask.ArtifactID)
+			if err != nil {
+				return graphstore.Node{}, err
+			}
+			return graphstore.AskNode(ask.ID, project, parties, ask.Author, ask.CreatedAt), nil
+		})
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		if err := ledger.Queue(func(b *store.WriteBatch) error {
+			graphstore.QueueNodes(b, askNode)
+			return nil
+		}); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+	}
 	event, err := s.queueStampedEvent(ledger, ownerOf(ask.IssueKey, ask.ArtifactID).event(
 		"ask.edited",
 		actor,
 		model.NewAskEditEventPayload(ask, previous, actor, askChanges),
 	), "ask", ask.ID)
 	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	// The stamp queueStampedEvent queues with the event appends no event, so the id sequence
+	// still names ask.edited here.
+	if err := ledger.Queue(func(b *store.WriteBatch) error {
+		graphstore.QueueCaused(b, askNode, graphstore.LatestEvent)
+		return nil
+	}); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -659,6 +706,17 @@ func blockArtifactOf(ask model.Ask) (string, error) {
 		return "", fmt.Errorf("ask %q has block id without block artifact", ask.ID)
 	}
 	return *ask.BlockArtifactID, nil
+}
+
+// askWordsChanged is whether an edit changed the words of the ask, as the row now stores them
+// against what it held before: its question, or the label or the description of an option, an
+// option added or an option dropped. An option's block id is no word of it, and multiple and
+// urgency are none either. It is what an edit made for a run names the ask's node changed by
+// (editAsk).
+func askWordsChanged(previous model.AskEditPrevious, ask model.Ask) bool {
+	return previous.Question != ask.Question || !slices.EqualFunc(previous.Options, ask.Options, func(was, now model.AskOption) bool {
+		return was.Label == now.Label && was.Description == now.Description
+	})
 }
 
 func timestampPtr(value *time.Time) *string {

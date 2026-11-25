@@ -12,6 +12,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // The project of every node, which a read limited to a project depends on. Each object a project
@@ -209,11 +210,11 @@ const (
 // for a comment and a block already (projections), so the project census reads them for these
 // alone. A kind added to objectKinds is read every way from that one list.
 var orphanKindList = func() string {
-	quoted := make([]string, len(objectKinds))
+	kinds := make([]string, len(objectKinds))
 	for index, kind := range objectKinds {
-		quoted[index] = "'" + kind.kind + "'"
+		kinds[index] = kind.kind
 	}
-	return strings.Join(quoted, ", ")
+	return store.QuoteLiterals(kinds)
 }()
 
 // ownLiveStatement is, for the node of a document row a removal can take away, whether the newest

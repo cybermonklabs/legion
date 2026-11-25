@@ -56,7 +56,7 @@
 # answered ask its person removed from the spec through the base release: R9 deletes it, its
 # heading takes one moved_to to that ask's node, and the census's moved_to store-only line counts
 # every moved_to the store states now, that one among them, with unresolved=0, which a moved_to
-# reads only where its far end is a block that stands or a live ask node. For each of shaped,
+# reads only where its far end is a block that stands or an ask node not gone. For each of shaped,
 # from_ask, decided_by, followed_by, reading_parent, ask_parent, ask_anchor and ask_answer it then
 # prints the store's count, the projection's count and the differences in each direction, and
 # requires rows on both sides and zero differences; it does the same for graph_edges against the

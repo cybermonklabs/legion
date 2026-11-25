@@ -824,7 +824,7 @@ refusal settles the write. A final refusal is one of these:
   pattern, its path values, the query, the content type less its boundary, and the body
   (`writeRequestFields`), so a key held under another digest was claimed by no attempt of this
   call. That needs the client never to send one key for two different writes: `#writeCall`
-  (`src/dispatch-http.ts:2176`) mints one per call, `dispatch-keyed-writes.test.ts` ("send one
+  (`src/dispatch-http.ts:2310`) mints one per call, `dispatch-keyed-writes.test.ts` ("send one
   Idempotency-Key per write call") shows five writes going under five keys, and
   `dispatch-write-outcomes.test.ts` fails any run whose attempts carried two keys. A caller that
   names its own key (`projectArtifact`, `docEdit`) names one intent with it: AskGate's decision

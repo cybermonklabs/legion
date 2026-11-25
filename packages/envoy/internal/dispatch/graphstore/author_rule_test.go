@@ -13,16 +13,17 @@ import (
 )
 
 // The root's R19 makes an author the person a credential proved, so the credentials of one
-// person are one author. A session is its own author only where the record says the broker proved
-// it (model.Actor's Proven): two such sessions of one workload stay two authors, because every
-// session of that workload carries the same workload. A session id a request's body named, with
-// no proof, proves nothing of itself - anybody can type any id - so beside the workload a pod's
+// person are one author. A session is its own author only where the record says its credential
+// proved it (model.Actor's Proven, which only a broker-issued token sets on a session): two such
+// sessions of one workload stay two authors, because every session of that workload carries the
+// same workload. A session id a request's body named, not proven, proves nothing of itself -
+// anybody can type any id - so beside the workload a pod's
 // token proved it is that workload's, the pod's own token's author, as every other id that pod
 // names is, and another workload is no author of it; with no workload it proves nobody, as the
 // shared bearer proves nobody. This test writes a node under each writer through Write, so its
 // made_by is stored as every write stores it, and reads it back under each reader through
 // AuthorIsSQL bound with ActingCredential, the pair every author-private read binds. It also
-// asks the Go half (sameAuthor, ProvesAuthor and provedAuthor), so the two halves of the one rule
+// asks the Go half (SameAuthor, ProvesAuthor and provedAuthor), so the two halves of the one rule
 // cannot answer one pair differently. Last, it holds the write half of the rule: a node reserved
 // for its author is refused on every credential that proves nobody, the shared bearer, a token
 // naming an empty owner and a session only a body named among them, and granted on every
@@ -42,7 +43,7 @@ func TestTheAuthorIsThePersonACredentialProvedAndNothingElseJoinsTwo(t *testing.
 	workload := "system:serviceaccount:legion:legion-worker"
 	podToken := model.Actor{Service: named(workload)}
 	otherPodToken := model.Actor{Service: named("system:serviceaccount:legion:legion-reviewer")}
-	// Two session ids a pod's body named beside the workload its token proved, with no proof.
+	// Two session ids a pod's body named beside the workload its token proved, not proven.
 	workloadSession := model.Actor{Kind: "session", ID: "ses_of_the_workload_1", Service: named(workload)}
 	otherWorkloadSession := model.Actor{Kind: "session", ID: "ses_of_the_workload_2", Service: named(workload)}
 	// Two sessions of that workload the broker proved, and the first one's id named by a body.
@@ -107,8 +108,8 @@ func TestTheAuthorIsThePersonACredentialProvedAndNothingElseJoinsTwo(t *testing.
 		}
 		writer, _ := provedAuthor(row.writer)
 		reader, read := provedAuthor(row.reader)
-		if inGo := sameAuthor(row.writer, row.reader); inGo != row.want {
-			t.Errorf("%s: sameAuthor answers %t (writer %+v, reader %+v), want %t", row.name, inGo, writer, reader, row.want)
+		if inGo := SameAuthor(row.writer, row.reader); inGo != row.want {
+			t.Errorf("%s: SameAuthor answers %t (writer %+v, reader %+v), want %t", row.name, inGo, writer, reader, row.want)
 		}
 		if ProvesAuthor(row.reader) != read {
 			t.Errorf("%s: ProvesAuthor answers %t for the reader, and provedAuthor %t", row.name, ProvesAuthor(row.reader), read)
@@ -145,7 +146,7 @@ func TestTheAuthorIsThePersonACredentialProvedAndNothingElseJoinsTwo(t *testing.
 	}
 
 	// The authored_by edge is attribution and the rule is visibility, and they part on a session
-	// no proof backs: a pod's write on a session its body named states its authored_by to that
+	// that is not proven: a pod's write on a session its body named states its authored_by to that
 	// session (AuthorOf, as this change has it), while the rule counts the workload its
 	// author; a session only a body named, the shared bearer's writes, keeps its authored_by too,
 	// while the rule counts it as nobody. A session the broker proved is its own author under both.
@@ -178,12 +179,75 @@ func TestTheAuthorIsThePersonACredentialProvedAndNothingElseJoinsTwo(t *testing.
 	}
 }
 
-// sameAuthor is the one rule stated in Go over two actors, as AuthorIsSQL states it in SQL: true
-// when the author writer's record proved (provedAuthor) and the author reader's credential proves
-// are one author, and false where either proves none. No code of the store asks it of two actors;
-// TestTheAuthorIsThePersonACredentialProvedAndNothingElseJoinsTwo holds it to AuthorIsSQL.
-func sameAuthor(writer, reader model.Actor) bool {
-	written, proved := provedAuthor(writer)
-	read, reads := provedAuthor(reader)
-	return proved && reads && written == read
+// A run is read by the credential that asked it, whatever its record proves under the one rule.
+// Its predicate compares the whole credential (AuthorCredentialIsSQL), and the bound credential
+// is nil unless the reader proves an author (ActingCredential), so the four-field equality holds
+// the run to one credential; the record is asked only whether it names a credential at all
+// (NamesCredential), as it was before model.Actor's Proven existed. A run a session that names no
+// owner and no workload recorded before then carries no proven mark: the rule counts that record as
+// nobody, and the session, proved by the broker now, reads its run all the same. No other session
+// does, of no workload, nor that session's id named by a body, nor a workload's own token. A run
+// whose author is the shared bearer's empty one is read by nobody, the bearer included.
+func TestARunIsReadByTheCredentialThatAskedItWhateverItsRecordProves(t *testing.T) {
+	database := storetest.Open(t)
+	ctx := context.Background()
+	at := time.Date(2026, 11, 17, 0, 0, 0, 0, time.UTC)
+	named := func(name string) *string { return &name }
+	workload := named("system:serviceaccount:legion:legion-worker")
+	const asker = "ses_asked_before_the_proven_mark"
+
+	oldShape := model.Actor{Kind: "session", ID: asker}
+	bearer := model.Actor{}
+	readers := []struct {
+		name  string
+		who   model.Actor
+		reads bool
+	}{
+		{"that session, proved by the broker now", model.Actor{Kind: "session", ID: asker, Proven: true}, true},
+		{"that session's id named by a body", model.Actor{Kind: "session", ID: asker}, false},
+		{"another session the broker proved", model.Actor{Kind: "session", ID: "ses_another", Proven: true}, false},
+		{"that id beside a workload, proved by the broker", model.Actor{Kind: "session", ID: asker, Service: workload, Proven: true}, false},
+		{"that id beside a workload, named by a pod", model.Actor{Kind: "session", ID: asker, Service: workload}, false},
+		{"another session of a workload, proved by the broker", model.Actor{Kind: "session", ID: "ses_of_a_workload", Service: workload, Proven: true}, false},
+		{"a workload's own token", model.Actor{Service: workload}, false},
+		{"the shared bearer", bearer, false},
+	}
+	if ProvesAuthor(oldShape) || !NamesCredential(oldShape) || NamesCredential(bearer) {
+		t.Fatalf("the old-shape record proves an author %t and names a credential %t, and the shared bearer names one %t: "+
+			"want no author, a credential, and none", ProvesAuthor(oldShape), NamesCredential(oldShape), NamesCredential(bearer))
+	}
+	for index, writer := range []struct {
+		name   string
+		actor  model.Actor
+		readBy func(reads bool) bool
+	}{
+		{"a run that session recorded before the mark", oldShape, func(reads bool) bool { return reads }},
+		{"a run of the shared bearer's empty author", bearer, func(bool) bool { return false }},
+	} {
+		id := fmt.Sprintf("credential-rule-%02d", index)
+		writeNode(t, ctx, database, Node{
+			Kind: KindPerson, ID: id, Supertag: "person",
+			Visibility: VisibilityProject, State: StateLive,
+			MadeAt: at, MadeBy: writer.actor, SourceEvent: NoEvent,
+		})
+		for _, reader := range readers {
+			want := writer.readBy(reader.reads)
+			var stored bool
+			if err := database.Pool.QueryRow(ctx,
+				`select `+AuthorCredentialIsSQL("made_by", "$3")+` from graph_nodes where kind = $1 and id = $2`,
+				KindPerson, id, ActingCredential(reader.who)).Scan(&stored); err != nil {
+				t.Fatalf("%s, read by %s: %v", writer.name, reader.name, err)
+			}
+			if stored != want {
+				t.Errorf("%s, read by %s: AuthorCredentialIsSQL answers %t, want %t", writer.name, reader.name, stored, want)
+			}
+			// The Go twin a run's owner is held to (api's goingRunIsTheCallers), for every reader
+			// a request resolves: no credential resolves to a session that proves nobody.
+			if ProvesAuthor(reader.who) {
+				if inGo := NamesCredential(writer.actor) && writer.actor.SameCredential(reader.who); inGo != want {
+					t.Errorf("%s, read by %s: NamesCredential and SameCredential answer %t, want %t", writer.name, reader.name, inGo, want)
+				}
+			}
+		}
+	}
 }

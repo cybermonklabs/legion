@@ -163,19 +163,19 @@ func countedApprovalRequest(t *testing.T, handler http.Handler, artifactID strin
 //     (queueNewAskReferences, through refs.PlanReplace);
 //  19. the ask's block state, read for its parts' plan (refs.PlanAskParts, through
 //     refs.ReadItemIndex);
-//  20. a batch of 20: the whole write phase, sent back to back - the ask's node, in its
+//  20. a batch of 21: the whole write phase, sent back to back - the ask's node, in its
 //     document's project, which costs no read of its own since the document was read with its
-//     project, and its author's (graphstore.AskFacts), in the three statements of the store's
-//     node write (graphstore.QueueNodes: the insert, the check that no node moves project, and
-//     the move), the ask row naming its node, its block state and the part rows of its question
-//     and options, the references and the row the ask owes the grammar's re-index queue, deleted
-//     with them (refs.Replacement.Queue), the ask.opened event with its payload and the
-//     issue's last_seq, the reference stamps, the ask's authored_by and the base attributes the
-//     node write stated - its visibility, its state and its project - appended under that event
-//     (graphstore.QueueCaused), the author's follow, its follower row marked for the ask's node
-//     in one statement, and its followed_by stated under that ask.opened in the statement after
-//     it (asks.PlanFollowNewAsk, which reads nothing for an ask this request creates), and the
-//     approval as the request leaves it;
+//     project, and its author's (graphstore.AskFacts), in the four statements of the store's
+//     node write (graphstore.QueueNodes: the read of the supertags the nodes are typed by, the
+//     insert, the check that no node moves project, and the move), the ask row naming its node,
+//     its block state and the part rows of its question and options, the references and the row
+//     the ask owes the grammar's re-index queue, deleted with them (refs.Replacement.Queue), the
+//     ask.opened event with its payload and the issue's last_seq, the reference stamps, the ask's
+//     authored_by and the base attributes the node write stated - its visibility, its state and
+//     its project - appended under that event (graphstore.QueueCaused), the author's follow, its
+//     follower row marked for the ask's node in one statement, and its followed_by stated under
+//     that ask.opened in the statement after it (asks.PlanFollowNewAsk, which reads nothing for an
+//     ask this request creates), and the approval as the request leaves it;
 //  21. commit;
 //  22. the display trees of the texts the ask.opened event carries - its question and both option
 //     labels - stored in one statement by the publish path (storeEventDisplayTrees);

@@ -23,6 +23,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // The corpus, as c-write-cost states it. The two documents are a stated shape and not a guess:
@@ -666,8 +667,8 @@ func writeCostStoreWrite(t *testing.T, arm *costArm, nodes, relations int64) (ti
 	batch := make([]graphstore.Node, 0, nodes)
 	for index := range int(nodes) {
 		batch = append(batch, graphstore.Node{
-			Kind: "block", ID: fmt.Sprintf("00000000-0000-4000-9000-%012d", index),
-			Supertag: "paragraph", Visibility: graphstore.VisibilityProject, State: graphstore.StateLive,
+			Kind: refs.BlockNodeKind, ID: fmt.Sprintf("00000000-0000-4000-9000-%012d", index),
+			Supertag: refs.BlockSupertag, Visibility: graphstore.VisibilityProject, State: graphstore.StateLive,
 			MadeAt: at, MadeBy: actor, SourceEvent: graphstore.NoEvent,
 		})
 	}
@@ -744,11 +745,12 @@ func requireWriteCostReachesTheStore(t *testing.T, head *costArm, corpus *writeC
 		comments, sessions)
 }
 
-// costStoreCounts is the store's own row counts, which only this child's arm holds.
+// costStoreCounts is the store's own row counts on the arm's database, or the words saying the arm
+// holds none, read off the database and not the arm: a base build past #3178 holds the store too.
 func costStoreCounts(t *testing.T, arm *costArm) string {
 	t.Helper()
-	if !arm.head {
-		return ", and no node and tuple store, which the commit before this child has not got"
+	if arm.count(t, `select count(to_regclass(name)) from unnest(array['graph_nodes', 'graph_tuples']) as name`) != 2 {
+		return ", and no node and tuple store, which " + arm.name + " has not got"
 	}
 	return fmt.Sprintf(", %d node(s) and %d tuple(s)",
 		arm.count(t, `select count(*) from graph_nodes`),

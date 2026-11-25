@@ -1407,7 +1407,7 @@ func (s *server) planCommentReply(
 	if err != nil {
 		return plan, err
 	}
-	if plan.stored, err = commentStored(ctx, tx, plan.id, who, plan.createdAt, nil, comment.ArtifactID, replyProject, replyParties); err != nil {
+	if plan.stored, err = commentStored(ctx, tx, plan.id, who, plan.createdAt, graphstore.VisibilityProject, nil, comment.ArtifactID, replyProject, replyParties); err != nil {
 		return plan, err
 	}
 	plan.changes, plan.write, err = s.planPendingItem(ctx, tx, who, refs.ItemComment, plan.id, body, refs.PendingSource{

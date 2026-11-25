@@ -34,7 +34,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/accesslog"
 	"github.com/sjawhar/envoy/internal/dispatch/api/apitest"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
-	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -609,60 +608,21 @@ func requireNoBlockIndexPass(t *testing.T, window string) {
 	}
 }
 
-// blockIndexLeaseNamespace is the first key every loop lease is taken under - duty's
-// leaseNamespace, which stays unexported - the four bytes of "LOOP". The second key is the
-// lease's own name, which Postgres hashes with hashtext.
-const blockIndexLeaseNamespace int32 = 0x4C4F4F50
-
 // blockIndexLeaseWait bounds the wait for the lease. A pass reads one batch of each queue it
 // serves and gives the lease back, seconds at most, so this is a hang guard on a wait nothing
 // healthy reaches and not a time the wait is meant to spend: a wait that reaches it means the
 // pass never gave its lease back, and the window cannot be measured with the pass held off.
 const blockIndexLeaseWait = 2 * time.Minute
 
-// holdBlockIndexLease takes the block-index pass's own lease (docs.BlockIndexLease) and answers
-// the call that gives it back. duty.Exclusive takes that lease before every pass and skips the
-// pass where another session holds it, so no block-index pass runs while this test holds it:
-// a window that owes the index of what it just wrote leaves that work to a tick after the lease
-// is given back. It does not replace drainBeforeStart, which clears what was owed before the
-// server started, work the lease only postpones; the two together leave the window clean.
-//
-// The lock belongs to the session that took it, so one connection of the harness's pool takes it,
-// holds it for the window and gives it back (duty.FreeSessionLock, which destroys rather than
-// returns a connection whose unlock failed, since what such a session holds is unknown).
+// holdBlockIndexLease takes the block-index pass's own lease over the harness's pool, through the
+// helper of block_index_lease_test.go every test that holds the pass off takes, and answers the
+// call that gives it back, so no block-index pass runs while this test holds it: a window that
+// owes the index of what it just wrote leaves that work to a tick after the lease is given back.
+// It does not replace drainBeforeStart, which clears what was owed before the server started,
+// work the lease only postpones; the two together leave the window clean.
 func (p *memoryServer) holdBlockIndexLease(t *testing.T) func() {
 	t.Helper()
-	ctx := context.Background()
-	conn, err := p.database.Pool.Acquire(ctx)
-	if err != nil {
-		t.Fatalf("take a connection for the block-index lease: %v", err)
-	}
-	deadline := time.Now().Add(blockIndexLeaseWait)
-	for {
-		var held bool
-		if err := conn.QueryRow(ctx, `select pg_try_advisory_lock($1, hashtext($2))`,
-			blockIndexLeaseNamespace, docs.BlockIndexLease).Scan(&held); err != nil {
-			conn.Release()
-			t.Fatalf("take the block-index lease: %v", err)
-		}
-		if held {
-			break
-		}
-		if time.Now().After(deadline) {
-			conn.Release()
-			t.Fatalf("the block-index pass held the %q lease for more than %s, so this window could not be measured with the pass held off:\n%s",
-				docs.BlockIndexLease, blockIndexLeaseWait, p.outputTail())
-		}
-		// pg_try_advisory_lock answers false rather than queueing behind the holder, so a pass
-		// running at this moment is waited out here: it gives the lease back when it ends.
-		time.Sleep(50 * time.Millisecond)
-	}
-	return func() {
-		if err := duty.FreeSessionLock(conn, `select pg_advisory_unlock($1, hashtext($2))`,
-			blockIndexLeaseNamespace, docs.BlockIndexLease); err != nil {
-			t.Errorf("give the block-index lease back: %v", err)
-		}
-	}
+	return holdBlockIndexLease(t, p.database.Pool, "this window's measurement", blockIndexLeaseWait, p.outputTail)
 }
 
 type response struct {

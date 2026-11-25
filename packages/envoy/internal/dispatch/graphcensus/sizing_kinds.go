@@ -441,10 +441,10 @@ func storeKinds() []StoreKind {
 			              and k.state = 'answered'))`,
 	}, {
 		Name: "block_move", MovedBy: movedWithAsks, Tuples: 1, Assumed: 1 * sizingWindowDays,
-		Driver: "assumed at one a day, since the one writer of a moved_to is the decisions step's conversion, which" +
-			" moves each section and ask block of a decisions document an earlier release wrote into its issue's spec" +
-			" once, a backlog no table dates: the moved address's moved_to, its node and placement being a block's," +
-			" which the block terms count",
+		Driver: "assumed at one a day, since the one writer of a moved_to out of a block is the decisions step's" +
+			" conversion, which moves each section and ask block of a decisions document an earlier release wrote" +
+			" into its issue's spec once, a backlog no table dates: the moved address's moved_to, its node and" +
+			" placement being a block's, which the block terms count",
 	}, {
 		Name: "decision", MovedBy: movedWithAsks, Tuples: 5, Assumed: 10 * sizingWindowDays,
 		Driver: "assumed at 10 a day, since production writes no agent's decision before the asks child ships and a" +
@@ -457,38 +457,88 @@ func storeKinds() []StoreKind {
 			" the asks child ships: its authored_by, its node and its part_of its decision being a block's, which the" +
 			" block terms count",
 	}, {
-		Name: "interaction", MovedBy: movedWithLenses, Nodes: 1, Tuples: 4, Assumed: 10 * sizingWindowDays,
-		Driver: "assumed at 10 runs a day, since production writes no interaction before the lenses child ships and" +
-			" going_requests keeps a run only for contracts.GoingRequestTTL, so no table holds the window's runs: its" +
-			" node, its visibility and state, its authored_by and one changed_by_run into it",
+		// Counted off graphstore.InteractionFacts, which the going POST (api's recordGoingRequest), the
+		// frame path and the backfill (graphstore.WriteRun) write a run through, the backfill each run
+		// recorded before this release: the words, ends_at and source values, and
+		// graphstore.AuthorFacts' authored_by with its author's aliases (an alias_of and a recorded_as
+		// at most); graphstore.Write's base attributes of the node it makes, the visibility, the state
+		// and the project where the run names one; the changed_by_run a write made for the run appends
+		// out of a node it changed (store.WithRun); and the state the sweep states the run's node gone
+		// at, an hour after it was asked (api's goRunGone, through graphstore.WriteState).
+		Name: "interaction", MovedBy: movedWithLenses, Nodes: 1, Tuples: 11, Assumed: 10 * sizingWindowDays,
+		Driver: "assumed at 10 runs a day, since production writes no interaction before this release and" +
+			" going_requests holds a run for an hour alone (contracts.GoingRequestTTL): the release before" +
+			" deletes it then, and this release's sweep states its node gone and removes its row, so no table" +
+			" of the database the sizing reads holds the window's runs: its node, its visibility and state, at" +
+			" most its project, its words, ends_at and source values, its authored_by, at most two aliases of" +
+			" its author, one changed_by_run into it and its state gone an hour on",
 	}, {
+		// Counted off graphstore.FrameTuple, the one value tuple the frame path (api's
+		// appendGoingEvent) and the backfill (graphstore.ReadRunFrames) write of each frame.
 		Name: "frame", MovedBy: movedWithLenses, Tuples: 1, Assumed: 500 * sizingWindowDays,
-		Driver: "assumed at 50 for each assumed run, 500 a day, since going_events keeps a run's frames no longer than" +
-			" going_requests keeps the run: one frame value each",
+		Driver: "assumed at 50 for each assumed run, 500 a day, since a run's going_events rows go with its" +
+			" going_requests row an hour after it was asked: one frame value each",
 	}, {
-		Name: "lens", MovedBy: movedWithLenses, Nodes: 1, Tuples: 6, Assumed: 2 * sizingWindowDays,
+		// Counted off api's invokeLens and writeReasoningNodes: graphstore.Write's visibility, state
+		// and project, the issue's; the part_of, the has_kind and, where the body names them, the
+		// verdict value and the triggered_by; the artifact_id value of a lens placed on a document or
+		// on a block of one (graphstore.AttributeArtifactID); and, where graphstore.AuthorOf names a
+		// writer of its made_by, graphstore.AuthorFacts' authored_by and the author's aliases, stated
+		// once a write.
+		Name: "lens", MovedBy: movedWithLenses, Nodes: 1, Tuples: 11, Assumed: 2 * sizingWindowDays,
 		Driver: "assumed at 2 a day, a pre-mortem and one other, since production writes no lens before" +
-			" the lenses child ships: its node, its visibility and state, its has_kind, its part_of the node it analyses," +
-			" its authored_by and, at most, its triggered_by",
+			" this release: its node, its visibility, state and project, its part_of the node it analyses," +
+			" its has_kind, at most its verdict value, its artifact_id value and its triggered_by, its authored_by" +
+			" and at most two aliases of its author",
 	}, {
-		Name: "lens_finding", MovedBy: movedWithLenses, Nodes: 1, Tuples: 4, Assumed: 10 * sizingWindowDays,
-		Driver: "assumed at 5 under each assumed lens, 10 a day: a finding block's node, its visibility and state, its" +
-			" part_of its lens and its rank value",
+		// Counted off api's retireConvertedDocument, the one writer of a moved_to out of a document's
+		// address, which appends one through writeReasoningPointer each time the pre-mortem conversion
+		// (api.ConvertPremortem) retires a document.
+		Name: "document_move", MovedBy: movedWithLenses, Tuples: 1, Assumed: 1 * sizingWindowDays,
+		Driver: "assumed at one a day, the pre-mortem the lens term assumes a day, since the one writer of a moved_to" +
+			" out of a document's address is the pre-mortem conversion, which moves the address of each pre-mortem" +
+			" document an earlier release wrote to the lens it writes in its place once, a backlog no table dates:" +
+			" the document's moved_to, its lens and risks being counted by the lens and risk terms and its" +
+			" retirement by artifact_removed",
 	}, {
-		Name: "lens_kind", MovedBy: movedWithLenses, Nodes: 2, Tuples: 8, Assumed: 11,
-		Driver: "assumed at the 11 kinds the catalogue's seed writes, R7's ten and chestertons-fence, taken as landing" +
-			" inside the window, which over-states a write made once: its node, its visibility and state, its words, its" +
-			" constrained_by, and its source's constraint node with that node's visibility, state, source and reference",
+		// Counted off api's newFinding and writeReasoningNodes, a finding written with its lens
+		// (invokeLens) or on its own (addLensFinding): the visibility, state and project, the part_of
+		// and the text value, and graphstore.AuthorFacts' authored_by and aliases, which a finding
+		// written with its lens shares with that write.
+		Name: "lens_finding", MovedBy: movedWithLenses, Nodes: 1, Tuples: 8, Assumed: 10 * sizingWindowDays,
+		Driver: "assumed at 5 under each assumed lens, 10 a day: a finding block's node, its visibility, state and" +
+			" project, its part_of its lens, its text value, its authored_by and at most two aliases of its author," +
+			" which over-states a finding written with its lens, whose write states those aliases once",
 	}, {
-		Name: "constraint", MovedBy: movedWithLenses, Nodes: 1, Tuples: 5, Assumed: 1 * sizingWindowDays,
-		Driver: "assumed at 1 a day, since production writes no constraint before the lenses child ships: its node, its" +
-			" visibility and state, its two values, a standard and its reference or a measurement and where it was" +
-			" taken, and the constrained_by of the requirement it forced",
+		// Counted off the seed of migrations 20261123174710, ten kinds, and 20261123174720, twelve,
+		// which graphstore.AddLensKind writes the shape of: the lens_kind node's visibility, state and
+		// words values and its constrained_by, and its constraint node's visibility, state, standard
+		// and reference values, in no project and by no author.
+		Name: "lens_kind", MovedBy: movedWithLenses, Nodes: 2, Tuples: 8, Assumed: 22,
+		Driver: "assumed at the 22 kinds the catalogue's seed writes, R7's ten and twelve further ones, taken as" +
+			" landing inside the window, which over-states a write made once: its node, its visibility and state, its" +
+			" words, its constrained_by, and its source's constraint node with that node's visibility, state, source" +
+			" and reference",
 	}, {
-		Name: "risk", MovedBy: movedWithLenses, Nodes: 1, Tuples: 4, Assumed: 11 * sizingWindowDays,
+		// Counted off api's writeConstraint and writeReasoningNodes: the visibility, state and project,
+		// the part_of its issue, one value of each field the body names (constraintAttributes), and
+		// graphstore.AuthorFacts' authored_by and aliases; and the constrained_by the requirement's
+		// pointer write appends (POST .../nodes/{id}/pointers).
+		Name: "constraint", MovedBy: movedWithLenses, Nodes: 1, Tuples: 11, Assumed: 1 * sizingWindowDays,
+		Driver: "assumed at 1 a day, since production writes no constraint before this release: its node, its" +
+			" visibility, state and project, its part_of its issue, at most three values, a standard and its" +
+			" reference or a measurement, its value and where it was taken, its authored_by, at most two aliases of" +
+			" its author, and the constrained_by of the requirement it forced",
+	}, {
+		// Counted off api's writeRisk and writeReasoningNodes, which the pre-mortem conversion
+		// (api.ConvertPremortem) writes its risks through too: the visibility, state and project, the
+		// part_of its lens, the heading, early_warning and prevention values the route requires, and
+		// graphstore.AuthorFacts' authored_by and aliases, with one prevented_by.
+		Name: "risk", MovedBy: movedWithLenses, Nodes: 1, Tuples: 11, Assumed: 11 * sizingWindowDays,
 		Driver: "assumed at 11 a day, one pre-mortem's risks a day as the one this tree holds has eleven, since" +
-			" production writes no risk before the lenses child ships: its node, its visibility and state, its part_of" +
-			" its lens and one prevented_by",
+			" production writes no risk before this release: its node, its visibility, state and project, its" +
+			" part_of its lens, its heading, early_warning and prevention values, its authored_by, at most two aliases" +
+			" of its author, and one prevented_by",
 	}}
 }
 
@@ -524,13 +574,13 @@ func reachesANode(topic string) string {
 // people a comment first names, the roles an event first addresses, and the components an
 // import inside it wrote.
 //
-// A comment's facts are read off its row as their writers read them: its author as commentAuthor
-// does (graphstore.AuthorOf), a document it is anchored to or owned by only where the document's
-// address fits the store's bound, and its aliases as graphstore's aliases states them - the owner a
-// session's credential proved, the session a person's credential proved, and the raw id a person
-// was recorded under where that is not their canonical login. The person of the last two is the
-// author actorAuthor reads off the row, where that author is a person, as commentWriterPeople's
-// first arm reads one.
+// A comment's facts are read off its row as their writers read them: its authored_by as the
+// census reads it off the row (authoredLink, graphstore.AuthorOf), a document it is anchored to or
+// owned by only where the document's address fits the store's bound, and its aliases as
+// graphstore's aliases states them - the owner a session's credential proved, the session a
+// person's credential proved, and the raw id a person was recorded under where that is not their
+// canonical login. The person of the last two is the author actorAuthor reads off the row, where
+// that author is a person, as commentWriterPeople's first arm reads one.
 //
 // The people are the ones the census holds to a node (commentWriterPeople), each with the time
 // the first comment naming them was written.
@@ -540,9 +590,7 @@ var sizingWritesWith = `
 		       case when c.author->>'kind' = 'user' then user_threads_login(c.author->>'id') end as writer,
 		       (c.reply_to is not null or c.ask_id is not null or c.answers is not null
 		        or c.replies_to_block is not null) as replies,
-		       (case when c.author->>'kind' <> '` + graphstore.KindSession + `'
-		                  or octet_length(coalesce(c.author->>'id', '')) <= ` + addressBound + `
-		             then ` + commentAuthor + ` end) is not null as authored,
+		       (` + authoredLink("c.author") + `) is not null as authored,
 		       coalesce(octet_length(anchor.ref_key) <= ` + addressBound + `, false) as anchored,
 		       coalesce(octet_length(owner.ref_key) <= ` + addressBound + `, false) as owned,
 		       (case when ` + provedSessionOwner("c.author") + `
