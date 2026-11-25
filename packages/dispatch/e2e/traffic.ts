@@ -16,10 +16,10 @@ export interface Traffic {
 }
 
 /** Whether a request is the page's live socket: its path starts with `/ws/`. The socket stays open
- *  for the page's whole life and is no read of the page, so neither watcher holds it in flight. In
- *  a CI trace the upgrade of a load's `GET /ws/live` (status 101) was reported as a request that
- *  stayed open 29,998.5 ms, though every read had answered within 0.5 s. */
-function isLiveSocket(url: URL): boolean {
+ *  for the page's whole life and is no read of the page, so no watcher of a page's requests holds
+ *  it in flight. In a CI trace the upgrade of a load's `GET /ws/live` (status 101) was reported as
+ *  a request that stayed open 29,998.5 ms, though every read had answered within 0.5 s. */
+export function isLiveSocket(url: URL): boolean {
   return url.pathname.startsWith("/ws/");
 }
 

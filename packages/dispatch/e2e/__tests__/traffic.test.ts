@@ -1,12 +1,13 @@
 import { expect, test } from "bun:test";
 import type { Page, Request } from "@playwright/test";
 
-import { watchApiRequests, watchTraffic } from "../traffic";
+import { isLiveSocket, watchApiRequests, watchTraffic } from "../traffic";
 
 // Like e2e/__tests__/sends.test.ts, this file drives a helper of the suite through a stand-in for
-// the part of a page the helper touches, so it starts no browser. Every row reads `quietFor(0)`,
-// which asks only whether a request is still in flight, so no row waits on the clock. Each row
-// reads every watcher before it asserts, so a failure names each watcher that failed it.
+// the part of a page the helper touches, so it starts no browser. Every row that drives a watcher
+// reads `quietFor(0)`, which asks only whether a request is still in flight, so no row waits on
+// the clock. Each such row reads every watcher before it asserts, so a failure names each watcher
+// that failed it.
 
 /** A page whose request events the row fires itself: the only part of a page the watchers touch. */
 function eventPage(): { page: Page; emit(event: string, request: Request): void } {
@@ -76,4 +77,19 @@ test("a read still in flight keeps the page from going quiet", () => {
       ends.map((end) => ({ end, ended: true, inFlight: false, watcher }))
     )
   );
+});
+
+// `e2e/refetch-budget.e2e.ts` keeps a watcher of its own, which this file does not drive, and
+// leaves the socket out through this same predicate, so the predicate is held here directly: a
+// path under `/ws/` is the socket, and a path that holds `ws` anywhere else is a read like any
+// other.
+test("a path under /ws/ is the live socket, and no other path is", () => {
+  const paths = ["/ws/live", "/api/v1/ws/x", "/wsx"];
+  expect(
+    paths.map((path) => ({ path, socket: isLiveSocket(new URL(path, "http://127.0.0.1")) }))
+  ).toEqual([
+    { path: "/ws/live", socket: true },
+    { path: "/api/v1/ws/x", socket: false },
+    { path: "/wsx", socket: false },
+  ]);
 });
