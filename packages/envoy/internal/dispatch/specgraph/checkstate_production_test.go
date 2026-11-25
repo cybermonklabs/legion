@@ -149,24 +149,24 @@ func (s *checkCase) productionProgram(changed, testCommit string) {
 	s.Results = append(s.Results, run, fault)
 }
 
-// programPass is the case of the program check q of production or of the graph, with C's tie: a
-// pass of its test at runCommit, under deploy d2 or at the transaction tx1, and a failing example
-// that its test at faultCommit caught; subject c2 under deploy d2 at tx1, where c2 differs from c1
-// outside the tie.
-func (s *checkCase) programPass(q Check, runCommit, faultCommit string) {
+// programBase is the base of programPass and passReadAnotherSubject: the program check q of
+// production or of the graph, with C's tie, and subject c2 under deploy d2 at tx1, where c2 differs
+// from c1 outside the tie.
+func (s *checkCase) programBase(q Check) {
 	s.t.Helper()
 	s.add(q)
 	s.tieLikeC(q.ID)
 	s.commit("c2", "c1", "docs/x.md")
 	s.Subject = Point{Commit: "c2", Deploy: "d2", GraphTx: "tx1"}
-	run := Result{Check: q.ID, Kind: ResultRun, Outcome: OutcomePass, Job: q.Test.Job, TestCommit: runCommit, At: checkStateRun.Add(time.Hour)}
-	if q.Subject == SubjectGraph {
-		run.GraphTx = "tx1"
-	} else {
-		run.Deploy = "d2"
-	}
-	s.Results = append(s.Results, run, Result{Check: q.ID, Kind: ResultFailingExample, Outcome: OutcomeFail, TestCommit: faultCommit,
-		At: checkStateRun.Add(65 * time.Minute), FaultAuthor: "author-b", TestAuthors: []string{"author-a"}})
+}
+
+// programPass is programBase with a pass of q's test at runCommit, under deploy d2 or at the
+// transaction tx1, and a failing example that its test at faultCommit caught.
+func (s *checkCase) programPass(q Check, runCommit, faultCommit string) {
+	s.t.Helper()
+	s.programBase(q)
+	s.Results = append(s.Results, programResult(q, ResultRun, OutcomePass, runCommit, time.Hour),
+		programResult(q, ResultFailingExample, OutcomeFail, faultCommit, 65*time.Minute))
 }
 
 // programResult is a result of the program check q of production or of the graph, of kind with
@@ -175,35 +175,33 @@ func (s *checkCase) programPass(q Check, runCommit, faultCommit string) {
 // author-a's test, as programPass's results are.
 func programResult(q Check, kind ResultKind, outcome Outcome, testCommit string, after time.Duration) Result {
 	r := Result{Check: q.ID, Kind: kind, Outcome: outcome, TestCommit: testCommit, At: checkStateRun.Add(after)}
-	switch {
-	case kind == ResultFailingExample:
+	if kind == ResultFailingExample {
 		r.FaultAuthor, r.TestAuthors = "author-b", []string{"author-a"}
-	case q.Subject == SubjectGraph:
-		r.Job, r.GraphTx = q.Test.Job, "tx1"
-	default:
-		r.Job, r.Deploy = q.Test.Job, "d2"
+		return r
+	}
+	r.Job = q.Test.Job
+	return readAt(q, r, "d2", "tx1")
+}
+
+// readAt is the run r of q with what it read: the transaction graphTx for a check of the graph, the
+// deploy for a check of production.
+func readAt(q Check, r Result, deploy, graphTx string) Result {
+	if q.Subject == SubjectGraph {
+		r.GraphTx = graphTx
+	} else {
+		r.Deploy = deploy
 	}
 	return r
 }
 
-// passReadAnotherSubject is the change of a row of TestCheckState: q, a program check of
-// production or of the graph, with C's tie, and one pass of its test at c1 that read the deploy d1
-// or the transaction tx2; subject c2 under deploy d2 at tx1, where c2 differs from c1 outside the
-// tie, so the test of the pass is the test at c2 and what the pass read is not the subject; a run
-// of q's job that ended at c2; and, with refused, CI's refusal of q at c1.
+// passReadAnotherSubject is the change of a row of TestCheckState: programBase with one pass of q's
+// test at c1 that read the deploy d1 or the transaction tx2, so the test of the pass is the test at
+// c2 and what the pass read is not the subject; a run of q's job that ended at c2; and, with
+// refused, CI's refusal of q at c1.
 func passReadAnotherSubject(q Check, refused bool) func(c *checkCase) {
 	return func(c *checkCase) {
-		c.add(q)
-		c.tieLikeC(q.ID)
-		c.commit("c2", "c1", "docs/x.md")
-		c.Subject = Point{Commit: "c2", Deploy: "d2", GraphTx: "tx1"}
-		pass := programResult(q, ResultRun, OutcomePass, "c1", time.Hour)
-		if q.Subject == SubjectGraph {
-			pass.GraphTx = "tx2"
-		} else {
-			pass.Deploy = "d1"
-		}
-		c.Results = append(c.Results, pass)
+		c.programBase(q)
+		c.Results = append(c.Results, readAt(q, programResult(q, ResultRun, OutcomePass, "c1", time.Hour), "d1", "tx2"))
 		c.JobRuns = []JobRun{{Job: q.Test.Job, Commit: "c2", Ended: true}}
 		if refused {
 			c.Uncited = map[string]map[string]string{"c1": {q.ID: "test-not-in-code"}}
