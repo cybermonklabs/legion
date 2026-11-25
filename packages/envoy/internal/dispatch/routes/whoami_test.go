@@ -63,6 +63,7 @@ func storeRouter(t *testing.T, database *store.Store) http.Handler {
 		Lifetime:          t.Context(),
 		HorizonStallAfter: horizontest.StallWarning,
 		HorizonWarnEvery:  horizontest.StallWarning,
+		HorizonLogger:     horizontest.Logger(horizontest.DatabaseOf(database)),
 	})
 	if err != nil {
 		t.Fatalf("build context: %v", err)

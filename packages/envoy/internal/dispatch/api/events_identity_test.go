@@ -64,6 +64,7 @@ func TestTheEventFeedClosesOnceItsPersonNoLongerResolves(t *testing.T) {
 		// The subscribe below waits on the event feed (eventFeedFrame), which reads the horizon's
 		// stall warnings for its own-hold rule.
 		HorizonStallAfter: horizontest.StallWarning, HorizonWarnEvery: horizontest.StallWarning,
+		HorizonLogger: horizontest.Logger(horizontest.DatabaseOf(database)),
 	})
 	if err != nil {
 		t.Fatalf("new API dependencies: %v", err)

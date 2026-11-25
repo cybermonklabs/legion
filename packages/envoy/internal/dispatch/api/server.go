@@ -192,6 +192,11 @@ type Deps struct {
 	// stall warning sees it inside its own patience.
 	HorizonStallAfter time.Duration
 	HorizonWarnEvery  time.Duration
+	// HorizonLogger is the sink of every warning the process's event horizon logs
+	// (events.Horizon.SetLogger). Nil logs to slog.Default as it stands at each warning, which a
+	// deployment keeps; only a test sets one, so that it reads its own server's warnings and none of
+	// the servers of the tests beside it (horizontest.Logger).
+	HorizonLogger *slog.Logger
 	// LiveSocketAge is how long a GET /ws/live socket lives before it closes with 4001 (max age),
 	// drawn as it opens. Nil draws it uniformly from [contracts.LiveSocketMinAge,
 	// contracts.LiveSocketMaxAge), so the sockets a deploy opened together do not all end
@@ -348,6 +353,8 @@ type DepsInput struct {
 	// thirty-second repeat of every event-horizon warning; see Deps.HorizonStallAfter.
 	HorizonStallAfter time.Duration
 	HorizonWarnEvery  time.Duration
+	// HorizonLogger is for tests only; see Deps.HorizonLogger.
+	HorizonLogger *slog.Logger
 	// ListenerRosterUncached is for end-to-end test processes only; see
 	// Deps.ListenerRosterUncached.
 	ListenerRosterUncached bool
@@ -464,6 +471,7 @@ func NewDeps(input DepsInput) (Deps, error) {
 		TestHookDeadline:       input.TestHookDeadline,
 		HorizonStallAfter:      input.HorizonStallAfter,
 		HorizonWarnEvery:       input.HorizonWarnEvery,
+		HorizonLogger:          input.HorizonLogger,
 		ListenerRosterUncached: input.ListenerRosterUncached,
 		OutboxPublishes:        input.OutboxPublishes,
 		Metrics:                input.Metrics,

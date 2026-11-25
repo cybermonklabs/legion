@@ -1118,7 +1118,7 @@ func awaitSinceRead(
 // names the read and show its last answer in a failure.
 func awaitHorizonRead[T any](t *testing.T, database *store.Store, what string, read func() T, holds func(T) bool, show func(T) string) T {
 	t.Helper()
-	warnings, stop := horizontest.Listen(t)
+	warnings, stop := horizontest.Listen(t, horizontest.DatabaseOf(database))
 	defer stop()
 	var answer T
 	horizontest.NewWatch(warnings, database.Pool.Config().ConnConfig.Database).Poll(t, "the whole answer of "+what,

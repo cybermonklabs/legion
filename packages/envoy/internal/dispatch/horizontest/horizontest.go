@@ -30,13 +30,11 @@
 package horizontest
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
-	"log"
 	"log/slog"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -228,112 +226,65 @@ func Lines(lines func() []string) func() []Warning {
 	}
 }
 
-// Listen makes the default logger's handler one that keeps every stall warning and passes every
-// record on to the handler it replaced, until stop, which t's cleanup also calls. A horizon logs
-// its warnings to slog.Default as it stands when it warns (events.Horizon's log), so this hears
-// every horizon of the test's own process, its second server's included, and a test that captures
-// its logs itself still gets every line. warnings answers the stall warnings kept so far, oldest
-// first. A warning logged through a logger made by With or WithGroup is kept without the
-// attributes those added; warnStall uses neither.
-//
-// Only slog's default changes: the log package keeps its own output and flags. slog.SetDefault
-// points the log package at the new handler, and slog's own default handler writes through the
-// log package, so a record handed on to it there would wait for the lock the log package holds
-// while a log.Print is under way: the first line logged would deadlock every goroutine that logs.
-// So when the handler Listen replaces is slog's own, records are handed on to one that writes as
-// it does on a logger of its own over the log package's writer (asSlogWrites).
-func Listen(t *testing.T) (warnings func() []Warning, stop func()) {
+// Logger is the logger a test gives the horizons of a server that reads database
+// (api.Deps.HorizonLogger, events.Horizon.SetLogger). Its handler keeps each stall warning for
+// database's Listen and hands every record on to slog.Default's handler as it stands at that record,
+// so a test that captures its logs itself still gets every line. Each test's database is a clone of
+// its own, so a Listen on it reads only the warnings of that test's own horizons, whatever tests run
+// beside it, and none of them swaps slog.Default to be heard. A warning logged through a logger made
+// by With or WithGroup from it is kept without the attributes those added; warnStall uses neither.
+func Logger(database string) *slog.Logger {
+	return slog.New(&keepWarnings{kept: keptFor(database)})
+}
+
+// Listen answers the stall warnings logged through Logger(database) from now until stop, which t's
+// cleanup also calls, oldest first: those of every horizon of a server on database, its second
+// server's included, and of no other.
+func Listen(t testing.TB, database string) (warnings func() []Warning, stop func()) {
 	t.Helper()
-	kept := &keptWarnings{}
-	previous, output, flags := slog.Default(), log.Writer(), log.Flags()
-	next := previous.Handler()
-	if next == slogsOwn {
-		next = asSlogWrites(next, output, log.Prefix(), flags)
+	kept := keptFor(database)
+	start := kept.count()
+	var (
+		mu  sync.Mutex
+		end = -1 // how many warnings database had kept when stop ran; -1 until it runs
+	)
+	warnings = func() []Warning {
+		mu.Lock()
+		upTo := end
+		mu.Unlock()
+		return kept.read(start, upTo)
 	}
-	slog.SetDefault(slog.New(keepWarnings{next: next, kept: kept}))
-	log.SetOutput(output)
-	log.SetFlags(flags)
-	var once sync.Once
 	stop = func() {
-		once.Do(func() {
-			slog.SetDefault(previous)
-			log.SetOutput(output)
-			log.SetFlags(flags)
-		})
+		mu.Lock()
+		defer mu.Unlock()
+		if end < 0 {
+			end = kept.count()
+		}
 	}
 	t.Cleanup(stop)
-	return kept.read, stop
+	return warnings, stop
 }
 
-// slogsOwn is slog's own default handler, the one the process starts with: no package's init
-// replaces it, so it is the handler slog.Default has here.
-var slogsOwn = slog.Default().Handler()
+// kept is the stall warnings Logger's handlers have kept, one keeper a database.
+var kept = struct {
+	mu sync.Mutex
+	by map[string]*keptWarnings
+}{by: map[string]*keptWarnings{}}
 
-// slogWrites writes each record as slog's own default handler does - "LEVEL message key=value…"
-// through a log.Logger, with the log package's prefix and flags - but on a log.Logger of its own
-// over the writer the log package had, so it never takes the lock of the log package's logger.
-// own is slog's handler, which answers Enabled as before.
-type slogWrites struct {
-	own    slog.Handler
-	logger *log.Logger
-	mu     *sync.Mutex
-	buffer *bytes.Buffer
-	// attrs renders a record's attributes into buffer as slog's text form, with the time, level
-	// and message dropped, since the line carries those itself.
-	attrs slog.Handler
-}
-
-func asSlogWrites(own slog.Handler, output io.Writer, prefix string, flags int) slogWrites {
-	buffer := &bytes.Buffer{}
-	return slogWrites{
-		own:    own,
-		logger: log.New(output, prefix, flags),
-		mu:     &sync.Mutex{},
-		buffer: buffer,
-		attrs: slog.NewTextHandler(buffer, &slog.HandlerOptions{
-			Level: slog.LevelDebug,
-			ReplaceAttr: func(groups []string, attr slog.Attr) slog.Attr {
-				if len(groups) == 0 && (attr.Key == slog.TimeKey || attr.Key == slog.LevelKey || attr.Key == slog.MessageKey) {
-					return slog.Attr{}
-				}
-				return attr
-			},
-		}),
+// keptFor is database's keeper, made the first time a Logger or a Listen names it.
+func keptFor(database string) *keptWarnings {
+	kept.mu.Lock()
+	defer kept.mu.Unlock()
+	k, ok := kept.by[database]
+	if !ok {
+		k = &keptWarnings{}
+		kept.by[database] = k
 	}
+	return k
 }
 
-func (h slogWrites) Enabled(ctx context.Context, level slog.Level) bool {
-	return h.own.Enabled(ctx, level)
-}
-
-func (h slogWrites) Handle(ctx context.Context, record slog.Record) error {
-	h.mu.Lock()
-	h.buffer.Reset()
-	err := h.attrs.Handle(ctx, record)
-	attrs := strings.TrimSuffix(h.buffer.String(), "\n")
-	h.mu.Unlock()
-	if err != nil {
-		return err
-	}
-	line := record.Level.String() + " " + record.Message
-	if attrs != "" {
-		line += " " + attrs
-	}
-	return h.logger.Output(2, line)
-}
-
-func (h slogWrites) WithAttrs(attrs []slog.Attr) slog.Handler {
-	h.attrs = h.attrs.WithAttrs(attrs)
-	return h
-}
-
-func (h slogWrites) WithGroup(name string) slog.Handler {
-	h.attrs = h.attrs.WithGroup(name)
-	return h
-}
-
-// keptWarnings is the stall warnings Listen's handler kept; the goroutines a test's server logs
-// from share it.
+// keptWarnings is the stall warnings one database's Logger handlers kept; the goroutines of that
+// test's servers log into it.
 type keptWarnings struct {
 	mu      sync.Mutex
 	records []slog.Record
@@ -345,9 +296,22 @@ func (k *keptWarnings) add(record slog.Record) {
 	k.records = append(k.records, record.Clone())
 }
 
-func (k *keptWarnings) read() []Warning {
+// count is how many warnings k has kept so far.
+func (k *keptWarnings) count() int {
 	k.mu.Lock()
-	records := append([]slog.Record(nil), k.records...)
+	defer k.mu.Unlock()
+	return len(k.records)
+}
+
+// read answers the warnings kept from the start'th on, oldest first, and when end is not negative
+// only those before the end'th.
+func (k *keptWarnings) read(start, end int) []Warning {
+	k.mu.Lock()
+	upTo := len(k.records)
+	if end >= 0 {
+		upTo = end
+	}
+	records := append([]slog.Record(nil), k.records[start:upTo]...)
 	k.mu.Unlock()
 	warnings := make([]Warning, 0, len(records))
 	for _, record := range records {
@@ -356,33 +320,44 @@ func (k *keptWarnings) read() []Warning {
 	return warnings
 }
 
-// keepWarnings is Listen's handler: it keeps each stall warning and hands every record on to next
-// whenever next would take it.
+// keepWarnings is Logger's handler: it keeps each stall warning in kept and hands every record on
+// to slog.Default's handler as it stands at that record, with the attributes and groups With and
+// WithGroup added (scope), whenever that handler would take it.
 type keepWarnings struct {
-	next slog.Handler
-	kept *keptWarnings
+	kept  *keptWarnings
+	scope []func(slog.Handler) slog.Handler
 }
 
-func (h keepWarnings) Enabled(ctx context.Context, level slog.Level) bool {
-	return level >= slog.LevelWarn || h.next.Enabled(ctx, level)
+// next is slog.Default's handler now, with the handler's scope applied in the order it was added.
+func (h *keepWarnings) next() slog.Handler {
+	next := slog.Default().Handler()
+	for _, apply := range h.scope {
+		next = apply(next)
+	}
+	return next
 }
 
-func (h keepWarnings) Handle(ctx context.Context, record slog.Record) error {
+func (h *keepWarnings) Enabled(ctx context.Context, level slog.Level) bool {
+	return level >= slog.LevelWarn || h.next().Enabled(ctx, level)
+}
+
+func (h *keepWarnings) Handle(ctx context.Context, record slog.Record) error {
 	if record.Message == events.StallWarning {
 		h.kept.add(record)
 	}
-	if !h.next.Enabled(ctx, record.Level) {
+	next := h.next()
+	if !next.Enabled(ctx, record.Level) {
 		return nil
 	}
-	return h.next.Handle(ctx, record)
+	return next.Handle(ctx, record)
 }
 
-func (h keepWarnings) WithAttrs(attrs []slog.Attr) slog.Handler {
-	return keepWarnings{next: h.next.WithAttrs(attrs), kept: h.kept}
+func (h *keepWarnings) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return &keepWarnings{kept: h.kept, scope: append(slices.Clip(h.scope), func(next slog.Handler) slog.Handler { return next.WithAttrs(attrs) })}
 }
 
-func (h keepWarnings) WithGroup(name string) slog.Handler {
-	return keepWarnings{next: h.next.WithGroup(name), kept: h.kept}
+func (h *keepWarnings) WithGroup(name string) slog.Handler {
+	return &keepWarnings{kept: h.kept, scope: append(slices.Clip(h.scope), func(next slog.Handler) slog.Handler { return next.WithGroup(name) })}
 }
 
 // Wait returns the one result arrived delivers: the outcome of work that waits on the event
@@ -472,13 +447,21 @@ func (w *Watch) Poll(t testing.TB, what string, detail func() string, condition 
 	held = true
 }
 
-// WaitInProcess is Wait on a horizon of the test's own process, on own's server: it listens for
-// the horizon's warnings for as long as it waits (Listen). The horizon must warn at StallWarning.
+// WaitInProcess is Wait on a horizon of the test's own process, on own's server: it reads the
+// warnings that server's horizons log through Logger(own's database) for as long as it waits
+// (Listen). The horizon must warn at StallWarning and log through that Logger.
 func WaitInProcess[T any](t *testing.T, what string, arrived <-chan T, own *store.Store) T {
 	t.Helper()
-	warnings, stop := Listen(t)
+	database := DatabaseOf(own)
+	warnings, stop := Listen(t, database)
 	defer stop()
-	return Wait(t, what, arrived, warnings, own.Pool.Config().ConnConfig.Database, nil)
+	return Wait(t, what, arrived, warnings, database, nil)
+}
+
+// DatabaseOf is the database own's pool reads: the name a Logger and a Listen for a server on own
+// take.
+func DatabaseOf(own *store.Store) string {
+	return own.Pool.Config().ConnConfig.Database
 }
 
 // ownDatabaseHold reports whether warning names a holder in ownDatabase, the database the horizon's
@@ -524,13 +507,14 @@ func ReadFirstFrame(conn *gws.Conn) <-chan FirstFrame {
 }
 
 // AwaitPersisted proves horizon's H until the H some process persisted reaches newest, waiting as
-// PollInProcess does on a horizon set to warn at StallWarning here, and fails t when a proof fails
-// or the shared wait gives up. own is the store whose database horizon's pool reads. A proof
+// PollInProcess does on a horizon set here to warn at StallWarning through Logger(own's database),
+// and fails t when a proof fails or the shared wait gives up. own is the store whose database horizon's pool reads. A proof
 // waits on the horizon, so each runs on a goroutine of its own (proveOnce) and the wait asks after
 // it: the next proof begins once the one before has answered.
 func AwaitPersisted(t *testing.T, horizon *events.Horizon, newest int64, own *store.Store) {
 	t.Helper()
 	horizon.SetStallWarning(StallWarning, StallWarning)
+	horizon.SetLogger(Logger(DatabaseOf(own)))
 	var proof <-chan persisted // the proof under way, nil between two
 	PollInProcess(t, fmt.Sprintf("a persisted horizon of %d", newest), own, func() bool {
 		if proof == nil {
@@ -576,11 +560,13 @@ func proveOnce(ctx context.Context, horizon *events.Horizon) <-chan persisted {
 }
 
 // PollInProcess asks condition until it holds, as Watch.Poll does, on a horizon of the test's own
-// process, on own's server: it listens for the horizon's warnings for as long as it waits (Listen).
-// The horizon must warn at StallWarning.
+// process, on own's server: it reads the warnings that server's horizons log through Logger(own's
+// database) for as long as it waits (Listen). The horizon must warn at StallWarning and log through
+// that Logger.
 func PollInProcess(t *testing.T, what string, own *store.Store, condition func() bool) {
 	t.Helper()
-	warnings, stop := Listen(t)
+	database := DatabaseOf(own)
+	warnings, stop := Listen(t, database)
 	defer stop()
-	NewWatch(warnings, own.Pool.Config().ConnConfig.Database).Poll(t, what, nil, condition)
+	NewWatch(warnings, database).Poll(t, what, nil, condition)
 }

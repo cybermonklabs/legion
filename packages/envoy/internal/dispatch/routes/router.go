@@ -187,6 +187,8 @@ type AppContextOptions struct {
 	// api.Deps.HorizonStallAfter.
 	HorizonStallAfter time.Duration
 	HorizonWarnEvery  time.Duration
+	// HorizonLogger is for tests only; see api.Deps.HorizonLogger.
+	HorizonLogger *slog.Logger
 	// ListenerRosterUncached is for end-to-end test processes only (cmd/dispatch:
 	// DISPATCH_TEST_ROSTER_UNCACHED); see api.DepsInput.
 	ListenerRosterUncached bool
@@ -269,6 +271,7 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		ListenerCallDeadline:   opts.ListenerCallDeadline,
 		HorizonStallAfter:      opts.HorizonStallAfter,
 		HorizonWarnEvery:       opts.HorizonWarnEvery,
+		HorizonLogger:          opts.HorizonLogger,
 		ListenerRosterUncached: opts.ListenerRosterUncached,
 		OutboxPublishes:        opts.OutboxPublishes,
 		Metrics:                opts.Metrics,

@@ -18,13 +18,11 @@ import (
 // ordinary case, in api's tests above all.
 var processDefault = slog.Default()
 
-// TestListenOverSlogsOwnDefaultHandlerPassesEveryRecordOn listens while the default logger is
-// slog's own, as it is for a test that captures no log: the stall warning is kept, and the warning,
-// another slog record and a log.Print each reach the log package's writer once. Wrapped naively,
-// slog's handler and the log package take the log package's lock in turn - slog.SetDefault points
-// the log package at the new handler, which hands the record to slog's handler, which writes
-// through the log package - and the first record logged deadlocks every goroutine that logs.
-func TestListenOverSlogsOwnDefaultHandlerPassesEveryRecordOn(t *testing.T) {
+// TestALoggerOverSlogsOwnDefaultHandlerPassesEveryRecordOn logs through Logger while the default
+// logger is slog's own, as it is for a test that captures no log: the stall warning is kept for the
+// database's Listen, and the warning, another slog record and a log.Print each reach the log
+// package's writer once, from a goroutine, with no lock of the log package taken twice.
+func TestALoggerOverSlogsOwnDefaultHandlerPassesEveryRecordOn(t *testing.T) {
 	written := &logtest.Buffer{}
 	previous, output, flags := slog.Default(), log.Writer(), log.Flags()
 	slog.SetDefault(processDefault)
@@ -34,16 +32,18 @@ func TestListenOverSlogsOwnDefaultHandlerPassesEveryRecordOn(t *testing.T) {
 		log.SetOutput(output)
 		log.SetFlags(flags)
 	})
-	warnings, stop := Listen(t)
+	const database = "dispatch_test_logger_over_slogs_own"
+	warnings, stop := Listen(t, database)
+	logger := Logger(database)
 	logged := make(chan struct{})
 	go func() {
 		defer close(logged)
-		slog.Warn(events.StallWarning, "pending_for", time.Second, "database", "postgres")
-		slog.Info("dispatch: request")
+		logger.Warn(events.StallWarning, "pending_for", time.Second, "database", "postgres")
+		logger.Info("dispatch: request")
 		log.Print("a log package line")
 	}()
 	// A handler and the log package that deadlocked would never close logged.
-	testwait.Receive(t, "logging under Listen over slog's own default handler to return", logged)
+	testwait.Receive(t, "logging through Logger over slog's own default handler to return", logged)
 	stop()
 	if kept := warnings(); len(kept) != 1 || kept[0].PendingFor != time.Second {
 		t.Fatalf("Listen kept %+v, want the one stall warning", kept)
@@ -54,6 +54,39 @@ func TestListenOverSlogsOwnDefaultHandlerPassesEveryRecordOn(t *testing.T) {
 			t.Errorf("the log package's writer got %q %d times, want once; it holds %q", line, count, text)
 		}
 	}
+}
+
+// TestEachDatabasesListenReadsOnlyTheWarningsOfItsOwnLogger runs two tests beside each other, each
+// on a database of its own, as api's tests run: the one whose horizon logs a stall warning reads it,
+// and the one whose horizon logs none reads none, whatever the other logged. A keeper the two
+// shared, as a reader of the whole process's default logger was, would hand the quiet one the
+// other's warning.
+func TestEachDatabasesListenReadsOnlyTheWarningsOfItsOwnLogger(t *testing.T) {
+	// listening closes once the quiet test listens, so the warning the other logs falls inside the
+	// quiet test's Listen whatever order the two run in.
+	listening, stalled := make(chan struct{}), make(chan struct{})
+	t.Run("a horizon that stalls", func(t *testing.T) {
+		t.Parallel()
+		const database = "dispatch_test_listen_stalls"
+		warnings, _ := Listen(t, database)
+		testwait.Receive(t, "the other database's test to listen", listening)
+		Logger(database).Warn(events.StallWarning, "pending_for", time.Second, "database", database)
+		close(stalled)
+		if kept := warnings(); len(kept) != 1 || kept[0].Database != database {
+			t.Fatalf("Listen on %s read %+v, want the one stall warning its own horizon logged", database, kept)
+		}
+	})
+	t.Run("a horizon that does not", func(t *testing.T) {
+		t.Parallel()
+		const database = "dispatch_test_listen_quiet"
+		warnings, _ := Listen(t, database)
+		close(listening)
+		testwait.Receive(t, "the other database's horizon to log its stall warning", stalled)
+		Logger(database).Info("dispatch: request")
+		if kept := warnings(); len(kept) != 0 {
+			t.Fatalf("Listen on %s read %+v, want none: its own horizon logged no stall warning", database, kept)
+		}
+	})
 }
 
 // stallWarningHead is the opening of every stall-warning line: slog's time, level and quoted
@@ -530,21 +563,22 @@ func TestFromRecordReadsWhatWarnStallLogged(t *testing.T) {
 	}
 }
 
-// TestListenKeepsEachStallWarningAndPassesEveryRecordOn listens while the default logger already
-// belongs to a test that captures its own records: the stall warning is kept, every record still
-// reaches the test's own handler, and once stopped nothing more is kept and the test's handler is
-// the default again.
-func TestListenKeepsEachStallWarningAndPassesEveryRecordOn(t *testing.T) {
+// TestALoggerKeepsEachStallWarningAndPassesEveryRecordOn logs through Logger while the default
+// logger belongs to a test that captures its own records: the stall warning is kept, every record
+// still reaches the test's own handler, and once the Listen has stopped it reads nothing more.
+func TestALoggerKeepsEachStallWarningAndPassesEveryRecordOn(t *testing.T) {
 	captured := &logtest.Recorder{}
 	logtest.SetDefault(t, captured)
-	warnings, stop := Listen(t)
-	slog.Info("dispatch: request")
-	slog.Warn(events.StallWarning, "pending_for", time.Second, "database", "postgres")
+	const database = "dispatch_test_logger_keeps"
+	warnings, stop := Listen(t, database)
+	logger := Logger(database)
+	logger.Info("dispatch: request")
+	logger.Warn(events.StallWarning, "pending_for", time.Second, "database", "postgres")
 	if kept := warnings(); len(kept) != 1 || kept[0].PendingFor != time.Second || kept[0].Database != "postgres" {
 		t.Fatalf("Listen kept %+v, want the one stall warning", kept)
 	}
 	stop()
-	slog.Warn(events.StallWarning, "pending_for", 2*time.Second)
+	logger.Warn(events.StallWarning, "pending_for", 2*time.Second)
 	if kept := warnings(); len(kept) != 1 {
 		t.Fatalf("Listen kept %d warnings after it stopped, want the 1 from before", len(kept))
 	}

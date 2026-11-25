@@ -445,11 +445,12 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		ListenerTakeoverWindow: takeoverWindow,
 		ListenerCallDeadline:   callDeadline,
 		// A wait on the event horizon (internal/dispatch/horizontest) reads its stall warnings for
-		// the own-hold rule and for the account a wait that gave up prints, so the horizon warns
-		// within a fraction of a second of a hold rather than at the production five and thirty
-		// seconds.
+		// the account a wait that gave up prints, so the horizon warns within a fraction of a second
+		// of a hold rather than at the production five and thirty seconds, to the test's own keeper
+		// of its database's warnings, which tests running beside it do not share.
 		HorizonStallAfter:      horizontest.StallWarning,
 		HorizonWarnEvery:       horizontest.StallWarning,
+		HorizonLogger:          horizontest.Logger(horizontest.DatabaseOf(database)),
 		OIDC:                   verifier,
 		GitHubRequestTimeout:   options.githubRequestTimeout,
 		BrokerTokens:           brokerTokens,

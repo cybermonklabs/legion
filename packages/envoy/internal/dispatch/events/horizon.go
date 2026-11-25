@@ -377,6 +377,18 @@ func (h *Horizon) SetStallWarning(stallAfter, warnEvery time.Duration) {
 	}
 }
 
+// SetLogger replaces the sink of every warning this Horizon logs: the stall warning, the
+// failed-observation warning and the failed-persist warning. A nil logger leaves it as it is, and a
+// Horizon whose sink nobody set logs to slog.Default as it stands at each warning, which is what
+// production keeps. A test sets it to read only the warnings of the horizons it built (horizontest
+// keeps them by the database the test's server reads), where tests that run beside it share
+// slog.Default. Call it before the Horizon is shared.
+func (h *Horizon) SetLogger(logger *slog.Logger) {
+	if logger != nil {
+		h.logger = logger
+	}
+}
+
 // Persisted answers the H some process persisted (PersistProven), when it is a value of the event
 // log as it stands now, and 0 when none is. Every event at or below it is final: finality is
 // permanent, whichever process proved it. It runs one statement and waits on no transaction.

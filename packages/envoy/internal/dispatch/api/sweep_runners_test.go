@@ -72,11 +72,12 @@ func recordedPool(t *testing.T, database *store.Store) (*store.Pool, *storetest.
 
 // sweepHorizon is one runner's events.Horizon, one per process as a server keeps one
 // (api.Background's EventHorizon), observing through that process's own pool. It warns of a stall
-// at horizontest.StallWarning, as a test server's horizon does, so a wait on what its passes judge
-// fails at once on a hold of the test's own (horizontest.PollInProcess).
+// at horizontest.StallWarning, as a test server's horizon does, to the test's keeper of the pool's
+// database, so a wait on what its passes judge names the holder (horizontest.PollInProcess).
 func sweepHorizon(pool *store.Pool) *events.Horizon {
 	horizon := events.NewHorizon(pool)
 	horizon.SetStallWarning(horizontest.StallWarning, horizontest.StallWarning)
+	horizon.SetLogger(horizontest.Logger(pool.Config().ConnConfig.Database))
 	return horizon
 }
 

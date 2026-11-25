@@ -50,9 +50,11 @@ func secondProcess(t *testing.T, database *store.Store) (http.Handler, *server) 
 		ServerURL:   "https://dispatch.example",
 		Docs:        documentService,
 		Events:      broker,
-		// Its horizon warns as the first process's does (newRegisteredTestServer).
+		// Its horizon warns as the first process's does (newRegisteredTestServer), to the test's
+		// own keeper of its database's warnings.
 		HorizonStallAfter: horizontest.StallWarning,
 		HorizonWarnEvery:  horizontest.StallWarning,
+		HorizonLogger:     horizontest.Logger(horizontest.DatabaseOf(second)),
 	})
 	if err != nil {
 		t.Fatalf("new API dependencies for the second process: %v", err)
