@@ -8200,8 +8200,15 @@ test("a thread's Dismiss in the Inbox's list leaves a reading column that can sc
       farthest: Math.round(box.scrollHeight - box.clientHeight),
       top: Math.round(box.scrollTop),
     }));
+  // The column draws its thread's forty paragraphs over frames, so the row waits until the column
+  // can scroll and holds still; then one read is where it stands just before the press.
+  await expect
+    .poll(async () => (await standing()).farthest, {
+      message: "the reading column can scroll before the press",
+    })
+    .toBeGreaterThan(0);
+  await settledScrollTop(column);
   const before = await standing();
-  expect(before.farthest, "the reading column can scroll before the press").toBeGreaterThan(0);
   await page.keyboard.press("Enter");
   await expect(row).toHaveCount(0);
   // A scroll lands over frames, so the column is read once it holds still.

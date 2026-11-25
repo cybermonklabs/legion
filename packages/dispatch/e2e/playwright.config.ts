@@ -367,7 +367,8 @@ const parallelProjects = [
   // List's view hands the focus to the row now at their place, whose bar and rows the action
   // takes away, its row that Unpin on a pinned agent keeps the keyboard focus on a control in
   // sight, whose row the unpin moves to its new place, its row that a thread's Dismiss in the
-  // Inbox's list scrolls nothing, whose row the Dismiss takes away, its five rows that a control
+  // Inbox's list scrolls nothing, and its row that the same Dismiss at 1440 leaves a reading
+  // column that can scroll where it stood, whose row the Dismiss takes away, its five rows that a control
   // held under the reader's press keeps the keyboard focus - the Inbox's Decline dialog, a
   // references Retry on the Artifacts tab, the Inbox card's Referenced by Retry, Unfollow and
   // Unsubscribe on an Inbox card's recipients, and a group card's Rename in the Session groups
@@ -478,8 +479,10 @@ const parallelProjects = [
   // `focusout`: `table-controls`'s page-own focus row, its row whose focused row a live update
   // takes away, its row that Add a priority opens its form in view with the focus on Priority to
   // advance, its row that Change answer opens the answer form with its first choice whole in
-  // the window, whose button takes itself away, and its scrolling-table row, whose focused row a
-  // scroll takes away.
+  // the window, whose button takes itself away, its two rows that a thread's Dismiss in the
+  // Inbox's list scrolls nothing, the window and the list at 1440 and 390 and a reading column that
+  // can scroll at 1440, whose row the Dismiss takes away, and its scrolling-table row, whose
+  // focused row a scroll takes away.
   // The order in which the engine fires a text box's blur and lets React commit the save the blur
   // made, which takes the box away: `issue`'s row that Enter in the title's editor, and a click
   // outside it, close it and leave the next key to the page, as above `webkit`.
