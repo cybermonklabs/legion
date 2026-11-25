@@ -826,3 +826,67 @@ func TestNewSetDigest(t *testing.T) {
 		t.Fatalf("Version = %s, want %s: a namespace with no requesters digests the bytes it always did", set.Version, want)
 	}
 }
+
+// duplicated is a store over another that lists the secret id as one two secrets hold - its own
+// source and other - as the 1Password store marks a title two active items hold.
+type duplicated struct {
+	secretstore.Store
+	id, other string
+}
+
+func (d duplicated) mark(ls secretstore.Listing) secretstore.Listing {
+	if ls.ID == d.id {
+		ls.Duplicates = []string{ls.Source, d.other}
+	}
+	return ls
+}
+
+func (d duplicated) List(ctx context.Context, prefix string, opts secretstore.ReadOptions) ([]secretstore.Listing, error) {
+	listings, err := d.Store.List(ctx, prefix, opts)
+	for i := range listings {
+		listings[i] = d.mark(listings[i])
+	}
+	return listings, err
+}
+
+func (d duplicated) Describe(ctx context.Context, id string, opts secretstore.ReadOptions) (secretstore.Listing, error) {
+	ls, err := d.Store.Describe(ctx, id, opts)
+	return d.mark(ls), err
+}
+
+// TestANameTwoSecretsHoldIsRefusedNamingBoth: a secret the store lists as held by two secrets is
+// refused name-duplicated, before any tag of it is weighed, with a detail naming both sources, by
+// a load and by a reread alike, while every other secret is served.
+func TestANameTwoSecretsHoldIsRefusedNamingBoth(t *testing.T) {
+	id := policytest.ID("DEEL_API_KEY")
+	untagged := policytest.Secret("DEEL_API_KEY", owner, policy.TierAgent, "v")
+	delete(untagged.Tags, policy.TagOwner)
+	store := duplicated{
+		Store: memory.New(untagged, policytest.Secret("OTHER_KEY", owner, policy.TierAgent, "v")),
+		id:    id, other: memory.Source(id) + "-second",
+	}
+	want := policy.Refusal{Reason: policy.ReasonNameDuplicated, Detail: "items " + memory.Source(id) + ", " + memory.Source(id) + "-second hold this name"}
+	ctx := context.Background()
+	loader := policytest.Loader(store)
+	set, err := loader.Load(ctx)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := set.Refused[id]; got != want {
+		t.Errorf("Load refused %s as %+v, want %+v", id, got, want)
+	}
+	if _, served := set.Secrets["OTHER_KEY"]; !served {
+		t.Error("Load did not serve OTHER_KEY, which one secret holds")
+	}
+	lookup, err := loader.LoadOne(ctx, "DEEL_API_KEY")
+	if err != nil || lookup.Served || lookup.Reason != policy.ReasonNameDuplicated {
+		t.Errorf("LoadOne(DEEL_API_KEY) = %+v, %v; want %s", lookup, err, policy.ReasonNameDuplicated)
+	}
+	cur := policytest.Current(t, store)
+	if lookup, err := cur.RefreshOne(ctx, "DEEL_API_KEY"); err != nil || lookup.Reason != policy.ReasonNameDuplicated {
+		t.Fatalf("RefreshOne(DEEL_API_KEY) = %+v, %v; want %s", lookup, err, policy.ReasonNameDuplicated)
+	}
+	if got := cur.Get().Refused[id]; got != want {
+		t.Errorf("after a reread the live set refuses %s as %+v, want %+v", id, got, want)
+	}
+}

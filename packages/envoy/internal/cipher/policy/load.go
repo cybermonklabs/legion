@@ -108,6 +108,11 @@ const (
 	// ReasonNameMalformed: the name under the prefix is not lowercase letters, digits and single
 	// hyphens starting with a letter, so it maps to no name a session can ask for.
 	ReasonNameMalformed = "name-malformed"
+	// ReasonNameDuplicated: more than one secret of the store holds the name
+	// (secretstore.Listing.Duplicates), as two active items of one title can in a 1Password vault,
+	// so no one of them is the secret a session asks for. It is refused before any tag is weighed,
+	// and its detail names each secret's source, so the owner can archive all but one.
+	ReasonNameDuplicated = "name-duplicated"
 	// ReasonOwnerTagMissing: the secret has no owner tag.
 	ReasonOwnerTagMissing = "owner-tag-missing"
 	// ReasonOwnerTagMalformed: the owner tag is not shared, a lowercase email, a group as
@@ -437,12 +442,15 @@ func (l Loader) Load(ctx context.Context) (*Set, error) {
 }
 
 // refusalOf is the Refusal of the secret ls lists for reason, with detail: its owner tag as the
-// store holds it, or "" for the two reasons that tag is itself the fault, missing or malformed, and
-// its superseded-by tag as written.
+// store holds it, or "" for the two reasons that tag is itself the fault, missing or malformed;
+// its superseded-by tag as written; and, for ReasonNameDuplicated, a detail of its own naming the
+// source of each secret that holds the name.
 func refusalOf(ls secretstore.Listing, reason, detail string) Refusal {
 	switch reason {
 	case ReasonOwnerTagMissing, ReasonOwnerTagMalformed:
 		return Refusal{Reason: reason, Detail: detail, SupersededBy: ls.Tags[TagSupersededBy]}
+	case ReasonNameDuplicated:
+		return Refusal{Reason: reason, Owner: ls.Tags[TagOwner], Detail: "items " + strings.Join(ls.Duplicates, ", ") + " hold this name", SupersededBy: ls.Tags[TagSupersededBy]}
 	}
 	return Refusal{Reason: reason, Owner: ls.Tags[TagOwner], Detail: detail, SupersededBy: ls.Tags[TagSupersededBy]}
 }
@@ -548,8 +556,12 @@ func (l Loader) LoadOne(ctx context.Context, name string) (Lookup, error) {
 // secret reads one secret under the prefix at now, answering the reason it is refused when it is,
 // and that refusal's detail where it has one (a proxy tag's, proxyTags). It asks the store whether
 // the secret is on the agent-secrets key only after every tag check, so a secret refused for its
-// name or tags costs no key lookup; a failed lookup is an error.
+// name or tags costs no key lookup; a failed lookup is an error. A name two items hold is refused
+// before any of that (ReasonNameDuplicated), since the store cannot say which item the name means.
 func (l Loader) secret(ctx context.Context, slug string, ls secretstore.Listing, now time.Time) (Secret, string, string, error) {
+	if len(ls.Duplicates) > 1 {
+		return Secret{}, ReasonNameDuplicated, "", nil
+	}
 	s, reason, err := l.storedSecret(ctx, slug, ls)
 	if err != nil || reason != "" {
 		return Secret{}, reason, "", err
