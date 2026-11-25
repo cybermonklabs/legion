@@ -318,6 +318,48 @@ func TestAMessageHeldForAReviewerWhosePodWaitsRaisesNoRelaunch(t *testing.T) {
 	}
 }
 
+// A relaunch raised for a reviewer's head is decided once the decision of its event returns,
+// whichever way that decision returns. One whose store write failed before the event reached the
+// table (settle) leaves the next attempt free to raise the relaunch again. Otherwise every later
+// task of that reviewer would wait unsent, with no relaunch, until the daemon restarts.
+func TestARelaunchWhoseDecisionFailedIsRaisedAgain(t *testing.T) {
+	h, recorded := newReviewerHarness(t, "head-1")
+	h.reach(StateWorking)
+	// The turn ends and the store refuses the task's retirement, so each decision's settle fails
+	// until the store takes writes again.
+	h.store.fail("RetireDelivery", errBoom)
+	if err := h.handle(StreamTurnEnd{Claim: h.token}); !errors.Is(err, errBoom) {
+		t.Fatalf("turn end over a failing retirement returned %v, want the store's error", err)
+	}
+	h.wantState(StateIdle)
+	recorded.set("head-2")
+	h.specs.setReviewHead("head-2")
+
+	// A message the daemon holds for the reviewer raises the relaunch, and the decision of the
+	// relaunch fails at its settle.
+	if holds, err := h.m.ReviewHeadHolds(h.ctx); err != nil || holds {
+		t.Fatalf("ReviewHeadHolds = %t, %v; want the message held while the relaunch runs", holds, err)
+	}
+	h.m.Wait()
+	h.wantCalls("Resume", 0)
+	if lines := h.logs.lines("the relaunch at the reviewer's head", "boom"); len(lines) != 1 {
+		t.Fatalf("the failed relaunch logged %q, want one line naming the store's error", lines)
+	}
+
+	// The store takes writes again, and the reviewer's next round is handed to it.
+	h.store.fail("RetireDelivery", nil)
+	h.must(RequestDeliver{Claim: h.token, Task: "review round two"})
+	h.m.Wait()
+	if got := h.wantCalls("Resume", 1)[0].Spec.ReviewHead; got != "head-2" {
+		t.Fatalf("the relaunch gave the reviewer head %q, want head-2", got)
+	}
+	h.relaunched()
+	h.m.Wait()
+	if prompts := h.wantPrompts(2); !strings.Contains(prompts[1].Message, "review round two") {
+		t.Fatalf("the relaunched reviewer was sent %q, want the round's task", prompts[1].Message)
+	}
+}
+
 // Only a reviewer's task asks for the head: every other role works the issue's shared workspace,
 // which every push reaches, and its task reads no record of a head.
 func TestOnlyAReviewersTaskReadsTheHead(t *testing.T) {

@@ -1468,7 +1468,8 @@ type Machine struct {
 	lostCause SessionLoss
 	// reviewRaising is whether a relaunch this machine raised for a reviewer's head
 	// (raiseReviewRelaunch, ReviewHeadMoved) is still to be decided, so a send that finds the
-	// heads apart again meanwhile raises none of its own; the fence clears it. reviewRaisedFor is
+	// heads apart again meanwhile raises none of its own; the decision of the relaunch's event
+	// clears it as it returns, whichever step it returns from (Handle). reviewRaisedFor is
 	// the record's head the last relaunch was raised for, at the generation it was raised over,
 	// so a launch since that still gave another head raises none again (reviewHeadHolds), and
 	// reviewRefused the head that refusal was last logged for. All three are memory only: a
@@ -1939,6 +1940,13 @@ func (m *Machine) Handle(ctx context.Context, ev Event) error {
 	// or fence that returns first, or a post for another claim (RefreshGate, the rule of return).
 	if stale, ok := ev.(StalePlugin); ok && stale.Credit != nil {
 		defer m.settleUntakenCredit(stale.Credit)
+	}
+	// A relaunch the machine raised for a reviewer's head (raiseReviewRelaunch) is decided by this
+	// decision, whatever the table makes of it and whichever step returns first: a settle that
+	// fails returns before the fence. So it is cleared as the decision returns, still under the
+	// lock, and the next send that finds the heads apart raises one again.
+	if _, moved := ev.(ReviewHeadMoved); moved {
+		defer func() { m.reviewRaising = false }()
 	}
 	m.decide(ev)
 	if token := claimOf(ev); token != m.claim.Token {
@@ -2741,10 +2749,6 @@ func (m *Machine) fence(ctx context.Context, ev Event) (bool, error) {
 			return false, nil
 		}
 		delete(m.timers, ev.Kind)
-	case ReviewHeadMoved:
-		// The relaunch the machine raised is decided now, whatever the table makes of it, so the
-		// next send that finds the heads apart raises one again (raiseReviewRelaunch).
-		m.reviewRaising = false
 	case RequestRegister:
 		// A registration as another session than the claim records is refused (fenceRequest),
 		// and stays refused: its process is not the claim's agent. Where that process is one an
