@@ -282,13 +282,20 @@ func (o *loadOptions) call(timeout time.Duration) error {
 		return err
 	}
 	defer answer.Body.Close()
-	if _, err := io.Copy(io.Discard, redact.StreamAnswer(answer, math.MaxInt64)); err != nil {
+	if _, err := drain(answer); err != nil {
 		return err
 	}
 	if answer.StatusCode != http.StatusOK {
 		return fmt.Errorf("the call answered %d", answer.StatusCode)
 	}
 	return nil
+}
+
+// drain reads the whole of answer's body and throws it away, answering how many bytes it read.
+// What this command measures is the bytes on the wire, which it never prints, so the body is the
+// data of redact.StreamAnswer, under no limit: the check sends 50 MiB through one of these calls.
+func drain(answer *http.Response) (int64, error) {
+	return io.Copy(io.Discard, redact.StreamAnswer(answer, math.MaxInt64))
 }
 
 // load opens rate connections a second for seconds seconds and answers what each one took.
@@ -412,7 +419,7 @@ func (o *loadOptions) upload(stdout io.Writer) {
 		o.say(stdout, map[string]any{"error": err.Error(), "seconds": time.Since(at).Seconds()})
 		return
 	}
-	read, _ := io.Copy(io.Discard, redact.StreamAnswer(answer, math.MaxInt64))
+	read, _ := drain(answer)
 	o.say(stdout, map[string]any{"status": answer.StatusCode, "sent": len(body), "answer_bytes": read,
 		"seconds": time.Since(at).Seconds()})
 }
@@ -432,14 +439,14 @@ func (o *loadOptions) gapMode(stdout io.Writer) {
 		o.say(stdout, map[string]any{"error": "the first event: " + err.Error()})
 		return
 	}
-	_, _ = io.Copy(io.Discard, redact.StreamAnswer(first, math.MaxInt64))
+	_, _ = drain(first)
 	time.Sleep(time.Duration(o.gap) * time.Second)
 	second, err := o.ask(conn, reader, "GET", "/second-event", nil, "")
 	if err != nil {
 		o.say(stdout, map[string]any{"first": first.StatusCode, "second_error": err.Error(), "gap": o.gap})
 		return
 	}
-	_, _ = io.Copy(io.Discard, redact.StreamAnswer(second, math.MaxInt64))
+	_, _ = drain(second)
 	o.say(stdout, map[string]any{"first": first.StatusCode, "second": second.StatusCode, "gap": o.gap})
 }
 
