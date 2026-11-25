@@ -699,7 +699,8 @@ func TestAKeptVolumePodWaitsOutADetach(t *testing.T) {
 		{"a kept pod, the kept-volume bound shorter than the boot timeout", 2 * time.Second, time.Second, true, 2 * time.Second},
 	} {
 		t.Run("a launch whose launcher never connects: "+tc.name, func(t *testing.T) {
-			g := newRig(t, nil, withOptions(func(o *Options) {
+			fc := clocktest.New(rigNow)
+			g := newRig(t, nil, withClock(fc), withOptions(func(o *Options) {
 				keptVolumes(SandboxMicroVM, childIssue)(o)
 				o.BootTimeout = tc.boot
 			}))
@@ -712,20 +713,21 @@ func TestAKeptVolumePodWaitsOutADetach(t *testing.T) {
 			name := SandboxName(spec.Claim)
 			result := make(chan error, 1)
 			go func() { _, err := g.r.Spawn(g.ctx, spec); result <- err }()
-			appeared := g.pendingPod(name, pulling)
+			ended := func() bool { return len(result) > 0 }
+			g.pendingPod(name, pulling)
+			began := g.launcherWaitBegun(fc, tc.want)
 
-			select {
-			case err := <-result:
-				waited := time.Since(appeared)
-				want := "wait for its role launcher: timed out after " + tc.want.String() + " waiting for role launcher " + string(spec.Claim)
-				if err == nil || !strings.Contains(err.Error(), want) {
-					t.Fatalf("Spawn = %v, want %q", err, want)
-				}
-				if waited < tc.want-recheckInterval {
-					t.Fatalf("the launch gave up %s after its pod appeared, want its start bound %s", waited, tc.want)
-				}
-			case <-time.After(90 * time.Second):
-				t.Fatal("hang guard: the launch never ended for a pod whose launcher never connects")
+			// The wait's checks run one recheck apart on the fake clock, so the launch is still
+			// waiting one recheck short of its start bound and has given up at it.
+			g.stepTo(fc, began.Add(tc.want-recheckInterval), ended)
+			if ended() {
+				t.Fatalf("the launch gave up %s into its wait, want its start bound %s: %v", fc.Now().Sub(began), tc.want, <-result)
+			}
+			g.stepTo(fc, began.Add(tc.want), ended)
+			err := testwait.Receive(t, "the launch", result)
+			want := "wait for its role launcher: timed out after " + tc.want.String() + " waiting for role launcher " + string(spec.Claim)
+			if err == nil || !strings.Contains(err.Error(), want) {
+				t.Fatalf("Spawn = %v, want %q", err, want)
 			}
 			if kept := ownsKeptVolume(g.sandbox(name)); kept != tc.keeps {
 				t.Fatalf("the issue's Sandbox owns a kept volume: %t, want %t", kept, tc.keeps)

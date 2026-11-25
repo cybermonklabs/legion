@@ -738,35 +738,57 @@ const neverFinishedBudget = 4 * recheckInterval
 // (planted), the attempt has moved on to its wait for a started pod to finish, and a check of the
 // attempt's wait has run after all that (step), it moves fc past budget. So the attempt's verdict
 // reads what the row planted, and a status the probe refused would have been refused by that check.
+// It returns at once when the probe under test has ended (ended): a probe that refused its pod runs
+// no further attempt.
 func (g *probeRig) runsOut(fc *clocktest.Fake, phases <-chan string, budget time.Duration, ended func() bool) {
 	g.t.Helper()
-	for phase := ""; phase != "startup"; {
-		phase = testwait.Receive(g.t, "the attempt's wait for its pod to start", phases)
+	if !g.reaches(phases, "startup", ended) {
+		return
 	}
-	g.eventually("the runtime's store to hold what the row planted", g.planted)
-	if pod := g.r.storedPod(probeSandboxName); pod != nil && probeStarted(pod) {
-		for phase := ""; phase != "command"; {
-			phase = testwait.Receive(g.t, "the attempt's wait for its started pod to finish", phases)
-		}
+	g.eventually("the runtime's store to hold what the row planted", func() bool { return ended() || g.planted() })
+	if ended() {
+		return
+	}
+	if pod := g.r.storedPod(probeSandboxName); pod != nil && probeStarted(pod) && !g.reaches(phases, "command", ended) {
+		return
 	}
 	g.step(fc, ended)
 	fc.Advance(budget)
 }
 
+// reaches reads phases until the attempt in progress reports phase (onPhase), skipping any other,
+// and reports false once the probe under test has ended (ended) before it did.
+func (g *probeRig) reaches(phases <-chan string, phase string, ended func() bool) bool {
+	g.t.Helper()
+	got := testwait.Until(g.t, "the probe's attempt to reach its "+phase+" phase", func() (string, bool) {
+		select {
+		case reported := <-phases:
+			return reported, reported == phase
+		default:
+			return "", ended()
+		}
+	})
+	return got == phase
+}
+
 // planted is whether the runtime's store holds what the row's stand-ins planted for the probe pod of
-// the attempt in progress: the pod as finish leaves it, or, where the rig makes no pod (hold), the
-// attempt's Sandbox and no pod. The attempt creates its Sandbox only once the store holds neither an
-// earlier Sandbox nor its pod (createProbe), so a pod the store holds by then is this attempt's.
+// the attempt in progress, the one of the Sandbox the API holds now: that Sandbox's pod as finish
+// leaves it, or, where the rig makes no pod (hold), that Sandbox and no pod of it. A pod of an
+// earlier attempt's Sandbox, which a lagging store may still hold, is never the answer.
 func (g *probeRig) planted() bool {
+	current := g.sandbox(probeSandboxName)
+	if current == nil {
+		return false
+	}
 	pod := g.r.storedPod(probeSandboxName)
 	g.mu.Lock()
 	finish := g.finish
 	g.mu.Unlock()
 	if g.hold.Load() || finish == nil {
 		s, _ := g.r.storedSandbox(probeSandboxName)
-		return s != nil && pod == nil
+		return s != nil && s.UID == current.UID && !ownedBy(pod, current.UID)
 	}
-	if pod == nil {
+	if !ownedBy(pod, current.UID) {
 		return false
 	}
 	want := pod.DeepCopy()
