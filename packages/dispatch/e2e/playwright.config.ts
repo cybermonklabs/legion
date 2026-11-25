@@ -403,6 +403,13 @@ const parallelProjects = [
   // before the read they count answers, that a Move with only closed issues marked keeps no
   // press live, that each chip Tab reaches in the Inbox's +N more panel stands wholly inside it,
   // and that taking off the Inbox's only narrowing at 390 leaves the focus on a control in sight.
+  // The rows INFRA-3135's round-26 tester pinned, each measured in this engine: `table-controls`'s
+  // rows that the shared list keeps the option it marks active inside its box when a typed word
+  // narrows it and when Enter ticks a value, that the Delivery page's session-groups editor, the
+  // project List's Claimed by and header filters and an Inbox card's Reaches draw no count before
+  // the read they count answers, that a double click on a marked row's held control and the List
+  // bar's partly cut landing leave the focus where it belongs, and that a Board move whose dry run
+  // is out leaves the focus where the reader's click put it.
   // Without a `testMatch` the project would see every spec in this directory, so it names the
   // same `testIgnore` as `chromium`: no tagged row may sit in a plain-HTTP, multiprocess or
   // clock-read spec, and `heavy-bodies.e2e.ts` belongs to `webkit-alone` alone. That ignore is
@@ -501,6 +508,13 @@ const parallelProjects = [
   // before the read they count answers, that a Move with only closed issues marked keeps no
   // press live, that each chip Tab reaches in the Inbox's +N more panel stands wholly inside it,
   // and that taking off the Inbox's only narrowing at 390 leaves the focus on a control in sight.
+  // The rows INFRA-3135's round-26 tester pinned, each measured in this engine: `table-controls`'s
+  // rows that the shared list keeps the option it marks active inside its box when a typed word
+  // narrows it and when Enter ticks a value, that the Delivery page's session-groups editor, the
+  // project List's Claimed by and header filters and an Inbox card's Reaches draw no count before
+  // the read they count answers, that a double click on a marked row's held control and the List
+  // bar's partly cut landing leave the focus where it belongs, and that a Board move whose dry run
+  // is out leaves the focus where the reader's click put it.
   // The `testIgnore` is `chromium`'s, for the reason given above `webkit`.
   {
     name: "firefox",
