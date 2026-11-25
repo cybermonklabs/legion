@@ -186,8 +186,7 @@ func (e *Engine) mergeForwardOnEntry(ctx context.Context, tx pgx.Tx, issue recor
 	}
 	asked, open := openAsk(*pr)
 	if open && owedTo(issue, asked) {
-		_, err := e.holdStartedWorker(ctx, tx, issue, pr)
-		return err
+		return e.holdStartedWorker(ctx, tx, issue, pr)
 	}
 	if classify.ConflictRound(*pr) {
 		switch {
@@ -212,10 +211,13 @@ func (e *Engine) mergeForwardOnEntry(ctx context.Context, tx pgx.Tx, issue recor
 }
 
 // openAsk is the merge forward pr's record holds while it is the open ask of the head pr stands
-// at - an ask of that head that has not landed - and whether it is.
+// at - an ask of that head that has not landed, on a pull request that is open - and whether it is.
+// A close keeps the record's ask (closed), but a closed pull request gets no push and no landing,
+// so nothing it holds is owed and no worker waits for it; a reopen drops the ask
+// (pullRequestOpened). Every reader of the ask reads this one rule, so none checks the state apart.
 func openAsk(pr record.PullRequest) (record.MergeForward, bool) {
 	asked := pr.MergeForward
-	if asked == nil || asked.Head != pr.HeadSHA || asked.Landed != "" {
+	if pr.State != record.PullRequestOpen || asked == nil || asked.Head != pr.HeadSHA || asked.Landed != "" {
 		return record.MergeForward{}, false
 	}
 	return *asked, true
@@ -343,8 +345,10 @@ func (e *Engine) askAgainAtLaunch(ctx context.Context, tx pgx.Tx, issue record.I
 // messages, the hold among them; the silence repair's send of the work to a worker up between
 // turns with no task (repairSilence), which a held worker that stopped as its hold says is; and
 // admission's send of the entry a worker is behind (SendOwedEntry). A worker that already holds
-// the hold reads it twice, which changes nothing it does. The asked role is never held
-// (heldWorker), and a pull request that is not open holds nobody.
+// the hold reads it again, which changes nothing it does: a launch that resumes the session an
+// earlier hold reached, and a worker a move starts, which the move's hold (mergeForwardOnEntry) and
+// its launch's ready each hold once, both reaching the launch's one session. The asked role is
+// never held (heldWorker), and a pull request that is not open holds nobody (openAsk).
 func (e *Engine) holdSentWorker(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role) error {
 	if !record.InWorkflow(issue) {
 		return nil
@@ -355,14 +359,10 @@ func (e *Engine) holdSentWorker(ctx context.Context, tx pgx.Tx, issue record.Iss
 		return nil
 	}
 	pr, err := e.store.PullRequestRow(ctx, tx, issue.Key)
-	if err != nil || pr == nil || pr.State != record.PullRequestOpen {
+	if err != nil {
 		return err
 	}
-	if worker, held := heldWorker(issue, *pr); !held || worker != role {
-		return nil
-	}
-	_, err = e.holdStartedWorker(ctx, tx, issue, pr)
-	return err
+	return e.holdStartedWorker(ctx, tx, issue, pr)
 }
 
 // askAgain sends the record's ask of issue's pull request again to role at launch, a launch of
@@ -384,7 +384,7 @@ func askAgain(ctx context.Context, store record.Store, tx pgx.Tx, issue record.I
 		return nil, nil
 	}
 	pr, err := store.PullRequest(ctx, tx, issue.Key)
-	if err != nil || pr == nil || pr.State != record.PullRequestOpen {
+	if err != nil || pr == nil {
 		return nil, err
 	}
 	asked, owed := owedAsk(issue, *pr)
@@ -530,8 +530,8 @@ func mergeForwardMessageOf(issue record.Issue, pr record.PullRequest, role claim
 }
 
 // holdStartedWorker holds the worker that has just started in the phase issue stands at, where
-// the merge of the head pr stands at is owed to another role (heldWorker), and answers whether it
-// did. It is the one rule of every start of a phase's worker: a move's (mergeForwardOnEntry), the
+// the merge of the head pr stands at is owed to another role (heldWorker). It is the one rule of
+// every start of a phase's worker: a move's (mergeForwardOnEntry), the
 // architect's retry of a held phase and the operator's restart of a phase's worker (retryPhase),
 // and every other way the daemon brings that worker back to its phase's work (holdSentWorker), whose
 // worker the first hold may never have reached, since a hold to a claim that failed ends
@@ -540,24 +540,24 @@ func mergeForwardMessageOf(issue record.Issue, pr record.PullRequest, role claim
 // the workspace, merge nothing where it is the merger, and wait for the landed message, which
 // mergeForwardLanded sends it as the worker of that phase. The record's ask is left as it is. A
 // tree that lingers tells nobody.
-func (e *Engine) holdStartedWorker(ctx context.Context, tx pgx.Tx, issue record.Issue, pr *record.PullRequest) (bool, error) {
+func (e *Engine) holdStartedWorker(ctx context.Context, tx pgx.Tx, issue record.Issue, pr *record.PullRequest) error {
 	if pr == nil {
-		return false, nil
+		return nil
 	}
 	worker, held := heldWorker(issue, *pr)
 	if !held {
-		return false, nil
+		return nil
 	}
 	if lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree); err != nil || lingers {
-		return true, err
+		return err
 	}
 	asked := pr.MergeForward
 	if err := e.tellRole(ctx, tx, issue, pr, worker, record.MergeForwardHold, asked.Why); err != nil {
-		return true, err
+		return err
 	}
 	e.logOnCommit(ctx, "workflow: a worker waits for a merge forward another role was asked", "issue", issue.Key, "tree", issue.Tree,
 		"role", worker, "phase", record.StandsAt(issue), "pullRequest", pr.Number, "head", asked.Head, "asked", asked.Asked(), "askedIn", asked.Phase)
-	return true, nil
+	return nil
 }
 
 // clearMergeForward drops the merge forward the record holds for issue's pull request

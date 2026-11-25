@@ -230,13 +230,8 @@ type heldMessage struct {
 func (r *outbox) deliverHeld(ctx context.Context, row record.OutboxRow, m heldMessage) error {
 	held := r.supervisedClaim(m.token)
 	if supervise.FailedOrRetired(held.State) {
-		if r.beforeUndeliveredEnd != nil {
-			r.beforeUndeliveredEnd(row)
-		}
-		if m.end != nil {
-			if err := m.end(ctx, false, 0); err != nil {
-				return err
-			}
+		if err := r.endUndelivered(ctx, row, m.end); err != nil {
+			return err
 		}
 		r.log.Info(m.claimEnded, append(m.attributes, "state", held.State)...)
 		return nil
@@ -290,6 +285,21 @@ func (r *outbox) deliverHeld(ctx context.Context, row record.OutboxRow, m heldMe
 		return wait.Errorf("%s waits for its %s, whose session the listener reports %s: %w", m.what, m.role, notify.StateUnresponsive, published)
 	}
 	return fmt.Errorf("publish %s to its %s: %w", m.what, m.role, published)
+}
+
+// endUndelivered is the end of row, a held message's, undelivered: the test's hook between the read
+// that ends it and the end (beforeUndeliveredEnd), then end, where the message has one (a
+// merge-forward ask's, endMergeForwardAsk), as undelivered to no launch. Both ways a held message
+// ends undelivered take it: the workflow's rule of a merge-forward message (mergeForwardMessage)
+// and a claim that failed or retired (deliverHeld).
+func (r *outbox) endUndelivered(ctx context.Context, row record.OutboxRow, end func(context.Context, bool, uint64) error) error {
+	if r.beforeUndeliveredEnd != nil {
+		r.beforeUndeliveredEnd(row)
+	}
+	if end == nil {
+		return nil
+	}
+	return end(ctx, false, 0)
 }
 
 // mergingAt reads, in one transaction, what a merge-queue row reads of its issue before it acts:

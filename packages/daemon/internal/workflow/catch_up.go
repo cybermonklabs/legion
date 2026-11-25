@@ -62,11 +62,11 @@ import (
 // machine sends tells the same record and is what marks it told, so a catch-up that is held,
 // superseded or never queued here costs nothing (dispatch://INFRA-3276 R3).
 func (e *Engine) claimReady(ctx context.Context, tx pgx.Tx, fact intake.ClaimReady) (intake.Result, error) {
+	issue, err := e.store.Issue(ctx, tx, fact.Issue)
+	if err != nil || issue == nil {
+		return intake.Result{}, err
+	}
 	if fact.Role != claim.RoleArchitect {
-		issue, err := e.store.Issue(ctx, tx, fact.Issue)
-		if err != nil || issue == nil {
-			return intake.Result{}, err
-		}
 		if err := e.askAgainAtLaunch(ctx, tx, *issue, fact); err != nil {
 			return intake.Result{}, err
 		}
@@ -74,10 +74,6 @@ func (e *Engine) claimReady(ctx context.Context, tx pgx.Tx, fact intake.ClaimRea
 			return intake.Result{}, err
 		}
 		return intake.Result{}, e.readyWorkerTask(ctx, tx, *issue, fact)
-	}
-	issue, err := e.store.Issue(ctx, tx, fact.Issue)
-	if err != nil || issue == nil {
-		return intake.Result{}, err
 	}
 	if claim.IsTreeRoot(issue.Key, issue.Tree) {
 		if issue.Lingers() || record.OutOfWorkflow(issue.Status) {

@@ -31,13 +31,10 @@ import (
 //
 // Each attempt first reads the issue, its pull request and whether its tree lingers in one
 // transaction, and finishes the row undelivered, with one log line naming why, once the message is
-// no longer to be delivered by the workflow's rule for these rows (workflow.MergeForwardAt): the
-// record holds no such issue, the issue has left the workflow, its tree lingers, the record holds
-// no pull request or one that is not open, the row is to the merger and the issue no longer stands
-// in merging, the record holds no merge forward or one of another head, or the row is an ask or a
-// hold and the merge forward has landed. Role-message rows run in no order of the issue's, so a
-// hold still queued behind its landed would otherwise tell the worker to wait for a head that
-// already came.
+// no longer to be delivered by the workflow's rule for these rows (workflow.MergeForwardAt, whose
+// leftMergeForwardAt lists each case). Role-message rows run in no order of the issue's, so a hold
+// still queued behind its landed would otherwise tell the worker to wait for a head that already
+// came.
 // What follows - a claim that failed or retired, the design gate, the wake and the publish - is
 // deliverHeld's, as it is a merge-queue removal's.
 //
@@ -83,13 +80,8 @@ func (r *outbox) mergeForwardMessage(ctx context.Context, row record.OutboxRow, 
 		}
 	}
 	if left != "" {
-		if r.beforeUndeliveredEnd != nil {
-			r.beforeUndeliveredEnd(row)
-		}
-		if end != nil {
-			if err := end(ctx, false, 0); err != nil {
-				return err
-			}
+		if err := r.endUndelivered(ctx, row, end); err != nil {
+			return err
 		}
 		r.log.Info("outbox merge-forward message finished undelivered: the workflow no longer delivers it", append(attributes, "why", left)...)
 		return nil

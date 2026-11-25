@@ -192,8 +192,9 @@ type outbox struct {
 	controllerLaunched bool
 	// beforeUndeliveredEnd, where a test sets it, runs on a held message's row between the read
 	// that ends the row undelivered - the workflow's rule of a merge-forward message
-	// (mergeForwardMessage), or a claim that failed or retired (deliverHeld) - and the end, so the
-	// test can make something come in between. nil runs nothing, and no production path sets it.
+	// (mergeForwardMessage), or a claim that failed or retired (deliverHeld) - and the end
+	// (endUndelivered), so the test can make something come in between. nil runs nothing, and no
+	// production path sets it.
 	beforeUndeliveredEnd func(record.OutboxRow)
 	// The lane registry (outbox_lanes.go). mu guards running, laneCtx and lanes; running is true
 	// between Run's start and its stop, laneCtx is Run's context, which every lane runs under, and

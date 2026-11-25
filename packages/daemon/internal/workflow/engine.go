@@ -2311,7 +2311,7 @@ func (e *Engine) retryPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	// (holdStartedWorker). A merge owed to that worker itself is asked again at the ready of its new
 	// launch (askAgainAtLaunch). Then it queues the reconcile of the tree's news as a move does
 	// after its start (queueMovedNews).
-	if _, err := e.holdStartedWorker(ctx, tx, issue, pr); err != nil {
+	if err := e.holdStartedWorker(ctx, tx, issue, pr); err != nil {
 		return "", err
 	}
 	return from, e.queueMovedNews(ctx, tx, issue)
