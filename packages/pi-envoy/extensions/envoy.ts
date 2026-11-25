@@ -113,7 +113,6 @@ import {
   natsDialBudget,
 } from "@legion/envoy-client/nats-connection";
 import {
-  type BrokerNatsCredential,
   followNatsCredential,
   keepNatsCredential,
 } from "@legion/envoy-client/nats-credential";
@@ -211,7 +210,7 @@ import * as host from "@oh-my-pi/pi-coding-agent";
 import type { UserInputBuiltinCommand } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/send-user-input-handler";
 import { logger as hostLogger, procmgr, VERSION } from "@oh-my-pi/pi-utils";
 import { encode } from "@toon-format/toon";
-import { connect, Events, type NatsConnection, StringCodec } from "nats";
+import { connect, Events, StringCodec } from "nats";
 import { name as packageName, version as packageVersion } from "../package.json" with {
   type: "json",
 };
