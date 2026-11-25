@@ -1113,3 +1113,39 @@ async function expectFallbackLine(
   ).toBeFocused();
   await expect(view, `${what} draws the view beside the line`).toHaveCount(0);
 }
+
+// The tester's red row of round 17 (the class of every hold on a write letting go at the write's
+// request deadline, REQUEST_DEADLINE_MS, 30 s): offline, the Decisions view's Send change lets its
+// hold go within that deadline. At 1e21af01 it is still held 32 s after the press: its hold
+// (`DecisionActions.tsx`, `sendHeld`) waits on a read of the document's text that has no bound,
+// and offline that read pauses and never settles.
+// SLOW(>=2s): a seeded issue whose Decisions view is loaded, a Change sent offline, and its hold
+// read past the request deadline.
+test("a change sent offline on a decision lets its Send change go within the request deadline", async ({
+  browser,
+}) => {
+  test.setTimeout(150_000);
+  await phase(browser, seedReviewList, async (page, seeded) => {
+    const id = (block: string) => blockNodeId(seeded.decisionsSlug, block);
+    const changed = id(seeded.tiedNewer);
+    await page.setViewportSize(DESKTOP);
+    await openPreset(page, seeded.key, "decisions");
+    await expect
+      .poll(() => decisionsPartRows(page, "review"), {
+        message: "the review list before the Change",
+      })
+      .toEqual([changed, id(seeded.tiedOlder)]);
+    const row = nodeRow(page, changed).first();
+    await row.locator('button[data-row-action="change"]').click();
+    await row.getByLabel(CONTROL_LABELS.your_change).fill("Tie it to the first statement instead.");
+    await page.context().setOffline(true);
+    const send = row.getByRole("button", { exact: true, name: CONTROL_LABELS.send_change });
+    await send.click();
+    // The hold is read once the 30 s request deadline and two seconds more have passed.
+    await page.waitForTimeout(32_000);
+    await expect(
+      send,
+      "Send change is no longer held past the request deadline"
+    ).not.toHaveAttribute("aria-disabled", "true");
+  });
+});
