@@ -81,9 +81,7 @@ func answerWords(answer redact.Answer) string { return trunc([]byte(answer.Words
 
 // errorCode is the code a non-2xx answer's body names (writeError writes {"error": ..., "code":
 // ...}); empty for a 2xx answer, a transport error, and a body that names none or is not JSON at
-// all. It is Dispatch's word, held as redact.RemoteText with every credential the request carried
-// redacted (redact.Answer.Decode), since whatever answers in Dispatch's place can echo the bearer
-// back: a caller compares it through the box and prints it as it prints itself.
+// all.
 func (r callResult) errorCode() redact.RemoteText {
 	if r.err != nil || r.status/100 == 2 {
 		return redact.RemoteText{}
@@ -98,9 +96,7 @@ func (r callResult) errorCode() redact.RemoteText {
 // landed says the keyed write this answers ran and Dispatch gives no copy of its answer: a 409
 // KEY_COMMITTED (it landed before its answer was lost) or a replayed 2xx whose body reads
 // ANSWER_NOT_KEPT (contracts.IdempotencyKeyCommitted, IdempotencyAnswerNotKept). What it made is
-// there, and is read back for anything its caller needs of it; it is no refusal. Each is decided
-// on Dispatch's words as they came: the 409's code through the box (errorCode), the 2xx's by a
-// test of its body (codeIs).
+// there, and is read back for anything its caller needs of it; it is no refusal.
 func (r callResult) landed() bool {
 	if r.err != nil {
 		return false
