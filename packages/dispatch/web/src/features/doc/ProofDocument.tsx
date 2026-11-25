@@ -541,7 +541,9 @@ export function ProofDocument({
   // The answer itself goes through the shared ask card; the document's own reads (text, blocks,
   // versions) refresh once it lands, since the server's ask node now holds the outcome the block
   // shows and the answer writes one version, which changes only the block's server-owned
-  // attributes, and a host that selected the question hears of its answer too.
+  // attributes when the answer is that version's whole change (the server's
+  // changesAskAttributesAlone: text a person was editing in the browser can settle into the same
+  // version), and a host that selected the question hears of its answer too.
   const blockAnswered = useCallback(
     (askId: string) => {
       void queryClient.invalidateQueries({ queryKey: ["artifact", artifact.id] });
