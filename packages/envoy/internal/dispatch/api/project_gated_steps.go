@@ -118,6 +118,7 @@ func (s *server) putProjectGatedSteps(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// kept for one release: steps-write-admits
 	steps = gatedStepsWithout(steps)
 
 	project, err := s.loadProject(r.Context(), s.deps.Store.Pool, r.PathValue("key"))

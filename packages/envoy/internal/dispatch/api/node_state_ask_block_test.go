@@ -36,8 +36,8 @@ func TestTheStateRouteRefusesAnAskBlockAndWritesTheAsk(t *testing.T) {
 	block := "dispatch://" + issue.Key + "/spec#b-q1"
 	ask := "dispatch://" + issue.Key + "/ask/" + askID
 
-	blockBefore := readAskBlockNodeState(t, database, blockNode)
-	askBefore := readAskBlockNodeState(t, database, ask)
+	blockBefore := storedStateOf(t, database, blockNode)
+	askBefore := storedStateOf(t, database, ask)
 	if askBefore.state == graphstore.StateProposed {
 		t.Fatalf("the ask %s is proposed before any write, so a write of proposed on it would move nothing", ask)
 	}
@@ -51,10 +51,10 @@ func TestTheStateRouteRefusesAnAskBlockAndWritesTheAsk(t *testing.T) {
 	requireRefused(t, "the settle of the ask block",
 		dispatchRequest(t, handler, http.MethodPost, statePath(issue.Key, block, "settle"), nil, "alice"),
 		http.StatusConflict, codeAskHoldsState, block, ask)
-	if after := readAskBlockNodeState(t, database, blockNode); after != blockBefore {
+	if after := storedStateOf(t, database, blockNode); after != blockBefore {
 		t.Fatalf("the refused writes moved the block %s from %+v to %+v", block, blockBefore, after)
 	}
-	if after := readAskBlockNodeState(t, database, ask); after != askBefore {
+	if after := storedStateOf(t, database, ask); after != askBefore {
 		t.Fatalf("the refused writes on the block moved the ask %s from %+v to %+v", ask, askBefore, after)
 	}
 
@@ -84,9 +84,76 @@ func TestTheStateRouteRefusesAnAskBlockAndWritesTheAsk(t *testing.T) {
 // refusal leaves both nodes' states and state tuple counts as they were.
 func TestTheStateRouteRefusesACopiedAskBlockNamingItsSourceAsk(t *testing.T) {
 	t.Parallel()
+	copied := uploadAskBlockCopy(t, "Copy of a question")
+	if !testwait.Holds(10*time.Second, 20*time.Millisecond, func() bool {
+		ties := currentTies(t, copied.database, copied.blockNode, graphstore.TupleCopiedFrom)
+		return len(ties) == 1 && ties[0].ToKind == graphstore.KindAsk && ties[0].ToID == copied.askID
+	}) {
+		t.Fatalf("the copy's block %s never held a current copied_from to ask %s", copied.blockNode, copied.askID)
+	}
+	if owned := countRows(t, copied.database, `select count(*) from asks where block_artifact_id = $1::uuid`, copied.document.ID); owned != 0 {
+		t.Fatalf("the copy opened %d asks of its own, want none", owned)
+	}
+	copied.requireProposedRefused(t, "proposed on the copied ask block")
+}
+
+// TestTheStateRouteRefusesAnUnclaimedCopyNamingTheAskItsOpeningLineNames holds the state route to
+// the question map's third case (refs.QuestionMap): a copy no settlement of this build has claimed,
+// whose block has no ask of its own and whose node holds no copied_from tuple, and whose latest
+// version's opening line names the ask it copies as copied_from. The spec's text is uploaded as a
+// second document of the same issue; once settlement has written the copy's provenance into its
+// latest version and owes the copy nothing more, the test takes the copied_from tuples off the
+// copy's block node, so the store holds the copy as the release before left one, its source named
+// in its opening line alone. The question map then gives the block the source ask, and the copy's
+// proposed write is 409 ASK_HOLDS_STATE naming that same ask. The refusal leaves both nodes'
+// states and state tuple counts as they were.
+func TestTheStateRouteRefusesAnUnclaimedCopyNamingTheAskItsOpeningLineNames(t *testing.T) {
+	t.Parallel()
+	copied := uploadAskBlockCopy(t, "An unclaimed copy of a question")
+	// A settlement is what states the claim: once the copy owes none, no later pass runs over it
+	// that could state the claim again after the tuples below are taken off.
+	awaitSettledVersionHolding(t, copied.handler, copied.database, copied.document.ID, `copied_from="`+copied.askID+`"`)
+	if removed, err := copied.database.Pool.Exec(context.Background(), `delete from graph_tuples where from_kind = $1 and from_id = $2 and kind = $3`,
+		refs.BlockNodeKind, copied.blockNode, graphstore.TupleCopiedFrom); err != nil || removed.RowsAffected() == 0 {
+		t.Fatalf("take the copied_from tuples off the copy's block %s: %d rows, %v", copied.blockNode, removed.RowsAffected(), err)
+	}
+	if ties := currentTies(t, copied.database, copied.blockNode, graphstore.TupleCopiedFrom); len(ties) != 0 {
+		t.Fatalf("the copy's block %s still holds the copied_from %+v, want none", copied.blockNode, ties)
+	}
+	if owned := countRows(t, copied.database, `select count(*) from asks where block_artifact_id = $1::uuid`, copied.document.ID); owned != 0 {
+		t.Fatalf("the copy opened %d asks of its own, want none", owned)
+	}
+	read := dispatchRequest(t, copied.handler, http.MethodGet, "/api/v1/references/questions?kind=artifact&id="+copied.document.ID, nil, "alice")
+	if read.Code != http.StatusOK {
+		t.Fatalf("read the copy's question map: status=%d body=%s", read.Code, read.Body.String())
+	}
+	if questions := decodeBody[referenceQuestions](t, read).Questions; len(questions) != 1 || questions[0].BlockID != "q1" ||
+		questions[0].Ask != copied.askID || questions[0].Reference != copied.ask {
+		t.Fatalf("the copy's question map is %+v, want q1 naming the ask its opening line names, %s at %s", questions, copied.askID, copied.ask)
+	}
+	copied.requireProposedRefused(t, "proposed on the unclaimed copy's ask block")
+}
+
+// askBlockCopy is an issue whose spec holds the `:::ask` block q1, which settlement has indexed
+// as an ask, and a copy of the spec's text uploaded as a second document of the same issue
+// (uploadAskBlockCopy): the handler and the store that hold them, the issue's key, the ask's id
+// and its dispatch address, the copy, and the store address of the copy's block node q1.
+type askBlockCopy struct {
+	handler           http.Handler
+	database          *store.Store
+	issue, askID, ask string
+	document          model.Artifact
+	blockNode         string
+}
+
+// uploadAskBlockCopy seeds an issue titled title whose spec holds the `:::ask` block q1, waits
+// for settlement to index its ask (seedBlockAsk), and uploads the spec's text as spec-record.md,
+// a second document of the same issue, as sessionActor.
+func uploadAskBlockCopy(t *testing.T, title string) askBlockCopy {
+	t.Helper()
 	handler, database := blockAskHandler(t)
 	const question = "Ship the cache this week?"
-	issue, askID := seedBlockAsk(t, handler, "Copy of a question", "q1",
+	issue, askID := seedBlockAsk(t, handler, title, "q1",
 		":::ask{#q1 urgency=\"med\" multiple=\"false\"}\n"+question+"\n\n- Ship: Now.\n- Hold: Later.\n:::\n", question)
 	record, _ := documentTexts(t, handler, issue.PrimaryArtifactID)
 	uploaded := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]any{
@@ -95,48 +162,30 @@ func TestTheStateRouteRefusesACopiedAskBlockNamingItsSourceAsk(t *testing.T) {
 	if uploaded.Code != http.StatusCreated {
 		t.Fatalf("upload the record copy: status=%d body=%s", uploaded.Code, uploaded.Body.String())
 	}
-	copied := decodeBody[struct {
-		Artifact model.Artifact `json:"artifact"`
-	}](t, uploaded).Artifact
-	copyID := refs.BlockAddress(copied.RefKey, "q1")
-	if !testwait.Holds(10*time.Second, 20*time.Millisecond, func() bool {
-		ties := currentTies(t, database, copyID, graphstore.TupleCopiedFrom)
-		return len(ties) == 1 && ties[0].ToKind == graphstore.KindAsk && ties[0].ToID == askID
-	}) {
-		t.Fatalf("the copy's block %s never held a current copied_from to ask %s", copyID, askID)
+	copied := decodeBody[artifactUploadResponse](t, uploaded).Artifact
+	return askBlockCopy{
+		handler: handler, database: database,
+		issue: issue.Key, askID: askID, ask: "dispatch://" + issue.Key + "/ask/" + askID,
+		document: copied, blockNode: refs.BlockAddress(copied.RefKey, "q1"),
 	}
-	if owned := countRows(t, database, `select count(*) from asks where block_artifact_id = $1::uuid`, copied.ID); owned != 0 {
-		t.Fatalf("the copy opened %d asks of its own, want none", owned)
-	}
-	block := refs.BlockRef("dispatch://"+issue.Key+"/artifact/"+copied.Slug, "q1")
-	ask := "dispatch://" + issue.Key + "/ask/" + askID
-	blockBefore := readAskBlockNodeState(t, database, block)
-	askBefore := readAskBlockNodeState(t, database, ask)
+}
 
-	requireRefused(t, "proposed on the copied ask block", writeStateAs(t, handler, issue.Key, block, graphstore.StateProposed, "alice"),
-		http.StatusConflict, codeAskHoldsState, block, ask)
-	if after := readAskBlockNodeState(t, database, block); after != blockBefore {
+// requireProposedRefused writes proposed on the copy's block q1, by the block's dispatch address
+// and as alice's cookie, and requires the write's 409 ASK_HOLDS_STATE naming the block and the
+// spec's ask (requireRefused, logged under name), and that the refusal left both nodes' states and
+// state tuple counts as they were.
+func (c askBlockCopy) requireProposedRefused(t *testing.T, name string) {
+	t.Helper()
+	block := refs.BlockRef("dispatch://"+c.issue+"/artifact/"+c.document.Slug, "q1")
+	blockBefore := storedStateOf(t, c.database, block)
+	askBefore := storedStateOf(t, c.database, c.ask)
+
+	requireRefused(t, name, writeStateAs(t, c.handler, c.issue, block, graphstore.StateProposed, "alice"),
+		http.StatusConflict, codeAskHoldsState, block, c.ask)
+	if after := storedStateOf(t, c.database, block); after != blockBefore {
 		t.Fatalf("the refused write moved the copied block %s from %+v to %+v", block, blockBefore, after)
 	}
-	if after := readAskBlockNodeState(t, database, ask); after != askBefore {
-		t.Fatalf("the refused write moved the source ask %s from %+v to %+v", ask, askBefore, after)
+	if after := storedStateOf(t, c.database, c.ask); after != askBefore {
+		t.Fatalf("the refused write moved the source ask %s from %+v to %+v", c.ask, askBefore, after)
 	}
-}
-
-// askBlockNodeState holds a node's stored state and its count of state tuples.
-type askBlockNodeState struct {
-	state  string
-	tuples int
-}
-
-// readAskBlockNodeState requires a row so the states compared before and after are the store's
-// own, not a default for a node the store has not recorded.
-func readAskBlockNodeState(t *testing.T, database *store.Store, address string) askBlockNodeState {
-	t.Helper()
-	node := storedNodeOf(t, database, address)
-	history, err := graphstore.History(context.Background(), database.Pool, node.Kind, node.ID, graphstore.AttributeState)
-	if err != nil {
-		t.Fatalf("read the state tuples of %s: %v", address, err)
-	}
-	return askBlockNodeState{state: node.State, tuples: len(history)}
 }

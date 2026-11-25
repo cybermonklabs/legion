@@ -11,6 +11,7 @@ import type {
 } from "@legion/contracts";
 import { DEFAULT_ISSUE_PAGE_LIMIT, issueStatusOptionsOf } from "@legion/contracts";
 import { actorText } from "../actor-text";
+import { commandLine, fieldFlag } from "../dispatch-command";
 import {
   type DispatchClient,
   DispatchServiceError,
@@ -132,17 +133,25 @@ function refuseUnsavedRepository(
   );
 }
 
-/** The revision a whole-set write of `advances` carries: the one the caller named, which answers
- *  a 409 ADVANCES_REVISION, else the one the read answered. A Dispatch server from before
- *  priorities answers no revision and refuses a write naming `advances`, so whichever revision
- *  was named the call says so and sends nothing, the closing reason included. */
-function advancesRevisionToSend(issue: IssueDetails, named: number | undefined): number {
-  if (issue.advances_revision === undefined) {
-    throw new Error(
-      `Dispatch read ${issue.key} without its advances: this Dispatch server predates priorities, so nothing was sent; upgrade the server`
-    );
-  }
-  return named ?? issue.advances_revision;
+/** A Dispatch server from before priorities answers a read without `advances_revision` and
+ *  refuses a write naming `advances`, so a call that names `advances` says so and sends nothing,
+ *  the closing reason included. */
+function refuseServerWithoutAdvances(issue: IssueDetails): void {
+  if (issue.advances_revision !== undefined) return;
+  throw new Error(
+    `Dispatch read ${issue.key} without its advances: this Dispatch server predates priorities, so nothing was sent; upgrade the server`
+  );
+}
+
+/** The clause a 409 ADVANCES_REVISION adds to the refusal: how the caller answers it, since the
+ *  server's sentence speaks of the API's field and not of this command's flags. In both of the
+ *  server's sentences (`refuseAdvancesRevision`, internal/dispatch/api/issue_advances.go) the
+ *  last number is the revision the issue holds, and no other field of the answer carries it, so
+ *  the clause takes that number. Every other error adds nothing, so it reads as it did. */
+function advancesRevisionAnswer(issueKey: string, error: unknown): string {
+  if (!dispatchAnswered(error, 409) || error.code !== "ADVANCES_REVISION") return "";
+  const held = /(\d+)\D*$/.exec(error.message)?.[1] ?? "<the revision named above>";
+  return `read the issue with ${commandLine("dispatch_read", { issue: issueKey })}, then send the whole set you mean with ${fieldFlag("dispatch_issue_update", "advances_revision")} ${held}`;
 }
 
 /** The two members a create or an update names the issue's waits by: needs, which a Dispatch of
@@ -306,14 +315,17 @@ export async function issueUpdateCommand(context: CommandContext): Promise<Dispa
   } catch (error) {
     throw refusalWithCode(error);
   }
-  // The command replaces the issue's own set, so the write carries a revision: with none the
-  // server takes one act alone and refuses a write that moves two relations
-  // (409 ADVANCES_REVISION). The caller's own revision answers that refusal against the
-  // revision it named; with none, the read above is the read this write answers.
+  if (advances !== undefined) refuseServerWithoutAdvances(before);
+  // The command replaces the issue's own set. The revision it carries is the caller's alone: a
+  // revision says which read the whole set answers, and only a read the caller saw can be that
+  // read. The revision of this command's own read would let the set retract a relation another
+  // writer added after the caller last read the issue. With none, the server takes the write one
+  // relation at a time and refuses one that moves two or more (409 ADVANCES_REVISION), naming the
+  // revision it holds, and the catch below says how to answer that refusal.
   const advancesWrite =
     advances === undefined
       ? undefined
-      : { advances, advances_revision: advancesRevisionToSend(before, advancesRevision) };
+      : { advances, ...defined("advances_revision", advancesRevision) };
   // The schema admits reason only beside status done. The reason is posted first, so the
   // close carries its note and an issue that cannot take the note stays open. Dispatch takes
   // messages on a closed issue (though not asks or artifacts) and answers a second close with
@@ -414,16 +426,19 @@ export async function issueUpdateCommand(context: CommandContext): Promise<Dispa
       dispatchAnswered(answered, 500) && newLinks.length > 0
         ? `one of ${newLinks.join(", ")} may already be linked from another issue (a URL links exactly one issue)`
         : "";
+    const revisionClause = advancesRevisionAnswer(issueKey, error);
     if (closingNote === undefined) {
       if (taken !== "" && !(error instanceof DispatchServiceError)) {
         throw withAccount(error, taken);
       }
-      throw refusalWithCode(error, taken);
+      throw refusalWithCode(error, taken, revisionClause);
     }
     // The reason is on the issue, so a blind retry would post it a second time: the error
     // says where the first one is, and whether the close may have landed anyway.
     const landed = closeAccount(error, closingNote);
-    if (error instanceof DispatchServiceError) throw refusalWithCode(error, taken, landed);
+    if (error instanceof DispatchServiceError) {
+      throw refusalWithCode(error, taken, revisionClause, landed);
+    }
     throw withAccount(error, [taken, landed].filter((clause) => clause !== "").join("; "));
   }
   refuseUnsavedRepository("updated", after, repo);

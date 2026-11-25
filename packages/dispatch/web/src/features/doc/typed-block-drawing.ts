@@ -409,6 +409,7 @@ export function liveAskOf(
   text: { readonly markdown: string; readonly asks?: readonly TextAsk[] | null } | undefined,
   blockId: string
 ): ServedAsk | undefined {
+  // kept for one release: release-before-text
   if (text?.asks === undefined || text.asks === null) {
     return renderedAskOf(text?.markdown, blockId);
   }

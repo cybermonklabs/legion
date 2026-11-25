@@ -560,7 +560,7 @@ func (r *personHandoverRig) addReading(key, artifactID, blockID, reading string)
 // and 0 where its latest version is not approved.
 func (r *personHandoverRig) approvedLatest(artifactID string) int {
 	r.t.Helper()
-	approval, err := dispatch.New(r.baseURL, scratchAgentToken).Approval(r.t.Context(), artifactID)
+	approval, err := dispatch.New(r.baseURL, dispatch.BearerTransport(scratchAgentToken, nil)).Approval(r.t.Context(), artifactID)
 	if err != nil {
 		r.t.Fatalf("read the approval of %s as the daemon's design gate reads it: %v", artifactID, err)
 	}

@@ -60,8 +60,9 @@ const storeStepWait = 20 * time.Second
 //     through graphstore.Write; and the sweep's end of a run an hour after it was asked
 //     (goRunGone), which takes the frame's order and states the run's node gone through
 //     graphstore.WriteState before it deletes the run's rows;
-//   - an issue's own field write made for a run (patchIssue), an edit of an ask's words and of
-//     a comment's words made for a run (editAsk, editComment), and an edit and a delete of an
+//   - an issue's own field write made for a run (writeIssue, the write core the PATCH and
+//     each step of a status change run), an edit of an ask's words and of a comment's
+//     words made for a run (editAsk, editComment), and an edit and a delete of an
 //     issue message and a delete of a comment made for a run (editMessage, deleteMessage,
 //     deleteComment), each of which plans the node of what it changed in its read phase
 //     (graphstore.PlanChangedForRun) and queues that node's write after its own row and
@@ -282,11 +283,12 @@ const (
 	// was asked (goRunGone), whose foreign key cascades inside it to the run's going_events rows; the
 	// id it names is read as no row where it is no uuid (store.CanonicalUUID), which follows it.
 	goingRunDeleteStatement = "delete from going_requests where id = "
-	// patchRowStatement is a PATCH's one update of the issue's row (patchIssue), askWordsStatement
-	// an edit's update of the ask's row (editAsk), commentWordsStatement an edit's update of the
-	// comment's row (editComment) and messageWordsStatement of the message's (editMessage), and
-	// commentClearStatement and messageClearStatement a delete's clear of the comment's row and
-	// of the message's (clearDeletedPostBody, for deleteComment and deleteMessage).
+	// patchRowStatement is the write core's update of the issue's row (writeIssue, which the PATCH
+	// reaches through patchIssue), askWordsStatement an edit's update of the ask's row (editAsk),
+	// commentWordsStatement an edit's update of the comment's row (editComment) and
+	// messageWordsStatement of the message's (editMessage), and commentClearStatement and
+	// messageClearStatement a delete's clear of the comment's row and of the message's
+	// (clearDeletedPostBody, for deleteComment and deleteMessage).
 	patchRowStatement     = "update issues set "
 	askWordsStatement     = "update asks set question = $2"
 	commentWordsStatement = "update comments set body = $2"
@@ -744,16 +746,16 @@ func (r *storeWriterRig) goingRunGone() storeWriter {
 	}
 }
 
-// issuePatchForRun is an issue's own field write made for a run (patchIssue), through its route,
-// with the run named in its header: a PATCH of the issue's labels by the person whose run it is. It
-// takes the issue's owner lock (lockPatchOwners) and updates the issue's row, a write it makes
-// inline; then its write phase writes the issue's node (graphstore.QueueNodes, planned by
-// graphstore.PlanChangedForRun), appends issue.updated, and appends what the node states under
-// that event with the node's changed_by_run to the run (graphstore.QueueCaused over
-// graphstore.LatestEvent). The issue's node exists from its create, so the node step is held as
-// the table it is written to, and the row's update as its table too. Each run is a run of its own,
-// its window moved an hour ahead, by a person no write has recorded, and sets labels no run has
-// set, so every run changes the issue.
+// issuePatchForRun is an issue's own field write made for a run (writeIssue), reached through the
+// PATCH's route (patchIssue), with the run named in its header: a PATCH of the issue's labels by
+// the person whose run it is. writeIssue takes the issue's owner lock (lockPatchOwners) and
+// updates the issue's row, a write it makes inline; then its write phase writes the issue's node
+// (graphstore.QueueNodes, planned by graphstore.PlanChangedForRun), appends issue.updated, and
+// appends what the node states under that event with the node's changed_by_run to the run
+// (graphstore.QueueCaused over graphstore.LatestEvent). The issue's node exists from its create,
+// so the node step is held as the table it is written to, and the row's update as its table too.
+// Each run is a run of its own, its window moved an hour ahead, by a person no write has recorded,
+// and sets labels no run has set, so every run changes the issue.
 //
 // The event's append advances the issue's last_seq on the row this write has already updated
 // (events.Broker's QueueAppend), and Postgres checks the foreign key of a row its own

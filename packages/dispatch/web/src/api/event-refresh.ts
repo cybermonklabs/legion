@@ -221,6 +221,7 @@ const LIVE_TEXTS_RENDERING_COPIES: RefreshTarget = {
           typeof entry.copied_from === "string"
       );
     }
+    // kept for one release: release-before-text
     return (
       "markdown" in data &&
       typeof data.markdown === "string" &&
