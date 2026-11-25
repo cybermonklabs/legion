@@ -97,7 +97,7 @@ func replacedOverPassedOverClaims(t *testing.T, script func(*podUpdateRig)) (*po
 	}
 	// Nothing is deciding when the sweep reads the claims, so the first sweep after the answers
 	// is the one that replaces the pod, and the read cannot be followed by a refusal that a
-	// machine mid-decision would cause (roundGroup's mask).
+	// machine mid-decision would cause (masked).
 	rig.settleAll()
 	replaced := rig.awaitReplacement(1, "once both workers answered")
 
@@ -310,13 +310,13 @@ func TestAnUpdateRoundNamesTheWorkItsSuspendedClaimsLeft(t *testing.T) {
 // The round passed over the implementer, a claim the daemon suspended, and the implementer answers
 // the round while the sweep decides the replacement: its machine has published the answer and
 // waits on the store's write of it, which the test holds with a lock on the claim's row. The
-// replacement's decision reads a claim whose machine is deciding as one that has not answered
-// (roundGroup's mask). So the read of the workspace is due, as for any claim the round passed over
-// that has not answered: it is made through the tester, whose process the pod is replaced through,
-// and it finds work. The replacement's line, which the decision's read gives, names the implementer
-// under notWaitedFor. The message on the issue only reports, and it reads the claims unmasked
-// (noticeGroup): the implementer answered the round, so it pushed its work, and no other claim
-// lost work, so the issue is written nothing.
+// replacement's decision reads such a claim as one that has not answered (masked), but the round
+// waits for no answer of a claim it passed over, so the replacement is made at this sweep. The
+// read of the workspace, the line and the message read the claim as it holds its answer
+// (noticeGroup): the implementer answered the round, so it pushed its work, and no claim is left
+// that the round did not wait for and that had not answered. So the replacement through the
+// tester makes no read of the workspace, the line names no claim under notWaitedFor, and the
+// issue is written nothing.
 func TestPodUpdateNamesNoPassedOverClaimThatAnsweredWhileItsMachineDecides(t *testing.T) {
 	rig := newPodUpdateRig(t, suspendedRole(claim.RoleImplementer, supervise.SuspendedByDaemon), readyWorker(claim.RoleTester))
 	token := rig.tokens[claim.RoleImplementer]
@@ -363,8 +363,10 @@ func TestPodUpdateNamesNoPassedOverClaimThatAnsweredWhileItsMachineDecides(t *te
 	if len(lines) != 1 {
 		t.Fatalf("the replacement was logged %+v, want one line", lines)
 	}
-	wantReadThroughTheTester(t, rig, lines[0], "found work")
-	wantField(t, lines[0], "notWaitedFor", claim.RoleImplementer)
+	if reads := rig.rt.CallsOf("WorkspaceWork"); len(reads) != 0 {
+		t.Errorf("the workspace was read %+v, want no read: the implementer answered the round, so the round passed over no claim that had not answered", reads)
+	}
+	wantField(t, lines[0], "notWaitedFor")
 	if messages := rig.messages(); len(messages) != 0 {
 		t.Errorf("the issue was written %q, want nothing: the implementer answered the round, and no other claim lost work", messages)
 	}

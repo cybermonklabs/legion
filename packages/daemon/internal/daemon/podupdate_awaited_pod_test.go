@@ -381,14 +381,14 @@ func TestPodUpdateNamesEachClaimItDidNotWaitForInTheGroupsOrder(t *testing.T) {
 // session whose launch waits on the pod, and that answered. The round passed over no claim. The
 // implementer's retry of its launch is in its decision while the sweep decides the replacement:
 // the runtime holds that retry inside Resume (holdNextResume), and the machine has published the
-// claim with its answer. The replacement's decision reads a claim whose machine is deciding as one
-// that has not answered (roundGroup's mask), so the implementer is a waiting member that had not
-// answered, as the line names it under waitingOnThePodNotWaitedFor. The read's gate reads the
-// claims as the decision does, so the read is due, as for a claim the round passed over that
-// answered while its machine was deciding: it is made through the tester and finds work. The
-// message on the issue reads the claims unmasked (noticeGroup): the implementer answered, so the
-// issue is written nothing.
-func TestPodUpdateReadsTheWorkspaceForAWaitingMemberThatAnsweredWhileItsMachineDecides(t *testing.T) {
+// claim with its answer. The replacement's decision reads such a claim as one that has not
+// answered (masked), but the round waits for no answer of a claim whose launch waits on the pod,
+// so the replacement is made at this sweep. The read of the workspace, the line and the message
+// read the claim as it holds its answer (noticeGroup): the implementer answered, so it pushed its
+// work, and no claim is left that the round did not wait for and that had not answered. So the
+// replacement through the tester makes no read of the workspace, the line names no claim under
+// notWaitedFor or waitingOnThePodNotWaitedFor, and the issue is written nothing.
+func TestPodUpdateSkipsTheWorkspaceReadForAWaitingMemberThatAnsweredWhileItsMachineDecides(t *testing.T) {
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
 	token, tester := rig.tokens[claim.RoleImplementer], rig.tokens[claim.RoleTester]
 	rig.rt.ScriptWorkspaceWork(podUpdateIssue, runtime.WorkspaceWork{Head: passedOverHead, Commits: []string{passedOverCommit}, Count: 1})
@@ -442,9 +442,11 @@ func TestPodUpdateReadsTheWorkspaceForAWaitingMemberThatAnsweredWhileItsMachineD
 	if len(lines) != 1 {
 		t.Fatalf("the replacement was logged %+v, want one line", lines)
 	}
-	wantReadThroughTheTester(t, rig, lines[0], "found work")
+	if reads := rig.rt.CallsOf("WorkspaceWork"); len(reads) != 0 {
+		t.Errorf("the workspace was read %+v, want no read: the implementer answered the round, so no claim had work that nobody was asked to push", reads)
+	}
 	wantField(t, lines[0], "notWaitedFor")
-	wantField(t, lines[0], "waitingOnThePodNotWaitedFor", claim.RoleImplementer)
+	wantField(t, lines[0], "waitingOnThePodNotWaitedFor")
 	if messages := rig.messages(); len(messages) != 0 {
 		t.Errorf("the issue was written %q, want nothing: the implementer answered the round, and no other claim lost work", messages)
 	}
