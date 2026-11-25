@@ -189,9 +189,14 @@ test("the injected dispatch-first context holds the blocker and accepted-request
 // command needs a secret. The blocker bullet, which every session holds whole, is the line that
 // sends an agent to open an ask, so its exception sits there and links the rule. Before this
 // sentence came, #5051 cut 80 words from dispatch-writing-specs, which left the three skills at
-// 2,257 words. By this test's own whitespace count, the three skills now stand at 2,329 words on
-// main at d57c7a79 (917 + 556 + 856; 2,310 at 7227e703 before #5364, after #5391's exit-code
-// bullets), not 2,276: 11 under the bound.
+// 2,257 words. The three skills then stood at 2,276 words, 64 under the bound.
+//
+// R11 of dispatch://INFRA-2947 later named the priorities page in that line as well, by its
+// address, beside `dispatch priorities`: 5 words more, which the bound holds. The blocked-by
+// bullet's "read its links first" became "read that list first", the same count, so that the
+// words name the list the command replaces. Counted as this test counts, over the staged skills,
+// the three stand at 2,334 words, 6 under the bound: the other edits of the three since #5051
+// hold the words the two counts above leave out.
 test("the three Dispatch skills total fewer than 2,340 words", () => {
   const words = ["dispatch", "dispatch-first", "dispatch-writing-specs"]
     .flatMap((skill) => files(path.join(staged, skill)))
