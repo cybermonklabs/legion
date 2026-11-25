@@ -193,6 +193,9 @@ test("the palette lists the issue page's actions, guarded like their buttons, an
     await page.locator("body").focus();
     await page.keyboard.press("Control+k");
     const priorityAnswer = pageAnswer(page, "priority p2", core);
+    // If an earlier step throws, closing the context can reject this wait before we await it.
+    // Observe that rejection now and still await the original below.
+    void priorityAnswer.catch(() => {});
     await input.fill("priority p2");
     const setP2 = actions.getByRole("option", { name: "Set priority P2" });
     await expect(actions.getByRole("option")).toHaveCount(1);
@@ -299,6 +302,7 @@ test("/ opens the same bar, and a query that is no action's start lists the hits
     await page.keyboard.press("Control+k");
     await expect(input).toHaveValue("");
     const issueAnswer = pageAnswer(page, "issue", core);
+    void issueAnswer.catch(() => {});
     await input.fill("issue");
     await expectAnswer(dialog, "issue", await issueAnswer);
     await expect(actions.getByRole("option", { name: "Close issue" })).toBeVisible();
@@ -355,6 +359,7 @@ test("a query that holds a card move further in moves no card on Enter", async (
     ] as const) {
       await page.keyboard.press("Control+k");
       const answer = pageAnswer(page, query, core);
+      void answer.catch(() => {});
       await input.fill(query);
       await expect(actions.getByRole("option", { name: move })).toHaveCount(1);
       await expect(dialog.getByText("Searching…")).toHaveCount(0);
@@ -377,6 +382,7 @@ test("a query that holds a card move further in moves no card on Enter", async (
     });
     await page.keyboard.press("Control+k");
     const nextAnswer = pageAnswer(page, "next", core);
+    void nextAnswer.catch(() => {});
     await input.fill("next");
     const nextMove = actions.getByRole("option", { name: "Move card to the next status" });
     await expect(nextMove).toHaveCount(1);

@@ -11,7 +11,7 @@ import { expect } from "@playwright/test";
 
 import { fixedKey, listMyReplies } from "./api";
 import { inboxPane } from "./inbox-pane";
-import { holdReadMarks, replyRowId } from "./inbox-threads";
+import { holdReadMarks, replyRowId, THREAD_SESSION } from "./inbox-threads";
 import { stubbed } from "./stub/stub-test";
 import {
   collapsedParts,
@@ -31,14 +31,14 @@ const CORE = fixedKey("CORE", "this file's recordings were made under it");
 
 /** The comment thread read through its fourth reply, so the fold holds four. */
 const test = stubbed(async () => {
-  const seeded = await seedThreads(CORE);
+  const seeded = await seedThreads(CORE, THREAD_SESSION);
   await readThrough(seeded.commentIssue, seeded.comment, 4);
   return seeded;
 });
 
 /** The ask's own thread, read through its fourth reply. */
 const askTest = stubbed(async () => {
-  const seeded = await seedThreads(CORE);
+  const seeded = await seedThreads(CORE, THREAD_SESSION);
   // The Inbox's row carries the thread's read mark, and the card folds by it: read through
   // reply 4, so the fold holds those four and replies 5 and 6 stay on screen.
   await readAskThrough(seeded.askIssue, seeded.askId, 4);
@@ -47,7 +47,7 @@ const askTest = stubbed(async () => {
 
 /** The same thread read through its second reply, leaving four unread. */
 const unreadAskTest = stubbed(async () => {
-  const seeded = await seedThreads(CORE);
+  const seeded = await seedThreads(CORE, THREAD_SESSION);
   await readAskThrough(seeded.askIssue, seeded.askId, 2);
   return seeded;
 });
@@ -55,7 +55,7 @@ const unreadAskTest = stubbed(async () => {
 /** The comment thread read through its second reply, which the server counts as four unread. */
 const unreadCommentTest = stubbed(async () => {
   // The count is the server's, so it is read where the seeding runs: in record mode alone.
-  const seeded = await seedThreads(CORE);
+  const seeded = await seedThreads(CORE, THREAD_SESSION);
   await readThrough(seeded.commentIssue, seeded.comment, 2);
   expect(
     ((await listMyReplies({ state: "unread" })).rows ?? []).find(

@@ -6,12 +6,12 @@ import { measured } from "./measure";
 /** A login a sign-in takes that no reset re-creates: the running row's own person,
  *  `rowPerson(...)`, or a login fixed on purpose, `fixedPerson(...)` (both e2e/test.ts), whose
  *  `people` and `user_sessions` rows the row's end deletes (`ownPeople`, e2e/test.ts); or a
- *  fixed login that leaves no person a later row reads, `fixedLogin(...)`, below. A real-stack
- *  row that signed in as a literal login other than alice or bob would record a person nothing
- *  deletes, since no reset empties the database between the rows of a worker (e2e/test.ts), and
- *  every later row of the worker that reads the list of everyone who has signed in whole (the
- *  options of an assignee control) would read that person in it. So the brand turns that row
- *  into a type error on its own pull request, as `RowKey` does for a key (e2e/api.ts). */
+ *  fixed login that leaves no person a later row reads, `fixedLogin(...)`, below. A literal
+ *  login other than alice or bob would leave a person in the real-stack database until the next
+ *  reset. The worker resets before its first row and before it seeds the review corpus
+ *  (`e2e/test.ts`). A few rows also reset the database themselves. Until then, a later row that
+ *  reads the whole people list would see that person in its assignee controls. The brand turns
+ *  that sign-in into a type error, as `RowKey` does for a key (e2e/api.ts). */
 export type RowLogin = string & { readonly rowLogin: unique symbol };
 
 /** What `signIn`, `asUser`, `asPlainHttpUser`, the `signedIn` option (e2e/test.ts) and the API
@@ -42,12 +42,11 @@ export function fixedLogin(login: string, why: string): RowLogin {
  *  The first sign-in of alice or bob since the last reset carries the cookie e2e/api.ts already
  *  holds for that login into the context (`reusableSessionCookie`), rather than asking the
  *  harness server for one: the reset re-created the `user_sessions` row that cookie names
- *  (e2e/seed.ts), so it authenticates again, and one cache serves both the row's API seeds and
- *  its browser contexts, which therefore act as the same session. The reset runs once per worker,
- *  before its first row, and where a row empties the database itself (`resetDatabase`,
- *  e2e/seed.ts). The cookie itself carries no state of an earlier row into this one: it names a
- *  login and a generation, which no row moves (a row signs out only a person of its own,
- *  `rowPerson`).
+ *  (e2e/seed.ts), so one cache serves the row's API seeds and browser contexts as the same
+ *  session. The worker resets before its first row and before it seeds the review corpus
+ *  (`e2e/test.ts`). Some rows also call `resetDatabase` (e2e/seed.ts) themselves. The cookie
+ *  carries no state of an earlier row: it names a login and a generation that those rows do not
+ *  change. A row signs out only a person of its own (`rowPerson`).
  *
  *  Every other sign-in mints at the harness server's dev sign-in route, as every sign-in did: the
  *  context's request client shares the context's cookie jar, and a relative URL resolves against

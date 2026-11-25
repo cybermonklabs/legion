@@ -41,11 +41,11 @@ function psqlCommand(
 /** The database this run's SQL writes to: a deployed server's own `PLAYWRIGHT_DATABASE_URL`, else
  *  the `DATABASE_URL` of this process's stack, which is the one the caller supplied for a run of
  *  one stack (`e2e/harness-ports.ts`). A leftover deployed URL must not override a local
- *  harness's DATABASE_URL, and nothing falls back to libpq's default database, because
- *  `resetDatabase` empties whatever this names: once per worker, before its first row, and where
- *  a row empties it itself (docs/testing.md names those rows). It is read when the session
- *  connects rather than at import, so a module that only imports `sql` never refuses before the
- *  harness has set it. */
+ *  harness's DATABASE_URL. Nothing falls back to libpq's default database: `resetDatabase`
+ *  empties the database this names. The worker resets before its first row and before it seeds
+ *  the review corpus (`e2e/test.ts`). Some rows also reset it themselves (docs/testing.md).
+ *  The URL is read when the session connects, so importing `sql` never requires the URL before
+ *  the harness sets it. */
 function databaseUrl(): string {
   const deployed = process.env.PLAYWRIGHT_BASE_URL
     ? process.env.PLAYWRIGHT_DATABASE_URL

@@ -194,7 +194,8 @@ export async function seedEveryField(): Promise<{
   const comment = await seedCommentThread(
     commentIssue.key,
     "Please fix the flaky clock test.",
-    "Done: the clock test is green."
+    "Done: the clock test is green.",
+    THREAD_SESSION
   );
   rows.push({
     assignee: "alice",
@@ -210,7 +211,8 @@ export async function seedEveryField(): Promise<{
   const message = await seedMessageThread(
     mirrorIssue.key,
     "Where is the nightly build?",
-    "On the mirror, replaying."
+    "On the mirror, replaying.",
+    THREAD_SESSION
   );
   rows.push({
     assignee: "alice",
@@ -222,7 +224,11 @@ export async function seedEveryField(): Promise<{
     urgency: "none",
   });
 
-  const agent = await seedAgentThread({ body: "What is the rollout status?", replies: ["Green."] });
+  const agent = await seedAgentThread({
+    body: "What is the rollout status?",
+    replies: ["Green."],
+    session: THREAD_SESSION,
+  });
   rows.push({
     assignee: "alice",
     id: agentRowId(agent),
@@ -238,7 +244,8 @@ export async function seedEveryField(): Promise<{
   const read = await seedCommentThread(
     readIssue.key,
     "Is the nightly mirror job still at 02:00?",
-    "It moved to 03:00 last week."
+    "It moved to 03:00 last week.",
+    THREAD_SESSION
   );
   const listed = await listMyReplies({ state: "unread" });
   const readRow = (listed.rows ?? []).find((row) => row.thread_id === read);

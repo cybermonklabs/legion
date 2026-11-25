@@ -61,15 +61,21 @@ const repliesList = stubbed(async () => {
   const comment = await seedCommentThread(
     commentIssue.key,
     "Please fix the flaky clock test.",
-    "Done: the clock test is green."
+    "Done: the clock test is green.",
+    THREAD_SESSION
   );
   const messageIssue = await createIssue({ project: "CORE", title: "Build status" });
   const message = await seedMessageThread(
     messageIssue.key,
     "Where is the nightly build?",
-    "On the mirror, replaying."
+    "On the mirror, replaying.",
+    THREAD_SESSION
   );
-  await seedAgentThread({ body: "What is the rollout status?", replies: ["Green."] });
+  await seedAgentThread({
+    body: "What is the rollout status?",
+    replies: ["Green."],
+    session: THREAD_SESSION,
+  });
   return { comment, counted: 6, message };
 });
 
@@ -115,7 +121,7 @@ repliesList(
 // A2: one list of twelve rows, and the Type filter over it.
 // ---------------------------------------------------------------------------
 
-const test = stubbed(() => seedTwelve(CORE));
+const test = stubbed(() => seedTwelve(CORE, THREAD_SESSION));
 
 test("the Type filter counts and narrows the one list of asks, approvals, replies and agent messages @pr", async ({
   page,

@@ -958,9 +958,9 @@ cd ../envoy/deploy/compose
 docker rmi "ghcr.io/cybermonklabs/legion/envoy:${acceptance_image_tag}"
 ```
 
-A run empties its database once per worker, before the worker's first row (`e2e/test.ts`,
-through `e2e/seed.ts`). Always set
-`PLAYWRIGHT_DATABASE_URL` to an isolated test database when using a deployed URL.
+The worker empties its database before its first row and before it seeds the review corpus
+(`reviewCorpus` in `e2e/test.ts`). Some rows also empty it themselves (see `docs/testing.md`).
+Always set `PLAYWRIGHT_DATABASE_URL` to an isolated test database when using a deployed URL.
 
 ## The stubbed layer
 

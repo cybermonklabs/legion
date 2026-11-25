@@ -1,7 +1,13 @@
 import { createIssue, createProject, listMyReplies, patchIssue } from "./api";
-import { holdReadMarks, replyRowId, seedBulkReplyThreads, unreadThreadRows } from "./inbox-threads";
+import {
+  holdReadMarks,
+  replyRowId,
+  rowThreadSession,
+  seedBulkReplyThreads,
+  unreadThreadRows,
+} from "./inbox-threads";
 import { drawnIds, openField } from "./inbox-view";
-import { expect, rowKey, rowPerson, test } from "./test";
+import { expect, rowKey, rowPerson, rowSessionId, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -18,6 +24,8 @@ import { asUser } from "./users";
 // A11: a hundred and twenty threads.
 // ---------------------------------------------------------------------------
 
+const threadSession = rowThreadSession(rowSessionId);
+
 test("a hundred and twenty threads sort by priority, count up, and follow their issue's priority live", async ({
   browser,
 }) => {
@@ -33,13 +41,20 @@ test("a hundred and twenty threads sort by priority, count up, and follow their 
   // A hundred and twenty threads across the two priorities, in one statement apiece. The P0
   // issue's one thread is seeded wholly behind the rest, so its last message is the oldest of
   // all of them and recency alone would put its row last.
-  await seedBulkReplyThreads({ count: 119, issueKey: later.key, login: me, prefix: "Mirror" });
+  await seedBulkReplyThreads({
+    count: 119,
+    issueKey: later.key,
+    login: me,
+    prefix: "Mirror",
+    session: threadSession,
+  });
   await seedBulkReplyThreads({
     count: 1,
     issueKey: urgent.key,
     login: me,
     olderThan: 600,
     prefix: "Ledger",
+    session: threadSession,
   });
   expect(await unreadThreadRows(me)).toBe(120);
   const listed = await listMyReplies({ state: "unread" }, { login: me });

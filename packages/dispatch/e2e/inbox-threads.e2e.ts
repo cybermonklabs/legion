@@ -29,7 +29,7 @@ test("the drawer's own bar filters the drawer alone, and the Inbox page keeps it
   // The reader is a person of the row's own (`rowPerson`, e2e/test.ts), whose Inbox holds the
   // twelve rows this seed makes and no other row's.
   const me = rowPerson("alice");
-  await seedTwelve(rowKey("CORE"), me, threadSession);
+  await seedTwelve(rowKey("CORE"), threadSession, me);
   const alice = await asUser(browser, me);
   try {
     const page = await alice.newPage();

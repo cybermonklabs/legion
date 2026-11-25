@@ -22,7 +22,7 @@ import {
   type RowKey,
 } from "./api";
 import { inboxPane } from "./inbox-pane";
-import { asSession, THREAD_SESSION } from "./inbox-threads";
+import { asSession } from "./inbox-threads";
 import { settledState } from "./settled";
 export const ROOT = "How far back does a replay go?";
 /** The six replies, oldest first; the newest two are the ones a collapsing surface keeps. */
@@ -72,7 +72,7 @@ export interface Seeded {
  */
 export async function seedThreads(
   project: RowKey,
-  session: FakeSession = THREAD_SESSION,
+  session: FakeSession,
   replies: readonly string[] = REPLIES
 ): Promise<Seeded> {
   await setLiveSessions([session]);

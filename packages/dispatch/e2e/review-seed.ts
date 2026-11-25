@@ -903,14 +903,10 @@ Each page is read once it is drawn.
   };
 }
 
-/** A broadcast of a row's own, for a row that opens the `broadcasts` or the `broadcast` page of
- *  `e2e/review-routes.ts` against the worker's corpus (`reviewCorpus`, e2e/test.ts), which holds
- *  none after the row that seeded it: that row's `ownBroadcasts` deletes the corpus's. It is sent
- *  as the corpus's is (`sendWorkspaceBroadcast`), to the sessions of `workspaceSessions`, which the
- *  corpus puts back in the fake Envoy before every row, and its replies are marked read as the
- *  corpus's are, so the page draws what it draws for the corpus's: the same body, the same
- *  recipients in the same order and the planner's reply, read. The row's own `ownBroadcasts`
- *  deletes it when the row ends. Answers its id. */
+/** Sends a new copy of the corpus's broadcast (`sendWorkspaceBroadcast`) and returns its id.
+ *  `reviewCorpus` (e2e/test.ts) restores the live sessions first. The copy keeps the original
+ *  body and recipient order and marks the planner's reply read. `ownBroadcasts` deletes it when
+ *  the row ends. */
 export async function seedReviewBroadcast(): Promise<string> {
   const broadcast = await sendWorkspaceBroadcast();
   await markBroadcastRepliesRead(broadcast.id);

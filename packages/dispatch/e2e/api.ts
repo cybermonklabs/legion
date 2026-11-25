@@ -163,15 +163,15 @@ interface CachedSession {
 
 const sessionCookies = new Map<string, CachedSession>();
 
-/** The session cookie the server issues `login` at its dev sign-in route, minted once per
- *  spelling of a login and process asked, and kept until something revokes it: the generation
- *  the cookie names lives in `user_sessions`, which `resetDatabase` empties and refills for
- *  `resetLogins` alone (it calls `forgetSessions`) - once per worker, before its first row, and
- *  where a row empties the database itself - and a browser context's Sign out as the same login
- *  advances it, so a row signs out only a person of its own (`rowPerson`, e2e/test.ts). With
- *  `target` set the sign-in is pinned to that process, so every request a pinned call makes, its
- *  sign-in included, is served by the process it names. A sign-in that fails, by its answer or by
- *  the request itself, is not kept, so the next call asks again. */
+/** The dev sign-in cookie for `login`, minted once per spelling of a login and process asked.
+ *  The cookie names a generation in `user_sessions`. `resetDatabase` clears the table, refills
+ *  it for `resetLogins` alone and calls `forgetSessions`. The worker resets before its first row
+ *  and before it seeds the review corpus (`e2e/test.ts`). Some rows also reset the database
+ *  themselves. Signing out advances the login's generation, so a row signs out only a person of
+ *  its own (`rowPerson`, e2e/test.ts).
+ *
+ *  When `target` is set, that process serves every request of the pinned call, including the
+ *  sign-in. The cache discards a failed sign-in so the next call can try again. */
 export function sessionCookie(login: SignInLogin, target?: DispatchProcess): Promise<Cookie> {
   const key = `${target ?? ""} ${login}`;
   const cached = sessionCookies.get(key);
@@ -217,8 +217,9 @@ const reusedSignIns = new Set<string>();
  *  cookie outlives it. Only the first sign-in of that login since the reset reuses: a row that
  *  signs the same login in twice has almost always signed it out in between, which advances the
  *  login's generation, and the cached cookie, which names the generation before it, would then be
- *  refused. The suite resets the database once per worker (e2e/test.ts), so that first sign-in
- *  is the worker's, and every later one mints until a row empties the database itself. */
+ *  refused. The worker resets before its first row and before it seeds the review corpus
+ *  (`e2e/test.ts`). Some rows also reset the database themselves. After the first sign-in for
+ *  that login, every later one mints a cookie until the next reset. */
 export function reusableSessionCookie(login: SignInLogin): Promise<Cookie> | undefined {
   if (!isResetLogin(login) || reusedSignIns.has(login)) {
     return undefined;
@@ -227,9 +228,10 @@ export function reusableSessionCookie(login: SignInLogin): Promise<Cookie> | und
   return sessionCookie(login);
 }
 
-/** Forgets the cached session cookies the reset leaves unusable, and the sign-ins it undoes;
- *  `resetDatabase` calls it after emptying the tables, which the suite does once per worker,
- *  before its first row, and where a row empties the database itself (e2e/seed.ts).
+/** Forgets the cached session cookies the reset leaves unusable and the sign-ins it undoes.
+ *  `resetDatabase` calls it after emptying the tables (e2e/seed.ts). The worker resets before
+ *  its first row and before it seeds the review corpus (`e2e/test.ts`). Some rows also reset
+ *  the database themselves.
  *
  *  The cookies of `resetLogins`, alice and bob, are kept: the reset re-inserts their people rows
  *  and their `user_sessions` rows at generation 0 (e2e/seed.ts), the generation a cookie minted

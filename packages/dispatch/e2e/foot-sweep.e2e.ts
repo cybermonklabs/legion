@@ -83,7 +83,6 @@ import { withIssuePage } from "./issue-page-option";
 import { pendingWrites } from "./keyed-writes";
 import { expectConversationInFront } from "./live-view-cost";
 import { type ReviewedRoute, reviewRoutes, waitForRouteSettled } from "./review-routes";
-import { seedReviewBroadcast } from "./review-seed";
 import { type Browser, expect, type Page, rowKey, rowPerson, rowSessionId, test } from "./test";
 import { asUser } from "./users";
 
@@ -257,23 +256,12 @@ function routeRows(): ReviewedRoute[][] {
 
 for (const routes of routeRows()) {
   const names = routes.map((route) => route.name).join(", ");
-  // SLOW(>=2s): the review corpus where the worker has not seeded it yet, a broadcast of the
-  // row's own where it opens a broadcast page, then for each route a refused change made on the
-  // issues table, a load with both floats and three settled readings of the foot, each at the
-  // end of every scroller.
+  // SLOW(>=2s): preparing the review corpus, then for each route a refused change on the issues
+  // table, a load with both floats and three settled readings at the end of every scroller.
   test(`both floats leave the foot clear on ${names} at three desktop sizes, and no end room once closed @foot`, async ({
     browser,
     reviewSeed,
   }) => {
-    // The worker's review corpus (`reviewCorpus`, e2e/test.ts), seeded once into the worker's
-    // database, as the accessibility rows read it: its keys are fixed, so a row that seeded it
-    // again would be refused. Its broadcast goes at the end of the row that seeded it
-    // (`ownBroadcasts`), so a row that opens the list of broadcasts or one broadcast opens one it
-    // sends itself, as the corpus's is sent (`seedReviewBroadcast`): with none, the list draws its
-    // empty state, which the corpus's broadcast kept it from.
-    const seed = routes.some((route) => route.name === "broadcasts" || route.name === "broadcast")
-      ? { ...reviewSeed, broadcast: await seedReviewBroadcast() }
-      : reviewSeed;
     const refused = (await listIssues("CORE")).find((issue) => issue.title === REFUSED_TITLE);
     if (refused === undefined) throw new Error(`The review corpus holds no "${REFUSED_TITLE}"`);
     const context = await asUser(browser, "alice");
@@ -282,7 +270,7 @@ for (const routes of routeRows()) {
       await routeFloats(page, refused.key);
       for (const route of routes) {
         await page.setViewportSize(ROUTE_SIZES[0]);
-        await openWithFloats(page, refused.key, route.path(seed));
+        await openWithFloats(page, refused.key, route.path(reviewSeed));
         for (const size of ROUTE_SIZES) {
           await page.setViewportSize(size);
           await waitForRouteSettled(page, route);

@@ -92,7 +92,7 @@ import {
 import { expectTimeout } from "./expect-timeout";
 import { sql } from "./psql";
 import type { ReviewSeed } from "./review-routes";
-import { seedReviewRoutes } from "./review-seed";
+import { seedReviewBroadcast, seedReviewRoutes } from "./review-seed";
 import {
   checkLogicalLogin,
   type RowIdentity,
@@ -109,7 +109,7 @@ import {
   resetFakes,
   sqlLiteral,
 } from "./seed";
-import { type RowLogin, type SignInLogin, signIn } from "./users";
+import { fixedLogin, type RowLogin, type SignInLogin, signIn } from "./users";
 import { reviewSessions } from "./workspace";
 
 /** Bytes this process drew once, when it loaded this module, and folds into every `rowKey`: a
@@ -283,14 +283,10 @@ export function rowPerson(logical: string): RowLogin {
  *  and `user_sessions` rows, so the list of everyone who has signed in reads at the next row's
  *  start as it read at this one's. The login is a `RowLogin` (e2e/users.ts), as `rowPerson`'s
  *  is, so `asUser`, `signIn` and the `signedIn` option take it. */
-export function fixedPerson(login: string, why: string): RowLogin {
-  if (why.trim() === "") {
-    throw new Error(
-      `fixedPerson: the fixed login ${JSON.stringify(login)} must name why it is fixed`
-    );
-  }
+export function fixedPerson(name: string, why: string): RowLogin {
+  const login = fixedLogin(name, why);
   namedPeople.add(login);
-  return login as RowLogin;
+  return login;
 }
 
 /** A `signedIn` value that signs the default context in as the row's own person for `login`. */
@@ -314,6 +310,9 @@ async function architectureSourcesHeld(): Promise<string[]> {
   );
   return held === "" ? [] : held.split("\n");
 }
+
+/** Whether the current row's default context has signed in. Each worker runs one row at a time. */
+let defaultContextSignedIn = false;
 
 /** What a spec may set with `test.use`. */
 type DispatchOptions = {
@@ -422,11 +421,9 @@ export const test = base.extend<DispatchOptions & DispatchFixtures, DispatchWork
   // page's Broadcasts region) is the stack's, not a person's, and a row that reads it whole -
   // that it holds exactly the broadcast the row sent - reads it back at its start only if each
   // row takes its own out again. Rows of one worker run one at a time on that worker's own
-  // stack, so what the end holds beyond the start is this row's. That includes the review
-  // corpus's broadcast when this row was the first to read the corpus: the list stays whole for
-  // the rows after it, and no page the accessibility rows scan draws it (`reviewCorpus`). It is
-  // read after the worker's emptying and the fakes' reset (`freshFakes`) and torn down after the
-  // default context is closed, which names it as it names `ownPeople`.
+  // stack, so what the end holds beyond the start is this row's. That includes the copy of the
+  // review corpus's broadcast that `reviewCorpus` gives each reader. This fixture reads the list
+  // after `freshFakes` and removes the new broadcasts after the default context closes.
   ownBroadcasts: [
     async ({ freshFakes: _resetFirst }, use) => {
       const kept = await broadcastIds();
@@ -511,21 +508,16 @@ export const test = base.extend<DispatchOptions & DispatchFixtures, DispatchWork
   // alike, so the worker seeds it once into a database it empties for it, and hands each row the
   // seed it returned. Its keys are the corpus's own (`CORE`, `ACME`), which the stubbed layer's
   // recordings were made under and no other row writes, since every other row writes keys of its
-  // own. Two things of it a row before can change without touching those keys, and both are put
-  // back before a row reads it: the delivery settings, which a delivery row puts back to
-  // `writeDeliverySettings`'s and the corpus seeds with its Pipeline job names and its reconcile
-  // error, and the fake Envoy's sessions, which a row may set and a reset of the fakes empties. Its
-  // broadcast goes at the end of the row that seeded it (`ownBroadcasts`): every broadcast is one
-  // list a row reads whole. No page the accessibility rows scan draws it, and a foot-sweep row that
-  // opens a broadcast page sends its own (`seedReviewBroadcast`, e2e/review-seed.ts). The seed
-  // reads lists the whole stack holds, every open question in the Inbox (`seedWorkspace`) and every
-  // check result (`seedReviewRoutes`), so the worker empties its database just before it seeds the
-  // corpus, whatever the rows before this one wrote there: they have ended, and every row after it
-  // writes under keys of its own. The first row to read it is often not the worker's first: seeded
+  // own. Before reusing the corpus, the fixture restores its delivery settings and fake Envoy
+  // sessions. It sends the broadcast again because `ownBroadcasts` deletes it after each reader.
+  // The seed reads lists the whole stack holds: open questions in the Inbox (`seedWorkspace`)
+  // and check results (`seedReviewRoutes`). The worker empties its database before it seeds
+  // the corpus. Earlier rows have ended, and later ones write under keys of their own. The
+  // first row to read the corpus is often not the worker's first: seeded
   // after the other rows of its worker, the seed's Inbox read never held exactly its five rows, and
-  // four rows failed so in CI run 45530954674. Emptying deletes every sign-in but alice's and bob's
-  // (the head comment above), so a row that reads the corpus opens its own contexts, as `asUser`
-  // and `withAlice` do.
+  // four rows failed so in CI run 45530954674. Emptying deletes every sign-in but alice's and
+  // bob's (see above). Before the reset, the fixture checks that the default context has not
+  // signed in yet.
   reviewCorpus: [
     // biome-ignore lint/correctness/noEmptyPattern: the corpus takes no other fixture.
     async ({}, use) => {
@@ -534,7 +526,14 @@ export const test = base.extend<DispatchOptions & DispatchFixtures, DispatchWork
         if (seeded?.into === databasesEmptied()) {
           await putDeliverySettings(seeded.settings);
           await setLiveSessions(reviewSessions);
-          return seeded.seed;
+          return { ...seeded.seed, broadcast: await seedReviewBroadcast() };
+        }
+        if (defaultContextSignedIn) {
+          throw new Error(
+            "reviewCorpus cannot reset the database after the default context signs in. " +
+              "The reset deletes sign-ins other than alice and bob. " +
+              "Request browser and reviewSeed, then open and sign in your own context."
+          );
         }
         await resetDatabase();
         const into = databasesEmptied();
@@ -569,8 +568,13 @@ export const test = base.extend<DispatchOptions & DispatchFixtures, DispatchWork
   ) => {
     if (signedIn !== false) {
       await signIn(context, typeof signedIn === "string" ? signedIn : rowPerson(signedIn.own));
+      defaultContextSignedIn = true;
     }
-    await use(context);
+    try {
+      await use(context);
+    } finally {
+      defaultContextSignedIn = false;
+    }
   },
 });
 

@@ -37,8 +37,7 @@ import type { SignInLogin } from "./users";
  * `user_threads` itself.
  */
 
-/** The session every seeded thread is answered by: live, and taking all three delivery modes, so
- *  a thread's composer has somewhere to send and a Send is a Send. */
+/** The fixed session the stubbed rows recorded. It takes all three delivery modes. */
 export const THREAD_SESSION: FakeSession = {
   capabilities: ["aside", "btw", "steer"],
   roles: [],
@@ -76,7 +75,7 @@ export async function seedCommentThread(
   issueKey: string,
   root: string,
   reply: string,
-  session: FakeSession = THREAD_SESSION,
+  session: FakeSession,
   login: SignInLogin = "alice"
 ): Promise<string> {
   const head = await createComment(issueKey, { body: root }, { login });
@@ -90,7 +89,7 @@ export async function seedMessageThread(
   issueKey: string,
   root: string,
   reply: string,
-  session: FakeSession = THREAD_SESSION,
+  session: FakeSession,
   login: SignInLogin = "alice"
 ): Promise<string> {
   const head = await createMessage(issueKey, { body: root }, { login });
@@ -107,7 +106,7 @@ export async function seedAskThread(
   issueKey: string,
   question: string,
   reply: string,
-  session: FakeSession = THREAD_SESSION,
+  session: FakeSession,
   login: SignInLogin = "alice"
 ): Promise<string> {
   const ask = await createAsk(
@@ -145,13 +144,13 @@ export async function seedAgentThread({
   delivery = "btw",
   login = "alice",
   replies,
-  session = THREAD_SESSION,
+  session,
 }: {
   body: string;
   delivery?: "aside" | "btw" | "steer";
   login?: SignInLogin;
   replies: readonly string[];
-  session?: FakeSession;
+  session: FakeSession;
 }): Promise<string> {
   const sent = await createAgentMessage(session.session_id, { body, delivery }, { login });
   for (const [index, reply] of replies.entries()) {
@@ -166,12 +165,12 @@ export async function seedBroadcastThread({
   body,
   login = "alice",
   reply,
-  session = THREAD_SESSION,
+  session,
 }: {
   body: string;
   login?: SignInLogin;
   reply: string;
-  session?: FakeSession;
+  session: FakeSession;
 }): Promise<string> {
   const broadcast = await createBroadcast(
     {
@@ -200,12 +199,12 @@ export async function seedAcceptedSend({
   body,
   login = "alice",
   reply,
-  session = THREAD_SESSION,
+  session,
 }: {
   body: string;
   login?: SignInLogin;
   reply: string;
-  session?: FakeSession;
+  session: FakeSession;
 }): Promise<string> {
   const sent = await createAgentMessage(session.session_id, { body, delivery: "steer" }, { login });
   await acceptAgentDelivery(sent.id, 1, sessionActor(session));
@@ -244,7 +243,7 @@ export async function seedBulkReplyThreads({
   login = "alice",
   olderThan = 0,
   prefix,
-  session = THREAD_SESSION,
+  session,
 }: {
   count: number;
   issueKey: string;
@@ -253,7 +252,7 @@ export async function seedBulkReplyThreads({
   olderThan?: number;
   /** What each root and reply says, before its number: `<prefix> root 7`, `<prefix> reply 7`. */
   prefix: string;
-  session?: FakeSession;
+  session: FakeSession;
 }): Promise<void> {
   await sql(`
     with roots as (
@@ -281,13 +280,13 @@ export async function seedBulkAgentThreads({
   count,
   login = "alice",
   prefix,
-  session = THREAD_SESSION,
+  session,
 }: {
   count: number;
   login?: string;
   /** What each message and reply says, before its number: `<prefix> ask 7`, `<prefix> answer 7`. */
   prefix: string;
-  session?: FakeSession;
+  session: FakeSession;
 }): Promise<void> {
   await sql(`
     with roots as (
@@ -457,8 +456,8 @@ async function indexedRow(
  */
 export async function seedTwelve(
   project: RowKey,
-  login: SignInLogin = "alice",
-  session: FakeSession = THREAD_SESSION
+  session: FakeSession,
+  login: SignInLogin = "alice"
 ): Promise<Twelve> {
   await setLiveSessions([session]);
   await createProject({ key: project, name: "Core" }, { login });
