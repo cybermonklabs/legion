@@ -1154,18 +1154,19 @@ type podReplacement struct {
 // claim whose launch waits on the round's own pod, that had not answered and whose work may be on
 // the pod's disk (unwaitedOnThePod): the round waits on no answer of such a claim either
 // (waitingClaims). Whether a claim's work may be on the pod's disk is workOnRoundPod's one
-// statement. The line names too what the read of the workspace found (workspaceRead.attrs). One
-// that the bound made — a claim had not answered, a turn ran, or a claim's report named background
-// work or was missing, when the last word let it through — is logged on a second line of its own,
-// `supervise pod update replaced at the bound`, naming the claims that answered and those that did
-// not, the turns that ran, and apart from them the roles whose reports held the round
-// (dispatch://INFRA-2981 R8, whose production check reads those words; dispatch://INFRA-4203 R4).
-// That line is written only where the last word ran and let the replacement through. A runtime
-// that found no pod to replace and returned nil without asking the last word replaced nothing, so
-// the bound replaced nothing either, and such an end writes the first line only where it ends the
-// round as a replacement made (above). What either line names a claim as having said is read from
-// the claims as they hold it (told, and in the last word's ended), never masked: the mask holds a
-// replacement back for a sweep, and is no answer a claim withdrew (noticeGroup).
+// statement. The line names too what the read of the workspace found
+// (workspaceRead.attrs). One that the bound made — a claim had not answered, a turn ran, or a
+// claim's report named background work or was missing, when the last word let it through — is
+// logged on a second line of its own, `supervise pod update replaced at the bound`, naming the
+// claims that answered and those that did not, the turns that ran, and apart from them the roles
+// whose reports held the round (dispatch://INFRA-2981 R8, whose production check reads those
+// words; dispatch://INFRA-4203 R4). That line is written only where the last word ran and let the
+// replacement through. A runtime that found no pod to replace and returned nil without asking the
+// last word replaced nothing, so the bound replaced nothing either, and such an end writes the
+// first line only where it ends the round as a replacement made (above). What either line names a
+// claim as having said is read from the claims as they hold it (told, and in the last word's
+// ended), never masked: the mask holds a replacement back for a sweep, and is no answer a claim
+// withdrew (noticeGroup).
 //
 // Where the read found work that no branch or tag on origin holds, or failed, and the replacement
 // is made all the same, the issue's architect is told what it took (roundReplaced,
