@@ -3722,11 +3722,18 @@ test("a check block outside the Verification document draws no state and is coun
     covered: true,
     state: "met",
   });
-  // Nothing under the statement is open, so the fold leaves it folded.
-  expect(treeRows(root).some((row) => row.kind === "node" && row.node.id === planned)).toBe(false);
-  expect(
-    treeRows(root).find((row) => row.kind === "node" && row.node.id === statement)
-  ).toMatchObject({ expanded: false });
+  // No node opens folded (R11): the statement is drawn unfolded, and every node under it, the
+  // check outside the Verification document among them, is a row.
+  const rows = treeRows(root);
+  expect(rows.find((row) => row.kind === "node" && row.node.id === statement)).toMatchObject({
+    expanded: true,
+  });
+  for (const id of [verified, planned]) {
+    expect(
+      rows.some((row) => row.kind === "node" && row.node.id === id),
+      id
+    ).toBe(true);
+  }
 });
 
 /** The state the page reads for the one check of a Verification document: what `payload`

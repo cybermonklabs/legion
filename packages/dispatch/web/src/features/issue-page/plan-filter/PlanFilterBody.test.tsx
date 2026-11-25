@@ -62,8 +62,8 @@ const KEY = "CORE-1";
 const PLAN = "plan-md";
 const SPEC = "spec-md";
 
-/** happy-dom answers every media query against its own window; the tree reads one to tell the
- *  width it is read at (`IssueTree.tsx`'s `ZOOMED_TREE_QUERY`), so a test sets it. */
+/** happy-dom answers every media query against its own window; the page reads them to tell the
+ *  width it is read at, so a test sets it. */
 function setViewport(width: number): void {
   window.matchMedia = ((query: string) => {
     const max = /max-width:\s*([\d.]+)px/.exec(query)?.[1];
@@ -262,7 +262,6 @@ function renderBody(
                   artifacts={artifacts}
                   context={new Set()}
                   emptyLine={EMPTY_STATE_LINES.plan}
-                  filtering
                   focusReveal
                   holdsEscape={false}
                   isClosed={false}

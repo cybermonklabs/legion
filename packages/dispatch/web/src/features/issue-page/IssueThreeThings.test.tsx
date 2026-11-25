@@ -771,7 +771,6 @@ test("a requirement, a decision and the head of a fully read issue draw no gap t
               artifacts={new Map([[specDocument.slug, specDocument]])}
               context={new Set()}
               emptyLine="Nothing here."
-              filtering={false}
               focusReveal={false}
               holdsEscape={false}
               isClosed={false}

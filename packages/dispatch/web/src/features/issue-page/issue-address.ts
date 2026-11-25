@@ -1,7 +1,8 @@
 import { type DispatchHrefItem, decodeBlockId, itemFromSearch } from "@legion/contracts";
 
 import type { Ask, Comment, MessageRead } from "../../api/types";
-import { buildIssuePath, type IssueRoute } from "../refs/routes";
+import { blockFragment } from "../refs/block-reference";
+import { buildIssuePath, type IssueRoute, parseNodeReference } from "../refs/routes";
 import { agentsOnlyIds } from "./agents-only";
 import type { TreeNode } from "./issue-tree";
 import type { Preset } from "./page-words";
@@ -91,6 +92,20 @@ const ROUTE_PRESETS: Readonly<Record<string, Preset>> = {
  *  filter on, the issue's own. */
 export function presetPath(key: string, preset: Preset): string {
   return buildIssuePath(preset === "conversation" ? { key, kind: "issue" } : { key, kind: preset });
+}
+
+/** The address that opens `preset` at `node`: the view's own address with the `#b-` fragment of
+ *  the block the node's reference names, which the view lands on as on any block its address
+ *  names (`issueAddress`). Undefined for a node whose reference names no block of an issue. */
+export function presetNodePath(
+  preset: Preset,
+  node: Pick<TreeNode, "reference">
+): string | undefined {
+  const route = node.reference === undefined ? undefined : parseNodeReference(node.reference);
+  if (route === undefined || !("key" in route) || !("block" in route)) return undefined;
+  return route.block === undefined
+    ? undefined
+    : `${presetPath(route.key, preset)}${blockFragment(route.block.id)}`;
 }
 
 /** A positive integer `?v=` holds, or undefined for anything else. */

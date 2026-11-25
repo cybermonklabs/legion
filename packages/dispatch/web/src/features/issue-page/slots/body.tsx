@@ -1,3 +1,4 @@
+import { useQueryClient } from "@tanstack/react-query";
 import {
   type ReactNode,
   type RefObject,
@@ -28,17 +29,18 @@ import {
 } from "../address-target";
 import { useOutlineEditing } from "../IssuePresetPanels";
 import { IssueTree } from "../IssueTree";
-import { issueAddress } from "../issue-address";
+import { issueAddress, presetPath } from "../issue-address";
 import { artifactsBySlug } from "../issue-artifacts";
 import { NoTooltips } from "../NoTooltips";
 import { useOutlineReads } from "../outline-reads";
 import { useOutlineRequest } from "../outline-request";
 import { KEY_REPORTS } from "../page-structure";
 import { EMPTY_STATE_LINES } from "../page-words";
-import { presetView } from "../presets";
+import { answerHolds, filterHolding, filterOfUndrawn, presetView } from "../presets";
 import type { SlotProps } from "../slot-props";
 import { specSummary } from "../spec-summary";
 import { focusIsLoose } from "../tree-focus";
+import { outlineQuery, type TreeAnswer, useOlderComments } from "../tree-read/tree-read";
 import { TreeReadFailed } from "../tree-read/view-read";
 import { abortOnReaderAct } from "../useNodeEditing";
 import { FailedReadLine } from "./failed-read-line";
@@ -46,9 +48,9 @@ import { useFollowing } from "./following";
 
 /** Filled by INFRA-1196 part G, "A node's row", then part I, "The outline". */
 export function BodySlot({ acts: given, issue, route }: BodySlotProps): ReactNode {
-  // The outline: the issue's one tree as the Conversation view leaves it, folded to the
-  // frontier, in place of the rows drawn with every branch open before it. The spec's summary
-  // callout is no row of it: the Spec view draws it as the issue's three sentences.
+  // The outline: the issue's one tree as the Conversation view leaves it, every node of it
+  // unfolded and whole (R11). The spec's summary callout is no row of it: the Spec view draws it
+  // as the issue's three sentences.
   const { hash, search } = useLocation();
   const following = useFollowing();
   const specSlug = primarySpec(issue)?.slug;
@@ -95,6 +97,27 @@ export function BodySlot({ acts: given, issue, route }: BodySlotProps): ReactNod
     () => presetView(root, outline, address.filter, named, memo),
     [address.filter, memo, named, outline, root]
   );
+  // The older comments of the outline read, whose control stands above the outline's first row
+  // under the issue while they remain (R15).
+  const older = useOlderComments(issue);
+  // An address on Conversation's own address that names a node Conversation draws no row of - a
+  // plan task, a result - opens the filter of its kind at that node (R9): the address is
+  // replaced by that filter's, with the same search and fragment, which the filter lands on as
+  // on any node its own address names, and where it draws none, the stage draws the outline in
+  // its place (`StageSlot`). A block Conversation's read holds no node of, once its reads have
+  // answered, opens the filter whose view answer the page holds it in (`filterHolding`), else
+  // Graph where Graph's read, as the page holds it, answers it (`answerHolds`); where none does,
+  // the outline says in its place that it has no row for the block.
+  const graphRead = useQueryClient().getQueryData<TreeAnswer>(outlineQuery(key, "graph").queryKey);
+  const undrawn =
+    address.preset !== "conversation"
+      ? undefined
+      : addressed.reveal !== undefined
+        ? filterOfUndrawn(addressed.reveal.at(-1) ?? root)
+        : fallback?.kind === "absent" && fallback.target.kind === "block"
+          ? (filterHolding(root.views, fallback.target) ??
+            (answerHolds(graphRead, fallback.target) ? "graph" : undefined))
+          : undefined;
   const artifacts = useMemo(() => artifactsBySlug(issue), [issue]);
   const request = useOutlineRequest();
   // Whether the reader has acted since they followed the address, after which the address's row
@@ -135,7 +158,9 @@ export function BodySlot({ acts: given, issue, route }: BodySlotProps): ReactNod
         {/* A tree read refused before it first answered leaves the tree the issue alone, which
             draws no row, so the outline says so over the tree, with a Retry. */}
         <TreeReadFailed issue={issue} />
-        {fallback?.kind === "landing" ? (
+        {undrawn !== undefined ? (
+          <Navigate replace to={`${presetPath(key, undrawn)}${search}${hash}`} />
+        ) : fallback?.kind === "landing" ? (
           // Keyed on the following, so a link to the same item followed again is drawn anew and
           // takes the focus again.
           <ItemFallback fallback={fallback} key={following} takesFocus={takesFocus} />
@@ -162,12 +187,12 @@ export function BodySlot({ acts: given, issue, route }: BodySlotProps): ReactNod
                   : undefined
             }
             failedReads={failed}
-            filtering={view.filtering}
             focusReveal
             // The words filter's Escape comes before the outline is left.
             holdsEscape={address.filter !== ""}
             isClosed={isClosed}
             {...(ancestor === undefined ? {} : { landingReport: KEY_REPORTS.agents_thread })}
+            older={older}
             onEditing={onEditing}
             readsHeld={readsHeld}
             readsSettled={readsSettled}

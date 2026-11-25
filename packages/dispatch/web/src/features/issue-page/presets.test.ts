@@ -5,15 +5,22 @@ import { actorLabelText } from "../refs/AgentName";
 import { deletedLineText } from "../refs/post-marks";
 import type { TreeNode } from "./issue-tree";
 import { NODE_TYPE_NAMES, type NodeType, type Preset } from "./page-words";
-import { filterSignals, isFilter, presetView } from "./presets";
-import { type DrawnRow, NOTHING_OPENED, treeRows } from "./tree-fold";
-import { everythingOpened } from "./tree-keys";
+import {
+  answerHolds,
+  filterHolding,
+  filterOfUndrawn,
+  filterSignals,
+  isFilter,
+  presetView,
+  tagFilter,
+} from "./presets";
+import { type DrawnRow, treeRows } from "./tree-fold";
 import { type TreeNodeExtra, treeAnswer, treeNode, treeTuple } from "./tree-read/tree-fixtures";
 import type { TreeAnswer, TreeAnswerNode } from "./tree-read/tree-read";
 
 /**
  * The page with no filter on and the four filters as views of the one tree: with no filter on
- * the whole tree, folded to the frontier; under a filter its own kinds as rows and no other, each
+ * the whole tree, every node of it unfolded; under a filter its own kinds as rows and no other, each
  * other parent a line on its child's row.
  */
 
@@ -51,18 +58,17 @@ function statement(
   return node(id, "requirement", children, { statement: true, ...extra });
 }
 
-/** The ids of every row drawn, in reading order; a branch's own row reads as `more:<id>`. */
+/** The ids of every row drawn, in reading order; the row that pages a node's children reads as
+ *  `page:<id>`. */
 function idsOf(rows: readonly DrawnRow[]): string[] {
-  return rows.map((row) => (row.kind === "deeper" ? `more:${row.of.id}` : row.node.id));
+  return rows.map((row) => (row.kind === "page" ? `page:${row.of.id}` : row.node.id));
 }
 
-/** The rows the page draws for `preset` under `query`: a filtered view with every branch it kept
- *  open, which is the fold `IssueTree.tsx` draws, and the issue's own row dropped where the view
- *  draws none. Each row reads as its id and its depth. */
+/** The rows the page draws for `preset` under `query`: every node the view kept, unfolded, which
+ *  is what `IssueTree.tsx` draws, and the issue's own row dropped where the view draws none. */
 function drawn(root: TreeNode, preset: Preset, query = ""): string[] {
   const view = presetView(root, preset, query);
-  const fold = view.filtering ? everythingOpened(view.root) : NOTHING_OPENED;
-  const rows = treeRows(view.root, fold);
+  const rows = treeRows(view.root);
   return idsOf(view.rootRow ? rows : rows.slice(1));
 }
 
@@ -114,19 +120,19 @@ function issue(): TreeNode {
   ]);
 }
 
-// R9, R10: with no filter on - Conversation, and Graph, which is no filter - the view is the whole
-// tree the outline read answers, folded to the frontier. Graph draws every node; Conversation draws
-// Conversation's read, which holds no result and no plan task, so a result or a plan task the tree
-// holds - every one, before the read takes `?kind=` - is no row of it.
-test("with no filter on the view is the whole tree, folded to the frontier", () => {
+// R9, R10, R11: with no filter on - Conversation, and Graph, which is no filter - the view is the
+// whole tree the outline read answers, every node of it unfolded. Graph draws every node;
+// Conversation draws Conversation's read, which holds no result and no plan task, so a result or
+// a plan task the tree holds - every one, before the read takes `?kind=` - is no row of it.
+test("with no filter on the view is the whole tree, every node of it unfolded", () => {
   const root = issue();
   for (const preset of ["conversation", "graph"] as const) {
     const view = presetView(root, preset, "");
-    expect(view.filtering).toBe(false);
     expect(view.rootRow).toBe(true);
     expect(parentLines(view.root)).toEqual({});
   }
-  // Exactly the fold the page draws with nothing narrowing it.
+  // Exactly the rows the page draws with nothing narrowing it: every node.
+  expect(drawn(root, "graph")).toEqual(nodesUnder(root).map((one) => one.id));
   expect(drawn(root, "graph")).toEqual(idsOf(treeRows(root)));
   const conversation = presetView(root, "conversation", "").root;
   expect([...new Set(nodesUnder(conversation).map((one) => one.type))].sort()).toEqual([
@@ -153,7 +159,7 @@ test("Graph is no filter", () => {
   expect(isFilter("conversation")).toBe(false);
   expect((["spec", "verification", "plan", "decisions"] as const).every(isFilter)).toBe(true);
   const view = presetView(root, "graph", "");
-  expect(view).toMatchObject({ filtering: false, lines: new Map(), rootRow: true });
+  expect(view).toMatchObject({ lines: new Map(), rootRow: true });
   expect(nodesUnder(view.root).map((one) => one.id)).toEqual(nodesUnder(root).map((one) => one.id));
   expect(Object.keys(filterSignals(root, "")).sort()).toEqual([
     "decisions",
@@ -178,10 +184,9 @@ test("with no filter on the spec's memo callout is no row, unless the address na
 
 // Graph, which draws every node, finds a plan task by its words with the chain above it as
 // context; Conversation, which draws no plan task, finds none.
-test("a filter by words with no filter on opens the path down to what it matched", () => {
+test("a filter by words with no filter on draws the path down to what it matched", () => {
   const root = issue();
   const view = presetView(root, "graph", "b-t2");
-  expect(view.filtering).toBe(true);
   expect([...view.context]).toEqual(["comment-1", "CORE-1"]);
   expect(drawn(root, "graph", "b-t2")).toEqual(["CORE-1", "comment-1", "plan#b-t2"]);
   expect(drawn(root, "conversation", "b-t2")).toEqual(["CORE-1"]);
@@ -242,13 +247,52 @@ test("Decisions draws the asks and decisions, a decision under its ask and anoth
 test("a node the address names is drawn whatever the filter", () => {
   const root = issue();
   const view = presetView(root, "spec", "", new Set(["comment-1"]));
-  expect(idsOf(treeRows(view.root, everythingOpened(view.root))).slice(1)).toEqual([
-    "spec#b-r1",
-    "spec#b-r2",
-    "comment-1",
-  ]);
+  expect(idsOf(treeRows(view.root)).slice(1)).toEqual(["spec#b-r1", "spec#b-r2", "comment-1"]);
   // It is drawn and not counted: the count is the filter's own kind.
   expect(view.matches).toBe(2);
+});
+
+// R9: an address that names a node Conversation draws no row of opens the filter of its kind at
+// it, and a row's kind tag opens a criterion or a statement in Spec, a check in Verification and
+// a decision in Decisions.
+test("a node Conversation draws no row of opens its filter, and a kind tag its own view", () => {
+  const result = node("result-1", "result");
+  expect(filterOfUndrawn(node("plan#b-t1", "plan_task"))).toBe("plan");
+  expect(filterOfUndrawn(result)).toBe("verification");
+  // A plan task Conversation draws as the ancestor of a row is a row of it.
+  expect(filterOfUndrawn(node("plan#b-t1", "plan_task", [node("c1", "comment")]))).toBeUndefined();
+  expect(filterOfUndrawn(node("comment-1", "comment"))).toBeUndefined();
+  expect(tagFilter(node("spec#b-k1", "criterion"))).toBe("spec");
+  expect(tagFilter(statement("spec#b-r1"))).toBe("spec");
+  expect(tagFilter(node("plan#b-r1", "requirement"))).toBeUndefined();
+  expect(tagFilter(node("v#b-c1", "check", [], { state: "passed" }))).toBe("verification");
+  expect(tagFilter(node("plan#b-c1", "check"))).toBeUndefined();
+  expect(tagFilter(node("d1", "decision"))).toBe("decisions");
+  expect(tagFilter(node("ask-1", "ask"))).toBeUndefined();
+  expect(tagFilter(result)).toBeUndefined();
+});
+
+// R9: a block Conversation's read holds no node of opens the filter whose held view answer holds
+// it as one of that filter's own kinds, in the document its address names where it names one;
+// where no held view holds it, no filter does.
+test("a block Conversation's read does not hold opens the filter whose view answer holds it", () => {
+  const placed = (slug: string) => ({ artifact_id: `artifact-${slug}`, position: 0, slug });
+  const views = {
+    plan: treeAnswer([
+      treeNode("r1", "requirement", null, { document: placed("spec-md"), in: "spec-md" }),
+      treeNode("t1", "plan_task", null, { document: placed("plan-md"), in: "plan-md" }),
+    ]),
+  };
+  expect(filterHolding(views, { id: "t1" })).toBe("plan");
+  expect(filterHolding(views, { document: "plan-md", id: "t1" })).toBe("plan");
+  expect(filterHolding(views, { document: "spec-md", id: "t1" })).toBeUndefined();
+  // A node the view holds as context of its own kinds is no node of that filter's.
+  expect(filterHolding(views, { id: "r1" })).toBeUndefined();
+  expect(filterHolding(undefined, { id: "t1" })).toBeUndefined();
+  // Graph draws every node of its read, so a read the page holds answers a block of any kind.
+  expect(answerHolds(views.plan, { id: "r1" })).toBe(true);
+  expect(answerHolds(views.plan, { document: "plan-md", id: "r1" })).toBe(false);
+  expect(answerHolds(undefined, { id: "r1" })).toBe(false);
 });
 
 test("each filter's signal is its count, with what of it asks something of the reader", () => {

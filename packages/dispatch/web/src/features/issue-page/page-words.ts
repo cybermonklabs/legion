@@ -970,6 +970,14 @@ export const CONTROL_LABELS = freeze({
    *  reader, the word the tree's own keys use (`useTreeKeymap.ts`). */
   deeper_row: "more row below",
   deeper_rows: "more rows below",
+  /** The row after a node's first 50 children, and after each next page of them, which draws
+   *  the next 50 (R15): the count before it is how many children are left and carries
+   *  `AUTHOR_TEXT_ATTRIBUTE`, and the words agree with it: "1 more row", "7 more rows". */
+  page_row: "more row",
+  page_rows: "more rows",
+  /** The control above the outline's first row under the issue while the outline read answers
+   *  older comments than it holds, which reads the next page of them (R15). */
+  older_comments: "Older comments",
   /** The panel's list of the issue's history (R15): its status moves, claims, handoffs, the
    *  Legion daemon's messages, what agents wrote outside every thread a person wrote in, and
    *  every other event that is no row of the outline, newest first. `/activity` opens it. */
@@ -980,6 +988,9 @@ export const CONTROL_LABELS = freeze({
   /** Opens the editor of a property beside the value it already holds, where that value is
    *  drawn: the issues this one waits on (`BlockedByControl.tsx`). */
   edit: "Edit",
+  /** The reader's own comment carries it on its row: it sets the line at the foot of the
+   *  outline to edit that comment, which `save` sends back (R11). */
+  edit_comment: "Edit",
   /** What the line at the foot of the outline says of the reader's own comment it is editing,
    *  before that comment's first line: `edit` in the comment's facts opens it, and `save` sends
    *  it back (the old thread card's Edit and Save). */

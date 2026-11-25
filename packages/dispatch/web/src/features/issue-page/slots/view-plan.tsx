@@ -153,7 +153,6 @@ export function ViewPlanSlot({
           artifacts={artifacts}
           context={view.context}
           emptyLine={address.filter === "" ? EMPTY_STATE_LINES.plan : EMPTY_STATE_LINES.no_match}
-          filtering={view.filtering}
           focusReveal
           // The words filter's Escape comes before the view is left.
           holdsEscape={address.filter !== ""}
