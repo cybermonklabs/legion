@@ -15,6 +15,7 @@ import (
 // one, so a request on the shared token, on a broker token, or on none carries none. The send
 // route reads it to take a role mark from Dispatch's own principal alone.
 func TestAPIAuthCarriesTheVerifiedPrincipalOfAnIdentityTokenAndOfNoOtherCredential(t *testing.T) {
+	t.Parallel()
 	cluster := newClusterIssuer(t)
 	google := newGoogleStandIn(t, listenerGoogleAccount)
 	var principal string
@@ -54,6 +55,7 @@ func TestAPIAuthCarriesTheVerifiedPrincipalOfAnIdentityTokenAndOfNoOtherCredenti
 // out, and an address with no Google pair, or one ENVOY_OIDC_GOOGLE_ACCOUNTS does not list. Unset
 // names nobody, and then no send may carry a role mark.
 func TestTheDispatchPrincipalIsReadAtStartAndOneNoCredentialCouldProveRefusesIt(t *testing.T) {
+	t.Parallel()
 	const issuer = "https://container.googleapis.com/v1/projects/example/locations/us-central1/clusters/example"
 	const subject = "system:serviceaccount:dispatch:example-dispatch"
 	for _, tc := range []struct {

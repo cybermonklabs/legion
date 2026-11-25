@@ -12,6 +12,7 @@ GATE = harness("check_ci_filters_test", "Test the CI filter check", f"{SCRIPTS}/
     *ci_retry("the fixtures link it in beside ci-filters-generate.sh, which sources it for the base tree's install"),
     (f"{SCRIPTS}/ci_ts_listing.py", "the TypeScript listing the fixtures link in, which the generate mode imports"),
     (f"{SCRIPTS}/ci-reads-convert.py", "the converter cases load it and run its gate and filter steps"),
+    (f"{SCRIPTS}/ci_ts_programs.py", "the converter's filters step imports it for each filter's listed trees"),
     (".github/ci-gates/*.py", "the derived function's import of ci_job_reads.py loads every gate file"),
     (".github/workflows/ci-job-typecheck.yaml", "check-ci-filters.test.sh runs its darwin vet step's own run text "
                                                 "over a module with a negated tag"),

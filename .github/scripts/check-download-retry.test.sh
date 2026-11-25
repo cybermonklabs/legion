@@ -13,8 +13,9 @@
 # same baseline: every exception that still has a site, each at the file, job and step name the
 # check's exception
 # list holds, the loops its DECLARED_LOOPS list declares the arithmetic of, each at the file,
-# step and verb that list holds, and the four Dockerfiles it reads. Both lists fail the check
-# when an entry matches nothing, which is why the baseline carries one site for each. A case
+# step and verb that list holds, the real harness-pool.sh, whose three runs RUN_EXEMPTIONS
+# names, and the four Dockerfiles it reads. All three lists fail the check when an entry
+# matches nothing, which is why the baseline carries one site or run for each. A case
 # that proves a refusal adds a workflow, an action or a Dockerfile of its own beside that
 # baseline, so a refusal is the case's own and not a hole in the baseline, and the baseline's
 # own case proves it passes. The last of rule 8's cases is the one that builds no miniature: it
@@ -64,6 +65,11 @@ fixture() {
     "$root/packages/envoy/infra/host/heldportwrapper"
   ln -s "$check_script" "$root/.github/scripts/check-download-retry.sh"
   ln -s "$script_dir/workflow_paths.py" "$root/.github/scripts/workflow_paths.py"
+  # The real harness-pool.sh, whose three runs of the command a caller hands it are the runs
+  # RUN_EXEMPTIONS names: the check refuses an entry that matches no run, as it refuses a stale
+  # exception, so a tree without the file fails for a reason no case is about
+  # (dispatch://INFRA-1545, round 65).
+  ln -s "$script_dir/harness-pool.sh" "$root/.github/scripts/harness-pool.sh"
   # The four Dockerfiles DOCKERFILES names, each of which the check refuses a tree for lacking.
   for dockerfile in \
     "$root/.github/docker/browser.Dockerfile" \
@@ -15164,6 +15170,155 @@ check "and of gh_wait_reset --stderr <file> retry_fetch" \
   "$(contains "$out" "::error file=.github/workflows/case.yaml,line=18::.gh api. in step 'Read behind the wait and its stderr file with its seconds a variable' is retried by .retry_fetch. with its seconds written as .\\\$READ_SECONDS.")"
 check "names no seconds as None" "$(is "$(contains "$out" 'written as .None.')" false)"
 check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 2)"
+
+# W65. harness-pool.sh's two wrapper options, `setsid --wait` and `env --default-signal=INT,QUIT`,
+# each run the command after them and take no word of their own, so the gate reads through them
+# as through the options WRAPPER_OPTIONS held before (dispatch://INFRA-1545, round 65). Behind
+# each, a curl at the floor is a site: --list lists it, and --jobs charges its 8 x 30 + 127 =
+# 367 s to the job's priced key; and a bare curl is refused at the floor. With the option out of
+# WRAPPER_OPTIONS the gate read no command after it and refused the option by name, so the first
+# curl was refused and neither listed nor charged, and the second was refused for the option
+# rather than at the floor.
+for option in "setsid --wait" "env --default-signal=INT,QUIT"; do
+  wrapper=${option%% *}
+  echo "case: r65 W65 a curl behind $option is read through it: at the floor it is listed and charged, bare it is refused"
+  root=$(fixture "r65-w65-$wrapper-floor")
+  cat > "$root/.github/workflows/case.yaml" <<YAML
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    # 60 s for the rest of the job, and the step's 367 s: 60 + 367 = 427 s -> 8 min.
+    timeout-minutes: 8
+    steps:
+      - name: Retry a curl behind $option
+        # 8 x 30 + 127 = 367 s.
+        timeout-minutes: 7
+        run: $option curl -fsSL --retry 7 --retry-all-errors --max-time 30 -o a https://example.com/a
+YAML
+  run_check "$root"
+  check "$option: the curl at the floor passes" "$(is "$status" 0)"
+  list_check "$root"
+  check "$option: --list lists it as a curl site of its step" \
+    "$(contains "$out" "^.github/workflows/case.yaml	12	curl	Retry a curl behind $option\$")"
+  set +e
+  run_gate null "$root" --jobs
+  set -e
+  check "$option: --jobs charges its 367 s to the job's key" \
+    "$(contains "$out" "^.github/workflows/case.yaml	build	7	8	367	.*	Retry a curl behind $option\$")"
+  root=$(fixture "r65-w65-$wrapper-bare")
+  cat > "$root/.github/workflows/case.yaml" <<YAML
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Run a bare curl behind $option
+        run: $option curl -fsSL https://example.com/a -o a
+YAML
+  run_check "$root"
+  check "$option: the bare curl is refused at the floor" \
+    "$(contains "$out" "::error file=.github/workflows/case.yaml,line=8::.curl. in step .Run a bare curl behind $option. fetches without the floor")"
+  check "$option: and nothing else" "$(is "$status|$(printf '%s\n' "$out" | grep -c '^::error')" "1|1")"
+done
+
+# W65 too. RUN_EXEMPTIONS excepts harness-pool.sh's three runs of the command a caller hands it
+# from UNNAMED_RUN's refusal, keyed by the file and the exact text of the lines each command spans
+# (dispatch://INFRA-1545, round 65). Every fixture carries the real harness-pool.sh, so the first
+# row is every case's baseline as well. Each row fails on its mutant: with the lookup gone the
+# listed runs are refused; with the file left out of the key the copy passes; with the text left
+# out of it the changed run passes; and with the stale-entry rule gone the entry that matches
+# nothing passes.
+# pool_runs <file>: the first line of each of the three runs, as the file holds them now.
+pool_runs() {
+  grep -nE '"\$\{BASH_SOURCE\[0\]\}" run |^    HARNESS_POOL_DEADLINE_MS=|^    env --default-signal' "$1" |
+    cut -d: -f1 | tr '\n' ' '
+}
+# unnamed_at <file>: the lines where the gate's output refuses a run of that file it cannot name.
+unnamed_at() {
+  printf '%s\n' "$out" | grep "^::error file=$1,line=[0-9]*::.* so this check cannot name the script that runs there" |
+    sed -E 's/^::error file=[^,]*,line=([0-9]+)::.*/\1/' | sort -n | tr '\n' ' '
+}
+
+echo "case: r65 W65 the three runs RUN_EXEMPTIONS lists pass in harness-pool.sh"
+root=$(fixture r65-w65-pool-listed)
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+check "finds the three runs in the file" "$(is "$(pool_runs "$root/.github/scripts/harness-pool.sh" | wc -w)" 3)"
+check "refuses nothing in harness-pool.sh" "$(is "$(contains "$out" 'harness-pool.sh')" false)"
+
+echo "case: r65 W65 the same three runs in another file are refused"
+root=$(fixture r65-w65-pool-copy)
+cp "$script_dir/harness-pool.sh" "$root/.github/scripts/r65-pool-copy.sh"
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
+check "refuses each of the copy's three runs, which no entry names" \
+  "$(is "$(unnamed_at .github/scripts/r65-pool-copy.sh)" "$(pool_runs "$root/.github/scripts/r65-pool-copy.sh")")"
+check "and none in harness-pool.sh itself" "$(is "$(unnamed_at .github/scripts/harness-pool.sh)" "")"
+check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 3)"
+
+echo "case: r65 W65 a listed run with one word changed is refused, and its entry, matching nothing, fails the check"
+root=$(fixture r65-w65-pool-word)
+rm "$root/.github/scripts/harness-pool.sh"
+sed 's/"\${BASH_SOURCE\[0\]}" run "\$base"/"${BASH_SOURCE[0]}" run2 "$base"/' "$script_dir/harness-pool.sh" \
+  > "$root/.github/scripts/harness-pool.sh"
+run_check "$root"
+changed=$(grep -n '"${BASH_SOURCE\[0\]}" run2 "$base"' "$root/.github/scripts/harness-pool.sh" | cut -d: -f1)
+check "exits 1" "$(is "$status" 1)"
+check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
+check "changes one line of the file" "$(is "$(diff "$script_dir/harness-pool.sh" "$root/.github/scripts/harness-pool.sh" | grep -c '^>')" 1)"
+check "refuses the changed run alone" "$(is "$(unnamed_at .github/scripts/harness-pool.sh)" "$changed ")"
+check "and fails the entry it no longer matches" \
+  "$(contains "$out" '^::error file=.github/scripts/check-download-retry.sh,line=1::the exception for the run in .github/scripts/harness-pool.sh written .setsid --wait "${BASH_SOURCE\[0\]}" run "$base" .* matches no run this check cannot name there')"
+check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 2)"
+
+echo "case: r65 W65 a RUN_EXEMPTIONS entry that matches no run fails the check"
+root=$(fixture r65-w65-pool-stale)
+declare_in "$root" RUN_EXEMPTIONS "    RunExemption('.github/scripts/harness-pool.sh', ('  echo r65 a line no file holds',), 'a case of this harness'),"
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
+check "names the entry, its text and what it was written for" \
+  "$(contains "$out" '^::error file=.github/scripts/check-download-retry.sh,line=1::the exception for the run in .github/scripts/harness-pool.sh written .echo r65 a line no file holds. matches no run this check cannot name there.* It was written for a case of this harness')"
+check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 1)"
+
+# W65 as well: what the stated limit under THE REACH OF THIS CHECK ENDS says of a script the gate
+# reads, handed to the pool. The pool's own run of its command is not read, but a script of
+# .github/scripts/ named at a `harness-pool.sh start` call is a script named in a program's
+# arguments, which the reach under rule 8's item 1 refuses by name where that script fetches, and
+# passes where it fetches nothing (dispatch://INFRA-1545, round 65).
+echo "case: r65 W65 a fetching script of .github/scripts handed to harness-pool.sh start is refused by name at the call"
+root=$(fixture r65-w65-pool-fetching)
+cat > "$root/.github/scripts/r65-fetch.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+. .github/scripts/ci-retry.sh
+retry_fetch "a large asset" 180 -- curl -fsSL --max-time 180 -o b https://example.com/b
+SH
+printf '%s\n' '#!/usr/bin/env bash' 'echo r65 fetches nothing' > "$root/.github/scripts/r65-quiet.sh"
+chmod +x "$root/.github/scripts/r65-fetch.sh" "$root/.github/scripts/r65-quiet.sh"
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Queue a fetching script in the harness pool
+        run: .github/scripts/harness-pool.sh start r65-fetch .github/scripts/r65-fetch.sh
+      - name: Queue a quiet script in the harness pool
+        run: .github/scripts/harness-pool.sh start r65-quiet .github/scripts/r65-quiet.sh
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
+check "refuses the fetching script by name at its call" \
+  "$(contains "$out" "^::error file=.github/workflows/case.yaml,line=8::step 'Queue a fetching script in the harness pool' of job 'build' names .github/scripts/r65-fetch.sh in an argument of .harness-pool.sh., a place this check does not read as a call, and that script fetches")"
+check "passes the script that fetches nothing" "$(is "$(contains "$out" 'Queue a quiet script')" false)"
+check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 1)"
 
 # W15. Four routes the Spec draft's review drove past the gate at a856bb35, each exit 0 under a
 # one-minute key (dispatch://INFRA-1545, round 38). A literal path names a file of the tree from

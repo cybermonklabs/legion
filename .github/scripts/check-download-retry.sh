@@ -518,8 +518,10 @@
 #     and a `retry_fetch` call outside its signature or behind a wrapper, wherever written, the
 #     one form `gh_wait_reset [--stderr <file>] retry_fetch …` aside (rule 6; odd_command);
 #   - an option of a wrapper this check drops (PASSTHROUGH) other than those it reads, `env -i`,
-#     `env -u <name>`, `nice -n <n>`, `sudo -E`, `sudo -u <user>` and `command -v`
-#     (WRAPPER_OPTIONS), `env -S` among them, and `busybox` as a command word with any program
+#     `env -u <name>`, `env --default-signal=INT,QUIT`, `nice -n <n>`, `sudo -E`,
+#     `sudo -u <user>`, `setsid --wait` and `command -v` (WRAPPER_OPTIONS; the signals' and the
+#     wait's since round 65, the forms harness-pool.sh writes), `env -S` among them, and
+#     `busybox` as a command word with any program
 #     after it, wherever written
 #     (`busybox --help`, `--list` and `--list-full` run no program and pass),
 #     whatever the command holds, in a step, a script, the text of a shell's `-c` and a
@@ -633,6 +635,27 @@
 # misreads. Any other undercount is a stated limit, such as a deliberately obscured spelling, a
 # route that only a contrived form reaches, or a path that a step builds at run time, recorded
 # with its shape in dispatch://INFRA-1545/artifact/r37-accepted-refusals-md.
+#
+# THE COMMAND A CALLER HANDS THE HARNESS POOL IS NOT READ AS A RUN, A STATED LIMIT
+# (dispatch://INFRA-1545, round 65). `.github/scripts/harness-pool.sh start [--minutes <n>]
+# <name> <command> [<argument>...]` queues <command> and returns, and the pool's recorder runs it
+# later: harness-pool.sh runs itself again behind `setsid --wait`, and the recorder runs the
+# command behind `bash -c` and `"$@"`. This check cannot name the command at those three runs,
+# and RUN_EXEMPTIONS excepts each from UNNAMED_RUN's refusal alone, by its file and its lines'
+# exact text, every other refusal of those lines standing. So a fetch in the handed command, or
+# in a script it runs, is held to no floor here and charged to no budget, the job's wait step,
+# which waits for it, included. What the callers hand, read at the merge of main's e546d760 from
+# the workflows' own `harness-pool.sh start` lines, which are the list: the 20 of
+# ci-job-envoy-go-checks.yaml hand scripts of packages/envoy (one inside a `bash -c` text that
+# runs `sudo locale-gen` first), and two of ci-job-test.yaml's 47 hand
+# scripts/priorities-seed-check.test.sh and .github/actions/architecture-check/check.test.sh,
+# each a script outside .github/scripts/, which this check reads in no place
+# (dispatch://INFRA-2899); the other 45 of ci-job-test.yaml hand a `.test.sh` harness of
+# .github/scripts/, which this check does not read either (TEST_HARNESS says why, and names the
+# two network calls harnesses hold). Each was as unread when it ran in a step of its own, so the
+# pool reads less of none of them. A script this check does read, named in a `harness-pool.sh
+# start` as its command or as an argument, is a script named in a program's arguments, which the
+# reach under rule 8's item 1 refuses by name at the call where that script fetches.
 #
 # A heredoc's body is blanked before any rule reads the step (without_heredocs), so a path
 # written in it is a path something prints rather than runs, a later run of what it printed
@@ -1675,8 +1698,9 @@ PASSTHROUGH = {"sudo", "exec", "command", "builtin", "nice", "ionice", "nohup", 
 # The options of a PASSTHROUGH wrapper this check reads, each with the number of words after it
 # that it takes, or RUNS_NOTHING where the wrapper then runs no command: `command -v curl` prints
 # where curl is found. These are the forms the tree writes behind a wrapper, `command -v` in its
-# actions, scripts and Dockerfiles, `env -u <name>` in worker.Dockerfile's two `go env` reads and
-# `sudo -u <user>` in dispatch-unit-repeat.yaml's psql as the server's postgres account, and the
+# actions, scripts and Dockerfiles, `env -u <name>` in worker.Dockerfile's two `go env` reads,
+# `sudo -u <user>` in dispatch-unit-repeat.yaml's psql as the server's postgres account, and
+# `setsid --wait` and `env --default-signal=INT,QUIT` in harness-pool.sh's start and run, and the
 # three a wrapper is most often written with, `env -i`, `nice -n <n>` and `sudo -E`. Any other
 # option after a wrapper, `env -S`, which splits a string this check does not read, `nice
 # --adjustment=5` or `sudo --user=<user>`, a long form no entry reads, among them, is refused by
@@ -1686,7 +1710,13 @@ PASSTHROUGH = {"sudo", "exec", "command", "builtin", "nice", "ionice", "nohup", 
 RUNS_NOTHING = -1
 WRAPPER_OPTIONS = {
     "command": {"-v": RUNS_NOTHING, "-V": RUNS_NOTHING},
-    "env": {"-i": 0, "-u": 1},
+    # `--default-signal=INT,QUIT` since this branch's merge of main's #5176: .github/scripts/
+    # harness-pool.sh's recorder runs each harness behind it, and the option sets SIGINT and
+    # SIGQUIT back to their defaults for the command after it and takes no word of its own, so
+    # that command is the one that runs. The word is read as written, its signals included, so
+    # `--default-signal` with any other list, or with none, is still refused by name
+    # (dispatch://INFRA-1545, round 65).
+    "env": {"-i": 0, "-u": 1, "--default-signal=INT,QUIT": 0},
     "nice": {"-n": 1},
     # `-u <user>` since this branch's merge of main's #4267, whose
     # .github/workflows/dispatch-unit-repeat.yaml's `Start PostgreSQL for the harness rows that
@@ -1696,6 +1726,11 @@ WRAPPER_OPTIONS = {
     # release-push.sh's release view and check-daemon-api-contract.sh's reads write
     # (dispatch://INFRA-1545, round 55).
     "gh_wait_reset": {"--stderr": 1},
+    # `--wait` since this branch's merge of main's #5176: harness-pool.sh's start runs the
+    # pool's recorder behind it, and the recorder runs each harness behind it. The option keeps
+    # setsid's own process until the command after it ends and takes no word of its own, so that
+    # command is the one that runs (dispatch://INFRA-1545, round 65).
+    "setsid": {"--wait": 0},
 }
 # Transparent, but the command they run is inside the script string behind `-c`, which rule 8
 # reads in one form, `bash -c '<text>'` (sites_of_command). The one list of shells this check
@@ -3355,7 +3390,8 @@ TIMEOUT_CLUSTER = (
 # charged to no budget. The tree writes neither.
 WRAPPER_OPTION = (
     "runs `{wrapper}` with `{option}`, an option of it this check does not read: it reads "
-    "`env -i`, `env -u <name>`, `nice -n <n>`, `sudo -E`, `sudo -u <user>`, `command -v` and "
+    "`env -i`, `env -u <name>`, `env --default-signal=INT,QUIT`, `nice -n <n>`, `sudo -E`, "
+    "`sudo -u <user>`, `setsid --wait`, `command -v` and "
     "`gh_wait_reset --stderr <file>` alone, and after any "
     "other option reads no command, so a fetch or a script run there is held to no floor and "
     "charged to no budget. Write the wrapper with none of its options but those, and set a "
@@ -5246,6 +5282,54 @@ EXEMPTIONS = [
               "Pull the multiprocess stack's Postgres image", ("docker pull",), GHCR_WHY),
     Exemption(".github/workflows/dispatch-browser.yaml", "embedder",
               "Pull the embedder stack's Postgres image", ("docker pull",), GHCR_WHY),
+]
+
+
+class RunExemption:
+    """One run this check cannot name, excepted from UNNAMED_RUN's refusal alone, by the file it
+    is written in and the exact text of every line its command spans, each as the file writes it,
+    its indentation included (dispatch://INFRA-1545, round 65). Exemption cannot carry one: it
+    excepts a fetch, by its job, its step and its verb, and a line of a script has none of the
+    three. A line's number is no key, since an edit above it moves it; its text is, so an entry
+    stops matching the moment a word of its command changes, the same text in another file is
+    not excepted, and every other refusal of that command still stands. `why` is what a reader of
+    a stale entry is told the entry was for. An entry matching no run fails this check, as a
+    stale Exemption does."""
+
+    def __init__(self, path: str, lines: tuple[str, ...], why: str) -> None:
+        self.path = path
+        self.lines = lines
+        self.why = why
+        self.used = 0
+
+    def covers(self, path: str, first: int, last: int) -> bool:
+        """Whether the run whose command spans lines `first` to `last` of `path` is this one."""
+        return (path == self.path and last - first + 1 == len(self.lines)
+                and all(file_line(path, first + at) == line
+                        for at, line in enumerate(self.lines)))
+
+
+# The runs of .github/scripts/harness-pool.sh (main's #5176), whose purpose is to run the command
+# each `harness-pool.sh start` hands it: `start` runs the script itself again behind `setsid
+# --wait`, as the harness's recorder, and the recorder runs the command behind `bash -c` and
+# `"$@"`, with its bound and without. This check cannot name that command at any of the three,
+# so each is UNNAMED_RUN's refusal but for these entries; the stated limit under THE REACH OF
+# THIS CHECK ENDS says what that leaves unread (dispatch://INFRA-1545, round 65).
+POOL_WHY = ("harness-pool.sh's run of the command a `harness-pool.sh start` hands it, which this "
+            "check does not read as a run (the stated limit under THE REACH OF THIS CHECK ENDS)")
+RUN_EXEMPTIONS: list[RunExemption] = [
+    RunExemption(".github/scripts/harness-pool.sh", (
+        '  setsid --wait "${BASH_SOURCE[0]}" run "$base" "$minutes" "$@" > "$base.recorder.log" 2>&1 < /dev/null {lock}>&- &',
+    ), POOL_WHY),
+    RunExemption(".github/scripts/harness-pool.sh", (
+        '    HARNESS_POOL_DEADLINE_MS=$((start_ms + (bound - 30) * 1000)) \\',
+        '      env --default-signal=INT,QUIT setsid --wait bash -c "$publish_then_run" harness-pool "$base" \\',
+        '      timeout --kill-after=30 "$bound" "$@" > "$base.log" 2>&1 < /dev/null || status=$?',
+    ), POOL_WHY),
+    RunExemption(".github/scripts/harness-pool.sh", (
+        '    env --default-signal=INT,QUIT setsid --wait bash -c "$publish_then_run" harness-pool "$base" \\',
+        '      "$@" > "$base.log" 2>&1 < /dev/null || status=$?',
+    ), POOL_WHY),
 ]
 
 
@@ -7213,6 +7297,9 @@ VARIABLE_PATTERNS_READ: dict[int, list[tuple[Command, str]]] = {}
 # arguments, `run "$@"` at its top level, is refused, since its callers are not followed
 # (runners_of). So is a text running those words itself outside any function, `"$@"` at a
 # script's top level or after a step's `set --` (HANDED_ON_RUN; dispatch://INFRA-1545, round 37).
+# The one exception is a run RUN_EXEMPTIONS names by its file and the exact text of its lines,
+# harness-pool.sh's three runs of the command its callers hand it, excepted from this refusal
+# alone (dispatch://INFRA-1545, round 65; the stated limit under THE REACH OF THIS CHECK ENDS).
 HANDED_ON = re.compile(r"\$(?:@|\{@\}|\{[A-Za-z_]\w*\[@\]\})")
 # A positional parameter as a command word: `$1` to `$9`, `${n}`, `$@`, `$*`, `${@}` and `${*}`.
 POSITIONAL = re.compile(r"\$(?:([1-9])|\{([1-9][0-9]*)\}|[@*]|\{[@*]\})")
@@ -9732,7 +9819,8 @@ for path, name, (who, loops, found, called), owner in body_reads:
     # the reading above holds it, and a command some refusal above already names this text at,
     # on any of its lines, excepted too: that command fails the check already, as `echo <path> |
     # bash` fails as a pipe into a shell, and a second sentence for it would say nothing the
-    # first does not (unnamed_runs; dispatch://INFRA-1545, round 37).
+    # first does not (unnamed_runs; dispatch://INFRA-1545, round 37). A run RUN_EXEMPTIONS names
+    # by its file and its lines' text is excepted from this refusal alone (round 65).
     runners = dict(runners_of(loops))
     for call in called:
         for library in libraries_of(call.target) if call.kind == CALL_SOURCED else ():
@@ -9740,6 +9828,11 @@ for path, name, (who, loops, found, called), owner in body_reads:
                 runners.setdefault(function, place)
     for line, last, does, why, cure in unnamed_runs(path, loops, bool(reached), runners,
                                                     name == "-" and path in SOURCED_LIBRARIES):
+        excepted = next((entry for entry in RUN_EXEMPTIONS if entry.covers(path, line, last)),
+                        None)
+        if excepted is not None:
+            excepted.used += 1
+            continue
         named_at = tuple(f"::error file={path},line={at}::{who} " for at in range(line, last + 1))
         if not any(earlier.startswith(named_at) for earlier in problems):
             problem(path, line, f"{who} " + UNNAMED_RUN.format(does=does, why=why, cure=cure)
@@ -10570,6 +10663,17 @@ for entry in EXEMPTIONS:
             + " matches no fetch in the tree. An exception outliving its site is an exception "
             "nobody reads again: drop it, or point it at where that site moved. It was written "
             f"for {entry.why}.")
+
+for entry in RUN_EXEMPTIONS:
+    if entry.used:
+        continue
+    problem(SELF, 1,
+            f"the exception for the run in {entry.path} written `{entry.lines[0].strip()}`"
+            + (f" and {len(entry.lines) - 1} more line(s)" if len(entry.lines) > 1 else "")
+            + " matches no run this check cannot name there: no command of that file spans "
+            "those lines with that text, each line as written. An exception outliving its line is "
+            "an exception nobody reads again: drop it, or write the text that line holds now. It "
+            f"was written for {entry.why} (dispatch://INFRA-1545, round 65).")
 
 for entry in DECLARED_LOOPS:
     if len(entry.loops) > 1:

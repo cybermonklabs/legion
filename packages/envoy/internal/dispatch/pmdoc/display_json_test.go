@@ -14,6 +14,7 @@ import (
 // served the same bytes. The read mints no block id, so a second read of one text is the same
 // bytes without a generator being held still for it.
 func TestDisplayJSONIsTheDisplayReadsTreeAndIsKept(t *testing.T) {
+	t.Parallel()
 	const markdown = "A **bold** line nothing else in this package reads.\n"
 	tree := DisplayJSON(markdown, DisplayLatest)
 	want, err := json.Marshal(ReadForDisplay(markdown, DisplayLatest).toDisplayJSON())
@@ -37,6 +38,7 @@ func TestDisplayJSONIsTheDisplayReadsTreeAndIsKept(t *testing.T) {
 // package builds. What each tree is charged against that bound, its array, its key and its entry
 // (displayCacheEntrySize), is TestTheDisplayCacheHoldsNoMoreLiveHeapThanItsBound's.
 func TestTheDisplayCacheHoldsItsBound(t *testing.T) {
+	t.Parallel()
 	const limit int64 = 64
 	cache := bytelru.New[displayCacheKey, json.RawMessage](limit)
 	first := displayCacheKey{sum: [32]byte{1}}
@@ -68,6 +70,7 @@ func TestTheDisplayCacheHoldsItsBound(t *testing.T) {
 // are gone from the text, the words between them carry DisplayHighlightMark, and the cut's
 // unmatched delimiters were balanced away before the read.
 func TestDisplaySnippetJSONMarksWhatTheQueryMatched(t *testing.T) {
+	t.Parallel()
 	const start, stop = "\uE000", "\uE001"
 	tree := DisplaySnippetJSON("Keep the "+start+"astrolabe"+stop+" here", start, stop)
 	var root struct {
@@ -106,6 +109,7 @@ func TestDisplaySnippetJSONMarksWhatTheQueryMatched(t *testing.T) {
 // A headline the window cut is balanced before it is read, so the palette is shown no delimiter
 // the parser would have paired across the cut.
 func TestDisplaySnippetJSONBalancesACutHeadline(t *testing.T) {
+	t.Parallel()
 	const start, stop = "\uE000", "\uE001"
 	window := strings.Repeat("word ", 21) + start + "anchor" + stop + "** after the"
 	tree := DisplaySnippetJSON(window, start, stop)

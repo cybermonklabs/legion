@@ -366,20 +366,31 @@ type Claim struct {
 	// ends the episode of launch failures it names (table.go's ready). So a start failure this
 	// release records is one from after LastReady. A claim an earlier release left in any state
 	// but ready, working or idle can hold one from before its last ready until its agent is next
-	// ready, since the start failure carries no time to set beside LastReady; migration
-	// 20261123212127 cleared the ones it left ready, working or idle, and the boot clears such a
-	// row a daemon of that release writes later (DropStaleStartFailure). Both are a far side's
-	// text, kept as such: LastStartFailure as any far side's error text is
+	// ready; migration 20261123212127 cleared the ones it left ready, working or idle, and the
+	// boot clears such a row a daemon of that release writes later (DropStaleStartFailure). Both
+	// are a far side's text, kept as such: LastStartFailure as any far side's error text is
 	// (storetext.FarSideError), and LastDeathCause as a far side's text (storetext.FarSideText)
 	// under the runtime's own bound (deathCause).
-	// LastReady is when the agent last said it could be prompted, which says how old the death's
-	// cause is. All three are persisted: the operator reading a claim after a restart is the one
-	// who has to act on them, and the death's cause is what the record of that death names
-	// (endDied, EndedWork), which the restarted worker is told (RelaunchSentence,
-	// interruptedTask).
-	LastDeathCause   string
-	LastStartFailure string
-	LastReady        time.Time
+	//
+	// LastDeathAt and LastStartFailureAt are when the daemon recorded the cause beside each, by
+	// its own clock, and zero where that cause is empty (#5349). The rule: each is set and
+	// cleared only together with its cause, so a cause recorded again with the same text is given
+	// its new time, and whatever drops a cause drops its time. A reader tells an old cause from a
+	// current one by it, which the text alone does not say: a claim keeps its death's cause
+	// through every later ready. The store writes each time with a digest of the cause it dates
+	// and reads it back only beside that cause (the claim store's scanClaim); a cause an earlier
+	// release recorded has no time, except after a rollback (the migration's header).
+	//
+	// LastReady is when the agent last said it could be prompted. LastDeathAt dates the death: a
+	// LastDeathAt before LastReady is a death the running agent survived. All five are persisted:
+	// the operator reading a claim after a restart is the one who has to act on them, and the
+	// death's cause is what the record of that death names (endDied, EndedWork), which the
+	// restarted worker is told (RelaunchSentence, interruptedTask).
+	LastDeathCause     string
+	LastDeathAt        time.Time
+	LastStartFailure   string
+	LastStartFailureAt time.Time
+	LastReady          time.Time
 	// BootTokenHash is the hash of the current launch's boot token, which the shim's hello and the
 	// agent's registration are resolved by. CapabilityHash is the hash of the secret the agent's
 	// registration was issued.
@@ -1527,7 +1538,8 @@ type Machine struct {
 	outstanding awaitedPrompts
 	// turnOutcomeFailed is whether the turn-outcome report this decision handles failed the
 	// claim: turnOutcome clears it, unpromptedTurnEnded sets it when it fails the claim, and
-	// HandleTurnOutcome reads it before the decision's lock is let go. It is memory only and
+	// HandleTurnOutcome reads it and clears it before the decision's lock is let go, so a report
+	// the table ignores, which runs neither, answers that it failed nothing. It is memory only and
 	// means nothing outside that one decision.
 	turnOutcomeFailed bool
 	// turnOutcomeDecided, when it is set, runs once HandleTurnOutcome's decision has let its lock
@@ -1961,6 +1973,7 @@ func (m *Machine) HandleTurnOutcome(ctx context.Context, r RequestTurnOutcome) (
 	var answer TurnOutcomeAnswer
 	err := m.handle(ctx, r, func() {
 		answer = TurnOutcomeAnswer{RefusedRun: m.claim.RefusedRun(), Failed: m.turnOutcomeFailed}
+		m.turnOutcomeFailed = false
 	})
 	if m.turnOutcomeDecided != nil {
 		m.turnOutcomeDecided()
@@ -2118,6 +2131,11 @@ const (
 	// suspended claim (internal/daemon's askRound asks a claim only once its agent is ready), so
 	// the row was enqueued before the suspension.
 	UpdateAskSuspended
+	// UpdateAskAnswered is an ask of a round the claim has already answered (UpdateSignalledAt):
+	// nothing is published and nothing is marked. The sweep reads the claims before the ask is
+	// published, so a role that answers in between was read as unanswered; under the claim's own
+	// lock its answer is read as it stands, and the agent is not asked what it has done.
+	UpdateAskAnswered
 )
 
 // PublishUpdateAsk publishes one ask of the claim's update round through publish, and marks the
@@ -2142,7 +2160,11 @@ const (
 //  2. The claim is read under the lock: a claim no longer in round is published nothing, and so
 //     is one an earlier ask of round already reached. Two rows of one round — a row left by an
 //     older daemon beside the sweep's own — therefore deliver one ask between them, whichever
-//     order they run in and whichever of them finds a holder. A claim the daemon suspended
+//     order they run in and whichever of them finds a holder. A claim that holds an answer of
+//     round (UpdateSignalledAt) is published nothing, and the call answers UpdateAskAnswered: the
+//     sweep reads the claims before the row runs, so a role can answer in between, and its agent
+//     is not asked what it has done. That check comes before the next one, so a claim that
+//     answered and was then suspended answers UpdateAskAnswered too. A claim the daemon suspended
 //     (PassedOverByRound) is published nothing either, and the call answers UpdateAskSuspended:
 //     the round does not ask such a claim (dispatch://INFRA-4109 R1). The sweep can enqueue a
 //     row before the suspension and the row can run after it, an idle release's included. Its
@@ -2189,6 +2211,8 @@ func (m *Machine) PublishUpdateAsk(ctx context.Context, round string, publish fu
 		return UpdateAskAlreadyDelivered, fmt.Errorf("the mark of the ask of round %s that reached the role waits on a claim write the store has not taken", round)
 	case m.claim.UpdateTaskedAt != nil:
 		return UpdateAskAlreadyDelivered, nil
+	case m.claim.UpdateSignalledAt != nil:
+		return UpdateAskAnswered, nil
 	case m.claim.PassedOverByRound():
 		return UpdateAskSuspended, nil
 	}
@@ -2490,6 +2514,16 @@ func (m *Machine) View() ClaimView {
 	v := *m.view.Load()
 	v.Claim = copyClaim(v.Claim)
 	return v
+}
+
+// Published is the claim as the machine last published it, as View reads it, shared rather than
+// copied: publish stores a view built fresh and nothing writes a stored one again, so a reader
+// that only reads the claim may share its slices and maps, as WaitingWake does. A reader that keeps
+// the claim past its own read, or writes it, takes View. It never waits on the decision in flight.
+// The daemon's refresh pass reads it for each claim it would post (internal/daemon's
+// refreshStalePlugins), at a sweep of every claim, where a copy of each would be garbage.
+func (m *Machine) Published() Claim {
+	return m.view.Load().Claim
 }
 
 // WaitingWake is the wake the pacing holds over this claim, nil while none waits: what the
@@ -3177,7 +3211,7 @@ func (m *Machine) launchTries(ctx context.Context, l launchTry, granted *podGran
 			m.relaunchAtProbe(l)
 			return errors.Join(err, m.persist(starting))
 		}
-		m.claim.LastStartFailure = storetext.FarSideError(err.Error())
+		m.claim.LastStartFailure, m.claim.LastStartFailureAt = storetext.FarSideError(err.Error()), m.deps.Clock.Now()
 		if errors.Is(err, runtime.ErrSessionStore) {
 			return m.startWaitsForStore(starting, err, l.charged, l.exempt)
 		}
@@ -3793,7 +3827,7 @@ func (m *Machine) stopPrevious(ctx context.Context) error {
 func (m *Machine) died(ctx context.Context, observation runtime.Observation) error {
 	m.log.Warn("supervise: process died", "incarnation", m.claim.Locator.Incarnation, "observed", string(observation.Kind),
 		"detail", observation.Detail, "podEnd", observation.PodEnd, "chargedBefore", m.claim.DeathCharged)
-	m.claim.LastDeathCause = deathCause(observation)
+	m.claim.LastDeathCause, m.claim.LastDeathAt = deathCause(observation), m.deps.Clock.Now()
 	// The pod's own reason for this end is kept on the claim, so the failure the workflow is told
 	// of when this death fails it — here, or where the relaunch it raises finds the launch budget
 	// spent (relaunchAfterFailure) — names the cause the role never chose, and so does the boot's
@@ -4668,17 +4702,27 @@ func (m *Machine) putClaimAndDelivery(ctx context.Context, c Claim, d Delivery) 
 // retirement. Each has a pending delivery by the time it calls, which is what this reads. While a
 // pause's stop is owed, the two rows go through that stop's transaction instead (putStops,
 // Deps.PauseStopped), the delivery carried on the claim it is handed.
+//
+// It publishes the claim before it writes it, as putClaim does, and publishes what the write
+// takes: stored normalizes the machine's live claim, so the publish follows that call and no
+// reader sees a claim holding what only a running process may hold (Published, stored,
+// NormalizeClaim). A turn's start writes the claim working here and then goes on to write its step
+// record, and a reader of the published claim must not read it ready meanwhile (internal/daemon's
+// refreshStalePlugins).
 func (m *Machine) putClaimAndPending(ctx context.Context) error {
 	if len(m.owedStops()) > 0 {
 		c, pending := m.stored(), *m.claim.Pending
 		c.Pending = &pending
+		m.publish()
 		if err := m.putStops(ctx, c); err != nil {
 			return err
 		}
 		m.unsaved = false
 		return nil
 	}
-	if err := m.putClaimAndDelivery(ctx, m.stored(), *m.claim.Pending); err != nil {
+	c, pending := m.stored(), *m.claim.Pending
+	m.publish()
+	if err := m.putClaimAndDelivery(ctx, c, pending); err != nil {
 		return err
 	}
 	m.unsaved = false
@@ -4796,18 +4840,18 @@ func NormalizeClaim(c *Claim) (enrollment *Enrollment, changed bool) {
 	return enrollment, changed
 }
 
-// DropStaleStartFailure clears the start failure of a claim stored ready, working or idle and
-// answers whether it cleared one. That claim's agent said it was ready after the start failed,
-// which ended the failure (table.go's ready), so the sentence is a refusal its running agent came
-// after. A daemon of an earlier release keeps it past that ready, and several projects' daemons
-// share one database, so a daemon still on that release, or a rollback and a roll-forward, writes
-// such a row after migration 20261123212127 cleared the rest. The boot asks this of every claim it
-// reads, before it repairs any state (internal/daemon's restore).
+// DropStaleStartFailure clears the start failure of a claim stored ready, working or idle, with
+// its time, and answers whether it cleared one. That claim's agent said it was ready
+// after the start failed, which ended the failure (table.go's ready), so the sentence is a refusal
+// its running agent came after. A daemon of an earlier release keeps it past that ready, and
+// several projects' daemons share one database, so a daemon still on that release, or a rollback
+// and a roll-forward, writes such a row after migration 20261123212127 cleared the rest. The boot
+// asks this of every claim it reads, before it repairs any state (internal/daemon's restore).
 func DropStaleStartFailure(c *Claim) bool {
 	if !SaidReady(c.State) || c.LastStartFailure == "" {
 		return false
 	}
-	c.LastStartFailure = ""
+	c.LastStartFailure, c.LastStartFailureAt = "", time.Time{}
 	return true
 }
 
