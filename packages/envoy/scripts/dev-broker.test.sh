@@ -55,12 +55,10 @@
 # DEV_BROKER_PROXIED_GITHUB_IP puts the proxied GitHub on that address's port 443 and points the
 # proxy at it, and DEV_BROKER_GITHUB_PERMISSIONS reaches the stands one owner at a time; (m)
 # DEV_BROKER_BROKER_BIN is the broker started, and no broker is built; (n) each of those two
-# settings, malformed, is refused with exit 2 before anything is created; (o) lib/pg-url.sh
+# settings, malformed, is refused with exit 2 before anything is created; and (o) lib/pg-url.sh
 # gives psql a URL without its password and the password, decoded, in PGPASSWORD, so a
 # DEV_BROKER_POSTGRES_URL run's password is in no argument of any call it makes and no line it
-# prints; and (p) each instance's exports, pasted into a shell that carries a person's own
-# sign-in store and machine identity, name a sign-in store in that instance's workdir and no
-# machine identity.
+# prints.
 set -euo pipefail
 
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
