@@ -307,7 +307,10 @@ func TestStatementTimings(t *testing.T) {
 // priorityNewestEventTiming names the newest event's pair, priorityKeyedWalkTiming the report of
 // the newest event alone with its walk keyed, and mainKeyedWalkTiming the report of main's text
 // with its walk keyed. Every other reading of the three carries one of the names as a prefix, and
-// each name carries the first, so one -run pattern of the first selects them all.
+// each name carries the first, so one -run pattern of the first selects them all. The pair's
+// before side is main's newest event alone, and its after side is the whole of the priorities
+// read's statement (priorityReadQuery), which reads the newest event among the four parts of the
+// full read: the pair times and counts that whole statement, not its newest event alone.
 const (
 	priorityNewestEventTiming = "the newest event under each priority"
 	priorityKeyedWalkTiming   = priorityNewestEventTiming + ", with the walk keyed"
@@ -639,33 +642,50 @@ const newestEventWalkCTE = "CTE members_spread"
 
 // logNewestEventWalk logs the walk's share of plan's top-node buffers: the buffers of the plan of
 // newestEventWalkCTE, which descends from the stated issues to every member, and the buffers of
-// every read of issues outside it, which reads each member's own row - in the keyed walk the
-// probes through issues_pkey, and in main's walk its join to issues. A node's buffers count every
-// node under it, so the CTE's are its own top node's. A plan with no one plan of the CTE fails
-// the test, since its share would then be read off nothing.
+// the reads of issues that read each member's own row. In the priorities read's statement those
+// are the reads inside its CTE member_issue (priorityMemberIssueCTE) alone: the statement reads
+// issues outside the walk for other parts too - the first fault's scan of the open issues in
+// flight, issueAdvancesTerms' climb from the listed rows of the second fault and that fault's own
+// climb (priorityBacklogTerms) - and none of those is a member's row. In a text with no such CTE,
+// main's and the keyed walks, every read of issues outside the walk reads a member's row: in the
+// keyed walk the probes through issues_pkey, and in main's walk its join to issues. A node's
+// buffers count every node under it, so a CTE's are its own top node's. A plan with no one plan
+// of the walk fails the test, since its share would then be read off nothing.
 func logNewestEventWalk(t *testing.T, text string, plan benchtime.PlanBuffers) {
 	t.Helper()
 	var top analyzedNode
 	if err := json.Unmarshal(plan.Plan, &top); err != nil {
 		t.Fatalf("read the plan of %s under %s: %v", text, plan.Mode, err)
 	}
+	hasMemberIssue := false
+	var find func(node analyzedNode)
+	find = func(node analyzedNode) {
+		hasMemberIssue = hasMemberIssue || node.SubplanName == priorityMemberIssueCTE
+		for _, child := range node.Plans {
+			find(child)
+		}
+	}
+	find(top)
 	var walks int
 	var walk, members int64
-	var visit func(node analyzedNode, inWalk bool)
-	visit = func(node analyzedNode, inWalk bool) {
+	var visit func(node analyzedNode, inWalk, inMemberIssue bool)
+	visit = func(node analyzedNode, inWalk, inMemberIssue bool) {
 		switch {
 		case node.SubplanName == newestEventWalkCTE:
 			walks++
 			walk += int64(node.SharedHitBlocks + node.SharedReadBlocks)
 			inWalk = true
-		case !inWalk && node.RelationName == "issues":
+		case node.SubplanName == priorityMemberIssueCTE:
+			inMemberIssue = true
+		}
+		if !inWalk && node.RelationName == "issues" && (inMemberIssue || !hasMemberIssue) {
 			members += int64(node.SharedHitBlocks + node.SharedReadBlocks)
 		}
 		for _, child := range node.Plans {
-			visit(child, inWalk)
+			visit(child, inWalk, inMemberIssue)
 		}
 	}
-	visit(top, false)
+	visit(top, false, false)
 	if walks != 1 {
 		t.Errorf("%s under %s holds %d plans of %s, want one:\n%s", text, plan.Mode, walks, newestEventWalkCTE, plan.Explained)
 		return
