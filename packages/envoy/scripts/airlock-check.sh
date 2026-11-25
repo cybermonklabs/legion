@@ -1954,7 +1954,7 @@ k8_copies() { # <head's file> <directory>
 	jq '(.kinds[] | select(.name == "stest")) += {"secrets": ["AIRLOCK_DEMO_TOKEN"]}' "$head" >"$d/names-secret.json"
 	printf '{"kinds": [{"name": "a", "hosts": ["a.airlock.test"], "ways": ["swap"]},], "profiles": []}' >"$d/malformed.json"
 	printf '%s\n' "no-host fail" "new-host pass" "new-header pass" "new-variable pass" "fields unknown" \
-		"kind-allow-row pass" "profile-allow-row pass" "removed-kind pass" "names-secret fail" "malformed fail" >"$d/copies"
+		"kind-allow-row pass" "profile-allow-row pass" "removed-kind leaves" "names-secret fail" "malformed fail" >"$d/copies"
 }
 
 # k8_names is what each copy's output must name, beside its exit status: the kind and the value a
@@ -1986,6 +1986,14 @@ k8_named() { # <label> <output>
 	done < <(k8_names "$1")
 }
 
+# k8_untagged writes a store list (k47_secrets_json's form) with the proxy tag taken off each
+# secret whose proxy tag names <kind>, and every other secret and tag as it was: the store as it is
+# once a reviewed retag has moved that kind's secrets off it, which is the order a removal of the
+# kind takes.
+k8_untagged() { # <store list> <kind>
+	jq --arg k "$2" 'map(if .annotations.proxy == $k then .annotations |= del(.proxy) else . end)' "$1"
+}
+
 # k8_reread makes every broker of the stack read one name again, as reread_all does, and answers
 # in K8_ANSWERS what each said, "<code> served=<served> reason=<reason>" per broker joined by
 # "; ", so a refused name is read off the broker's own answer and not off a reread that ended.
@@ -2006,7 +2014,7 @@ check_k8() {
 	expect "the malformed copy fails with the position of the parse error"
 	expect "the local broker refuses to start on each failing copy"
 	expect "the copies with a new host, a new header, a new variable, changed fields and new allow rows pass and list what they add, of the kind or of the profile (changed fields: the named-fields slice's, not judged here)"
-	expect "the copy without a kind passes and lists the kind leaving the airlock"
+	expect "the copy without a kind passes and lists the kind leaving the airlock, once no secret carries that kind's proxy tag; while one does, the rules test refuses the copy and names that secret, which would otherwise leave the proxy"
 	expect "the policy load refuses the judge tag of 1800 seconds and names the key"
 	expect "the negative control: on the head's file the test passes and lists no change, and the same policy load with a judge tag of 900 seconds refuses nothing"
 
@@ -2016,6 +2024,15 @@ check_k8() {
 	mkdir -p "$d"
 	cp "$AIRLOCK_PROFILES_FILE" "$d/head.json"
 	k8_copies "$d/head.json" "$d"
+	# Each run reads the store's tags (--secrets-json), as the rules test reads them for a
+	# deployment's change: a profile with no proxy string takes its kind from its source's proxy
+	# tag, which the file alone does not hold, so a run without them answers 3 (UNKNOWN) for a
+	# file it refuses nothing of. The second list is the same store with the aws kind's secrets
+	# untagged, the retag that a removal of that kind comes with.
+	k47_secrets_json "$AIRLOCK_FAKE_SECRETS_FILE" >"$d/secrets.json"
+	k8_untagged "$d/secrets.json" aws >"$d/secrets-aws-untagged.json"
+	local aws_tagged
+	aws_tagged="$(jq -r '[.[] | select(.annotations.proxy == "aws") | .name] | length' "$d/secrets.json")"
 
 	local label want status out failing=()
 	while read -r label want <&3; do
@@ -2023,7 +2040,7 @@ check_k8() {
 			unknown "the $label copy: a kind's fields are the named-fields slice's (s-fields), which this head does not build, so the copy was not run"
 			continue
 		fi
-		out="$("$BROKER_BIN" profiles check "$d/$label.json" --against "$d/head.json" 2>&1)"
+		out="$("$BROKER_BIN" profiles check "$d/$label.json" --against "$d/head.json" --secrets-json "$d/secrets.json" 2>&1)"
 		status=$?
 		observe "$label: exit $status; $(printf '%s' "$out" | grep -vE '^profiles check: (compared against|.* is valid:)' | head -n 4 | tr '\n' ' ')"
 		case "$want" in
@@ -2037,6 +2054,19 @@ check_k8() {
 			judge "$([ "$status" = 0 ] && k8_named "$label" "$out" && echo 0 || echo 1)" \
 				"the $label copy passes and lists what it changes ($(k8_names "$label" | tr '\n' ' '))" \
 				"it exited $status; its lines naming the change: $(printf '%s' "$out" | grep -F "$(k8_names "$label" | tail -n 1)" | head -n 2 | tr '\n' ' ')"
+			;;
+		leaves)
+			# The store as it is: a secret still tagged proxy=aws would name no kind of the copy,
+			# so the rules test refuses the copy as the policy load would refuse that secret.
+			judge "$([ "$aws_tagged" -ge 1 ] 2>/dev/null && [ "$status" = 1 ] && contains "proxy-kind-unknown" "$out" && printf '%s' "$out" | grep -qiE 'airlock[-_]aws[-_]key' && echo 0 || echo 1)" \
+				"the $label copy, while a secret carries the aws kind's proxy tag, is refused, naming that secret and proxy-kind-unknown" \
+				"$aws_tagged secret(s) in the store list carry proxy=aws; it exited $status saying '$(printf '%s' "$out" | grep -iE 'proxy-kind-unknown|leaving' | head -n 2 | tr '\n' ' ')'"
+			out="$("$BROKER_BIN" profiles check "$d/$label.json" --against "$d/head.json" --secrets-json "$d/secrets-aws-untagged.json" 2>&1)"
+			status=$?
+			observe "$label, with the aws kind's secrets untagged: exit $status; $(printf '%s' "$out" | grep -F 'kind "aws"' | head -n 2 | tr '\n' ' ')"
+			judge "$([ "$status" = 0 ] && k8_named "$label" "$out" && echo 0 || echo 1)" \
+				"the $label copy, once no secret carries that kind's proxy tag, passes and lists the kind leaving the airlock ($(k8_names "$label" | tr '\n' ' '))" \
+				"it exited $status; its lines naming the change: $(printf '%s' "$out" | grep -F 'kind "aws"' | head -n 2 | tr '\n' ' ')"
 			;;
 		esac
 	done 3<"$d/copies"
@@ -2054,7 +2084,7 @@ check_k8() {
 	judge "$([ "${#failing[@]}" -gt 0 ] && [ "$refusals" = "${#failing[@]}" ] && echo 0 || echo 1)" \
 		"the local broker refuses to start on each failing copy" "$refusals of ${#failing[@]} refused, naming the file"
 
-	out="$("$BROKER_BIN" profiles check "$d/head.json" --against "$d/head.json" 2>&1)"
+	out="$("$BROKER_BIN" profiles check "$d/head.json" --against "$d/head.json" --secrets-json "$d/secrets.json" 2>&1)"
 	status=$?
 	control "the head's file against itself exited $status saying: $(printf '%s' "$out" | tail -n 1)"
 	judge "$([ "$status" = 0 ] && contains "nothing changed" "$out" && echo 0 || echo 1)" \

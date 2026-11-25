@@ -540,7 +540,7 @@ check test "$output" = "status 143; left: "
 # token exchange stand's records and lists, and the field reader every judgement of k47 goes
 # through. Each has a control in which the fixture is wrong in the one way the reader is there to
 # see, and the reader must say so.
-for function in k47_kind k47_lines k47_api k47_exchanges k47_hits k47_secrets_json k47_field k47_control_edit k8_copies k8_names k8_named; do
+for function in k47_kind k47_lines k47_api k47_exchanges k47_hits k47_secrets_json k47_field k47_control_edit k8_copies k8_names k8_named k8_untagged; do
   definition="$(sed -n "/^${function}() {/,/^}/p" "$script_dir/airlock-check.sh")"
   [[ -n "$definition" ]] || { printf 'FAIL: airlock-check.sh defines no %s()\n' "$function"; exit 1; }
   eval "$definition"
@@ -637,6 +637,13 @@ printf '{"secrets":[{"name":"example/agent-secrets/airlock-anthropic-narrowed","
 output="$(k47_secrets_json "$k47/fake.json" | jq -c .)"
 label="k47_secrets_json lists each fake secret as gcloud lists it, its tags as its annotations, and no value"
 check test "$output" = '[{"name":"projects/000000000000/secrets/agent-secrets-airlock-anthropic-narrowed","annotations":{"proxy":"anthropic","proxy-narrowed":"true"}}]'
+printf '[{"name":"a","annotations":{"owner":"o","proxy":"aws"}},{"name":"b","annotations":{"owner":"o","proxy":"stest"}},{"name":"c","annotations":{"owner":"o"}}]\n' >"$k47/store.json"
+output="$(k8_untagged "$k47/store.json" aws | jq -c .)"
+label="k8_untagged takes the proxy tag off the named kind's secrets alone and keeps every other tag and secret"
+check test "$output" = '[{"name":"a","annotations":{"owner":"o"}},{"name":"b","annotations":{"owner":"o","proxy":"stest"}},{"name":"c","annotations":{"owner":"o"}}]'
+output="$(k8_untagged "$k47/store.json" glogin | jq -c .)"
+label="control: k8_untagged of a kind no secret carries changes nothing"
+check test "$output" = "$(jq -c . "$k47/store.json")"
 
 # The two control edits, on copies of the files they edit: each takes its text out of this tree's
 # file, and refuses a file it has already been made on, whose build would be the stack's own.

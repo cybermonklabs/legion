@@ -252,7 +252,7 @@ refuses names the identity it refused ([Which sign-in may do what](#which-sign-i
   the decision back to a person, and ends each live grant the judge made of the secret at its
   next release; lowering the seconds below a live judged grant's lifetime ends that grant the
   same way, and putting the tag back does not bring an ended grant back. Any change of the
-  seconds also ends the live grants of each profile of it that has a proxy block, since the
+  seconds also ends the live grants of each profile of it that is behind a kind, since the
   seconds are in the profile's fingerprint.
 - **`--guidance TEXT`** is optional: your instruction to the judge, saying when it should grant a
   request for the secret, for example
@@ -291,9 +291,28 @@ refuses names the identity it refused ([Which sign-in may do what](#which-sign-i
   airlock ([The airlock](/legion/broker/concepts/#the-airlock)), and only to post with
   `POST /api/chat.postMessage`, carrying `channel`, `thread_ts` and `text`, to a channel id the
   owner of every private project it names allows; the proxy refuses every other call
-  `CHANNEL_NOT_ALLOWED`. Where no profile with a proxy block serves the secret, such a credential is denied it
+  `CHANNEL_NOT_ALLOWED`. Where the secret is behind no kind of the airlock (it carries no `proxy` tag), such a credential is denied it
   `project-channels-need-airlock`. A credential that names no private project gets the secret as
   before. Any other value, and on `create` the word `none`, is refused before anything is written.
+- **`--proxy KIND`** is optional. It puts the secret behind a kind of the broker's profiles file,
+  one lowercase word such as `github` or `anthropic`
+  ([The airlock](/legion/broker/concepts/#the-airlock)): a session gets a placeholder, and the
+  broker's proxy puts the credential only into the calls the kind allows. Unset, the secret is
+  released as its value. The CLI checks only the word's form; the broker refuses the secret at its
+  next load when the file declares no such kind (`proxy-kind-unknown`), when the secret's type
+  takes a way the kind does not list (`proxy-way-not-in-kind`), or when the kind sets a
+  `max_grant` and the secret has no `--max-grant`, or a longer one
+  (`proxy-max-grant-above-kind`). Beside `--proxy` or `--proxy-narrowed`, the CLI also writes
+  `rollback-guard:kinds` into the secret's `requesters` tag, after its list and after a project
+  tags' guard, so that a broker from before the kinds refuses the secret rather than release its
+  value; the guard stays while either tag remains and goes with the last of the two, and `show`
+  prints `kinds_rollback_guard: yes` and the list without it
+  ([Rolling back past the kinds](/legion/broker/operate/#rolling-back-past-the-kinds)).
+- **`--proxy-narrowed true`** is optional. It says that the secret's one profile narrows its kind
+  with an `allow` of its own: the broker serves it only through exactly one profile that has an
+  `allow`, and refuses it otherwise (`proxy-narrowed-profiles`). A profile's own `allow` is refused
+  unless its source carries this tag, so taking a narrowing away needs a change of the file and a
+  change of the tag. `retag --proxy-narrowed none` removes it.
 - **`--max-grant`** is optional, except with `--admin true`, `--type google-service-account` and
   `--type anthropic-federation`, where each needs it, of an hour or less. It is the longest
   `--ttl` a request for this secret may use.

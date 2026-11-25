@@ -230,15 +230,20 @@ with, `--help` prints the usage, and a usage error exits 2. `k9` is a long run â
 minutes of connections and two stacks, about twenty-five minutes in all; `k47` builds
 two control brokers and takes about ten; every other check takes a few minutes.
 
-`k8` runs `envoy-broker profiles check <copy> --against <the head's file>` on ten copies
-of the stack's profiles file: a kind with no host, a kind's new host, header and
-variable, a kind's changed `fields` (an `UNKNOWN:` line: the named-fields slice
-builds them), a new row of a kind's `allow`, a new row of a profile's `allow` inside
-its kind's, a kind removed, a kind naming a secret, and a file that is no JSON. It
-starts a local broker on each failing copy and reads its refusal, then gives a test
-key a judge tag of 1800 seconds and reads the policy load's refusal; the head's file
-against itself and the same key at 900 seconds are its control. The pull request half
-of k8 is the deployment's.
+`k8` runs `envoy-broker profiles check <copy> --against <the head's file> --secrets-json
+<store list>` on ten copies of the stack's profiles file, the store list being the fake
+store's tags in `gcloud secrets list`'s form, since a profile with no `proxy` string takes
+its kind from its source's tag and the check answers 3 without them: a kind with no host,
+a kind's new host, header and variable, a kind's changed `fields` (an `UNKNOWN:` line: the
+named-fields slice builds them), a new row of a kind's `allow`, a new row of a profile's
+`allow` inside its kind's, a kind removed, a kind naming a secret, and a file that is no
+JSON. The removed kind is run twice: against the store as it is, where a secret still
+tagged with that kind is refused and the copy with it, and against the store with that
+kind's secrets untagged, where the copy passes and lists the kind removed. It starts a
+local broker on each failing copy and reads its refusal, then gives a test key a judge
+tag of 1800 seconds and reads the policy load's refusal; the head's file against itself
+and the same key at 900 seconds are its control. The pull request half of k8 is the
+deployment's.
 
 `k47` is the `anthropic` kind's check: it prints the kind, and for each anthropic
 secret approves its grant as the stack's person and sends, with the placeholder as a

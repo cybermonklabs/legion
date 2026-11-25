@@ -587,14 +587,14 @@ before you roll the broker back past this release.
 Rolling the broker back past the release in which a key's judge and guidance became its own tags
 gives the judge nothing: an older broker reads them from the profiles file's `proxy` blocks, and
 ignores the `judge` and `guidance` tags, so every request goes to its person until the file sets
-them again. A broker of this release refuses a profiles file whose `proxy` block still sets
-`judge` or `guidance`, naming the tag to write instead, and does not start with one: tag the keys
-(`agent-secrets secret retag <NAME> --judge <seconds> --guidance '<text>'`) and take the two
-fields out of the file before you roll this release out. A profile is served with its source's
-`judge` seconds in its fingerprint, where its block held them, so tagging the source with the
-seconds its block held and then taking the two fields out ends no grant. Tag it with other
-seconds, or leave it untagged, and each live grant of that profile ends at the first broker of
-this release.
+them again. A broker of this release refuses a profiles file that still sets `judge` or
+`guidance` on a profile, naming the tag to write instead, and does not start with one: tag the
+keys (`agent-secrets secret retag <NAME> --judge <seconds> --guidance '<text>'`) and take the two
+fields out of the file before you roll this release out. A profile behind a kind is served with
+its source's `judge` seconds in its fingerprint, where its block held them, so tagging the source
+with the seconds its block held and then taking the two fields out ends no grant. Tag it with
+other seconds, or leave it untagged, and each live grant of that profile ends at the first broker
+of this release.
 
 Whoever can get a token for a listed account logs in as its service. Kubernetes access control on
 the daemon's namespace is that boundary: anyone who may create pods there naming the account,
@@ -1056,10 +1056,11 @@ those clients go on running while the deployment moves to a client with `--targe
 
 **Which Apps leave the airlock.** `BROKER_GITHUB_APP_FIELD_SECRETS` names the stored
 `github-app` secrets whose release this answer hands over outside the airlock, separated by
-commas or spaces; unset, it names none and the field is answered for no secret. The answer
-removes the profile's proxy block, and the broker this field comes from refused a narrowed
-release of a name its airlock held, so a deployment names the Apps that broker handed over raw
-and no others. Each entry is an agent-secret name, and the start is refused for anything else.
+commas or spaces; unset, it names none and the field is answered for no secret. The answer is
+outside the airlock: it hands over the minted token, not a placeholder, whatever kind the secret
+is behind. The broker this field comes from refused a narrowed release of a name its airlock
+held, so a deployment names the Apps that broker handed over raw and no others. Each entry is an
+agent-secret name, and the start is refused for anything else.
 
 **Who it is answered for.** `BROKER_GITHUB_APP_FIELD_REQUESTERS` names them: registered services
 and people, separated by commas or spaces, such as
@@ -1423,6 +1424,56 @@ The first count must be more than 0, or the list read nothing. The second must b
 the second count finds, run `agent-secrets secret retag NAME --project <KEY>` (or
 `--project-channels slack`) to write the guard, or remove the tag. After the rollback, every guarded
 secret is refused, so no session gets one until the broker is rolled forward again.
+
+## Rolling back past the kinds
+
+A broker from before the kinds reads neither a `kinds` list nor the `proxy` and `proxy-narrowed`
+tags. It refuses to start on a profiles file in the kinds form, so a rollback also puts the file
+back to its proxy-block form. And it serves a secret that is behind the airlock by its `proxy` tag
+alone, with no proxy block in that older file, as its value: an agent-tier secret then goes out
+with no approval. **No rollback past this release while any secret carries `proxy` or
+`proxy-narrowed` without its guard, and no rollback past legion-envoy-v29.23.0 while any secret
+carries either at all.**
+
+The guard is the entry `rollback-guard:kinds` in the secret's `requesters` tag
+(`policy.KindsRollbackGuard`). `agent-secrets secret create` and `retag` write it beside a
+`proxy` or a `proxy-narrowed` tag, after the people and services the `requesters` tag lists and
+after a project tags' guard, keep it while either tag remains, and take it out with the last of
+the two. A broker from legion-envoy-v29.23.0, the first release that reads `requesters`, up to
+the release before the kinds reads every `requesters` entry as a person's email, a registered
+service or the project tags' guard, and no service name holds a colon, so it refuses a secret that
+carries this guard as `requesters-malformed`. A broker older than legion-envoy-v29.23.0 reads no
+`requesters` tag, so the guard does not stop it. This broker takes the entry out before it reads
+the list, so the guard changes nothing here, and `secret show` and `secret list --json` print the
+list without it, with a `kinds_rollback_guard` field saying whether the secret carries it.
+
+The guard covers the tags the CLI writes. A `proxy` or `proxy-narrowed` tag written by a console
+or an infra-applier without the guard is served as its value by every earlier broker. Before a
+rollback, read the stored `requesters` tag as the older broker will. On Google Secret Manager,
+with the project the broker reads:
+
+```sh
+gcloud secrets list --project <project> --filter='name~agent-secrets-' --format='json(name,annotations)' > secrets.json
+jq 'length' secrets.json
+jq '[.[] | select((.annotations.proxy != null or .annotations["proxy-narrowed"] != null) and ((.annotations.requesters // "") | split(" ") | index("rollback-guard:kinds") | not)) | .name]' secrets.json
+```
+
+On AWS Secrets Manager, list the same tags with
+`aws secretsmanager list-secrets --filters Key=name,Values=<prefix>` and select each secret whose
+`Tags` hold `proxy` or `proxy-narrowed` and whose `requesters` tag holds no `rollback-guard:kinds`.
+On either store, `agent-secrets` built from this release gives the same answer from its own read
+of the tags:
+
+```sh
+agent-secrets secret list --json > secrets.json
+jq 'length' secrets.json
+jq '[.[] | select((.proxy != "" or .proxy_narrowed != "") and (.kinds_rollback_guard | not)) | .name]' secrets.json
+```
+
+In each read, the first count must be more than 0, or the list read nothing. The second list must
+be empty. For each secret it names, run `agent-secrets secret retag NAME --proxy <kind>` to write
+the guard, or remove the tag. After the rollback, every guarded secret is refused, so no session
+gets one until the broker is rolled forward again.
 
 ## Network and trust
 
@@ -2097,12 +2148,35 @@ A refusal of the airlock's proxy port has more fields:
 The proxy port's `method`, `path`, `host`, `reason` and `correlation_id` are the command's own
 text, and each has a placeholder in it written as `[placeholder]` (below).
 
-A refused call to a bound host writes this line in place of its call line,
-`airlock proxy: a call to a bound host`, so each such call still writes one line
+A call the proxy carried, or could not carry, writes `airlock proxy: a call to a bound host` at
+INFO, with `answer_id`, `enrollment`, `grant`, `secret`, `issue`, `host`, `method`, `path`
+(without its query), `status` and `allowed`; `slot` where the secret has more than one value;
+`way`, how its credential went in or would have (`swap`, `mint`, `sign`, `exchange` or `dpop`),
+for each call the proxy chose a name for; and `reason` for a call that was not carried. A refused
+call to a bound host writes its refusal line in place of that call line, so each such call still
+writes one line
 ([Run the broker locally](/legion/broker/guides/run-locally/#reach-a-secret-behind-the-airlock)
 shows both). A `429` that the Azure token endpoint answers and the proxy forwards is no refusal:
 it keeps its call line at INFO, which names its answer id and its status, and writes no refusal
 line.
+
+Each credential the broker mints for a grant writes `broker: a token was minted for a call` at
+INFO: each token a minter makes on a release, one for each slot of its value (so one for each
+account of a GitHub App's installations), and each access token the proxy gets at an exchange.
+Its fields are `enrollment`, `grant`, `secret`, `way` (`mint` or `exchange`), `type` (the
+secret's type), `slot`, and, where the broker knows them, `app` (the GitHub App's id), `account`
+(the GitHub account of the slot, or the service account the token was minted as), `repositories`
+and `permissions` (what the GitHub mint asked for), and `sha256`, the hex SHA-256 of the
+credential. No field holds the credential or any part of it: a scan compares the hash against a
+token found somewhere, to tell which grant's mint it came from. A session's own release of a
+minted name writes the line too, since it mints to learn the name's slots, so one grant can write
+one line at its release and one when the proxy mints for its first call.
+
+A profile whose `proxy` string names the kind its source's `proxy` tag names too writes
+`profile's proxy string names its source's proxy kind; drop the string` at WARN, with `profile`,
+`source` and `kind`, once at each full policy load and never at a reread. The profile is served
+behind that kind; the line stays until the profiles file drops the string, which then changes
+nothing a grant was decided under.
 
 Beside those, the proxy writes one line for each socket it opens for a tunnel or a plain-HTTP
 request and one for each dial it does not make, which is the whole of what the broker records
