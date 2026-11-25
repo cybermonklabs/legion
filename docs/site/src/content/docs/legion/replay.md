@@ -289,6 +289,10 @@ It holds a record of the approvals from the moment the project's default assigne
 The conflict draw reads how fast each base branch moved.
 `collect-merges` reads a base branch's first-parent history from GitHub's commit listing, with `GET` alone.
 It writes the history into the window as `merges/<owner>__<name>.jsonl`, and writes the file's new sha256 into `window.json`.
+It reads the window one line at a time and checks it as every command does.
+Of the window, it holds in memory only the merges of `--repo`.
+It writes only that file and `window.json`, each to a temporary file that it renames into place.
+Every other file of the window stays as it was.
 It lists the branch's commits from a day before `--from` to the tip of the branch, with no end time.
 A commit's first parent can be committed after the commit, even after `--to`.
 So the walk starts at the tip and goes along first parents through every listed commit, whatever its time.
@@ -330,6 +334,10 @@ The queue signal reads how long the project's pull requests wait in the merge qu
 A pull request belongs to them where an `issue.pull_request_attribution_changed` event of an issue of the project moves it, or where a line of the window's log names it (`pullRequest`) for an issue whose repository, as its events give it, is `--repo`.
 It writes each timeline event of the kinds `added_to_merge_queue`, `removed_from_merge_queue` and `merged`, exactly as GitHub serves it, with its pull request's number, into the window as `queue/<owner>__<name>.jsonl`.
 It writes the file's new sha256 into `window.json`, with a record of the queue signal over the window's reach and run-out.
+It reads the window one line at a time and checks it as every command does.
+Of the window, it holds in memory only the pull requests that the log and the events name, and the repository of each issue.
+It writes only that file and `window.json`, each to a temporary file that it renames into place.
+Every other file of the window stays as it was.
 It names each pull request that a line names for an issue whose repository the window does not give, and reads none of them.
 A read that GitHub refuses for now is tried again with a growing wait, and a read that fails writes nothing.
 

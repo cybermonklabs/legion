@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"path"
 	"regexp"
 	"slices"
 	"strings"
@@ -76,6 +77,12 @@ type MergesConfig struct {
 // a stretch's own merge out of its count. It sends GET alone, each read GitHub refuses for now
 // (429, a 5xx, no answer) tried again with a growing wait. It returns the branch's commits as
 // written, oldest first.
+//
+// It reads the window once, a line at a time (walkWindow), and refuses every window ReadWindow
+// refuses, before any read of GitHub. Of the window it holds its window.json and the lines of
+// cfg.Repo's merges file alone, never another input. It writes that file and window.json alone,
+// each through a temporary file renamed into place (replaceInput); every other input of the window
+// keeps its bytes.
 func CollectMerges(ctx context.Context, cfg MergesConfig) ([]Merge, error) {
 	owner, name, ok := splitRepo(cfg.Repo)
 	switch {
@@ -92,7 +99,17 @@ func CollectMerges(ctx context.Context, cfg MergesConfig) ([]Merge, error) {
 	if err != nil || (api.Scheme != "https" && api.Scheme != "http") || api.Host == "" {
 		return nil, fmt.Errorf("replay: collect-merges: %q is no http or https URL of GitHub's API", cfg.API)
 	}
-	w, err := ReadWindow(cfg.Window)
+	head, err := readWindowHead(cfg.Window)
+	if err != nil {
+		return nil, fmt.Errorf("replay: collect-merges: %w", err)
+	}
+	var held []Merge
+	err = walkWindow(cfg.Window, head, func(input windowInput) func(json.RawMessage, any) {
+		if input.kind != mergesDir || input.key != cfg.Repo {
+			return nil
+		}
+		return func(_ json.RawMessage, merge any) { held = append(held, merge.(Merge)) }
+	})
 	if err != nil {
 		return nil, fmt.Errorf("replay: collect-merges: %w", err)
 	}
@@ -130,11 +147,14 @@ func CollectMerges(ctx context.Context, cfg MergesConfig) ([]Merge, error) {
 		}
 	}
 	merges := slices.DeleteFunc(walk, func(m Merge) bool { return m.At.Before(cfg.From) || !m.At.Before(cfg.To) })
-	kept := slices.DeleteFunc(slices.Clone(w.Merges[cfg.Repo]), func(m Merge) bool { return m.Branch == cfg.Branch })
+	kept := slices.DeleteFunc(held, func(m Merge) bool { return m.Branch == cfg.Branch })
 	kept = append(kept, merges...)
 	slices.SortStableFunc(kept, func(a, b Merge) int { return a.At.Compare(b.At) })
-	w.Merges[cfg.Repo] = kept
-	if err := w.Write(cfg.Window); err != nil {
+	lines, err := marshalLines(kept)
+	if err != nil {
+		return nil, fmt.Errorf("replay: collect-merges: %w", err)
+	}
+	if err := replaceInput(cfg.Window, head, path.Join(mergesDir, owner+"__"+name+".jsonl"), lines); err != nil {
 		return nil, fmt.Errorf("replay: collect-merges: %w", err)
 	}
 	return merges, nil

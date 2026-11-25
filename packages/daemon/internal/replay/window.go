@@ -1,12 +1,15 @@
 package replay
 
 import (
+	"bufio"
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash"
+	"io"
 	"maps"
 	"os"
 	"path"
@@ -259,12 +262,12 @@ func readWindowHead(dir string) (Window, error) {
 }
 
 // ReadWindow reads the window in dir: window.json (readWindowHead), then every input its Files
-// names, each checked against its sha256 before it is read. It refuses a window of another format,
-// an input that is missing or whose hash differs, a name in Files that is no input of the format, a
-// line of an input that is not one JSON object or not of that input's form, an input file in dir
-// that Files does not name, since nothing would check it, and a record of the signals no reader
-// could trust (checkSignals). Other files of dir — a fixture's README.md and expect.json — are no
-// part of the window and are not read.
+// names, each read once, a line at a time, and hashed as it is read (walkWindow), every line of
+// every input held. It refuses a window of another format, an input that is missing or whose hash
+// differs, a name in Files that is no input of the format, a line of an input that is not one JSON
+// object or not of that input's form, an input file in dir that Files does not name, since nothing
+// would check it, and a record of the signals no reader could trust (checkSignals). Other files of
+// dir — a fixture's README.md and expect.json — are no part of the window and are not read.
 func ReadWindow(dir string) (Window, error) {
 	w, err := readWindowHead(dir)
 	if err != nil {
@@ -272,115 +275,263 @@ func ReadWindow(dir string) (Window, error) {
 	}
 	w.Events = make(map[string][]json.RawMessage)
 	w.Merges = make(map[string][]Merge)
-	for _, name := range slices.Sorted(maps.Keys(w.Files)) {
-		kind, key, err := inputOf(name)
-		if err != nil {
-			return Window{}, fmt.Errorf("read the window in %s: %w", dir, err)
-		}
-		data, err := os.ReadFile(filepath.Join(dir, filepath.FromSlash(name)))
-		if err != nil {
-			return Window{}, fmt.Errorf("read the window in %s: %w", dir, err)
-		}
-		if sum := sha256.Sum256(data); hex.EncodeToString(sum[:]) != w.Files[name] {
-			return Window{}, fmt.Errorf("read the window in %s: the sha256 of %s is %s, and window.json records %s",
-				dir, name, hex.EncodeToString(sum[:]), w.Files[name])
-		}
-		lines, err := jsonLines(data)
-		if err != nil {
-			return Window{}, fmt.Errorf("read the window in %s: %s: %w", dir, name, err)
-		}
-		// refuse names the line of the input that does not read.
-		refuse := func(i int, err error) (Window, error) {
-			return Window{}, fmt.Errorf("read the window in %s: %s line %d: %w", dir, name, i+1, err)
-		}
-		switch kind {
+	err = walkWindow(dir, w, func(input windowInput) func(json.RawMessage, any) {
+		switch input.kind {
 		case logFile:
-			w.Log = lines
-		case eventsDir:
-			w.Events[key] = lines
-		case mergesDir:
-			merges := make([]Merge, 0, len(lines))
-			for i, line := range lines {
-				var merge Merge
-				if err := json.Unmarshal(line, &merge); err != nil {
-					return refuse(i, err)
-				}
-				merges = append(merges, merge)
+			return func(line json.RawMessage, _ any) {
+				w.Log = append(w.Log, bytes.Clone(line))
 			}
-			w.Merges[key] = merges
+		case eventsDir:
+			w.Events[input.key] = nil
+			return func(line json.RawMessage, _ any) {
+				w.Events[input.key] = append(w.Events[input.key], bytes.Clone(line))
+			}
+		case mergesDir:
+			w.Merges[input.key] = []Merge{}
+			return func(_ json.RawMessage, merge any) {
+				w.Merges[input.key] = append(w.Merges[input.key], merge.(Merge))
+			}
 		case providerFile:
-			w.Provider = make([]ProviderMinute, 0, len(lines))
-			for i, line := range lines {
-				minute, err := ParseProviderMinute(line)
-				if err != nil {
-					return refuse(i, err)
-				}
-				w.Provider = append(w.Provider, minute)
+			w.Provider = []ProviderMinute{}
+			return func(_ json.RawMessage, minute any) {
+				w.Provider = append(w.Provider, minute.(ProviderMinute))
 			}
 		case launcherFile:
-			w.Launcher = make([]LauncherLine, 0, len(lines))
-			for i, line := range lines {
-				var launched LauncherLine
-				if err := decodeStrict(line, &launched); err != nil {
-					return refuse(i, err)
-				}
-				if err := launched.check(); err != nil {
-					return refuse(i, err)
-				}
-				w.Launcher = append(w.Launcher, launched)
+			w.Launcher = []LauncherLine{}
+			return func(_ json.RawMessage, launched any) {
+				w.Launcher = append(w.Launcher, launched.(LauncherLine))
 			}
 		case memoryFile:
-			w.Memory = make([]MemorySample, 0, len(lines))
-			for i, line := range lines {
-				var sample MemorySample
-				if err := decodeStrict(line, &sample); err != nil {
-					return refuse(i, err)
-				}
-				if err := sample.check(); err != nil {
-					return refuse(i, err)
-				}
-				w.Memory = append(w.Memory, sample)
+			w.Memory = []MemorySample{}
+			return func(_ json.RawMessage, sample any) {
+				w.Memory = append(w.Memory, sample.(MemorySample))
 			}
 		case queueDir:
-			for i, line := range lines {
-				if _, err := ParseQueueLine(line); err != nil {
-					return refuse(i, err)
-				}
-			}
 			if w.Queue == nil {
 				w.Queue = make(map[string][]json.RawMessage)
 			}
-			w.Queue[key] = append([]json.RawMessage{}, lines...)
-		case settingsFile:
-			for i, line := range lines {
-				if _, err := ParseSettingsEvent(line); err != nil {
-					return refuse(i, err)
-				}
+			w.Queue[input.key] = []json.RawMessage{}
+			return func(line json.RawMessage, _ any) {
+				w.Queue[input.key] = append(w.Queue[input.key], bytes.Clone(line))
 			}
-			w.Settings = append([]json.RawMessage{}, lines...)
+		case settingsFile:
+			w.Settings = []json.RawMessage{}
+			return func(line json.RawMessage, _ any) {
+				w.Settings = append(w.Settings, bytes.Clone(line))
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return Window{}, err
+	}
+	return w, nil
+}
+
+// windowInput is an input file of a window as walkWindow opens it: its name in window.json's
+// files, which input of the format it is and the key it holds (inputOf).
+type windowInput struct {
+	name, kind, key string
+}
+
+// windowVisitor is what walkWindow hands a window's inputs to. It is called as each input is
+// opened, and the function it returns, where it returns one, with each line of that input in turn:
+// the line, the white space around it cut off, and, for an input a Window holds decoded, the line
+// decoded (decodeInputLine). The line is walkWindow's buffer, which it reads the next line into, so
+// a visitor that keeps a line keeps a copy of it.
+type windowVisitor func(input windowInput) func(line json.RawMessage, value any)
+
+// inputBuffer is how many bytes of an input walkWindow reads ahead. A line longer than that is
+// gathered in a buffer of its own, which grows to the longest such line (inputReader).
+const inputBuffer = 64 << 10
+
+// walkWindow reads the inputs of head, the window in dir as readWindowHead gives it, and hands each
+// to visit: every input head's Files names, in the order of their names, each read once, a line at
+// a time, and hashed as it is read. It holds one line at a time and nothing else of an input but
+// what visit keeps. It refuses, as ReadWindow says, a name in Files that is no input of the format,
+// an input that is missing or whose hash differs, a line that is not one JSON object or not of its
+// input's form, an input file in dir that Files does not name, and a record of the signals no
+// reader could trust (checkSignals). An input is judged once it is read whole, as a read of the
+// whole file judges it: by its hash first, then by its first line that is not one JSON object,
+// then by its first line not of its input's form. visit is given no line from an input's first
+// refused line on, and the walk ends at the first input it refuses.
+func walkWindow(dir string, head Window, visit windowVisitor) error {
+	reader := inputReader{buffered: bufio.NewReaderSize(nil, inputBuffer), hash: sha256.New()}
+	for _, name := range slices.Sorted(maps.Keys(head.Files)) {
+		kind, key, err := inputOf(name)
+		if err != nil {
+			return fmt.Errorf("read the window in %s: %w", dir, err)
+		}
+		file, err := os.Open(filepath.Join(dir, filepath.FromSlash(name)))
+		if err != nil {
+			return fmt.Errorf("read the window in %s: %w", dir, err)
+		}
+		err = reader.walk(file, name, kind, head.Files[name], visit(windowInput{name: name, kind: kind, key: key}))
+		file.Close()
+		if err != nil {
+			return fmt.Errorf("read the window in %s: %w", dir, err)
 		}
 	}
 	present, err := inputFiles(dir)
 	if err != nil {
-		return Window{}, fmt.Errorf("read the window in %s: %w", dir, err)
+		return fmt.Errorf("read the window in %s: %w", dir, err)
 	}
 	for _, name := range present {
-		if _, listed := w.Files[name]; !listed {
-			return Window{}, fmt.Errorf("read the window in %s: %s is an input file window.json does not name, so nothing checks it", dir, name)
+		if _, listed := head.Files[name]; !listed {
+			return fmt.Errorf("read the window in %s: %s is an input file window.json does not name, so nothing checks it", dir, name)
 		}
 	}
-	if err := w.checkSignals(); err != nil {
-		return Window{}, fmt.Errorf("read the window in %s: %w", dir, err)
+	if err := head.checkSignals(heldInputs(head.Files)); err != nil {
+		return fmt.Errorf("read the window in %s: %w", dir, err)
 	}
-	return w, nil
+	return nil
+}
+
+// inputReader reads the inputs of a window one after another, each a line at a time, and hashes
+// each as it reads it. It keeps its buffers from one input to the next: the bytes it reads ahead,
+// and long, which holds a line longer than those.
+type inputReader struct {
+	buffered *bufio.Reader
+	hash     hash.Hash
+	long     []byte
+}
+
+// walk reads input, the input name of a window, of kind (inputOf), whose sha256 window.json
+// records as sum, and hands each of its lines to visit, where visit is not nil. It refuses the
+// input as walkWindow says.
+func (r *inputReader) walk(input io.Reader, name, kind, sum string, visit func(json.RawMessage, any)) error {
+	r.hash.Reset()
+	r.buffered.Reset(io.TeeReader(input, r.hash))
+	var notObject, notForm error
+	for number := 1; ; number++ {
+		line, ended, err := r.line()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return err
+		}
+		if number == 1 && ended && len(line) == 0 {
+			// A newline alone holds no line, as an empty file holds none.
+			if _, err := r.buffered.Peek(1); errors.Is(err, io.EOF) {
+				break
+			} else if err != nil {
+				return err
+			}
+		}
+		line = bytes.TrimSpace(line)
+		if !bytes.HasPrefix(line, []byte("{")) || !json.Valid(line) {
+			notObject = fmt.Errorf("%s: line %d is not one JSON object", name, number)
+			break
+		}
+		if notForm != nil {
+			continue
+		}
+		value, err := decodeInputLine(kind, line)
+		switch {
+		case err != nil:
+			notForm = fmt.Errorf("%s line %d: %w", name, number, err)
+		case visit != nil:
+			visit(line, value)
+		}
+	}
+	// What follows a line that is not one JSON object is read for the hash alone.
+	if _, err := io.Copy(io.Discard, r.buffered); err != nil {
+		return err
+	}
+	if got := hex.EncodeToString(r.hash.Sum(nil)); got != sum {
+		return fmt.Errorf("the sha256 of %s is %s, and window.json records %s", name, got, sum)
+	}
+	if notObject != nil {
+		return notObject
+	}
+	return notForm
+}
+
+// line is the input's next line, its newline cut off, and whether a newline ended it; io.EOF where
+// the input holds no more. The line is one of r's buffers, which its next read writes over.
+func (r *inputReader) line() ([]byte, bool, error) {
+	line, err := r.buffered.ReadSlice('\n')
+	if errors.Is(err, bufio.ErrBufferFull) {
+		r.long = append(r.long[:0], line...)
+		for errors.Is(err, bufio.ErrBufferFull) {
+			line, err = r.buffered.ReadSlice('\n')
+			r.long = append(r.long, line...)
+		}
+		line = r.long
+	}
+	switch {
+	case err == nil:
+		return line[:len(line)-1], true, nil
+	case errors.Is(err, io.EOF) && len(line) > 0:
+		return line, false, nil
+	}
+	return nil, false, err
+}
+
+// decodeInputLine checks line, a line of an input of kind (inputOf), against that input's form,
+// and is the line decoded for an input a Window holds decoded: a Merge, a ProviderMinute, a
+// LauncherLine or a MemorySample; nil for the others, which a Window holds as their lines.
+func decodeInputLine(kind string, line []byte) (any, error) {
+	switch kind {
+	case mergesDir:
+		var merge Merge
+		if err := json.Unmarshal(line, &merge); err != nil {
+			return nil, err
+		}
+		return merge, nil
+	case providerFile:
+		minute, err := ParseProviderMinute(line)
+		if err != nil {
+			return nil, err
+		}
+		return minute, nil
+	case launcherFile:
+		var launched LauncherLine
+		if err := decodeStrict(line, &launched); err != nil {
+			return nil, err
+		}
+		if err := launched.check(); err != nil {
+			return nil, err
+		}
+		return launched, nil
+	case memoryFile:
+		var sample MemorySample
+		if err := decodeStrict(line, &sample); err != nil {
+			return nil, err
+		}
+		if err := sample.check(); err != nil {
+			return nil, err
+		}
+		return sample, nil
+	case queueDir:
+		_, err := ParseQueueLine(line)
+		return nil, err
+	case settingsFile:
+		_, err := ParseSettingsEvent(line)
+		return nil, err
+	}
+	return nil, nil
+}
+
+// heldInputs is each input of the format files names, by its kind (inputOf).
+func heldInputs(files map[string]string) map[string]bool {
+	held := make(map[string]bool)
+	for name := range files {
+		if kind, _, err := inputOf(name); err == nil {
+			held[kind] = true
+		}
+	}
+	return held
 }
 
 // checkSignals refuses a record of the signals no reader could trust: a signal the signals map
 // names that is none of R11's, a span that is empty, spans of one signal out of order or
 // overlapping, a record of the kills with no launcher log, of the provider with no provider
-// record or of the queue with no queue file, and a P0 bound below zero. Its refusal names the
-// files by the names window.json gives them.
-func (w Window) checkSignals() error {
+// record or of the queue with no queue file, and a P0 bound below zero. held says which inputs
+// the window holds, by their kind (inputOf): launcherFile, providerFile and queueDir, a queue file
+// of any repository. Its refusal names the files by the names window.json gives them.
+func (w Window) checkSignals(held map[string]bool) error {
 	for _, signal := range slices.Sorted(maps.Keys(w.Signals)) {
 		if !slices.Contains(windowSignals, signal) {
 			return fmt.Errorf("window.json names a record of %q, which is no signal of R11 (%s)", signal, strings.Join(windowSignals, ", "))
@@ -395,11 +546,11 @@ func (w Window) checkSignals() error {
 			}
 		}
 	}
-	needs := map[string]bool{SignalKills: w.Launcher != nil, SignalProvider: w.Provider != nil, SignalQueue: w.Queue != nil}
-	inputs := map[string]string{SignalKills: launcherFile, SignalProvider: providerFile, SignalQueue: "queue file"}
+	inputs := map[string]string{SignalKills: launcherFile, SignalProvider: providerFile, SignalQueue: queueDir}
+	names := map[string]string{SignalKills: launcherFile, SignalProvider: providerFile, SignalQueue: "queue file"}
 	for _, signal := range []string{SignalKills, SignalProvider, SignalQueue} {
-		if len(w.Signals[signal]) > 0 && !needs[signal] {
-			return fmt.Errorf("window.json names a record of %s, and the window holds no %s", signal, inputs[signal])
+		if len(w.Signals[signal]) > 0 && !held[inputs[signal]] {
+			return fmt.Errorf("window.json names a record of %s, and the window holds no %s", signal, names[signal])
 		}
 	}
 	for _, bound := range w.P0Bounds {
@@ -427,25 +578,22 @@ func decodeStrict(line []byte, into any) error {
 func (w Window) Write(dir string) error {
 	w.Format = WindowFormat
 	w.Files = make(map[string]string)
-	if err := w.checkSignals(); err != nil {
+	if err := w.checkSignals(map[string]bool{launcherFile: w.Launcher != nil, providerFile: w.Provider != nil, queueDir: w.Queue != nil}); err != nil {
 		return fmt.Errorf("write the window to %s: %w", dir, err)
 	}
 	write := func(name string, lines []json.RawMessage) error {
-		var data bytes.Buffer
-		for i, line := range lines {
-			if err := json.Compact(&data, line); err != nil {
-				return fmt.Errorf("write %s line %d: %w", name, i+1, err)
-			}
-			data.WriteByte('\n')
+		data, err := encodeLines(name, lines)
+		if err != nil {
+			return err
 		}
 		file := filepath.Join(dir, filepath.FromSlash(name))
 		if err := os.MkdirAll(filepath.Dir(file), 0o755); err != nil {
 			return err
 		}
-		if err := os.WriteFile(file, data.Bytes(), 0o644); err != nil {
+		if err := os.WriteFile(file, data, 0o644); err != nil {
 			return err
 		}
-		sum := sha256.Sum256(data.Bytes())
+		sum := sha256.Sum256(data)
 		w.Files[name] = hex.EncodeToString(sum[:])
 		return nil
 	}
@@ -503,12 +651,97 @@ func (w Window) Write(dir string) error {
 			return fmt.Errorf("write the window to %s: %w", dir, err)
 		}
 	}
-	window, err := json.MarshalIndent(w, "", "  ")
+	window, err := marshalWindow(w)
 	if err != nil {
 		return fmt.Errorf("write the window to %s: %w", dir, err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, windowFile), append(window, '\n'), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, windowFile), window, 0o644); err != nil {
 		return fmt.Errorf("write the window to %s: %w", dir, err)
+	}
+	return nil
+}
+
+// encodeLines is lines as Write writes the input name: each line compact, on a line of its own.
+func encodeLines(name string, lines []json.RawMessage) ([]byte, error) {
+	var data bytes.Buffer
+	for i, line := range lines {
+		if err := json.Compact(&data, line); err != nil {
+			return nil, fmt.Errorf("write %s line %d: %w", name, i+1, err)
+		}
+		data.WriteByte('\n')
+	}
+	return data.Bytes(), nil
+}
+
+// marshalWindow is w's window.json as Write writes it: its members with a JSON name, indented by
+// two spaces, and a newline after.
+func marshalWindow(w Window) ([]byte, error) {
+	window, err := json.MarshalIndent(w, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	return append(window, '\n'), nil
+}
+
+// replaceInput writes lines into the window in dir as its input name, in place of the file of that
+// name the window holds or beside its other inputs where it holds none, then its window.json: head,
+// the window as readWindowHead read it, with the sha256 of the file written in its files. Each is
+// written as Write writes it, to a temporary file in its own directory that is renamed into place;
+// no other file of dir is opened, so every other input keeps its bytes. The new head's record of the
+// signals is checked (checkSignals), and both files are encoded, before either is written, so a
+// refusal writes nothing.
+func replaceInput(dir string, head Window, name string, lines []json.RawMessage) error {
+	data, err := encodeLines(name, lines)
+	if err != nil {
+		return fmt.Errorf("write the window to %s: %w", dir, err)
+	}
+	sum := sha256.Sum256(data)
+	files := make(map[string]string, len(head.Files)+1)
+	maps.Copy(files, head.Files)
+	files[name] = hex.EncodeToString(sum[:])
+	head.Files = files
+	if err := head.checkSignals(heldInputs(head.Files)); err != nil {
+		return fmt.Errorf("write the window to %s: %w", dir, err)
+	}
+	window, err := marshalWindow(head)
+	if err != nil {
+		return fmt.Errorf("write the window to %s: %w", dir, err)
+	}
+	for _, file := range []struct {
+		name string
+		data []byte
+	}{{name, data}, {windowFile, window}} {
+		if err := replaceFile(filepath.Join(dir, filepath.FromSlash(file.name)), file.data); err != nil {
+			return fmt.Errorf("write the window to %s: %w", dir, err)
+		}
+	}
+	return nil
+}
+
+// replaceFile writes data as file, whose directory it creates where it is missing, through a
+// temporary file in that directory that it renames into place, so a reader of file reads either
+// its bytes before or data whole. A write that fails leaves no temporary file.
+func replaceFile(file string, data []byte) error {
+	if err := os.MkdirAll(filepath.Dir(file), 0o755); err != nil {
+		return err
+	}
+	temp, err := os.CreateTemp(filepath.Dir(file), filepath.Base(file)+".*")
+	if err != nil {
+		return err
+	}
+	_, err = temp.Write(data)
+	if err == nil {
+		err = temp.Chmod(0o644)
+	}
+	if closed := temp.Close(); err == nil {
+		err = closed
+	}
+	if err == nil {
+		err = os.Rename(temp.Name(), file)
+	}
+	if err != nil {
+		os.Remove(temp.Name())
+		return err
 	}
 	return nil
 }
@@ -586,24 +819,4 @@ func inputFiles(dir string) ([]string, error) {
 		}
 	}
 	return names, nil
-}
-
-// jsonLines is data's lines, each one JSON object: a last line ended by a newline leaves no empty
-// line after it, and any other empty line, or a line that is not an object, is refused. Each line
-// is a part of data, which the caller writes nothing to after.
-func jsonLines(data []byte) ([]json.RawMessage, error) {
-	text := bytes.TrimSuffix(data, []byte("\n"))
-	if len(text) == 0 {
-		return nil, nil
-	}
-	split := bytes.Split(text, []byte("\n"))
-	lines := make([]json.RawMessage, 0, len(split))
-	for i, line := range split {
-		trimmed := bytes.TrimSpace(line)
-		if !bytes.HasPrefix(trimmed, []byte("{")) || !json.Valid(trimmed) {
-			return nil, fmt.Errorf("line %d is not one JSON object", i+1)
-		}
-		lines = append(lines, json.RawMessage(trimmed))
-	}
-	return lines, nil
 }
