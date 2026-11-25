@@ -9,21 +9,24 @@
 // starts each worker as a child process group of the test process instead of as a pane on the
 // daemon's private tmux server, wherever it runs.
 //
-// Everything below the pane is the real thing: the command is the one a pane runs,
+// Everything below the pane is the real thing. An Oh My Pi worker runs the command a pane runs:
 // `legion worker-shim --connect unix://<the daemon's stream socket> --boot-token-file <file> --
-// <omp argv>`, built from this checkout's `legion` and the Oh My Pi LEGION_OMP_PATH names; the
-// environment is `internal/runtime/tmux`'s own (tmux.PaneVariables over tmux.PaneInputs), which is
-// the function that package exports for exactly this — a process it does not start that must be
-// told what a pane is told. The agent therefore registers over the daemon's own HTTP routes,
-// speaks the daemon's own worker stream through the real shim, and loads this branch's two
-// plugins, as a pane does.
+// <omp argv>`. It is built from this checkout's `legion` and the Oh My Pi the proof names. A
+// Claude Code worker runs the same shim prefix around the inner command of
+// `internal/runtime/tmux`'s own Claude Code launcher, under `sh -c` (agentCommand). A claim the
+// proof stands in for runs a placeholder process instead, and the proof plays its agent
+// (standsIn). The environment is `internal/runtime/tmux`'s own (tmux.PaneVariables over
+// tmux.PaneInputs). That package exports the function for exactly this: a process it does not
+// start that must be told what a pane is told. So the agent registers over the daemon's own HTTP
+// routes, and speaks the daemon's own worker stream through the real shim. It loads this
+// branch's plugins, as a pane does.
 //
 // What differs from `internal/runtime/tmux`, and why:
 //
-//   - There is no tmux, so there is no window, no pane id, no `sh -c` and no server-wide
-//     environment table. The locator still says `tmux`, because `runtime.Locator.Validate` admits
-//     two runtime words and a local process is neither a pod nor nothing; its window is the claim's
-//     issue and its pane `%<pid>`, so `Locator.Label` still reads as a place. The incarnation is
+//   - There is no tmux, so there is no window, no pane id and no server-wide environment table.
+//     The locator still says `tmux`, because `runtime.Locator.Validate` admits two runtime words,
+//     and a local process is neither a pod nor nothing. Its window is the claim's issue and its
+//     pane `%<pid>`, so `Locator.Label` still reads as a place. The incarnation is
 //     the tmux runtime's own `<pid>:<start ticks>`, read from /proc, so a reissued pid is told from
 //     the process the locator recorded exactly as it is there.
 //   - The inner Oh My Pi command is an argv rather than a shell fragment. It names the claim's
@@ -37,9 +40,9 @@
 //   - PodDrift, ReplacePod and CleanupTree hold nothing per place or per tree, so each answers
 //     as a process-only runtime answers: no drift, nothing to replace, nothing to delete.
 //
-// Every child is started in a process group of its own (Setpgid) and every stop signals that
-// group, so Oh My Pi and the shim go together and a failed or finished run leaves no child
-// behind: the test's cleanup kills every group the runtime ever started, whatever the proof did.
+// Every child is started in a process group of its own (Setpgid), and every stop signals that
+// group. So the agent and the shim go together. A failed or finished run leaves no child behind:
+// the test's cleanup kills every group the runtime ever started, whatever the proof did.
 //
 // Two things here are a step's rather than a runtime's, and both are of that process group: a
 // step kills one out from under the daemon (killProcessGroup), and a step holds the runtime's
@@ -64,6 +67,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 	"github.com/sjawhar/legion/daemon/internal/runtime/tmux"
 	"github.com/sjawhar/legion/daemon/internal/runtime/workerbin"
 )
@@ -93,10 +97,14 @@ type localPane struct {
 // runtime factory hands every runtime; a stop sends the shutdown frame over the claim's connection
 // before it signals anything, as the tmux runtime's stop does.
 type localRuntime struct {
-	t         *testing.T
-	stateDir  string
-	legion    string
-	omp       string
+	t        *testing.T
+	stateDir string
+	legion   string
+	omp      string
+	// claude is the Claude Code launch a spawn on runtime.BackendClaude runs, as the daemon's own
+	// boot resolves one (resolveClaude). A proof that drives no Claude Code pane leaves it zero.
+	// Such a spawn is then refused, as a daemon that resolved no Claude Code launch refuses it.
+	claude    tmux.ClaudeLaunch
 	home      string
 	profile   string
 	daemonURL string
@@ -114,8 +122,18 @@ type localRuntime struct {
 	// environment is what a proof gives its panes beyond what a pane is told: the model key of a
 	// proof whose panes call a real model, which reaches the pane's process and nothing else.
 	environment []string
-	conns       runtime.Conns
-	stream      string
+	// claimEnvironment is what a proof gives one claim's pane after environment, nil for none: a
+	// Claude Code pane's own model endpoint. No other pane of the proof shares it.
+	claimEnvironment func(claim.Token) []string
+	// standsIn says whether the proof stands in for a claim's agent itself, nil for none. Such a
+	// launch writes the claim's boot-token file as every launch does. Its process is a placeholder
+	// (standInCommand) that runs no agent and no shim. The proof dials the worker stream with the
+	// boot token Launches names and registers over the daemon's routes, as the package's
+	// fake-runtime walks do. The placeholder gives the runtime a process to observe, stop and reap
+	// as it does a pane's.
+	standsIn func(claim.Token) bool
+	conns    runtime.Conns
+	stream   string
 	// paneLogs is the directory each worker's stdout and stderr is written under, one file per
 	// launch, kept for the run's evidence.
 	paneLogs string
@@ -301,9 +319,9 @@ func (r *localRuntime) Resume(ctx context.Context, prev *runtime.Locator, spec r
 	return r.launch(ctx, spec)
 }
 
-// launch starts one worker: its working directory and boot-token file written, then the shim
-// around Oh My Pi in a process group of its own. A claim whose process still runs is refused —
-// one claim, one process — as the tmux runtime refuses it.
+// launch starts one worker: its working directory and boot-token file written, then its child in
+// a process group of its own (agentCommand). A claim whose process still runs is refused, one
+// claim and one process, as the tmux runtime refuses it.
 func (r *localRuntime) launch(ctx context.Context, spec runtime.SpawnSpec) (runtime.Locator, error) {
 	if err := runtime.ValidateSpawnSpec(spec, nil); err != nil {
 		return runtime.Locator{}, err
@@ -350,14 +368,9 @@ func (r *localRuntime) launch(ctx context.Context, spec runtime.SpawnSpec) (runt
 		return runtime.Locator{}, fmt.Errorf("spawn %s: %w", spec.Claim, err)
 	}
 
-	argv := []string{
-		r.legion, "worker-shim",
-		"--connect", r.stream,
-		"--boot-token-file", bootToken.Path,
-		"--", r.omp, "--mode", "rpc", "--append-system-prompt", promptFile,
-	}
-	if spec.ResumeSessionFile != "" {
-		argv = slices.Insert(argv, len(argv)-4, "--resume="+spec.ResumeSessionFile)
+	argv, pairs, err := r.agentCommand(spec, bootToken, promptFile)
+	if err != nil {
+		return runtime.Locator{}, err
 	}
 	logPath := filepath.Join(r.paneLogs, fmt.Sprintf("%s.%d.log", spec.Claim, seq))
 	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
@@ -366,7 +379,7 @@ func (r *localRuntime) launch(ctx context.Context, spec runtime.SpawnSpec) (runt
 	}
 	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Dir = workDir
-	cmd.Env = r.paneEnvironment(variables, workDir)
+	cmd.Env = append(r.paneEnvironment(spec.Claim, variables, workDir), pairs...)
 	// A resume is held to its session as every runtime holds it (runtime.SessionExclusiveVariable).
 	if spec.ResumeSessionFile != "" {
 		cmd.Env = append(cmd.Env, runtime.SessionExclusiveVariable+"="+runtime.SessionExclusiveValue)
@@ -409,20 +422,72 @@ func (r *localRuntime) launch(ctx context.Context, spec runtime.SpawnSpec) (runt
 	return pane.locator, nil
 }
 
+// standInCommand is the placeholder process of a claim the proof stands in for (standsIn). It
+// runs no agent and no shim, and lasts longer than any proof. So the runtime observes, stops and
+// reaps it as it does a pane's process, and the claim's stop ends it.
+var standInCommand = []string{"sleep", "86400"}
+
+// agentCommand is the child one spawn runs, and the environment pairs that harness carries beyond
+// what a pane is told. The child is the shim around the agent either way, as a pane runs it. A
+// claim the proof stands in for runs the placeholder instead (standInCommand).
+//
+// On Oh My Pi the shim's argv names the Oh My Pi this runtime was given, which needs no shell. On
+// Claude Code the inner command is the one `internal/runtime/tmux`'s own launcher builds
+// (claudeLauncher.Launch). That launch makes the claim's Claude Code directory, writes its MCP
+// configuration and starts or continues its session. The inner command's words are already quoted
+// for a pane's shell. So it is spliced after the shim's `--` unquoted, and the whole is run by
+// `sh -c`, as shimShellCommand splices it into a pane's command. Launch's pairs are tmux's
+// `-e NAME=VALUE` form, which this runtime has no tmux for. Each value is a pair of the child's
+// own environment, after the ones a pane is told, as tmux puts them after the operator's.
+func (r *localRuntime) agentCommand(spec runtime.SpawnSpec, bootToken runtime.SecretFile, promptFile string) (argv, pairs []string, err error) {
+	if r.standsIn != nil && r.standsIn(spec.Claim) {
+		return slices.Clone(standInCommand), nil, nil
+	}
+	if runtime.Of(spec.Backend) != runtime.BackendClaude {
+		argv = []string{
+			r.legion, "worker-shim",
+			"--connect", r.stream,
+			"--boot-token-file", bootToken.Path,
+			"--", r.omp, "--mode", "rpc", "--append-system-prompt", promptFile,
+		}
+		if spec.ResumeSessionFile != "" {
+			argv = slices.Insert(argv, len(argv)-4, "--resume="+spec.ResumeSessionFile)
+		}
+		return argv, nil, nil
+	}
+	if r.claude.Binary == "" {
+		return nil, nil, fmt.Errorf("spawn %s: its role runs on claude, and this proof gave the runtime no Claude Code launch", spec.Claim)
+	}
+	inner, tmuxPairs, err := tmux.NewClaudeLauncher(r.claude).Launch(spec, tmux.Host{StateDir: r.stateDir, Legion: r.legion}, promptFile)
+	if err != nil {
+		return nil, nil, err
+	}
+	for i := 0; i < len(tmuxPairs); i += 2 {
+		if tmuxPairs[i] != "-e" || i+1 == len(tmuxPairs) {
+			return nil, nil, fmt.Errorf("spawn %s: the Claude Code launch gave the pairs %q, which are no `-e NAME=VALUE` run", spec.Claim, tmuxPairs)
+		}
+		pairs = append(pairs, tmuxPairs[i+1])
+	}
+	command := shellprefix.Word(r.legion) + " worker-shim --connect " + shellprefix.Word(r.stream) +
+		" --boot-token-file " + shellprefix.Word(bootToken.Path) + " -- " + inner
+	return []string{"sh", "-c", command}, pairs, nil
+}
+
 // workDir is the working directory of every pane of issue, which launch makes: the roles of one
 // issue share it, as they share the issue's jj workspace in a pod.
 func (r *localRuntime) workDir(issue string) string {
 	return filepath.Join(r.stateDir, "workspaces", issue)
 }
 
-// paneEnvironment is the child's whole environment: the variables a pane is told, the PATH a pane
-// is told (the daemon's launcher directory first, as workerbin.Path puts it), the HOME and
-// OMP_PROFILE that select the run's own Oh My Pi profile — which under tmux reach a pane from the
-// daemon's own environment through the tmux server — TMPDIR, and what the proof gives its panes
-// itself (environment). Nothing of the test process's own environment rides through: this test
-// runs inside a Legion pod, whose environment names that pod's workspace, daemon and credentials,
-// and a pane that inherited them would register with the wrong daemon.
-func (r *localRuntime) paneEnvironment(variables []string, workDir string) []string {
+// paneEnvironment is the child's whole environment. It holds the variables a pane is told, and
+// the PATH a pane is told (the daemon's launcher directory first, as workerbin.Path puts it). It
+// holds the HOME and OMP_PROFILE that select the run's own Oh My Pi profile. Under tmux those
+// reach a pane from the daemon's own environment through the tmux server. It also holds TMPDIR,
+// what the proof gives its panes itself (environment) and what it gives token's pane alone
+// (claimEnvironment). Nothing of the test process's own environment rides through. This test runs
+// inside a Legion pod, whose environment names that pod's workspace, daemon and credentials. A
+// pane that inherited them would register with the wrong daemon.
+func (r *localRuntime) paneEnvironment(token claim.Token, variables []string, workDir string) []string {
 	env := []string{
 		"PATH=" + workerbin.Path(os.Getenv("PATH"), r.stateDir),
 		"HOME=" + r.home,
@@ -431,7 +496,11 @@ func (r *localRuntime) paneEnvironment(variables []string, workDir string) []str
 		"LANG=C.UTF-8",
 	}
 	_ = os.MkdirAll(filepath.Join(workDir, "tmp"), 0o700)
-	return append(append(env, r.environment...), variables...)
+	env = append(env, r.environment...)
+	if r.claimEnvironment != nil {
+		env = append(env, r.claimEnvironment(token)...)
+	}
+	return append(env, variables...)
 }
 
 func (r *localRuntime) Suspend(ctx context.Context, loc runtime.Locator) error {

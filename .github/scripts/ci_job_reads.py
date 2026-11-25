@@ -102,6 +102,7 @@ SHARED_FILE = {
     "tooling-checks": "test",
     "pi-legion-build": "pi-legion",
     "envoy-infra-build": "envoy-infra-go",
+    "step-models-chain": "plugin-pack",
 }
 
 
@@ -1098,6 +1099,23 @@ def hold_plugin_pack_tests():
 
 
 hold_plugin_pack_tests()
+
+
+# ---------------------------------------------------------------- the step-models chain
+# Two tests of internal/daemon carry the e2e build tag. They drive both real harnesses behind the
+# real shim and the real daemon. TestStepModelsLive runs the pinned Oh My Pi and the pinned Claude
+# Code over two issues. It judges each step record's set model and counts against the agents' own
+# transcripts. TestTheStandInGivesEachResponseItsOwnID holds the stand-ins those counts rest on to
+# one id per response. They are a job of their own because nothing else of ci.yaml runs the
+# daemon's e2e tag. The step joins -tags with -run, so it runs those two alone. The package's
+# untagged tests stay the daemon-go race step's (TAG_RUNS below).
+STEP_MODELS_CHAIN_TESTS = ["TestStepModelsLive", "TestTheStandInGivesEachResponseItsOwnID"]
+STEP_MODELS_CHAIN_PACKAGE = "internal/daemon"
+STEP_MODELS_CHAIN_JOB = "step-models-chain"
+STEP_MODELS_CHAIN_STEP = "Run the step-models chain on the real harnesses"
+STEP_MODELS_CHAIN_PATTERN = f"'^({'|'.join(sorted(STEP_MODELS_CHAIN_TESTS))})$'"
+STEP_MODELS_CHAIN_SCRIPT = (f"go test -tags e2e -count=1 -timeout 40m -v -run {STEP_MODELS_CHAIN_PATTERN} "
+                            f"./{STEP_MODELS_CHAIN_PACKAGE}/")
 
 
 # ---------------------------------------------------------------- the supervise table's pure pins
@@ -2197,6 +2215,12 @@ TAG_RUNS = [
     TagRun("envoy_infra_go", "envoy-infra-go", INFRA_NATSLIVE_STEP, "envoy_infra_build", "envoy-infra-build",
            f"envoy-infra-build's \"{INFRA_PLAIN_STEP}\" runs {', '.join(INFRA_NATSLIVE_PACKAGES)} untagged",
            job_file("envoy-infra-go")),
+    # The chain's step joins -tags e2e with -run, so it runs the two tagged tests of
+    # internal/daemon alone. That package's untagged tests are the daemon-go race step's, which
+    # is the one run of them (docs/testing.md), and daemon_go_tests is that step's filter.
+    TagRun("step_models_chain", STEP_MODELS_CHAIN_JOB, STEP_MODELS_CHAIN_STEP, "daemon_go_tests", "daemon-go-race",
+           f"daemon-go-race's \"{DAEMON_RACE_STEP}\" runs ./{STEP_MODELS_CHAIN_PACKAGE}'s untagged tests",
+           job_file(STEP_MODELS_CHAIN_JOB)),
 ]
 
 
