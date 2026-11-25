@@ -10,12 +10,16 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store/migrations"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
 
 // membersOwedVersion is the version of the migration this file tests, so the test can migrate
 // through everything before it whatever lands beside it.
 const membersOwedVersion = 20261123224717
+
+// issuePriorityVersion is the migration that adds issues.priority, which PutIssue writes.
+const issuePriorityVersion = 20261124060500
 
 // membersOwedRelease names the release whose way back the migration's header carries, as a
 // failure to read that block names it.
@@ -37,6 +41,22 @@ func TestTheMembersOwedMarkComesOnlyOnRootsWhoseReadmissionHasStillToRun(t *test
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, membersOwedVersion-1)
+	// The seed goes through this release's PutIssue, which writes issues.priority, a column the
+	// waiting line's issue priority (20261124060500) adds above this migration. That one is applied
+	// with the seed's schema, and Migrate, which decides each migration on its own row, then
+	// applies this one; neither reads or writes the other's column.
+	all, err := migrations.All()
+	if err != nil {
+		t.Fatalf("read the embedded migrations: %v", err)
+	}
+	for _, migration := range all {
+		if migration.Version != issuePriorityVersion {
+			continue
+		}
+		if _, err := store.apply(ctx, migration); err != nil {
+			t.Fatalf("apply %s: %v", migration.Name, err)
+		}
+	}
 	records := record.NewStore()
 	root := func(key, status string, generation uint64, at phase.Phase, linger *time.Time) record.Issue {
 		return record.Issue{Key: key, Tree: key, Project: "LEGION", Title: key, Phase: at, Generation: generation, Status: status,

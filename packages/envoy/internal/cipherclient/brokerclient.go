@@ -1,9 +1,10 @@
 // Package cipherclient is this repository's one Go client of the secrets broker's RFC 8693 token
 // exchange: a machine or a person trades the platform identity it already holds for one of the
 // broker's access tokens, which Dispatch and the Envoy listener read back at the broker's
-// introspection route. `agent-secrets`, `agent-secrets-helper` and `legion controller start` use
-// it; the TypeScript client of packages/cipher-client is its other half, and the two are held to
-// one wire contract by the corpus in testdata/wire.json, which both suites replay.
+// introspection route. `agent-secrets`, `agent-secrets-helper`, `legion controller start` and the
+// Legion daemon's own Dispatch client (NewTokenTransport) use it; the TypeScript client of
+// packages/cipher-client is its other half, and the two are held to one wire contract by the
+// corpus in testdata/wire.json, which both suites replay.
 //
 // What the exchange is: the caller presents the subject token its platform already gives it (a
 // Source), proves a key of its own with a DPoP proof (RFC 9449), and is answered an access token
@@ -12,8 +13,15 @@
 // rather than once. A person's sign-in trades their own Google identity token with the machine's
 // as the actor token (RFC 8693 Section 2.1), which is the one request that carries two tokens.
 //
-// Each process makes its own key and sends only its public half: the proof embeds the public JWK,
-// and no code here marshals a private member onto the wire.
+// A caller sends only the public half of the key it proves: the proof embeds the public JWK, and
+// no code here marshals a private member onto the wire. That key is one its process makes, a
+// person's sign-in box key, or, for a role in a pod, the role's own agent-secrets key
+// (MachineKey), the key the broker holds a pod session's trade to.
+//
+// When it trades again: at the renewal moment worked out once as a token lands (renewalAt states
+// the rule) and stored on the token. Token answers the token until then, Run sleeps until then,
+// and RenewalAt answers that moment for it. The TypeScript client holds a token to the same rule,
+// and testdata/renewal.json holds both clients to it (TestRenewalCorpus).
 //
 // What it refuses to do: hand out a token it could not renew. Token answers the held token while
 // that token is live and the broker is merely unreachable, and answers the error once the broker
@@ -35,6 +43,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/oauth2"
@@ -58,8 +67,8 @@ const (
 	// broker mints a machine's token for an hour or less.
 	DefaultRenewBefore = 5 * time.Minute
 	// credentialRenewBefore is how long before the expiry of the launcher credential a token
-	// names the client trades again, beside RenewBefore for the access token: whichever is due
-	// first decides (dueAt). The credential lives as long as the identity token it was traded
+	// names the client trades again, beside RenewBefore for the access token: whichever comes
+	// first decides (renewalAt). The credential lives as long as the identity token it was traded
 	// from, about an hour, and the access token as long as BROKER_ACCESS_TOKEN_SECONDS, which may
 	// be an hour too, so a client that traded by the access token alone would, with a long one,
 	// trade with minutes of the credential left, and the broker renews no session of a machine or
@@ -68,6 +77,11 @@ const (
 	// and seven of Run's tries, so a trade that fails is tried again more than once before the
 	// credential lapses.
 	credentialRenewBefore = 15 * time.Minute
+	// liveMargin is how long the held token must still be good for live to answer it, so a
+	// request that presents it reaches its server and is read there before it lapses. It is a
+	// small part of RenewBefore, so a renewal loop (Run) that waits out a broker that does not
+	// answer leaves requests presenting the token in hand for nearly all of that window.
+	liveMargin = 10 * time.Second
 	// defaultRetryWait is the wait after a trade the broker did not answer or answered 5xx,
 	// doubling to maxRetryWait. The grant has no rotation window to miss, so an outage longer
 	// than one token's life is the same event as a short one: the loop keeps trading until the
@@ -97,6 +111,11 @@ type Token struct {
 	// CredentialExpiresAt is when that credential lapses (oauthwire.ExtraCredentialExpiresAt),
 	// zero where the answer carries none.
 	CredentialExpiresAt time.Time
+	// renewsAt is when the client trades again for this token: renewalAt as of the moment it
+	// landed, set by read from the same now as Expiry. Token answers the token until then, Run
+	// sleeps until then, and RenewalAt answers it. It is the client's own reckoning, no member of
+	// the broker's answer, so testdata/wire.json names it nowhere.
+	renewsAt time.Time
 }
 
 // RefusedError is a trade the broker refused: a plain error naming what it said. Almost every
@@ -242,9 +261,9 @@ type Config struct {
 	// counts as no broker URL at all. It is a cipheraddr.Address so that no log line or error of
 	// this client can print the credential such an address may carry.
 	BrokerURL cipheraddr.Address
-	// Key is this process's own DPoP key, whose public half alone reaches the broker. A person's
-	// sign-in proves the box key `agent-secrets login` made; every other caller proves a key it
-	// made at start.
+	// Key is the DPoP key this client proves, whose public half alone reaches the broker. A
+	// person's sign-in proves the box key `agent-secrets login` made, and a role in a pod its own
+	// agent-secrets key (MachineKey); every other caller proves a key it made at start.
 	Key *ecdsa.PrivateKey
 	// Subject is the identity being traded.
 	Subject Source
@@ -272,6 +291,15 @@ type Config struct {
 	// set it at all: a sign-in holds its credential, and the broker refuses one that declines
 	// (invalid_request, oauth.personDeclinesNothing).
 	NoLauncherCredential bool
+	// Scope is the OAuth scope this trade asks for, sent as the form's scope: oauthwire.ScopeRead
+	// narrows the minted token to reading, on the identity the same trade would have had. Empty
+	// sends no parameter, which is every Go trade of this release: no Go caller makes a read
+	// trade, and this client sends no holder proof (oauthwire.HeaderDPoPHolder).
+	Scope string
+	// AsOf is the cut a read trade asks for (oauthwire.FormAsOf), an RFC 3339 time sent as
+	// written. Empty sends no parameter. The broker refuses a cut beside any scope but
+	// oauthwire.ScopeRead.
+	AsOf string
 	// HTTP is the client every call goes through; nil is http.DefaultClient. The DPoP proof is
 	// signed by a transport this client wraps around it, so a caller passing its own client
 	// keeps its timeout and its dialler.
@@ -297,17 +325,25 @@ type Client struct {
 	projects string
 	// noLauncherCredential is Config.NoLauncherCredential: this trade declines the credential.
 	noLauncherCredential bool
-	http                 *http.Client
-	log                  *slog.Logger
-	renewBefore          time.Duration
-	now                  func() time.Time
-	after                func(time.Duration) <-chan time.Time
+	// scope and asOf are Config.Scope and Config.AsOf, each sent only when set.
+	scope       string
+	asOf        string
+	http        *http.Client
+	log         *slog.Logger
+	renewBefore time.Duration
+	now         func() time.Time
+	after       func(time.Duration) <-chan time.Time
 	// wake carries a Wake to the renewal loop's sleep, one slot deep: the instruction is "trade
 	// now", which two of are one.
 	wake chan struct{}
 
-	mu   sync.Mutex
-	held *Token
+	// mu serialises the trades, and every write of held with them: one trade runs at a time, and
+	// no token is replaced by what an older trade answered.
+	mu sync.Mutex
+	// held is the token this client holds: nil before its first trade, after Drop, and after a
+	// failed trade with nothing live left. Only a holder of mu writes it, and live reads it
+	// without mu, so a request that finds a token still good here never queues behind a trade.
+	held atomic.Pointer[Token]
 }
 
 // WithoutTrailingSlashes is raw without the slashes it ends in: the one rule both halves of this
@@ -344,6 +380,8 @@ func New(cfg Config) (*Client, error) {
 		session:              cfg.Session,
 		projects:             oauthwire.JoinProjects(cfg.Projects),
 		noLauncherCredential: cfg.NoLauncherCredential,
+		scope:                cfg.Scope,
+		asOf:                 cfg.AsOf,
 		http:                 cfg.HTTP,
 		log:                  cfg.Log,
 		renewBefore:          cfg.RenewBefore,
@@ -369,39 +407,69 @@ func New(cfg Config) (*Client, error) {
 // under the minted credential signs with it.
 func (c *Client) Key() *ecdsa.PrivateKey { return c.key }
 
-// Token is a live access token: the held one until it is due for its next trade (dueAt, which
-// also reads the launcher credential it names), and otherwise a fresh trade. A trade the broker
-// did not answer, or answered with a refusal a later trade may cure (429, a DPoP refusal, a pod
+// Token is a live access token: the held one until the renewal moment stored on it as it landed
+// (Token.renewsAt, as the TypeScript client holds HeldToken.renewsAt in
+// packages/cipher-client/src/token-client.ts), and otherwise a fresh trade. A trade the broker did
+// not answer, or answered with a refusal a later trade may cure (429, a DPoP refusal, a pod
 // session it holds no registration for yet, a person Dispatch holds), while the held token is
 // still live answers that token, since a client that already holds an identity need not stop for
-// a broker that is merely down or busy, and says so (logRetried); a refusal no retry can cure
-// (finalRefusal: the broker's RefusedError.Permanent, or a sign-in the issuer has ended,
-// ErrSignInEnded), and a failure with nothing live left, answer the error and drop the token in
-// hand, so no caller writes with no identity. Token trades once; a caller that waits for a
-// registration to land runs Run, which trades again.
+// a broker that is merely down or busy; a refusal no retry can cure (finalRefusal: the broker's
+// RefusedError.Permanent, or a sign-in the issuer has ended, ErrSignInEnded), and a failure with
+// nothing live left, answer the error and drop the token in hand, so no caller writes with no
+// identity. Token trades once; a caller that waits for a registration to land runs Run, which
+// trades again.
 func (c *Client) Token(ctx context.Context) (*Token, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.held != nil && c.now().Before(c.dueAt(c.held)) {
-		return c.held, nil
+	held := c.held.Load()
+	if held != nil && c.now().Before(held.renewsAt) {
+		return held, nil
 	}
 	token, err := c.tradeHeld(ctx)
 	if err == nil {
 		return token, nil
 	}
-	if c.held != nil && c.now().Before(c.held.Expiry) {
-		c.logRetried(ctx, err, c.held, "the token in hand is still live")
-		return c.held, nil
+	if held := c.held.Load(); held != nil && c.now().Before(held.Expiry) {
+		c.logRetried(ctx, err, held, "the token in hand is still live")
+		return held, nil
 	}
-	c.held = nil
+	c.held.Store(nil)
 	return nil, err
 }
 
+// live is the held token while it is good for at least liveMargin more, and nil otherwise. It
+// takes no lock, so it never waits on a trade in flight: a caller holding a token inside its
+// renewal window presents it while a renewal loop (Run) trades for the next one, or waits out a
+// broker that does not answer or hangs, rather than queue behind that trade (NewTokenTransport).
+func (c *Client) live() *Token {
+	if held := c.held.Load(); held != nil && c.now().Add(liveMargin).Before(held.Expiry) {
+		return held
+	}
+	return nil
+}
+
+// Drop forgets token when it is still the one this client holds, so the next Token trades afresh
+// rather than answering it again: for a caller a server has told that the token it presented is
+// no longer live, such as one the broker ended at a revoke before it lapsed (NewTokenTransport).
+// It clears the held token as the TypeScript client's drop() does
+// (packages/cipher-client/src/token-client.ts), but only while that is the token named: a trade
+// that landed since the caller was answered holds a fresh token, and dropping it would cost the
+// next caller a trade for nothing.
+func (c *Client) Drop(token *Token) {
+	if token == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if held := c.held.Load(); held != nil && held.AccessToken == token.AccessToken {
+		c.held.Store(nil)
+	}
+}
+
 // Run keeps one token live until ctx ends, handing each one to onToken as it lands: the first
-// trade, and every renewal once the token in hand is due (untilRenewal: RenewBefore ahead of its
-// expiry, or credentialRenewBefore ahead of its launcher credential's, whichever comes first). It
-// is the shape a caller with something to keep fresh takes — a credential to install, a token
-// file to rewrite — and nothing of that caller restarts across a renewal.
+// trade, and every renewal, traded at the renewal moment stored on the token in hand as it landed
+// (Token.renewsAt). It is the shape a caller with something to keep fresh takes — a credential to
+// install, a token file to rewrite — and nothing of that caller restarts across a renewal.
 //
 // It stops with a plain error on a refusal no retry can cure (finalRefusal) — the broker refusing
 // the identity for good (RefusedError.Permanent), or the issuer ending the person's sign-in it
@@ -426,7 +494,7 @@ func (c *Client) Run(ctx context.Context, onToken func(context.Context, *Token) 
 	for {
 		c.mu.Lock()
 		token, err := c.tradeHeld(ctx)
-		held := c.held
+		held := c.held.Load()
 		c.mu.Unlock()
 		switch {
 		case err == nil:
@@ -440,7 +508,10 @@ func (c *Client) Run(ctx context.Context, onToken func(context.Context, *Token) 
 			if err := onToken(ctx, token); err != nil {
 				return err
 			}
-			if !c.sleep(ctx, c.untilRenewal(token)) {
+			// The renewal comes at the moment stored on the token as it landed: one worked out
+			// again after onToken would come later, by half of onToken's time for a half-life
+			// renewal.
+			if !c.sleep(ctx, token.renewsAt.Sub(c.now())) {
 				return nil
 			}
 			continue
@@ -474,10 +545,17 @@ func (c *Client) Run(ctx context.Context, onToken func(context.Context, *Token) 
 	}
 }
 
-// RenewalAt is when Run trades again once token lands (untilRenewal). A caller that holds an
-// older token beside it reads from this whether the older one outlives the wait.
+// RenewalAt is the renewal moment stored on token as it landed (Token.renewsAt): when Run trades
+// again after handing token to onToken, and until when Token answers token while it holds it,
+// however long after the landing the caller asks. It reads token alone, so it never waits on a
+// trade in progress. A Token built by hand carries no stored moment, having landed through no
+// trade, so RenewalAt works one out for it by renewalAt as of now. A caller that holds an older
+// token beside the one Run handed it reads from this whether the older one outlives the wait.
 func (c *Client) RenewalAt(token *Token) time.Time {
-	return c.renewalAt(token, c.now())
+	if token.renewsAt.IsZero() {
+		return c.renewalAt(token, c.now())
+	}
+	return token.renewsAt
 }
 
 func retriedTrade(err error) (string, []any) {
@@ -511,43 +589,44 @@ func (c *Client) logRetried(ctx context.Context, err error, held *Token, then st
 			"credential_expires_at", held.CredentialExpiresAt.UTC().Format(time.RFC3339)}, attrs...)...)
 }
 
-// untilRenewal is how long to wait before trading again for the token in hand (renewalAt).
-func (c *Client) untilRenewal(token *Token) time.Duration {
-	now := c.now()
-	return c.renewalAt(token, now).Sub(now)
-}
-
-// dueAt is when token is due for its next trade: RenewBefore ahead of the access token's expiry,
-// or credentialRenewBefore ahead of the expiry of the launcher credential it names, whichever
-// comes first. A token that names no credential expiry is due by its access token alone.
-func (c *Client) dueAt(token *Token) time.Time {
-	due := token.Expiry.Add(-c.renewBefore)
-	if expires := token.CredentialExpiresAt; !expires.IsZero() && expires.Add(-credentialRenewBefore).Before(due) {
-		due = expires.Add(-credentialRenewBefore)
-	}
-	return due
-}
-
-// renewalAt is RenewalAt as of now: when token is due (dueAt), and half of what is left before
-// it ends — the access token's expiry, or the credential's where that comes first and is still
-// ahead — for a token already due when it lands: a deployment that mints short tokens, or a dev
-// stack proving a renewal in seconds. That half is never later than the token's own end, and it
-// is what keeps such a client from trading again the instant each token lands, which would spend
-// the broker's per-address token bucket in a loop and end in a 429. A credential whose expiry has
-// already passed as its token lands (a clock far off the broker's) is no end to halve: the access
-// token's expiry decides, so such an answer cannot make the client trade without pause either.
+// renewalAt is when to trade again for token as of now: by its access token, the later of
+// RenewBefore ahead of its expiry and half of what it has left, and now for a token already past
+// its expiry (renewalBy). A token of at least twice RenewBefore renews RenewBefore ahead of its
+// expiry, and a shorter one at its half life — a deployment that mints short tokens, or a dev
+// stack proving a renewal in seconds. That half is never later than the token's own expiry, and
+// it is what keeps such a client from trading again soon after each token lands, which would
+// spend the broker's per-address token bucket in a loop and end in a 429. The TypeScript client's
+// BrokerTokenClient holds the same rule (renewalAt in packages/cipher-client/src/token-client.ts),
+// and testdata/renewal.json holds the two to it (TestRenewalCorpus).
+//
+// A token that names its launcher credential's expiry is traded again by that too, where it comes
+// first: credentialRenewBefore ahead of the credential's expiry, or at half of its life, by the
+// same rule. That part is this client's alone: a TypeScript client holds no session under the
+// credential (none of them reads its id), so its credential's life decides nothing for it. A
+// credential already past its expiry as its token lands (a clock far off the broker's) is no
+// moment to trade at: the access token decides, so such an answer cannot make the client trade
+// without pause.
 func (c *Client) renewalAt(token *Token, now time.Time) time.Time {
-	if at := c.dueAt(token); at.After(now) {
-		return at
+	at := renewalBy(token.Expiry, c.renewBefore, now)
+	if expires := token.CredentialExpiresAt; expires.After(now) {
+		if credential := renewalBy(expires, credentialRenewBefore, now); credential.Before(at) {
+			at = credential
+		}
 	}
-	end := token.Expiry
-	if expires := token.CredentialExpiresAt; expires.After(now) && expires.Before(end) {
-		end = expires
+	return at
+}
+
+// renewalBy is when to trade again, as of now, for what lapses at end: the later of before ahead
+// of end and half of what is left, and now once end has passed.
+func renewalBy(end time.Time, before time.Duration, now time.Time) time.Time {
+	left := end.Sub(now)
+	if left <= 0 {
+		return now
 	}
-	if left := end.Sub(now); left > 0 {
-		return now.Add(left / 2)
+	if half := now.Add(left / 2); half.After(end.Add(-before)) {
+		return half
 	}
-	return now
+	return end.Add(-before)
 }
 
 // sleep waits d, reporting false when ctx ended first. A Wake cuts the wait short, so the
@@ -593,16 +672,17 @@ func (c *Client) tradeHeld(ctx context.Context) (*Token, error) {
 	token, err := c.trade(ctx)
 	switch {
 	case err == nil:
-		c.held = token
+		c.held.Store(token)
 	case finalRefusal(err):
-		c.held = nil
+		c.held.Store(nil)
 	}
 	return token, err
 }
 
 // trade is one RFC 8693 exchange: the subject token this moment's Source answers, the actor
 // token where a person is signing in, the session name, whether this trade declines the launcher
-// credential its identity holds, and a DPoP proof of this client's key.
+// credential its identity holds, the scope and the cut a read trade asks for, and a DPoP proof of
+// this client's key.
 func (c *Client) trade(ctx context.Context) (*Token, error) {
 	subject, subjectType, err := c.subject.Token(ctx)
 	if err != nil {
@@ -621,6 +701,14 @@ func (c *Client) trade(ctx context.Context) (*Token, error) {
 		// Sent only when there is a list: a trade naming none reads exactly as one written before
 		// the parameter existed.
 		form.Set(oauthwire.FormProjects, c.projects)
+	}
+	// Each sent only when set: a trade that asks for neither reads exactly as one written before
+	// the parameters existed.
+	if c.scope != "" {
+		form.Set("scope", c.scope)
+	}
+	if c.asOf != "" {
+		form.Set(oauthwire.FormAsOf, c.asOf)
 	}
 	if c.noLauncherCredential {
 		// Sent only to decline: an absent parameter asks, so a broker that has never heard of
@@ -745,10 +833,11 @@ func (c *Client) read(shown string, answer tokenAnswer) (*Token, error) {
 	if err != nil || seconds <= 0 {
 		return nil, fmt.Errorf("the broker at %s answered no usable expires_in (%s)", shown, quoted(answer.ExpiresIn.String()))
 	}
+	now := c.now()
 	token := &Token{
 		AccessToken:  answer.AccessToken,
 		TokenType:    answer.TokenType,
-		Expiry:       c.now().Add(time.Duration(seconds) * time.Second),
+		Expiry:       now.Add(time.Duration(seconds) * time.Second),
 		CredentialID: answer.CredentialID,
 	}
 	if answer.CredentialExpiresAt != "" {
@@ -758,5 +847,7 @@ func (c *Client) read(shown string, answer tokenAnswer) (*Token, error) {
 		}
 		token.CredentialExpiresAt = expires.UTC()
 	}
+	// Worked out once the credential's expiry is read, which it reads too (renewalAt).
+	token.renewsAt = c.renewalAt(token, now)
 	return token, nil
 }

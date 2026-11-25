@@ -54,7 +54,7 @@ func TestTheResumeLaunchesAnOperatorsSpawnThePauseStoppedOwingALaunch(t *testing
 	session := "ses-operator-spawn"
 	r.handle(token, supervise.StreamHello{Claim: token, Generation: launched.Generation})
 	r.handle(token, supervise.RequestRegister{Claim: token, Generation: launched.Generation, Session: session,
-		SessionFile: "/sessions/" + session + ".jsonl", PluginContract: api.DaemonAPIVersion})
+		SessionFile: "/sessions/" + session + ".jsonl", PluginContract: api.DaemonAPIVersion()})
 	r.handle(token, supervise.RequestReady{Claim: token, Generation: launched.Generation, Session: session})
 	stopped := r.awaitState(token, supervise.StateSuspended, "the held stop runs at the agent's ready")
 	if !stopped.Released() || stopped.Pending == nil || stopped.Pending.Task != task || !stopped.Pending.ConfirmedAt.IsZero() {
@@ -94,7 +94,7 @@ func TestTheResumeLaunchesAnOperatorsSpawnThePauseStoppedOwingALaunch(t *testing
 		return r.claim(token).State == supervise.StateShimConnected
 	})
 	r.handle(token, supervise.RequestRegister{Claim: token, Generation: relaunched.Generation, Session: session,
-		SessionFile: "/sessions/" + session + ".jsonl", PluginContract: api.DaemonAPIVersion})
+		SessionFile: "/sessions/" + session + ".jsonl", PluginContract: api.DaemonAPIVersion()})
 	r.handle(token, supervise.RequestReady{Claim: token, Generation: relaunched.Generation, Session: session})
 	r.startTurn(sh, task)
 	r.awaitState(token, supervise.StateWorking, "the spawn takes its task in a turn")
@@ -158,7 +158,7 @@ func TestTheResumeLaunchesAClaimOfAnotherProjectsIssueOnlyForTheWorkThePauseHeld
 				launched := r.claim(token)
 				r.handle(token, supervise.StreamHello{Claim: token, Generation: launched.Generation})
 				r.handle(token, supervise.RequestRegister{Claim: token, Generation: launched.Generation, Session: session,
-					SessionFile: "/sessions/" + session + ".jsonl", PluginContract: api.DaemonAPIVersion})
+					SessionFile: "/sessions/" + session + ".jsonl", PluginContract: api.DaemonAPIVersion()})
 				r.handle(token, supervise.RequestReady{Claim: token, Generation: launched.Generation, Session: session})
 			}
 			up(idle, "ses-other-idle")
@@ -361,7 +361,7 @@ func TestARoundsBoundCountsTheHeldPodOnToTheLetOutOfItsLastHeldLaunch(t *testing
 			if _, err := r.pool.Exec(r.ctx, `update outbox set lease_until = $2 where id = $1`, held, r.dueNow()); err != nil {
 				t.Fatalf("let P's row's lease lapse: %v", err)
 			}
-			// The outbox's sweep, every outboxLease of the wall clock, wakes P's lane.
+			// The outbox's sweep, every pauseRigOutboxSweep of the wall clock, wakes P's lane.
 			testwait.WithinPolling(t, 2*time.Minute, 200*time.Millisecond, "P's worker's launch to reserve the last turn", func() bool {
 				return len(r.rt.launches())-before+len(r.state().WakesWaiting) == others+1
 			})
@@ -371,7 +371,7 @@ func TestARoundsBoundCountsTheHeldPodOnToTheLetOutOfItsLastHeldLaunch(t *testing
 				if launch.claim == worker(P) {
 					letOut = launch.at
 					// Every sweep that read the clock before this turn has run.
-					time.Sleep(5 * r.o.orphanSweep)
+					r.awaitFullSweep()
 				}
 				if replaced := r.replacedPods(P); replaced != 0 {
 					t.Fatalf("P's pod was replaced %d times by %s after the resume, at the launch of %s, while P's worker had not yet been let out of the pacing",
@@ -391,7 +391,7 @@ func TestARoundsBoundCountsTheHeldPodOnToTheLetOutOfItsLastHeldLaunch(t *testing
 
 			// The roles get what was left of their grace once the pacing let P's worker out.
 			r.clock.advanceTo(letOut.Add(left - time.Minute))
-			time.Sleep(5 * r.o.orphanSweep)
+			r.awaitFullSweep()
 			if replaced := r.replacedPods(P); replaced != 0 {
 				t.Fatalf("P's pod was replaced %d times a minute before the bound moved to the let-out, want none", replaced)
 			}
@@ -651,7 +651,7 @@ func TestTheResumedSpawnOfAnotherProjectsRootArchitectTouchesNoRowOfThatProjectA
 	const session = "ses-other-root-architect"
 	r.handle(token, supervise.StreamHello{Claim: token, Generation: launched.Generation})
 	r.handle(token, supervise.RequestRegister{Claim: token, Generation: launched.Generation, Session: session,
-		SessionFile: "/sessions/" + session + ".jsonl", PluginContract: api.DaemonAPIVersion})
+		SessionFile: "/sessions/" + session + ".jsonl", PluginContract: api.DaemonAPIVersion()})
 	r.handle(token, supervise.RequestReady{Claim: token, Generation: launched.Generation, Session: session})
 	r.awaitState(token, supervise.StateSuspended, "the held stop runs at the agent's ready")
 	if got := r.count(`select count(*) from project_pause_stops where pause_id = $1 and claim = $2 and ended_as = 'stopped' and launch_owed`,
@@ -707,7 +707,7 @@ func TestTheResumedSpawnOfAnotherProjectsRootArchitectTouchesNoRowOfThatProjectA
 		return r.claim(token).State == supervise.StateShimConnected
 	})
 	r.handle(token, supervise.RequestRegister{Claim: token, Generation: relaunched.Generation, Session: session,
-		SessionFile: "/sessions/" + session + ".jsonl", PluginContract: api.DaemonAPIVersion})
+		SessionFile: "/sessions/" + session + ".jsonl", PluginContract: api.DaemonAPIVersion()})
 	r.handle(token, supervise.RequestReady{Claim: token, Generation: relaunched.Generation, Session: session})
 	testwait.Eventually(t, "the relaunched spawn's agent to be ready", func() bool {
 		state := r.claim(token).State
@@ -786,7 +786,7 @@ func TestAFactOfTheResumedSpawnOfAnotherProjectsIssueTouchesNoRowOfThatProject(t
 			const session = "ses-other-root-architect"
 			r.handle(token, supervise.StreamHello{Claim: token, Generation: launched.Generation})
 			r.handle(token, supervise.RequestRegister{Claim: token, Generation: launched.Generation, Session: session,
-				SessionFile: "/sessions/" + session + ".jsonl", PluginContract: api.DaemonAPIVersion})
+				SessionFile: "/sessions/" + session + ".jsonl", PluginContract: api.DaemonAPIVersion()})
 			r.handle(token, supervise.RequestReady{Claim: token, Generation: launched.Generation, Session: session})
 			r.awaitState(token, supervise.StateSuspended, "the held stop runs at the agent's ready")
 			launches := len(r.rt.launchesOf(token))
@@ -881,7 +881,7 @@ func TestThePausesStopOfASpawnOfAnotherProjectsIssueTouchesNoRoleHoldersRowOfTha
 	const session = "ses-other-architect"
 	r.handle(token, supervise.StreamHello{Claim: token, Generation: launched.Generation})
 	r.handle(token, supervise.RequestRegister{Claim: token, Generation: launched.Generation, Session: session,
-		SessionFile: "/sessions/" + session + ".jsonl", PluginContract: api.DaemonAPIVersion})
+		SessionFile: "/sessions/" + session + ".jsonl", PluginContract: api.DaemonAPIVersion()})
 	r.handle(token, supervise.RequestReady{Claim: token, Generation: launched.Generation, Session: session})
 	testwait.Eventually(t, "the spawn's agent to be ready", func() bool {
 		state := r.claim(token).State

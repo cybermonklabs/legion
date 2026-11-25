@@ -19,6 +19,7 @@ import (
 // Each row deletes the fenced code block between the pair and reads the version the settlement
 // stored, so what is checked is the bytes a person's next read gives back.
 func TestDeletingABlockOfATypedBlockInATightItemKeepsTheBlocksApart(t *testing.T) {
+	t.Parallel()
 	const callout = ":::callout{#c1 kind=\"note\" title=\"T\"}"
 	const table = "  | h | i |\n  | --- | --- |\n  | c | d |\n"
 	for _, test := range []struct {

@@ -184,11 +184,12 @@
 #                                 create it. Those databases stay there, because the batch drops
 #                                 no database and stops no server it was given, so drop them
 #                                 between batches: a later run of the same name finds its database
-#                                 there and fails, naming it. Its max_connections must admit 30
-#                                 connections for each concurrent run and 20 more: services_up
-#                                 reads max_connections and refuses a SKILL_SCENARIOS_PARALLEL
-#                                 above what the server admits. A server that admits 100 takes a
-#                                 parallelism of 1 or 2
+#                                 there and fails, naming it. Its max_connections must admit, for
+#                                 each concurrent run, the connections one Dispatch server opens
+#                                 (`store/cmd/connections -process` prints them) and 20 more:
+#                                 services_up reads max_connections and refuses a
+#                                 SKILL_SCENARIOS_PARALLEL above what the server admits, so a
+#                                 server at Postgres's default of 100 is refused
 #   SKILL_SCENARIOS_NATS_URL      a NATS the batch uses in place of the container it would start,
 #                                 as a URL (nats://<host>:<port>). It must run JetStream, as the
 #                                 container does (`-js`), on a nats-server at or above the floor
@@ -927,16 +928,28 @@ nats_ready() {
   case $line in 'INFO '*) ;; *) return 1 ;; esac
 }
 
+# connections_needed sets services_up's per_run, the connections one run's Dispatch server opens,
+# which `store/cmd/connections -process` prints, and its needs, what parallel runs and the batch's
+# own queries open at once: per_run for each run and 20 more. It fails when no count is printed.
+connections_needed() {
+  per_run=$(cd "$root/packages/envoy" && go run ./internal/dispatch/store/cmd/connections -process) &&
+    [[ "$per_run" =~ ^[1-9][0-9]*$ ]] ||
+    fail "store/cmd/connections -process printed no count of one Dispatch server's connections: $per_run"
+  needs=$((per_run * parallel + 20))
+}
+
 # services_up brings up the batch's services: its Postgres and its NATS, the servers the operator
 # gave (given_services) or two containers it starts, and the Envoy listener built from this
 # checkout, which the services file ($services_env) names with the NATS and the listener token.
 #
-# Each run's Dispatch server opens at most 30 connections to the batch's Postgres: its shared pool
-# (16), loop leases (8), document rooms (4), health probe (1) and listener (1), the sizes in
-# packages/envoy/internal/dispatch/store/pool.go. Postgres admits 100 by default, too few for 5
-# servers at once, so a container this batch starts gets max_connections of 30 for each concurrent
-# run and 20 more for the batch's own queries. A given server's max_connections is the operator's,
-# not the batch's, so services_up reads it and refuses a parallelism the server cannot serve.
+# Each run's Dispatch server opens at most store.ConnectionsPerProcess connections to the batch's
+# Postgres: its counted pools and its permanent listeners (packages/envoy/internal/dispatch/store/
+# pool.go), which `store/cmd/connections -process` prints, so this script holds no number of its
+# own. Postgres admits 100 by default, too few for 5 servers at once, so a container this batch
+# starts gets max_connections of that count for each concurrent run and 20 more for the batch's own
+# queries. A given server's max_connections is the operator's, not the batch's, so services_up
+# reads it and refuses a parallelism the server cannot serve. The count is read after a given
+# URL's checks, so a refused URL builds nothing.
 #
 # A given Postgres must be a postgres:// or postgresql:// URL, the one form safe_url and pg_sql take
 # a password out of. It must hold no sslpassword parameter, a client key's passphrase: pg_sql takes
@@ -950,9 +963,8 @@ nats_ready() {
 # cannot carry, so such a URL is refused here, before anything starts, and not in every run.
 services_up() {
   evidence=$S
-  local parallel=${SKILL_SCENARIOS_PARALLEL:-5} needs admits fits pg_port nats_port pg_host run_url tool rest param key
+  local parallel=${SKILL_SCENARIOS_PARALLEL:-5} per_run needs admits fits pg_port nats_port pg_host run_url tool rest param key
   local -a params=()
-  needs=$((30 * parallel + 20))
   if given_services; then
     case $SKILL_SCENARIOS_POSTGRES_URL in
     postgres://* | postgresql://*) ;;
@@ -975,18 +987,20 @@ services_up() {
     done
     require_loopback_dsn pg_host SKILL_SCENARIOS_POSTGRES_URL "$SKILL_SCENARIOS_POSTGRES_URL" "each run creates a database there" || fail "$pg_host"
     run_database_url run_url SKILL_SCENARIOS_POSTGRES_URL "$SKILL_SCENARIOS_POSTGRES_URL" run_placeholder "each run's Dispatch opens its database there" || fail "$run_url"
+    connections_needed
     pg_url=$SKILL_SCENARIOS_POSTGRES_URL
     nats_url=$SKILL_SCENARIOS_NATS_URL
     (umask 077 && printf '%s\n' "$pg_url" >"$services_postgres")
     until_true 60 "Postgres at $(safe_url "$pg_url") to answer a query" pg_sql "$pg_url" 'select 1'
     until_true 60 "NATS at $(safe_url "$nats_url") to send its INFO line" nats_ready "$nats_url"
     admits=$(pg_sql "$pg_url" 'SHOW max_connections')
-    fits=$(((admits - 20) / 30))
+    fits=$(((admits - 20) / per_run))
     [ "$fits" -ge 1 ] ||
-      fail "$(safe_url "$pg_url") admits $admits connections, and one run needs 50: give a Postgres whose max_connections is 50 or more"
+      fail "$(safe_url "$pg_url") admits $admits connections, and one run needs $((per_run + 20)): give a Postgres whose max_connections is $((per_run + 20)) or more"
     [ "$parallel" -le "$fits" ] ||
       fail "SKILL_SCENARIOS_PARALLEL is $parallel, so this batch needs $needs connections to $(safe_url "$pg_url"), which admits $admits: set SKILL_SCENARIOS_PARALLEL to $fits or lower"
   else
+    connections_needed
     # A given Postgres's URL that a batch killed outright left would send this batch's runs there.
     rm -f -- "$services_postgres"
     # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)

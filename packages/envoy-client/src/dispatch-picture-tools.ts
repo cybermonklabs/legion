@@ -27,11 +27,11 @@ import {
   isPictureType,
   oversizePictureText,
   PICTURE_SHOWN_MAX_BYTES,
-  PICTURE_SNIFF_BYTES,
   PICTURE_UPLOAD_MAX_BYTES,
   PICTURES_SHOWN_MAX,
   PICTURES_SHOWN_MAX_BYTES,
   pictureLine,
+  readPictureHead,
   sniffPictureType,
   type ToolImage,
   toolImage,
@@ -87,7 +87,7 @@ async function localPicture(
     const stats = await file.stat();
     if (!stats.isFile()) return `images: ${path} is not a file`;
     size = stats.size;
-    head = new Uint8Array(await file.slice(0, PICTURE_SNIFF_BYTES).arrayBuffer());
+    head = await readPictureHead(absolute);
   } catch (error) {
     return `images: ${path} cannot be read: ${messageFor(error)}`;
   }

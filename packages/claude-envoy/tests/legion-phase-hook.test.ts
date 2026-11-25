@@ -2,6 +2,7 @@ import { expect, test } from "bun:test"
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
+import { daemonContract } from "@legion/contracts/daemon-contract"
 import { LegionStateResponse } from "@legion/contracts/legion-api"
 import {
   EnvoyApiError,
@@ -11,7 +12,7 @@ import {
 import { type ActivityInput, createLegionDaemonClient } from "@legion/pi-shared/daemon-client"
 import type { ClaimCapability } from "@legion/pi-shared/legion-phase-ops"
 import { REMINDER } from "@legion/pi-shared/phase-stall"
-import { legion } from "../package.json" with { type: "json" }
+import pkg from "../package.json" with { type: "json" }
 import {
   createPhaseHookEndpoint,
   PHASE_HOOK_REFUSAL,
@@ -24,6 +25,9 @@ import {
 import { waitFor } from "./channel-session-harness"
 
 const SESSION = "6f1c2d3e-4a5b-4c6d-8e7f-9a0b1c2d3e4f"
+/** The contract this build speaks, as `legion-claim.ts` reads it (`daemonContract`): this
+ * checkout's. */
+const PLUGIN_CONTRACT = daemonContract(pkg, import.meta.dir)
 
 /** The pane's claim: the implementer of LEGION-208, whose phase in the daemon's state fixture is
  * `implementing`, so the reminder's record check says this role still works this phase. */
@@ -142,7 +146,7 @@ async function harness(
       : Response.json(held)
   }) as typeof fetch
   const daemon = createLegionDaemonClient("http://daemon.test", {
-    pluginContract: legion.daemonApiVersion,
+    pluginContract: PLUGIN_CONTRACT,
     fetch: fetchStub,
   })
   const lines: string[] = []
@@ -754,7 +758,7 @@ test("a worker whose workspace was recreated is told once, as a turn of its own"
   try {
     boot()
     await waitFor(async () => inbox.length > 0, "the recreated-workspace notice")
-    expect(inbox[0]).toContain("it holds what was pushed to legion/LEGION-208")
+    expect(inbox[0]).toContain("from what was pushed to legion/LEGION-208")
     // Recorded in the record the phase and count live in, so a server Claude Code restarts inside
     // the same process does not repeat it.
     expect(await record()).toEqual({
