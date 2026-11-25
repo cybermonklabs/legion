@@ -47,8 +47,9 @@ func (s *server) lockedCommentAllowingClosed(ctx context.Context, tx pgx.Tx, id 
 }
 
 // correctionActor is the caller of a correction: an edit or a delete, of a comment
-// (editComment, deleteComment) or of an issue message (editMessage, deleteMessage,
-// message_corrections.go). The author of a post is a session or a person, so all four read
+// (editCommentAs, deleteCommentAs) or of an issue message (editMessageAs, deleteMessageAs,
+// message_corrections.go), for the /api/v1 and the /api/v2 route of each, which resolve it before
+// the shared work runs. The author of a post is a session or a person, so all four read
 // both.
 //
 // The session comes first, through requireActor: the one the credential proves, or the one the
@@ -64,7 +65,7 @@ func (s *server) lockedCommentAllowingClosed(ctx context.Context, tx pgx.Tx, id 
 // (400 ACTOR_KIND), and a session is not the author of the comment its owner wrote in a
 // browser (403 NOT_AUTHOR). Every other credential that proves no session - the deployment's
 // shared token, a pod's service-account token - holds no person scope and keeps that refusal.
-// The ask reword reaches the person along its own path: editAsk resolves the actor with
+// The ask reword reaches the person along its own path: rewordAsk resolves the actor with
 // requireActor and resolves the person beside it, and falls back to that person only where the
 // session it resolved is not the ask's author (asks.go).
 //
@@ -382,8 +383,8 @@ func (s *server) editCommentAs(w http.ResponseWriter, r *http.Request, actor mod
 // the mark its anchor names is no longer in the document (docs.ErrAnchorOrphaned). The anchor
 // keeps everything else it carries, so the comment still reads as the one made on that quote,
 // and the write is queued on the caller's own ledger, which both callers of this then end their
-// own way: the accept and the reject arms of commentAction commit the orphaning and answer 409,
-// where deleteComment carries on and deletes the comment.
+// own way: the accept and the reject arms of commentActionAs commit the orphaning and answer 409,
+// where deleteCommentAs carries on and deletes the comment.
 //
 // Only the orphaned key is written, the one key this refusal decides: writing the whole anchor
 // would write back every other key of the column as this transaction read it, which is not what
@@ -542,7 +543,7 @@ func (s *server) commentActionAs(w http.ResponseWriter, r *http.Request, actor m
 		comment.Suggestion.Accepted = &accepted
 		// The decision is merged into the column (jsonb ||), so every key the create stored and
 		// this write does not name stays: the kind, which the delete of a rejected suggestion reads
-		// to tell an insert's quote, the comment's own words, from document text (deleteComment).
+		// to tell an insert's quote, the comment's own words, from document text (deleteCommentAs).
 		suggestion, err := encodeJSON(comment.Suggestion)
 		if err != nil {
 			s.writeHandlerError(w, r, err)

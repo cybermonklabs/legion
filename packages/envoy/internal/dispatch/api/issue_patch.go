@@ -125,7 +125,8 @@ type issueWriteCall struct {
 }
 
 // issueWriteCallStep is what the write of one step of a status change (POST
-// /api/v1/issues/{key}/status-change) or of R25's fix (RunParentStatusFixAtBoot) carries beside
+// /api/v1/issues/{key}/status-change, or the status-change form of PATCH /api/v2/issues/{key}:
+// changeIssueStatusFrom) or of R25's fix (RunParentStatusFixAtBoot) carries beside
 // the PATCH's fields. Each step is a write of its own, and it decides its write from what it reads
 // under its own owner lock, not from the plan that the call read before its first step.
 type issueWriteCallStep struct {

@@ -30,12 +30,13 @@ const (
 // slice, as every surface shares DISPATCH_SCOPES in @legion/contracts.
 var Scopes = []string{ScopePerson, ScopeApprove}
 
-// ScopeRead is the word that marks a read-only credential. GET /api/v1/whoami lists it among such
-// a credential's scopes, and a read-only personal token's set holds it: POST
-// /api/v1/me/agent-tokens takes it as a mint word and keeps it in agent_read_tokens.scopes, the
-// token list names it, and PATCH /api/v1/me/agent-tokens/{id} refuses it. No credential holds it
-// as a scope: Credential.ReadOnly marks the credential, Credential.Scopes never carries the word,
-// and no route requires it, so no recorded act names it either.
+// ScopeRead is the word that marks a read-only credential. GET /api/v1/whoami and GET /api/v2/me
+// list it among such a credential's scopes, and a read-only personal token's set holds it: POST
+// /api/v1/me/agent-tokens and POST /api/v2/me/agent-tokens take it as a mint word and keep it in
+// agent_read_tokens.scopes, the token lists name it, and PATCH /api/v1/me/agent-tokens/{id} and
+// PATCH /api/v2/me/agent-tokens/{id} refuse it. No credential holds it as a scope:
+// Credential.ReadOnly marks the credential, Credential.Scopes never carries the word, and no route
+// requires it, so no recorded act names it either.
 const ScopeRead = "read"
 
 // ActorAct names the agent that acted when a credential acted for its person, so a write records
@@ -1938,7 +1939,7 @@ type Version struct {
 	// that version names as its precondition's document token, and what `dispatch doc-read`
 	// prints for it. Every read of a version row states it (StateFileTokens). A document's version
 	// carries none here, since a document's token is its live tree's (GET
-	// /api/v1/artifacts/{id}/text).
+	// /api/v1/artifacts/{id}/text, GET /api/v2/artifacts/{id}?include=text).
 	Token *string `json:"token,omitempty"`
 }
 
@@ -3159,7 +3160,8 @@ type Comment struct {
 //
 // EditedAt, DeletedAt and DeletedBy are the marks of the quoted post, read from its own row, so a
 // read that prints the reply without its parent (GET /api/v1/comments/{id} or GET
-// /api/v1/issues/{key}/messages/{id} of the reply) still says the post was edited or deleted.
+// /api/v1/issues/{key}/messages/{id} of the reply, and GET /api/v2/comments/{id} or GET
+// /api/v2/messages/{id}) still says the post was edited or deleted.
 // EditedAt is the time its author last edited it, absent on a post nobody edited, as the delete
 // mark is absent while the post stands: contracts' ReplyBlockSchema is held to this shape's
 // document (dispatch-api-owned.ts) and must read a frame written before a mark as it did

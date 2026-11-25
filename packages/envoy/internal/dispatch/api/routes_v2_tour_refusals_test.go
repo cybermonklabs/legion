@@ -121,6 +121,7 @@ var tourRefusals = map[string][]tourRefusal{
 				request.Body = map[string]any{"status": "done", "dry_run": true}
 				return request
 			}, Code: apicode.ParentStatusConflict},
+		{Name: "a keyed status change with no credential", Change: refusalKeyedStatusChange, Code: apicode.NoIdentity},
 	},
 	"POST /api/v2/issues": {
 		{Name: "a spec that is no Proof document", Change: refusalBody("spec", tourMarkdownRefused), Code: apicode.InvalidMarkdown},
@@ -132,10 +133,15 @@ var tourRefusals = map[string][]tourRefusal{
 		{Name: "an ask that breaks its content rule", Change: refusalBody("content", tourAskBlockBroken), Code: apicode.InvalidAskBlock},
 		{Name: "a check that breaks a rule of a check CI proves", Change: refusalBody("content", tourCICheckBroken), Code: apicode.InvalidCICheck},
 		{Name: "a precondition behind the document it replaces", Change: refusalStaleIssueUpload, Code: apicode.PreconditionFailed},
+		{Name: "a precondition behind the file it replaces", Change: refusalStaleFileUpload("/api/v2/issues/{key}/artifacts"), Code: apicode.PreconditionFailed},
 	},
 	"POST /api/v2/projects/{key}/artifacts": {
 		{Name: "content that is no Proof document", Change: refusalBody("content", tourMarkdownRefused), Code: apicode.InvalidMarkdown},
 		{Name: "a precondition behind the document it replaces", Change: refusalStaleProjectUpload, Code: apicode.PreconditionFailed},
+		{Name: "a precondition behind the file it replaces", Change: refusalStaleFileUpload("/api/v2/projects/{key}/artifacts"), Code: apicode.PreconditionFailed},
+	},
+	"POST /api/v2/agents/{session_id}/artifacts": {
+		{Name: "a precondition behind the file it replaces", Change: refusalStaleFileUpload("/api/v2/agents/{session_id}/artifacts"), Code: apicode.PreconditionFailed},
 	},
 	"GET /api/v2/credential-grants": {
 		{Name: "the broker's refusal of the approver", Change: brokerRefuses(http.MethodGet, "/v1/grants", "APPROVER_REQUIRED", http.StatusBadRequest), Code: apicode.ApproverRequired},

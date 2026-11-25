@@ -95,6 +95,10 @@ type tourRequest struct {
 	Body any
 	// As is the credential the request carries.
 	As tourCaller
+	// Key is the Idempotency-Key the request carries where send is handed none, and empty for
+	// none: a tourRefusal's change sets it to draw a refusal of the keyed layer, which holdRefusal
+	// sends unkeyed (refusalKeyedStatusChange).
+	Key string
 }
 
 // tourUpload is a multipart upload's body: its fields, and its file.
@@ -398,15 +402,16 @@ func keepsItsAnswer(route apiRoute, request tourRequest, param string) bool {
 }
 
 // send carries request to route through the tour's server, under the Idempotency-Key key where
-// one is given.
+// one is given, and else under the request's own Key.
 func (tour *routeTour) send(t *testing.T, route apiRoute, request tourRequest, key string) *httptest.ResponseRecorder {
 	t.Helper()
 	return tour.serve(tour.request(t, route, request, key))
 }
 
 // request is the HTTP request send carries: request to route, under the Idempotency-Key key where
-// one is given. It fails t for a request it cannot build, so a test that sends on a goroutine of
-// its own builds the request here, on the test's goroutine, and serves it there (serve).
+// one is given, and else under the request's own Key. It fails t for a request it cannot build,
+// so a test that sends on a goroutine of its own builds the request here, on the test's
+// goroutine, and serves it there (serve).
 func (tour *routeTour) request(t *testing.T, route apiRoute, request tourRequest, key string) *http.Request {
 	t.Helper()
 	target := route.Pattern
@@ -447,7 +452,7 @@ func (tour *routeTour) request(t *testing.T, route apiRoute, request tourRequest
 	if request.As.Token != "" {
 		sending.Header.Set("Authorization", "Bearer "+request.As.Token)
 	}
-	if key != "" {
+	if key := cmp.Or(key, request.Key); key != "" {
 		sending.Header.Set(contracts.IdempotencyKeyHeader, key)
 	}
 	return sending
@@ -560,6 +565,45 @@ func refusalStaleUpload(store func(t *testing.T, tour *routeTour, key, name stri
 		store(t, tour, request.Path["key"], request.Body.(map[string]any)["name"].(string))
 		return refusalBody("precondition", map[string]any{"document": tourStaleDocumentToken})(t, tour, request)
 	}
+}
+
+// refusalStaleFileUpload is a tourRefusal's change that first stores a file at owner, the path of
+// its step's upload route with each wildcard filled from the step's path, and then sends its step's
+// upload as that file's replacement, naming as its precondition a token no version of the file
+// has: the token that stands is the one the versions list answers (listArtifactVersionsV2).
+func refusalStaleFileUpload(owner string) func(*testing.T, *routeTour, tourRequest) tourRequest {
+	return func(t *testing.T, tour *routeTour, request tourRequest) tourRequest {
+		t.Helper()
+		const name, contentType = "tour-replaced.txt", "text/plain"
+		target := owner
+		for param, value := range request.Path {
+			target = strings.ReplaceAll(target, "{"+param+"}", url.PathEscape(value))
+		}
+		stored := multipartRequest(t, tour.handler, target, map[string]string{"name": name}, name, contentType,
+			[]byte("The file the tour replaces.\n"), "alice")
+		if stored.Code != http.StatusCreated {
+			t.Fatalf("store the file the upload replaces: status=%d body=%s", stored.Code, stored.Body.String())
+		}
+		stale := encodeUploadBase(t, map[string]string{"document": tourStaleDocumentToken})
+		request.Body = tourUpload{
+			Fields:      map[string]string{"name": name, "precondition": stale},
+			Filename:    name,
+			ContentType: contentType,
+			Content:     []byte("The tour's replacement of that file.\n"),
+		}
+		return request
+	}
+}
+
+// refusalKeyedStatusChange is a tourRefusal's change that sends its step's PATCH of an issue as the
+// status-change form, a preview, with no credential and under an Idempotency-Key: the keyed layer
+// resolves the caller before the handler runs, and refuses one that resolves to nobody 401 in the
+// form's {code, error, changed} (refuseStatusChangeKey).
+func refusalKeyedStatusChange(_ *testing.T, _ *routeTour, request tourRequest) tourRequest {
+	request.Body = map[string]any{"status": "in_progress", "dry_run": true}
+	request.As = tourCaller{}
+	request.Key = "tour-status-change-no-credential"
+	return request
 }
 
 // withoutMembers is the JSON value body with each member paths names taken out (tourStep's

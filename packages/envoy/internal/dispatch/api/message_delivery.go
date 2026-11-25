@@ -429,7 +429,7 @@ func (s *server) recordPendingMessageDelivery(
 	} else if err := tx.QueryRow(ctx, `select target from messages where id = $1 for no key update`, message.ID).Scan(&target); err != nil {
 		return pendingMessageDelivery{}, err
 	}
-	// An unbound send is a Retry (createDelivery), which resumes or opens an attempt of the
+	// An unbound send is a Retry (retryMessageDelivery), which resumes or opens an attempt of the
 	// message, so it is this row that decides whether any text is left to send: a delete that
 	// committed while the Retry waited on the lock refuses it here, where the route's own check
 	// read the message before the lock. A bound sender takes its own attempt and no other, which
@@ -1303,7 +1303,7 @@ func (s *server) replyAfterAnswer(
 	// message replied to takes above. A retry above this line posts nothing, so it stands and
 	// hands back the answer as every other read of a deleted post gives it, with no body.
 	//
-	// The answer was read under its issue's lock (replyMessage), so no delete commits behind
+	// The answer was read under its issue's lock (answerMessageDelivery), so no delete commits behind
 	// it; an answer in a conversation with no issue is never deleted at all.
 	if answer.DeletedAt != nil {
 		return replyRead{}, nil, deletedPostError(refs.ItemMessage)
@@ -1474,9 +1474,10 @@ func (s *server) loadMessageDeliveries(ctx context.Context, q queryer, messageID
 }
 
 // hydrateWrittenMessage sets message.Deliveries to every attempt of the message, as GET
-// /api/v1/messages/{id} lists them (hydrateMessageThreads), for the answer of a write of it. A
-// correction (editMessage, deleteMessage) passes its own transaction as q, in its read phase,
-// before its write phase runs, so a read that fails ends the request with nothing written; the
+// /api/v1/messages/{id} and GET /api/v2/messages/{id} list them (hydrateMessageThreads), for the
+// answer of a write of it. A correction (editMessageAs, deleteMessageAs) passes its own
+// transaction as q, in its read phase, before its write phase runs, so a read that fails ends the
+// request with nothing written; the
 // delete sets the attempts its settle leaves in the answer itself. The other callers pass the
 // pool after the write committed, so a read that fails there fails the answer of a write that
 // stands: a keyed repeat's answer (recoveredMessage, freshMessage), and the answer of a targeted

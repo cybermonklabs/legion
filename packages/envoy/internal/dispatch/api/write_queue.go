@@ -74,7 +74,7 @@ func (s *server) queueLoggedEvent(ledger *docs.Ledger, event model.Event, logins
 }
 
 // queueLoggedEventOn is queueLoggedEvent's step on b itself, for a route that runs its write
-// phase as a batch of its own (store.RunWrite: createStoredMessage, editMessage, deleteMessage):
+// phase as a batch of its own (store.RunWrite: createStoredMessage, editMessageAs, deleteMessageAs):
 // the event's insert with the thread_logins it reads, then the stamp of fromKind/fromID's new
 // reference edges with the event's id, none for an empty fromKind. appended receives the event
 // once the batch has run it, for the route to publish after its commit.
@@ -190,8 +190,8 @@ func (s *server) queueEditedItemReferences(ctx context.Context, tx pgx.Tx, ledge
 // targets also name every target the item still cites when the rewrite moves the head of its
 // text, which each of its edges shows (refs.EditedTargets). It is the one plan of every such
 // rewrite, which its caller queues where it makes the write: on a comment's ledger
-// (queueEditedItemReferences, and deleteComment's through clearDeletedPostBody) or on the batch
-// a message's route runs itself (editMessage, and deleteMessage's through clearDeletedPostBody).
+// (queueEditedItemReferences, and deleteCommentAs's through clearDeletedPostBody) or on the batch
+// a message's route runs itself (editMessageAs, and deleteMessageAs's through clearDeletedPostBody).
 func (s *server) planEditedItem(
 	ctx context.Context, tx pgx.Tx, writer model.Actor, kind refs.ItemKind, itemID, previous, body string, at time.Time, carried *refs.CarriedEdit,
 ) (model.ReferenceChanges, docs.WriteStep, error) {

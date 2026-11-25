@@ -90,7 +90,7 @@ func postBodyHistoryStep(kind refs.ItemKind, itemID, body string, actor model.Ac
 }
 
 // queuePostBodyHistory queues postBodyHistoryStep on ledger, for a route whose write phase is its
-// ledger's (editComment).
+// ledger's (editCommentAs).
 func queuePostBodyHistory(ledger *docs.Ledger, kind refs.ItemKind, itemID, body string, actor model.Actor) error {
 	step, err := postBodyHistoryStep(kind, itemID, body, actor)
 	if err != nil {

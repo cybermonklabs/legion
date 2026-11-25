@@ -2,10 +2,12 @@ package api
 
 import (
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/metrics"
 )
 
@@ -146,5 +148,81 @@ func TestV2MultipartUploadNamesItsBaseInItsForm(t *testing.T) {
 	}
 	if sample, want := unguardedReplacementSample(t, registry), unguardedReplacementsMetric+" 1"; sample != want {
 		t.Fatalf("the counter reads %q, want %q: the one multipart replacement naming no token", sample, want)
+	}
+}
+
+// A file's or a picture's replacement through /api/v2 names the token GET
+// /api/v2/artifacts/{id}/versions answers on the version that stands, the read the three upload
+// routes name for it (fileReplacementText), as /api/v1's reads state it (model.StateFileTokens):
+// the newest version's token from that list is taken, and once a later version stands, the token
+// read before it is refused 409 PRECONDITION_FAILED naming the version and the token that stand,
+// and writes nothing. A document's version carries no token on that list: a document's token is
+// its live text's.
+func TestV2FileReplacementNamesTheTokenTheVersionsListAnswers(t *testing.T) {
+	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
+	issue := createArtifactIssue(t, handler)
+	target := "/api/v2/issues/" + issue.Key + "/artifacts"
+	newestVersion := func(t *testing.T, artifactID string) model.Version {
+		t.Helper()
+		read := dispatchRequest(t, handler, http.MethodGet, "/api/v2/artifacts/"+artifactID+"/versions?sort=-number&limit=1", nil, "alice")
+		if read.Code != http.StatusOK {
+			t.Fatalf("read the newest version of %s: status=%d body=%s", artifactID, read.Code, read.Body.String())
+		}
+		listed := decodeBody[page[model.Version]](t, read).Items
+		if len(listed) != 1 {
+			t.Fatalf("the versions list of %s answered %d versions under limit=1: %s", artifactID, len(listed), read.Body.String())
+		}
+		return listed[0]
+	}
+	for _, file := range uploadedFiles {
+		t.Run(file.name, func(t *testing.T) {
+			upload := func(content []byte, token string) *httptest.ResponseRecorder {
+				t.Helper()
+				fields := map[string]string{"name": file.name}
+				if token != "" {
+					fields["precondition"] = encodeUploadBase(t, map[string]string{"document": token})
+				}
+				return multipartRequest(t, handler, target, fields, file.name, file.contentType, content, "alice")
+			}
+			created := upload(file.first, "")
+			if created.Code != http.StatusCreated {
+				t.Fatalf("the first v2 upload of %s = %d, want 201: %s", file.name, created.Code, created.Body.String())
+			}
+			artifactID := decodeBody[struct {
+				Artifact struct {
+					ID string `json:"id"`
+				} `json:"artifact"`
+			}](t, created).Artifact.ID
+
+			first := newestVersion(t, artifactID)
+			if first.Number != 1 || first.Token == nil || *first.Token != fileVersionTokenOf(file.first) {
+				t.Fatalf("the versions list answered %+v, want version 1 carrying the token %s", first, fileVersionTokenOf(file.first))
+			}
+			if replaced := upload(file.second, *first.Token); replaced.Code != http.StatusCreated {
+				t.Fatalf("a v2 replacement naming the token the versions list answered = %d, want 201: %s", replaced.Code, replaced.Body.String())
+			}
+			second := newestVersion(t, artifactID)
+			if second.Number != 2 || second.Token == nil || *second.Token != fileVersionTokenOf(file.second) {
+				t.Fatalf("the versions list answered %+v, want version 2 carrying the token %s", second, fileVersionTokenOf(file.second))
+			}
+
+			stale := upload(file.third, *first.Token)
+			if stale.Code != http.StatusConflict {
+				t.Fatalf("a v2 replacement naming the token of a replaced version = %d, want 409: %s", stale.Code, stale.Body.String())
+			}
+			conflict := decodeBody[uploadPreconditionConflict](t, stale)
+			if conflict.Code != "PRECONDITION_FAILED" || conflict.Current.Document != *second.Token ||
+				conflict.Current.Version == nil || *conflict.Current.Version != 2 {
+				t.Fatalf("the v2 refusal of a stale token = %s, want PRECONDITION_FAILED naming version 2 and its token %s", stale.Body.String(), *second.Token)
+			}
+			if count := uploadedVersionCount(t, database, artifactID); count != 2 {
+				t.Fatalf("%s holds %d versions after the refused replacement, want 2", file.name, count)
+			}
+		})
+	}
+
+	document := seedUploadedDocument(t, handler, issue.Key, "notes.md", "# Notes\n\nbefore\n")
+	if version := newestVersion(t, document); version.Token != nil {
+		t.Fatalf("the versions list gave a document's version the token %q, want none: a document's token is its live text's", *version.Token)
 	}
 }

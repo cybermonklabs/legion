@@ -5,6 +5,13 @@ package api
 // call, and drives a refusal of each through both versions: /api/v2 answers it under the code it
 // declares, with the broker's message and the members its refusal carries beside it, and /api/v1
 // relays the broker's bytes (dispatch://INFRA-4071/spec R6 and R7; R3.1 for /api/v1).
+//ci:builds packages/envoy ./cmd/cipher-refgen readBrokerReference runs `go run ./cmd/cipher-refgen` in the module
+//ci:reads-set refgen_api readBrokerReference's cipher-refgen parses the broker's API package and every package its routes and bodies name (readAPI, apiPage)
+//ci:reads packages/envoy/internal/cipher/config/*.go !**/*_test.go readBrokerReference's cipher-refgen parses it (configPage)
+//ci:reads packages/envoy/cmd/cipherd/*.go !**/*_test.go readBrokerReference's cipher-refgen parses it (configPage)
+//ci:reads packages/envoy/internal/cipher/helper/*.go !**/*_test.go readBrokerReference's cipher-refgen parses it (errorsPage, docConsts)
+//ci:reads packages/envoy/cmd/cipher/*.go !**/*_test.go readBrokerReference's cipher-refgen parses it (errorsPage, docConsts)
+//ci:reads packages/envoy/internal/cipher/proxy/*.go !**/*_test.go readBrokerReference's cipher-refgen parses it (errorsPage, checkRefusalWrites)
 
 import (
 	"encoding/json"

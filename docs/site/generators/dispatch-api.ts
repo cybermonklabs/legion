@@ -190,7 +190,7 @@ function callerSections(): string[] {
     "",
     ...Object.entries(SCOPES).map(([scope, meaning]) => `- \`${scope}\`: ${meaning}`),
     "",
-    "A read-only token is any token that holds `read`: one the secrets broker minted from a read entry or narrowed because its trade asked for `read`, or a personal token minted with `read`. It holds `person` at most, never `approve`. Dispatch serves it only on the GET routes it classes as reads (`readClasses` in the source), and refuses it `403 READ_ONLY_TOKEN` on every other route, with no challenge header, before it reads the route's scopes. It refuses a read-only token that carries a cut `403 AS_OF_TOKEN_NOT_SERVED` on every read but `GET /api/v1/whoami`. The route index does not carry the read class, so this page does not mark those routes.",
+    "A read-only token is any token that holds `read`: one the secrets broker minted from a read entry or narrowed because its trade asked for `read`, or a personal token minted with `read`. It holds `person` at most, never `approve`. Dispatch serves it only on the GET routes it classes as reads (`readClasses` in the source), and refuses it `403 READ_ONLY_TOKEN` on every other route, with no challenge header, before it reads the route's scopes. It refuses a read-only token that carries a cut `403 AS_OF_TOKEN_NOT_SERVED` on every read but `GET /api/v1/whoami` and `GET /api/v2/me`. The route index does not carry the read class, so this page does not mark those routes.",
     "",
     "Path parameters are the `{name}` segments of a path.",
     "",

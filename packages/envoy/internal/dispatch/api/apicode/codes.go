@@ -604,11 +604,12 @@ var (
 	SigninIDInput            = v2Only("SIGNIN_ID_INPUT", http.StatusBadRequest)
 	StateInput               = v2Only("STATE_INPUT", http.StatusBadRequest)
 
-	// The broker's refusals of Dispatch's own ServiceAccount token, which it answers on any of
-	// those routes before the route runs (accountAuth in its route table), each under the
-	// broker's name. The broker refused Dispatch, not the caller, so none is answered at the 401,
-	// 403 or 429 the broker wrote, which would tell the caller its own credential failed or that
-	// it sent too many.
+	// The broker's refusals of Dispatch's own call, which it answers on any of those routes
+	// before the route runs (accountAuth in its route table), each under the broker's name: those
+	// of Dispatch's own ServiceAccount token, and RATE_LIMITED, which spends the bucket of the
+	// address Dispatch calls from before any token is verified. The broker refused Dispatch, not
+	// the caller, so none is answered at the 401, 403 or 429 the broker wrote, which would tell
+	// the caller its own credential failed or that it sent too many.
 
 	// AccountLacksPower is the broker's 403 to Dispatch's account, listed in its
 	// BROKER_API_ACCOUNTS without the power the route needs. It is answered 502: the broker
@@ -636,11 +637,11 @@ var (
 	// is: the broker's configuration refused Dispatch, and a 401 would blame the caller's
 	// credential.
 	AccountTokensOff = v2Only("ACCOUNT_TOKENS_OFF", http.StatusBadGateway)
-	// RateLimited is the broker's 429 to Dispatch's account, whose requests, those of every
-	// caller of Dispatch together, spent the broker's bucket for them. It is answered 503 with the
-	// broker's Retry-After where the broker sent one: the service Dispatch relies on cannot take
-	// the call for now, and a 429 would tell the caller that it, one of Dispatch's many callers,
-	// sent too many.
+	// RateLimited is the broker's 429 to Dispatch's calls, whose requests, those of every caller
+	// of Dispatch together, spent the broker's bucket for the address they come from, which the
+	// broker spends before it verifies any token. It is answered 503 with the broker's Retry-After
+	// where the broker sent one: the service Dispatch relies on cannot take the call for now, and
+	// a 429 would tell the caller that it, one of Dispatch's many callers, sent too many.
 	RateLimited = v2Only("RATE_LIMITED", http.StatusServiceUnavailable)
 )
 

@@ -32,7 +32,7 @@ const agentTokenColumns = `id::text, name, prefix, scopes, created_at, last_used
 // The mint and a token's last use each run one of two statements, one per table. Each names its
 // table in its own text, so the census of item-row writers (item_writer_census_test.go) reads the
 // table it writes, and takes what follows the table from one of these, so the two stay one text:
-// agentTokenInsert is the mint's columns, their values and the row it answers (createAgentToken),
+// agentTokenInsert is the mint's columns, their values and the row it answers (createAgentTokenFrom),
 // and agentTokenUse is a token's last use, written at most once a minute (personalTokenActor).
 const (
 	agentTokenInsert = `(owner, name, token_hash, prefix, scopes)

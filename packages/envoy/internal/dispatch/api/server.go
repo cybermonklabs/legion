@@ -580,10 +580,11 @@ type server struct {
 	// that. Only a test sets it, so a body that stalls is the test's choice rather than a minute of
 	// wall clock.
 	drainReadLimit time.Duration
-	// resultsClock replaces the clock GET /api/v1/issues/{key}/results reads each moment from
-	// (resultsNow); nil, which every server the deployment builds leaves it, means time.Now. Only a
-	// test sets it, so a read past the span an answer is believed for is the test's choice rather
-	// than a wait of that span on the wall clock.
+	// resultsClock replaces the clock a results read (GET /api/v1/issues/{key}/results, GET
+	// /api/v2/issues/{key}/checks) reads each moment from (resultsNow); nil, which every server
+	// the deployment builds leaves it, means time.Now. Only a test sets it, so a read past the span
+	// an answer is believed for is the test's choice rather than a wait of that span on the wall
+	// clock.
 	resultsClock func() time.Time
 	// drainDeadlineSet is called with the moment a drain began and the read deadline it computed
 	// from that moment, before the drain sets the deadline on the connection (readFor); nil, which
@@ -608,7 +609,7 @@ type server struct {
 	afterMentionCopyRule func()
 	// deleteLeavesSettlement has the delete of a comment whose pending insert suggestion it
 	// rejects leave the document's next version to the settlement the reject arms, as the delete
-	// did before it wrote that version itself (deleteComment, docs.SettleVersion); false, which
+	// did before it wrote that version itself (deleteCommentAs, docs.SettleVersion); false, which
 	// every server the deployment builds leaves it, settles in the delete. Only a benchmark sets
 	// it, to time the delete without its settle beside the delete with it
 	// (BenchmarkDeleteOfAPendingInsertSettle).
@@ -713,7 +714,8 @@ type RouteMux interface {
 //
 // Every route outside the read class (readClasses), GET /ws/live among them, answers a read-only
 // token 403 READ_ONLY_TOKEN before anything else it does, and every read but GET /api/v1/whoami
-// answers one that carries a cut 403 AS_OF_TOKEN_NOT_SERVED (refuseReadOnlyToken).
+// and GET /api/v2/me answers one that carries a cut 403 AS_OF_TOKEN_NOT_SERVED
+// (refuseReadOnlyToken).
 //
 // The server holds the delivery hub (LEGION-690), which starts its goroutines on the first
 // subscription and runs them until lifetime ends, and mounts GET /ws/live beside the document
@@ -1688,10 +1690,10 @@ func (s *server) gateRouteScopes(scopes []string, handler http.HandlerFunc) http
 // Then a caller whose credential is read-only (readOnlyCredential, which a results read reads the
 // caller by too) is answered 403 READ_ONLY_TOKEN on every row that is not a read
 // (readWritesNothing), every write among them, and on GET /ws/live, and next does not run. On a
-// read, a read-only credential that carries a cut (model.Credential.Cut) is
-// answered 403 AS_OF_TOKEN_NOT_SERVED, naming the cut, on every row but GET /api/v1/whoami,
-// since this build answers no read at a past time and must not answer one with the present.
-// Every other request runs next as it always did.
+// read, a read-only credential that carries a cut (model.Credential.Cut) is answered 403
+// AS_OF_TOKEN_NOT_SERVED, naming the cut, on every row but GET /api/v1/whoami and GET /api/v2/me
+// (readAnswersCut), since this build answers no read at a past time and must not answer one with
+// the present. Every other request runs next as it always did.
 //
 // Neither refusal carries a WWW-Authenticate challenge, unlike a missing scope's
 // (refuseMissingScope): RFC 6750 Section 3.1 has the challenge name the scope a request needs,
@@ -1711,9 +1713,9 @@ func (s *server) refuseReadOnlyToken(name string, entry readEntry, next http.Han
 			writeError(w, r, apicode.ReadOnlyToken, readOnlyRefusal)
 			return
 		}
-		// The cut. No read of this build answers at a past time, so every read but whoami runs
-		// nothing for a token that carries a cut, rather than answer it with the present. This
-		// branch is all the gate does with a cut.
+		// The cut. No read of this build answers at a past time, so every read but the two that
+		// report the caller's credential (readAnswersCut) runs nothing for a token that carries a
+		// cut, rather than answer it with the present. This branch is all the gate does with a cut.
 		if !credential.Cut.IsZero() && !answersACut {
 			writeError(w, r, apicode.AsOfTokenNotServed, fmt.Sprintf(
 				"this request's credential is a read-only token cut at %s, and this build of Dispatch does not answer a read at a past time: nothing ran",
@@ -1736,8 +1738,9 @@ func readAnswersCut(name string) bool {
 	return name == whoamiRoute || name == http.MethodGet+" /api/v2/me"
 }
 
-// cutText is a cut (model.Credential.Cut) as Dispatch writes it, in whoami's answer and in the
-// refusal of a read at a past time: RFC 3339 in UTC, with every fractional digit it has.
+// cutText is a cut (model.Credential.Cut) as Dispatch writes it, in the answers of GET
+// /api/v1/whoami and GET /api/v2/me and in the refusal of a read at a past time: RFC 3339 in UTC,
+// with every fractional digit it has.
 func cutText(cut time.Time) string {
 	return cut.UTC().Format(time.RFC3339Nano)
 }
@@ -1752,9 +1755,10 @@ func cutText(cut time.Time) string {
 //
 // It resolves no other credential, though optionalActor would resolve any: none other can be
 // read-only and undecided here, and resolving one would change the rows that take no credential
-// (GET /api/v1, GET /api/v1/schema/blocks), which never resolve their caller. A sign-in is read
-// from the store, and some sign-ins record their person (Deps.Identity); the shared token and a
-// service-account token name their caller on the access-log line, and the second is verified.
+// (GET /api/v1, GET /api/v1/schema/blocks, GET /api/v2, GET /api/v2/block-schema), which never
+// resolve their caller. A sign-in is read from the store, and some sign-ins record their person
+// (Deps.Identity); the shared token and a service-account token name their caller on the
+// access-log line, and the second is verified.
 func (s *server) resolvePersonalToken(r *http.Request) *http.Request {
 	if _, decided := r.Context().Value(resolvedCallerKey{}).(resolvedCaller); decided || s.deps.Store == nil {
 		return r

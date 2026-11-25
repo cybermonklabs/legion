@@ -1,5 +1,7 @@
 package api
 
+//ci:reads packages/envoy/internal/dispatch/routes/*.go !**/*_test.go TestNoSourceMakesACodeOrAnErrorBodyOutsideItsWriters globs and parses ../routes/*.go beside this package's own source
+
 import (
 	"bufio"
 	"encoding/json"

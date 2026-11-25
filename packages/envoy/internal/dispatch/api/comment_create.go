@@ -58,8 +58,8 @@ type commentInput struct {
 // the comment's own text until an accept makes those words document text, and the delete reads
 // the kind (loadStoredSuggestion) to empty that quote once the mark is gone and answers no kind:
 // an orphaned suggestion's, and a rejected one's, whose reject took the words out
-// (deleteComment). An accept or a reject merges what it decides into the column, which keeps the
-// kind (commentAction), so a decided suggestion keeps it. Only the delete reads the kind; every
+// (deleteCommentAs). An accept or a reject merges what it decides into the column, which keeps the
+// kind (commentActionAs), so a decided suggestion keeps it. Only the delete reads the kind; every
 // other read decodes the column into model.Suggestion, which has no kind and drops it, so no
 // answer and no event carries it. A suggestion with no anchor has no mark and stores no kind.
 type storedSuggestion struct {
@@ -322,7 +322,7 @@ func (s *server) normalizeCommentThreadTarget(
 		}
 		// A reply adds text under the post it answers, and a deleted post takes none: the
 		// thread reply is refused as the delivery callback's reply is (comment_delivery.go's
-		// replyComment), on the parent this walk has already locked, so the refusal costs no
+		// answerCommentDelivery), on the parent this walk has already locked, so the refusal costs no
 		// read of its own. Only the comment the request named is judged: a reply under a live
 		// comment stands whatever became of the root above it, and a reply written before the
 		// delete keeps its text and its place.

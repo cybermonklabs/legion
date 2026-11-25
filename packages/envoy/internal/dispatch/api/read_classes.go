@@ -68,13 +68,14 @@ const docsCompactionNote = "Writes nothing itself. A cold read of a document who
 // class, or with an entry that names no GET row it mounts (readClassRefusals), so a GET row added
 // later is served to no read-only token until someone has read its handler and classed it here.
 //
-// v1ReadClasses holds the /api/v1 GETs, grouped by class and in table order.
+// v1ReadClasses holds the /api/v1 GETs, grouped by class and in table order: v1Rows, then the
+// /api/v1 paths of the rows both versions serve (v2Infra979Rows).
 var v1ReadClasses = map[string]readEntry{
 	// The GETs that write.
+	"GET /api/v1/going/requests/{id}/stream": {Writes: readWritesState, WriteNote: "When the run is past its ends_at and holds no terminal frame, the read inserts the run's end frame, the error that its answer did not arrive, into going_events on the request's context (endGoingRun), doing nothing on conflict when another writer ended the run first."},
 	"GET /api/v1/delivery/timeline":          {Writes: readWritesState, WriteNote: "When a deploy run has no configured production job, or its production job has no configured apply step, the read inserts a delivery_run_warnings row on the request's context (firstToWarn, on conflict doing nothing), once per process for each run and configuration."},
 	"GET /api/v1/delivery/measures":          {Writes: readWritesState, WriteNote: "As the timeline's: an insert into delivery_run_warnings for a deploy run with no matching production job or apply step, on the request's context, once per process for each run and configuration (firstToWarn)."},
 	"GET /api/v1/delivery/pipeline":          {Writes: readWritesState, WriteNote: "As the timeline's, for the deploy runs on main since the first day it shows: an insert into delivery_run_warnings for a run with no matching production job or apply step, on the request's context, once per process for each run and configuration (firstToWarn)."},
-	"GET /api/v1/going/requests/{id}/stream": {Writes: readWritesState, WriteNote: "When the run is past its ends_at and holds no terminal frame, the read inserts the run's end frame, the error that its answer did not arrive, into going_events on the request's context (endGoingRun), doing nothing on conflict when another writer ended the run first."},
 
 	// The reads whose handler makes the server write on its own context, or whose class a first
 	// reading of the handler would get wrong.
@@ -109,9 +110,6 @@ var v1ReadClasses = map[string]readEntry{
 	"GET /api/v1/projects/{key}/plans":                                   {Writes: readWritesNothing},
 	"GET /api/v1/settings/project-default-assignees":                     {Writes: readWritesNothing},
 	"GET /api/v1/settings/new-issue":                                     {Writes: readWritesNothing},
-	"GET /api/v1/settings/delivery":                                      {Writes: readWritesNothing},
-	"GET /api/v1/projects/{key}/legion/daemon":                           {Writes: readWritesNothing},
-	"GET /api/v1/projects/{key}/legion/board":                            {Writes: readWritesNothing},
 	"GET /api/v1/delivery/runs/{id}":                                     {Writes: readWritesNothing},
 	"GET /api/v1/ci-reconcile/passes":                                    {Writes: readWritesNothing},
 	"GET /api/v1/me/agent-tokens":                                        {Writes: readWritesNothing},
@@ -129,10 +127,10 @@ var v1ReadClasses = map[string]readEntry{
 	"GET /api/v1/issues/{key}/references":                                {Writes: readWritesNothing},
 	"GET /api/v1/issues/{key}/collaborators":                             {Writes: readWritesNothing},
 	"GET /api/v1/references/questions":                                   {Writes: readWritesNothing},
-	"GET /api/v1/reference-targets":                                      {Writes: readWritesNothing},
 	"GET /api/v1/block-links":                                            {Writes: readWritesNothing},
 	"GET /api/v1/issues/{key}/subscribers":                               {Writes: readWritesNothing},
 	"GET /api/v1/issues/{key}/artifacts":                                 {Writes: readWritesNothing},
+	"GET /api/v1/reference-targets":                                      {Writes: readWritesNothing},
 	"GET /api/v1/issues/{key}/messages":                                  {Writes: readWritesNothing},
 	"GET /api/v1/issues/{key}/messages/{id}":                             {Writes: readWritesNothing},
 	"GET /api/v1/issues/{key}/handoffs":                                  {Writes: readWritesNothing},
@@ -190,6 +188,9 @@ var v1ReadClasses = map[string]readEntry{
 	"GET /api/v1/machine-logins":                                         {Writes: readWritesNothing},
 	"GET /api/v1/signins":                                                {Writes: readWritesNothing},
 	"GET /api/v1/credentials/capabilities":                               {Writes: readWritesNothing},
+	"GET /api/v1/settings/delivery":                                      {Writes: readWritesNothing},
+	"GET /api/v1/projects/{key}/legion/daemon":                           {Writes: readWritesNothing},
+	"GET /api/v1/projects/{key}/legion/board":                            {Writes: readWritesNothing},
 	// The test hooks' GET rows, which read this process's memory.
 	"GET /api/v1/artifacts/_test/rooms":                          {Writes: readWritesNothing},
 	"GET /api/v1/artifacts/{id}/_test/room-counters":             {Writes: readWritesNothing},
@@ -266,7 +267,7 @@ func v2ReadClasses() map[string]readEntry {
 		"GET /api/v2/me":                                             v1ReadClasses[whoamiRoute],
 		"GET /api/v2/me/agent-tokens":                                v1ReadClasses["GET /api/v1/me/agent-tokens"],
 		"GET /api/v2/me/answers":                                     v1ReadClasses["GET /api/v1/me/answers"],
-		"GET /api/v2/me/marks":                                       read, // Pages stored issue, agent, ask and thread marks.
+		"GET /api/v2/me/marks":                                       read, // Pages stored issue, agent, document, thread, message and ask marks.
 		"GET /api/v2/me/marks/{kind}/{id}":                           read, // Reads one stored mark without setting it.
 		"GET /api/v2/me/signins":                                     v1ReadClasses["GET /api/v1/signins"],
 		"GET /api/v2/me/threads":                                     v1ReadClasses["GET /api/v1/me/replies"],

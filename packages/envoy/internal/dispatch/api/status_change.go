@@ -1,8 +1,10 @@
 package api
 
-// status_change.go is POST /api/v1/issues/{key}/status-change: a status change of one issue that
-// names, with an option, what happens to the open issues under it or to the issues above it, so
-// that every parent's status stays in line with its children's (R24, parent_status_rule.go).
+// status_change.go is POST /api/v1/issues/{key}/status-change and the status-change form of PATCH
+// /api/v2/issues/{key} (a body carrying include_children, unlink_children, include_parent or
+// dry_run): a status change of one issue that names, with an option, what happens to the open
+// issues under it or to the issues above it, so that every parent's status stays in line with its
+// children's (R24, parent_status_rule.go).
 //
 // The call is a sequence of single-issue writes, each one the PATCH's own write (writeIssue) in a
 // transaction of its own, in an order where every write keeps the rule: the ancestors that
@@ -64,7 +66,8 @@ const (
 const statusChangeRuleSentence = "Dispatch keeps a parent's status in line with its children's: a parent is done only when " +
 	"each child is done, and while a child is in work its parent is in work too."
 
-// statusChangeInput is the body of POST /api/v1/issues/{key}/status-change.
+// statusChangeInput is the body of POST /api/v1/issues/{key}/status-change, and what the
+// status-change form of PATCH /api/v2/issues/{key} carries (patchIssueV2Input.statusChangeInput).
 type statusChangeInput struct {
 	// Status is the status the call writes on the issue it names.
 	Status string `json:"status" required:"true"`
@@ -162,12 +165,8 @@ func parseStatusChange(input statusChangeInput) (statusChange, error) {
 	}, nil
 }
 
-// changeIssueStatus is POST /api/v1/issues/{key}/status-change. It plans the call and checks the
-// plan under its owner locks (planStatusChange), answers a dry run from that plan, and otherwise
-// runs each step through the PATCH's write core. A refused step stops the call: no later step
-// runs, and the refusal carries the entries of the steps that committed before it. An attempt
-// that took over a key an earlier attempt left unanswered resumes the call from that attempt's
-// recovery point (resumedStatusChange).
+// changeIssueStatus answers POST /api/v1/issues/{key}/status-change: the call changeIssueStatusFrom
+// makes, once the body is read.
 func (s *server) changeIssueStatus(w http.ResponseWriter, r *http.Request) {
 	none := []statusChangeEntry{}
 	var input statusChangeInput
@@ -178,7 +177,13 @@ func (s *server) changeIssueStatus(w http.ResponseWriter, r *http.Request) {
 	s.changeIssueStatusFrom(w, r, input)
 }
 
-// changeIssueStatusFrom runs the same status plan for the /api/v1 POST and the /api/v2 PATCH.
+// changeIssueStatusFrom is a status change, the work of POST /api/v1/issues/{key}/status-change
+// and of the status-change form of PATCH /api/v2/issues/{key}. It plans the call and checks the
+// plan under its owner locks (planStatusChange), answers a dry run from that plan, and otherwise
+// runs each step through the PATCH's write core. A refused step stops the call: no later step
+// runs, and the refusal carries the entries of the steps that committed before it. An attempt
+// that took over a key an earlier attempt left unanswered resumes the call from that attempt's
+// recovery point (resumedStatusChange).
 func (s *server) changeIssueStatusFrom(w http.ResponseWriter, r *http.Request, input statusChangeInput) {
 	none := []statusChangeEntry{}
 	writer, err := s.requestWriter(r, input.Actor)

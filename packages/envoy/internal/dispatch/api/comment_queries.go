@@ -425,15 +425,15 @@ func (s *server) hydrateCommentSideTables(ctx context.Context, q queryer, who mo
 	return comments, nil
 }
 
-// hydrateWrittenComment is the comment a write answers, with the side tables
-// GET /api/v1/comments/{id} reads it with (hydrateCommentSideTables): its mentions, its delivery
-// attempts and the block it replies to, read for who, the writer the answer goes to. A write
-// calls it on its own transaction, tx, in its read phase, before Commit runs its queued writes,
-// so a read that fails ends the request with nothing written. The rows it reads are ones no
-// write that answers this way queues a change to, but for the delete's settle of the attempts
-// still pending, which the delete sets in what this returns as its settle leaves them
-// (deleteComment). The anchor's position stays out: getComment computes it from the document,
-// and no side table holds it.
+// hydrateWrittenComment is the comment a write answers, with the side tables GET
+// /api/v1/comments/{id} and GET /api/v2/comments/{id} read it with (hydrateCommentSideTables): its
+// mentions, its delivery attempts and the block it replies to, read for who, the writer the answer
+// goes to. A write calls it on its own transaction, tx, in its read phase, before Commit runs its
+// queued writes, so a read that fails ends the request with nothing written. The rows it reads are
+// ones no write that answers this way queues a change to, but for the delete's settle of the
+// attempts still pending, which the delete sets in what this returns as its settle leaves them
+// (deleteCommentAs). The anchor's position stays out: readCommentThread computes it from the
+// document, and no side table holds it.
 func (s *server) hydrateWrittenComment(ctx context.Context, tx pgx.Tx, who model.Actor, comment model.Comment) (model.Comment, error) {
 	comments, err := s.hydrateCommentSideTables(ctx, tx, who, []model.Comment{comment})
 	if err != nil {
@@ -442,9 +442,9 @@ func (s *server) hydrateWrittenComment(ctx context.Context, tx pgx.Tx, who model
 	return comments[0], nil
 }
 
-// freshComment is one comment as GET /api/v1/comments/{id} reads it for who and a write of it
-// answers it (hydrateWrittenComment): the row with its mentions, its delivery attempts and the
-// block it replies to, read now from the pool.
+// freshComment is one comment as GET /api/v1/comments/{id} and GET /api/v2/comments/{id} read it
+// for who and a write of it answers it (hydrateWrittenComment): the row with its mentions, its
+// delivery attempts and the block it replies to, read now from the pool.
 func (s *server) freshComment(ctx context.Context, who model.Actor, id string) (model.Comment, error) {
 	comment, err := s.loadComment(ctx, s.deps.Store.Pool, id)
 	if err != nil {

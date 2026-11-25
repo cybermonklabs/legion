@@ -361,7 +361,7 @@ func (s *server) claimCommentDeliveryAttempt(
 	// An unbound call is a Retry, which resumes or opens an attempt of the comment, so it is the
 	// comment as this owner lock leaves it that decides whether any text is left to send: a
 	// delete that committed while the Retry waited on the lock refuses it here, where the route's
-	// own check read the comment before the lock (createCommentDelivery). A bound call takes its
+	// own check read the comment before the lock (retryCommentMention). A bound call takes its
 	// own attempt and no other, which that delete has already settled (queueDeletedPostSettlement),
 	// so it finds the attempt settled below and sends nothing.
 	if resume.attempt == 0 && stored.DeletedAt != nil {

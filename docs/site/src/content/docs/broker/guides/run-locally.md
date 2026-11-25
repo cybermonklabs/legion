@@ -498,10 +498,10 @@ trade. Such a token writes nothing.
 Dispatch serves a read-only token on the GET routes it classes as reads, and answers it
 `403 READ_ONLY_TOKEN` on every other route of its route table and on `GET /ws/live`. It answers a
 read-only token that carries a cut `403 AS_OF_TOKEN_NOT_SERVED` on every read but
-`GET /api/v1/whoami`. `packages/dispatch/e2e/read-token-live.ts` shows each of these against this
-stack. Leave the stack running. `bun run dispatch:local` runs until Ctrl-C, so it takes a shell of
-its own: open a new one and paste the dev broker's exports into it too, as you pasted them into
-the second shell. A shell without them expands `$AGENT_SECRETS_URL` and
+`GET /api/v1/whoami` and `GET /api/v2/me`. `packages/dispatch/e2e/read-token-live.ts` shows each
+of these against this stack. Leave the stack running. `bun run dispatch:local` runs until Ctrl-C,
+so it takes a shell of its own: open a new one and paste the dev broker's exports into it too, as
+you pasted them into the second shell. A shell without them expands `$AGENT_SECRETS_URL` and
 `$AGENT_SECRETS_ACCOUNT_TOKEN_FILE` to nothing, and Dispatch then starts with no broker. In that new
 shell, from `packages/dispatch`, start a local Dispatch that reads this broker (where there is no
 Docker, also set `DATABASE_URL` to a Postgres database of its own):

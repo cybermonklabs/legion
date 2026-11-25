@@ -82,18 +82,30 @@ const artifactUploadText = "JSON {name, content?, summary?, actor?, precondition
 	"bytes are, and otherwise a file under its declared type. An upload under a name or slug the owner already holds is " +
 	"that artifact's next version."
 
-// fileUploadPreconditionText is the same file and picture guard on all three upload routes.
-const fileUploadPreconditionText = "To replace a file or a picture, precondition {document} names the latest " +
-	"version's token from GET /api/v2/artifacts/{id}/versions?sort=-number&limit=1. A stale token is 409 PRECONDITION_FAILED " +
-	"with the version and token that stand; a first upload or a version with no token also refuses a named token. " +
-	"A replacement naming none is taken unchecked. A precondition naming blocks is 400 INVALID_PRECONDITION."
+// fileReplacementText is what the three upload routes say of the token a replacement of a file or
+// a picture names, which the versions list answers on each version (listArtifactVersionsV2).
+const fileReplacementText = "To replace a file or a picture, precondition {document} names the latest version's " +
+	"token, which GET /api/v2/artifacts/{id}/versions?sort=-number&limit=1 answers on that version; a replacement " +
+	"naming none is taken unchecked."
 
-// artifactUploadPreconditionText adds the guard for a replacement of live document text.
+// uploadPreconditionRefusalText is what the three upload routes say of a precondition they refuse,
+// a document's and a file's alike, each refusal under its code once.
+const uploadPreconditionRefusalText = "A stale token is 409 PRECONDITION_FAILED with the token and version that " +
+	"stand; a first upload or a version with no token also refuses a named token. A precondition naming blocks is " +
+	"400 INVALID_PRECONDITION."
+
+// fileUploadPreconditionText is the guard of an agent conversation's upload, which holds files and
+// pictures alone.
+const fileUploadPreconditionText = fileReplacementText + " " + uploadPreconditionRefusalText
+
+// artifactUploadPreconditionText is the guard of an issue's and a project's upload: the token of
+// live document text, which GET /api/v2/artifacts/{id}?include=text answers, and a file's or a
+// picture's.
 const artifactUploadPreconditionText = "To replace a document, precondition {document} names the token " +
-	"include=text answers (multipart takes the same JSON in the precondition field). Dispatch checks it under " +
-	"the write lock. A stale token is 409 PRECONDITION_FAILED with the live token and version. A replacement " +
-	"naming none is taken for now and counted (envoy_dispatch_document_replacements_unguarded_total on /metrics). " +
-	fileUploadPreconditionText
+	"GET /api/v2/artifacts/{id}?include=text answers (multipart takes the same JSON in the precondition field), " +
+	"which Dispatch checks under the write lock; a replacement naming none is taken for now and counted " +
+	"(envoy_dispatch_document_replacements_unguarded_total on /metrics). " + fileReplacementText + " " +
+	uploadPreconditionRefusalText
 
 // artifactUploadRoleText is what the description of an issue's upload says of the documents that
 // play a role on an issue.
@@ -572,9 +584,10 @@ func (s *server) v2DocumentRows() []routeRow {
 		{
 			Method: http.MethodGet, Pattern: "/artifacts/{id}/versions", Auth: authAny, Versions: onlyV2,
 			Description: "List an artifact's versions: each {number, named, summary, authors, created_at, size?, mime?, " +
-				"sha256?}, no markdown. sort=number (the default, oldest first) or -number. limit 1 to 200 (default 50) and " +
-				"offset; {items, total, limit, offset}. GET /api/v2/artifacts/{id}/versions/{number} reads one. 404 " +
-				"ARTIFACT_NOT_FOUND.",
+				"sha256?, token?}, no markdown; token is a file's or a picture's version token, which an upload replacing " +
+				"that version names as its precondition, and a document's version carries none. sort=number (the default, " +
+				"oldest first) or -number. limit 1 to 200 (default 50) and offset; {items, total, limit, offset}. GET " +
+				"/api/v2/artifacts/{id}/versions/{number} reads one. 404 ARTIFACT_NOT_FOUND.",
 			Handler:  s.listArtifactVersionsV2,
 			Resource: "versions", Kind: kindCollection, Key: "{number}",
 			Query:    artifactVersionsV2Query{},
@@ -1437,6 +1450,8 @@ type artifactVersionsV2Query struct {
 
 // listArtifactVersionsV2 answers GET /api/v2/artifacts/{id}/versions: one page of the versions GET
 // /api/v1/artifacts/{id} carried whole in its versions[] member (loadVersions), ordered by number.
+// A file's or a picture's versions carry their tokens, as every read of a version row states them
+// (model.StateFileTokens), so a replacement of the file names the token this list answers.
 func (s *server) listArtifactVersionsV2(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -1476,6 +1491,7 @@ func (s *server) listArtifactVersionsV2(w http.ResponseWriter, r *http.Request) 
 		s.writeHandlerError(w, r, fmt.Errorf("read the artifact's versions: %w", err))
 		return
 	}
+	model.StateFileTokens(artifact.Kind, versions)
 	WriteJSON(w, http.StatusOK, newPage(versions, total, query.pageQuery))
 }
 

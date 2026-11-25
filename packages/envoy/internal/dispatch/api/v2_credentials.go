@@ -10,8 +10,9 @@ package api
 // every /api/v2 refusal is, under the code the route declares for it, with the broker's message
 // and the members the broker's refusal carries beside it (brokerRefusalV2), where /api/v1 relays
 // the broker's bytes: the broker's own code at the broker's own status, but its refusals of
-// Dispatch's own ServiceAccount token at 502 and 503, since they are no fault of the caller's,
-// and a code the route does not declare as 502 AGENT_SECRETS_REFUSAL_UNDECLARED
+// Dispatch's own ServiceAccount token at 502, and its RATE_LIMITED, which spends the bucket of the
+// address Dispatch calls from before any token is verified, at 503, since none of them is the
+// caller's fault, and a code the route does not declare as 502 AGENT_SECRETS_REFUSAL_UNDECLARED
 // (relayBrokerRefusalV2, R7). An id the broker holds no record of answers the broker's own 404
 // under one code of its object (R7). And a deny of a service's machine login that the code's
 // lookup read already denied answers the broker's 409 RECORD_TERMINAL as the no-op of R8, 200
@@ -81,17 +82,20 @@ var (
 	brokerStateInputRefusal               = apicode.Refusal{Condition: apicode.BrokerStateInput, Code: apicode.StateInput}
 )
 
-// brokerAccountRefusal is a refusal of Dispatch's own ServiceAccount token: the status the broker
-// answers it at, and the refusal /api/v2 answers it as, under the broker's code at a status of
-// its own (apicode.AccountLacksPower says why).
+// brokerAccountRefusal is a refusal the broker answers Dispatch's own call with before the route
+// runs (brokerAccountRefusals): the status the broker answers it at, and the refusal /api/v2
+// answers it as, under the broker's code at a status of its own (apicode.AccountLacksPower and
+// apicode.RateLimited say why).
 type brokerAccountRefusal struct {
 	BrokerStatus int
 	Refusal      apicode.Refusal
 }
 
-// brokerAccountRefusals are the broker's refusals of Dispatch's own ServiceAccount token, which
-// every broker route a credential handler calls takes (accountAuth in the broker's route table),
-// so every call declares them.
+// brokerAccountRefusals are the refusals the broker answers Dispatch's own call with before the
+// route runs, on every broker route a credential handler calls, each of which takes accountAuth
+// (the broker's route table), so every call declares them: RATE_LIMITED, which spends the bucket
+// of the address Dispatch calls from before any token is verified, and the refusals of Dispatch's
+// own ServiceAccount token.
 var brokerAccountRefusals = []brokerAccountRefusal{
 	{http.StatusForbidden, apicode.Refusal{Condition: apicode.BrokerAccountLacksPower, Code: apicode.AccountLacksPower}},
 	{http.StatusForbidden, apicode.Refusal{Condition: apicode.BrokerAccountNotListed, Code: apicode.AccountNotListed}},
@@ -331,8 +335,8 @@ func (s *server) v2CredentialRows() []routeRow {
 				"whose approver is anyone, and any other is 403 NOT_APPROVER. A grant the broker saw move to another box " +
 				"each time it read it, three times in a row, is 409 GRANT_MOVING, revoking nothing; the same revoke " +
 				"succeeds once it stays put. A caller Dispatch calls a restricted member ends a grant only as the " +
-				"person its enrollment acts for: every other grant they may see is refused them with that same " +
-				"NOT_APPROVER, saying why. While Dispatch does not " +
+				"person its enrollment acts for: every other grant they may see is refused them with that same 403, " +
+				"saying why. While Dispatch does not " +
 				"answer the broker what kind of member the caller is (a timeout, a failed connection, a gateway's 502, " +
 				"503 or 504, Dispatch's own DATABASE_UNAVAILABLE or OIDC_ISSUER_UNAVAILABLE, or a 500 naming no code " +
 				"or INTERNAL, which Dispatch answers while its database fails), only the person the grant names as its " +

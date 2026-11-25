@@ -37,8 +37,9 @@ import (
 // always was. The one layer that reads the decision before the route resolves its caller is the
 // read-only gate inside it (refuseReadOnlyToken), which verifies no broker-issued token itself:
 // it answers a read-only token on every route outside the read class, and one that carries a cut
-// on every read but whoami. A personal token is the gate's own to resolve, and the gate carries
-// that result, its refusal included, as this carries its decision.
+// on every read but GET /api/v1/whoami and GET /api/v2/me (readAnswersCut). A personal token is
+// the gate's own to resolve, and the gate carries that result, its refusal included, as this
+// carries its decision.
 func (s *server) decideBrokerToken(handler http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if _, presented := ciphertoken.Presented(r); !presented {
@@ -120,8 +121,8 @@ var brokerPersonScopes = []string{model.ScopePerson}
 // (readClasses) and on GET /ws/live, ahead of the scope gate, the sign-in check, an account
 // entry's write as its account and everything else the route does. While no build answers a read
 // at a past time, it answers one that carries a cut 403 AS_OF_TOKEN_NOT_SERVED on every read but
-// GET /api/v1/whoami. On a read it serves, it is the session it names, reading as that session
-// does.
+// GET /api/v1/whoami and GET /api/v2/me. On a read it serves, it is the session it names, reading
+// as that session does.
 //
 // Each refusal is its own code, and none of them repeats the token the caller presented:
 //

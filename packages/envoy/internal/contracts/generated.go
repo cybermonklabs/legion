@@ -572,10 +572,10 @@ const DispatchSignInRequired = "SIGN_IN_REQUIRED"
 const DispatchReadOnlyToken = "READ_ONLY_TOKEN"
 
 // DispatchAsOfTokenNotServed is the code of the 403 for a request by a read-only token that
-// carries a cut (as_of) to a read route other than GET /api/v1/whoami: no build serves a read at
-// a past time yet, so the route ran nothing rather than answer with the present. Generated from
-// DISPATCH_AS_OF_TOKEN_NOT_SERVED in packages/contracts so the server's refusal and every
-// client's reading of it cannot drift apart.
+// carries a cut (as_of) to a read route other than GET /api/v1/whoami and GET /api/v2/me: no
+// build serves a read at a past time yet, so the route ran nothing rather than answer with the
+// present. Generated from DISPATCH_AS_OF_TOKEN_NOT_SERVED in packages/contracts so the server's
+// refusal and every client's reading of it cannot drift apart.
 const DispatchAsOfTokenNotServed = "AS_OF_TOKEN_NOT_SERVED"
 
 func NowMillis() int64 {

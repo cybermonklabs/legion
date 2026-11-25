@@ -1053,7 +1053,7 @@ totals as (
 // where main's arm drops it inside the ordered select. So 1,001 windows of comments that no longer
 // exist, nearer than a project's three comments, would answer that project with none of them,
 // where main answers all three (measured on such a corpus, INFRA-988). It loses no row today
-// because no path deletes a comment row: a comment's delete (deleteComment, dispatch://INFRA-1523)
+// because no path deletes a comment row: a comment's delete (deleteCommentAs, dispatch://INFRA-1523)
 // keeps the row and clears its body, and nothing outside the tests runs `delete from comments`.
 // That delete drops the comment's windows in its own transaction (clearDeletedPostBody,
 // refs.TombstoneItem), so no window of a deleted comment is left for this join to read; one

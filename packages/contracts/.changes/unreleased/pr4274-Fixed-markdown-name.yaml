@@ -16,6 +16,3 @@ body: |-
   trims them, and the tool specs refuse a `done` status's reason, a `changes_requested` review's
   reason and a result's `retract` reason that Dispatch would read as blank (U+0085 alone), while
   they let through one Dispatch reads as content (U+FEFF alone).
-  The refusal of an upload under the name of a document the owner already holds
-  (`ARTIFACT_NAME_EXISTS_RULE`) says that over a file, which has no token, the upload is sent again
-  with `--force` alone.

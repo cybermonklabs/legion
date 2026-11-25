@@ -2,8 +2,8 @@
  *  mints read a running Dispatch and write nothing. Dispatch serves a read-only token on every GET
  *  route it classes as a read (`readClasses`, packages/envoy/internal/dispatch/api/read_classes.go)
  *  and answers it 403 READ_ONLY_TOKEN on every other route and on GET /ws/live. It answers one
- *  that carries a cut 403 AS_OF_TOKEN_NOT_SERVED on every read but GET /api/v1/whoami. Four tokens
- *  show it:
+ *  that carries a cut 403 AS_OF_TOKEN_NOT_SERVED on every read but GET /api/v1/whoami and GET
+ *  /api/v2/me. Four tokens show it:
  *
  *  - The read entry's (BROKER_EXCHANGE_READ_ACCOUNTS). Its pod's trade asks for no scope and gets
  *    the scope `read` alone, with no person and no project. It reads the issue and is refused a

@@ -362,7 +362,7 @@ func (s *server) createStoredMessage(
 	}
 	// A reply adds text under the message it answers, and a deleted post takes none: the
 	// thread reply is refused as the delivery callback's reply is (message_delivery.go's
-	// replyMessage), on the parent row this read already holds. Only the message in_reply_to
+	// answerMessageDelivery), on the parent row this read already holds. Only the message in_reply_to
 	// named is judged, and a reply written before the delete keeps its text and its place.
 	if parent.Deleted {
 		return model.Message{}, nil, deletedPostError(refs.ItemMessage)

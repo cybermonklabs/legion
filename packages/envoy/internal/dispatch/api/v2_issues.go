@@ -347,12 +347,20 @@ func (s *server) v2IssueRows() []routeRow {
 					{Status: http.StatusConflict, Body: foreignChildOpenError{}},
 					{Status: http.StatusConflict, Body: parentStatusConflictBody{}},
 					{Status: http.StatusConflict, Body: statusChangeConflict{}},
+					// The status-change form's refusals carry changed at every status the handler
+					// or the keyed layer answers one at (writeStatusChangeRefusal,
+					// refuseStatusChangeKey): the keyed layer resolves the caller, so a credential
+					// that does not resolve is refused there at 401, 429 or 503, and a close's or a
+					// reopen's document work refuses at 503.
 					{Status: http.StatusConflict, Body: statusChangeRefusal{}},
 					{Status: http.StatusBadRequest, Body: statusChangeRefusal{}},
+					{Status: http.StatusUnauthorized, Body: statusChangeRefusal{}},
 					{Status: http.StatusForbidden, Body: statusChangeRefusal{}},
 					{Status: http.StatusNotFound, Body: statusChangeRefusal{}},
 					{Status: http.StatusUnprocessableEntity, Body: statusChangeRefusal{}},
+					{Status: http.StatusTooManyRequests, Body: statusChangeRefusal{}},
 					{Status: http.StatusInternalServerError, Body: statusChangeRefusal{}},
+					{Status: http.StatusServiceUnavailable, Body: statusChangeRefusal{}},
 				},
 			},
 			Scope: scopeProject, ProjectOf: projectPathIssue,

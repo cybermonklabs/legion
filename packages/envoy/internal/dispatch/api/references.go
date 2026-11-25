@@ -940,7 +940,7 @@ func (s *server) getArtifactReferences(w http.ResponseWriter, r *http.Request) {
 // It hashes the answer rather than what the answer is made of because a member moves without
 // anything this issue holds moving with it. A member is a document of another owner (no member
 // is one of this issue's own documents, refs.Closure), and that owner's writes append their
-// events there: a rename of the document (artifact.renamed, renameArtifact) changes the
+// events there: a rename of the document (artifact.renamed, renameArtifactTo) changes the
 // member's artifact.name, and the delete of a comment whose accepted suggestion named a version
 // after the comment's body renames that version (renameAcceptedVersion), while this issue's
 // event sequence, the closure and each member's latest version stand still. A row of links or

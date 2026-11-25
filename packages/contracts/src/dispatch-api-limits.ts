@@ -279,10 +279,10 @@ export const DISPATCH_READ_ONLY_TOKEN = "READ_ONLY_TOKEN";
 
 /**
  * The code of the `403` for a request by a read-only token that carries a cut (the broker's
- * `as_of`: the past time the token reads at) to a read route other than `GET /api/v1/whoami`.
- * No build serves a read at a past time yet, so Dispatch refuses the request before the route's
- * handler runs, and names the cut, rather than answer it with the present. On a route outside
- * the read class the same token is refused `DISPATCH_READ_ONLY_TOKEN`.
+ * `as_of`: the past time the token reads at) to a read route other than `GET /api/v1/whoami` and
+ * `GET /api/v2/me`. No build serves a read at a past time yet, so Dispatch refuses the request
+ * before the route's handler runs, and names the cut, rather than answer it with the present. On
+ * a route outside the read class the same token is refused `DISPATCH_READ_ONLY_TOKEN`.
  */
 export const DISPATCH_AS_OF_TOKEN_NOT_SERVED = "AS_OF_TOKEN_NOT_SERVED";
 
