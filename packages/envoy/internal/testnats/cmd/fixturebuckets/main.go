@@ -4,6 +4,10 @@
 // before it starts a listener on it:
 //
 //	fixturebuckets -url nats://127.0.0.1:4222 [-replicas 1]
+//	FIXTUREBUCKETS_URL=nats://127.0.0.1:4222 fixturebuckets [-replicas 1]
+//
+// A script whose URL can carry a credential, a password or a token, gives it in FIXTUREBUCKETS_URL:
+// every user of the machine reads a process's arguments, and only its owner its environment.
 //
 // It is a test fixture, not a product: it refuses a server that is not on this machine's loopback,
 // and nothing deployed runs it. The operator creates a deployment's buckets with `envoy-infra
@@ -33,16 +37,20 @@ func main() {
 // run provisions the server args name, and prints what it provisioned to stdout. Its output and
 // its errors name the server without the URL's user info (bus.NATSURLWithoutUserinfo): a rig can
 // hand it a URL an operator gave, from which nats.go reads a password or a token, and the rig
-// keeps the output in a log and prints it on a failure.
+// keeps the output in a log and prints it on a failure. The server is -url's, or FIXTUREBUCKETS_URL's
+// when -url is not given.
 func run(args []string, stdout io.Writer) error {
 	flags := flag.NewFlagSet("fixturebuckets", flag.ContinueOnError)
-	url := flags.String("url", "", "the fixture's own NATS server, on loopback")
+	url := flags.String("url", "", "the fixture's own NATS server, on loopback (FIXTUREBUCKETS_URL when not given)")
 	replicas := flags.Int("replicas", 1, "the copies each bucket is created with")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
+	if *url == "" {
+		*url = os.Getenv("FIXTUREBUCKETS_URL")
+	}
 	if *url == "" || flags.NArg() > 0 {
-		return fmt.Errorf("usage: fixturebuckets -url nats://127.0.0.1:<port> [-replicas N]")
+		return fmt.Errorf("usage: fixturebuckets -url nats://127.0.0.1:<port> [-replicas N], or FIXTUREBUCKETS_URL in place of -url")
 	}
 	server := bus.NATSURLWithoutUserinfo(*url)
 	if !bus.LocalNATSURL(*url) {

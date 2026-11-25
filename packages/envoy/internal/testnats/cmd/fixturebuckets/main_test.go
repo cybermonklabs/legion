@@ -45,3 +45,18 @@ func TestFixturebucketsNamesItsServerWithoutTheURLsUserInfo(t *testing.T) {
 		}
 	})
 }
+
+// fixturebuckets reads its server's URL from FIXTUREBUCKETS_URL when it is given no -url, so a rig
+// whose URL can carry a credential keeps it out of the process list, where every user of the
+// machine reads a process's arguments; a process's environment is its owner's alone.
+func TestFixturebucketsReadsItsServersURLFromTheEnvironment(t *testing.T) {
+	_, uri := testnats.Start(t)
+	t.Setenv("FIXTUREBUCKETS_URL", withPassword(t, uri))
+	var out bytes.Buffer
+	if err := run(nil, &out); err != nil {
+		t.Fatalf("provision the server FIXTUREBUCKETS_URL names: %v", err)
+	}
+	if !strings.Contains(out.String(), "provisioned "+uri+":") {
+		t.Fatalf("fixturebuckets printed %q, want the server FIXTUREBUCKETS_URL names provisioned as %s", out.String(), uri)
+	}
+}

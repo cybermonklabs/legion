@@ -844,8 +844,9 @@ describe.skipIf(withoutPython || withoutLibpq)("services_up", () => {
   /** services_up given a loopback Postgres URL and natsUrl, past every check to the provisioning
    * of that NATS: a psql that answers 500 to `SHOW max_connections`, a NATS probe that answers,
    * and a go that builds a fixturebuckets that fails, as the real one does on a server it cannot
-   * reach. Answers services_up's status, its output, fixturebuckets.log and the services
-   * directory. */
+   * reach. The fixturebuckets it builds, and a python3 first on PATH that runs the real one,
+   * append each argument they were given to argv.log, one a line. Answers services_up's status,
+   * its output, fixturebuckets.log, argv.log and the services directory. */
   function provision(natsUrl: string) {
     const dir = freshDir("services-provision");
     const bin = path.join(dir, "bin");
@@ -853,6 +854,18 @@ describe.skipIf(withoutPython || withoutLibpq)("services_up", () => {
     mkdirSync(bin);
     mkdirSync(path.join(services, "logs"), { recursive: true });
     mkdirSync(path.join(dir, "root", "packages", "envoy"), { recursive: true });
+    const argv = path.join(dir, "argv.log");
+    // The interpreter itself, not a version manager's shim, which would find this one on PATH.
+    const python = Bun.spawnSync(["python3", "-c", "import sys; print(sys.executable)"], {
+      env: childEnv,
+    })
+      .stdout.toString()
+      .trim();
+    writeFileSync(
+      path.join(bin, "python3"),
+      `#!/bin/sh\nprintf '%s\\n' "$@" >>${JSON.stringify(argv)}\nexec ${JSON.stringify(python)} "$@"\n`,
+      { mode: 0o755 }
+    );
     writeFileSync(
       path.join(bin, "psql"),
       `#!/bin/sh\ncase "$*" in *max_connections*) echo 500 ;; *) echo 1 ;; esac\n`,
@@ -863,7 +876,7 @@ describe.skipIf(withoutPython || withoutLibpq)("services_up", () => {
       `#!/bin/sh\ncase "$1 $2" in\n` +
         `"run ./internal/dispatch/store/cmd/connections") echo 29 ;;\n` +
         `"build -o")\n` +
-        `  printf '#!/bin/sh\\necho "fixturebuckets: nats: no servers available for connection" >&2\\nexit 1\\n' >"$3"\n` +
+        `  printf '#!/bin/sh\\nprintf "%%s\\\\n" "$@" >>${argv}\\necho "fixturebuckets: nats: no servers available for connection" >&2\\nexit 1\\n' >"$3"\n` +
         `  chmod +x "$3" ;;\n` +
         `esac\n`,
       { mode: 0o755 }
@@ -883,7 +896,12 @@ describe.skipIf(withoutPython || withoutLibpq)("services_up", () => {
       }
     );
     const log = path.join(services, "logs", "fixturebuckets.log");
-    return { ...result, log: existsSync(log) ? readFileSync(log, "utf8") : "", services };
+    return {
+      ...result,
+      log: existsSync(log) ? readFileSync(log, "utf8") : "",
+      argv: existsSync(argv) ? readFileSync(argv, "utf8") : "",
+      services,
+    };
   }
 
   // Catches: a provisioning of a given NATS whose failure names its URL with the password in it.
@@ -898,6 +916,20 @@ describe.skipIf(withoutPython || withoutLibpq)("services_up", () => {
       stderr: `skill-scenarios: fixturebuckets could not provision nats://127.0.0.1:4222 with the buckets a listener copies; see ${services}/logs/fixturebuckets.log\n`,
       log: "fixturebuckets: nats: no servers available for connection\n",
     });
+  });
+
+  // Catches: a given NATS's credential in the process list, where every user of the machine reads
+  // a process's arguments: fixturebuckets given it as -url, or nats_url_host's python3 given it as
+  // an argument. Both take the URL in their environment, which only its owner reads, as the
+  // listener takes NATS_URLS and psql the Postgres password.
+  test("a given NATS's URL reaches no process's arguments", () => {
+    const { code, argv } = provision(withPassword("127.0.0.1:4222"));
+    // Each argument that holds the password, with the password masked, so a failure names it.
+    const leaked = argv
+      .split("\n")
+      .filter((line) => line.includes("s3cret"))
+      .map((line) => line.replaceAll("s3cret", "<password>"));
+    expect({ code, ran: argv.length > 0, leaked }).toEqual({ code: 1, ran: true, leaked: [] });
   });
 });
 

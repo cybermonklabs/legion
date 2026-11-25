@@ -936,11 +936,13 @@ nats_ready() {
 # this machine's loopback as fixturebuckets reads it (bus.LocalNATSURL): localhost, or a loopback
 # address, read from the URL and never resolved, its root dot dropped. The host is what follows
 # the last `@` of the authority, as Go's net/url reads it, so it never holds the URL's user info. A
-# URL it cannot read prints nothing and fails.
+# URL it cannot read prints nothing and fails. python3 reads the URL from its environment, never
+# from its arguments: a given URL can carry a password or a token, and every user of this machine
+# reads a process's arguments.
 nats_url_host() {
-  python3 -c '
-import ipaddress, sys, urllib.parse
-raw = sys.argv[1].strip()
+  NATS_URL_HOST_URL=$1 python3 -c '
+import ipaddress, os, sys, urllib.parse
+raw = os.environ["NATS_URL_HOST_URL"].strip()
 if "://" not in raw:
     raw = "nats://" + raw
 try:
@@ -952,7 +954,7 @@ try:
     sys.exit(0 if host == "localhost" or ipaddress.ip_address(host).is_loopback else 1)
 except ValueError:
     sys.exit(1)
-' "$1"
+'
 }
 
 # connections_needed sets services_up's per_run, the connections one run's Dispatch server opens,
@@ -1058,9 +1060,10 @@ services_up() {
   (cd "$root/packages/envoy" && go build -o "$S/envoy-listener" ./cmd/listener &&
     go build -o "$S/fixturebuckets" ./internal/testnats/cmd/fixturebuckets)
   # No listener creates a bucket it copies: the batch provisions its own NATS with them before the
-  # listener starts. A given NATS's URL can carry a password, so the failure names the server as
-  # safe_url prints it, and fixturebuckets names it in its log without the URL's user info.
-  "$S/fixturebuckets" -url "$nats_url" >"$S/logs/fixturebuckets.log" 2>&1 ||
+  # listener starts. A given NATS's URL can carry a password or a token, so fixturebuckets takes it
+  # in its environment (FIXTUREBUCKETS_URL), out of the process list, the failure names the server
+  # as safe_url prints it, and fixturebuckets names it in its log without the URL's user info.
+  FIXTUREBUCKETS_URL=$nats_url "$S/fixturebuckets" >"$S/logs/fixturebuckets.log" 2>&1 ||
     fail "fixturebuckets could not provision $(safe_url "$nats_url") with the buckets a listener copies; see $S/logs/fixturebuckets.log"
   (umask 077 && openssl rand -hex 24 >"$S/envoy-token" && printf 'e2e-token\n' >"$S/dispatch-token")
   start_listener
