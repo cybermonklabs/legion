@@ -1246,7 +1246,12 @@ func natsConnectionError(err error) bool {
 // which the stream's ensure returns as the server's refusal arrives) after waitOutGrantRefusal,
 // each try logging streamRefusedLine at ERROR with the refused subject and the server's text; and
 // a NATS that cannot be reached (natsConnectionError) every startRetry for as long as it takes, so
-// a listener started before its NATS waits for it rather than exiting.
+// a listener started before its NATS waits for it rather than exiting; and a server that refuses
+// the connection itself for a connection limit, its own or the account's (connectionLimitRefusal),
+// after the same wait as a grant's refusal, each try logging connectionLimitLine at ERROR: the limit
+// is the account's or the server's state, which other connections change, and not the listener's
+// configuration, and every pod of the machine connects as one NATS user and would be refused
+// alike, so an exit would only send each pod into a crash loop.
 //
 // A credential the server refuses is the listener's own configuration, and a restarted pod reads
 // its credential again, so it ends the start, but only once each try's connect has waited it out
@@ -1284,6 +1289,12 @@ func connectListener(cfg config.Service, edge *edgeGrant, instance string, logge
 			waitOutGrantRefusal(logger, &refusedWait, streamRefusedLine, err, slog.String("stream", bus.Stream), slog.String("grant", grantName(edge)))
 			continue
 		}
+		if connectionLimitRefusal(err) {
+			logger.Error(connectionLimitLine, slog.String("error", err.Error()), slog.String("retry_in", refusedWait.String()))
+			time.Sleep(refusedWait)
+			refusedWait = nextRefusedWait(refusedWait)
+			continue
+		}
 		if !natsConnectionError(err) {
 			// The line keeps the words it had before it named the credential, which a reader
 			// matches (the natslive edge test reads "connect to NATS and reconcile the ... stream:
@@ -1294,6 +1305,18 @@ func connectListener(cfg config.Service, edge *edgeGrant, instance string, logge
 		logger.Warn("NATS connect failed; retrying", slog.String("retry_in", startRetry.String()), slog.String("error", err.Error()))
 		time.Sleep(startRetry)
 	}
+}
+
+// connectionLimitLine is the line a main connect the server refused for a connection limit logs at
+// each try (connectListener).
+const connectionLimitLine = "NATS connect refused by a connection limit; retrying"
+
+// connectionLimitRefusal reports whether err is a server refusing a connection for a connection
+// limit: its own (nats.ErrMaxConnectionsExceeded) or the account's
+// (nats.ErrMaxAccountConnectionsExceeded). Either is the server's state, which a connection that
+// closes frees, and never the listener's configuration (connectListener).
+func connectionLimitRefusal(err error) bool {
+	return errors.Is(err, nats.ErrMaxConnectionsExceeded) || errors.Is(err, nats.ErrMaxAccountConnectionsExceeded)
 }
 
 // endStartOnNATS ends a start whose main connect failed with err: it exits with
