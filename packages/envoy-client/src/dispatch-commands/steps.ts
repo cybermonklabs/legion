@@ -26,17 +26,18 @@ function stepLine(record: StepRecord): string {
   ].join(" ");
 }
 
-/** A task of the plan: the tasks it needs - `nothing` for none, and `are not recorded` where its
- *  plan node recorded none - then each step the plan gives it, at the state Dispatch answers for it
- *  from the runs of the plan's own run of the issue. */
+/** A task of the plan: the tasks it needs, as a list in brackets joined by commas, `[]` for none,
+ *  and `-` where its plan node recorded none, as `orDash` prints a field a record does not hold;
+ *  then each step the plan gives it, at the state Dispatch answers for it from the runs of the
+ *  plan's own run of the issue. A task id is lowercase letters, digits and hyphens, so neither `[]`
+ *  nor `-` is one, and the list holds no space, so it stays one field of the line. */
 function taskLine(
   task: string,
   needs: readonly string[] | null,
   planned: readonly PlannedStep[]
 ): string {
   const states = planned.map((step) => `${step.step} ${step.name} ${step.state}`);
-  const needed =
-    needs === null ? "are not recorded" : needs.length === 0 ? "nothing" : needs.join(", ");
+  const needed = needs === null ? "-" : `[${needs.join(",")}]`;
   return `task ${task} needs ${needed}: ${states.join(", ")}`;
 }
 

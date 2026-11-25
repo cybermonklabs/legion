@@ -143,7 +143,7 @@ describe("step-records-read.sh", () => {
   // after the header for a run, which answers this whole read UNKNOWN.
   test("the line of a task of the plan is no run, and a whole answer with it passes", () => {
     const taskLine =
-      "task default needs nothing: 1 planner passed, 2 implementer passed, 3 tester passed, 4 reviewer passed, 5 acceptance:owner passed";
+      "task default needs []: 1 planner passed, 2 implementer passed, 3 tester passed, 4 reviewer passed, 5 acceptance:owner passed";
     const { code, stdout } = read(`${[whole[0], taskLine, ...whole.slice(1)].join("\n")}\n`);
     expect(stdout).toContain(`PASS: ${key}: 10 records;`);
     expect(code).toBe(0);

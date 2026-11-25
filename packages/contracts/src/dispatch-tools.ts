@@ -2899,10 +2899,12 @@ export const dispatchToolSpecs = [
     description:
       "Print each task of an issue's plan and each step that ran on the issue, as the Legion " +
       "daemon recorded it at the step's start and at its end. The first line is `<KEY>: <n> " +
-      "steps in <m> tasks`. The tasks of the issue's newest plan come first, in the plan's " +
+      "steps in <m> tasks`, where m counts each task listed, a task of the plan with no run " +
+      "included. The tasks of the issue's newest plan come first, in the plan's " +
       "order, then each other task with a run, in the order each first ran. A task of the plan " +
-      "prints `task <task> needs <tasks>: <place> <step> <state>, ...`: the tasks it needs, " +
-      "nothing, or are not recorded where its plan node recorded none, then each step the plan " +
+      "prints `task <task> needs <needs>: <place> <step> <state>, ...`: needs is the tasks it " +
+      "needs as a list, [a,b], [] where it needs none, and - where its plan node recorded none, " +
+      "then each step the plan " +
       "gives it, where state is where Dispatch says it stands among the records of the plan's own " +
       "run: not started, running, or the result of its newest run there. Then each run of a step " +
       "of the task prints one line: `<task> " +
