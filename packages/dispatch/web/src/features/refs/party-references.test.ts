@@ -105,13 +105,9 @@ test("a party written only in code is mentioned nowhere", () => {
   );
 });
 
-// A reference names an agent by the wider rule the Agents page shows session ids under, where a
-// delivery route is `session:[A-Za-z0-9_-]+` (the server's `model.ParseRoute`). A body can
-// therefore write an agent address no route reaches. The server stores such a write as its
-// author wrote it, counts that party as somebody named and delivers to nobody for it
-// (`api.commentPartiesOf`): the composer says the same of the draft in front of the reader
-// rather than listing a party who is never told.
-test("an agent address no delivery route reaches names the draft and is delivered to nobody", () => {
+// The draft reader recognizes a session reference even when it cannot become a delivery target.
+// This says nothing about whether the server accepts a new comment carrying that reference.
+test("a non-routable agent reference names a party in the draft but gives no delivery target", () => {
   expect(draftParties("[x](dispatch://agent/a.b) please look.")).toEqual({
     named: true,
     targets: [],
