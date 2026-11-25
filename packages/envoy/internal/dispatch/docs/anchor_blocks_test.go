@@ -278,7 +278,7 @@ func TestBlockForQuoteLeavesTopLevelCrossBlockAnchorsUnpinned(t *testing.T) {
 }
 
 // The anchor block backfill pins a legacy comment anchor's block and states its anchored_in in one
-// transaction (T17b of dispatch://INFRA-1253's plan): the comment's row, which its update locks,
+// transaction (T17b of the issue-tree plan): the comment's row, which its update locks,
 // then the tuple through the store's writer at the sentinel. It takes the row's owner lock first,
 // in the row's own transaction (backfillAnchorBlock): a settlement holds that owner's lock while it
 // refreshes the anchors, and the two meet at the lock and the row alone

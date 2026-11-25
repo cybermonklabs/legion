@@ -10,8 +10,8 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
-// The shipped schema's parent and widened needs, each held to its reach (dispatch://INFRA-1253/spec
-// R2, R10 and R11). A parent names a block of a document of the writing issue or of an issue above
+// The shipped schema's parent and widened needs, each held to its reach (R2, R10 and R11 of the
+// issue-tree spec). A parent names a block of a document of the writing issue or of an issue above
 // it, or an ask, a comment or a message of one of those that is a conversation node, or a block of
 // one; it is refused at an item or item block no row holds under the issue its reference spells,
 // at one of a sibling tree, at one that is no conversation node (an agent's status comment, a

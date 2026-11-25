@@ -753,7 +753,7 @@ assertion prints `PASS: <n> <what>` on stderr, the first failure prints `FAIL:` 
 a run that reaches the end writes `all <n> assertions passed` as the one line on stdout, so a run
 cut short fails a reader that reads that line.
 
-`e2e/acceptance/seed-corpus.sh` writes the corpus the upgrade checks of dispatch://INFRA-1253
+`e2e/acceptance/seed-corpus.sh` writes the corpus the issue-tree upgrade checks
 read, through the API of the release before this branch: the server `e2e/acceptance/lib-baseline.sh`
 builds from `BASELINE_SHA` and boots, so every row of it is one that release's own writers left.
 It writes a project of eight issues. The first holds a spec, a `verification.md`, a `plan.md` and
@@ -764,7 +764,8 @@ upload, comments that cite blocks, messages, asks and recorded results; the seco
 Five more serve the render boundary's two counts and the conversion's dry run: one approved at its
 newest versions, one whose approval a later version supersedes, one approved and then asked for
 changes, one closed, and one holding a spec alone. The last has the size of the largest issue
-measured, INFRA-1308: 10,842 blocks over 243 documents, 34 comments, 34 messages and no ask. It
+measured, the memory experiment's measurement: 10,842 blocks over 243 documents, 34 comments,
+34 messages and no ask. It
 prints each issue it writes and each count with the time it was taken, the boundary's two counts
 (`pre_cutover_versions` and `standing_approvals`) among them, stops the server, keeps the database,
 and ends with `PASS: seed-corpus.sh complete 5 sections`. Its inputs:
@@ -826,7 +827,7 @@ and sources none of it, and `lib-baseline.sh`, `lib-processes.sh`, `lib-tree.sh`
 `seed-decisions.sh`, `node-visibility-census-lib.sh` and `node-visibility-census-stages.sh`
 (which `node-visibility-census.sh` sources) are files the drivers source, not drivers.
 
-The drivers of dispatch://INFRA-1253 and `seed-corpus.sh` also source `e2e/acceptance/lib-tree.sh`,
+The issue-tree drivers and `seed-corpus.sh` also source `e2e/acceptance/lib-tree.sh`,
 after `lib.sh` and, for a driver over rows an earlier release wrote, after `lib-baseline.sh`. It
 holds what they share, so no driver copies it: the request as the agent or as the person
 (`tree_send`, `tree_person_send`, and `tree_want`, whose failure names the request), the dev

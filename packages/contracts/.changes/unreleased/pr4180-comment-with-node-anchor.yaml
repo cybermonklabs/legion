@@ -1,0 +1,14 @@
+kind: Added
+body: |-
+  `CommentWithNodeAnchorSchema`: a comment as `GET /api/v1/issues/{key}/comments` and
+  `GET /api/v1/comments/{id}` answer a caller that sends `?node_anchor=true`, which is the comment
+  `CommentSchema` reads with the member `node_anchor` (`CommentNodeAnchorSchema`) where its anchor
+  names a node or a block: that node by kind and id with its state, the quote, the quote's
+  zero-based occurrence (null for a document anchor) and `orphaned`. `CommentSchema` does not
+  change: a comment on the text of a node answers `anchor: null` and no `node_anchor` to every read
+  without the parameter and in every `comment.*` event. `scripts/wire-against-main.ts` parses a file
+  of server answers, one `{schema, label, value}` a line, with the strict schemas of a checkout of
+  `main`, and with this package's own for a schema `main` does not export.
+time: 2026-11-25T18:00:00Z
+custom:
+    Issue: pr4180

@@ -310,7 +310,7 @@ func requireAnIssueReadReadsNoRelationTableWhole(t *testing.T, database *store.S
 	}
 }
 
-// TestGraphEdgesKeepsEveryRelationAcrossARollback holds the arms of dispatch://INFRA-1253's split
+// TestGraphEdgesKeepsEveryRelationAcrossARollback holds the arms of the issue-tree spec's split
 // of the issue relations and of a component's (c-view-arms): the arms over issues (child_of),
 // issue_links (blocked_by), artifacts (attached_to), components (part_of), component_depends
 // (depends_on) and issue_component_members (affects) answer the rows that name no node, and the
@@ -331,7 +331,7 @@ func requireAnIssueReadReadsNoRelationTableWhole(t *testing.T, database *store.S
 // row's own created_at, a component's snapshot's imported_at, an issue's components' updated_at -
 // and the old arms answer none of them: each moved relation reads once through the tuple arm, and
 // the store holds its new value alone, the old one retracted. The cases of an artifact's citations
-// and the deletion of dispatch://INFRA-1149's four arms are T8c's and T9's.
+// and the deletion of the graph-store spec's four arms are T8c's and T9's.
 //
 // A document's citations, T8c's: the release before's document, naming no node, cites the target
 // by a refs row that release wrote, which the arm over refs answers once before the backfill and

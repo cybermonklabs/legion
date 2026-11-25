@@ -614,7 +614,7 @@ func commentMarkInFragment(t *testing.T, service *Service, room, fragment, id st
 // comment mark in the spec's fragment, one no row records, goes once its TTL has passed, taken out
 // of the spec's fragment, while the mark of a comment anchored on the spec stays, though no row
 // anchored on the room's own tree artifact records either: the sweep reads what every document of
-// the room records before it touches any fragment (T12b of dispatch://INFRA-1253's plan).
+// the room records before it touches any fragment (T12b of the issue-tree plan).
 func TestAnIssueRoomsSettlementSweepsEachDocumentsFragmentAndKeepsWhatItsDocumentRecords(t *testing.T) {
 	database := storetest.Open(t)
 	room := createIssueRoom(t, database, 1)

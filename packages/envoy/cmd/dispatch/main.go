@@ -446,6 +446,14 @@ func main() {
 		slog.Error("dispatch: open database", "error", err)
 		os.Exit(1)
 	}
+	// Whether this boot creates the database from empty, read before the migrations make it: R26's
+	// step (graphcensus.RunTypedBlockSupertagsStep) restates the reads of a block's type on such a
+	// database with no fleet to wait for, since every block it will hold is written by this build.
+	migrated, err := store.Census(ctx, boot.DatabaseURL)
+	if err != nil {
+		slog.Error("dispatch: read whether the database is empty before its migrations", "error", err)
+		os.Exit(1)
+	}
 	if err := database.Migrate(ctx); err != nil {
 		slog.Error("dispatch: migrate database", "error", explainMigrateError(err))
 		os.Exit(1)
@@ -479,30 +487,10 @@ func main() {
 	renames := refs.NewRenames(renamePairs)
 	attributor := delivery.NewAttributor(renames)
 
-	// document_search (migration 20261101182447) holds each document's latest search vector,
-	// 20261101182454's trigger keeps it in step from the deploy on, and this fills it for the
-	// documents stored before that. It runs here, in committed batches, rather than as migration
-	// 20261101182501: one transaction over artifact_versions measured 35.5 s on a
-	// production-shaped database, and 20261101182454's trigger makes every concurrent version
-	// write to a document the pass has already written wait that whole transaction out
-	// (20261101182501's comment holds the measurement).
-	//
-	// A failure stops the boot, unlike the count below: this release's search reads
-	// document_search alone, so a process that served with the table unfilled would answer a
-	// search with documents missing. The rolling deploy keeps that correct - the release
-	// before this one serves every request until this process has filled the table and begins
-	// serving.
-	if filled, err := database.FillDocumentSearch(ctx); err != nil {
-		slog.Error("dispatch: fill document_search for the documents stored before this release", "error", err)
-		os.Exit(1)
-	} else if filled > 0 {
-		slog.Info("dispatch: filled document_search for the documents stored before this release", "rows", filled)
-	}
-
 	// The decisions step's first phase (docs.DecisionStep): every asks and ask_followers row the
 	// release before wrote is stated on its ask's node and marked, in committed batches, before
-	// this process serves, as document_search is filled above. A reading's check of its ask takes
-	// the answer from the node, which reads an ask the backfill has not stated as open, so a
+	// this process serves. A reading's check of its ask takes the answer from the node, which
+	// reads an ask the backfill has not stated as open, so a
 	// failure stops the boot, and the release before keeps serving in a roll until this process
 	// can. The process waits here for the step's lock only while the first phase owes a row, so a
 	// process that holds the lock, stalled or not, keeps no boot waiting when nothing is owed. Its
@@ -1039,7 +1027,7 @@ func main() {
 	// functions set it from the deploy on, and this labels the rows stored before it, in
 	// committed batches of its own (20261109120100 holds the cursor it records its place in).
 	//
-	// In the background, where the document_search fill above blocks the boot: a label costs
+	// In the background, and not on the boot's path: a label costs
 	// about 253 bytes of heap and 4.9 KiB of growth in the vector index, and the pass is one to
 	// two hours on a deployment of a million rows (INFRA-988, store.EmbeddingProjectKeyBatch), so
 	// a boot that waited for it would outlast any rollout. What waiting would buy is nothing a
@@ -1049,8 +1037,8 @@ func main() {
 	// (api/search.go, meaningProjectScope), and every batch moves rows onto the faster predicate
 	// the pass exists for. A failure is logged and the process serves on, for the same reason.
 	//
-	// Here, among the loops, and not beside the document_search fill above, because it needs the
-	// lease pool, which is opened below that: one process of a roll fills and the other skips,
+	// Here, among the loops, because it needs the lease pool, which the boot opens before this:
+	// one process of a roll fills and the other skips,
 	// since two of them would each pay the same hours for one result. The process that skipped
 	// tries again every five minutes until the labelling is over, so a holder killed mid-pass
 	// costs the fill that wait rather than lasting until something next boots
@@ -1114,7 +1102,7 @@ func main() {
 	// run on a goroutine of their own, as the embedding fill's do, so no pod's readiness waits for
 	// them (startBootBackfill, runBootBackfill). Two processes that boot together each run it, which
 	// the backfill allows.
-	startBootBackfill(ctx, database, boot)
+	startBootBackfill(ctx, database, boot, migrated.Fresh)
 	// The block index: each document version no block-aware write indexed - every document at
 	// migration 0121, each version a build without the block index writes during a roll, and each
 	// rebuild-refs marks - and each comment, ask and issue message citing a block (`#b-`) that such
@@ -2662,8 +2650,10 @@ func bootBackfillHorizonBound(boot bootConfig) time.Duration {
 // logged which and ended. So the record, and the line a skip or a failure logs, come before
 // anything the boot does after this call, and nothing of the boot waits for the passes.
 // DISPATCH_TEST_HOLD_BOOT_BACKFILL, under the test hooks, holds the passes once the horizon is
-// recorded, until the process stops.
-func startBootBackfill(ctx context.Context, database *store.Store, boot bootConfig) {
+// recorded, until the process stops. Once the run has logged that it is done, the same goroutine
+// runs R26's step (graphcensus.RunTypedBlockSupertagsStep), which a run that logged no done line
+// never reaches; fresh says this boot created the database from empty.
+func startBootBackfill(ctx context.Context, database *store.Store, boot bootConfig, fresh bool) {
 	var run graphcensus.BackfillRun
 	record := func(ctx context.Context) error {
 		var err error
@@ -2681,6 +2671,10 @@ func startBootBackfill(ctx context.Context, database *store.Store, boot bootConf
 			}
 			_, err := run.Passes(ctx, io.Discard)
 			return err
+		}, func(ctx context.Context) {
+			if err := graphcensus.RunTypedBlockSupertagsStep(ctx, database, buildCommit, fresh, slog.Default()); err != nil {
+				slog.Error("dispatch: the typed block supertags step failed", "error", err)
+			}
 		})
 	}()
 	select {
@@ -2702,7 +2696,9 @@ func startBootBackfill(ctx context.Context, database *store.Store, boot bootConf
 //     beside it as a finding;
 //   - any other error of the run, one beside such rows included: that error and no done line, so
 //     what waits for the backfill's end waits for the next boot's run.
-func runBootBackfill(ctx context.Context, logger *slog.Logger, record func(context.Context) error, run func(context.Context) error) error {
+//
+// afterDone, where it is not nil, runs right after each done line, on the same goroutine.
+func runBootBackfill(ctx context.Context, logger *slog.Logger, record func(context.Context) error, run func(context.Context) error, afterDone func(context.Context)) error {
 	if err := record(ctx); err != nil {
 		var bound *graphcensus.HorizonBoundError
 		if errors.As(err, &bound) {
@@ -2715,11 +2711,17 @@ func runBootBackfill(ctx context.Context, logger *slog.Logger, record func(conte
 	err := run(ctx)
 	if err == nil {
 		logger.Info(bootBackfillDoneLine)
+		if afterDone != nil {
+			afterDone(ctx)
+		}
 		return nil
 	}
 	if moved, only := graphcensus.OnlyProjectMoved(err); only {
 		logger.Warn(bootBackfillDoneLine, "project_moved", moved,
 			"finding", "rows whose node the store holds in another project, which no run of the backfill writes")
+		if afterDone != nil {
+			afterDone(ctx)
+		}
 		return nil
 	}
 	logger.Error("dispatch: boot backfill failed", "error", err)

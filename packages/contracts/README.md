@@ -24,6 +24,10 @@ Run each from this directory.
   stale one and writes nothing.
 - `bun run gen:api` rewrites `src/dispatch-api.generated.ts`; `bun run check:api` compares it and
   writes nothing.
+- `bun scripts/wire-against-main.ts <main's packages/contracts/src> <wire file>` parses each
+  `{schema, label, value}` line of the wire file with main's strict schema of that name (this
+  package's own where main has none) and prints `PASS: wire-against-main <n> lines` or each
+  refused line with its problems.
 
 ## Generated files
 

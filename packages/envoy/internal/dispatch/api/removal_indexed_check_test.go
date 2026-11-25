@@ -215,6 +215,7 @@ func TestEachForeignKeyCheckOfARemovalProbesAnIndex(t *testing.T) {
 	}
 
 	// The removal behind a held lock.
+	createTestProject(t, handler, "TEST")
 	issue := titleIssue(t, handler, "A document removed behind a held lock")
 	document := emptyDocument(t, handler, issue.Key, "Removal notes")
 	holder, err := database.Pool.Begin(ctx)

@@ -71,6 +71,22 @@ const resultRevisionExemption = "a result recorded or retracted moves the record
 	"node and no value or relation out of one: a result is none of those nodes, and its tuple to its check is a relation " +
 	"out of the result (TestARecordedResultAndItsRetractionChangeNoRequirementCriterionOrCheck)"
 
+// nodeMoveRevisionExemption is why specWriterRevisions leaves the versions the node PATCH's drain
+// appends unchecked.
+const nodeMoveRevisionExemption = "a node move checks its writer before it moves anything (refuseSpecWriterOfNode in " +
+	"moveNode, node_move.go): a requirement, criterion or check moves, and so has a relation out of it written, only for " +
+	"a person or an architect of the issue's tree; the version DrainOwedQueries then appends re-renders each query " +
+	"document whose record the move changed from the store, and writes no node and no relation beyond the move the " +
+	"check admitted"
+
+// nodeDeleteRevisionExemption is why specWriterRevisions leaves the versions the node DELETE's
+// drain appends unchecked.
+const nodeDeleteRevisionExemption = "a node delete checks its writer before it takes anything (refuseSpecWriterOfNode in " +
+	"node_delete.go, once for each issue and document the subtree holds): a requirement, criterion or check is taken, " +
+	"and so has the relations out of it retracted, only for a person or an architect of the issue's tree; the version " +
+	"DrainOwedQueries then appends re-renders each query document whose record the delete changed from the store, and " +
+	"writes no node and no relation beyond the delete the check admitted"
+
 // specWriterRevisions names every route whose path reaches specWriterRevision, with the reason
 // the version it appends there is left unchecked. TestEveryRouteThatWritesADocumentChecksItsWriter
 // holds the table to it both ways (unheldQueryRevisions): a route that reaches the revision and is
@@ -85,12 +101,14 @@ const resultRevisionExemption = "a result recorded or retracted moves the record
 // (requestActor, docs/socket_admission.go), or through a route whose own path this test holds to
 // the check, and every other mark is left by one of the routes specWriterRevisions names.
 var specWriterRevisions = map[string]string{
-	"POST /api/v1/issues/{key}/results": resultRevisionExemption,
-	"POST /api/v1/results/{id}/retract": resultRevisionExemption,
+	"POST /api/v1/issues/{key}/results":      resultRevisionExemption,
+	"POST /api/v1/results/{id}/retract":      resultRevisionExemption,
+	"PATCH /api/v1/issues/{key}/nodes/{id}":  nodeMoveRevisionExemption,
+	"DELETE /api/v1/issues/{key}/nodes/{id}": nodeDeleteRevisionExemption,
 }
 
 // anchoredWriteExemption is why specWriterExempt leaves the four anchored comment and ask routes
-// unchecked (dispatch://INFRA-4764/spec, Design, "The two writes R1 leaves as they are").
+// unchecked (the spec-writer spec's Design, "The two writes R1 leaves as they are").
 const anchoredWriteExemption = "an anchored comment, ask or suggestion writes a version (MarkQuote and SnapshotVersion, anchors.go) " +
 	"that adds only its writer's mark around words others wrote, and a comment or a suggestion is how a worker " +
 	"proposes a change to the architect; dispatch suggest posts on the two comment routes " +
@@ -117,12 +135,12 @@ var specWriterExempt = map[string]string{
 	"POST /api/v1/issues/{key}/artifacts/{slug}/premortem-convert": premortemConvertExemption,
 }
 
-// TestEveryRouteThatWritesADocumentChecksItsWriter holds R1 of INFRA-4764 - on a Legion-run
-// issue, a version of the spec or the Verification document from a writer who is no person and no
-// architect is refused on every route that writes one - to the server's own route inventory rather
-// than to a list of the routes that check today; and with it the rule that a write of a
-// requirement, criterion or check node's state, or of a pointer out of one, is held to the same
-// check, so the guard counts the node writes of specWriterNodeSinks beside the sinks.
+// TestEveryRouteThatWritesADocumentChecksItsWriter holds R1 of the spec-writer spec - on a
+// Legion-run issue, a version of the spec or the Verification document from a writer who is no
+// person and no architect is refused on every route that writes one - to the server's own route
+// inventory rather than to a list of the routes that check today; and with it the rule that a write
+// of a requirement, criterion or check node's state, or of a pointer out of one, is held to the
+// same check, so the guard counts the node writes of specWriterNodeSinks beside the sinks.
 //
 // The inventory is the table (routes_table.go) with its test hooks in, read from the source so that
 // each row's handler is read with it, and held to the table the server mounts. A row whose path

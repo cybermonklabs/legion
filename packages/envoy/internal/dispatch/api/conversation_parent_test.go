@@ -19,7 +19,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
-// conversationKinds are the item kinds of an issue's conversation (dispatch://INFRA-1253/spec R2),
+// conversationKinds are the item kinds of an issue's conversation (R2 of the issue-tree spec),
 // which only a node's parent may name.
 var conversationKinds = []pmdoc.BlockItemKind{pmdoc.BlockItemAsk, pmdoc.BlockItemComment, pmdoc.BlockItemMessage}
 
@@ -270,11 +270,11 @@ func conversationAttributes(schema pmdoc.BlockSchema) (declaring, from []string)
 	return declaring, from
 }
 
-// c-conversation-parent, its second test (dispatch://INFRA-1253/spec R2: "The tie is the parent
+// c-conversation-parent, its second test (R2 of the issue-tree spec: "The tie is the parent
 // tuple and nothing else"). The schema half: the whole schema the store's type nodes build holds
 // no attribute but parent that declares the conversation's kinds, and none called from. A planted
 // second attribute declaring them, and a planted from, in a copy of that schema, are found by the
-// same search that finds none in the real one. The walk-up half (T7 of dispatch://INFRA-1253's
+// same search that finds none in the real one. The walk-up half (T7 of the issue-tree
 // plan): from a block whose parent is a comment's block, the walk up the chain the block index
 // climbs (refs.PartOfChains) reaches the comment and the words in it; with the block's stored
 // parent value cleared in the store and its part_of left, the same walk reaches the same comment,

@@ -6,7 +6,7 @@ import (
 	"slices"
 )
 
-// NodeTextMove is what a move of the node route (R7 of dispatch://INFRA-1253: api's PATCH
+// NodeTextMove is what a move of the node route (R7 of the issue-tree spec: api's PATCH
 // /api/v1/issues/{key}/nodes/{id}) writes into the tree of the document that holds the block it
 // moves: the block's id (Block); whether Markdown can show the block's new place (Nest), and the
 // block whose content its text then goes into (Container, "" for the document's top level); the

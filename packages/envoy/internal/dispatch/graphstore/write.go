@@ -225,6 +225,10 @@ type Uncaused struct {
 	sentinel bool
 	// appended, where Counting set it, counts the tuples the append appends (queueAppend).
 	appended *int64
+	// armless, where ArmlessFresh set it, is the kind of node for each of whose tuples the append
+	// leaves the conflict arm off where this write's own node write made the node
+	// (armlessAppend), "" for none.
+	armless string
 	// parts are the writes Joined holds as this one, each with the mark its own node write left,
 	// which QueueNodes and QueueCaused write one after another (split); nil for a write of one node
 	// write. Nodes and Tuples then hold theirs, in order, for a reader of what the joined write
@@ -252,8 +256,9 @@ func (w Uncaused) split() []Uncaused {
 // nodes of assigns to its key and the facts whose near end (FromKind, FromID) of assigns to it, in
 // write's order, so a writer causes each part under an event of its own (QueueCaused) - an issue
 // room's index pass, each part under the version event of the document it is of. A part keeps
-// the mark write's node write left on the rows of its nodes (nodeMark), with write's sentinel and
-// count (Counting), and its base attributes follow the facts of it that preceded write's own: the
+// the mark write's node write left on the rows of its nodes (nodeMark), with write's sentinel,
+// count (Counting) and armless append (ArmlessFresh), and its base attributes follow the facts of
+// it that preceded write's own: the
 // nodes of one write are parted, not written again, so each part's append states the base
 // attributes of its own nodes and moves them alone. A joined write (Joined) is parted part by
 // part, and each key's pieces are joined again.
@@ -279,13 +284,13 @@ func Parted(write Uncaused, of func(kind, id string) string) map[string]Uncaused
 		key := of(node.Kind, node.ID)
 		part := parted[key]
 		part.Nodes = append(part.Nodes, node)
-		part.mark, part.sentinel, part.appended = write.mark, write.sentinel, write.appended
+		part.mark, part.sentinel, part.appended, part.armless = write.mark, write.sentinel, write.appended, write.armless
 		parted[key] = part
 	}
 	for index, held := range write.Tuples {
 		key := of(held.FromKind, held.FromID)
 		part := parted[key]
-		part.Tuples, part.appended = append(part.Tuples, held), write.appended
+		part.Tuples, part.appended, part.armless = append(part.Tuples, held), write.appended, write.armless
 		if index < write.baseAt {
 			part.baseAt++
 		}
@@ -305,6 +310,28 @@ func Counting(write Uncaused, appended *int64) Uncaused {
 		write.parts = slices.Clone(write.parts)
 		for index := range write.parts {
 			write.parts[index] = Counting(write.parts[index], appended)
+		}
+	}
+	return write
+}
+
+// ArmlessFresh answers write with its append leaving the conflict arm off for each tuple of a node
+// of kind kind its own node write's insert made (armlessAppend): no statement before that insert
+// can have appended a tuple of such a node, so neither repeat key has a row for it to meet, and
+// the two arbiters every other tuple runs are waste. A tuple of a node that stood before the write,
+// and a tuple of a node of another kind, keeps the arm, so a publisher's retry of the write's
+// batch, whose nodes its first send made, appends nothing twice. It is for a writer whose write
+// states each fact of a node of that kind once, as a version's block index pass states each fact
+// of a block (refs.BlockIndexing): a fact such a write states twice would fail the append on its
+// repeat key rather than be dropped by it. The other nodes such a write makes - the authors it
+// names, whose aliases two of its parts may each state - keep the arm. A joined write (Joined) is
+// armless part by part.
+func ArmlessFresh(write Uncaused, kind string) Uncaused {
+	write.armless = kind
+	if write.parts != nil {
+		write.parts = slices.Clone(write.parts)
+		for index := range write.parts {
+			write.parts[index] = ArmlessFresh(write.parts[index], kind)
 		}
 	}
 	return write
@@ -493,7 +520,7 @@ func queueCausedPart(b *store.WriteBatch, write Uncaused, event int64) {
 	queueAppend(b, appending{
 		tuples: len(write.Tuples), tuple: stated,
 		nodes: write.Nodes, mark: write.mark, baseAt: write.baseAt,
-		cause: &event, sentinel: write.sentinel, appended: write.appended,
+		cause: &event, sentinel: write.sentinel, appended: write.appended, armless: write.armless,
 		run: b.Run(), changes: changes,
 	})
 }
@@ -527,18 +554,22 @@ var ErrProjectMoved = errors.New("a node's project never moves")
 // IsBaseAttribute is whether kind is the tuple kind of a base attribute (baseAttributes).
 func IsBaseAttribute(kind string) bool { return slices.Contains(baseAttributes[:], kind) }
 
-// The base attributes a node write states for one node, as its mark carries them (nodeMarks).
+// The base attributes a node write states for one node, as its mark carries them (nodeMarks), and
+// markInserted beside them, which says the write's insert made the node: no attribute, and no tuple
+// states it, but the append of an armless write (ArmlessFresh) leaves the conflict arm off for the
+// tuples of such a node, which no earlier statement can have appended.
 const (
 	markVisibility = 1 << iota
 	markState
 	markProject
 	markParties
+	markInserted
 )
 
-// markMade is the attributes a node write states for a node it makes, in the SQL of a select over
-// the arrays it binds (nodeArrays): visibility and state always, and project and parties where the
-// node carries each.
-var markMade = strconv.Itoa(markVisibility|markState) +
+// markMade is the mark a node write leaves on a node it makes, in the SQL of a select over the
+// arrays it binds (nodeArrays): the attributes it states, visibility and state always and project
+// and parties where the node carries each, and markInserted.
+var markMade = strconv.Itoa(markVisibility|markState|markInserted) +
 	` + case when project_key is not null then ` + strconv.Itoa(markProject) + ` else 0 end` +
 	` + case when parties is not null then ` + strconv.Itoa(markParties) + ` else 0 end`
 
@@ -547,7 +578,8 @@ var markMade = strconv.Itoa(markVisibility|markState) +
 // negative source_event, -(mark*markSpan + attributes), where mark names the write and
 // attributes are the base attributes it states for the node (markVisibility, markState,
 // markProject, markParties: visibility and state for a node it made, with project and parties
-// where it carries them, and for a node already there each one the write moved). No event has a
+// where it carries them, and for a node already there each one the write moved), with
+// markInserted for a node it made. No event has a
 // negative id, and a row carries the mark only between two statements of one transaction, the
 // node write and the append, which run in one write phase or one after the other in a transaction
 // that holds the node's row from the first: no other transaction sees it, and the transaction's
@@ -569,9 +601,9 @@ func nextNodeMark() int64 {
 	return nodeMarks.Add(1)%(1<<40) + 1
 }
 
-// markSpan is how many values the four attributes a mark carries can take, so neither the mark nor
-// its attributes reaches the other.
-const markSpan = (markVisibility | markState | markProject | markParties) + 1
+// markSpan is how many values the four attributes and markInserted a mark carries can take, so
+// neither the mark nor its attributes reaches the other.
+const markSpan = (markVisibility | markState | markProject | markParties | markInserted) + 1
 
 // markSQL is the source_event a node write leaves on a row: -(mark*markSpan + attributes), mark
 // bound as the parameter at markParam.

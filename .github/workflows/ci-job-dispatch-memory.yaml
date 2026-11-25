@@ -64,6 +64,8 @@ jobs:
         run: |
           pattern=$(../../.github/scripts/go-tagged-tests.sh memory ./cmd/dispatch)
           go test -tags memory -count=1 -timeout 60m -v -run "$pattern" ./cmd/dispatch
+          pattern=$(../../.github/scripts/go-tagged-tests.sh memory ./internal/dispatch/docs)
+          go test -tags memory -count=1 -timeout 30m -v -run "$pattern" ./internal/dispatch/docs
         working-directory: packages/envoy
 
       - name: Report ci-ok when this job decides a merge-group run

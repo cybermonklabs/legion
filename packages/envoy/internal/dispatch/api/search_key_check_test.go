@@ -291,9 +291,20 @@ func TestSearchFollowsABlockThatChangesOwner(t *testing.T) {
 	if held != 1 {
 		t.Errorf("node_search holds %d rows naming the node %s with the word %q, want 1", held, address, word)
 	}
+	// The route answers the node that matched rather than a document: the spec's one document hit
+	// names the block that holds the word. The issue's own vector carries its spec's text
+	// (migration 20261105145242), so the issue may answer beside it; an issue hit is no document
+	// and names no block.
 	lexical := searchResponse(t, handler, "q="+word+"&keywords_only=true")
-	if hits := searchKeyHits(lexical); len(hits) != 1 || hits[0].block != firstBlock {
-		t.Errorf("the search route answers %+v for %q, want one hit naming the node %s that matched rather than a document", hits, word, address)
+	var documentHits []searchKeyHit
+	for _, hit := range searchKeyHits(lexical) {
+		if hit.kind == "document" {
+			documentHits = append(documentHits, hit)
+		}
+	}
+	if len(documentHits) != 1 || documentHits[0].id != issue.PrimaryArtifactID || documentHits[0].block != firstBlock {
+		t.Errorf("the search route answers the document hits %+v for %q, want one, the spec %s, naming the node %s that matched rather than the document alone",
+			documentHits, word, issue.PrimaryArtifactID, address)
 	}
 
 	// The trigger, its function and document_search stay in place, and the trigger still fills

@@ -311,7 +311,9 @@ type owedOutcome struct {
 // settlement mark: it is read again once a write moves either.
 type liveAheadDocuments map[string]owedDocument
 
-// ReconcileBlockIndex runs one tick: first the read of the events after its build's cursor, which
+// ReconcileBlockIndex runs one tick: first the repair of the versions whose version_renders rows a
+// pass marked tree_mismatch before the tick began (repairTreeMismatches, R15), then the read of the
+// events after its build's cursor, which
 // marks owed every document they name that this build's store has not stated at its version and
 // gives every comment they name whose row names no node its node (readEventsAfterCursor), then,
 // while this build owes it, the object pass: the nodes of the issues, documents, asks and messages
@@ -354,7 +356,17 @@ func (s *Service) ReconcileBlockIndex(ctx context.Context, cursors BlockIndexCur
 	}
 	after := cursors.Documents
 	tick := BlockIndexTick{Cursor: BlockIndexCursors{Documents: after}}
-	// The read of the events runs first, so a document it marks is listed by this tick's batch
+	// The repair runs first, over the rows marked when the tick begins, so a mark this tick's own
+	// passes set is repaired at the next tick at the earliest, once its room has had a tick to show
+	// an update in flight. A repair that fails is logged and holds back nothing else of the tick:
+	// every mark it did not repair stays for the next.
+	if err := s.repairTreeMismatches(ctx); err != nil {
+		if ctx.Err() != nil {
+			return tick, ctx.Err()
+		}
+		slog.Error("dispatch: block index could not repair the versions marked tree_mismatch", "error", err)
+	}
+	// The read of the events runs next, so a document it marks is listed by this tick's batch
 	// below and drained by it when the batch has room. A read that fails is logged and holds back
 	// nothing else of the tick: the cursor stays where it was, and the next tick reads the same
 	// events again. The object pass runs after it, so the node of a document the read marks is
@@ -1224,6 +1236,21 @@ func (s *Service) reindexScope(ctx context.Context, doc string) error {
 // the close could not settle, are saved by that settlement (RunSettlementResumption takes such a
 // document when no room does), so a block is first indexed at the first version that holds it.
 //
+// The live read can hold an update of the room this process holds that the store has not taken
+// yet - one whose durable append is in flight, whose pending row it writes only with that append,
+// or one the room committed and no drainer has classified - so after that read, and with no
+// transaction held, the pass drains the room's update log and reads whether this process counts
+// such an update or such an append (roomHoldsUnstoredUpdate); where it does, the document is live
+// ahead as where its pending row stands, and a later tick reads it again. So a document whose
+// live text differs from its latest version, with no pending row and no update in flight, holds
+// a version whose writer wrote a tree that does not render as the markdown it stored: the pass
+// states that tree at the version, as it always has, and marks the version's row tree_mismatch in
+// place of its time, its seq and its digest (recordTreeMismatch, R15), which a later tick repairs
+// (repairTreeMismatches).
+//
+// A pass that gives the version's row its time first - a deferred version's first pass - runs the
+// carry of R14 to it once the row stands, in its own transaction (commitPass, carryFirstStated).
+//
 // A document the server cannot read (ErrDocumentUnloadable, ErrDocOutsideSchema) or that has no
 // stored state has no block to show, so its latest version's markdown is indexed with no blocks.
 //
@@ -1278,6 +1305,9 @@ func (s *Service) indexOwedDocument(ctx context.Context, document owedDocument) 
 		case err != nil:
 			return false, false, err
 		}
+	}
+	if s.roomHoldsUnstoredUpdate(document.id) {
+		return false, true, nil
 	}
 
 	tx, err := s.store.Pool.Begin(ctx)
@@ -1345,11 +1375,14 @@ func (s *Service) indexOwedDocument(ctx context.Context, document owedDocument) 
 	if version != document.version || !owed {
 		return false, false, nil
 	}
+	mismatched := false
 	switch {
 	case unreadable || markdown == "" && len(blocks) == 0:
 		markdown, blocks = stored, nil
-	case markedAt != nil && markdown != stored:
+	case markdown != stored && markedAt != nil:
 		return false, true, nil
+	case markdown != stored:
+		mismatched = true
 	}
 	// The event that recorded this version is read before the index pass: it is the cause every
 	// node and tuple of the pass carries, and on this path it already exists, while on the
@@ -1375,18 +1408,65 @@ func (s *Service) indexOwedDocument(ctx context.Context, document owedDocument) 
 	}); err != nil {
 		return false, false, err
 	}
-	if err := ledger.runQueue(ctx, nil); err != nil {
-		return false, false, err
+	if mismatched {
+		slog.Warn("dispatch: block index stated a document whose live tree does not render as its latest version's stored markdown; the version's row is marked tree_mismatch and keeps its stored bytes until a repair",
+			"artifact", document.id, "version", version)
+		recordTreeMismatch(queued, tx, refs.OneVersion(document.id, version, versionAt))
 	}
-	if s.afterBlockIndexWrite != nil {
-		if err := s.afterBlockIndexWrite(document.id); err != nil {
-			return false, false, err
+	if err := s.commitPass(ctx, tx, ledger, func() error {
+		if s.afterBlockIndexWrite != nil {
+			return s.afterBlockIndexWrite(document.id)
 		}
-	}
-	if err := tx.Commit(ctx); err != nil {
+		return nil
+	}); err != nil {
 		return false, false, err
 	}
 	return true, false, nil
+}
+
+// restateDocumentVersion runs, in tx, the reconciliation's pass over one document that is its own
+// room at version, a version marked tree_mismatch the repair restates (repairDocumentMismatch),
+// from markdown, the version's stored markdown, its blocks and tree, the tree they were rendered
+// from (indexRenderedVersion's tick), as indexOwedDocument runs it over a document's newest version:
+// the event that recorded the version read before the pass, the pass's facts caused by it
+// (causeRoomFacts, over the document as its one fragment) and the stamp of its links with it
+// (stampVersionEvent).
+func (s *Service) restateDocumentVersion(ctx context.Context, tx pgx.Tx, owner artifactOwner, artifactID string, version int, versionAt time.Time, markdown string, blocks []model.ArtifactBlock, tree *pmdoc.Node) error {
+	eventID, err := versionEventID(ctx, tx, owner, artifactID, version)
+	if err != nil {
+		return err
+	}
+	_, stated, err := s.indexRenderedVersion(ctx, tx, artifactID, refs.OneVersion(artifactID, version, versionAt), nil, true, markdown, blocks, tree, nil)
+	if err != nil {
+		return err
+	}
+	if err := causeRoomFacts(ctx, tx, artifactID, map[string]graphstore.Uncaused{artifactID: stated}, map[string]int64{artifactID: eventID}, []string{artifactID}); err != nil {
+		return err
+	}
+	return write(ctx, tx, func(b *store.WriteBatch) error {
+		stampVersionEvent(b, artifactID, artifactID, version, versionAt, eventID)
+		return nil
+	})
+}
+
+// roomHoldsUnstoredUpdate reports whether room, as this process holds it, holds an update the
+// store has not taken yet, which a reconciliation's pass reads after its live read and with no
+// transaction held, before it reads the room's pending row under the owner lock (R15). It drains
+// the room's update log first (observeRoomDoc), as a read of a room behind the stored head drains
+// it (unstoredSnapshot): ygo appends each commit to that log under the document's lock, before any
+// observer of the commit runs, so the drain classifies every update the live read can hold, though
+// the room's own observer may still wait for the replica's lock. Then it reads whether this
+// process's record of the room counts an update its persistence has not taken or a durable append
+// that has not landed (hasPendingUpdates, hasDurableAppend): a classified update stays counted
+// until its append lands or the room drops it, and the append commits the room's pending row in
+// its own transaction (docs/append_writes.go), so a pass that reads the counts and then the row
+// sees the one or the other. A room this process does not hold has nothing to drain and counts
+// nothing: another process takes a room's updates in only from the stored head (roomCatchUps).
+func (s *Service) roomHoldsUnstoredUpdate(room string) bool {
+	if live := s.srv.GetDoc(room); live != nil {
+		s.observeRoomDoc(room, live)
+	}
+	return s.hasPendingUpdates(room) || s.hasDurableAppend(room)
 }
 
 // versionEventID is the id of the event that recorded version: its artifact.version, or for
@@ -1466,7 +1546,7 @@ func (s *Service) indexOwed(ctx context.Context, document owedDocument) owedOutc
 
 // indexOwedRoom reconciles the issue room document.room whole, on an owed mark of any of its
 // artifacts - a document its document_rooms rows hold, or its tree artifact (T12a of
-// dispatch://INFRA-1253's plan): never one artifact alone, so no pass writes a document_blocks row
+// the issue-tree plan): never one artifact alone, so no pass writes a document_blocks row
 // keyed by a converted document, and the pass that decides which blocks are gone reads every
 // fragment. It reads the room the server serves over every fragment of its layout (roomTree), with
 // no transaction held, then, under the tree artifact's owner lock, which every version write of
@@ -1485,13 +1565,24 @@ func (s *Service) indexOwed(ctx context.Context, document owedDocument) owedOutc
 // unreadable: it stays owed and nothing of it is indexed, rather than a fragment being indexed as
 // holding no blocks, so no pass removes a block it could not read.
 //
-// Otherwise it runs, in the transaction, the one pass under the tree artifact a settlement of the
-// room runs (indexRoom, over the fragments' own renderings laid end to end in the room's order,
-// fragmentsText), at the newest version of each fragment's document, each document's facts caused
-// by the event that recorded its version (causeRoomFacts), stamps each document's links with that
-// event, and clears the owed mark of every artifact of the room, the tree's own included: the
-// pass's fence (refs.PlanBlocks) clears the marks of the documents it indexes, and a document
-// holding no version is cleared here.
+// After its live read, and with no transaction held, it drains the room's update log and reads
+// whether this process counts an update of the room the store has not taken yet
+// (roomHoldsUnstoredUpdate), as indexOwedDocument does: where it does, the room is live ahead and
+// stays owed, since that update's pending row is written only with its append. So a fragment that
+// reads otherwise than its document's newest version, with no pending row and no update in
+// flight, is a version whose writer wrote a tree that does not render as the markdown it stored:
+// the pass states the room as it reads it, and marks that version's row tree_mismatch in place of
+// its time, its seq and its digest (recordTreeMismatch, R15), which a later tick repairs
+// (repairTreeMismatches). A version whose row the pass gives its time first takes the carry of
+// R14 in the pass's own transaction (commitPass).
+//
+// A room neither live ahead nor unreadable takes, in the transaction, the one pass under the tree
+// artifact a settlement of the room runs (stateRoom: indexRoom, over the fragments' own renderings
+// laid end to end in the room's order, fragmentsText), at the newest version of each fragment's
+// document. Each document's facts are caused by the event that recorded its version
+// (causeRoomFacts), each document's links are stamped with that event, and the owed mark of every
+// artifact of the room, the tree's own included, is cleared: the pass's fence (refs.PlanBlocks)
+// clears the marks of the documents it indexes, and a document holding no version is cleared there.
 //
 // The transaction reads, extracts and plans the whole pass before its first write (queueWrites),
 // as indexOwedDocument's does, so it holds a transaction id only for the pass's statements and the
@@ -1530,6 +1621,9 @@ func (s *Service) indexOwedRoom(ctx context.Context, document owedDocument) (ind
 	parts := read.layout.parts(tree, counts)
 	if parts == nil {
 		return false, false, false, fmt.Errorf("the tree of room %s does not part into its %d fragments", room, len(documents))
+	}
+	if s.roomHoldsUnstoredUpdate(room) {
+		return false, true, false, nil
 	}
 
 	tx, err := s.store.Pool.Begin(ctx)
@@ -1576,6 +1670,9 @@ func (s *Service) indexOwedRoom(ctx context.Context, document owedDocument) (ind
 		return false, false, false, err
 	}
 	versions := refs.Versions{}
+	// mismatched is each fragment's version the pass states from a fragment that reads otherwise
+	// than that version's stored markdown, with no pending row and no update in flight.
+	mismatched := refs.Versions{}
 	// markdowns is each fragment's own rendering, with its blocks' ranges in it (offsets): the text
 	// the pass indexes, laid end to end (fragmentsText), in which one that renders as no text holds
 	// no block.
@@ -1593,40 +1690,74 @@ func (s *Service) indexOwedRoom(ctx context.Context, document owedDocument) (ind
 				"room", room, "artifact", fragment, "error", err)
 			return false, false, true, nil
 		}
-		if markedAt != nil && markdown != latest[index].markdown {
-			return false, true, false, nil
+		if markdown != latest[index].markdown {
+			if markedAt != nil {
+				return false, true, false, nil
+			}
+			mismatched[fragment] = versions[fragment]
 		}
 		markdowns[index], offsets[index] = markdown, held
 	}
+	if err := s.stateRoom(queued, tx, owner, room, read.layout, documents, versions, parts, markdowns, offsets); err != nil {
+		return false, false, false, err
+	}
+	if len(mismatched) > 0 {
+		slog.Warn("dispatch: block index stated an issue room a fragment of which does not render as its document's latest version's stored markdown; that version's row is marked tree_mismatch and keeps its stored bytes until a repair",
+			"room", room, "documents", slices.Sorted(maps.Keys(mismatched)))
+		recordTreeMismatch(queued, tx, mismatched)
+	}
+	if err := s.commitPass(ctx, tx, ledger, func() error {
+		if s.afterBlockIndexWrite != nil {
+			return s.afterBlockIndexWrite(document.id)
+		}
+		return nil
+	}); err != nil {
+		return false, false, false, err
+	}
+	return true, false, false, nil
+}
+
+// stateRoom runs, in tx, the one pass under the issue room room's tree artifact a settlement of
+// the room runs (indexRoom), the reconciliation's (indexOwedRoom) or a repair's restate of it
+// (repairRoomMismatch): over parts, each fragment's part of the room in the order of
+// layout.documents (documents), with each fragment's own rendering and its blocks' ranges in it
+// (markdowns, offsets) laid end to end in the room's order (fragmentsText), at versions, the
+// version each fragment's document is stated at, none for a fragment whose document holds none.
+// Each document's facts are caused by the event that recorded its version (causeRoomFacts), and
+// each document's links stamped with that event. It then clears the owed mark of every artifact of
+// the room, the tree's own included: the pass's fence (refs.PlanBlocks) clears the marks of the
+// documents it indexes, and a document holding no version is cleared here.
+func (s *Service) stateRoom(ctx context.Context, tx pgx.Tx, owner artifactOwner, room string, layout roomLayout, documents []string, versions refs.Versions, parts []*pmdoc.Node, markdowns []string, offsets [][]pmdoc.BlockOffset) error {
 	if len(versions) > 0 {
 		joined, joinedCounts := joinFragments(parts)
 		markdown, laid := fragmentsText(markdowns, offsets)
-		blocks := offsetBlocks(laid, read.layout.blockDocuments(room, joined, joinedCounts))
+		blocks := offsetBlocks(laid, layout.blockDocuments(room, joined, joinedCounts))
 		// The events that recorded each version are read before the pass, as for one document:
 		// each document's is the cause of the facts the pass states of its blocks.
 		events := make(map[string]int64, len(versions))
 		for indexed, version := range versions {
-			if events[indexed], err = versionEventID(queued, tx, owner, indexed, version.Number); err != nil {
-				return false, false, false, err
+			var err error
+			if events[indexed], err = versionEventID(ctx, tx, owner, indexed, version.Number); err != nil {
+				return err
 			}
 		}
-		index, err := s.indexRoom(queued, tx, room, versions, nil, true, markdown, blocks, joined, nil)
+		index, err := s.indexRoom(ctx, tx, room, versions, nil, true, markdown, blocks, joined, nil)
 		if err != nil {
-			return false, false, false, err
+			return err
 		}
 		// Each document's part under its own stored event, in id order, the room's references with
 		// the part of the document whose event the stamps below give their rows.
 		facts := roomFactsByDocument(index, roomReferencesDocument(room, versions, events, slices.Sorted(maps.Keys(versions))))
-		if err := causeRoomFacts(queued, tx, room, facts, events, slices.Sorted(maps.Keys(facts))); err != nil {
-			return false, false, false, err
+		if err := causeRoomFacts(ctx, tx, room, facts, events, slices.Sorted(maps.Keys(facts))); err != nil {
+			return err
 		}
-		if err := write(queued, tx, func(b *store.WriteBatch) error {
+		if err := write(ctx, tx, func(b *store.WriteBatch) error {
 			for _, indexed := range slices.Sorted(maps.Keys(versions)) {
 				stampVersionEvent(b, room, indexed, versions[indexed].Number, versions[indexed].At, events[indexed])
 			}
 			return nil
 		}); err != nil {
-			return false, false, false, err
+			return err
 		}
 	}
 	// A document of the room holding no version is no part of the pass's fence, which cleared the
@@ -1635,27 +1766,13 @@ func (s *Service) indexOwedRoom(ctx context.Context, document owedDocument) (ind
 	// states it at the version it leaves by the Service's marking rule (refs.BlockIndexMarkingRule),
 	// so neither the backfill nor a tick marks it again; a mark of a higher rule stays for that rule's
 	// pass, as the fence leaves it (refs' queueStand).
-	if err := writeExec(queued, tx, fmt.Sprintf("clear the marks of room %s", room), `
+	return writeExec(ctx, tx, fmt.Sprintf("clear the marks of room %s", room), `
 		update document_block_versions set version = coalesce(version, 0),
 			store_owed_at = case when store_owed_rule <= $3 then null else store_owed_at end,
 			stated_version = coalesce(version, 0), stated_rule = $3
 		where (artifact_id = any($1::uuid[]) or artifact_id in (select d.artifact_id from document_rooms d where d.room = $2::uuid))
 		  and (version is null or store_owed_at is not null)
-	`, documents, room, s.markingRule); err != nil {
-		return false, false, false, err
-	}
-	if err := ledger.runQueue(ctx, nil); err != nil {
-		return false, false, false, err
-	}
-	if s.afterBlockIndexWrite != nil {
-		if err := s.afterBlockIndexWrite(document.id); err != nil {
-			return false, false, false, err
-		}
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return false, false, false, err
-	}
-	return true, false, false, nil
+	`, documents, room, s.markingRule)
 }
 
 // roomTree is the tree of the issue room room over every fragment of layout, joined as the room

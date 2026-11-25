@@ -15,32 +15,28 @@ import (
 
 // TestTheStateRouteRefusesAnAskBlockAndWritesTheAsk holds one question to one state
 // (askHoldsState). A spec holds one `:::ask` block, q1, and once settlement indexes its ask the
-// question is two nodes the store holds: the block, `<ref_key>#q1` at dispatch://<KEY>/spec#b-q1,
-// which is only the question's place in the spec, and its ask, ask/<uuid> at
-// dispatch://<KEY>/ask/<uuid>, whose node holds the question's state. alice's cookie writes
-// proposed, overtaken and live on the block by its dispatch address and proposed by its store
-// address, and settles it by its dispatch address: each is 409 ASK_HOLDS_STATE naming the ask, and
-// neither node moves its state or gains a state tuple. Her proposed by the ask's own address is
-// then written as on any other node: the ask's row holds proposed, its newest state tuple is
-// proposed written by her, and the block's row holds the state it held before.
+// question is two nodes the store holds: the block, `<tree ref_key>#q1` under the tree artifact of
+// the issue's room the spec is a fragment of (blockKeyOf), at dispatch://<KEY>/spec#b-q1, which is
+// only the question's place in the spec, and its ask, ask/<uuid> at dispatch://<KEY>/ask/<uuid>,
+// whose node holds the question's state. alice's cookie writes proposed, overtaken and live on the
+// block by its dispatch address and proposed by its store address, and settles it by its dispatch
+// address: each is 409 ASK_HOLDS_STATE naming the ask, and neither node moves its state or gains a
+// state tuple. Her proposed by the ask's own address is then written as on any other node: the
+// ask's row holds proposed, its newest state tuple is proposed written by her, and the block's row
+// holds the state it held before.
 func TestTheStateRouteRefusesAnAskBlockAndWritesTheAsk(t *testing.T) {
 	t.Parallel()
 	handler, database := blockAskHandler(t)
-	ctx := context.Background()
 	const question = "Ship the cache this week?"
 	issue := createInteractionIssue(t, handler, "TEST", "One question holds one state",
 		"Context\n\n:::ask{#q1 urgency=\"med\" multiple=\"false\"}\n"+question+"\n\n- Ship: Now.\n- Hold: Later.\n:::\n")
 	awaitIndexedAskBlock(t, handler, issue.PrimaryArtifactID, "q1", question)
 	askID := blockAskID(t, handler, issue.Key, "q1")
-	var blockNode string
-	if err := database.Pool.QueryRow(ctx, `select ref_key || '#q1' from artifacts where id = $1::uuid`,
-		issue.PrimaryArtifactID).Scan(&blockNode); err != nil {
-		t.Fatalf("read the store id of the block q1: %v", err)
-	}
+	blockNode := blockKeyOf(t, database, issue.PrimaryArtifactID) + "#q1"
 	block := "dispatch://" + issue.Key + "/spec#b-q1"
 	ask := "dispatch://" + issue.Key + "/ask/" + askID
 
-	blockBefore := readAskBlockNodeState(t, database, block)
+	blockBefore := readAskBlockNodeState(t, database, blockNode)
 	askBefore := readAskBlockNodeState(t, database, ask)
 	if askBefore.state == graphstore.StateProposed {
 		t.Fatalf("the ask %s is proposed before any write, so a write of proposed on it would move nothing", ask)
@@ -55,7 +51,7 @@ func TestTheStateRouteRefusesAnAskBlockAndWritesTheAsk(t *testing.T) {
 	requireRefused(t, "the settle of the ask block",
 		dispatchRequest(t, handler, http.MethodPost, statePath(issue.Key, block, "settle"), nil, "alice"),
 		http.StatusConflict, codeAskHoldsState, block, ask)
-	if after := readAskBlockNodeState(t, database, block); after != blockBefore {
+	if after := readAskBlockNodeState(t, database, blockNode); after != blockBefore {
 		t.Fatalf("the refused writes moved the block %s from %+v to %+v", block, blockBefore, after)
 	}
 	if after := readAskBlockNodeState(t, database, ask); after != askBefore {
@@ -77,7 +73,7 @@ func TestTheStateRouteRefusesAnAskBlockAndWritesTheAsk(t *testing.T) {
 		newest.Who.Kind != "user" || newest.Who.ID != "alice" {
 		t.Fatalf("the ask's newest state tuple is %s written by %+v, want proposed written by alice", newest.ToID, newest.Who)
 	}
-	if after := storedNodeOf(t, database, block); after.State != blockBefore.state {
+	if after := storedNodeOf(t, database, blockNode); after.State != blockBefore.state {
 		t.Fatalf("the write on the ask moved the block %s from %s to %s", block, blockBefore.state, after.State)
 	}
 }

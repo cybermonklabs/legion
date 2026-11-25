@@ -212,7 +212,7 @@ func markStale(ctx context.Context, q graphstore.Queryer, decisions []model.Deci
 // read of it answers them (TextSum over refs.DecisionWords, Decision.TextSHA256), and Shaped, the
 // sum of the same block rendered with its `shaped` attribute among its words, as
 // refs.DecisionWords rendered a decision before it left that attribute out (R32 of
-// dispatch://INFRA-1253's spec). The two are one sum for a decision that carries no `shaped`.
+// the issue-tree spec). The two are one sum for a decision that carries no `shaped`.
 type WordSums struct{ Sum, Shaped string }
 
 // WordSumsOf answers WordSums for each of nodes the store holds as an agent's decision (a block
@@ -906,8 +906,8 @@ func blockWords(tree *pmdoc.Node, typ, blockID string) (string, *pmdoc.Node, boo
 }
 
 // ownWords is a typed block's own words. An ask's are its question and its options (plan v17,
-// T8): the blocks of its content rendered alone, with no attribute of the block at all - neither
-// the server's state, answered_by, answered_at, selected, answer, copied_from and
+// T8), refs.AskWords': the blocks of its content rendered alone, with no attribute of the block at
+// all - neither the server's state, answered_by, answered_at, selected, answer, copied_from and
 // copied_from_document, which the roll window and the first write on one build write or drop, nor
 // the `shaped` pointers the conversion gives it, nor its urgency - and none of the readings it
 // closes with. So a version that changes none of those words changes no ask's words. A decision's
@@ -916,8 +916,7 @@ func blockWords(tree *pmdoc.Node, typ, blockID string) (string, *pmdoc.Node, boo
 // decision's words, and they are the words a Keep sums.
 func ownWords(block *pmdoc.Node) (string, error) {
 	if block.Type == askType {
-		content, _ := pmdoc.TypedContent(block)
-		return pmdoc.Render(&pmdoc.Node{Type: "doc", Children: content})
+		return refs.AskWords(block)
 	}
 	return refs.DecisionWords(block)
 }

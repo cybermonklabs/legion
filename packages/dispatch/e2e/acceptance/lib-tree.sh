@@ -1,5 +1,5 @@
 # shellcheck shell=bash
-# What the acceptance drivers of dispatch://INFRA-1253 share, so that no driver copies it: the
+# What the issue-tree acceptance drivers share, so that no driver copies it: the
 # request to a server as the agent or as the person, the person's dev sign-in and the project create
 # that names that person, the tree read, the two CLIs, and for a driver over rows an earlier release
 # wrote the boot of this head over them, the store backfill's run and the wait for the backfill, the
@@ -7,7 +7,7 @@
 # for an upgrade driver after lib-baseline.sh too, which this file reads but does not source: a
 # driver against `bun run dispatch:local` boots no server and has no use for it.
 #
-# The checks it serves are every driver check of the Verification document of dispatch://INFRA-1253
+# The checks it serves are every driver check of the issue-tree Verification document
 # (verification-md), and seed-corpus.sh, which writes the corpus several of them read:
 #   against `bun run dispatch:local` on infra_1253: c-reparent-and-state, c-coverage-states,
 #     c-issue-relations-read, c-conversation-holds-the-discussion, c-tree-read-views,

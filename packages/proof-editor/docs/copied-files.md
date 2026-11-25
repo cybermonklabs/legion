@@ -83,6 +83,11 @@ Biome's formatter, linter and `assist` are off over the copies, in the first ove
 
 28. Annotations, casts and assertions that make a file type-check, each of which erases before runtime.
 
+29. The `minutes` attribute kind, a duration a plan task's `size` is written in (`45m`, `2h`, `1h30m`).
+    In `src/block-schema.ts`: `minutesValueProblem`, the twin of pmdoc's `Minutes`, with its pattern and its bound, and `parseAttribute`'s `minutes` case calling it.
+    In `src/typed-block-commands.ts`: `validateValue`'s `minutes` case calling it.
+    In `src/tests/block-schema.test.ts`: its import and the suite's case for the kind.
+
 ## The two micromark copies
 
 `src/directive-factories.ts` and `src/html-flow.ts` have no counterpart in the fork.

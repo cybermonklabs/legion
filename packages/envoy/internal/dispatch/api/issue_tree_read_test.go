@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -702,7 +703,7 @@ func TestAKeepReachesADecisionOfAnIssueRoom(t *testing.T) {
 		}
 		keep := "/api/v1/artifacts/" + kept.document + "/blocks/" + kept.block + "/keep"
 		requireRefused(t, kept.name+" kept with a sum it does not hold", dispatchRequest(t, handler, http.MethodPost, keep,
-			map[string]any{"text_sha256": strings.Repeat("0", 64)}, "alice"), http.StatusConflict, "DECISION_CHANGED", "")
+			map[string]any{"text_sha256": strings.Repeat("0", 64)}, "alice"), http.StatusConflict, "DECISION_CHANGED")
 		succeeded(t, "keep "+kept.name, dispatchRequest(t, handler, http.MethodPost, keep, map[string]any{"text_sha256": decision.Decision.TextSHA256}, "alice"))
 		after, _ := treeRead(t, handler, issue.Key, "", "alice", false).node(t, refs.BlockNodeKind, node)
 		if after.Decision == nil || after.Decision.Kept == nil || after.Decision.Kept.KeptBy != "alice" || after.Decision.WaitingReview {
@@ -1037,19 +1038,41 @@ func requireDecisionsViewAsRead(t *testing.T, what string, view treeAnswer, read
 	return nodes
 }
 
+// decisionsQueryVersions is the id of the artifact row of the decisions query node of the issue
+// key, "" where the issue holds none, and the newest version that node holds, 0 where it holds
+// none: the node the tree read reads a version of `?view=decisions` from.
+func decisionsQueryVersions(t *testing.T, database *store.Store, key string) (string, int) {
+	t.Helper()
+	var id *string
+	var newest int
+	if err := database.Pool.QueryRow(context.Background(), `
+		select min(a.id::text), coalesce(max(v.number), 0)
+		from artifacts a
+		join graph_nodes n on n.kind = $2 and n.id = a.ref_key and n.supertag = $3 and n.attributes->>$4 = $5
+		left join artifact_versions v on v.artifact_id = a.id
+		where a.issue_key = $1`,
+		key, graphstore.KindArtifact, graphstore.SupertagQuery, graphstore.AttributeQuery, graphstore.QueryDecisions).Scan(&id, &newest); err != nil {
+		t.Fatalf("read the decisions query node of %s: %v", key, err)
+	}
+	return deref(id), newest
+}
+
 // TestTheDecisionsViewAnswersTheDecisionsQuery: an issue born converted and one that has not
-// converted each hold decisionsViewSpec, with its ask a1 answered and then closed by the reading
-// g2, a2 open, its decision d1, which holds the reading g1, kept by alice, d2 waiting for review,
-// and a constraint r1's constrained_by names. Each one's ?view=decisions answers every entry of the
-// decisions read as the query's, keyed and shaped as that read answers it
-// (requireDecisionsViewAsRead), the open question with its options, the kept decision with its
+// converted each hold decisionsViewSpec, with its ask a1 answered by a person and then closed by
+// the agent's reading g2, a2 open, its decision d1, which holds the reading g1, kept by alice, d2
+// waiting for review, and a constraint r1's constrained_by names. Each one's ?view=decisions
+// answers every entry of the decisions read as the query's, keyed and shaped as that read answers
+// it (requireDecisionsViewAsRead), the open question with its options, the kept decision with its
 // keeper, the waiting one waiting, the reading under its decision and the reading under the
 // answered ask's node, and no node of its query but an ask, a decision or a reading of a decision
 // or of an answered ask. Its ?view=spec answers, as context, d1 and the answered a1, each with its
 // shaped tuple to r1, and the constraint with r1's constrained_by, and neither the open a2, which
-// shaped r2, nor d2, which shaped nothing. A version of the decisions query node is answered as a
-// version no record holds.
+// shaped r2, nor d2, which shaped nothing. A version the decisions query node does not have is 404
+// QUERY_VERSION_NOT_FOUND on both issues; on the converted issue, version 1, the create's, answers
+// the view as it stood at the revision its row records, without g2, or 404
+// QUERY_VERSION_NOT_RECORDED where its row records none (R8).
 func TestTheDecisionsViewAnswersTheDecisionsQuery(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
 	documents := deps.Docs.(*docs.Service)
 	createReferenceAPIProject(t, handler, "CORE")
@@ -1070,9 +1093,10 @@ func TestTheDecisionsViewAnswersTheDecisionsQuery(t *testing.T) {
 		spec := readDecisionDocument(t, database, issue.Key, "spec")
 		answered, open := blockAskID(t, handler, issue.Key, "a1"), blockAskID(t, handler, issue.Key, "a2")
 		answerDecisionBlock(t, handler, answered, "bob", []string{"Urgency"}, "Urgency, then age.", nil)
-		// The reading g2 closes the answered a1, written as a person rewrites the spec around it.
-		uploadAs(t, handler, issue.Key, "spec.md",
-			withAskReading(t, documentMarkdown(t, handler, spec.id), "a1", "g2", "The agent reads the answer as urgency before age."), "alice")
+		// The agent's reading g2 closes the person's answered a1: an agent's reading inserted into
+		// a person's decision is taken (R32).
+		agentUploadAs(t, handler, issue.Key, "spec.md",
+			withAskReading(t, documentMarkdown(t, handler, spec.id), "a1", "g2", "The agent reads the answer as urgency before age."), nil)
 		settleIssue(t, documents, issue.Key)
 		kept := requireEntry(t, readEntries(t, handler, issue.Key), "the decision d1", refs.BlockNodeKind+":"+spec.address("d1"))
 		keepBlock(t, handler, spec.id, "d1", kept.TextSHA256)
@@ -1168,9 +1192,35 @@ func TestTheDecisionsViewAnswersTheDecisionsQuery(t *testing.T) {
 			}
 		}
 
-		// The decisions query node records no version of its own yet: a version of it is answered
-		// as a version no record holds.
-		requireRefused(t, what+": a version of the decisions query", treeResponse(t, handler, issue.Key, "?view=decisions&v=1", "alice", false),
-			http.StatusNotFound, "QUERY_VERSION_NOT_FOUND", "decisions query of "+issue.Key+" holds no version 1")
+		// A version of the decisions query node answers as R8's rule of v= reads that version. A
+		// version the node does not have is 404 QUERY_VERSION_NOT_FOUND on both issues: the issue
+		// that has not converted holds no query node at all. The converted issue's node holds the
+		// version 1 its create writes (R15), which answers the query's nodes as they stood at the
+		// store revision its version_renders row records, so with no reading g2, which came after
+		// it, and 404 QUERY_VERSION_NOT_RECORDED, naming version 1, where its row records none.
+		query, newest := decisionsQueryVersions(t, database, issue.Key)
+		if (query == "") != issueCase.unconverted || !issueCase.unconverted && newest < 1 {
+			t.Fatalf("%s holds the decisions query node %q at version %d, want one at version 1 or above exactly where the issue is converted", what, query, newest)
+		}
+		requireRefused(t, what+": a version the decisions query does not have", treeResponse(t, handler, issue.Key, fmt.Sprintf("?view=decisions&v=%d", newest+1), "alice", false),
+			http.StatusNotFound, "QUERY_VERSION_NOT_FOUND", fmt.Sprintf("decisions query of %s holds no version %d", issue.Key, newest+1))
+		if query == "" {
+			continue
+		}
+		first := treeResponse(t, handler, issue.Key, "?view=decisions&v=1", "alice", false)
+		if treeReadViewsRecorded(t, database, query, 1) == 0 {
+			requireRefused(t, what+": version 1 of the decisions query, which records no store revision", first, http.StatusNotFound, "QUERY_VERSION_NOT_RECORDED", "version 1")
+			continue
+		}
+		if first.Code != http.StatusOK {
+			t.Fatalf("%s: version 1 of the decisions query, which records the store revision it read: status=%d body=%s, want 200", what, first.Code, first.Body.String())
+		}
+		atFirst := decodeBody[model.IssueTreeRead](t, first)
+		if atFirst.View != graphstore.QueryDecisions || atFirst.Version == nil || *atFirst.Version != 1 {
+			t.Errorf("%s: ?view=decisions&v=1 answers the view %q at version %s, want decisions at version 1", what, atFirst.View, entryJSON(t, atFirst.Version))
+		}
+		if held := (treeAnswer{IssueTreeRead: atFirst}).nodesNamed(refs.BlockNodeKind, closing); len(held) != 0 {
+			t.Errorf("%s: ?view=decisions&v=1 answers the reading g2 %s, written after version 1 of the decisions query", what, closing)
+		}
 	}
 }

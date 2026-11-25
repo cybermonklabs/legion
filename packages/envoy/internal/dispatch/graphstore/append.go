@@ -34,6 +34,9 @@ type appending struct {
 	sentinel bool
 	// appended, where Counting set it, counts the tuples the append appends (queueAppend).
 	appended *int64
+	// armless is the kind of node for each of whose tuples the append leaves the conflict arm off
+	// where the write's own node write's insert made the node (ArmlessFresh), "" for none.
+	armless string
 	// run is the run of the command bar the write is made for, and changes the changed_by_run each
 	// node the write changed owes it (changedByRunMarks), none for a write made for no run.
 	run     string
@@ -192,8 +195,12 @@ var markedAttributeValues = BaseAttributeValues([...]string{`marked.visibility`,
 // queueAppendStatement queues one statement of an append (queueAppend): the caller's tuples at
 // the indexes order names, at their places (majors), and, where nodes is not empty, the base
 // attributes those nodes' write states at baseSlot and their move onto their cause. Its arguments
-// are built when the write phase sends it (store.WriteBatch's QueueBuilt).
+// are built when the write phase sends it (store.WriteBatch's QueueBuilt). An armless write's
+// statement (ArmlessFresh) appends with no conflict arm each tuple of a node its own node write's
+// insert made (armlessAppend), unless its append is counted (Counting), which reads one insert's
+// rows.
 func queueAppendStatement(b *store.WriteBatch, order []int, majors []int64, nodes []Node, write appending, own map[baseAttribute]struct{}, baseSlot int64) {
+	armless := write.armless != "" && write.appended == nil && write.mark != 0
 	build := func() ([]any, error) {
 		params, err := tupleParamsOf(len(order), func(index int) Tuple { return write.tuple(order[index]) })
 		if err != nil {
@@ -201,6 +208,9 @@ func queueAppendStatement(b *store.WriteBatch, order []int, majors []int64, node
 		}
 		params = append(params, majors)
 		if len(nodes) == 0 {
+			if armless {
+				params = append(params, write.mark)
+			}
 			return params, nil
 		}
 		nodeArgs, err := appendedNodeParams(nodes, write.cause, own)
@@ -211,6 +221,16 @@ func queueAppendStatement(b *store.WriteBatch, order []int, majors []int64, node
 	}
 	stated := orderedTuples()
 	if len(nodes) == 0 {
+		if armless {
+			b.QueueBuilt("append graph tuples", `
+			with `+armlessAppend(stated, "$"+strconv.Itoa(tupleMajorsParam+1), write.armless)+`
+			insert into graph_tuples (seq, `+tupleWriteColumns+`)
+			select seq, `+tupleWriteColumns+` from appended
+			where not appended.armless and `+KeptHeadRows+`
+			on conflict do nothing
+		`, build)
+			return
+		}
 		counted(b.QueueBuilt("append graph tuples", `
 			insert into graph_tuples (`+tupleWriteColumns+`)
 			select `+tupleWriteColumns+` from (`+stated+`) appended
@@ -225,35 +245,36 @@ func queueAppendStatement(b *store.WriteBatch, order []int, majors []int64, node
 	at := tupleArrayCount + 2
 	markParam := "$" + strconv.Itoa(at+appendedNodeArrays)
 	baseParam, sentinelParam := "$"+strconv.Itoa(at+appendedNodeArrays+1), "$"+strconv.Itoa(at+appendedNodeArrays+2)
-	counted(b.QueueBuilt("append graph tuples", `
+	head := `
 		with written as (
 			select kind, id, visibility, state, project, parties, made_at, made_by, cause, skip, position
-			from unnest(`+arrayList(at, "text", "text", "text", "text", "text", "text", "timestamptz", "jsonb", "bigint", "integer")+`)
+			from unnest(` + arrayList(at, "text", "text", "text", "text", "text", "text", "timestamptz", "jsonb", "bigint", "integer") + `)
 				with ordinality as node(kind, id, visibility, state, project, parties, made_at, made_by, cause, skip, position)
 		),
 		marked as (
-			select written.*, `+markAttributes("held")+` & ~written.skip as attributes
+			select written.*, ` + markAttributes("held") + ` & ~written.skip as attributes
 			from written
 			cross join lateral (
 				select g.source_event from graph_nodes g
 				where g.kind = written.kind and g.id = written.id
 				offset 0
 			) held
-			where `+markedBy("held", markParam)+`
+			where ` + markedBy("held", markParam) + `
 		),
 		based as (
-			select marked.kind as from_kind, marked.id as from_id, attribute.kind, '`+KindValue+`' as to_kind,
+			select marked.kind as from_kind, marked.id as from_id, attribute.kind, '` + KindValue + `' as to_kind,
 			       attribute.value as to_id, marked.made_at as at, marked.made_by as who,
-			       `+causeOf("marked.cause")+` as source_event, null::bigint as legacy_source_seq, true as asserted,
-			       `+baseParam+`::bigint as major, marked.position * `+strconv.Itoa(len(baseAttributes))+` + attribute.ordinal as minor
+			       ` + causeOf("marked.cause") + ` as source_event, null::bigint as legacy_source_seq, true as asserted,
+			       ` + baseParam + `::bigint as major, marked.position * ` + strconv.Itoa(len(baseAttributes)) + ` + attribute.ordinal as minor
 			from marked
 			cross join lateral (values
-				`+markedAttributeValues+`
+				` + markedAttributeValues + `
 			) as attribute(bit, ordinal, kind, value)
 			where marked.attributes & attribute.bit <> 0
 		),
-		settled as (
-			update graph_nodes set source_event = `+causeOf("moved.cause")+`
+		`
+	settled := `settled as (
+			update graph_nodes set source_event = ` + causeOf("moved.cause") + `
 			from (
 				select written.kind, written.id, written.cause
 				from written
@@ -262,13 +283,25 @@ func queueAppendStatement(b *store.WriteBatch, order []int, majors []int64, node
 					where g.kind = written.kind and g.id = written.id
 					offset 0
 				) held
-				where `+markedBy("held", markParam)+`
-				   or `+sentinelParam+`::boolean and held.source_event = `+strconv.FormatInt(NoEvent, 10)+`
-				      and written.cause <> `+strconv.FormatInt(NoEvent, 10)+`
+				where ` + markedBy("held", markParam) + `
+				   or ` + sentinelParam + `::boolean and held.source_event = ` + strconv.FormatInt(NoEvent, 10) + `
+				      and written.cause <> ` + strconv.FormatInt(NoEvent, 10) + `
 			) moved
-			where graph_nodes.kind = moved.kind and graph_nodes.id = moved.id and `+KeptHeadRows+`
+			where graph_nodes.kind = moved.kind and graph_nodes.id = moved.id and ` + KeptHeadRows + `
 		)
-		insert into graph_tuples (`+tupleWriteColumns+`)
+		`
+	if armless {
+		b.QueueBuilt("append graph tuples", head+armlessAppend(stated+`
+			union all
+			select `+tupleWriteColumns+`, major, minor from based`, markParam, write.armless)+`,
+		`+settled+`insert into graph_tuples (seq, `+tupleWriteColumns+`)
+		select seq, `+tupleWriteColumns+` from appended
+		where not appended.armless and `+KeptHeadRows+`
+		on conflict do nothing
+	`, build)
+		return
+	}
+	counted(b.QueueBuilt("append graph tuples", head+settled+`insert into graph_tuples (`+tupleWriteColumns+`)
 		select `+tupleWriteColumns+` from (
 			`+stated+`
 			union all
@@ -278,6 +311,43 @@ func queueAppendStatement(b *store.WriteBatch, order []int, majors []int64, node
 		order by major, minor
 		on conflict do nothing
 	`, build), write.appended)
+}
+
+// armlessAppend is the two common table expressions of an armless write's statement
+// (ArmlessFresh) over tuples, the select of the tuples it appends with their places (major,
+// minor): appended, each tuple with the sequence it takes, drawn in the append's order, and
+// whether its node is one of kind kind the write's own insert made - its from node, probed through
+// graph_nodes' primary key behind an offset 0, and only where it is of that kind, carries the mark
+// at markParam with markInserted - and armless, the insert of those tuples with no conflict arm.
+// The statement's own insert appends the rest with the arm, and the two together give the rows the
+// sequence one insert in the append's order would. A node's mark stands until the statement that
+// states its write's base attributes moves it onto its cause (queueAppend's settled), which reads
+// the same snapshot as this probe, so a tuple appended after that statement, in a later statement
+// of a long append, is appended with the arm. A node no insert of the write made is no such node,
+// so a tuple a publisher's retry sends again, whose node the first send made, keeps the arm and is
+// dropped by the repeat key, and every unique index stays, so a tuple wrongly taken for one fails
+// the statement and is never appended twice.
+func armlessAppend(tuples, markParam, kind string) string {
+	return `appended as materialized (
+			select nextval((select pg_get_serial_sequence('graph_tuples', 'seq'))::regclass) as seq, ordered.*
+			from (
+				select tuple.*, coalesce(` + markedBy("held", markParam) + ` and (` + markAttributes("held") + ` & ` + strconv.Itoa(markInserted) + `) <> 0, false) as armless
+				from (
+					` + tuples + `
+				) tuple
+				left join lateral (
+					select g.source_event from graph_nodes g
+					where tuple.from_kind = ` + store.QuoteLiteral(kind) + ` and g.kind = tuple.from_kind and g.id = tuple.from_id
+					offset 0
+				) held on true
+				order by tuple.major, tuple.minor
+			) ordered
+		),
+		armless as (
+			insert into graph_tuples (seq, ` + tupleWriteColumns + `)
+			select seq, ` + tupleWriteColumns + ` from appended
+			where appended.armless and ` + KeptHeadRows + `
+		)`
 }
 
 // queueChangedByRun queues the append of the changed_by_run tuples a write made for run owes it

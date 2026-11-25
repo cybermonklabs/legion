@@ -242,6 +242,27 @@ func (f *QuoteFinder) FindInBlock(quote, blockID string, occurrence *int) (Range
 	return f.choose(quote, inside, occurrence, nil)
 }
 
+// OccurrenceInBlock is the occurrence FindInBlock takes for a match of quote that starts at from
+// inside the block carrying blockID: the number of that block's matches of quote, as FindInBlock
+// filters them, that start before from. held is false where the document holds no block of that
+// id or from lies outside it, where no occurrence of the block places the match.
+func (f *QuoteFinder) OccurrenceInBlock(quote, blockID string, from int) (occurrence int, held bool, err error) {
+	matches, err := f.matches(quote)
+	if err != nil {
+		return 0, false, err
+	}
+	_, block, found := findBlock(f.doc, blockID)
+	if !found || from < block.From || from >= block.To {
+		return 0, false, nil
+	}
+	for _, match := range matches {
+		if match.From >= block.From && match.To <= block.To && match.From < from {
+			occurrence++
+		}
+	}
+	return occurrence, true, nil
+}
+
 // FindListItem answers a quote that opens with a list item's marker (ParseListItemQuote) by the
 // items it selects (listItemQuoteMatches), choosing among them as Find chooses among a quote's
 // matches; a quote that selects no item is Find's miss. Only a document edit asks it, after Find

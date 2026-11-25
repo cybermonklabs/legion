@@ -167,22 +167,27 @@ func TestTheDeferredWriteStatesEachBlocksTextRowAndMembershipOnce(t *testing.T) 
 
 // TestARoomLeftOwedRunsTheTypedNodePassOnItsFragment: where a browser's unversioned edit of the plan
 // leaves an issue room owed its block index, the whole typed-node pass runs on the fragment its
-// write wrote: through an upload of the Verification, its
-// decision, the reading it closes with, its check and its plan task are nodes at once, and through
-// an edit of the spec its requirement is; and no block of the plan's fragment is, not even the plan
-// task the browser's edit wrote, which waits for the room pass that closes the case.
+// write wrote: through an upload of the Verification's second version, its decision, the reading it
+// closes with, its check and its plan task are nodes at once, and through an edit of the spec its
+// requirement is, each under its type's supertag (R26 of the issue tree's spec); and no block of the
+// plan's fragment is, not even the plan task the browser's edit wrote, which waits for the room pass
+// that closes the case. Every document joins the room before the browser opens it: a join closes the
+// room at its commit (docs' Ledger.closeJoinedRooms), and the departing browser's settlement
+// versions its edit (docs' settleLastPeer), which leaves the room owing nothing.
 func TestARoomLeftOwedRunsTheTypedNodePassOnItsFragment(t *testing.T) {
 	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour, browserPeers: true})
 	createReferenceAPIProject(t, handler, "FRAG")
 	issue := createDigestIssue(t, handler, database, "FRAG", "The fragment of a room left owed", typedDocument("", false, acceptedRequirement("r1")), false)
 	fixture := &acceptedFixture{handler: handler, database: database, documents: deps.Docs.(*docs.Service), issue: issue, converted: true}
 	plan := uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "plan.md", "The plan to come.\n").Artifact.ID
+	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", "The checks to come.\n")
 	fixture.holdOwedBy(t, plan, typedBlockMarkdown(issue.Key, acceptedPlanTask("tp", "r1")))
 	fixture.upload(t, "verification.md", false, acceptedCheck("c1", "r1"), acceptedBlock{id: "d1", typ: "decision", reading: "g1"}, acceptedPlanTask("t9", "r1"))
 	fixture.edit(t, issue.PrimaryArtifactID, acceptedRequirement("r2"))
 	key := blockKeyOf(t, database, plan)
 	for _, block := range []struct{ id, supertag string }{
-		{"d1", refs.DecisionSupertag}, {"g1", refs.ReadingSupertag}, {"c1", refs.BlockSupertag}, {"t9", refs.BlockSupertag}, {"r2", refs.BlockSupertag},
+		{"d1", refs.DecisionSupertag}, {"g1", refs.ReadingSupertag}, {"c1", refs.TypeSupertag("check")},
+		{"t9", refs.TypeSupertag("plan_task")}, {"r2", refs.TypeSupertag("requirement")},
 	} {
 		if held := readHeldTypedBlock(t, database, key+"#"+block.id); held.state != graphstore.StateLive || held.supertag != block.supertag {
 			t.Errorf("the write of the room left owed left %s#%s at %q under the supertag %q, want a live node of %q", key, block.id, held.state, held.supertag, block.supertag)

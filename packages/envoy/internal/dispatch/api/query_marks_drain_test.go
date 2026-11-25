@@ -312,8 +312,8 @@ func requireDrainTrace(t *testing.T, what string, sent []storetest.SentStatement
 //     writes nothing.
 //   - A result on an issue that has not converted marks nothing and runs no drain.
 //
-// The node PATCH and DELETE are not built yet; the eventless marks they leave (greatest_event null)
-// are theirs to test once they are.
+// The node PATCH's eventless mark (greatest_event null) and its drain are held by
+// TestAMoveMarksItsIssuesQueriesOwedAndTheDrainWritesThem (api/node_move_drain_test.go).
 func TestIssueQueryMarksDrainAfterCommit(t *testing.T) {
 	handler, database, deps, probe, sent := newDrainProbeServer(t)
 	documents := probe.Service

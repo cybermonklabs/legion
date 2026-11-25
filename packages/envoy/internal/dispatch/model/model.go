@@ -409,12 +409,21 @@ func DeletedPostMark(at *time.Time, by []byte) (*time.Time, *Actor, error) {
 	return &deleted, &actor, nil
 }
 
-// AnchorInput selects document text by quote or identifies a browser-owned mark.
+// AnchorInput selects document text by quote or identifies a browser-owned mark, or, for a
+// comment's write, selects the text of a node by quote.
 type AnchorInput struct {
-	// Artifact is required: an anchor naming no document is refused (400 INVALID_ANCHOR,
-	// api.resolveAnchor). The tag is read by the OpenAPI emitter, which requires a field of a
-	// request body only where the handler refuses a body without it (api/openapi.go).
-	Artifact   string  `json:"artifact" required:"true"`
+	// Artifact is the document the anchor is on. An anchor naming neither it nor Node is refused
+	// (400 INVALID_ANCHOR, api.resolveAnchor), and so is one naming both.
+	Artifact string `json:"artifact,omitempty"`
+	// Node, in place of Artifact, is the node of a comment's issue whose text the anchor quotes -
+	// a lens, a finding, a risk, a constraint or a result - by its store address, as
+	// /nodes/{id} takes it, or its dispatch:// address (this issue's spec R31). Quote is then
+	// required, and Occurrence counts the quote's matches in the node's text. A mark_id or a
+	// block_id beside it, a node of another kind, one the caller may not see under the issue, one
+	// reserved for its author, a gone one, and a quote the node's text does not hold at that
+	// occurrence are each refused 400 INVALID_ANCHOR naming the field (api.resolveNodeAnchor). An
+	// ask takes no node.
+	Node       string  `json:"node,omitempty"`
 	Quote      *string `json:"quote,omitempty"`
 	Occurrence *int    `json:"occurrence,omitempty"`
 	MarkID     *string `json:"mark_id,omitempty"`
@@ -896,14 +905,14 @@ type Issue struct {
 	Labels   []string `json:"labels"`
 	Parent   *string  `json:"parent"`
 	// BlockedBy and Needs are the issue keys this issue waits on, of any project, sorted: one
-	// relation, the needs tuples of the issue (dispatch://INFRA-1253 R10), answered by the
+	// relation, the needs tuples of the issue (R10 of the issue-tree spec), answered by the
 	// issue_links rows that project them, under both spellings through this release, since a
 	// reader of the release before reads blocked_by.
 	BlockedBy []string `json:"blocked_by"`
 	Needs     []string `json:"needs" required:"false"`
 	// DuplicateOf is the key of the issue of this issue's project it repeats, and FiledFrom the
 	// canonical reference of the ask, comment or message it was filed out of
-	// (dispatch://INFRA-1253 R9), each the far end of the issue's duplicate_of or filed_from tuple
+	// (R9 of the issue-tree spec), each the far end of the issue's duplicate_of or filed_from tuple
 	// and null where it holds none.
 	DuplicateOf *string `json:"duplicate_of" required:"false"`
 	FiledFrom   *string `json:"filed_from" required:"false"`
@@ -1122,10 +1131,11 @@ type SearchResult struct {
 	Artifact *SearchArtifact `json:"artifact,omitempty"`
 	ID       string          `json:"id"`
 	// BlockID is the block of the hit whose own text matched, read from the window of blocks the
-	// meaning leg found (INFRA-370): for a document the block of the document, for a comment or
-	// a message a block of its body, for an ask the part of its question, options or answer. It
-	// is nil on an issue hit, which has no blocks, and on a hit only the keyword list found,
-	// which matched the item's whole text rather than one of its windows.
+	// meaning leg found (#2679), or for a document from the blocks whose nodes the keyword
+	// list found (node_search): for a document the block of the document, for a comment or a
+	// message a block of its body, for an ask the part of its question, options or answer. It is
+	// nil on an issue hit, which has no blocks, and on a comment, an ask or a message only the
+	// keyword list found, which matched the item's whole text rather than one of its windows.
 	BlockID *string `json:"block_id,omitempty"`
 	Snippet string  `json:"snippet"`
 	// SnippetTree is the ProseMirror tree the snippet is shown as, with the match marked
@@ -1587,13 +1597,13 @@ type Artifact struct {
 	// `decisions`, until the decisions step retires it. A document of
 	// an issue born converted carries no role in its row: its role is projected from the query
 	// value of its node (graphstore.QueryNode), `verification`, `plan` or `decisions`, the spec's
-	// `spec` projecting none (dispatch://INFRA-1253 R8, decision 2 of its plan).
+	// `spec` projecting none (R8 of the issue-tree spec, decision 2 of its plan).
 	Role      string    `json:"role,omitempty"`
 	CreatedBy Actor     `json:"created_by"`
 	CreatedAt time.Time `json:"created_at"`
 	// Room is the artifact id of the room the document is edited in, which a socket opened on the
 	// document's own id is admitted to: its document_rooms row's room, the issue's tree artifact,
-	// for a document of an issue room, and its own id otherwise (dispatch://INFRA-1253 R5, D3 of
+	// for a document of an issue room, and its own id otherwise (R5 of the issue-tree spec, D3 of
 	// its plan). Fragment is the fragment of that room's Yjs document that holds the document,
 	// which the page's editor binds: the document's own id for a document of an issue room, and
 	// ArtifactFragmentOwn otherwise, the tree artifact itself included. Every artifact this build
@@ -2157,7 +2167,7 @@ type ArtifactHumanEditedEventPayload struct {
 // the block (BlockEmbedded, BlockEmbeddingPending, BlockNotEmbedded), which the blocks route
 // sets and nothing that only indexes blocks does. Document is, for a block of an issue room
 // indexed under the issue's tree artifact, the artifact id of the document whose fragment of the
-// room holds it (dispatch://INFRA-1253 R5), which the block index states as the block's
+// room holds it (R5 of the issue-tree spec), which the block index states as the block's
 // in_document; "" for a block of the indexed document itself. No route answers it. TextTree is
 // the display tree of the block's whole slice of the markdown (From to To), the text the block
 // index stores for it, which the blocks routes answer only to a caller that sent
@@ -3532,6 +3542,38 @@ type Comment struct {
 	// RepliesToBlock is the node id comments.replies_to_block stores, null for a comment that
 	// names no block; ReplyBlock is read from it, and only for a comment that names one.
 	RepliesToBlock *string `json:"-"`
+	// NodeAnchor is the anchor comments.node_anchor stores for a comment on the text of a node
+	// (this issue's spec R31), nil for every other comment; Anchor is nil on such a comment. No
+	// read of a comment answers it under this name and no event carries it: a deployed client
+	// parses a comment with the strict CommentSchema, so only a read asked with
+	// ?node_anchor=true answers the member node_anchor (CommentNodeAnchor).
+	NodeAnchor *NodeAnchor `json:"-"`
+}
+
+// NodeAnchor is a comment's anchor on the text of a node that is no block of a document - a lens,
+// a finding, a risk, a constraint or a result (this issue's spec R31) - as comments.node_anchor
+// stores it: the node as graph_nodes keys it (a finding is kind block, id lens/<uuid>#<block id>),
+// the words it quotes, the zero-based match of those words in the node's text it names, as a
+// quote beside block_id counts its matches in one block, and whether a write of the node's text
+// dropped that match or a DELETE took the node gone.
+type NodeAnchor struct {
+	NodeKind   string `json:"node_kind"`
+	NodeID     string `json:"node_id"`
+	Quote      string `json:"quote"`
+	Occurrence int    `json:"occurrence"`
+	Orphaned   bool   `json:"orphaned"`
+}
+
+// CommentNodeAnchor is the member node_anchor a comments read asked with ?node_anchor=true answers
+// on each comment whose anchor names a node or a block (R31): that node by its store kind and id,
+// with its node state, gone for a node deleted since; the quote; the occurrence, null for a
+// document anchor, which stores none; and the orphaned mark as stored. A reader tells a deleted
+// node from the node's own state, since orphaned says only that the quoted words left its text.
+type CommentNodeAnchor struct {
+	Node       IssueTreeAnchorNode `json:"node"`
+	Quote      string              `json:"quote"`
+	Occurrence *int                `json:"occurrence"`
+	Orphaned   bool                `json:"orphaned"`
 }
 
 // ReplyBlock is the block a reply answers: its node id ('<item kind>/<item id>#<block id>') and
@@ -4344,7 +4386,7 @@ type GraphExcerpt struct {
 // behind them (graphstore.TupleChangedByRun and the four beside it, and graphstore.TupleAuthoredBy
 // of an interaction, a lens, a finding, a risk and a constraint), which the view answers from the
 // tuples alone, and an issue's duplicate_of and filed_from, which the store holds alone too
-// (dispatch://INFRA-1253 R9). blocked_by is the kind graph_edges names an issue's wait on an issue
+// (R9 of the issue-tree spec). blocked_by is the kind graph_edges names an issue's wait on an issue
 // by through this release, in its old arm and its tuple arm alike, the kind a process of the
 // release before reads that wait by; this build's references read answers the same wait as needs
 // (EdgeKindNeeds) and takes either spelling in its kind filter (R10). A typed block's `block[]`
@@ -4356,7 +4398,7 @@ var GraphEdgeKinds = []string{"mentions", "child_of", "blocked_by", "attached_to
 	EdgeKindNeeds, "duplicate_of", "filed_from"}
 
 // EdgeKindNeeds is the kind of a wait, an issue's on an issue and a plan node's on a plan node
-// alike (dispatch://INFRA-1253 R10): a structural kind of GraphEdgeKinds and the name of the
+// alike (R10 of the issue-tree spec): a structural kind of GraphEdgeKinds and the name of the
 // plan_task's `block[]` attribute, the one name both families of edge hold.
 const EdgeKindNeeds = "needs"
 

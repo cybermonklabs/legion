@@ -131,7 +131,7 @@ func (w addressingWrites) writeCausing(
 }
 
 // createIssue writes an issue as the API's createIssue does: the issue's node before its row, the
-// row naming that node (dispatch://INFRA-1253), and the issue.created event whose payload is the
+// row naming that node (the issue-tree spec), and the issue.created event whose payload is the
 // issue it made, routed to no one. The node's facts carry the sentinel rather than that event,
 // since this writes the event after the rows; no read here asks what caused them. A row the API
 // wrote names its node, so no backfill pass reads it.

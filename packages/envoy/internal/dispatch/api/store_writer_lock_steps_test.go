@@ -79,9 +79,12 @@ const storeStepWait = 20 * time.Second
 //   - the record and the retraction of a check's result (writeRecordedResult,
 //     writeCheckResultRetraction), which write the result's node and tuples and its retracted
 //     value (T11 of this branch's plan);
-//   - and a node's move that writes no text (moveNodeRoute, queueNodeMove), which writes its
+//   - a node's move that writes no text (moveNodeRoute, queueNodeMove), which writes its
 //     tuples alone at the sentinel, its block's parent_block_id and the issue's query mark (R7 of
-//     dispatch://INFRA-1253).
+//     the issue-tree spec);
+//   - and a node's delete that takes a lens and its finding (deleteNodeRoute, queueNodeDelete),
+//     which writes their node rows gone, their state tuples and the retraction of every tuple out
+//     of each, and the issue's query mark (R7 of the issue-tree spec).
 //
 // The order they are held to is the one written on api/inbox_read.go's markInboxReadThreads, which
 // graphstore's TestEveryStoreWriteTakesOneLockOrder reads: the owner's lock comes first; a node's
@@ -124,7 +127,7 @@ func TestEveryApiStoreWriterTakesTheStoreLockOrder(t *testing.T) {
 		rig.askFollow(), rig.askCreate(), rig.approvalRetry(), rig.approvalFollowerRetry(), rig.approvalHandBack(),
 		rig.documentUpload(), rig.documentEdit(), rig.issueCreate(),
 		rig.issuePatchRelations(), rig.issuePatchFiledFrom(), rig.architectureSourceRemoval(), rig.commentAnchorOrphaning(),
-		rig.resultRecord(), rig.resultRetraction(), rig.nodeMove(),
+		rig.resultRecord(), rig.resultRetraction(), rig.nodeMove(), rig.nodeDelete(),
 	} {
 		t.Run(writer.name, func(t *testing.T) {
 			requireTheWrittenOrderAdmits(t, writer)

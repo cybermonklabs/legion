@@ -106,7 +106,7 @@ func TestGetIssueReturnsWorkflowFields(t *testing.T) {
 }
 
 // TestTheDaemonReadsNeedsAndFallsBackToBlockedBy is c-one-dependency's daemon half
-// (dispatch://INFRA-1253 R10): a Dispatch of this release answers an issue's waits as needs beside
+// (R10 of the issue-tree spec): a Dispatch of this release answers an issue's waits as needs beside
 // blocked_by, and one of the release before answers blocked_by alone, which a new daemon can meet.
 // The issue read and the listing each decode an answer holding needs and one holding blocked_by
 // alone to the same targets, and an answer whose two members name different issues is read by

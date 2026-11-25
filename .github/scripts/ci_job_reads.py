@@ -669,7 +669,9 @@ done"""
 MEMORY_STEP = "Memory tests of the Dispatch server"
 MEMORY_SCRIPT = f"""\
 pattern=$(../../{TAGGED_TESTS} memory ./cmd/dispatch)
-go test -tags memory -count=1 -timeout 60m -v -run "$pattern" ./cmd/dispatch"""
+go test -tags memory -count=1 -timeout 60m -v -run "$pattern" ./cmd/dispatch
+pattern=$(../../{TAGGED_TESTS} memory ./internal/dispatch/docs)
+go test -tags memory -count=1 -timeout 30m -v -run "$pattern" ./internal/dispatch/docs"""
 DISPATCH_MP_STEP = "Two-process tests of the Dispatch server"
 DISPATCH_MP_SCRIPT = f"""\
 pattern=$(../../{TAGGED_TESTS} multiprocess ./cmd/dispatch)
