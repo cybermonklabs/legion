@@ -56,8 +56,15 @@ func TestAProxyRelaysUntilCutAndAgainOnceRestored(t *testing.T) {
 	// The client tried to reconnect and the cut proxy refused it, which the proxy's own count of
 	// refused dials says with no span: the dial at :51 is one, and any later one is the client's
 	// reconnect. A window of 300 ms (before) could pass before the client's first reconnect, whose
-	// wait is 50 ms plus up to 100 ms of jitter and a handshake, came at all on a loaded machine.
+	// wait is 50 ms plus up to 100 ms of jitter and a handshake, came at all on a loaded machine. A
+	// reconnect that comes first fails the row as soon as it comes, so a cut proxy that relays the
+	// client's reconnect fails the row then, not at the test's deadline.
 	testwait.Until(t, "the cut proxy to refuse the client's reconnect", func() (int, bool) {
+		select {
+		case <-reconnected:
+			t.Fatal("the client reconnected through a cut proxy")
+		default:
+		}
 		refused := proxy.refusedDials()
 		return refused, refused >= 2
 	})
