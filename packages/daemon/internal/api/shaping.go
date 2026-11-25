@@ -1135,19 +1135,6 @@ func withoutPriority(issue Issue) (Issue, bool) {
 // number for that reason.
 const causeTimesContract = 256
 
-// treeInBacklogOrIceboxContract is the daemon contract at which the held word of a member of a
-// tree whose root stands in backlog or icebox became `tree_in_backlog_or_icebox`
-// (record.HeldTreeInBacklogOrIcebox, version.go's 280). The word rides a value strip and no band:
-// a caller whose restore is below this contract is served each such row as `unclassified` with no
-// `heldBy` (withoutUnadmittedHeldWords), which every reader of the field admits. The number is
-// written once as the word's arrival, in the declared table (answers.go's heldReasons).
-//
-// It is a literal of its own and never DaemonAPIVersion: the number a later contract takes moves
-// that constant, and the contract the word arrived at stays where it is. It moves only with this
-// change's own number, and it is the last number of answers.go's SupportedContracts, which names
-// the constant rather than its number for that reason.
-const treeInBacklogOrIceboxContract = 280
-
 // withoutGatedSteps is the issue with no `gatedSteps`, the field gatedStepsContract added to the
 // state; nothing else of that contract is on the route. The field is `omitempty`, and a root of a
 // deployment that gates no step carries an empty list of it (GatedStepViewsOf), which the wire
