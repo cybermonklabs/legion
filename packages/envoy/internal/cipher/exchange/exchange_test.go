@@ -456,7 +456,9 @@ func TestTheReservationsAreTheNamesTheEntriesFix(t *testing.T) {
 // exchange to go through, and an entry that fixes one answers none, since every pod of that
 // account writes under the configuration's name and is registered for nothing. A read entry
 // always fixes one, and answers its service and session, the project scope that writes nothing,
-// and no person and no project.
+// and no person and no project. The daemon account's entry fixes legion-daemon:ACME, the daemon
+// session of its own project, so it answers LegionStatus too
+// (TestPodGivesLegionStatusToTheDaemonsEntryAlone).
 func TestPodAnswersTheListedAccount(t *testing.T) {
 	set := listed(t)
 	for _, c := range []struct {
@@ -468,11 +470,11 @@ func TestPodAnswersTheListedAccount(t *testing.T) {
 		{name: "the session the request names", token: podToken(workerAccount, podUID), session: "implementer-g1",
 			want: exchange.Claims{Session: "implementer-g1", Person: person, Scope: exchange.ProjectScopeNamed, Projects: []string{project}, Principal: workerPrincipal, Instance: podUID}},
 		{name: "the session the entry fixes, the request naming none", token: podToken(daemonAccount, podUID), session: "",
-			want: exchange.Claims{Session: fixedSession, Person: person, Scope: exchange.ProjectScopeNamed, Projects: []string{project}, Principal: daemonPrincipal}},
+			want: exchange.Claims{Session: fixedSession, Person: person, Scope: exchange.ProjectScopeNamed, Projects: []string{project}, LegionStatus: true, Principal: daemonPrincipal}},
 		{name: "the session the entry fixes, the request naming the same", token: podToken(daemonAccount, podUID), session: fixedSession,
-			want: exchange.Claims{Session: fixedSession, Person: person, Scope: exchange.ProjectScopeNamed, Projects: []string{project}, Principal: daemonPrincipal}},
+			want: exchange.Claims{Session: fixedSession, Person: person, Scope: exchange.ProjectScopeNamed, Projects: []string{project}, LegionStatus: true, Principal: daemonPrincipal}},
 		{name: "another pod of the account is the same principal", token: podToken(daemonAccount, "another-pod-uid"), session: "",
-			want: exchange.Claims{Session: fixedSession, Person: person, Scope: exchange.ProjectScopeNamed, Projects: []string{project}, Principal: daemonPrincipal}},
+			want: exchange.Claims{Session: fixedSession, Person: person, Scope: exchange.ProjectScopeNamed, Projects: []string{project}, LegionStatus: true, Principal: daemonPrincipal}},
 		{name: "a read entry's session, the request naming none", token: podToken(readerAccount, podUID), session: "",
 			want: exchange.Claims{Session: readerSession, Service: readerService, Scope: exchange.ProjectScopeNone, Principal: readerPrincipal}},
 		{name: "a read entry's session, the request naming the same", token: podToken(readerAccount, podUID), session: readerSession,
@@ -484,6 +486,72 @@ func TestPodAnswersTheListedAccount(t *testing.T) {
 			claims, err := set.Pod(c.token, c.session, nil)
 			if err != nil || !reflect.DeepEqual(claims, c.want) {
 				t.Fatalf("Pod(%s) = %+v, %v; want %+v", c.name, claims, err, c.want)
+			}
+		})
+	}
+}
+
+// TestPodGivesLegionStatusToTheDaemonsEntryAlone: Pod answers LegionStatus for one kind of entry
+// alone, an account entry that names a project and fixes the session legion-daemon:<that
+// project>. Each other row is a pod whose token carries a session that looks like a daemon's or a
+// Legion role's, and Pod answers it LegionStatus false:
+//
+//   - an entry of ACME that fixes no session, whose request names legion-daemon:ACME;
+//   - an entry of P2 that fixes legion-daemon:P3;
+//   - an entry that names no project and fixes legion-daemon: alone;
+//   - an entry of ACME that fixes a Legion role's session;
+//   - an entry of CASE that fixes Legion-Daemon:CASE, since the comparison holds the case;
+//   - a read entry that fixes legion-daemon:READ.
+//
+// The decision reads the session the entry fixes, and never the session the request names.
+func TestPodGivesLegionStatusToTheDaemonsEntryAlone(t *testing.T) {
+	const (
+		crossAccount     = "system:serviceaccount:example-ns:example-cross"
+		noProjectAccount = "system:serviceaccount:example-ns:example-noproject"
+		roleAccount      = "system:serviceaccount:example-ns:example-role"
+		caseAccount      = "system:serviceaccount:example-ns:example-case"
+		roleSession      = "legion-acme-acme-1-implementer"
+	)
+	set, err := exchange.NewSet(
+		[]exchange.AccountEntry{
+			{Account: daemonAccount, Project: project, Person: person, Session: fixedSession},
+			{Account: workerAccount, Project: project, Person: person},
+			{Account: crossAccount, Project: "P2", Person: person, Session: "legion-daemon:P3"},
+			{Account: noProjectAccount, Person: person, Session: "legion-daemon:"},
+			{Account: roleAccount, Project: project, Person: person, Session: roleSession},
+			{Account: caseAccount, Project: "CASE", Person: person, Session: "Legion-Daemon:CASE"},
+		},
+		[]exchange.ReadEntry{{Account: readerAccount, Service: readerService, Session: "legion-daemon:READ"}},
+		nil, nil, signInDomain)
+	if err != nil {
+		t.Fatalf("NewSet: %v", err)
+	}
+	for _, c := range []struct {
+		name    string
+		account string
+		// session is the session the request names, and claimed the one Pod answers.
+		session, claimed string
+		want             bool
+	}{
+		{name: "the daemon's entry, an account of ACME fixing legion-daemon:ACME", account: daemonAccount, claimed: fixedSession, want: true},
+		{name: "the daemon's entry, the request naming the session it fixes", account: daemonAccount, session: fixedSession, claimed: fixedSession, want: true},
+		{name: "an account of ACME fixing no session, whose request names legion-daemon:ACME", account: workerAccount, session: fixedSession, claimed: fixedSession},
+		{name: "an account of P2 fixing legion-daemon:P3", account: crossAccount, claimed: "legion-daemon:P3"},
+		{name: "an account naming no project, fixing legion-daemon:", account: noProjectAccount, claimed: "legion-daemon:"},
+		{name: "an account of ACME fixing the role's session", account: roleAccount, claimed: roleSession},
+		{name: "an account of CASE fixing Legion-Daemon:CASE", account: caseAccount, claimed: "Legion-Daemon:CASE"},
+		{name: "a read entry fixing legion-daemon:READ", account: readerAccount, claimed: "legion-daemon:READ"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			claims, err := set.Pod(podToken(c.account, podUID), c.session, nil)
+			if err != nil {
+				t.Fatalf("Pod(%s) = %v, want claims", c.name, err)
+			}
+			if claims.Session != c.claimed {
+				t.Fatalf("Pod(%s) answered the session %q, want %q", c.name, claims.Session, c.claimed)
+			}
+			if claims.LegionStatus != c.want {
+				t.Errorf("Pod(%s) answered LegionStatus %t, want %t", c.name, claims.LegionStatus, c.want)
 			}
 		})
 	}

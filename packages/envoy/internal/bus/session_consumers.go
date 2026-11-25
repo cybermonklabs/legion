@@ -167,8 +167,9 @@ type SessionConsumers struct {
 	// pullExpires and pullHeartbeat are sessionPullExpires and sessionPullHeartbeat, shortened by
 	// a test of a pull's later requests.
 	pullExpires, pullHeartbeat time.Duration
-	// logger is the logger the connection was opened with (ConnectSessionConsumers),
-	// slog.Default() where that was nil: where create and recordResumeFloorAt write their lines.
+	// logger is the logger the connection was opened with (ConnectSessionConsumers), the client's
+	// own where that was nil (sessionConsumersOn): where create and recordResumeFloorAt write
+	// their lines.
 	logger *slog.Logger
 	// pendingMu guards pending, createFault, deleteAnswerFault and infoFault.
 	pendingMu sync.Mutex
@@ -224,12 +225,13 @@ type SessionConsumers struct {
 // INFO line of a caller's start it lowered to the session's resume record, and the WARN line of
 // a start past the stream's end it created at the stream's first sequence instead; and where
 // every resume record it writes logs the WARN line of a floor past the stream's end it recorded
-// at the sequence before the stream's first (recordResumeFloorAt). slog.Default() stands in for
-// a nil logger. The listener passes its own JSON logger (cmd/listener connectSessionDelivery,
-// logging.Logger.Slog), so those lines carry its machine_id as its other session-consumer lines
-// do, and it never sets the default instead (store.WithLogger says why). It is a parameter for
-// the reason inactiveThreshold is: no create or record runs before the logger is set, and
-// nothing writes the field while either reads it.
+// at the sequence before the stream's first (recordResumeFloorAt). A nil logger stands for the
+// client's own (WithLogger, else where slog.Default() points at each line). The listener passes
+// its own JSON logger (cmd/listener connectSessionDelivery, logging.Logger.Slog), so those lines
+// carry its machine_id as its other session-consumer lines do, and it never sets the default
+// instead (store.WithLogger says why). It is a parameter for the reason inactiveThreshold is: no
+// create or record runs before the logger is set, and nothing writes the field while either reads
+// it.
 //
 // A server that can skip a message on a consumer filtering on a wildcard and a literal at the same
 // token is refused, naming its version and the fixed releases (natsversion.ConnectedRefusal, which
@@ -261,7 +263,11 @@ func sessionConsumersOn(client *Client, inactiveThreshold time.Duration, logger 
 		inactiveThreshold: cmp.Or(max(inactiveThreshold, 0), SessionConsumerInactiveThreshold),
 		pullExpires:       sessionPullExpires,
 		pullHeartbeat:     sessionPullHeartbeat,
-		logger:            cmp.Or(logger, slog.Default()),
+		// A caller that names no logger gets the client's, so the consumers' lines and the
+		// connection's go to one place: a caller that gave the client WithLogger gets that, and
+		// one that gave it none gets the client's fallback, which writes where slog.Default()
+		// points at each line.
+		logger: cmp.Or(logger, client.log()),
 	}
 }
 
@@ -870,6 +876,25 @@ func (s *SessionConsumers) Info(ctx context.Context, sessionID string) (*jetstre
 		return nil, err
 	}
 	return s.info(ctx, name)
+}
+
+// consumerGrantProbe is the session whose consumer ProbeConsumerCalls reads: an id no session
+// registers under, so a server that lets the read through answers that no such consumer exists.
+const consumerGrantProbe = "envoy-consumer-grant-probe"
+
+// ProbeConsumerCalls asks the server whether the connection's NATS user may make the session
+// consumers' calls, by one CONSUMER.INFO of a consumer no session has (consumerGrantProbe): nil
+// when the server answered, found or not; its refusal under the user's grant, which wraps
+// ErrConsumerNotGranted and ErrPublishDenied; or the read's own failure. Dispatch's user and a
+// host's hold none of these calls (natsgrant.Dispatch, natsgrant.Host), so this is how a listener
+// running as either learns it from the server rather than from its own name. A takeover pass's
+// first read of a record is the same call on the previous holder's consumer
+// (Client.SessionReadFloor), so the listener asks this before it runs any pass.
+func (s *SessionConsumers) ProbeConsumerCalls(ctx context.Context) error {
+	if _, err := s.Info(ctx, consumerGrantProbe); err != nil && !errors.Is(err, ErrSessionConsumerNotFound) {
+		return err
+	}
+	return nil
 }
 
 // ListSessionConsumers reads every session consumer the stream holds, by session id, with the

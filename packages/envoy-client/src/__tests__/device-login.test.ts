@@ -188,6 +188,29 @@ test("dispatch login refuses a file setting that names no regular file, before a
   }
 });
 
+test("dispatch login --device refuses a code no poll could reach before it prints the code", async () => {
+  // A broker whose interval is no shorter than its code's life: the code would lapse before its
+  // first poll, and an approval of it would mint a launcher credential bound to a key no process
+  // holds. The command shows no code to approve, names the broker's interval and lifetime, and
+  // does not tell the person to ask again, which would meet the same answer.
+  const stub = broker({ interval: 1_800 });
+  const file = path.join(tempDir(), "legion", "device-login.json");
+  const { code, stdout } = await dispatch(["login", "--device", "--person", PERSON], {
+    HOME: tempDir(),
+    AGENT_SECRETS_URL: stub.url,
+    AGENT_SECRETS_DEVICE_LOGIN_FILE: file,
+  });
+  expect(code, stdout).toBe(1);
+  expect(stdout).not.toContain("WDJB-MJHT");
+  expect(stdout).not.toContain("enter the code");
+  expect(stdout).toContain(
+    "answered a device code that lives 600 s, with a poll interval of 1800 s"
+  );
+  expect(stdout).not.toContain("ask again");
+  expect(stub.authorizations).toHaveLength(1);
+  expect(stub.polls).toHaveLength(0);
+});
+
 test("a login approved and then not kept names its credential and where to revoke it", async () => {
   const stub = broker({ credentialId: "cred-unkept-1" });
   const file = path.join(tempDir(), "legion", "device-login.json");

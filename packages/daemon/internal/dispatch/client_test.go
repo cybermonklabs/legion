@@ -1133,6 +1133,13 @@ func clientWrites() []clientWrite {
 			body: `{"task":"default","step":0,"kind":"retro","role":"implementer","type":"","agent":"legion-other-other-7-implementer","generation":2,"rating":4,"rating_reason":"The plan put the tests after the review.","actor":{"kind":"session","id":"legion-daemon:OTHER"}}`,
 		},
 		{
+			method: "PutStepExperiment", route: "PUT /api/v1/issues/OTHER-7/steps/" + step + "/experiment",
+			call: func(ctx context.Context, client *HTTPClient) error {
+				return client.PutStepExperiment(ctx, "OTHER-7", step, retro, StepExperiment{Experiment: "memory", Variant: "off"})
+			},
+			body: `{"task":"default","step":0,"kind":"retro","role":"implementer","type":"","agent":"legion-other-other-7-implementer","generation":2,"experiment":"memory","variant":"off","actor":{"kind":"session","id":"legion-daemon:OTHER"}}`,
+		},
+		{
 			method: "PutPlan", route: "PUT /api/v1/issues/OTHER-7/plans/" + plan,
 			call: func(ctx context.Context, client *HTTPClient) error {
 				return client.PutPlan(ctx, "OTHER-7", plan, PlanWrite{Generation: 2, Source: "default",

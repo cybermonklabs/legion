@@ -154,6 +154,7 @@ func writeSecret(t *testing.T, name, value string) string {
 // Dispatch credential is its own pod identity, so a pod whose environment lacks one of the three
 // variables R2 names refuses the boot naming the variable, and trades nothing.
 func TestTheBrokerSettingRefusesABootWithoutThePodIdentity(t *testing.T) {
+	t.Parallel()
 	broker := newCredentialBroker(t, mintsTheDaemonsToken)
 	dispatchServer := newCredentialDispatch(t, daemonWhoami("EXAMPLE"))
 	for missing, want := range map[string]string{
@@ -183,6 +184,7 @@ func TestTheBrokerSettingRefusesABootWithoutThePodIdentity(t *testing.T) {
 // never called; a broker answering 503 is logged and traded with again, at the boot gate's pacing,
 // and the boot goes on.
 func TestAPermanentBrokerRefusalRefusesTheBoot(t *testing.T) {
+	// Not parallel: it writes the package variable readinessRetry (fastReadiness).
 	fastReadiness(t, bootprobe.Retry{Initial: time.Millisecond, Max: 4 * time.Millisecond})
 	const words = "system:serviceaccount:legion:legion-daemon is listed by no exchange entry"
 
@@ -237,6 +239,7 @@ func TestAPermanentBrokerRefusalRefusesTheBoot(t *testing.T) {
 // reads Dispatch's whoami of its own token and refuses each of the three, naming the field and the
 // broker entry the deployment must fix. The right answer boots.
 func TestTheBootRefusesAnEntryDispatchWouldRefuse(t *testing.T) {
+	t.Parallel()
 	broker := newCredentialBroker(t, mintsTheDaemonsToken)
 	for name, tc := range map[string]struct {
 		change func(map[string]any)
@@ -338,6 +341,7 @@ func TestTheDaemonsClientNamesTheSessionItsTokenProves(t *testing.T) {
 // Dispatch, the boot's whoami and the workflow's reads and writes, carries the broker's token under
 // DPoP with a proof, and none carries the transition token's text, anywhere in it.
 func TestTheDaemonNeverSendsTheTransitionToken(t *testing.T) {
+	t.Parallel()
 	const transitionToken = "shared-transition-token-3a9f"
 	broker := newCredentialBroker(t, mintsTheDaemonsToken)
 	cfg := kubernetesConfig(t, "https://127.0.0.1:1")
@@ -401,6 +405,7 @@ func TestTheDaemonNeverSendsTheTransitionToken(t *testing.T) {
 // daemon's Dispatch client presents, the file without the setting and the broker and the session
 // under it, the transition file beside it where one is named, and no token in either.
 func TestTheBootLogNamesTheDispatchCredential(t *testing.T) {
+	t.Parallel()
 	const fileToken = "dispatch-file-token-4e7a"
 	broker := newCredentialBroker(t, mintsTheDaemonsToken)
 	dispatchServer := newCredentialDispatch(t, daemonWhoami("EXAMPLE"))
@@ -464,9 +469,12 @@ func TestTheBootLogNamesTheDispatchCredential(t *testing.T) {
 // Dispatch credential at the real broker, the client's own renewal loop trades for the next token
 // when boot's comes due, with no Dispatch call made, so the first call after that presents a new
 // token that the broker issued before the call was sent: no call traded for it. The broker's
-// tokens live 40 s, so boot's comes due 20 s in, and the transport would still present it until
-// 10 s before it lapses (cipherclient's liveMargin); the call goes between the two.
+// tokens live 40 s, so boot's comes due 20 s after it was issued, and the transport presents it
+// until 10 s before it lapses (cipherclient's liveMargin), 30 s after it was issued. The call goes
+// 29 s after boot's trade returned. A transport with no renewal loop fails either way: before 30 s
+// it presents boot's token, and after it the call trades for a token issued as it was sent.
 func TestTheDaemonRenewsItsDispatchTokenOffTheRequestPath(t *testing.T) {
+	t.Parallel()
 	const lifetime = 40 * time.Second
 	rig := newBrokerRig(t, ciphertest.WithAccessLifetime(lifetime))
 	dispatchServer := newCredentialDispatch(t, daemonWhoami("EXAMPLE"))
@@ -474,11 +482,14 @@ func TestTheDaemonRenewsItsDispatchTokenOffTheRequestPath(t *testing.T) {
 		cipherclient.BrokerURLVar: rig.URL, cipherclient.IdentityVar: cipherclient.IdentityKubernetes,
 		cipherclient.MachineTokenFileVar: writeSecret(t, "daemon-exchange-token", rig.MintSubjectToken(t, ciphertest.DaemonExchangeAccount, "daemon-pod-uid")),
 	}
-	booted := time.Now()
 	transport, err := dispatchCredential(t.Context(), brokerConfig(dispatchServer.URL), "", getenvOf(env), quietLogger())
 	if err != nil {
 		t.Fatalf("dispatchCredential: %v", err)
 	}
+	// Boot's token was issued before this, so the renewal loop's timer fires by booted + 20 s, and
+	// the renewal has until the call, less the second exp rounds to, to land: 8 s for the timer's
+	// wake and one trade, whatever boot's own trade took.
+	booted := time.Now()
 	client := dispatch.New(dispatchServer.URL, transport)
 	// presented makes one Dispatch call, answering the token it carried and when it was sent.
 	presented := func() (string, time.Time) {
@@ -497,7 +508,7 @@ func TestTheDaemonRenewsItsDispatchTokenOffTheRequestPath(t *testing.T) {
 	}
 
 	boot, _ := presented()
-	time.Sleep(time.Until(booted.Add(lifetime/2 + 5*time.Second)))
+	time.Sleep(time.Until(booted.Add(lifetime - 11*time.Second)))
 	renewed, sent := presented()
 	if renewed == boot {
 		t.Fatalf("the call %s after boot presented boot's token, want the one the renewal loop traded for when boot's came due",

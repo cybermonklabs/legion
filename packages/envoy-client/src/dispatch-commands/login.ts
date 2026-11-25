@@ -81,13 +81,17 @@ function parseLogin(argv: readonly string[]): ParsedLogin {
 /**
  * Runs `dispatch login` with `argv` (the words after `login`) in `env`, and answers its exit
  * code: 0 once the login is approved and kept; 1 when the broker could not be reached or refused
- * it, the person denied it, its code expired, or it could not be kept (the message then names its
- * credential, live at the broker, and any copy of it kept); 2 for a usage error, before any
- * request: either of the command's token files set (`tokenFilesSet`), no `--device`, no person
- * (`--person`, else `AGENT_SECRETS_PERSON`), no broker (`AGENT_SECRETS_URL`) a device login may
- * use (https, or http on this machine's loopback), a login directory others may write to, another
- * user owns, or this user cannot enter and write to, or a login file setting that names something
- * other than a regular file (a directory, a named pipe, a socket, a device, a loop of links).
+ * it, answered a code that would lapse before its first poll (refused before the code is printed,
+ * naming the broker's interval and its codes' lifetime, or the hour this machine polls a code at
+ * most, and what must change at the broker), or answered a poll with a 4xx that is no outage and
+ * decides nothing (naming its status), when the person denied it, its code expired, or it could
+ * not be kept (the message then names its credential, live at the broker, and any copy of it
+ * kept); 2 for a usage error, before any request: either of the command's token files set
+ * (`tokenFilesSet`), no `--device`, no person (`--person`, else `AGENT_SECRETS_PERSON`), no broker
+ * (`AGENT_SECRETS_URL`) a device login may use (https, or http on this machine's loopback), a
+ * login directory others may write to, another user owns, or this user cannot enter and write to,
+ * or a login file setting that names something other than a regular file (a directory, a named
+ * pipe, a socket, a device, a loop of links).
  */
 export async function loginCommand(
   argv: readonly string[],

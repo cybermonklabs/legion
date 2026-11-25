@@ -72,6 +72,7 @@ import type {
   RelatedCheckInput,
   ResolveAskInput,
   SearchResponse,
+  SearchResultKind,
   SessionAnswersResponse,
   StatusChangeAnswer,
   StatusChangeInput,
@@ -483,6 +484,9 @@ export interface SearchOptions {
   readonly project?: string;
   readonly limit?: number;
   readonly offset?: number;
+  /** The kinds to rank, count and page (`SEARCH_KINDS`): `#url` writes one `kind=` per entry,
+   *  which is how the route reads it. With none named the search reads every kind it indexes. */
+  readonly kind?: readonly SearchResultKind[];
 }
 
 /** One node's edges: `to` reads what points at it, `from` what it points to; exactly one. */
@@ -1276,8 +1280,12 @@ export class DispatchClient {
    *  running session, or any human, holds it; 409 CLAIM_CONTENDED when the holder changed twice
    *  while the request ran, so nothing was applied. The answer's `legion_managed_status` says
    *  whether the Legion daemon owns this issue's status — true when the issue carries the
-   *  `legion` label in any case or sits under one that does, where a status anyone else writes
-   *  is undone. */
+   *  `legion` label in any case or sits under one of its own project that does. On such an
+   *  issue, where Dispatch runs with `DISPATCH_LEGION_STATUS_SCOPE` on, it refuses a status
+   *  write from a credential that holds neither the `person` nor the `legion-status` scope
+   *  (403 `LEGION_STATUS_SCOPE_REQUIRED`), but for `done`, `backlog`, `icebox` or `triage` from
+   *  an architect of an issue above with its own broker token. Otherwise the daemon undoes a
+   *  status anyone else writes. */
   async claimIssue(issue: string, input: { readonly actor?: Actor } = {}): Promise<ClaimedIssue> {
     return this.#json(
       "POST",
@@ -1472,6 +1480,24 @@ export class DispatchClient {
   /** `GET /api/v1/projects`: every project, ordered by key. */
   async listProjects(): Promise<Project[]> {
     return this.#json("GET", ["api", "v1", "projects"]);
+  }
+
+  /** `PUT /api/v1/projects/{key}/proven-sessions`: turn the project's proven-sessions setting on.
+   *  A bearer names its session in `actor`. It answers the project as `listProjects` lists it. A
+   *  token scoped to another project is 403 PROJECT_SCOPE. */
+  async turnOnProvenSessions(
+    project: string,
+    input: { readonly actor?: Actor } = {}
+  ): Promise<Project> {
+    return this.#json("PUT", ["api", "v1", "projects", project, "proven-sessions"], input);
+  }
+
+  /** `DELETE /api/v1/projects/{key}/proven-sessions`: turn the project's proven-sessions setting
+   *  off. The route needs the person scope, so a credential without it is 403
+   *  OAUTH_SCOPE_REQUIRED, and its writer is the person the credential acts for. It answers the
+   *  project as `listProjects` lists it. A token scoped to another project is 403 PROJECT_SCOPE. */
+  async turnOffProvenSessions(project: string): Promise<Project> {
+    return this.#json("DELETE", ["api", "v1", "projects", project, "proven-sessions"]);
   }
 
   /** `GET /api/v1/projects/{key}/architecture-sources`: the project's architecture sources, one
@@ -2139,8 +2165,9 @@ export class DispatchClient {
   }
 
   /** `GET /api/v1/projects/{key}/plans`: each finished issue of the project, newest close first,
-   *  with its plan, each retro's rating, its time and its count of failed steps. `since` and
-   *  `until` bound the close to `[since, until)`, and a bound left out is not sent. */
+   *  with its plan, each retro's rating, its time, its count of failed steps, and the experiment
+   *  and the variant the step records of its newest run name, null where they name none. `since`
+   *  and `until` bound the close to `[since, until)`, and a bound left out is not sent. */
   async listProjectPlans(
     project: string,
     window: { readonly since?: string | undefined; readonly until?: string | undefined } = {}

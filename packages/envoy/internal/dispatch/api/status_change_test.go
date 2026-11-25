@@ -22,6 +22,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
@@ -746,11 +747,13 @@ func cookieServer(t *testing.T, on bool) statusChangeServer {
 }
 
 // iapServer is a server behind an identity-aware proxy, whose person no Dispatch cookie names:
-// the proxy's signed assertion alone.
+// the proxy's signed assertion alone. Its verifier judges an assertion's times on the wall clock:
+// each request carries an assertion minted for it that lives nine minutes, and no row here asks
+// when one expires.
 func iapServer(t *testing.T, on bool) statusChangeServer {
 	t.Helper()
 	database := storetest.Open(t)
-	iap := newIAPSocketKeys(t, database)
+	iap := newIAPSocketKeys(t, database, clock.Real())
 	handler, _, _ := newTestServer(t, testServerOptions{store: database, parentStatusRule: on, identity: iap.identity})
 	server := statusChangeServer{
 		name: "the IAP server", project: ruleProject, database: database,

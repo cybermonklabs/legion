@@ -167,6 +167,8 @@ const WRITE_COMMANDS: readonly (readonly [command: string, method: string, route
   ["plan-approve", "POST", "/api/v1/artifacts/{id}/plan-reviews"],
   ["review", "POST", "/api/v1/artifacts/{id}/versions/{number}/reviews"],
   ["project", "POST", "/api/v1/projects"],
+  ["project-update", "PUT", "/api/v1/projects/{key}/proven-sessions"],
+  ["project-update", "DELETE", "/api/v1/projects/{key}/proven-sessions"],
   ["related", "POST", "/api/v1/projects/{key}/related"],
   ["architecture-sync", "POST", "/api/v1/projects/{key}/architecture-sources/sync"],
   ["architecture-sync", "POST", "/api/v1/projects/{key}/architecture-source/sync"],

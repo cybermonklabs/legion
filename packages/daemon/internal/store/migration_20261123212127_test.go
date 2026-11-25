@@ -17,6 +17,7 @@ const startFailureAfterReadyVersion = 20261123212127
 // up after that start, and every claim keeps its death cause. The rows are written with SQL that
 // names the columns of the schema the migration finds, as the release before writes them.
 func TestTheMigrationClearsTheStartFailureOfAClaimWhoseAgentIsUp(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, startFailureAfterReadyVersion-1)

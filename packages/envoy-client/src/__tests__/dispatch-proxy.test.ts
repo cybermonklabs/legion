@@ -2377,6 +2377,8 @@ const COMMAND_OF: Partial<Record<ClientMethod, string | null>> = {
   retractResult: "result",
   writeHandoff: "handoff-write",
   createProject: "project",
+  turnOnProvenSessions: "project-update",
+  turnOffProvenSessions: "project-update",
   related: "related",
   // The route, and the older route where Dispatch has no route for the newer one.
   syncArchitectureSources: "architecture-sync",
