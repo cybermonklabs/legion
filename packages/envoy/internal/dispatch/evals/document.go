@@ -118,6 +118,14 @@ func findDocument(ctx context.Context, w *writeTx) (evalsDocument, bool, error) 
 // than added by an edit after it: an edit reads a document no room holds from the store (docs'
 // coldFork), where a document whose insert this transaction has only queued is not yet. The
 // caller holds the project's documents' lock and found no `evals-md` under it (lockDocument).
+//
+// The document's settlement is scheduled only where its seed owes one (docs.WrittenText's
+// OwesSettlement), as it does where a method holds an ask block or a check carrying `ci_check`.
+// The text this writes otherwise - a heading, a paragraph, and a heading and a callout per eval,
+// each block given its id by the parse - leaves a settlement nothing to write but the delete of
+// the row that said one was owed, so such a create records nothing owed and no settlement loads
+// the document's room for it, on a project create (api's createProject, through EnsureTx) and on
+// a first registration alike.
 func (s *Store) createDocument(ctx context.Context, w *writeTx, sections string, actor model.Actor) error {
 	artifact, written, err := docs.CreateDocument(ctx, s.documents, docs.NewArtifact{
 		Project: &w.project, RefPrefix: w.project, Slug: DocumentSlug, Name: DocumentName, CreatedBy: actor,
@@ -131,7 +139,9 @@ func (s *Store) createDocument(ctx context.Context, w *writeTx, sections string,
 	}, written.Blocks); err != nil {
 		return err
 	}
-	w.owesSettlement(artifact.ID)
+	if written.OwesSettlement {
+		w.owesSettlement(artifact.ID)
+	}
 	return nil
 }
 
@@ -291,8 +301,8 @@ func (s *Store) editDocument(ctx context.Context, w *writeTx, document evalsDocu
 	}, written.Blocks)
 }
 
-// owesSettlement records that the transaction wrote artifactID, whose settlement is scheduled
-// once it commits.
+// owesSettlement records that the transaction wrote artifactID and left it owing a settlement,
+// which is scheduled once it commits (committed).
 func (w *writeTx) owesSettlement(artifactID string) {
 	if !slices.Contains(w.settle, artifactID) {
 		w.settle = append(w.settle, artifactID)

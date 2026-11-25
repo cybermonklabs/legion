@@ -58,8 +58,10 @@ func slugOf(project, evalID string) string {
 
 // writeTx is one registry write's transaction and what its commit owes: the ledger its document
 // writes and their events queue on (docs.Ledger), the document events it queued, published once
-// it commits, and the documents it wrote, whose settlement is scheduled then, as an upload and an
-// edit schedule theirs. now is the transaction's own now(), which every time the write stores is.
+// it commits, and the documents it wrote that owe a settlement, whose settlement is scheduled
+// then, as an upload and an edit schedule theirs: an edit of `evals-md` that applied an
+// operation, and a create of it whose seed owes one (createDocument). now is the transaction's
+// own now(), which every time the write stores is.
 type writeTx struct {
 	pgx.Tx
 	ledger  *docs.Ledger
@@ -148,9 +150,9 @@ func openWrite(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, project stri
 }
 
 // committed is what w's commit owes, paid once its transaction has committed: the settlement of
-// each document it wrote is scheduled, the document events it queued are published, and a batch
-// of the change log's outbox, its own change rows among them where no backlog lies ahead of them,
-// is moved into the change log (drainChanges).
+// each document it wrote that owes one is scheduled, the document events it queued are published,
+// and a batch of the change log's outbox, its own change rows among them where no backlog lies
+// ahead of them, is moved into the change log (drainChanges).
 func (s *Store) committed(ctx context.Context, w *writeTx) {
 	for _, artifactID := range w.settle {
 		s.documents.ScheduleSettlement(artifactID)

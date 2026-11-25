@@ -168,7 +168,9 @@ func (s *server) createProject(w http.ResponseWriter, r *http.Request) {
 	// transaction id, and its writes are queued on the ledger (evals.Store.EnsureTx), which Commit
 	// sends after the project's row and its event, the first writes, which the queued rows name.
 	// The seed's versions record their changes in the change log's outbox and take no lock;
-	// Committed moves them into the log once the transaction has committed.
+	// Committed moves them into the log once the transaction has committed. The `evals-md` the
+	// seed creates owes no settlement unless a method holds what a settlement writes into
+	// (docs.CreateDocument), so Committed schedules none for it and the create loads no room.
 	documentCtx, ledger := s.deps.Docs.Join(r.Context(), tx)
 	defer ledger.Discard()
 	seeded, err := s.registry().EnsureTx(documentCtx, tx, ledger, input.Key, input.Name)

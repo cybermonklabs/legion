@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 
 	"github.com/jackc/pgx/v5"
 
@@ -145,12 +146,18 @@ func stringOf(value *string) string {
 // before the event that records the version exists, and no tuple may be updated afterwards, so
 // the caller appends Blocks under that event, in the same transaction (graphstore.QueueCaused),
 // as every other writer of a version does (VersionResult.Blocks).
+//
+// OwesSettlement is whether the write left the document owing a settlement, which its caller
+// schedules once the transaction has committed (Service.ScheduleSettlement). Every write does but
+// the seed of a document CreateDocument creates whose tree a settlement has nothing to write into
+// (seedOwesSettlement), which records nothing owed (SeedText).
 type WrittenText struct {
-	Markdown string
-	Version  model.Version
-	ReadBack *pmdoc.Node
-	Changes  model.ReferenceChanges
-	Blocks   graphstore.Uncaused
+	Markdown       string
+	Version        model.Version
+	ReadBack       *pmdoc.Node
+	Changes        model.ReferenceChanges
+	Blocks         graphstore.Uncaused
+	OwesSettlement bool
 }
 
 // WriteDocumentText writes markdown as the whole text of the document artifactID and queues it as
@@ -164,7 +171,9 @@ type WrittenText struct {
 // credit of every edit the write read when it changed the document, queues the count of the
 // document's task items after the version's insert, so the count names that version (LEGION-542),
 // and indexes the version's references. ctx is the context Join returned: every read runs in the
-// transaction it joined, and every write is queued on its ledger.
+// transaction it joined, and every write is queued on its ledger. It answers whether the write
+// left the document owing a settlement (WrittenText.OwesSettlement): a replacement does, and so
+// does a seed, unless CreateDocument made it and its tree needs no settlement (SeedText).
 //
 // It appends no event, and so states none of Blocks: an upload appends its own event, after the
 // approval moves a replacement makes, and the eval registry appends the creation's, and each
@@ -202,7 +211,8 @@ func WriteDocumentText(ctx context.Context, documents API, artifactID, markdown 
 	if err != nil {
 		return WrittenText{}, err
 	}
-	return WrittenText{Markdown: stored, Version: version, ReadBack: readBack, Changes: changes, Blocks: blocks}, nil
+	owes := !created || ledger.seedOwes(artifactID)
+	return WrittenText{Markdown: stored, Version: version, ReadBack: readBack, Changes: changes, Blocks: blocks, OwesSettlement: owes}, nil
 }
 
 // CreateDocument creates a markdown document with no request behind it: it queues row's insert
@@ -210,7 +220,16 @@ func WriteDocumentText(ctx context.Context, documents API, artifactID, markdown 
 // of a new document does (QueueNewArtifact, then WriteDocumentText). ctx is the context Join
 // returned, and the caller queues the document's `artifact.created` event
 // (ArtifactCreatedEventPayload) after them, commits through the ledger and then schedules the
-// document's settlement, as an upload does.
+// document's settlement where the answer says the document owes one (WrittenText.OwesSettlement).
+//
+// The document's seed owes a settlement only where its tree needs one (withVersionedSeed,
+// seedOwesSettlement). Its first version is the one written here, at the head the seed leaves, so
+// a settlement of a tree it has nothing to write into would store nothing but the delete of the
+// pending-settlement row the seed left, and would load the document's room to do it, a room that
+// then stays resident until the idle sweep takes it: on every project create, whose `evals-md`
+// this creates (internal/dispatch/evals). Such a seed records nothing owed (SeedText), so no
+// settlement runs for it: none is scheduled, and neither the resumption, nor a load of the room,
+// nor Shutdown finds one owed.
 func CreateDocument(ctx context.Context, documents API, row NewArtifact, markdown string) (model.Artifact, WrittenText, error) {
 	ledger := ledgerFrom(ctx)
 	if _, joined := txFromContext(ctx); !joined {
@@ -221,12 +240,51 @@ func CreateDocument(ctx context.Context, documents API, row NewArtifact, markdow
 	if err != nil {
 		return model.Artifact{}, WrittenText{}, err
 	}
-	written, err := WriteDocumentText(ctx, documents, artifact.ID, markdown, row.CreatedBy, nil, true, nil)
+	written, err := WriteDocumentText(withVersionedSeed(ctx), documents, artifact.ID, markdown, row.CreatedBy, nil, true, nil)
 	if err != nil {
 		return model.Artifact{}, WrittenText{}, err
 	}
 	artifact.Versions = []model.Version{written.Version}
 	return artifact, written, nil
+}
+
+// versionedSeedContextKey marks a seed whose first version its caller writes at the seed's head
+// (withVersionedSeed).
+type versionedSeedContextKey struct{}
+
+// withVersionedSeed marks the seed made with ctx (SeedText) as CreateDocument's: its first version
+// is queued in the seed's own transaction, at the head the seed leaves (WriteDocumentText), so a
+// settlement of it writes no version, and the seed owes one only where its tree needs one
+// (seedOwesSettlement). A seed made without the mark owes a settlement, as every seed did before
+// the mark: a test's, which no caller versions, and a new issue's spec and an upload's (api's
+// createIssue and storeArtifact), which schedule the settlement of every document they write.
+func withVersionedSeed(ctx context.Context) context.Context {
+	return context.WithValue(ctx, versionedSeedContextKey{}, true)
+}
+
+// isVersionedSeed is whether ctx marks its seed as CreateDocument's (withVersionedSeed).
+func isVersionedSeed(ctx context.Context) bool {
+	versioned, _ := ctx.Value(versionedSeedContextKey{}).(bool)
+	return versioned
+}
+
+// seedOwesSettlement is whether a seed of tree that its caller versions at the seed's head
+// (withVersionedSeed) still owes its document a settlement: whether a settlement could write
+// anything into the tree. It errs toward owing, reading the tree as each stage of a settlement
+// that writes reads it: a block lacking an id, or repeating one, which the stamp gives a new one
+// (pmdoc.BlockIDRepairCount, applyStamp; the parse gives every block of a written tree an id, so
+// none should); any ask block, with an id or without, which the reconciliation indexes, repairs
+// or flags (reconcileAskBlocks); and any check block carrying `ci_check`, which it holds to the
+// four rules (reconcileCICheckBlocks), though the seed's own refusal has held it to them already
+// (refuseCICheckBlocks). The rest of a settlement writes nothing for such a seed: the version is
+// the caller's, at the seed's head, so no content follows it (contentChangedSinceVersion); the
+// parse took out every anchor mark (asUploaded), so the sweep finds none (sweepUnrecordedMarks);
+// and a new document has no ask row, pending author or check result to reconcile.
+func seedOwesSettlement(tree *pmdoc.Node) bool {
+	return pmdoc.BlockIDRepairCount(tree) > 0 || pmdoc.HoldsAskBlock(tree) ||
+		slices.ContainsFunc(checkBlockNodes(tree), func(node *pmdoc.Node) bool {
+			return CarriesCICheck(CheckAttributesOf(node))
+		})
 }
 
 // RecordWrittenTaskProgress records the task count of the document a write just stored, queued on
