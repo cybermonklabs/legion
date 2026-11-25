@@ -1618,8 +1618,10 @@ func meInboxOwnerArgs(shape meInboxShape) (issue, artifact string) {
 // keeps are the rows the page answers, in its order and with its tie-break, and the one past it.
 // One test runs after the cut: an Agent root's facts are an inner lateral (myAgentRowFacts), which
 // drops a root holding no session reply. No dismissal mark names such a root: a dismissal is
-// refused for a root whose newest reply the page did not draw (inboxDismissCheckAgentRoots), and no
-// statement deletes a message.
+// refused for a root whose newest reply the page did not draw (inboxDismissCheckAgentRoots), no own
+// reply writes an Agent dismissal mark for a root no session answered, which its writer reads
+// under the root's lock (createStoredMessage, inboxwrite.Recording.Unanswered), and no statement
+// deletes a message.
 //
 // page_rows reads each row from its key (meInboxPageRows), so every step after it meets those rows
 // alone, and an Agent root's thread (myAgentRowFacts) is walked for the Agent rows among them and

@@ -382,22 +382,24 @@ func deliveredTo(fromKind, fromID, login string, at time.Time, who model.Actor, 
 //     marked_seq at the log position of this moment (migration 20261116160000); then, where the
 //     upsert moved the mark, A's read_through to T at the moment that row's read mark stands at
 //     once the upsert ran, stated by the same statement (queueKeepRow, graphstore.MarkArm), as
-//     every writer of a read mark states it (the spec's R6). Where the write dismisses
-//     (PlanRecord), the same statement also sets the row's dismissed_at to the write's moment, on a
-//     row it begins and on one already there, whatever the row's read mark and version: the
-//     dismissal takes no version guard (the own-answer rule, R1). Before that statement, A's
-//     dismissed tuple to T's root, at the write's moment and under its event
+//     every writer of a read mark states it (the spec's R6). Where the write dismisses its row
+//     (ownDismissal's dismissesRow), the same statement also sets the row's dismissed_at to the
+//     write's moment, on a row it begins and on one already there, whatever the row's read mark
+//     and version: the dismissal takes no version guard (the own-answer rule, R1). Before that
+//     statement, A's dismissed tuple to T's root, at the write's moment and under its event
 //     (graphstore.QueueFromPerson), so the row and the tuple commit together;
-//  6. where the write dismisses and is a reply under an Agent thread - a message on no issue,
-//     which keeps no user_threads row - A's dismissed tuple to the root message, then A's
-//     user_agent_thread_dismissed row at that root, both at the write's moment, made or moved
-//     whatever the row held, so the row always matches the newest tuple; then, as a Dismiss press
-//     of the thread marks them, each session's reply under the root that A's read mark of its
-//     session does not cover and A has not read by id, marked read by id at the write's moment -
-//     its user_agent_reply_read row and its reply_read tuple, stated by the statement that
-//     inserts the row (agentRepliesRead, graphstore.MarkArm) - so the thread A no longer sees in
-//     their Inbox holds nothing unread. The writer took the root `for update` before its own row's
-//     insert (api's createStoredMessage, D6).
+//  6. where the write dismisses an Agent thread (ownDismissal's dismissesAgentRoot) - a reply
+//     under a message on no issue, which keeps no user_threads row and so takes no step 5 - A's
+//     dismissed tuple to the root message, then A's user_agent_thread_dismissed row at that root,
+//     both at the write's moment, made or moved whatever the row held, so the row always matches
+//     the newest tuple; then, as a Dismiss press of the thread marks them, each session's reply
+//     under the root that A's read mark of its session does not cover and A has not read by id,
+//     marked read by id at the write's moment - its user_agent_reply_read row and its reply_read
+//     tuple, stated by the statement that inserts the row (agentRepliesRead, graphstore.MarkArm) -
+//     so the thread A no longer sees in their Inbox holds nothing unread. The writer took the root
+//     `for update` before its own row's insert and read under that lock that a session answered
+//     the root (api's createStoredMessage, D6): a root no session answered is no Agent row, and a
+//     reply under it takes none of this step (Recording.Unanswered).
 //
 // A session's reply to a message takes, between steps 1 and 2, its thread root's Agent
 // dismissals: the root `for no key update`, which its writer took before the reply's insert
@@ -443,9 +445,9 @@ type Recording struct {
 	// them.
 	delivered, moved []string
 	starter          string
-	// dismisses is whether the write takes its thread out of A's Inbox (PlanRecord, R1), and
-	// agentDismiss whether it does so under an Agent thread, whose mark is a row of its own (step 6).
-	dismisses, agentDismiss bool
+	// dismisses is what the write takes out of A's Inbox (ownDismissal, R1): nothing, its thread on
+	// A's own row (step 5), or the Agent thread at its root, whose mark is a row of its own (step 6).
+	dismisses dismissal
 	// failClear and failThreads are whether a test armed the failure between the retraction of the
 	// Agent dismissals and the delete of their rows (failpoint.AgentDismissalClear), and between
 	// the deliveries and the move of the rows they reach (failpoint.UserThreads), decided as the
@@ -460,32 +462,76 @@ func (r Recording) Root() (string, string) {
 }
 
 // AgentDismissal is the root message of the Agent thread the record takes out of its writer's
-// Inbox (step 6), and whether it does. The writer takes that root `for update` before its own
-// row's insert, as the dismiss route takes an Agent root before the person's rows (D6): taken
-// after the insert, whose foreign key holds its parent `for key share`, the lock would be an
-// upgrade that can deadlock against the dismiss route. Step 6's upsert of the writer's
-// user_agent_thread_dismissed row (queueAgentDismissal) then moves the root's own
-// agent_dismissed_at where the writer sent the root, as the dismiss route's mark does, through the
-// trigger of migration 20261125053125, under this lock: every writer of that column takes the root
-// first.
+// Inbox (step 6), and whether it does, as the plan reads it. The writer takes that root `for
+// update` before its own row's insert, as the dismiss route takes an Agent root before the
+// person's rows (D6): taken after the insert, whose foreign key holds its parent `for key share`,
+// the lock would be an upgrade that can deadlock against the dismiss route. Once the lock is
+// granted it reads whether a session answered the root, and drops the dismissal where none did
+// (Unanswered). Step 6's upsert of the writer's user_agent_thread_dismissed row
+// (queueAgentDismissal) then moves the root's own agent_dismissed_at where the writer sent the
+// root, as the dismiss route's mark does, through the trigger of migration 20261125053125, under
+// this lock: every writer of that column takes the root first.
 func (r Recording) AgentDismissal() (string, bool) {
-	if !r.agentDismiss {
+	if r.dismisses != dismissesAgentRoot {
 		return "", false
 	}
 	return r.thread.id, true
 }
 
-// ownDismissal is D5's rule (the own-answer rule, R1): whether w takes its thread, rooted at
-// root, out of its writer's Inbox, and whether it does so under an Agent thread. It does when its
-// handler marked it its writer's own (Write.OwnWrite), its writer is a person (person, the login
-// PlanRecord read, "" for anybody else), its tuples' writer acts as itself with no agent acting
-// for them (Who.Act), and it is an answer or a reply - not the write that starts the thread. An
-// Agent thread is a message thread on no project, which keeps no user_threads row. An Unstored
-// write dismisses nothing: its record is the trigger body's projection, which states no tuple and
-// never dismissed (Recording.queueUnstored), so its writer takes no Agent root for it either.
-func ownDismissal(w Write, person string, root thread) (dismisses, agent bool) {
-	dismisses = w.OwnWrite && !w.unstored && person != "" && w.Who.Act == nil && (w.ask != nil || w.NodeID != root.id)
-	return dismisses, dismisses && w.NodeKind == graphstore.KindMessage && w.Project == ""
+// Unanswered is r, the record of a reply that takes an Agent thread out of its writer's Inbox
+// (AgentDismissal), for a root no session answered, as the writer read it under the root's `for
+// update`: r dismissing nothing, so it takes none of step 6 - no dismissed tuple, no
+// user_agent_thread_dismissed row and no reply marked read. The Inbox's reads draw an Agent row
+// from the session replies of its root's thread, through an inner lateral (api's myAgentRowFacts),
+// so a root no session answered is no Agent row, and a mark of it would be the mark of no row,
+// which a Dismissed page cut to its marks counts and then drops. No session's reply commits
+// between that read and this write's commit: one of this release takes the root `for no key
+// update` before its insert (QueueRootLock), one of an older build takes it `for key share` in
+// the trigger user_agent_thread_dismissed_clear (migrations 20261105093507 and 20261125053125),
+// and either level waits for `for update`.
+func (r Recording) Unanswered() Recording {
+	if r.dismisses == dismissesAgentRoot {
+		r.dismisses = dismissesNothing
+	}
+	return r
+}
+
+// dismissal is what a write takes out of its writer's Inbox as their own dismissal
+// (ownDismissal), and so which of Record's steps writes it.
+type dismissal int
+
+const (
+	// dismissesNothing is a write that dismisses nothing.
+	dismissesNothing dismissal = iota
+	// dismissesRow is a write that dismisses its thread on its writer's own user_threads row, beside
+	// their dismissed tuple to the thread's root (step 5).
+	dismissesRow
+	// dismissesAgentRoot is a reply that dismisses its Agent thread, which keeps no user_threads
+	// row: the writer's dismissed tuple to the root message, their user_agent_thread_dismissed row
+	// at it and the thread's replies marked read (step 6).
+	dismissesAgentRoot
+)
+
+// ownDismissal is D5's rule (the own-answer rule, R1): what w, written in the thread rooted at
+// root, takes out of its writer's Inbox. It dismisses when its handler marked it its writer's own
+// (Write.OwnWrite), its writer is a person (person, the login PlanRecord read, "" for anybody
+// else), its tuples' writer acts as itself with no agent acting for them (Who.Act), and it is an
+// answer or a reply - not the write that starts the thread: a message on no project, an Agent
+// thread's reply, dismisses that thread at its root (dismissesAgentRoot), since its thread keeps no
+// user_threads row, and any other write its thread on its writer's own row (dismissesRow). The
+// Agent root's dismissal stands only where a session answered the root, which the writer reads
+// under the root's lock (Recording.Unanswered). An Unstored write dismisses nothing: its record is
+// the trigger body's projection, which states no tuple and never dismissed
+// (Recording.queueUnstored), so its writer takes no Agent root for it either.
+func ownDismissal(w Write, person string, root thread) dismissal {
+	switch {
+	case !w.OwnWrite || w.unstored || person == "" || w.Who.Act != nil || (w.ask == nil && w.NodeID == root.id):
+		return dismissesNothing
+	case w.NodeKind == graphstore.KindMessage && w.Project == "":
+		return dismissesAgentRoot
+	default:
+		return dismissesRow
+	}
 }
 
 // QueueRootLock queues, for a session's reply to a message, the lock of the root of the thread the
@@ -497,8 +543,8 @@ func ownDismissal(w Write, person string, root thread) (dismisses, agent bool) {
 // holding no more than the `for key share` its foreign key takes where it answers the root
 // directly, so a restore holding the root `for no key update` could wait for a mark the reply's
 // delete holds while the reply's update waits for the root, and Postgres would fail one of the
-// two. Any other record queues nothing: a person's own reply that dismisses its Agent thread takes
-// the root `for update` instead (AgentDismissal), and no write is both a session's and a person's.
+// two. Any other record queues nothing: a person's own reply under an Agent thread takes the root
+// `for update` instead (AgentDismissal), and no write is both a session's and a person's.
 func (r Recording) QueueRootLock(b *store.WriteBatch) {
 	if r.clears {
 		queueRootLock(b, r.thread.id)
@@ -535,7 +581,7 @@ func PlanRecord(ctx context.Context, tx pgx.Tx, w Write) (Recording, error) {
 	if r.named && r.authorKind == graphstore.KindPerson {
 		r.person = r.authorID
 	}
-	r.dismisses, r.agentDismiss = ownDismissal(w, r.person, thread)
+	r.dismisses = ownDismissal(w, r.person, thread)
 	if r.owed, err = owedBy(ctx, tx, w.ask); err != nil {
 		return Recording{}, err
 	}
@@ -699,19 +745,20 @@ func (r Recording) Queue(b *store.WriteBatch, event int64) error {
 		queueMoveRows(b, thread, w, r.moved)
 	}
 
-	// 5. A's own row, and the read mark it stands at where this write moved it; where the write
-	// dismisses, A's dismissed tuple and the row's dismissed_at with it.
-	if login, keeps := w.keptLogin(); keeps {
-		if err := queueKeepRow(b, thread, w, login, event, r.dismisses); err != nil {
-			return err
+	switch r.dismisses {
+	case dismissesNothing, dismissesRow:
+		// 5. A's own row, and the read mark it stands at where this write moved it; where the write
+		// dismisses its row, A's dismissed tuple and the row's dismissed_at with it.
+		if login, keeps := w.keptLogin(); keeps {
+			if err := queueKeepRow(b, thread, w, login, event, r.dismisses == dismissesRow); err != nil {
+				return err
+			}
 		}
-	}
-
-	// 6. A reply under an Agent thread that dismisses: A's dismissed tuple to the root message, then
-	// A's row of it, which the root lock its writer took first orders against the dismiss route,
-	// then the replies under the root A has not read, each marked read by id with its reply_read,
-	// as a Dismiss press marks them.
-	if r.agentDismiss {
+	case dismissesAgentRoot:
+		// 6. A reply that dismisses its Agent thread, which keeps no row of A's: A's dismissed tuple
+		// to the root message, then A's row of it, which the root lock its writer took first orders
+		// against the dismiss route, then the replies under the root A has not read, each marked
+		// read by id with its reply_read, as a Dismiss press marks them.
 		graphstore.QueueFromPerson(b, w.At, []graphstore.Tuple{dismissalOf(r.person, thread, w, event)})
 		queueAgentDismissal(b, r.person, thread.id, w)
 		read, params, err := graphstore.MarkArm(4, "replies_read", graphstore.TupleReplyRead, graphstore.KindMessage, w.Who, event)

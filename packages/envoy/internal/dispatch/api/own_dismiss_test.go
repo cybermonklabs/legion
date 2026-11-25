@@ -157,7 +157,7 @@ const (
 	commentSite         = "api/comment_create.go#createCommentFor Comment"
 	sessionCommentSite  = "api/comment_delivery.go#planCommentReply Comment"
 	messageSite         = "api/messages.go#inbox Message"
-	ownMessageSite      = "api/messages.go#ownInbox Message"
+	ownMessageSite      = "api/messages.go#createStoredMessage Own"
 	approvalRequestSite = "api/reviews.go#openApprovalAsk Opened"
 	carriedSite         = "docs/approval_carry.go#answerApprovalAsk Answered"
 	askBlockSite        = "docs/ask_blocks.go#createAskBlock Opened"
@@ -570,20 +570,22 @@ type threadWriteSite struct {
 
 // requireEveryWriteIntoAThreadIsListed reads the module's source, every Go file but the tests and
 // inboxwrite's own, with go/parser, and finds each call of an inboxwrite constructor and each
-// inboxwrite.Write literal, named "<file>#<function> <constructor>" ("Write" for a literal), the
-// file from internal/dispatch where it lives under it. It fails on a site no row of rows names and
-// on a row whose site the source no longer holds, so a new write into a thread cannot appear
-// without a row that says whether it dismisses.
+// inboxwrite.Write literal, named "<file>#<function> <constructor>" ("Write" for a literal), and
+// each Own called on a write a helper built and answered - `stored.inbox(message, actor).Own()` -
+// named "<file>#<function> Own", the file from internal/dispatch where it lives under it. It fails
+// on a site no row of rows names and on a row whose site the source no longer holds, so a new
+// write into a thread cannot appear without a row that says whether it dismisses.
 //
 // It also reads whether each site marks the write it builds its writer's own - Own called on the
-// expression that builds it, or OwnWrite set in the literal - which is the one way a handler lets
-// inboxwrite.PlanRecord dismiss. It fails where that disagrees with the rows of the site: a site
-// some row of which dismisses has to mark its writes its own, and a site none of whose rows
-// dismisses - the carried approval, the restore of a retracted ask, the backfill's and the seed's
-// writes among them - must not. A row of a site that marks its writes its own and dismisses
-// nothing is decided by PlanRecord's other conditions (a session, an Act, a write that starts its
-// thread), which its drive reads. A site that marks some of its writes its own and not others is
-// refused, since no row could say which of them it is about.
+// expression that builds it, or OwnWrite set in the literal; an Own site marks every write it
+// names - which is the one way a handler lets inboxwrite.PlanRecord dismiss. It fails where that
+// disagrees with the rows of the site: a site some row of which dismisses has to mark its writes
+// its own, and a site none of whose rows dismisses - the carried approval, the restore of a
+// retracted ask, the backfill's and the seed's writes among them - must not. A row of a site that
+// marks its writes its own and dismisses nothing is decided by PlanRecord's other conditions (a
+// session, an Act, a write that starts its thread), which its drive reads. A site that marks some
+// of its writes its own and not others is refused, since no row could say which of them it is
+// about.
 func requireEveryWriteIntoAThreadIsListed(t *testing.T, rows []ownDismissRow) {
 	t.Helper()
 	const moduleRoot = "../../.."
@@ -706,6 +708,18 @@ func threadWritesIn(relative string, files *token.FileSet, file *ast.File) map[s
 		x, ok := selector.X.(*ast.Ident)
 		return selector.Sel.Name, ok && x.Name == name
 	}
+	// built is whether expression builds a write itself: a constructor's call or a Write literal.
+	built := func(expression ast.Expr) bool {
+		switch written := expression.(type) {
+		case *ast.CallExpr:
+			called, ok := named(written.Fun)
+			return ok && slices.Contains(threadWriteConstructors, called)
+		case *ast.CompositeLit:
+			literal, ok := named(written.Type)
+			return ok && literal == "Write"
+		}
+		return false
+	}
 	for _, declared := range file.Decls {
 		function := "(package level)"
 		if declaration, ok := declared.(*ast.FuncDecl); ok {
@@ -725,6 +739,8 @@ func threadWritesIn(relative string, files *token.FileSet, file *ast.File) map[s
 			case *ast.CallExpr:
 				if called, ok := named(written.Fun); ok && slices.Contains(threadWriteConstructors, called) {
 					constructor = called
+				} else if ownOfHelpersWrite(written, built) {
+					constructor, own = "Own", true
 				}
 			case *ast.CompositeLit:
 				if literal, ok := named(written.Type); ok && literal == "Write" {
@@ -766,6 +782,29 @@ func calledOwn(path []ast.Node) bool {
 			return true
 		}
 		current = call
+	}
+	return false
+}
+
+// ownOfHelpersWrite is whether call is Own called on a write that no constructor or literal of its
+// own chain of method calls builds - one a helper built and answered, such as
+// `stored.inbox(message, actor).Own()`, which the walk names a site of its own. Own on a chain that
+// starts at a constructor or a literal, built tells, is that write's own site's (calledOwn).
+func ownOfHelpersWrite(call *ast.CallExpr, built func(ast.Expr) bool) bool {
+	selector, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok || selector.Sel.Name != "Own" || len(call.Args) != 0 {
+		return false
+	}
+	for receiver := selector.X; !built(receiver); {
+		chained, ok := receiver.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		method, ok := chained.Fun.(*ast.SelectorExpr)
+		if !ok {
+			return true
+		}
+		receiver = method.X
 	}
 	return false
 }
