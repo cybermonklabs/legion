@@ -98,11 +98,11 @@ func proofURL(t *testing.T, compact string) string {
 
 // TestAnEnrolmentURLThatDoesNotParsePrintsNoneOfIt: --url with redacttest's credentials in its user
 // information and its query. One url.Parse refuses (an invalid escape in its path) fails enroll-pod
-// by --url and the class alone, before any call (unparsed); http.NewRequest's error for the URL with
-// the service login's route appended, which enroll-pod printed before, quotes it whole (twin). One
-// url.Parse takes, whose joined URL, as url.URL.String writes it, url.Parse refuses again (an IPv6
-// zone holding a byte that is not ASCII, which String escapes as %FD), fails the service login by
-// its method, the URL as redact.URL prints it and the class (reparsed); its twin shows
+// by --url and the class alone, before any call (unparsed); http.NewRequest's error for the URL
+// with the service login's route appended quotes it whole (twin). One url.Parse takes, whose
+// joined URL, as url.URL.String writes it, url.Parse refuses again (an IPv6 zone holding a byte
+// that is not ASCII, which String escapes as %FD), fails the service login by its method, the
+// URL as redact.URL prints it and the class (reparsed); its twin shows
 // http.NewRequest's error for the joined URL holds the credentials. Captures
 // dev-proxy-stands.enroll-url/<case>.
 func TestAnEnrolmentURLThatDoesNotParsePrintsNoneOfIt(t *testing.T) {

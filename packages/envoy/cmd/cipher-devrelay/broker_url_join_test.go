@@ -62,12 +62,12 @@ func TestABrokerCallGoesToThePathJoinedOntoTheBrokerAddress(t *testing.T) {
 // TestABrokerAddressThatDoesNotParsePrintsNoneOfIt: --broker with redacttest's credentials in its
 // user information and its query. One url.Parse refuses (an invalid escape in its path) fails the
 // lookup by the setting and the class alone, before any request (unparsed); http.NewRequest's
-// error for the address with the route appended, which the call printed through the Address's
-// Error before, quotes it whole (twin). One url.Parse takes, whose joined URL, as url.URL.String
-// writes it, url.Parse refuses again (an IPv6 zone holding a byte that is not ASCII, which String
-// escapes as %FD), prints through the Address's Error as the call's other failures do, the URL as
-// redact.NotPrinted (reparsed); its twin shows http.NewRequest's error for the joined URL holds the
-// credentials. Captures devrelay.broker-url/<case>.
+// error for the address with the route appended quotes it whole (twin). One url.Parse takes,
+// whose joined URL, as url.URL.String writes it, url.Parse refuses again (an IPv6 zone holding a
+// byte that is not ASCII, which String escapes as %FD), prints through the Address's Error as the
+// call's other failures do, the URL as redact.NotPrinted (reparsed); its twin shows
+// http.NewRequest's error for the joined URL holds the credentials. Captures
+// devrelay.broker-url/<case>.
 func TestABrokerAddressThatDoesNotParsePrintsNoneOfIt(t *testing.T) {
 	token := tokenFile(t, "caller-token")
 	param := "access" + "_token"
