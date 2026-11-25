@@ -3,6 +3,7 @@ package clocktest_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"sync"
 	"testing"
@@ -406,13 +407,19 @@ func TestStopAndReset(t *testing.T) {
 	}
 }
 
+// contextEnding is how a context ended: its Err and its Cause, printed by name.
+type contextEnding struct{ err, cause error }
+
+func (e contextEnding) String() string { return fmt.Sprintf("Err %v, Cause %v", e.err, e.cause) }
+
 // WithTimeoutCause ends as context.WithTimeoutCause does, on the fake as on the real clock: at its
-// deadline with context.DeadlineExceeded as its error and the cause it was given, with
-// context.Canceled as both once its cancel runs first, and before it is returned when its wait is
-// zero or less. The real clock's deadline here is a millisecond, waited for on its own Done.
+// deadline with context.DeadlineExceeded as its error and the cause it was given, or
+// context.DeadlineExceeded as its cause too when that cause is nil; with context.Canceled as both
+// once its cancel runs first; and before it is returned when its wait is zero or less. The real
+// clock's deadlines here are a millisecond, each waited for on its own Done.
 func TestWithTimeoutCauseEndsAsTheContextPackagesDoes(t *testing.T) {
 	cause := errors.New("the allowance ended")
-	type ending struct{ err, cause error }
+	type ending = contextEnding
 	ended := func(ctx context.Context) ending { return ending{ctx.Err(), context.Cause(ctx)} }
 	fake := clocktest.New(epoch)
 
@@ -453,5 +460,20 @@ func TestWithTimeoutCauseEndsAsTheContextPackagesDoes(t *testing.T) {
 	}
 	if got := ended(fakeSpent); got != want {
 		t.Errorf("the fake's context of no wait read %+v as it was returned, want %+v, as the real clock's does", got, want)
+	}
+
+	realNoCause, cancel := clock.Real().WithTimeoutCause(context.Background(), time.Millisecond, nil)
+	defer cancel()
+	testwait.Receive(t, "the real clock's context of no cause at its deadline", realNoCause.Done())
+	fakeNoCause, cancel := fake.WithTimeoutCause(context.Background(), time.Minute, nil)
+	defer cancel()
+	fake.Advance(time.Minute)
+	testwait.Receive(t, "the fake's context of no cause at its deadline", fakeNoCause.Done())
+	want = ending{context.DeadlineExceeded, context.DeadlineExceeded}
+	if got := ended(realNoCause); got != want {
+		t.Errorf("the real clock's context of no cause at its deadline ended %+v, want %+v", got, want)
+	}
+	if got := ended(fakeNoCause); got != want {
+		t.Errorf("the fake's context of no cause at its deadline ended %+v, want %+v, as the real clock's does", got, want)
 	}
 }

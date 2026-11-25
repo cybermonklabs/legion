@@ -25,7 +25,7 @@ func upgradedPair(t *testing.T) (served, client *gws.Conn) {
 		upgraded <- conn
 	}))
 	t.Cleanup(server.Close)
-	client, response, err := gws.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http"), nil)
+	client, response, err := dialLive(t, gws.DefaultDialer, "ws"+strings.TrimPrefix(server.URL, "http"), nil)
 	if err != nil {
 		t.Fatalf("dial the test server: %v", err)
 	}

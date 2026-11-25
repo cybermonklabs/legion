@@ -262,8 +262,10 @@ func (c *Fake) WithTimeout(ctx context.Context, d time.Duration) (context.Contex
 	return c.withDeadline(ctx, func(now time.Time) time.Time { return now.Add(d) }, context.DeadlineExceeded)
 }
 
+// WithTimeoutCause is WithTimeout whose end at its deadline carries cause, or
+// context.DeadlineExceeded when cause is nil, as context.WithTimeoutCause's does.
 func (c *Fake) WithTimeoutCause(ctx context.Context, d time.Duration, cause error) (context.Context, context.CancelFunc) {
-	return c.withDeadline(ctx, func(now time.Time) time.Time { return now.Add(d) }, cause)
+	return c.withDeadline(ctx, func(now time.Time) time.Time { return now.Add(d) }, cmp.Or(cause, context.DeadlineExceeded))
 }
 
 func (c *Fake) WithDeadline(ctx context.Context, at time.Time) (context.Context, context.CancelFunc) {

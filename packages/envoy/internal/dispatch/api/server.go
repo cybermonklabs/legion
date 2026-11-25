@@ -194,7 +194,7 @@ type Deps struct {
 	// LiveSocketClock is what a GET /ws/live socket's read deadlines run on: the pong deadline, two
 	// heartbeats after the page's last pong, the wait for the page's close frame once the socket
 	// sent its own (liveSocketCloseWait), and the drain's wait for the rest of a frame past the read
-	// limit, liveSocketCloseWait too, which takes the pong deadline's place (drainReads). Nil is
+	// limit, liveSocketCloseWait too, which takes the pong deadline's place (endReads). Nil is
 	// clock.Real(), as a deployment leaves it; only a test sets another, a clocktest fake on which
 	// no page's reads end until the test moves it there. It is not Clock, so a test that moves the
 	// server's clock through its heartbeats ends no read with it.
@@ -231,16 +231,20 @@ type Deps struct {
 	// it empty, which is one identity for every such build and is why a deploy is what it is
 	// for rather than a key anything depends on being unique.
 	BuildCommit string
-	// Clock is the clock every timer of this package that a test asserts runs on: the heartbeat on
-	// which a socket resolves its caller again (whileCallerResolves), the listener lookups'
-	// windows (mentionLookupTimeout, the listener client's window), the take-over's tries
-	// (takeoverRetry), the related-item check's allowance (relatedBounds), an agent view's wait
-	// for its replay (agentStreamReplayTimeout) and the time each access-log line records
-	// (accesslog.HandlerOn), which a test hands AnswersLatency's clock too. One lookup does not
-	// run on it: roleHolderMayBe, the question whether a session may hold a role, arms
-	// mentionLookupTimeout on the wall clock (context.WithTimeout). Nil, which every deployment
-	// leaves it, is clock.Real(), for a server Register builds and for one built directly alike
-	// (server.clock); a test passes a clocktest.Fake and moves it.
+	// Clock is the clock these timers of this package run on: the heartbeat on which a socket
+	// resolves its caller again (whileCallerResolves), the bound on each listener lookup of a
+	// comment's route and mentions (resolveMentionTarget's mentionLookupTimeout), the listener
+	// client's window, the take-over's tries (takeoverRetry), the related-item check's allowance
+	// (relatedBounds), an agent view's wait for its replay (agentStreamReplayTimeout) and the time
+	// each access-log line records (accesslog.HandlerOn), which a test hands AnswersLatency's
+	// clock too. Three listener lookups bound themselves on the wall clock instead
+	// (context.WithTimeout), and only the listener client's window of each runs on this clock:
+	// roleHolderMayBe, the question whether a session may hold a role (mentionLookupTimeout);
+	// listRouteRoster, the read of the listener's session list (routeRosterTimeout); and a
+	// broadcast's resolution of its recipients (resolveBroadcastSessions,
+	// broadcastResolveAllowance). Nil, which every deployment leaves it, is clock.Real(), for a
+	// server Register builds and for one built directly alike (server.clock); a test passes a
+	// clocktest.Fake and moves it.
 	Clock clock.Clock
 	// ParentStatusRule is DISPATCH_PARENT_STATUS_RULE: while it is on, a write that would leave
 	// a parent's status out of line with its children's (R24) is refused 409

@@ -108,11 +108,11 @@ type liveSocket struct {
 	// waiting.
 	closed chan struct{}
 	// deadline orders the pong handler's extension of the read deadline with the last one the
-	// writer sets once it has closed, or the drain of a frame past the read limit (drainReads);
+	// writer sets once it has closed, or the drain of a frame past the read limit (endReads);
 	// closing stops further extensions. readsDue is that deadline, on clock
 	// (Deps.LiveSocketClock, clock.Real() where that is nil), and readsEnd the one timer that ends
 	// the page's reads once it is due, by setting the connection's read deadline to now
-	// (endReadsNow). Each awaitPong, endReads and drainReads moves readsDue and the timer and lifts
+	// (endReadsNow). Each awaitPong and endReads moves readsDue and the timer and lifts
 	// any deadline the timer already set on the connection, as each SetReadDeadline replaces the
 	// one before, expired or not: a pong already in the read buffer when the deadline fell due
 	// renews it before the next network read, and that read then waits for the page. The timer's
@@ -224,7 +224,11 @@ func (socket *liveSocket) awaitPong(wait time.Duration) {
 }
 
 // endReads ends the page's reads within wait: the time its close frame has to arrive once the
-// socket sent its own, or none when the connection failed.
+// socket sent its own, or none when the connection failed, or the time the rest of a frame past
+// the read limit has to arrive (serveLiveSocket's drain). Its deadline replaces the pong
+// deadline, as a SetReadDeadline replaces the one before, so a pong deadline that falls due inside
+// the wait does not cut it short, and one the pong deadline's timer already set on the connection
+// is lifted with it (endReadsInLocked).
 func (socket *liveSocket) endReads(wait time.Duration) {
 	socket.deadline.Lock()
 	defer socket.deadline.Unlock()
@@ -280,18 +284,6 @@ func (socket *liveSocket) stopReadDeadline() {
 	if socket.readsEnd != nil {
 		socket.readsEnd.Stop()
 	}
-}
-
-// drainReads gives the rest of a frame past the read limit wait from now to arrive, on the
-// socket's clock: the drain's deadline replaces the pong deadline, as a SetReadDeadline replaces
-// the one before, so a pong deadline that falls due inside the drain does not cut it short, and a
-// read deadline the pong deadline's timer already set on the connection is lifted with it
-// (endReadsInLocked).
-func (socket *liveSocket) drainReads(wait time.Duration) {
-	socket.deadline.Lock()
-	defer socket.deadline.Unlock()
-	socket.closing = true
-	socket.endReadsInLocked(wait)
 }
 
 // close sends the page a close frame with code and reason, and waits for its reply.
@@ -488,7 +480,7 @@ func (s *server) serveLiveSocket(w http.ResponseWriter, r *http.Request) {
 	if errors.Is(readErr, gws.ErrReadLimit) {
 		// The rest of the frame past the limit is still arriving. Reading it off before closing makes
 		// the close a FIN behind the 1009 gorilla wrote, not a reset that can overtake it.
-		socket.drainReads(liveSocketCloseWait)
+		socket.endReads(liveSocketCloseWait)
 		_, _ = io.Copy(io.Discard, conn.NetConn())
 	}
 }

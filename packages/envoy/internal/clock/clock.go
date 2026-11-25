@@ -45,8 +45,8 @@ type Clock interface {
 	WithTimeout(ctx context.Context, d time.Duration) (context.Context, context.CancelFunc)
 	// WithTimeoutCause is WithTimeout whose end at d carries cause (context.Cause), as
 	// context.WithTimeoutCause's does: its Err is context.DeadlineExceeded at d, with cause as its
-	// cause, and context.Canceled, as error and cause both, once its cancel runs first. A d of zero
-	// or less ends it before it is returned.
+	// cause, or context.DeadlineExceeded when cause is nil, and context.Canceled, as error and
+	// cause both, once its cancel runs first. A d of zero or less ends it before it is returned.
 	WithTimeoutCause(ctx context.Context, d time.Duration, cause error) (context.Context, context.CancelFunc)
 	// WithDeadline is a context that ends with context.DeadlineExceeded at at.
 	WithDeadline(ctx context.Context, at time.Time) (context.Context, context.CancelFunc)
