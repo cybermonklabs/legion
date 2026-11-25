@@ -59,15 +59,18 @@ import (
 // has: the rule that took the first candidate outright, whatever repository its issue resolved
 // to. 1 held every candidate to the pull request's repository and ranked the title and the body
 // first. 2 is the order above, with the two links and the head branch over the title and the
-// body.
+// body. 6 is the rule of 2, with each merged row's merge commit and merge time stored: raising it
+// offers each merged row stored before once more, and that refresh stores both from GitHub's
+// answer (RefreshPullRequestHead, headRow). It is 6, not 3, because cybermonklabs/legion#4230
+// numbers its own rules 3 to 5.
 //
-// Raising this by one is how a later change to the attribution reaches the merged rows already
-// stored. Nothing else revisits one — an open row comes round at every reconcile pass of one
-// process, each starting at most five minutes after the one before it ended
-// (PullRequestHeadStaleAfter), but a merged row is read again only by that arm — so a change made
-// without raising it leaves every pull request merged before it judged by the rule of its day for
-// good.
-const AttributionRuleVersion = 2
+// Raising this is how a later change to the attribution, or to what a merged row stores, reaches
+// the merged rows already stored. Nothing else revisits one — an open row comes round at every
+// reconcile pass of one process, each starting at most five minutes after the one before it
+// ended (PullRequestHeadStaleAfter), but a merged row is read again only by that arm — so a
+// change made without raising it leaves every pull request merged before it judged by the rule
+// of its day for good.
+const AttributionRuleVersion = 6
 
 // attributionSource names the source a pull request's issue came from.
 type attributionSource string
@@ -427,6 +430,7 @@ type Attributor struct {
 	headQuery       string
 	headsRead       headsStatement
 	mergedInRead    headsStatement
+	mergeInRead headsStatement
 }
 
 // NewAttributor is the Attributor of renames.
@@ -439,6 +443,7 @@ func NewAttributor(renames refs.Renames) *Attributor {
 		headQuery:       headAttributedQuery(renames),
 		headsRead:       headsAttributedRead(renames),
 		mergedInRead:    baseBranchMergedInRead(renames),
+		mergeInRead: mergeInRead(renames),
 	}
 }
 

@@ -23,9 +23,19 @@ The pull request body's `Checks` lines are in `skill://legion-worker/references/
   The negative control shows it failing on a deliberately wrong input.
   A documented procedure counts only when it ran: reading it is not a run.
 
-- A `before_merge` result stands while its commit is the head of an open pull request Dispatch attributes to the check's issue (`packages/envoy/internal/dispatch/delivery/attribution.go`), or the final head of a merged one, and while no part of the check's block has changed.
+- A `before_merge` result stands at the head of each open pull request that Dispatch attributes to the check's issue (`packages/envoy/internal/dispatch/delivery/attribution.go`).
+  With none open, it stands at the final head of the pull request that merged last: its last commit before the merge.
+  It stands while no part of the check's block has changed.
+  A pass and a fail at one head read not known until one of them is retracted.
   So after a push, record each `before_merge` check with no `ci_check` again.
   Run it again only when the change since its pass can affect what it drives; otherwise record its earlier pass at the new head with `--observed 'carried from <old sha>: <why the change cannot affect it>'`.
+
+- An `after_merge` result counts only at a commit on the branch the issue's pull request merged into, or on the default branch.
+  That commit must also be the merge of the work on that branch, or have it in its history.
+  The merge of the work is the commit that brought the issue's pull request that merged last into that branch.
+  Where the pull request merged into another branch, the default branch's merge of the work is the merge that brought that branch in.
+  The result recorded last among those that count decides.
+  Where a pass and a fail both count at that result's commit, the check reads not known until one of them is retracted.
 
 ## The rules every phase's evidence follows
 

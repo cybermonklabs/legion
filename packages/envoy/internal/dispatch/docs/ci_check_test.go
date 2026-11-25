@@ -2,6 +2,7 @@ package docs
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
@@ -194,5 +195,34 @@ func TestACICheckRepairLandsOnlyOnTheCheckItJudged(t *testing.T) {
 				t.Fatalf("the live block carries ci_check: %v, want %v", carries, !test.changed)
 			}
 		})
+	}
+}
+
+// A check's marks, subject and program, are read by no rule, so a write that changes only them
+// does not introduce the block (refuseCICheckBlocks): a check carrying a ci_check that breaks a
+// rule, left by another writer, is not refused for an edit of its marks, as it is not for an edit
+// elsewhere in the document. A change of an attribute a rule reads, its run here, introduces the
+// block, and the write is refused naming it. No result is read: the run rule decides first.
+func TestAChangeOfACheckMarkAloneDoesNotJudgeTheChecksCICheckAgain(t *testing.T) {
+	prior, err := pmdoc.Parse(ciCheckOf("c1", `run="go test ./..." `+ciCheckKept))
+	if err != nil {
+		t.Fatalf("parse the document before the write: %v", err)
+	}
+	for _, marks := range []string{`subject="production"`, `program="dispatch"`, `subject="graph" program="dispatch"`} {
+		tree, err := pmdoc.Parse(ciCheckOf("c1", marks+` run="go test ./..." `+ciCheckKept))
+		if err != nil {
+			t.Fatalf("parse the write adding %s: %v", marks, err)
+		}
+		if err := refuseCICheckBlocks(context.Background(), nil, "doc-1", tree, prior); err != nil {
+			t.Errorf("a write that adds %s to a check left breaking a rule = %v, want it taken", marks, err)
+		}
+	}
+	tree, err := pmdoc.Parse(ciCheckOf("c1", `subject="production" run="go test ./internal/..." `+ciCheckKept))
+	if err != nil {
+		t.Fatalf("parse the write changing the run: %v", err)
+	}
+	var invalid *ErrInvalidCICheck
+	if err := refuseCICheckBlocks(context.Background(), nil, "doc-1", tree, prior); !errors.As(err, &invalid) || invalid.BlockID != "c1" {
+		t.Errorf("a write that changes the run of a check left breaking a rule = %v, want ErrInvalidCICheck naming c1", err)
 	}
 }

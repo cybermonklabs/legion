@@ -2,10 +2,7 @@ package delivery
 
 import (
 	"context"
-	"errors"
 	"fmt"
-
-	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -143,6 +140,20 @@ func (a *Attributor) HeadAttributedTo(ctx context.Context, pool *store.Pool, iss
 		return false, fmt.Errorf("read the pull request heads of %s at %s: %w", issueKey, sha, err)
 	}
 	return found, nil
+}
+
+// mergeInRead lists linked merged pull requests over the same stored or request-local heads.
+func mergeInRead(renames refs.Renames) headsStatement {
+	return newHeadsStatement(linkedPullRequestTerms(renames), `
+	select ` + mergedColumns + ` from (
+		select distinct on (h.repo, h.number)
+			h.repo, h.number, h.base_ref, h.head_sha, h.merge_commit_sha, h.merged_at, h.attribution_rule
+		from linked_pulls l
+		` + linkedHeadJoin + `
+		where lower(l.repo) = lower($2) and h.state = 'merged'
+		order by h.repo, h.number
+	) merged
+	order by ` + newestMergeFirst, 2, "")
 }
 
 // baseBranchMergedInQuery is BaseBranchMergedIn's statement after its WITH list: the linked rows
