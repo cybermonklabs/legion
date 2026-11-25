@@ -686,7 +686,9 @@ test("a file rig.sh builds into a run is held by rig.test.ts's whole-world row, 
 
 // Catches: a check that takes a setDefaultTimeout of any value for the bound, so a file whose rows
 // run processes under one second passes; a bound set inside a block read as the file's; a `_`
-// separator read as no number; and a call in a string or a comment read as a process run.
+// separator read as no number; a call in a string or a comment read as a process run; and a file
+// bounded by row-waits.ts's rowWaits, which main's rig.test.ts calls in place of setDefaultTimeout,
+// read as one under bun's default, or held by a rowWaits bound under 30 s.
 test("a test file that runs processes is held only by a top-level bound of 30 s or more", () => {
   const file = `${RIG}/planted.test.ts`;
   const spawn = 'const planted = spawnChecked(["true"]);';
@@ -697,6 +699,8 @@ test("a test file that runs processes is held only by a top-level bound of 30 s 
     ["in a block", `describe("d", () => {\n  setDefaultTimeout(60_000);\n});\n${spawn}`],
     ["thirty seconds", `setDefaultTimeout(30000);\n${spawn}`],
     ["a minute", `setDefaultTimeout(60_000);\nconst run = () => Bun.spawnSync(["true"]);`],
+    ["row waits, a minute", `const waits = rowWaits(60_000);\n${spawn}`],
+    ["row waits, just under", `const waits = rowWaits(29_999);\n${spawn}`],
     ["no process", `const code = 'execSync("true");';\n// ${spawn}`],
   ];
   expect(
@@ -713,6 +717,8 @@ test("a test file that runs processes is held only by a top-level bound of 30 s 
     ["in a block", `${file}:4`, "instance"],
     ["thirty seconds", `${file}:2`, "true"],
     ["a minute", `${file}:2`, "true"],
+    ["row waits, a minute", `${file}:2`, "true"],
+    ["row waits, just under", `${file}:2`, "instance"],
     ["no process", file, "true"],
   ]);
 });

@@ -1667,9 +1667,10 @@ const notModelled: Check = {
 /** A call that runs a process: test-programs.ts's spawnChecked, Bun's spawn, spawnSync and shell
  * (`Bun.$`), and node's spawnSync and execSync. */
 const RUNS_PROCESS = /\b(?:spawnChecked|spawnSync|execSync)\s*\(|\bBun\.spawn\s*\(|\bBun\.\$/;
-/** A call of bun:test's setDefaultTimeout at a file's top level (biome writes a top-level statement
- * at column 0), and its argument. */
-const DEFAULT_TIMEOUT = /^setDefaultTimeout\(([^)]*)\)/;
+/** A call at a file's top level (biome writes a top-level statement at column 0) that bounds every
+ * row of the file, and its argument: bun:test's setDefaultTimeout, or scripts/e2e/lib/row-waits.ts's
+ * rowWaits, assigned to a name, which calls setDefaultTimeout with its bound. */
+const DEFAULT_TIMEOUT = /^(?:(setDefaultTimeout)|(?:const|let) \w+ = (rowWaits))\(([^)]*)\)/;
 /** The least bound in milliseconds a test file that runs processes sets its rows: six times bun's
  * 5 s default. */
 const LEAST_BOUND = 30_000;
@@ -1689,7 +1690,15 @@ export function defaultBounds(tree: Tree): Hit[] {
     if (first === -1) return { at: file, text: "", ...holds("runs no process") };
     const bounds = lines.flatMap((text, index) => {
       const call = DEFAULT_TIMEOUT.exec(text);
-      return call === null ? [] : [{ line: index + 1, argument: (call[1] ?? "").trim() }];
+      return call === null
+        ? []
+        : [
+            {
+              line: index + 1,
+              name: call[1] ?? call[2] ?? "",
+              argument: (call[3] ?? "").trim(),
+            },
+          ];
     });
     const held = bounds.find(
       ({ argument }) =>
@@ -1699,11 +1708,11 @@ export function defaultBounds(tree: Tree): Hit[] {
       at: `${file}:${first + 1}`,
       text: lines[first] ?? "",
       ...(held !== undefined
-        ? holds(`setDefaultTimeout(${held.argument}) at line ${held.line} bounds its rows`)
+        ? holds(`${held.name}(${held.argument}) at line ${held.line} bounds its rows`)
         : instance(
             bounds.length === 0
-              ? "runs a process under bun's 5 s default: its top level calls no setDefaultTimeout"
-              : `runs a process under a bound below 30 000 ms: ${bounds.map(({ argument, line }) => `setDefaultTimeout(${argument}) at line ${line}`).join(", ")}`
+              ? "runs a process under bun's 5 s default: its top level calls no setDefaultTimeout or rowWaits"
+              : `runs a process under a bound below 30 000 ms: ${bounds.map(({ name, argument, line }) => `${name}(${argument}) at line ${line}`).join(", ")}`
           )),
     };
   });
@@ -1713,8 +1722,8 @@ const defaultBound: Check = {
   name: "hand search 11: a test that runs processes under bun's default bound",
   class: "A test file whose rows run processes under bun's 5 s default bound.",
   reading:
-    "every test file of the rig for a code line that calls `spawnChecked`, `Bun.spawn`, `Bun.spawnSync`, `spawnSync`, `execSync` or `Bun.$` outside a string (a row's, or a helper's of the file, which its rows call), and for a `setDefaultTimeout(<n>)` at its top level",
-  rule: "a file that runs a process is an instance unless its top level calls `setDefaultTimeout(<n>)` with `n` a number literal (`_` separators allowed) of at least 30 000, six times bun's 5 s default; a file that runs no process is a true statement",
+    "every test file of the rig for a code line that calls `spawnChecked`, `Bun.spawn`, `Bun.spawnSync`, `spawnSync`, `execSync` or `Bun.$` outside a string (a row's, or a helper's of the file, which its rows call), and for a `setDefaultTimeout(<n>)`, or a `rowWaits(<n>)` assigned to a name (scripts/e2e/lib/row-waits.ts, which calls setDefaultTimeout with it), at its top level",
+  rule: "a file that runs a process is an instance unless its top level calls `setDefaultTimeout(<n>)` or assigns `rowWaits(<n>)` with `n` a number literal (`_` separators allowed) of at least 30 000, six times bun's 5 s default; a file that runs no process is a true statement",
   run: defaultBounds,
 };
 
