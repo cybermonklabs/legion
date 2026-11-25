@@ -314,10 +314,10 @@ func (t *intakeTuning) ackWait() time.Duration {
 // them count against MaxAckPending in the meantime.
 //
 // It asks for new messages only (DeliverNewPolicy), which a take-over that creates the durable
-// with no start recorded turns into an explicit start at the stream's next sequence (takeOver):
-// the first bind of a deployment that never had the durable must not hand the intake the
-// stream's whole retained history, 72 hours of every GitHub event Envoy relays, none of which it
-// ever processed.
+// with no start recorded turns into an explicit start at the stream's next sequence (takeOver,
+// which says why the start is explicit): the first bind of a deployment that never had the
+// durable must not hand the intake the stream's whole retained history, 72 hours of every GitHub
+// event Envoy relays, none of which it ever processed.
 //
 // FilterSubject, AckWait and MaxAckPending keep the values of the build before generations: that
 // build's processes, still running during a rolling release, update a durable whose three differ

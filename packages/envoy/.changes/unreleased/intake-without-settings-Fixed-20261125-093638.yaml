@@ -11,8 +11,8 @@ body: |-
   takes consumer generation 2 and asks for new messages only: a take-over that creates it with no
   start recorded creates it at the stream's next sequence, as an explicit start, so the first bind
   hands the intake none of the stream's 72-hour retained history, and a take-over never starts a
-  durable before its own start sequence, which a durable that has acknowledged nothing reports as
-  an ack floor of 0.
+  durable before its own start sequence. Both follow the rule recorded for nats-server v2.10.29,
+  which reports a fresh consumer's ack floor as 0, as the session consumers already do.
 time: 2026-11-25T09:36:38Z
 custom:
     Issue: intake-without-settings

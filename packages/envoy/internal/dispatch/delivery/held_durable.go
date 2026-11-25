@@ -401,10 +401,13 @@ func (d *heldDurable) holds() bool {
 // take-over before this one recorded when it deleted the durable and did not create it again
 // (intakeHoldToken). With no start recorded, a config that asks for new messages only
 // (DeliverNewPolicy) is created at the stream's next sequence, read under the lease, as an
-// explicit start: a durable created at DeliverNew records no start sequence, and it reports an
-// ack floor of 0 until its first ack, so a take-over before that ack would start it at the
-// stream's first message (takeOverConfig;
-// docs/solutions/envoy/a-fresh-jetstream-consumer-reports-ack-floor-0-so-create-it-at-a-start-sequence-INFRA-594.md).
+// explicit start. That is the rule
+// docs/solutions/envoy/a-fresh-jetstream-consumer-reports-ack-floor-0-so-create-it-at-a-start-sequence-INFRA-594.md
+// records, and bus.SessionConsumers follows for the same shape: nats-server v2.10.29 reports a
+// fresh consumer's ack floor as 0 until its first ack, so a durable created at DeliverNew, which
+// records no start sequence, would be started at the stream's first message by a take-over before
+// that ack (takeOverConfig). v2.15.1 reports the floor as the stream's last sequence; the rule
+// guards a server version where the trap exists.
 // A durable bound to a subject no hold recorded is left as it is
 // (boundElsewhere). Any other -- unbound, or bound to the subject the hold records, which is a
 // holder that died or was cut off -- is deleted and created again at its ack floor on a fresh
@@ -473,11 +476,12 @@ func (d *heldDurable) takeOver(ctx context.Context) {
 // not acknowledged -- what a dead holder had been handed, what a stopped one handed back --
 // replays nothing it had, and skips nothing (TestAnAbandonedHoldersMessagesReachTheStandbyWithinTheHoldsLapse,
 // and TestATakeOverWhoseCreateFailsCreatesTheDurableAtItsFloorOnTheNextAttempt for a create retried).
-// It never starts before the durable's own start sequence (OptStartSeq): a durable that has
-// acknowledged nothing reports an ack floor of 0, and the floor plus one would hand the new holder
-// every message the stream held before the durable was created
-// (TestAFirstBindStartsAtTheStreamsNextMessageAndATakeOverKeepsThatStart). A durable created with
-// no start sequence reads 0 there, which bounds nothing.
+// It never starts before the durable's own start sequence (OptStartSeq), the floor rule the note
+// takeOver cites records: where a server reports a fresh durable's ack floor as 0, as v2.10.29
+// does, the floor plus one would hand the new holder every message the stream held before the
+// durable was created (TestAFirstBindStartsAtTheStreamsNextMessageAndATakeOverKeepsThatStart,
+// which proves no replay on v2.15.1, a server that reports that floor as the stream's last
+// sequence). A durable created with no start sequence reads 0 there, which bounds nothing.
 // The take-over records that start in its hold's token before it deletes the durable, and
 // finishTakeOver says what a create that fails after the delete leaves behind.
 // The deployed metadata keeps its own keys and drops the ones nats-server sets itself (the

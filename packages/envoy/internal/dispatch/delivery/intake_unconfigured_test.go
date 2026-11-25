@@ -120,10 +120,16 @@ func TestAnIntakeWithNoDeliverySettingsRecordsAPullRequestsHead(t *testing.T) {
 // The first bind of a deployment that never had the durable starts at the stream's next message,
 // as an explicit start sequence: a pull request opened before the bind, which the stream still
 // holds, gets no head row from it. A take-over of that durable before it has acknowledged anything
-// keeps that start: the durable then reports an ack floor of 0
-// (docs/solutions/envoy/a-fresh-jetstream-consumer-reports-ack-floor-0-so-create-it-at-a-start-sequence-INFRA-594.md),
-// and a take-over that started at the floor plus one would hand the new holder the stream from its
-// first message. A pull request opened after the take-over gets its row.
+// replays none of it either, and a pull request opened after the take-over gets its row.
+//
+// The explicit start and the take-over's floor of OptStartSeq (takeOverConfig) are the rule
+// docs/solutions/envoy/a-fresh-jetstream-consumer-reports-ack-floor-0-so-create-it-at-a-start-sequence-INFRA-594.md
+// records from nats-server v2.10.29, which reports a fresh consumer's ack floor as 0, so a take-over
+// at the floor plus one would hand the new holder the stream from its first message. This test
+// proves no replay on the server it runs, and does not isolate that floor: on v2.15.1 the server
+// reports the floor as the stream's last sequence, and a mutant without the floor of OptStartSeq,
+// or without the explicit start, passes here too. The rule stays as the guard for a server version
+// where the trap exists, and it is the one bus.SessionConsumers follows for the same shape.
 func TestAFirstBindStartsAtTheStreamsNextMessageAndATakeOverKeepsThatStart(t *testing.T) {
 	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
