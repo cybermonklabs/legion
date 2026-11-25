@@ -1602,15 +1602,23 @@ describe("label_tree", () => {
     const record = [
       `commit ${second}`,
       `manifest ${sha256(manifest)}`,
-      ...[...named, "drops/new.txt"].map((f) => `manifest-file ${f} ${sha256(path.join(files, f))}`),
+      ...[...named, "drops/new.txt"].map(
+        (f) => `manifest-file ${f} ${sha256(path.join(files, f))}`
+      ),
       "",
     ].join("\n");
     expect(readFileSync(path.join(work, "label-trees/every-verb/label-tree"), "utf8")).toBe(record);
     expect(made.stdout).toBe(record);
     expect(readFileSync(path.join(work, "label-trees/every-verb/diff.numstat"), "utf8")).toBe(
-      ["1\t1\ta.txt", "0\t1\tb.md", "1\t0\tc.txt", "0\t1\td.txt", "0\t1\tf.txt", "1\t1\tg.txt", ""].join(
-        "\n"
-      )
+      [
+        "1\t1\ta.txt",
+        "0\t1\tb.md",
+        "1\t0\tc.txt",
+        "0\t1\td.txt",
+        "0\t1\tf.txt",
+        "1\t1\tg.txt",
+        "",
+      ].join("\n")
     );
     // The tree's profile copies the record's manifest lines into built-from.
     const profile = bash(
@@ -1668,7 +1676,9 @@ describe("label_tree", () => {
       const origin = git(root, "remote", "get-url", "origin").trim();
       git(repo, "fetch", "-q", "--depth=1", origin, "refs/pull/4902/head");
     } catch (error) {
-      throw new Error(`UNKNOWN: refs/pull/4902/head not in this checkout, and its fetch failed: ${error}`);
+      throw new Error(
+        `UNKNOWN: refs/pull/4902/head not in this checkout, and its fetch failed: ${error}`
+      );
     }
     pr4902 = { repo, head: git(repo, "rev-parse", "FETCH_HEAD").trim() };
     return pr4902;
@@ -1677,65 +1687,96 @@ describe("label_tree", () => {
 
   // Catches: a control manifest that no longer applies to the head whose sentences it takes out,
   // and a label-tree that reads a ref the checkout lacks as a tree to build.
-  test(
-    "the owner-walk manifests apply at #4902's head",
-    () => {
-      const absent = freshDir("no-4902");
-      git(absent, "init", "-q");
-      const none = freshDir("no-4902-work");
-      const missing = labelTree(absent, scenarios, none, "ctl-d", "refs/pull/4902/head", path.join(controls, "owner-walk-D.txt"));
-      expect(missing.code).toBe(3);
-      expect(missing.stderr).toContain("UNKNOWN: refs/pull/4902/head not in this checkout");
-      expect(existsSync(path.join(none, "label-trees/ctl-d"))).toBe(false);
-      const { repo, head } = fetch4902();
-      for (const [name, manifest] of [
-        ["ctl-d", "owner-walk-D.txt"],
-        ["ctl-d-strict", "owner-walk-D-strict.txt"],
-        ["ctl-e", "owner-walk-E.txt"],
-      ] as const) {
-        const made = labelTree(repo, scenarios, freshDir(`at-4902-${name}`), name, head, path.join(controls, manifest));
-        expect({ name, code: made.code, stderr: made.code === 0 ? "" : made.stderr }).toEqual({
-          name,
-          code: 0,
-          stderr: "",
-        });
-      }
-    },
-    300_000
-  );
+  test("the owner-walk manifests apply at #4902's head", () => {
+    const absent = freshDir("no-4902");
+    git(absent, "init", "-q");
+    const none = freshDir("no-4902-work");
+    const missing = labelTree(
+      absent,
+      scenarios,
+      none,
+      "ctl-d",
+      "refs/pull/4902/head",
+      path.join(controls, "owner-walk-D.txt")
+    );
+    expect(missing.code).toBe(3);
+    expect(missing.stderr).toContain("UNKNOWN: refs/pull/4902/head not in this checkout");
+    expect(existsSync(path.join(none, "label-trees/ctl-d"))).toBe(false);
+    const { repo, head } = fetch4902();
+    for (const [name, manifest] of [
+      ["ctl-d", "owner-walk-D.txt"],
+      ["ctl-d-strict", "owner-walk-D-strict.txt"],
+      ["ctl-e", "owner-walk-E.txt"],
+    ] as const) {
+      const made = labelTree(
+        repo,
+        scenarios,
+        freshDir(`at-4902-${name}`),
+        name,
+        head,
+        path.join(controls, manifest)
+      );
+      expect({ name, code: made.code, stderr: made.code === 0 ? "" : made.stderr }).toEqual({
+        name,
+        code: 0,
+        stderr: "",
+      });
+    }
+  }, 300_000);
 
   // Catches: a D whose tree takes out more than #4902's own lines (a manifest line too many, a
   // patch of another file), which would make D's control a control of something else.
-  test(
-    "D's tree differs from its head in the patch's lines alone",
-    () => {
-      const { repo, head } = fetch4902();
-      const patch = path.join(controls, "patches/owner-walk-D.patch");
-      const holds = (work: string, name: string) =>
-        bash(`${defs("fail", "cmd_unpatch_holds")}\nwork=$1\ncmd_unpatch_holds "$2" "$3"`, [work, name, patch]);
-      const work = freshDir("d-holds");
-      const made = labelTree(repo, scenarios, work, "ctl-d", head, path.join(controls, "owner-walk-D.txt"));
-      expect({ code: made.code, stderr: made.code === 0 ? "" : made.stderr }).toEqual({ code: 0, stderr: "" });
-      // The manifest control reads this line: one more line of the manifest changes it.
-      console.log(`D's tree at ${head}, its record: ${made.stdout.split("\n").find((line) => line.startsWith("manifest ")) ?? "no manifest line"}`);
-      expect(readFileSync(path.join(work, "label-trees/ctl-d/diff.numstat"), "utf8")).toBe(
-        "0\t2\tpackages/daemon/internal/prompts/go/architect-common.md\n"
-      );
-      expect(holds(work, "ctl-d")).toEqual({
-        code: 0,
-        stdout:
-          "the label tree ctl-d differs from its commit in the lines of owner-walk-D.patch alone: 0 2 packages/daemon/internal/prompts/go/architect-common.md\n",
-        stderr: "",
-      });
-      // D-strict's tree takes out three lines more, so the same check fails it.
-      const strictWork = freshDir("d-strict-holds");
-      expect(labelTree(repo, scenarios, strictWork, "ctl-d-strict", head, path.join(controls, "owner-walk-D-strict.txt")).code).toBe(0);
-      const strict = holds(strictWork, "ctl-d-strict");
-      expect(strict.code).toBe(1);
-      expect(strict.stderr).toContain("differs from its commit in more than the lines of");
-    },
-    300_000
-  );
+  test("D's tree differs from its head in the patch's lines alone", () => {
+    const { repo, head } = fetch4902();
+    const patch = path.join(controls, "patches/owner-walk-D.patch");
+    const holds = (work: string, name: string) =>
+      bash(`${defs("fail", "cmd_unpatch_holds")}\nwork=$1\ncmd_unpatch_holds "$2" "$3"`, [
+        work,
+        name,
+        patch,
+      ]);
+    const work = freshDir("d-holds");
+    const made = labelTree(
+      repo,
+      scenarios,
+      work,
+      "ctl-d",
+      head,
+      path.join(controls, "owner-walk-D.txt")
+    );
+    expect({ code: made.code, stderr: made.code === 0 ? "" : made.stderr }).toEqual({
+      code: 0,
+      stderr: "",
+    });
+    // The manifest control reads this line: one more line of the manifest changes it.
+    console.log(
+      `D's tree at ${head}, its record: ${made.stdout.split("\n").find((line) => line.startsWith("manifest ")) ?? "no manifest line"}`
+    );
+    expect(readFileSync(path.join(work, "label-trees/ctl-d/diff.numstat"), "utf8")).toBe(
+      "0\t2\tpackages/daemon/internal/prompts/go/architect-common.md\n"
+    );
+    expect(holds(work, "ctl-d")).toEqual({
+      code: 0,
+      stdout:
+        "the label tree ctl-d differs from its commit in the lines of owner-walk-D.patch alone: 0 2 packages/daemon/internal/prompts/go/architect-common.md\n",
+      stderr: "",
+    });
+    // D-strict's tree takes out three lines more, so the same check fails it.
+    const strictWork = freshDir("d-strict-holds");
+    expect(
+      labelTree(
+        repo,
+        scenarios,
+        strictWork,
+        "ctl-d-strict",
+        head,
+        path.join(controls, "owner-walk-D-strict.txt")
+      ).code
+    ).toBe(0);
+    const strict = holds(strictWork, "ctl-d-strict");
+    expect(strict.code).toBe(1);
+    expect(strict.stderr).toContain("differs from its commit in more than the lines of");
+  }, 300_000);
 });
 
 describe("a label older than its entry", () => {
@@ -1743,7 +1784,9 @@ describe("a label older than its entry", () => {
   // then have to write itself.
   test("a label with no label-texts.sh is refused by name", () => {
     const co = freshDir("old-label");
-    const check = bash(`${defs("fail", "require_label_texts")}\nrequire_label_texts "$1" old`, [co]);
+    const check = bash(`${defs("fail", "require_label_texts")}\nrequire_label_texts "$1" old`, [
+      co,
+    ]);
     expect(check.code).toBe(1);
     expect(check.stderr).toContain(
       `label old: its checkout ${co} has no packages/pi-legion/scripts/skill-scenarios/label-texts.sh`
@@ -1753,7 +1796,10 @@ describe("a label older than its entry", () => {
     const P = path.join(work, "profiles/old");
     const agent = path.join(P, "home/.omp/profiles/skills-old/agent");
     mkdirSync(agent, { recursive: true });
-    writeFileSync(path.join(agent, "config.yml"), "extensionHandlers:\n  toolCallTimeoutMs: 120000\n");
+    writeFileSync(
+      path.join(agent, "config.yml"),
+      "extensionHandlers:\n  toolCallTimeoutMs: 120000\n"
+    );
     for (const [file, text] of [
       ["ready", ""],
       ["checkout", `${co}\n`],
@@ -1761,10 +1807,20 @@ describe("a label older than its entry", () => {
       ["profile", "skills-old\n"],
     ] as const)
       writeFileSync(path.join(P, file), text);
-    const batch = Bun.spawnSync(["bash", path.join(scenarios, "rig.sh"), "batch-scored", "owner-walk", "1", "old"], {
-      env: { ...childEnv, SKILL_SCENARIOS_WORK: work, SKILL_SCENARIOS_OWNER_WALK_CASE: "root-B-claude" },
-    });
-    expect({ code: batch.exitCode, named: batch.stderr.toString().includes("label old: its checkout") }).toEqual({
+    const batch = Bun.spawnSync(
+      ["bash", path.join(scenarios, "rig.sh"), "batch-scored", "owner-walk", "1", "old"],
+      {
+        env: {
+          ...childEnv,
+          SKILL_SCENARIOS_WORK: work,
+          SKILL_SCENARIOS_OWNER_WALK_CASE: "root-B-claude",
+        },
+      }
+    );
+    expect({
+      code: batch.exitCode,
+      named: batch.stderr.toString().includes("label old: its checkout"),
+    }).toEqual({
       code: 1,
       named: true,
     });
@@ -1796,7 +1852,10 @@ describe("a label older than its entry", () => {
       { mode: 0o755 }
     );
     const services = path.join(work, "services-env");
-    writeFileSync(services, "ENVOY_URL=http://127.0.0.1:1\nENVOY_NATS_URL=nats://127.0.0.1:2\nENVOY_TOKEN_FILE=/rig/envoy-token\n");
+    writeFileSync(
+      services,
+      "ENVOY_URL=http://127.0.0.1:1\nENVOY_NATS_URL=nats://127.0.0.1:2\nENVOY_TOKEN_FILE=/rig/envoy-token\n"
+    );
     writeFileSync(
       path.join(R, "world-request.json"),
       JSON.stringify({
@@ -1820,14 +1879,18 @@ describe("a label older than its entry", () => {
       [R, co, work, services]
     );
     expect({ code: result.code, stderr: result.stderr }).toEqual({ code: 0, stderr: "" });
-    expect(JSON.parse(readFileSync(path.join(R, "launch-request.json"), "utf8")).planGuidanceFile).toBe(
-      path.join(R, "guidance.md")
-    );
+    expect(
+      JSON.parse(readFileSync(path.join(R, "launch-request.json"), "utf8")).planGuidanceFile
+    ).toBe(path.join(R, "guidance.md"));
     const row = RunRow.parse(
-      JSON.parse(readFileSync(path.join(work, "runs/owner-walk-root-A-claude-head-1/row.json"), "utf8"))
+      JSON.parse(
+        readFileSync(path.join(work, "runs/owner-walk-root-A-claude-head-1/row.json"), "utf8")
+      )
     );
     expect(row.outcome).toBe("rig-error");
-    expect(row.outcome === "rig-error" ? row.error : "").toContain('unknown field "planGuidanceFile"');
+    expect(row.outcome === "rig-error" ? row.error : "").toContain(
+      'unknown field "planGuidanceFile"'
+    );
   });
 });
 
@@ -1839,7 +1902,10 @@ describe("launch_env", () => {
     let answers = 0;
     const answer = (env: Record<string, string>) => {
       const file = path.join(dir, `answer-${++answers}.json`);
-      writeFileSync(file, JSON.stringify({ systemPromptFile: "/rig/system.md", env, published: [] }));
+      writeFileSync(
+        file,
+        JSON.stringify({ systemPromptFile: "/rig/system.md", env, published: [] })
+      );
       return file;
     };
     const run = (file: string) => bash(`${defs("fail", "launch_env")}\nlaunch_env "$1"`, [file]);
@@ -1848,7 +1914,9 @@ describe("launch_env", () => {
       stdout: "ENVOY_URL=http://127.0.0.1:1\nLEGION_ROLE=architect\n",
       stderr: "",
     });
-    const stalled = run(answer({ ENVOY_URL: "http://127.0.0.1:1", LEGION_STALL_REMINDER_MS: "1000" }));
+    const stalled = run(
+      answer({ ENVOY_URL: "http://127.0.0.1:1", LEGION_STALL_REMINDER_MS: "1000" })
+    );
     expect({ code: stalled.code, stdout: stalled.stdout }).toEqual({ code: 1, stdout: "" });
     expect(stalled.stderr).toContain("the launch's environment holds LEGION_STALL_REMINDER_MS");
   });
@@ -1862,7 +1930,11 @@ describe("the outside-services mode", () => {
     const bin = freshDir("outside-bin");
     const calls = path.join(dir, "calls");
     for (const tool of ["psql", "docker"])
-      writeFileSync(path.join(bin, tool), `#!/bin/sh\necho "${tool} $*" >>${calls}\n[ ${tool} = psql ]\n`, { mode: 0o755 });
+      writeFileSync(
+        path.join(bin, tool),
+        `#!/bin/sh\necho "${tool} $*" >>${calls}\n[ ${tool} = psql ]\n`,
+        { mode: 0o755 }
+      );
     const dsn = "postgres://rig@127.0.0.1:5999/postgres?sslmode=disable";
     const script = [
       "root=$1 R=$2 evidence=$2 work=$2 timeout_hook=",
@@ -1875,8 +1947,14 @@ describe("the outside-services mode", () => {
       'printf "%s\\n" "$pg_url" "$pg_server" "$nats_url" "$(database_url run_x)"',
     ].join("\n");
     const env = { PATH: `${bin}:${childEnv.PATH}`, SKILL_SCENARIOS_PG_DSN: dsn };
-    const result = bash(script, [root, dir], { ...env, SKILL_SCENARIOS_NATS_URL: "nats://127.0.0.1:4999" });
-    expect({ code: result.code, stderr: result.code === 0 ? "" : result.stderr }).toEqual({ code: 0, stderr: "" });
+    const result = bash(script, [root, dir], {
+      ...env,
+      SKILL_SCENARIOS_NATS_URL: "nats://127.0.0.1:4999",
+    });
+    expect({ code: result.code, stderr: result.code === 0 ? "" : result.stderr }).toEqual({
+      code: 0,
+      stderr: "",
+    });
     expect(result.stdout.trim().split("\n").slice(-4)).toEqual([
       dsn,
       "postgres://127.0.0.1:5999",
@@ -1894,7 +1972,9 @@ describe("the outside-services mode", () => {
     // One of the two alone is refused, naming both.
     const half = bash(script, [root, freshDir("outside-half")], env);
     expect(half.code).toBe(1);
-    expect(half.stderr).toContain("takes SKILL_SCENARIOS_PG_DSN and SKILL_SCENARIOS_NATS_URL together");
+    expect(half.stderr).toContain(
+      "takes SKILL_SCENARIOS_PG_DSN and SKILL_SCENARIOS_NATS_URL together"
+    );
   });
 });
 
@@ -1910,7 +1990,13 @@ describe("install_provider_route's two new forms", () => {
     let files = 0;
     const file = (api: string, apiKey: string) => {
       const out = path.join(dir, `gpt-${++files}.yml`);
-      const block = { baseUrl: "http://gateway.example.invalid:4000/v1", api, apiKey, authHeader: true, models: [{ id: "openai/gpt-6.1-sol" }] };
+      const block = {
+        baseUrl: "http://gateway.example.invalid:4000/v1",
+        api,
+        apiKey,
+        authHeader: true,
+        models: [{ id: "openai/gpt-6.1-sol" }],
+      };
       writeFileSync(out, JSON.stringify({ providers: { "gateway-openai": block } }));
       return out;
     };
@@ -1921,7 +2007,10 @@ describe("install_provider_route's two new forms", () => {
     });
     const taken = profileDir();
     const ok = route(taken, env(file("openai-responses", `!${key}`)), "openai/gpt-6.1-sol");
-    expect({ code: ok.code, stderr: ok.code === 0 ? "" : ok.stderr }).toEqual({ code: 0, stderr: "" });
+    expect({ code: ok.code, stderr: ok.code === 0 ? "" : ok.stderr }).toEqual({
+      code: 0,
+      stderr: "",
+    });
     const agent = path.join(taken, "home/.omp/profiles/skills-test/agent");
     expect(JSON.parse(readFileSync(path.join(agent, "models.yml"), "utf8"))).toEqual({
       providers: {
@@ -1934,14 +2023,31 @@ describe("install_provider_route's two new forms", () => {
         },
       },
     });
-    expect(readFileSync(path.join(agent, "config.yml"), "utf8")).toContain("  default: gateway-openai/openai/gpt-6.1-sol\n");
+    expect(readFileSync(path.join(agent, "config.yml"), "utf8")).toContain(
+      "  default: gateway-openai/openai/gpt-6.1-sol\n"
+    );
     for (const [api, apiKey, refusal] of [
-      ["openai-responses", `!${plain}`, `reads its key with ${plain}, which is not an executable file`],
-      ["openai-responses", "!model-token", 'does not read its key as "!cat <absolute file>" or "!<absolute executable>"'],
-      ["google-generative-ai", `!${key}`, "speaks google-generative-ai, not anthropic-messages or openai-responses"],
+      [
+        "openai-responses",
+        `!${plain}`,
+        `reads its key with ${plain}, which is not an executable file`,
+      ],
+      [
+        "openai-responses",
+        "!model-token",
+        'does not read its key as "!cat <absolute file>" or "!<absolute executable>"',
+      ],
+      [
+        "google-generative-ai",
+        `!${key}`,
+        "speaks google-generative-ai, not anthropic-messages or openai-responses",
+      ],
     ] as const) {
       const refused = route(profileDir(), env(file(api, apiKey)), "openai/gpt-6.1-sol");
-      expect({ code: refused.code, refusal: refused.stderr.includes(refusal) ? refusal : refused.stderr }).toEqual({
+      expect({
+        code: refused.code,
+        refusal: refused.stderr.includes(refusal) ? refusal : refused.stderr,
+      }).toEqual({
         code: 1,
         refusal,
       });
@@ -1956,10 +2062,17 @@ describe("rig_omp", () => {
     mkdirSync(path.join(install, "bin"));
     const omp = path.join(install, "bin/omp");
     const loose = path.join(install, "omp-1.2.3");
-    for (const file of [omp, loose]) writeFileSync(file, "#!/bin/sh\necho omp/1.2.3\n", { mode: 0o755 });
+    for (const file of [omp, loose])
+      writeFileSync(file, "#!/bin/sh\necho omp/1.2.3\n", { mode: 0o755 });
     const pick = (binary: string, pin: string) =>
-      bash(`${defs("fail", "pinned_omp", "rig_omp")}\nrig_omp "$1"`, [pin], { SKILL_SCENARIOS_OMP: binary });
-    expect(pick(omp, "github:example/oh-my-pi@1.2.3-7")).toEqual({ code: 0, stdout: `${omp}\n`, stderr: "" });
+      bash(`${defs("fail", "pinned_omp", "rig_omp")}\nrig_omp "$1"`, [pin], {
+        SKILL_SCENARIOS_OMP: binary,
+      });
+    expect(pick(omp, "github:example/oh-my-pi@1.2.3-7")).toEqual({
+      code: 0,
+      stdout: `${omp}\n`,
+      stderr: "",
+    });
     const other = pick(omp, "github:example/oh-my-pi@1.2.4-1");
     expect(other.code).toBe(1);
     expect(other.stderr).toContain(
@@ -1975,7 +2088,10 @@ describe("owner_walk_case", () => {
   // Catches: an owner-walk run with no case, or one owner-walk.ts does not know, which would run
   // a world no cell counts.
   test("SKILL_SCENARIOS_OWNER_WALK_CASE is refused when unset or unknown, naming its values", () => {
-    const listed = Bun.spawnSync([process.execPath, path.join(scenarios, "owner-walk.ts"), "cases"], { env: childEnv });
+    const listed = Bun.spawnSync(
+      [process.execPath, path.join(scenarios, "owner-walk.ts"), "cases"],
+      { env: childEnv }
+    );
     const cases = listed.stdout
       .toString()
       .trim()
@@ -1983,7 +2099,11 @@ describe("owner_walk_case", () => {
       .map((line) => line.split(" ")[0] ?? "");
     expect(cases).toContain("root-B-claude");
     const pick = (value?: string) =>
-      bash(`${defs("fail", "owner_walk_case")}\nhere=$1\nowner_walk_case`, [scenarios], value === undefined ? {} : { SKILL_SCENARIOS_OWNER_WALK_CASE: value });
+      bash(
+        `${defs("fail", "owner_walk_case")}\nhere=$1\nowner_walk_case`,
+        [scenarios],
+        value === undefined ? {} : { SKILL_SCENARIOS_OWNER_WALK_CASE: value }
+      );
     expect(pick("root-B-claude")).toEqual({ code: 0, stdout: "root-B-claude\n", stderr: "" });
     const unset = pick();
     expect(unset.code).toBe(1);
@@ -2019,7 +2139,8 @@ describe("batch_scored", () => {
     const never = freshDir("cell-never");
     expect(cell(never, 2)).toEqual({
       code: 0,
-      stdout: "UNKNOWN: owner-walk head root-B-claude: 0 scored runs of 2 after 6 launches, three times its count\n",
+      stdout:
+        "UNKNOWN: owner-walk head root-B-claude: 0 scored runs of 2 after 6 launches, three times its count\n",
       stderr: "",
     });
     expect(readFileSync(path.join(never, "launches"), "utf8")).toBe("1\n2\n3\n4\n5\n6\n");
@@ -2046,7 +2167,10 @@ describe("the recorded plans answer", () => {
         ],
       })}\n`
     );
-    const source = bash(`${defs("plans_source")}\n${assignment("owner_walk_project")}\nplans_source "$1" "$2"`, [answer, "c".repeat(40)]);
+    const source = bash(
+      `${defs("plans_source")}\n${assignment("owner_walk_project")}\nplans_source "$1" "$2"`,
+      [answer, "c".repeat(40)]
+    );
     expect(source.code).toBe(0);
     expect(JSON.parse(source.stdout)).toEqual({
       commit: "c".repeat(40),
@@ -2058,14 +2182,20 @@ describe("the recorded plans answer", () => {
   // Catches: a decoder that keeps a body whose bytes are not the ones the capture printed.
   test("decode_plans_answer keeps the body whose sha256 the log printed, and refuses another", () => {
     const dir = freshDir("plans-decode");
-    const body = Buffer.from(`${JSON.stringify({ project: "SRX1", issues: [], note: "x".repeat(200) })}\n`);
+    const body = Buffer.from(
+      `${JSON.stringify({ project: "SRX1", issues: [], note: "x".repeat(200) })}\n`
+    );
     const lines = (body.toString("base64").match(/.{1,76}/g) ?? []).join("\n");
     const log = (sum: string) => {
       const file = path.join(dir, `pod-${sum.slice(0, 4)}.log`);
-      writeFileSync(file, `--- PASS: TestPlanRatingsLive (1.00s)\nplans answer begin\n${lines}\nplans answer end\nplans answer sha256 ${sum}\n`);
+      writeFileSync(
+        file,
+        `--- PASS: TestPlanRatingsLive (1.00s)\nplans answer begin\n${lines}\nplans answer end\nplans answer sha256 ${sum}\n`
+      );
       return file;
     };
-    const decode = (file: string, out: string) => bash(`${defs("fail", "decode_plans_answer")}\ndecode_plans_answer "$1" "$2"`, [file, out]);
+    const decode = (file: string, out: string) =>
+      bash(`${defs("fail", "decode_plans_answer")}\ndecode_plans_answer "$1" "$2"`, [file, out]);
     const right = createHash("sha256").update(body).digest("hex");
     const kept = path.join(dir, "kept.json");
     expect(decode(log(right), kept)).toEqual({ code: 0, stdout: "", stderr: "" });
@@ -2073,7 +2203,9 @@ describe("the recorded plans answer", () => {
     const refused = path.join(dir, "refused.json");
     const wrong = decode(log("0".repeat(64)), refused);
     expect(wrong.code).toBe(1);
-    expect(wrong.stderr).toContain(`has the sha256 ${right}, and the log printed ${"0".repeat(64)}`);
+    expect(wrong.stderr).toContain(
+      `has the sha256 ${right}, and the log printed ${"0".repeat(64)}`
+    );
     expect(existsSync(refused)).toBe(false);
   });
 });
@@ -2152,17 +2284,36 @@ interface FakeOmpPlan {
 
 /** launch_rpc BOUND START... -- THEN... on the fake Oh My Pi with PLAN, its rpc_poll 0.3 s, in a
  * run directory of its own; TRANSCRIPT, when given, is the session's transcript beforehand. */
-function rpcRun(name: string, plan: FakeOmpPlan, starts: string[], thens: string[] = [], bound = 30, transcript?: object[]) {
+function rpcRun(
+  name: string,
+  plan: FakeOmpPlan,
+  starts: string[],
+  thens: string[] = [],
+  bound = 30,
+  transcript?: object[]
+) {
   const R = freshDir(name);
   const bin = path.join(R, "omp-install/bin");
   mkdirSync(bin, { recursive: true });
   writeFileSync(path.join(bin, "omp"), FAKE_OMP, { mode: 0o755 });
   for (const dir of ["logs", "sessions", "cwd"]) mkdirSync(path.join(R, dir));
   if (transcript !== undefined)
-    writeFileSync(path.join(R, "sessions/session.jsonl"), transcript.map((entry) => `${JSON.stringify(entry)}\n`).join(""));
+    writeFileSync(
+      path.join(R, "sessions/session.jsonl"),
+      transcript.map((entry) => `${JSON.stringify(entry)}\n`).join("")
+    );
   writeFileSync(path.join(R, "plan.json"), JSON.stringify(plan));
   writeFileSync(path.join(R, "system-prompt.md"), "the label's system prompt\n");
-  writeFileSync(path.join(R, "pane.env"), [`HOME=${R}`, `PATH=${childEnv.PATH}`, `SKILL_SCENARIO_RUN=${R}`, `FAKE_OMP_PLAN=${path.join(R, "plan.json")}`, ""].join("\n"));
+  writeFileSync(
+    path.join(R, "pane.env"),
+    [
+      `HOME=${R}`,
+      `PATH=${childEnv.PATH}`,
+      `SKILL_SCENARIO_RUN=${R}`,
+      `FAKE_OMP_PLAN=${path.join(R, "plan.json")}`,
+      "",
+    ].join("\n")
+  );
   const files = (kind: string, texts: string[]) =>
     texts.map((text, i) => {
       const file = path.join(R, `${kind}-${i + 1}.txt`);
@@ -2173,18 +2324,40 @@ function rpcRun(name: string, plan: FakeOmpPlan, starts: string[], thens: string
     "root=$1 R=$2 evidence=$2 work=$2/work timeout_hook=",
     defs("fail", "note"),
     '. "$root/scripts/e2e/lib/rig.sh"',
-    defs("pinned_omp", "rig_omp", "rpc_now", "rpc_send", "rpc_answer", "rpc_state", "rpc_turn", "rpc_activity", "rpc_settled", "rpc_ready", "rpc_prompt", "rpc_wait", "rpc_reminders", "rpc_bound", "rpc_end", "launch_rpc"),
+    defs(
+      "pinned_omp",
+      "rig_omp",
+      "rpc_now",
+      "rpc_send",
+      "rpc_answer",
+      "rpc_state",
+      "rpc_turn",
+      "rpc_activity",
+      "rpc_settled",
+      "rpc_ready",
+      "rpc_prompt",
+      "rpc_wait",
+      "rpc_reminders",
+      "rpc_bound",
+      "rpc_end",
+      "launch_rpc"
+    ),
     assignment("rpc_ms"),
     "rpc_poll=0.3 rpc_ready_bound=10 omp_pid='' rpc_fd='' pin=github:example/oh-my-pi@1.2.3-4",
     "bound=$3",
     "shift 3",
     'launch_rpc "$bound" "$@"',
   ].join("\n");
-  const result = bash(script, [root, R, String(bound), ...files("start", starts), "--", ...files("then", thens)], {
-    SKILL_SCENARIOS_OMP: path.join(bin, "omp"),
-  });
+  const result = bash(
+    script,
+    [root, R, String(bound), ...files("start", starts), "--", ...files("then", thens)],
+    {
+      SKILL_SCENARIOS_OMP: path.join(bin, "omp"),
+    }
+  );
   const events = jsonLines(path.join(R, "fake-omp.jsonl"));
-  const at = (key: string, value: unknown) => events.find((event) => event[key] === value)?.at as number | undefined;
+  const at = (key: string, value: unknown) =>
+    events.find((event) => event[key] === value)?.at as number | undefined;
   return {
     ...result,
     R,
@@ -2192,7 +2365,10 @@ function rpcRun(name: string, plan: FakeOmpPlan, starts: string[], thens: string
     at,
     prompts: events.filter((event) => "prompt" in event),
     sent: jsonLines(path.join(R, "rpc-sent.jsonl")).map(
-      (line): Record<string, unknown> & { ms: number } => ({ ...(line.sent as Record<string, unknown>), ms: line.ms as number })
+      (line): Record<string, unknown> & { ms: number } => ({
+        ...(line.sent as Record<string, unknown>),
+        ms: line.ms as number,
+      })
     ),
     out: existsSync(path.join(R, "out.txt")) ? readFileSync(path.join(R, "out.txt"), "utf8") : "",
   };
@@ -2202,12 +2378,18 @@ describe("launch_rpc", () => {
   // Catches: a task sent before the claim is ready (the plugin would take it unclaimed), sent
   // twice, or changed on the way (quoting, a trailing newline dropped).
   test("launch_rpc sends the start task unchanged as one RPC prompt, after claims/ready", () => {
-    const task = 'Task: rig-marker-7f3.\nIt holds "quotes", a $HOME, a back\\slash and a tab\there.\n';
+    const task =
+      'Task: rig-marker-7f3.\nIt holds "quotes", a $HOME, a back\\slash and a tab\there.\n';
     const run = rpcRun("rpc-start", { readyAfterMs: 1500, reports: [{ running: false }] }, [task]);
-    expect({ code: run.code, stderr: run.code === 0 ? "" : run.stderr }).toEqual({ code: 0, stderr: "" });
+    expect({ code: run.code, stderr: run.code === 0 ? "" : run.stderr }).toEqual({
+      code: 0,
+      stderr: "",
+    });
     expect(run.out).toBe("exit=0\n");
     expect(run.prompts.map((event) => event.prompt)).toEqual([task]);
-    expect(run.sent.filter((command) => command.type === "prompt").map((command) => command.message)).toEqual([task]);
+    expect(
+      run.sent.filter((command) => command.type === "prompt").map((command) => command.message)
+    ).toEqual([task]);
     expect(run.at("ready", true)).toBeLessThan(run.prompts[0]?.at as number);
     expect(jsonLines(path.join(run.R, "rpc.jsonl")).length).toBeGreaterThan(run.sent.length);
   });
@@ -2215,87 +2397,164 @@ describe("launch_rpc", () => {
   // Catches: a run ended while the session's own job runs: in RPC mode that job's end starts a
   // new turn, which the run would cut off.
   test("launch_rpc does not end a run whose activity report says background work runs, and ends it once the report says none", () => {
-    const run = rpcRun("rpc-background", { reports: [{ running: true, kinds: ["bash"] }, { running: false, afterMs: 2500 }] }, ["Do the work.\n"]);
-    expect({ code: run.code, stderr: run.code === 0 ? "" : run.stderr }).toEqual({ code: 0, stderr: "" });
+    const run = rpcRun(
+      "rpc-background",
+      {
+        reports: [
+          { running: true, kinds: ["bash"] },
+          { running: false, afterMs: 2500 },
+        ],
+      },
+      ["Do the work.\n"]
+    );
+    expect({ code: run.code, stderr: run.code === 0 ? "" : run.stderr }).toEqual({
+      code: 0,
+      stderr: "",
+    });
     expect(run.out).toBe("exit=0\n");
     const none = run.at("report", 1) as number;
-    expect(run.sent.some((command) => command.type === "get_state" && command.ms < none)).toBe(true);
+    expect(run.sent.some((command) => command.type === "get_state" && command.ms < none)).toBe(
+      true
+    );
     expect(run.at("stdinClosed", true)).toBeGreaterThanOrEqual(none);
   });
 
   // Catches: a phase worker's run ended while Legion's reminder is armed, which would start one
   // more turn the run never sees.
   test("launch_rpc does not end a phase worker's run while its activity report names a reminder armed, and ends it once its phase closed", () => {
-    const run = rpcRun("rpc-reminder", { reports: [{ running: false, next: "2026-11-24T23:00:00.000Z" }, { running: false, next: null, afterMs: 2500 }] }, ["Do the work.\n"]);
-    expect({ code: run.code, stderr: run.code === 0 ? "" : run.stderr }).toEqual({ code: 0, stderr: "" });
+    const run = rpcRun(
+      "rpc-reminder",
+      {
+        reports: [
+          { running: false, next: "2026-11-24T23:00:00.000Z" },
+          { running: false, next: null, afterMs: 2500 },
+        ],
+      },
+      ["Do the work.\n"]
+    );
+    expect({ code: run.code, stderr: run.code === 0 ? "" : run.stderr }).toEqual({
+      code: 0,
+      stderr: "",
+    });
     expect(run.out).toBe("exit=0\n");
     const closed = run.at("report", 1) as number;
-    expect(run.sent.some((command) => command.type === "get_state" && command.ms < closed)).toBe(true);
+    expect(run.sent.some((command) => command.type === "get_state" && command.ms < closed)).toBe(
+      true
+    );
     expect(run.at("stdinClosed", true)).toBeGreaterThanOrEqual(closed);
   });
 
   // Catches: an owner's run held past its settle, or its questions sent before its turn ended.
   test("an owner's run ends at its first settle with no background work, since its report names no reminder", () => {
-    const run = rpcRun("rpc-owner", { reports: [{ running: false, next: null }] }, ["Plan the issue.\n"], ["Which step do you add?\n"]);
-    expect({ code: run.code, stderr: run.code === 0 ? "" : run.stderr }).toEqual({ code: 0, stderr: "" });
+    const run = rpcRun(
+      "rpc-owner",
+      { reports: [{ running: false, next: null }] },
+      ["Plan the issue.\n"],
+      ["Which step do you add?\n"]
+    );
+    expect({ code: run.code, stderr: run.code === 0 ? "" : run.stderr }).toEqual({
+      code: 0,
+      stderr: "",
+    });
     expect(run.out).toBe("exit=0\n");
-    expect(run.prompts.map((event) => event.prompt)).toEqual(["Plan the issue.\n", "Which step do you add?\n"]);
+    expect(run.prompts.map((event) => event.prompt)).toEqual([
+      "Plan the issue.\n",
+      "Which step do you add?\n",
+    ]);
     expect(run.prompts[1]?.at).toBeGreaterThan(run.at("agentEnd", "0") as number);
-    expect((run.at("stdinClosed", true) as number) - (run.at("agentEnd", "1") as number)).toBeLessThan(3000);
+    expect(
+      (run.at("stdinClosed", true) as number) - (run.at("agentEnd", "1") as number)
+    ).toBeLessThan(3000);
   });
 
   // Catches: a run with no start task (a child owner, whom the catch-up notice alone starts) that
   // sends its questions before the notice's turn, or ends before it.
   test("launch_rpc with no start task waits for the turn a notice starts, and sends its questions once that turn ends", () => {
-    const run = rpcRun("rpc-notice", { selfStartAfterMs: 2000, reports: [{ running: false }] }, [], ["Which step do you add?\n"]);
-    expect({ code: run.code, stderr: run.code === 0 ? "" : run.stderr }).toEqual({ code: 0, stderr: "" });
+    const run = rpcRun(
+      "rpc-notice",
+      { selfStartAfterMs: 2000, reports: [{ running: false }] },
+      [],
+      ["Which step do you add?\n"]
+    );
+    expect({ code: run.code, stderr: run.code === 0 ? "" : run.stderr }).toEqual({
+      code: 0,
+      stderr: "",
+    });
     expect(run.out).toBe("exit=0\n");
     expect(run.prompts.map((event) => event.prompt)).toEqual(["Which step do you add?\n"]);
     expect(run.prompts[0]?.at).toBeGreaterThan(run.at("agentEnd", "notice") as number);
   });
 
   // Catches: a bound that reads as an end, or a held run whose row cannot say what held it.
-  test(
-    "launch_rpc writes exit=bound at the run's bound, and the row names what held it: the reminder and the count of reminders, the background work, or the turn",
-    () => {
-      const held = (name: string, plan: FakeOmpPlan, transcript?: object[]) => {
-        const run = rpcRun(name, plan, ["Do the work.\n"], [], 2, transcript);
-        const file = path.join(run.R, "held.txt");
-        return { code: run.code, out: run.out, held: existsSync(file) ? readFileSync(file, "utf8") : "no held.txt" };
+  test("launch_rpc writes exit=bound at the run's bound, and the row names what held it: the reminder and the count of reminders, the background work, or the turn", () => {
+    const held = (name: string, plan: FakeOmpPlan, transcript?: object[]) => {
+      const run = rpcRun(name, plan, ["Do the work.\n"], [], 2, transcript);
+      const file = path.join(run.R, "held.txt");
+      return {
+        code: run.code,
+        out: run.out,
+        held: existsSync(file) ? readFileSync(file, "utf8") : "no held.txt",
       };
-      const bound = "the run did not end within 2 seconds";
-      expect(held("bound-turn", { hang: true })).toEqual({ code: 0, out: "exit=bound\n", held: `${bound}: a turn running\n` });
-      expect(held("bound-work", { reports: [{ running: true, kinds: ["bash", "task"] }] })).toEqual({
-        code: 0,
-        out: "exit=bound\n",
-        held: `${bound}: background work running: bash, task\n`,
-      });
-      const reminder = { type: "custom_message", customType: "legion-phase-reminder" };
-      expect(held("bound-reminder", { reports: [{ running: false, next: "2026-11-24T23:05:00.000Z" }] }, [reminder, { type: "message" }, reminder])).toEqual({
-        code: 0,
-        out: "exit=bound\n",
-        held: `${bound}: a reminder armed for 2026-11-24T23:05:00.000Z, after 2 reminders\n`,
-      });
-    },
-    120_000
-  );
+    };
+    const bound = "the run did not end within 2 seconds";
+    expect(held("bound-turn", { hang: true })).toEqual({
+      code: 0,
+      out: "exit=bound\n",
+      held: `${bound}: a turn running\n`,
+    });
+    expect(held("bound-work", { reports: [{ running: true, kinds: ["bash", "task"] }] })).toEqual({
+      code: 0,
+      out: "exit=bound\n",
+      held: `${bound}: background work running: bash, task\n`,
+    });
+    const reminder = { type: "custom_message", customType: "legion-phase-reminder" };
+    expect(
+      held("bound-reminder", { reports: [{ running: false, next: "2026-11-24T23:05:00.000Z" }] }, [
+        reminder,
+        { type: "message" },
+        reminder,
+      ])
+    ).toEqual({
+      code: 0,
+      out: "exit=bound\n",
+      held: `${bound}: a reminder armed for 2026-11-24T23:05:00.000Z, after 2 reminders\n`,
+    });
+  }, 120_000);
 });
 
 describe("the model line of a stand-in label", () => {
   // Catches: a try whose one run is a rig error for its model, so it scores nothing.
   test("with SKILL_SCENARIOS_MODEL=standin, the label's built-from names the stand-in as its model line, so the try's run passes the model check and is no rig error", () => {
     const dir = freshDir("standin-model-line");
-    const line = bash(`${defs("route_model_line")}\n${assignment("model_standin")}\nroute_model_line`, [], { SKILL_SCENARIOS_MODEL: "standin" });
+    const line = bash(
+      `${defs("route_model_line")}\n${assignment("model_standin")}\nroute_model_line`,
+      [],
+      { SKILL_SCENARIOS_MODEL: "standin" }
+    );
     expect(line).toEqual({ code: 0, stdout: "model standin/standin-model\n", stderr: "" });
     // A transcript of a turn the stand-in answered, in the fields transcriptModels reads.
     const entries = [
       { type: "model_change", model: "standin/standin-model" },
-      { type: "message", message: { role: "assistant", provider: "standin", model: "standin-model", content: [{ type: "text", text: "stand-in" }] } },
+      {
+        type: "message",
+        message: {
+          role: "assistant",
+          provider: "standin",
+          model: "standin-model",
+          content: [{ type: "text", text: "stand-in" }],
+        },
+      },
     ] as unknown as Parameters<typeof modelProblem>[1];
-    writeFileSync(path.join(dir, "built-from"), `checkout /rig/label\ncommit ${"a".repeat(40)}\n${line.stdout}`);
+    writeFileSync(
+      path.join(dir, "built-from"),
+      `checkout /rig/label\ncommit ${"a".repeat(40)}\n${line.stdout}`
+    );
     expect(modelProblem(dir, entries)).toBeUndefined();
     // Control: a built-from that names the gateway's model makes the same run a rig error.
-    writeFileSync(path.join(dir, "built-from"), `checkout /rig/label\ncommit ${"a".repeat(40)}\nmodel gateway/claude-opus-5-5\n`);
+    writeFileSync(
+      path.join(dir, "built-from"),
+      `checkout /rig/label\ncommit ${"a".repeat(40)}\nmodel gateway/claude-opus-5-5\n`
+    );
     expect(modelProblem(dir, entries)).toBe(
       "its transcript names the model standin/standin-model, and its label's built-from names gateway/claude-opus-5-5"
     );
@@ -2304,7 +2563,9 @@ describe("the model line of a stand-in label", () => {
   const omp = process.env.LEGION_TEST_OMP;
   const skipOmp = omp === undefined && process.env.GITHUB_ACTIONS !== "true";
   if (skipOmp)
-    console.error("UNKNOWN: rig.test.ts's model stand-in row runs the real Oh My Pi and needs LEGION_TEST_OMP (the runner's --omp sets it); it does not run here");
+    console.error(
+      "UNKNOWN: rig.test.ts's model stand-in row runs the real Oh My Pi and needs LEGION_TEST_OMP (the runner's --omp sets it); it does not run here"
+    );
 
   // Catches: a stand-in route that reaches no stand-in (the turn goes nowhere, or to a real
   // provider), and a transcript that names another model than the one built-from holds.
@@ -2319,12 +2580,19 @@ describe("the model line of a stand-in label", () => {
       const home = path.join(dir, "home");
       const profile = "skills-standin";
       const fns = `${defs("fail", "install_standin_route", "route_config", "route_model_standin", "route_model_line")}\n${assignment("model_standin")}\n${assignment("model_standin_unrouted")}`;
-      const installed = bash(`${fns}\ninstall_standin_route "$1" "$2" && route_model_line >"$3/built-from"`, [profile, home, dir], {
-        SKILL_SCENARIOS_MODEL: "standin",
-      });
+      const installed = bash(
+        `${fns}\ninstall_standin_route "$1" "$2" && route_model_line >"$3/built-from"`,
+        [profile, home, dir],
+        {
+          SKILL_SCENARIOS_MODEL: "standin",
+        }
+      );
       expect({ code: installed.code, stderr: installed.stderr }).toEqual({ code: 0, stderr: "" });
       const log = path.join(dir, "model-standin.jsonl");
-      const server = Bun.spawn([process.execPath, path.join(scenarios, "model-standin.ts"), log], { stdout: "pipe", stderr: "pipe" });
+      const server = Bun.spawn([process.execPath, path.join(scenarios, "model-standin.ts"), log], {
+        stdout: "pipe",
+        stderr: "pipe",
+      });
       try {
         const reader = server.stdout.getReader();
         let printed = "";
@@ -2342,20 +2610,50 @@ describe("the model line of a stand-in label", () => {
         mkdirSync(sessions);
         mkdirSync(workspace);
         const turn = Bun.spawnSync(
-          [omp, "-p", "Say hello.", "--no-extensions", "--no-skills", "--no-rules", "--no-lsp", "--no-title", "--session-dir", sessions],
+          [
+            omp,
+            "-p",
+            "Say hello.",
+            "--no-extensions",
+            "--no-skills",
+            "--no-rules",
+            "--no-lsp",
+            "--no-title",
+            "--session-dir",
+            sessions,
+          ],
           {
             cwd: workspace,
-            env: { HOME: home, OMP_PROFILE: profile, PATH: "/usr/local/bin:/usr/bin:/bin", PI_NOTIFICATIONS: "off", PI_NO_TITLE: "1" },
+            env: {
+              HOME: home,
+              OMP_PROFILE: profile,
+              PATH: "/usr/local/bin:/usr/bin:/bin",
+              PI_NOTIFICATIONS: "off",
+              PI_NO_TITLE: "1",
+            },
             timeout: 120_000,
           }
         );
-        expect({ code: turn.exitCode, stderr: turn.exitCode === 0 ? "" : turn.stderr.toString() }).toEqual({ code: 0, stderr: "" });
+        expect({
+          code: turn.exitCode,
+          stderr: turn.exitCode === 0 ? "" : turn.stderr.toString(),
+        }).toEqual({ code: 0, stderr: "" });
         const entries = (readdirSync(sessions, { recursive: true }) as string[])
           .filter((file) => file.endsWith(".jsonl"))
-          .flatMap((file) => jsonLines(path.join(sessions, file))) as unknown as Parameters<typeof modelProblem>[1];
-        const said = (entries as unknown as { message?: { role?: string; content?: { type?: string; text?: string }[] } }[])
+          .flatMap((file) => jsonLines(path.join(sessions, file))) as unknown as Parameters<
+          typeof modelProblem
+        >[1];
+        const said = (
+          entries as unknown as {
+            message?: { role?: string; content?: { type?: string; text?: string }[] };
+          }[]
+        )
           .filter((entry) => entry.message?.role === "assistant")
-          .flatMap((entry) => (entry.message?.content ?? []).filter((part) => part.type === "text").map((part) => part.text));
+          .flatMap((entry) =>
+            (entry.message?.content ?? [])
+              .filter((part) => part.type === "text")
+              .map((part) => part.text)
+          );
         expect(said).toContain(MODEL_STANDIN_MESSAGE);
         expect(transcriptModels(entries)).toEqual(["standin/standin-model"]);
         expect(modelProblem(dir, entries)).toBeUndefined();
@@ -2369,17 +2667,35 @@ describe("the model line of a stand-in label", () => {
       const key = path.join(dir, "model-token");
       writeFileSync(key, "#!/bin/sh\necho token\n", { mode: 0o755 });
       const providers = path.join(dir, "providers.yml");
-      const block = { baseUrl: "http://gateway.example.invalid:4000", api: "anthropic-messages", apiKey: `!${key}`, authHeader: true, models: [{ id: "claude-opus-5-5" }] };
+      const block = {
+        baseUrl: "http://gateway.example.invalid:4000",
+        api: "anthropic-messages",
+        apiKey: `!${key}`,
+        authHeader: true,
+        models: [{ id: "claude-opus-5-5" }],
+      };
       writeFileSync(providers, JSON.stringify({ providers: { gateway: block } }));
-      const gatewayEnv = { LEGION_E2E_MODEL_ROUTE: "provider", LEGION_E2E_MODEL_PROVIDER_FILE: providers, LEGION_E2E_MODEL_PROVIDER: "gateway" };
+      const gatewayEnv = {
+        LEGION_E2E_MODEL_ROUTE: "provider",
+        LEGION_E2E_MODEL_PROVIDER_FILE: providers,
+        LEGION_E2E_MODEL_PROVIDER: "gateway",
+      };
       const gateway = profileDir();
       const viaGateway = route(gateway, gatewayEnv, "claude-opus-5-5");
-      expect({ code: viaGateway.code, stderr: viaGateway.code === 0 ? "" : viaGateway.stderr }).toEqual({ code: 0, stderr: "" });
-      const models = JSON.parse(readFileSync(path.join(gateway, "home/.omp/profiles/skills-test/agent/models.yml"), "utf8"));
-      expect(Object.keys(models.providers)).toEqual(["gateway"]);
-      expect(bash(`${fns}\nroute_model_line`, [], { ...gatewayEnv, LEGION_E2E_MODEL_PROVIDER_MODEL: "claude-opus-5-5" }).stdout).toBe(
-        "model gateway/claude-opus-5-5\n"
+      expect({
+        code: viaGateway.code,
+        stderr: viaGateway.code === 0 ? "" : viaGateway.stderr,
+      }).toEqual({ code: 0, stderr: "" });
+      const models = JSON.parse(
+        readFileSync(path.join(gateway, "home/.omp/profiles/skills-test/agent/models.yml"), "utf8")
       );
+      expect(Object.keys(models.providers)).toEqual(["gateway"]);
+      expect(
+        bash(`${fns}\nroute_model_line`, [], {
+          ...gatewayEnv,
+          LEGION_E2E_MODEL_PROVIDER_MODEL: "claude-opus-5-5",
+        }).stdout
+      ).toBe("model gateway/claude-opus-5-5\n");
     },
     180_000
   );
@@ -2419,10 +2735,17 @@ describe("the reach lines", () => {
     ];
     const reachOf = (out: string) => out.split("\n").filter((line) => line.startsWith("reach "));
     // `rig.sh rows`, the command scored-job.sh runs.
-    const rows = Bun.spawnSync(["bash", path.join(scenarios, "rig.sh"), "rows", "owner-walk"], { env: { ...childEnv, SKILL_SCENARIOS_WORK: work } });
+    const rows = Bun.spawnSync(["bash", path.join(scenarios, "rig.sh"), "rows", "owner-walk"], {
+      env: { ...childEnv, SKILL_SCENARIOS_WORK: work },
+    });
     expect(rows.exitCode).toBe(0);
     expect(reachOf(rows.stdout.toString())).toEqual(want);
-    expect(rows.stdout.toString().split("\n").filter((line) => line.startsWith("row "))).toHaveLength(2);
+    expect(
+      rows.stdout
+        .toString()
+        .split("\n")
+        .filter((line) => line.startsWith("row "))
+    ).toHaveLength(2);
     // rig.sh score's cmd_score, with the scoring and the cells, which read a whole run, stood in.
     const score = bash(
       `${defs("note", "fail", "cmd_rows", "cmd_score")}\nscore_scored_run() { :; }\nbun() { :; }\nwork=$1 here=$2\ncmd_score owner-walk`,
@@ -2478,15 +2801,38 @@ esac
     );
     const work = freshDir("job-work");
     const run = (env: Record<string, string>) => {
-      const result = Bun.spawnSync(["bash", path.join(here, "scored-job.sh"), "owner-walk", "head", "--case", "root-B-claude", "--count", "1"], {
-        env: { ...childEnv, PATH: `${bin}:${childEnv.PATH}`, SKILL_SCENARIOS_WORK: work, ...env },
-      });
-      const read = (file: string) => (existsSync(path.join(work, file)) ? readFileSync(path.join(work, file), "utf8") : "");
-      return { code: result.exitCode, stdout: result.stdout.toString(), stderr: result.stderr.toString(), calls: read("rig-calls"), env: read("rig-env") };
+      const result = Bun.spawnSync(
+        [
+          "bash",
+          path.join(here, "scored-job.sh"),
+          "owner-walk",
+          "head",
+          "--case",
+          "root-B-claude",
+          "--count",
+          "1",
+        ],
+        {
+          env: { ...childEnv, PATH: `${bin}:${childEnv.PATH}`, SKILL_SCENARIOS_WORK: work, ...env },
+        }
+      );
+      const read = (file: string) =>
+        existsSync(path.join(work, file)) ? readFileSync(path.join(work, file), "utf8") : "";
+      return {
+        code: result.exitCode,
+        stdout: result.stdout.toString(),
+        stderr: result.stderr.toString(),
+        calls: read("rig-calls"),
+        env: read("rig-env"),
+      };
     };
     return { repo: realpathSync(repo), work, run };
   }
-  const pod = { LEGION_TEST_PG_DSN: "postgres://ci@127.0.0.1:5432/postgres", LEGION_TEST_NATS_URL: "nats://127.0.0.1:4222", LEGION_TEST_OMP: "/work/omp/bin/omp" };
+  const pod = {
+    LEGION_TEST_PG_DSN: "postgres://ci@127.0.0.1:5432/postgres",
+    LEGION_TEST_NATS_URL: "nats://127.0.0.1:4222",
+    LEGION_TEST_OMP: "/work/omp/bin/omp",
+  };
 
   // Catches: a Job that skips a step, runs them out of order, hands the rig another case, store or
   // Oh My Pi than the pod's, hides a rig error's logs, or ends on a line that is not its cell's.
@@ -2495,7 +2841,14 @@ esac
     const job = run({ ...pod, SKILL_SCENARIOS_MODEL: "standin" });
     expect({ code: job.code, stderr: job.stderr }).toEqual({ code: 0, stderr: "" });
     expect(job.calls).toBe(
-      [`plans-capture ${repo} ${work}/plans`, `profile head ${repo}`, "batch-scored owner-walk 1 head", "rows owner-walk", "cell owner-walk head root-B-claude 1", ""].join("\n")
+      [
+        `plans-capture ${repo} ${work}/plans`,
+        `profile head ${repo}`,
+        "batch-scored owner-walk 1 head",
+        "rows owner-walk",
+        "cell owner-walk head root-B-claude 1",
+        "",
+      ].join("\n")
     );
     expect(job.env).toBe(
       `case=root-B-claude model=standin route= provider= pg=${pod.LEGION_TEST_PG_DSN} nats=${pod.LEGION_TEST_NATS_URL} omp=${pod.LEGION_TEST_OMP} plans=${work}/plans\n`
@@ -2503,10 +2856,16 @@ esac
     const lines = job.stdout.trim().split("\n");
     expect(lines).toContain("scored-job: the model: the model stand-in (model-standin.ts)");
     expect(lines).toContain('row {"outcome":"scored","run":"owner-walk-root-B-claude-head-1"}');
-    expect(lines).toContain("reach owner-walk-root-B-claude-head-1: bash names storage.googleapis.com (session s, message 1)");
-    const tail = lines.indexOf("scored-job: rig error owner-walk-root-B-claude-head-2: the last lines of runs/owner-walk-root-B-claude-head-2/logs/daemon.log");
+    expect(lines).toContain(
+      "reach owner-walk-root-B-claude-head-1: bash names storage.googleapis.com (session s, message 1)"
+    );
+    const tail = lines.indexOf(
+      "scored-job: rig error owner-walk-root-B-claude-head-2: the last lines of runs/owner-walk-root-B-claude-head-2/logs/daemon.log"
+    );
     expect(lines[tail + 1]).toBe("  the planted daemon line");
-    expect(lines.at(-1)).toBe("scored-job owner-walk head root-B-claude, label head: 2 runs, 1 scored, 1 rig errors, count 1; each clause: read 0 of 1; runs passed 0 of 1; verdict fail");
+    expect(lines.at(-1)).toBe(
+      "scored-job owner-walk head root-B-claude, label head: 2 runs, 1 scored, 1 rig errors, count 1; each clause: read 0 of 1; runs passed 0 of 1; verdict fail"
+    );
   });
 
   // Catches: a Job with no stand-in that runs on whatever route the pod gives, or with no gateway
@@ -2518,7 +2877,11 @@ esac
     const { work, run } = plantedJob();
     // The key command the runner's --model-gateway writes, scored-job.sh's default.
     const modelToken = "!/work/bin/model-token";
-    const job = run({ ...pod, SKILL_SCENARIOS_GATEWAY_URL: "http://gateway.example.invalid:4000/", SKILL_SCENARIOS_MODEL_ID: "claude-opus-5-5" });
+    const job = run({
+      ...pod,
+      SKILL_SCENARIOS_GATEWAY_URL: "http://gateway.example.invalid:4000/",
+      SKILL_SCENARIOS_MODEL_ID: "claude-opus-5-5",
+    });
     expect({ code: job.code, stderr: job.stderr }).toEqual({ code: 0, stderr: "" });
     expect(job.env).toContain("model= route=provider provider=gateway ");
     expect(JSON.parse(readFileSync(path.join(work, "providers.yml"), "utf8"))).toEqual({
