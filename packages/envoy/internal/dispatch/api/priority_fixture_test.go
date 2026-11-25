@@ -159,14 +159,15 @@ func seededRank(index int) string {
 	return fmt.Sprintf("%08d", index)
 }
 
-// issuesLastEventAtFill is the statement of 20261125094600_issues_last_event_at_backfill.up.sql,
-// letter for letter: it fills each issue's newest-event pair (last_event_at, last_event_at_seq)
-// from its event of last_seq. A corpus written by COPY holds the pair null, as a deployment's rows
-// do before that migration runs; a corpus that runs this stands as a deployment does after it.
-const issuesLastEventAtFill = `update issues
-set (last_event_at, last_event_at_seq) = (
-  select e.created_at, e.seq
-  from events e
-  where e.issue_key = issues.key and e.seq = issues.last_seq
-)
-where last_seq > 0 and last_event_at_seq is distinct from last_seq;`
+// issuesLastEventAtFillMigration is the migration that fills each issue's newest-event pair
+// (last_event_at, last_event_at_seq) from its event of last_seq, taking the rows in key order.
+const issuesLastEventAtFillMigration = "20261125094600_issues_last_event_at_backfill.up.sql"
+
+// fillNewestEventPairs runs that migration's file on database as the runner applies it
+// (applyStoreMigration), so a test runs the fill as a deployment does rather than a copy of it. A
+// corpus written by COPY holds the pair null, as a deployment's rows do before the migration
+// runs; a corpus that runs this stands as a deployment does after it.
+func fillNewestEventPairs(t *testing.T, database *store.Store) {
+	t.Helper()
+	applyStoreMigration(t, database, issuesLastEventAtFillMigration)
+}

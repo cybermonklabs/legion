@@ -418,10 +418,8 @@ func TestPriorityNewestEventReadsOneEventOfEachMember(t *testing.T) {
 
 	const mains, statement, keyed = 0, 1, 2
 	for stateNumber, state := range newestEventStates {
-		if state.setup != "" {
-			if _, err := corpus.database.Pool.Exec(ctx, state.setup); err != nil {
-				t.Fatalf("set the newest-event pairs %s: %v", state.name, err)
-			}
+		if state.setup != nil {
+			state.setup(t, corpus.database)
 		}
 		for scopeNumber, scope := range newestEventScopes {
 			members := newestEventMemberIssues(t, corpus.database, corpus.priorities, scope.projects, scope.name)
@@ -494,23 +492,29 @@ func TestPriorityNewestEventReadsOneEventOfEachMember(t *testing.T) {
 // newestEventStates are the three states of the corpus's newest-event pairs that
 // TestPriorityNewestEventReadsOneEventOfEachMember reads the statement in, in order, each made by
 // its setup from the one before: as written, every pair null, where the statement probes the
-// event of each member issue that has one; after 20261125094600's fill (issuesLastEventAtFill),
+// event of each member issue that has one; after 20261125094600's fill (fillNewestEventPairs),
 // where it probes none; and with the pair of one member issue of both scopes - the first by key of
 // project newestEventProject's issues that state a relation and have an event - a seq behind its
 // last_seq, where it probes that one.
 var newestEventStates = []struct {
-	name, setup string
-	probes      func(members newestEventMembers) int
+	name   string
+	setup  func(t *testing.T, database *store.Store)
+	probes func(members newestEventMembers) int
 }{
-	{"before the fill", "", func(members newestEventMembers) int { return members.withEvents }},
-	{"after the fill", issuesLastEventAtFill, func(newestEventMembers) int { return 0 }},
-	{"with one pair behind its last_seq", `update issues set last_event_at_seq = last_seq - 1
-		where key = (
-			select i.key from issues i
-			where i.project_key = '` + newestEventProject + `' and i.last_seq > 0
-				and i.key in (select t.from_id from priority_tuples t)
-			order by i.key collate "C" limit 1
-		)`, func(newestEventMembers) int { return 1 }},
+	{"before the fill", nil, func(members newestEventMembers) int { return members.withEvents }},
+	{"after the fill", fillNewestEventPairs, func(newestEventMembers) int { return 0 }},
+	{"with one pair behind its last_seq", func(t *testing.T, database *store.Store) {
+		t.Helper()
+		if _, err := database.Pool.Exec(context.Background(), `update issues set last_event_at_seq = last_seq - 1
+			where key = (
+				select i.key from issues i
+				where i.project_key = '`+newestEventProject+`' and i.last_seq > 0
+					and i.key in (select t.from_id from priority_tuples t)
+				order by i.key collate "C" limit 1
+			)`); err != nil {
+			t.Fatalf("set one member issue's newest-event pair a seq behind its last_seq: %v", err)
+		}
+	}, func(newestEventMembers) int { return 1 }},
 }
 
 // requireNewestEventProbes holds plan, an analyzed plan of the priorities read's statement, to

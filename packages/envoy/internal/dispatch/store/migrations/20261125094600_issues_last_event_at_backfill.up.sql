@@ -17,13 +17,29 @@
 -- append to an issue waits at most for this one statement. The ALTER that took the table's
 -- ACCESS EXCLUSIVE lock committed in 20261125094500, so no reader of issues waits on it.
 --
+-- It takes the rows in key order (`key collate "C"`): `unfilled` selects the rows it writes in
+-- that order `for no key update`, and the update joins it, so each row's lock is taken before the
+-- update reaches any row. That is the order in which store.LockOwners takes the rows of several
+-- issues (ownerRowsIssues in store/ownerlock.go), so the fill and such a write take any two issue
+-- rows in one order. An update that locked each row when its scan reached it could hold one row
+-- of such a write and wait for another the write holds, while the write waits for the first, and
+-- Postgres would abort one of the two, the migration or the write.
+--
 -- A process of the release before this one that appends an event while this runs, or later in
 -- the same roll, leaves its row's pair behind last_seq; the read probes that row, and the row's
 -- next append through this release writes the pair again.
+with unfilled as materialized (
+  select key
+  from issues
+  where last_seq > 0 and last_event_at_seq is distinct from last_seq
+  order by key collate "C"
+  for no key update
+)
 update issues
 set (last_event_at, last_event_at_seq) = (
   select e.created_at, e.seq
   from events e
   where e.issue_key = issues.key and e.seq = issues.last_seq
 )
-where last_seq > 0 and last_event_at_seq is distinct from last_seq;
+from unfilled
+where issues.key = unfilled.key;
