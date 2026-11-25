@@ -1,6 +1,6 @@
 name: CI job test
 
-# The steps of ci.yaml's `test` and `tooling-checks` jobs, in a file of their own.
+# The steps of `.github/workflows/ci.yaml#test` and `.github/workflows/ci.yaml#tooling-checks` jobs, in a file of their own.
 # ci.yaml's job of each id calls this file and passes its own id as `job`, and the job of this
 # file named for it runs while the other is skipped. Each caller keeps `needs: changes` and the
 # whole `if:` that decides whether its job runs, so the `if:` here only picks which of the two
@@ -48,7 +48,7 @@ name: CI job test
 #
 # Each job's last step reports ci-ok for its caller: on a merge-group run the job's own result
 # decides, it posts the failing ci-ok at once (.github/actions/ci-ok-report), as every job of
-# ci.yaml ends. `ci-ok-changes` carries ci.yaml's `toJSON(needs.changes)` for it.
+# ci.yaml ends. `ci-ok-changes` carries `.github/workflows/ci.yaml#toJSON(needs.changes)` for it.
 on:
   workflow_call:
     inputs:
@@ -60,20 +60,20 @@ on:
         required: true
       ci-ok-changes:
         description: >-
-          ci.yaml's `toJSON(needs.changes)`: end the job with ci-ok's report
+          `.github/workflows/ci.yaml#toJSON(needs.changes)`: end the job with ci-ok's report
           (.github/actions/ci-ok-report), as every job of ci.yaml ends.
         type: string
         required: true
       changes-result:
         description: >-
-          ci.yaml's `needs.changes.result`: every gated step below runs when `changes` did not
+          `.github/workflows/ci.yaml#needs.changes.result`: every gated step below runs when `changes` did not
           succeed, as they did before the job's `if:` gated them one by one, and as lint's two
           notices steps do.
         type: string
         required: true
       matched-filters:
         description: >-
-          ci.yaml's `needs.changes.outputs.matched_filters`: the paths filter's list of the filters
+          `.github/workflows/ci.yaml#needs.changes.outputs.matched_filters`: the paths filter's list of the filters
           that matched, as JSON (`["test","release_push_test"]`), or `all` on a dispatched run and
           on one whose filters fell open.
           Each gated step below runs when its own filter is in it.
@@ -260,6 +260,10 @@ jobs:
         if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"check_fireevent_reasons_test"')
         run: .github/scripts/harness-pool.sh start .github/scripts/check-fireevent-reasons.test.sh .github/scripts/check-fireevent-reasons.test.sh
 
+      - name: Test the whole-tree Biome check
+        if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"check_biome_tree_test"')
+        run: .github/scripts/harness-pool.sh start .github/scripts/check-biome-tree.test.sh .github/scripts/check-biome-tree.test.sh
+
       - name: Test the daemon API contract number check
         if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"check_daemon_api_contract_test"')
         run: .github/scripts/harness-pool.sh start .github/scripts/check-daemon-api-contract.test.sh .github/scripts/check-daemon-api-contract.test.sh
@@ -321,6 +325,13 @@ jobs:
       - name: Test the browser lane's blob attempt selection
         if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"dispatch_browser_latest_blobs_test"')
         run: .github/scripts/harness-pool.sh start .github/scripts/dispatch-browser-latest-blobs.test.sh .github/scripts/dispatch-browser-latest-blobs.test.sh
+
+      # The second read of the binaries artifact the shard and alone jobs make when
+      # actions/download-artifact's first did not complete, against a stand-in GitHub whose blob
+      # stalls partway, serves bytes off the artifact's digest, or is not there.
+      - name: Test the browser lane's second read of its binaries (a stand-in GitHub)
+        if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"dispatch_browser_fetch_binaries_test"')
+        run: .github/scripts/harness-pool.sh start .github/scripts/dispatch-browser-fetch-binaries.test.sh .github/scripts/dispatch-browser-fetch-binaries.test.sh
 
       # Reading one of dispatch-browser.yaml's merge job, run through that job's own call over
       # fixture blob directories and a stand-in for its jobs read: what it says of the legs for
@@ -538,7 +549,7 @@ jobs:
           .github/scripts/release-push.sh fold-check $(<.github/changelog-packages)
 
       # The guides' own layout, in this job because it installs Bun's dependencies, which the
-      # test's Markdown parser needs (scripts/semantic-line-breaks.guides.test.ts:6-8). The
+      # test's Markdown parser needs (`scripts/semantic-line-breaks.guides.test.ts#mdast-util-from-markdown`). The
       # step has a filter of its own, guide_layout, naming the six guides the test reads and
       # the checker it spawns: no other step of this job reads one of them, so a run that
       # changed none of them skips this step.
