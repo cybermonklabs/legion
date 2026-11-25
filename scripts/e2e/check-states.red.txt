@@ -89,7 +89,7 @@ go packages/daemon/internal/record ^TestPhaseVerdictGoneMigrationStripsTheVerdic
 # ablate-states-read patch cuts, so its label-checkouts.sh refuses the patch (it does not apply)
 # before the rig starts a service or a model; and its scenarios have no case no-verdict-fail or
 # no-verdict-pass for the judgement to count.
-cmd . states-read-scenarios packages/pi-legion/scripts/skill-scenarios/states-read-check.sh -- bash packages/pi-legion/scripts/skill-scenarios/states-read-check.sh
+cmd . states-read-scenarios packages/pi-legion/scripts/skill-scenarios/states-read-check.sh packages/pi-legion/scripts/skill-scenarios/label-judgement.sh -- bash packages/pi-legion/scripts/skill-scenarios/states-read-check.sh
 
 # v-a-testing-step-passes-by-its-checks: no state event, so the test does not build.
 go packages/daemon/internal/workflow ^TestATestingStepPassesWhenItsChecksPass$ packages/daemon/internal/workflow/check_states_move_test.go packages/daemon/internal/workflow/check_states_test.go packages/daemon/internal/checkstatetest/checkstatetest.go packages/contracts/fixtures/dispatch-events/check-state-changed.json
@@ -111,4 +111,4 @@ e2e scripts/e2e/check-states.sh ci-failure-tells scripts/e2e/check-states.sh pac
 # v-tester-reads-no-ci: the whole model check, run by tester-ci-check.sh with the rig of the commit
 # it runs at, which has no world tester-reads-no-ci, so its batch names a scenario the rig refuses
 # before a model starts.
-cmd . tester-ci-scenarios packages/pi-legion/scripts/skill-scenarios/tester-ci-check.sh -- bash packages/pi-legion/scripts/skill-scenarios/tester-ci-check.sh
+cmd . tester-ci-scenarios packages/pi-legion/scripts/skill-scenarios/tester-ci-check.sh packages/pi-legion/scripts/skill-scenarios/label-judgement.sh -- bash packages/pi-legion/scripts/skill-scenarios/tester-ci-check.sh
