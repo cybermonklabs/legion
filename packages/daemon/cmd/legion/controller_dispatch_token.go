@@ -13,13 +13,21 @@ import (
 	"github.com/google/uuid"
 	"github.com/sjawhar/envoy/cipheraddr"
 	"github.com/sjawhar/envoy/cipherclient"
+
+	"github.com/sjawhar/legion/daemon/internal/programbound"
 )
 
 // controllerDispatchTradeWait bounds the one trade this start makes to prove the controller can
 // hold a Dispatch credential at all. A controller that cannot write to Dispatch cannot do its
 // work, so a broker that is down refuses the start rather than letting Oh My Pi come up with no
-// credential.
-const controllerDispatchTradeWait = 60 * time.Second
+// credential. It is a variable so that this package's tests can give it their own deadline
+// (programbound): a stand-in broker a loaded machine made slower than the minute would refuse
+// the start.
+var controllerDispatchTradeWait = 60 * time.Second
+
+func init() {
+	programbound.Register(&controllerDispatchTradeWait)
+}
 
 // controllerCheckSession is the session name this start's own trade writes under: a name of its
 // own, new on every start, as the controller session's own id is. It is never a name a session
@@ -103,7 +111,7 @@ func controllerDispatchBroker(ctx context.Context, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	timed, cancel := context.WithTimeout(ctx, controllerDispatchTradeWait)
+	timed, cancel := context.WithTimeout(ctx, programbound.Of(&controllerDispatchTradeWait))
 	defer cancel()
 	token, err := client.Token(timed)
 	if err != nil {
