@@ -78,6 +78,8 @@ function finished(issue: string, tasks: string[][] | null): FinishedIssue {
     ended_at: null,
     duration_seconds: null,
     failed_steps: 1,
+    experiment: null,
+    variant: null,
   };
 }
 
