@@ -1043,10 +1043,11 @@ type AssignmentView struct {
 
 // WaitingOnView is what a root in awaiting_person waits on from a person (record.Awaiting): an ask
 // or a spec version, when the wait began and, once an act answered it, when and by what act. The
-// answered root then stands in admission's waiting line as well, among the issues whose work came
-// back, oldest first, until the pass that resumes it. It is record.WaitingOnView, where its fields
-// are declared: the state's `waitingOn` and a state event's are the same value read two ways
-// (record.ObservationOf), and the view is declared once, under both.
+// answered root then stands in admission's waiting line as well, within its priority, among the
+// issues whose work came back, oldest first, until the pass that resumes it. It is
+// record.WaitingOnView, where its fields are declared: the state's `waitingOn` and a state event's
+// are the same value read two ways (record.ObservationOf), and the view is declared once, under
+// both.
 type WaitingOnView = record.WaitingOnView
 
 // PriorityView is a Dispatch priority on this wire, as Dispatch sends one: its number, 0 for P0
