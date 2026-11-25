@@ -3,6 +3,12 @@ import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { z } from "zod";
+import {
+  type ContractRecords,
+  composeEntries,
+  daemonApiRecords,
+  entryFixtures,
+} from "./daemon-api-records";
 import * as legionApi from "./legion-api";
 import {
   LEGION_FAILURE_CAUSES,
@@ -197,10 +203,11 @@ const schemas: Record<string, z.ZodType> = {
   // a replay with one record of each outcome and one left, and the ids a discard closed.
   "intake-replay.json": LegionIntakeReplayResponse,
   "intake-discard.json": LegionIntakeDiscardResponse,
-  // No route answers this one: it is the contract number the daemon's boot gate requires of the
-  // installed plugin (`internal/api/version.go`), and the plugin's own test pins its manifest's
-  // `legion.daemonApiVersion` to it.
-  "version.json": z.strictObject({ daemonApiVersion: z.number().int().positive() }),
+  // Nor this one: the numbers of the numbered entries of `internal/api/version.go`, from the
+  // serving floor to L, its greatest, ascending. No later change adds to it: a contract change is
+  // an entry with one fixture under `contracts/`, so the number a build speaks is L plus its count
+  // of entry fixtures (`daemon-api-records.ts`, and `daemonContract()` for a plugin's manifest).
+  "released-contracts.json": z.array(z.number().int().positive()).min(1),
   // Nor this one: the numbers a worker's own stall watch runs on, written from the daemon's
   // copies of them (`internal/config/stalldefaults.go`) so that
   // `packages/pi-shared/src/stall-limits.test.ts` can hold the plugin's own numbers — the one
@@ -436,15 +443,6 @@ test("every answer schema the module exports is the schema of a golden", () => {
   ).toEqual([]);
 });
 
-/** One row of `enumerated-fields.json`: one field of one answer the daemon declares a plugin
- * parses with a strict enumeration, and every value it may take with the contract it arrived
- * at (`internal/api/answers.go`'s `EnumeratedFields`). */
-interface EnumeratedFieldRow {
-  readonly answer: string;
-  readonly keyPath: string;
-  readonly values: readonly { readonly value: string; readonly since: number }[];
-}
-
 /** The answer schema this module parses each answer of the daemon's table with, by the id the
  * table writes it under (`internal/api/answers.go`). An answer whose id no entry here names
  * fails the case below, so an enumerated field of that answer is read rather than skipped. */
@@ -453,6 +451,45 @@ const ANSWER_SCHEMAS: Record<string, z.ZodType> = {
   "issue-record": LegionIssueRecordResponse,
   register: LegionRegisterResponse,
   "intake-replay": LegionIntakeReplayResponse,
+};
+
+/** The schemas this module parses each answer of the daemon's table that writes a body with, by
+ * the id the table writes it under: the answer schemas above and every other. A client parses
+ * the refusal on every answer that is not a success, as the error or as a pause's refusal, so its
+ * key paths are those the two name. An answer whose id no entry here names fails the case that
+ * reads them, so a key path of that answer is held rather than skipped. */
+const RECORD_SCHEMAS: Record<string, readonly z.ZodType[]> = {
+  ...Object.fromEntries(Object.entries(ANSWER_SCHEMAS).map(([id, schema]) => [id, [schema]])),
+  health: [LegionHealthResponse],
+  "register-controller": [LegionControllerRegisterResponse],
+  "release-records": [LegionReleaseRecordsResponse],
+  grant: [LegionGrantResponse],
+  "handoff-complete": [LegionHandoffCompleteResponse],
+  "empty-object": [LegionEmptyResponse],
+  "fresh-session": [LegionFreshSessionResponse],
+  compact: [LegionCompactResponse],
+  "turn-outcome": [LegionTurnOutcomeResponse],
+  "wave-release": [LegionWaveReleaseResponse],
+  refusal: [LegionErrorResponse, LegionPauseFailureResponse],
+  "project-pause": [LegionProjectPauseResponse],
+  "project-resume": [LegionProjectResumeResponse],
+  "plan-register": [LegionPlanRegisterResponse],
+  "intake-discard": [LegionIntakeDiscardResponse],
+};
+
+/** The reason the refusal's `reasons` is named by no schema of this module. */
+const PLAN_REASONS_STRIPPED =
+  "a refused plan's `error` holds every reason in order, and the `legion` tool hands the refusal to its agent whole, so `LegionErrorResponse` strips the list by design (`LegionPlanRegisterResponse` says so)";
+
+/** Every key path a record of the daemon serves that this module's schema of its answer leaves
+ * unnamed by design, by `<answer> <keyPath>`, with why. The case that reads it fails an entry
+ * whose path the record does not hold or the schema names, so a stale entry is red rather than
+ * hiding the next key path no schema names. */
+const UNNAMED_KEY_PATHS: Record<string, string> = {
+  "refusal reasons": PLAN_REASONS_STRIPPED,
+  "refusal reasons.*": PLAN_REASONS_STRIPPED,
+  "refusal reasons.*.reason": PLAN_REASONS_STRIPPED,
+  "refusal reasons.*.task": PLAN_REASONS_STRIPPED,
 };
 
 /** One step of a path from a schema's root to a node below it: the field `key` of an object,
@@ -473,6 +510,19 @@ function censusPath(steps: readonly SchemaStep[]): string {
       return step.kind === "element" ? "[]" : "{}";
     })
     .join("");
+}
+
+/** A path as the daemon's records write one: the keys joined by `.`, a record's value and a list's
+ * element both `*` (`issues.*.phase`, `capabilities.*.status`), and the options of a union at the
+ * path of the union itself, since `waitingOn.answeredBy` is one field of both the `ask` and the
+ * `gate` shape (`keyPathRule` in `internal/api/contract_shapes_test.go`). */
+function recordKeyPath(steps: readonly SchemaStep[]): string {
+  return steps
+    .flatMap((step) => {
+      if (step.kind === "key") return [step.key];
+      return step.kind === "option" ? [] : ["*"];
+    })
+    .join(".");
 }
 
 /** The node kinds the schemas of either side are built from that hold no node below them. A
@@ -536,12 +586,9 @@ function walkSchema(
   }
 }
 
-/** Every `z.enum` the answer schemas of `roots` read, with its members, by `<answer> <key path>`.
- * The key path is written as the daemon's table writes one: the keys joined by `.`, a record's
- * value and a list's element both `*` (`issues.*.phase`, `capabilities.*.status`), and the
- * options of a union at the path of the union itself, since `waitingOn.answeredBy` is one field
- * of both the `ask` and the `gate` shape. A node two paths reach is read at both of them, as the
- * claim view is at `architect` and at `workers.*.claim`.
+/** Every `z.enum` the answer schemas of `roots` read, with its members, by `<answer> <key path>`,
+ * the key path written as the daemon's table writes one (`recordKeyPath`). A node two paths reach
+ * is read at both of them, as the claim view is at `architect` and at `workers.*.claim`.
  *
  * `problems` names each path that holds no one list to compare: a path at which two
  * enumerations with different members stand, a path at which a `z.enum` stands beside a node
@@ -556,13 +603,7 @@ function enumeratedFields(roots: Record<string, z.ZodType>): {
   const problems: string[] = [];
   for (const [answer, schema] of Object.entries(roots)) {
     walkSchema(answer, schema, (node, steps) => {
-      const keyPath = steps
-        .flatMap((step) => {
-          if (step.kind === "key") return [step.key];
-          return step.kind === "option" ? [] : ["*"];
-        })
-        .join(".");
-      const field = `${answer} ${keyPath}`;
+      const field = `${answer} ${recordKeyPath(steps)}`;
       if (!(node instanceof z.ZodEnum)) {
         // A union and its options stand at one path, so only a kind other than those two is
         // one that could stand where an enumeration does.
@@ -612,29 +653,28 @@ function enumeratedFields(roots: Record<string, z.ZodType>): {
 // own contract, in a block an older reader parses with its own schema, which this build no longer
 // holds. `repositories.mapped.*.cache.state` is one: contract 202 replaced that block with
 // `live`, and the daemon writes it, in contract 152's shape, for a caller below 202 alone. Such a
-// row is told apart by the records (`contract-shapes.json`): the record of the daemon's own
-// contract carries no such key path and the record of an earlier contract does. That earlier
-// reader's own enumeration holds it, so the row is passed over here; a row no record carries at
-// all is compared as any other, and fails.
+// row is told apart by the records: the record of this build's own contract carries no such key
+// path and the record of an earlier contract does. That earlier reader's own enumeration holds
+// it, so the row is passed over here; a row no record carries at all is compared as any other,
+// and fails.
+//
+// The rows and the records are this build's (`daemon-api-records.ts`): `enumerated-fields.json`
+// and `contract-shapes.json`, which hold the numbered entries', with the rows and the records
+// each entry fixture adds over them, so a value an entry adds is compared as one the file holds.
 test("every enumerated field the daemon declares holds this build's own values", () => {
-  const rows = fixture("enumerated-fields.json") as EnumeratedFieldRow[];
+  const build = daemonApiRecords(fixtureDir);
+  const rows = build.enumeratedFields;
   expect(rows.length).toBeGreaterThan(0);
   const { members, problems } = enumeratedFields(ANSWER_SCHEMAS);
   expect(problems).toEqual([]);
   // A walk that read no enumeration would leave both directions below holding vacuously.
   expect(members.size).toBeGreaterThan(0);
-  const { daemonApiVersion } = z
-    .object({ daemonApiVersion: z.number() })
-    .parse(fixture("version.json"));
-  // Each answer's key paths, as `<answer> <keyPath>`, in the record of the daemon's own contract
+  // Each answer's key paths, as `<answer> <keyPath>`, in the record of this build's own contract
   // and in the record of any earlier one.
   const ownPaths = new Set<string>();
   const earlierPaths = new Set<string>();
-  const records = z
-    .array(z.object({ contract: z.number(), answer: z.string(), keyPaths: z.array(z.string()) }))
-    .parse(fixture("contract-shapes.json"));
-  for (const record of records) {
-    const paths = record.contract === daemonApiVersion ? ownPaths : earlierPaths;
+  for (const record of build.records) {
+    const paths = record.contract === build.contract ? ownPaths : earlierPaths;
     for (const keyPath of record.keyPaths) {
       paths.add(`${record.answer} ${keyPath}`);
     }
@@ -672,6 +712,105 @@ test("every enumerated field the daemon declares holds this build's own values",
     undeclared,
     `this module reads these fields with a z.enum and the daemon's table declares none of them: ${undeclared.join(", ")}`
   ).toEqual([]);
+});
+
+// The keys of the other half of a record, held to the schemas: every key path the daemon serves
+// an answer at this build's own contract is one this module's schema of that answer names, but
+// those `UNNAMED_KEY_PATHS` gives a reason for. The drift gate above holds the keys the goldens
+// carry; this holds the keys of the record, which is taken from bodies richer than any golden, and
+// which is the one an entry fixture composes over L's (`daemon-api-records.ts`). So an entry whose
+// fixture adds a key path to an answer is red here until the schema names the key, before any
+// golden carries it.
+test("every key path the daemon serves this build's contract is one its schema names", () => {
+  const build = daemonApiRecords(fixtureDir);
+  const newest = build.records.filter((record) => record.contract === build.contract);
+  expect(newest.length).toBeGreaterThan(0);
+  const unnamed: string[] = [];
+  const held = new Set<string>();
+  const named = new Set<string>();
+  for (const record of newest) {
+    if (record.noBody) {
+      continue;
+    }
+    const schemas = RECORD_SCHEMAS[record.answer];
+    expect(schemas, `the ${record.answer} answer has no schema in RECORD_SCHEMAS`).toBeDefined();
+    for (const schema of schemas ?? []) {
+      walkSchema(record.answer, schema, (_node, steps) => {
+        named.add(`${record.answer} ${recordKeyPath(steps)}`);
+      });
+    }
+    for (const keyPath of record.keyPaths) {
+      const field = `${record.answer} ${keyPath}`;
+      held.add(field);
+      if (!named.has(field) && UNNAMED_KEY_PATHS[field] === undefined) {
+        unnamed.push(field);
+      }
+    }
+  }
+  expect(
+    unnamed,
+    `the daemon serves these key paths at contract ${build.contract} and this module's schema of their answer names none of them: ${unnamed.join(", ")}`
+  ).toEqual([]);
+  for (const field of Object.keys(UNNAMED_KEY_PATHS).sort()) {
+    expect(held.has(field), `UNNAMED_KEY_PATHS names ${field}, which no record holds`).toBeTrue();
+    expect(named.has(field), `UNNAMED_KEY_PATHS names ${field}, which a schema names`).toBeFalse();
+  }
+});
+
+// The composition itself, held to the example fixtures it shares with the daemon's shape gate
+// (`testdata/entry-fixture-examples/`, `internal/api`'s TestTheCompositionOfTheExampleFixtures):
+// `base.json` stands for L's record, each `<id>_<slug>.json` is an entry fixture, and
+// `expected.json` is the one record the newest of them composes, which both languages reach or are
+// red. The examples make every operation a fixture holds, and the last removes what the first and
+// the second add, so their order matters: in the reverse order the composition is refused, naming
+// the entry and the operation, as the gate refuses a fixture an order puts before the entry whose
+// key it changes.
+test("the example entry fixtures compose the one record expected of them", () => {
+  const examples = path.join(import.meta.dir, "..", "testdata", "entry-fixture-examples");
+  const read = (name: string): ContractRecords =>
+    JSON.parse(readFileSync(path.join(examples, name), "utf8"));
+  const base = read("base.json");
+  const files = entryFixtures(examples, false);
+  expect(files.length).toBeGreaterThan(1);
+  const numbered = (order: typeof files) =>
+    order.map((file, rank) => ({
+      name: file.name,
+      number: base.contract + rank + 1,
+      fixture: file.fixture,
+    }));
+  expect(composeEntries(base, numbered(files)).at(-1)).toEqual(read("expected.json"));
+
+  const reversed = numbered([...files].reverse());
+  expect(() => composeEntries(base, reversed)).toThrow(
+    `entry ${reversed[0]?.name} (contract ${base.contract + 1}) removes the note answer, and the record before it holds no such answer`
+  );
+});
+
+// A row an entry adds to `enumerated-fields.json` names each of its values once. The daemon's gate
+// grows the row value by value (`withEnumeratedRows` in `internal/api`), so it refuses a value the
+// added row names twice as surely as one the row before it holds, naming the entry; the
+// composition here must refuse it too, or the two would compose different records from one
+// fixture.
+test("an entry row that adds one enumerated value twice is refused, naming the entry", () => {
+  const examples = path.join(import.meta.dir, "..", "testdata", "entry-fixture-examples");
+  const base: ContractRecords = JSON.parse(readFileSync(path.join(examples, "base.json"), "utf8"));
+  expect(base.enumeratedFields.map((row) => row.keyPath)).toEqual(["issues.*.phase"]);
+  // A row the base holds, and a row no record before it declares.
+  for (const keyPath of ["issues.*.phase", "issues.*.kind"]) {
+    const entry = {
+      name: "20261126000000_twice",
+      number: base.contract + 1,
+      fixture: {
+        answers: [],
+        routes: [],
+        answerRows: [],
+        enumeratedRows: [{ answer: "state", keyPath, values: ["merging", "merging"] }],
+      },
+    };
+    expect(() => composeEntries(base, [entry])).toThrow(
+      `entry 20261126000000_twice (contract ${base.contract + 1}) adds \`merging\` to \`${keyPath}\` of the state answer in enumerated-fields.json, and that row holds it already`
+    );
+  }
 });
 
 // What that equality catches, and the one place it is blind. A key no schema names is dropped
@@ -1850,27 +1989,33 @@ test("a claim carries the leak check's cause beside its failure", () => {
 // all, since a key added to a narrowed body is exactly what the narrowing exists to prevent. The
 // daemon writes that narrowing to its own log instead (`api.recordShaping`). From contract 193 on,
 // a reader served the body whole, the operator's `legion state --json` among them, is told the
-// daemon's own number as the caller's too, which is the golden's mark. Before contract 193 a daemon
-// from 75 on served that reader the daemon's number alone, and the schema reads that mark as well.
+// daemon's own number as the caller's too. Before contract 193 a daemon from 75 on served that
+// reader the daemon's number alone, and the schema reads that mark as well.
+//
+// The golden carries no mark: `TestStateGolden` takes out each one that names the daemon's own
+// number, which an entry moves, and holds the two to that number apart, so no golden changes with
+// the build's number. The marks are written here, on copies of the golden, with the number of the
+// build this checkout is (`daemon-api-records.ts`).
 test("the state says which contract it was built at", () => {
-  const { daemonApiVersion } = fixture("version.json") as { daemonApiVersion: number };
+  const { contract } = daemonApiRecords(fixtureDir);
   const golden = fixture("state.json") as { contract?: Record<string, unknown> };
-  expect(golden.contract).toEqual({ daemon: daemonApiVersion, caller: daemonApiVersion });
-  expect(LegionStateResponse.parse(golden).contract).toEqual({
-    daemon: daemonApiVersion,
-    caller: daemonApiVersion,
+  expect(golden.contract).toBeUndefined();
+
+  const marked = fixture("state.json") as { contract?: Record<string, unknown> };
+  marked.contract = { daemon: contract, caller: contract };
+  expect(LegionStateResponse.parse(marked).contract).toEqual({
+    daemon: contract,
+    caller: contract,
   });
 
   const older = fixture("state.json") as { contract?: Record<string, unknown> };
-  older.contract = { daemon: daemonApiVersion };
-  expect(LegionStateResponse.parse(older).contract).toEqual({ daemon: daemonApiVersion });
+  older.contract = { daemon: contract };
+  expect(LegionStateResponse.parse(older).contract).toEqual({ daemon: contract });
 
   // A narrowed body carries no mark, and parses: the readers of this schema are never served one
   // — a caller below 75 reads with the schema of its own contract — and the state as
   // internal/projection answers it, before the route marks it, carries none either.
-  const narrowed = fixture("state.json") as Record<string, unknown>;
-  delete narrowed.contract;
-  expect(LegionStateResponse.safeParse(narrowed).error?.issues ?? []).toEqual([]);
+  expect(LegionStateResponse.safeParse(golden).error?.issues ?? []).toEqual([]);
   expect(LegionStateResponse.parse(fixture("state-stage3.json")).contract).toBeUndefined();
 
   // A number that is no contract is refused rather than read. A mark naming the caller alone is
@@ -1880,8 +2025,8 @@ test("the state says which contract it was built at", () => {
   const wrong = fixture("state.json") as { contract?: Record<string, unknown> };
   wrong.contract = { daemon: 0 };
   expect(LegionStateResponse.safeParse(wrong).success).toBeFalse();
-  wrong.contract = { caller: daemonApiVersion };
-  expect(LegionStateResponse.parse(wrong).contract).toEqual({ caller: daemonApiVersion });
+  wrong.contract = { caller: contract };
+  expect(LegionStateResponse.parse(wrong).contract).toEqual({ caller: contract });
 });
 
 // An architect's backward move names the issue it moves from accepting; a phase worker's may
@@ -2756,7 +2901,7 @@ test("a reader at the previous contract parses the state body this daemon serves
   expect(droppedFromState(served)).toBe("strandedClaims[0].suspendedBy");
 });
 
-// Contract 276: a root's gated step may stand open on an ancestor's approval (`open_on_basis`) or
+// The gate-basis contract entry: a root's gated step may stand open on an ancestor's approval (`open_on_basis`) or
 // wait, closed, on an ancestor's open approval request (`pending_on_basis`), each with the `basis`
 // that names the approval or the request, and every root the daemon records says whether its
 // tree runs (`treeRuns`). The state golden carries LEGION-207's step open on LEGION-200's
@@ -2855,10 +3000,10 @@ test("the state golden carries a step on an ancestor's basis and whether each ro
 
 // `legionGatedStepView`'s status as contracts 55 to 275 hold it: four words, in an enum. Every
 // plugin parses the state with the schema of the contract it was built at, so this reader is live
-// in every pod still on an image before 276. It reads every step of the golden that stands on no
-// basis, and refuses the two words of 276 — and with them the whole state body, since
+// in every pod still on an image before the gate-basis entry. It reads every step of the golden that stands on no
+// basis, and refuses the two words of that entry — and with them the whole state body, since
 // `gatedSteps` is an array it parses whole — which is why the state route serves a caller below
-// 276 no `gatedSteps` on an issue with a step on a basis (`api`'s `withoutGateBasis` and
+// that entry's contract no `gatedSteps` on an issue with a step on a basis (`api`'s `withoutGateBasis` and
 // `withoutUnadmittedStepStatuses`, pinned on the Go side): neither `waiting` nor `approved` is true
 // of such a step, so it serves no entry of that issue rather than a wrong one.
 const gatedStepStatusBeforeBasis = z.object({
@@ -2885,7 +3030,7 @@ test("a reader before the basis words reads every gated step but those on a basi
   }
 });
 
-// The architect's registration on an ancestor's basis (contract 276): the three fields come
+// The architect's registration on an ancestor's basis (the gate-basis entry): the three fields come
 // together, the document is a UUID, the version positive and the reason a sentence; a request
 // that names none of them is the request it was.
 test("a gate registration names a basis by its document, its version and a reason", () => {
@@ -2926,8 +3071,8 @@ test("a reader at contract 152 parses the repositories block served below 202", 
   // The caller states the contract before 202, the one whose entry made the block live
   // (`repositoriesLiveContract` in `internal/api/shaping.go`), and the `contract` mark below names
   // the highest contract the records hold below 202 (`recordedContractAtOrBelow`). The bound is
-  // 202 and not `daemonApiVersion`: the records hold an entry at 202 itself, so a bound at the
-  // daemon's own contract would name 202 as soon as a later contract lands.
+  // 202 and not this build's own contract: the records hold an entry at 202 itself, so a bound at
+  // the daemon's own contract would name 202 as soon as a later contract lands.
   const repositoriesLiveContract = 202;
   const served = fixtureBody("state-narrowed-repositories.json");
   const written = served.repositories;
@@ -2978,35 +3123,31 @@ test("a reader at contract 152 parses the repositories block served below 202", 
   ]);
   expect(block.data?.caches).toEqual(live.caches);
 
-  // Every other key is the state golden's own, the `contract` mark, `lowestPluginContract`,
-  // `intakeGiveUps` and the keys contracts 220, 246, 250, 256, 275 and 276 added aside: the mark names
-  // the contract the caller is served at, 199, the recorded contract below the 201 the caller
-  // states (`recordedContractAtOrBelow`), INFRA-4605's, which moved no answer's shape, and the
-  // lowest plugin contract reports the claims of the snapshot the route projected the body from, a
-  // pod at 201, which `state.json`'s own fixture does not hold. Eight bands stand above 199: the
-  // repositories block's at 202; contract 220's, which takes `plan` off each assignment; the
-  // intake's give-ups' at 228, so the narrowing leaves `intakeGiveUps` off; the pod hold's at 246,
-  // which leaves `podHold` off every issue (`withoutPodHold`); contract 250's, which takes
-  // `priority` off each issue and off its `waitingLine`; contract 256's, which takes `lastDeathAt`
-  // and `lastStartFailureAt` off each claim view; contract 275's, which takes `dispatchCredential`
-  // off the state; and contract 276's, which takes every root's
-  // `treeRuns` and the `gatedSteps` of each issue with a step on an ancestor's basis (`api`'s
-  // `withoutGateBasis`); so the golden's issues, rows and claim views are compared without them,
-  // and the narrowing changes this one block and those keys and no other key. One value strip of
-  // contract 213 stands above 199 as well: `caches`, the source of the repository-cache-room row,
-  // arrived at contract 213, so that row is served here without its `source`, every other field of
-  // it and every other row as the state golden holds them. Contract 276's value strips take
-  // nothing more here: the strip of its two step statuses takes the `gatedSteps` its band has taken
-  // already, and the golden holds no issue in `awaiting_children` and no held row of it.
-  const { daemonApiVersion } = z
-    .object({ daemonApiVersion: z.number() })
-    .parse(fixture("version.json"));
-  const recordedBelow = z
-    .array(z.object({ contract: z.number() }))
-    .parse(fixture("contract-shapes.json"))
-    .map((record) => record.contract)
+  // Every other key is the state golden's own, the `contract` mark, `lowestPluginContract` and
+  // `intakeGiveUps` aside: the mark names the contract the caller is served at, 199, the recorded
+  // contract below the 201 the caller states (`recordedContractAtOrBelow`), INFRA-4605's, which
+  // moved no answer's shape, and the lowest plugin contract reports the claims of the snapshot the
+  // route projected the body from, a pod at 201, which `state.json`'s own fixture does not hold.
+  // The mark holds no `daemon`: `TestStateNarrowedRepositoriesGolden` takes out the daemon's own
+  // number, which an entry moves, and holds it to that number apart.
+  // Seven bands stand above 199: the repositories block's at 202; contract 220's, which takes
+  // `plan` off each assignment; the intake's give-ups' at 228, so the narrowing leaves
+  // `intakeGiveUps` off; the pod hold's at 246, which leaves `podHold` off every issue
+  // (`withoutPodHold`); contract 250's, which takes `priority` off each issue and off its
+  // `waitingLine`; contract 256's, which takes `lastDeathAt` and `lastStartFailureAt` off each
+  // claim view; and contract 275's, which takes `dispatchCredential` off the state. Above them
+  // stands the gate-basis entry's band, which takes every root's `treeRuns` and the `gatedSteps`
+  // of each issue with a step on an ancestor's basis (`api`'s `withoutGateBasis`). So the golden's
+  // issues, rows and claim views are compared without them. One value strip stands above 199 as
+  // well: `caches`, the source of the repository-cache-room row, arrived at contract 213, so that
+  // row is served here without its `source`, every other field of it and every other row as the
+  // state golden holds them. The gate-basis entry's value strips take nothing more here: the strip
+  // of its two step statuses takes the `gatedSteps` its band has taken already, and the golden
+  // holds no issue in `awaiting_children` and no held row of it.
+  const recordedBelow = daemonApiRecords(fixtureDir)
+    .records.map((record) => record.contract)
     .filter((contract) => contract < repositoriesLiveContract);
-  expect(served.contract).toEqual({ daemon: daemonApiVersion, caller: Math.max(...recordedBelow) });
+  expect(served.contract).toEqual({ caller: Math.max(...recordedBelow) });
   expect("intakeGiveUps" in served).toBeFalse();
   const {
     repositories: _narrowedBlock,

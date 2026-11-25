@@ -56,7 +56,7 @@ body: |-
   `20261114232555_awaiting_children` adds the phase, the held start with `children_wait_children`,
   `children_waited_at`, `phases.entry_from`, `phases.entry_given_task`,
   `phases.entry_given_entry` and `phases.entry_given_generation`. A caller below daemon
-  API contract 276 is served such a parent's `phase` as `admitted` and its held word as
+  API contract entry 20261125161152 (gate-basis) is served such a parent's `phase` as `admitted` and its held word as
   `children_first`. The first admission
   pass after the deploy moves every started parent of a running tree (in `planning` through
   `accepting`, its pull request not merged) that has an open Dispatch child into

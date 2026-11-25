@@ -3,7 +3,7 @@ body: |-
   `LEGION_WORKFLOW_PHASES` names `awaiting_children`, the phase a parent waits in while a Dispatch
   child of it is open, and `LEGION_HELD_REASONS` names the held word `awaiting_children`. The docs
   of `LegionPhaseBackwardRequest`, `LegionSignOffRequest` and `LegionTaskStopRequest` name the refusal
-  `WAITING_ON_CHILDREN`. A caller below daemon API contract 276 reads such a parent's phase as
+  `WAITING_ON_CHILDREN`. A caller below the daemon API contract entry 20261125161152 (gate-basis) reads such a parent's phase as
   `admitted` and its held word as `children_first`.
 custom:
     Issue: pr4592

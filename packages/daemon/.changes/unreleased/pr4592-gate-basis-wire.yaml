@@ -8,7 +8,7 @@ body: |-
   basis, `approvedVersion` is the root's version registered, which no person approved. Every root
   the daemon records carries `treeRuns`, whether its tree runs. The architect's catch-up states such
   a step with `pending` and `basis`, and an open basis reads open with no `approved` version. A
-  caller below daemon API contract 276 gets no `treeRuns` and no `gatedSteps` on an issue with a
+  caller below the daemon API contract entry 20261125161152 (gate-basis) gets no `treeRuns` and no `gatedSteps` on an issue with a
   step on a basis.
 custom:
     Issue: pr4592

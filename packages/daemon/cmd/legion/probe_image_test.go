@@ -113,7 +113,7 @@ esac
 }
 
 // thisBinarysContract is the daemon API contract this binary speaks, as a manifest writes it.
-var thisBinarysContract = strconv.Itoa(api.DaemonAPIVersion)
+var thisBinarysContract = strconv.Itoa(api.DaemonAPIVersion())
 
 // image is the worker image's two plugin roots, which every probe-image run is given, the
 // claude-envoy root and Claude Code pin the Claude lane and the claude-code row check, its bin of
@@ -300,9 +300,9 @@ const lastContractWithoutDefaultBranch = 25
 // pi-legion declaring that older contract, so the daemon's probe Sandbox, asking for this binary's
 // own, refuses it by both numbers before any issue pod runs that image's `workspace-init`.
 func TestProbeImageRefusesAnImageWhoseWorkspaceInitTakesNoDefaultBranch(t *testing.T) {
-	if api.DaemonAPIVersion <= lastContractWithoutDefaultBranch {
+	if api.DaemonAPIVersion() <= lastContractWithoutDefaultBranch {
 		t.Fatalf("DaemonAPIVersion is %d: the pod's --default-branch needs a contract above %d, or an image whose workspace-init rejects the flag passes the probe",
-			api.DaemonAPIVersion, lastContractWithoutDefaultBranch)
+			api.DaemonAPIVersion(), lastContractWithoutDefaultBranch)
 	}
 	old := strconv.Itoa(lastContractWithoutDefaultBranch)
 	img := inImage(t, old, imageOmp(t))
@@ -323,9 +323,9 @@ const lastContractWithoutGhBundles = 29
 // the daemon's probe Sandbox, asking for this binary's own, refuses it by both numbers before any
 // issue pod runs that image's git.
 func TestProbeImageRefusesAnImageWithoutTheGhWrapper(t *testing.T) {
-	if api.DaemonAPIVersion <= lastContractWithoutGhBundles {
+	if api.DaemonAPIVersion() <= lastContractWithoutGhBundles {
 		t.Fatalf("DaemonAPIVersion is %d: per-owner gh bundles need a contract above %d, or an image without legion gh and legion git-credential passes the probe",
-			api.DaemonAPIVersion, lastContractWithoutGhBundles)
+			api.DaemonAPIVersion(), lastContractWithoutGhBundles)
 	}
 	old := strconv.Itoa(lastContractWithoutGhBundles)
 	img := inImage(t, old, imageOmp(t))
@@ -343,9 +343,9 @@ const lastContractWithoutRepositoryCache = 31
 // the daemon's probe Sandbox, asking for this binary's own, refuses it by both numbers before any
 // cache pod runs that image's `legion workspace-init cache` and exits 2 on the unknown subcommand.
 func TestProbeImageRefusesAnImageWithoutTheRepositoryCache(t *testing.T) {
-	if api.DaemonAPIVersion <= lastContractWithoutRepositoryCache {
+	if api.DaemonAPIVersion() <= lastContractWithoutRepositoryCache {
 		t.Fatalf("DaemonAPIVersion is %d: the cache pod's workspace-init cache needs a contract above %d, or an image without it passes the probe",
-			api.DaemonAPIVersion, lastContractWithoutRepositoryCache)
+			api.DaemonAPIVersion(), lastContractWithoutRepositoryCache)
 	}
 	old := strconv.Itoa(lastContractWithoutRepositoryCache)
 	img := inImage(t, old, imageOmp(t))

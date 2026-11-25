@@ -35,7 +35,7 @@ import (
 // Dispatch itself gave, and the criteria step, on the API tests' fake client
 // (internal/api/gate_basis_test.go); a root waiting on a person, the phase tasks after planning,
 // the production check's task and the merger's start, in internal/workflow and internal/record;
-// and a caller at a contract below 276, whose narrowing needs a caller that states such a contract
+// and a caller at a contract below entry 20261125161152 (gate-basis), whose narrowing needs a caller that states such a contract
 // or one in a pod, which the rig runs neither of (callerPodOf), in
 // internal/api/gate_basis_wire_test.go.
 
@@ -685,7 +685,7 @@ func insertAtEnd(markdown string) map[string]string {
 // TestTheProductionCheckTaskOfAViewNamesTheAncestorsRequirements (internal/workflow), and
 // TestABasisOpeningTakesTheRegistrationsMomentInTheLine (internal/record: GateOpen, the tree's gate
 // and its first opening, which the merger's start reads, and TreeGate.OpenedAt). A caller below
-// contract 276 is TestACallerBelowTheGateBasisContractIsServedNoTreeRunsAndNoStepOnABasis
+// entry 20261125161152 (gate-basis) is TestACallerBelowTheGateBasisContractIsServedNoTreeRunsAndNoStepOnABasis
 // (internal/api): the rig runs no pod and no caller of it states a contract below this daemon's
 // own, so no caller here is narrowed.
 func TestBasisGateOpensOnAnAncestorApproval(t *testing.T) {

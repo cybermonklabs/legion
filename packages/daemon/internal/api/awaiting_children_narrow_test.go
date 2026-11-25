@@ -74,11 +74,11 @@ func TestAwaitingChildrenNarrowsToAdmittedAndChildrenFirstBelowItsContract(t *te
 		phase  phase.Phase
 		reason record.HeldReason
 	}{
-		{name: "a caller stating the contract just below", remote: operator, claims: podClaims(DaemonAPIVersion), stated: gateBasisContract - 1,
+		{name: "a caller stating the contract just below", remote: operator, claims: podClaims(DaemonAPIVersion()), stated: entryNumber(gateBasisContract) - 1,
 			phase: phase.Admitted, reason: record.HeldChildrenFirst},
 		{name: "a pod at pauseContract", remote: statePodAddr + ":41000", claims: podClaims(pauseContract),
 			phase: phase.Admitted, reason: record.HeldChildrenFirst},
-		{name: "a caller stating the contract", remote: operator, claims: podClaims(pauseContract), stated: gateBasisContract,
+		{name: "a caller stating the contract", remote: operator, claims: podClaims(pauseContract), stated: entryNumber(gateBasisContract),
 			phase: phase.AwaitingChildren, reason: record.HeldAwaitingChildren},
 		{name: "a caller in no pod stating nothing", remote: operator, claims: podClaims(pauseContract),
 			phase: phase.AwaitingChildren, reason: record.HeldAwaitingChildren},

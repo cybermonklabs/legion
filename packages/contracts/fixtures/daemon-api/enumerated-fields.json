@@ -12,10 +12,6 @@
         "since": 46
       },
       {
-        "value": "awaiting_children",
-        "since": 276
-      },
-      {
         "value": "awaiting_person",
         "since": 46
       },
@@ -368,14 +364,6 @@
         "since": 55
       },
       {
-        "value": "open_on_basis",
-        "since": 276
-      },
-      {
-        "value": "pending_on_basis",
-        "since": 276
-      },
-      {
         "value": "unregistered",
         "since": 55
       },
@@ -716,10 +704,6 @@
         "since": 75
       },
       {
-        "value": "awaiting_children",
-        "since": 276
-      },
-      {
         "value": "awaiting_person",
         "since": 75
       },
@@ -910,10 +894,6 @@
         "since": 75
       },
       {
-        "value": "awaiting_children",
-        "since": 276
-      },
-      {
         "value": "awaiting_person",
         "since": 75
       },
@@ -966,10 +946,6 @@
       {
         "value": "admitted",
         "since": 75
-      },
-      {
-        "value": "awaiting_children",
-        "since": 276
       },
       {
         "value": "awaiting_person",
@@ -1110,10 +1086,6 @@
         "since": 98
       },
       {
-        "value": "awaiting_children",
-        "since": 276
-      },
-      {
         "value": "children_before_retro",
         "since": 219
       },
@@ -1210,10 +1182,6 @@
       {
         "value": "admitted",
         "since": 46
-      },
-      {
-        "value": "awaiting_children",
-        "since": 276
       },
       {
         "value": "awaiting_person",
@@ -1568,14 +1536,6 @@
         "since": 55
       },
       {
-        "value": "open_on_basis",
-        "since": 276
-      },
-      {
-        "value": "pending_on_basis",
-        "since": 276
-      },
-      {
         "value": "unregistered",
         "since": 55
       },
@@ -1670,10 +1630,6 @@
       {
         "value": "admitted",
         "since": 75
-      },
-      {
-        "value": "awaiting_children",
-        "since": 276
       },
       {
         "value": "awaiting_person",
@@ -1866,10 +1822,6 @@
         "since": 75
       },
       {
-        "value": "awaiting_children",
-        "since": 276
-      },
-      {
         "value": "awaiting_person",
         "since": 75
       },
@@ -1922,10 +1874,6 @@
       {
         "value": "admitted",
         "since": 75
-      },
-      {
-        "value": "awaiting_children",
-        "since": 276
       },
       {
         "value": "awaiting_person",

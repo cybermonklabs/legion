@@ -18,6 +18,8 @@ GATE = gate("pi_legion_build", "pi-legion-build", reads=reads(
     ("packages/dispatch/web/src/api/paths.ts", "`packages/dispatch/e2e/api.ts#PathsOf` imports PathsOf, Op, PathParams, QueryParams, RequestBody, Query, Body and Result from it, since that client is keyed on the generated document's path patterns"),
     ("skills/**", f"`scripts/pi-plugin-prepack.sh#stage_skills` stages the plugin's skills, run by {at('pi-legion-build', 'Pack pi-legion')}"),
     ("scripts/pi-plugin-prepack.sh", f"packages/pi-legion/package.json prepack ({at('pi-legion-build', 'Pack pi-legion')})"),
+    ("scripts/daemon-contract.sh", f"{at('pi-legion-build', 'Pack pi-legion')} writes the number it prints into the packed manifest"),
+    (f"{FIX}/daemon-api/**", "scripts/daemon-contract.sh reads released-contracts.json and lists contracts/*.json for the number the pack writes"),
     ("scripts/third-party-notices.ts", "`scripts/pi-plugin-prepack.sh#dist/THIRD_PARTY_NOTICES` writes that file with it"),
     ("scripts/e2e/lib/**", "`packages/pi-legion/scripts/skill-scenarios/rig.test.ts#scriptFunctions` imports scripts/e2e/lib/script-functions, and the typecheck includes scripts/skill-scenarios/*.ts"),
     # What the skills' guard reads beside the skills and the package, run by
