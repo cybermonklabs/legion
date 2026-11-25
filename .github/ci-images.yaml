@@ -76,6 +76,16 @@ images:
     tag: pgvector-2358fcba
     digest: sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
 
+  # PgBouncer 1.25.2, the pool internal/ompsessions' TestEveryPoolPinsItsSearchPath starts with
+  # docker in transaction mode in front of its test Postgres: its PoolImage constant
+  # (packages/daemon/internal/ompsessions/searchpath_test.go) names this copy by digest, and the
+  # daemon-go job pulls it first. 1.25.2 refuses search_path as a startup parameter, and 1.26.0
+  # and later accept it, so the row stays at 1.25.2 while a pool the session database is reached
+  # through does.
+  - upstream: docker.io/edoburu/pgbouncer:v1.25.2-p0
+    tag: pgbouncer-v1.25.2-p0-7d7a27d9
+    digest: sha256:7d7a27d9e90985cab5cf42256f5c13a3120baa4b055b69df37beb272b89b2340
+
   # NATS 2.10: the envoy-client and claude-envoy jobs' pre-pulls, packages/envoy-client/test/nats-server.ts,
   # scripts/e2e/lib/nats-stream.test.ts, packages/daemon's testnats.SkippingImage and packages/envoy's
   # testnats.LegacyImage, the older server the daemon's and the listener's refusal tests and

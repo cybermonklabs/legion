@@ -50,7 +50,7 @@ func TestConnectedAnswersWhileAReconnectDialHangs(t *testing.T) {
 	// The reconnect that lands is what puts the answer back: a flag the callbacks stopped keeping
 	// current would leave the client reading disconnected for the rest of its life.
 	proxy.delay.Store(0)
-	waitFor(t, 30*time.Second, "the client to read connected again once its link is back", client.Connected)
+	waitFor(t, "the client to read connected again once its link is back", client.Connected)
 }
 
 // awaitHeldConnectionLock returns once a read of conn's state has gone unanswered for

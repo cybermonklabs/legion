@@ -83,5 +83,5 @@ func TestConnectedReadsDownAtACutWhileTheReconnectHooksRun(t *testing.T) {
 		close(finish)
 	}
 	proxy.delay.Store(0)
-	waitFor(t, 30*time.Second, "the client to read connected again once its link is back", client.Connected)
+	waitFor(t, "the client to read connected again once its link is back", client.Connected)
 }
