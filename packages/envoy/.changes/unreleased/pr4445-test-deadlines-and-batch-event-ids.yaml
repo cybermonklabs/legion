@@ -1,15 +1,18 @@
 kind: Changed
 body: |-
-  A Dispatch test process (`DISPATCH_TEST_HOOKS=1`) reads ten more settings, each refused without
-  the hooks and each unset in a deployment: `DISPATCH_TEST_LISTENER_CALL_DEADLINE`,
+  A Dispatch test process (`DISPATCH_TEST_HOOKS=1`) reads fourteen more settings, each refused
+  without the hooks and each unset in a deployment: `DISPATCH_TEST_LISTENER_CALL_DEADLINE`,
   `DISPATCH_TEST_HTTP_DRAIN_DEADLINE`, `DISPATCH_TEST_DOCUMENT_SHUTDOWN_DEADLINE`,
   `DISPATCH_TEST_SHUTDOWN_PROBE_DEADLINE`, `DISPATCH_TEST_DASHBOARD_PUBLISH_DEADLINE`,
   `DISPATCH_TEST_READ_HEADER_DEADLINE`, `DISPATCH_TEST_GITHUB_REQUEST_DEADLINE` (which
   `redeliver-webhooks` reads too), `DISPATCH_TEST_HOOK_DEADLINE`,
   `DISPATCH_TEST_INTAKE_HOLD_CALL_DEADLINE` and `DISPATCH_TEST_INTAKE_MESSAGE_DEADLINE` each take
-  an RFC 3339 moment or `none` and end that bound at it, and `DISPATCH_TEST_INTAKE_HOLD_TTL` takes
-  a duration. The events outbox's sent-batch line and its scan-failure line carry the ids of the
-  events the batch sent (`event_ids`).
+  an RFC 3339 moment or `none` and end that bound at it; `DISPATCH_TEST_INTAKE_HOLD_TTL` and
+  `DISPATCH_TEST_COMPACTION_SWEEP_PERIOD` each take a duration;
+  `DISPATCH_TEST_HEALTHZ_PUBLISHER_READS=1` logs each read `/healthz` makes of whether the process
+  publishes the outbox; and `DISPATCH_TEST_DEBUG_MESSAGES` names the DEBUG log messages the process
+  writes, separated by `|`. The events outbox's sent-batch line and its scan-failure line carry the
+  ids of the events the batch sent (`event_ids`).
 time: 2026-11-24T14:23:49Z
 custom:
     Issue: pr4445

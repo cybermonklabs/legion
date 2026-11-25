@@ -696,9 +696,10 @@ func TestAKeyedPostBegunPastItsBoundEndsAtOnce(t *testing.T) {
 // after it, rather than the request held open for as long as its client cares to. Both drains: the
 // one every early answer waits behind (drainBeforeAnswer), here an upload to a closed issue and a
 // message pressed by another login, and the keyed layer's reading of a repeat found in flight.
-// The drain's deadline is bodyDrainLimit from the moment it begins on the server's clock, which
-// stands still here: the test reads the deadline the server set on its connection, then moves the
-// clock to it (drainConn.reach).
+// The drain's deadline is production's, since this server leaves drainDeadline at its zero value:
+// bodyDrainLimit from the moment the drain begins on the server's clock, which stands still here.
+// The test reads the deadline the server set on its connection, then moves the clock to it
+// (drainConn.reach).
 //
 // The drain's deadline stays on the connection once a drain ends short of the body's end, whether
 // its read failed or the body ran past the route's limit: net/http itself reads on after the

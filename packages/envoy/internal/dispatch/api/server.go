@@ -632,6 +632,15 @@ type server struct {
 	// the deployment builds leaves it, calls nothing. Only a test sets it, to send the rest of a
 	// body it held back once the repeat is waiting on it.
 	repeatFoundInFlight func()
+	// drainDeadline is the end a test gives the read deadline of a drain (readFor) in place of
+	// bodyDrainLimit from the server's now; the zero value, which every server the deployment builds
+	// leaves it, keeps bodyDrainLimit. Only a test sets it, so a body its client sends late on a
+	// loaded machine is read as long as the test's own waits would wait for it, rather than cut off
+	// by a minute of wall clock: the status change's repeat rigs (newRepeatRigOn) set the moment the
+	// shared wait gives up (testwait.GiveUpAt), and under -timeout 0, whose waits have no end, a
+	// drain then sets no read deadline at all. body_drain_test.go's rows leave it, and hold the
+	// drain to production's bound.
+	drainDeadline clock.Deadline
 	// statusChangeAfterStep is called after each step of a status change commits, with the
 	// step's index in the call's plan (status_change.go); nil, which every server the deployment
 	// builds leaves it, calls nothing. Only a test sets it, to make another writer's write between

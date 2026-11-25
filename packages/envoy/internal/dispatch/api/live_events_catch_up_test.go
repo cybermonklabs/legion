@@ -2,6 +2,8 @@ package api
 
 import (
 	"context"
+	"log/slog"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -10,6 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/horizontest"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -193,9 +196,12 @@ func TestARelayDropPastTheBoundsEndsTheSubscriptionAsBehind(t *testing.T) {
 // A subscription whose read fails (here, a database that no longer answers) ends with an ended
 // frame (behind), so its page subscribes again, rather than going silent; and it waits the relay's
 // retry on the server's clock first, so a read that keeps failing is asked again at that pace
-// rather than as fast as the page can resubscribe.
+// rather than as fast as the page can resubscribe. Before it waits it warns that it could not read,
+// and the row requires that warning: it carries the read's error, and the page is told only that
+// the feed is behind, so it is the server's one record of why the feed ended. The row is not
+// parallel, because it makes its recorder the default logger's (logtest.SetDefault), and every
+// test of the process logs through the default logger.
 func TestAnEventsSubscriptionWhoseReadFailsEndsAsBehind(t *testing.T) {
-	t.Parallel()
 	fake := clocktest.New(time.Now())
 	_, database, _, served := newRegisteredTestServer(t, testServerOptions{clock: fake})
 	testwait.Returns(t, "every connection of the server's pool to come back, so the pool closes", database.Pool.Close)
@@ -203,6 +209,8 @@ func TestAnEventsSubscriptionWhoseReadFailsEndsAsBehind(t *testing.T) {
 	if err != nil {
 		t.Fatalf("mark the subscription's context for the pool: %v", err)
 	}
+	records := &logtest.Recorder{}
+	logtest.SetDefault(t, records)
 	stream := newGatedStream()
 	close(stream.gate)
 	retry := fake.Now().Add(eventRelayRetry)
@@ -211,6 +219,13 @@ func TestAnEventsSubscriptionWhoseReadFailsEndsAsBehind(t *testing.T) {
 	fake.AwaitArmedAt(t, "the failed subscription's retry", retry)
 	if queued := len(stream.frames); queued != 0 {
 		t.Fatalf("the subscription whose read failed sent %d frames before its retry", queued)
+	}
+	// The subscription logs its warning before it arms the retry (endEventsAfterFailure), so with
+	// the retry armed the record is already kept, and this read waits for nothing.
+	if !slices.ContainsFunc(records.Records(), func(record slog.Record) bool {
+		return strings.HasPrefix(record.Message, "dispatch: an events subscription could not ")
+	}) {
+		t.Fatal("the subscription whose read failed logged no warning that it could not read")
 	}
 	fake.Set(retry)
 	ended, ok := stream.next(t, "feed's end").(LiveEnded)

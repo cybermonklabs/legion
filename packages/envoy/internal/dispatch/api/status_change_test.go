@@ -22,6 +22,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
@@ -1951,12 +1952,13 @@ func TestAStatusChangeChecksItsPlanUnderItsLocks(t *testing.T) {
 // reads a live holder's lease live however long the row takes, and no renewal, which a run arms a
 // third of its lease on, fires within the run. sweeps records each ask sweep of a closed issue.
 //
-// The server runs on the real clock (newRepeatRig), since a drained repeat's server sets its
-// socket's read deadline on the server's clock (readFor: bodyDrainLimit, a minute, from its now):
-// on a fake no row moves, that deadline is a real minute after the rig was built, and every
-// drained repeat of a rig older than that would be cut off before its body arrived. Only the row
-// that moves a run to its bound (keyedHandlerLimit) has a fake (clock, newRepeatRigOnAFake), on a
-// rig of its own whose keyed calls go through a recorder, which takes no read deadline.
+// The server of the rig the rows share runs on the real clock (newRepeatRig). A drained repeat's
+// server reads the repeat's body until the test's own waits give up, not for bodyDrainLimit from
+// its now: every repeat rig gives the drain that end (drainDeadline, newRepeatRigOn), so a body a
+// loaded machine sends late is read and judged rather than cut off, on the real clock as on a fake.
+// body_drain_test.go's rows hold the drain to production's bound. Only the row that moves a run to
+// its bound (keyedHandlerLimit) has a fake (clock, newRepeatRigOnAFake), on a rig of its own whose
+// keyed calls go through a recorder, which takes no read deadline.
 type repeatRig struct {
 	statusChangeRig
 	sweeps *sweptAsks
@@ -1980,6 +1982,10 @@ func newRepeatRigOnAFake(t *testing.T) repeatRig {
 func newRepeatRigOn(t *testing.T, options testServerOptions, fake *clocktest.Fake) repeatRig {
 	t.Helper()
 	rig := newStatusChangeRigWith(t, options)
+	// A drain ends where the shared wait gives up (testwait.GiveUpAt), or never under -timeout 0,
+	// whose waits have no end: a repeat's body is waited for as long as the row waits for its
+	// answer, and no longer.
+	rig.served.drainDeadline = clock.DeadlineAt(testwait.GiveUpAt(t))
 	sweeps := &sweptAsks{API: rig.served.deps.Docs, swept: map[string][][]string{}}
 	rig.served.deps.Docs = sweeps
 	return repeatRig{statusChangeRig: rig, sweeps: sweeps, clock: fake}

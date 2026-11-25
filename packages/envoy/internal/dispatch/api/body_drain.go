@@ -41,10 +41,16 @@ const bodyDrainLimit = time.Minute
 // those reads end where the drain's did and the connection closes; lifted, a client that stopped
 // sending would hold the connection open after its answer, and withhold the answer itself where
 // its body ran past the limit. A writer with no connection of its own (a test's recorder) bounds
-// nothing.
+// nothing. A test that gives the drain an end of its own (server.drainDeadline) has the deadline
+// at that end in place of bodyDrainLimit from now, and none at all where that end is none;
+// production's zero value keeps bodyDrainLimit.
 func (s *server) readFor(w http.ResponseWriter) (lift func()) {
+	span, bounded := s.drainDeadline.Within(s.clock, bodyDrainLimit)
+	if !bounded {
+		return func() {}
+	}
 	controller := http.NewResponseController(w)
-	if err := controller.SetReadDeadline(s.clock.Now().Add(bodyDrainLimit)); err != nil {
+	if err := controller.SetReadDeadline(s.clock.Now().Add(span)); err != nil {
 		return func() {}
 	}
 	return func() { _ = controller.SetReadDeadline(time.Time{}) }
