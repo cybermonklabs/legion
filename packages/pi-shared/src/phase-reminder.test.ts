@@ -59,7 +59,7 @@ test("the owed check aborts a daemon request that outlives its bound, and remind
       handed.push(signal);
       return new Promise<LegionOwed>(() => {});
     },
-    publisher: () => undefined,
+    publisher: async () => undefined,
     project: "LEGION",
     limits: DEFAULT_STALL_LIMITS,
     log: { debug: () => {}, warn: (message) => warned.push(message) },
@@ -103,7 +103,7 @@ function overDaemon(answer: typeof fetch) {
     saveEntry: () => {},
     claim: () => implementer,
     readOwed: (input, signal) => daemon.owed(input, { signal }),
-    publisher: () => undefined,
+    publisher: async () => undefined,
     project: "LEGION",
     limits: DEFAULT_STALL_LIMITS,
     log: { debug: () => {}, warn: (message) => warned.push(message) },
@@ -169,11 +169,12 @@ function rig(options: {
   readonly restore?: PhaseStallEntry;
   /** The bound on the owed check, when a case's daemon hangs past it. */
   readonly owedBoundMs?: number;
-  /** The session's claim; the implementer of LEGION-208, a tree root, when it is left out. */
-  readonly claim?: ClaimCapability;
-  /** The session's claim as each check reads it, for a case whose session registers its claim
-   * late; `claim` when it is left out. */
-  readonly claimOf?: () => ClaimCapability | undefined;
+  /** The publisher's build, which settles before the publisher is handed over, as a first build
+   *  that runs Envoy's token command does; the publisher is at hand at once otherwise. */
+  readonly buildPublisher?: () => Promise<void>;
+  /** The session's claim: the implementer of LEGION-208, a tree root, throughout unless a case
+   *  names one. */
+  readonly claim?: () => ClaimCapability | undefined;
   /** The runner's clock; the real one when it is left out. */
   readonly now?: () => number;
 }): Rig {
@@ -193,14 +194,17 @@ function rig(options: {
       timers.push({ callback, delayMs });
     },
     saveEntry: (entry) => entries.push(entry),
-    claim: options.claimOf ?? (() => options.claim ?? implementer),
+    claim: options.claim ?? (() => implementer),
     readOwed: (input, signal) => {
       asked += 1;
       return options.owed === undefined ? Promise.resolve(OWES) : options.owed(input, signal);
     },
-    publisher: () => async (input) => {
-      published.push(input);
-      return options.publish === undefined ? {} : options.publish(input);
+    publisher: async () => {
+      await options.buildPublisher?.();
+      return async (input) => {
+        published.push(input);
+        return options.publish === undefined ? {} : options.publish(input);
+      };
     },
     project: "legion",
     limits: { ...DEFAULT_STALL_LIMITS, architectAfter: 2 },
@@ -406,7 +410,7 @@ function standInDaemon(owed: LegionOwed): StandInDaemon {
 // reminds it.
 test("a record of another role phase sends no reminder", async () => {
   const daemon = standInDaemon(OWES_NOTHING);
-  const { reminder, timers, sent, asked } = rig({ claim: tester, owed: daemon.owed });
+  const { reminder, timers, sent, asked } = rig({ claim: () => tester, owed: daemon.owed });
 
   expect(await reminder.settle(said("Tested the change."))).toBeUndefined();
   // A WAITING reply buys a quiet wait, whose timer asks again and sends nothing; so does the
@@ -425,7 +429,7 @@ test("a record of another role phase sends no reminder", async () => {
 // at the settle and at the timer after it, naming that work.
 test("the role own open phase is reminded", async () => {
   const daemon = standInDaemon({ owes: true, work: TESTING });
-  const { reminder, timers, sent } = rig({ claim: tester, owed: daemon.owed });
+  const { reminder, timers, sent } = rig({ claim: () => tester, owed: daemon.owed });
 
   const continuation = await reminder.settle(said("Tested the change."));
   expect(continuation).toBe(reminderText("Tested the change.", TESTING));
@@ -468,7 +472,7 @@ test("a failed read logs its cause once per claim per hour", async () => {
   let clock = start;
   let claim: ClaimCapability | undefined;
   const { reminder, sent, warnings } = rig({
-    claimOf: () => claim,
+    claim: () => claim,
     owed: unreachable,
     now: () => clock,
   });
@@ -656,7 +660,7 @@ const childOwes = (architect?: string): LegionOwed => ({
 // and the worker tells it. Nothing else of the daemon is read for it.
 test("a child whose own architect claim is live has its worker's notice go to that architect", async () => {
   const { reminder, timers, published, asked } = rig({
-    claim: child,
+    claim: () => child,
     owed: async () => childOwes(CHILD_ARCHITECT),
   });
   expect(await reminder.settle(said("Pushed."))).toBeString();
@@ -703,7 +707,7 @@ test("a child whose own architect is not live has its worker's notice go to the 
     },
   ];
   for (const { label, owed, topic } of cases) {
-    const { reminder, timers, published } = rig({ claim: child, owed });
+    const { reminder, timers, published } = rig({ claim: () => child, owed });
     expect(await reminder.settle(said("Pushed.")), label).toBeString();
     expect(await reminder.settle(said("Still pushing the change.")), label).toBeUndefined();
     await fireLast(timers);
@@ -714,7 +718,7 @@ test("a child whose own architect is not live has its worker's notice go to the 
     ).toEqual([`notifications.role.${topic}`]);
   }
 
-  const failing = rig({ claim: child, owed: unreachable });
+  const failing = rig({ claim: () => child, owed: unreachable });
   expect(await failing.reminder.settle(said("Pushed."))).toBeUndefined();
   expect(await failing.reminder.settle(said("Still pushing the change."))).toBeUndefined();
   failing.reminder.armResumeReminder();
@@ -762,7 +766,7 @@ async function settlePastTheThreshold({ reminder, timers }: Rig): Promise<void> 
 // stand-in never answers.
 test("tells the architect nothing for a role whose claim does not work the current phase", async () => {
   const daemon = standInDaemon(OWES_NOTHING);
-  const run = rig({ claim: tester, owed: daemon.owed });
+  const run = rig({ claim: () => tester, owed: daemon.owed });
 
   await settlePastTheThreshold(run);
 
@@ -776,7 +780,7 @@ test("tells the architect nothing for a role whose claim does not work the curre
 // told once, by a notice whose source is the worker's own session.
 test("still tells the architect for a role that works the current phase", async () => {
   const daemon = standInDaemon({ owes: true, work: TESTING });
-  const run = rig({ claim: tester, owed: daemon.owed });
+  const run = rig({ claim: () => tester, owed: daemon.owed });
 
   await settlePastTheThreshold(run);
 
@@ -798,7 +802,7 @@ test("still tells the architect for a role that works the current phase", async 
 // alone ends the reminding.
 test("a tester the daemon moved out of its phase while in a turn ends that turn with no reminder, having made no handoff_complete call", async () => {
   const daemon = standInDaemon({ owes: true, work: TESTING });
-  const run = rig({ claim: tester, owed: daemon.owed });
+  const run = rig({ claim: () => tester, owed: daemon.owed });
 
   // The daemon's task starts the turn while the testing phase is open, and the tester runs the
   // suite: tool calls, none of them handoff_complete.
@@ -839,7 +843,7 @@ const REVIEWING = "the reviewing phase of LEGION-208";
 // settles past `architectAfter`.
 test("a reviewer moved out of its phase by its own request_backward_move is reminded of nothing", async () => {
   const daemon = standInDaemon({ owes: true, work: REVIEWING });
-  const run = rig({ claim: reviewer, owed: daemon.owed });
+  const run = rig({ claim: () => reviewer, owed: daemon.owed });
 
   // The daemon's task starts the turn while the issue is in review. The reviewer reads the change
   // and calls request_backward_move, and the daemon moves the issue as the call runs.
@@ -865,7 +869,7 @@ test("a reviewer moved out of its phase by its own request_backward_move is remi
 // after it reminds, and the run tells the architect once it reaches `architectAfter`.
 test("a tester not moved out of its phase is still reminded when its turn ends with no completion", async () => {
   const daemon = standInDaemon({ owes: true, work: TESTING });
-  const run = rig({ claim: tester, owed: daemon.owed });
+  const run = rig({ claim: () => tester, owed: daemon.owed });
 
   run.reminder.turnStarted();
   run.reminder.apply({ kind: "inbound" });
@@ -896,7 +900,7 @@ test("a tester not moved out of its phase is still reminded when its turn ends w
 // its due time holds the issue's pod from its idle release.
 test("a reminder timer armed before the daemon moved the issue out of its phase fires after the move, sends no reminder and clears its wake", async () => {
   const daemon = standInDaemon({ owes: true, work: TESTING });
-  const run = rig({ claim: tester, owed: daemon.owed });
+  const run = rig({ claim: () => tester, owed: daemon.owed });
 
   // The tester's turn ends while its phase is open, and the continuation goes. The turn the
   // continuation starts ends with no completion too, and its settle arms the timer of the next
@@ -1054,6 +1058,66 @@ test("a notice accepted after its run ended acknowledges nothing of the next run
   expect(published[1]?.idempotencyKey).toMatch(/^[0-9a-f-]{36}$/);
   expect(published[1]?.idempotencyKey).not.toBe(firstKey);
   expect(entries.at(-1)).toMatchObject({ count: 2, reported: true });
+});
+
+// The publisher's first build can run Envoy's token command, and the event loop goes on serving
+// the worker meanwhile: a turn that resets the count lands inside that wait. The notice must then
+// tell nothing, since its run has ended: read after the wait, it would tell the architect of a
+// worker that "has let 0 reminders go unanswered". The next run is told as any run is.
+test("a notice whose publisher was still being built when the run ended tells nothing, and the next run is told", async () => {
+  const building = Promise.withResolvers<void>();
+  const built = Promise.withResolvers<void>();
+  let builds = 0;
+  const { reminder, timers, entries, published } = rig({
+    buildPublisher: () => {
+      builds += 1;
+      if (builds > 1) return Promise.resolve();
+      building.resolve();
+      return built.promise;
+    },
+  });
+
+  // The run reaches the threshold; its notice waits for the publisher.
+  expect(await reminder.settle(said("Pushed."))).toBeString();
+  expect(await reminder.settle(said("Still here."))).toBeUndefined();
+  const delivered = fireLast(timers);
+  await building.promise;
+
+  // The worker acts meanwhile, which ends the run, and the publisher is built after.
+  reminder.apply({ kind: "tool-call" });
+  built.resolve();
+  await delivered;
+  expect(published).toEqual([]);
+  expect(entries.at(-1)).toMatchObject({ count: 0, reported: false });
+
+  // The next run reaches the threshold and tells the architect of its two reminders.
+  expect(await reminder.settle(said("Working on it."))).toBeString();
+  expect(await reminder.settle(said("Still here."))).toBeUndefined();
+  await fireLast(timers);
+  expect(published).toHaveLength(1);
+  expect(published[0]?.message).toContain("has let 2 reminders go unanswered");
+  expect(entries.at(-1)).toMatchObject({ count: 2, reported: true });
+});
+
+// A run whose claim has ended sends no notice, so it builds no publisher for one either: the
+// first build can run Envoy's token command, and a broker trade would buy a token for nothing.
+test("a run whose claim has ended builds no publisher for its notice", async () => {
+  let claimed = true;
+  let builds = 0;
+  const { reminder, timers, published } = rig({
+    claim: () => (claimed ? implementer : undefined),
+    buildPublisher: async () => {
+      builds += 1;
+    },
+  });
+
+  // The run reaches the threshold, and its claim ends before the reminder that would tell.
+  expect(await reminder.settle(said("Pushed."))).toBeString();
+  expect(await reminder.settle(said("Still here."))).toBeUndefined();
+  claimed = false;
+  await fireLast(timers);
+  expect(builds).toBe(0);
+  expect(published).toEqual([]);
 });
 
 // A failure other than "no live session holds the role" is not dropped: the next delivered

@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"reflect"
 	"testing"
 	"time"
 
@@ -297,7 +298,7 @@ func sameWait(got *record.Awaiting, want record.Awaiting) bool {
 	}
 	g, w := *got, want
 	g.AnsweredAt, g.Since.At, w.AnsweredAt, w.Since.At = nil, time.Time{}, nil, time.Time{}
-	return g == w
+	return reflect.DeepEqual(g, w)
 }
 
 // A wake brings a released pod back and tells the role why; it hands the architect no phase

@@ -1539,16 +1539,17 @@ func (m *Machine) streaming(ctx context.Context, conn runtime.Conn) (streaming, 
 	return state.IsStreaming, true
 }
 
-// startSend sends the pending delivery: it writes the task's working copy line from the record
-// first (currentWorkingCopy), then runs one prompt on its own goroutine and posts its outcome back
-// to the machine. It is the one place a prompt goes out, so no send of a worker's task, the first
-// or any resend after a busy answer, a lost answer or a relaunch, goes out with the line its start
-// was composed with. The task is marked as put to the agent before the goroutine starts
-// (Delivery.Prompted), whatever the agent then answers: from here on, a prompt of it has gone
-// out. Of the claim's two untold records, this marks which the prompt carries the sentence of, as
-// message composed it (Machine.carried), and tells neither, as confirmCarrying states. Whether the
-// send adopts the working copy first is decided here, under the machine's lock, so the goroutine
-// acts on the claim the hold in sendPending was decided against.
+// startSend sends the pending delivery: it writes the task's working copy line from the
+// repository the claim's process works first (currentWorkingCopy), then runs one prompt on its own
+// goroutine and posts its outcome back to the machine. It is the one place a prompt goes out, so
+// no send of a worker's task, the first or any resend after a busy answer, a lost answer or a
+// relaunch, goes out with the line its start was composed with. The task is marked as put to the
+// agent before the goroutine starts (Delivery.Prompted), whatever the agent then answers: from
+// here on, a prompt of it has gone out. Of the claim's two untold records, this marks which the
+// prompt carries the sentence of, as message composed it (Machine.carried), and tells neither, as
+// confirmCarrying states. Whether the send adopts the working copy first is decided here, under
+// the machine's lock, so the goroutine acts on the claim the hold in sendPending was decided
+// against.
 //
 // The news of the approved design this prompt carries is the pending delivery's own (d.News, as
 // sendPending's render and currentWorkingCopy left it), and nothing keeps a second copy of it:
@@ -1604,23 +1605,25 @@ func (m *Machine) startSend(ctx context.Context, conn runtime.Conn) error {
 	return nil
 }
 
-// currentWorkingCopy writes a phase worker's held task back to the working copy it names now
-// (Deps.WorkingCopy): its working copy line, which the start that queued it composed from the
-// issue's record then, written again from the record as it stands at this send. A correction of
-// the issue's repository can land while the task waits (the claim held it behind a turn, a busy
-// agent, a launch, a pod the correction replaced), and the directory of the repository the issue
-// left is the one a kept volume still holds and no role may work in. Only a task that names a
-// phase is asked: a worker's task is a task of a phase, and a task of news alone (NewsOnly) holds
-// none of the phase's text. A read that fails sends nothing, as a failed read of a root
-// architect's held task does (currentRootTask): the task stays pending, unsent and charged
-// nothing, and the next trigger asks again, so no send carries the line the record has moved
-// from and none goes without one.
+// currentWorkingCopy writes a phase worker's held task back to the working copy the process it
+// goes to works (Deps.WorkingCopy): its working copy line, which the start that queued it composed
+// from the issue's record then, written again from the repository the claim's process was
+// launched on (Claim.WorkingRepository). The two can differ: a correction of the issue's
+// repository can land between the start and the send (the claim held the task behind a turn, a
+// busy agent, a launch), and it moves the record at once and the process only at its next launch,
+// a tmux pane's or the relaunch into the pod its update round builds. The line names the
+// workspace the agent that reads it is in, and a relaunch moves it. Only a task that names a phase
+// is asked: a worker's task is a task of a phase, and a task of news alone (NewsOnly) holds none
+// of the phase's text. An answer that fails sends nothing, as a failed read of a root architect's
+// held task does (currentRootTask): the task stays pending, unsent and charged nothing, and the
+// next trigger asks again, so no send carries a line its process does not work in and none goes
+// without one.
 //
 // A task the answer leaves as it is is sent as it is. One it rewrites is persisted before it is
 // sent, so a restart reads the task this send carries, under a new id (rotateTaskID): the shim
 // answers a send under an id it already holds from its own record without forwarding it
-// (shimwire's Dedupe), so an earlier send of this task under the same id, whose prompt named the
-// directory the record has moved from, would be the one the agent read.
+// (shimwire's Dedupe), so an earlier send of this task under the same id, whose prompt named
+// another directory, would be the one the agent read.
 func (m *Machine) currentWorkingCopy(ctx context.Context) error {
 	p := m.claim.Pending
 	if m.deps.WorkingCopy == nil || p.Phase == "" || p.NewsOnly {
@@ -1638,7 +1641,7 @@ func (m *Machine) currentWorkingCopy(ctx context.Context) error {
 	if err := m.rewritePending(ctx, id, task, p.Kept, news); err != nil {
 		return err
 	}
-	m.log.Info("supervise: the working copy this task names was read again from the record; the task is sent naming it as it stands",
+	m.log.Info("supervise: the working copy this task names was written again for the process it goes to; the task is sent naming the workspace that process works",
 		"delivery", id, "was", was, "issue", m.claim.Issue)
 	return nil
 }

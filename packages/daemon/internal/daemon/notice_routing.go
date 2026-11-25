@@ -53,9 +53,9 @@ var errNoticeRowGone = errors.New("the notice row was deleted under its lease")
 
 // changesSuperseded is a changes request the person's approval followed: the gates stillOwed read
 // record an approval of the document reviewed, at the version the request reviewed or a later
-// one, given after the review (decisionSuperseded). approved is the version approved, which the
-// line that finishes the row names. Only an approval replaces a changes request, so the
-// predicate's answer for one always names it (workflow.Supersession.By).
+// one, given after the review (workflow.NoticeSuperseded). approved is the version approved,
+// which the line that finishes the row names. Only an approval replaces a changes request, so
+// the predicate's answer for one always names it (workflow.Supersession.By).
 type changesSuperseded struct{ approved int }
 
 func (s changesSuperseded) Error() string {
@@ -66,9 +66,9 @@ func (s changesSuperseded) Error() string {
 // owed: the row is still in the outbox under its lease (errNoticeRowGone when it is not), and,
 // when its payload, a notice or a controller notice, holds a person's changes request
 // (record.ChangesRequest), that request is still the person's word (changesSuperseded when it is
-// not), asked of the gates of row's issue as tx holds them (decisionSuperseded). The two are read
-// in one snapshot because a clear of the row's generation asks each changes request queued on the
-// issues it clears while their gates stand, deletes the row of each one the person's approval
+// not), asked of the gates of row's issue as tx holds them (workflow.NoticeSuperseded). The two
+// are read in one snapshot because a clear of the row's generation asks each changes request
+// queued on the issues it clears while their gates stand, deletes each row the person's approval
 // followed, and then deletes the gates, those of a request it found standing included, whose row
 // it keeps (workflow.Engine.ClearGeneration). A snapshot taken before the clear finds the row and
 // the approval both; one taken after it finds a row the approval followed gone, and asks a row
@@ -88,11 +88,11 @@ func (r *outbox) stillOwed(ctx context.Context, tx pgx.Tx, row record.OutboxRow,
 	if !asks {
 		return nil
 	}
-	superseded, err := r.decisionSuperseded(ctx, tx, row.Issue, request, record.DecisionDesignChangesRequested)
+	gates, err := r.records.GatesOf(ctx, tx, row.Issue)
 	if err != nil {
 		return err
 	}
-	if superseded != nil {
+	if superseded := workflow.NoticeSuperseded(gates, r.gatedSteps, row.Issue, request, record.DecisionDesignChangesRequested); superseded != nil {
 		return changesSuperseded{approved: superseded.By.Version}
 	}
 	return nil

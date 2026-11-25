@@ -721,10 +721,9 @@ func TestRunWaitsForTheCleanStopOfASuspensionDecidedBeforeTheHalt(t *testing.T) 
 	machines := make(chan context.Context, 1)
 	build := o.runtime
 	o.runtime = func(ctx context.Context, listener *stream.Listener, address string, tokens appauth.Source,
-		repository func(context.Context, string) (ghrepo.Repository, string, error), st *store.Store, cached func() []ghrepo.Repository,
-		writeOnIssue func(ctx context.Context, issue, body string) error) (runtime.Runtime, error) {
+		repository func(context.Context, string) (ghrepo.Repository, string, error), st *store.Store, cached func() []ghrepo.Repository) (runtime.Runtime, error) {
 		machines <- ctx
-		return build(ctx, listener, address, tokens, repository, st, cached, writeOnIssue)
+		return build(ctx, listener, address, tokens, repository, st, cached)
 	}
 	logs := &syncBuffer{}
 	d := startDaemonLogging(t, cfg, o, slog.New(slog.NewJSONHandler(logs, nil)))

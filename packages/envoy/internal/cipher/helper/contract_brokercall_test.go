@@ -122,6 +122,7 @@ func liveIDs(rows []brokerEnrollment) []string {
 // that waits BrokerCallWait gets OK with the enrollment's id, and the broker holds exactly that
 // one live enrollment for the runtime id.
 func TestContractASlowBrokersEnrollmentAnswersWithItsID(t *testing.T) {
+	t.Parallel()
 	held := &holdingTransport{base: http.DefaultTransport, method: http.MethodPost, path: "/v1/enrollments", hold: 8 * time.Second}
 	cr := heldContractRig(t, held)
 	runtimeID := "slow-box-" + t.Name()
@@ -144,6 +145,7 @@ func TestContractASlowBrokersEnrollmentAnswersWithItsID(t *testing.T) {
 // answer reaches the helper 8 s later. unenroll-session-key answers OK, and the broker's row is
 // revoked.
 func TestContractASlowBrokersRevokeAnswersOK(t *testing.T) {
+	t.Parallel()
 	held := &holdingTransport{base: http.DefaultTransport, method: http.MethodDelete, path: "/v1/enrollments/", hold: 8 * time.Second}
 	cr := heldContractRig(t, held)
 	runtimeID := "slow-revoke-box-" + t.Name()
@@ -168,16 +170,16 @@ func TestContractASlowBrokersRevokeAnswersOK(t *testing.T) {
 
 // TestContractAnEnrollPastTheBoundIsUnknownAndTheSameEnrollAgainAnswersItsRow: the broker makes
 // the enrollment, and its answer would reach the helper 5 s later, past the op's 2 s bound. The
-// bound ends the op, which answers ENROLL_OUTCOME_UNKNOWN with settle's cause, before the bound
-// plus 1 s where brokerCall's timer would answer, while the broker holds the row. The same enroll
-// again (the same key and runtime id), answered at once, gets that row: the broker answers the
-// same key under the same credential and runtime id with its live enrollment, and makes no second
-// one.
+// bound ends the op, which answers ENROLL_OUTCOME_UNKNOWN with settle's cause, before brokerCall's
+// timer would answer (slowTimer), while the broker holds the row. The same enroll again (the same
+// key and runtime id), answered at once, gets that row: the broker answers the same key under the
+// same credential and runtime id with its live enrollment, and makes no second one.
 func TestContractAnEnrollPastTheBoundIsUnknownAndTheSameEnrollAgainAnswersItsRow(t *testing.T) {
+	t.Parallel()
 	held := &holdingTransport{base: http.DefaultTransport, method: http.MethodPost, path: "/v1/enrollments", hold: 5 * time.Second}
 	cr := heldContractRig(t, held)
 	const bound = 2 * time.Second
-	cr.srv.BrokerCallBound = bound
+	slowTimer(cr.srv, bound)
 	runtimeID := "past-bound-box-" + t.Name()
 	req := Request{Op: "enroll-session-key", RuntimeID: runtimeID, Thumbprint: sessionThumbprint(t)}
 
@@ -189,7 +191,7 @@ func TestContractAnEnrollPastTheBoundIsUnknownAndTheSameEnrollAgainAnswersItsRow
 	if n := held.held.Load(); n != 1 {
 		t.Fatalf("the transport held %d answers of POST /v1/enrollments, want 1; answer %+v, the broker's rows %+v", n, first, rows)
 	}
-	wantSettled(t, fmt.Sprintf("enroll-session-key past its bound (the broker's rows %+v)", rows), first, CodeEnrollUnknown, elapsed, bound+time.Second)
+	wantSettled(t, fmt.Sprintf("enroll-session-key past its bound (the broker's rows %+v)", rows), first, CodeEnrollUnknown, elapsed, bound+answerMargin)
 	live := liveIDs(rows)
 	if len(live) != 1 {
 		t.Fatalf("the broker's rows for %s after the enroll past the bound: %+v; want the one live row it made", runtimeID, rows)
@@ -210,6 +212,7 @@ func TestContractAnEnrollPastTheBoundIsUnknownAndTheSameEnrollAgainAnswersItsRow
 // decides before it writes anything. The helper answers ENROLL_FAILED, not unknown, and the
 // broker holds no new row.
 func TestContractAnEnrollTheBrokerRefusesIsAKnownFailureThatAddsNoRow(t *testing.T) {
+	t.Parallel()
 	cr := newContractRig(t)
 	cr.login(t)
 	runtimeID := "refused-box-" + t.Name()

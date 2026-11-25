@@ -149,14 +149,14 @@ var decisionReviewSentences = []struct{ phrase, renderer string }{
 // The reach is transitive, which bounds what the rule for a publisher proves: it fails a publisher
 // that reaches the predicate through nothing it calls, and no more. The delivery of a notice
 // (deliverNotice) reaches it four ways: through its ask of a changes request (the stillOwed that
-// readNoticeTree reads, through decisionSuperseded), through the catch-up's Decided that
+// readNoticeTree calls, through workflow.NoticeSuperseded), through the catch-up's Decided that
 // readNoticeTree writes again (workflow.KeptDecisionsTask), through the hand-over of a catch-up's
 // decisions to a fresh catch-up (workflow.HandOverKept) once a newer one superseded it
 // (supersededKept) or its re-holds are spent (the re-hold policy's spentKept), and through the
 // relay of a parked decision (parkDecision). Take the first out and the walk still passes. What
 // holds that ask is its behavior, which TestAQueuedChangesNoticeAnApprovalFollowedIsNotPublished
 // drives. The publish of a relay to the controller (controllerNotice) reaches it one way alone,
-// through its ask of a relayed changes request (stillOwed, through decisionSuperseded), so the
+// through its ask of a relayed changes request (stillOwed, through workflow.NoticeSuperseded), so the
 // walk fails it if that ask goes; that the ask is of the review's mark and document the relay
 // carries, and of nothing kept beside the row, is its behavior too, which
 // TestAChangesRequestRelayedToTheControllerIsNotToldOnceApproved drives.
@@ -175,7 +175,7 @@ var decisionReviewSentences = []struct{ phrase, renderer string }{
 // again names the review whether or not the person's word has moved since, which is how the
 // sweep's send of a lost resume's start named a changes request the person's approval had
 // superseded. The resume still writes that text, which this release never sends, for the release
-// a rollback past contract 240 returns to (record.PhaseRow.EntryTask says so), so the text is
+// a rollback past contract 259 returns to (record.PhaseRow.EntryTask says so), so the text is
 // there for a new sender to read. Such a function passes only where storedTaskReaders names it,
 // with why its read sends no person's review.
 //

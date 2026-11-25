@@ -1,0 +1,21 @@
+kind: Added
+body: |-
+  `DISPATCH_TOKEN_BROKER_READ=1` makes the `dispatch` command's broker trade ask for a token that
+  only reads. `DISPATCH_TOKEN_BROKER_AS_OF=<an RFC 3339 time>` beside it asks for a cut, a past time
+  that the token reads at. Either setting reads no bearer, so the command never writes with
+  `DISPATCH_TOKEN`. Only the Dispatch credential is narrowed. The Envoy listener and NATS keep the
+  session's own credential.
+
+  `DISPATCH_BROKER_TOKEN_FILE` and `DISPATCH_BROKER_DPOP_KEY_FILE` let the `dispatch` command use a
+  broker token that was traded elsewhere. The first file holds the token. The second file holds
+  the P-256 key that the token is bound to, in PKCS#8 PEM. The command reads both files before each
+  request and sends the token only to `DISPATCH_URL`. It refuses to start when one file setting is
+  set alone, when `DISPATCH_URL` is not set, or when another Dispatch credential setting is set
+  beside them. `dispatch login` refuses while either file setting is set, so a copy given the
+  files starts no device login and keeps no login file.
+
+  Under a read-only token, a write command prints Dispatch's refusal (`READ_ONLY_TOKEN: …`) and
+  exits 1. `dispatch whoami` says that the credential may only read, and names its cut.
+time: 2026-11-20T02:56:22Z
+custom:
+  Issue: pr4557

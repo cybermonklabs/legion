@@ -303,6 +303,11 @@ interface TellerRig {
   owed: LegionOwed | string;
   /** Every question the teller asked the owed route, in order. */
   readonly asked: OwedInput[];
+  /** The session's claim as the teller reads it at each moment. */
+  claim: ClaimCapability | undefined;
+  /** The publisher's build, which settles before the publisher is handed over; the publisher is at
+   *  hand at once while it is undefined. */
+  buildPublisher: (() => Promise<void>) | undefined;
 }
 
 function tellerRig(
@@ -324,6 +329,8 @@ function tellerRig(
     transcriptWritable: true,
     owed: owedNaming("legion-legion-infra-1274-architect"),
     asked: [],
+    claim: "claim" in options ? options.claim : claimOf(),
+    buildPublisher: undefined,
   };
   const publish: EnvoyPublish = async (input) => {
     state.published.push(input);
@@ -341,14 +348,17 @@ function tellerRig(
         tree: "INFRA-1000",
         issue: "INFRA-1274",
       },
-    claim: () => ("claim" in options ? options.claim : claimOf()),
+    claim: () => state.claim,
     project: options.project ?? "legion",
     readOwed: async (input) => {
       state.asked.push(input);
       if (typeof state.owed === "string") throw new Error(state.owed);
       return state.owed;
     },
-    publisher: () => (state.envoy ? publish : undefined),
+    publisher: async () => {
+      await state.buildPublisher?.();
+      return state.envoy ? publish : undefined;
+    },
     appendEntry: (customType, data) => {
       expect(customType).toBe(STALL_WATCH_ENTRY);
       if (!state.transcriptWritable) throw new Error("the transcript is not writable");
@@ -400,6 +410,50 @@ test("a phase worker's session tells the issue's own live architect, with the ev
   expect(rig.asked).toEqual([
     { claimToken: "claim-token", sessionId: "ses_worker", secret: CLAIM_SECRET },
   ]);
+});
+
+// The publisher's first build can run Envoy's token command, and the event loop goes on serving
+// the session meanwhile: its claim can end, or be replaced, inside that wait. The notice was built
+// from the claim the session held before the wait, so it is sent only while the session still
+// holds that claim: one whose claim ended or changed is not sent under the old one.
+test("a notice whose claim ended while the publisher was built is not sent under the ended claim", async () => {
+  const rig = tellerRig();
+  const building = Promise.withResolvers<void>();
+  const built = Promise.withResolvers<void>();
+  rig.buildPublisher = () => {
+    building.resolve();
+    return built.promise;
+  };
+  const telling = rig.teller.tellOverdue(evidenceOf());
+  await building.promise;
+  rig.claim = undefined;
+  built.resolve();
+
+  expect(await telling).toEqual({ evidenceWritten: true, ownerTold: false });
+  expect(rig.published).toEqual([]);
+  expect(rig.warnings.map((warning) => warning.message)).toContain(
+    "legion: this session's claim ended before its owner was told"
+  );
+});
+
+test("a notice whose claim changed while the publisher was built is not sent under the old claim", async () => {
+  const rig = tellerRig();
+  const building = Promise.withResolvers<void>();
+  const built = Promise.withResolvers<void>();
+  rig.buildPublisher = () => {
+    building.resolve();
+    return built.promise;
+  };
+  const telling = rig.teller.tellOverdue(evidenceOf());
+  await building.promise;
+  rig.claim = claimOf({ issue: "INFRA-1275" });
+  built.resolve();
+
+  expect(await telling).toEqual({ evidenceWritten: true, ownerTold: false });
+  expect(rig.published).toEqual([]);
+  expect(rig.warnings.map((warning) => warning.message)).toContain(
+    "legion: this session's claim changed before its owner was told"
+  );
 });
 
 // The issue's own architect retired or failed is passed over by the daemon's owner walk, which

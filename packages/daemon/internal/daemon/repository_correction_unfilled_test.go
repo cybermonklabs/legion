@@ -126,7 +126,7 @@ func TestNoPassCorrectsARecordWithNoRepositoryAndTheBackfillFillsIt(t *testing.T
 				t.Fatalf("notes on %s = %q, want none", unfilledKey, notes)
 			}
 
-			if left, err := backfillRepositories(ctx, w.pool, w.records, client, "LEGION", t.TempDir(), w.defaultBranches, ghrepo.Renames{}, quietLogger()); err != nil || left {
+			if left, err := backfillRepositories(ctx, w.pool, w.records, client, "LEGION", t.TempDir(), w.defaultBranches, ghrepo.Renames{}, w.reads(), quietLogger()); err != nil || left {
 				t.Fatalf("the backfill left a record = %t (%v), want every record filled", left, err)
 			}
 			got = recordedIssue(t, w, unfilledKey)

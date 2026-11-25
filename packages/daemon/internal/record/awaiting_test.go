@@ -122,12 +122,12 @@ func TestAWaitRoundTripsAndOnlyItsOwnWritersMoveTheSequences(t *testing.T) {
 	})
 }
 
-// The version of the review that answered a wait, the document the answering act was of and the
-// step whose row held it are recorded beside the answer (Awaiting.AnsweredVersion, AnsweredArtifact
-// and AnsweredStep) and read back as written. A daemon of an earlier release names none of their
-// columns, so its write of a later answer leaves the old version, document and step beside a
-// moment that is no longer the answer's, and that answer reads as one with none of them rather
-// than with the review before it. An answer that is no review records none of them.
+// The document the act that answered a wait was of, the step whose row held it and the version
+// of the review are recorded beside the answer as one (Awaiting.AnsweredDocument) and read back as
+// written. A daemon of an earlier release names none of their columns, so its write of a later
+// answer leaves the old version, document and step beside a moment that is no longer the
+// answer's, and that answer reads as one with no document rather than with the review before it.
+// An answer that is of no document records none.
 func TestAnAnswersReviewedVersionIsReadOnlyBesideTheAnswerItWasWrittenWith(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)
@@ -139,13 +139,13 @@ func TestAnAnswersReviewedVersionIsReadOnlyBesideTheAnswerItWasWrittenWith(t *te
 		must(t, err)
 		waiting := *stored
 		waiting.Phase = phase.AwaitingPerson
+		reviewed := AnsweredDocument{Version: 3, Artifact: "artifact-1", Step: DesignStepCriteria}
 		waiting.Awaiting = &Awaiting{Ask: "ask-q", AnsweredAt: &at, AnsweredBy: AnsweredByChanges, AnsweredDetail: `version 3: "say more"`,
-			AnsweredVersion: 3, AnsweredArtifact: "artifact-1", AnsweredStep: DesignStepCriteria, Since: EventMark{Seq: 11, At: at}}
+			AnsweredDocument: &reviewed, Since: EventMark{Seq: 11, At: at}}
 		must(t, records.PutIssue(ctx, tx, waiting))
 		read, err := records.Issue(ctx, tx, "LEGION-1")
 		must(t, err)
-		if read.Awaiting == nil || read.Awaiting.AnsweredVersion != 3 || read.Awaiting.AnsweredArtifact != "artifact-1" ||
-			read.Awaiting.AnsweredStep != DesignStepCriteria {
+		if read.Awaiting == nil || read.Awaiting.AnsweredDocument == nil || *read.Awaiting.AnsweredDocument != reviewed {
 			t.Fatalf("awaiting = %+v, want the reviewed version 3 of artifact-1 on the criteria step read back", read.Awaiting)
 		}
 
@@ -156,17 +156,16 @@ func TestAnAnswersReviewedVersionIsReadOnlyBesideTheAnswerItWasWrittenWith(t *te
 		must(t, err)
 		read, err = records.Issue(ctx, tx, "LEGION-1")
 		must(t, err)
-		if read.Awaiting == nil || read.Awaiting.AnsweredVersion != 0 || read.Awaiting.AnsweredArtifact != "" || read.Awaiting.AnsweredStep != "" {
-			t.Fatalf("awaiting after an earlier release's answer = %+v, want no version, no document and no step: the stored ones are the "+
-				"answer before it", read.Awaiting)
+		if read.Awaiting == nil || read.Awaiting.AnsweredDocument != nil {
+			t.Fatalf("awaiting after an earlier release's answer = %+v, want no document: the stored one is the answer before it", read.Awaiting)
 		}
 
 		waiting.Awaiting = &Awaiting{Ask: "ask-q", AnsweredAt: &at, AnsweredBy: AnsweredByAsk, AnsweredDetail: "ask-q", Since: EventMark{Seq: 11, At: at}}
 		must(t, records.PutIssue(ctx, tx, waiting))
 		read, err = records.Issue(ctx, tx, "LEGION-1")
 		must(t, err)
-		if read.Awaiting == nil || read.Awaiting.AnsweredVersion != 0 || read.Awaiting.AnsweredArtifact != "" || read.Awaiting.AnsweredStep != "" {
-			t.Fatalf("awaiting answered by an ask = %+v, want no version, no document and no step", read.Awaiting)
+		if read.Awaiting == nil || read.Awaiting.AnsweredDocument != nil {
+			t.Fatalf("awaiting answered by an ask = %+v, want no document", read.Awaiting)
 		}
 	})
 }

@@ -37,6 +37,7 @@ import { LabelPill } from "../../components/Pill";
 import { PinButton } from "../../components/PinButton";
 import { AgentListRefilling } from "../../components/QueryError";
 import { RefusableButton } from "../../components/RefusableButton";
+import { useFootInset } from "../../hooks/useFootInset";
 import { useSending } from "../../hooks/useSending";
 import { compareTimestamps } from "../../lib/timestamps";
 import {
@@ -1147,6 +1148,13 @@ function BroadcastComposer({
   // line on screen shows it), so a refusal naming agents names them as `AgentName` does.
   const refusal = sendState.refusal === null ? null : sendState.refusal.map(text.part).join("");
   const noticeId = useId();
+  // On a narrow or short screen this section is what sticks to the foot of the page's scroll
+  // (`BroadcastFoot` has no box there), in the foot's page layer (`hooks/useFootInset.ts` lists
+  // the foot's layers and the elements in each). Elsewhere that wrapper holds it and sticks
+  // instead, and the wrapper's band holds the section's, so the section's band changes no inset
+  // and no ceiling there: it registers on every screen.
+  const sectionRef = useRef<HTMLElement>(null);
+  useFootInset(sectionRef, true, "page");
 
   // On a narrow or short screen (`narrow-or-short`, styles.css) the composer is a compact grid,
   // so it takes about a third of a phone screen: the heading on one line, the recipients in one
@@ -1160,6 +1168,7 @@ function BroadcastComposer({
     <section
       aria-label="Broadcast"
       className={`max-h-[50vh] overflow-y-auto rounded-xl border p-3 narrow-or-short:sticky narrow-or-short:bottom-0 narrow-or-short:z-10 narrow-or-short:mt-3 narrow-or-short:grid narrow-or-short:grid-cols-[auto_minmax(0,1fr)_auto] narrow-or-short:items-center narrow-or-short:gap-2 short:grid-cols-[auto_minmax(0,1fr)_auto_auto] ${card} ${borderDefault}`}
+      ref={sectionRef}
     >
       <h2
         className={`text-sm font-semibold narrow-or-short:col-span-full narrow-or-short:truncate short:col-span-1 ${textPrimaryOnCanvas}`}
@@ -1246,6 +1255,22 @@ function BroadcastComposer({
         {sendState.label}
       </RefusableButton>
     </section>
+  );
+}
+
+/**
+ * The page's sends and its broadcast composer, under the list and stuck to the foot of the
+ * page's scroll, in the foot's page layer (`hooks/useFootInset.ts` lists the foot's layers and the
+ * elements in each). On a narrow or short screen it has no box (`contents`), adds nothing, and the
+ * composer sticks by itself.
+ */
+function BroadcastFoot({ children }: { children: ReactNode }): ReactNode {
+  const footRef = useRef<HTMLDivElement>(null);
+  useFootInset(footRef, true, "page");
+  return (
+    <div className="sticky bottom-0 z-10 mt-3 space-y-2 narrow-or-short:contents" ref={footRef}>
+      {children}
+    </div>
   );
 }
 
@@ -1541,7 +1566,8 @@ export function AgentsPage(): ReactNode {
     ) {
       focusAfterPin.current = sessionID;
     }
-    writePin(sessionID, !pinned.includes(sessionID));
+    // The write never rejects and answers only for the shell's migration (`useAgentPinWrite`).
+    void writePin(sessionID, !pinned.includes(sessionID));
   };
   const select = (sessionID: string, next: boolean) => {
     setSelected((current) => {
@@ -1773,7 +1799,7 @@ export function AgentsPage(): ReactNode {
           narrow or short screen only the composer sticks (the wrapper is `contents`), and the
           strip stays at the end of the list: the composer alone fills the screen's budget. */}
       {queue.rows.length === 0 && !showComposer ? null : (
-        <div className="sticky bottom-0 z-10 mt-3 space-y-2 narrow-or-short:contents">
+        <BroadcastFoot>
           {queue.rows.length === 0 ? null : (
             <BroadcastSends
               className="narrow-or-short:mt-3"
@@ -1808,7 +1834,7 @@ export function AgentsPage(): ReactNode {
               selected={selected}
             />
           ) : null}
-        </div>
+        </BroadcastFoot>
       )}
       {/* A session the list does not hold has ended only when the list is current. */}
       {current ? <EndedAgentsWithReplies live={agents} /> : null}

@@ -257,7 +257,7 @@ func TestACloseOfTheAwaitedQuestionAnswersTheWaitWithItsCloser(t *testing.T) {
 // A person's review of the root's spec answers a root waiting on its architect's question: they
 // have decided what the work depends on, and the resume task says how the spec stands. A review
 // Dispatch recorded before the wait began answers nothing. The answer records the version the
-// review was of (record.Awaiting.AnsweredVersion), which the resume asks the person's word at.
+// review was of (record.AnsweredDocument.Version), which the resume asks the person's word at.
 func TestAPersonsReviewOfTheSpecAnswersAQuestionWait(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -284,7 +284,8 @@ func TestAPersonsReviewOfTheSpecAnswersAQuestionWait(t *testing.T) {
 				}
 				return
 			}
-			if awaiting == nil || awaiting.AnsweredAt == nil || awaiting.AnsweredBy != tc.answer || awaiting.AnsweredVersion != 2 {
+			if awaiting == nil || awaiting.AnsweredAt == nil || awaiting.AnsweredBy != tc.answer || awaiting.AnsweredDocument == nil ||
+				awaiting.AnsweredDocument.Version != 2 {
 				t.Fatalf("awaiting = %+v, want it answered by %s, of version 2", awaiting, tc.answer)
 			}
 		})
@@ -790,7 +791,7 @@ func TestAQuestionWaitUnderGateOffIsLeftAsItIs(t *testing.T) {
 
 // A wait on the gate under gates.design: off whose gate stands open is answered by the open gate in
 // the pass that finds it, not moved first to a question of the tree still with the person, and the
-// answer records the version the gate holds approved (record.Awaiting.AnsweredVersion).
+// answer records the version the gate holds approved (record.AnsweredDocument.Version).
 func TestAnOpenGateAnswersAGateWaitUnderGateOffBeforeAnyQuestionMovesIt(t *testing.T) {
 	pool := migratedPool(t)
 	root := askRoot()
@@ -803,7 +804,8 @@ func TestAnOpenGateAnswersAGateWaitUnderGateOffBeforeAnyQuestionMovesIt(t *testi
 		t.Errorf("the pass reported no change, want it to report the wait it answered")
 	}
 	got := recordedRoot(t, pool)
-	if !got.Answered() || got.Awaiting.AnsweredBy != record.AnsweredByApproval || got.Awaiting.GateVersion != 3 || got.Awaiting.AnsweredVersion != 3 {
+	if !got.Answered() || got.Awaiting.AnsweredBy != record.AnsweredByApproval || got.Awaiting.GateVersion != 3 ||
+		got.Awaiting.AnsweredDocument == nil || got.Awaiting.AnsweredDocument.Version != 3 {
 		t.Fatalf("wait = %#v, want it answered by the open gate at version 3", got.Awaiting)
 	}
 }

@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"maps"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -95,7 +96,7 @@ func TestThePhaseEntryAwaitingMigrationKeepsAResumesEntryAndItsWayBackPutsTheMar
 	// The resume of an answered root raises LEGION-209's architect entry 2 on a changes request.
 	answeredAt := time.Date(2026, 11, 18, 7, 0, 0, 0, time.UTC)
 	wait := record.Awaiting{GateVersion: 4, Artifact: "artifact-209", AnsweredAt: &answeredAt, AnsweredBy: record.AnsweredByChanges,
-		AnsweredDetail: `version 4: "name the rollback path"`, AnsweredVersion: 4,
+		AnsweredDetail: `version 4: "name the rollback path"`, AnsweredDocument: &record.AnsweredDocument{Version: 4},
 		Since: record.EventMark{Seq: 10, At: answeredAt.Add(-time.Hour)}}
 	want := phaseRowOf(t, store, "LEGION-209", claim.RoleArchitect)
 	want.Entry, want.EntryTask, want.EntryAwaiting = 2, "A person requested changes to your spec on LEGION-209.", &wait
@@ -185,7 +186,7 @@ func sameWait(got, want record.Awaiting) bool {
 		return false
 	}
 	got.AnsweredAt, got.Since.At, want.AnsweredAt, want.Since.At = nil, time.Time{}, nil, time.Time{}
-	return got == want
+	return reflect.DeepEqual(got, want)
 }
 
 // headerWayBack is the one transaction the header of migration version carries for its way back:

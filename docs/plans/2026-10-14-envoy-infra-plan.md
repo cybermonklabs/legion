@@ -21,8 +21,8 @@ v1.47.3 with `config` v1.33.9, `service/secretsmanager` v1.50.4, `service/sts` v
 smithy-go v1.28.5 (slice 2, `packages/envoy/infra/go.mod:6-10`), testcontainers-go v0.41.0, Pulumi
 CLI v3.268.0 in CI.
 
-**Spec:** `docs/plans/2026-10-14-envoy-infra-design.md` (approved by Sami, 2026-10-13 and
-2026-10-14). The evidence for every pin and call is summarised under "Evidence" at the end.
+**Spec:** `docs/plans/2026-10-14-envoy-infra-design.md`. The evidence for every pin and call is
+summarised under "Evidence" at the end.
 
 ## Global constraints
 
@@ -40,7 +40,7 @@ CLI v3.268.0 in CI.
   component and the package.
 - Every component input holding a secret carries `provider:"secret"`.
 - An existing deployment moves onto a component only when its `pulumi preview` creates, updates,
-  replaces or deletes no cloud resource and its stack outputs are unchanged (Sami, 2026-10-13). The
+  replaces or deletes no cloud resource and its stack outputs are unchanged. The
   only creates allowed are resources that exist only in Pulumi state: the component resources, and
   provider resources (`pulumi:providers:*`), such as an explicit provider a consumer passes in or
   the default provider of this plugin's own package.
@@ -61,7 +61,7 @@ CLI v3.268.0 in CI.
 
 ## Decisions carried from the design conversation
 
-Sami, 2026-10-13 and 2026-10-14, recorded in the spec:
+Decisions recorded in the spec (2026-10-13 and 2026-10-14):
 
 - Go, shipped as an executable plugin; nested module under `packages/envoy`.
 - The preview rule above for every existing deployment that moves.
@@ -69,7 +69,7 @@ Sami, 2026-10-13 and 2026-10-14, recorded in the spec:
 - One NATS user per host, shared by that host's listener and its sessions.
 - Agents are trusted like an engineer who is not a super-admin; restricting them is not a goal.
 - The existing deployments move onto the components first, or in parallel with the GCP work, each
-  with a preview that shows no diff (Sami, 2026-10-14). This plan runs them in parallel: slice 1
+  with a preview that shows no diff. This plan runs them in parallel: slice 1
   carries the existing Docker-host deployment, slice 3 the existing AWS deployment, and slice 4
   (GCP) runs beside slice 3 once slice 2's shared pieces exist.
 
@@ -120,7 +120,7 @@ Rejected, with the reason:
   paths with `go list -deps` per target, so no hand-kept list can drift from the build.
 - **R9. `host:Listener` offers no listen host and no webhooks in this version.** No consumer here
   sets webhooks (the Docker-host deployment's machines all have `listener: {}`; the GCP hub has
-  none in the first version, Sami 2026-10-13), and a non-loopback listener needs an API token
+  none in the first version), and a non-loopback listener needs an API token
   (`cmd/listener/main.go:420-429`) that nothing here provides. Task 1.1 corrects the spec's list.
 - **R10. A watchdog and a seed are refused together.** The watchdog recreates a removed container
   from its env file alone (`watchdog.ts`, the `missing)` branch), which holds no secret, so a
@@ -329,7 +329,7 @@ The contract implemented is the listener's own: `packages/envoy/internal/config/
 (`ENVOY_HOST_BRIDGE`) and `internal/bus/reach.go:33-66` (`ENVOY_ALLOW_REMOTE_NATS=1` needed for
 any URL that is not `localhost` or a loopback literal). Webhooks are not part of this plan: no
 consumer here enables one (the existing Docker-host deployment sets none; the GCP hub has none in
-the first version, Sami 2026-10-13). `ENVOY_LISTEN_HOST` is not offered either: a non-loopback
+the first version). `ENVOY_LISTEN_HOST` is not offered either: a non-loopback
 listener needs an API token (`cmd/listener/main.go:420-429`), which nothing here provides.
 
 - [ ] **Step 1: export the reach rule.** Rename `localNATSURL` to `LocalNATSURL` in
@@ -1377,9 +1377,7 @@ are gone, they read them from this command.
   - They must create, update, replace or delete no cloud resource, and stack outputs must not
     change. The only creates allowed are those the Global constraints name.
   - The previews use this branch's plugin, built by path, under the deployment's pinned Pulumi
-    CLI. Sami ruled on 2026-10-14 that they run locally rather than from the devbox, under his own
-    AWS SSO session, granted for this migration only: its staging profile for staging, its
-    production profile for production and dispatch.
+    CLI.
   - The record goes on that repository's draft PR, opened early for it. This PR gets operation
     counts by resource type only.
   - Ran with the plugin at `ec0ea342`, and the deployment's gate passed all three: staging and
@@ -1391,8 +1389,8 @@ are gone, they read them from this command.
 
 ### Task 3.4: the empty webhooks list
 
-Sami left the deployment's proof surface to the coordinator on 2026-10-14, which chose a
-slot-capable Envoy (the deployment plan's PR 0): a standalone slot runs a listener with no webhooks.
+On 2026-10-14 the coordinator chose the deployment's proof surface: a slot-capable Envoy (the
+deployment plan's PR 0), in which a standalone slot runs a listener with no webhooks.
 Once that PR has a commit, the coordinator supplies it in the brief:
 
 - [x] Render the empty-list container definition with that commit's reference code from placeholder
@@ -1772,7 +1770,7 @@ Hardening considered and not taken (the coordinator's decision, recorded with #1
 | E8. Seed generate and verify against Secret Manager; a generated seed connects | 2, 4 | infrastructure | in-repo fake stores and real nats-server (Tasks 2.2, 4.2); Secret Manager in the first GCP deployment | that deployment's operator | Tasks 2.2, 4.2, 4.4 |
 | E9. `gcp:NatsHub` serves NATS over the tailnet, admits a seeded client, refuses one without, keeps its tailnet identity and stream across `recreate-instances` | 4 | infrastructure | the first GCP deployment, applied from the branch's plugin | its operator; prerequisites: the project's billing linked by the organization's billing administrator, and the operator's tailnet, policy and OAuth-client steps | Task 4.4 |
 | E10. The CLI checks and verifies the existing AWS deployment's live seed read-only, printing the reference script's lines | 2 | infrastructure | that deployment's staging Secrets Manager, from the devbox, with the branch-built CLI | the devbox's `staging` profile (`--expect-account` refuses any other) | Task 2.3 |
-| E11. The existing AWS deployment's staging, production and dispatch previews create, update, replace or delete no cloud resource, with only state-only creates (component and provider resources) and outputs unchanged | 3 | infrastructure | that deployment's own stacks and backend, run locally (Sami, 2026-10-14), with this branch's plugin by path | Sami's own AWS SSO session, granted for this migration only: its staging profile for staging, its production profile for production and dispatch | Task 3.3; the deployment's own plan |
+| E11. The existing AWS deployment's staging, production and dispatch previews create, update, replace or delete no cloud resource, with only state-only creates (component and provider resources) and outputs unchanged | 3 | infrastructure | that deployment's own stacks and backend, run locally, with this branch's plugin by path | its operator's own AWS SSO session: its staging profile for staging, its production profile for production and dispatch | Task 3.3; the deployment's own plan |
 
 Legion's own end-to-end stages (`scripts/e2e/stage*.sh`) exercise none of the changed paths. The
 Envoy changes (`bus.LocalNATSURL`, `bus.ListenerDurable`/`ListenerQueue`; in testnats,

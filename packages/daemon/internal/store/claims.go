@@ -1,10 +1,12 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"math"
 	"strings"
 	"time"
@@ -46,7 +48,8 @@ var _ supervise.Store = (*Store)(nil)
 // (supervise.Delivery.Carried), and whether that turn's result said it ran (supervise.Delivery.Ran),
 // are read beside both (carried_news and carried_ran, design_news_told.go).
 const claimSelect = `select c.token, c.project, c.tree, c.issue, c.role, c.generation, c.tree_epoch, c.session,
-	c.session_file, c.locator, c.state, c.failure, c.pod_end, c.failure_cause, c.failed_at, c.pending_cause, c.leak_check_cause,
+	c.session_file, c.locator, c.working_repository, c.working_repository_incarnation,
+	c.state, c.failure, c.pod_end, c.failure_cause, c.failed_at, c.pending_cause, c.leak_check_cause,
 	c.launch_failures, c.deaths, c.prompt_failures, c.prompt_retires,
 	c.boot_token_hash, c.capability_hash, c.uncertain_streak, c.last_start_row, c.serving_generation,
 	c.given_entry, c.served_entry, c.handshake_entry, c.handshake_generation, c.handshake_queued_at,
@@ -54,7 +57,9 @@ const claimSelect = `select c.token, c.project, c.tree, c.issue, c.role, c.gener
 	c.agent_secrets_enrollment, c.agent_secrets_enrollment_incarnation, c.suspended_by,
 	c.plugin_contract, c.plugin_relaunch_for, c.agent_resume_generation, c.delivered_rows,
 	c.last_turn_start, c.last_turn_end,
-	c.last_death_cause, c.last_start_failure, c.last_ready, c.turn_outcomes, c.abandoned_session, c.ended_work,
+	c.last_death_cause, c.last_death_at, c.last_death_digest,
+	c.last_start_failure, c.last_start_failure_at, c.last_start_failure_digest, c.last_ready,
+	c.turn_outcomes, c.abandoned_session, c.ended_work,
 	c.update_round, c.update_reasons, c.update_repository, c.update_repository_round,
 	c.update_opened_at, c.update_tasked_at, c.update_signalled_at, c.update_head, c.update_told_at,
 	c.update_left_round, c.provider_error_run, c.death_charged,
@@ -422,6 +427,7 @@ func upsertClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) error {
 		delivered = []int64{}
 	}
 	repository, repositoryRound := roundRepositoryColumns(c)
+	working, workingIncarnation := workingRepositoryColumns(c)
 	_, err := tx.Exec(ctx, `insert into claims (token, project, tree, issue, role, generation, tree_epoch,
 		session, session_file, locator, state, failure, launch_failures, deaths, prompt_failures, prompt_retires,
 		boot_token_hash, capability_hash, uncertain_streak, last_start_row,
@@ -435,10 +441,12 @@ func upsertClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) error {
 		pod_end, failure_cause, failed_at, pending_cause, leak_check_cause, ended_work,
 		handshake_entry, handshake_generation, handshake_queued_at, handshake_confirmed_at,
 		update_repository, update_repository_round,
+		working_repository, working_repository_incarnation,
+		last_death_at, last_start_failure_at, last_death_digest, last_start_failure_digest,
 		retired_at_write_mark)
 		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26,
 		$27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54,
-		$55, $56, $57, $58, $59, $60, $61,
+		$55, $56, $57, $58, $59, $60, $61, $62, $63, $64, $65, $66, $67,
 		case when $11 = 'retired' then nextval('outbox_write_mark_seq') else 0 end)
 		on conflict (token) do update set project = excluded.project, tree = excluded.tree,
 		issue = excluded.issue, role = excluded.role, generation = excluded.generation, tree_epoch = excluded.tree_epoch,
@@ -466,7 +474,10 @@ func upsertClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) error {
 		delivered_rows = (select coalesce(array_agg(distinct delivered order by delivered), '{}'::bigint[])
 			from unnest(claims.delivered_rows || excluded.delivered_rows) as delivered),
 		last_turn_start = excluded.last_turn_start, last_turn_end = excluded.last_turn_end,
-		last_death_cause = excluded.last_death_cause, last_start_failure = excluded.last_start_failure,
+		last_death_cause = excluded.last_death_cause, last_death_at = excluded.last_death_at,
+		last_death_digest = excluded.last_death_digest,
+		last_start_failure = excluded.last_start_failure, last_start_failure_at = excluded.last_start_failure_at,
+		last_start_failure_digest = excluded.last_start_failure_digest,
 		last_ready = excluded.last_ready, turn_outcomes = excluded.turn_outcomes,
 		abandoned_session = excluded.abandoned_session,
 		update_round = excluded.update_round, update_reasons = excluded.update_reasons,
@@ -476,6 +487,8 @@ func upsertClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) error {
 		update_left_round = excluded.update_left_round,
 		update_repository = excluded.update_repository,
 		update_repository_round = excluded.update_repository_round,
+		working_repository = excluded.working_repository,
+		working_repository_incarnation = excluded.working_repository_incarnation,
 		provider_error_run = excluded.provider_error_run,
 		serving_check_look = excluded.serving_check_look,
 		serving_check_opened_at = excluded.serving_check_opened_at,
@@ -529,6 +542,9 @@ func upsertClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) error {
 		c.PodEnd, string(c.FailureCause), instant(c.FailedAt), string(c.PendingCause), c.LeakCheckCause, endedWork,
 		c.Handshake.Entry, int64(c.Handshake.Generation), instant(c.Handshake.QueuedAt), instant(c.Handshake.ConfirmedAt),
 		repository, repositoryRound,
+		working, workingIncarnation,
+		instant(c.LastDeathAt), instant(c.LastStartFailureAt),
+		causeDigest(c.LastDeathCause, c.LastDeathAt), causeDigest(c.LastStartFailure, c.LastStartFailureAt),
 	)
 	if err != nil {
 		return fmt.Errorf("put claim %s: %w", c.Token, err)
@@ -904,6 +920,8 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 		generation, treeEpoch       int64
 		agentResumeGeneration       int64
 		locator                     []byte
+		working                     *string
+		workingIncarnation          string
 		deliveryID, task            *string
 		markedBy                    *string
 		deliveryPhase               *string
@@ -927,6 +945,8 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 		lastSendError               *string
 		turnStart, turnEnd          *time.Time
 		lastReady                   *time.Time
+		deathAt, startFailureAt     *time.Time
+		deathDigest, failureDigest  []byte
 		outcomes                    []byte
 		abandoned                   []byte
 		endedWork                   []byte
@@ -945,7 +965,8 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 		kinds                       string
 	)
 	err := row.Scan(&token, &c.Project, &c.Tree, &c.Issue, &role, &generation, &treeEpoch, &c.Session,
-		&c.SessionFile, &locator, &state, &c.Failure, &c.PodEnd, &cause, &failedAt, &pendingCause, &c.LeakCheckCause,
+		&c.SessionFile, &locator, &working, &workingIncarnation,
+		&state, &c.Failure, &c.PodEnd, &cause, &failedAt, &pendingCause, &c.LeakCheckCause,
 		&c.Budgets.LaunchFailures, &c.Budgets.Deaths, &c.Budgets.PromptFailures,
 		&c.Budgets.PromptRetires, &c.BootTokenHash, &c.CapabilityHash, &c.UncertainStreak,
 		&c.LastStartRow, &servingGeneration, &c.GivenEntry, &c.ServedEntry,
@@ -954,7 +975,8 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 		&enrollmentID, &enrollmentIC, &by,
 		&c.PluginContract, &c.PluginRelaunchFor, &agentResumeGeneration, &c.DeliveredRows,
 		&turnStart, &turnEnd,
-		&c.LastDeathCause, &c.LastStartFailure, &lastReady, &outcomes, &abandoned, &endedWork,
+		&c.LastDeathCause, &deathAt, &deathDigest, &c.LastStartFailure, &startFailureAt, &failureDigest, &lastReady,
+		&outcomes, &abandoned, &endedWork,
 		&c.UpdateRound, &c.UpdateReasons, &repository, &repositoryRound, &updateOpened, &updateTasked, &updateSignalled,
 		&c.UpdateHead, &updateTold,
 		&c.UpdateLeftRound, &c.ProviderErrorRun, &c.DeathCharged,
@@ -1010,6 +1032,15 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 		}
 	}
 	c.LastTurnStart, c.LastTurnEnd, c.LastReady = orZero(turnStart), orZero(turnEnd), orZero(lastReady)
+	// A cause's time is read only beside a cause whose digest is the one stored with the time
+	// (causeTime), and a start failure's time before last_ready is read as none, since this
+	// release drops the start failure with its time at every ready; the migration's header
+	// (20261124073512_claim_cause_times) says what the two rules leave after a rollback.
+	c.LastDeathAt = causeTime(c.LastDeathCause, deathAt, deathDigest)
+	c.LastStartFailureAt = causeTime(c.LastStartFailure, startFailureAt, failureDigest)
+	if c.LastStartFailureAt.Before(c.LastReady) {
+		c.LastStartFailureAt = time.Time{}
+	}
 	c.UpdateOpenedAt, c.UpdateTaskedAt, c.UpdateSignalledAt, c.UpdateToldAt = updateOpened, updateTasked, updateSignalled, updateTold
 	if c.UpdateRepository, err = roundRepositoryOf(repository, repositoryRound, c.UpdateRound); err != nil {
 		return supervise.Claim{}, fmt.Errorf("read claim %s: %w", token, err)
@@ -1033,6 +1064,9 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 			return supervise.Claim{}, fmt.Errorf("read claim %s: %w", token, err)
 		}
 		c.Locator = &loc
+	}
+	if c.WorkingRepository, err = workingRepositoryOf(working, workingIncarnation, c.Locator); err != nil {
+		return supervise.Claim{}, fmt.Errorf("read claim %s: %w", token, err)
 	}
 	if enrollmentID != nil && enrollmentIC != nil {
 		c.Enrollment = &supervise.Enrollment{ID: *enrollmentID, Incarnation: *enrollmentIC}
@@ -1083,10 +1117,11 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 // hold it: its name and the round it was written with, both empty for no repository
 // (20261112012123_issue_repository_correction).
 func roundRepositoryColumns(c supervise.Claim) (repository, round string) {
-	if c.UpdateRepository.IsZero() {
-		return "", ""
+	repository = c.UpdateRepository.StringOrEmpty()
+	if repository != "" {
+		round = c.UpdateRound
 	}
-	return c.UpdateRepository.String(), c.UpdateRound
+	return repository, round
 }
 
 // roundRepositoryOf is the repository the two columns hold for round, the round the claim
@@ -1103,6 +1138,44 @@ func roundRepositoryOf(repository, written, round string) (ghrepo.Repository, er
 		return ghrepo.Repository{}, nil
 	}
 	return ghrepo.Parse("its update round's repository", repository)
+}
+
+// workingRepositoryColumns is the repository the claim's process works
+// (supervise.Claim.WorkingRepository) as claims.working_repository and
+// working_repository_incarnation hold it: its name, the empty name for a launch that named no
+// repository, and the incarnation of the process it was recorded for; a null name and an empty
+// incarnation where none is recorded, which a claim that records no process never does
+// (20261112012123_issue_repository_correction).
+func workingRepositoryColumns(c supervise.Claim) (repository *string, incarnation string) {
+	if c.WorkingRepository == nil || c.Locator == nil {
+		return nil, ""
+	}
+	name := c.WorkingRepository.StringOrEmpty()
+	return &name, c.Locator.Incarnation
+}
+
+// workingRepositoryOf is the repository the two columns hold for the process loc names, nil where
+// they hold none for it: a null name, no locator, and a name written for another incarnation. A
+// daemon of an earlier release names neither column, so its relaunch of the claim writes a locator
+// of the new process beside the name this release recorded for the one before, and no launch of
+// this release recorded the repository that new process works. An empty name is the zero
+// Repository, a launch that named none. A name written for loc's incarnation that is no
+// repository is an error rather than none, as a round's repository is (roundRepositoryOf): the
+// daemon writes only a name it parsed, so such a value is a row somebody edited, and read as none
+// it would send the task's line as composed, from the record, to a process that may not work
+// there.
+func workingRepositoryOf(repository *string, written string, loc *runtime.Locator) (*ghrepo.Repository, error) {
+	if repository == nil || loc == nil || written != loc.Incarnation {
+		return nil, nil
+	}
+	if *repository == "" {
+		return &ghrepo.Repository{}, nil
+	}
+	repo, err := ghrepo.Parse("the repository its process works", *repository)
+	if err != nil {
+		return nil, err
+	}
+	return &repo, nil
 }
 
 // storedResume is pending_task_deliveries.resume (20261112215432_delivery_resume): the wait a
@@ -1180,4 +1253,27 @@ func orZero(t *time.Time) time.Time {
 		return time.Time{}
 	}
 	return *t
+}
+
+// causeTime is the time a row holds for cause, or the zero time where the cause is empty, the row
+// holds no time, or the digest stored with the time is of another text than the cause's.
+func causeTime(cause string, at *time.Time, digest []byte) time.Time {
+	if cause == "" || at == nil || !bytes.Equal(digest, causeDigest(cause, *at)) {
+		return time.Time{}
+	}
+	return *at
+}
+
+// causeDigest is the digest upsertClaim writes beside a cause's time, in the same statement: nil
+// where the time is zero, else the 64-bit FNV-1a of the cause's text as the row stores it, in 8
+// bytes. It tells the read whether the time is still the cause's, after a daemon of an earlier
+// release rewrote the cause and not the time (causeTime), and it protects nothing: the text it is
+// taken of stands in plain beside it in the same row.
+func causeDigest(cause string, at time.Time) []byte {
+	if at.IsZero() {
+		return nil
+	}
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(cause))
+	return h.Sum(nil)
 }

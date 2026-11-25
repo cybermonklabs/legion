@@ -1293,12 +1293,13 @@ func newsTask(at phase.Phase, generation uint64, confirmed bool) *supervise.Deli
 }
 
 // cancelRelease cancels LEGION-208's release through the outbox's own cancel, with the rig's
-// backstop, as a release whose save failed does.
+// backstop, as a release the project's pause overtook does (store.ReleaseCausePaused, releaseHold).
 func (r *pauseRig) cancelRelease() {
 	r.t.Helper()
 	runner := &outbox{pool: r.pool, records: r.pauses.records, trees: r.st, project: "legion", backstop: r.pauses.backstop,
 		now: time.Now, log: quietLogger()}
-	if err := runner.cancelRelease(r.ctx, pauseIssue, pauseIssue, workflow.IdleHoldBundleSave, "the save of the release failed"); err != nil {
+	hold, why := releaseHold(store.ReleaseCausePaused)
+	if err := runner.cancelRelease(r.ctx, pauseIssue, pauseIssue, hold, why); err != nil {
 		r.t.Fatalf("cancel the release of %s while LEGION is paused: %v", pauseIssue, err)
 	}
 }

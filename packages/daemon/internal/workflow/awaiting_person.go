@@ -162,30 +162,29 @@ func (e *Engine) catchUpApplied(ctx context.Context, tx pgx.Tx, fact intake.Catc
 // waitAnswer is the act that answered a root's wait, as answerWait records it: what answered (by);
 // the act's own detail — the ask a person acted on, the version and reason of the review that
 // answered, or who took the question away — so a later act of the same kind does not rename it;
-// the Dispatch artifact id of the document the act was of — a person's review, or a newer version
-// — and "" for any other act (document); the step of the gate row that held that document at the
-// answer, set wherever document is and "" where no row held it (step); and the version a person's
-// review that answered was of — the version a changes request reviewed or an approval approved —
-// and 0 for any other act (reviewed).
+// and for an act of a document — a person's review, or a newer version — what it was of
+// (document: the document, the step of the gate row that held it at the answer, "" where no row
+// held it, and the version of a review — the version a changes request reviewed or an approval
+// approved — 0 for a newer version), the zero value for an act of no document.
 type waitAnswer struct {
 	by       record.Answer
 	detail   string
-	document string
-	step     record.DesignStep
-	reviewed int
+	document record.AnsweredDocument
 }
 
 // answerWait records that the act a (waitAnswer) answered root's wait now, which puts the root in
-// the waiting line (record.Waiting) — among the issues whose work came back, oldest first — and
-// names the act in the task its architect resumes with (resumeTask). The document, its step and
-// the version reviewed are recorded beside the detail (record.Awaiting.AnsweredArtifact,
-// AnsweredStep and AnsweredVersion), so the resume names that document and asks whether that
-// review is still the person's word (SupersedingApproval) of the gate of that step and of a
-// number, and not of the step it speaks of or the detail's words, whatever document the step
-// holds by then.
+// the waiting line (record.Waiting) — within its priority, among the issues whose work came back,
+// oldest first — and names the act in the task its architect resumes with (resumeTask). The
+// document the act was of is recorded beside the detail (record.Awaiting.AnsweredDocument, nil for
+// an act of none), so the resume names that document and asks whether that review is still the
+// person's word (SupersedingApproval) of the gate of its step and of a number, and not of the step
+// it speaks of or the detail's words, whatever document the step holds by then.
 func (e *Engine) answerWait(ctx context.Context, tx pgx.Tx, root record.Issue, a waitAnswer) error {
 	at := e.now()
 	root.Awaiting.AnsweredAt, root.Awaiting.AnsweredBy, root.Awaiting.AnsweredDetail = &at, a.by, a.detail
-	root.Awaiting.AnsweredArtifact, root.Awaiting.AnsweredStep, root.Awaiting.AnsweredVersion = a.document, a.step, a.reviewed
+	root.Awaiting.AnsweredDocument = nil
+	if a.document != (record.AnsweredDocument{}) {
+		root.Awaiting.AnsweredDocument = &a.document
+	}
 	return e.WriteIssue(ctx, tx, root)
 }

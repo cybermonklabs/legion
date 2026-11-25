@@ -265,9 +265,8 @@ func TestRepositoryCorrectionWritesGitHubsAnswerAtTheCorrection(t *testing.T) {
 			branch:  "release/v2"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			quickInstallReads(t)
 			installs := &installations{}
-			w, client, github := changingRig(t, installs)
+			w, client, github := changingRig(t, installs, quickInstallReads)
 			recordCorrectionRoot(t, w.pool, w.records, key, key, 0)
 			keepAnEntry(t, w, client)
 			tc.change(github, installs)
@@ -329,7 +328,7 @@ func handOverCorrection(t *testing.T, w *workflowRuntime, _ *repositoryDispatch)
 
 // A correction whose reads GitHub does not answer writes nothing and says nothing, and its issue
 // is owed a follow (requestFollowOf) that the refresher makes at once, no other follow being owed
-// here, and again on its backoff (installReadRetry) while GitHub still does not answer, each pass
+// here, and again on its backoff (reads().retry) while GitHub still does not answer, each pass
 // reading the repository again and writing nothing: the record stays where it was, with nothing
 // waiting and nothing said. Once GitHub answers, the follow corrects the record onto GitHub's
 // spelling and default branch, with no further event of the issue and no boot, as any correction
@@ -351,11 +350,10 @@ func TestACorrectionGitHubDidNotAnswerIsFollowedOnceGitHubAnswers(t *testing.T) 
 		{name: "a hand-over the outbox prepares", correct: handOverCorrection, seq: 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			quickInstallReads(t)
 			installs := &installations{}
 			implement := "implement " + strangerRepo
 			installs.setFailing(errors.New("GitHub answered 502"), implement)
-			w, client, _ := changingRig(t, installs)
+			w, client, _ := changingRig(t, installs, quickInstallReads)
 			recordCorrectionRoot(t, w.pool, w.records, key, key, 0)
 			client.show(issue(key, strangerRepo, "in_progress", true, "", 2))
 
@@ -398,12 +396,11 @@ func TestACorrectionGitHubDidNotAnswerIsFollowedOnceGitHubAnswers(t *testing.T) 
 // moves onto, the one whose repository answers first while the other's still does not, with no
 // event of either after the one GitHub did not answer, and the follow is settled once both are.
 func TestAFollowOwedForOneIssueReadsAnotherAskedForWhileItIsOwed(t *testing.T) {
-	quickInstallReads(t)
 	const first, second = "LEGION-1091", "LEGION-1092"
 	installs := &installations{}
 	stranger, answered := "implement "+strangerRepo, "implement "+answeredRepo
 	installs.setFailing(errors.New("GitHub answered 502"), stranger, answered)
-	w, client, _ := changingRig(t, installs)
+	w, client, _ := changingRig(t, installs, quickInstallReads)
 	recordCorrectionRoot(t, w.pool, w.records, first, first, 0)
 	recordCorrectionRoot(t, w.pool, w.records, second, second, 1)
 
@@ -440,13 +437,13 @@ func TestAFollowOwedForOneIssueReadsAnotherAskedForWhileItIsOwed(t *testing.T) {
 
 // An issue a follow is owed for, whose reads GitHub still does not answer, starts no follow pass
 // when it is asked for again (requestFollowOf), as each event or hand-over of it asks: the pass
-// that left it owed armed the follow's own clock (installReadRetry's first wait, 30 s), and the
-// issue waits for that. Each pass reads the records, Dispatch's whole listing and GitHub, so
-// through a GitHub outage a pass at each ask would cost that much per event. The ask is counted
-// all the same, and an issue no pass owes yet is followed at once. A pass is counted by its read
-// of strangerRepo's implement App, which every pass here makes once and nothing else makes.
-// Control: with every ask waking the refresher, the second ask of the owed issue starts a pass at
-// once.
+// that left it owed armed the follow's own clock (reads().retry's first wait, 30 s in production,
+// productionRepositoryReads), and the issue waits for that. Each pass reads the records,
+// Dispatch's whole listing and GitHub, so through a GitHub outage a pass at each ask would cost
+// that much per event. The ask is counted all the same, and an issue no pass owes yet is followed
+// at once. A pass is counted by its read of strangerRepo's implement App, which every pass here
+// makes once and nothing else makes. Control: with every ask waking the refresher, the second ask
+// of the owed issue starts a pass at once.
 func TestAnAskOfAnIssueAFollowIsOwedForWaitsTheFollowsClock(t *testing.T) {
 	const owed, added = "LEGION-1096", "LEGION-1097"
 	installs := &installations{}
@@ -608,12 +605,11 @@ func TestAFollowReadsARepositoryOnceForEveryIssueItMovesOntoIt(t *testing.T) {
 // GitHub never failed. The follow stays owed, and the pass after GitHub answers corrects every
 // issue onto GitHub's spelling and default branch.
 func TestAFollowWhoseBoundEndsWhileItReadsARepositoryWritesNothingAndIsMadeAgain(t *testing.T) {
-	quickInstallReads(t)
 	calls := productionAppCalls()
 	calls.attempt = 500 * time.Millisecond
 	installs := &slowInstallations{installations: &installations{}}
 	installs.hang.Store(true)
-	w, client, _ := changingRig(t, installs.installations, func(w *workflowRuntime) { w.installs, w.appCalls = installs, &calls })
+	w, client, _ := changingRig(t, installs.installations, quickInstallReads, func(w *workflowRuntime) { w.installs, w.appCalls = installs, &calls })
 	keys := []string{"LEGION-1071", "LEGION-1072", "LEGION-1073"}
 	for i, key := range keys {
 		recordCorrectionRoot(t, w.pool, w.records, key, key, i)
@@ -657,14 +653,13 @@ func TestAFollowWhoseBoundEndsWhileItReadsARepositoryWritesNothingAndIsMadeAgain
 // pass already read, not even the one whose change still waits, which a full pass would read
 // again every time and ahead of them. Once GitHub answers, the next pass completes the follow.
 func TestAFollowWhoseBoundEndsWritesWhatItPreparedAndLeavesTheRestOwed(t *testing.T) {
-	quickInstallReads(t)
 	calls := productionAppCalls()
 	calls.attempt = 500 * time.Millisecond
 	const refusedRepo = "lambda/gadgets"
 	installs := &slowInstallations{installations: &installations{}}
 	installs.setMissing(true, "review "+refusedRepo)
 	installs.hang.Store(true)
-	w, client, _ := changingRig(t, installs.installations, func(w *workflowRuntime) { w.installs, w.appCalls = installs, &calls })
+	w, client, _ := changingRig(t, installs.installations, quickInstallReads, func(w *workflowRuntime) { w.installs, w.appCalls = installs, &calls })
 	const anchored, answered, refused, cut = "LEGION-1081", "LEGION-1082", "LEGION-1083", "LEGION-1084"
 	for i, key := range []string{anchored, answered, refused, cut} {
 		recordCorrectionRoot(t, w.pool, w.records, key, key, i)

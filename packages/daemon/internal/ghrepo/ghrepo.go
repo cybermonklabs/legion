@@ -50,6 +50,15 @@ func (r Repository) String() string {
 	return r.owner + "/" + r.name
 }
 
+// StringOrEmpty is String for a repository and "" for the zero Repository, no repository, where
+// String gives "/": the name a column or a log line holds for no repository.
+func (r Repository) StringOrEmpty() string {
+	if r.IsZero() {
+		return ""
+	}
+	return r.String()
+}
+
 // MustParse is Parse of a repository the caller wrote as a literal, a test's fixture: it panics on
 // one Parse refuses.
 func MustParse(repository string) Repository {

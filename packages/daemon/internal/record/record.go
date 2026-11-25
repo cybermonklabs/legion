@@ -180,6 +180,12 @@ type Issue struct {
 	// record (LastDispatchSeq's), whatever the daemon has queued since: every event carries the whole
 	// issue, so only an event whose status differs from it writes a status.
 	DispatchStatus string
+	// Priority is the issue's own Dispatch priority (P0 to P3, or none) as the newest Dispatch
+	// observation applied to the record showed it: a live event, the boot listing or a detail
+	// read, each of which carries it, written wherever the record takes that observation's rank.
+	// It is the issue's own and never its tree root's: the root's is read from the root's record
+	// where it is wanted (PriorityOf).
+	Priority Priority
 	// Repo is the GitHub repository (owner/name) the issue targets, and DefaultBranch that
 	// repository's default branch: Dispatch's resolved repository and GitHub's default branch when
 	// the daemon first recorded the issue (a root's admission, a child's recording under its tree, an
@@ -272,10 +278,12 @@ type Issue struct {
 	// first phase waits for — and nil for every other record. It is the mark that stands an issue
 	// whose row was taken away for a wait in the waiting line at the moment it lost that row
 	// (Waiting). The row and the mark are written together, so no pass reads a mark beside a row:
-	// only Store.ReleaseSlotForWait writes it, with the delete of the row in one statement. Three
-	// writes clear it (Store.ClearReleasedForWait): the grant of a slot, the ordinary release of
-	// a row for good, and the issue's departure from the workflow, which the release's own read
-	// of the live issues no longer reaches (workflow's leave). PutIssue keeps the stored value.
+	// only Store.ReleaseSlotForWait writes it, with the delete of the row in one statement. These
+	// writes clear it (Store.ClearReleasedForWait, Store.ReleaseTreeSlots), and this is the one
+	// list of them: the grant of a slot, the ordinary release of a row for good, the issue's
+	// departure from the workflow, which the release's own read of the live issues no longer
+	// reaches (workflow's leave), and the re-admission of its tree's root, for every issue of the
+	// tree (admit's releaseTreeSlots). PutIssue keeps the stored value.
 	ReleasedForWaitAt *time.Time
 	// MovedAt is when the daemon last saw the issue move: the time of the newest fact it recorded
 	// that meant the issue's own record changed — a Dispatch event of the issue, a GitHub event of
@@ -302,6 +310,24 @@ type Issue struct {
 	// that queues the notice, and PutIssue keeps the stored value as it does for moved_at: every
 	// pass that records an issue holds a copy read before its own telling.
 	TreeStalledToldAt *time.Time
+	// MembersOwed says that a re-admission started this root's generation and its tree has not yet
+	// run in it, so the members that re-admission left mid-phase, and the members reopened at done,
+	// are still to be brought back (dispatch://INFRA-5471). admit's readmit sets it. It is cleared
+	// in three places. Two bring the members back in the same transaction (admit's
+	// returnOwedMembers): the root's promotion from the waiting line, and the first admission pass
+	// that finds its tree running before any promotion while the root is still handed to Legion
+	// and its design gate has opened (admit's returnMembersOfRunningTrees, MembersReturnOwed). The
+	// third is that same pass meeting a root a daemon of an earlier release promoted, which brought
+	// the members back and never names the column (admit's promotedByEarlierRelease). It clears
+	// that mark and starts nothing. A root whose label a person takes off while it waits stops
+	// being a queued root and keeps the mark until the label returns. While the mark stands, a
+	// tree whose lifecycle is not open under the workflow keeps
+	// its root queued whatever the gate says (ran).
+	// It is false on a child's row and on every root no re-admission started. Only Store.OweMembers
+	// and Store.ClearMembersOwed write it, and PutIssue keeps the stored value, as it does for
+	// released_for_wait_at: every write site that records the root holds a copy read before its own
+	// fact, and a copy read before the clear would otherwise owe the members a second return.
+	MembersOwed bool
 }
 
 // Repository is the repository the record names (Repo) in the spelling the record keeps: what
@@ -479,32 +505,21 @@ const HoldForChildren HoldReason = "children"
 // (Ask, the ask's id), or the closed design gate at a spec version (GateVersion) on the document
 // it registered (Artifact); when a person answered it (AnsweredAt, nil until then), with what
 // (AnsweredBy) and that act's own detail (AnsweredDetail: the ask acted on, who closed it, or the
-// version and reason of the review); for a person's review, the version it was of
-// (AnsweredVersion: the version a changes request reviewed or an approval approved), written
-// beside the detail by the same answer, so a reader that asks whether that review is still the
-// person's word reads a number and never parses the detail, which is display text; for a review
-// or a newer version of a document, the Dispatch artifact id of the document it was of
-// (AnsweredArtifact) and the step whose gate row held that document at the answer
-// (AnsweredStep), written by the same answer, so the resume asks the review of the gate of that
-// step and names that document, which under a deployment that gates more than one step need not
-// be the step it speaks of, and a wait on a question records no document of its own; the step is
-// recorded because the document need not stay on any row: a registration of another document on
-// that step starts a fresh row in its place (workflow's answeredStep); and where on Dispatch the
-// wait began (Since): the newest hand-back the architect made since it was last given work
-// (Issue.DeclaredSeq). It is a snapshot of the wait's subject; what else is still with the person
-// is the root's asks (RootAsk). A person's act Dispatch recorded at or before Since never answers
-// the wait. An answered root stands in the line's returned part (Waiting) and resumes on the slot
-// it holds.
+// version and reason of the review); for an act of a document, a person's review or a newer
+// version, that document (AnsweredDocument), written beside the detail by the same answer; and
+// where on Dispatch the wait began (Since): the newest hand-back the architect made since it was
+// last given work (Issue.DeclaredSeq). It is a snapshot of the wait's subject; what else is still
+// with the person is the root's asks (RootAsk). A person's act Dispatch recorded at or before
+// Since never answers the wait. An answered root stands in the line's returned part (Waiting) and
+// resumes on the slot it holds.
 //
-// AnsweredVersion is 0 for every other answer, for a changes request a daemon of an earlier
-// release answered after this release's migration gave every older changes request its version
-// (20261112215432_delivery_resume), and for an approval an earlier release answered, which that
-// migration gives none: such a review is asked as a sender that knows no version asks, at the
-// version the gate holds approved (workflow.SupersedingApproval). AnsweredArtifact and
-// AnsweredStep are "" for every other answer and for every answer an earlier release wrote, which
-// the migration gives neither: such an act is read as of the document the wait records
-// (Artifact) and the step of the row that holds it, and where that is none too, as of the step the
-// resume speaks of. AnsweredStep is "" as well where no row held the document at the answer.
+// AnsweredDocument is nil for every other answer and for every answer an earlier release wrote,
+// but a changes request one wrote before this release's migration (20261112215432_delivery_resume),
+// which that migration gives the version it read from the detail and no document or step. An
+// answer that records no document is read as of the document the wait records (Artifact) and the
+// step of the row that holds it, and where that is none too, as of the step the resume speaks of;
+// a review that records no version is asked as a sender that knows no version asks, at the version
+// the gate holds approved (workflow.SupersedingApproval).
 type Awaiting struct {
 	Ask              string
 	GateVersion      int
@@ -512,10 +527,30 @@ type Awaiting struct {
 	AnsweredAt       *time.Time
 	AnsweredBy       Answer
 	AnsweredDetail   string
-	AnsweredVersion  int        `json:",omitempty"`
-	AnsweredArtifact string     `json:",omitempty"`
-	AnsweredStep     DesignStep `json:",omitempty"`
+	AnsweredDocument *AnsweredDocument `json:",omitempty"`
 	Since            EventMark
+}
+
+// AnsweredDocument is what the act that answered a root's wait was of, where that act is a
+// person's review or a newer version of a document: the Dispatch artifact id of the document
+// (Artifact), the step whose gate row held it at the answer (Step), and for a review the version
+// it was of (Version: the version a changes request reviewed or an approval approved). The answer
+// writes the three together (workflow's answerWait), so the resume asks whether that review is
+// still the person's word (workflow.SupersedingApproval) of a number, never of the detail, which is
+// display text, and of the gate of that step, and names that document, which under a deployment
+// that gates more than one step need not be the step it speaks of, while a wait on a question
+// records no document of its own. The step is recorded because the document need not stay on any
+// row: a registration of another document on that step starts a fresh row in its place
+// (workflow's answeredStep).
+//
+// Version is 0 for a newer version, which is no review, and for an approval the gates.design: off
+// rule gave (workflow's leaveGateOff). Artifact and Step are "" for a changes request the migration
+// gave its version alone, Artifact also where the wait the act answered names no document, and Step
+// also where no row held the document at the answer.
+type AnsweredDocument struct {
+	Version  int        `json:",omitempty"`
+	Artifact string     `json:",omitempty"`
+	Step     DesignStep `json:",omitempty"`
 }
 
 // Answer is the act that answered a root's wait, which the task resuming its architect names.
@@ -822,8 +857,8 @@ type PhaseRow struct {
 	// notice.
 	CompletedAt time.Time
 	// Entry is the number of the phase entry this role's row is on: a transition's start of the
-	// phase the issue has moved into, the promotion's start of a mid-phase worker a re-admitted
-	// tree brings back, and a root architect's start of work it was not on raise it by one and
+	// phase the issue has moved into, the start of a mid-phase worker a re-admitted tree's first run
+	// brings back, and a root architect's start of work it was not on raise it by one and
 	// write the three fields below beside it, in their own transaction (workflow's start,
 	// StartPromotedWorker, StartArchitect and ResumeAwaitedRoot). It is the finer of the
 	// two numbers a completion is held to: the issue's generation is the same for every entry of
@@ -851,7 +886,7 @@ type PhaseRow struct {
 	//
 	// The resume writes the text it rendered here all the same, though this release never sends
 	// it for an entry that holds a wait: its one reader is a rollback to the release before
-	// contract 240. The rollback block in docs/kubernetes.md (contract 240) marks each entry that
+	// contract 259. The rollback block in docs/kubernetes.md (contract 259) marks each entry that
 	// holds a wait (phases.entry_verbatim), and that release sends a marked entry's task as this
 	// field holds it, as it did before this release. So the write is no dead code: it goes only
 	// when that rollback block goes.
@@ -887,8 +922,8 @@ type PhaseRow struct {
 	// completion as the release before did (store migration
 	// 20261113090512_phase_entry_moved_back.up.sql), until the role's next entry writes what its
 	// own move was. A row PutPhase writes reads what it was given: false on one this release
-	// inserted before raising any entry on it, and after the promotion's start of a mid-phase
-	// worker, which moves no phase back.
+	// inserted before raising any entry on it, and after the start of a mid-phase worker a
+	// re-admitted tree's first run brings back, which moves no phase back.
 	//
 	// One rule of the daemon reads it and no other: the completion route's entry fence, which
 	// takes a completion of an earlier entry when the commit it names is the head the record
@@ -2331,8 +2366,9 @@ type Store interface {
 	ArchitectServed(ctx context.Context, tx pgx.Tx, tree string) (uint64, int64, error)
 	// TreeMembersRun is whether an issue of tree other than its root stands past
 	// phase.Admitted in the workflow (InWorkflow): its status is none of OutOfWorkflowStatuses
-	// and its phase is neither admitted nor done. Those are the members a
-	// re-admission's promotion starts again (admit's startMidPhaseMembers, which passes over a
+	// and its phase is neither admitted nor done. Those are the members a re-admitted tree's first
+	// run starts again, its promotion or the admission pass that finds it running first (admit's
+	// startMidPhaseMembers, which passes over a
 	// member at admitted and one out of the workflow), and a member a person set todo once its
 	// own first phase has started. It is what says a root architect's tree has work under way
 	// whatever its claim has served (workflow.ArchitectStart.MembersRun). It answers one bool
@@ -2629,6 +2665,17 @@ type Store interface {
 	// ClearReleasedForWait sets Issue.ReleasedForWaitAt back to null: the issue holds a slot
 	// again, or holds none for a reason that is not a wait.
 	ClearReleasedForWait(ctx context.Context, tx pgx.Tx, issue string) error
+	// ReleaseTreeSlots frees the slot of every issue of tree and clears Issue.ReleasedForWaitAt
+	// from every issue of it, and answers the issues whose slot it freed, in slot order: the
+	// re-admission of the tree's own root, which ends the generation those rows and marks were of
+	// (admit's releaseTreeSlots).
+	ReleaseTreeSlots(ctx context.Context, tx pgx.Tx, tree string) ([]string, error)
+	// OweMembers sets Issue.MembersOwed on the root key: its re-admission has started a generation
+	// whose members are still to be brought back (admit's readmit).
+	OweMembers(ctx context.Context, tx pgx.Tx, key string) error
+	// ClearMembersOwed sets Issue.MembersOwed back to false on the root key: its members came back
+	// with its promotion, or with the pass that found its tree running first.
+	ClearMembersOwed(ctx context.Context, tx pgx.Tx, key string) error
 	// OpenTreeLifecycle binds an admission fact's root start rows to one durable tree epoch before
 	// the fact commits. A reserved cleanup returns treelifecycle.ErrCleanupReserved without
 	// admitting work.
@@ -2730,9 +2777,9 @@ type Store interface {
 	// conditional update: false is another holder's lease, a lifecycle row of its issue since
 	// leased, or a row no longer due, in order, or in the outbox. leaseFor must be positive.
 	ClaimRow(ctx context.Context, tx pgx.Tx, id int64, now time.Time, leaseFor time.Duration) (OutboxRow, bool, error)
-	// RenewOutboxLease moves the lease on row id to until while leaseToken holds it; false is a
-	// lease no longer the caller's.
-	RenewOutboxLease(ctx context.Context, tx pgx.Tx, id int64, leaseToken string, until time.Time) (bool, error)
+	// RenewOutboxLease moves the lease on row id to until while leaseToken holds it; renewed false
+	// is a lease no longer the caller's, and gone is a row finished rather than leased by another.
+	RenewOutboxLease(ctx context.Context, tx pgx.Tx, id int64, leaseToken string, until time.Time) (renewed, gone bool, err error)
 	// NextDue is the earliest next_at after now among issue's rows of kinds no live lease holds;
 	// false is none. Kinds nil is every kind.
 	NextDue(ctx context.Context, tx pgx.Tx, issue string, kinds []OutboxKind, now time.Time) (time.Time, bool, error)

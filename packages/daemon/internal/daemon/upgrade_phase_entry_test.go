@@ -43,13 +43,16 @@ const phaseEntryMigration = 20261111225552
 // beside the phase entry and the upgrade under test applies them.
 const olderReleasesNewestMigration = 20261112180548
 
-// deliveryResumeMigration is 20261112215432_delivery_resume, a migration above that release's
-// newest which the fixture applies all the same: this release's record.Store.PutIssue, which the
-// fixture records the tree with, writes the four issues columns it adds
-// (awaiting_answered_version, awaiting_answered_version_at, awaiting_answered_artifact and
-// awaiting_answered_step), and none of the columns it adds, which its header names, is one the
-// phase entry reads or writes. So applying it first changes nothing the upgrade decides.
-const deliveryResumeMigration = 20261112215432
+// appliedWithTheFixture are the migrations above olderReleasesNewestMigration that preEntryStore
+// applies with the fixture's own rather than withholding them for the upgrade under test: the tree
+// is recorded through this release's PutIssue, so each migration that adds a column PutIssue
+// writes must stand before the tree is seeded. Each adds a column of issues, which no statement of
+// the phase entry reads or writes, so it changes nothing the upgrade under test reads.
+// 20261112215432_delivery_resume adds the four answered-document columns
+// (awaiting_answered_version, awaiting_answered_document_at, awaiting_answered_artifact and
+// awaiting_answered_step), and none of the other columns it adds, which its header names, is one
+// the phase entry reads or writes; 20261124060500_issue_priority adds issues.priority.
+var appliedWithTheFixture = []int{20261112215432, 20261124060500}
 
 // upgradeProject is the Dispatch project of the tree the upgrade is read on, and upgradeRoot its
 // root. Each shape is a member of that one tree, standing in testing, so the role every shape is
@@ -70,9 +73,9 @@ const (
 // though that release records no such version, because its version stands below that release's
 // newest; that is harmless here, since it adds pull_requests.state_read_at and the phase entry
 // touches no pull_requests column. Neither column is one any statement of the phase entry reads
-// or writes. Every version above that release's newest (olderReleasesNewestMigration) but
-// deliveryResumeMigration is withheld with the phase entry, so Store.Migrate, which decides each
-// migration on its own row, applies the phase entry and those.
+// or writes. Every version above that release's newest (olderReleasesNewestMigration) is withheld
+// with the phase entry, but those appliedWithTheFixture names, so Store.Migrate, which decides
+// each migration on its own row, applies the phase entry and those it withheld.
 //
 // It is built this way because the old shape is reachable no other way: the three assignment
 // columns are created by the migrations under this one and dropped by this one, so a record as
@@ -116,11 +119,11 @@ func preEntryStore(t *testing.T) *store.Store {
 }
 
 // withheldByFixture says whether preEntryStore withholds the migration of version beside the
-// phase entry: every one above the older release's newest but deliveryResumeMigration, which the
-// fixture applies. The fixture and the count of what the upgrade applies read this one rule, so
-// the two cannot disagree on which migrations the upgrade under test runs.
+// phase entry: every one above the older release's newest but those appliedWithTheFixture names,
+// which the fixture applies. The fixture and the count of what the upgrade applies read this one
+// rule, so the two cannot disagree on which migrations the upgrade under test runs.
 func withheldByFixture(version int) bool {
-	return version > olderReleasesNewestMigration && version != deliveryResumeMigration
+	return version > olderReleasesNewestMigration && !slices.Contains(appliedWithTheFixture, version)
 }
 
 // migrationsAbove is how many embedded migrations preEntryStore withheld beside the phase entry

@@ -237,6 +237,42 @@ func withoutAssignmentPlanKeys(t *testing.T, body []byte) []byte {
 	return encoded
 }
 
+// withoutPriorityKeys is a state body with no issue carrying `priority` and no waitingLine
+// carrying `priority`, which is what a caller below priorityContract is served of a state that
+// carries them (api's withoutPriority). It serves the table below as withoutQuietKeys does.
+func withoutPriorityKeys(t *testing.T, body []byte) []byte {
+	t.Helper()
+	var served map[string]any
+	if err := json.Unmarshal(body, &served); err != nil {
+		t.Fatalf("decode state %s: %v", body, err)
+	}
+	for _, issue := range served["issues"].(map[string]any) {
+		stripPriority(issue.(map[string]any))
+	}
+	encoded, err := json.Marshal(served)
+	if err != nil {
+		t.Fatalf("encode the state %s without its priorities: %v", body, err)
+	}
+	return encoded
+}
+
+// stripPriority takes the two keys priorityContract added off one issue of a decoded body: its
+// own `priority` and its waitingLine's.
+func stripPriority(issue map[string]any) {
+	delete(issue, "priority")
+	if line, carried := issue["waitingLine"].(map[string]any); carried {
+		delete(line, "priority")
+	}
+}
+
+// stripRepositoryCorrection takes the four keys repositoryCorrectionContract added
+// (repositoryCorrectionKeys) off one issue of a decoded body.
+func stripRepositoryCorrection(issue map[string]any) {
+	for _, key := range repositoryCorrectionKeys {
+		delete(issue, key)
+	}
+}
+
 // withoutMergeWaitKey is a state body with no issue carrying `mergeWait`, which is what a caller
 // below mergeWaitContract is served of a state (api's withoutMergeWait). It serves the table
 // below as withoutQuietKeys does: a row's baseline is the full state with exactly the keys that
@@ -281,6 +317,25 @@ func withoutEntryTimeKeys(t *testing.T, body []byte) []byte {
 	return encoded
 }
 
+// withoutPodHoldKey is a state body with no issue carrying `podHold`, which is what a caller below
+// podHoldContract is served of a state that carries one (api's withoutPodHold). It serves the
+// table below as withoutEntryTimeKeys does.
+func withoutPodHoldKey(t *testing.T, body []byte) []byte {
+	t.Helper()
+	var served map[string]any
+	if err := json.Unmarshal(body, &served); err != nil {
+		t.Fatalf("decode state %s: %v", body, err)
+	}
+	for _, issue := range served["issues"].(map[string]any) {
+		delete(issue.(map[string]any), "podHold")
+	}
+	encoded, err := json.Marshal(served)
+	if err != nil {
+		t.Fatalf("encode the state %s without its pod holds: %v", body, err)
+	}
+	return encoded
+}
+
 // withoutCorrectionKeys is a state body with no issue carrying `repoBefore`, `repoCorrectedAt`,
 // `repoChangePending` or `repoChangeReason`, which is what a caller below
 // repositoryCorrectionContract is served of a state that carries them (api's
@@ -294,10 +349,7 @@ func withoutCorrectionKeys(t *testing.T, body []byte) []byte {
 		t.Fatalf("decode state %s: %v", body, err)
 	}
 	for _, issue := range served["issues"].(map[string]any) {
-		issue := issue.(map[string]any)
-		for _, key := range repositoryCorrectionKeys {
-			delete(issue, key)
-		}
+		stripRepositoryCorrection(issue.(map[string]any))
 	}
 	encoded, err := json.Marshal(served)
 	if err != nil {
@@ -458,14 +510,8 @@ func withoutLeakCheckCauses(t *testing.T, body []byte) []byte {
 	}
 	for _, issue := range served["issues"].(map[string]any) {
 		issue := issue.(map[string]any)
-		views := []any{issue["architect"]}
-		for _, worker := range issue["workers"].(map[string]any) {
-			views = append(views, worker.(map[string]any)["claim"])
-		}
-		for _, view := range views {
-			if view, ok := view.(map[string]any); ok {
-				delete(view, "leakCheckCause")
-			}
+		for _, view := range decodedClaimViews(issue) {
+			delete(view, "leakCheckCause")
 		}
 	}
 	encoded, err := json.Marshal(served)
@@ -562,15 +608,9 @@ func servedAt(t *testing.T, body []byte, contract int) []byte {
 	if contract < shapedAnswersContract {
 		for _, issue := range served["issues"].(map[string]any) {
 			issue := issue.(map[string]any)
-			views := []any{issue["architect"]}
-			for _, worker := range issue["workers"].(map[string]any) {
-				views = append(views, worker.(map[string]any)["claim"])
-			}
-			for _, view := range views {
-				if view, ok := view.(map[string]any); ok {
-					for _, key := range roundReportKeys {
-						delete(view, key)
-					}
+			for _, view := range decodedClaimViews(issue) {
+				for _, key := range roundReportKeys {
+					delete(view, key)
 				}
 			}
 		}
@@ -694,6 +734,10 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 		// shapedAnswersContract up to below repositoryCorrectionContract is in no pod reading
 		// (podContracts), so it is served them.
 		correction bool
+		// priority is whether the caller is served each issue's `priority` and its waitingLine's
+		// `priority` (priorityContract, the contract that added both), so a caller at it is
+		// served the keys and every older one is not.
+		priority bool
 		// caches is whether the caller is served the repository-cache-room row's `source`,
 		// `caches` (cachesSourceContract, the contract that added the word). The word is a value,
 		// held back from every caller whose pod's lowest contract is below that contract
@@ -758,23 +802,24 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 		// reading reaches: the project's pause is served too, and every key a later row of
 		// stateNarrowings adds is held back, the claim views' keys of contract 193, the
 		// repositories block this daemon writes, which is served in contract 152's shape, each
-		// assignment's `plan`, the state's `intakeGiveUps` of contract 228 and the four repository
-		// keys among them. The repository caches' row is served without its `source` here as in
-		// every band below, the value cachesSourceContract added.
+		// assignment's `plan`, the state's `intakeGiveUps` of contract 228, each issue's `podHold`,
+		// each issue's `priority` and the four repository keys among them. The repository caches'
+		// row is served without its `source` here as in every band below, the value
+		// cachesSourceContract added.
 		{name: "a pod at pauseContract", remote: statePodAddr + ":41000", claims: podClaims(pauseContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: pauseContract, assigned: true, times: true, apps: true, pause: true},
 		// A pod whose claims record shapedAnswersContract, the contract from which every build
 		// states its contract in the header. Such a pod is in no pod reading: podContracts leaves
 		// out a claim at shapedAnswersContract or above. So the reading falls through to the body
 		// this daemon writes, which carries every key and every value, the repositories block
-		// repositoriesLiveContract writes, each assignment's `plan`, `intakeGiveUps`, the four of a
-		// repository correction and the caches source among them, and the row names
-		// DaemonAPIVersion. repositoriesLiveContract, assignmentPlanContract, intakeGiveUpsContract
-		// and repositoryCorrectionContract stand above shapedAnswersContract, so a caller between
-		// them is served their bands by its header alone (contract_shapes_test.go,
-		// TestAnOlderPluginContractGetsTheStateWithoutIntakeGiveUps).
-		{name: "a pod at the contract from which every build states its own", remote: statePodAddr + ":41000", claims: podClaims(shapedAnswersContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: DaemonAPIVersion, assigned: true, times: true, apps: true, pause: true, repos: true, plans: true, correction: true, caches: true, giveUps: true},
-		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: DaemonAPIVersion, assigned: true, times: true, apps: true, pause: true, repos: true, plans: true, correction: true, caches: true, giveUps: true},
-		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(supervise.PodUpdateContract - 1), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: DaemonAPIVersion, assigned: true, times: true, apps: true, pause: true, repos: true, plans: true, correction: true, caches: true, giveUps: true},
+		// repositoriesLiveContract writes, each assignment's `plan`, `intakeGiveUps`, each issue's
+		// `podHold`, each issue's and waiting member's `priority`, the four of a repository
+		// correction and the caches source among them, and the row names DaemonAPIVersion. Every
+		// row of stateNarrowings from repositoriesLiveContract up stands above
+		// shapedAnswersContract, so a caller between them is served their bands by its header
+		// alone (contract_shapes_test.go, TestAnOlderPluginContractGetsTheStateWithoutIntakeGiveUps).
+		{name: "a pod at the contract from which every build states its own", remote: statePodAddr + ":41000", claims: podClaims(shapedAnswersContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: DaemonAPIVersion, assigned: true, times: true, apps: true, pause: true, repos: true, plans: true, correction: true, priority: true, caches: true, giveUps: true},
+		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: DaemonAPIVersion, assigned: true, times: true, apps: true, pause: true, repos: true, plans: true, correction: true, priority: true, caches: true, giveUps: true},
+		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(supervise.PodUpdateContract - 1), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: DaemonAPIVersion, assigned: true, times: true, apps: true, pause: true, repos: true, plans: true, correction: true, priority: true, caches: true, giveUps: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			body := stateFrom(t, populatedState(t), tc.remote, tc.claims)
@@ -805,7 +850,8 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 			// place a caller at (callerKind.reaches), so each is served the repositories block
 			// in contract 152's shape before any key of it is taken out (withRepositoriesAt152),
 			// and only the three rows served this daemon's own body the block that contract
-			// writes.
+			// writes. No pod's claims place a caller at podHoldContract either, so only those
+			// three rows are served each issue's `podHold` (withoutPodHoldKey).
 			if tc.rounds && tc.stall {
 				want := full
 				if !tc.answers {
@@ -847,11 +893,17 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 				if !tc.correction {
 					want = withoutCorrectionKeys(t, want)
 				}
+				if !tc.priority {
+					want = withoutPriorityKeys(t, want)
+				}
 				if !tc.caches {
 					want = withoutCachesSources(t, want)
 				}
 				if !tc.giveUps {
 					want = withoutIntakeGiveUpsKey(t, want)
+				}
+				if tc.contract < podHoldContract {
+					want = withoutPodHoldKey(t, want)
 				}
 				want = servedAt(t, want, tc.contract)
 				if withoutLowestContract(t, body) != withoutLowestContract(t, want) {
@@ -937,30 +989,30 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 					delete(issue, key)
 				}
 				// Every row that reaches here is below phaseEntriesContract too, so the two
-				// entry numbers, the two times of their task and the architect-stalled arms go
-				// whatever the row is, as the decided record's keys above do.
+				// entry numbers, the two times of their task, the architect-stalled arms and the
+				// pod's standing hold go whatever the row is, as the decided record's keys above do.
 				delete(issue, "phaseEntry")
 				delete(issue, "givenEntry")
 				delete(issue, "entryQueuedAt")
 				delete(issue, "entryConfirmedAt")
 				delete(issue, "architectStalls")
+				delete(issue, "podHold")
+				// Every row that reaches here is below priorityContract too, so neither the
+				// issue nor its waitingLine carries `priority`.
+				stripPriority(issue)
+				// Every row that reaches here is below repositoryCorrectionContract too, so no
+				// issue carries the four keys of a correction of its repository.
+				stripRepositoryCorrection(issue)
 				if !tc.quiet {
 					delete(issue, TreeMovedAtField)
 					delete(issue, QuietHoursField)
 				}
-				views := []any{issue["architect"]}
 				for _, worker := range issue["workers"].(map[string]any) {
-					worker := worker.(map[string]any)
 					if !tc.rounds {
-						delete(worker, backwardMovesField)
+						delete(worker.(map[string]any), backwardMovesField)
 					}
-					views = append(views, worker["claim"])
 				}
-				for _, view := range views {
-					view, ok := view.(map[string]any)
-					if !ok {
-						continue
-					}
+				for _, view := range decodedClaimViews(issue) {
 					if !tc.rounds {
 						delete(view, "updateRound")
 						delete(view, "updateHead")
@@ -979,12 +1031,6 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 					for _, key := range recordFieldClaimKeys {
 						delete(view, key)
 					}
-				}
-				if !tc.correction {
-					delete(issue, "repoBefore")
-					delete(issue, "repoCorrectedAt")
-					delete(issue, "repoChangePending")
-					delete(issue, "repoChangeReason")
 				}
 				if tc.rounds {
 					continue
@@ -1066,15 +1112,17 @@ func withoutLowestContract(t *testing.T, body []byte) string {
 
 // servedShape applies to want, a body decoded from the state this contract writes, what an older
 // caller is served that no column of the tables calling it names: the stand-ins of keys a
-// contract removed, and two bands of keys this contract writes. A caller below checkRoleContract
+// contract removed, and three bands of keys this contract writes. A caller below checkRoleContract
 // is served each issue's check without `role` (api's withoutCheckRole); a caller below
 // fixAttemptsContract is served `fixAttempts` of 0 on each pull request and `max_fix_attempts` of
-// 3 in the settings block (withFixAttempts, withMaxFixAttempts); and a caller below
+// 3 in the settings block (withFixAttempts, withMaxFixAttempts); a caller below
 // stateMachineContract is served the issue without the seven keys that contract added
-// (withoutStateMachineFields). Every other key of the settings block is served as this contract
-// writes it, since no reader types it (answers.go's typedSettings). One contract decides the
-// stand-ins, because the two sides of a caller's shaping part only below ServingFloor, which is
-// below fixAttemptsContract as every number this is called with is.
+// (withoutStateMachineFields); and a caller below causeTimesContract is served each claim view
+// without `lastDeathAt` and `lastStartFailureAt` (withoutCauseTimes): every row of those tables
+// but the three served this daemon's own body is below it. Every other key of the settings block is
+// served as this contract writes it, since no reader types it (answers.go's typedSettings). One
+// contract decides the stand-ins, because the two sides of a caller's shaping part only below
+// ServingFloor, which is below fixAttemptsContract as every number this is called with is.
 func servedShape(want map[string]any, contract int) {
 	settings := want["settings"].(map[string]any)
 	if contract < fixAttemptsContract {
@@ -1093,22 +1141,22 @@ func servedShape(want map[string]any, contract int) {
 		if check, carries := issue["check"].(map[string]any); carries && contract < checkRoleContract {
 			delete(check, "role")
 		}
+		views := decodedClaimViews(issue)
+		for _, view := range views {
+			if contract < causeTimesContract {
+				delete(view, "lastDeathAt")
+				delete(view, "lastStartFailureAt")
+			}
+			if contract < stateMachineContract {
+				deleteTurnRecord(view)
+			}
+		}
 		if contract >= stateMachineContract {
 			continue
 		}
-		if architect, carries := issue["architect"].(map[string]any); carries {
-			deleteTurnRecord(architect)
-		}
-		workers, carries := issue["workers"].(map[string]any)
-		if !carries {
-			continue
-		}
+		workers, _ := issue["workers"].(map[string]any)
 		for _, worker := range workers {
-			worker := worker.(map[string]any)
-			delete(worker, "pass")
-			if view, held := worker["claim"].(map[string]any); held {
-				deleteTurnRecord(view)
-			}
+			delete(worker.(map[string]any), "pass")
 		}
 	}
 }
@@ -1119,6 +1167,24 @@ func deleteTurnRecord(view map[string]any) {
 	for _, key := range []string{"lastTurnStart", "lastTurnEnd", "lastDeathCause", "lastStartFailure", "lastReady"} {
 		delete(view, key)
 	}
+}
+
+// decodedClaimViews is every claim view of one decoded issue, the architect's and each worker's,
+// as the maps the body decoded into, so a change made to one is made to the body.
+func decodedClaimViews(issue map[string]any) []map[string]any {
+	var views []map[string]any
+	if architect, carries := issue["architect"].(map[string]any); carries {
+		views = append(views, architect)
+	}
+	workers, _ := issue["workers"].(map[string]any)
+	for _, worker := range workers {
+		if worker, ok := worker.(map[string]any); ok {
+			if view, held := worker["claim"].(map[string]any); held {
+				views = append(views, view)
+			}
+		}
+	}
+	return views
 }
 
 // strandedServed is the report of claims nothing will wake of a state body, entry for entry as

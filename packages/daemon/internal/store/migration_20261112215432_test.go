@@ -11,12 +11,12 @@ const deliveryResumeVersion = 20261112215432
 
 // 20261112215432 gives a wait a changes request answered before it the version that request
 // reviewed (issues.awaiting_answered_version), read once from the detail every earlier release
-// wrote for it, with the answer's moment beside it (awaiting_answered_version_at), so the resume
-// asks of a number and the wait reads as it did. A wait answered any other way, and one still
-// unanswered, takes no version. It adds the columns the document the answering act was of and the
-// step whose row held it are recorded in (awaiting_answered_artifact, awaiting_answered_step), and
-// gives no wait either: an answer before it records neither. The negative control is the same rows
-// read before the migration, which hold no such column.
+// wrote for it, with the answer's moment beside it (awaiting_answered_document_at, the fence of the
+// answered document), so the resume asks of a number and the wait reads as it did. A wait answered
+// any other way, and one still unanswered, takes no version. It adds the columns the document the
+// answering act was of and the step whose row held it are recorded in (awaiting_answered_artifact,
+// awaiting_answered_step), and gives no wait either: an answer before it records neither. The
+// negative control is the same rows read before the migration, which hold no such column.
 func TestAWaitAChangesRequestAnsweredTakesItsVersionIn20261112215432(t *testing.T) {
 	ctx := context.Background()
 	store := emptyStore(t)
@@ -39,7 +39,7 @@ func TestAWaitAChangesRequestAnsweredTakesItsVersionIn20261112215432(t *testing.
 	}
 	var columns int
 	if err := store.Pool().QueryRow(ctx, `select count(*) from information_schema.columns
-		where table_name = 'issues' and column_name in ('awaiting_answered_version', 'awaiting_answered_version_at',
+		where table_name = 'issues' and column_name in ('awaiting_answered_version', 'awaiting_answered_document_at',
 			'awaiting_answered_artifact', 'awaiting_answered_step')`).Scan(&columns); err != nil {
 		t.Fatalf("read the answer's columns before the migration: %v", err)
 	}
@@ -63,7 +63,7 @@ func TestAWaitAChangesRequestAnsweredTakesItsVersionIn20261112215432(t *testing.
 		var document, step *string
 		var beside bool
 		if err := store.Pool().QueryRow(ctx, `select awaiting_answered_version, awaiting_answered_artifact, awaiting_answered_step,
-			coalesce(awaiting_answered_version_at = awaiting_answered_at, false) from issues where key = $1`, want.key).Scan(&version, &document, &step, &beside); err != nil {
+			coalesce(awaiting_answered_document_at = awaiting_answered_at, false) from issues where key = $1`, want.key).Scan(&version, &document, &step, &beside); err != nil {
 			t.Fatalf("read the version of %s: %v", want.key, err)
 		}
 		if document != nil {

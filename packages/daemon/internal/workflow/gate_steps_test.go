@@ -386,8 +386,8 @@ func TestGatedStepsHoldEveryPhaseUntilEveryStepIsApproved(t *testing.T) {
 // (criteria); a registration of the other step's document moves a gate wait to that document,
 // whose review answers it while the step in question stays closed; a wait on a question is
 // answered by a review of either document; and the step in question moves when a review of the
-// other document lands after the answer. The answer records the document it was of and the step
-// whose row held it (record.Awaiting.AnsweredArtifact and AnsweredStep), so the resume names that
+// other document lands after the answer. The answer records the document it was of, the step
+// whose row held it and the version reviewed (record.AnsweredDocument), so the resume names that
 // document and asks the predicate of that step's gate whether the person's review is still their
 // word (SupersedingApproval): it never says an approval the predicate holds standing no longer
 // stands, and never says a changes request the predicate holds standing asks for no revision. What
@@ -453,7 +453,7 @@ func TestUnderTwoGatedStepsTheResumeAsksTheReviewOfTheDocumentItWasOf(t *testing
 			// The criteria step is still closed, so it is the step in question, and the registration
 			// of another document on the spec step after the answer leaves no row holding the
 			// primary document approved. The answer records the spec step it was of
-			// (record.Awaiting.AnsweredStep), so the resume names the primary document and the
+			// (record.AnsweredDocument.Step), so the resume names the primary document and the
 			// document the spec step holds now, not the Verification document (INFRA-3136 R29).
 			name:    "a wait on the Verification document, answered by the primary document's approval, another primary document registered after it",
 			waitDoc: criteriaDoc,
@@ -598,8 +598,12 @@ func TestUnderTwoGatedStepsTheResumeAsksTheReviewOfTheDocumentItWasOf(t *testing
 
 			apply("answer", tc.answer)
 			answered := recordedRoot(t, pool).Awaiting
-			if answered == nil || answered.AnsweredAt == nil || answered.AnsweredBy != tc.by || answered.AnsweredArtifact != tc.reviewedDoc ||
-				answered.AnsweredStep != tc.reviewed || answered.AnsweredVersion != tc.reviewedAt {
+			var recorded record.AnsweredDocument
+			if answered != nil && answered.AnsweredDocument != nil {
+				recorded = *answered.AnsweredDocument
+			}
+			if want := (record.AnsweredDocument{Version: tc.reviewedAt, Artifact: tc.reviewedDoc, Step: tc.reviewed}); answered == nil ||
+				answered.AnsweredAt == nil || answered.AnsweredBy != tc.by || recorded != want {
 				t.Fatalf("the wait = %+v, want it answered by %s of %s on the %s step, version %d", answered, tc.by, tc.reviewedDoc, tc.reviewed,
 					tc.reviewedAt)
 			}

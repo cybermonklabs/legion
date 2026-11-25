@@ -417,7 +417,7 @@ func refStep(key, ref string) (record.DesignStep, bool) {
 // the newer decision kept under the same document's ref, and of the claim a start holds on it. A
 // gate that records no request, or no gate of the notice's document, says nothing against it.
 // It does not decide whether the request is still the person's word, which SupersedingApproval
-// decides and parkDecision asks first (its decisionSuperseded): a request a newer one replaced
+// decides and parkDecision asks first (NoticeSuperseded): a request a newer one replaced
 // still is, and the workflow tells it. It decides only which request holds the document's place
 // among what is kept and relayed.
 func ChangesSuperseded(gates map[record.DesignStep]record.DesignGate, issue string, notice record.Notice) bool {

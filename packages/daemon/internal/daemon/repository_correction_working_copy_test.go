@@ -2,7 +2,6 @@ package daemon
 
 import (
 	"context"
-	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -14,6 +13,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
 	"github.com/sjawhar/legion/daemon/internal/runtime/tmux"
@@ -25,7 +25,7 @@ import (
 
 const (
 	// workingCopyIssue is the issue these cases correct, its implementer the worker whose task is
-	// held across the correction, and workingCopyOwnersLine the line of the owner's text of its
+	// sent across the correction, and workingCopyOwnersLine the line of the owner's text of its
 	// task's block that reads like the daemon's working copy line.
 	workingCopyIssue      = "LEGION-208"
 	workingCopyOwnersLine = " Working copy: branch legion/LEGION-208, directory /owners/own/LEGION-208."
@@ -36,14 +36,16 @@ const (
 // composes the task under the directory the runtime gives the record's repository
 // (engineWorkspaceDir), the outbox runner that runs the start it writes, and a claim supervisor
 // whose Deps.WorkingCopy is the daemon's own answer (workflowRuntime.workingCopy), as daemon.go
-// wires it.
+// wires it, and whose every launch is built from the issue's record as it stands at that launch,
+// as the daemon's own spec builder builds one (recordSpecs).
 type workingCopyRig struct {
 	t        *testing.T
 	ctx      context.Context
 	pool     *store.Pool
 	records  record.Store
-	engine   *workflow.Engine
+	workflow *workflowRuntime
 	sup      *supervisor
+	rt       *fake.Runtime
 	runner   *outbox
 	conn     *fake.Conn
 	token    claim.Token
@@ -77,13 +79,15 @@ func newWorkingCopyRig(t *testing.T, runtimeName string) *workingCopyRig {
 	stateDir := t.TempDir()
 	engine := workflow.New(records, workflow.Config{Project: "LEGION", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(),
 		WorkspaceDir: engineWorkspaceDir(config.Config{Runtime: config.Runtime{Name: runtimeName}, StateDir: stateDir})}, quietLogger())
-	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
-	sup.deps.WorkingCopy = (&workflowRuntime{pool: pool, records: records, engine: engine}).workingCopy
+	w := &workflowRuntime{pool: pool, records: records, engine: engine}
+	sup, rt := newOutboxSupervisor(t, "legion", t.TempDir())
+	sup.deps.WorkingCopy = w.workingCopy
+	sup.deps.Specs = recordSpecs{read: w.recordedIssue}
 	token := mustClaimToken(t, issue.Key, claim.RoleImplementer)
 	conn := fake.NewConn()
 	sup.deps.Conns.(*fake.Conns).Register(token, conn)
-	return &workingCopyRig{t: t, ctx: ctx, pool: pool, records: records, engine: engine, sup: sup, conn: conn, token: token,
-		runtime: runtimeName, stateDir: stateDir,
+	return &workingCopyRig{t: t, ctx: ctx, pool: pool, records: records, workflow: w, sup: sup, rt: rt, conn: conn,
+		token: token, runtime: runtimeName, stateDir: stateDir,
 		runner: &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, supervisor: sup,
 			tokens: outboxTokens{}, project: "legion", stateDir: t.TempDir(),
 			provision: func(context.Context, workspace.Request) (workspace.Workspace, error) {
@@ -112,12 +116,12 @@ func (r *workingCopyRig) line(repo string) string {
 }
 
 // start is the implementer's start the engine writes for the promotion's resume of its step
-// (workflow.Engine.StartPromotedWorker), composed from the record as it stands now: the task the
-// phases row keeps (record.PhaseRow.EntryTask) and the outbox row carries.
-func (r *workingCopyRig) start() entryStartRow {
+// (workflow.Engine.StartPromotedWorker), composed from the record as it stands now, on composedOn:
+// the task the phases row keeps (record.PhaseRow.EntryTask) and the outbox row carries.
+func (r *workingCopyRig) start(composedOn string) entryStartRow {
 	r.t.Helper()
 	issue := readIssue(r.t, r.pool, workingCopyIssue)
-	if err := startPromoted(r.ctx, r.pool, r.engine, *issue, claim.RoleImplementer); err != nil {
+	if err := startPromoted(r.ctx, r.pool, r.workflow.engine, *issue, claim.RoleImplementer); err != nil {
 		r.t.Fatalf("write the implementer's start: %v", err)
 	}
 	rows := roleStartRows(r.t, r.pool, workingCopyIssue, claim.RoleImplementer)
@@ -125,9 +129,9 @@ func (r *workingCopyRig) start() entryStartRow {
 		r.t.Fatal("the promotion wrote no start of the implementer")
 	}
 	start := rows[len(rows)-1]
-	if task := start.request.Task; !strings.Contains(task, r.line("acme/widgets")) || !strings.Contains(task, workingCopyOwnersLine) {
+	if task := start.request.Task; !strings.Contains(task, r.line(composedOn)) || !strings.Contains(task, workingCopyOwnersLine) {
 		r.t.Fatalf("the implementer's start carries %q, want it composed naming %q and the owner's line %q: the case's own premise",
-			task, r.line("acme/widgets"), workingCopyOwnersLine)
+			task, r.line(composedOn), workingCopyOwnersLine)
 	}
 	return start
 }
@@ -138,6 +142,42 @@ func (r *workingCopyRig) run(start entryStartRow) {
 	if err := r.runner.execute(r.ctx, start.row); err != nil {
 		r.t.Fatalf("run the implementer's start row %d: %v", start.row.ID, err)
 	}
+	r.wait()
+}
+
+// launch starts the implementer's process, built from the record as it stands now, and makes its
+// agent ready.
+func (r *workingCopyRig) launch() {
+	r.t.Helper()
+	machine := startedClaim(r.t, r.sup, claim.RoleImplementer)
+	if err := machine.Handle(r.ctx, supervise.RequestSpawn{Claim: r.token}); err != nil {
+		r.t.Fatalf("spawn the implementer: %v", err)
+	}
+	readyClaimOf(r.t, r.sup, r.token, claim.RoleImplementer)
+	r.wait()
+}
+
+// relaunch is the claim's next launch: its process ends by the daemon's own act, as the update
+// round's replacement ends every role of a pod, the claim is launched again on its session, built
+// from the record as it stands then, and its agent comes up ready, which sends it the task it
+// still holds.
+func (r *workingCopyRig) relaunch() {
+	r.t.Helper()
+	machine := r.machine()
+	ended := machine.Claim().Locator
+	if ended == nil {
+		r.t.Fatal("the implementer records no process to end")
+	}
+	if err := machine.Handle(r.ctx, supervise.RuntimeObservation{Observation: runtime.Observation{
+		Locator: *ended, Kind: runtime.Gone, At: time.Now(), Displaced: true,
+	}}); err != nil {
+		r.t.Fatalf("end the implementer's process: %v", err)
+	}
+	r.wait()
+	if loc := machine.Claim().Locator; loc == nil || loc.Incarnation == ended.Incarnation {
+		r.t.Fatalf("the implementer records the process %+v after the relaunch, want another than %s: the case's own premise", loc, ended.Incarnation)
+	}
+	readyClaimOf(r.t, r.sup, r.token, claim.RoleImplementer)
 	r.wait()
 }
 
@@ -163,22 +203,33 @@ func (r *workingCopyRig) corrects() {
 	correctRecord(r.t, r.pool, r.records, workingCopyIssue, "zeta/tools", "release/v9", time.Now())
 }
 
-// wantSentAfterTheCorrection fails unless sent, a prompt of the implementer's task, and the task the
-// claim holds name the workspace of zeta/tools in their working copy line, and never the
-// workspace of acme/widgets, with the owner's line inside the owner's text as the owner wrote it.
-func (r *workingCopyRig) wantSentAfterTheCorrection(sent string) {
+// prompt is the nth prompt the implementer was sent, failing unless it was sent exactly n.
+func (r *workingCopyRig) prompt(n int) string {
 	r.t.Helper()
-	left, moved := r.line("acme/widgets"), r.line("zeta/tools")
+	prompts := r.conn.Prompts()
+	if len(prompts) != n {
+		r.t.Fatalf("the implementer was prompted %+v, want %d prompts", prompts, n)
+	}
+	return prompts[n-1].Message
+}
+
+// wantSent fails unless sent, a prompt of the implementer's task, and the task the claim holds
+// after it name the workspace of works in their working copy line and never the workspace of
+// other, with the owner's line inside the owner's text as the owner wrote it.
+func (r *workingCopyRig) wantSent(sent, works, other string) {
+	r.t.Helper()
+	want, wrong := r.line(works), r.line(other)
 	held := r.machine().Claim().Pending
 	if held == nil {
 		r.t.Fatal("the implementer holds no task after its send")
 	}
 	for _, read := range []struct{ what, text string }{
-		{"the prompt sent after the correction", sent},
+		{"the prompt", sent},
 		{"the task the claim holds after it", held.Task},
 	} {
-		if strings.Contains(read.text, left) || !strings.Contains(read.text, moved) {
-			r.t.Fatalf("%s names the working copy %q, the workspace of acme/widgets the issue left; want %q:\n%s", read.what, left, moved, read.text)
+		if strings.Contains(read.text, wrong) || !strings.Contains(read.text, want) {
+			r.t.Fatalf("%s names the working copy %q, the workspace of %s, which the process it went to does not work in; want %q:\n%s",
+				read.what, wrong, other, want, read.text)
 		}
 		if !strings.Contains(read.text, "\n"+workingCopyOwnersLine+"\n") {
 			r.t.Fatalf("%s holds no owner's line %q inside the owner's text as the owner wrote it:\n%s", read.what, workingCopyOwnersLine, read.text)
@@ -186,68 +237,89 @@ func (r *workingCopyRig) wantSentAfterTheCorrection(sent string) {
 	}
 }
 
-// A worker's task is composed from the record when its start is written, and it is held until a
-// send: in the phases row (record.PhaseRow.EntryTask), in the outbox row the lane has not run, in
-// the claim's pending delivery behind a launch, a busy agent or a send the transport lost. A
-// correction of the issue's repository can land in between, and the directory of the repository
-// the issue left is the one a kept volume still holds and no role may work in. So every send of a
-// worker's task writes its working copy line from the record as the send reads it (supervise's
-// startSend, Deps.WorkingCopy, the daemon's workingCopy), under the directory the runtime gives the
-// record's repository: a start written before the correction and sent after it names the workspace
-// of the repository the issue moved to, and so does a task sent before the correction and again
-// after it. The task's owner's text holds a line that reads like the daemon's working copy line,
-// inside its fence, and every send leaves it as the owner wrote it. Both runtimes' workspaces
-// follow the record.
-func TestRepositoryCorrectionNamesTheNewWorkspaceInEveryWorkerTaskSentAfterIt(t *testing.T) {
+// A worker's task is composed from the issue's record when its start is written and held until a
+// send, and its working copy line tells the worker the directory its work is in. A correction of
+// the issue's repository moves the record at once, and the process that receives the task only at
+// its next launch: a tmux pane goes on in the workspace it was started in, the only one there is
+// until that launch provisions the new repository's, and a pod's roles go on in its clone until the
+// update round replaces the pod. So every send writes the line from the repository the receiving
+// process was launched on, which its launch recorded (supervise.Claim.WorkingRepository; supervise's
+// startSend, Deps.WorkingCopy, the daemon's workingCopy), under each runtime's own directory: a task
+// sent before the claim's next launch names the workspace of the repository the issue left, and one
+// sent after it names the workspace of the repository the issue moved to. A role launched into a
+// live pod after the correction works that pod's clone whatever repository its spec names, so it
+// is sent that clone's directory. A claim no launch of this release recorded a repository for is
+// sent the line its task was composed with, and a launch that named no repository the branch alone.
+// The task's owner's text holds a line that reads like the daemon's working copy line, inside its
+// fence, and every send leaves it as the owner wrote it.
+func TestAWorkerTaskNamesTheWorkspaceOfTheProcessItIsSentTo(t *testing.T) {
 	t.Parallel()
-	for _, name := range []string{"kubernetes", "tmux"} {
-		t.Run(name, func(t *testing.T) {
-			t.Run("a start written before the correction and sent after it", func(t *testing.T) {
-				r := newWorkingCopyRig(t, name)
-				start := r.start()
-				r.corrects()
+	const left, moved = "acme/widgets", "zeta/tools"
 
-				r.run(start)
-				readyClaimOf(t, r.sup, r.token, claim.RoleImplementer)
-				r.wait()
-				prompts := r.conn.Prompts()
-				if len(prompts) != 1 {
-					t.Fatalf("the implementer was prompted %+v, want its one start", prompts)
-				}
-				r.wantSentAfterTheCorrection(prompts[0].Message)
-			})
+	t.Run("tmux: a pane launched before the correction is sent its own workspace until its next launch", func(t *testing.T) {
+		r := newWorkingCopyRig(t, "tmux")
+		r.launch()
+		start := r.start(left)
+		r.corrects()
 
-			t.Run("a task sent before the correction and again after it", func(t *testing.T) {
-				r := newWorkingCopyRig(t, name)
-				machine, _, err := r.sup.Create(r.ctx, supervise.Claim{Token: r.token, Project: "legion", Tree: workingCopyIssue,
-					Issue: workingCopyIssue, Role: claim.RoleImplementer, State: supervise.StateQueued}, "")
-				if err != nil {
-					t.Fatalf("create the implementer claim: %v", err)
-				}
-				if err := machine.Handle(r.ctx, supervise.RequestSpawn{Claim: r.token}); err != nil {
-					t.Fatalf("spawn the implementer: %v", err)
-				}
-				readyClaimOf(t, r.sup, r.token, claim.RoleImplementer)
-				r.conn.FailPrompt(errors.New("the stream to the shim closed"))
-				r.run(r.start())
-				prompts := r.conn.Prompts()
-				if len(prompts) != 1 || !strings.Contains(prompts[0].Message, r.line("acme/widgets")) {
-					t.Fatalf("the implementer was prompted %+v before the correction, want its start naming %q: the case's own premise",
-						prompts, r.line("acme/widgets"))
-				}
+		r.run(start)
+		r.wantSent(r.prompt(1), left, moved)
 
-				r.corrects()
-				r.conn.FailPrompt(nil)
-				if err := machine.Handle(r.ctx, supervise.StreamHello{Claim: r.token, Generation: machine.Claim().Generation}); err != nil {
-					t.Fatalf("the shim's hello again: %v", err)
-				}
-				r.wait()
-				prompts = r.conn.Prompts()
-				if len(prompts) != 2 {
-					t.Fatalf("the implementer was prompted %+v, want its start sent again once the transport is back", prompts)
-				}
-				r.wantSentAfterTheCorrection(prompts[1].Message)
-			})
-		})
-	}
+		r.relaunch()
+		r.wantSent(r.prompt(2), moved, left)
+	})
+
+	t.Run("kubernetes: a process of the pod built from the old repository is sent that pod's workspace until it is relaunched in a new pod", func(t *testing.T) {
+		r := newWorkingCopyRig(t, "kubernetes")
+		r.rt.ScriptPodRepository(r.token, left)
+		r.launch()
+		r.corrects()
+
+		r.run(r.start(moved))
+		r.wantSent(r.prompt(1), left, moved)
+
+		// The pod the update round builds in the old one's stead is built from the record.
+		r.rt.ScriptPodRepository(r.token, moved)
+		r.relaunch()
+		r.wantSent(r.prompt(2), moved, left)
+	})
+
+	t.Run("kubernetes: a role launched into the live pod after the correction is sent that pod's workspace", func(t *testing.T) {
+		r := newWorkingCopyRig(t, "kubernetes")
+		r.rt.ScriptPodRepository(r.token, left)
+		r.corrects()
+		r.launch()
+		if spawned := r.rt.CallsOf("Spawn"); len(spawned) != 1 || spawned[0].Spec.Repository.String() != moved {
+			t.Fatalf("the launch after the correction was %+v, want one spawn built for %s: the case's own premise", spawned, moved)
+		}
+
+		r.run(r.start(moved))
+		r.wantSent(r.prompt(1), left, moved)
+	})
+
+	t.Run("a claim that records no working repository is sent the line as composed", func(t *testing.T) {
+		r := newWorkingCopyRig(t, "tmux")
+		composed := r.start(left).request.Task
+		r.corrects()
+		// The claim as the store reads one whose process an earlier release launched: a process,
+		// and no repository recorded for it.
+		earlier := supervise.Claim{Token: r.token, Project: "legion", Tree: workingCopyIssue, Issue: workingCopyIssue,
+			Role: claim.RoleImplementer, State: supervise.StateReady, Locator: &runtime.Locator{
+				Runtime: runtime.RuntimeTmux, Claim: r.token, Incarnation: "31001:900001",
+				Tmux: &runtime.TmuxLocator{Window: "@3", Pane: "%41"},
+			}}
+		held := supervise.Delivery{ID: "outbox:7", Task: composed, Phase: phase.Implementing, Generation: 1}
+		task, news, err := r.workflow.workingCopy(r.ctx, earlier, held)
+		if err != nil || task != composed || news != nil {
+			t.Fatalf("the earlier release's claim is sent %q (news %q, error %v), want the task as composed, naming %q:\n%s",
+				task, news, err, r.line(left), composed)
+		}
+
+		earlier.WorkingRepository = &ghrepo.Repository{}
+		task, _, err = r.workflow.workingCopy(r.ctx, earlier, held)
+		branchAlone := " Working copy: branch legion/" + workingCopyIssue + "."
+		if err != nil || !strings.Contains(task, branchAlone) || strings.Contains(task, r.line(left)) || strings.Contains(task, r.line(moved)) {
+			t.Fatalf("a claim whose launch named no repository is sent %q (error %v), want its line to name the branch alone, %q", task, err, branchAlone)
+		}
+	})
 }

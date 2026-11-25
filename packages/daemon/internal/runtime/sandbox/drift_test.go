@@ -25,7 +25,7 @@ import (
 //
 // PodDrift reads loc's Sandbox and the pod of the same name from r's informer stores. A write gets
 // to those stores through the watch, after the API has it. Thus driftOf first waits until r's
-// stores hold the Sandbox and the pod that g's trackers hold, within Eventually's bound. Where
+// stores hold the Sandbox and the pod that g's trackers hold, within a minute (testwait.Bounded). Where
 // the tracker holds no such pod, the wait holds until the store holds none too. Without
 // the wait, a test that reads a write from the tracker can ask PodDrift about the Sandbox before
 // that write (TestAKeptPodRecordsAndTellsTheManifestItsReconnectedLauncherWasServed). The wait

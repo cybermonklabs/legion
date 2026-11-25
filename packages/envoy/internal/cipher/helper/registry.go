@@ -176,8 +176,8 @@ func (s *Session) identity() identity {
 // for it. With neither, no revoke can land, no renew is ever sent, and nothing can answer a
 // wait taken for one.
 //
-// Reading the channel never blocks, and neither does waiting on the nil this answers with:
-// a nil channel blocks for ever, which in registerReply's select is exactly "nothing here".
+// Reading the channel never blocks. The nil this answers with is a case of waitForRegister's
+// select that never fires, which is exactly "nothing here".
 func (s *Session) confirmationInFlight() <-chan struct{} {
 	s.mu.Lock()
 	defer s.mu.Unlock()

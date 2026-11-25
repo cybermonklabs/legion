@@ -103,7 +103,7 @@ export interface PhaseReminderDeps {
   readonly wakeChanged: () => void;
   /** The Envoy listener the architect notice goes to, or undefined when Envoy is off for this
    * session. Built lazily and once by the caller. */
-  readonly publisher: () => EnvoyPublish | undefined;
+  readonly publisher: () => Promise<EnvoyPublish | undefined>;
   /** `LEGION_PROJECT`: the project token every role topic carries. */
   readonly project: string | undefined;
   readonly limits: StallLimits;
@@ -335,10 +335,11 @@ export function createPhaseReminder(deps: PhaseReminderDeps): PhaseReminder {
    * daemon failed runs no further turn in this process — its retry relaunches this session in a
    * new process, or starts a new session once the daemon's `forgetSession` (its supervise package)
    * has dropped this one — and a reminder written now reaches nobody who can act on it. That is
-   * what ends the reminding of a session whose provider refuses every turn, on either host. An
-   * answer that could not be read is `UNREAD_CHECK`: it reminds no one, and its cause goes to the
-   * log (`logUnread`). The cause of a read past the bound is `withBound`'s, `no answer within
-   * 3000ms`.
+   * what ends the reminding of a session whose provider refuses a turn with a status that cannot
+   * clear (dispatch://INFRA-4508); a refusal that can clear fails no claim, so its reminders keep
+   * their pace. An answer that could not be read is `UNREAD_CHECK`: it reminds no one, and its
+   * cause goes to the log (`logUnread`). The cause of a read past the bound is `withBound`'s, `no
+   * answer within 3000ms`.
    */
   const owedCheck = async (): Promise<OwedCheck> => {
     const claim = deps.claim();
@@ -367,6 +368,9 @@ export function createPhaseReminder(deps: PhaseReminderDeps): PhaseReminder {
     return { reminds: true, work: answer.work };
   };
 
+  /** Whether the run has reached the threshold and its architect has not been told yet. */
+  const architectDue = (): boolean => !reported && stall.count >= deps.limits.architectAfter;
+
   /**
    * D6: one Envoy message to the architect that owns this worker, when a delivered reminder
    * brought the count to the threshold. It names the work the daemon answered was owed, as the
@@ -379,9 +383,15 @@ export function createPhaseReminder(deps: PhaseReminderDeps): PhaseReminder {
    * belongs to: one that lands after the run ended acknowledges nothing.
    */
   const tellArchitect = async (work: string): Promise<void> => {
+    // A run whose claim has ended builds no publisher: its first build can run Envoy's token
+    // command, which would trade a broker token for a notice that is not sent.
+    if (deps.claim() === undefined) return;
+    // The worker's own turn may end the run, or its claim may end, while the publisher is built.
+    // What is read after it is the run as it stands, which may need no notice any more.
+    const publish = await deps.publisher();
+    if (!architectDue()) return;
     const claim = deps.claim();
     if (claim === undefined) return;
-    const publish = deps.publisher();
     if (publish === undefined) {
       deps.log.debug("legion: Envoy is off for this session; the architect is not told", {
         issue: claim.issue,
@@ -502,7 +512,7 @@ export function createPhaseReminder(deps: PhaseReminderDeps): PhaseReminder {
       if (generation === sentAt) armReminder(lastText, deps.limits.reminderMs);
       return;
     }
-    if (reported || stall.count < deps.limits.architectAfter) return;
+    if (!architectDue()) return;
     await tellArchitect(work);
   };
 

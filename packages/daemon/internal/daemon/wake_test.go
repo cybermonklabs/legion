@@ -219,7 +219,7 @@ func TestADueBackstopWakesItsPodsLifecycleLaneOnce(t *testing.T) {
 			woke := time.Now().UTC().Add(-time.Hour).Truncate(time.Millisecond)
 			recordPodWake(t, w.idleStore, store.PodResume{Project: "legion", Issue: pauseIssue,
 				Role: string(claim.RoleImplementer), Kind: pods.WakeBackstop, At: woke})
-			if _, err := w.idleStore.RecordPodRelease(ctx, store.PodRelease{Project: "legion", Issue: pauseIssue, Generation: 1,
+			if _, _, err := w.idleStore.RecordPodRelease(ctx, store.PodRelease{Project: "legion", Issue: pauseIssue, Generation: 1,
 				Roles: []string{string(claim.RoleImplementer)}, At: woke.Add(time.Minute)}); err != nil {
 				t.Fatalf("record the pod's release: %v", err)
 			}

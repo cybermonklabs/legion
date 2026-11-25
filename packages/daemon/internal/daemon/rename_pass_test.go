@@ -31,7 +31,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/prompts"
 	"github.com/sjawhar/legion/daemon/internal/record"
-	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
@@ -264,7 +263,7 @@ func TestTheBootWritesEachRenamesNewNameOverItsOldOnce(t *testing.T) {
 		t.Errorf("lines of a pair left = %+v, want none: GitHub shows the transfer", left)
 	}
 	want := map[string]renameTableTally{"issues": {written: 3}, "pull_requests": {written: 1}, "cleared_pull_requests": {written: 1},
-		"production_checks": {written: 1}, "repo_notes": {written: 2}, "workspace_bundles": {}}
+		"production_checks": {written: 1}, "repo_notes": {written: 2}}
 	if got := renameTables(t, logged.String()); !reflect.DeepEqual(got, want) {
 		t.Errorf("table lines of the first boot = %+v, want %+v", got, want)
 	}
@@ -273,8 +272,7 @@ func TestTheBootWritesEachRenamesNewNameOverItsOldOnce(t *testing.T) {
 	rebindHeldPorts(t, &cfg)
 	var again syncBuffer
 	renameBoot(t, cfg, &again)
-	want = map[string]renameTableTally{"issues": {}, "pull_requests": {}, "cleared_pull_requests": {}, "production_checks": {}, "repo_notes": {},
-		"workspace_bundles": {}}
+	want = map[string]renameTableTally{"issues": {}, "pull_requests": {}, "cleared_pull_requests": {}, "production_checks": {}, "repo_notes": {}}
 	if got := renameTables(t, again.String()); !reflect.DeepEqual(got, want) {
 		t.Errorf("table lines of the second boot = %+v, want nothing written and nothing left", got)
 	}
@@ -324,7 +322,7 @@ func TestARenameWriteThatFailsIsLoggedAndTheNextBootWritesIt(t *testing.T) {
 		t.Errorf("failure lines = %+v, want one WARN line naming %s and the database's refusal", failed, refused)
 	}
 	want := map[string]renameTableTally{"issues": {written: 1, failed: 1, left: 1}, "pull_requests": {failed: 1, left: 1},
-		"cleared_pull_requests": {}, "production_checks": {}, "repo_notes": {}, "workspace_bundles": {}}
+		"cleared_pull_requests": {}, "production_checks": {}, "repo_notes": {}}
 	if got := renameTables(t, logged.String()); !reflect.DeepEqual(got, want) {
 		t.Errorf("table lines of the first boot = %+v, want %+v", got, want)
 	}
@@ -340,7 +338,7 @@ func TestARenameWriteThatFailsIsLoggedAndTheNextBootWritesIt(t *testing.T) {
 		t.Errorf("%s's stored names after the next boot = %v, want each on %s", refused, names, renameTo)
 	}
 	want = map[string]renameTableTally{"issues": {written: 1}, "pull_requests": {written: 1}, "cleared_pull_requests": {}, "production_checks": {},
-		"repo_notes": {}, "workspace_bundles": {}}
+		"repo_notes": {}}
 	if got := renameTables(t, again.String()); !reflect.DeepEqual(got, want) {
 		t.Errorf("table lines of the next boot = %+v, want %+v", got, want)
 	}
@@ -405,16 +403,17 @@ func TestAnIssueWithALivePodKeepsItsNamesUntilItsPodEnds(t *testing.T) {
 	}
 }
 
-// The next pod after a rename works the new name with the saved workspace restored
-// (dispatch://INFRA-4401 A10). An issue's idle release saves its workspace bundle while its record
-// names the pair's `from`, and the end of that release's pod (outbox.releaseIssue, after its
-// teardown) writes the pair's `to` over it and keeps the bundle. The read of the live records the
-// pass wakes (wakeLive, refreshCacheRepositories) then caches the `to`; the issue's next launch's
-// spec (specs.repository, workflowRuntime.issueLaunchRepository) names the `to` at the record's
-// default branch; and the next pod's restore takes the bundle that release saved, which the store
-// keeps by issue and not by repository (store.TakeWorkspaceBundleForRestore). Control: with the
-// pass at that hook deleted (releaseIssue's endPods), the next launch's spec names the `from`.
-func TestTheNextPodAfterARenameWorksTheNewNameWithTheSavedWorkspace(t *testing.T) {
+// The next pod after a rename works the new name. An issue's idle
+// release reads its workspace while its record names the pair's `from`, finds nothing origin does
+// not hold, and the end of that release's pod (outbox.releaseIssue, after its teardown) writes the
+// pair's `to` over it. The read of the live records the pass wakes (wakeLive,
+// refreshCacheRepositories) then caches the `to`, and the issue's next launch's spec
+// (specs.repository, workflowRuntime.issueLaunchRepository) names the `to` at the record's default
+// branch, which is where the next pod's workspace is made from: the release took the pod only
+// because no working copy or bookmark of its workspace held a commit origin does not hold, so no
+// such work is left to carry across the rename. Control: with the pass at that hook deleted (releaseIssue's endPods), the next launch's
+// spec names the `from`.
+func TestTheNextPodAfterARenameWorksTheNewName(t *testing.T) {
 	t.Parallel()
 	rig := newIdleRig(t)
 	ctx := context.Background()
@@ -427,33 +426,26 @@ func TestTheNextPodAfterARenameWorksTheNewNameWithTheSavedWorkspace(t *testing.T
 	rig.w.repositories = transferredRepositories()
 	rig.w.liveWake = make(chan struct{}, 1)
 	rig.runner.podEnded = rig.w.podEndsOn(renamePodRuntime{rig.rt})
-	// Inside the teardown, before the pod end: the release has saved the bundle by then, and the
-	// record still names the `from`.
+	// Inside the teardown, before the pod end: the release has read the workspace by then, and
+	// the record still names the `from`.
 	var atTeardown struct {
-		repo    string
-		bundled bool
-		err     error
+		repo string
+		err  error
 	}
 	rig.rt.beforeAuthorize = func() {
-		if atTeardown.err = rig.pool.QueryRow(ctx, "select repo from issues where key = $1", key).Scan(&atTeardown.repo); atTeardown.err == nil {
-			_, atTeardown.bundled, atTeardown.err = rig.st.WorkspaceBundleSize(ctx, key)
-		}
+		atTeardown.err = rig.pool.QueryRow(ctx, "select repo from issues where key = $1", key).Scan(&atTeardown.repo)
 	}
 
 	rig.w.releaseIdlePods(ctx)
 	rig.drain(t)
-	if _, suspended := rig.rt.reads(); suspended != 1 {
-		t.Fatalf("Sandbox teardowns = %d, want the release's one", suspended)
+	if read, suspended := rig.rt.reads(); suspended != 1 || len(read) != 1 {
+		t.Fatalf("Sandbox teardowns = %d after %d workspace reads, want the release's one after its one read", suspended, len(read))
 	}
-	if atTeardown.err != nil || !atTeardown.bundled || atTeardown.repo != renameFrom {
-		t.Fatalf("at the release's teardown %s's record names %q with a bundle saved %t (%v), want %s with the bundle saved",
-			key, atTeardown.repo, atTeardown.bundled, atTeardown.err, renameFrom)
+	if atTeardown.err != nil || atTeardown.repo != renameFrom {
+		t.Fatalf("at the release's teardown %s's record names %q (%v), want %s", key, atTeardown.repo, atTeardown.err, renameFrom)
 	}
 	if names := storedRepositoryNames(t, rig.pool, key); !namedAll(names, renameTo) {
 		t.Errorf("%s's stored names after its release's pod end = %v, want each on %s", key, names, renameTo)
-	}
-	if !rig.bundled(t) {
-		t.Errorf("%s holds no saved bundle after its release's pod end, want the one the release saved", key)
 	}
 	select {
 	case <-rig.w.liveWake:
@@ -483,13 +475,6 @@ func TestTheNextPodAfterARenameWorksTheNewNameWithTheSavedWorkspace(t *testing.T
 		t.Errorf("the next launch's spec works %s at %s, want %s at main: the pod after the rename works the new name",
 			spec.Repository, spec.DefaultBranch, renameTo)
 	}
-	// The next pod is built from the spec just read, so its workspace is a clone of that name.
-	saved, take, err := rig.st.TakeWorkspaceBundleForRestore(ctx, "legion", key, "pod-after-the-rename", spec.Repository.String(),
-		time.Now().UTC().Add(time.Minute), rig.w.repositories.same)
-	if err != nil || take != runtime.WorkspaceBundleSend || string(saved.Bundle) != "PACK" || saved.Head != "abc" || saved.PodUID != releasedPodUID {
-		t.Errorf("the next pod's restore took %v of a bundle with head %q off %q (%v), want the bundle the release saved off %s sent to it",
-			take, saved.Head, saved.PodUID, err, releasedPodUID)
-	}
 }
 
 // An idle release under keep_volume keeps the issue's Sandbox, Suspended, with its kept volume, for
@@ -497,9 +482,9 @@ func TestTheNextPodAfterARenameWorksTheNewNameWithTheSavedWorkspace(t *testing.T
 // workspace directory under the name the record holds (workspace.Location). So the end of that
 // release's pod leaves the issue's stored names on the old name and logs one kept line that names
 // the issue and says the runtime keeps its volume. With the new name written, the next pod would
-// make a fresh workspace under the new name, the runtime would drop the saved bundle, since the
-// kept volume holds that work (runtime.HeldWorkspaceBundleDrop), and the work would stay under the
-// old name. A later pass writes such an issue once no kept volume is left: here, once the runtime
+// make a fresh workspace under the new name, and the workspace on the kept volume, with its
+// session's files and caches, would stay under the old name. A later pass writes such an issue
+// once no kept volume is left: here, once the runtime
 // keeps no volume of the issue, as after the teardown of its close (SuspendIssue), the next pod end
 // writes the new name, and its issues line counts one row written and none left. Control: the same
 // release with no kept volume writes the new name at the pod end and logs no kept line, as an
@@ -1089,8 +1074,7 @@ func TestTheRenamePassSendsGitHubNoRequestForAPairNoRowNames(t *testing.T) {
 	if left := renameLines(t, boot.String(), renameLeftLine); len(left) != 0 {
 		t.Errorf("the boot's lines of a pair left = %+v, want none: no row names %s", left, renameFrom)
 	}
-	want := map[string]renameTableTally{"issues": {}, "pull_requests": {}, "cleared_pull_requests": {}, "production_checks": {}, "repo_notes": {},
-		"workspace_bundles": {}}
+	want := map[string]renameTableTally{"issues": {}, "pull_requests": {}, "cleared_pull_requests": {}, "production_checks": {}, "repo_notes": {}}
 	if got := renameTables(t, boot.String()); !reflect.DeepEqual(got, want) {
 		t.Errorf("the boot's table lines = %+v, want each table's, nothing written and nothing left", got)
 	}

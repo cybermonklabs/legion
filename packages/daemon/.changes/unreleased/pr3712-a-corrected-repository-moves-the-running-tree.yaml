@@ -2,14 +2,7 @@ kind: Changed
 body: |-
   An issue's repository in Legion's record follows the repository Dispatch resolves it to, in the
   pass that reads the change: a live event, the boot listing, or a hand-over. The daemon replaces
-  the issue's pod, each worker's next task names both repositories, and a saved bundle of the old
-  repository is kept in `workspace_bundles_refused` and never restored into the new clone: the
-  restore compares a bundle with the repository the asking pod was built from, not with the
-  record, so a correction that lands or is undone while a pod starts sends no bundle into a clone
-  of another repository. A saved bundle that names no repository, which an earlier release saved
-  and restored into the next pod, is now refused and kept in `workspace_bundles_refused` too. A
-  microVM pod's kept volume (`keep_volume`) does not drop that bundle: the volume holds the work
-  only in the old repository's workspace, which the new pod does not work in. A correction reads
+  the issue's pod, and each worker's next task names both repositories. A correction reads
   GitHub at that event (both Apps' installation, the spelling and the default branch) and never
   writes from an earlier read. A repository a role App is not installed on waits on the record,
   with its reason, and the issue is told what a person can do; the change is applied at the issue's
@@ -23,8 +16,10 @@ body: |-
   again at 30 s only once no read is owed. A correction read before another pass moved the record
   (a hand-over, or an event that arrives late, after a pass over Dispatch's listing at the same
   sequence) writes nothing either, and the daemon owes that issue the same read, so the record ends
-  on what Dispatch resolves then. The one-time rename pass writes a configured pair's new name on a
-  saved bundle too, so the bundle is still restored once the pair is removed. A worker's task names
-  in its `Working copy:` line the directory of the repository the record holds when the task is
-  sent, not when it was written, so a task held across a correction, and one sent again after it,
-  names the new repository's workspace.
+  on what Dispatch resolves then. A worker's task names
+  in its `Working copy:` line the directory of the repository the process it is sent to was started
+  on, written at each send and recorded at each launch: after a correction a tmux pane goes on in
+  the old repository's workspace until it is launched again, and a pod's roles until the update
+  round's relaunch, so the line names the old workspace until that launch and the new one after
+  it, and a role launched into a live pod is told that pod's workspace.
+  The send rewrites the line after the task's phase heading, not a similar phrase in its title.
