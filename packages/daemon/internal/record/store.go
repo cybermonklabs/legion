@@ -3344,9 +3344,8 @@ func (s *Postgres) BranchQueued(ctx context.Context, tx pgx.Tx, issue string) (b
 }
 
 // OutboxQueued says whether the outbox still holds a row of kind for issue — due, running or
-// backing off. A kind of which one row stands for an issue at a time is queued only where this
-// answers false: the read of the checks (CloseRead) and the publish of the stored wait
-// (CloseWaitPublish), each of which reads the record when it runs.
+// backing off. BranchQueued is its read of the issue_branch kind, whose row's branch may not
+// exist on GitHub yet while the row is running too.
 func (s *Postgres) OutboxQueued(ctx context.Context, tx pgx.Tx, issue string, kind OutboxKind) (bool, error) {
 	var queued bool
 	if err := tx.QueryRow(ctx, `select exists (select 1 from outbox where issue = $1 and kind = $2)`,
@@ -3354,6 +3353,22 @@ func (s *Postgres) OutboxQueued(ctx context.Context, tx pgx.Tx, issue string, ki
 		return false, fmt.Errorf("read whether a %s row of %s is still queued: %w", kind, issue, err)
 	}
 	return queued, nil
+}
+
+// OutboxWaiting says whether the outbox holds a row of kind for issue that no live lease holds:
+// one due or backing off, which reads the record when it runs. A live lease is the one the store
+// reads everywhere (RoleRuns' QueuedSupervise.Running): a token that is set and a lease_until
+// after now(). So a row a lane runs now is not waiting, and a row whose lane died mid-run, whose
+// lease lapsed, is: the lane runs it again from the start. The read of the checks (CloseRead) and
+// the publish of the stored wait (CloseWaitPublish) are queued only where this answers false. The
+// close read applies its fact while its own row is leased, and that fact can owe the next read.
+func (s *Postgres) OutboxWaiting(ctx context.Context, tx pgx.Tx, issue string, kind OutboxKind) (bool, error) {
+	var waiting bool
+	if err := tx.QueryRow(ctx, `select exists (select 1 from outbox where issue = $1 and kind = $2
+		and not coalesce(lease_token <> '' and lease_until > now(), false))`, issue, string(kind)).Scan(&waiting); err != nil {
+		return false, fmt.Errorf("read whether a %s row of %s waits to run: %w", kind, issue, err)
+	}
+	return waiting, nil
 }
 
 // UnfinishedLanes is every lane of project's issues with a row still in the outbox — due, running,

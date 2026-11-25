@@ -2733,9 +2733,13 @@ type Store interface {
 	// OutboxQueued of that kind.
 	BranchQueued(ctx context.Context, tx pgx.Tx, issue string) (bool, error)
 	// OutboxQueued says whether the outbox still holds a row of kind for issue, whatever its lease
-	// or its next_at: the read of a kind of which one row stands for an issue at a time, as one
-	// close_read and one close_wait_publish row do.
+	// or its next_at, the row a lane runs now among them.
 	OutboxQueued(ctx context.Context, tx pgx.Tx, issue string, kind OutboxKind) (bool, error)
+	// OutboxWaiting says whether the outbox holds a row of kind for issue that no live lease holds:
+	// one still to run, which reads the record when it runs. A kind of which one row waits for an
+	// issue at a time, as close_read and close_wait_publish do, is queued only where this answers
+	// false. A row a lane runs now is not waiting, so a fact its run applies can queue the next.
+	OutboxWaiting(ctx context.Context, tx pgx.Tx, issue string, kind OutboxKind) (bool, error)
 	// UnfinishedLanes is each (issue, lane) with a row of project still in the outbox, by issue
 	// then lane.
 	UnfinishedLanes(ctx context.Context, tx pgx.Tx, project string) ([]LaneKey, error)
