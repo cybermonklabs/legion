@@ -1986,6 +1986,33 @@ describe("the questions file", () => {
     expect(read(`answer_holds architect-decision ''`)).toEqual({ code: 1, text: "write-through" });
   });
 
+  // A10's reads take the reply to a control's question as the loop's answer only when it carries
+  // the loop's mark: a control resumes the agent it asked, which may then answer that question
+  // itself, keys and all.
+  test("loop_answer_holds names the loop's mark a reply lacks, then the first key it lacks", () => {
+    const mark = "the loop's mark legion-answer:<id>";
+    // The loop's answer on the asker's topic: its mark and both keys.
+    expect(read(`loop_answer_holds architect-decision "$(inbox_reply event-one)"`)).toEqual({
+      code: 0,
+      text: "",
+    });
+    // The same reply with its mark cut, as an agent's own answer stands: not the loop's.
+    const unmarked = read(
+      `reply=$(inbox_reply event-one); loop_answer_holds architect-decision "\${reply/<!-- legion-answer:a1a1a1a1b2b2b2b2 -->/}"`
+    );
+    expect(unmarked).toEqual({ code: 1, text: mark });
+    expect(read(`loop_answer_holds architect-decision ''`)).toEqual({ code: 1, text: mark });
+    // A reply carrying the mark that lacks a key names the key.
+    expect(read(`loop_answer_holds architect-decision "$(inbox_reply event-two)"`)).toEqual({
+      code: 1,
+      text: "write-through",
+    });
+    // And a question the file does not have holds for none.
+    const unknown = read(`loop_answer_holds no-such-question "$(inbox_reply event-one)"`);
+    expect(unknown.code).toBe(1);
+    expect(unknown.text).toContain("no question no-such-question");
+  });
+
   // The list A10's GPT-6.1 leg asks from after its two cache questions: three questions, the
   // leg's bound, each a question of its own to the GPT-6.1 merger with keys the rig checks.
   test("the live file's a10.reasoning names three questions to the GPT-6.1 merger, each with keys", () => {
@@ -2181,6 +2208,17 @@ describe("Dispatch", () => {
     );
     expect(read("comment_reply_by ALX-3 comment-77 session-architect").code).not.toBe(0);
     expect(read("comment_reply_by ALX-8 comment-77 session-tester").code).not.toBe(0);
+  });
+
+  // Dispatch climbs a reply's `reply_to` to its thread's head, so each of the tester's replies in
+  // comment-100's thread names comment-100: its answer to the mention and, later, A20's answer
+  // under the person's reply. The answer to the comment is the first of them.
+  test("comment_reply_in prints the agent's answer to a comment, not its later reply in the thread", () => {
+    const thread = '"$(dispatch_get comments/comment-100 | jq -c .replies)"';
+    expect(read(`comment_reply_in ${thread} comment-100 session-tester`)).toEqual({
+      code: 0,
+      text: "VIOLET-OTTER-88, and 20 of 20 passed. <!-- legion-answer:c3c3c3c3d4d4d4d4 -->",
+    });
   });
 
   test("record_reply_by reads the reply out of a conversation page's own record", () => {
@@ -2442,6 +2480,15 @@ describe("Dispatch", () => {
       expect(read(`reply_count ${none}`)).toEqual({ code: 0, text: "0" });
       expect(read(`reply_answering ${none} comment-102`).code).not.toBe(0);
     }
+  });
+
+  // comment-120's thread holds the loop's answer under the person's reply comment-122, then a reply
+  // the tester wrote under it once resumed, with no mark. The answer is the first of the two.
+  test("reply_answering prints the answer under a person's reply, not a later reply under it", () => {
+    const replies = "replies=$(thread_replies_by comment-120 session-tester)";
+    const answer = read(`${replies}; reply_answering "$replies" comment-122`);
+    expect(answer.code).toBe(0);
+    expect(answer.text).toContain("<!-- legion-answer:e5e5e5e5f6f6f6f6 -->");
   });
 
   test("rows_hold_paths and scan_rows read the daemon's and Oh My Pi's own rows", () => {

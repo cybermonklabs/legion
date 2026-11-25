@@ -2837,7 +2837,8 @@ check_a9() {
 #   cached input tokens (call_cached_tokens), and its cost line a cache read (cache_read_tokens).
 #   The line's count is summed over the answer's calls, and a later call of an answer reads what
 #   an earlier call of the same answer wrote, so the line alone shows nothing of the first call;
-#   (e) each reply holds its question's answer key;
+#   (e) each reply is the loop's, carrying its mark, and holds its question's answer key
+#   (loop_answer_holds): the merger, resumed after the answers, may answer a question itself;
 #   (f) resumed on its own route (agents-gpt), the merger's first request is for the model and
 #   holds every question asked once each.
 # A transcript with no tool call, or with no reasoning item carrying encrypted content, which
@@ -2943,7 +2944,7 @@ a10_gpt_read() {
     note "GPT-6.1: $prefix-$k ($id): event ${event:-(none)}; its calls on daemon-$store $(jq -c '[.[] | {ordinal, path, model: .request_body.model, status}]' <<<"$calls"), efforts $(calls_efforts "$calls") (want \"$want\"); of the reasoning its earlier steps returned, its later requests carried ${carries[k - 1]} (carried, owed); answered line $(jq -c '{model, calls, cacheReadTokens, cacheWriteTokens, costUSD}' <<<"${line:-null}"); reply: $(said_text "$reply")"
     calls_on_model "$calls" /v1/responses "$gpt_model_id" && [ "$(jq -r '.model // ""' <<<"${line:-null}")" = "$gpt_model" ] || ok_model=0
     efforts_all "$calls" "$want" || ok_effort=0
-    if ! missing=$(answer_holds "$id" "$reply"); then
+    if ! missing=$(loop_answer_holds "$id" "$reply"); then
       ok_keys=0
       unkeyed+="${unkeyed:+; }the reply to $prefix-$k ($id) lacks \"$missing\""
     fi
@@ -2981,18 +2982,20 @@ a10_gpt_read() {
 }
 
 # a10_claude_read E1 E2 MARK1 MARK2 LINE M TRANSCRIPT is the read of A10's Claude Code leg: the
-# pre-change reviewer's answers to E1 and E2, its questions asked under MARK1 and MARK2
-# (question_suffix), hold pre-change-scan's keys; the loop's first request for MARK1 carries the
-# effort TRANSCRIPT last ran at and every thinking signature it holds, byte for byte; LINE, the cost
-# line of the answer one organization served after another, read the conversation from cache; and the
-# resumed reviewer's first request after its first M model calls (claude-<store>) holds the two
-# questions once each. TRANSCRIPT is the file the conversation was kept in just before MARK1's
-# question (sessions/<store>/pre_change-before-<MARK1>.jsonl), never the conversation as it stands:
-# the answers the loop gave since, and the resumed reviewer's turn, write thinking signatures into
-# it (conversation/claude's AppendFile) that no request of the first answer could hold. It sets
+# replies to E1 and E2, the pre-change reviewer's questions asked under MARK1 and MARK2
+# (question_suffix), are the loop's answers, each carrying its mark, and hold pre-change-scan's
+# keys (loop_answer_holds: the reviewer, resumed after them, may answer the questions itself); the
+# loop's first request for MARK1 carries the effort TRANSCRIPT last ran at and every thinking
+# signature it holds, byte for byte; LINE, the cost line of the answer one organization served
+# after another, read the conversation from cache; and the resumed reviewer's first request after
+# its first M model calls (claude-<store>) holds the two questions once each. TRANSCRIPT is the
+# file the conversation was kept in just before MARK1's question
+# (sessions/<store>/pre_change-before-<MARK1>.jsonl), never the conversation as it stands: the
+# answers the loop gave since, and the resumed reviewer's turn, write thinking signatures into it
+# (conversation/claude's AppendFile) that no request of the first answer could hold. It sets
 # read_pass_said to the row's PASS words for what it judged.
 a10_claude_read() {
-  local transcript='' want sigs request effort missing=0 sig resumed counts keys=no
+  local transcript='' want sigs request effort missing=0 sig resumed counts keys=no lacks=''
   [ ! -f "$7" ] || transcript=$(<"$7")
   want=$(transcript_effort "$transcript")
   sigs=$(transcript_signatures "$transcript")
@@ -3003,25 +3006,27 @@ a10_claude_read() {
   done <<<"$sigs"
   resumed=$(first_request_after "claude-$store" "$6")
   counts="$(question_occurrences "$resumed" pre-change-scan "$run_tag" "$3") $(question_occurrences "$resumed" pre-change-scan "$run_tag" "$4")"
-  answer_holds pre-change-scan "$(inbox_reply "$1" 2>/dev/null || true)" >/dev/null &&
-    answer_holds pre-change-scan "$(inbox_reply "$2" 2>/dev/null || true)" >/dev/null && keys=yes
-  read_said="Claude Code: both answers hold their keys: $keys; the transcript's last effort \"$want\", the request effort of the answer to $3) \"$effort\"; its thinking signatures $(grep -c . <<<"$sigs" || true), missing from that request $missing; the cache line read $(cache_read_tokens "$5") tokens; the resumed reviewer's first request (claude-$store, after its first $6 model calls) holds the two questions: $counts"
+  lacks=$(loop_answer_holds pre-change-scan "$(inbox_reply "$1" 2>/dev/null || true)") &&
+    lacks=$(loop_answer_holds pre-change-scan "$(inbox_reply "$2" 2>/dev/null || true)") && keys=yes
+  read_said="Claude Code: both answers the loop's and holding their keys: $keys${lacks:+ (one lacks \"$lacks\")}; the transcript's last effort \"$want\", the request effort of the answer to $3) \"$effort\"; its thinking signatures $(grep -c . <<<"$sigs" || true), missing from that request $missing; the cache line read $(cache_read_tokens "$5") tokens; the resumed reviewer's first request (claude-$store, after its first $6 model calls) holds the two questions: $counts"
   read_pass_said="Claude Code: effort \"$effort\" and each of the transcript's $(grep -c . <<<"$sigs" || true) thinking signatures replayed"
   [ "$keys" = yes ] && [ -n "$want" ] && [ "$effort" = "$want" ] && [ -n "$sigs" ] && [ "$missing" = 0 ] &&
     [ "$(cache_read_tokens "$5")" -gt 0 ] && [ "$counts" = "1 1" ]
 }
 # a10_compaction_read E3 MARKER M is the read of A10's compaction leg: the architect's conversation
-# holds a compaction written as text, the answer to E3, the question asked under MARKER after it,
-# holds in-order-2's keys, and the resumed architect's first request after its first M model calls
-# (agents) holds that question once.
+# holds a compaction written as text; the reply to E3, the question asked under MARKER after it, is
+# the loop's answer, carrying its mark, and holds in-order-2's keys (loop_answer_holds: the
+# architect, resumed after it, may answer the question itself); and the resumed architect's first
+# request after its first M model calls (agents) holds that question once.
 a10_compaction_read() {
-  local compactions reply request after
+  local compactions reply lacks held=no request after
   compactions=$(text_compactions architect 2>/dev/null) || compactions=0
   reply=$(inbox_reply "$1" 2>/dev/null) || reply=
+  lacks=$(loop_answer_holds in-order-2 "$reply") && held=yes
   request=$(first_request_after agents "$3")
   after=$(question_occurrences "$request" in-order-2 "$run_tag" "$2")
-  read_said="compactions written as text in the architect's conversation: ${compactions:-0}; the answer from the compacted conversation: $(said_text "$reply"); the resumed architect's first request (agents, after its first $3 model calls) holds the question asked after the compaction $after time(s)"
-  [ "${compactions:-0}" -gt 0 ] 2>/dev/null && [ -n "$reply" ] && answer_holds in-order-2 "$reply" >/dev/null && [ "$after" = 1 ]
+  read_said="compactions written as text in the architect's conversation: ${compactions:-0}; the answer from the compacted conversation: $(said_text "$reply"), the loop's and holding its keys: $held${lacks:+ (it lacks \"$lacks\")}; the resumed architect's first request (agents, after its first $3 model calls) holds the question asked after the compaction $after time(s)"
+  [ "${compactions:-0}" -gt 0 ] 2>/dev/null && [ "$held" = yes ] && [ "$after" = 1 ]
 }
 
 # check_a10: A10's GPT-6.1 clause (a10_gpt, where the model route serves the model), its Claude

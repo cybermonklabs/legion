@@ -319,6 +319,46 @@
     },
     "replies": []
   },
+  "comments/comment-120": {
+    "comment": {
+      "id": "comment-120",
+      "author": { "id": "user:smoke", "kind": "user" },
+      "reply_to": null,
+      "answers": null,
+      "body": "@tester which marker did your rerun carry? (question tester-closed-thread of run 4242)",
+      "deliveries": []
+    },
+    "replies": [
+      {
+        "id": "comment-121",
+        "author": { "id": "session-tester", "kind": "session" },
+        "reply_to": "comment-120",
+        "answers": "comment-120",
+        "body": "VIOLET-OTTER-88, and 20 of 20 passed. <!-- legion-answer:c3c3c3c3d4d4d4d4 -->"
+      },
+      {
+        "id": "comment-122",
+        "author": { "id": "user:smoke", "kind": "user" },
+        "reply_to": "comment-120",
+        "answers": "comment-121",
+        "body": "Thanks. Which test did that rerun cover, and under which marker? (question tester-thread-reply of run 4242)"
+      },
+      {
+        "id": "comment-123",
+        "author": { "id": "session-tester", "kind": "session" },
+        "reply_to": "comment-120",
+        "answers": "comment-122",
+        "body": "TestQuartzLantern, under VIOLET-OTTER-88. <!-- legion-answer:e5e5e5e5f6f6f6f6 -->"
+      },
+      {
+        "id": "comment-124",
+        "author": { "id": "session-tester", "kind": "session" },
+        "reply_to": "comment-120",
+        "answers": "comment-122",
+        "body": "Resumed, I covered TestQuartzLantern under VIOLET-OTTER-88."
+      }
+    ]
+  },
   "comments/comment-404": { "error": { "code": "NOT_FOUND", "message": "comment not found" } },
   "issues/ALX-3/collaborators": {
     "legion_registry": "available",

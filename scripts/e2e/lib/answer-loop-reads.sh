@@ -1006,6 +1006,19 @@ answer_holds() {
     }
   done <<<"$keys"
 }
+# loop_answer_holds ID REPLY: REPLY is the loop's answer to question ID. It carries the loop's mark
+# (answer_question_id), which every answer the loop posts carries and an agent's own reply does
+# not, and holds every key of ID (answer_holds). It prints what is missing, the mark or the first
+# key REPLY lacks, and nothing when it holds. A control resumes the agent it asked
+# (control_agents), which may then answer the control's question itself, keys and all: that is no
+# answer of the loop's (A10's legs).
+loop_answer_holds() {
+  [ -n "$(answer_question_id "$2")" ] || {
+    printf '%s\n' "the loop's mark legion-answer:<id>"
+    return 1
+  }
+  answer_holds "$1" "$2"
+}
 # recorded_hit FILE TEXT: the questions file records FILE's line TEXT as a hit of A16's search that
 # is not about the answer loop (a16.unrelated_hits, by its whole text or the start of it).
 recorded_hit() {
@@ -1030,11 +1043,13 @@ a16_hit() {
 
 # ---- Dispatch -------------------------------------------------------------------------------------
 # ask_of SESSION ISSUE prints the id of the newest ask SESSION opened on ISSUE, empty for none;
-# ask_reply_after ASK COMMENT SESSION prints SESSION's newest reply on ASK's thread written after
-# the reply COMMENT, a person's (A1's, A6's and their controls'), and fails when none is or when
-# the thread holds no COMMENT: the answer to that reply and to no earlier one, which a thread the
-# loop answered before still holds. The asks route answers an array, so a body that is not one (an
-# error object) names no ask.
+# ask_reply_after ASK COMMENT SESSION prints SESSION's first reply on ASK's thread written after the
+# reply COMMENT, a person's (A1's, A6's and their controls'), and fails when none is or when the
+# thread holds no COMMENT: SESSION's answer to that reply. Not its answer to an earlier reply, which
+# a thread the loop answered before still holds, and not a later post of SESSION's, which an agent
+# resumed since writes on its own ask (A7's control reads A1's thread after the architect's
+# resumes). The asks route answers an array, so a body that is not one (an error object) names no
+# ask.
 ask_of() {
   dispatch_get "issues/$2/asks?thread=1" |
     jq -r --arg s "$1" 'if type == "array" then ([.[] | select(.author.id == $s)] | last | .id? // empty) else empty end' || true
@@ -1042,13 +1057,15 @@ ask_of() {
 ask_reply_after() {
   dispatch_get "asks/$1" | jq -e -r --arg c "$2" --arg s "$3" '[.replies[]?] as $r
     | ([range($r | length) | select($r[.].id == $c)] | first) as $at
-    | if $at == null then empty else ([$r[$at + 1:][] | select(.author.id == $s)] | last | .body? // empty) end'
+    | if $at == null then empty else ([$r[$at + 1:][] | select(.author.id == $s)] | first | .body? // empty) end'
 }
-# comment_reply_in COMMENTS COMMENT SESSION prints SESSION's newest reply to COMMENT in COMMENTS, an
+# comment_reply_in COMMENTS COMMENT SESSION prints SESSION's first reply to COMMENT in COMMENTS, an
 # issue's list of comments (GET issues/<issue>/comments), or fails: the answer a role mention of a
-# stopped agent is answered with (A3).
+# stopped agent is answered with (A3, A21). Dispatch climbs a reply's `reply_to` to its thread's
+# head, so a later reply of SESSION's in COMMENT's thread names COMMENT too: A20's answer, written
+# under the person's reply, or a post of the agent once resumed.
 comment_reply_in() {
-  jq -e -r --arg id "$2" --arg s "$3" '[.[]? | select(.reply_to == $id and .author.id == $s)] | (last | .body? // empty)' <<<"${1:-null}"
+  jq -e -r --arg id "$2" --arg s "$3" '[.[]? | select(.reply_to == $id and .author.id == $s)] | (first | .body? // empty)' <<<"${1:-null}"
 }
 # comment_reply_by ISSUE COMMENT SESSION is comment_reply_in over the list read from Dispatch now.
 comment_reply_by() { comment_reply_in "$(dispatch_get "issues/$1/comments")" "$2" "$3"; }
@@ -1161,10 +1178,11 @@ thread_replies_by() {
 first_reply_id() { jq -r 'if type == "array" then (.[0].id? // empty) else empty end' <<<"${1:-null}" 2>/dev/null || true; }
 # reply_count REPLIES: how many replies the list holds, 0 for a list that is none.
 reply_count() { jq 'if type == "array" then length else 0 end' <<<"${1:-null}" 2>/dev/null || printf '0\n'; }
-# reply_answering REPLIES COMMENT prints the body of the newest of those replies written under
-# COMMENT (its `answers`), and fails while none is: the answer to a person's reply in a thread.
+# reply_answering REPLIES COMMENT prints the body of the first of those replies written under
+# COMMENT (its `answers`), and fails while none is: the answer to a person's reply in a thread, not
+# a later reply the agent, once resumed, writes under it.
 reply_answering() {
-  jq -e -r --arg c "$2" 'if type == "array" then ([.[] | select(.answers == $c)] | last | .body? // empty) else empty end' \
+  jq -e -r --arg c "$2" 'if type == "array" then ([.[] | select(.answers == $c)] | first | .body? // empty) else empty end' \
     <<<"${1:-null}" 2>/dev/null
 }
 # rows_hold_paths ROWS PATH...: the omp_session_files rows hold a row for each PATH.
