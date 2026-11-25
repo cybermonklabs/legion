@@ -986,10 +986,11 @@ type Deps struct {
 	// PhaseRole names the role working the current phase of issue, which the gate's order puts
 	// first among the starts no request raised that wait behind another (podQueue.next): the first
 	// start to reach a pod that holds nothing goes at once whatever its role (PodStarts.grant). It
-	// is the workflow's own reading of the issue record (internal/workflow's OpenPhaseRole), "" for
-	// an issue it does not record, for a phase no role works, and for a phase the architect works
-	// (admitted, accepting), which has no phase worker, so the order falls back to claim.Roles
-	// there. It is read at each start into a gated pod that no request raised, before the gate
+	// is the workflow's own reading of the issue record (the first of internal/workflow's
+	// OpenRoles), "" for an issue it does not record, for a phase no role works, and for a phase
+	// the architect works (admitted, accepting), which has no phase worker, so the order falls back
+	// to claim.Roles there; where a fix runs in such a phase it names the fix's implementer. It is
+	// read at each start into a gated pod that no request raised, before the gate
 	// answers, since the order reads it of no other, bounded by Timeouts.RPC; an error is logged
 	// and read as no phase worker, so the start waits in the order of claim.Roles. nil is a daemon
 	// with no workflow, where no role is the phase worker.
