@@ -1627,8 +1627,8 @@ COPY --chmod=0755 packages/daemon/docker/git /opt/legion/bin/git
 # default command expanded as jj expands them, it also checks that the git on PATH is the wrapper
 # and refuses a push whose configuration names another git, rather than pushing unchecked. It
 # hands a `jj git push` to `legion jj --real /usr/local/bin/jj`, whose push step sets the author of
-# each commit the push sends from that commit's Legion-Role trailer, and which then runs the real
-# jj:
+# a commit the push sends from that commit's Legion-Role trailer, where its rules let it, and which
+# then runs the real jj:
 # packages/daemon/docker/jj.
 COPY --chmod=0755 packages/daemon/docker/jj /opt/legion/bin/jj
 # The pre-push hook the git wrapper points git at, in a root-owned directory no role can write:

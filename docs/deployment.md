@@ -495,8 +495,9 @@ The step decides from reads with `--ignore-working-copy`.
 Where the push takes a snapshot of its own, the step first compares what git did in the
 workspace with what jj last imported, with reads that import nothing: git's `HEAD`
 (`git rev-parse HEAD`) with the first parent of `@` (`jj log -r 'first_parent(@)'`), to which jj
-sets git's `HEAD` after each of its commands, and git's branches (`git for-each-ref refs/heads`)
-with jj's `@git` bookmarks (`jj bookmark list --all-remotes`).
+sets git's `HEAD` after each of its commands, and git's local branches
+(`git for-each-ref refs/heads`) with jj's `@git` bookmarks (`jj bookmark list --all-remotes`).
+It compares no other ref of git's, such as a tag or a remote-tracking branch.
 An unborn `HEAD` where the first parent of `@` is the root commit counts as equal, and a
 conflicted `@git` bookmark as a difference.
 A workspace whose root (`jj workspace root`) holds no `.git`, such as an issue workspace under jj
@@ -504,18 +505,18 @@ A workspace whose root (`jj workspace root`) holds no `.git`, such as an issue w
 Each git read runs the first `git` on `PATH`, the worker image's wrapper in a pod and `bin/git` in
 a pane, with `-C` and the workspace's root; one that fails, but for an unborn `HEAD`, counts as a
 difference, since the snapshot that follows is the one the push takes anyway.
-Where git moved neither `HEAD` nor a branch and the step's first run finds nothing of the push to
-change, no commit and no word, or where the push itself carries `--ignore-working-copy`, every jj
-command of the step runs with `--ignore-working-copy`, so it takes no snapshot, and where it found
-nothing to change it adds no operation; a role's own `--ignore-working-copy` goes to the real push
-alone, and the step then compares nothing.
+Where git moved neither `HEAD` nor a local branch and the step's first run finds nothing of the
+push to change, no commit and no word, or where the push itself carries `--ignore-working-copy`,
+every jj command of the step runs with `--ignore-working-copy`, so it takes no snapshot, and where
+it found nothing to change it adds no operation; a role's own `--ignore-working-copy` goes to the
+real push alone, and the step then compares nothing.
 Otherwise the step takes the one snapshot of the working copy that the push would take itself,
 with the push's own `-R` and `--quiet` arguments and the `--config` and `--config-file` arguments
 that jj keeps for the push, and passes on what that snapshot prints but the warnings that jj
 prints on every command, which the push prints itself.
-It takes that snapshot before its first read where git moved `HEAD` or a branch, so that read
-sees what git did, and otherwise before it changes a commit or a word of the push, after which it
-reads what the push sends again and acts on no commit id it read before the snapshot.
+It takes that snapshot before its first read where git moved `HEAD` or a local branch, so that
+read sees what git did, and otherwise before it changes a commit or a word of the push, after
+which it reads what the push sends again and acts on no commit id it read before the snapshot.
 Each of its other commands runs with `--ignore-working-copy`, and so does the real push, which
 then takes no second snapshot: every id the step reads after its snapshot, `@` and each
 descendant of `@` included, stays valid through the push, a warning that a snapshot prints, such
@@ -587,17 +588,19 @@ jj rebases such a commit when it sits above a commit that the step rewrote, whic
 commit id and the step's identity as committer, and it keeps its author.
 A commit with an empty author whose trailer names a role of the table gets that role's author
 too, and `jj git push` still refuses one with no such trailer.
-The step adds no refusal.
+The step adds no refusal of its own: a jj command of the step that fails stops the push with
+jj's error.
 Where it cannot read the dry run, it prints one line, and the push runs as written, but where a
 metaedit of the step ran first, such as the fill of an empty author, after which each revision
 argument is held to its set as above, and with `--ignore-working-copy` where the step took its
 snapshot.
-A commit that the push reaches only through what git did in a colocated workspace, which no jj
-command has imported yet, such as one that a `git commit`, a `git commit --amend` or a
-`git rebase` made, or one under a branch that git moved, is no exception: git moved `HEAD` or a
-branch, so the step takes its snapshot before its first read, which imports git's `HEAD` and refs
-in jj's own order and keeps the working copy current, and the step reads that commit and sets its
-author as for any other.
+A commit that the push reaches only through git's `HEAD` or a local branch that git moved in a
+colocated workspace, which no jj command has imported yet, such as one that a `git commit`, a
+`git commit --amend` or a `git rebase` made, is no exception: the step takes its snapshot before
+its first read, which imports git's `HEAD` and refs in jj's own order and keeps the working copy
+current, and the step reads that commit and sets its author by the rules above, as for any other.
+A commit that only another ref of git's names, such as a tag, is outside that comparison: the step
+takes no snapshot for it, and the commit keeps the author that jj alone leaves it.
 `jj git import` is not that step: with `--ignore-working-copy` it imports no commit that git made
 on jj's detached `HEAD`, and after a `git rebase` of the branch under `@` it rewrites `@` and
 leaves the working copy that every role shares stale.
@@ -611,8 +614,8 @@ A commit's timestamps are whole seconds, so a rewrite in the same second as an e
 the same commit asks jj for a commit that exists already, which jj refuses.
 In a retry of a refused push that names a hidden commit of a divergent change, which the first
 push's rewrite replaced, the step takes the commit that the rewrite made, and the push sends it.
-In any other case, such as a retry after a `jj undo`, the step prints one line, and the push runs
-as after a dry run that the step cannot read.
+In any other case, such as a retry after a `jj undo` or a `jj op restore` in the same second, the
+push stops with jj's error and exit status before the real push runs, and sends nothing.
 A process with no table runs no step, such as a controller or a pane of an earlier release.
 Where a host's jj wrapper runs `bin/jj` again, `legion jj` follows the loop rule of `legion git`
 above to choose the `jj` it runs, and a command that comes back with the words `legion jj` ran it
