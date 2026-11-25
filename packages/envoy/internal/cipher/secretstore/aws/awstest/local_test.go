@@ -11,6 +11,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager/types"
 
+	"github.com/sjawhar/envoy/internal/cipher/secretstore"
 	awsstore "github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
 )
 
@@ -226,11 +227,11 @@ func TestLocalNumbersAValueAnewWhenItsBytesChange(t *testing.T) {
 	store := awsstore.Store{Client: l, KMS: l, KeyARN: "arn:aws:kms:us-east-1:111122223333:key/k"}
 	version := func(step string) string {
 		t.Helper()
-		described, err := store.Describe(ctx, name)
+		described, err := store.Describe(ctx, name, secretstore.ReadOptions{})
 		if err != nil {
 			t.Fatalf("%s: Describe: %v", step, err)
 		}
-		listed, err := store.List(ctx, "dev/")
+		listed, err := store.List(ctx, "dev/", secretstore.ReadOptions{})
 		if err != nil || len(listed) != 1 || listed[0].Version != described.Version {
 			t.Fatalf("%s: List = %+v, %v; want the version Describe names, %q", step, listed, err, described.Version)
 		}

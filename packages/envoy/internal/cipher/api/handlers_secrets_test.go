@@ -340,7 +340,7 @@ type abandoningDescriber struct {
 	cancel context.CancelFunc
 }
 
-func (d abandoningDescriber) Describe(ctx context.Context, _ string) (secretstore.Listing, error) {
+func (d abandoningDescriber) Describe(ctx context.Context, _ string, _ secretstore.ReadOptions) (secretstore.Listing, error) {
 	d.cancel()
 	if err := ctx.Err(); err != nil {
 		return secretstore.Listing{}, fmt.Errorf("operation error Secrets Manager: DescribeSecret, %w", err)

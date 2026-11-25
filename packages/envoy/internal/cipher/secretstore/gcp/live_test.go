@@ -15,7 +15,6 @@ import (
 	"cloud.google.com/go/secretmanager/apiv1/secretmanagerpb"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-	"google.golang.org/protobuf/types/known/fieldmaskpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/sjawhar/envoy/internal/cipher/secretstore"
@@ -108,7 +107,7 @@ func TestGCPLive(t *testing.T) {
 	var byID map[string]secretstore.Listing
 	deadline := time.Now().Add(90 * time.Second)
 	for {
-		listings, err := store.List(ctx, prefix)
+		listings, err := store.List(ctx, prefix, secretstore.ReadOptions{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -144,17 +143,17 @@ func TestGCPLive(t *testing.T) {
 	if ls := byID[disabled]; !onKey(ls) || ls.HasCurrentValue {
 		t.Fatalf("disabled = %+v; want on the key with no value", ls)
 	}
-	if _, err := store.Describe(ctx, expiring); !errors.Is(err, secretstore.ErrNotFound) {
+	if _, err := store.Describe(ctx, expiring, secretstore.ReadOptions{}); !errors.Is(err, secretstore.ErrNotFound) {
 		t.Fatalf("Describe(expiring) = %v, want ErrNotFound", err)
 	}
 	if _, err := store.Read(ctx, expiring); !errors.Is(err, secretstore.ErrNotFound) {
 		t.Fatalf("Read(expiring) = %v, want ErrNotFound: Secret Manager still holds its value, and the store must not release it", err)
 	}
 
-	if ls, err := store.Describe(ctx, served); err != nil || !onKey(ls) || !ls.HasCurrentValue {
+	if ls, err := store.Describe(ctx, served, secretstore.ReadOptions{}); err != nil || !onKey(ls) || !ls.HasCurrentValue {
 		t.Fatalf("Describe(served) = %+v, %v", ls, err)
 	}
-	if _, err := store.Describe(ctx, prefix+"missing"); !errors.Is(err, secretstore.ErrNotFound) {
+	if _, err := store.Describe(ctx, prefix+"missing", secretstore.ReadOptions{}); !errors.Is(err, secretstore.ErrNotFound) {
 		t.Fatalf("Describe(missing) = %v, want ErrNotFound", err)
 	}
 	if v, err := store.Read(ctx, served); err != nil || v != "live-value" {
@@ -249,16 +248,6 @@ func TestGCPLiveRunsTheStoreContract(t *testing.T) {
 						t.Fatalf("create %s: %v", id, err)
 					}
 					held[name] = true
-				} else if f.Deleted {
-					// A held secret is replaced as the fixture says; scheduling its deletion is the
-					// one change the contract makes to one.
-					update := &secretmanagerpb.UpdateSecretRequest{
-						Secret:     &secretmanagerpb.Secret{Name: name, Expiration: &secretmanagerpb.Secret_ExpireTime{ExpireTime: timestamppb.New(time.Now().Add(time.Hour))}},
-						UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"expire_time"}},
-					}
-					if _, err := client.UpdateSecret(ctx, update); err != nil {
-						t.Fatalf("schedule the deletion of %s: %v", id, err)
-					}
 				}
 				if f.Value != "" {
 					if _, err := client.AddSecretVersion(ctx, &secretmanagerpb.AddSecretVersionRequest{Parent: name, Payload: &secretmanagerpb.SecretPayload{Data: []byte(f.Value)}}); err != nil {

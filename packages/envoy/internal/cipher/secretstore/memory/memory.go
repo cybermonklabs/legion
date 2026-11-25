@@ -39,7 +39,7 @@ type Secret struct {
 	// CreatedAt is when it was created, unset where nobody says.
 	CreatedAt *time.Time `json:"created_at,omitempty"`
 	// DeletedAt, when set, is when it was scheduled for deletion: List leaves it out and Describe
-	// and Read answer ErrNotFound.
+	// and Read answer ErrNotFound, unless a read asks for deleted secrets.
 	DeletedAt *time.Time `json:"deleted_at,omitempty"`
 }
 
@@ -56,11 +56,15 @@ type Store struct {
 	// empty for a New store.
 	path string
 	file []byte
+	// next is the error the next call of each kind answers (FailNext), held the error every call
+	// of each kind answers until cleared (Fail), and calls the calls of each kind made so far.
+	next, held map[string]error
+	calls      map[string]int
 }
 
 // New holds secrets.
 func New(secrets ...Secret) *Store {
-	s := &Store{secrets: map[string]Secret{}, version: map[string]uint64{}}
+	s := &Store{secrets: map[string]Secret{}, version: map[string]uint64{}, next: map[string]error{}, held: map[string]error{}, calls: map[string]int{}}
 	for _, secret := range secrets {
 		s.hold(secret)
 	}
@@ -97,6 +101,53 @@ func (s *Store) Delete(id string) {
 	delete(s.version, id)
 }
 
+// FailNext makes the next call of kind call - "list", "describe" or "read" - answer err.
+func (s *Store) FailNext(call string, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.next[call] = err
+}
+
+// Fail makes every later call of kind call answer err, until Fail(call, nil).
+func (s *Store) Fail(call string, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err == nil {
+		delete(s.held, call)
+		return
+	}
+	s.held[call] = err
+}
+
+// Calls is how many calls of kind call the store has been asked so far, refused ones included; ""
+// counts every call.
+func (s *Store) Calls(call string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if call != "" {
+		return s.calls[call]
+	}
+	total := 0
+	for _, n := range s.calls {
+		total += n
+	}
+	return total
+}
+
+// begin counts one call of kind call and answers the error FailNext or Fail set for it, or the
+// followed file's failure, or nil. The caller holds s.mu.
+func (s *Store) begin(call string) error {
+	s.calls[call]++
+	if err, ok := s.next[call]; ok {
+		delete(s.next, call)
+		return err
+	}
+	if err, ok := s.held[call]; ok {
+		return err
+	}
+	return s.follow()
+}
+
 // hold makes secret the one of its name, numbering its value against the one that name held. The
 // caller holds s.mu, or is building s.
 func (s *Store) hold(secret Secret) {
@@ -109,7 +160,7 @@ func (s *Store) hold(secret Secret) {
 }
 
 // listing is the Listing of the secret held at id. The caller holds s.mu.
-func (s *Store) listing(id string) secretstore.Listing {
+func (s *Store) listing(id string, opts secretstore.ReadOptions) secretstore.Listing {
 	secret := s.secrets[id]
 	tags := maps.Clone(secret.Tags)
 	if tags == nil {
@@ -126,40 +177,49 @@ func (s *Store) listing(id string) secretstore.Listing {
 	if secret.CreatedAt != nil {
 		ls.Created = *secret.CreatedAt
 	}
+	if secret.DeletedAt != nil {
+		ls.Deleted = *secret.DeletedAt
+	}
+	if opts.Versions {
+		ls.Versions = map[string][]string{}
+		if ls.Version != "" {
+			ls.Versions[ls.Version] = []string{"CURRENT"}
+		}
+	}
 	return ls
 }
 
 // List answers every secret whose full name starts with prefix, leaving out one scheduled for
-// deletion.
-func (s *Store) List(_ context.Context, prefix string) ([]secretstore.Listing, error) {
+// deletion unless opts.IncludeDeleted asks for it.
+func (s *Store) List(_ context.Context, prefix string, opts secretstore.ReadOptions) ([]secretstore.Listing, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := s.follow(); err != nil {
+	if err := s.begin("list"); err != nil {
 		return nil, err
 	}
 	var listings []secretstore.Listing
 	for id, secret := range s.secrets {
-		if !strings.HasPrefix(id, prefix) || secret.DeletedAt != nil {
+		if !strings.HasPrefix(id, prefix) || secret.DeletedAt != nil && !opts.IncludeDeleted {
 			continue
 		}
-		listings = append(listings, s.listing(id))
+		listings = append(listings, s.listing(id, opts))
 	}
 	return listings, nil
 }
 
 // Describe answers the secret whose full name is id, or ErrNotFound for one the store does not
-// hold and one scheduled for deletion.
-func (s *Store) Describe(_ context.Context, id string) (secretstore.Listing, error) {
+// hold and, unless opts.IncludeDeleted asks for it, one scheduled for deletion.
+func (s *Store) Describe(_ context.Context, id string, opts secretstore.ReadOptions) (secretstore.Listing, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := s.follow(); err != nil {
+	if err := s.begin("describe"); err != nil {
 		return secretstore.Listing{}, err
 	}
 	secret, ok := s.secrets[id]
-	if !ok || secret.DeletedAt != nil {
+	if !ok || secret.DeletedAt != nil && !opts.IncludeDeleted {
 		return secretstore.Listing{}, secretstore.ErrNotFound
 	}
-	return s.listing(id), nil
+	return s.listing(id, opts), nil
 }
 
 // Read answers the value of the secret source names: ErrNotFound for a source no memory secret has,
@@ -167,7 +227,7 @@ func (s *Store) Describe(_ context.Context, id string) (secretstore.Listing, err
 func (s *Store) Read(_ context.Context, source string) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := s.follow(); err != nil {
+	if err := s.begin("read"); err != nil {
 		return "", err
 	}
 	id, ok := strings.CutPrefix(source, sourcePrefix)

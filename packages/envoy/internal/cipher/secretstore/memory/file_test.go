@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/cipher/secretstore"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore/memory"
 )
 
@@ -21,7 +22,7 @@ func writeFile(t *testing.T, path, content string) {
 // versions is every listed secret's Version under prefix, by ID.
 func versions(t *testing.T, store *memory.Store) map[string]string {
 	t.Helper()
-	listings, err := store.List(context.Background(), prefix)
+	listings, err := store.List(context.Background(), prefix, secretstore.ReadOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}

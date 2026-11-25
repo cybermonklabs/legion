@@ -93,7 +93,7 @@ func TestSourceFormatRecordedOnMain(t *testing.T) {
 			record := filepath.Join("testdata", "source-recorded-on-main-"+row.store+".json")
 			store := row.open(t, row.prefix)
 			ctx := context.Background()
-			listings, err := store.List(ctx, row.prefix)
+			listings, err := store.List(ctx, row.prefix, secretstore.ReadOptions{})
 			if err != nil {
 				t.Fatalf("List: %v", err)
 			}
@@ -114,7 +114,7 @@ func TestSourceFormatRecordedOnMain(t *testing.T) {
 					t.Fatalf("%s is not served (refused: %+v); want each recorded secret served", name, set.Refused)
 				}
 				got[name] = recordedSource{Listed: ls.Source, Source: secret.Source}
-				described, err := store.Describe(ctx, ls.ID)
+				described, err := store.Describe(ctx, ls.ID, secretstore.ReadOptions{})
 				if err != nil {
 					t.Fatalf("Describe %s: %v", ls.ID, err)
 				}

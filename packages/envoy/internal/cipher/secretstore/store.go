@@ -50,17 +50,27 @@ type Reader interface {
 	Read(ctx context.Context, source string) (string, error)
 }
 
+// ReadOptions asks List and Describe for more than the policy reads. The broker sets neither; the
+// agent-secrets CLI's list and show do.
+type ReadOptions struct {
+	// IncludeDeleted also answers a secret scheduled for deletion, with Listing.Deleted set.
+	IncludeDeleted bool
+	// Versions fills Listing.Versions, which may cost a call of its own per secret.
+	Versions bool
+}
+
 // Store is what the broker reads agent secrets with. List and Describe answer the metadata the
 // policy decides from, and Read answers a granted value; nothing here writes a secret.
 type Store interface {
 	Reader
 	// List answers every secret whose full name starts with prefix, byte for byte, in no promised
-	// order. A secret scheduled for deletion is one the store does not hold: List leaves it out,
-	// Describe and Read answer ErrNotFound for it.
-	List(ctx context.Context, prefix string) ([]Listing, error)
-	// Describe answers one secret by its full name, or ErrNotFound when none exists or it is
-	// scheduled for deletion.
-	Describe(ctx context.Context, id string) (Listing, error)
+	// order. A secret scheduled for deletion is one the store does not hold unless
+	// opts.IncludeDeleted asks for it: List leaves it out, Describe and Read answer ErrNotFound for
+	// it.
+	List(ctx context.Context, prefix string, opts ReadOptions) ([]Listing, error)
+	// Describe answers one secret by its full name, or ErrNotFound when none exists or, unless
+	// opts.IncludeDeleted asks for it, it is scheduled for deletion.
+	Describe(ctx context.Context, id string, opts ReadOptions) (Listing, error)
 	// ValidName refuses, before any call is made, a full name no secret of this store can carry:
 	// one past its length limit, or outside its character set. The error names the rule and never
 	// wraps a lookup's failure.
@@ -103,4 +113,13 @@ type Listing struct {
 	// `agent-secrets secret create` made before its value and has not given one. A secret with any
 	// version (a disabled one included), or without the label, is not.
 	Unfilled bool
+	// LastChanged is when the secret was last changed; Deleted is the deletion time the store
+	// names for a secret scheduled for deletion (when the delete ran, or when the store will
+	// remove it), answered only to a read with ReadOptions.IncludeDeleted; and EarliestPurge is
+	// the earliest moment the store may remove it for good, where that is not Deleted itself. Each
+	// is the zero time where the store answers none.
+	LastChanged, Deleted, EarliestPurge time.Time
+	// Versions maps each version id to its labels or state, as the store names them; nil unless
+	// the read set ReadOptions.Versions. Version, when set, is one of its keys.
+	Versions map[string][]string
 }

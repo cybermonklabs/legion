@@ -318,7 +318,7 @@ func TestARereadAnswersACallerWithNoSessionAtOnceAndRereadsAfter(t *testing.T) {
 // failingDescriber fails every Describe as a throttled store does.
 type failingDescriber struct{ secretstore.Store }
 
-func (failingDescriber) Describe(context.Context, string) (secretstore.Listing, error) {
+func (failingDescriber) Describe(context.Context, string, secretstore.ReadOptions) (secretstore.Listing, error) {
 	return secretstore.Listing{}, &throttled{}
 }
 
@@ -358,7 +358,7 @@ func TestARereadNoCallerWaitsOnLogsTheStoresFailure(t *testing.T) {
 // panickingDescriber panics on every Describe, as a store client with a defect of its own would.
 type panickingDescriber struct{ secretstore.Store }
 
-func (panickingDescriber) Describe(context.Context, string) (secretstore.Listing, error) {
+func (panickingDescriber) Describe(context.Context, string, secretstore.ReadOptions) (secretstore.Listing, error) {
 	panic("a store client's own defect")
 }
 

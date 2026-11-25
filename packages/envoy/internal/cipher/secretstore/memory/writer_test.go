@@ -1,0 +1,130 @@
+package memory_test
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sync"
+	"testing"
+
+	"github.com/sjawhar/envoy/internal/cipher/secretstore"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/memory"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/secretstoretest"
+)
+
+// openWriter writes an empty memory secrets file of t's own and opens the memory store's writer
+// over it, as the CLI opens it from the broker's settings.
+func openWriter(t *testing.T) (*memory.Writer, string) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "memory-secrets.json")
+	writeFile(t, path, `{"secrets": []}`)
+	w, err := memory.Backend{}.OpenWriter(context.Background(), secretstore.Settings{
+		Store: memory.Name, Prefix: prefix, Fields: map[string]string{"memory_secrets_file": path},
+	}, secretstore.WriterOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = w.Close() })
+	return w.(*memory.Writer), path
+}
+
+// TestMemoryRunsTheWriterContract runs the writer contract on the memory store's writer over a
+// file of its own; another writer's retag is a second writer over the same file.
+func TestMemoryRunsTheWriterContract(t *testing.T) {
+	secretstoretest.WriterContract(t, "memory", func(t *testing.T) secretstoretest.WriterRig {
+		w, path := openWriter(t)
+		other, err := memory.Backend{}.OpenWriter(context.Background(), secretstore.Settings{
+			Store: memory.Name, Prefix: prefix, Fields: map[string]string{"memory_secrets_file": path},
+		}, secretstore.WriterOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = other.Close() })
+		return secretstoretest.WriterRig{
+			Writer: w, Prefix: prefix,
+			LoseNextAnswer: w.LoseNext,
+			DenyNext:       w.DenyNext,
+			Retag: func(t *testing.T, id string, tags map[string]string) {
+				t.Helper()
+				held, err := other.CurrentTags(context.Background(), id)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := other.SetTags(context.Background(), id, held, tags, nil); err != nil {
+					t.Fatalf("another writer's retag: %v", err)
+				}
+			},
+		}
+	})
+}
+
+// TestAWriteNeverExposesAPartialFile: a reader of the file beside 50 writes sees only whole files:
+// every read parses, and holds every secret written before it began.
+func TestAWriteNeverExposesAPartialFile(t *testing.T) {
+	w, path := openWriter(t)
+	ctx := context.Background()
+	var written sync.Map
+	done := make(chan struct{})
+	var problems []string
+	var mu sync.Mutex
+	go func() {
+		defer close(done)
+		for i := range 50 {
+			id := fmt.Sprintf("%skey-%02d", prefix, i)
+			c := w.PrepareCreate(id, map[string]string{"owner": "shared", "tier": "agent"})
+			if _, err := c.Begin(ctx); err != nil {
+				mu.Lock()
+				problems = append(problems, err.Error())
+				mu.Unlock()
+				return
+			}
+			if err := c.Store(ctx, "v"); err != nil {
+				mu.Lock()
+				problems = append(problems, err.Error())
+				mu.Unlock()
+				return
+			}
+			written.Store(id, true)
+		}
+	}()
+	reads := 0
+	for {
+		select {
+		case <-done:
+			mu.Lock()
+			defer mu.Unlock()
+			if len(problems) > 0 {
+				t.Fatalf("a write failed: %v", problems)
+			}
+			if reads == 0 {
+				t.Fatal("UNKNOWN: the reader read nothing beside the writes")
+			}
+			return
+		default:
+		}
+		var before []string
+		written.Range(func(k, _ any) bool { before = append(before, k.(string)); return true })
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var f struct {
+			Secrets []memory.Secret `json:"secrets"`
+		}
+		if err := json.Unmarshal(data, &f); err != nil {
+			t.Fatalf("a read beside the writes found a partial file (%d bytes): %v", len(data), err)
+		}
+		names := map[string]bool{}
+		for _, s := range f.Secrets {
+			names[s.Name] = true
+		}
+		for _, id := range before {
+			if !names[id] {
+				t.Fatalf("a read lost %s, which a write finished before it began", id)
+			}
+		}
+		reads++
+	}
+}
