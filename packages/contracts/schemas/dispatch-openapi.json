@@ -45,6 +45,94 @@
         "x-auth": "public"
       }
     },
+    "/api/v1/_test/holds/neighbourhood-read": {
+      "put": {
+        "description": "Test hook: hold this process's next graph neighbourhood read for a Go duration.",
+        "operationId": "putApiV1TestHoldsNeighbourhoodRead",
+        "parameters": [
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RelatedReadHoldInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "204": {
+            "description": "No Content"
+          }
+        },
+        "x-auth": "any",
+        "x-test-hook": true,
+        "x-write-scope": "deployment"
+      }
+    },
+    "/api/v1/_test/holds/related-search": {
+      "put": {
+        "description": "Test hook: hold this process's next related search's keyword stage for a Go duration.",
+        "operationId": "putApiV1TestHoldsRelatedSearch",
+        "parameters": [
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RelatedReadHoldInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "204": {
+            "description": "No Content"
+          }
+        },
+        "x-auth": "any",
+        "x-test-hook": true,
+        "x-write-scope": "deployment"
+      }
+    },
     "/api/v1/agents": {
       "get": {
         "description": "Live sessions with roles, capabilities, open asks, and last activity, from Dispatch's copy of the Envoy listener's session list, at most 5 s old.",
@@ -5658,7 +5746,7 @@
     },
     "/api/v1/issues/{key}": {
       "get": {
-        "description": "Read an issue with its open asks, primary document, children, and progress: {tasks, children}, its spec's task-list items (`- [ ]` / `- [x]`, nested lists included) and its direct children as {done, total}, each null when it has none. blocks is the keys of the issues whose blocked_by names this one, sorted, [] when none; GET /api/v1/issues lists no blocks. comment_count is how many comments GET /api/v1/issues/{key}/comments lists, left out when the issue holds none.",
+        "description": "Read an issue with its open asks, primary document, children, and progress: {tasks, children}, its spec's task-list items (`- [ ]` / `- [x]`, nested lists included) and its direct children as {done, total}, each null when it has none. queries lists {query, artifact_id, takes, subtree} for its query nodes, in spec, verification, plan, decisions order. On an unconverted issue the existing role documents answer in that shape. blocks is the keys of the issues whose blocked_by names this one, sorted, [] when none; GET /api/v1/issues lists no blocks. comment_count is how many comments GET /api/v1/issues/{key}/comments lists, left out when the issue holds none.",
         "operationId": "getApiV1IssuesByKey",
         "parameters": [
           {
@@ -15779,7 +15867,10 @@
             "$ref": "#/components/schemas/Actor"
           },
           "carried_from_version": {
-            "type": "integer"
+            "type": [
+              "null",
+              "integer"
+            ]
           },
           "content_sha256": {
             "type": "string"
@@ -15836,7 +15927,10 @@
             "$ref": "#/components/schemas/Actor"
           },
           "carried_from_version": {
-            "type": "integer"
+            "type": [
+              "null",
+              "integer"
+            ]
           },
           "content_sha256": {
             "type": "string"
@@ -16098,7 +16192,10 @@
             ]
           },
           "carried_from_version": {
-            "type": "integer"
+            "type": [
+              "null",
+              "integer"
+            ]
           },
           "content_sha256": {
             "type": [
@@ -16165,7 +16262,10 @@
             ]
           },
           "carried_from_version": {
-            "type": "integer"
+            "type": [
+              "null",
+              "integer"
+            ]
           },
           "content_sha256": {
             "type": [
@@ -25684,6 +25784,12 @@
           "project": {
             "type": "string"
           },
+          "queries": {
+            "items": {
+              "$ref": "#/components/schemas/IssueQuery"
+            },
+            "type": "array"
+          },
           "rank": {
             "type": "string"
           },
@@ -25813,6 +25919,39 @@
           "candidates",
           "code",
           "error"
+        ],
+        "type": "object"
+      },
+      "IssueNeighbour": {
+        "properties": {
+          "href": {
+            "type": "string"
+          },
+          "key": {
+            "type": "string"
+          },
+          "shares": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "status": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "status",
+          "title",
+          "shares",
+          "href"
         ],
         "type": "object"
       },
@@ -26045,6 +26184,41 @@
         "required": [
           "issue",
           "nodes"
+        ],
+        "type": "object"
+      },
+      "IssueQuery": {
+        "properties": {
+          "artifact_id": {
+            "type": "string"
+          },
+          "query": {
+            "enum": [
+              "spec",
+              "verification",
+              "plan",
+              "decisions"
+            ],
+            "type": "string"
+          },
+          "subtree": {
+            "type": "string"
+          },
+          "takes": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "query",
+          "artifact_id",
+          "takes",
+          "subtree"
         ],
         "type": "object"
       },
@@ -27089,7 +27263,10 @@
             "items": {
               "type": "string"
             },
-            "type": "array"
+            "type": [
+              "array",
+              "null"
+            ]
           },
           "done": {
             "$ref": "#/components/schemas/IssueTreePlan"
@@ -27119,7 +27296,10 @@
             "items": {
               "type": "string"
             },
-            "type": "array"
+            "type": [
+              "array",
+              "null"
+            ]
           },
           "start": {
             "$ref": "#/components/schemas/IssueTreePlan"
@@ -27129,6 +27309,8 @@
           "position",
           "needs",
           "size",
+          "skills",
+          "docs",
           "cycle"
         ],
         "type": "object"
@@ -29517,6 +29699,25 @@
           "to",
           "checks",
           "next_after"
+        ],
+        "type": "object"
+      },
+      "NeighbourhoodCheck": {
+        "properties": {
+          "missing": {
+            "type": "string"
+          },
+          "outcome": {
+            "enum": [
+              "made",
+              "none",
+              "not_made"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "outcome"
         ],
         "type": "object"
       },
@@ -32088,6 +32289,17 @@
         ],
         "type": "object"
       },
+      "RelatedReadHoldInput": {
+        "properties": {
+          "duration": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "duration"
+        ],
+        "type": "object"
+      },
       "RenameArtifactInput": {
         "properties": {
           "name": {
@@ -33992,6 +34204,15 @@
           },
           "near_copy_check": {
             "type": "string"
+          },
+          "neighbourhood": {
+            "$ref": "#/components/schemas/NeighbourhoodCheck"
+          },
+          "neighbours": {
+            "items": {
+              "$ref": "#/components/schemas/IssueNeighbour"
+            },
+            "type": "array"
           },
           "other_projects": {
             "items": {

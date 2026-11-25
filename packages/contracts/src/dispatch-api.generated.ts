@@ -18,6 +18,40 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/_test/holds/neighbourhood-read": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    /** @description Test hook: hold this process's next graph neighbourhood read for a Go duration. */
+    put: operations["putApiV1TestHoldsNeighbourhoodRead"];
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/_test/holds/related-search": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    /** @description Test hook: hold this process's next related search's keyword stage for a Go duration. */
+    put: operations["putApiV1TestHoldsRelatedSearch"];
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/agents": {
     parameters: {
       query?: never;
@@ -1417,7 +1451,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Read an issue with its open asks, primary document, children, and progress: {tasks, children}, its spec's task-list items (`- [ ]` / `- [x]`, nested lists included) and its direct children as {done, total}, each null when it has none. blocks is the keys of the issues whose blocked_by names this one, sorted, [] when none; GET /api/v1/issues lists no blocks. comment_count is how many comments GET /api/v1/issues/{key}/comments lists, left out when the issue holds none. */
+    /** @description Read an issue with its open asks, primary document, children, and progress: {tasks, children}, its spec's task-list items (`- [ ]` / `- [x]`, nested lists included) and its direct children as {done, total}, each null when it has none. queries lists {query, artifact_id, takes, subtree} for its query nodes, in spec, verification, plan, decisions order. On an unconverted issue the existing role documents answer in that shape. blocks is the keys of the issues whose blocked_by names this one, sorted, [] when none; GET /api/v1/issues lists no blocks. comment_count is how many comments GET /api/v1/issues/{key}/comments lists, left out when the issue holds none. */
     get: operations["getApiV1IssuesByKey"];
     put?: never;
     post?: never;
@@ -3835,7 +3869,7 @@ export interface components {
       ask_id?: string;
       at?: string;
       by?: components["schemas"]["Actor"];
-      carried_from_version?: number;
+      carried_from_version?: null | number;
       content_sha256?: string;
       content_sha256_source?: string;
       documents?: components["schemas"]["AskApprovalDocument"][];
@@ -3852,7 +3886,7 @@ export interface components {
       ask_id?: string;
       at?: string;
       by?: components["schemas"]["Actor"];
-      carried_from_version?: number;
+      carried_from_version?: null | number;
       content_sha256?: string;
       content_sha256_source?: string;
       documents?: components["schemas"]["AskApprovalDocument"][];
@@ -3923,7 +3957,7 @@ export interface components {
       actor: components["schemas"]["Actor"];
       artifact_id: string;
       ask_id: null | string;
-      carried_from_version?: number;
+      carried_from_version?: null | number;
       content_sha256: null | string;
       content_sha256_source: null | string;
       /** Format: date-time */
@@ -3938,7 +3972,7 @@ export interface components {
       actor: components["schemas"]["Actor"];
       artifact_id: string;
       ask_id: null | string;
-      carried_from_version?: number;
+      carried_from_version?: null | number;
       content_sha256: null | string;
       content_sha256_source: null | string;
       /** Format: date-time */
@@ -6078,6 +6112,7 @@ export interface components {
       priority: null | number;
       progress: components["schemas"]["IssueProgress"];
       project: string;
+      queries?: components["schemas"]["IssueQuery"][];
       rank: string;
       referenced_by_count: number;
       repo: null | string;
@@ -6098,6 +6133,13 @@ export interface components {
       candidates: components["schemas"]["DuplicateCandidate"][] | null;
       code: string;
       error: string;
+    };
+    IssueNeighbour: {
+      href: string;
+      key: string;
+      shares: string[] | null;
+      status: string;
+      title: string;
     };
     IssueOpenAsk: {
       anchor: components["schemas"]["Anchor"] | null;
@@ -6147,6 +6189,13 @@ export interface components {
     IssueProposed: {
       issue: string;
       nodes: components["schemas"]["ProposedNode"][] | null;
+    };
+    IssueQuery: {
+      artifact_id: string;
+      /** @enum {string} */
+      query: "spec" | "verification" | "plan" | "decisions";
+      subtree: string;
+      takes: string[] | null;
     };
     IssueRankInput: {
       after?: null | string;
@@ -6377,12 +6426,12 @@ export interface components {
     };
     IssueTreePlan: {
       cycle: boolean;
-      docs?: string[];
+      docs: string[] | null;
       done?: components["schemas"]["IssueTreePlan"];
       needs: components["schemas"]["IssueTreeHalfEnd"][] | null;
       position: null | number;
       size: null | string;
-      skills?: string[];
+      skills: string[] | null;
       start?: components["schemas"]["IssueTreePlan"];
     };
     IssueTreeRead: {
@@ -6946,6 +6995,11 @@ export interface components {
       project: string;
       /** Format: date-time */
       to: null | string;
+    };
+    NeighbourhoodCheck: {
+      missing?: string;
+      /** @enum {string} */
+      outcome: "made" | "none" | "not_made";
     };
     NewIssueSettings: {
       label: string;
@@ -7542,6 +7596,9 @@ export interface components {
       total: number;
       total_ms: components["schemas"]["RelatedCheckTiming"];
     };
+    RelatedReadHoldInput: {
+      duration: string;
+    };
     RenameArtifactInput: {
       name: string;
     };
@@ -7995,6 +8052,8 @@ export interface components {
       likely_duplicate?: components["schemas"]["DuplicateCandidate"];
       missing?: string;
       near_copy_check?: string;
+      neighbourhood?: components["schemas"]["NeighbourhoodCheck"];
+      neighbours?: components["schemas"]["IssueNeighbour"][];
       other_projects?: components["schemas"]["WriteSuggestion"][];
       outcome: string;
       related: components["schemas"]["WriteSuggestion"][] | null;
@@ -8233,6 +8292,74 @@ export interface operations {
         content: {
           "application/json": components["schemas"]["RouteIndex"];
         };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  putApiV1TestHoldsNeighbourhoodRead: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["RelatedReadHoldInput"];
+      };
+    };
+    responses: {
+      /** @description No Content */
+      204: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  putApiV1TestHoldsRelatedSearch: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["RelatedReadHoldInput"];
+      };
+    };
+    responses: {
+      /** @description No Content */
+      204: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
       default: {
@@ -17537,9 +17664,11 @@ export type IssueDesignGates = components["schemas"]["IssueDesignGates"];
 export type IssueDesignGatesInput = components["schemas"]["IssueDesignGatesInput"];
 export type IssueDetails = components["schemas"]["IssueDetails"];
 export type IssueDuplicateError = components["schemas"]["IssueDuplicateError"];
+export type IssueNeighbour = components["schemas"]["IssueNeighbour"];
 export type IssueOpenAsk = components["schemas"]["IssueOpenAsk"];
 export type IssueProgress = components["schemas"]["IssueProgress"];
 export type IssueProposed = components["schemas"]["IssueProposed"];
+export type IssueQuery = components["schemas"]["IssueQuery"];
 export type IssueRankInput = components["schemas"]["IssueRankInput"];
 export type IssueRefResolved = components["schemas"]["IssueRefResolved"];
 export type IssueReferenceSummary = components["schemas"]["IssueReferenceSummary"];
@@ -17620,6 +17749,7 @@ export type MyReplySession = components["schemas"]["MyReplySession"];
 export type NearCopyCheck = components["schemas"]["NearCopyCheck"];
 export type NearCopyCheckCandidate = components["schemas"]["NearCopyCheckCandidate"];
 export type NearCopyChecksPage = components["schemas"]["NearCopyChecksPage"];
+export type NeighbourhoodCheck = components["schemas"]["NeighbourhoodCheck"];
 export type NewIssueSettings = components["schemas"]["NewIssueSettings"];
 export type NewIssueSettingsInput = components["schemas"]["NewIssueSettingsInput"];
 export type NodeDeleted = components["schemas"]["NodeDeleted"];
@@ -17702,6 +17832,7 @@ export type ReferencedBy = components["schemas"]["ReferencedBy"];
 export type RelatedCheckInput = components["schemas"]["RelatedCheckInput"];
 export type RelatedCheckTiming = components["schemas"]["RelatedCheckTiming"];
 export type RelatedChecksReport = components["schemas"]["RelatedChecksReport"];
+export type RelatedReadHoldInput = components["schemas"]["RelatedReadHoldInput"];
 export type RenameArtifactInput = components["schemas"]["RenameArtifactInput"];
 export type ReplyBlockWithTrees = components["schemas"]["ReplyBlockWithTrees"];
 export type RepoProject = components["schemas"]["RepoProject"];
