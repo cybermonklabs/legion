@@ -1,9 +1,9 @@
 ---
-title: "A contract bump's sweep includes test expectations spelling the bare number; replace them with the package's derived constant"
+title: "A test's expectation of the daemon's own contract spells the package's derived value, never the bare number"
 category: legion
 tags:
   - daemon-api-version
-  - contract-bump
+  - contract-entry
   - tests
   - worker-pod
 date: 2026-10-16
@@ -12,22 +12,23 @@ module: packages/daemon/cmd/legion, packages/daemon/internal/daemon
 related_issues:
   - "LEGION-636"
   - "sjawhar/legion#1984"
+  - "INFRA-1569"
 ---
 
-# A contract bump's sweep includes test expectations spelling the bare number; replace them with the package's derived constant
+# A test's expectation of the daemon's own contract spells the package's derived value, never the bare number
 
 Extends docs/solutions/legion/a-contract-numbers-prose-is-declaration-history-or-current-write-current-as-a-pointer-and-sweep-docs-solutions-too-LEGION-578.md.
 
-- That document's sweep regex finds prose mentions; a test's expected output is a "current"
-  mention it does not match: `PluginContract: 24` in a fake daemon's `supervise.Deps`, a golden
-  stdout line `… architect LEGION-208 suspended 1 24\n`, a sentence `this daemon requires 24`.
-  Sweep the bare number under tests too before the bump is built:
-  `grep -rn '\b<old>\b' packages/daemon --include='*_test.go'`.
-- Replace each hit with the constant, not the new literal: `api.DaemonAPIVersion` where an int is
-  wanted, and the package's existing derived string where the expectation is text
-  (`cmd/legion/probe_image_test.go` already has
-  `var thisBinarysContract = strconv.Itoa(api.DaemonAPIVersion)`; `fmt.Sprintf("… requires %d …",
-  api.DaemonAPIVersion)` in `internal/daemon`). The next bump then changes nothing there.
+- That document's rule for prose holds for a test's expected output, which a prose search does not
+  match: `PluginContract: 24` in a fake daemon's `supervise.Deps`, a golden stdout line
+  `… architect LEGION-208 suspended 1 24\n`, a sentence `this daemon requires 24`. Each states the
+  daemon's own contract, a current value, and since dispatch://INFRA-1569 that value moves at every
+  contract entry `main` merges, with no edit on the branch that holds the test.
+- Spell each as the derived value: `api.DaemonAPIVersion()` where an int is wanted, and the
+  package's derived string where the expectation is text (`cmd/legion/probe_image_test.go`'s
+  `thisBinarysContract`; `fmt.Sprintf("… requires %d …", api.DaemonAPIVersion())` in
+  `internal/daemon`). Find the literals with `grep -rn '\b<n>\b' packages/daemon --include='*_test.go'`,
+  `<n>` being the number `bash scripts/daemon-contract.sh` prints for the working tree.
 - The packages that hold these tests are the ones a worker pod cannot run (`internal/daemon`
   needs Docker for NATS; `cmd/legion`'s claims tests ran only when the package was run whole),
   so a filtered local `go test` never sees them and CI does. The grep is the local check.
