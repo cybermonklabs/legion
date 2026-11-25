@@ -934,11 +934,12 @@ describe.skipIf(withoutPython || withoutLibpq)("services_up", () => {
   });
 
   /** services_up given a loopback Postgres URL and natsUrl, past every check to the provisioning
-   * of that NATS: a psql that answers 500 to `SHOW max_connections`, a NATS probe that answers,
-   * and a go that builds a fixturebuckets that fails, as the real one does on a server it cannot
-   * reach. The fixturebuckets it builds, and a python3 first on PATH that runs the real one,
-   * append each argument they were given to argv.log, one a line. Answers services_up's status,
-   * its output, fixturebuckets.log, argv.log and the services directory. */
+   * of that NATS: a psql that answers 500 to `SHOW max_connections`, a NATS probe that answers and
+   * appends what it was handed to ready.log, and a go that builds a fixturebuckets that fails, as
+   * the real one does on a server it cannot reach (or succeeds, with provisions). The
+   * fixturebuckets it builds, and a python3 first on PATH that runs the real one, append each
+   * argument they were given to argv.log, one a line. Answers services_up's status, its output,
+   * fixturebuckets.log, argv.log, ready.log and the services directory. */
   function provision(natsUrl: string, provisions = false) {
     const dir = freshDir("services-provision");
     const bin = path.join(dir, "bin");
@@ -947,6 +948,7 @@ describe.skipIf(withoutPython || withoutLibpq)("services_up", () => {
     mkdirSync(path.join(services, "logs"), { recursive: true });
     mkdirSync(path.join(dir, "root", "packages", "envoy"), { recursive: true });
     const argv = path.join(dir, "argv.log");
+    const ready = path.join(dir, "ready.log");
     // The interpreter itself, not a version manager's shim, which would find this one on PATH.
     const python = Bun.spawnSync(["python3", "-c", "import sys; print(sys.executable)"], {
       env: childEnv,
@@ -979,7 +981,8 @@ describe.skipIf(withoutPython || withoutLibpq)("services_up", () => {
       `set -euo pipefail\n. "$1"\n. "$2"\n${fn("fail")}\n${fn("given_services")}\n` +
         `${fn("safe_url")}\n${fn("pg_sql")}\n${fn("nats_endpoint")}\n${fn("connections_needed")}\n` +
         `${fn("owner_only")}\n${fn("note")}\n${fn("services_up")}\n` +
-        `until_true() { echo "waiting for $2" >&2; shift 2; "$@" >/dev/null; }\nnats_ready() { :; }\n` +
+        `until_true() { echo "waiting for $2" >&2; shift 2; "$@" >/dev/null; }\n` +
+        `nats_ready() { printf '%s\\n' "$*" >>${JSON.stringify(ready)}; }\n` +
         `start_listener() { echo "the listener started" >&2; envoy_port=1; }\n` +
         `root=$3\nS=$4\nservices_env=$S/env\nservices_postgres=$S/postgres-url\nservices_up`,
       [pgUrl, loopbackDsn, path.join(dir, "root"), services],
@@ -1008,6 +1011,7 @@ describe.skipIf(withoutPython || withoutLibpq)("services_up", () => {
       ...result,
       log: existsSync(log) ? readFileSync(log, "utf8") : "",
       argv: existsSync(argv) ? readFileSync(argv, "utf8") : "",
+      ready: existsSync(ready) ? readFileSync(ready, "utf8") : "",
       services,
       files,
     };
@@ -1028,6 +1032,17 @@ describe.skipIf(withoutPython || withoutLibpq)("services_up", () => {
         `skill-scenarios: fixturebuckets could not provision the NATS at 127.0.0.1:4222 with the buckets a listener copies; see ${services}/logs/fixturebuckets.log\n`,
       log: "fixturebuckets: nats: no servers available for connection\n",
     });
+  });
+
+  // Catches: a readiness probe handed anything but the host and port the loopback check passed,
+  // the raw URL among them, which a second parse can read another host from: here a `@` after
+  // a `?` puts another address past the authority, and a probe that cut at the last `@` would
+  // probe 127.0.0.1:4999 while the check read 127.0.0.1:4222.
+  test("the readiness probe is handed the host and port the loopback check passed", () => {
+    // The `@` is built at run time, so the literal does not read as a URL's user info to a scan.
+    const at = String.fromCharCode(64);
+    const { code, ready } = provision(`nats://127.0.0.1:4222?x=${at}127.0.0.1:4999`, true);
+    expect({ code, ready }).toEqual({ code: 0, ready: "127.0.0.1 4222\n" });
   });
 
   // Catches: a given NATS's credential in the process list, where every user of the machine reads
