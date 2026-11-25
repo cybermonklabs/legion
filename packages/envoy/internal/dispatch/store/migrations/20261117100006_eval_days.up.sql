@@ -191,7 +191,18 @@ create table eval_days (
 -- 0.2 %, and wrote 0.93 MB of WAL where 1.89; over 60 passes with no vacuum the table grew
 -- 0.69 MiB a pass at 100 and stopped growing by pass 8 at 80, smaller than at 100 with autovacuum
 -- at its defaults. The cost is up to a quarter more heap as the rows are loaded.
-with (fillfactor = 80);
+--
+-- The insert threshold and the index cleanup: a rewrite also deletes the rows the new settings no
+-- longer build and inserts the rows they build anew (60 of each in a pass of a production rule at
+-- INFRA's size), and an insert finds the space a delete freed only in the free space map, which a
+-- vacuum alone writes. At the defaults autovacuum waits for inserts or dead rows of a fifth of the
+-- table, and pruning keeps taking the dead rows off its count, so over 60 such passes it never ran
+-- and the table grew 66 KB a pass, 236.0 to 240.0 MB (dispatch://INFRA-2916, test round 15). With
+-- a vacuum after every 1,000 inserts, whatever the table holds, the freed space is found again
+-- within 17 such passes. The index cleanup is on because those passes leave dead item pointers on
+-- fewer than 2 % of the pages, where a vacuum left to choose skips its index pass and, with it,
+-- the pass that frees those pointers and records their pages' free space.
+with (fillfactor = 80, autovacuum_vacuum_insert_threshold = 1000, autovacuum_vacuum_insert_scale_factor = 0, vacuum_index_cleanup = on);
 create index eval_days_window on eval_days (project_key, repo, day) where listed;
 create index eval_days_stamps on eval_days (project_key, eval_id, writer, day) where listed;
 
