@@ -72,9 +72,6 @@ func TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement(t *testing.T) {
 		Mergeable        string   `json:"mergeable"`
 		MergeStateStatus string   `json:"mergeStateStatus"`
 	}
-	type queryAnswerTwin struct {
-		Repository map[string]*graphQLPullTwin `json:"repository"`
-	}
 	type chunkTwin struct {
 		github     githubrest.Client
 		answers    map[int]graphQLPullTwin
@@ -113,7 +110,6 @@ func TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement(t *testing.T) {
 	queryAnswer := struct {
 		Repository map[string]*graphQLPull `json:"repository"`
 	}{Repository: map[string]*graphQLPull{"p86": &node}}
-	queryAnswerT := queryAnswerTwin{Repository: map[string]*graphQLPullTwin{"p86": &nodeT}}
 	chunk := chunkAnswer{answers: map[int]graphQLPull{86: node}, unanswered: map[int]string{}}
 	chunkT := chunkTwin{answers: map[int]graphQLPullTwin{86: nodeT}, unanswered: map[int]string{}}
 	chunkE := chunkExported{Answers: map[int]graphQLPullTwin{86: nodeT}, Unanswered: map[int]string{}}
@@ -131,7 +127,9 @@ func TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement(t *testing.T) {
 		{Name: "daemon.pullRequestBase", Kind: "fields", Boxed: base, Same: baseT, Exported: baseT},
 		{Name: "daemon.githubPullRequest", Kind: "fields", Boxed: pull, Same: pullT, Exported: pullT},
 		{Name: "daemon.graphQLPull", Kind: "fields", Boxed: node, Same: nodeT, Exported: nodeT},
-		{Name: "daemon.queryChunk.answer", Kind: "fields", Boxed: queryAnswer, Same: queryAnswerT, Exported: queryAnswerT},
+		// The query's answer holds its pull requests behind map values that are pointers, which
+		// fmt prints as addresses, so it has no same-shape twin a printer reaches.
+		{Name: "daemon.queryChunk.answer", Kind: "fields", Boxed: queryAnswer},
 		{Name: "daemon.chunkAnswer", Kind: "struct", Boxed: chunk, Same: chunkT, Exported: chunkE},
 	} {
 		t.Run(h.Name, func(t *testing.T) { oauth2calltest.PrintTest(t, h) })
