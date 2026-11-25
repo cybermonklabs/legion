@@ -205,7 +205,7 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 	// suppressed by its tree's linger, not by its own.
 	issue := record.Issue{
 		Key: held, Tree: root, Project: "OTHER", Title: "the held child", Parent: &parent,
-		Phase: phase.AwaitingPerson, Generation: 3, Status: "in_progress", Rank: "00042",
+		Phase: phase.AwaitingPerson, Generation: 3, Status: "in_progress", Rank: "00042", Priority: record.P1,
 		LingerUntil: &lingerUntil, Hold: &record.Hold{From: phase.Implementing, Reason: record.HoldEscalated},
 		LastDispatchSeq: 91,
 		HandedOver:      true, TakenBack: true, DispatchStatus: "needs_review",
@@ -274,15 +274,17 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 		UpdateRound: "pod:" + podUID, UpdateReasons: "the pod template changed: the image moved",
 		UpdateRepository: ghrepo.MustParse("acme/widgets"),
 		UpdateOpenedAt:   &openedAt, UpdateTaskedAt: &openedAt, UpdateSignalledAt: &answeredAt,
-		UpdateHead:       "4c1b8e2a6f9d3047b5e1c8a2f6d940b3e7c5a128",
-		UpdateToldAt:     &answeredAt,
-		UpdateLeftRound:  "pod:older",
-		ProviderErrorRun: 6,
-		LastTurnStart:    projectedAt.Add(-2 * time.Minute),
-		LastTurnEnd:      projectedAt.Add(-30 * time.Second),
-		LastReady:        projectedAt.Add(-3 * time.Minute),
-		LastDeathCause:   "the pod was evicted",
-		LastStartFailure: "the launcher refused the start",
+		UpdateHead:         "4c1b8e2a6f9d3047b5e1c8a2f6d940b3e7c5a128",
+		UpdateToldAt:       &answeredAt,
+		UpdateLeftRound:    "pod:older",
+		ProviderErrorRun:   6,
+		LastTurnStart:      projectedAt.Add(-2 * time.Minute),
+		LastTurnEnd:        projectedAt.Add(-30 * time.Second),
+		LastReady:          projectedAt.Add(-3 * time.Minute),
+		LastDeathCause:     "the pod was evicted",
+		LastDeathAt:        projectedAt.Add(-4 * time.Minute),
+		LastStartFailure:   "the launcher refused the start",
+		LastStartFailureAt: projectedAt.Add(-5 * time.Minute),
 		TurnOutcomes: []supervise.TurnOutcome{{
 			Generation: 3, Sequence: 2, Refused: true, Message: "the provider refused this turn",
 		}},
@@ -332,13 +334,15 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 			"updateReasons":     current.UpdateReasons,
 			"updateState":       api.UpdateStateAnswered,
 			"providerErrorRun":  current.ProviderErrorRun,
-			// The turn times and the two causes, with the ready that dates the death: the view
-			// carries each as the record holds it.
-			"lastTurnStart":    current.LastTurnStart,
-			"lastTurnEnd":      current.LastTurnEnd,
-			"lastReady":        current.LastReady,
-			"lastDeathCause":   current.LastDeathCause,
-			"lastStartFailure": current.LastStartFailure,
+			// The turn times, the ready and the two causes, each with the time the daemon recorded
+			// it, LastDeathAt dating the death: the view carries each as the record holds it.
+			"lastTurnStart":      current.LastTurnStart,
+			"lastTurnEnd":        current.LastTurnEnd,
+			"lastReady":          current.LastReady,
+			"lastDeathCause":     current.LastDeathCause,
+			"lastDeathAt":        current.LastDeathAt,
+			"lastStartFailure":   current.LastStartFailure,
+			"lastStartFailureAt": current.LastStartFailureAt,
 			// The pending task reduced to the five facts a reader decides on, and never its
 			// text: that one is held, which the key's presence says, its phase, when it was
 			// queued, how many sends failed and the last send error.
@@ -397,6 +401,8 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 			"repoBefore": issue.RepoCorrection.Before, "repoCorrectedAt": issue.RepoCorrection.At,
 			"repoChangePending": issue.RepoChange.Pending, "repoChangeReason": issue.RepoChange.Reason,
 			"ancestry": issue.Ancestry,
+			// The record's P1 as the wire spells a Dispatch priority: its number, 0 for P0.
+			"priority": 1,
 			"waitingOn": map[string]any{
 				"kind": "ask", "ask": issue.Awaiting.Ask, "since": issue.Awaiting.Since.At,
 				"answeredAt": issue.Awaiting.AnsweredAt, "answeredBy": issue.Awaiting.AnsweredBy,

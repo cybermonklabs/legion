@@ -515,8 +515,7 @@ func (r *Runtime) PodRepository(_ context.Context, k runtime.Known) (string, err
 
 // locatedPodRepository is the repository the pod loc records was built from, as that pod's own
 // workspace fetch names it (fetchRepositoryName), and "" where this runtime's store holds no pod
-// of loc's Sandbox under loc's pod uid, or the pod's fetch names none. PodRepository answers it,
-// and so does the bundle of a release's save (BundleWorkspace), so the two read one pod alike.
+// of loc's Sandbox under loc's pod uid, or the pod's fetch names none. PodRepository answers it.
 func (r *Runtime) locatedPodRepository(loc runtime.Locator) string {
 	pod := r.storedPod(loc.Sandbox.Name)
 	if pod == nil || string(pod.UID) != loc.Sandbox.PodUID {

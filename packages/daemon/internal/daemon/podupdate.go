@@ -3015,11 +3015,9 @@ func (s *supervision) groupDrift(ctx context.Context, issue string, group []supe
 // has left until the pod is replaced.
 //
 // The two names are read by the one rule the daemon decides whether an issue has left a
-// repository by (repositories.left), which compares them as a saved bundle's restore compares
-// the bundle's repository with its pod's (ghrepo.Renames.Same, in
-// store.Store.TakeWorkspaceBundleForRestore): without regard to case, as GitHub compares names,
-// and a configured rename's two names as one repository, so re-pointing an issue at the name a
-// transfer moved its repository to replaces no pod.
+// repository by (repositories.left, ghrepo.Renames.Same): without regard to case, as GitHub
+// compares names, and a configured rename's two names as one repository, so re-pointing an issue
+// at the name a transfer moved its repository to replaces no pod.
 //
 // Nothing is a reason but two names that are both there and differ. A pod that answers no name
 // and a name that is no repository add none here, and recordedLeft says where the record adds

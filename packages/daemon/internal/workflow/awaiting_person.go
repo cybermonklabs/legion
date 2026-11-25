@@ -173,12 +173,12 @@ type waitAnswer struct {
 }
 
 // answerWait records that the act a (waitAnswer) answered root's wait now, which puts the root in
-// the waiting line (record.Waiting) — among the issues whose work came back, oldest first — and
-// names the act in the task its architect resumes with (resumeTask). The document the act was of
-// is recorded beside the detail (record.Awaiting.AnsweredDocument, nil for an act of none), so the
-// resume names that document and asks whether that review is still the person's word
-// (SupersedingApproval) of the gate of its step and of a number, and not of the step it speaks of
-// or the detail's words, whatever document the step holds by then.
+// the waiting line (record.Waiting) — within its priority, among the issues whose work came back,
+// oldest first — and names the act in the task its architect resumes with (resumeTask). The
+// document the act was of is recorded beside the detail (record.Awaiting.AnsweredDocument, nil for
+// an act of none), so the resume names that document and asks whether that review is still the
+// person's word (SupersedingApproval) of the gate of its step and of a number, and not of the step
+// it speaks of or the detail's words, whatever document the step holds by then.
 func (e *Engine) answerWait(ctx context.Context, tx pgx.Tx, root record.Issue, a waitAnswer) error {
 	at := e.now()
 	root.Awaiting.AnsweredAt, root.Awaiting.AnsweredBy, root.Awaiting.AnsweredDetail = &at, a.by, a.detail

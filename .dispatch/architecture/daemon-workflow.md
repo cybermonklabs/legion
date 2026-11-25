@@ -24,7 +24,7 @@ No deploy run is matched any more: the production check a merge opens is woken o
 — gave on a `pending` report, by the retry of a look nobody reported, or by the check's own bound, so `projects.<KEY>.deploys` is read for nothing and only warned about.
 The reads keyed on the `pull_requests` table's `repo` column
 — the engine's `pullRequest` and `pullRequestByBranch`, `internal/daemon`'s `reviewedRepository` and intake's `recordedPullRequest` — ask under each name `Renames.Lookups` gives, the fact's own first and the pair's other name only when the first finds nothing, which is what lets a pull request already open at the transfer go on taking its CI, its review and its merge.
-The equivalence writes no record but for one pass of this release, `internal/daemon`'s rename pass (`record.RenameIssueRepository`), which writes each pair's `to` over its `from` on the stored rows of each issue with no live pod, a saved workspace bundle's repository among them, at boot and when the issue's pod ends;
+The equivalence writes no record but for one pass of this release, `internal/daemon`'s rename pass (`record.RenameIssueRepository`), which writes each pair's `to` over its `from` on the stored rows of each issue with no live pod, at boot and when the issue's pod ends;
 until it writes a record, the record keeps the repository it was written under, so the pair must stay configured until no row names the old repository.
 The pass writes beside `CorrectIssueRepository` and is no correction: the pair names one repository, so it records no repository the issue left, and its statement matches the old name rather than a copy read earlier.
 It serves no repository of its own either

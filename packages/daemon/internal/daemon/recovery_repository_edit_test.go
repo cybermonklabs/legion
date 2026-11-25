@@ -26,7 +26,7 @@ import (
 // sequence 1 from its listing, and the edit, applied while the issue had no record, reached none:
 // nothing moved the record onto orbit/gadgets or said anything on the issue.
 func TestAnEditOfAnUnrecordedIssuesRepositoryDuringARecoveryIsApplied(t *testing.T) {
-	// Not parallel: it writes the package variable installReadRetry (newHeldEditRecovery).
+	t.Parallel()
 	const key = "LEGION-1800"
 	h := newHeldEditRecovery(t, key)
 	h.edit(t, key, "orbit/gadgets", 2)
@@ -57,7 +57,7 @@ func TestAnEditOfAnUnrecordedIssuesRepositoryDuringARecoveryIsApplied(t *testing
 // records the issue on zeta/tools at sequence 3, with nothing said on it. Before, the held listing
 // recorded the issue at sequence 1, behind both edits.
 func TestTwoEditsOfAnUnrecordedIssuesRepositoryDuringARecoveryRecordItAtTheNewer(t *testing.T) {
-	// Not parallel: it writes the package variable installReadRetry (newHeldEditRecovery).
+	t.Parallel()
 	const key = "LEGION-1802"
 	h := newHeldEditRecovery(t, key)
 	h.edit(t, key, "orbit/gadgets", 2)
@@ -75,11 +75,10 @@ func TestTwoEditsOfAnUnrecordedIssuesRepositoryDuringARecoveryRecordItAtTheNewer
 // nothing on the issue, and once GitHub answers, the follow the edit's preparation asked for
 // (requestFollowOf) moves it onto orbit/gadgets, with nothing said on the issue either.
 func TestAnEditOfARecoveredIssuesRepositoryIsFollowedOnceGitHubAnswers(t *testing.T) {
-	// Not parallel: it writes the package variable installReadRetry (quickInstallReads).
-	quickInstallReads(t)
+	t.Parallel()
 	installs := &installations{}
 	installs.setFailing(errors.New("GitHub answered 502"), "implement zeta/tools", "implement orbit/gadgets")
-	w, client, installs, _ := repositoryRigWith(t, installs)
+	w, client, installs, _ := repositoryRigWith(t, installs, quickInstallReads)
 	const key = "LEGION-1801"
 	deliver(t, w, client, issue(key, "zeta/tools", "todo", true, "", 1))
 	serveAndRecover(t, w, installs)
@@ -111,7 +110,7 @@ func TestAnEditOfARecoveredIssuesRepositoryIsFollowedOnceGitHubAnswers(t *testin
 // that event asked no follow, and the record stayed on zeta/tools until the issue's next event or
 // the next boot.
 func TestAnEditPreparedBeforeARecoveryRecordedTheIssueIsFollowed(t *testing.T) {
-	// Not parallel: it writes the package variable installReadRetry (newHeldEditRecovery).
+	t.Parallel()
 	const key = "LEGION-1803"
 	h := newHeldEditRecovery(t, key)
 	h.installs.setFailing(nil, "implement orbit/gadgets")
@@ -148,12 +147,11 @@ func TestAnEditPreparedBeforeARecoveryRecordedTheIssueIsFollowed(t *testing.T) {
 // parent. Before, the pass let zeta/tools go with the child unrecorded, and no later pass listed
 // it.
 func TestAChildARecoveryFoundNewerThanItsListingIsRecordedByTheNextPass(t *testing.T) {
-	// Not parallel: it writes the package variable installReadRetry (quickInstallReads).
-	quickInstallReads(t)
+	t.Parallel()
 	installs := &installations{}
 	installs.setFailing(errors.New("GitHub answered 502"), "implement zeta/tools")
 	refresher := &heldRefresher{gate: make(chan struct{})}
-	w, client, installs, _ := repositoryRigWith(t, installs, refresher.hold)
+	w, client, installs, _ := repositoryRigWith(t, installs, quickInstallReads, refresher.hold)
 	const root, parent, child = "LEGION-1809", "LEGION-1810", "LEGION-1811"
 	liveRoot(t, w, client, root)
 	deliver(t, w, client, issue(child, "zeta/tools", "todo", false, parent, 1))
@@ -204,10 +202,9 @@ type heldEditRecovery struct {
 
 func newHeldEditRecovery(t *testing.T, key string) heldEditRecovery {
 	t.Helper()
-	quickInstallReads(t)
 	installs := &installations{}
 	installs.setFailing(errors.New("GitHub answered 502"), "implement zeta/tools", "implement orbit/gadgets")
-	w, client, installs, _ := repositoryRigWith(t, installs)
+	w, client, installs, _ := repositoryRigWith(t, installs, quickInstallReads)
 	// No repository is unread before the event's preparation leaves zeta/tools so, which is what
 	// wakes the recovery, and deliver shows the issue before it prepares the event: the held listing
 	// is the first, and shows the issue at sequence 1.
