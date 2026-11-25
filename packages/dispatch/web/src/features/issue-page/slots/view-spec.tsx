@@ -6,6 +6,7 @@ import { primarySpec, roleDocument } from "../../../api/issue-cache";
 import { whoAmIQuery } from "../../../api/queries";
 import { EVENT_FRESH } from "../../refs/reference-target";
 import { useAddressTarget } from "../address-target";
+import { useOutlineEditing } from "../IssuePresetPanels";
 import { briefCounts } from "../IssueThreeThings";
 import { issueAddress } from "../issue-address";
 import { NoTooltips } from "../NoTooltips";
@@ -83,6 +84,7 @@ export function ViewSpecSlot({ acts, issue, onAddressDrawn, route }: ViewSlotPro
     onAddressDrawn(rows.some(({ id }) => id === revealed));
   }, [onAddressDrawn, revealed, tells, view.root]);
   const request = useOutlineRequest();
+  const { onEditing, panels } = useOutlineEditing(issue);
   return (
     <NoTooltips>
       {/* The view's measure, the prototype's `.spec`: at most 1080 px, in the middle of the
@@ -99,6 +101,7 @@ export function ViewSpecSlot({ acts, issue, onAddressDrawn, route }: ViewSlotPro
           // Escape is a later step of the page's key table.
           holdsEscape={address.filter !== ""}
           issue={issue}
+          onEditing={onEditing}
           reader={viewer}
           {...(namesFailure === undefined ? {} : { namesFailure })}
           readsSettled={readsSettled}
@@ -108,6 +111,7 @@ export function ViewSpecSlot({ acts, issue, onAddressDrawn, route }: ViewSlotPro
           view={view.root}
         />
       </div>
+      {panels}
     </NoTooltips>
   );
 }

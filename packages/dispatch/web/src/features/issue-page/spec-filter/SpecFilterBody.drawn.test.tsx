@@ -1,4 +1,4 @@
-import { beforeAll, expect, type Mock, spyOn, test } from "bun:test";
+import { beforeAll, expect, type Mock, mock, spyOn, test } from "bun:test";
 import {
   onlineManager,
   QueryClient,
@@ -14,6 +14,7 @@ import { MemoryRouter, useLocation } from "react-router-dom";
 import { type HeldNotifications, holdNotifications } from "../../../__tests__/commits";
 import { displayTree } from "../../../__tests__/display-trees";
 import { installIntersectionObserver } from "../../../__tests__/intersection-observer";
+import { installResizeObserver } from "../../../__tests__/scroll-box";
 import { api } from "../../../api/client";
 import {
   artifactBlocksQuery,
@@ -47,6 +48,7 @@ import {
   READER,
 } from "../decisions-filter/decisions-fixtures";
 import { conversationPath } from "../decisions-filter/decisions-parts";
+import { DocumentStage, DocumentStages } from "../document-stage";
 import { FocusedNodeProvider, useFocusedNode } from "../focused-node";
 import type { BriefCounts } from "../IssueThreeThings";
 import type { OutlineRequest } from "../IssueTree";
@@ -77,6 +79,7 @@ import {
   issueMessagesQuery,
   treeDocumentIds,
 } from "../useIssueTree";
+import type { OnEditing } from "../useNodeEditing";
 import { check, checkNode, result } from "../verification-filter/verification-fixtures";
 import { SpecFilterBody } from "./SpecFilterBody";
 import {
@@ -210,8 +213,10 @@ function drawBody(
     coverage = "answered",
     decisionBlocks,
     decisions = "answered",
+    editor,
     named = [],
     names,
+    onEditing = () => {},
     plan,
     reader = READER,
     request,
@@ -229,8 +234,10 @@ function drawBody(
     coverage?: ReadState;
     decisionBlocks?: ReadState;
     decisions?: ReadState;
+    editor?: ReactNode;
     named?: readonly string[];
     names?: ReadonlyMap<string, string>;
+    onEditing?: OnEditing;
     plan?: ReadState;
     reader?: string;
     request?: OutlineRequest;
@@ -325,6 +332,7 @@ function drawBody(
       emptyLine={EMPTY_STATE_LINES.spec}
       holdsEscape={false}
       issue={over}
+      onEditing={onEditing}
       reader={reader}
       // The case holds each read as it says, so an address lands as soon as its row is drawn.
       readsSettled
@@ -349,7 +357,10 @@ function drawBody(
                     <FocusedProbe />
                     <LocationProbe />
                     <TreeReads issue={shown} />
-                    {drawn ? stage ? <ViewStage>{body}</ViewStage> : body : null}
+                    <DocumentStages>
+                      {drawn ? stage ? <ViewStage>{body}</ViewStage> : body : null}
+                      {editor}
+                    </DocumentStages>
                   </FocusedNodeProvider>
                 </OutlineRequestProvider>
               </MarginProvider>
@@ -982,6 +993,36 @@ test("the arrows move between the statements, and a key with nowhere to go repor
   } finally {
     view.unmount();
     read.mockRestore();
+  }
+});
+
+test("a key holds the focused item only when it moves focus to another item of the tree", async () => {
+  const user = userEvent.setup();
+  const sizes = installResizeObserver();
+  const { read, view } = drawBody(issueTree([statement("r1"), statement("r2")]));
+  try {
+    const first = rowOf(view, "spec#b-r1");
+    const second = rowOf(view, "spec#b-r2");
+    act(() => first.focus());
+    // The hold watches the page for rows drawn above the item. The row's own placing
+    // watches only the row, so it cannot produce this observation.
+    for (const key of ["{PageDown}", " ", "{PageUp}", "{ArrowUp}"]) {
+      await user.keyboard(key);
+      expect(document.activeElement).toBe(first);
+      expect(sizes.observed(), `${key} started a hold without moving focus`).not.toContain(
+        document.body
+      );
+    }
+
+    await user.keyboard("{ArrowDown}");
+    expect(document.activeElement).toBe(second);
+    expect(sizes.observed(), "ArrowDown did not start a hold").toContain(document.body);
+    await user.keyboard(" ");
+    expect(sizes.observed(), "Space kept the hold from ArrowDown").not.toContain(document.body);
+  } finally {
+    view.unmount();
+    read.mockRestore();
+    sizes.restore();
   }
 });
 
@@ -1932,6 +1973,94 @@ test("a press on a link inside a statement leaves every statement as drawn until
   }
 });
 
+/** A marker for the editor on the real document stage, without opening a document room. */
+function specEditor(): ReactNode {
+  return (
+    <DocumentStage artifactId="artifact-spec">
+      <div data-test-spec-editor="" tabIndex={-1} />
+    </DocumentStage>
+  );
+}
+
+test("Enter on a statement puts the caret in its words through the outline's editing", async () => {
+  const user = userEvent.setup();
+  const onEditing = mock<OnEditing>(() => {});
+  const { read, view } = drawBody(
+    issueTree([statement("r1", { gaps: ["shaped_disagreement"] }), statement("r2")]),
+    [],
+    { editor: specEditor(), onEditing }
+  );
+  try {
+    const row = rowOf(view, "spec#b-r1");
+    const words = row.querySelector("[data-node-words]");
+    const original = "The page draws r1.";
+    expect(words?.textContent).toContain(original);
+    expect(words?.querySelector("[data-node-trail]")).not.toBeNull();
+    expect(row).toHaveAttribute("data-editable");
+    act(() => row.focus());
+    await user.keyboard("{Enter}");
+
+    expect(locationOf(view)).toBe("/");
+    expect(onEditing).toHaveBeenCalledWith("artifact-spec", expect.any(Function));
+    const editor = words?.querySelector<HTMLElement>("[data-test-spec-editor]");
+    expect(editor).toBeInTheDocument();
+    expect(words?.textContent).not.toContain(original);
+    expect(words?.querySelector("[data-node-trail]")).toBeNull();
+    expect(row.querySelector("[data-node-trail]")).toBeInTheDocument();
+    expect(rowOf(view, "spec#b-r2").textContent).toContain("The page draws r2.");
+
+    act(() => editor?.focus());
+    await user.keyboard("{Escape}");
+    expect(document.activeElement).toBe(row);
+    expect(editor).not.toBeInTheDocument();
+    expect(words?.textContent).toContain(original);
+    expect(onEditing.mock.calls.at(-1)?.[0]).toBeUndefined();
+  } finally {
+    view.unmount();
+    read.mockRestore();
+  }
+});
+
+test("a press on a statement's words puts the caret in them, and a press on a link in them follows the link", async () => {
+  const user = userEvent.setup();
+  const onEditing = mock<OnEditing>(() => {});
+  const destination = "/settings";
+  const linked = `Read [the settings page](${destination}) first.`;
+  const { read, view } = drawBody(
+    issueTree([statement("r1", { text: linked, tree: displayTree(linked) }), statement("r2")]),
+    [],
+    { editor: specEditor(), onEditing }
+  );
+  try {
+    const row = rowOf(view, "spec#b-r1");
+    const link = await within(row).findByRole("link", { name: "the settings page" });
+    const words = link.closest<HTMLElement>("[data-node-words]");
+    if (words === null) throw new Error("the link is not in the statement's words");
+    act(() => row.focus());
+    onEditing.mockClear();
+    await user.click(link);
+    expect(locationOf(view)).toBe(destination);
+    expect(onEditing).not.toHaveBeenCalled();
+    expect(link).toBeInTheDocument();
+
+    // A press on a row that already holds focus must work without a new focus event.
+    act(() => row.focus());
+    await user.pointer({ keys: "[MouseLeft>]", target: words });
+    expect(onEditing).not.toHaveBeenCalled();
+    expect(link).toBeInTheDocument();
+    await user.pointer({ keys: "[/MouseLeft]" });
+    await waitFor(() =>
+      expect(onEditing).toHaveBeenCalledWith("artifact-spec", expect.any(Function))
+    );
+    expect(words.querySelector("[data-test-spec-editor]")).toBeInTheDocument();
+    expect(link).not.toBeInTheDocument();
+    expect(locationOf(view)).toBe(destination);
+  } finally {
+    view.unmount();
+    read.mockRestore();
+  }
+});
+
 // The same order on a decision's cell: a press on the cell draws the person's whole answer only
 // once it ends, and the statement that had the focus keeps its look until then; a press on that
 // statement keeps the whole answer drawn until it ends, and then the statement takes the focus.
@@ -2546,9 +2675,8 @@ test("q and w still say where they could not go while the results read is out or
 });
 
 // R11: the Spec view draws no row for an open question unless an address names one, so `q`
-// with an open question to go to goes to it in the conversation, at the address Enter on a
-// statement follows, where the outline puts the focus on it; it says there is no next question
-// only where the issue holds none.
+// with an open question to go to goes to it in the conversation, where the outline puts the
+// focus on it. It says there is no next question only where the issue holds none.
 test("q goes to the next open question in the conversation, where the view draws no row for it", async () => {
   const user = userEvent.setup();
   const question = openAsk("ask-2");

@@ -43,6 +43,8 @@ import { appKeymap } from "../../shell/keymap";
 import { agentRoleWord } from "../agent-role";
 import { CutWords } from "../CutWords";
 import { conversationPath } from "../decisions-filter/decisions-parts";
+import { useDocumentAdmissions } from "../document-admission";
+import { useDocumentStage } from "../document-stage";
 import { useSetFocusedNode } from "../focused-node";
 import { type BriefCounts, IssueThreeThings } from "../IssueThreeThings";
 import {
@@ -54,6 +56,7 @@ import {
 } from "../IssueTree";
 import { CLEARANCE } from "../identity-block";
 import { presetPath } from "../issue-address";
+import { artifactsBySlug, documentOfNode } from "../issue-artifacts";
 import type { TreeNode } from "../issue-tree";
 import { NodeGlyph } from "../NodeGlyph";
 import { NodeEdges, useRowOnScreen } from "../NodeRow";
@@ -75,15 +78,15 @@ import {
   VERIFICATION_WORDS,
 } from "../page-words";
 import { usePressFocus } from "../press-focus";
-import { RowText, useOutOfTabOrder } from "../RowText";
+import { FOCUSABLE, RowText, useOutOfTabOrder } from "../RowText";
 import { FailedReadLine } from "../slots/failed-read-line";
 import { useFollowing } from "../slots/following";
 import { specSummary } from "../spec-summary";
 import { nodeRowSelectorOf, TAB_STOP_ROW } from "../tree-focus";
-import type { DrawnRow } from "../tree-fold";
-import { nodesInOrder } from "../tree-keys";
+import { nodesInOrder, rowKeyOf } from "../tree-keys";
 import { issueAsksQuery, type NamesFailure } from "../useIssueTree";
 import { type LineRead, useLineRefusals } from "../useLineRefusals";
+import { nodeEditable, type OnEditing, useNodeEditing } from "../useNodeEditing";
 import { moveToRow, useTreeKeymap } from "../useTreeKeymap";
 import { CAP } from "../verification-filter/VerificationFilterBody";
 import {
@@ -140,12 +143,12 @@ const NOTHING = (): void => {};
  * its one tab stop, the arrows and `j`/`k` move between them, `w` moves to the decision beside
  * a statement, the arrows and `j`/`k` move on from that decision to the statement after or
  * before its run, `f` steps through a statement's links - its count of checks among them, which
- * opens the Verification view on that statement - and Enter goes to a statement in the
- * conversation, where it is edited. `r` replies to a statement once a statement can be a target
- * of the outline's writer, which the body already passes to the keymap. The focus on a
- * statement puts its facts in Details, as a row of the outline does, and the focus on a decision
- * puts that decision's; an address naming a statement (`/spec#b-<block>`) puts the focus on it
- * (R10, R19).
+ * opens the Verification view on that statement. Enter or a press on its words puts the caret
+ * in its block through the outline's editing (`useNodeEditing`), and Escape returns to the row.
+ * `r` replies to a statement once a statement can be a target of the outline's writer, which
+ * the body already passes to the keymap. The focus on a statement puts its facts in Details,
+ * as a row of the outline does, and the focus on a decision puts that decision's. An address
+ * naming a statement (`/spec#b-<block>`) puts the focus on it (R10, R19).
  */
 export function SpecFilterBody({
   addressActs,
@@ -155,6 +158,7 @@ export function SpecFilterBody({
   holdsEscape,
   issue,
   namesFailure,
+  onEditing,
   reader,
   readsSettled,
   request,
@@ -184,6 +188,8 @@ export function SpecFilterBody({
    *  them too - the three sentences, and the name of every reference a plain line cites. None
    *  while they do not stand failed. */
   namesFailure?: NamesFailure;
+  /** Asks the page for the editor of the document a row is being edited in. */
+  onEditing: OnEditing;
   /** Who is reading, so a decision of theirs reads as their own words (R34). */
   reader: string | undefined;
   /** Whether every read the tree's rows come from has answered, with its data or with its
@@ -341,6 +347,14 @@ export function SpecFilterBody({
     const row = document.activeElement?.closest<HTMLElement>("[data-node-row]")?.dataset.nodeId;
     setReport(line === "" || row === undefined ? undefined : { line, row });
   }, []);
+  const artifacts = useMemo(() => artifactsBySlug(issue), [issue]);
+  const admissions = useDocumentAdmissions();
+  const { edit, editing, stopEditing } = useNodeEditing({
+    artifacts,
+    container: tree,
+    onEditing,
+    onReport: reportHere,
+  });
   // The statements in the order they are drawn, which is the order the keys move through them,
   // and after them every other row the filter kept.
   const statements = useMemo(
@@ -352,10 +366,19 @@ export function SpecFilterBody({
     ],
     [groups, others]
   );
-  const rows = useMemo<DrawnRow[]>(
-    () => statements.map((node) => ({ kind: "node", level: 1, node, trail: [] })),
-    [statements]
-  );
+  const { rows, rowKeys } = useMemo(() => {
+    const rows = statements.map((node) => ({ kind: "node" as const, level: 1, node, trail: [] }));
+    const rowKeys = new Map(rows.map((row) => [row.node.id, rowKeyOf(row)]));
+    return { rows, rowKeys };
+  }, [statements]);
+  const editingRow = editing?.row;
+  // When the filter or a read removes the edited row, release its document even if the focus
+  // was already elsewhere. There is no row for Escape's focus restoration to find.
+  useEffect(() => {
+    if (editingRow !== undefined && !rows.some((row) => rowKeyOf(row) === editingRow)) {
+      stopEditing();
+    }
+  }, [editingRow, rows, stopEditing]);
   const takeFocus = useCallback(
     (node: TreeNode) => {
       setFocused(node.id);
@@ -408,12 +431,12 @@ export function SpecFilterBody({
   );
   // The focus leaving the body gives the panel back to the issue's own facts, unless it went
   // to Details, where a reader reads the node's: the outline's own rule (`useReleaseFocus`).
-  // This body edits nothing, so no row holds the focus through an edit.
+  // Keep the row's facts while its editor moves onto the row or the reader presses in Details.
   const leave = useCallback(() => {
     setFocused(undefined);
     setOpenCell(undefined);
   }, []);
-  const releaseFocus = useReleaseFocus({ editing: false, onLeave: leave });
+  const releaseFocus = useReleaseFocus({ editing: editing !== undefined, onLeave: leave });
   // Puts the focus on the statement or the decision cell that draws node `id`, as the outline
   // moves to a row (`moveToRow`), which brings it on screen where it already holds the focus.
   const goTo = useCallback((id: string): boolean => {
@@ -507,42 +530,26 @@ export function SpecFilterBody({
     landOnRow(row, landingHold);
   }, [addressActs, following, readsSettled, reveal, statements]);
 
-  // The statement, the other row or the decision cell a key or a press leaves the reader on is
-  // held on screen until their next act (`holdOnScreen`), as the outline holds a row it takes
-  // the reader to: rows drawn above it - the statements, once the coverage or the spec's blocks
-  // answer - would otherwise push it out of view, since at the page's top the browser's scroll
-  // anchoring holds the header still and not the row. A key's own `keydown` is an act that ends
-  // the hold before it, so the hold starts once the key is done (its `keyup`), on the item that
-  // then holds the focus, which is the one it was pressed on where it moved nowhere (End on the
-  // last row). Only a key that went down in the tree is held after (`keyInTree`), and only where
-  // the focus is still in the tree: a key that takes the reader out of it holds nothing, and so
-  // does one that brings them into it from elsewhere, as Tab from the page does. A press is held
-  // once it is over (its `click`), on the item it landed on where that item holds the focus: a
-  // press on what is no item leaves the focus where it was, so it holds nothing rather than pull
-  // the page back to a row the reader did not press. A wheel, a swipe, which sends no click, and
-  // Tab start no hold, since each keeps the reader's place. The hold takes the landing's place
-  // in `landingHold`, so one item is held at a time (`holdInPlaceOf`).
-  const keyInTree = useRef<string | undefined>(undefined);
-  const holdFocusedItem = useCallback((pressed?: EventTarget) => {
-    const item = document.activeElement?.closest<HTMLElement>('[role="treeitem"]');
-    if (item == null || tree.current?.contains(item) !== true) return;
-    if (pressed instanceof Node && !item.contains(pressed)) return;
+  // Hold a tree item on screen until the next act, so reads that draw rows above it cannot
+  // push it out of view. A key starts a hold at keyup only if it moved focus to another item
+  // of this tree. Page Down, Space and Page Up leave focus where it was and start no hold.
+  // A press can hold the item it clicked if that item has focus. Tab and a press outside an
+  // item start no hold. The editor places its own caret, so its row starts no hold either.
+  // The hold replaces the address's landing in `landingHold` (`holdInPlaceOf`).
+  const keyInTree = useRef<{ key: string; from: HTMLElement | null } | undefined>(undefined);
+  const holdFocusedItem = (item: HTMLElement) => {
+    if (editingRow !== undefined && item.dataset.rowKey === editingRow) return;
     holdInPlaceOf(item, landingHold);
-  }, []);
+  };
+  const pressedWords = useRef<HTMLElement | null>(null);
 
   useTreeKeymap({
     container: tree,
-    // No row of this filter is edited here (Enter goes to the conversation), so none is held.
-    editing: false,
+    editing: editing !== undefined,
     holdsEscape,
     onCycle: NOTHING,
-    // Enter on a statement goes to it in the conversation, where it is edited: this filter
-    // draws each statement and edits none.
-    onEdit: (_row, node) => {
-      const path = conversationPath(node);
-      if (path !== undefined) navigate(path);
-    },
-    onEditEnd: NOTHING,
+    onEdit: edit,
+    onEditEnd: stopEditing,
     onFold: NOTHING,
     onOpenDeeper: NOTHING,
     onPin: NOTHING,
@@ -558,11 +565,10 @@ export function SpecFilterBody({
     // goes there, and a decision named from a statement is that statement's own cell's to
     // answer, as the tree's key handler answers a `w` it takes first. Where the view draws
     // nothing for it - an open question no address named, a decision that heads no run of the
-    // view - the key goes to it in the conversation, at the address Enter on a statement follows
-    // (`conversationPath`), which opens the outline there with the focus on it. Which decision
-    // heads which run is known only once what decided each statement is held: until then a
-    // decision with no cell may yet have one, and the key does nothing. Whether the node is a
-    // decision is read off the tree the keymap found it in, never off the body's decisions read.
+    // view - the key goes to it in the conversation (`conversationPath`), which opens the
+    // outline there with the focus on it. Until the decisions and asks reads answer, a
+    // decision with no cell may yet have one, and the key does nothing. The node's kind
+    // comes from the tree the keymap found it in, not the body's decisions read.
     onReveal: (id) => {
       const node = nodesInOrder(root).find((one) => one.id === id);
       const decided = node?.type === "decision";
@@ -598,6 +604,19 @@ export function SpecFilterBody({
     stop !== undefined && statements.some((node) => node.id === stop)
       ? stop
       : (addressed ?? statements[0])?.id;
+  const rowProps = (node: TreeNode): SpecRowProps => {
+    const rowKey = rowKeys.get(node.id);
+    const place = documentOfNode(node.id, artifacts);
+    return {
+      editable: nodeEditable(place, issue.closed_at !== null, admissions),
+      editing: editing !== undefined && editing.row === rowKey ? editing.artifactId : undefined,
+      focused: focused === node.id,
+      onFocus: (row) => focusStatement(row, node),
+      ...(report?.row === node.id ? { report: report.line } : {}),
+      rowKey,
+      tabStop: tabStop === node.id,
+    };
+  };
   return (
     <div className="mt-3.5 mb-[120px] flex w-full min-w-0 flex-col" data-spec-body="">
       {/* Each line of the reads that stand failed, in the page's words, as every view drawn in
@@ -674,8 +693,35 @@ export function SpecFilterBody({
         className="flex min-w-0 flex-col"
         data-spec-tree=""
         onBlur={releaseFocus}
-        // The end of a press in the tree, which holds the item it landed on (`holdFocusedItem`).
-        onClick={(event) => holdFocusedItem(event.target)}
+        onClick={(event) => {
+          const item = focusedTreeItem(event.currentTarget);
+          const words = pressedWords.current;
+          pressedWords.current = null;
+          if (item === null || !(event.target instanceof Node) || !item.contains(event.target)) {
+            return;
+          }
+          const rowKey = item.dataset.rowKey;
+          if (
+            event.detail > 0 &&
+            words !== null &&
+            words === statementWordsAt(event.target) &&
+            rowKey !== undefined &&
+            rowKey !== editingRow &&
+            document.activeElement === item
+          ) {
+            const node = rows.find((row) => row.node.id === item.dataset.nodeId)?.node;
+            if (node === undefined) return;
+            // Run after the press focus settles and the outline releases any edit the press
+            // left. A link or control never supplies a words box here.
+            window.setTimeout(() => {
+              if (document.activeElement !== item || !item.contains(words)) return;
+              reportHere("");
+              edit(rowKey, node);
+            }, 0);
+            return;
+          }
+          holdFocusedItem(item);
+        }}
         // A focus on the tree itself - the page's `t s` lands here - goes on to the tab-stop
         // row; where the view draws no row it stays here.
         onFocus={(event) => {
@@ -684,10 +730,19 @@ export function SpecFilterBody({
         }}
         // The keys a statement and a cell answer before the keymap does (`useTreeKeymap.ts`
         // listens on the window, after this): `w` on a statement, and `j`, `k` and the arrows
-        // on a cell, which the keymap finds no row on. Each key but Tab is noted as it goes
-        // down here, so the item it leaves the reader on is held once it is done (`onKeyUp`).
+        // on a cell, which the keymap finds no row on. Record where each key started before
+        // either handler can move the focus.
         onKeyDown={(event) => {
-          keyInTree.current = event.key === "Tab" ? undefined : event.key;
+          keyInTree.current =
+            event.key === "Tab"
+              ? undefined
+              : { key: event.key, from: focusedTreeItem(event.currentTarget) };
+          if (
+            event.target instanceof HTMLElement &&
+            (event.target.isContentEditable || event.target.matches("input, select, textarea"))
+          ) {
+            return;
+          }
           const key = bareKey(event);
           if (key === "w") {
             if (toOwnCell()) event.preventDefault();
@@ -702,12 +757,12 @@ export function SpecFilterBody({
           event.preventDefault();
           leaveCell(cell, step);
         }}
-        // A key that went down in the tree, done with the focus still in it, holds the item it
-        // left the reader on (`holdFocusedItem`).
         onKeyUp={(event) => {
-          if (event.key !== keyInTree.current) return;
+          const down = keyInTree.current;
+          if (down?.key !== event.key) return;
           keyInTree.current = undefined;
-          holdFocusedItem();
+          const item = focusedTreeItem(event.currentTarget);
+          if (item !== null && item !== down.from) holdFocusedItem(item);
         }}
         // A press in the tree, whose focus a statement or a cell takes once the press is over
         // (`press`). A press on what is no item - a group's heading, the space between runs
@@ -716,6 +771,8 @@ export function SpecFilterBody({
         // statement they did not press.
         onMouseDown={(event) => {
           press.onMouseDown();
+          pressedWords.current =
+            event.button === 0 && !event.defaultPrevented ? statementWordsAt(event.target) : null;
           if (
             event.target instanceof Element &&
             event.target.closest('[role="treeitem"]') === null
@@ -729,28 +786,25 @@ export function SpecFilterBody({
       >
         {groups.map((group) => (
           <Group
-            context={context}
-            focused={focused}
+            drawStatement={(statement, decision) => (
+              <Statement
+                {...rowProps(statement.node)}
+                context={context.has(statement.node.id)}
+                decision={decision}
+                key={statement.node.id}
+                marked={marked}
+                statement={statement}
+              />
+            )}
             group={group}
             key={group.parent?.id ?? group.runs[0]?.statements[0]?.node.id ?? ""}
             known={decidedHeld}
-            marked={marked}
             onCellFocus={focusCell}
-            onFocus={focusStatement}
             openCell={openCell}
-            {...(report === undefined ? {} : { report })}
-            tabStop={tabStop}
           />
         ))}
         {others.map((node) => (
-          <OtherRow
-            focused={focused === node.id}
-            key={node.id}
-            node={node}
-            onFocus={(row) => focusStatement(row, node)}
-            {...(report?.row === node.id ? { report: report.line } : {})}
-            tabStop={tabStop === node.id}
-          />
+          <OtherRow {...rowProps(node)} key={node.id} node={node} />
         ))}
       </div>
       {statementsHeld && statements.length === 0 ? (
@@ -814,14 +868,21 @@ const CELL_STEPS: Readonly<Partial<Record<string, 1 | -1>>> = {
  * window listeners for each press. It goes once `useRowOnScreen` takes an optional placing
  * step, which this view then passes.
  */
-function useOnScreenUnderHeads(item: RefObject<HTMLElement | null>, focused: boolean): () => void {
-  const placeByRule = useRowOnScreen(item, focused);
+function useOnScreenUnderHeads(
+  item: RefObject<HTMLElement | null>,
+  focused: boolean,
+  placesItself = true
+): () => void {
+  const placeByRule = useRowOnScreen(item, focused, undefined, placesItself);
   const pressed = useRef(false);
+  // As in `useRowOnScreen`, a change in who places the row does not itself move the page.
+  const placing = useRef(placesItself);
+  placing.current = placesItself;
   useLayoutEffect(() => {
     const element = item.current;
     if (!focused || element === null) return;
     const place = () => {
-      if (!pressed.current) clearOfHeads(element);
+      if (placing.current && !pressed.current) clearOfHeads(element);
     };
     place();
     if (typeof ResizeObserver === "undefined") return;
@@ -859,6 +920,22 @@ function treeItemOf(tree: HTMLElement | null, id: string): HTMLElement | null {
   return (
     tree?.querySelector<HTMLElement>(`[data-node-id="${CSS.escape(id)}"][role="treeitem"]`) ?? null
   );
+}
+
+/** The item containing the focus, if it belongs to this tree. */
+function focusedTreeItem(tree: HTMLElement): HTMLElement | null {
+  const item = document.activeElement?.closest<HTMLElement>('[role="treeitem"]') ?? null;
+  return tree.contains(item) ? item : null;
+}
+
+/** Which statement's words a press hit, excluding their links, controls and chips. */
+function statementWordsAt(target: EventTarget): HTMLElement | null {
+  if (!(target instanceof Element)) return null;
+  const words = target.closest<HTMLElement>("[data-spec-statement] [data-node-words]");
+  const control = target.closest(
+    `${FOCUSABLE}, summary, [role="button"], [role="link"], [data-node-trail]`
+  );
+  return words !== null && !words.contains(control) ? words : null;
 }
 
 /** The key `event` is as one of the keymap's single-key bindings reads it - a letter in lower
@@ -1014,26 +1091,17 @@ function dotted(parts: readonly LinePart[]): ReactNode {
 /** The statements under one parent: that parent's own line as the group's heading, then one row
  *  of the grid per run of statements one decision shaped. */
 function Group({
-  context,
-  focused,
+  drawStatement,
   group,
   known,
-  marked,
   onCellFocus,
-  onFocus,
   openCell,
-  report,
-  tabStop,
 }: {
-  context: ReadonlySet<string>;
-  focused: string | undefined;
+  drawStatement: (statement: SpecStatement, decision: SpecDecision | undefined) => ReactNode;
   group: SpecGroup;
   /** Whether the decisions read and the asks read hold an answer, which is when a run with no
    *  decision can say that none shaped it. */
   known: boolean;
-  /** Whether the reads a mark comes from hold an answer, which is when a statement can carry
-   *  how it stands. */
-  marked: boolean;
   /** Takes a focus inside a run's cell, with the decision the cell draws, and the run whose
    *  cell draws what only the focus draws where the cell itself has the focus. */
   onCellFocus: (
@@ -1041,13 +1109,8 @@ function Group({
     decision: SpecDecision | undefined,
     open: string | undefined
   ) => void;
-  /** Takes a focus inside a statement's row. */
-  onFocus: (row: HTMLElement, node: TreeNode) => void;
   /** The run whose cell has the focus itself, by its first statement. */
   openCell: string | undefined;
-  /** What a key reported, and the statement it was pressed on. */
-  report?: { readonly line: string; readonly row: string };
-  tabStop: string | undefined;
 }): ReactNode {
   return (
     <section
@@ -1074,19 +1137,7 @@ function Group({
             statements={run.statements}
           />
           <div className="flex min-w-0 flex-col" role="presentation">
-            {run.statements.map((statement) => (
-              <Statement
-                context={context.has(statement.node.id)}
-                decision={run.decision}
-                focused={focused === statement.node.id}
-                key={statement.node.id}
-                marked={marked}
-                onFocus={(row) => onFocus(row, statement.node)}
-                {...(report?.row === statement.node.id ? { report: report.line } : {})}
-                statement={statement}
-                tabStop={tabStop === statement.node.id}
-              />
-            ))}
+            {run.statements.map((statement) => drawStatement(statement, run.decision))}
           </div>
         </div>
       ))}
@@ -1327,43 +1378,52 @@ function WholeOf({ decision }: { decision: SpecDecision }): ReactNode {
   );
 }
 
+interface SpecRowProps {
+  editable: boolean;
+  editing: string | undefined;
+  focused: boolean;
+  /** Takes a focus anywhere in the row, once a press that gave it is over. */
+  onFocus: (row: HTMLElement) => void;
+  /** What a key pressed on this row reported when it had nowhere to go. */
+  report?: string;
+  rowKey: string | undefined;
+  tabStop: boolean;
+}
+
 /**
  * One statement: its bullet, its words with the chips it carries after the last of them, the
  * line naming the decision that shaped it, and at the right end of its first line the count of
  * the checks that serve it (`CheckCount`) and its mark (R5, R6, R17, R34). Its words are whole,
  * with no limit of lines, with the focus or without it (R6): the view is where a statement is
  * read, so it draws every word of it, as its author wrote it. Its chips stand on the words' own
- * line after their last word, as a row of the outline draws its trail (`NodeRow.tsx`), which is
- * why the row draws its own box of words rather than `CutWords`, which draws its words and
- * nothing after them.
+ * line after their last word, as a row of the outline draws its trail (`NodeRow.tsx`). While
+ * editing, the same document stage replaces the words and the chips move below it.
  */
 function Statement({
   context,
   decision,
+  editable,
+  editing,
   focused,
   marked,
   onFocus,
   report,
+  rowKey,
   statement,
   tabStop,
-}: {
+}: SpecRowProps & {
   context: boolean;
   decision: SpecDecision | undefined;
-  focused: boolean;
   /** Whether the reads its mark comes from hold an answer. */
   marked: boolean;
-  /** Takes a focus anywhere in the row, once a press that gave it is over. */
-  onFocus: (row: HTMLElement) => void;
-  /** What a key pressed on this statement reported when it had nowhere to go. */
-  report?: string;
   statement: SpecStatement;
-  tabStop: boolean;
 }): ReactNode {
   const node = statement.node;
   const row = useRef<HTMLDivElement | null>(null);
   const words = useRef<HTMLDivElement | null>(null);
-  const press = useOnScreenUnderHeads(row, focused);
-  useOutOfTabOrder(words, true);
+  const stage = useDocumentStage(editing);
+  const press = useOnScreenUnderHeads(row, focused, editing === undefined);
+  useOutOfTabOrder(words, editing === undefined);
   // The count of the checks that serve it, drawn only where one does, and where its reference
   // names the block the Verification view puts the focus on.
   const checks = node.counts?.checks ?? 0;
@@ -1391,6 +1451,7 @@ function Statement({
       } items-start gap-x-2 rounded-md py-[3px] pr-1.5 outline-none max-[761px]:gap-x-1.5 ${
         focused ? pageFocusedRow : ""
       }`}
+      data-editable={editable ? "" : undefined}
       data-node-context={context ? "" : undefined}
       data-node-id={node.id}
       // The attributes every row of the outline carries, so the page's own readers find a
@@ -1398,6 +1459,7 @@ function Statement({
       // `drawnRows` and `nodeRow`), and the outline's keys walk it (`useTreeKeymap.ts`).
       data-node-row=""
       data-node-type={node.type}
+      data-row-key={rowKey}
       data-spec-mark={marked ? statement.mark : undefined}
       data-spec-statement=""
       // Any focus inside the row is the reader on this statement - a chip or a link of its
@@ -1423,11 +1485,19 @@ function Statement({
           data-node-words=""
           ref={words}
         >
-          <RowText markdown={node.text} source={node.source} tree={node.tree} />
-          {/* A direct child of the words' box, which `styles.css` reads to draw the words
-              inline, so the trail follows the last word. */}
-          {trail}
+          {editing !== undefined ? (
+            <div className="flex min-w-0 flex-col" ref={stage} {...authorText} />
+          ) : (
+            <>
+              <RowText markdown={node.text} source={node.source} tree={node.tree} />
+              {/* A direct child, so the styles draw the trail after the last word. */}
+              {trail}
+            </>
+          )}
         </div>
+        {editing !== undefined && trail !== null ? (
+          <div className="flex min-w-0 flex-wrap items-baseline">{trail}</div>
+        ) : null}
         <Because decision={decision} statement={statement} />
         <RowReport line={report} />
       </div>
@@ -1497,31 +1567,29 @@ function verificationPath(node: Pick<TreeNode, "reference">): string | undefined
  *  and no decision beside it, so nothing the filter kept is lost (R19). A key pressed on it with
  *  nowhere to go says so under its words, as on a statement. */
 function OtherRow({
+  editable,
+  editing,
   focused,
   node,
   onFocus,
   report,
+  rowKey,
   tabStop,
-}: {
-  focused: boolean;
-  node: TreeNode;
-  /** Takes a focus anywhere in the row, once a press that gave it is over. */
-  onFocus: (row: HTMLElement) => void;
-  /** What a key pressed on this row reported when it had nowhere to go. */
-  report?: string;
-  tabStop: boolean;
-}): ReactNode {
+}: SpecRowProps & { node: TreeNode }): ReactNode {
   const row = useRef<HTMLDivElement | null>(null);
-  const press = useOnScreenUnderHeads(row, focused);
+  const stage = useDocumentStage(editing);
+  const press = useOnScreenUnderHeads(row, focused, editing === undefined);
   return (
     <div
       aria-level={1}
       className={`mt-[18px] ml-[300px] min-w-0 rounded-md py-[3px] pr-1.5 pl-[26px] outline-none max-[901px]:ml-0 max-[901px]:pl-0 ${
         focused ? pageFocusedRow : ""
       }`}
+      data-editable={editable ? "" : undefined}
       data-node-id={node.id}
       data-node-row=""
       data-node-type={node.type}
+      data-row-key={rowKey}
       data-spec-other=""
       // Any focus inside the row is the reader on it, as on a statement.
       onFocus={(event) => onFocus(event.currentTarget)}
@@ -1533,9 +1601,13 @@ function OtherRow({
       <p className={`text-xs leading-5 ${pageQuietText}`} {...pageChrome}>
         {NODE_TYPE_NAMES[node.type]}
       </p>
-      <CutWords className={`text-[15px] leading-6 ${pageWordsText}`} whole={focused}>
-        <RowText markdown={node.text} source={node.source} tree={node.tree} />
-      </CutWords>
+      {editing !== undefined ? (
+        <div className="flex min-w-0 flex-col" ref={stage} {...authorText} />
+      ) : (
+        <CutWords className={`text-[15px] leading-6 ${pageWordsText}`} whole={focused}>
+          <RowText markdown={node.text} source={node.source} tree={node.tree} />
+        </CutWords>
+      )}
       <RowReport line={report} />
     </div>
   );
