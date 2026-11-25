@@ -162,7 +162,7 @@ func startCostArm(t *testing.T, name string, head bool, options dispatchOptions)
 // costDatabaseWithoutJIT sets jit = off on an arm's database and answers what a new session of
 // it reads. Production's Cloud SQL does not JIT-compile statements, and a test Postgres that
 // does (a pgvector image ships LLVM and leaves jit on) spends time compiling a read that
-// production never spends: on 2026-11-24 INFRA-1098's implementer measured the references read's
+// production never spends: on 2026-11-24 a measurement of the references read saw its
 // statement compiling for longer than its median run took. The setting is the database's, so it
 // reaches every session of both builds, the server's pool included, which each opens after it;
 // a session open before it keeps the setting it started with, which is why it is read back on a

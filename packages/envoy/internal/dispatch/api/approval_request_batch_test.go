@@ -168,9 +168,10 @@ func countedApprovalRequest(t *testing.T, handler http.Handler, artifactID strin
 //     document's project, which costs no read of its own since the document was read with its
 //     project, in the three statements of the store's node write (graphstore.QueueNodes: the
 //     insert, the check that no node moves project, and the move), the ask row, its block state
-//     and the part rows of its question and options, the references and the row the ask owes the
-//     grammar's re-index queue, deleted with them (refs.Replacement.Queue, INFRA-869), the
-//     ask.opened event with its payload and the issue's last_seq, the reference stamps, the base
+//     and the part rows of its question and options, the references and
+//     the row the ask owes the grammar's re-index queue, deleted with them
+//     (refs.Replacement.Queue, INFRA-869), the ask.opened event with its payload and the
+//     issue's last_seq, the reference stamps, the base
 //     attributes the node write stated - its visibility, its state and its project - appended
 //     under that event (graphstore.QueueCaused), the author's follow and the session node it
 //     records, caused by that ask.opened, in one statement (asks.QueueFollowAuthor), and the
