@@ -271,8 +271,21 @@ func (r *stopsEarlierRuntime) Spawn(ctx context.Context, spec runtime.SpawnSpec)
 
 // dialShimUntilAcked dials as worker-shim does, again after a refused hello until one is acked,
 // and returns the acknowledged connection: a claim's stream slot is free again once the listener
-// has read its previous connection's close.
+// has read its previous connection's close. It fails the test naming the boot token and the last
+// refusal once no hello is acked within 10 s (ackedShim).
 func dialShimUntilAcked(t *testing.T, address, bootToken string) *shim {
+	t.Helper()
+	acked, err := ackedShim(t, address, bootToken)
+	if err != nil {
+		t.Fatalf("no hello with %s was acked: %v", bootToken, err)
+	}
+	return acked
+}
+
+// ackedShim is dialShimUntilAcked's dialing, answering the shim's last refusal rather than failing
+// the test, for a caller that can say more of why the daemon refused the boot token than the
+// refusal does: the worker stream closes a refused hello with no frame, which reads here as an EOF.
+func ackedShim(t *testing.T, address, bootToken string) (*shim, error) {
 	t.Helper()
 	var last error
 	var acked *shim
@@ -302,9 +315,9 @@ func dialShimUntilAcked(t *testing.T, address, bootToken string) *shim {
 		last = fmt.Errorf("hello refused: %v", err)
 		return false
 	}) {
-		t.Fatalf("no hello with %s was acked: %v", bootToken, last)
+		return nil, last
 	}
-	return acked
+	return acked, nil
 }
 
 // What restoration's gate keeps from a hello, the boot still keeps. A hello still waits until every

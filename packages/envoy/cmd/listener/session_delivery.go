@@ -272,9 +272,14 @@ type sessionDelivery struct {
 	// noGrantUntil is when the registrations' calls may probe the grant again after a refusal for
 	// want of it; zero while no refusal episode runs. noGrantLogged is set once the episode's one
 	// warning is logged, so a hub without the grant costs one line per episode rather than one per
-	// registration. A consumer call that succeeds ends the episode.
+	// registration. A consumer call that succeeds ends the episode. grantedAt is when one last
+	// succeeded, zero before the first (holdsConsumerGrant).
 	noGrantUntil  time.Time
 	noGrantLogged bool
+	grantedAt     time.Time
+	// grantProbeMu holds one probe of the grant at a time (holdsConsumerGrant), so callers that ask
+	// together, a sweep and the handovers of claims granted at once, send one read between them.
+	grantProbeMu sync.Mutex
 	// grantHeld is closed, once (grantHeldOnce), when a session consumer call of this listener has
 	// succeeded: its NATS user holds the session consumers' calls, so this listener gives its
 	// sessions consumer delivery (consumerGrantHeld).
@@ -985,38 +990,94 @@ func consumerLimitReached(err error) bool {
 func (m *sessionDelivery) grantRefused() bool {
 	m.grantMu.Lock()
 	defer m.grantMu.Unlock()
-	return !m.noGrantUntil.IsZero() && m.now().Before(m.noGrantUntil)
+	return m.refusingAt(m.now())
+}
+
+// refusingAt reports whether a refusal episode runs at now: a refusal for want of a grant was met
+// less than noGrantBackoff before it (grantRefusal). It is the one test of the episode, which
+// grantRefused and grantKnown both read; the caller holds grantMu.
+func (m *sessionDelivery) refusingAt(now time.Time) bool {
+	return !m.noGrantUntil.IsZero() && now.Before(m.noGrantUntil)
 }
 
 // granted ends a refusal episode once a consumer call succeeds: the grant now carries session
 // consumers, and a later refusal is logged again. It also says this listener gives consumer
-// delivery (holdsConsumerGrant).
+// delivery (markConsumerGrantHeld).
 func (m *sessionDelivery) granted() {
 	m.grantMu.Lock()
 	m.noGrantUntil = time.Time{}
 	m.noGrantLogged = false
+	m.grantedAt = m.now()
 	m.grantMu.Unlock()
-	m.holdsConsumerGrant()
+	m.markConsumerGrantHeld()
 }
 
-// holdsConsumerGrant records that a session consumer call of this listener succeeded: granted's
-// record of a registration's or a delete's call, and the list of the session consumers that gaining
-// the durable binding reads (sessionRelays.listConsumers), which ends no refusal episode of the
-// creates, since a grant may allow the list and refuse them. Any of them says the NATS user holds
-// the session consumers' calls, which only the grant of a listener that gives its sessions
-// consumer delivery holds (natsgrant.Listener and natsgrant.ListenerHost). The server's answer is
-// how this listener learns it gives consumer delivery: nothing in its configuration says so, and a
-// listener connecting as a host or Dispatch user is refused every one of those calls.
-// consumerGrantHeld is closed from here on.
-func (m *sessionDelivery) holdsConsumerGrant() {
+// markConsumerGrantHeld records that a session consumer call of this listener succeeded: granted's
+// record of a registration's, a delete's or a grant probe's call (holdsConsumerGrant), and the list
+// of the session consumers that gaining the durable binding reads (sessionRelays.listConsumers),
+// which ends no refusal episode of the creates, since a grant may allow the list and refuse them.
+// Any of them says the NATS user holds the session consumers' calls, which only the grant of a
+// listener that gives its sessions consumer delivery holds (natsgrant.Listener and
+// natsgrant.ListenerHost). The server's answer is how this listener learns it gives consumer
+// delivery: nothing in its configuration says so, and a listener connecting as a host or Dispatch
+// user is refused every one of those calls. consumerGrantHeld is closed from here on.
+func (m *sessionDelivery) markConsumerGrantHeld() {
 	m.grantHeldOnce.Do(func() { close(m.grantHeld) })
 }
 
 // consumerGrantHeld is closed once a session consumer call of this listener has succeeded
-// (holdsConsumerGrant): from then on the listener gives its sessions consumer delivery, and the
+// (markConsumerGrantHeld): from then on the listener gives its sessions consumer delivery, and the
 // task relay, which relays only to such sessions, opens the task bucket (taskRelay.run).
 func (m *sessionDelivery) consumerGrantHeld() <-chan struct{} {
 	return m.grantHeld
+}
+
+// grantKnown is the grant's answer while one stands, under one hold of grantMu: no while a refusal
+// episode runs (refusingAt), yes within noGrantBackoff of a consumer call that succeeded; known is
+// false when neither stands and the server must be asked.
+func (m *sessionDelivery) grantKnown() (holds, known bool) {
+	m.grantMu.Lock()
+	defer m.grantMu.Unlock()
+	now := m.now()
+	if m.refusingAt(now) {
+		return false, true
+	}
+	if !m.grantedAt.IsZero() && now.Sub(m.grantedAt) < noGrantBackoff {
+		return true, true
+	}
+	return false, false
+}
+
+// holdsConsumerGrant reports whether this listener's NATS user may make the session consumers'
+// calls, which a takeover pass needs and Dispatch's user and every host's hold none of
+// (listenerDeliveryHandlerConfig.consumerGrant). It answers from grantKnown while an answer stands,
+// with no call: a registration of a listener that relays sessions keeps the yes fresh. Otherwise it
+// asks the server with one read of a consumer no session has (bus.SessionConsumers.
+// ProbeConsumerCalls): a refusal starts an episode as any consumer call's does, so Dispatch's
+// listener is refused that read once per episode, and an answer counts as a call that succeeded. A
+// read that did not answer is no, and the caller's next pass asks again. Callers hold
+// grantProbeMu from entry, so those that ask together take the one probe's answer. A delivery with
+// no consumer connection manages no session consumer, and answers no.
+func (m *sessionDelivery) holdsConsumerGrant(ctx context.Context) bool {
+	if m == nil || m.consumers == nil {
+		return false
+	}
+	m.grantProbeMu.Lock()
+	defer m.grantProbeMu.Unlock()
+	if holds, known := m.grantKnown(); known {
+		return holds
+	}
+	err := m.consumers.ProbeConsumerCalls(ctx)
+	switch {
+	case err == nil:
+		m.granted()
+		return true
+	case m.grantRefusal("read a session consumer before a takeover pass", "", err):
+		return false
+	}
+	m.logger.LogEvent(slog.LevelDebug, "the session consumers' grant could not be read; no takeover pass runs until it can",
+		slog.String("error", err.Error()))
+	return false
 }
 
 // refollow sets the filter of sessionID's consumer to its stored interest topics after a change

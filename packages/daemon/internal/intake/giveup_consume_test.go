@@ -310,40 +310,106 @@ func TestAGivenUpMessageMovesTheFloorAndTheMessagesBehindItApply(t *testing.T) {
 
 // The count and the first failure are the record's and JetStream's, not the consumers' memory: a
 // restart of the consumers on the same stream and pool keeps the first failure's time, and the
-// give-up at the bound counts the deliveries before the restart.
+// give-up comes at the delivery of JetStream's count that the bound names, counting the deliveries
+// before the restart. JetStream counts every delivery it makes, also one no handler ran for: a
+// redelivery that falls due while the consumers stop reaches a client that is stopping, which
+// drops it once its subscription is gone, or runs it on the cancelled context, where its note and
+// its fact fail before any handler and nothing is written (consumerRun.failed). So the handler's
+// count is not JetStream's, and each row pins the restart: the second handler run pauses the
+// Dispatch durable, so JetStream sends no redelivery while the consumers stop, and the row makes
+// JetStream's count before the restart what it names, the two deliveries that failed, or a third
+// that a client takes after the stop and never handles, as a stopping one can. After the restart
+// the handler runs once for each delivery the bound has left.
 func TestTheCountAndTheFirstFailureSurviveARestartOfTheConsumers(t *testing.T) {
-	pool := migratedPool(t)
-	js, stream := testJetStream(t)
-	spec := boundSpec(&lockedBuffer{}, 4, time.Nanosecond)
-	spec.NakDelay, spec.NakDelayCap = 200*time.Millisecond, 200*time.Millisecond
-	var calls atomic.Int32
-	handler := handlerFunc(func(context.Context, pgx.Tx, Fact) (Result, error) {
-		calls.Add(1)
-		return Result{}, errAlwaysFails
-	})
-	stop := startConsume(t, js, spec, pool, handler)
-	sent := publish(t, js, "notifications.dispatch.issue.CAPTURE-3.issue.updated", capturedIssueUpdatedEnvelope(t))
-	dispatch := dispatchConsumerName(spec.Project)
-	var before record.IntakeFailure
-	testwait.Eventually(t, "two failed deliveries recorded", func() bool {
-		f, ok := intakeRecordOf(t, pool, dispatch, sent.Sequence)
-		before = f
-		return ok && f.EndedDelivery >= 2
-	})
-	stop()
-	if handled := calls.Load(); handled >= int32(spec.GiveUpDeliveries) {
-		t.Fatalf("the handler ran %d times before the restart, want fewer than the bound's %d", handled, spec.GiveUpDeliveries)
-	}
+	for _, row := range []struct {
+		name string
+		// taken is how many deliveries a client takes after the stop and never handles.
+		taken int
+	}{
+		{name: "the restart falls between two deliveries"},
+		{name: "a delivery the stop takes is never handled", taken: 1},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), testwait.Remaining(t))
+			defer cancel()
+			pool := migratedPool(t)
+			js, stream := testJetStream(t)
+			spec := boundSpec(&lockedBuffer{}, 4, time.Nanosecond)
+			dispatch := dispatchConsumerName(spec.Project)
+			var calls atomic.Int32
+			paused := make(chan error, 1)
+			handler := handlerFunc(func(ctx context.Context, _ pgx.Tx, _ Fact) (Result, error) {
+				if calls.Add(1) == 2 {
+					_, err := js.PauseConsumer(ctx, NotificationStream, dispatch, time.Now().Add(time.Hour))
+					paused <- err
+				}
+				return Result{}, errAlwaysFails
+			})
+			stop := startConsume(t, js, spec, pool, handler)
+			sent := publish(t, js, "notifications.dispatch.issue.CAPTURE-3.issue.updated", capturedIssueUpdatedEnvelope(t))
+			if err := testwait.Receive(t, "the second handler run's pause of the Dispatch durable", paused); err != nil {
+				t.Fatalf("pause the Dispatch durable: %v", err)
+			}
+			var before record.IntakeFailure
+			testwait.Eventually(t, "two failed deliveries recorded", func() bool {
+				f, ok := intakeRecordOf(t, pool, dispatch, sent.Sequence)
+				before = f
+				return ok && f.EndedDelivery >= 2
+			})
+			stop()
+			handled := calls.Load()
+			if handled != 2 {
+				t.Fatalf("the handler ran %d times before the restart, want the 2 before the pause", handled)
+			}
+			// The flush orders the stopped consumers' unsubscribe before the resume, so the pull
+			// each left waiting on the server has no interest when the message falls due again.
+			if err := js.Conn().FlushWithContext(ctx); err != nil {
+				t.Fatalf("flush the stopped consumers' unsubscribe: %v", err)
+			}
+			if _, err := js.ResumeConsumer(ctx, NotificationStream, dispatch); err != nil {
+				t.Fatalf("resume the Dispatch durable: %v", err)
+			}
+			consumer, err := stream.Consumer(ctx, dispatch)
+			if err != nil {
+				t.Fatalf("look up the Dispatch durable: %v", err)
+			}
+			for range row.taken {
+				takeDelivery(t, consumer)
+			}
+			info, err := consumer.Info(ctx)
+			if err != nil {
+				t.Fatalf("read the Dispatch durable's deliveries: %v", err)
+			}
+			delivered := info.Delivered.Consumer
+			if want := uint64(2 + row.taken); delivered != want {
+				t.Fatalf("JetStream delivered the message %d times before the restart, want %d", delivered, want)
+			}
 
-	defer startConsume(t, js, spec, pool, handler)()
-	given := waitGivenUp(t, pool, dispatch, sent.Sequence)
-	assertAcknowledgedThrough(t, stream, dispatch, sent)
-	if !given.FirstFailedAt.Equal(before.FirstFailedAt) {
-		t.Fatalf("the first failure after the restart = %s, want %s from before it", given.FirstFailedAt, before.FirstFailedAt)
+			defer startConsume(t, js, spec, pool, handler)()
+			given := waitGivenUp(t, pool, dispatch, sent.Sequence)
+			assertAcknowledgedThrough(t, stream, dispatch, sent)
+			if !given.FirstFailedAt.Equal(before.FirstFailedAt) {
+				t.Fatalf("the first failure after the restart = %s, want %s from before it", given.FirstFailedAt, before.FirstFailedAt)
+			}
+			after := calls.Load() - handled
+			if given.GiveUpReason != record.GiveUpBound || given.Deliveries != spec.GiveUpDeliveries || int(after) != spec.GiveUpDeliveries-int(delivered) {
+				t.Fatalf("the record = %+v after %d handler calls after the restart, which JetStream had delivered the message %d times before; want it given up at the bound's delivery %d, counting those before the restart",
+					given, after, delivered, spec.GiveUpDeliveries)
+			}
+		})
 	}
-	if handled := calls.Load(); given.GiveUpReason != record.GiveUpBound || given.Deliveries != spec.GiveUpDeliveries || handled != int32(spec.GiveUpDeliveries) {
-		t.Fatalf("the record = %+v after %d handler calls, want it given up at the bound's delivery %d, counting those before the restart",
-			given, handled, spec.GiveUpDeliveries)
+}
+
+// takeDelivery takes the next delivery of consumer as a client that never handles it would, and
+// leaves it unacknowledged, so JetStream delivers it again once its acknowledgement window ends.
+func takeDelivery(t *testing.T, consumer jetstream.Consumer) {
+	t.Helper()
+	batch, err := consumer.Fetch(1, jetstream.FetchMaxWait(testwait.Remaining(t)))
+	if err != nil {
+		t.Fatalf("take a delivery of %s: %v", consumer.CachedInfo().Name, err)
+	}
+	if _, ok := <-batch.Messages(); !ok {
+		t.Fatalf("take a delivery of %s: none came: %v", consumer.CachedInfo().Name, batch.Error())
 	}
 }
 

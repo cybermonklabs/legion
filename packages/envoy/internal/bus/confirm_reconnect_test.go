@@ -2,7 +2,6 @@ package bus
 
 import (
 	"bufio"
-	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -101,7 +100,9 @@ func TestConfirmPublishedRefusesADenialAReconnectCleared(t *testing.T) {
 	if err := conn.Publish(subject, []byte("{}")); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
-	if err := conn.FlushTimeout(5 * time.Second); err != nil {
+	// No span of its own: the flush's answer can come late on a loaded machine with nothing wrong.
+	// forgedWait, since FlushWithContext refuses a context with no deadline (-timeout 0).
+	if err := conn.FlushWithContext(forgedWait(t)); err != nil {
 		t.Fatalf("flush: %v", err)
 	}
 	// nats.go queues the disconnect callback after the reconnect has cleared the last error
@@ -139,7 +140,9 @@ func TestConfirmPublishedRefusesADenialACompletedReconnectCleared(t *testing.T) 
 	if err := conn.Publish(subject, []byte("{}")); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
-	if err := conn.FlushTimeout(5 * time.Second); err != nil {
+	// No span of its own: the flush's answer can come late on a loaded machine with nothing wrong.
+	// forgedWait, since FlushWithContext refuses a context with no deadline (-timeout 0).
+	if err := conn.FlushWithContext(forgedWait(t)); err != nil {
 		t.Fatalf("flush: %v", err)
 	}
 	// nats.go queues the reconnect callback once the new connection is marked connected.
@@ -263,8 +266,9 @@ func TestPublishConfirmedReadsTheStateBeforeThePublish(t *testing.T) {
 		return conn.Flush()
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	// No span of its own: an answer can come late on a loaded machine with nothing wrong. forgedWait,
+	// since publishConfirmed reads a context with no deadline (-timeout 0) as a spent window.
+	ctx := forgedWait(t)
 	err := client.publishConfirmed(ctx, conn, &nats.Msg{Subject: subject, Data: []byte("{}")}, answered)
 	if !errors.Is(err, ErrPublishDenied) {
 		t.Fatalf("a publish the server denied while it ran returned %v, want ErrPublishDenied", err)

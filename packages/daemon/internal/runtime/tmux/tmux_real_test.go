@@ -466,7 +466,7 @@ func (c *stubConn) AgentSecretsToken(context.Context) (string, error) {
 func (c *stubConn) awaitEvent(t *testing.T, want string) {
 	t.Helper()
 	for {
-		if got := testwait.Receive(t, "a "+want+" frame", c.events); got == want {
+		if got := testwait.Receive(t, "an "+want+" frame", c.events); got == want {
 			return
 		}
 	}
@@ -807,13 +807,31 @@ func (h *hungServer) returning(t *testing.T, r *rig, what string, call func()) {
 // exiting under the probe's own list-panes. Both converge on Gone.
 func awaitGone(t *testing.T, rt *Runtime, loc runtime.Locator, after string) {
 	t.Helper()
-	testwait.Until(t, "Probe after "+after+" to read gone", func() (runtime.Observation, bool) {
+	testwait.Until(t, "Probe after "+after+" to read gone", paced(costlyPace, func() (runtime.Observation, bool) {
 		obs := probe(t, rt, loc)
 		if obs.Kind == runtime.Alive {
 			t.Fatalf("Probe after %s = %+v: the stopped process is running", after, obs)
 		}
 		return obs, obs.Kind == runtime.Gone
-	})
+	}))
+}
+
+// costlyPace is how often a wait asks a question that costs a tmux client or a walk of /proc:
+// testwait asks every 10 ms, which testwait.Holds's rule keeps for questions that cost nothing.
+const costlyPace = 50 * time.Millisecond
+
+// paced is read asked at most once per every, for a testwait.Until whose question costs
+// something; the wait is still testwait's, bounded by the test binary's deadline and failing by
+// name.
+func paced[T any](every time.Duration, read func() (T, bool)) func() (T, bool) {
+	var last time.Time
+	return func() (T, bool) {
+		if wait := every - time.Since(last); !last.IsZero() && wait > 0 {
+			time.Sleep(wait)
+		}
+		last = time.Now()
+		return read()
+	}
 }
 
 func panePid(t *testing.T, loc runtime.Locator) int {
@@ -852,7 +870,7 @@ func procEnviron(t *testing.T, pid int) map[string]string {
 func descendant(t *testing.T, root int, name string) int {
 	t.Helper()
 	found := 0
-	testwait.Eventually(t, name+" under pid "+strconv.Itoa(root), func() bool {
+	testwait.Until(t, name+" under pid "+strconv.Itoa(root), paced(costlyPace, func() (int, bool) {
 		children := map[int][]int{}
 		entries, _ := os.ReadDir("/proc")
 		for _, entry := range entries {
@@ -875,38 +893,63 @@ func descendant(t *testing.T, root int, name string) int {
 			queue = queue[1:]
 			if argv := procCmdline(pid); len(argv) > 0 && filepath.Base(argv[0]) == name {
 				found = pid
-				return true
+				return found, true
 			}
 			queue = append(queue, children[pid]...)
 		}
-		return false
-	})
+		return 0, false
+	}))
 	return found
 }
 
 // readReport is what the Oh My Pi stand-in recorded about its own launch. The stand-in writes it
-// as it starts, which is after the pane exists and after its agent registered, so the file is
-// waited for rather than read once: on a loaded machine the process is running before its first
-// write lands, and reading in that window is not a failed launch.
+// as it starts, which is after the pane exists and after its agent registered, so the report is
+// waited for rather than read once. The wait ends on a report that parses and names pid, a fact an
+// empty or half-written file cannot hold: os.WriteFile creates and truncates the file before it
+// writes, so a read can find the file there with nothing in it yet.
 func readReport(t *testing.T, workspace string, pid int) map[string]any {
 	t.Helper()
 	path := filepath.Join(workspace, fmt.Sprintf("standin-%d.json", pid))
-	// The read's own answer is the failure text, so err is the wait's verdict: the wait ends on a
-	// read that succeeds or fails for any reason but the file's absence.
-	var raw []byte
-	var err error
-	testwait.Eventually(t, "the stand-in's report at "+path, func() bool {
-		raw, err = os.ReadFile(path)
-		return err == nil || !errors.Is(err, os.ErrNotExist)
+	type reading struct {
+		Report map[string]any
+		Err    string
+	}
+	got := testwait.Until(t, fmt.Sprintf("the stand-in's report at %s, naming pid %d", path, pid), func() (reading, bool) {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			return reading{Err: err.Error()}, false
+		}
+		var report map[string]any
+		if err := json.Unmarshal(raw, &report); err != nil {
+			return reading{Err: fmt.Sprintf("%d bytes that do not parse: %v", len(raw), err)}, false
+		}
+		if named, ok := report["pid"].(float64); !ok || int(named) != pid {
+			return reading{Report: report, Err: fmt.Sprintf("the report names pid %v", report["pid"])}, false
+		}
+		return reading{Report: report}, true
 	})
-	if err != nil {
-		t.Fatalf("read the stand-in's report at %s: %v", path, err)
+	return got.Report
+}
+
+// awaitSweepReport is the next report on observations. Observe closes its channel when its context
+// ends, and testwait.Context ends at the moment a wait gives up, so a closed channel is a sweep
+// that never came, said so, not a report of zero.
+func awaitSweepReport(t *testing.T, what string, observations <-chan runtime.Observation) runtime.Observation {
+	t.Helper()
+	type read struct {
+		obs  runtime.Observation
+		open bool
 	}
-	var report map[string]any
-	if err := json.Unmarshal(raw, &report); err != nil {
-		t.Fatalf("the stand-in's report at %s: %v", path, err)
+	reads := make(chan read, 1)
+	go func() {
+		obs, open := <-observations
+		reads <- read{obs, open}
+	}()
+	got := testwait.Receive(t, what, reads)
+	if !got.open {
+		t.Fatalf("%s: the sweep's channel closed first: Observe's context ended before the sweep reported", what)
 	}
-	return report
+	return got.obs
 }
 
 func hasKillPane(argvs [][]string) bool {
@@ -1566,15 +1609,16 @@ func TestRealTmuxReconcilesAWindowWhoseReportWasLost(t *testing.T) {
 	// The pane marks its window as this runtime's from its own shell, after tmux has started it, and
 	// reconciliation reaps only a marked window: the start command names the worker-shim from the
 	// pane's creation, so waiting for that alone let a loaded host reconcile before the mark was set.
-	testwait.Eventually(t, "the unrecorded worker-shim pane to mark its window", func() bool {
-		for _, line := range strings.Split(panes(), "\n") {
+	testwait.Until(t, "the unrecorded worker-shim pane to mark its window", paced(costlyPace, func() (string, bool) {
+		listing := panes()
+		for _, line := range strings.Split(listing, "\n") {
 			fields := strings.SplitN(line, "\t", 4)
 			if len(fields) == 4 && fields[2] == r.rt.Socket() && strings.Contains(fields[3], "worker-shim") {
-				return true
+				return listing, true
 			}
 		}
-		return false
-	})
+		return listing, false
+	}))
 	if !strings.Contains(panes(), "sleep 3600") {
 		t.Fatalf("the private server has no unmarked bootstrap pane before reconciliation:\n%s", panes())
 	}
@@ -1642,7 +1686,7 @@ func TestRealTmuxReconcileOrphans(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if obs := testwait.Receive(t, "the restarted daemon's sweep to report", observations); obs.Kind != runtime.Alive || obs.Locator.Incarnation != live.Incarnation {
+	if obs := awaitSweepReport(t, "the restarted daemon's sweep to report", observations); obs.Kind != runtime.Alive || obs.Locator.Incarnation != live.Incarnation {
 		t.Errorf("the restarted daemon's sweep reported %+v, want the known pane alive", obs)
 	}
 }
@@ -1660,7 +1704,7 @@ func TestRealTmuxObserveReportsGoneOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if obs := testwait.Receive(t, "the first sweep's report", observations); obs.Kind != runtime.Alive {
+	if obs := awaitSweepReport(t, "the first sweep's report", observations); obs.Kind != runtime.Alive {
 		t.Fatalf("first sweep = %+v, want alive", obs)
 	}
 	r.mustTmux("kill-pane", "-t", loc.Tmux.Pane)
