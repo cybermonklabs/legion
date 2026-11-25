@@ -378,6 +378,10 @@ func TestGhTargetOfFailsClosed(t *testing.T) {
 	ghWithARepositoryOption := editedGhHelp(map[string][2]string{
 		"pr view": {"\nINHERITED FLAGS\n", "      --mirror string    Read the pull request from this repository instead\n\nINHERITED FLAGS\n"},
 	})
+	// gh 2.98.0's help of every command, saved whole, which holds `gh status`, so the words of a
+	// -h row are gh's commands and the row is refused for its -h alone.
+	walked := savedGhHelpOf(t, "2.98.0")
+	const hBeforeTheCommand = `"-h" comes before the command's name, and only -R/--repo and --help may (gh can take the word after such a -h as its value`
 	for _, tc := range []struct {
 		argv    []string
 		env     map[string]string
@@ -515,6 +519,19 @@ func TestGhTargetOfFailsClosed(t *testing.T) {
 		{argv: []string{"--version", "co"}, err: `"--version" comes before the command's name`},
 		{argv: []string{"-R", "sjawhar/legion", "--version", "hello"}, help: ghWithAnExtensionAndANestedAlias, err: `"--version" comes before the command's name`},
 		{argv: []string{"--help", "--version"}, err: `"--version" comes before the command's name`},
+		// A -h before the command's name is refused but as the whole argv (the walk's -h case
+		// says why); `gh pr --help` is the way to ask.
+		{argv: []string{"-h", "status", "config", "set", "-h", "github.com", "editor", "x"}, help: walked, err: hBeforeTheCommand},
+		{argv: []string{"-h", "status", "auth", "logout", "-h", "github.com"}, help: walked, err: hBeforeTheCommand},
+		{argv: []string{"-h", "status", "repo", "create", "acme/x", "--public"}, help: walked, err: hBeforeTheCommand},
+		{argv: []string{"auth", "-h", "status", "logout", "-h", "github.com"}, help: walked, err: hBeforeTheCommand},
+		{argv: []string{"repo", "-h", "view", "create", "acme/x", "--public"}, help: walked, err: hBeforeTheCommand},
+		{argv: []string{"-R", "acme/widgets", "-h", "pr", "view", "1"}, help: walked, err: hBeforeTheCommand},
+		{argv: []string{"-h", "pr", "view", "1", "-R", "acme/w"}, help: walked, err: hBeforeTheCommand},
+		{argv: []string{"-h", "status"}, help: walked, err: hBeforeTheCommand},
+		{argv: []string{"-R", "acme/widgets", "-h"}, help: walked, err: hBeforeTheCommand},
+		{argv: []string{"pr", "-h"}, help: walked, err: hBeforeTheCommand},
+		{argv: []string{"-h"}, help: walked},
 		// A first word gh's own help does not list, whose help gh may answer by installing an
 		// extension, and the commands that run another program on gh's token.
 		{argv: []string{"stack", "view"}, err: `"stack" is no command gh's own help lists`},
@@ -648,7 +665,6 @@ func TestGhTargetOfFailsClosed(t *testing.T) {
 		{argv: []string{"pr"}},
 		{argv: nil},
 		{argv: []string{"--help"}},
-		{argv: []string{"-h", "pr", "view", "1", "-R", "acme/w"}},
 		{argv: []string{"pr", "view", "1", "--help"}},
 		{argv: []string{"pr", "view", "1", "-R", "acme/w", "-h"}},
 		{argv: []string{"api", "graphql", "-f", "query={viewer{login}}"}},
@@ -3434,6 +3450,30 @@ func TestGhTargetOfReadsTheFilesTheCallWouldSend(t *testing.T) {
 	}
 }
 
+// ghHelpStandIn is a stand-in gh that answers a help read of the resolver's, `[<command>]
+// --help`, with that command's help from gh 2.98.0's saved walk, and any other run, a help call
+// whose words are more than a command's path among them, with a line of help, after recording
+// the run in the file GH_STANDIN_RECORD names.
+func ghHelpStandIn(t *testing.T) string {
+	t.Helper()
+	help, err := filepath.Abs(filepath.Join(ghHelpWalkDir, "2.98.0"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stub := filepath.Join(t.TempDir(), "gh")
+	script := "#!/bin/sh\nfor last; do :; done\n" +
+		"if [ \"$last\" = --help ]; then\n" +
+		"  path=$(printf '%s ' \"$@\" | sed -e 's/--help $//' -e 's/ $//' -e 's/ /_/g')\n" +
+		"  if [ -f '" + help + "'/\"${path:-gh}\".txt ]; then exec cat '" + help + "'/\"${path:-gh}\".txt; fi\n" +
+		"fi\n" +
+		"printf 'gh %s\\n' \"$*\" >>\"$GH_STANDIN_RECORD\"\n" +
+		"echo 'the help gh prints'\n"
+	if err := os.WriteFile(stub, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return stub
+}
+
 // A call that only prints gh's help of a command sends nothing, so `legion gh` hands the guard
 // the zero GhSent of it (ghPrintsOnly), and the guard opens no file its options name. With the
 // fixture's rule file named, each help call below passes the whole guard, and gh runs it with
@@ -3449,24 +3489,7 @@ func TestGhTargetOfReadsTheFilesTheCallWouldSend(t *testing.T) {
 // names `gh release upload`.
 func TestLegionGhPassesAHelpCallAndOpensNothing(t *testing.T) {
 	root, defaultDir := gitCredentialBundle(t)
-	help, err := filepath.Abs(filepath.Join(ghHelpWalkDir, "2.98.0"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	// The gh of this test answers a help read of the resolver's, `[<command>] --help`, with that
-	// command's saved help, and any other run, a help call whose words are more than a command's
-	// path among them, with a line of help, after recording the run.
-	stub := filepath.Join(t.TempDir(), "gh")
-	script := "#!/bin/sh\nfor last; do :; done\n" +
-		"if [ \"$last\" = --help ]; then\n" +
-		"  path=$(printf '%s ' \"$@\" | sed -e 's/--help $//' -e 's/ $//' -e 's/ /_/g')\n" +
-		"  if [ -f '" + help + "'/\"${path:-gh}\".txt ]; then exec cat '" + help + "'/\"${path:-gh}\".txt; fi\n" +
-		"fi\n" +
-		"printf 'gh %s\\n' \"$*\" >>\"$GH_STANDIN_RECORD\"\n" +
-		"echo 'the help gh prints'\n"
-	if err := os.WriteFile(stub, []byte(script), 0o700); err != nil {
-		t.Fatal(err)
-	}
+	stub := ghHelpStandIn(t)
 	asset := writeFile(t, "notes.txt", "the "+leakguardtest.Word+" notes\n")
 	absent := filepath.Join(t.TempDir(), "absent.md")
 	rules := leakguardtest.WriteRules(t, t.TempDir())
@@ -3504,6 +3527,32 @@ func TestLegionGhPassesAHelpCallAndOpensNothing(t *testing.T) {
 				t.Errorf("the shared check recorded %q, want its one run of the call, %q", got, want)
 			}
 		})
+	}
+}
+
+// A -h before the command's name with words after it is refused before gh runs, and the call
+// sends nothing (the walk's -h case in ghTargetOf says how gh reads it): `legion gh -h status
+// config set -h github.com editor x`, which gh runs as `gh config set --host github.com editor
+// x`, exits 2 naming the -h. The stand-in gh (ghHelpStandIn) records no run, so gh ran nothing
+// but the resolver's help reads and never `config set`, and the shared check runs nothing.
+func TestLegionGhRefusesAHelpFlagBeforeTheCommandAndRunsNothing(t *testing.T) {
+	root, defaultDir := gitCredentialBundle(t)
+	args := []string{"-h", "status", "config", "set", "-h", "github.com", "editor", "x"}
+	records := t.TempDir()
+	ghRecord, checkRecord := filepath.Join(records, "gh"), filepath.Join(records, "check")
+	code, stdout, stderr := legionGh(t, map[string]string{
+		"LEGION_GH_PATH": ghHelpStandIn(t), "GH_CONFIG_DIR": defaultDir, "LEGION_GH_OWNERS_DIR": root,
+		"PUBLIC_LEAK_CHECK": leakguardtest.Write(t, t.TempDir(), ghCheckPasses), leakguard.RulesFileVar: leakguardtest.WriteRules(t, t.TempDir()),
+		"GH_STANDIN_RECORD": ghRecord, "LEAK_CHECK_RECORD": checkRecord, "XDG_STATE_HOME": filepath.Join(records, "state"),
+	}, args...)
+	if want := `"-h" comes before the command's name`; code != 2 || stdout != "" || !strings.Contains(stderr, want) {
+		t.Errorf("legion gh %q = exit %d, stdout %q, stderr %q; want exit 2 and a refusal containing %q", args, code, stdout, stderr, want)
+	}
+	if got := readRecord(t, ghRecord); got != "" {
+		t.Errorf("gh recorded %q, want no run but the resolver's help reads", got)
+	}
+	if got := readRecord(t, checkRecord); got != "" {
+		t.Errorf("the shared check recorded %q, want no run", got)
 	}
 }
 

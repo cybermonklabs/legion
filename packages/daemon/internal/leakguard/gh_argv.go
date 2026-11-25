@@ -183,8 +183,11 @@ var ghFieldOptions = map[string]bool{
 // are not options, read until they are a path of ghLeaves or a word leaves every path. -R and
 // --repo, which gh takes before and between those words and `legion gh` does too (`-R <v>`,
 // `-R<v>`, `--repo <v>`, `--repo=<v>`), are passed over with their value, and so is any other
-// option there, `--help` and `-h` among them, which takes none. A bare `--` there ends gh's
-// options before any command is named.
+// option there, which is read as taking none. That holds for --help, a boolean, and not for a -h
+// with two or more words after it, whose value gh takes to be the next word; `legion gh` refuses
+// every -h before the command's name but `gh -h` alone before the guard runs (cmd/legion's
+// ghTargetOf), so only a caller handing the guard a bare argv of its own reaches this reading of
+// one. A bare `--` there ends gh's options before any command is named.
 func ghLeafOf(args []string) (*ghLeaf, int) {
 	var words []string
 	for i := 0; i < len(args); i++ {
@@ -348,10 +351,11 @@ read:
 // percent-escapes of an endpoint's path and of its query: a contents API path is a file's name, so
 // the path decoded is "the gh call's argument <i>, path"; and a release asset's `name` and `label`
 // query values are the asset's file name and label, so each value of the query decoded is "the gh
-// call's argument <i>, query <key>" (decodedQuery), a `;` in it kept. A path that does not decode
-// adds nothing, nor does a pair of the query that does not, and the endpoint's own record is read
-// as ever. Every value of every endpoint's query is read so, which errs toward reading more: a
-// value GitHub stores nowhere costs a record.
+// call's argument <i>, query <key>" (decodedQuery), a `;` in it kept, and each key decoded is "the
+// gh call's argument <i>, query <key> (name)", as a JSON object's names are. A path that does not
+// decode adds nothing, nor does a pair of the query that does not, and the endpoint's own record
+// is read as ever. Every key and value of every endpoint's query is read so, which errs toward
+// reading more: a key or a value GitHub stores nowhere costs a record.
 func (argv *ghArgv) readEndpoint(args []string, i int) {
 	kind, decodedPath, query := ghAPIEndpoint(args[i])
 	argv.endpoint = ghEndpoint{kind: kind, text: args[i]}
@@ -429,26 +433,34 @@ func ghAPIEndpoint(endpoint string) (kind ghEndpointKind, decodedPath, query str
 	return kind, decoded, query
 }
 
-// decodedQuery is records with a record of each value of query, as written in the endpoint that
-// is the call's argument i, decoded, labelled "the gh call's argument <i>, query <key>", where
-// decoding changes the value's text, in the order query writes them. It reads the pairs as GitHub
-// stores them: parted at `&`, a key from its value at the first `=`, and each read by
-// url.QueryUnescape, so a `+` is a space. A `;` parts no pair and stays in its value, decoded with
-// the rest, as GitHub keeps it: api.github.com answered `?per_page=1&x=a%62c;d` on 2026-11-25 with
-// the pair `x=abc%3Bd` (spec v10's R5 of dispatch://INFRA-3929), where url.ParseQuery refuses such
-// a pair. A pair whose key or value does not unescape is skipped, as url.ParseQuery skips it, and
-// the other pairs are still read. url.ParseQuery's own answer is a map, which keeps neither the
-// order of the pairs nor the text each value had.
+// decodedQuery is records with a record of each key and each value of query, as written in the
+// endpoint that is the call's argument i, decoded, in the order query writes them: the key
+// labelled "the gh call's argument <i>, query <key> (name)" where decoding changes the key's
+// text, as a JSON object's names and a field's are (`inputs%5Bnotes%5D` is `inputs[notes]`, which
+// a parser that merges a query into the request's parameters may store as an input's name), and
+// then the value labelled "the gh call's argument <i>, query <key>" where decoding changes the
+// value's text. It reads the pairs as GitHub stores them: parted at `&`, a key from its value at
+// the first `=`, and each read by url.QueryUnescape, so a `+` is a space. A `;` parts no pair and
+// stays in its value, decoded with the rest, as GitHub keeps it: api.github.com answered
+// `?per_page=1&x=a%62c;d` on 2026-11-25 with the pair `x=abc%3Bd` (spec v10's R5 of
+// dispatch://INFRA-3929), where url.ParseQuery refuses such a pair. A pair whose key or value
+// does not unescape is skipped, as url.ParseQuery skips it, and the other pairs are still read.
+// url.ParseQuery's own answer is a map, which keeps neither the order of the pairs nor the text
+// each key and value had.
 func decodedQuery(records []Record, i int, query string) []Record {
 	for pair := range strings.SplitSeq(query, "&") {
 		rawKey, raw, _ := strings.Cut(pair, "=")
 		key, keyErr := url.QueryUnescape(rawKey)
 		value, err := url.QueryUnescape(raw)
-		if keyErr != nil || err != nil {
+		if keyErr != nil || err != nil || (key == rawKey && value == raw) {
 			continue
 		}
+		label := argumentLabel(i) + ", query " + key
+		if key != rawKey {
+			records = append(records, Record{Label: label + " (name)", Text: key})
+		}
 		if value != raw {
-			records = append(records, Record{Label: argumentLabel(i) + ", query " + key, Text: value})
+			records = append(records, Record{Label: label, Text: value})
 		}
 	}
 	return records

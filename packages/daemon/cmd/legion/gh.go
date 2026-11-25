@@ -780,10 +780,11 @@ type ghTarget struct {
 	writesNothing    bool
 }
 
-// ghPrintsOnly is ghTargetOf's target of a command gh only prints for — `gh --version` alone, `gh`
-// with no command, a group with no leaf, a leaf whose help is asked for, by `--help` or by a `-h`
-// no option of the leaf takes, and `gh help`, with a command or without — which names no owner
-// and sends nothing beside its argv. Its sent is the zero GhSent, so the guard opens no file its
+// ghPrintsOnly is ghTargetOf's target of a command gh only prints for — `gh --version` and `gh
+// -h`, each the whole argv (ghTargetOf refuses any other -h before the leaf's name), `gh` with no
+// command, a group with no leaf, a leaf whose help is asked for, by `--help` or by a `-h` no
+// option of the leaf takes, and `gh help`, with a command or without — which names no owner and
+// sends nothing beside its argv. Its sent is the zero GhSent, so the guard opens no file its
 // options name: `gh pr comment 1 --body-file <path> --help` prints the leaf's help and reads no
 // <path>, and a guard that read the leaf's options with tables of its own would refuse the call
 // where no file is at <path>.
@@ -875,8 +876,8 @@ func ghCallerToken(env map[string]string) string {
 // naming no owner gets a target with no owner, no repository and no directory, and a sent that is
 // never nil. It fails closed: whenever it cannot be certain which gh directory the command needs
 // it is an error, which names the argument it could not place, and nothing is sent. `gh
-// --version` alone, and a command whose last --help is true, name none and send nothing, since gh
-// only prints (ghPrintsOnly).
+// --version` and `gh -h` alone, and a command whose last --help is true, name none and send
+// nothing, since gh only prints (ghPrintsOnly).
 //
 // It reads the command as gh does, from gh's own help of each command on the way (help): the
 // path of subcommands down to the leaf the arguments run, every option's arity, and the arguments
@@ -886,13 +887,13 @@ func ghCallerToken(env map[string]string) string {
 // token itself, are errors before its help is read, since reading it could run them (ghWalk); so
 // is such a word as the target of `gh help`, which for an extension gh runs (ghHelpTarget), and a
 // word whose help is another command's that lists no such alias of its own. Before the leaf only
-// the inherited -R/--repo and --help/-h may come, read with the leaf's own options; anything else
-// there, a subcommand gh does not know, help that lists an option incompletely or not at all, an
-// option the leaf's help does not list or names a selector of in a way this does not know, and an
-// argument its USAGE has no place for or names in a way this does not know (ghSlotKinds) are
-// errors. The leaf's options are read with pflag's rules, and after `--` the rest are its
-// arguments, unless its USAGE passes them on (`gh repo clone <repository> [<directory>] [--
-// <gitflags>...]`).
+// the inherited -R/--repo and --help may come, read with the leaf's own options, and a -h only as
+// the whole argv (`gh -h`; the walk's -h case says why); anything else there, a subcommand gh
+// does not know, help that lists an option incompletely or not at all, an option the leaf's help
+// does not list or names a selector of in a way this does not know, and an argument its USAGE has
+// no place for or names in a way this does not know (ghSlotKinds) are errors. The leaf's options
+// are read with pflag's rules, and after `--` the rest are its arguments, unless its USAGE passes
+// them on (`gh repo clone <repository> [<directory>] [-- <gitflags>...]`).
 //
 // Every selector the leaf's help names counts: a `<repository>` (or another repository) argument,
 // before `--` or, for a leaf passing the rest on, the first after it; an `<owner>`; a URL argument
@@ -945,6 +946,26 @@ func ghTargetOf(argv []string, env map[string]string, help func(path []string) (
 			}
 			// gh reads a word after it as a command, an alias's or an extension's among them.
 			return ghTarget{}, cannotPlace(arg, "comes before the command's name, and only -R/--repo and --help may (gh's version is `gh --version` alone)", false)
+		case arg == "-h":
+			// cobra v1.10.2, the one gh 2.98.0 pins (command.go), finds the command before it
+			// adds a help flag (InitDefaultHelpFlag runs in execute, after Find, and adds none to
+			// gh, whose root defines --help itself, a persistent boolean with no -h), and neither
+			// gh's root nor any of its groups defines a -h. Find strips each command's options on
+			// the way with stripFlags, which reads a two-letter option the command does not define
+			// as a boolean (shortHasNoOptDefVal) as one whose value is the next word, but only
+			// when two or more words follow it (`if len(args) <= 1 { break Loop }`). So with two
+			// or more words after it, gh takes the first as the -h's value and runs the command
+			// the later words name, whose own -h, where it has one (--hostname, --host,
+			// --homepage), reads a later -h: `gh -h status config set -h github.com editor x` runs
+			// `gh config set`. With one word after it, stripFlags stops there, Find goes no
+			// deeper, and pflag answers the undefined -h with the help of the command found so
+			// far. Either way the walk refuses it, since gh's contract (docs/deployment.md) admits
+			// only -R/--repo and --help before the command; --help, a boolean, takes no word.
+			// `gh -h` alone names no command and prints gh's help.
+			if len(argv) == 1 {
+				return ghPrintsOnly(), nil
+			}
+			return ghTarget{}, cannotPlace(arg, "comes before the command's name, and only -R/--repo and --help may (gh can take the word after such a -h as its value and run another command; ask for help with --help)", false)
 		case len(walk.path) == 0 && arg == "help":
 			if err := ghHelpTarget(argv[i+1:], help); err != nil {
 				return ghTarget{}, err
@@ -957,7 +978,7 @@ func ghTargetOf(argv []string, env map[string]string, help func(path []string) (
 			rest = append(rest, arg, argv[i+1])
 			i++
 		case strings.HasPrefix(arg, "--repo=") || (strings.HasPrefix(arg, "-R") && len(arg) > 2) ||
-			arg == "--help" || strings.HasPrefix(arg, "--help=") || arg == "-h":
+			arg == "--help" || strings.HasPrefix(arg, "--help="):
 			// The leaf reads these as its own, in order with the rest of its arguments.
 			rest = append(rest, arg)
 		case strings.HasPrefix(arg, "-"):

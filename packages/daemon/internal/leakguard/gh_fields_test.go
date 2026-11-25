@@ -346,14 +346,14 @@ func TestAnEndpointsPercentEscapesAreReadDecoded(t *testing.T) {
 // of a gh call's records). Each row's call holds the fixture's one word hidden by what GitHub does
 // to that text before it stores it — a JSON `\u` escape in a JSON body's string or name, in a
 // body sent to another host, in a GraphQL literal and in a workflow run's JSON inputs, a
-// percent-escape in an endpoint's path and in a query value that holds a `;` — or written plainly
-// where GitHub stores the text as the call writes it: an argument, a field's value and its name,
-// a file option's file and a field's file, a body sent to another host, and a release asset's
-// `#label` in its argument (an asset's file is opened by no rule pass, as on main; legion gh's
-// parse names no file of it, so its Sent is the zero GhSent). The call to a public repository is
-// refused, the report naming that row's record and no other; the same call to a private
-// repository passes, and so does the call to a public one where no rule file is named, which runs
-// no rule.
+// percent-escape in an endpoint's path, in a query value that holds a `;` and in a query's key —
+// or written plainly where GitHub stores the text as the call writes it: an argument, a field's
+// value and its name, a file option's file and a field's file, a body sent to another host, and a
+// release asset's `#label` in its argument (an asset's file is opened by no rule pass, as on
+// main; legion gh's parse names no file of it, so its Sent is the zero GhSent). The call to a
+// public repository is refused, the report naming that row's record and no other; the same call
+// to a private repository passes, and so does the call to a public one where no rule file is
+// named, which runs no rule.
 func TestEveryTextGitHubStoresIsReadAsItIsStored(t *testing.T) {
 	const (
 		repo    = "repos/invented-org/invented-repo"
@@ -415,6 +415,10 @@ func TestEveryTextGitHubStoresIsReadAsItIsStored(t *testing.T) {
 		{"a query value holding a semicolon, percent-decoded with it", func(t *testing.T) (GhRequest, string) {
 			endpoint := repo + "/issues/1/comments?x=the%20" + percentWord + "%20notes;v1"
 			return GhRequest{Args: []string{"api", "-X", "POST", endpoint, "-f", "body=a clean comment"}}, "the gh call's argument 3, query x"
+		}},
+		{"a query key, percent-decoded", func(t *testing.T) (GhRequest, string) {
+			endpoint := repo + "/issues/1/comments?inputs%5Bthe%20" + percentWord + "%20notes%5D=1"
+			return GhRequest{Args: []string{"api", endpoint, "-f", "body=a clean comment"}}, "the gh call's argument 1, query inputs[" + plain + "] (name)"
 		}},
 		{"a GraphQL query's literal, decoded", func(t *testing.T) (GhRequest, string) {
 			return GhRequest{Args: []string{"api", "graphql", "-f", "query=" + graphQLMutation(jsonEscaped, "a clean body")}}, "the gh call's field query, GraphQL string 2"
