@@ -41,10 +41,11 @@ type extraction struct {
 	texts      map[[2]string]int
 	kept       map[[3]string]bool
 	termsLevel int
-	// footnotes is each footnote definition of the document, read once (readFootnotes), by the key
-	// that a reference finds it by (pmdoc.FootnoteLabelKey), the first one where two share a key, as
-	// the parser resolves a reference.
-	footnotes map[string]*Footnote
+	// byLabel is the first footnote definition of each label of the document, and byKey each
+	// definition of each key of a label (pmdoc.FootnoteLabelKey), in the order of the document,
+	// each read once (readFootnotes), as the parser and the browser editor link a reference.
+	byLabel map[string]*Footnote
+	byKey   map[string][]*Footnote
 }
 
 // add keeps a text once for each body, what it holds and the footnotes it refers to: the same
@@ -126,11 +127,12 @@ func ExtractDocument(document string, version int, markdown string) (Extracted, 
 		return Extracted{}, &UnreadableError{document, version, err}
 	}
 	e := &extraction{
-		where:     fmt.Sprintf("%s version %d", document, version),
-		out:       Extracted{Counts: map[Kind]int{}},
-		texts:     map[[2]string]int{},
-		kept:      map[[3]string]bool{},
-		footnotes: map[string]*Footnote{},
+		where:   fmt.Sprintf("%s version %d", document, version),
+		out:     Extracted{Counts: map[Kind]int{}},
+		texts:   map[[2]string]int{},
+		kept:    map[[3]string]bool{},
+		byLabel: map[string]*Footnote{},
+		byKey:   map[string][]*Footnote{},
 	}
 	for _, kind := range kinds {
 		e.out.Counts[kind] = 0
@@ -143,24 +145,40 @@ func ExtractDocument(document string, version int, markdown string) (Extracted, 
 // readFootnotes reads each footnote definition of tree once: its words, the words of each
 // paragraph and heading in it, one to a line, what they hold, and each footnote that they refer to.
 // A footnote that a footnote refers to is read here too, so every text that refers to one shares
-// it, whatever their count.
+// it, whatever their count. Each definition is a footnote of its own, also where another has its
+// label, or its label up to case (pmdoc.FootnoteLabelKey). A reference reads the one that the
+// parser links to it (notesOf), and the browser editor's parser links it to the first of them up
+// to case, so each such footnote holds the next one of its key, and the last the first: a
+// reference to any of them reads each, and no definition of a label that a reference writes goes
+// unread. That is one footnote more for each definition, so the work stays in proportion to the
+// footnotes.
 func (e *extraction) readFootnotes(tree *pmdoc.Node) {
-	definitions := map[*Footnote]*pmdoc.Node{}
-	var order []*Footnote
+	// defined is one definition: its footnote, its node, the key of its label, and its place among
+	// the definitions of that key.
+	type defined struct {
+		note *Footnote
+		node *pmdoc.Node
+		key  string
+		at   int
+	}
+	var order []defined
 	pmdoc.Walk(tree, func(node *pmdoc.Node) bool {
 		if node.Type == "footnote_definition" {
 			label, _ := node.Attrs["label"].(string)
-			if key := pmdoc.FootnoteLabelKey(label); e.footnotes[key] == nil {
-				note := &Footnote{Label: label}
-				e.footnotes[key], definitions[note] = note, node
-				order = append(order, note)
+			note := &Footnote{Label: label}
+			if e.byLabel[label] == nil {
+				e.byLabel[label] = note
 			}
+			key := pmdoc.FootnoteLabelKey(label)
+			order = append(order, defined{note, node, key, len(e.byKey[key])})
+			e.byKey[key] = append(e.byKey[key], note)
 		}
 		return true
 	})
-	for _, note := range order {
+	notes := make([]*Footnote, len(order))
+	for index, each := range order {
 		var parts []reading
-		pmdoc.Walk(definitions[note], func(node *pmdoc.Node) bool {
+		pmdoc.Walk(each.node, func(node *pmdoc.Node) bool {
 			if node.Type == "paragraph" || node.Type == "heading" {
 				parts = append(parts, e.read(node.Children))
 				return false
@@ -168,20 +186,38 @@ func (e *extraction) readFootnotes(tree *pmdoc.Node) {
 			return node.Type != "code_block"
 		})
 		read := joined("\n", parts)
+		note := each.note
 		note.Body, note.Held = read.words, read.held.unique()
 		note.Held.Shown = read.shown
 		note.Notes = e.notesOf(read.notes)
+		notes[index] = note
 	}
-	holdsWords(order)
+	for _, each := range order {
+		sharing := e.byKey[each.key]
+		if len(sharing) < 2 {
+			continue
+		}
+		if next := sharing[(each.at+1)%len(sharing)]; !slices.Contains(each.note.Notes, next) {
+			each.note.Notes = append(each.note.Notes, next)
+		}
+	}
+	holdsWords(notes)
 }
 
-// notesOf is the footnote of each key, once and in the order of keys, less a key that no
-// footnote of the document defines.
-func (e *extraction) notesOf(keys []string) []*Footnote {
+// notesOf is the footnote that the reference of each label reads, once and in the order of the
+// labels, less a label that no footnote of the document defines: the one that the parser links to
+// it, the first whose label it writes, else the first whose label it writes up to case.
+func (e *extraction) notesOf(labels []string) []*Footnote {
 	var notes []*Footnote
-	seen := make(map[*Footnote]bool, len(keys))
-	for _, key := range keys {
-		if note := e.footnotes[key]; note != nil && !seen[note] {
+	seen := make(map[*Footnote]bool, len(labels))
+	for _, label := range labels {
+		note := e.byLabel[label]
+		if note == nil {
+			if sharing := e.byKey[pmdoc.FootnoteLabelKey(label)]; len(sharing) > 0 {
+				note = sharing[0]
+			}
+		}
+		if note != nil && !seen[note] {
 			seen[note] = true
 			notes = append(notes, note)
 		}
@@ -416,8 +452,8 @@ func strongLead(nodes []*pmdoc.Node) (lead, rest []*pmdoc.Node) {
 }
 
 // reading is inline content as a person reads it: its words, with code in code font, the same
-// words exactly as the page shows them (shown), the key of each footnote that it refers to, in
-// order, and what it holds beside its words.
+// words exactly as the page shows them (shown), the label of each footnote that it refers to, as
+// the tree writes it, in order (notesOf), and what it holds beside its words.
 type reading struct {
 	words, shown string
 	notes        []string
@@ -506,7 +542,7 @@ func (e *extraction) inline(nodes []*pmdoc.Node) reading {
 			out.held = out.held.withAddress(src).withTitle(title)
 		case "footnote_reference":
 			label, _ := node.Attrs["label"].(string)
-			out.notes = append(out.notes, pmdoc.FootnoteLabelKey(label))
+			out.notes = append(out.notes, label)
 		}
 		index++
 	}

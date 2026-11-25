@@ -506,6 +506,80 @@ func TestAFootnoteIsJudgedOnceAndGivesEachFindingOnce(t *testing.T) {
 	}
 }
 
+// A reference reads the footnote that the parser links to it: the first whose label it writes, or
+// else the first whose label matches it up to case (pmdoc.FootnoteLabelKey). The browser editor's
+// parser links it to the first that matches up to case, so the reference also reads each other
+// footnote whose label matches its own up to case, a second footnote of its own label among them,
+// and no such definition goes unread: each holds the next one of its label up to case. The
+// sentences of each count in a statement that refers to it, and its findings stand under the
+// first text that refers to it. The control: a footnote that no reference reads, whatever its
+// label, is read by no text, as no other prose outside a block is.
+func TestAReferenceReadsEachFootnoteWhoseLabelMatchesItUpToCase(t *testing.T) {
+	const ada = `it names a person: "Ada Lovelace"`
+	const twelve = `it names a pull request: "#12". ` + pullRequestForms
+	for _, test := range []struct {
+		name, markdown string
+		linked         string
+		held           []string
+		want           []string
+	}{
+		{"the review's probe: [^A] under [^a] and [^A]", requirement("r", "Dispatch keeps it.[^A]") +
+			"\n[^a]: Dispatch keeps it.\n\n[^A]: Ada Lovelace approved it in #12. It runs. It stops. It ends.\n",
+			"A", []string{"A", "a"}, []string{
+				"statement r sentences: it has at least 5 sentences with those of its footnotes, and a statement has one or two: [^A] adds 4, and Dispatch stops the count there",
+				"statement r pull-request: in its footnote [^A]: " + twelve,
+				"statement r person: in its footnote [^A]: " + ada,
+			}},
+		{"[^a] under [^a] and [^A]", requirement("r", "Dispatch keeps it.[^a]") +
+			"\n[^a]: Dispatch keeps it.\n\n[^A]: Ada Lovelace approved it in #12.\n",
+			"a", []string{"a", "A"}, []string{
+				"statement r sentences: it has 3 sentences with those of its footnotes, and a statement has one or two: [^a] adds 1 and [^A] adds 1",
+				"statement r pull-request: in the footnote [^A], which has the label of its footnote [^a] up to case: " + twelve,
+				"statement r person: in the footnote [^A], which has the label of its footnote [^a] up to case: " + ada,
+			}},
+		{"[^A] under [^a] alone", requirement("r", "Dispatch keeps it.[^A]") + "\n[^a]: Ada Lovelace approved it.\n",
+			"a", []string{"a"}, []string{"statement r person: in its footnote [^a]: " + ada}},
+		{"[^a] under two definitions of [^a]", requirement("r", "Dispatch keeps it.[^a]") +
+			"\n[^a]: Dispatch keeps it.\n\n[^a]: Ada Lovelace approved it.\n",
+			"a", []string{"a", "a"}, []string{
+				"statement r sentences: it has 3 sentences with those of its footnotes, and a statement has one or two: [^a] adds 1 and [^a] adds 1",
+				"statement r person: in the footnote [^a], which has the label of its footnote [^a] up to case: " + ada,
+			}},
+		{"the control: a footnote of another label that no reference reads", requirement("r", "Dispatch keeps it.[^a]") +
+			"\n[^a]: Dispatch keeps it.\n\n[^z]: Ada Lovelace approved it.\n",
+			"a", []string{"a"}, nil},
+	} {
+		extracted, err := ExtractDocument("spec.md", 1, storedMarkdown(t, test.markdown))
+		if err != nil {
+			t.Fatalf("%s: %v", test.name, err)
+		}
+		statement := extracted.Texts[0]
+		if len(statement.Notes) != 1 || statement.Notes[0].Label != test.linked {
+			t.Errorf("%s: the reference reads %d footnotes, want the one that the parser links, [^%s]", test.name, len(statement.Notes), test.linked)
+		}
+		// held is each footnote that the statement holds, in the order of a walk from it, once.
+		var held []string
+		seen := map[*Footnote]bool{}
+		for walk := slices.Clone(statement.Notes); len(walk) > 0; walk = walk[1:] {
+			if note := walk[0]; !seen[note] {
+				seen[note] = true
+				held = append(held, note.Label)
+				walk = append(walk, note.Notes...)
+			}
+		}
+		if !slices.Equal(held, test.held) {
+			t.Errorf("%s: the statement holds the footnotes %q, want %q", test.name, held, test.held)
+		}
+		var got []string
+		for _, finding := range Check(planted("ada.lovelace@example.com"), Input{Texts: extracted.Texts}) {
+			got = append(got, fmt.Sprintf("%s %s %s: %s", finding.Kind, finding.Node, finding.Rule, finding.Detail))
+		}
+		if !slices.Equal(got, test.want) {
+			t.Errorf("%s: the findings\n%q\nwant\n%q", test.name, got, test.want)
+		}
+	}
+}
+
 // The red team's two inputs of a part of Terms and a container, with their controls: a heading in
 // a block quote does not close the part of Terms around the quote, and a part of Terms in a block
 // quote or a callout ends with the quote or the callout.

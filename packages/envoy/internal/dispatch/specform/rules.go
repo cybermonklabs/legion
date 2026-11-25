@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/url"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"unicode"
@@ -268,7 +269,7 @@ func breaks(c Context, people [][]string, text Text, notes *footnoteJudge) []bro
 	find := func() {
 		found = found[:0]
 		if prose(text.Kind) {
-			form, _, _ := formBreaks(text.Kind, oneLine(text.Body), held, judge)
+			form, _, _ := formBreaks(text.Kind, proseLine(text.Body), held, judge)
 			found = append(found, form...)
 		}
 		found = append(found, heldBreaks(c, people, text.Body, text.Held, judge)...)
@@ -325,7 +326,9 @@ func heldBreaks(c Context, people [][]string, body string, held Held, judge *way
 		shown = body
 	}
 	line := oneLine(shown)
-	places := judge.placesIn(oneLine(body), line, false)
+	// The places of the shown words are read in both with each fence marker as white space, as the
+	// form rules read the body (proseLine), byte for byte, so each offset of line stays its own.
+	places := judge.placesIn(proseLine(body), proseLine(shown), false)
 	var found []broken
 	type also struct {
 		finding int
@@ -469,7 +472,7 @@ func formBreaks(kind Kind, line string, noted footnotesHeld, judge *wayJudge) ([
 	}
 	for _, sentence := range sentences {
 		bound, of := maxWords, "a sentence"
-		if kind == KindProcedure && isInstruction(sentence.words) {
+		if kind == KindProcedure && sentence.isInstruction(line) {
 			bound, of = maxProcedureWords, "an instruction"
 		}
 		if words := sentence.words; len(words) > bound {
@@ -583,10 +586,49 @@ func (c covered) holds(at int) bool {
 // reference to a record of Dispatch, the address of a pull request and an email address. A form
 // of a name that only words have, such as "#12" or "Ada Lovelace", names nothing in an address,
 // nor in a reference that words hold, such as "https://example.com/guide#12". A "#12" in the name
-// of an incident names no pull request. judge judges the ways out of each person (wayJudge): in the
-// whole address, or in the sentence that places finds for the place of line that names the person
-// (sentencePlaces), which a caller with a judge gives for a line that is no address.
+// of an incident names no pull request. A line of words that holds a format character (formatForms)
+// names each form that either reading of it finds, and the finding quotes the form with its format
+// characters. judge judges the ways out of each person (wayJudge): in the whole address, or in the
+// sentence that places finds for the place of line that names the person (sentencePlaces), which a
+// caller with a judge gives for a line that is no address.
 func referenceBreaks(c Context, people [][]string, line string, address bool, judge *wayJudge, places *sentencePlaces) []broken {
+	var forms []span
+	if !address && strings.ContainsFunc(line, isFormat) {
+		forms = formatForms(c, people, line)
+	} else {
+		forms = referenceForms(c, people, line, address)
+	}
+	// The judge names an address once, not once for each name in it.
+	var addressed charge.Unit
+	if address && slices.ContainsFunc(forms, func(each span) bool { return each.rule == rulePerson }) {
+		addressed = judge.named(line, true)
+	}
+	found := make([]broken, 0, len(forms))
+	for _, each := range forms {
+		words := line[each.start:each.end]
+		switch each.rule {
+		case ruleDispatchLink:
+			found = append(found, recordBreak(each.named.form, words, each.record))
+		case ruleIncident:
+			found = append(found, broken{rule: ruleIncident, detail: fmt.Sprintf("it names an incident: %q. %s", words, incidentForms)})
+		case rulePullRequest:
+			found = append(found, broken{rule: rulePullRequest, detail: fmt.Sprintf("it names a pull request: %q. %s", words, pullRequestForms)})
+		case rulePerson:
+			unit := addressed
+			if judge != nil && !address {
+				unit = places.of(each.start, words)
+			}
+			found = append(found, personBreak(words, judge.offered(unit, rulePerson, words, personWays(words))))
+		}
+	}
+	return found
+}
+
+// referenceForms is the span of each form that referenceBreaks reads in line, with its rule, and
+// for a record of Dispatch the record and the form in which the words name it (broken.named):
+// first each record, in the order of the line, then each incident, each pull request and each
+// person, each in the order of the line.
+func referenceForms(c Context, people [][]string, line string, address bool) []span {
 	var links []span
 	references := newCovered(line)
 	for _, located := range text.ExtractAt(line, c.ServerURL) {
@@ -611,10 +653,7 @@ func referenceBreaks(c Context, people [][]string, line string, address bool, ju
 		}
 	}
 	sort.SliceStable(links, func(a, b int) bool { return links[a].start < links[b].start })
-	var found []broken
-	for _, link := range links {
-		found = append(found, link.broken)
-	}
+	found := links
 	pullRequests := pullRequestAddress.find(line)
 	if !address {
 		// A form of a pull request inside an address of one, an incident or a form found before
@@ -623,7 +662,7 @@ func referenceBreaks(c Context, people [][]string, line string, address bool, ju
 		named.mark(pullRequests...)
 		for _, each := range incident.find(line) {
 			named.mark(each)
-			found = append(found, broken{rule: ruleIncident, detail: fmt.Sprintf("it names an incident: %q. %s", line[each.start:each.end], incidentForms)})
+			found = append(found, span{each.start, each.end, broken{rule: ruleIncident}})
 		}
 		for _, form := range []wordForm{pullRequestRepo, pullRequestName} {
 			for _, each := range form.find(line) {
@@ -636,7 +675,7 @@ func referenceBreaks(c Context, people [][]string, line string, address bool, ju
 	}
 	sort.SliceStable(pullRequests, func(a, b int) bool { return pullRequests[a].start < pullRequests[b].start })
 	for _, each := range pullRequests {
-		found = append(found, broken{rule: rulePullRequest, detail: fmt.Sprintf("it names a pull request: %q. %s", line[each.start:each.end], pullRequestForms)})
+		found = append(found, span{each.start, each.end, broken{rule: rulePullRequest}})
 	}
 	var names []span
 	if address {
@@ -648,19 +687,72 @@ func referenceBreaks(c Context, people [][]string, line string, address bool, ju
 	} else {
 		names = personNames(people, line, references)
 	}
-	// The judge names an address once, not once for each name in it.
-	var addressed charge.Unit
-	if address && len(names) > 0 {
-		addressed = judge.named(line, true)
-	}
 	for _, each := range names {
-		name, unit := line[each.start:each.end], addressed
-		if judge != nil && !address {
-			unit = places.of(each.start, name)
-		}
-		found = append(found, personBreak(name, judge.offered(unit, rulePerson, name, personWays(name))))
+		found = append(found, span{each.start, each.end, broken{rule: rulePerson}})
 	}
 	return found
+}
+
+// isFormat reports whether r is a format character (\p{Cf}), such as a soft hyphen, a zero-width
+// space or a word joiner, which the page shows as nothing.
+func isFormat(r rune) bool {
+	return unicode.Is(unicode.Cf, r)
+}
+
+// formRank is the place of the forms of rule among the forms that referenceForms answers.
+var formRank = map[Rule]int{ruleDispatchLink: 0, ruleIncident: 1, rulePullRequest: 2, rulePerson: 3}
+
+// formatForms is the forms of line, a line of words that holds a format character, that either of
+// its two readings finds (referenceForms), so that no format character hides a form: the words
+// with each format character taken out, which joins the characters on its two sides, as in
+// "Ada Love\u00adlace", and the words with each format character read as white space, which parts
+// them, as in "Ada\u2060Lovelace" and "x\u200bACME-12". A form that the first reading finds stands
+// for each form of its rule that the second finds over any of the same characters, so one place
+// gives one finding. Each span is a span of line, so a finding quotes the form with its format
+// characters.
+func formatForms(c Context, people [][]string, line string) []span {
+	var joined strings.Builder
+	spaced := []byte(line)
+	// at is the offset in line of each byte of joined.
+	at := make([]int, 0, len(line))
+	for offset := 0; offset < len(line); {
+		r, size := utf8.DecodeRuneInString(line[offset:])
+		if isFormat(r) {
+			for index := offset; index < offset+size; index++ {
+				spaced[index] = ' '
+			}
+		} else {
+			joined.WriteString(line[offset : offset+size])
+			for index := offset; index < offset+size; index++ {
+				at = append(at, index)
+			}
+		}
+		offset += size
+	}
+	forms := referenceForms(c, people, joined.String(), false)
+	for index := range forms {
+		forms[index].start, forms[index].end = at[forms[index].start], at[forms[index].end-1]+1
+	}
+	held := map[Rule]covered{}
+	for _, each := range forms {
+		if held[each.rule] == nil {
+			held[each.rule] = newCovered(line)
+		}
+		held[each.rule].mark(each)
+	}
+	for _, each := range referenceForms(c, people, string(spaced), false) {
+		taken := held[each.rule]
+		if taken == nil || !slices.ContainsFunc(taken[each.start:each.end], func(held bool) bool { return held }) {
+			forms = append(forms, each)
+		}
+	}
+	sort.SliceStable(forms, func(a, b int) bool {
+		if rankA, rankB := formRank[forms[a].rule], formRank[forms[b].rule]; rankA != rankB {
+			return rankA < rankB
+		}
+		return forms[a].start < forms[b].start
+	})
+	return forms
 }
 
 // personWays is the ways out of the rule person for name, an email address: a path after the

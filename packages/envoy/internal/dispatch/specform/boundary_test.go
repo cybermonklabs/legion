@@ -39,7 +39,10 @@ func referenceNames(t *testing.T, c Context, body string) []string {
 // script inside it. Where a letter is part of the form itself (an email address, a handle, the key
 // of an incident), the joined text is a longer form of the same kind. A form whose alphabet is ASCII
 // by the rule of its system (a key of Dispatch, an id, the owner and the repository of GitHub, a
-// number) holds no letter of another script, so such a letter inside it makes it no form.
+// number) holds no letter of another script, so such a letter inside it makes it no form. A
+// format character (\p{Cf}) inside or beside a form, such as a zero-width space or a soft hyphen,
+// hides no form, as the page shows none: the form stands where the words name it with each format
+// character taken out or read as a space, and the finding quotes the form with it.
 func TestEachReferenceFormIsAWholeWord(t *testing.T) {
 	const id = "0195f3c2-7b1d-7c3e-9a4f-2b6d8e1f0a37"
 	for _, test := range []struct {
@@ -50,6 +53,13 @@ func TestEachReferenceFormIsAWholeWord(t *testing.T) {
 		{"a key", "xACME-12", nil},
 		{"a key", "ACME-12x", nil},
 		{"a key", "ACME-12.", []string{"dispatch-link ACME-12"}},
+		{"a key with a zero-width space", "ACME-\u200b12", []string{"dispatch-link ACME-\u200b12"}},
+		{"a key with a soft hyphen", "AC\u00adME-12", []string{"dispatch-link AC\u00adME-12"}},
+		{"the control: a key after a letter and a zero-width space, read as a space", "x\u200bACME-12", []string{"dispatch-link ACME-12"}},
+		{"a link with a zero-width space", "dispatch://ACME-\u200b12", []string{"dispatch-link dispatch://ACME-\u200b12"}},
+		{"a number of a pull request with a word joiner", "#1\u20602", []string{"pull-request #1\u20602"}},
+		{"INC-<n> with a soft hyphen", "INC-\u00ad12", []string{"incident INC-\u00ad12"}},
+		{"an email address with a soft hyphen", "ada\u00ad@example.com", []string{"person ada\u00ad@example.com"}},
 		{"an id", id, []string{"dispatch-link " + id}},
 		{"an id", "x" + id, nil},
 		{"an id", id + "x", nil},
@@ -171,7 +181,11 @@ func TestEachReferenceFormIsAWholeWord(t *testing.T) {
 // Each part of a person's name is a whole word of wordClass, as each form of a name is: a character
 // of a word right before it or right after it makes it part of a longer word, which is no part of
 // the name. A part of a person's email that holds a digit or a mark is one word too, and so is a
-// word of an approved component name. The stated limit: Dispatch compares no normal forms, so a
+// word of an approved component name. A format character (\p{Cf}), such as a soft hyphen, a
+// zero-width space or a word joiner, is no character that the page shows, so it hides no name: a
+// name stands where the words name it with each format character taken out, which joins the
+// characters on its two sides, or read as a space, which parts them, and the finding quotes the
+// name with its format characters. The stated limit: Dispatch compares no normal forms, so a
 // letter written with a combining mark in the text names no part that the email writes as one
 // composed letter.
 func TestEachPartOfAPersonsNameIsAWholeWord(t *testing.T) {
@@ -196,6 +210,19 @@ func TestEachPartOfAPersonsNameIsAWholeWord(t *testing.T) {
 		{"a component name that _ joins is one word", "dispatch.admin@example.com", "Dispatch_Admin", "Dispatch asks Dispatch Admin.",
 			[]string{"person Dispatch Admin"}},
 		{"the control: a component name of two words", "dispatch.admin@example.com", "Dispatch Admin", "Dispatch asks Dispatch Admin.", nil},
+		{"a soft hyphen inside a part", ada, "", "Dispatch asks Ada Love\u00adlace.", []string{"person Ada Love\u00adlace"}},
+		{"a zero-width space before the space", ada, "", "Dispatch asks Ada\u200b Lovelace.", []string{"person Ada\u200b Lovelace"}},
+		{"a word joiner between the parts", ada, "", "Dispatch asks Ada\u2060Lovelace.", []string{"person Ada\u2060Lovelace"}},
+		{"a zero-width space between the parts", ada, "", "Dispatch asks Ada\u200bLovelace.", []string{"person Ada\u200bLovelace"}},
+		{"a soft hyphen in each part, and a zero-width space after the name", ada, "", "Dispatch asks A\u00adda Love\u00adlace\u200b.",
+			[]string{"person A\u00adda Love\u00adlace"}},
+		{"the control: a letter between the parts", ada, "", "Dispatch asks AdaxLovelace.", nil},
+		{"the control: no space between the parts", ada, "", "Dispatch asks AdaLovelace.", nil},
+		{"the control: a real space between the parts", ada, "", "Dispatch asks Ada Lovelace.", []string{"person Ada Lovelace"}},
+		{"the control: a soft hyphen between a letter and a part, read as a space", ada, "", "Dispatch asks x\u00adAda Lovelace.",
+			[]string{"person Ada Lovelace"}},
+		{"the control: a word joiner between a part and a digit, read as a space", ada, "", "Dispatch asks Ada Lovelace\u20602.",
+			[]string{"person Ada Lovelace"}},
 	} {
 		context := planted(test.person)
 		if test.system != "" {

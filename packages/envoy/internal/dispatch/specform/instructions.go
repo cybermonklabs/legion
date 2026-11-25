@@ -7,6 +7,8 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/sjawhar/envoy/internal/dispatch/specform/ste"
 )
 
 // maxProcedureWords is R49's bound on an instruction, a sentence of the procedure of a check that
@@ -375,10 +377,19 @@ func secondInstruction(words []string, commas []bool) (int, bool) {
 	return second, seen == 2
 }
 
-// isInstruction reports whether sentence, as sentencesOf reads a line, is an instruction: it
-// opens one at instructionStart, a span in code font standing for the object. So the 20-word bound
-// of an instruction is its, and a sentence of a procedure that describes keeps 25.
-func isInstruction(sentence []string) bool {
+// isInstruction reports whether the sentence, which sentencesOf read from line, is an instruction:
+// it opens one at instructionStart. It reads the sentence as instructionBreaks does, with each span
+// in code font one word (codeAsWords), so a span in code font stands for the object, as in
+// "Run `go test` with the flag". So the 20-word bound of an instruction is its, though nothing in
+// code font counts among its words, and a sentence of a procedure that describes keeps 25.
+func (s sentence) isInstruction(line string) bool {
+	coded, _ := codeAsWords(line[s.start:s.end])
+	var sentence []string
+	for _, piece := range ste.Words(coded) {
+		for _, word := range piece {
+			sentence = append(sentence, word.Text)
+		}
+	}
 	words, commas := sentenceWords(sentence)
 	_, ok := instructionStart(words, commas)
 	return ok

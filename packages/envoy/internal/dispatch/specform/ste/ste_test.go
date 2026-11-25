@@ -299,9 +299,10 @@ func heldAllocates(held []Verbs) uint64 {
 }
 
 // TestWordsAreWhatSteLintLints holds Words to the text that ste-lint's line loop lints, as words:
-// inline code is left out, a code fence line holds none, a table's cells are pieces of their own,
-// and Python's white space splits the words. A stop ends no piece. Each word takes the bytes of the
-// text from its first character to its last, so those bytes without their inline code are the
+// inline code is left out, a table's cells are pieces of their own, and Python's white space splits
+// the words. No line is a fence, as a text of Dispatch is no document
+// (TestTheReadersOfATextOfDispatchReadNoFence). A stop ends no piece. Each word takes the bytes of
+// the text from its first character to its last, so those bytes without their inline code are the
 // word, and a word with inline code inside it takes that code too.
 func TestWordsAreWhatSteLintLints(t *testing.T) {
 	for _, test := range []struct {
@@ -315,7 +316,7 @@ func TestWordsAreWhatSteLintLints(t *testing.T) {
 		{"One.\u00a0Two.\x1fThree", [][]string{{"One.", "Two.", "Three"}}, nil},
 		{"First line\nsecond. Third", [][]string{{"First", "line"}, {"second.", "Third"}}, [][2]int{{0, 5}, {6, 10}, {11, 18}, {19, 24}}},
 		{"| A. b | C |\n| --- | --- |\n| d e | f |", [][]string{{"A.", "b"}, {"C"}, {"d", "e"}, {"f"}}, [][2]int{{2, 4}, {5, 6}, {9, 10}, {29, 30}, {31, 32}, {35, 36}}},
-		{"```\nOne. Two.\n```", nil, nil},
+		{"```\nOne. Two.\n```", [][]string{{"`"}, {"One.", "Two."}, {"`"}}, nil},
 		{"`only code`", nil, nil},
 		{"", nil, nil},
 		{"Done. ", [][]string{{"Done."}}, nil},
@@ -339,6 +340,33 @@ func TestWordsAreWhatSteLintLints(t *testing.T) {
 		if test.bytes != nil && !reflect.DeepEqual(bytes, test.bytes) {
 			t.Errorf("Words(%q) take the bytes %v, want %v", test.text, bytes, test.bytes)
 		}
+	}
+}
+
+// A text of Dispatch is no markdown document: Dispatch joins the lines of a text into one, with its
+// fence markers written as white space (TestNoFencesWritesEachFenceMarkerAsWhiteSpace), and the
+// judge of the ways out reads one sentence of it alone, which can start with three backticks of
+// code font. So LintVerbs, Words and SpreadOf read no line as a fence, where Lint, the port of
+// ste-lint, still does (the control, and TestPortMatchesSteLintOnTheCorpus).
+func TestTheReadersOfATextOfDispatchReadNoFence(t *testing.T) {
+	const piece = "```x``` a; b"
+	if got := Lint(piece); len(got) != 0 {
+		t.Errorf("the control: Lint(%q) = %v, want none, as ste-lint reads the line as a fence", piece, got)
+	}
+	if got, _ := LintVerbs(piece); !sameFindings(got, []Finding{{"semicolon", ";"}}) {
+		t.Errorf("LintVerbs(%q) = %v, want the semicolon after the code font", piece, got)
+	}
+	var words []string
+	for _, each := range Words("```x``` One. Two.") {
+		for _, word := range each {
+			words = append(words, word.Text)
+		}
+	}
+	if !slices.Equal(words, []string{"One.", "Two."}) {
+		t.Errorf("Words: %q, want the two words after the code font", words)
+	}
+	if got := SpreadOf("```x``` one two three").Pieces; !slices.Equal(got, []int{3}) {
+		t.Errorf("SpreadOf: the pieces %v, want one of 3 words", got)
 	}
 }
 

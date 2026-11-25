@@ -5856,6 +5856,10 @@ Each item below names a path with its method and identity, then its purpose.
       Each text is the text that a person reads: a character reference is its character, and a hard break is a space between two words.
       A link is its words, and an image is its alternative text, so a stop or a `#` in an address breaks no rule of a sentence or of a name.
       The rules that count sentences and words, and `ste-lint`, read code in code font, as `ste-lint` reads it.
+      A text is no document, so a line of it that starts with three backticks or three tildes opens no fence, where `ste-lint` reads a fence and lints nothing up to the next such line.
+      Dispatch reads that run, the word right after it such as `sh` in ```` ```sh ````, and the next run of as many on the line as white space, so each rule reads the sentences after it.
+      A run of three backticks inside a line is code font, as `ste-lint` reads it.
+      So code font that starts a line and holds two backticks in a row, which three backticks open, counts its words there: start the line with a word.
       The rules of links, of records and of people read the words as the page shows them, with no mark of code font.
       So code font hides no name or link, also when it holds the whole name or a part of it.
 
@@ -5886,6 +5890,9 @@ Each item below names a path with its method and identity, then its purpose.
 
     - How Dispatch reads a footnote: a footnote that a text refers to is part of that text, and so is a footnote that such a footnote refers to.
       Dispatch judges each footnote one time for each document.
+      A reference refers to the footnote whose label it writes, or else to the first one whose label it writes in another case, as the parser links it.
+      The browser editor links it to the first one of its label in any case, so the reference also holds each other footnote whose label differs from its own only in case, and each later footnote of its own label.
+      So no such footnote goes unread, and a finding of one names it as in `in the footnote [^A], which has the label of its footnote [^a] up to case`.
       Each finding of a footnote is in the refusal one time, under the first text that refers to the footnote and whose kind the rule reads.
       That is the first in the order that Dispatch judges the texts: each text but a term line in the order of the document, then each term line.
       Its words name the footnote and how many other texts refer to it, as in `in its footnote [^n] (2 other texts also refer to it)`.
@@ -5922,6 +5929,7 @@ Each item below names a path with its method and identity, then its purpose.
       A sentence is an instruction when it starts with a verb of the rule's list, with no comma after it, and then the first word of the verb's object.
       The list is `internal/dispatch/specform/instruction-verbs.txt`, reviewed data: a change of the list is a change of the rule, which a person reviews, and no test reads a skill or a procedure to write it.
       The first word of the object is `the`, `a`, `an`, `each`, `every`, `all`, `any`, `both`, `no`, `its`, `their`, `this`, `these`, `those`, `it`, `them` or a span in code font.
+      So ``Run `go test` with the race detector`` is an instruction, which has at most 20 words outside the code font, as nothing in code font counts as a word.
       After a condition at the start of the sentence, such as `If the run fails,`, the instruction starts after the comma that ends the condition.
       A second instruction is the same two words after `and`, `or`, `then` or a comma, as in `Read each request and record its version`, which breaks the form (rule `instructions`).
       Two verbs of one object, as in `Push and hold the switch`, are one instruction, as ASD-STE100 lets two actions at the same time be.
@@ -6029,6 +6037,10 @@ Each item below names a path with its method and identity, then its purpose.
       So write such a colour in words.
       A form right beside a letter of a script that writes no space between words, as in `见#12`, is part of a longer word.
       So it names nothing, and R49 leaves such a text to the reviewer of R25.
+      A format character (Unicode class `Cf`), such as a soft hyphen, a zero-width space or a word joiner, hides no form, as the page shows none.
+      The rules read the words twice where they hold one: with each format character taken out, which joins the characters on its two sides, and with each read as a space, which parts them.
+      Each name that either reading finds is a finding, and the finding quotes the name with its format characters.
+      So `Ada Lovelace` with a soft hyphen inside `Lovelace`, `Ada` and `Lovelace` joined by a word joiner, and `ACME-12` after a letter and a zero-width space each give a finding.
 
     - How the rules read a term line: a term line is `- **<term>**: <definition>` under a heading `Terms`.
       Each other paragraph, list item or table row under that heading breaks the form (rule `term-line`).

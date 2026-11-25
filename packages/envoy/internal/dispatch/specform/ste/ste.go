@@ -380,15 +380,78 @@ func isFence(stripped string) bool {
 	return strings.HasPrefix(stripped, "```") || strings.HasPrefix(stripped, "~~~")
 }
 
+// NoFences is text with each fence marker that ste-lint reads written as white space, byte for
+// byte, for a text that is no markdown document, as a text of Dispatch is: on each line
+// (splitLines) that starts with "```" or "~~~" after its white space (isFence), the run of
+// backticks or tildes that starts it, the characters right after the run up to white space or the
+// run's own character (a language, such as "sh" in "```sh"), and the next run of as many of that
+// character on the line, which closes it; and so again while the line still starts with such a
+// run. So Lint reads each line of the text that it returns, and the words after a marker as
+// words, where ste-lint reads no word from the marker to the next one; and each byte stays where
+// it was, so an offset of the one text is the offset of the same character of the other.
+func NoFences(text string) string {
+	var written []byte
+	lines, starts := splitLines(text)
+	for index, line := range lines {
+		start := starts[index]
+		for {
+			if written != nil {
+				line = string(written[start : start+len(line)])
+			}
+			rest := strings.TrimLeftFunc(line, isSpace)
+			if !isFence(rest) {
+				break
+			}
+			if written == nil {
+				written = []byte(text)
+			}
+			mark := rest[0]
+			at := len(line) - len(rest)
+			run := len(rest) - len(strings.TrimLeft(rest, rest[:1]))
+			end := at + run
+			if after := strings.IndexFunc(line[end:], func(r rune) bool { return isSpace(r) || r == rune(mark) }); after >= 0 {
+				end += after
+			} else {
+				end = len(line)
+			}
+			blank(written[start+at : start+end])
+			for search := end; search < len(line); {
+				next := strings.IndexByte(line[search:], mark)
+				if next < 0 {
+					break
+				}
+				search += next
+				closing := len(line[search:]) - len(strings.TrimLeft(line[search:], rest[:1]))
+				if closing == run {
+					blank(written[start+search : start+search+closing])
+					break
+				}
+				search += closing
+			}
+		}
+	}
+	if written == nil {
+		return text
+	}
+	return string(written)
+}
+
+// blank writes each byte of b as a space.
+func blank(b []byte) {
+	for index := range b {
+		b[index] = ' '
+	}
+}
+
 // eachSegment visits the text that ste-lint's line loop lints, in its order: each segment of
-// each line outside a code fence, with its inline code removed (from.cuts). line is the 1-based
-// line number, and starts the byte where each line starts in the text (splitLines), so from.start
-// is where the segment starts in the text.
-func eachSegment(lines []string, starts []int, visit func(line int, from segment, text string)) {
+// each line, with its inline code removed (from.cuts), outside a code fence where fences is set,
+// as ste-lint reads a document. line is the 1-based line number, and starts the byte where each
+// line starts in the text (splitLines), so from.start is where the segment starts in the text.
+func eachSegment(lines []string, starts []int, fences bool, visit func(line int, from segment, text string)) {
 	tables := tableCells(lines)
 	inFence := false
 	for index, raw := range lines {
-		if isFence(Strip(raw)) {
+		if fences && isFence(Strip(raw)) {
 			inFence = !inFence
 			continue
 		}
@@ -431,14 +494,14 @@ type Word struct {
 	Start, End int
 }
 
-// Words is each piece of text that ste-lint lints, as its words: outside code fences, a table's
-// cells one by one, with inline code removed, split at Python's white space, each word with the
-// bytes of text that it takes. A piece with no word is left out. Where a sentence ends is the
-// caller's to decide.
+// Words is each piece of text that ste-lint lints, as its words, as LintVerbs reads them: a
+// table's cells one by one, with inline code removed, split at Python's white space, each word with
+// the bytes of text that it takes, and no line a fence. A piece with no word is left out. Where a
+// sentence ends is the caller's to decide.
 func Words(text string) [][]Word {
 	var pieces [][]Word
 	lines, starts := splitLines(text)
-	eachSegment(lines, starts, func(_ int, from segment, kept string) {
+	eachSegment(lines, starts, false, func(_ int, from segment, kept string) {
 		var words []Word
 		// cut is the next cut of from.cuts, and removed the bytes of the cuts before it: a byte
 		// of kept stands at from.start, its offset and removed, and the words go in the order of
@@ -497,16 +560,27 @@ func (c *columns) at(offset int) int {
 }
 
 // Lint is ste-lint's hard findings for text, in ste-lint's order: by line and column, and in
-// the order ste-lint found them where those are equal.
+// the order ste-lint found them where those are equal. It reads text as ste-lint reads a
+// document, so a line that starts with "```" or "~~~" opens or closes a fence, and it lints no line
+// of a fence.
 func Lint(text string) []Finding {
-	findings, _ := LintVerbs(text)
+	findings, _ := lint(text, true)
 	return findings
 }
 
-// LintVerbs is Lint, and the members of the synonym groups that text uses (Verbs), each as Lint
-// reads it for the rule synonym-rotation: so the verbs of one text can stand beside the words of
-// another (Rotations).
+// LintVerbs is Lint of a text that is no markdown document, such as the one line of a text of
+// Dispatch or a sentence of it, and the members of the synonym groups that text uses (Verbs), each
+// as it reads them for the rule synonym-rotation: so the verbs of one text can stand beside the
+// words of another (Rotations). It reads no line as a fence: a caller hands it a text whose fence
+// markers NoFences wrote as white space, or a piece of one, which can start with three backticks of
+// code font where no line starts.
 func LintVerbs(text string) ([]Finding, Verbs) {
+	return lint(text, false)
+}
+
+// lint is Lint, and the verbs of LintVerbs, of text, with a line that starts with a fence marker
+// opening or closing a fence where fences is set.
+func lint(text string, fences bool) ([]Finding, Verbs) {
 	lines, starts := splitLines(text)
 	var found []located
 	add := func(line, column int, rule, match string) {
@@ -514,7 +588,7 @@ func LintVerbs(text string) ([]Finding, Verbs) {
 	}
 	seen := map[[2]int]bool{}
 	var hits []Hit
-	eachSegment(lines, starts, func(line int, from segment, text string) {
+	eachSegment(lines, starts, fences, func(line int, from segment, text string) {
 		column := columns{text: text, start: from.column}
 		for index, char := range text {
 			if char == ';' {
@@ -551,7 +625,7 @@ func LintVerbs(text string) ([]Finding, Verbs) {
 			add(each[index].Line, each[index].Column, "synonym-rotation", each[index].Match)
 		}
 	}
-	found = append(found, danglingConjunctions(lines)...)
+	found = append(found, danglingConjunctions(lines, fences)...)
 	sort.SliceStable(found, func(a, b int) bool {
 		if found[a].line != found[b].line {
 			return found[a].line < found[b].line
@@ -632,13 +706,14 @@ type Spread struct {
 	Open   bool
 }
 
-// SpreadOf is the Spread of text, a text of one line, as LintVerbs reads it.
+// SpreadOf is the Spread of text, a text of one line, as LintVerbs reads it: a piece of a line,
+// such as a sentence, which no fence switch reads.
 func SpreadOf(text string) Spread {
 	var spread Spread
 	lines, starts := splitLines(text)
 	seen := map[[2]int]bool{}
 	last := rune(-1)
-	eachSegment(lines, starts, func(line int, from segment, kept string) {
+	eachSegment(lines, starts, false, func(line int, from segment, kept string) {
 		column := columns{text: kept, start: from.column}
 		spread.Hits = append(spread.Hits, firstHits(kept, line, &column, seen)...)
 		for _, piece := range sentencePieces(kept) {
@@ -857,13 +932,14 @@ type itemLine struct {
 }
 
 // danglingConjunctions is ste-lint's _dangling_conjunction_findings: a list item, outside a code
-// fence, whose last line with text ends in "and" or "or", inline code read as a neutral word.
-func danglingConjunctions(lines []string) []located {
+// fence where fences is set, whose last line with text ends in "and" or "or", inline code read as
+// a neutral word.
+func danglingConjunctions(lines []string, fences bool) []located {
 	var found []located
 	inFence := false
 	for index := 0; index < len(lines); {
 		line := lines[index]
-		if isFence(Strip(line)) {
+		if fences && isFence(Strip(line)) {
 			inFence = !inFence
 			index++
 			continue
@@ -883,7 +959,7 @@ func danglingConjunctions(lines []string) []located {
 		itemFence := false
 		for ; next < len(lines); next++ {
 			candidate := lines[next]
-			if isFence(Strip(candidate)) {
+			if fences && isFence(Strip(candidate)) {
 				itemFence = !itemFence
 				continue
 			}
