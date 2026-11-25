@@ -109,7 +109,9 @@ func batchAnswer(t *testing.T, asked []int, nodes ...map[string]any) string {
 // graphQLAnswerOf is rest, an answer to GET /pulls/86, as the by-number query answers the same
 // pull request when asked: GitHub's `mergeable` null, true and false are UNKNOWN, MERGEABLE and
 // CONFLICTING, its `mergeStateStatus` is the `mergeable_state` in capitals, and its base and head
-// are the REST answer's. An answer that is no 2xx is the query's own status and body.
+// are the REST answer's: the base by its name as the stand-in wrote it (githubText.Name), a JSON
+// string as GitHub writes baseRefName, since a githubText itself encodes as an object. An answer
+// that is no 2xx is the query's own status and body.
 func graphQLAnswerOf(t *testing.T, rest pullAnswer, asked []int) (int, string) {
 	t.Helper()
 	if rest.status >= http.StatusMultipleChoices {
@@ -132,7 +134,7 @@ func graphQLAnswerOf(t *testing.T, rest pullAnswer, asked []int) (int, string) {
 		state = "CLOSED"
 	}
 	node := map[string]any{"number": pull.Number, "state": state, "headRefOid": pull.Head.SHA, "headRefName": pull.Head.Ref,
-		"baseRefName": pull.Base.Ref, "mergeable": mergeable, "mergeStateStatus": strings.ToUpper(pull.MergeableState)}
+		"baseRefName": pull.Base.Ref.Name(), "mergeable": mergeable, "mergeStateStatus": strings.ToUpper(pull.MergeableState)}
 	return http.StatusOK, batchAnswer(t, asked, node)
 }
 

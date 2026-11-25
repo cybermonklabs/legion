@@ -128,8 +128,13 @@ func statementStart(sql string) string {
 }
 
 // heldBytes is the bytes of text and binary data value holds, whatever its kind: every string and
-// byte slice or array it reaches through pointers, interfaces, slices, arrays, maps and struct
-// fields, each pointer read once.
+// byte slice or array it reaches through pointers, interfaces, slices, arrays, maps and the
+// exported fields of structs, each pointer read once. An unexported field is not read: the redact
+// box keeps another party's words in unexported fields, and the redaction gate's reflection census
+// allows a walk of values of any type only where each struct field it reads is exported. A
+// statement's arguments are values pgx encodes from what they show - strings, byte slices, maps,
+// pgtype's structs of exported fields - so what an argument holds in unexported fields alone, as a
+// time.Time's location does, is no text the statement sends.
 func heldBytes(value reflect.Value, seen map[uintptr]struct{}) int {
 	switch value.Kind() {
 	case reflect.String:
@@ -166,7 +171,9 @@ func heldBytes(value reflect.Value, seen map[uintptr]struct{}) int {
 	case reflect.Struct:
 		bytes := 0
 		for index := range value.NumField() {
-			bytes += heldBytes(value.Field(index), seen)
+			if value.Type().Field(index).IsExported() {
+				bytes += heldBytes(value.Field(index), seen)
+			}
 		}
 		return bytes
 	}

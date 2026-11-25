@@ -1,6 +1,7 @@
 package githubrest
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -9,6 +10,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/sjawhar/envoy/oauth2call"
 )
 
 // GraphQLEndpoint is GitHub's GraphQL endpoint under endpoint, GitHub's API root; empty is
@@ -28,7 +31,9 @@ const graphQLAccept = "application/vnd.github.merge-info-preview+json"
 // GraphQLError is one entry of the `errors` list a GraphQL answer carries: GitHub's message, its
 // type where it names one (RATE_LIMITED, NOT_FOUND, FORBIDDEN and others), and the path of the
 // field it is about, each step a field name or alias, or an index: ["repository", "p87"] for the
-// pull request a query asked for under the alias p87.
+// pull request a query asked for under the alias p87. GitHub's words, the type, the message and
+// each name of the path, are held as the rule reads them (graphQLErrors), so the entry prints
+// none of the token the query carried; a caller matches a step against an alias it wrote itself.
 type GraphQLError struct {
 	Type    string `json:"type"`
 	Message string `json:"message"`
@@ -51,17 +56,73 @@ func (e GraphQLErrors) Error() string {
 	return "GitHub answered the GraphQL query with errors: " + strings.Join(messages, "; ")
 }
 
-// rateLimited says whether e, the errors of a 200 GitHub sent with headers, is GitHub's rate
-// limit: an error of GraphQL's own type for it (RATE_LIMITED), or, whatever the errors' types, the
-// signals a REST answer's limit carries (limitSignals: a retry-after, x-ratelimit-remaining: 0, or a
-// message naming the secondary limit), which GitHub documents it may answer a query 200 with.
-func (e GraphQLErrors) rateLimited(headers http.Header) bool {
-	for _, entry := range e {
-		if entry.Type == "RATE_LIMITED" {
+// graphQLAnswered is one entry of an answer's `errors` list as the answer decodes it
+// (oauth2call.Answer.Decode): its type and message as GitHub's words, held with the record of the
+// query's request, and its path step by step.
+type graphQLAnswered struct {
+	Type    oauth2call.RemoteText `json:"type"`
+	Message oauth2call.RemoteText `json:"message"`
+	Path    []graphQLStep         `json:"path"`
+}
+
+// graphQLStep is one step of an error's path: a field name or an alias (Name, GitHub's words), or
+// an index of a list where Named is false.
+type graphQLStep struct {
+	Named bool
+	Name  oauth2call.RemoteText
+	Index int
+}
+
+// UnmarshalJSON reads a step: a JSON string as Name, as a RemoteText decodes one, and anything
+// else as Index.
+func (s *graphQLStep) UnmarshalJSON(data []byte) error {
+	if trimmed := bytes.TrimSpace(data); len(trimmed) > 0 && trimmed[0] == '"' {
+		s.Named = true
+		return json.Unmarshal(trimmed, &s.Name)
+	}
+	return json.Unmarshal(data, &s.Index)
+}
+
+// graphQLErrors is answered as GraphQLErrors, each word of GitHub's as the rule reads it.
+func graphQLErrors(answered []graphQLAnswered) GraphQLErrors {
+	if len(answered) == 0 {
+		return nil
+	}
+	errs := make(GraphQLErrors, len(answered))
+	for i, entry := range answered {
+		path := make([]any, len(entry.Path))
+		for j, step := range entry.Path {
+			path[j] = step.Index
+			if step.Named {
+				path[j] = step.Name.String()
+			}
+		}
+		errs[i] = GraphQLError{Type: entry.Type.String(), Message: entry.Message.String(), Path: path}
+	}
+	return errs
+}
+
+// graphQLRateLimited says whether answered, the errors of a 200 GitHub sent with headers, read
+// as read, is GitHub's rate limit: an error of GraphQL's own type for it (RATE_LIMITED), or,
+// whatever the errors' types, the signals a REST answer's limit carries (signals: a retry-after,
+// x-ratelimit-remaining: 0, or an answer naming the secondary limit), which GitHub documents it
+// may answer a query 200 with. Each is decided on GitHub's words as they came.
+func graphQLRateLimited(answered []graphQLAnswered, headers http.Header, named bool) bool {
+	for _, entry := range answered {
+		if entry.Type.Equal("RATE_LIMITED") {
 			return true
 		}
 	}
-	return len(e) > 0 && limitSignals(headers, e.Error())
+	return len(answered) > 0 && signals(headers, named)
+}
+
+// graphQLHasData says whether body, a GraphQL answer as it came, carries `data` that is not
+// null: a test of the answer's bytes (oauth2call.Holds), which keeps nothing of them.
+func graphQLHasData(body []byte) bool {
+	var answer struct {
+		Data json.RawMessage `json:"data"`
+	}
+	return json.Unmarshal(body, &answer) == nil && len(answer.Data) > 0 && string(answer.Data) != "null"
 }
 
 // BudgetGraphQL is the GraphQL API's own primary budget, the points of the token's queries, which
@@ -72,51 +133,65 @@ const BudgetGraphQL Budget = "graphql"
 // (GraphQLEndpoint), and reads the answer's `data` into into, whatever part of it GitHub gave.
 // GitHub budgets queries apart from the REST API, by the points each costs, and a query of twenty
 // pull requests costs one point. An answer other than 2xx is an *Answer, as a REST call's is, a
-// rate limit among them, and so is a 200 whose errors are GitHub's rate limit (rateLimited:
-// GraphQL's RATE_LIMITED, a retry-after, an exhausted budget, or the secondary limit's message),
-// with the wait its headers ask, or a minute (LimitHeaders.WaitAt). A 2xx whose `errors` list is
-// not empty is GraphQLErrors after the data it carries is read, so a caller that asked for several
-// things takes those GitHub answered and reads each error's Path for the rest; one with no `data`
-// and no errors is an error too. It is not named Query: the daemon's transaction guard
-// (internal/textcheck) reads every method of that name that takes a context first as a database
-// statement.
+// rate limit among them, and so is a 200 whose errors are GitHub's rate limit
+// (graphQLRateLimited: GraphQL's RATE_LIMITED, a retry-after, an exhausted budget, or the
+// secondary limit's message), with the wait its headers ask, or a minute (LimitHeaders.WaitAt). A
+// 2xx whose `errors` list is not empty is GraphQLErrors after the data it carries is read, so a
+// caller that asked for several things takes those GitHub answered and reads each error's Path for
+// the rest; one with no `data` and no errors is an error too. It is not named Query: the daemon's
+// transaction guard (internal/textcheck) reads every method of that name that takes a context
+// first as a database statement.
+//
+// The answer is read as every answer of the client's is (oauth2call.ReadAnswer) and decoded in
+// parts through it (oauth2call.Answer.Decode): its errors, and its data into into, so every
+// RemoteText into holds is held with the record of the query's request. What the answer is - a
+// rate limit, an answer with data - is decided on its words as they came.
 func (c Client) GraphQL(ctx context.Context, query string, variables map[string]any, into any) error {
 	encoded, err := json.Marshal(map[string]any{"query": query, "variables": variables})
 	if err != nil {
 		return fmt.Errorf("encode the GraphQL query: %w", err)
 	}
-	var answer struct {
-		Data   json.RawMessage `json:"data"`
-		Errors GraphQLErrors   `json:"errors"`
-	}
-	_, response, err := c.exchange(ctx, http.MethodPost, c.API, "", encoded, &answer, graphQLAccept)
+	_, response, read, err := c.exchange(ctx, http.MethodPost, c.API, "", encoded, graphQLAccept)
 	if err != nil {
 		return err
 	}
-	if answer.Errors.rateLimited(response.Header) {
+	var answered struct {
+		Errors []graphQLAnswered `json:"errors"`
+	}
+	if err := read.Decode(&answered); err != nil {
+		return err
+	}
+	errs := graphQLErrors(answered.Errors)
+	named := oauth2call.Holds(read, namesSecondaryLimit)
+	if graphQLRateLimited(answered.Errors, response.Header, named) {
 		path := "/graphql"
 		if target, err := url.Parse(c.API); err == nil {
 			path = ShownPath(c.API, target, "")
 		}
 		// A primary limit of a query is GraphQL's own budget, which GitHub names in
 		// x-ratelimit-resource; spent reads a budget named nowhere as the REST API's core one.
-		body, budget := answer.Errors.Error(), spent(response.Header, NamesSecondaryLimit(answer.Errors.Error()))
+		budget := spent(response.Header, named)
 		if budget == BudgetCore {
 			budget = BudgetGraphQL
 		}
 		limit := limitHeaders(response)
 		wait, _ := limit.WaitAt(time.Now())
-		return &Answer{Method: http.MethodPost, Path: path, Status: http.StatusOK, Body: body, RateLimited: true,
-			RetryAfter: wait, Budget: budget, Limit: limit}
+		return &Answer{Method: http.MethodPost, Path: path, Status: http.StatusOK, Body: errs.Error(), RateLimited: true,
+			RetryAfter: wait, Budget: budget, Limit: limit, read: read}
 	}
-	data := len(answer.Data) > 0 && string(answer.Data) != "null"
+	data := oauth2call.Holds(read, graphQLHasData)
 	if data {
-		if err := json.Unmarshal(answer.Data, into); err != nil {
+		// The data member decodes into into itself: an interface value set to a non-nil pointer,
+		// which the answer's decode follows.
+		held := struct {
+			Data any `json:"data"`
+		}{Data: into}
+		if err := read.Decode(&held); err != nil {
 			return err
 		}
 	}
-	if len(answer.Errors) > 0 {
-		return answer.Errors
+	if len(errs) > 0 {
+		return errs
 	}
 	if !data {
 		return errors.New("GitHub answered the GraphQL query with no data")

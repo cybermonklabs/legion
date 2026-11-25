@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -14,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/oauth2call"
 	"github.com/sjawhar/envoy/oauth2call/oauth2calltest"
 	"github.com/sjawhar/legion/daemon/internal/githubtest"
 )
@@ -353,14 +355,21 @@ func TestLimitSaysWhichLimitAnAnswerIs(t *testing.T) {
 	}
 }
 
-// GitHub's answer that a query ran out of its time is read from the answer's body, however the
-// caller wrapped the answer (NamesTimeout); an error that only quotes the words, and GitHub's
-// other answers, are not it. Answered says which outcomes are GitHub's answers: its data, an
-// answer other than 2xx and GraphQL errors, wrapped or not; a deadline, or any error that carries
-// no answer of GitHub's, is none.
+// GitHub's answer that a query ran out of its time is read from the answer's body as it came,
+// however the caller wrapped the answer (NamesTimeout); an error that only quotes the words, and
+// GitHub's other answers, are not it. The answer is built as the client builds one (AnswerOf of
+// the body it read): NamesTimeout decides on the body as it came (Answer.Says), never on Body, the
+// rule's print of it. Answered says which outcomes are GitHub's answers: its data, an answer other
+// than 2xx and GraphQL errors, wrapped or not; a deadline, or any error that carries no answer of
+// GitHub's, is none.
 func TestATimeoutAndAnAnswerAreReadFromGitHubsAnswer(t *testing.T) {
-	timedOut := &Answer{Method: http.MethodPost, Path: "/graphql", Status: http.StatusBadGateway,
-		Body: `{"message":"We couldn't respond to your request in time. Sorry about that. Please try resubmitting your request and contact us if the problem persists."}`}
+	const said = `{"message":"We couldn't respond to your request in time. Sorry about that. Please try resubmitting your request and contact us if the problem persists."}`
+	response := &http.Response{StatusCode: http.StatusBadGateway, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(said))}
+	read, err := oauth2call.ReadAnswer(response, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	timedOut := AnswerOf(http.MethodPost, "/graphql", response, read)
 	for _, tc := range []struct {
 		name     string
 		err      error

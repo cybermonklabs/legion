@@ -1,0 +1,14 @@
+kind: Fixed
+body: |-
+  A refusal no longer prints a URL or a value that can carry a credential as written. `legion
+  controller start` names a daemon it cannot reach through the URL rule, and a daemon URL that does
+  not parse by what it is. `legion gh` names a git remote it cannot read with its URL through the
+  rule, and a `git remote -v` line it cannot read by the URL gh reads from it, never the line.
+  `legion workspace-init fetch` names a refused `--cache-url` by the flag alone. The config names a
+  refused `nats_urls` entry by its place in the list, and an address no pod reaches through the
+  rule. The intake names a review's `review_id` or `submitted_at` it cannot read by the member,
+  never GitHub's value. Before, each printed the value, where a user name and password, a token or
+  an echo of the installation token can be written.
+time: 2026-11-25T07:30:27Z
+custom:
+    Issue: pr4368

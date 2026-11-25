@@ -155,13 +155,13 @@ func TestWorkspaceInitFetchRefusesBeforeFetching(t *testing.T) {
 			name: "a --cache-url that is not an http URL",
 			args: func(v *issueVolume) []string { return append(v.fetchArgs(), "--cache-url", "ftp://10.0.0.5:8418") },
 			code: 3,
-			says: func(*issueVolume) string { return `--cache-url must be an http:// URL (got "ftp://10.0.0.5:8418")` },
+			says: func(*issueVolume) string { return "--cache-url must be an http:// URL with a host" },
 		},
 		{
 			name: "a LEGION_REPOSITORY_CACHE_URL that is not an http URL",
 			env:  func(t *testing.T, _ *issueVolume) { t.Setenv("LEGION_REPOSITORY_CACHE_URL", "10.0.0.5:8418") },
 			code: 3,
-			says: func(*issueVolume) string { return `--cache-url must be an http:// URL (got "10.0.0.5:8418")` },
+			says: func(*issueVolume) string { return "--cache-url must be an http:// URL with a host" },
 		},
 		{
 			name: "a --cache-url with no LEGION_REPOSITORY_CACHE_TOKEN_FILE",

@@ -815,12 +815,13 @@ func decodeReview(repository ghrepo.Repository, raw map[string]json.RawMessage) 
 	body, _ := rawString(raw, "body")
 	bodyTruncated, _ := rawString(raw, "body_truncated")
 	// The listener carries GitHub's review id as a decimal string; one that predates it carries
-	// none, and the review is then ordered by when it is processed.
+	// none, and the review is then ordered by when it is processed. A review_id or a submitted_at
+	// that cannot be read is named by its member and never by its value, which is GitHub's word.
 	var id int64
 	if text, ok := rawString(raw, "review_id"); ok && text != "" {
 		parsed, err := strconv.ParseInt(text, 10, 64)
 		if err != nil || parsed <= 0 {
-			return nil, nil, fmt.Errorf("review_id %q is not a positive integer", text)
+			return nil, nil, errors.New("review_id is not a positive integer (the value is not printed)")
 		}
 		id = parsed
 	}
@@ -830,7 +831,7 @@ func decodeReview(repository ghrepo.Repository, raw map[string]json.RawMessage) 
 	submittedAt, ok := rawTimestamp(raw, "submitted_at")
 	var unread []string
 	if !ok {
-		unread = append(unread, fmt.Sprintf("submitted_at %s is not an RFC 3339 time", raw["submitted_at"]))
+		unread = append(unread, "submitted_at is not an RFC 3339 time (the value is not printed)")
 	}
 	return PullRequestReview{Repo: repository.String(), Number: number, ID: id, SubmittedAt: submittedAt, State: strings.ToLower(state),
 		CommitID: commitID, HeadSHA: headSHA, Author: author, Body: body, BodyTruncated: bodyTruncated == "true"}, unread, nil

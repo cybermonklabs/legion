@@ -715,16 +715,19 @@ func namesKey(value *yaml.Node, name string) bool {
 	return false
 }
 
-// readNatsURLs is `nats_urls`: valid URLs, in order, each once.
+// readNatsURLs is `nats_urls`: valid URLs, in order, each once. A refused entry is named by its
+// place in the list, never as written: a NATS URL carries its credential in its user information
+// (endpointURL), and an entry that does not parse has no "://" for a reader of the URL rule to
+// find.
 func readNatsURLs(value *yaml.Node, key string) ([]string, error) {
 	read, err := readStrings(value, key)
 	if err != nil || read == nil {
 		return read, err
 	}
 	urls := make([]string, 0, len(read))
-	for _, raw := range read {
+	for i, raw := range read {
 		if _, err := endpointURL(raw, key); err != nil {
-			return nil, fmt.Errorf("%s entry %q%s", key, raw, strings.TrimPrefix(err.Error(), key))
+			return nil, fmt.Errorf("%s entry %d%s", key, i+1, strings.TrimPrefix(err.Error(), key))
 		}
 		if !slices.Contains(urls, raw) {
 			urls = append(urls, raw)

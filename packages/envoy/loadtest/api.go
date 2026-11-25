@@ -88,31 +88,38 @@ func (r callResult) errorCode() redact.RemoteText {
 	if r.err != nil || r.status/100 == 2 {
 		return redact.RemoteText{}
 	}
-	return r.bodyCode()
-}
-
-// bodyCode is the code the answer's body names, whatever its status, held as errorCode holds it
-// (redact.Answer.Decode); empty for a body that names none or is not JSON at all.
-func (r callResult) bodyCode() redact.RemoteText {
-	var answered struct {
+	var refusal struct {
 		Code redact.RemoteText `json:"code"`
 	}
-	_ = r.answer.Decode(&answered)
-	return answered.Code
+	_ = r.answer.Decode(&refusal)
+	return refusal.Code
 }
 
 // landed says the keyed write this answers ran and Dispatch gives no copy of its answer: a 409
 // KEY_COMMITTED (it landed before its answer was lost) or a replayed 2xx whose body reads
 // ANSWER_NOT_KEPT (contracts.IdempotencyKeyCommitted, IdempotencyAnswerNotKept). What it made is
-// there, and is read back for anything its caller needs of it; it is no refusal.
+// there, and is read back for anything its caller needs of it; it is no refusal. Each is decided
+// on Dispatch's words as they came: the 409's code through the box (errorCode), the 2xx's by a
+// test of its body (codeIs).
 func (r callResult) landed() bool {
 	if r.err != nil {
 		return false
 	}
 	if r.status == http.StatusConflict {
-		return r.bodyCode().Equal(contracts.IdempotencyKeyCommitted)
+		return r.errorCode().Equal(contracts.IdempotencyKeyCommitted)
 	}
-	return r.replayed && r.status/100 == 2 && r.bodyCode().Equal(contracts.IdempotencyAnswerNotKept)
+	return r.replayed && r.status/100 == 2 && redact.Holds(r.answer, codeIs(contracts.IdempotencyAnswerNotKept))
+}
+
+// codeIs is a test of an answer's body as it came (redact.Holds): whether it is a JSON object whose
+// code member is code. It keeps nothing of the body.
+func codeIs(code string) func(body []byte) bool {
+	return func(body []byte) bool {
+		var answered struct {
+			Code string `json:"code"`
+		}
+		return json.Unmarshal(body, &answered) == nil && answered.Code == code
+	}
 }
 
 // transient is a failure worth retrying: a transport error, 429 or 5xx.

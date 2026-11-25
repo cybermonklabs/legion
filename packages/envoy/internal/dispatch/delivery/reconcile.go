@@ -467,20 +467,23 @@ func (r *Reconcile) reconcileMergedPullRequests(ctx context.Context, settings De
 // (https://github.com/<owner>/<repo>/pull/<n>): GitHub's search-issues response does not carry a
 // separate repository field, only the issue/PR's own URL. It cuts the URL itself rather than
 // through refs.SplitGitHubRepo, whose name rule refuses the "repo/pull/N" the URL's tail is; the
-// name it answers meets that rule again where any read splits it into a GitHub path.
+// name it answers meets that rule again where any read splits it into a GitHub path. A URL it
+// cannot read is named by what it is and never by its value: it is GitHub's word, or that of
+// whatever answered the search in GitHub's place, which can echo the installation token the
+// search carried. Its caller names the pull request by its number.
 func (r *Reconcile) searchResultRepo(pr FetchedPullRequest) (string, error) {
 	const prefix = "https://github.com/"
 	if len(pr.URL) <= len(prefix) || pr.URL[:len(prefix)] != prefix {
-		return "", fmt.Errorf("pull request URL %q does not start with %s", pr.URL, prefix)
+		return "", errors.New("its URL does not start with " + prefix + " (the URL is not printed)")
 	}
 	// The tail is "owner/repo/pull/N"; keep only the owner and repo segments.
 	owner, repoTail, _ := strings.Cut(pr.URL[len(prefix):], "/")
 	repoName, _, found := strings.Cut(repoTail, "/")
 	if owner == "" || repoName == "" {
-		return "", fmt.Errorf("pull request URL %q: no owner/repo", pr.URL)
+		return "", errors.New("its URL names no owner/repo (the URL is not printed)")
 	}
 	if !found {
-		return "", fmt.Errorf("pull request URL %q: no /pull/ segment", pr.URL)
+		return "", errors.New("its URL has no /pull/ segment (the URL is not printed)")
 	}
 	return owner + "/" + repoName, nil
 }

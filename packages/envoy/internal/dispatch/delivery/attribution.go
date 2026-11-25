@@ -459,24 +459,27 @@ type attributionCandidate struct {
 
 // resolveAttributionCandidates is every issue the stored inputs of the pull request at url, in
 // repo, name, best first, each marked held or not: the whole ranked list, so a caller that must
-// skip a candidate can take the next rather than make a second read.
+// skip a candidate can take the next rather than make a second read. A failed read names the pull
+// request by what it is and never by url: GitHub's word, held from an answer to a request that
+// carried the installation token, which whatever answered in GitHub's place can make an echo of
+// that token.
 func (a *Attributor) resolveAttributionCandidates(ctx context.Context, pool *store.Pool, repo, url string, inputs AttributionInputs) ([]attributionCandidate, error) {
 	rows, err := pool.Query(ctx, a.candidatesQuery,
 		url, inputs.TitleKeys, inputs.CitedIssues, inputs.BranchKeys, inputs.CommitKeys, repo)
 	if err != nil {
-		return nil, fmt.Errorf("resolve the issue of %s: %w", url, err)
+		return nil, fmt.Errorf("resolve the pull request's issue: %w", err)
 	}
 	defer rows.Close()
 	var candidates []attributionCandidate
 	for rows.Next() {
 		var candidate attributionCandidate
 		if err := rows.Scan(&candidate.key, &candidate.source, &candidate.held); err != nil {
-			return nil, fmt.Errorf("resolve the issue of %s: %w", url, err)
+			return nil, fmt.Errorf("resolve the pull request's issue: %w", err)
 		}
 		candidates = append(candidates, candidate)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("resolve the issue of %s: %w", url, err)
+		return nil, fmt.Errorf("resolve the pull request's issue: %w", err)
 	}
 	return candidates, nil
 }
