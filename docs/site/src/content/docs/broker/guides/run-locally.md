@@ -136,10 +136,12 @@ machine file (the login the helper keeps across restarts) in the stack's workdir
 never touches one already running for your user, or your own machine's login, and nothing lands in
 your current directory. The exports name a sign-in store in the workdir (`AGENT_SECRETS_SIGNIN_DIR`),
 which holds no sign-in, and no machine identity (`AGENT_SECRETS_MACHINE_IDENTITY` empty), whatever
-your shell set before. `agent-secrets` takes a person's sign-in before the helper, so with your own
-`agent-secrets login` the session below would sign as you at this broker, which refuses it; and a
-helper given your machine's identity would trade it here and keep its key in your own
-`~/.config/agent-secrets`. Check that `type agent-secrets` names the workdir's `bin/`: a tool manager
+your shell set before; an identity named in `~/.config/agent-secrets/config` is read all the same,
+since `agent-secrets` takes the file's value where the variable is empty. `agent-secrets` takes a
+person's sign-in before the helper, so with your own `agent-secrets login` the session below would
+sign as you at this broker, which refuses it; and a helper given your machine's identity would
+trade it here and keep its key in your own `~/.config/agent-secrets`. Check that
+`type agent-secrets` names the workdir's `bin/`: a tool manager
 that puts its own directories first on `PATH` at every prompt runs an installed `agent-secrets`
 instead.
 

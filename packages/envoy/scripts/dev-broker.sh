@@ -177,7 +177,10 @@
 #
 # The exports also name a sign-in store in WORK_DIR (AGENT_SECRETS_SIGNIN_DIR, which nothing
 # here creates, so it holds no sign-in) and no machine identity (AGENT_SECRETS_MACHINE_IDENTITY
-# empty), since a shell of a person who uses another broker can carry both. The clients take a
+# empty), since a shell of a person who uses another broker can carry both. An identity named in
+# ~/.config/agent-secrets/config is read all the same, since agent-secrets takes the file's value
+# where the variable is empty (cmd/cipher/config.go, clientGetenv); agent-secrets-helper reads
+# its environment alone. The clients take a
 # person's sign-in before the helper (cmd/cipher/chain.go), so with that person's store a session
 # registered here signs as that person at this broker, which takes no Google sign-in, and every
 # call of the session is refused. With that identity the helper trades this machine's own token
