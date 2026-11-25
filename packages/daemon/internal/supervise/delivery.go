@@ -620,7 +620,7 @@ func (m *Machine) queue(ctx context.Context, request RequestDeliver) error {
 	}
 	d := Delivery{ID: id, Task: request.Task, Phase: request.Phase, Generation: request.Generation, Kept: request.Kept,
 		News: request.News, NewsOnly: request.NewsOnly, Entry: request.Entry, CheckLook: request.CheckLook, QueuedAt: m.deps.Clock.Now(),
-		RoundNamed: request.RoundNamed, Fix: request.Fix, FixFrom: request.FixFrom, MoveTo: request.MoveTo}
+		RoundNamed: request.RoundNamed, Fix: request.Fix, FixFrom: request.FixFrom, MoveTo: request.MoveTo, FixBranch: request.FixBranch}
 	if request.Row > 0 || request.Entry > 0 {
 		// The claim records the row, the entry and its handshake only once the store has them
 		// with the delivery: a write that failed leaves the row undelivered and the entry ungiven,
