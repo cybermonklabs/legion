@@ -53,7 +53,6 @@ import {
   focusedRowReadId,
   heldTreeAnswer,
   invokeLens,
-  kindFilterGate,
   type LensKind,
   type LensLine,
   type LensReadIds,
@@ -70,6 +69,7 @@ import {
   lensRows,
   lensShowChain,
   menuItems,
+  requestedTreeRead,
   seedLenses,
   treePagesOf,
 } from "./issue-page-w";
@@ -97,13 +97,16 @@ import { assertPageFits } from "./unclipped";
  * and, for a row's own words, `e2e/issue-page-j.ts`'s `ownWords`. A `@phone` row reads 1440 px on
  * `chromium` and 390 px on `iphone` (`rowSize`).
  *
- * Every node a row names, it names by the id the page's own tree read gave it
- * (`e2e/issue-page-t-tree.ts`'s `treeAnswerOf`, read through `lensReadIds`), and every row it reads,
- * by the id the page drew it under for that read id (`drawnIdOf`): no row builds an id. Rows 1 to
- * 3 and the two rows of row 2's clauses take those ids from Conversation's read, which holds both
- * constraints only while the base answers it as the whole tree, as this base does (the row owed
- * on the filter by kind, below); row 4 and that owed row take them from Graph's, which is the
- * whole tree on every base.
+ * Every node a row names, it names by the id Graph's read gives it - the tree read with no view
+ * and no kind, the whole tree, which holds every node `seedLenses` wrote as a node of the issue
+ * (`lensReadIds`) - and every row it reads, by the id the page drew it under for that read id
+ * (`drawnIdOf`): no row builds an id. Rows 1 to 3 and the two rows of row 2's clauses read
+ * Graph's read through the signed-in page's own request context (`requestedTreeRead`,
+ * `e2e/issue-page-w.ts`), and row 4 as the page received it on its load of Graph
+ * (`e2e/issue-page-t-tree.ts`'s `treeAnswerOf`), whose order it reads too. Conversation's read
+ * (`?kind=`) holds no message, and a constraint only as the context a statement's tuple names;
+ * where a row reads Conversation's own answer (`treeAnswerOf`), it reads there only what that
+ * read holds: a statement, a lens, an ask.
  *
  * What each row reads, and in which outline:
  *
@@ -116,19 +119,24 @@ import { assertPageFits } from "./unclipped";
  *   (6) the chain; the page's own words; (9) no address and no uuid in the page's text; and (7)
  *   `?node=` on the view's own address, with risk B's id and with a uuid nobody holds. It reads
  *   (8), that no filter draws these rows, once.
- * - Row 2 invokes in Conversation from statement 2's menu as its check says, from the row of each
- *   kind of node the route takes, and on statement 3, which holds `CHILD_PAGE` lenses written
- *   before the load (`seedPagedLensIssue`): the new lens's row stands past the first `CHILD_PAGE`
- *   of statement 3's children, focused and on screen. In Graph it invokes once, from statement
- *   2's menu, and lands on Graph's own address of the new lens. No filter offers the act.
+ * - Row 2 invokes in Conversation from statement 2's menu as its check says, and on statement 3,
+ *   which holds `CHILD_PAGE` lenses written before the load (`seedPagedLensIssue`): the new lens's
+ *   row stands past the first `CHILD_PAGE` of statement 3's children, focused and on screen. In
+ *   Graph it invokes from statement 2's menu, and lands on Graph's own address of the new lens.
+ *   It invokes from the row of each kind of node the route takes: in Conversation from the open
+ *   question, the comment, the trade-off analysis and risk A, and in Graph from the message and
+ *   the standard constraint, which Conversation draws no row for. No filter offers the act.
  * - Row 3 compares a load of Conversation and a load of Graph of the issue with lenses with the
  *   same loads of an issue without them; presses `j`, the chain and the menu in Conversation; and
  *   invokes once in each outline, which sends one read of the tree, the open view's: in
  *   Conversation the read with `kind`, in Graph the read with no kind and no view.
- * - Row 4 reads in Graph the constraints at the top level, statement 5's and statement 6's
- *   chips, and Enter on the standard's chip, which focuses the standard's row in place; the same
- *   two chips in Conversation; statement 5's chip under Spec, which opens Graph at the standard's
- *   row; and `?node=` with the measurement's id on Graph's address.
+ * - Row 4 reads in Graph and in Conversation. In Graph: the constraints at the top level,
+ *   statement 5's and statement 6's chips, and Enter on the standard's chip, which focuses the
+ *   standard's row in place. In Conversation, at the issue's own address: the same two chips,
+ *   that neither constraint is a row, and Enter on the standard's chip, which opens Graph with
+ *   the standard's row focused. Then statement 5's chip under Spec, which opens Graph at the
+ *   standard's row; and `?node=` with the measurement's id on the issue's own address, which
+ *   opens Graph with the measurement's row focused.
  *
  * Each row checks its gates first, each with `owedUnless` (`e2e/issue-page-t-tree.ts`), and skips
  * where the server change a gate probes for is not on the base, with an `owed` annotation naming
@@ -144,21 +152,6 @@ import { assertPageFits } from "./unclipped";
  * too. The round that lands 5c85ffdc1b on the base gives the row back a title c-premortem's `-g`
  * matches, or adds the row to that pattern, and takes off `@owed`; until that round, no check
  * reads the clause.
- *
- * The readings of Conversation that wait on the model's filter of the tree read by kind are a
- * row of their own in the same way, "Conversation's own read draws no constraint row and opens
- * Graph for one @owed". Conversation's read names its kinds (`?kind=`), none of which is a
- * constraint, but this base answers that read as the whole tree, so Conversation draws the
- * issue's constraints as rows, and a chip or a `?node=` that names one stays in Conversation. The
- * row checks `treeReadGate`, `convertedGate` and `kindFilterGate` (`e2e/issue-page-w.ts`), which
- * is met only where the tree read with `kind=ask` answers no node of the issue of another kind
- * than an ask, but the issue's own node and the context that places the asks. Once the three are
- * met, it reads that Conversation draws neither constraint as a row, that statement 5's chip in
- * Conversation opens Graph with the standard's row focused, and that `?node=` with the
- * measurement's id on the issue's own address opens Graph with it focused. Its title matches the
- * `-g` of no check, c-constraints' (`a constraint stands under the issue`) above all, so no check
- * reads these clauses until the round that lands the filter on the base gives the row a title
- * that pattern matches, or adds the row to it, and takes off `@owed`.
  *
  * A row of its own, "a person invokes a lens from a link a row's words hold, through a read of
  * the tree", proves that the link statement 2's words draw keeps the focus, and the row its Lens
@@ -246,6 +239,15 @@ async function seedPagedLensIssue(): Promise<LensIssue> {
     await invokeLens(issue.whole.key, { kind: "trade-off", on: issue.lenses.statements.three });
   }
   return issue;
+}
+
+/** The read id of each node `seedLenses` wrote on issue `key` (`lensReadIds`), from Graph's
+ *  read, the whole tree, read through the signed-in page's own request context
+ *  (`requestedTreeRead`): Conversation's read holds no message, and a constraint only as
+ *  context. Every write of the seed has answered before a row calls it, so one read of the
+ *  server holds each node the seed wrote. */
+async function graphReadIds(page: Page, key: string, lenses: LensSeed): Promise<LensReadIds> {
+  return lensReadIds(await requestedTreeRead(page, key), key, lenses);
 }
 
 /** The size a `@phone` row reads: 390 px on the `iphone` project, 1440 px on every other. */
@@ -1113,13 +1115,15 @@ test("lenses are drawn under their node with the chain that triggered them @phon
     const key = whole.key;
     owedUnless(await treeReadGate(page, key));
     owedUnless(await convertedGate(page, key));
+    const ids = await graphReadIds(page, key, lenses);
     await page.setViewportSize(size);
     const tree = treeAnswerOf(page);
     const traffic = watchApiRequests(page);
     await gotoIssue(page, presetPath(key, "conversation"));
     await expectOpeningLanded(page);
+    // Conversation's read holds the lenses and the statements, so it places the trade-off
+    // analysis as Graph's read does.
     const answer = await heldAnswer(tree, `the tree read of ${key}`);
-    const ids = lensReadIds(answer, key, lenses);
     expect(
       answer.nodes?.find((node) => node.id === ids.tradeOff)?.parent?.id,
       "the tree read does not place the trade-off analysis under its first statement"
@@ -1159,7 +1163,7 @@ test("lenses are drawn under their node with the chain that triggered them @phon
 
 // Row 2.
 // SLOW(>=2s): a whole seeded issue with its lenses and 50 lenses more on statement 3, nine
-// invocations through the menu, one of them in Graph and one past statement 3's first page of
+// invocations through the menu, three of them in Graph and one past statement 3's first page of
 // children, a walk of every row of three views, a retried write and three loads that each read
 // the catalogue.
 test("a person invokes a lens from a node's menu @phone", async ({ browser }) => {
@@ -1169,13 +1173,14 @@ test("a person invokes a lens from a node's menu @phone", async ({ browser }) =>
     const key = whole.key;
     owedUnless(await treeReadGate(page, key));
     owedUnless(await convertedGate(page, key));
+    const ids = await graphReadIds(page, key, lenses);
     const plain = presetPath(key, "conversation");
     await page.setViewportSize(size);
     const tree = treeAnswerOf(page);
     await gotoIssue(page, plain);
     await expectOpeningLanded(page);
+    // Conversation's read, which holds the open question the row finds in it below.
     const answer = await heldAnswer(tree, `the tree read of ${key}`);
-    const ids = lensReadIds(answer, key, lenses);
     const kinds = await lensCatalogue();
     expect(kinds, "the lens catalogue does not hold its 22 kinds").toHaveLength(22);
     // Statement 2's address, as the coverage read gives it (as `seedLenses` reads statement 1's):
@@ -1314,21 +1319,23 @@ test("a person invokes a lens from a node's menu @phone", async ({ browser }) =>
     }
 
     // Each kind of node the route takes by its address takes the act: an open question, a
-    // comment, a message, a lens, a risk and a constraint.
+    // comment, a message, a lens, a risk and a constraint. Conversation draws no row for a
+    // message, which no kind of its read is, nor for a constraint, which its read holds only as
+    // context, so those two are invoked in Graph, and the rest in Conversation.
     await gotoIssue(page, plain);
     await expectOpeningLanded(page);
     // The open question is an ask block of the spec: its node is the one holding that block.
     const question = answer.nodes?.find((node) => node.block_id === whole.openQuestion.blockId);
     if (question === undefined) throw new Error(`the tree read of ${key} holds no open question`);
-    for (const [target, what] of [
-      [question.id, "the open question"],
-      [whole.comments.threads[0] ?? "", "the comment"],
-      [whole.messages.root, "the message"],
-      [ids.tradeOff, "the trade-off analysis"],
-      [ids.riskA, "risk A"],
-      [ids.standard, "the standard constraint"],
+    for (const [target, what, view] of [
+      [question.id, "the open question", "conversation"],
+      [whole.comments.threads[0] ?? "", "the comment", "conversation"],
+      [whole.messages.root, "the message", "graph"],
+      [ids.tradeOff, "the trade-off analysis", "conversation"],
+      [ids.riskA, "risk A", "conversation"],
+      [ids.standard, "the standard constraint", "graph"],
     ] as const) {
-      await invokeThroughMenu(page, tree, key, "conversation", target, what);
+      await invokeThroughMenu(page, tree, key, view, target, what);
     }
 
     // Statement 3 holds the `CHILD_PAGE` lenses `seedPagedLensIssue` wrote after its other
@@ -1466,12 +1473,12 @@ test("a person invokes a lens from a link a row's words hold, through a read of 
     const key = whole.key;
     owedUnless(await treeReadGate(page, key));
     owedUnless(await convertedGate(page, key));
+    const ids = await graphReadIds(page, key, lenses);
     const tree = treeAnswerOf(page);
     await gotoIssue(page, presetPath(key, "conversation"));
     await expectOpeningLanded(page);
-    const answer = await heldAnswer(tree, `the tree read of ${key}`);
-    const ids = lensReadIds(answer, key, lenses);
-    const before = new Set(lensIdsIn(answer));
+    // Conversation's read holds every lens, which the invocation's new lens is told from.
+    const before = new Set(lensIdsIn(await heldAnswer(tree, `the tree read of ${key}`)));
 
     // The focus on the one link statement 2's words draw, for the document they cite, reached
     // with `f` as a reader reaches it.
@@ -1534,7 +1541,7 @@ test("a person invokes a lens from a link a row's words hold, through a read of 
 // (`lenses are drawn under their node|a person invokes a lens`), since no project inverts
 // `@owed` and that run does not either.
 // SLOW(>=2s): a whole seeded issue with its lenses, the gate's invocation and its tree read,
-// every branch opened and one invocation through the menu.
+// Graph's read of the tree, every branch opened and one invocation through the menu.
 test("a finding's own row invokes a lens @owed", async ({ browser }) => {
   test.setTimeout(120_000);
   await phase(browser, seedLensIssue, async (page, { lenses, whole }) => {
@@ -1543,17 +1550,8 @@ test("a finding's own row invokes a lens @owed", async ({ browser }) => {
     owedUnless(await convertedGate(page, key));
     owedUnless(await findingGate(page, key, lenses));
     const tree = treeAnswerOf(page);
-    await gotoIssue(page, presetPath(key, "conversation"));
-    await expectOpeningLanded(page);
-    const answer = await heldAnswer(tree, `the tree read of ${key}`);
-    await invokeThroughMenu(
-      page,
-      tree,
-      key,
-      "conversation",
-      lensReadIds(answer, key, lenses).finding,
-      "the finding"
-    );
+    const { finding } = await graphReadIds(page, key, lenses);
+    await invokeThroughMenu(page, tree, key, "conversation", finding, "the finding");
   });
 });
 
@@ -1581,6 +1579,7 @@ test("the first load adds no request for lenses and reads a chain only at a pres
     const key = whole.key;
     owedUnless(await treeReadGate(page, key));
     owedUnless(await convertedGate(page, key));
+    const ids = await graphReadIds(page, key, lenses);
     const tree = treeAnswerOf(page);
     const traffic = watchApiRequests(page);
 
@@ -1594,7 +1593,6 @@ test("the first load adds no request for lenses and reads a chain only at a pres
       { kind: conversationQuery.getAll("kind").length > 0, view: conversationQuery.has("view") },
       "Conversation's load reads the tree with no kind, or with a view"
     ).toEqual({ kind: true, view: false });
-    const ids = lensReadIds(answer, key, lenses);
 
     // `j` over every row focuses each lens in turn, which reads nothing.
     await unfoldEveryBranch(page);
@@ -1702,8 +1700,8 @@ test("the first load adds no request for lenses and reads a chain only at a pres
 
 // Row 4.
 // SLOW(>=2s): a whole seeded issue with its lenses, loaded in Graph, in Conversation, under Spec
-// and at Graph's `?node=`, every branch opened, and the standard's chip pressed in Graph and
-// under Spec.
+// and at the issue's own `?node=`, every branch opened in Graph and in Conversation, and the
+// standard's chip pressed in Graph, in Conversation and under Spec.
 test("a constraint stands under the issue and a statement names it @phone", async ({ browser }) => {
   test.setTimeout(300_000);
   const size = rowSize();
@@ -1809,13 +1807,45 @@ test("a constraint stands under the issue and a statement names it @phone", asyn
     const catalogueStandard = (await lensCatalogue())[0]?.sources?.[0]?.standard ?? "";
     await expectCatalogueChip(page, ids, catalogueStandard, "graph");
 
-    // (2) and (3) in Conversation: statement 5 names the standard by the same chip, and statement
-    // 6 the catalogue's constraint by its words alone. Where Enter on the standard's chip goes
-    // from Conversation waits on the filter by kind, and is the owed row's.
-    await gotoIssue(page, presetPath(key, "conversation"));
+    // In Conversation, at the issue's own address, (2) and (3): statement 5 names the standard by
+    // the same chip, and statement 6 the catalogue's constraint by its words alone.
+    const plain = presetPath(key, "conversation");
+    await gotoIssue(page, plain);
     await expectOpeningLanded(page);
     const statementFive = await expectStandardChip(page, ids, lenses, "conversation");
     await expectCatalogueChip(page, ids, catalogueStandard, "conversation");
+
+    // (1) In Conversation neither constraint is a row: no kind of its read is a constraint, and it
+    // holds the standard only as the context statement 5's chip names.
+    await unfoldEveryBranch(page);
+    // Every branch is open, and statement 5's line came from the one read a constraint's row
+    // would come from, so the rows drawn now are every row that read draws.
+    const constraintRows = await Promise.all(
+      [ids.standard, ids.measurement].map((id) => drawnIdOf(page, id))
+    );
+    expect(constraintRows, "in Conversation a constraint is a row").toEqual([null, null]);
+
+    // (2) In Conversation, Enter on the standard's chip opens Graph, which alone draws the
+    // standard, with the standard's row focused.
+    const fiveRow = await focusRow(page, statementFive);
+    await pressFTo(
+      page,
+      lensChipLinks(fiveRow, "constrained_by"),
+      "f does not reach the standard's chip on statement 5"
+    );
+    await page.keyboard.press("Enter");
+    await expectAt(
+      page,
+      key,
+      "graph",
+      "Enter on the standard's chip in Conversation does not open Graph"
+    );
+    await expect
+      .poll(() => focusedRowReadId(page), {
+        message: "Enter on the standard's chip in Conversation does not focus the standard's row",
+        timeout: 30_000,
+      })
+      .toBe(ids.standard);
 
     // (4) Under Spec, statement 5 reads the same line, the standard's chip by its words, and the
     // chip, which is a link, opens Graph at the standard's row, focused.
@@ -1849,85 +1879,8 @@ test("a constraint stands under the issue and a statement names it @phone", asyn
       })
       .toBe(ids.standard);
 
-    // (5) `?node=` with the measurement's id on Graph's address opens Graph with its row focused.
-    await gotoIssue(page, `${graph}?node=${encodeURIComponent(ids.measurement)}`);
-    await expect
-      .poll(() => focusedRowReadId(page), {
-        message:
-          "on Graph's address, ?node= with the measurement's id does not open with its row focused",
-        timeout: 30_000,
-      })
-      .toBe(ids.measurement);
-  });
-});
-
-// Conversation's own read, owed until the model's filter of the tree read by kind is on the
-// base, which answers Conversation's read (`?kind=`) with the kinds it names, no constraint among
-// them: titled so that no check's `-g` matches it, above all c-constraints' (`a constraint stands
-// under the issue`), since no project inverts `@owed` and that run does not either.
-// SLOW(>=2s): a whole seeded issue with its lenses, the gate's read of the tree by kind, a load
-// of Graph and two of Conversation, every branch opened, and a chip pressed that opens Graph.
-test("Conversation's own read draws no constraint row and opens Graph for one @owed", async ({
-  browser,
-}) => {
-  test.setTimeout(180_000);
-  await phase(browser, seedLensIssue, async (page, { lenses, whole }) => {
-    const key = whole.key;
-    owedUnless(await treeReadGate(page, key));
-    owedUnless(await convertedGate(page, key));
-    owedUnless(await kindFilterGate(page, key));
-    const plain = presetPath(key, "conversation");
-    const tree = treeAnswerOf(page);
-    // Graph's read is the whole tree, the issue's constraints in it, which Conversation's is not
-    // once the filter is on the base: the row names each node by the id Graph's read gives it.
-    await gotoIssue(page, presetPath(key, "graph"));
-    await expectOpeningLanded(page);
-    const ids = lensReadIds(await heldAnswer(tree, `Graph's tree read of ${key}`), key, lenses);
-
-    // In Conversation neither constraint is a row, once statement 5's line names the standard.
-    await gotoIssue(page, plain);
-    await expectOpeningLanded(page);
-    const statementFive = await drawnId(page, ids.statements[4] ?? "", "statement 5");
-    const fiveRow = nodeRow(page, statementFive).first();
-    await expect
-      .poll(
-        async () =>
-          lineReading(await lensLines(fiveRow), "constrained_by")?.targets.map(
-            (target) => target.words
-          ),
-        { message: "statement 5 does not read Constrained by with the standard's chip" }
-      )
-      .toEqual([lenses.standard.standard ?? ""]);
-    await unfoldEveryBranch(page);
-    // Every branch is open, and statement 5's line came from the one read a constraint's row
-    // would come from, so the rows drawn now are every row that read draws.
-    const constraintRows = await Promise.all(
-      [ids.standard, ids.measurement].map((id) => drawnIdOf(page, id))
-    );
-    expect(constraintRows, "in Conversation a constraint is a row").toEqual([null, null]);
-
-    // Statement 5's chip in Conversation opens Graph with the standard's row focused.
-    await focusRow(page, statementFive);
-    await pressFTo(
-      page,
-      lensChipLinks(fiveRow, "constrained_by"),
-      "f does not reach the standard's chip on statement 5"
-    );
-    await page.keyboard.press("Enter");
-    await expectAt(
-      page,
-      key,
-      "graph",
-      "Enter on the standard's chip in Conversation does not open Graph"
-    );
-    await expect
-      .poll(() => focusedRowReadId(page), {
-        message: "Enter on the standard's chip in Conversation does not focus the standard's row",
-        timeout: 30_000,
-      })
-      .toBe(ids.standard);
-
-    // `?node=` with the measurement's id on the issue's own address opens Graph with it focused.
+    // (5) `?node=` with the measurement's id on the issue's own address opens Graph with its row
+    // focused: Conversation's read holds no measurement, and Graph's, the whole tree, does.
     await gotoIssue(page, `${plain}?node=${encodeURIComponent(ids.measurement)}`);
     await expectAt(
       page,
