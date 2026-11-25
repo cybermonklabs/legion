@@ -80,23 +80,9 @@ expect.extend(reportableJestDomMatchers());
 // waits for, or a number with its reason on the line directly above it: `e2e/row-limits.ts`
 // holds every test file of that directory to that rule, and `e2e/__tests__/row-limits.test.ts`
 // runs it on that lane, so a limit there is checked rather than listed here. `web/src` has no
-// such rule, and its rows that set less than the flag are the ones the flag does not protect. A
-// grep of its test files and a parse of them with the TypeScript parser find thirteen rows that
-// set a limit, three of them less and ten more. The three that set less:
-// `web/src/features/refs/MarkdownBody.test.tsx`'s "ends formatted on the page's own thread when
-// the worker misses its deadline" sets 40 s, above the 25 s wait that row must let run out, and
-// `web/src/features/refs/fixture-table-readings.test.ts` sets 30 s, as `WHOLE_TABLE_TIMEOUT_MS`,
-// on "every document of the table reads in a DOM as the table says it reads" and "no mark element
-// stands between an inline leaf and its paragraph, in any document of the table". The ten that
-// set more: `web/src/app-sign-out.test.tsx` sets 390 s on "the sign-out question names every
-// tab's unsent changes, and says when a tab did not answer" and on "the sign-out question names a
-// duplicated tab's copies once, and forgets a tab that missed it", and
-// `web/src/features/issue/useIssueDrafts.test.ts` sets 1,100 s, as `explorationTimeout`, on the
-// seven rows its loop "every sequence of one to five events keeps ${invariant}: ${statement}"
-// registers, one per invariant, and on "the sweep judges every sequence of one to five events
-// once: 186,538". The list is checked by nothing: a row added tomorrow may set any number. What
-// lowering the flag would cut is every row that sets none, and what raising it would not reach is
-// every row that sets one.
+// such rule, and its rows that set less than the flag are the ones the flag does not protect.
+// What lowering the flag would cut is every row that sets none, and what raising it would not
+// reach is every row that sets one.
 //
 // The wait budget is the line below. Testing Library's default `asyncUtilTimeout` is 1000 ms,
 // which a loaded run of this suite passes while a page is still rendering: it failed

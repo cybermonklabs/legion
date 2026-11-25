@@ -576,7 +576,7 @@ test("the sign-out question names every tab's unsent changes, and says when a ta
 
     // Every tab the app knows of answers, so this question comes without a timer: it is waited
     // for on real turns, with the clock held, so the window cannot end before the other tab's
-    // answer is in, however many turns the machine takes to deliver it.
+    // answer is in, as long as it comes within the 1_000 turns `onRealTurns` gives a wait.
     await user.click(screen.getByRole("button", { name: "Sign out" }));
     await onRealTurns(() => app.asked.length > 0);
     expect(app.asked).toHaveLength(1);
