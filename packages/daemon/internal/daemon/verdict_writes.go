@@ -26,16 +26,20 @@ const (
 	verdictTokenMode       = "verdict: legion-verdict is not written: the App is in token mode, which mints no verdict token"
 	verdictReadWentOn      = "verdict: a merge-state read went on before its issue's write of legion-verdict ended"
 	verdictWriteFailed     = "verdict: a write of legion-verdict failed; the writers' sweep at boot and every 10 minutes writes it again"
-	verdictNoAnswer        = "verdict: GitHub has given no answer to the read of a head's change on 3 of the writers' sweeps in a row, so the change counts as unread and legion-verdict is now failure there, until GitHub answers"
 )
+
+// verdictNoAnswer is the WARN of a head GitHub gave no answer for on noAnswerSweeps of the writers'
+// sweeps in a row, which names the bound from noAnswerSweeps itself, so the two cannot part.
+var verdictNoAnswer = "verdict: GitHub has given no answer to the read of a head's change on " + strconv.Itoa(noAnswerSweeps) +
+	" of the writers' sweeps in a row, so the change counts as unread and legion-verdict is now failure there, until GitHub answers"
 
 // noAnswerSweeps is how many of the writers' sweeps in a row may find GitHub giving no answer to
 // the read of one head's change before the head is decided failure, as for a change GitHub answers
-// cannot be read (boundUnanswered), and the writer warns (verdictNoAnswer, whose text and
-// troubleshooting.md name the number): 3 sweeps, 10 minutes apart (verdictSweepInterval), are 30
-// minutes, longer than the short outages of GitHub that end by themselves, and well inside the merge
-// queue's 180-minute timeout, so the queue removes a group whose head GitHub never answers for, and
-// the owner hears of it, before the group times out.
+// cannot be read (boundUnanswered), and the writer warns (verdictNoAnswer, whose text is built from
+// this number; troubleshooting.md, concepts.md and the changelog name it too): 3 sweeps, 10 minutes
+// apart (verdictSweepInterval), are 30 minutes, longer than the short outages of GitHub that end by
+// themselves, and well inside the merge queue's 180-minute timeout, so the queue removes a group
+// whose head GitHub never answers for, and the owner hears of it, before the group times out.
 const noAnswerSweeps = 3
 
 // verdictWriter is the state of the daemon's writer of the required check legion-verdict (spec
@@ -466,9 +470,11 @@ func (w *workflowRuntime) writeVerdictOver(ctx context.Context, target verdictTa
 // head's verdict does, and a failure's output is written again for the head as it is now, so a
 // failure for a commit with no reader no longer says each check reads yes once one does not. A
 // failure is made over the others too, for the head's output alone (headOutput): its conclusion
-// needs no other read, so where the others cannot be read the pull request's own failure stands, as
-// its no decision yet does, which writes no run of the daemon's own. The write reads the open pull
-// requests at the head once (headPulls).
+// needs no other read, so where GitHub does not let the others be read (gitHubReadError) the pull
+// request's own failure stands, as its no decision yet does, which writes no run of the daemon's own
+// and counts toward the bound. A store failure deciding the others is no answer of GitHub's: it
+// fails the write, which the writers' sweep makes again. The write reads the open pull requests at
+// the head once (headPulls).
 func (w *workflowRuntime) decideHead(ctx context.Context, entry config.VerdictRepository, target, written verdictTarget) (verdictDecision, error) {
 	pulls := &headPulls{}
 	decided, err := w.decideVerdict(ctx, entry, target.repository, target.number, target.head, pulls)
@@ -487,7 +493,7 @@ func (w *workflowRuntime) decideHead(ctx context.Context, entry config.VerdictRe
 		switch {
 		case err == nil:
 			decided = combined
-		case decided.conclusion != verdict.Failure && decided.conclusion != verdict.Undecided:
+		case !gitHubReadFailed(err) || decided.conclusion != verdict.Failure && decided.conclusion != verdict.Undecided:
 			return verdictDecision{}, err
 		}
 	}

@@ -94,15 +94,16 @@ type listedStatus struct {
 // A head with no conclusion is written on only when overForeign is set, which is the writers'
 // sweep's ask to put failure over each run and status of the App there that does not show it; a
 // write a fact asks for (writeVerdictOver without overForeign) writes nothing there and makes no
-// GitHub call. A head with no decision yet (verdict.Undecided) gets no run or status of the daemon's
-// own, and those the record holds stand as they are; only the writers' sweep's write there still
-// puts, over each run and status of the App the record does not hold, the conclusion of the
-// daemon's newest write at the head, or failure where it has none (R19). In token mode the daemon
-// mints no verdict token (appauth.ErrNoVerdictToken): it writes nothing and logs that once. So it
-// does while it holds no App id: an id that is no number tells no run as the App's, its own among
-// them, and a write would make a new run at each write; the one ERROR where the writer is built says
-// why (newVerdictWriter). One goroutine makes every write (writeVerdicts), so no two writes of one
-// head read its runs together and each create one.
+// GitHub call. A head with no decision yet (verdict.Undecided) gets no new run of the daemon's own;
+// only the writers' sweep's write there puts the conclusion of the daemon's newest write at the
+// head, or failure where it has none, over each run and status of the App that shows another: one
+// the record does not hold, and one it holds that another token of the App turned (R19); the output
+// of such a run then names the conclusion alone, as the head has no decision to name. In token mode
+// the daemon mints no verdict token (appauth.ErrNoVerdictToken): it writes nothing and logs that
+// once. So it does while it holds no App id: an id that is no number tells no run as the App's, its
+// own among them, and a write would make a new run at each write; the one ERROR where the writer is
+// built says why (newVerdictWriter). One goroutine makes every write (writeVerdicts), so no two
+// writes of one head read its runs together and each create one.
 func (w *workflowRuntime) writeDecided(ctx context.Context, target verdictTarget, decided verdictDecision, overForeign bool) error {
 	_, err := w.writeDecidedChanged(ctx, target, decided, overForeign)
 	return err
@@ -155,7 +156,8 @@ func (w *workflowRuntime) writeDecidedChanged(ctx context.Context, target verdic
 		shown = true
 		foreign := run.ID
 		if ownRuns[run.ID] {
-			if undecided || run.Conclusion == string(over) && run.Output.Title == output["title"] && run.Output.Summary == output["summary"] {
+			matches := run.Conclusion == string(over)
+			if matches && (undecided || run.Output.Title == output["title"] && run.Output.Summary == output["summary"]) {
 				continue
 			}
 			foreign = 0
@@ -183,7 +185,7 @@ func (w *workflowRuntime) writeDecidedChanged(ctx context.Context, target verdic
 		switch {
 		case !ownStatuses[status.ID]:
 			return true, w.createVerdictStatus(call, client, target, decided.kind, over, status.ID)
-		case !undecided && status.State != string(over):
+		case status.State != string(over):
 			return true, w.createVerdictStatus(call, client, target, decided.kind, over, 0)
 		}
 		return changed, nil
