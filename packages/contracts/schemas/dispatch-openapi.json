@@ -8426,7 +8426,7 @@
     },
     "/api/v1/issues/{key}/steps": {
       "get": {
-        "description": "Every run of every step of the issue's workflow, task by task in the order of each task's first run, each task's runs in the order they ran: {issue, tasks: [{task, steps}]}, each step {id, issue, task, step, kind, role, type, agent, session, model, generation, attempt, started_at, ended_at, result, returned_to, report, rating, rating_reason}, its attempt its place among the issue's runs of the same task, step and kind from 1, and rating and rating_reason a retro's alone. A closed issue's read too, an issue no step ran on reads with tasks [], and a key no issue carries is 404 NOT_FOUND, as the issue's own read answers it.",
+        "description": "Every run of every step of the issue's workflow, task by task in the order of each task's first run, each task's runs in the order they ran: {issue, tasks: [{task, steps}]}, each step {id, issue, task, step, kind, role, type, agent, session, model, generation, attempt, started_at, ended_at, result, returned_to, report, rating, rating_reason, experiment, variant}, its attempt its place among the issue's runs of the same task, step and kind from 1, rating and rating_reason a retro's alone, and experiment and variant the experiment a draw put the issue in and the variant it drew there, each null where the run holds none. A closed issue's read too, an issue no step ran on reads with tasks [], and a key no issue carries is 404 NOT_FOUND, as the issue's own read answers it.",
         "operationId": "getApiV1IssuesByKeySteps",
         "parameters": [
           {
@@ -8506,6 +8506,72 @@
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/StepRecordInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StepRecord"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-write-scope": "project"
+      }
+    },
+    "/api/v1/issues/{key}/steps/{id}/experiment": {
+      "put": {
+        "description": "Write the experiment and the variant of a run's issue {actor, experiment, variant, task?, step?, kind?, role?, type?, agent?, session?, model?, generation?, started_at?, ended_at?, result?, returned_to?, report?}: experiment is the experiment a draw put the issue in and variant the variant it drew there, each a name of 1 to 32 characters of a-z, 0-9 and -. The Legion daemon writes it under the id of the run, after the run's own write, with the fields PUT /api/v1/issues/{key}/steps/{id} takes, which make the record where the run's start and end have not landed yet; each field the record does not hold yet is set and every field it holds is left, but returned_to, which only the write that sets the result sets, so the experiment and the variant are written once. The actor must be session legion-daemon:\u003cPROJECT\u003e of the issue's project (403 STEP_WRITER otherwise); a bearer caller names its own session, so any caller whose credential proves no session can name that one. A closed issue takes it, and no write appends an issue event. Answers 200 with the record as it stands after the write and its attempt. A body naming neither, one naming one alone, and a name outside its form are 400 STEP_INPUT naming the field; an id whose record is a run of another issue is 409 STEP_OTHER_ISSUE, and an issue Dispatch does not know 404 ISSUE_NOT_FOUND.",
+        "operationId": "putApiV1IssuesByKeyStepsByIdExperiment",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StepExperimentInput"
               }
             }
           },
@@ -12741,7 +12807,7 @@
     },
     "/api/v1/projects/{key}/plans": {
       "get": {
-        "description": "Each finished issue of the project, one whose status is done and whose closed_at is set, newest close first, its close within [since, until) where ?since= and ?until= (RFC 3339) name either bound: {project, issues: [{issue, title, closed_at, plan, ratings, started_at, ended_at, duration_seconds, failed_steps}]}. plan is the plan of the issue's newest run as the Legion daemon wrote it {id, issue, generation, source, artifact_id, version, tasks: [{id, steps}]}, null for an issue with none; ratings is the rating of each of its retros, in the order they ran, {rating, reason, step_id, ended_at}; started_at is the earliest start of its step records, ended_at the latest end and duration_seconds the whole seconds between them, each null where no record holds one, and duration_seconds null too where that end is before that start, a time Dispatch cannot count; failed_steps counts its step records of kind step that failed. It writes nothing. 404 PROJECT_NOT_FOUND for a project Dispatch does not hold, 400 INVALID_QUERY for a bound that is no RFC 3339 time or a since not before its until.",
+        "description": "Each finished issue of the project, one whose status is done and whose closed_at is set, newest close first, its close within [since, until) where ?since= and ?until= (RFC 3339) name either bound: {project, issues: [{issue, title, closed_at, plan, ratings, started_at, ended_at, duration_seconds, failed_steps, experiment, variant}]}. plan is the plan of the issue's newest run as the Legion daemon wrote it {id, issue, generation, source, artifact_id, version, tasks: [{id, steps}]}, null for an issue with none; ratings is the rating of each of its retros, in the order they ran, {rating, reason, step_id, ended_at}; started_at is the earliest start of its step records, ended_at the latest end and duration_seconds the whole seconds between them, each null where no record holds one, and duration_seconds null too where that end is before that start, a time Dispatch cannot count; failed_steps counts its step records of kind step that failed; experiment and variant are the experiment a draw put the issue in and the variant it drew there, as the step records of its newest run name them, each null where they name none. It writes nothing. 404 PROJECT_NOT_FOUND for a project Dispatch does not hold, 400 INVALID_QUERY for a bound that is no RFC 3339 time or a since not before its until.",
         "operationId": "getApiV1ProjectsByKeyPlans",
         "parameters": [
           {
@@ -22564,6 +22630,12 @@
               "string"
             ]
           },
+          "experiment": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
           "failed_steps": {
             "type": "integer"
           },
@@ -22598,6 +22670,12 @@
           },
           "title": {
             "type": "string"
+          },
+          "variant": {
+            "type": [
+              "null",
+              "string"
+            ]
           }
         },
         "required": [
@@ -22609,7 +22687,9 @@
           "started_at",
           "ended_at",
           "duration_seconds",
-          "failed_steps"
+          "failed_steps",
+          "experiment",
+          "variant"
         ],
         "type": "object"
       },
@@ -31831,6 +31911,135 @@
         ],
         "type": "object"
       },
+      "StepExperimentInput": {
+        "properties": {
+          "actor": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Actor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "agent": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "ended_at": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "experiment": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "generation": {
+            "type": [
+              "null",
+              "integer"
+            ]
+          },
+          "kind": {
+            "enum": [
+              "step",
+              "retro",
+              "merge",
+              null
+            ],
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "model": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "report": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "result": {
+            "enum": [
+              "passed",
+              "failed",
+              "stopped",
+              null
+            ],
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "returned_to": {
+            "type": [
+              "null",
+              "integer"
+            ]
+          },
+          "role": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "session": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "started_at": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "step": {
+            "type": [
+              "null",
+              "integer"
+            ]
+          },
+          "task": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "type": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "variant": {
+            "type": [
+              "null",
+              "string"
+            ]
+          }
+        },
+        "required": [
+          "experiment",
+          "variant"
+        ],
+        "type": "object"
+      },
       "StepRatingInput": {
         "properties": {
           "actor": {
@@ -31975,6 +32184,12 @@
               "string"
             ]
           },
+          "experiment": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
           "generation": {
             "format": "int64",
             "type": "integer"
@@ -32050,6 +32265,12 @@
           },
           "type": {
             "type": "string"
+          },
+          "variant": {
+            "type": [
+              "null",
+              "string"
+            ]
           }
         },
         "required": [
@@ -32071,7 +32292,9 @@
           "returned_to",
           "report",
           "rating",
-          "rating_reason"
+          "rating_reason",
+          "experiment",
+          "variant"
         ],
         "type": "object"
       },

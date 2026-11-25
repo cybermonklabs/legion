@@ -1034,6 +1034,7 @@ var goingExcludedRoutes = map[string]string{
 	"PUT /api/v1/issues/{key}/role-holders":                         goingExcludedDaemon,
 	"PUT /api/v1/issues/{key}/steps/{id}":                           goingExcludedDaemon + " STEP_WRITER",
 	"PUT /api/v1/issues/{key}/steps/{id}/rating":                    goingExcludedDaemon + " STEP_WRITER",
+	"PUT /api/v1/issues/{key}/steps/{id}/experiment":                goingExcludedDaemon + " STEP_WRITER",
 	"PUT /api/v1/issues/{key}/plans/{id}":                           goingExcludedDaemon + " STEP_WRITER",
 	"POST /api/v1/issues/{key}/status-change":                       goingExcludedStatusChange,
 	"POST /api/v1/live/_test/disconnect":                            goingExcludedTestHook,
