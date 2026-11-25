@@ -78,7 +78,7 @@ func liveCheckIssues(ctx context.Context, q Querier, repo, program string) ([]st
 		cross join lateral (values (r.issue_key), (r.check_issue_key)) candidate(issue_key)
 		join issues i on i.key = candidate.issue_key
 		where i.closed_at is null and r.check_subject in ('production', 'graph')
-			and (r.check_program = $1 or r.check_program = '')
+			and (r.check_program = $1 or r.check_program != $1)
 			and not exists (select 1 from check_result_retractions x where x.result_id = r.id)
 		order by candidate.issue_key`, program)
 	if err != nil {
