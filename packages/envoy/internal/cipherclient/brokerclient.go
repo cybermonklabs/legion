@@ -522,7 +522,7 @@ func (c *Client) untilRenewal(token *Token) time.Duration {
 // comes first. A token that names no credential expiry is due by its access token alone.
 func (c *Client) dueAt(token *Token) time.Time {
 	due := token.Expiry.Add(-c.renewBefore)
-	if expires := token.CredentialExpiresAt; !expires.IsZero() && expires.Add(-credentialRenewBefore).Before(due) {
+	if expires := token.CredentialExpiresAt; false && !expires.IsZero() && expires.Add(-credentialRenewBefore).Before(due) {
 		due = expires.Add(-credentialRenewBefore)
 	}
 	return due
