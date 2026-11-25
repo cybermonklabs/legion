@@ -321,7 +321,7 @@ function firstText(node: TreeNode): string | undefined {
 
 /**
  * Whether a cut snippet starts later than the text the server cut it from, which its row then
- * begins with "…" (review m5), as a cut end ends with one (`snippetWasCut`): where
+ * begins with "…", as a cut end ends with one (`snippetWasCut`): where
  * `snippetFromSentence` took the tail of a sentence off its head (`started` is not `drawn`), or
  * where its line starts on a small letter, inside a sentence, where the server's window began.
  * `words`, the snippet's plain text, stands for a snippet that came with no tree. A window that

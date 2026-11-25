@@ -3,6 +3,7 @@ import { cleanup, screen, waitFor, within } from "@testing-library/react";
 
 import { renderWithQueries } from "../../__tests__/query-provider";
 import { ApiError, api } from "../../api/client";
+import type { IssueReferenceSummary } from "../../api/types";
 import { pageStatusProgressText } from "../../theme/classes";
 import { ItemChip } from "./ItemChip";
 
@@ -65,22 +66,30 @@ test("a chip is one box that never wraps: a long title is cut, and shows whole o
   }
 });
 
-// A chip drawn for a time link's words (`MarkdownBody`) shows the time on hover, not the title.
-test("a chip given what it shows on hover shows that in place of its title", async () => {
-  const summary = spyOn(api, "getIssueSummary").mockResolvedValue({
-    documents: [],
-    key: "DEMO-17",
-    project: "DEMO",
-    status: "backlog",
-    title: "PDF export: fonts missing on mobile",
-  });
+// A chip drawn for a time link's words (`MarkdownBody`, `TimedWords`) shows the time on hover
+// after its whole title, which the chip cuts with "…" where the line is narrower than it; until
+// the issue's summary answers, the time alone.
+test("a chip given what it shows on hover shows that after its whole title, and alone until the title is read", async () => {
+  const read = Promise.withResolvers<IssueReferenceSummary>();
+  const summary = spyOn(api, "getIssueSummary").mockReturnValue(read.promise);
   try {
     renderWithQueries(<ItemChip hover="10/10/2026, 9:00:00 AM" issue="DEMO-17" />);
     const chip = screen.getByTestId("item-chip");
+    expect(chip).toHaveAttribute("title", "10/10/2026, 9:00:00 AM");
+    read.resolve({
+      documents: [],
+      key: "DEMO-17",
+      project: "DEMO",
+      status: "backlog",
+      title: "PDF export: fonts missing on mobile",
+    });
     await waitFor(() =>
       expect(chip.textContent).toBe("DEMO-17BacklogPDF export: fonts missing on mobile")
     );
-    expect(chip).toHaveAttribute("title", "10/10/2026, 9:00:00 AM");
+    expect(chip).toHaveAttribute(
+      "title",
+      "PDF export: fonts missing on mobile · 10/10/2026, 9:00:00 AM"
+    );
   } finally {
     summary.mockRestore();
   }

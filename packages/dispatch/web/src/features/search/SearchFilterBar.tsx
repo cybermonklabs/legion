@@ -12,12 +12,20 @@ import {
   textMutedOnSurface,
   textPrimaryOnSurface,
 } from "../../theme/classes";
+import { boxLineClassName } from "../going/RunControls";
 import { issueStatuses, statusLabel } from "../project/board-model";
 import { type SearchBarFilters, type SearchFilterName, searchFilterChips } from "./search-filters";
 
 /** Every filter's one look (design v3, state 1, as Linear's filters are one pill): a rounded
- *  pill as tall as the box above it, naming its field and then its value. */
-const pill = `inline-flex min-h-[38px] items-center gap-1.5 rounded-full border px-3 text-sm ${inputClasses(true)}`;
+ *  pill as tall as the box above it, naming its field and then its value. It is built as the box
+ *  is (`BoxFrame`): this frame draws the border round one control at the box's input's padding
+ *  and line (`boxLineClassName`), so the floor `styles.css` puts on a button or an input below
+ *  `xl` lifts the control inside the border as it lifts the box's input, and the pill and the
+ *  box stand as tall at every width. */
+const pillFrame = `inline-flex items-center rounded-full border ${inputClasses(true)} ${focusWithinBorder}`;
+
+/** A pill's control when it is a button, which its frame holds. */
+const pillButton = `inline-flex items-center gap-1.5 rounded-full px-3 ${boxLineClassName}`;
 
 /** The days back from today that "Updated since" offers, each by the words its menu says. */
 const SINCE_CHOICES: readonly { readonly days: number; readonly text: string }[] = [
@@ -79,21 +87,23 @@ function FilterMenu({
 
   return (
     <div className="relative" ref={wrapper}>
-      <button
-        aria-controls={listId}
-        aria-expanded={open}
-        aria-label={label}
-        className={`${pill} ${open ? selectedCardBorder : ""}`}
-        onBlur={closeOnLeave}
-        onClick={() => setOpen(!open)}
-        type="button"
-      >
-        <span className={textPrimaryOnSurface}>{label}</span>
-        <span className={textMutedOnSurface}>{value}</span>
-        <span aria-hidden="true" className={textMutedOnSurface}>
-          ▾
-        </span>
-      </button>
+      <span className={`${pillFrame} ${open ? selectedCardBorder : ""}`}>
+        <button
+          aria-controls={listId}
+          aria-expanded={open}
+          aria-label={label}
+          className={pillButton}
+          onBlur={closeOnLeave}
+          onClick={() => setOpen(!open)}
+          type="button"
+        >
+          <span className={textPrimaryOnSurface}>{label}</span>
+          <span className={textMutedOnSurface}>{value}</span>
+          <span aria-hidden="true" className={textMutedOnSurface}>
+            ▾
+          </span>
+        </button>
+      </span>
       {open ? (
         <ul
           aria-label={label}
@@ -172,19 +182,20 @@ export function SearchFilterBar({
       data-testid="search-filters"
     >
       {searchFilterChips(filters).map(({ label, name }) => (
-        <button
-          aria-label={`Remove ${label}`}
-          className={`${pill} ${selectedCardBorder} ${textPrimaryOnSurface}`}
-          key={name}
-          onClick={() => set(removals[name])}
-          title={label}
-          type="button"
-        >
-          {label}
-          <span aria-hidden="true" className={textMutedOnSurface}>
-            ×
-          </span>
-        </button>
+        <span className={`${pillFrame} ${selectedCardBorder}`} key={name}>
+          <button
+            aria-label={`Remove ${label}`}
+            className={`${pillButton} ${textPrimaryOnSurface}`}
+            onClick={() => set(removals[name])}
+            title={label}
+            type="button"
+          >
+            {label}
+            <span aria-hidden="true" className={textMutedOnSurface}>
+              ×
+            </span>
+          </button>
+        </span>
       ))}
       {filters.project === undefined ? (
         <FilterMenu
@@ -210,11 +221,11 @@ export function SearchFilterBar({
         // theirs end in (review a6), so the four read alike. The box is as wide as its words and
         // no wider - no width kept past them, and no room for a search box's clear button - so
         // its caret stands as far from "Anyone" as theirs from their values.
-        <label className={`${pill} cursor-text ${focusWithinBorder}`}>
+        <label className={`${pillFrame} cursor-text gap-1.5 px-3 text-sm`}>
           <span className={textPrimaryOnSurface}>Author</span>
           <input
             aria-label="Author"
-            className={`field-sizing-content outline-none [&::-webkit-search-cancel-button]:hidden ${bgTransparent}`}
+            className={`${boxLineClassName} field-sizing-content outline-none [&::-webkit-search-cancel-button]:hidden ${bgTransparent}`}
             onBlur={takeAuthor}
             onChange={(event) => setAuthor(event.target.value)}
             onKeyDown={(event) => {

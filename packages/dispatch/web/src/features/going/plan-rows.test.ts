@@ -712,6 +712,40 @@ test("a long edit's preview marks the words it takes out and puts in, in the sen
   expect(cut.at(-1)).toEqual({ kind: "same", value: "…" });
 });
 
+// A long edit's preview reads as plain words, as a new issue's spec does (`specSentences`): a
+// link reads as its words, a heading keeps its words without its `#` marks, since an edit can
+// change a heading, and emphasis, code and list marks are left out; the words the edit takes out
+// and puts in are marked in them. An edit of the marks alone - only a link's address - leaves the
+// plain words the same, and its preview marks the changed words of the body as written, so it
+// never reads as no change.
+test("a long edit's preview reads the body's Markdown as plain words, and an edit of a link's address alone still marks a change", () => {
+  const rails =
+    "## The rails\n\nWipe them with a **dry** cloth and `oil`.\n\n- Tighten the bolts of [the track](dispatch://DEMO-7) once a month.";
+  expect(editPreview(rails, rails.replace("once a month", "every two weeks"))).toEqual([
+    {
+      kind: "same",
+      value: "The rails Wipe them with a dry cloth and oil. Tighten the bolts of the track ",
+    },
+    { kind: "removed", value: "once a month" },
+    { kind: "added", value: "every two weeks" },
+    { kind: "same", value: "." },
+  ]);
+
+  const dome = "# The dome\n\nIt turns by hand.";
+  expect(editPreview(dome, dome.replace("dome", "roof"))).toEqual([
+    { kind: "same", value: "The " },
+    { kind: "removed", value: "dome" },
+    { kind: "added", value: "roof" },
+    { kind: "same", value: " It turns by hand." },
+  ]);
+
+  const moved = editPreview(rails, rails.replace("DEMO-7", "DEMO-8"));
+  expect(moved.filter((part) => part.kind !== "same")).toEqual([
+    { kind: "removed", value: "7" },
+    { kind: "added", value: "8" },
+  ]);
+});
+
 test("a row whose item changed after the plan showed is unticked once for each change, with what needs it", () => {
   const changed = (title: string): GoingPlanAnswer => ({
     ...plan,

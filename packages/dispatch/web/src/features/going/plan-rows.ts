@@ -1253,21 +1253,30 @@ export function valuesNowWords(changes: readonly RowChange[]): string {
 /** The longest the sentences shown above a new issue's whole spec run, in characters. */
 const SPEC_SENTENCES_MAX = 300;
 
-/** The first two or three sentences of a new issue's spec, as plain words: its headings and its
- *  Markdown marks (list marks, emphasis, code marks, a link's address) left out, its lines run
- *  together, and the third sentence, then the second, left out where they run past
- *  `SPEC_SENTENCES_MAX`. */
+/** A Markdown heading's line: one to six `#` marks, then a space or the line's end. */
+const HEADING_LINE = /^\s{0,3}#{1,6}(?:\s|$)/u;
+
+/** A line of Markdown as plain words: a heading's `#` marks, a list, task or quote mark,
+ *  emphasis and code marks and a link's address left out, a link read as its words. */
+function plainLine(line: string): string {
+  const words = HEADING_LINE.test(line)
+    ? line.replace(/^\s{0,3}#{1,6}/u, "").replace(/\s#+\s*$/u, "")
+    : line;
+  return words
+    .replace(/^\s{0,3}(?:[-*+]\s+(?:\[[ xX]\]\s+)?|\d+[.)]\s+|>\s?)/u, "")
+    .replace(/!?\[([^\]]*)\]\([^)]*\)/gu, "$1")
+    .replace(/[*_`]+/gu, "")
+    .trim();
+}
+
+/** The first two or three sentences of a new issue's spec, as plain words: its headings left
+ *  out, its other lines as `plainLine` reads them and run together, and the third sentence,
+ *  then the second, left out where they run past `SPEC_SENTENCES_MAX`. */
 export function specSentences(spec: string): string {
   const plain = spec
     .split("\n")
-    .filter((line) => !/^\s{0,3}#{1,6}(?:\s|$)/u.test(line))
-    .map((line) =>
-      line
-        .replace(/^\s{0,3}(?:[-*+]\s+(?:\[[ xX]\]\s+)?|\d+[.)]\s+|>\s?)/u, "")
-        .replace(/!?\[([^\]]*)\]\([^)]*\)/gu, "$1")
-        .replace(/[*_`]+/gu, "")
-        .trim()
-    )
+    .filter((line) => !HEADING_LINE.test(line))
+    .map(plainLine)
     .filter((line) => line !== "")
     .join(" ");
   const sentences = plain.match(/[^.!?]+(?:[.!?]+|$)/gu)?.map((sentence) => sentence.trim()) ?? [];
@@ -1350,18 +1359,34 @@ function sentenceEnds(text: string): number[] {
  *  starts: the few words that place the change in its sentence. */
 const PREVIEW_LEAD = 40;
 
+/** `body` as plain words: each of its lines as `plainLine` reads it, a heading's words kept, since
+ *  an edit can change a heading, and its empty lines left out. */
+function plainWords(body: string): string {
+  return body
+    .split("\n")
+    .map(plainLine)
+    .filter((line) => line !== "")
+    .join("\n");
+}
+
 /**
- * The preview of a long edit of a post's body (review m1): two or three of its sentences, its
- * lines run together, the words the edit takes out struck and the words it puts in marked, as the
- * diff folded under it marks them (`changedWords`), so the person reads what changes without
- * opening the diff. They are the body's first sentences where those hold the edit's first change
- * and fit `SPEC_SENTENCES_MAX`, as a new issue's spec shows (`specSentences`); else the sentence
- * that holds it and those after it, led by "…"; a sentence too long for the preview shows from
- * `PREVIEW_LEAD` characters before the change. A preview that stops before the body ends ends
- * with "…". Changes that only spaces part read as one run out and one in (`joinedChanges`).
+ * The preview of a long edit of a post's body (review m1): two or three of its sentences in plain
+ * words (`plainWords`), its lines run together, the words the edit takes out struck and the words
+ * it puts in marked, as the diff folded under it marks them (`changedWords`), so the person reads
+ * what changes without opening the diff. They are the body's first sentences where those hold the
+ * edit's first change and fit `SPEC_SENTENCES_MAX`, as a new issue's spec shows
+ * (`specSentences`); else the sentence that holds it and those after it, led by "…"; a sentence
+ * too long for the preview shows from `PREVIEW_LEAD` characters before the change. A preview that
+ * stops before the body ends ends with "…". Changes that only spaces part read as one run out and
+ * one in (`joinedChanges`). An edit of the Markdown's marks alone, such as a link's address,
+ * leaves the two bodies' plain words the same, so its preview marks the changed words of the body
+ * as written instead, and still shows that something changes.
  */
 export function editPreview(now: string, next: string): WordPart[] {
-  const parts = joinedChanges(changedWords(now, next)).map((part) => ({
+  const plainNow = plainWords(now);
+  const plainNext = plainWords(next);
+  const [before, after] = plainNow === plainNext ? [now, next] : [plainNow, plainNext];
+  const parts = joinedChanges(changedWords(before, after)).map((part) => ({
     kind: part.kind,
     value: part.value.replace(/\s+/gu, " "),
   }));

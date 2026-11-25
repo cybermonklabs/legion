@@ -3,13 +3,13 @@ import { type ReactNode, useCallback, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
 import type { DisplayTree } from "../../api/types";
-import { TIME_LINK_ATTRIBUTE } from "./dispatch-time";
 import { ItemChip } from "./ItemChip";
 import { type MarkdownEngine, markdownClassName, type SoftBreaks } from "./markdown-engine";
 import type { ReferenceAnchor } from "./RefLink";
-import { buildDispatchReference, buildReferencePath, parseDispatchReference } from "./routes";
+import { buildDispatchReference, buildReferencePath } from "./routes";
 import { drawTaskCheckboxes } from "./task-checkboxes";
 import type { TextSource } from "./text-references";
+import { TIME_LINK_ATTRIBUTE, timeLinkIssue } from "./time-link";
 import {
   ATTACH_BATCH,
   type DecorateMarkdown,
@@ -292,25 +292,20 @@ function holdPunctuation(anchor: HTMLElement): void {
 }
 
 /**
- * The time links of a body drawn with chips whose words are an issue's key, each made a link to
- * that issue for its chip: the command bar's agent wrote when DEMO-17 last moved as
- * `[DEMO-17](dispatch-time:2026-10-10T09:00:00Z)`, and the words name the item, so the item is
- * drawn (`takeIssueLinks`), not lost to a time. The words become an empty `<a>` to the issue
- * inside the time, as the link pass leaves an anchor for its portal (`collectReferenceAnchors`).
- * A time link whose key the link pass already made a link holds no words of its own by now, and
- * is that link's.
+ * The time links of a body drawn with chips whose words are an issue's key (`timeLinkIssue`),
+ * each made a link to that issue for its chip: the command bar's agent wrote when DEMO-17 last
+ * moved as `[DEMO-17](dispatch-time:2026-10-10T09:00:00Z)`, and the words name the item, so the
+ * item is drawn (`takeIssueLinks`), not lost to a time. The words become an empty `<a>` to the
+ * issue inside the time, as the link pass leaves an anchor for its portal
+ * (`collectReferenceAnchors`). A time link whose key the link pass already made a link holds no
+ * words of its own by now, and is that link's.
  */
 function timeLinkAnchors(element: HTMLElement): ReferenceAnchor[] {
   const anchors: ReferenceAnchor[] = [];
   for (const link of element.querySelectorAll<HTMLElement>(`[${TIME_LINK_ATTRIBUTE}]`)) {
     const words = link.textContent?.trim() ?? "";
-    // Words that are an issue's key and nothing else: a reference of nothing more names that
-    // issue, and one of a key with anything after it names something else or nothing. The words
-    // are the page's text, so they are percent-encoded before they make a route and its href: a
-    // key (letters, digits and a hyphen) encodes as itself, and words with a slash, a hash or any
-    // other character encode to a key no issue has, so they draw as a time, as before.
-    const route = parseDispatchReference(`dispatch://${encodeURIComponent(words)}`);
-    if (route?.kind !== "issue") {
+    const route = timeLinkIssue(words);
+    if (route === undefined) {
       continue;
     }
     const reference = buildDispatchReference(route);

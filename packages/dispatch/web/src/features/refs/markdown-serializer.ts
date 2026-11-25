@@ -2,11 +2,11 @@ import { documentFromJSON } from "@legion/proof-editor/document-json";
 import type { HeadlessProofEditor } from "@legion/proof-editor/headless";
 import { DOMSerializer, Schema } from "prosemirror-model";
 
-import { instantOf, isTimeAddress, TIME_LINK_ATTRIBUTE } from "./dispatch-time";
 import type { MarkdownEngine, RenderSpecWithAttrs } from "./markdown-engine";
 import type { DocumentJSON } from "./markdown-parse.worker";
 import { buildDispatchReference, buildReferencePath, pictureReference } from "./routes";
 import { timeTitle } from "./Timestamp";
+import { instantOf, isTimeAddress, TIME_LINK_ATTRIBUTE } from "./time-link";
 
 /**
  * The half of the Markdown engine written against ProseMirror's own classes, behind the same

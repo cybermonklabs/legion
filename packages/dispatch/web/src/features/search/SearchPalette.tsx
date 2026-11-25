@@ -822,6 +822,9 @@ function PaletteDialog({
   const [filtersOpen, setFiltersOpen] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
+  // The search's parts under the box, one column that scrolls where the window is too short for
+  // the list's one row.
+  const searchPartsRef = useRef<HTMLDivElement>(null);
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [filters, setFilters] = useState<SearchBarFilters>({});
@@ -1218,9 +1221,10 @@ function PaletteDialog({
     setActive({ hits: listedSearch, id: shownId, left });
   }
   // Focus stays in the input while the arrows move the highlight (`aria-activedescendant`), so
-  // the list scrolls the highlighted row into its own view: an issue page offers more rows than
-  // the list's height holds. It does again whenever the list's own height changes (the window
-  // shrinks, or the message under it grows), since the row did not move but its view did.
+  // the list scrolls the highlighted row into its own view, and the column under the box into
+  // its own where a short window scrolls it: an issue page offers more rows than the list's
+  // height holds. It does again whenever the list's height or the column's changes (the window
+  // shrinks, or the message under the list grows), since the row did not move but its view did.
   useLayoutEffect(() => {
     if (shownId === null) {
       return;
@@ -1235,6 +1239,9 @@ function PaletteDialog({
     }
     const sizes = new ResizeObserver(keepInView);
     sizes.observe(list);
+    if (searchPartsRef.current !== null) {
+      sizes.observe(searchPartsRef.current);
+    }
     return () => sizes.disconnect();
   }, [shownId]);
 
@@ -1399,15 +1406,19 @@ function PaletteDialog({
     <>
       <div aria-hidden="true" className={`fixed inset-0 z-40 ${backdrop50}`} onClick={onClose} />
       {/* The wrapper holds the palette's place: below the top bar, to the screen's foot (1rem
-          short of it from `xl`). The dialog is a column no taller than that. Before Enter only
-          the list scrolls, and the list keeps one row's height, so a short window cuts the key
-          hints and then the message rather than the row the reader is on. As a conversation it
-          is 80% of the window's height, the conversation scrolls inside it, and the box sits at
-          its foot. The children keep their places in both states (an empty place where a part
-          does not show), so the box is the same element throughout. The frame clips
-          (`overflow-clip`) rather than hides what overflows it: a hidden overflow is still a
-          scroll that a script, a focus or a scroll into view moves, and one moved the header
-          and the box out of the frame (review B1). Only the list and the conversation scroll. */}
+          short of it from `xl`). The dialog is a column no taller than that. Before Enter the
+          box is on top and the search's parts under it are one column (`searchPartsRef`) that
+          takes the room the frame leaves under the box, whatever the box holds: the list takes
+          what the parts above and below it leave in that column, down to one row's height, and
+          a window too short for that row scrolls the column instead, so the row the reader is
+          on still shows whole and the key hints and then the message under the list are what
+          leave the view. As a conversation it is 80% of the window's height, the conversation
+          scrolls inside it, and the box sits at its foot. The children keep their places in
+          both states (an empty place where a part does not show), so the box is the same
+          element throughout. The frame clips (`overflow-clip`) rather than hides what overflows
+          it: a hidden overflow is still a scroll that a script, a focus or a scroll into view
+          moves, and one moved the header and the box out of the frame (review B1). Only the
+          list, the column under the box and the conversation scroll; the box never moves. */}
       <div className="pointer-events-none fixed inset-x-0 top-12 bottom-0 z-50 flex items-start justify-center xl:top-20 xl:bottom-4 xl:px-4">
         {/* biome-ignore lint/a11y/useKeyWithClickEvents: a link's Enter is a click, which this
             follows in place: an item's chip in an answer opens its item with the router, rather
@@ -1467,7 +1478,7 @@ function PaletteDialog({
             )}
           </div>
           {talking || history ? null : (
-            <>
+            <div className="flex min-h-0 flex-col overflow-y-auto" ref={searchPartsRef}>
               {/* What narrows the search and what the words themselves can do, behind the
                   Filters button: the chips the reader has added with the controls for the rest,
                   and the three operator forms. */}
@@ -1496,19 +1507,14 @@ function PaletteDialog({
                 </p>
               ) : null}
               {rows.length === 0 ? null : (
-                // The list keeps one row's height (5rem), but never more than the frame holds
-                // under the box: the frame clips, so a list that reaches past it cuts the foot
-                // of the row the arrows bring to the list's foot. That room is the window's
-                // height less the frame's place above and below it, its two borders, and the
-                // box's part: its padding (`p-3`), its row, and the rule under it. From `xl` the
-                // frame stands at `top-20` and `bottom-4` and the row is the input's (`py-2` and
-                // a `text-sm` line) and its frame's two borders: 9.75rem and 5 px. Below `xl`
-                // (1280 px, where `styles.css` floors every button and input at 44 px) the frame
-                // stands at `top-12` and the row is 44 px and those two borders: 4.5rem and
-                // 49 px. At 1440x240 and at 1279x200 that room is 79 px, where 5rem reached 1 px
-                // past the clip and a 44 px row showed 43 px of itself.
+                // The list takes the room its column leaves it once the parts above it (the
+                // Filters panel, the no-model line) and under it are drawn, which ends where the
+                // frame clips, and keeps one row's height (5rem) where that room is less: there
+                // the column scrolls, and the arrows' scroll into view brings the row into the
+                // column's view as well as the list's, so a window that holds the box and one row
+                // shows the row the reader is on whole, whatever stands above the list.
                 <div
-                  className="max-h-[60vh] min-h-[min(5rem,calc(100dvh-4.5rem-49px))] flex-1 overflow-y-auto xl:min-h-[min(5rem,calc(100dvh-9.75rem-5px))]"
+                  className="max-h-[60vh] min-h-20 flex-1 overflow-y-auto"
                   id="search-results"
                   ref={listRef}
                   role="listbox"
@@ -1667,7 +1673,7 @@ function PaletteDialog({
                   onMove={() => movePanel({ kind: "keep_at_side" }, login)}
                 />
               </div>
-            </>
+            </div>
           )}
         </div>
       </div>

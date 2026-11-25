@@ -349,7 +349,7 @@ test("a document hit's snippet shows no directive fence or attributes a cut wind
 // A snippet the server cut out of a longer text ends with "…" (review R4, 13-filing-line): the
 // headline's window is 24 words, so a snippet that wide stopped mid-phrase at the row's edge with
 // nothing to say so, and a shorter one is the whole text and ends as it does. A cut snippet whose
-// window began inside a sentence begins with "…" too (review m5), and one that begins on a
+// window began inside a sentence begins with "…" too, and one that begins on a
 // sentence's first word begins as it does. The issue's status stands in a column of its own
 // beside both of the hit's lines, so the snippet's line stops before it rather than running on
 // under it.

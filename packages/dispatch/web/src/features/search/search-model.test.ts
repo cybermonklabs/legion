@@ -220,8 +220,8 @@ test("a cut snippet that begins on a sentence's tail starts at the next sentence
   expect(snippetFromSentence(undefined)).toBeUndefined();
 });
 
-// A cut snippet that starts later than the text it was cut from says so: its row begins with "…"
-// (review m5), as a cut end ends with one. It starts later where `snippetFromSentence` took a
+// A cut snippet that starts later than the text it was cut from says so: its row begins with "…",
+// as a cut end ends with one. It starts later where `snippetFromSentence` took a
 // sentence's tail off its head, or where the server's window began inside a sentence, which its
 // small first letter shows; a snippet that starts on a sentence's first word starts as it does.
 test("a cut snippet that starts past its text's start begins with …, and one that starts a sentence does not", () => {

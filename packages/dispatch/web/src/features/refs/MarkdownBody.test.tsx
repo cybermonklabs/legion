@@ -2333,8 +2333,9 @@ test("a time link draws the words the model wrote, not words made from its insta
 // A time link whose words are an issue's key names that issue: a real model wrote when DEMO-17
 // last moved as `[DEMO-17](dispatch-time:…)`, and the bar drew a time, so the reader lost the
 // issue. The bar draws the issue's chip there, as it draws every issue it names, with the time on
-// the chip's hover and the full stop after it on its line - in an answer whose text links no bare
-// key (the conversation's) and in one that links the key an item frame names (the short answer's).
+// the chip's hover after its whole title and the full stop after it on its line - in an answer
+// whose text links no bare key (the conversation's) and in one that links the key an item frame
+// names (the short answer's).
 test("a time link whose words are an issue's key draws that issue's chip, with the time on hover", async () => {
   await warmMarkdownRenderer();
   const getIssueSummary = spyOn(api, "getIssueSummary").mockResolvedValue({
@@ -2364,7 +2365,10 @@ test("a time link whose words are an issue's key draws that issue's chip, with t
           expect(drawn.textContent).toBe(chipWords);
           return drawn;
         });
-        expect(chip).toHaveAttribute("title", new Date(instant).toLocaleString());
+        expect(chip).toHaveAttribute(
+          "title",
+          `PDF export: fonts missing on mobile · ${new Date(instant).toLocaleString()}`
+        );
         expect(chip.closest("a")).toHaveAttribute("href", "/issues/DEMO-17");
         expect(chip.closest("time")).toHaveAttribute("datetime", instant);
         expect(view.getAllByTestId("item-chip")).toHaveLength(1);

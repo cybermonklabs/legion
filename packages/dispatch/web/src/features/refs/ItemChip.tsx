@@ -25,14 +25,15 @@ import { issueSummaryQuery } from "./reference-target";
  * is cut with "…", the full title showing on hover. Being its own box, it takes no underline from
  * the link it sits in, so it reads as one thing to click, not as a key and a title that are two
  * links. The caller keeps the punctuation after it on its line (`MarkdownBody`). A chip the
- * caller gives a `hover` shows that on hover in place of the title: a chip drawn for the words of
- * a time link shows the time (`MarkdownBody`).
+ * caller gives a `hover` shows that on hover after the whole title ("<title> · <hover>"), and
+ * alone until the summary answers: a chip drawn for the words of a time link shows the time
+ * (`MarkdownBody`, `TimedWords`), and keeps the title the chip may cut whole beside it.
  */
 export function ItemChip({
   hover,
   issue,
 }: {
-  /** What the chip shows on hover, where that is not the issue's title. */
+  /** What the chip shows on hover after the issue's title. */
   readonly hover?: string;
   readonly issue: string;
 }): ReactNode {
@@ -41,7 +42,11 @@ export function ItemChip({
     <span
       className={`not-prose inline-flex max-w-full items-center gap-1.5 rounded-md border px-1.5 align-middle text-sm leading-5 font-normal whitespace-nowrap no-underline ${borderDefault} ${surfaceMutedBg}`}
       data-testid="item-chip"
-      title={hover ?? summary?.title}
+      title={
+        hover === undefined || summary === undefined
+          ? (hover ?? summary?.title)
+          : `${summary.title} · ${hover}`
+      }
     >
       <span className={`shrink-0 font-semibold ${textPrimaryOnSurface}`}>{issue}</span>
       {summary === undefined ? null : (

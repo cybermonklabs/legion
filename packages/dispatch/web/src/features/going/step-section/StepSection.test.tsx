@@ -188,7 +188,7 @@ test("while a call runs, its header keeps the words the model wrote, and no Thin
 });
 
 // A header too long for its row is cut at the row's edge (`truncate`), so it keeps its whole
-// words on hover (review m6): its title holds them as the page shows them, with a time the model
+// words on hover: its title holds them as the page shows them, with a time the model
 // wrote in the words the line draws it in.
 test("a long header keeps its whole words in its title, a time in the words the page shows", () => {
   const words =

@@ -409,10 +409,16 @@ export function focusConversationBox(): boolean {
   return box !== undefined && box !== null;
 }
 
+/** The padding and line of the box's input, which set the box's height inside its frame's border
+ *  (`BoxFrame`), with the floor `styles.css` puts on every input below `xl`. The search's filter
+ *  pills give their one control the same, inside a border of their own, so they stand as tall as
+ *  the box at every width (`SearchFilterBar`). */
+export const boxLineClassName = "py-2 text-sm";
+
 /** The input the person types in, inside the box's frame (`BoxFrame`), which draws its border.
  *  The clear button a browser draws in a search box keeps a gap from the words before it, which
  *  it would otherwise touch where the words fill the box. */
-export const boxInputClassName = `block min-w-0 flex-1 px-1.5 py-2 text-sm outline-none [&::-webkit-search-cancel-button]:ms-2 ${bgTransparent}`;
+export const boxInputClassName = `block min-w-0 flex-1 px-1.5 ${boxLineClassName} outline-none [&::-webkit-search-cancel-button]:ms-2 ${bgTransparent}`;
 
 /**
  * The least width of the box's input, from what it says it does now (`placeholder`, `boxWords`):

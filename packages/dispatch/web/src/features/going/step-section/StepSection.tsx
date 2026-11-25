@@ -463,7 +463,7 @@ function StepList({
           <div className="space-y-0.5" key={group.first}>
             {group.header === "" ? null : (
               // The line is cut where the row is narrower than it, and keeps its whole words, as
-              // the page shows them, on hover (review m6).
+              // the page shows them, on hover.
               <p
                 className={`truncate text-[13px] ${textMutedOnSurface}`}
                 data-testid="going-step-words"
