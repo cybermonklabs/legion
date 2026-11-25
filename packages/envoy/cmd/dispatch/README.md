@@ -1210,7 +1210,7 @@ Google states that a new Domain-wide Delegation grant can take up to 24 hours to
 
 ### Clearing a machine-login revocation
 
-A machine-login revocation the broker never confirms, which `envoy_dispatch_machine_login_revocation_oldest_owed_seconds` past a few minutes shows and the loop logs at ERROR (`the machine logins of a restricted member taken off an access list were not revoked`), leaves the member's machine logins refreshing, and refuses every approve of a machine login by the member `409 MACHINE_LOGIN_REVOCATION_OWED`, until it settles.
+A machine-login revocation the broker never confirms, which `envoy_dispatch_machine_login_revocation_oldest_owed_seconds` past a few minutes shows and the loop logs at ERROR (`the machine logins of a restricted member taken off an access list or reset by a project's owner were not revoked`), leaves the member's machine logins refreshing, and refuses every approve of a machine login by the member `409 MACHINE_LOGIN_REVOCATION_OWED`, until it settles.
 No command settles it; settling it by hand revokes nothing at the broker, so first revoke the member's machine logins there, with the calls the loop makes as Dispatch's own ServiceAccount.
 Mint a token of that account for the broker's audience as the After a restore page's machine-login block does (`kubectl create token`, an hour at most), then list the member's logins and revoke each one the list names with `service` null:
 

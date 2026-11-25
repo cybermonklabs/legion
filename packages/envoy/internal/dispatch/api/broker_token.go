@@ -16,7 +16,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"strings"
 	"sync"
 	"time"
 
@@ -471,11 +470,13 @@ func errNoBrokerConfigured() *apiError {
 var brokerPersonScopes = []string{model.ScopePerson}
 
 // maxTiedSessions bounds tiedSessions: once it holds this many pairs it starts again empty, which
-// costs a later request of each pair one statement that finds its row and writes nothing.
+// costs a later request of each pair one more statement, access.TieSession's, that finds its row
+// and writes nothing.
 const maxTiedSessions = 1 << 16
 
 // tiedSessions is each (session, person) pair this process has recorded in session_owners
-// (tieBrokerSession). A row there is never removed, so a pair held here is one the table holds.
+// (tieBrokerSession). A row there is never removed, so a pair held here is one the table holds. It
+// holds no token's list: tieBrokerSession records the list on each request.
 type tiedSessions struct {
 	mu   sync.Mutex
 	held map[string]struct{}
@@ -486,34 +487,33 @@ type tiedSessions struct {
 // session reached (access.RecordListedReach): the session reads under that list from this request
 // on, and the listener's record of the list is only sampled, so a token traded to a wider list
 // and back between two samples would otherwise leave nothing saying what the session could read.
-// A pair, and a list, this process recorded already is not written again. A server with no
-// database records nothing: it relays no agent view either.
+// A pair this process tied already is not written again; the list's record is made on each
+// request that lists projects, held pair or not, because it records only the listed projects
+// private at that moment and a listed project can turn private between two requests, which the
+// switch records only for a session whose stored listener list names it. A server with no database
+// records nothing: it relays no agent view either.
 func (s *server) tieBrokerSession(ctx context.Context, session, person string, projects []string) error {
 	login := model.CanonicalLogin(person)
 	if session == "" || login == "" || s.deps.Store == nil || s.deps.Store.Pool == nil {
 		return nil
 	}
-	pair := session + "\x00" + login + "\x00" + strings.Join(projects, ",")
+	pair := session + "\x00" + login
 	ties := &s.sessionTies
 	ties.mu.Lock()
 	_, held := ties.held[pair]
 	ties.mu.Unlock()
-	if held {
-		return nil
+	if !held {
+		if err := access.TieSession(ctx, s.deps.Store.Pool, session, login); err != nil {
+			return err
+		}
+		ties.mu.Lock()
+		if ties.held == nil || len(ties.held) >= maxTiedSessions {
+			ties.held = make(map[string]struct{})
+		}
+		ties.held[pair] = struct{}{}
+		ties.mu.Unlock()
 	}
-	if err := access.TieSession(ctx, s.deps.Store.Pool, session, login); err != nil {
-		return err
-	}
-	if err := access.RecordListedReach(ctx, s.deps.Store.Pool, session, projects); err != nil {
-		return err
-	}
-	ties.mu.Lock()
-	defer ties.mu.Unlock()
-	if ties.held == nil || len(ties.held) >= maxTiedSessions {
-		ties.held = make(map[string]struct{})
-	}
-	ties.held[pair] = struct{}{}
-	return nil
+	return access.RecordListedReach(ctx, s.deps.Store.Pool, session, projects)
 }
 
 // brokerTokenActor authenticates a caller presenting an access token the secrets broker issued,

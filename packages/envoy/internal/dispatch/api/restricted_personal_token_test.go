@@ -307,10 +307,18 @@ func TestAStoredRestrictedTokenHoldingApproveActsWithNoScope(t *testing.T) {
 	if listed.Code != http.StatusOK {
 		t.Fatalf("erin lists her tokens: status=%d body=%s", listed.Code, listed.Body.String())
 	}
+	found := false
 	for _, token := range decodeBody[[]heldToken](t, listed) {
-		if token.ID == id && (len(token.Scopes) != 0 || token.Scopes == nil) {
+		if token.ID != id {
+			continue
+		}
+		found = true
+		if len(token.Scopes) != 0 || token.Scopes == nil {
 			t.Fatalf("erin's browser lists her stored token holding %v, want [], the scopes it acts with", token.Scopes)
 		}
+	}
+	if !found {
+		t.Fatalf("erin's browser lists no token %s, her stored token", id)
 	}
 
 	unlisted := personalTokenListing(t, r.database, accessErin, nil, model.ScopePerson, model.ScopeApprove)
@@ -395,7 +403,11 @@ func TestAMemberMadeRestrictedActsWithNoScopeThroughTheirTokens(t *testing.T) {
 	if listed.Code != http.StatusOK {
 		t.Fatalf("dana lists her tokens: status=%d body=%s", listed.Code, listed.Body.String())
 	}
-	for _, token := range decodeBody[[]heldToken](t, listed) {
+	tokens := decodeBody[[]heldToken](t, listed)
+	if held := r.tokensOf(t, accessDana); int64(len(tokens)) != held {
+		t.Fatalf("dana's browser lists %d tokens once she is restricted, want her %d", len(tokens), held)
+	}
+	for _, token := range tokens {
 		if len(token.Scopes) != 0 {
 			t.Fatalf("dana's browser lists token %s holding %v once she is restricted, want []", token.ID, token.Scopes)
 		}
