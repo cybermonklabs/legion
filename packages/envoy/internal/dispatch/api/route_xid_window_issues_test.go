@@ -101,7 +101,7 @@ var issueRouteXidWindows = []routeXidWindowCase{
 	{
 		name: "the issue create naming a repository", route: "POST /api/v1/issues naming a repository (createIssue)",
 		ready: readyIssueCreateNamingRepository, window: storetest.XidWindowOf(10,
-			"the create's inline steering writes - the project's next number, the rank lock, the rank read, the issue row, its blocked_by links and its artifact row - "+
+			"the create's inline steering writes - the project's next number, the rank lock, the rank read, the issue row, whose batch carries the issue's and the spec's node, its blocked_by links and its artifact row - "+
 				"the two reads that load the issue it answers with, the queued batch and its COMMIT"),
 	},
 	// A near copy whose refusal's near_copy_checks row could not be written goes in unchecked
@@ -114,7 +114,7 @@ var issueRouteXidWindows = []routeXidWindowCase{
 	{
 		name: "the issue create of a near copy whose refusal was not recorded", route: "POST /api/v1/issues past an unrecorded refusal (createIssue, writeNearCopyCheck)",
 		ready: readyIssueCreateUnrecordedNearCopy, window: storetest.XidWindowOf(11,
-			"the create's inline steering writes - the project's next number, the rank lock, the rank read, the issue row, its blocked_by links and its artifact row - "+
+			"the create's inline steering writes - the project's next number, the rank lock, the rank read, the issue row, whose batch carries the issue's and the spec's node, its blocked_by links and its artifact row - "+
 				"the two reads that load the issue it answers with, its near_copy_checks row, the queued batch and its COMMIT"),
 	},
 	// A patch stating a relation to a priority decides the revision rule on the issue it read
@@ -137,7 +137,7 @@ var issueRouteXidWindows = []routeXidWindowCase{
 	{
 		name: "the issue create naming a blocker in another project", route: "POST /api/v1/issues naming a blocked_by target in another project (createIssue, lockIssueDependencyWrite, writeBlockedBy)",
 		ready: readyIssueCreateBlockedAcrossProjects, window: storetest.XidWindowOf(14,
-			"the create's inline steering writes - the project's next number, the rank lock, the rank read, the issue row, "+
+			"the create's inline steering writes - the project's next number, the rank lock, the rank read, the issue row, whose batch carries the issue's and the spec's node, "+
 				"the target's project read, the wait walk, the blocked_by delete and insert and its artifact row - "+
 				"the two reads that load the issue it answers with, the read resolving the blocker its event names, "+
 				"the queued batch and its COMMIT"),
