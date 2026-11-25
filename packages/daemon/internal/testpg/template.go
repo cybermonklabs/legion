@@ -32,9 +32,9 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
 )
 
-// shared is this test process's one template database and the clone drops still in flight. Main
-// sets prefix and main before the package's tests run; Clone refuses to run without them, since
-// only Main waits for the drops and drops the template.
+// shared is this test process's one template database. Main sets prefix and main before the
+// package's tests run; Clone refuses to run without them, since only Main drops the template and
+// the copies of it internal/testpg/testdb's pool holds.
 var shared struct {
 	main   bool
 	prefix string
@@ -44,10 +44,6 @@ var shared struct {
 	server   string
 	admin    *pgxpool.Pool
 	template string
-
-	drops     sync.WaitGroup
-	dropMu    sync.Mutex
-	dropFails []string
 }
 
 // Clone is the URL of a database carrying every migration, cloned from this process's template and
@@ -100,9 +96,10 @@ func ClonePool(t testing.TB, prefix string) *pgxpool.Pool {
 	return pool
 }
 
-// Main runs a package's tests, waits for their clones to drop, drops the template Clone copied,
-// and answers run's code — 1 instead of 0 when a drop failed, so a database left behind is a red
-// run rather than a surprise on the next one. prefix names this package's template.
+// Main runs a package's tests inside testdb.Main, which drops the copies of the template its
+// pool holds once they end, then drops the template Clone copied, and answers run's code — 1
+// instead of 0 when a drop failed, so a database left behind is a red run rather than a surprise
+// on the next one. prefix names this package's template.
 //
 // It takes run rather than *testing.M so a package that has a TestMain of its own composes the
 // two:
@@ -110,18 +107,11 @@ func ClonePool(t testing.TB, prefix string) *pgxpool.Pool {
 //	func TestMain(m *testing.M) { os.Exit(testpg.Main("legion_intake_test", func() int { return testnats.Main(m) })) }
 func Main(prefix string, run func() int) int {
 	shared.prefix, shared.main = prefix, true
-	code := run()
+	code := testdb.Main(run)
 	if shared.admin == nil {
 		return code
 	}
 	defer shared.admin.Close()
-	shared.drops.Wait()
-	for _, failure := range shared.dropFails {
-		fmt.Fprintf(os.Stderr, "testpg: %s\n", failure)
-		if code == 0 {
-			code = 1
-		}
-	}
 	if shared.template == "" {
 		return code
 	}
