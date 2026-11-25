@@ -1516,6 +1516,7 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 	if fallback := boot.ProjectOwnerFallback; fallback != "" {
 		if err := principal.CheckPersonLogin(fallback); err != nil {
 			return bootConfig{}, fmt.Errorf("DISPATCH_PROJECT_OWNER_FALLBACK must be a lowercase email, the one a full member signed in with; got a value of %d characters", len(fallback))
+			return bootConfig{}, fmt.Errorf("DISPATCH_PROJECT_OWNER_FALLBACK must be a lowercase email, the one a full member signed in with; got a value of %d characters", len(fallback))
 		}
 	}
 	if boot.EnvoyAccountTokenFile != "" && boot.EnvoyGoogleAudience != "" {
