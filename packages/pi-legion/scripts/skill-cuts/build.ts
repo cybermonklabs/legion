@@ -14,6 +14,7 @@
  *       --copies <copies out dir> --count <count dir> --out <cases.jsonl> [--max <n>]
  *       [--budget-usd <n>] [--concurrency <n>] [--stop-projected-usd <n>]
  *       [--stop-after-sessions <n>] [--stop-zero-case-usd <n>] [--drop-navigation]
+ *       [--store-only <file>]
  *   bun scripts/skill-cuts/build.ts build-cases --config <skill-cuts.json> --key-file <file>
  *       (--cut <id> | --set <id>) --skill <name> --old <skill dir> --copies <copies out dir>
  *       --count <count dir> --written <n> (--context-session <store>:<hash> | --sessions <file>
@@ -64,6 +65,14 @@
  * again. With `--written` the peak is read after each task decided, and no task after it is read.
  * Both forms' summaries record the largest peak read in the run (`peakRssBytes`, in bytes), and
  * their last line printed gives it in MiB, so one run measures the memory a build takes.
+ *
+ * **--store-only <file>** (attribute.ts's `<cut id>/store-only/<skill>.json` of the skill, read
+ * before any store read, a file that is not one refused as `behaviour report` refuses it): a
+ * build that ends with no case ends its summary line, and its stop line when it stopped, with
+ * how many of the skill's counted sessions only the transcript store holds, by host, so that
+ * none of them was a case source (`storeOnlyWords`; none when there are none). It changes no
+ * session's outcome, and the summary's inputs do not hold it. `--written` and `--reprofile`
+ * take no `--store-only`.
  *
  * Up to `--concurrency` sessions (BUILD_CONCURRENCY unless given) are open at once: pulled (one
  * store query at a time across them) and read, the gateway taking as many calls at once. A
@@ -700,7 +709,9 @@ import {
   type R4Output,
   readCount,
   readR4,
+  readStoreOnly,
   sessionModel,
+  storeOnlyWords,
   type Via,
   vias,
 } from "./attribute";
@@ -6894,7 +6905,7 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
 // build-cases
 
 const BUILD_CASES_USAGE =
-  "usage: build.ts build-cases --config <skill-cuts.json> --key-file <file> (--cut <id> | --set <id>) --skill <name> --old <dir> [--new <dir>] --sessions <file> --seed <n> --copies <dir> --count <dir> --out <cases.jsonl> [--max <n>] [--budget-usd <n>] [--concurrency <n>] [--stop-projected-usd <n>] [--stop-after-sessions <n>] [--stop-zero-case-usd <n>] [--drop-navigation]\n       build.ts build-cases --config <skill-cuts.json> --key-file <file> (--cut <id> | --set <id>) --skill <name> --old <dir> --copies <dir> --count <dir> --written <n> (--context-session <store>:<hash> | --sessions <file> --seed <n>) --out <cases.jsonl> [--session-cases <cases.jsonl>] [--reading-models <file>] [--model-pool <file>]... [--written-answer <file>] [--budget-usd <n>] [--drop-navigation]\n       build.ts build-cases --config <skill-cuts.json> --old <dir> --copies <dir> --count <dir> --reprofile <cases.jsonl> --out <new cases.jsonl>";
+  "usage: build.ts build-cases --config <skill-cuts.json> --key-file <file> (--cut <id> | --set <id>) --skill <name> --old <dir> [--new <dir>] --sessions <file> --seed <n> --copies <dir> --count <dir> --out <cases.jsonl> [--max <n>] [--budget-usd <n>] [--concurrency <n>] [--stop-projected-usd <n>] [--stop-after-sessions <n>] [--stop-zero-case-usd <n>] [--drop-navigation] [--store-only <file>]\n       build.ts build-cases --config <skill-cuts.json> --key-file <file> (--cut <id> | --set <id>) --skill <name> --old <dir> --copies <dir> --count <dir> --written <n> (--context-session <store>:<hash> | --sessions <file> --seed <n>) --out <cases.jsonl> [--session-cases <cases.jsonl>] [--reading-models <file>] [--model-pool <file>]... [--written-answer <file>] [--budget-usd <n>] [--drop-navigation]\n       build.ts build-cases --config <skill-cuts.json> --old <dir> --copies <dir> --count <dir> --reprofile <cases.jsonl> --out <new cases.jsonl>";
 /** The flags only `build-cases --written` takes. */
 const WRITTEN_FLAGS = [
   "context-session",
@@ -6924,6 +6935,7 @@ const BUILD_CASES_OPTIONS = {
   "stop-projected-usd": { type: "string" },
   "stop-after-sessions": { type: "string" },
   "stop-zero-case-usd": { type: "string" },
+  "store-only": { type: "string" },
   written: { type: "string" },
   "context-session": { type: "string" },
   "session-cases": { type: "string" },
@@ -8518,6 +8530,7 @@ async function reprofileCases(values: BuildCasesValues, io: BuildIo): Promise<nu
     "drop-navigation",
     ...WRITTEN_FLAGS,
     "written",
+    "store-only",
   ] as const) {
     if (values[flag] !== undefined) {
       throw new Refused(
@@ -9502,6 +9515,7 @@ async function buildWrittenCases(values: BuildCasesValues, io: BuildIo): Promise
     "stop-projected-usd",
     "stop-after-sessions",
     "stop-zero-case-usd",
+    "store-only",
   ] as const) {
     if (values[flag] !== undefined) {
       throw new Refused(
@@ -10445,6 +10459,10 @@ async function buildCases(argv: readonly string[], io: BuildIo): Promise<number>
     throw new Refused(`--new ${newDir} is not a directory`);
   }
   mustBeFile(given["key-file"], "--key-file");
+  // The skill's counted sessions that only the transcript store holds, which a build with no case
+  // names at its end: never case sources, since a case's session is pulled from a Postgres store.
+  const storeOnly =
+    values["store-only"] === undefined ? undefined : readStoreOnly(values["store-only"]);
   const files = skillFiles(given.old);
   const { copies, placer: placing } = readCopiesAndPlacer(config, given.count, given.copies);
   const candidates = readCandidates(given.sessions, config);
@@ -10850,18 +10868,19 @@ async function buildCases(argv: readonly string[], io: BuildIo): Promise<number>
   const navigation = run.dropNavigation
     ? `, ${counts.dropped} step${counts.dropped === 1 ? "" : "s"} dropped for ${lines} navigation line${lines === 1 ? "" : "s"} (${counts.withReplacement} with a replacement case, ${counts.withoutReplacement} without) (--drop-navigation)`
     : "";
+  const noCase = casesBuilt === 0 && storeOnly !== undefined ? storeOnlyWords(storeOnly) : "";
   io.out(
-    `build-cases: ${casesBuilt} cases of ${sessions.length} sessions tried${navigation}, $${usd.toFixed(4)} of readers at list price, peak memory ${mib(peak.bytes)} MiB; written to ${given.out} and ${summaryFile}\n`
+    `build-cases: ${casesBuilt} cases of ${sessions.length} sessions tried${navigation}, $${usd.toFixed(4)} of readers at list price, peak memory ${mib(peak.bytes)} MiB; written to ${given.out} and ${summaryFile}${noCase}\n`
   );
   if (stopped !== undefined) {
-    io.err(`build-cases: stopped: ${stopped}`);
+    io.err(`build-cases: stopped: ${stopped}${noCase}`);
     return EXIT.stopped;
   }
   if (ruleStop !== undefined) {
     const projected =
       ruleStop.projectedUsd === null ? "unbounded" : `$${ruleStop.projectedUsd.toFixed(4)}`;
     io.err(
-      `build-cases: stopped by --${ruleStop.rule}: ${ruleStop.sessions} sessions decided, ${ruleStop.cases} cases, $${ruleStop.spentUsd.toFixed(4)} of readers spent, projected ${projected} to --max ${Number.isFinite(max) ? max : "(none)"} cases`
+      `build-cases: stopped by --${ruleStop.rule}: ${ruleStop.sessions} sessions decided, ${ruleStop.cases} cases, $${ruleStop.spentUsd.toFixed(4)} of readers spent, projected ${projected} to --max ${Number.isFinite(max) ? max : "(none)"} cases${noCase}`
     );
     return EXIT.stoppedByCost;
   }

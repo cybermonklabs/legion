@@ -61,8 +61,9 @@ bun scripts/skill-cuts/cli.ts behaviour <screen|confirm|control|report> \
   [--omp-config <file>]... [--cache-dir <dir>] [--scratch <dir>] \
   [--reading-models <file>] [--limits <file>] [--build-summary <file>]... \
   [--again <case id>]... [--confirm-flagged] \
-  [--allow-runners <digest>[,<digest>...]]
-                                 (--again, --confirm-flagged: confirm only; --again not with --case)
+  [--allow-runners <digest>[,<digest>...]] [--store-only <file>]
+                                 (--again, --confirm-flagged: confirm only; --again not with --case;
+                                  --store-only: report only)
 ```
 
 One skill per run: `--old` is that skill's own directory (the old text: the skill at the cut's
@@ -163,7 +164,10 @@ loss when the compared arm passes at least 10 fewer of 40 fresh runs than old.
 - In every stage, a case one of whose captures needs a directory no read can give (the commit
   holds no such directory, or GitHub cuts a level of its tree short even read alone) is dropped
   as `unreadable-directory`, its drop naming the repository, the commit and the path; a run
-  started again skips it. A stage left unscreened (an arm lacks its judged runs after its 5 extra
+  started again skips it. So is, as `legion-tool-undefined`, a case one of whose captures is of
+  a Legion pane whose context installs `pi-legion` as an extension and whose body defines no
+  `legion` tool in either of its two attempts (below), its drop naming the arm and each attempt's
+  stderr lines. A stage left unscreened (an arm lacks its judged runs after its 5 extra
   runs) counts for nothing in the score, unless its runs show it can never be judged: an arm's
   runs that read skill files past the last answered round drop its case as `reads-past-last-round`
   (below); else a stage in which the provider refused, on a content policy (a stream error whose
@@ -223,11 +227,11 @@ loss when the compared arm passes at least 10 fewer of 40 fresh runs than old.
   made by `--confirm-flagged` gets the verdict line under `confirm` above in its place), ending
   with how many of the skill's screened cases have a listing that could not be measured (no
   listing measure, or one that says so); the drops per judge control and the drops counted as
-  `model-not-served`, as `unreadable-directory`, as `listing-misses`, as `listing-adds`, as
-  `injection-unrebuildable`, the last by kind (a case under each kind it holds), as `path-form`,
-  by the arm whose text holds the file, as `reads-past-last-round` and as `provider-refused`; the
-  verdict line also counts the screened cases whose profile took names from their recorded
-  listing (`fromRecorded`, below); an estimate of the procedure's
+  `model-not-served`, as `unreadable-directory`, as `legion-tool-undefined`, as `listing-misses`,
+  as `listing-adds`, as `injection-unrebuildable`, the last by kind (a case under each kind it
+  holds), as `path-form`, by the arm whose text holds the file, as `reads-past-last-round` and as
+  `provider-refused`; the verdict line also counts the screened cases whose profile took names
+  from their recorded listing (`fromRecorded`, below); an estimate of the procedure's
   false-loss chance at the cases run (exact binomial under identical old and compared texts, the
   pass rates taken from each case's own screen; its assumptions are printed with it),
   a table of the chance it finds a loss of 10 to 40 points in one informative case, each screened
@@ -322,6 +326,11 @@ loss when the compared arm passes at least 10 fewer of 40 fresh runs than old.
   says. A skill too few of whose reading sessions are on served models, and with no written case,
   gets no verdict. Without `--reading-models`, it says the reading sessions by model were not
   given, and the verdict names no models.
+  With `--store-only` (the skill's `<cut id>/store-only/<skill>.json` that `attribute` writes), it also prints, beside the reading sessions by model and whatever the verdict, one line: `counted sessions: N, of which store-only (held by the transcript store alone, so not case sources): M (<host>: k, …)`, with `M` 0 and no hosts for a skill none of whose counted sessions is store-only.
+  Where the skill gets no verdict for fewer than 6 informative cases and `M` is above 0, the reason then ends with `; M of the skill's N counted sessions are store-only, so they were never case sources (<host>: k, …)`.
+  A file that is not JSON or not of that shape is refused (exit 2), naming the file.
+  `screen`, `confirm` and `control` refuse `--store-only` (exit 2).
+  Without `--store-only`, the report says nothing of the transcript store.
 
 The report's spend at list price is the sum of what the case results in `<out>/cases` record
 their calls cost, each call once, and the report prints each part of it: the judge controls (the
@@ -354,7 +363,15 @@ ends, and is ended after 10 minutes (`AFTER_CASE_TIMEOUT_MS`). Captures are kept
 `<out>/captures/`; a capture that is not there yet is made with Oh My Pi and needs `--models`:
 `--omp`, else `$LEGION_OMP_PATH`, else the `omp` on PATH, taken as an
 absolute path; a command given `--models` when none of them names one is refused (exit 2), and
-`load` reads Oh My Pi the same way. A saved capture is read back and not made again; the
+`load` reads Oh My Pi the same way. A capture of a Legion pane (any role but the controller)
+whose context installs `pi-legion` as an extension must send that plugin's `legion` tool, which
+the plugin defines at the end of its session start: a body without it (Oh My Pi goes on past a
+session start that threw, saying `Extension error` on stderr) is refused and the arm captured
+once more by a fresh run, each attempt kept in the record's `legionAttempts` (its tool count,
+whether it defines `legion`, its `[legion]` and `Extension error` lines of stderr), and a second
+refusal saves nothing and stops the case: `behaviour` drops it as `legion-tool-undefined`, and
+`load` fails that task. A context that installs no `pi-legion`, or installs it as skills only, is
+not refused. A saved capture is read back and not made again; the
 installed copies of the profile's other skills that its record names, which its replays answer a
 read of such a skill from, are not in it but in the cache (`<cache-dir>/skills/<key>`), which is
 not kept with `--out`. Before replay, the runner makes each missing skill copy again from its
@@ -1607,6 +1624,13 @@ With Claude Code coverage, a Claude-only install has a read count like any other
 sessions; the ranked skills' sessions and corresponding model files for `build-cases` and
 `behaviour` still use Postgres sessions, which the case builder can pull.
 
+With `transcriptStore` configured, `attribute` also writes each ranked skill's `<out>/<cut id>/store-only/<skill>.json`, beside its sessions and models files.
+It holds the skill, its counted sessions (`counted`: the sessions of the cut repository's copy, which the ranking counts), how many of them only the transcript store holds (`storeOnly`: the copy's `transcript_store_sessions`), and each host's of those, most first (`hosts`).
+For example: `{"skill": "alpha", "counted": 40, "storeOnly": 3, "hosts": [{"host": "host-a", "sessions": 2}, {"host": "host-b", "sessions": 1}]}`.
+A store-only session is in no sessions file, since `build-cases` pulls a case's session from a Postgres store, so it is never a case source.
+`behaviour report --store-only` and `build-cases --store-only` read the file.
+Without `transcriptStore`, `attribute` writes no store-only file.
+
 ### `set-count`
 
 ```
@@ -2048,7 +2072,8 @@ bun scripts/skill-cuts/cli.ts build-cases --config <skill-cuts.json> --key-file 
   [--new <skill dir in the cut>] --sessions <sessions.jsonl> --seed <n> \
   --copies <copies out dir> --count <count dir> --out <cases.jsonl> [--max <n>] \
   [--budget-usd <n>] [--concurrency <n>] [--stop-projected-usd <n>] \
-  [--stop-after-sessions <n>] [--stop-zero-case-usd <n>] [--drop-navigation]
+  [--stop-after-sessions <n>] [--stop-zero-case-usd <n>] [--drop-navigation] \
+  [--store-only <file>]
 bun scripts/skill-cuts/cli.ts build-cases --config <skill-cuts.json> --key-file <file> \
   (--cut <id> | --set <id>) --skill <name> --old <skill dir> --copies <copies out dir> \
   --count <count dir> --written <n> \
@@ -2770,6 +2795,11 @@ checked after each session decided, before the build reads another, and the proj
 `not-needed`, and each drop keeps its reason. A run that goes on checks the rule on the sessions
 the earlier runs decided before it reads the store, so a build the rule stopped stops again at
 once with the same bounds.
+
+With `--store-only` (the skill's `<cut id>/store-only/<skill>.json` that `attribute` writes), a build that ends with no case ends its summary line `build-cases: 0 cases of …`, and its stop line `build-cases: stopped …` when it stopped, with `; M of the skill's N counted sessions are store-only, so they were never case sources (<host>: k, …)` when `M` is above 0.
+The file is read before any store read, and one that is not JSON or not of that shape is refused (exit 2), naming the file, as `behaviour report` refuses it.
+It changes no session's outcome, and the summary's inputs do not hold it, so a run that goes on may add it or leave it out.
+`build-cases --written` and `build-cases --reprofile` refuse `--store-only` (exit 2).
 
 Each session's transcript is pulled into a file of its own beside the output (`<out>.spool/`,
 removed once the session is decided, and the directory once the build ends), one row of the

@@ -18,7 +18,7 @@
  *       [--request-log <file>] [--reading-models <file>] [--limits <file>]
  *       [--build-summary <file>]... (report only)
  *       [--again <case id>]... [--confirm-flagged] (both confirm only)
- *       [--allow-runners <digest>[,<digest>...]]
+ *       [--allow-runners <digest>[,<digest>...]] [--store-only <file>] (report only)
  *   bun scripts/skill-cuts/cli.ts read --config <file> --key-file <file> --prompt <name>
  *       --in <input.json> --out <answer.json> [--request-log <file>] [--budget-usd <n>]
  *       [--concurrency <n>]
@@ -73,6 +73,7 @@
  *       --seed <n> --copies <dir> --count <dir> --out <cases.jsonl> [--max <n>]
  *       [--budget-usd <n>] [--concurrency <n>] [--stop-projected-usd <n>]
  *       [--stop-after-sessions <n>] [--stop-zero-case-usd <n>] [--drop-navigation]
+ *       [--store-only <file>]
  *   bun scripts/skill-cuts/cli.ts build-cases --config <file> --key-file <file>
  *       (--cut <id> | --set <id>) --skill <name> --old <dir> --copies <dir> --count <dir>
  *       --written <n> (--context-session <store>:<hash> | --sessions <file> --seed <n>)
@@ -166,8 +167,12 @@
  *   In any stage, a case one of whose captures needs a directory no read can give (context.ts's
  *   UnreadableDirectory: the commit holds no such directory, or GitHub cuts a level of its tree
  *   short even read alone) is dropped as `unreadable-directory`, its drop naming the repository,
- *   the commit and the path, and a run started again skips it. Each drop records its stage
- *   (`droppedAt`). A case dropped at screen is never informative; one dropped at confirm or
+ *   the commit and the path, and a run started again skips it; so is, as `legion-tool-undefined`,
+ *   a case one of whose captures is of a Legion pane whose context installs pi-legion as an
+ *   extension and whose body defines no `legion` tool in either of its two attempts (capture.ts's
+ *   LegionToolUndefined), its drop naming the arm and each attempt's stderr lines. Each drop
+ *   records its stage (`droppedAt`). A case dropped at screen is never informative; one dropped
+ *   at confirm or
  *   control keeps its screen's passes in the score, so a flagged one that cannot be confirmed
  *   gives its skill no verdict unless another case is a confirmed loss, and a dropped control
  *   case gives its place to the next case of the control rule's order (score.ts's `scoreSkill`).
@@ -207,11 +212,12 @@
  *   each stage it ran; each confirm of a case with more than one, and the pooled passes of a case
  *   whose three confirms are pooled; the cases of each kind and the informative cases of each;
  *   the drops by the judge controls (and by each control), by `model-not-served`, by
- *   `unreadable-directory`, by `listing-misses`, by `listing-adds`, by `injection-unrebuildable`
- *   (with the cases of each of its kinds), by `path-form` (by the arm its reason names: old and
- *   new, and ours where it is the compared arm), by `reads-past-last-round` and by
- *   `provider-refused`; the control case, and each dropped case it replaced; with ours compared,
- *   ours against old over all screened cases and over those with no removed read; each model of
+ *   `unreadable-directory`, by `legion-tool-undefined`, by `listing-misses`, by `listing-adds`,
+ *   by `injection-unrebuildable` (with the cases of each of its kinds), by `path-form` (by the
+ *   arm its reason names: old and new, and ours where it is the compared arm), by
+ *   `reads-past-last-round` and by `provider-refused`; the control case, and each dropped case it
+ *   replaced; with ours compared, ours against old over all screened cases and over those with no
+ *   removed read; each model of
  *   the cases; the skill's verdict and its reason (score.ts; `keeps` is printed "no loss detected
  *   by the registered rule", or "no loss of no skill …" with no skill compared), with how many of
  *   its screened cases have a listing that could not be
@@ -257,7 +263,12 @@
  *   result that shows one fails `report`, and every stage command, naming the case (exit 1). A
  *   run any of whose confirms `confirm --confirm-flagged` made gives the case results as any run
  *   does, and the verdict line `case result only; no skill verdict stands (--confirm-flagged)`
- *   (CONFIRM_FLAGGED_VERDICT), never a skill verdict.
+ *   (CONFIRM_FLAGGED_VERDICT), never a skill verdict. With `--store-only <file>` (attribute.ts's
+ *   `<cut id>/store-only/<skill>.json` of the skill), it prints, beside the reading sessions by
+ *   model and whatever the verdict, the skill's counted sessions and how many of them only the
+ *   transcript store holds, by host, which were never case sources; when a skill gets no verdict
+ *   for fewer than MIN_INFORMATIVE_CASES informative cases and some are, the reason ends with
+ *   their count (attribute.ts's `storeOnlyWords`). Without it, `report` says nothing of the store.
  *
  * Every round of a stage sends the runs of all its arms in one order, seeded by the round's
  * recorded seed (replay.ts's `replayInterleaved`), each run with a session id of its own, and its
@@ -405,7 +416,16 @@ import {
   InjectionRefused,
   injectionFaults,
 } from "./arms";
-import { main as attributeMain, type ModelCount, modelCountOf, modelId } from "./attribute";
+import {
+  main as attributeMain,
+  type ModelCount,
+  modelCountOf,
+  modelId,
+  readStoreOnly,
+  type StoreOnly,
+  storeOnlyHosts,
+  storeOnlyWords,
+} from "./attribute";
 import {
   main as buildMain,
   fromRecordedIn,
@@ -419,6 +439,8 @@ import {
   captureBody,
   capturePaths,
   gatewayHints,
+  LEGION_TOOL_UNDEFINED,
+  LegionToolUndefined,
   listingOf,
   restoredCapture,
   type SessionFacts,
@@ -2361,7 +2383,9 @@ const SENSITIVITY = { old: [0.9, 0.7], drops: [0.1, 0.2, 0.3, 0.4], none: 0.1 } 
  *  `readingModels` the skill's reading sessions by model that `--reading-models` names, with its
  *  file, and `limits` the text `--limits` names, with its file (each undefined without its flag).
  *  `allowRunners` are the runners `--allow-runners` names, whose saved stages a stage command
- *  takes as this runner's, and whose results report reports with others' (none without it). */
+ *  takes as this runner's, and whose results report reports with others' (none without it).
+ *  `storeOnly` is the skill's counted and store-only sessions that `--store-only` names (report
+ *  only; undefined without it). */
 interface Behaviour {
   readonly io: CliIo;
   readonly command: string;
@@ -2377,6 +2401,7 @@ interface Behaviour {
   readonly readingModels: { readonly file: string; readonly count: ModelCount } | undefined;
   readonly limits: { readonly file: string; readonly text: string } | undefined;
   readonly allowRunners: readonly string[];
+  readonly storeOnly: StoreOnly | undefined;
 }
 
 /** What a stage command runs with. `gateway` counts the spend; `replays`, `judge` and the capture
@@ -3067,9 +3092,11 @@ const NO_CHECKOUT: Unanswered = {
  * ends; the stage's last state is returned unsaved, for `finishCase` to write. Each phase's time
  * is counted in `phases`. A case whose context holds a directory no read can give (context.ts's
  * UnreadableDirectory: the commit holds no such directory, or GitHub cuts a level of it short
- * even read alone) is returned dropped, with that reason and `stage`, before any run, so a run
- * started again skips it. A stage left unscreened by an arm whose runs read skill files past the
- * last answered round is returned dropped under READS_PAST_LAST_ROUND (`readsPastDrop`); else one
+ * even read alone), or one whose Legion pane's capture defines no `legion` tool in either attempt
+ * (capture.ts's LegionToolUndefined, under LEGION_TOOL_UNDEFINED), is returned dropped, with that
+ * reason and `stage`, before any run, so a run started again skips it. A stage left unscreened by
+ * an arm whose runs read skill files past the last answered round is returned dropped under
+ * READS_PAST_LAST_ROUND (`readsPastDrop`); else one
  * in each of whose arms that lack their judged runs the provider refused, on a content policy,
  * every run with no verdict, under PROVIDER_REFUSED (`refusedDrop`). A stage it starts records
  * this runner (`r.runner`), and a confirm it runs or goes on with under `--confirm-flagged`
@@ -3148,7 +3175,9 @@ async function runStage(
             }
           : error instanceof UnreadableDirectory
             ? { dropped: `${UNREADABLE_DIRECTORY}: ${error.message}` }
-            : undefined;
+            : error instanceof LegionToolUndefined
+              ? { dropped: `${LEGION_TOOL_UNDEFINED}: ${error.message}` }
+              : undefined;
       if (dropped === undefined) throw error;
       phases.captureMs[name] = performance.now() - started;
       countReads();
@@ -4121,6 +4150,17 @@ function modelLines(b: Behaviour, score: SkillScore): string[] {
   ];
 }
 
+/** The report's line on the skill's counted sessions (`--store-only`): how many of them only the
+ *  transcript store holds, with each host's, whatever the verdict; none without `--store-only`. */
+function storeOnlyLines(b: Behaviour): string[] {
+  const storeOnly = b.storeOnly;
+  if (storeOnly === undefined) return [];
+  const hosts = storeOnly.hosts.length === 0 ? "" : ` (${storeOnlyHosts(storeOnly)})`;
+  return [
+    `counted sessions: ${storeOnly.counted}, of which store-only (held by the transcript store alone, so not case sources): ${storeOnly.storeOnly}${hosts}`,
+  ];
+}
+
 /** The end of a verdict's line with `--reading-models`: the reading sessions the verdict speaks
  *  for, on each served model its screened session cases ran on (a served model of the file counted
  *  under the one of its id), and those it does not: the sessions on models the gateway does not
@@ -4212,7 +4252,10 @@ const CONFIRM_FLAGGED_VERDICT = "case result only; no skill verdict stands (--co
  *  any of whose confirms, earlier ones too, records `confirmFlagged` gets CONFIRM_FLAGGED_VERDICT
  *  and no verdict. With `--reading-models`, a skill too few of whose reading sessions are on
  *  served models (`servedScreeningRefusal`) gets none when it has no written case; one with
- *  written cases is screened on them, and its reason is theirs. */
+ *  written cases is screened on them, and its reason is theirs. With `--store-only`, the reason
+ *  of a skill with fewer than MIN_INFORMATIVE_CASES informative cases ends with how many of its
+ *  counted sessions only the transcript store holds, so were never case sources
+ *  (`storeOnlyWords`). */
 function verdictLine(
   b: Behaviour,
   results: ReadonlyMap<string, CaseResult>,
@@ -4242,7 +4285,11 @@ function verdictLine(
     const controlResult =
       score.controlCase === undefined ? undefined : results.get(score.controlCase);
     const planted = controlResult?.stages.control?.plantedLine ?? null;
-    return `none: ${reasonWords(outcome.reason, score.control, planted)}${listing}`;
+    const storeOnly =
+      b.storeOnly !== undefined && score.informative < MIN_INFORMATIVE_CASES
+        ? storeOnlyWords(b.storeOnly)
+        : "";
+    return `none: ${reasonWords(outcome.reason, score.control, planted)}${storeOnly}${listing}`;
   }
   const flagged = score.cases.filter((each) => each.flagged).length;
   const control = `the planted-loss control (case ${score.controlCase}) is a loss and its false-loss control is no loss`;
@@ -5042,7 +5089,7 @@ function reportCommand(
     )
     .join(", ");
   lines.push(
-    `cases: ${score.screened} screened, ${score.informative} informative, ${flagged} flagged, ${losses} confirmed losses; ${drops.length} dropped (${byControls} by the judge controls, ${droppedAs(MODEL_NOT_SERVED)}, ${droppedAs(UNREADABLE_DIRECTORY)}, ${droppedAs(LISTING_MISSES)}, ${droppedAs(LISTING_ADDS)}, ${injected.length} ${INJECTION_UNREBUILDABLE} (${byKind}), ${formed.length} ${PATH_FORM} (${byArm}), ${droppedAs(READS_PAST_LAST_ROUND)}, ${droppedAs(PROVIDER_REFUSED)}), ${unscreened} unscreened, ${notRun} not run`
+    `cases: ${score.screened} screened, ${score.informative} informative, ${flagged} flagged, ${losses} confirmed losses; ${drops.length} dropped (${byControls} by the judge controls, ${droppedAs(MODEL_NOT_SERVED)}, ${droppedAs(UNREADABLE_DIRECTORY)}, ${droppedAs(LEGION_TOOL_UNDEFINED)}, ${droppedAs(LISTING_MISSES)}, ${droppedAs(LISTING_ADDS)}, ${injected.length} ${INJECTION_UNREBUILDABLE} (${byKind}), ${formed.length} ${PATH_FORM} (${byArm}), ${droppedAs(READS_PAST_LAST_ROUND)}, ${droppedAs(PROVIDER_REFUSED)}), ${unscreened} unscreened, ${notRun} not run`
   );
   // Each arm's runs of each stage, the earlier confirms too, whose reply after the last answered
   // round still only read: an arm that keeps the agent reading acts differently.
@@ -5128,7 +5175,7 @@ function reportCommand(
   }
   if (b.compared === "ours") lines.push(...oursAgainstOldLines(results, score));
   lines.push(caseModelsLine(b));
-  lines.push(...modelLines(b, score), writtenTasksLine(b, score));
+  lines.push(...modelLines(b, score), ...storeOnlyLines(b), writtenTasksLine(b, score));
   lines.push(`verdict: ${verdictLine(b, results, score)}`);
   if (navigation !== undefined) {
     lines.push(
@@ -5239,6 +5286,7 @@ const BEHAVIOUR_USAGE = [
   "  [--again <case id>]... (confirm only, not with --case: one more confirm of that flagged case)",
   "  [--confirm-flagged] (confirm only: confirm each flagged case even where the skill can get no verdict; report then gives case results only)",
   "  [--allow-runners <digest>[,<digest>...]] (take saved stages of these runners as this runner's; report: report results of these runners together)",
+  "  [--store-only <file>] (report only: the skill's <cut id>/store-only/<skill>.json, written by attribute)",
   "  report needs only --config, --out, --old and --cases; its --request-log is the log it sets the spend against, <out>/requests.jsonl by default; [--limits <file>] (printed as it is)",
   "  [--build-summary <file>]... (report only: build-cases' summaries; it names their navigation lines no case tests and counts their replacement cases before and after the judge controls)",
 ].join("\n");
@@ -5298,6 +5346,7 @@ async function behaviourCommand(argv: readonly string[], io: CliIo): Promise<num
       again: { type: "string", multiple: true },
       "confirm-flagged": { type: "boolean" },
       "allow-runners": { type: "string" },
+      "store-only": { type: "string" },
     },
     BEHAVIOUR_USAGE
   );
@@ -5307,6 +5356,12 @@ async function behaviourCommand(argv: readonly string[], io: CliIo): Promise<num
   if (values["confirm-flagged"] !== undefined && command !== "confirm") {
     throw new Refused(
       `--confirm-flagged goes with behaviour confirm only: report reads from the case results whether their confirms were made with it. ${BEHAVIOUR_USAGE}`
+    );
+  }
+  const storeOnlyFile = values["store-only"];
+  if (storeOnlyFile !== undefined && command !== "report") {
+    throw new Refused(
+      `--store-only goes with behaviour report only: no stage command reads it. ${BEHAVIOUR_USAGE}`
     );
   }
   const allowRunners = values["allow-runners"]?.split(",").map((each) => each.trim()) ?? [];
@@ -5387,6 +5442,7 @@ async function behaviourCommand(argv: readonly string[], io: CliIo): Promise<num
         ? undefined
         : { file: limits, text: readBytes(limits, "the limits text").toString("utf8") },
     allowRunners,
+    storeOnly: storeOnlyFile === undefined ? undefined : readStoreOnly(storeOnlyFile),
   };
   const log = values["request-log"] ?? path.join(given.out, REQUEST_LOG);
   if (report) {
@@ -5685,7 +5741,7 @@ const USAGE = [
   "  copies --config <skill-cuts.json> --at <ISO instant> --out <dir> [--only <owner/repo>]... [--max-search-calls <n>] [--cache-dir <dir>]",
   "  attribute --config <skill-cuts.json> --count <dir> --copies <dir> --spans <file> --out <dir> [--changed <cut or set id>=<file>]... [--models <dir>]",
   "  set-count --config <skill-cuts.json> --rows <dir> --spans <file> --out <dir> [--dotfiles-commit <sha>] [--rows-label <text>] [--not-read <name>=<reason>]...",
-  "  build-cases --config <skill-cuts.json> --key-file <file> (--cut <id> | --set <id>) --skill <name> --old <dir> [--new <dir>] --sessions <file> --seed <n> --copies <dir> --count <dir> --out <cases.jsonl> [--max <n>] [--budget-usd <n>] [--concurrency <n>] [--stop-projected-usd <n>] [--stop-after-sessions <n>] [--stop-zero-case-usd <n>] [--drop-navigation]",
+  "  build-cases --config <skill-cuts.json> --key-file <file> (--cut <id> | --set <id>) --skill <name> --old <dir> [--new <dir>] --sessions <file> --seed <n> --copies <dir> --count <dir> --out <cases.jsonl> [--max <n>] [--budget-usd <n>] [--concurrency <n>] [--stop-projected-usd <n>] [--stop-after-sessions <n>] [--stop-zero-case-usd <n>] [--drop-navigation] [--store-only <file>]",
   "  build-cases --config <skill-cuts.json> --key-file <file> (--cut <id> | --set <id>) --skill <name> --old <dir> --copies <dir> --count <dir> --written <n> (--context-session <store>:<hash> | --sessions <file> --seed <n>) --out <cases.jsonl> [--session-cases <cases.jsonl>] [--reading-models <file>] [--model-pool <file>]... [--written-answer <file>] [--budget-usd <n>] [--drop-navigation]",
   "  build-cases --config <skill-cuts.json> --old <dir> --copies <dir> --count <dir> --reprofile <cases.jsonl> --out <new cases.jsonl>",
   "  build-tasks --config <skill-cuts.json> --key-file <file> --skill <dir> --store <db>... --out <tasks.jsonl> [--model <model>] [--profiles-out <dir> --copies <dir> --count <dir> --context-session <store>:<hash>] [--max-candidates <n>] [--max-search-minutes <m>]",

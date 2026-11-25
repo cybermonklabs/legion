@@ -7574,6 +7574,103 @@ test("build-cases --written stops above 1 GiB of peak resident memory once a tas
   expect(lines.at(-1)).toContain(`, peak memory 1024 MiB; written to ${out}`);
 }, 60_000);
 
+// INFRA-4676's architect (2026-11-25T18:54:22Z and 19:02:42Z): cases come from Postgres sessions
+// alone, so a build that ends with no case says how many of the skill's counted sessions only the
+// transcript store holds, which were never case sources; the walk copies that line into the
+// skill's no-case report.
+test("with --store-only, a build with no case ends its summary line, and its stop line, with the skill's store-only sessions, and with none store-only says nothing of them; a file that is not one is refused before any read, and so is the option with --written", async () => {
+  /** Writes `content` (JSON of a value, or a text as it is) as attribute's
+   *  `<cut id>/store-only/<skill>.json` of alpha, and returns the file. */
+  const storeOnlyFile = (name: string, content: unknown) => {
+    const file = path.join(setupDir, name);
+    writeFileSync(file, typeof content === "string" ? content : JSON.stringify(content));
+    return file;
+  };
+  const some = storeOnlyFile("store-only-some.json", {
+    skill: "alpha",
+    counted: 40,
+    storeOnly: 3,
+    hosts: [
+      { host: "host-a", sessions: 2 },
+      { host: "host-b", sessions: 1 },
+    ],
+  });
+  const none = storeOnlyFile("store-only-none.json", {
+    skill: "alpha",
+    counted: 12,
+    storeOnly: 0,
+    hosts: [],
+  });
+  const words =
+    "; 3 of the skill's 40 counted sessions are store-only, so they were never case sources (host-a: 2, host-b: 1)";
+
+  // A build that ends with no case, not stopped.
+  const sessions = absentSessions("store-only-absent.jsonl", 3);
+  const ended = async (name: string, file: string) => {
+    const out = path.join(scratch, name, "cases.jsonl");
+    const lines: string[] = [];
+    const args = buildArgs(sessions, out, "1", "--concurrency", "1", "--store-only", file);
+    expect(await main(args, io(lines))).toBe(EXIT.ok);
+    return {
+      lines,
+      summary: `build-cases: 0 cases of 3 sessions tried, $0.0000 of readers at list price, peak memory 200 MiB; written to ${out} and ${out}.summary.json`,
+    };
+  };
+  const withSome = await ended("store-only-some", some);
+  expect(withSome.lines).toContain(`${withSome.summary}${words}\n`);
+  const withNone = await ended("store-only-none", none);
+  expect(withNone.lines).toContain(`${withNone.summary}\n`);
+
+  // A build the stop rule stops with no case.
+  const stoppedOut = path.join(scratch, "store-only-stopped", "cases.jsonl");
+  const stoppedLines: string[] = [];
+  const stopArgs = buildArgs(
+    absentSessions("store-only-stopped.jsonl", STOP_AFTER_SESSIONS + 5),
+    stoppedOut,
+    "1",
+    "--max",
+    "15",
+    "--concurrency",
+    "1",
+    "--store-only",
+    some
+  );
+  expect(await main(stopArgs, io(stoppedLines))).toBe(EXIT.stoppedByCost);
+  expect(stoppedLines).toContain(
+    `build-cases: stopped by --stop-projected-usd: ${STOP_AFTER_SESSIONS} sessions decided, 0 cases, $0.0000 of readers spent, projected unbounded to --max 15 cases${words}`
+  );
+
+  // A file that is not JSON, or not of its shape, is refused before any store read or call, as
+  // behaviour report refuses it; the written form, which builds no case from a sessions file,
+  // refuses the option.
+  const from = recorder.requests.length;
+  const logged = readFileSync(psqlLog, "utf8").length;
+  const refusedOut = path.join(scratch, "store-only-refused", "cases.jsonl");
+  for (const [file, why] of [
+    [storeOnlyFile("store-only-not-json.json", "{ counted: 40"), "is not JSON: "],
+    [
+      storeOnlyFile("store-only-shape.json", { skill: "alpha", counted: 40 }),
+      "is not a skill's store-only sessions (attribute's <cut id>/store-only/<skill>.json): storeOnly: ",
+    ],
+  ] as const) {
+    const lines: string[] = [];
+    const args = buildArgs(sessions, refusedOut, "1", "--store-only", file);
+    expect(await main(args, io(lines))).toBe(EXIT.refused);
+    expect(lines.join("\n")).toContain(`--store-only ${file} ${why}`);
+  }
+  const written: string[] = [];
+  const context = ["--context-session", `store_a:${fileHash(sessionPath("good"))}`];
+  expect(await main(writtenArgs(refusedOut, ...context, "--store-only", some), io(written))).toBe(
+    EXIT.refused
+  );
+  expect(written.join("\n")).toContain(
+    "--written writes the cases of one context session, so it takes no --store-only"
+  );
+  expect(recorder.requests.length).toBe(from);
+  expect(readFileSync(psqlLog, "utf8").length).toBe(logged);
+  expect(existsSync(refusedOut)).toBe(false);
+}, 60_000);
+
 test("the pull reads the store command's output row by row with psqlRows' checks and faults, and reports a failing command first", async () => {
   const dir = path.join(scratch, "pull-output");
   mkdirSync(dir, { recursive: true });

@@ -153,6 +153,18 @@
  * `injections` field was made before arms gave it their own text, and is refused
  * (`savedCapture`).
  *
+ * **The Legion tool.** A Legion pane (a Legion role other than the controller, which is not
+ * reproduced) whose context installs `pi-legion` as an extension sends that plugin's `legion`
+ * tool, which the plugin defines at the end of its session start, after its registration with
+ * the stand-in daemon; Oh My Pi reports a session-start handler that throws as `Extension error`
+ * on stderr and goes on, so such a run's body can lack the tool. Such a body is refused and the
+ * arm captured once more by a fresh run: the same inputs, with no turn, temporary file or pane
+ * state of the refused run. The record keeps each attempt (`legionAttempts`: its tool count,
+ * whether it defines `legion`, its `[legion]` and `Extension error` lines of stderr), and its other
+ * fields are the last attempt's. When the second body lacks the tool too, the capture throws
+ * LegionToolUndefined, naming the case, the arm, the plugin and each attempt's lines, and saves
+ * nothing. A context that installs no `pi-legion`, or installs it as skills only, is not refused.
+ *
  * **The digests.** The record holds the session's `system-prompt-digest` (`sessionDigest`, from
  * the case) and the capture's own, `promptDigest`, which is Oh My Pi's algorithm
  * (packages/coding-agent/src/session/session-tools.ts, `systemPromptDigest`): a wyhash chain over
@@ -301,6 +313,31 @@ const STAND_IN_STREAM = "stream-1";
 /** An Oh My Pi run that ended with no model request a capture can take. */
 class RunEnded extends Error {}
 
+/** The plugin that defines a Legion pane's `legion` tool, under the name a profile gives it (its
+ *  directory's, as arms.ts's ENVOY_PLUGIN names `pi-envoy`), and how many capture runs an arm of a
+ *  pane whose context installs it as an extension gets for a body that defines no `legion` tool:
+ *  the first, and one more (the file's header, "The Legion tool"). */
+const LEGION_PLUGIN = "pi-legion";
+const LEGION_ATTEMPTS = 2;
+
+/** How the drop of a behaviour case begins whose capture threw LegionToolUndefined: the rest of
+ *  the drop is the error's message. */
+export const LEGION_TOOL_UNDEFINED = "legion-tool-undefined";
+
+/** What a capture throws when the body of each of the LEGION_ATTEMPTS attempts of a Legion pane
+ *  whose context installs LEGION_PLUGIN as an extension defines no `legion` tool. Its message
+ *  names the case, the arm, the plugin and each attempt's `[legion]` and `Extension error` lines
+ *  of stderr. */
+export class LegionToolUndefined extends Error {}
+
+/** The lines of a run's stderr that say what the Legion plugin did: its own (`[legion]`), and Oh
+ *  My Pi's on an extension whose handler threw (`Extension error`). */
+function legionLines(stderr: string): string[] {
+  return stderr
+    .split("\n")
+    .filter((line) => line.startsWith("[legion]") || line.includes("Extension error"));
+}
+
 /** The names of the tools a body defines, in order. */
 function bodyToolNames(body: RequestBody): string[] {
   return Array.isArray(body.tools)
@@ -330,10 +367,7 @@ export function pluginTools(
   if (role?.role === "controller") {
     leftOut.push("legion: a controller session is not reproduced, so its tool is not defined");
   } else if (role !== undefined && !tools.includes("legion")) {
-    const said = stderr
-      .split("\n")
-      .filter((line) => line.startsWith("[legion]") || line.includes("Extension error"));
-    leftOut.push(`legion: the plugin defined no tool: ${said.join(" ")}`);
+    leftOut.push(`legion: the plugin defined no tool: ${legionLines(stderr).join(" ")}`);
   }
   return {
     tools,
@@ -603,6 +637,19 @@ export interface CaptureRecord {
     readonly envoy: readonly string[];
     readonly leftOut: readonly string[];
   };
+  /** For a Legion pane whose context installs LEGION_PLUGIN as an extension: each capture run
+   *  whose body was checked for the `legion` tool, in order (the file's header, "The Legion
+   *  tool"), with how many tools its body defines, whether `legion` is among them, and its
+   *  `[legion]` and `Extension error` lines of stderr. Every other field of the record is the last
+   *  attempt's, whose body is saved. Null for any other context; absent from a capture saved
+   *  before this field. */
+  readonly legionAttempts?:
+    | readonly {
+        readonly tools: number;
+        readonly legion: boolean;
+        readonly stderr: readonly string[];
+      }[]
+    | null;
   /** How many messages the run itself added that the hook dropped, at each model request. */
   readonly hookDropped: readonly number[];
   /** How the capture run ended: its exit code or signal, and why when it was not 0. A run that
@@ -1787,10 +1834,12 @@ export type CaptureCase = Pick<
  * Captures the request body of `c`'s arm `arm`, or reads back the capture saved already. Throws
  * when no capture is saved and `options` gives no Oh My Pi binary or no `models.yml` to make one,
  * when Oh My Pi fails or sends no turn, when a hint cannot be written (the error `options.hints`
- * threw, as it is, the moment it throws: the gateway's BudgetSpent stays one), or when the body
+ * threw, as it is, the moment it throws: the gateway's BudgetSpent stays one), when the body
  * does not list exactly the arm's installed skills under their recorded lines or their hints, or
- * under the cut-down description where Oh My Pi kept no hint of the model's reply. A reply Oh My
- * Pi does not keep fails no capture (the file's header, "A reply Oh My Pi keeps no hint of").
+ * under the cut-down description where Oh My Pi kept no hint of the model's reply, or, as
+ * LegionToolUndefined, when a Legion pane whose context installs LEGION_PLUGIN as an extension
+ * defines no `legion` tool in either attempt (the file's header, "The Legion tool"). A reply Oh
+ * My Pi does not keep fails no capture (the file's header, "A reply Oh My Pi keeps no hint of").
  */
 export async function captureBody(
   c: CaptureCase,
@@ -1904,6 +1953,13 @@ export async function captureBody(
     : pane !== undefined || envoyPlugin
       ? ["ENVOY_URL", "ENVOY_NATS_URL"]
       : [];
+  // A Legion pane whose context installs the Legion plugin as an extension (the file's header,
+  // "The Legion tool"): its body must define that plugin's `legion` tool.
+  const legionPane = context.record.plugins.some(
+    (plugin) => plugin.name === LEGION_PLUGIN && plugin.as === "extension"
+  )
+    ? pane
+    : undefined;
 
   // What the recorder does with each request, by the run it is in. The hint run owes each drawn
   // hint the cache lacks, and each recorded line whose key the runner does not know.
@@ -2145,6 +2201,8 @@ export async function captureBody(
   const envoyEndpoints: Record<string, string> = Object.fromEntries(
     envoyVariables.map((name) => [name, endpoints[name]])
   );
+  /** The pane's state directory, LEGION_STATE_DIR of a Legion pane's capture run. */
+  const legionState = path.join(root, "legion-state");
   const standInEnvironment: Record<string, string> =
     pane === undefined
       ? envoyEndpoints
@@ -2152,7 +2210,7 @@ export async function captureBody(
           LEGION_ROLE: pane.role,
           LEGION_TREE: CAPTURE_TREE,
           LEGION_ISSUE: issue,
-          LEGION_STATE_DIR: path.join(root, "legion-state"),
+          LEGION_STATE_DIR: legionState,
           LEGION_BOOT_TOKEN: randomBytes(18).toString("base64url"),
           DISPATCH_SESSION_ID: STAND_IN_SESSION,
           ...endpoints,
@@ -2367,23 +2425,52 @@ export async function captureBody(
     // when it fails), so such a run is made again, at most CAPTURE_TRIES times in all. A run Oh
     // My Pi refuses for its `--tools` (`refusedTools`) is made again without the names it
     // refused, each recorded as left out with why; that refusal counts as no try.
-    let captureRunMs = 0;
-    for (let attempt = 1; ; ) {
-      try {
-        captureRunMs = await runOmp();
-        break;
-      } catch (error) {
-        if (!(error instanceof RunEnded)) throw error;
-        const sent = sentToolNames;
-        const dropped = refusedTools(stderr).filter(({ name }) => sent?.includes(name));
-        if (sent !== undefined && dropped.length > 0) {
-          sentToolNames = sent.filter((name) => !dropped.some((tool) => tool.name === name));
-          toolsLeftOut.push(...dropped);
-          continue;
+    const captureRun = async (): Promise<number> => {
+      for (let tries = 1; ; ) {
+        try {
+          return await runOmp();
+        } catch (error) {
+          if (!(error instanceof RunEnded)) throw error;
+          const sent = sentToolNames;
+          const dropped = refusedTools(stderr).filter(({ name }) => sent?.includes(name));
+          if (sent !== undefined && dropped.length > 0) {
+            sentToolNames = sent.filter((name) => !dropped.some((tool) => tool.name === name));
+            toolsLeftOut.push(...dropped);
+            continue;
+          }
+          tries += 1;
+          if (pane === undefined || tries > CAPTURE_TRIES) throw error;
         }
-        attempt += 1;
-        if (pane === undefined || attempt > CAPTURE_TRIES) throw error;
       }
+    };
+    // The Legion tool (the file's header): a `legionPane` body with no `legion` tool is refused,
+    // and the arm is captured again by a fresh run, LEGION_ATTEMPTS attempts in all, each one
+    // recorded; the last one's refusal ends the capture.
+    const legionAttempts: NonNullable<CaptureRecord["legionAttempts"]>[number][] = [];
+    let captureRunMs = await captureRun();
+    for (;;) {
+      const sent = turns[0];
+      if (legionPane === undefined || sent === undefined) break;
+      const names = bodyToolNames(JSON.parse(sent.body) as RequestBody);
+      const legion = names.includes("legion");
+      legionAttempts.push({ tools: names.length, legion, stderr: legionLines(stderr) });
+      if (legion) break;
+      if (legionAttempts.length === LEGION_ATTEMPTS) {
+        const said = legionAttempts.map(
+          (each, index) =>
+            `attempt ${index + 1}: its body defines ${each.tools} tools, legion not among them, and its stderr's [legion] and Extension error lines are ${each.stderr.length === 0 ? "none" : each.stderr.map((line) => JSON.stringify(line)).join(" ")}`
+        );
+        throw new LegionToolUndefined(
+          `case ${c.id} arm ${arm.name}: the captured body is refused: a Legion ${legionPane.role} pane whose context installs ${LEGION_PLUGIN} as an extension must send ${LEGION_PLUGIN}'s legion tool, and the body of none of its ${LEGION_ATTEMPTS} attempts defines it: ${said.join("; ")}`
+        );
+      }
+      // The next attempt gets the scratch a first run gets: no turn of this one, and none of its
+      // temporary files or pane state (`runOmp` makes its sessions directory again).
+      turns.length = 0;
+      for (const dir of [path.join(root, "tmp"), legionState]) {
+        rmSync(dir, { recursive: true, force: true });
+      }
+      captureRunMs = await captureRun();
     }
     const turn = turns[0];
     if (turn === undefined) {
@@ -2535,6 +2622,7 @@ export async function captureBody(
           ...toolsLeftOut.map(({ name, reason }) => `${name}: ${reason}`),
         ],
       },
+      legionAttempts: legionPane === undefined ? null : legionAttempts,
       hookDropped: hookCounts(hookLog),
       injections: arm.injections ?? [],
       dispatch: arm.dispatch ?? null,
