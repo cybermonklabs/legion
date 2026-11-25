@@ -165,6 +165,12 @@ The gate is the `before_merge` checks of the issue's own Verification document, 
 issue's own head: each must read yes at each open head of the issue, a check carrying `ci_check` among them, which
 `dispatch results --issue <issue>` shows. A pass and a fail at any open head make the check not known: send
 the issue back at once, naming the check, do not accept it, and do not wait for a later result, a CI run still going or GitHub that Dispatch could not read.
+A check that a message of a fix names as the running fix's check is the exception to both: it is
+the fix's, its state does not hold your acceptance, and the task is done only when it reads yes at
+its head, which Legion's hold before the retro waits for. Beside a fix, the reviewer's approval of
+the head its step started at stands for that step, also after the fix pushed. On a task that takes
+a fix, a change of a check's state at the head sends you a prompt to read Dispatch again while the
+child is in `accepting`: it names no verdict, so you may wait for it, then read `dispatch results`.
 At acceptance, read each CI-proved check's derived result and each result its CI job recorded.
 To give a check to CI, write a new check block under a new id; retracting a result does not lift the old rule.
 On a task that takes a fix, a check carrying `ci_check` that fails at the head starts a fix beside
