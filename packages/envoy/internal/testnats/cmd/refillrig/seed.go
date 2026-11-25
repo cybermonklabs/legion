@@ -12,6 +12,7 @@ import (
 	"github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // bucketConfig is the config the listener creates each bucket with when it finds none
@@ -27,10 +28,13 @@ func bucketConfig(kind string) (*nats.KeyValueConfig, error) {
 	return nil, fmt.Errorf("bucket %q: want sessions or interests", kind)
 }
 
+// connect connects to the NATS server url names, -nats of seed and recreate. Its failure names the
+// flag and the failure's class alone: nats.go's error for a URL it cannot parse quotes the URL
+// whole, and a NATS URL carries its user and password, or its token, in its user information.
 func connect(url string) (*nats.Conn, nats.JetStreamContext, error) {
 	conn, err := nats.Connect(url, nats.Timeout(5*time.Second), nats.Name("refillrig"))
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, fmt.Errorf("connect to the NATS server -nats names: %w", redact.Class(err))
 	}
 	js, err := conn.JetStream(nats.PublishAsyncMaxPending(4096), nats.MaxWait(10*time.Second))
 	if err != nil {

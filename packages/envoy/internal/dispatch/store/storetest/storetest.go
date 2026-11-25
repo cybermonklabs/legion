@@ -42,6 +42,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
@@ -296,17 +297,22 @@ func dropDatabase(name string) {
 }
 
 // openAdmin opens the admin pool, on the server raw names, that every database and template is
-// created and dropped through.
+// created and dropped through. It sets shared.server only once the pool is open.
+//
+// A failure prints neither raw nor any part of it: raw carries the server's user and password, and
+// can carry a query. url.Parse's error quotes raw whole, and the error it wraps can quote the text
+// net/url read as the port, which is the password where raw names no host after it; pgx's
+// ParseConfigError quotes the URL with its password masked but its user and its query kept, and
+// the error it wraps can quote a query key.
 func openAdmin(raw string) error {
 	server, err := url.Parse(raw)
 	if err != nil {
-		return fmt.Errorf("parse %s: %w", DatabaseURLEnv, err)
+		return fmt.Errorf("parse %s: %w", DatabaseURLEnv, redact.Class(err))
 	}
-	shared.server = *server
 	ctx := context.Background()
-	config, err := pgxpool.ParseConfig(databaseURL(shared.server, "postgres"))
+	config, err := pgxpool.ParseConfig(databaseURL(*server, "postgres"))
 	if err != nil {
-		return fmt.Errorf("parse admin database URL: %w", err)
+		return fmt.Errorf("parse the admin database URL %s names: %w", DatabaseURLEnv, redact.Masked(err, "pgx cannot read its connection settings"))
 	}
 	// Drops run concurrently on this pool. Its default size is the CPU count, and on a large
 	// machine the packages testing against one server at once would exceed its connection limit.
@@ -315,6 +321,7 @@ func openAdmin(raw string) error {
 	if err != nil {
 		return fmt.Errorf("open admin pool: %w", err)
 	}
+	shared.server = *server
 	shared.admin = admin
 	return nil
 }
