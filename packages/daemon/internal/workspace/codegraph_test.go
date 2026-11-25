@@ -1219,8 +1219,8 @@ func TestWarmCodegraphIndexReadsACodegraphASignalEndedAsOneThatAnsweredNothing(t
 		grace := codegraphStopGrace
 		codegraphStopGrace = testwait.Remaining(t)
 		t.Cleanup(func() { codegraphStopGrace = grace })
-		r := newBoundRow(t, fake, "echo 'parsing 512 files' >&2; : > '%[1]s/printed'; while [ ! -f '%[1]s/go' ]; do sleep 0.01; done; "+
-			"( while kill -0 $$ 2>/dev/null; do sleep 0.01; done; : > '%[1]s/gone'; while [ ! -f '%[1]s/release' ]; do sleep 0.01; done ) & kill -KILL $$")
+		r := newBoundRow(t, fake, "echo 'parsing 512 files' >&2; : > '%[1]s/printed'; while [ -d '%[1]s' ] && [ ! -f '%[1]s/go' ]; do sleep 0.01; done; "+
+			"( while kill -0 $$ 2>/dev/null; do sleep 0.01; done; : > '%[1]s/gone'; while [ -d '%[1]s' ] && [ ! -f '%[1]s/release' ]; do sleep 0.01; done; : > '%[1]s/left' ) & kill -KILL $$")
 		r.reached("the stub's init to print its line", "printed")
 		r.c.AwaitArmed(t, "the init's bound, while the build's shell still runs", 1)
 		r.mark("go")
@@ -1246,9 +1246,11 @@ type boundRow struct {
 
 // newBoundRow starts the warm-up of a fresh workspace under a 1 s bound on a fake clock, with a
 // stub whose `init` runs script, which names the marks directory as %[1]s. Its cleanup, which runs
-// before the marks directory is removed, ends the warm-up's context and writes "release", then
-// waits for the warm-up to return, so a stub the row left waiting is gone when the row is: the
-// context's end SIGTERMs the build's shell, and "release" lets a child that holds its pipes go.
+// before the marks directory is removed, ends the warm-up's context and writes "release", waits
+// for the warm-up to return, and, once the test has written "go" (which lets a stub start a child
+// that holds its pipes), waits for that child's "left": the context's end SIGTERMs the build's
+// shell, and "release" lets the child go. So a stub the row left waiting is gone when the row is,
+// whatever the row did; a stub's loops also end once the marks directory is gone.
 func newBoundRow(t *testing.T, fake func(t *testing.T, callLog, cases string), script string) *boundRow {
 	t.Helper()
 	bound := codegraphTimeout
@@ -1262,6 +1264,9 @@ func newBoundRow(t *testing.T, fake func(t *testing.T, callLog, cases string), s
 		cancel()
 		_ = os.WriteFile(filepath.Join(r.marks, "release"), nil, 0o600)
 		testwait.Receive(t, "the warm-up to return once its context ended and its stub was released", r.done)
+		if _, err := os.Stat(filepath.Join(r.marks, "go")); err == nil {
+			r.reached("the stub's child to leave once released", "left")
+		}
 	})
 	go func() { defer close(r.done); warmCodegraphIndexOn(ctx, r.c, r.dir, time.Now()) }()
 	return r
