@@ -448,11 +448,12 @@ func TestQuestionMapReadsABlockIDWrittenQuoted(t *testing.T) {
 // want to pmdoc.Parse of its markdown too. A backslash in a footnote's label escapes the `]` after
 // it, as the renderer writes a label that holds one (pmdoc's escapeFootnoteLabel), so a block or a
 // fence written on that label's line opens there, and the definition's later blocks stand four
-// columns in, as the renderer writes them. A line four columns or more past its containers opens
-// no block: it is indented code. A later line of a paragraph there, an inline code span's among
-// them, can open no block either, but pmdoc refuses such a line in a write, so no version holds
-// one. After a front-matter opener that no line closes, no typed block opens at the document's
-// level (pmdoc's frontmatterAttempt).
+// columns in, as the renderer writes them. A label of a form feed is a label: goldmark's white
+// space is the space, the tab and the line endings alone. A line four columns or more past its
+// containers opens no block: it is indented code. A later line of a paragraph there, an inline
+// code span's among them, can open no block either, but pmdoc refuses such a line in a write, so
+// no version holds one. After a front-matter opener that no line closes, no typed block opens at
+// the document's level (pmdoc's frontmatterAttempt).
 func TestQuestionBlocksReadTheAskBlocksPmdocReads(t *testing.T) {
 	for _, test := range []struct {
 		name, markdown string
@@ -477,6 +478,11 @@ func TestQuestionBlocksReadTheAskBlocksPmdocReads(t *testing.T) {
 			name:     "a later block of a footnote four columns in",
 			markdown: "See.[^n]\n\n[^n]: Note.\n\n    :::ask{#plain}\n    Which?\n    :::\n",
 			want:     []string{"plain"},
+		},
+		{
+			name:     "a block opened on the line of a footnote label that holds only a form feed",
+			markdown: "See.[^\f]\n\n[^\f]: :::ask{#x}\n    Which?\n    :::\n",
+			want:     []string{"x"},
 		},
 		{
 			name:     "a line of indented code",

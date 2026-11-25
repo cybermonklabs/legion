@@ -19,26 +19,31 @@ export interface TypedOpenerFrame {
   readonly name: string;
 }
 
-/** How readAskBlocks reads a document's lines. */
-export interface BlockReading {
+/** How readAskBlocks reads a document's lines, `F` being the frame that `typedOpener` gives for a
+ *  typed block's opening line. */
+export interface BlockReading<F extends TypedOpenerFrame> {
   /** Whether a front matter that the first line opens is read as front matter (frontMatterEnd). */
   readonly frontMatter: boolean;
+  /** Whether the reader collects each ask block's lines (AskBlockLines.body). */
+  readonly bodies: boolean;
   /**
    * The reader of a typed block's opening line, given the line from its first colon on. It gives
    * undefined where the line opens no typed block. A line of three colons or more that it gives
    * undefined for, other than `:::` alone, is a directive the server refuses (refusedDirective).
    */
-  readonly typedOpener: (text: string) => TypedOpenerFrame | undefined;
+  readonly typedOpener: (text: string) => F | undefined;
 }
 
 /** An ask block that readAskBlocks found. */
-export interface AskBlockLines {
+export interface AskBlockLines<F extends TypedOpenerFrame> {
   /** The block's opening line, from its first colon on. */
   readonly opener: string;
+  /** The frame that BlockReading.typedOpener gave for the opening line. */
+  readonly frame: F;
   /**
    * Each later line that the block holds, up to its closing line, blank lines included. A line is
    * read past the containers around the block, and past as many columns of its indentation as the
-   * opening line stands past those containers.
+   * opening line stands past those containers. Empty where BlockReading.bodies is not set.
    */
   readonly body: readonly string[];
 }
@@ -74,13 +79,17 @@ export interface AskBlockLines {
  *
  * HTML blocks, which the server refuses in a write, are not read.
  */
-export function readAskBlocks(lines: readonly string[], reading: BlockReading): AskBlockLines[] {
+export function readAskBlocks<F extends TypedOpenerFrame>(
+  lines: readonly string[],
+  reading: BlockReading<F>
+): AskBlockLines<F>[] {
   const frontMatter = reading.frontMatter ? frontMatterEnd(lines) : { end: 0, unclosed: false };
-  const scan: BlockScan = {
+  const scan: BlockScan<F> = {
     lines: lines.slice(frontMatter.end),
     index: 0,
     opened: [],
     typedOpener: reading.typedOpener,
+    bodies: reading.bodies,
     asks: [],
     emptyItemWithBlankLines: false,
     skipList: false,
@@ -116,16 +125,18 @@ function frontMatterEnd(lines: readonly string[]): { end: number; unclosed: bool
 }
 
 /** What the reader carries from line to line, as goldmark's parser context carries it. */
-interface BlockScan {
+interface BlockScan<F extends TypedOpenerFrame = TypedOpenerFrame> {
   /** The markdown's lines past its front matter, and the index of the one being read. */
   readonly lines: readonly string[];
   index: number;
   /** The blocks open, outermost first, as `pc.OpenedBlocks()`; the document is not among them. */
   readonly opened: ScanBlock[];
-  /** The reader of a typed block's opening line (BlockReading). */
-  readonly typedOpener: (text: string) => TypedOpenerFrame | undefined;
+  /** The reader of a typed block's opening line, and whether ask blocks' lines are collected
+   *  (BlockReading). */
+  readonly typedOpener: (text: string) => F | undefined;
+  readonly bodies: boolean;
   /** Each ask block found so far. */
-  readonly asks: AskBlockLines[];
+  readonly asks: AskBlockLines<F>[];
   /** goldmark's `emptyListItemWithBlankLines`. */
   emptyItemWithBlankLines: boolean;
   /** goldmark's `skipListParserKey`: a list item closed at a sibling's marker. */
@@ -170,7 +181,8 @@ type ScanBlock =
       readonly fence: number;
       /** The columns its opening line's text stands past its container's, taken off its lines. */
       readonly indent: number;
-      /** An ask block's lines (AskBlockLines.body); undefined for a typed block of another name. */
+      /** An ask block's lines (AskBlockLines.body); undefined for a typed block of another name,
+       *  and where the reader collects no lines (BlockReading.bodies). */
       readonly body: string[] | undefined;
     })
   | (ScanBlockBase & { readonly kind: "fence"; readonly char: string; readonly length: number });
@@ -178,26 +190,26 @@ type ScanBlock =
 /** What a block's continuation does with a line, as goldmark's `State`. */
 type Continuation = "close" | "continue" | "children";
 
-/** One line of markdown, read from the column that the containers around a block have taken. */
+/** The column after `char`, which starts at `column`: a tab reaches the next multiple of four. */
+function nextColumn(column: number, char: string): number {
+  return char === "\t" ? column + 4 - (column % 4) : column + 1;
+}
+
+/**
+ * One line of markdown, read from the column that the containers around a block have taken. A
+ * column is measured forward from the first character not taken, and only when a reader asks for
+ * it, as the Go twin's scanLine measures it (packages/envoy/internal/dispatch/refs/scope.go).
+ */
 class ScanLine {
   readonly text: string;
-  /** The column each character starts at, a tab reaching the next multiple of four, then the end's. */
-  readonly #starts: number[];
-  /** The column of the line's end. */
-  readonly #end: number;
+  /** The index of the first character not taken, and the column it starts at. */
   #pos = 0;
+  #start = 0;
+  /** The column taken so far: #start, or more where a tab at #pos is partly taken. */
   #column = 0;
 
   constructor(text: string) {
     this.text = text;
-    const starts = [0];
-    let column = 0;
-    for (let index = 0; index < text.length; index++) {
-      column += text[index] === "\t" ? 4 - (column % 4) : 1;
-      starts.push(column);
-    }
-    this.#starts = starts;
-    this.#end = column;
   }
 
   /** The column taken so far. */
@@ -205,11 +217,12 @@ class ScanLine {
     return this.#column;
   }
 
-  /** The column that the character at `index` starts at, and the line's end past its last one. */
+  /** The column that the character at `index`, #pos or after it, starts at, and the line's end
+   *  past its last one. */
   columnAt(index: number): number {
-    // #starts holds a column for each index from 0 to the line's length, and every caller passes
-    // one of those, so the line's end never stands in for a column that #starts holds.
-    return this.#starts[index] ?? this.#end;
+    let column = this.#start;
+    for (let at = this.#pos; at < index; at++) column = nextColumn(column, this.text.charAt(at));
+    return column;
   }
 
   /** The index of the first character from `index` on that is no space or tab. */
@@ -219,7 +232,7 @@ class ScanLine {
     return end;
   }
 
-  /** The columns of the spaces and tabs that start at `index`. */
+  /** The columns of the spaces and tabs that start at `index`, #pos or after it. */
   spacesAt(index: number): number {
     return this.columnAt(this.#afterSpaces(index)) - this.columnAt(index);
   }
@@ -238,21 +251,31 @@ class ScanLine {
   /** Takes `columns` columns of the spaces and tabs ahead, a tab partly if it spans more. */
   skip(columns: number): void {
     this.#column += columns;
-    while (this.#pos < this.text.length && this.columnAt(this.#pos + 1) <= this.#column) {
+    while (this.#pos < this.text.length) {
+      const next = nextColumn(this.#start, this.text.charAt(this.#pos));
+      if (next > this.#column) return;
       this.#pos++;
+      this.#start = next;
     }
   }
 
-  /** Takes the line up to the character at `index`. */
+  /** Takes the line up to the character at `index`, #pos or after it. */
   advanceTo(index: number): void {
+    this.#start = this.columnAt(index);
     this.#pos = index;
-    this.#column = this.columnAt(index);
+    this.#column = this.#start;
+  }
+
+  /** Takes the rest of the line, as a block of the rest of the line does. It measures no columns:
+   *  nothing is left to measure. */
+  takeAll(): void {
+    this.#pos = this.text.length;
+    this.#start = this.#column;
   }
 
   /** What is left of the line, a tab partly taken written as the columns it has left. */
   rest(): string {
-    const start = this.columnAt(this.#pos);
-    if (this.#pos < this.text.length && start < this.#column) {
+    if (this.#pos < this.text.length && this.#start < this.#column) {
       return (
         " ".repeat(this.columnAt(this.#pos + 1) - this.#column) + this.text.slice(this.#pos + 1)
       );
@@ -267,9 +290,11 @@ function readScanLine(scan: BlockScan, document: ScanBlock, line: ScanLine): voi
     if (!line.blank()) openScanBlocks(scan, document, line);
     return;
   }
-  const opened = [...scan.opened];
-  const lastIndex = opened.length - 1;
-  for (const [index, block] of opened.entries()) {
+  // No continuation changes scan.opened, and the loop returns where it opens or closes a block:
+  // each index reads a block that was open when the line began.
+  const lastIndex = scan.opened.length - 1;
+  for (let index = 0; index <= lastIndex; index++) {
+    const block = scan.opened[index] as ScanBlock;
     // A paragraph is continued by openScanBlocks, when the line opens no block that interrupts it.
     if (block.kind !== "paragraph") {
       const continuation = continueScanBlock(scan, block, line);
@@ -280,7 +305,7 @@ function readScanLine(scan: BlockScan, document: ScanBlock, line: ScanLine): voi
       if (continuation !== "close") continue;
     }
     // The block closes here, or the line continues the paragraph last opened lazily.
-    if (openScanBlocks(scan, opened[index - 1] ?? document, line) !== "paragraph") {
+    if (openScanBlocks(scan, scan.opened[index - 1] ?? document, line) !== "paragraph") {
       scan.opened.splice(index, lastIndex - index + 1);
     }
     return;
@@ -350,7 +375,7 @@ function under(parent: ScanBlock): ScanBlockBase {
 
 /** A block that holds nothing and closes at the next line: a heading, a rule, a refused directive. */
 function leafAt(parent: ScanBlock, line: ScanLine): { block: ScanBlock; children: boolean } {
-  line.advanceTo(line.text.length);
+  line.takeAll();
   return { block: { kind: "leaf", ...under(parent) }, children: false };
 }
 
@@ -459,7 +484,7 @@ const SCAN_PARSERS: readonly ScanParser[] = [
       if (length < 3) return undefined;
       // A backtick fence's info string holds no backtick: such a line is inline code.
       if (char === "`" && line.text.slice(at + length).includes("`")) return undefined;
-      line.advanceTo(line.text.length);
+      line.takeAll();
       return { block: { kind: "fence", char, length, ...under(parent) }, children: false };
     },
   },
@@ -485,17 +510,17 @@ const SCAN_PARSERS: readonly ScanParser[] = [
     indented: false,
     open(scan, parent, line, width, at) {
       const text = line.text.slice(at);
-      const opener = scan.typedOpener(text);
-      if (opener === undefined || frontMatterHolds(scan, parent)) return undefined;
+      const frame = scan.typedOpener(text);
+      if (frame === undefined || frontMatterHolds(scan, parent)) return undefined;
       let body: string[] | undefined;
-      if (opener.name === "ask") {
-        body = [];
-        scan.asks.push({ opener: text, body });
+      if (frame.name === "ask") {
+        body = scan.bodies ? [] : undefined;
+        scan.asks.push({ opener: text, frame, body: body ?? [] });
       }
-      line.advanceTo(line.text.length);
+      line.takeAll();
       const block: ScanBlock = {
         kind: "typed",
-        fence: opener.colons,
+        fence: frame.colons,
         indent: width,
         body,
         ...under(parent),
@@ -531,7 +556,7 @@ const SCAN_PARSERS: readonly ScanParser[] = [
         table: false,
         ...under(parent),
       };
-      line.advanceTo(line.text.length);
+      line.takeAll();
       return { block, children: false };
     },
   },
@@ -596,7 +621,7 @@ function continueScanBlock(scan: BlockScan, block: ScanBlock, line: ScanLine): C
       // A line of at least the fence's colons closes the block, whatever block inside it the line
       // would otherwise continue (directive.go, typedDirectiveParser.Continue).
       if (width < 4 && at < line.text.length && fenceColons(line.text.slice(at)) >= block.fence) {
-        line.advanceTo(line.text.length);
+        line.takeAll();
         return "close";
       }
       if (at < line.text.length) line.skip(Math.min(width, block.indent));
@@ -608,18 +633,18 @@ function continueScanBlock(scan: BlockScan, block: ScanBlock, line: ScanLine): C
       if (width < 4) {
         const length = runOf(line.text, at, block.char);
         if (length >= block.length && /^[ \t]*$/.test(line.text.slice(at + length))) {
-          line.advanceTo(line.text.length);
+          line.takeAll();
           return "close";
         }
       }
-      line.advanceTo(line.text.length);
+      line.takeAll();
       return "continue";
     }
     case "code": {
       if (line.blank()) return "continue";
       if (line.indent().width < 4) return "close";
       block.lastLine = scan.index;
-      line.advanceTo(line.text.length);
+      line.takeAll();
       return "continue";
     }
     default:
@@ -800,8 +825,8 @@ function footnoteLabelEnd(text: string, at: number): number | undefined {
  */
 function refusedDirective(scan: BlockScan, text: string): boolean {
   if (text.startsWith(":::")) return text !== ":::" && scan.typedOpener(text) === undefined;
-  if (text.startsWith("::")) return /^::[A-Za-z0-9_-]/.test(text);
-  return /^:[A-Za-z0-9_-]/.test(text) && text.includes("{");
+  if (text.startsWith("::")) return directiveNameChar(text.charAt(2));
+  return text.startsWith(":") && directiveNameChar(text.charAt(1)) && text.includes("{");
 }
 
 /** goldmark's `isThematicBreak`: three or more of one of `*`, `-`, `_`, with spaces between. */
@@ -816,7 +841,7 @@ function setextUnderline(text: string): boolean {
 }
 
 /**
- * directive.go's `fenceColons`: the colons `text` holds when they are all it holds but spaces and
+ * directive.go's `FenceColons`: the colons `text` holds when they are all it holds but spaces and
  * tabs. The colons stand between the two runs of spaces and tabs, so the pattern reads `text` in
  * time linear in its length.
  */
@@ -827,8 +852,13 @@ function fenceColons(text: string): number {
 }
 
 /** How many times `char` stands in a row in `text` from `index`. */
-function runOf(text: string, index: number, char: string): number {
+export function runOf(text: string, index: number, char: string): number {
   let end = index;
   while (text.charAt(end) === char) end++;
   return end - index;
+}
+
+/** directive.go's `DirectiveNameByte`: a letter, a digit, `_` or `-`. */
+export function directiveNameChar(char: string): boolean {
+  return /^[A-Za-z0-9_-]$/.test(char);
 }

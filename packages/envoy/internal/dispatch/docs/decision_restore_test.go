@@ -1383,11 +1383,7 @@ func TestAConversionThatRetiresTheDecisionsDocumentFirstVersionsAPersonsUnsettle
 		t.Fatalf("the conversion wrote %+v and declined %+v, want the ask %s (q-doc) written nowhere and declined to alice at version %d of the decisions document",
 			result.Restored, result.Declined, deleted, result.DecisionsVersion)
 	}
-	var written string
-	if err := issue.database.Pool.QueryRow(ctx, `select markdown from artifact_versions where artifact_id = $1 and number = $2`,
-		decisions, result.DecisionsVersion).Scan(&written); err != nil {
-		t.Fatalf("read version %d of the decisions document: %v", result.DecisionsVersion, err)
-	}
+	written := versionMarkdown(t, issue.database, decisions, result.DecisionsVersion)
 	if strings.Contains(written, "#q-doc ") {
 		t.Errorf("version %d of the decisions document holds a block of q-doc, which alice's browser deleted:\n%s", result.DecisionsVersion, written)
 	}
