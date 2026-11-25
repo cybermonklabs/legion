@@ -577,7 +577,7 @@ func requireNoHandBackAfterCreation(t *testing.T, recorded *durableEvents, from 
 // new consumer then starts at that message and delivers both once.
 func TestAHandBackLeftRunningLandsBeforeTheStandbyTakesOver(t *testing.T) {
 	t.Run("a hand-back that lands before the stop's deadline", func(t *testing.T) {
-		logs := captureLogs(t)
+		logs := captureIntakeLogs(t)
 		row := stopWithAHeldHandBack(t, nil)
 		waitFor(t, func() bool { return loggedMessage(logs(), callLeftRunning) }, func() string {
 			return "control: the stop never went on without the held hand-back's publish: " + consumerState(row.publisher)

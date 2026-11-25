@@ -413,7 +413,8 @@ func TestAReadThatLandsAfterTheRunEndedUndoesNothing(t *testing.T) {
 // TestAJobsReadThatFailsIsLoggedAndTheRunIsReadAtItsEnd: GitHub answering 500 to the jobs read is
 // a WARN and changes no row; the run stays on the backfill's list, and its end reads its jobs.
 func TestAJobsReadThatFailsIsLoggedAndTheRunIsReadAtItsEnd(t *testing.T) {
-	logs := captureLogs(t)
+	t.Parallel()
+	logs := captureIntakeLogs(t)
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	seedRunningDeployRun(t, ctx, pool)
@@ -561,7 +562,7 @@ func TestTheJobIntakeReadsAtMostABoundedNumberOfRunsAtOnce(t *testing.T) {
 // holds a slot instead, a whole intakeMessageTimeout past the moment it took it, and its read stores
 // the run's jobs.
 func TestAQueuedJobReadsDeadlineStartsOnceItHoldsItsSlot(t *testing.T) {
-	logs := captureLogs(t)
+	logs := captureIntakeLogs(t)
 	pool, ctx := deliveryTestPool(t)
 	// Every read slot taken, and one run waiting for a slot.
 	const runs = reconcilePartialConcurrency + 1
@@ -728,7 +729,7 @@ func (c *holdingJobClock) AfterFunc(d time.Duration, f func()) clock.Timer {
 // delivery because the stop drains the subscription before it answers anything
 // (intakeDelivery.stop).
 func TestAJobEventHandledAfterTheIntakeStoppedIsHandedBackToTheNextHolderAtOnce(t *testing.T) {
-	logs := captureLogs(t)
+	logs := captureIntakeLogs(t)
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	seedRunningDeployRun(t, ctx, pool)

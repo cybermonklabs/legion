@@ -45,7 +45,7 @@ func TestATakeOverStepTheGrantRefusesGivesUpAtOnce(t *testing.T) {
 		{"the delete", "delete NATS consumer to take it over", []string{"$JS.API.CONSUMER.DELETE." + bus.Stream + "." + bus.DispatchDeliveryDurable}, true},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			logs := captureLogs(t)
+			logs := captureIntakeLogs(t)
 			pool, ctx := deliveryTestPool(t)
 			seedDeliverySettings(t, ctx, pool)
 			uri, owner := deniedIntakeServer(t, row.deny...)

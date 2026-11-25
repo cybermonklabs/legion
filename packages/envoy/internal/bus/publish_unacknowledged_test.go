@@ -75,6 +75,7 @@ func TestAStoredPublishSaysWhenTheStreamMayHoldWhatItFailedToSend(t *testing.T) 
 	})
 
 	t.Run("a write the stream refused is no ErrUnacknowledged", func(t *testing.T) {
+		// No span of its own: an answer can come late on a loaded machine with nothing wrong.
 		ctx := testwait.Context(t)
 		subject := bus.KeptRoleCursorSubject("unacknowledged-refused")
 		if _, err := client.PublishCursorAt(ctx, subject, []byte(`{"kept":1}`), 0); err != nil {
@@ -131,6 +132,7 @@ func TestAStoredPublishSaysWhenTheStreamMayHoldWhatItFailedToSend(t *testing.T) 
 			err error
 		}
 		answered := make(chan answer, 1)
+		// No span of its own: an answer can come late on a loaded machine with nothing wrong.
 		ctx := testwait.Context(t)
 		go func() {
 			ack, err := client.PublishAckWithin(ctx, unacknowledgedEnvelope(topic))
@@ -177,6 +179,7 @@ func TestAStoredPublishSaysWhenTheStreamMayHoldWhatItFailedToSend(t *testing.T) 
 			err error
 		}
 		answered := make(chan answer, 1)
+		// No span of its own: an answer can come late on a loaded machine with nothing wrong.
 		ctx := testwait.Context(t)
 		go func() {
 			ack, err := reconnecting.PublishAckWithin(ctx, unacknowledgedEnvelope(topic))
@@ -221,6 +224,7 @@ func TestAStoredPublishSaysWhenTheStreamMayHoldWhatItFailedToSend(t *testing.T) 
 		proxy.FreezeServerReplies()
 		body := []byte(`{"kept":7}`)
 		answered := make(chan error, 1)
+		// No span of its own: an answer can come late on a loaded machine with nothing wrong.
 		ctx := testwait.Context(t)
 		go func() {
 			_, err := reconnecting.PublishCursorAt(ctx, subject, body, 0)

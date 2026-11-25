@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"log/slog"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -328,7 +327,7 @@ func (d *intakeDelivery) stop(ctx context.Context) {
 			})
 			lost := !answered || !connected
 			if lost || d.handling.Err() != nil || d.clock.Now().Sub(waitedFrom) >= time.Duration(d.tuning.drainWait.Load()) {
-				slog.Error("dispatch delivery: the intake's subscription did not finish draining; unsubscribing it", "waited", d.clock.Now().Sub(waitedFrom), "connection_lost", lost)
+				d.tuning.log.Error("dispatch delivery: the intake's subscription did not finish draining; unsubscribing it", "waited", d.clock.Now().Sub(waitedFrom), "connection_lost", lost)
 				callNATS(d.tuning, "unsubscribe the intake's subscription", func() (struct{}, error) {
 					return struct{}{}, draining.Unsubscribe()
 				})
@@ -354,10 +353,10 @@ func (d *intakeDelivery) stop(ctx context.Context) {
 // (callLeftRunning), and answered is false. That goroutine holds nothing of the stop's; a call
 // through the bus client that holds the client's own lock while it reads nats.go's state
 // (Connected, and DrainSubscription through it) holds that lock until nats.go answers. Its failure
-// is logged when it ends, with attrs; a connection already closed is how a call that outlived the
-// stop ends when the client closes at shutdown, and is logged as that rather than as an error; a
-// publish refused because the connection is reconnecting (ErrReconnectBufExceeded) is logged at
-// INFO.
+// is logged when it ends, with attrs, to the intake's logger (tuning.log), as the WARN line is; a
+// connection already closed is how a call that outlived the stop ends when the client closes at
+// shutdown, and is logged as that rather than as an error; a publish refused because the
+// connection is reconnecting (ErrReconnectBufExceeded) is logged at INFO.
 func callNATS[T any](tuning *intakeTuning, what string, call func() (T, error), attrs ...any) (value T, answered bool) {
 	answers := make(chan T, 1)
 	go func() {
@@ -365,11 +364,11 @@ func callNATS[T any](tuning *intakeTuning, what string, call func() (T, error), 
 		switch {
 		case err == nil:
 		case errors.Is(err, natsgo.ErrConnectionClosed):
-			slog.Info("dispatch delivery: "+what+": the connection had closed", append(attrs, "error", err)...)
+			tuning.log.Info("dispatch delivery: "+what+": the connection had closed", append(attrs, "error", err)...)
 		case errors.Is(err, natsgo.ErrReconnectBufExceeded):
-			slog.Info("dispatch delivery: "+what+": the connection is reconnecting, so the message is left with the durable for its ack wait", append(attrs, "error", err)...)
+			tuning.log.Info("dispatch delivery: "+what+": the connection is reconnecting, so the message is left with the durable for its ack wait", append(attrs, "error", err)...)
 		default:
-			slog.Error("dispatch delivery: "+what, append(attrs, "error", err)...)
+			tuning.log.Error("dispatch delivery: "+what, append(attrs, "error", err)...)
 		}
 		answers <- v
 	}()
@@ -380,7 +379,7 @@ func callNATS[T any](tuning *intakeTuning, what string, call func() (T, error), 
 	case value = <-answers:
 		return value, true
 	case <-timer.C:
-		slog.Warn(callLeftRunning, append(attrs, "call", what, "waited", wait)...)
+		tuning.log.Warn(callLeftRunning, append(attrs, "call", what, "waited", wait)...)
 		return value, false
 	}
 }
@@ -445,12 +444,12 @@ func (d *intakeDelivery) giveBack(msg *natsgo.Msg) {
 // handed is sound while the hold covers it whether or not this subscription still delivers.
 func (d *intakeDelivery) handBack(msg *natsgo.Msg) {
 	if !d.holdCovers() {
-		slog.Warn("dispatch delivery: the hold no longer covers this delivery, so the message is left with the durable for the next holder's take-over",
+		d.tuning.log.Warn("dispatch delivery: the hold no longer covers this delivery, so the message is left with the durable for the next holder's take-over",
 			"subject", msg.Subject)
 		return
 	}
 	if !d.mayHandBack() {
-		slog.Info("dispatch delivery: the hand-back is withheld, so the message is left with the durable", "subject", msg.Subject)
+		d.tuning.log.Info("dispatch delivery: the hand-back is withheld, so the message is left with the durable", "subject", msg.Subject)
 		return
 	}
 	d.publishHandBack(msg, 0)
@@ -463,12 +462,12 @@ func (d *intakeDelivery) handBack(msg *natsgo.Msg) {
 // begins, and the stop waits for that handler.
 func (d *intakeDelivery) handBackOwn(msg *natsgo.Msg, after time.Duration) {
 	if !d.mayAnswer() {
-		slog.Warn("dispatch delivery: the hold no longer covers this delivery, so the envelope whose head row was not stored is left with the durable for the next holder's take-over",
+		d.tuning.log.Warn("dispatch delivery: the hold no longer covers this delivery, so the envelope whose head row was not stored is left with the durable for the next holder's take-over",
 			"subject", msg.Subject)
 		return
 	}
 	if !d.mayHandBack() {
-		slog.Info("dispatch delivery: the hand-back is withheld, so the envelope whose head row was not stored is left with the durable", "subject", msg.Subject)
+		d.tuning.log.Info("dispatch delivery: the hand-back is withheld, so the envelope whose head row was not stored is left with the durable", "subject", msg.Subject)
 		return
 	}
 	d.publishHandBack(msg, after)
@@ -495,7 +494,7 @@ func (d *intakeDelivery) publishHandBack(msg *natsgo.Msg, after time.Duration) {
 	}
 	written, admitted := d.admitHandBack()
 	if !admitted {
-		slog.Info(handBackSealed, "subject", msg.Subject)
+		d.tuning.log.Info(handBackSealed, "subject", msg.Subject)
 		return
 	}
 	if hook := d.afterHandBackAdmitted.Load(); hook != nil {

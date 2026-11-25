@@ -196,7 +196,8 @@ func TestAHolderThatStopsIsReplacedWithinTheBoundTheCodeStates(t *testing.T) {
 // the step that replaced it: there is no confirmation read any more, because the create's own
 // answer is the confirmation.
 func TestATakeOverWhoseCreateNeverLandsGivesItsSubscriptionUp(t *testing.T) {
-	logs := captureLogs(t)
+	t.Parallel()
+	logs := captureIntakeLogs(t)
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	natsURL := testnats.URL(t)

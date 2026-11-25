@@ -3,7 +3,6 @@ package delivery
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"sync"
 	"time"
 
@@ -145,13 +144,14 @@ func (b IntakeBounds) apply(d *heldDurable) {
 	d.holdCallDeadline, d.messageDeadline, d.stopDeadline = b.HoldCallDeadline, b.MessageDeadline, b.StopDeadline
 }
 
-// startIntakes is StartIntakes with both intakes timed by tuning and run on c (heldDurable.clock):
-// production's tuning (newIntakeTuning) and clock.Real from StartIntakes, or a test's tuning and
-// its clocktest.Fake, which moves the intakes' stop deadlines only when the test moves it. The
-// first of bounds applies after both, to each intake.
+// startIntakes is StartIntakes with both intakes, and the settings cache they route by, timed by
+// tuning and logging to its logger (intakeTuning.log), and both intakes run on c
+// (heldDurable.clock): production's tuning (newIntakeTuning) and clock.Real from StartIntakes, or a
+// test's tuning and its clocktest.Fake, which moves the intakes' stop deadlines only when the test
+// moves it. The first of bounds applies after both, to each intake.
 func startIntakes(ctx context.Context, tuning *intakeTuning, connect func(name string) (*bus.Client, error), pool *store.Pool, leases IntakeLeases, github *githubapp.Client, broker *events.Broker, settingsWake <-chan struct{}, pushes PushImports, attributor *Attributor, c clock.Clock, bounds ...IntakeBounds) (stop func(), err error) {
 	if github == nil {
-		slog.Info("dispatch delivery: no GitHub App key — the intakes are idle")
+		tuning.log.Info("dispatch delivery: no GitHub App key — the intakes are idle")
 		return func() {}, nil
 	}
 	intakeClient, err := connect(intakeConnectionName)
@@ -163,7 +163,7 @@ func startIntakes(ctx context.Context, tuning *intakeTuning, connect func(name s
 		intakeClient.Close()
 		return nil, fmt.Errorf("connect the job intake: %w", err)
 	}
-	settings := newSettingsCache(pool, settingsWake)
+	settings := newSettingsCache(pool, settingsWake, tuning.log)
 	intake := newIntake(tuning, intakeClient, pool, leases.events, github, broker, settings, attributor)
 	intake.clock = c
 	intake.pushes = pushes

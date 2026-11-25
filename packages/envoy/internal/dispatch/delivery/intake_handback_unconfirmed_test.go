@@ -126,7 +126,7 @@ type unconfirmedHandBack struct {
 func stopWithAnUnconfirmedHandBack(t *testing.T, options ...bus.ConnectOption) unconfirmedHandBack {
 	t.Helper()
 	var row unconfirmedHandBack
-	row.logs = captureLogs(t)
+	row.logs = captureIntakeLogs(t)
 	pool, ctx := deliveryTestPool(t)
 	row.pool = pool
 	seedDeliverySettings(t, ctx, pool)
@@ -329,7 +329,8 @@ func TestAHandBackOnAConnectionGivenUpAsStaleNeverReachesTheStandbysDurable(t *t
 // the hold at once, leaving the -NAK to go out whenever the link moved, after a standby could have
 // recreated the durable; that is the negative control, which fails the hold's check.
 func TestAHandBackAnEarlierDeliveryLeftUnconfirmedKeepsTheHoldAtTheStop(t *testing.T) {
-	logs := captureLogs(t)
+	t.Parallel()
+	logs := captureIntakeLogs(t)
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	natsURL := testnats.URL(t)
@@ -443,7 +444,10 @@ func delivering(durable *heldDurable) *intakeDelivery {
 // (requireHandBackBeforeCreation). The negative control is the mark made after the admission, with
 // this hook between the two: the stop releases the hold, and the row fails at the hold's check.
 func TestAnEarlierDeliverysHandBackAdmittedBeforeItsPublishKeepsTheHoldAtTheStop(t *testing.T) {
-	logs := captureLogs(t)
+	// Serial: the stop's drain and its connected read must each answer within the intake's
+	// callWait (100 ms) for the hand-back to be admitted at all, which eight tests on four CPUs can
+	// miss without a defect.
+	logs := captureIntakeLogs(t)
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	natsURL := testnats.URL(t)
@@ -572,7 +576,7 @@ func TestAnEarlierDeliverysHandBackAdmittedBeforeItsPublishKeepsTheHoldAtTheStop
 // that none severed the connection. The negative control is the settlement of the latest delivery
 // alone: the first delivery's watcher severs, and the row fails naming the severed connection.
 func TestAReleaseAtTheStopSeversNothingForAnEarlierDeliveryStillConfirmingItsHandBack(t *testing.T) {
-	logs := captureLogs(t)
+	logs := captureIntakeLogs(t)
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	natsURL := testnats.URL(t)

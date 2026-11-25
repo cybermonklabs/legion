@@ -3,7 +3,6 @@ package delivery
 import (
 	"context"
 	"encoding/json"
-	"log/slog"
 	"strconv"
 	"sync"
 	"time"
@@ -149,7 +148,7 @@ func jobConsumerConfig(*intakeTuning) natsgo.ConsumerConfig {
 func (j *JobIntake) deliver(d *intakeDelivery, message intakeMessage) {
 	msg := message.msg
 	if j.ctx.Err() != nil || d.stopping.Load() {
-		slog.Warn("dispatch delivery: the job intake stopped before this event was handled; handing it back", "subject", msg.Subject)
+		d.tuning.log.Warn("dispatch delivery: the job intake stopped before this event was handled; handing it back", "subject", msg.Subject)
 		d.giveBack(msg)
 		return
 	}
@@ -159,7 +158,7 @@ func (j *JobIntake) deliver(d *intakeDelivery, message intakeMessage) {
 	callNATS(d.tuning, "acknowledge job message", func() (struct{}, error) { return struct{}{}, msg.Ack() }, "subject", msg.Subject)
 	var envelope contracts.Envelope
 	if err := json.Unmarshal(msg.Data, &envelope); err != nil {
-		slog.Error("dispatch delivery: decode job envelope", "subject", msg.Subject, "error", err)
+		d.tuning.log.Error("dispatch delivery: decode job envelope", "subject", msg.Subject, "error", err)
 		return
 	}
 	ctx, cancel := context.WithTimeout(j.ctx, jobCheckTimeout)
@@ -185,12 +184,12 @@ func (j *JobIntake) receive(ctx context.Context, payload string) {
 	}
 	runID, err := strconv.ParseInt(job.RunID, 10, 64)
 	if err != nil {
-		slog.Warn("dispatch delivery: job event with a malformed run_id", "run_id", job.RunID)
+		j.tuning.log.Warn("dispatch delivery: job event with a malformed run_id", "run_id", job.RunID)
 		return
 	}
 	tracked, err := RunTracked(ctx, j.pool, job.Repo, runID)
 	if err != nil {
-		slog.Error("dispatch delivery: read whether a job's run is tracked", "repo", job.Repo, "run_id", runID, "error", err)
+		j.tuning.log.Error("dispatch delivery: read whether a job's run is tracked", "repo", job.Repo, "run_id", runID, "error", err)
 		return
 	}
 	if !tracked {
@@ -250,17 +249,17 @@ func (j *JobIntake) fire(key runKey, run *pendingRun) {
 func (j *JobIntake) read(ctx context.Context, key runKey, production Production) {
 	owner, repo, err := refs.SplitGitHubRepo(key.repo)
 	if err != nil {
-		slog.Error("dispatch delivery: job run repository", "repo", key.repo, "error", err)
+		j.tuning.log.Error("dispatch delivery: job run repository", "repo", key.repo, "error", err)
 		return
 	}
 	fetched, err := ListWorkflowRunJobs(ctx, j.github, owner, repo, key.runID)
 	if err != nil {
-		slog.Warn("dispatch delivery: read the jobs of a running deploy run; its end reads them again", "repo", key.repo, "run_id", key.runID, "error", err)
+		j.tuning.log.Warn("dispatch delivery: read the jobs of a running deploy run; its end reads them again", "repo", key.repo, "run_id", key.runID, "error", err)
 		return
 	}
 	jobs := RunJobs(key.repo, key.runID, fetched, production)
 	if err := UpsertRunJobs(ctx, j.pool, key.repo, key.runID, jobs, JobsComplete(jobs)); err != nil {
-		slog.Error("dispatch delivery: store the jobs of a running deploy run", "repo", key.repo, "run_id", key.runID, "error", err)
+		j.tuning.log.Error("dispatch delivery: store the jobs of a running deploy run", "repo", key.repo, "run_id", key.runID, "error", err)
 	}
 }
 

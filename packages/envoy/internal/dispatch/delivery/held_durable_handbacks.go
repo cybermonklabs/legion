@@ -2,7 +2,6 @@ package delivery
 
 import (
 	"context"
-	"log/slog"
 	"time"
 
 	natsgo "github.com/nats-io/nats.go"
@@ -91,7 +90,7 @@ const intakeHandBacksSevered = "dispatch delivery: the intake's hold is lost wit
 // the hand-backs named stay outstanding, and the next holder's take-over recreates the durable at
 // its ack floor and is handed them once (takeOverConfig).
 func (d *heldDurable) severHandBacks() {
-	slog.Warn(intakeHandBacksSevered, "name", d.name)
+	d.tuning.log.Warn(intakeHandBacksSevered, "name", d.name)
 	d.nats.Sever()
 }
 
@@ -218,7 +217,7 @@ func (d *heldDurable) releaseHold(hold *duty.Hold, lapse bool) {
 	releasing, cancel := d.clock.WithTimeout(context.Background(), intakeHoldRenew)
 	defer cancel()
 	if err := release(releasing); err != nil {
-		slog.Error("dispatch delivery: release the intake's hold", "name", d.name, "error", err)
+		d.tuning.log.Error("dispatch delivery: release the intake's hold", "name", d.name, "error", err)
 	}
 }
 

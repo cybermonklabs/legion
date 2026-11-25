@@ -42,6 +42,9 @@ var givingUpLines = []string{intakeHoldLost, durableDeliversElsewhere}
 // hold is still this intake's, no line says it stopped delivering, and a message published after
 // the callback is handled by it.
 func TestAHolderKeepsTheDurableThroughAFirstConnectCallbackThatLandsInsideItsBind(t *testing.T) {
+	// The default logger, which this test's intakes write to as well (captureLogsFrom), from Debug
+	// up: the row orders the bind against the bus client's own "envoy nats connected" line, and
+	// reads the intake's numbered checks of its durable (DurableChecked).
 	logs := captureLogsFrom(t, slog.LevelDebug)
 	_, uri := testnats.Start(t)
 	// A client that connects in the foreground creates the stream before the intake's client
