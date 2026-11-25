@@ -33,9 +33,9 @@ fail:
 4. **Compare both sides sorted with `slices.Equal`**, so a member listed twice fails too.
 5. **Fail on every empty result**: no anchor line, no bullets, a decision that wrote nothing. A
    skip or an empty set reads exactly like a pass.
-6. **Make CI select it.** A test that reads a file outside its module needs that file in its job's
-   filter and a `RULES` entry in `.github/scripts/ci_job_reads.py`
-   (`docs/solutions/github/join-a-job-to-the-ci-router.md`).
+6. **Make CI select it.** A test that reads a file outside its module declares it in a
+   `//ci:reads` line at the top of the test file, from which the changes job computes its job's
+   filter (`docs/solutions/github/join-a-job-to-the-ci-router.md`).
 7. **When a review round rewrites how the fence finds or derives what it checks, re-run every
    mutation the previous version caught.** For each one that now passes, either restore the check
    or put the gap in the pull request body's *Not proven / risk*. Change the failure message so it

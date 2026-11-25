@@ -11,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
@@ -64,7 +65,7 @@ func TestARebuildBesideAnEditKeepsTheEditsReferences(t *testing.T) {
 	edit := func(tx pgx.Tx) {
 		lockOwnerOrFail(t, ctx, tx, owner)
 		editText(t, ctx, tx,
-			`update comments set body = $2 where id = $1::uuid`, "comment", source, editedComment)
+			`update comments set body = $2 where id = $1::uuid`, "comment", source, editedComment, prefixAuthor)
 	}
 	gate.order(t, ctx, database.Pool, probe, locked, rebuilt, edit)
 
@@ -102,7 +103,7 @@ func TestARebuildBesideADocumentEditKeepsTheEditsReferences(t *testing.T) {
 		`, document, editedDocument); err != nil {
 			t.Fatalf("write the edited document version: %v", err)
 		}
-		writeEdges(t, ctx, tx, "artifact", document, editedDocument)
+		writeEdges(t, ctx, tx, "artifact", document, editedDocument, model.Actor{})
 	}
 	gate.order(t, ctx, database.Pool, probe, locked, rebuilt, edit)
 
@@ -142,7 +143,7 @@ func TestARebuildBesideAProjectDocumentEditKeepsTheEditsReferences(t *testing.T)
 		`, document, editedDocument); err != nil {
 			t.Fatalf("write the edited project document version: %v", err)
 		}
-		writeEdges(t, ctx, tx, "artifact", document, editedDocument)
+		writeEdges(t, ctx, tx, "artifact", document, editedDocument, model.Actor{})
 	}
 	gate.order(t, ctx, database.Pool, probe, locked, rebuilt, edit)
 
@@ -262,19 +263,20 @@ func probeRefused(t *testing.T, ctx context.Context, probe pgx.Tx, gate *readGat
 }
 
 // editText writes new text with one statement and then the edges of that text, as a live writer
-// of an ask, a comment or a message does.
-func editText(t *testing.T, ctx context.Context, tx pgx.Tx, sql, kind, id, body string) {
+// of an ask, a comment or a message does, for writer, the author the source's row records.
+func editText(t *testing.T, ctx context.Context, tx pgx.Tx, sql, kind, id, body string, writer model.Actor) {
 	t.Helper()
 	if _, err := tx.Exec(ctx, sql, id, body); err != nil {
 		t.Fatalf("write the edited text: %v", err)
 	}
-	writeEdges(t, ctx, tx, kind, id, body)
+	writeEdges(t, ctx, tx, kind, id, body, writer)
 }
 
-// writeEdges stores the edges of one text, as every writer does after it writes.
-func writeEdges(t *testing.T, ctx context.Context, tx pgx.Tx, kind, id, body string) {
+// writeEdges stores the edges of one text, as every writer does after it writes, its short ids
+// resolved for writer, the author the source records.
+func writeEdges(t *testing.T, ctx context.Context, tx pgx.Tx, kind, id, body string, writer model.Actor) {
 	t.Helper()
-	located := NewReader(ctx, tx, kind, id, resolverServer).Mentions(body)
+	located := NewReader(ctx, tx, writer, kind, id, resolverServer).Mentions(body)
 	if _, err := replaceRefs(ctx, tx, kind, id, text.Refs(located), nil, true); err != nil {
 		t.Fatalf("write the edges of the edited text: %v", err)
 	}

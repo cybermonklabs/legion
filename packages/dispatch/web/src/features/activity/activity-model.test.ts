@@ -1,5 +1,5 @@
 import { beforeAll, expect, test } from "bun:test";
-import type { SettledDeliveryState } from "@legion/contracts";
+import { DELETED_POST_DELIVERY_ERROR, type SettledDeliveryState } from "@legion/contracts";
 
 import type { DispatchEvent } from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
@@ -126,6 +126,7 @@ test("a project's default assignee names the person it moved to; a retained clea
 function commentDelivery(receipt: {
   state: SettledDeliveryState;
   duplicate?: boolean;
+  error?: string;
 }): DispatchEvent {
   return {
     actor: { id: "alice", kind: "user" },
@@ -172,7 +173,19 @@ test("a mention receipt says whether the mention reached its target", () => {
   ]);
 });
 
-function messageDelivery(state: SettledDeliveryState): DispatchEvent {
+// A delete appends one failed receipt per send of its post it ended, with its own words. That
+// receipt is no failure to deliver: the line says the post's delete ended the mention, while any
+// other failure still says the mention could not be delivered.
+test("a mention receipt the post's delete appended says the delete ended the mention", () => {
+  expect(
+    activityDescription(commentDelivery({ error: DELETED_POST_DELIVERY_ERROR, state: "failed" }))
+  ).toEqual(["the post's delete ended a comment mention to session:planner"]);
+  expect(
+    activityDescription(commentDelivery({ error: "no live session planner", state: "failed" }))
+  ).toEqual(["could not deliver a comment mention to session:planner"]);
+});
+
+function messageDelivery(state: SettledDeliveryState, error?: string): DispatchEvent {
   return {
     actor: { id: "alice", kind: "user" },
     created_at: "2026-10-25T00:00:00Z",
@@ -187,6 +200,7 @@ function messageDelivery(state: SettledDeliveryState): DispatchEvent {
       state,
       target: "session:planner",
       title: "planner",
+      ...(error === undefined ? {} : { error }),
     },
     seq: 2,
     type: "message.delivery",
@@ -198,6 +212,17 @@ test("a message receipt says a queued message waits for the stopped session", ()
   expect(activityDescription(messageDelivery("sent"))).toEqual(["delivered a message"]);
   expect(activityDescription(messageDelivery("queued"))).toEqual([
     "queued a message for session:planner, which is stopped; it gets the message if it runs again within 72 hours",
+  ]);
+});
+
+// A failed message receipt is no delivery: it reads as a mention's failure does, naming the
+// target, and the one a delete appended for a send it ended says the delete ended it.
+test("a failed message receipt says it was not delivered, or that the post's delete ended it", () => {
+  expect(activityDescription(messageDelivery("failed", "no live session planner"))).toEqual([
+    "could not deliver a message to session:planner",
+  ]);
+  expect(activityDescription(messageDelivery("failed", DELETED_POST_DELIVERY_ERROR))).toEqual([
+    "the post's delete ended a message to session:planner",
   ]);
 });
 

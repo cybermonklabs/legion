@@ -437,7 +437,7 @@ const (
 	// gone when it arrived.
 	roleClaimWriteMissing
 	// roleClaimWriteRaced is every attempt lost to a write that landed since the read it was
-	// conditional on (nats.ErrKeyExists), the last of them at the attempt bound.
+	// conditional on (bus.IsCASConflict), the last of them at the attempt bound.
 	roleClaimWriteRaced
 )
 
@@ -468,7 +468,7 @@ func (r *Registry) writeRoleClaim(ctx context.Context, claim RoleClaim, w roleCl
 			return roleClaimWriteLanded, at, nil
 		case errors.Is(err, nats.ErrKeyNotFound):
 			return roleClaimWriteMissing, claim, nil
-		case !errors.Is(err, nats.ErrKeyExists):
+		case !bus.IsCASConflict(err):
 			return roleClaimWriteFailed, claim, err
 		case attempt == w.attempts:
 			return roleClaimWriteRaced, claim, nil
@@ -616,6 +616,32 @@ func (r *Registry) RoleClaim(ctx context.Context, role string) (RoleClaim, error
 		return RoleClaim{}, err
 	}
 	claim.Revision = entry.Revision()
+	return claim, nil
+}
+
+// RoleClaimFromLeader reads role's claim as RoleClaim does, from the role bucket stream's leader
+// (bus.KeyValue.ReadFromLeader) rather than by a direct get, which on a replicated bucket any copy
+// near enough to current answers: a copy that has not applied a takeover answers the previous
+// holder's claim. It is the read for a decision a stale claim would get wrong for good, such as the
+// session relay's judgement of whether a role message still belongs to the session it was stored
+// for. A role with no claim, or a delete or purge marker, is the zero claim without an error; a
+// message the server wrote under the role's key is ErrMalformedRoleClaim, as a value no claim
+// decodes from is.
+func (r *Registry) RoleClaimFromLeader(ctx context.Context, role string) (RoleClaim, error) {
+	leader, err := r.roles().ReadFromLeader(ctx, role)
+	switch {
+	case err != nil:
+		return RoleClaim{}, fmt.Errorf("read role %s's claim: %w", role, err)
+	case leader.Kind == bus.LeaderAbsent || leader.Kind == bus.LeaderMarker:
+		return RoleClaim{}, nil
+	case leader.Kind == bus.LeaderServerWritten:
+		return RoleClaim{}, fmt.Errorf("%w: role %s's key holds a message the server wrote", ErrMalformedRoleClaim, role)
+	}
+	claim, err := DecodeRoleClaim(leader.Value)
+	if err != nil {
+		return RoleClaim{}, err
+	}
+	claim.Revision = leader.Revision
 	return claim, nil
 }
 

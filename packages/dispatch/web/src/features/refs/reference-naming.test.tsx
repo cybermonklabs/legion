@@ -241,6 +241,32 @@ test("a known person reads as their login with no link, an unknown one as writte
   }
 });
 
+// R5 and R8 for a login GFM would cut: a person's login is an email address, and GFM's transform
+// starts an email after a dot or a hyphen in its local part, which drew `dispatch://person/john.`
+// and a link to `mailto:doe@example.com`. The engine keeps the address whole
+// (`@legion/proof-editor`'s `whole-addresses.ts`), so it names the person and reads as their login,
+// with no link and no mail address anywhere in the line.
+test("a known person whose login holds a dot or a hyphen reads as their login with no link", async () => {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  client.setQueryData(
+    ["users"],
+    [{ login: "john.doe@example.com" }, { login: "person-2@example.com" }]
+  );
+  const view = draw(
+    <MarkdownBody markdown="Ask dispatch://person/john.doe@example.com and dispatch://person/person-2@example.com now." />,
+    client
+  );
+  try {
+    await waitFor(() =>
+      expect(words(view.container)).toBe("Ask john.doe@example.com and person-2@example.com now.")
+    );
+    expect(view.container.querySelectorAll("a")).toHaveLength(0);
+    expect(view.container.innerHTML).not.toContain("mailto:");
+  } finally {
+    view.unmount();
+  }
+});
+
 // R5 and R8, by the one rule of a known role (`role-holders.ts`), which the picker's role rows
 // follow: a role a session the registry lists holds is named and linked, whether that session is
 // live or unresponsive, as the server delivers to either. A text that names no record is on no

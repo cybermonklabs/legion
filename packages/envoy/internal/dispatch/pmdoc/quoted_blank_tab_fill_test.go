@@ -13,6 +13,7 @@ import "testing"
 // and so stores the third as a document the browser draws otherwise; a reader that answers spread
 // for the first stores one the browser draws otherwise in its place (#2507).
 func TestATabFillInsideAQuotedItemFollowsTheBrowser(t *testing.T) {
+	t.Parallel()
 	const callout = ":::callout{#c1 kind=\"note\" title=\"T\"}"
 	for _, test := range []struct {
 		name     string

@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # packages/envoy/infra/scripts/race-unit.sh
 #
-# The race build of envoy-infra's unit tests: the one command envoy-infra-go's unit step runs and
-# ci-caches.yaml's envoy-infra fill compiles into the build cache that step restores.
+# The race build of envoy-infra's unit tests: the one command envoy-infra-build's unit step runs
+# and ci-caches.yaml's envoy-infra fill compiles into the build cache that step restores.
 #
-#   race-unit.sh run       go test -count=1 -race over PACKAGES (envoy-infra-go's unit step)
+#   race-unit.sh run       go test -count=1 -race over PACKAGES (envoy-infra-build's unit step)
 #   race-unit.sh compile   go test -c -o /dev/null -race over PACKAGES (the fill's arm64 leg)
 #
 # PACKAGES is every package of the module, from `go list ./...`, less those EXCLUDE matches: the

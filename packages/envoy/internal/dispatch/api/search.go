@@ -24,6 +24,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
@@ -188,7 +189,7 @@ func searchKeywordLegs(rank func(searchColumn string) string) string {
     left join artifacts a on a.id = c.artifact_id
     left join projects p on p.key = a.project_key, q
    where c.search @@ q.tsq and ($2 = '' or coalesce(i.project_key, p.key) = $2)` +
-		searchRowFilters("i.status", "c.author", "c.created_at") + `
+		searchRowFilters("i.status", "c.author", "coalesce(c.edited_at, c.created_at)") + `
   union all
   select 'ask' as kind, 'keyword', k.issue_key, case when k.issue_key is null then coalesce(k.artifact_id, k.block_artifact_id) else null::uuid end,
          coalesce(k.artifact_id, k.block_artifact_id, ` + store.CastableUUID(`k.anchor->>'artifact_id'`) + `), k.id::text, ` + askBlockNodeSQL + `,
@@ -200,7 +201,7 @@ func searchKeywordLegs(rank func(searchColumn string) string) string {
     left join artifacts a on a.id = coalesce(k.artifact_id, k.block_artifact_id)
     left join projects p on p.key = a.project_key, q
    where k.search @@ q.tsq and ($2 = '' or coalesce(i.project_key, p.key) = $2)` +
-		searchRowFilters("i.status", "k.author", "k.created_at") + `
+		searchRowFilters("i.status", "k.author", "coalesce(k.edited_at, k.created_at)") + `
   union all
   select 'message' as kind, 'keyword', m.issue_key, null::uuid, null::uuid, m.id::text, null::text,
          null::text, null::text[],
@@ -208,7 +209,7 @@ func searchKeywordLegs(rank func(searchColumn string) string) string {
          false, ` + rank("m.search") + `
     from messages m join issues i on i.key = m.issue_key, q
    where m.search @@ q.tsq and ($2 = '' or i.project_key = $2)` +
-		searchRowFilters("i.status", "m.author", "m.created_at")
+		searchRowFilters("i.status", "m.author", "coalesce(m.edited_at, m.created_at)")
 }
 
 // searchRowFilters is the status, author and date filter every leg of every search narrows by,
@@ -220,9 +221,14 @@ func searchKeywordLegs(rank func(searchColumn string) string) string {
 // the rows of the issues in that status and such a row belongs to none. author is the jsonb
 // actor that wrote the item the row names, matched on its id, which is a person's login or a
 // session's id; every kind has one, an issue and a document their creator. written is when the
-// item itself was last written, which the date filter reads in place of the recency the row is
-// ordered by: an issue's updated_at moves whenever anything on it moves, and a comment written
-// last year on an issue touched today is not a comment from today.
+// item's text was last written: a comment, an ask and a message each record an edit of their own
+// (comments.edited_at, asks.edited_at, messages.edited_at), and an edit rewrites the row's search
+// vector, so each of those arms passes coalesce(edited_at, created_at) and a search that finds an
+// edit's text does not drop the row for the date the text it replaced was written. The arms whose
+// table records no edit pass the one time they have: an issue's updated_at, and a document
+// version's created_at, the moment that version's text was written. The date filter reads that in
+// place of the recency the row is ordered by: an issue's updated_at moves whenever anything on it
+// moves, and a comment written last year on an issue touched today is not a comment from today.
 func searchRowFilters(status, author, written string) string {
 	return `
      and (q.status_filter = '' or ` + status + ` = q.status_filter)
@@ -350,10 +356,24 @@ var (
 // in the page's own lateral join, over the rows of one page and the few blocks each window covers,
 // never over every candidate; a keyword row and an issue carry no covers, so the join answers
 // nothing for them.
-func searchPageAndTailSQL(legsSource string) string {
+//
+// A covered block is named only where the acting person may see it, by the registry's own
+// predicate over the block's node (refs.VisibleEnd, bound at seen, the parameter the acting
+// credential is bound at): the hit is the best covered block the reader may see, and a window
+// whose every block is hidden from them names none. A row's own predicate is its item's or its
+// document's, so a visible document's window can cover a block its author keeps to themselves,
+// and naming that block would answer its id and its link to a reader who may not see it. The
+// block's node kind is its owner's block kind - `block` for a document's, `<kind>_block` for a
+// comment's, an ask's or a message's (refs.ItemKind.BlockKind) - and its id is the address the
+// store keys it by: `<ref_key>#<block>` for a document's block, `<kind>/<uuid>#<block>` for an
+// item's (refs.ParseItemBlockNode).
+func searchPageAndTailSQL(legsSource string, seen int) string {
+	visibleBlock := refs.VisibleEnd(`case r.kind when 'document' then 'block' else r.kind || '_block' end`,
+		`case r.kind when 'document' then ar.ref_key else r.kind || '/' || r.id end || '#' || covered.block_id`,
+		true, searchParam(seen))
 	return fmt.Sprintf(`page as (
   select l.*, f.score, f.own_lead
-    from %s l join fused f using (kind, id)
+    from %[1]s l join fused f using (kind, id)
    order by f.score desc, case when f.own_lead then l.id end, l.updated_at desc, l.id
    limit $3 offset $6
 )
@@ -390,8 +410,9 @@ select t.total, t.reachable, r.kind, case when r.owner_artifact_id is null then 
   -- The block of r.covers that matched, if the row carries a window. Each covered block's own
   -- text comes from the table its indexer writes it to: a document's, a comment's and an ask's
   -- block texts are kept per version or revision, the latest being the current text. A message
-  -- is never edited and keeps no text table (refs/item_blocks.go's table map), so its block is
-  -- ranked on the excerpt its row holds, the block's head as refs.BlockExcerpt cuts it.
+  -- records no revisions, so it keeps no text table (refs/item_blocks.go's table map) and its
+  -- block is ranked on the excerpt its row holds, the block's head as refs.BlockExcerpt cuts it,
+  -- which an edit of the message rewrites with the block it changed.
   left join lateral (
     select covered.block_id
       from unnest(r.covers) with ordinality as covered(block_id, ord)
@@ -410,11 +431,12 @@ select t.total, t.reachable, r.kind, case when r.owner_artifact_id is null then 
                                  where x.message_id = r.id::uuid and x.block_id = covered.block_id)
         end as text
       ) block
+     where %[2]s
      order by ts_rank_cd(to_tsvector('english', search_text(coalesce(block.text, ''))), q.tsq) desc, covered.ord
      limit 1
   ) hit on true
  order by r.score desc, case when r.own_lead then r.id end, r.updated_at desc, r.id
-`, legsSource)
+`, legsSource, visibleBlock)
 }
 
 // searchQuery scores every kind of content on one list, so a page holds the query's best matches
@@ -442,8 +464,17 @@ select t.total, t.reachable, r.kind, case when r.owner_artifact_id is null then 
 // $5 headlineOptions, $6 offset, $7 contracts.SearchKindDepth, $8 searchFusionK, then
 // searchQOpener's own six from $9: $9 the fallback's rarest words, $10 the words it excludes,
 // $11 the issues the query names by key, $12 status, $13 author, $14 updated_since
-// (searchQueryArguments).
-var searchQuery = searchQOpener(9) + searchQueryBody(searchKeywordLegsSQL, searchFusedSQL, "")
+// (searchQueryArguments), and $15 the acting credential (refs.VisibilityArg).
+var searchQuery = searchQOpener(9) + searchQueryBody(searchKeywordLegsSQL, searchFusedSQL, "", searchSeenParam)
+
+// searchSeenParam and searchMeaningSeenParam are where each of search's own two queries binds
+// the acting credential: after every parameter the query already had, the opener's own six
+// included, so neither query's numbering moved. The related-item check numbers its own
+// (related_statements.go).
+const (
+	searchSeenParam        = 15
+	searchMeaningSeenParam = 18
+)
 
 // searchQOpener opens searchQuery and searchQueryMeaning: their q, the query text read as
 // websearch_to_tsquery, its first term ($4) for the snippet window, the issues the query names by
@@ -477,24 +508,31 @@ with q as (select
 }
 
 // searchKindsCTE is the kinds CTE both bodies open with: the arms whose rows the query ranks,
-// with every row exclude names dropped before anything ranks, counts or pages them. exclude is
-// an SQL predicate over the arms' own columns, true of a row the caller leaves out, and empty
-// for a query that leaves nothing out, whose text is then the arms as they stand. Search leaves
-// out the kinds the request did not name (searchKinds.exclusion), so ranked, legs, total and
-// reachable are the asked-for kinds' rows and not only their page; the related-item check passes
-// relatedExcludedOwners, because the page it takes is ten rows deep (suggestionSearchDepth) and
-// rows dropped after that page took places in it and hid the matches the check exists to find.
+// with every row exclude names dropped before anything ranks, counts or pages them, and every
+// row the acting person may not see dropped with them. exclude is an SQL predicate over the
+// arms' own columns, true of a row the caller leaves out, and empty for a query that leaves
+// nothing out. Search leaves out the kinds the request did not name (searchKinds.exclusion), so
+// ranked, legs, total and reachable are the asked-for kinds' rows and not only their page; the
+// related-item check passes relatedExcludedOwners, because the page it takes is ten rows deep
+// (suggestionSearchDepth) and rows dropped after that page took places in it and hid the matches
+// the check exists to find.
+//
+// seen is the parameter the acting credential is bound at. This is the one choke point both
+// bodies pass through, and the related-item check's two shapes of each with them, so binding
+// the registry's predicate here (refs.VisibleEnd, over the arms' own kind and id) reaches
+// every keyword arm at once; a meaning arm binds its own besides, because its candidate CTE
+// cuts to its limit before this filter ever sees a row. A search row's kind is the reader's
+// word for it, and `document` is the node kind `artifact`.
 //
 // The arms are a union whose first select names every column, so the derived table the filter
 // reads carries those names on to ranked below unchanged.
-func searchKindsCTE(arms, exclude string) string {
-	if exclude == "" {
-		return `kinds as (` + arms + `
-),
-`
+func searchKindsCTE(arms, exclude string, seen int) string {
+	visible := refs.VisibleEnd(`case arms.kind when 'document' then 'artifact' else arms.kind end`, `arms.id::text`, false, searchParam(seen))
+	if exclude != "" {
+		visible = `not (` + exclude + `) and ` + visible
 	}
 	return `kinds as (select * from (` + arms + `
-) arms where not (` + exclude + `)
+) arms where ` + visible + `
 ),
 `
 }
@@ -583,15 +621,16 @@ var searchStatementsByKinds [int(searchNoKind) + 1]searchStatements
 // statements answers the texts this set runs, building them on the first ask. The set that
 // leaves nothing out builds searchQuery and the three searchQueryMeaning texts themselves: its
 // exclusion is empty, and searchKindsCTE writes the arms as they stand for an empty one, so the
-// bytes the pool prepares for a search naming no kind are the bytes the tests read by name.
+// bytes the pool prepares for a search naming no kind are the bytes the tests read by name. Each
+// binds the acting credential where its search binds it (searchSeenParam, searchMeaningSeenParam).
 func (k searchKinds) statements() *searchStatements {
 	pair := &searchStatementsByKinds[k]
 	pair.once.Do(func() {
 		exclude := k.exclusion()
-		pair.keyword = searchQOpener(9) + searchQueryBody(searchKeywordLegsSQL, searchFusedSQL, exclude)
+		pair.keyword = searchQOpener(9) + searchQueryBody(searchKeywordLegsSQL, searchFusedSQL, exclude, searchSeenParam)
 		meaning := func(scope meaningProjectScope) string {
 			return searchQOpener(12) +
-				searchQueryMeaningBody(searchKeywordLegsSQL, searchFusedSQL, exclude, scope)
+				searchQueryMeaningBody(searchKeywordLegsSQL, searchFusedSQL, exclude, searchMeaningSeenParam, scope)
 		}
 		pair.meaningEvery = meaning(meaningEveryProject)
 		pair.meaningScoped = meaning(meaningOneProject)
@@ -600,11 +639,17 @@ func (k searchKinds) statements() *searchStatements {
 	return pair
 }
 
+// searchParam is the placeholder of a numbered parameter, as the query bodies name theirs.
+func searchParam(number int) string {
+	return "$" + strconv.Itoa(number)
+}
+
 // searchQueryBody is searchQuery after its q, over keywordLegs (searchKeywordLegs), fused (the
 // "fused" CTE scoring what the legs matched, searchFusedSQL or relatedFusedSQL) and without or
-// with an exclusion (searchKindsCTE): every CTE it reads q from and the page.
-func searchQueryBody(keywordLegs, fused, exclude string) string {
-	return searchKindsCTE(keywordLegs, exclude) + `ranked as (
+// with an exclusion (searchKindsCTE): every CTE it reads q from and the page. seen is the
+// parameter the acting credential is bound at, which every caller numbers after its own.
+func searchQueryBody(keywordLegs, fused, exclude string, seen int) string {
+	return searchKindsCTE(keywordLegs, exclude, seen) + `ranked as (
   select *, row_number() over (partition by kind order by own desc, r desc, updated_at desc, id) as pos,
          count(*) over (partition by kind) as matches
     from kinds
@@ -616,7 +661,7 @@ legs as (
   select (select coalesce(sum(matches), 0) from (select max(matches) as matches from legs group by kind) each_kind) as total,
          (select count(*) from fused) as reachable
 ),
-` + searchPageAndTailSQL("legs")
+` + searchPageAndTailSQL("legs", seen)
 }
 
 // searchWindowLimit is the LIMIT a window arm's candidate CTE takes, searchWindowCandidates as
@@ -769,7 +814,7 @@ func (s *server) beginMeaningScan(ctx context.Context) (pgx.Tx, error) {
 // can lose the good plan of either: measured on the load-test deployment, the scoped form
 // takes a small project's windows through embeddings_kind_project (800 of 800 rows, 13.7 ms)
 // and the unscoped form takes every project's through embeddings_cosine (INFRA-988, migration
-// 20261109120000's header holds the four measured plans). All three take the same seventeen
+// 20261109120000's header holds the four measured plans). All three take the same eighteen
 // parameters with the same meanings; in the unscoped one $2 is read by the keyword
 // legs alone, which keep the project predicate they share with searchQuery.
 //
@@ -792,12 +837,13 @@ func (s *server) beginMeaningScan(ctx context.Context) (pgx.Tx, error) {
 // $7 contracts.SearchKindDepth, $8 searchFusionK, $9 the query's embedding (a vector literal),
 // $10 searchMeaningFloor, $11 the query embedder's identity, then searchQOpener's own six from
 // $12: $12 the fallback's rarest words, $13 the words it excludes, $14 the issues the query names
-// by key, $15 status, $16 author, $17 updated_since (searchMeaningQueryArguments). All three
-// shapes take all seventeen; searchQueryMeaning reads $2 in its keyword legs alone.
+// by key, $15 status, $16 author, $17 updated_since (searchMeaningQueryArguments), and $18 the
+// acting credential. All three shapes take all eighteen; searchQueryMeaning reads $2 in its
+// keyword legs alone.
 var (
-	searchQueryMeaning       = searchQOpener(12) + searchQueryMeaningBody(searchKeywordLegsSQL, searchFusedSQL, "", meaningEveryProject)
-	searchQueryMeaningScoped = searchQOpener(12) + searchQueryMeaningBody(searchKeywordLegsSQL, searchFusedSQL, "", meaningOneProject)
-	searchQueryMeaningJoined = searchQOpener(12) + searchQueryMeaningBody(searchKeywordLegsSQL, searchFusedSQL, "", meaningOneProjectJoined)
+	searchQueryMeaning       = searchQOpener(12) + searchQueryMeaningBody(searchKeywordLegsSQL, searchFusedSQL, "", searchMeaningSeenParam, meaningEveryProject)
+	searchQueryMeaningScoped = searchQOpener(12) + searchQueryMeaningBody(searchKeywordLegsSQL, searchFusedSQL, "", searchMeaningSeenParam, meaningOneProject)
+	searchQueryMeaningJoined = searchQOpener(12) + searchQueryMeaningBody(searchKeywordLegsSQL, searchFusedSQL, "", searchMeaningSeenParam, meaningOneProjectJoined)
 )
 
 // meaningProjectScope is which of the three shapes of the meaning statement is being composed,
@@ -855,14 +901,21 @@ func (scope meaningProjectScope) candidateProject(column string) string {
 // searchQueryMeaningBody is searchQueryMeaning after its q, over keywordLegs (searchKeywordLegs),
 // fused (searchFusedSQL or relatedFusedSQL, as searchQueryBody takes it), without or with an
 // exclusion (searchKindsCTE), and scoped to one project - on the row's own column or on the
-// owner each arm joins - or to every one.
-func searchQueryMeaningBody(keywordLegs, fused, exclude string, scope meaningProjectScope) string {
+// owner each arm joins - or to every one. seen is the parameter the acting credential is bound
+// at.
+//
+// Each candidate CTE binds the predicate of its own node kind besides the one searchKindsCTE
+// binds over every arm: a candidate CTE cuts to its own limit by distance before anything
+// downstream filters it, so a node the acting person may not see would otherwise take a place
+// in that cut and hide a node they may.
+func searchQueryMeaningBody(keywordLegs, fused, exclude string, seen int, scope meaningProjectScope) string {
 	return `meaning_issue_candidates as (
   select i.key as issue_key, i.key as id, i.title as issue_title, i.status as issue_status, i.updated_at,
          1 - (e.embedding <=> $9::vector) as r
     from embeddings e
     join issues i on i.key = e.id, q
-   where e.kind = 'issue' and e.embedding is not null and e.model = $11` + scope.candidateProject("i.project_key") +
+   where e.kind = 'issue' and e.embedding is not null and e.model = $11` + scope.candidateProject("i.project_key") + `
+     and ` + refs.VisibleKind("issue", "i.key", searchParam(seen)) +
 		searchRowFilters("i.status", "i.created_by", "i.updated_at") + `
    order by e.embedding <=> $9::vector
    limit $7
@@ -883,7 +936,8 @@ meaning_document_candidates as (
     left join issues i on i.key = a.issue_key
     join projects p on p.key = a.project_key
     join lateral (select created_at from artifact_versions v where v.artifact_id = a.id order by v.number desc limit 1) v on true, q
-   where e.kind = 'document_block' and a.kind = 'doc' and e.embedding is not null and e.model = $11` + scope.candidateProject("p.key") +
+   where e.kind = 'document_block' and a.kind = 'doc' and e.embedding is not null and e.model = $11` + scope.candidateProject("p.key") + `
+     and ` + refs.VisibleKind("artifact", "a.ref_key", searchParam(seen)) +
 		searchRowFilters("i.status", "a.created_by", "v.created_at") + `
    order by e.embedding <=> $9::vector
    ` + searchWindowLimit + `
@@ -896,7 +950,7 @@ meaning_document as (
     from meaning_document_candidates where r >= $10
    order by meaning_document_candidates.id, r desc, window_id
 ),
-` + searchMeaningCommentArm(scope) + `,
+` + searchMeaningCommentArm(scope, seen) + `,
 meaning_ask_candidates as (
   select k.issue_key, k.artifact_id, k.block_artifact_id, k.anchor, k.id, ` + askBlockNodeSQL + ` as block_id, e.id as window_id, e.covers,
          i.title as issue_title, i.status as issue_status,
@@ -907,8 +961,9 @@ meaning_ask_candidates as (
     left join issues i on i.key = k.issue_key
     left join artifacts a on a.id = coalesce(k.artifact_id, k.block_artifact_id)
     left join projects p on p.key = a.project_key, q
-   where e.kind = 'ask_part' and e.embedding is not null and e.model = $11` + scope.candidateProject("coalesce(i.project_key, p.key)") +
-		searchRowFilters("i.status", "k.author", "k.created_at") + `
+   where e.kind = 'ask_part' and e.embedding is not null and e.model = $11` + scope.candidateProject("coalesce(i.project_key, p.key)") + `
+     and ` + refs.VisibleKind("ask", "k.id::text", searchParam(seen)) +
+		searchRowFilters("i.status", "k.author", "coalesce(k.edited_at, k.created_at)") + `
    order by e.embedding <=> $9::vector
    ` + searchWindowLimit + `
 ),
@@ -927,8 +982,9 @@ meaning_message_candidates as (
     from embeddings e
     join messages m on m.id = ` + windowItemUUID + `
     join issues i on i.key = m.issue_key, q
-   where e.kind = 'message_block' and e.embedding is not null and e.model = $11` + scope.candidateProject("i.project_key") +
-		searchRowFilters("i.status", "m.author", "m.created_at") + `
+   where e.kind = 'message_block' and e.embedding is not null and e.model = $11` + scope.candidateProject("i.project_key") + `
+     and ` + refs.VisibleKind("message", "m.id::text", searchParam(seen)) +
+		searchRowFilters("i.status", "m.author", "coalesce(m.edited_at, m.created_at)") + `
    order by e.embedding <=> $9::vector
    ` + searchWindowLimit + `
 ),
@@ -945,7 +1001,7 @@ meaning_message as (
   union all select * from meaning_document
   union all select * from meaning_comment
   union all select * from meaning_ask
-  union all select * from meaning_message`, exclude) + `ranked as (
+  union all select * from meaning_message`, exclude, seen) + `ranked as (
   select *, row_number() over (partition by kind, list order by own desc, r desc, updated_at desc, id) as pos
     from kinds
 ),
@@ -962,7 +1018,7 @@ totals as (
   select (select count(*) from (select distinct kind, id from kinds) u) as total,
          (select count(*) from fused) as reachable
 ),
-` + searchPageAndTailSQL("legs_unique")
+` + searchPageAndTailSQL("legs_unique", seen)
 }
 
 // searchMeaningCommentArm is searchQueryMeaningBody's comment arm. It is two arms, not one,
@@ -984,10 +1040,13 @@ totals as (
 // where main's arm drops it inside the ordered select. So 1,001 windows of comments that no longer
 // exist, nearer than a project's three comments, would answer that project with none of them,
 // where main answers all three (measured on such a corpus, INFRA-988). It loses no row today
-// because no path deletes a comment row: no route deletes a comment, and nothing outside the
-// tests runs `delete from comments`. A change that adds comment deletion (dispatch://INFRA-1523)
-// must delete the comment's windows in the same transaction, or move this join back inside the
-// limit.
+// because no path deletes a comment row: a comment's delete (deleteComment, dispatch://INFRA-1523)
+// keeps the row and clears its body, and nothing outside the tests runs `delete from comments`.
+// That delete drops the comment's windows in its own transaction (clearDeletedPostBody,
+// refs.TombstoneItem), so no window of a deleted comment is left for this join to read; one
+// left behind by some later defect would join here, and its hit carries the comment's delete
+// mark (stampSearchPostMarks), which is the backstop for that case. A change that deletes comment rows must delete the comment's
+// windows in the same transaction, or move this join back inside the limit.
 //
 // The three window arms beside it filter and join inside the ordered, limited select, and for
 // comments that order costs the index. The item join is on an expression of the window's id
@@ -1034,9 +1093,15 @@ totals as (
 // (meaningStatementFor). The project predicate is the one filter that had to move the other
 // way, down into the candidate CTE: it is the one a search names on nearly every request, so it
 // is the one whose absence from the index scan spent the whole candidate set on other projects.
-func searchMeaningCommentArm(scope meaningProjectScope) string {
+//
+// seen is the parameter the acting credential is bound at: this arm binds the comment
+// predicate inside its candidate CTE, over the comment the window belongs to
+// (windowItemUUID), because the CTE cuts to its limit by distance before the join above it
+// ever sees a row, so a comment the acting person may not see would otherwise take a place in
+// that cut and hide one they may.
+func searchMeaningCommentArm(scope meaningProjectScope, seen int) string {
 	if scope == meaningOneProjectJoined {
-		return searchMeaningCommentArmJoined
+		return searchMeaningCommentArmJoined(seen)
 	}
 	return `meaning_comment_candidates as (
   select e.id as window_id, e.covers, ` + windowItemUUID + ` as comment_id,
@@ -1044,6 +1109,7 @@ func searchMeaningCommentArm(scope meaningProjectScope) string {
     from embeddings e
    where e.kind = 'comment_block' and e.embedding is not null and e.model = $11` +
 		scope.candidateProject(searchMeaningCommentProject) + `
+     and ` + refs.VisibleKind("comment", windowItemUUID+`::text`, searchParam(seen)) + `
    order by e.embedding <=> $9::vector
    ` + searchWindowLimit + `
 ),
@@ -1058,7 +1124,7 @@ meaning_comment as (
     left join issues i on i.key = c.issue_key
     left join artifacts a on a.id = c.artifact_id
     left join projects p on p.key = a.project_key, q
-   where meaning_comment_candidates.r >= $10` + searchRowFilters("i.status", "c.author", "c.created_at") + `
+   where meaning_comment_candidates.r >= $10` + searchRowFilters("i.status", "c.author", "coalesce(c.edited_at, c.created_at)") + `
    order by c.id, meaning_comment_candidates.r desc, meaning_comment_candidates.window_id
 )`
 }
@@ -1105,7 +1171,12 @@ const searchMeaningCommentProject = `coalesce(i.project_key, p.key)`
 // the price of serving every row until the pass has labelled them. A search narrowing by status,
 // author or updated_since keeps it for good, since those three filters are inside this arm's
 // limit and above the other's.
-var searchMeaningCommentArmJoined = `meaning_comment_candidates as (
+//
+// seen is the parameter the acting credential is bound at, and the comment predicate rides
+// inside this arm's candidate limit beside the project one, for the reason every other
+// candidate CTE binds its own: the limit is spent before anything above it filters.
+func searchMeaningCommentArmJoined(seen int) string {
+	return `meaning_comment_candidates as (
   select c.issue_key, c.artifact_id, c.anchor, c.id, e.id as window_id, e.covers, i.title as issue_title, i.status as issue_status, p.key as owner_project, a.slug as owner_slug, a.name as owner_name,
          coalesce(i.updated_at, c.created_at) as updated_at,
          1 - (e.embedding <=> $9::vector) as r
@@ -1115,8 +1186,9 @@ var searchMeaningCommentArmJoined = `meaning_comment_candidates as (
     left join artifacts a on a.id = c.artifact_id
     left join projects p on p.key = a.project_key, q
    where e.kind = 'comment_block' and e.embedding is not null and e.model = $11` +
-	meaningOneProjectJoined.candidateProject(searchMeaningCommentProject) +
-	searchRowFilters("i.status", "c.author", "c.created_at") + `
+		meaningOneProjectJoined.candidateProject(searchMeaningCommentProject) + `
+     and ` + refs.VisibleKind("comment", "c.id::text", searchParam(seen)) +
+		searchRowFilters("i.status", "c.author", "coalesce(c.edited_at, c.created_at)") + `
    order by e.embedding <=> $9::vector
    ` + searchWindowLimit + `
 ),
@@ -1128,9 +1200,11 @@ meaning_comment as (
     from meaning_comment_candidates where r >= $10
    order by meaning_comment_candidates.id, r desc, window_id
 )`
+}
 
 func (s *server) search(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAuthenticated(w, r) {
+	who, ok := s.actingReader(w, r)
+	if !ok {
 		return
 	}
 
@@ -1211,7 +1285,7 @@ func (s *server) search(w http.ResponseWriter, r *http.Request) {
 	reading := readSearchQuery(searchText)
 	parameters := searchParameters{text: searchText, project: project, numberProject: numberProject,
 		status: status, author: author, since: since, kinds: kinds, limit: limit, offset: offset,
-		keywordsOnly: keywordsOnly, trees: wantsDisplayTrees(r), reading: &reading}
+		keywordsOnly: keywordsOnly, trees: wantsDisplayTrees(r), reading: &reading, who: who}
 	response, err := s.runSearch(r.Context(), parameters)
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -1223,11 +1297,16 @@ func (s *server) search(w http.ResponseWriter, r *http.Request) {
 	// text: runSearch stamps that on the response itself, true only where the fallback ran.
 	response.Query.Operators = reading.operators()
 	response.Filters = searchAppliedFilters(parameters)
-	// Where each ask hit stands is read for this route alone: the write-time suggestions share
-	// the ranking (runFusedSearch) but never show it. TookMS counts the read.
+	// Where each ask hit stands, and who wrote each comment, message and ask hit, is read for this
+	// route alone: the write-time suggestions (relatedSearch) rank the same bodies but never show
+	// either. TookMS counts the reads.
 	started := time.Now()
 	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
 	if err := s.attachAskStates(r.Context(), s.deps.Store.Pool, response.Results, reader); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	if err := attachItemAuthors(r.Context(), s.deps.Store.Pool, response.Results); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -1257,12 +1336,14 @@ func (s *server) search(w http.ResponseWriter, r *http.Request) {
 // keystroke is the cost it exists to avoid.
 //
 // The query as typed is what it runs, however many words that query holds: one statement, and
-// for every query matching anything the only statement a search runs, so the common path costs
-// what it cost before there was a fallback at all. A query that matches nothing - no row of any
-// kind, which is what the answer's own total says - is run a second time over its rarest words
-// (searchRarestWords, searchBroadenWords), and that second answer alone is stamped broadened.
-// The query's embedding is taken once and both runs share it, so a broadened search still costs
-// one model-service call.
+// for every query matching anything the only search statement a search runs, so the common path
+// costs what it cost before there was a fallback at all. A query that matches nothing - no row of
+// any kind, which is what the answer's own total says - is run a second time over its rarest
+// words (searchRarestWords, searchBroadenWords), and that second answer alone is stamped
+// broadened. The query's embedding is taken once and both runs share it, so a broadened search
+// still costs one model-service call. The page answered is then stamped with the edit times and
+// the delete marks of its comments and messages (stampSearchPostMarks), one read by id of the
+// page's own posts.
 func (s *server) runSearch(ctx context.Context, parameters searchParameters) (model.SearchResponse, error) {
 	keys, err := s.searchOwnIssueKeys(ctx, parameters.text, parameters.numberScope())
 	if err != nil {
@@ -1294,27 +1375,96 @@ func (s *server) runSearch(ctx context.Context, parameters searchParameters) (mo
 	}
 	started := time.Now()
 	response, err := run(ctx, parameters)
-	if err != nil || response.Total > 0 {
-		return response, err
-	}
-	words, err := s.searchRarestWords(ctx, parameters)
 	if err != nil {
 		return model.SearchResponse{}, err
 	}
-	if len(words) == 0 {
-		return response, nil
+	if response.Total == 0 {
+		words, err := s.searchRarestWords(ctx, parameters)
+		if err != nil {
+			return model.SearchResponse{}, err
+		}
+		if len(words) > 0 {
+			parameters.broaden = words
+			parameters.excluded = parameters.queryReading().excludedWords()
+			if response, err = run(ctx, parameters); err != nil {
+				return model.SearchResponse{}, err
+			}
+			response.Query.Broadened = true
+			// What the caller waited for is all three reads: the query as typed, its words' df,
+			// and the fallback itself.
+			response.TookMS = time.Since(started).Milliseconds()
+		}
 	}
-	parameters.broaden = words
-	parameters.excluded = parameters.queryReading().excludedWords()
-	broadened, err := run(ctx, parameters)
-	if err != nil {
+	if err := s.stampSearchPostMarks(ctx, response.Results); err != nil {
 		return model.SearchResponse{}, err
 	}
-	broadened.Query.Broadened = true
-	// What the caller waited for is all three reads: the query as typed, its words' df, and the
-	// fallback itself.
-	broadened.TookMS = time.Since(started).Milliseconds()
-	return broadened, nil
+	return response, nil
+}
+
+// stampSearchPostMarks sets the marks of each comment and message hit of results whose author
+// edited or deleted it since it was written: EditedAt, and DeletedAt with DeletedBy as
+// model.DeletedPostMark reads them, so every reader of a hit can say the post was edited or is
+// deleted. It is one read by id of the page's own posts, made after the search statement rather
+// than inside it: the search and meaning statements end in one column shape that the oracles of
+// their arms compare row for row with earlier releases' (document_search_oracle_test.go), and the
+// page is at most searchMaxLimit rows. A page with no comment or message reads nothing.
+//
+// A delete clears the post's body, so the keyword arm drops the post with it: its search vector
+// follows the body. The meaning arm drops it too, since the delete drops the post's windows in
+// its own transaction (clearDeletedPostBody, refs.TombstoneItem). This stamp is the backstop
+// for a hit of a deleted post all the same, which no path of this build produces: it carries the
+// empty snippet the cleared body gives, and the mark is what tells its reader the post is deleted.
+func (s *server) stampSearchPostMarks(ctx context.Context, results []model.SearchResult) error {
+	var comments, messages []string
+	for _, result := range results {
+		switch result.Kind {
+		case "comment":
+			comments = append(comments, result.ID)
+		case "message":
+			messages = append(messages, result.ID)
+		}
+	}
+	if len(comments) == 0 && len(messages) == 0 {
+		return nil
+	}
+	rows, err := s.deps.Store.Pool.Query(ctx, `
+		select 'comment', c.id::text, c.edited_at, c.deleted_at, c.deleted_by from comments c
+		where c.id = any($1::uuid[]) and (c.edited_at is not null or c.deleted_at is not null)
+		union all
+		select 'message', m.id::text, m.edited_at, m.deleted_at, m.deleted_by from messages m
+		where m.id = any($2::uuid[]) and (m.edited_at is not null or m.deleted_at is not null)`, comments, messages)
+	if err != nil {
+		return fmt.Errorf("read the marks of the search's posts: %w", err)
+	}
+	defer rows.Close()
+	type postMarks struct {
+		editedAt, deletedAt *time.Time
+		deletedBy           *model.Actor
+	}
+	marked := make(map[[2]string]postMarks)
+	for rows.Next() {
+		var kind, id string
+		var editedAt, deletedAt *time.Time
+		var deletedBy []byte
+		if err := rows.Scan(&kind, &id, &editedAt, &deletedAt, &deletedBy); err != nil {
+			return fmt.Errorf("scan the marks of a search's post: %w", err)
+		}
+		marks := postMarks{editedAt: editedAt}
+		if marks.deletedAt, marks.deletedBy, err = model.DeletedPostMark(deletedAt, deletedBy); err != nil {
+			return fmt.Errorf("the %s %s: %w", kind, id, err)
+		}
+		marked[[2]string{kind, id}] = marks
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("read the marks of the search's posts: %w", err)
+	}
+	for index := range results {
+		if marks, found := marked[[2]string{results[index].Kind, results[index].ID}]; found {
+			results[index].EditedAt = marks.editedAt
+			results[index].DeletedAt, results[index].DeletedBy = marks.deletedAt, marks.deletedBy
+		}
+	}
+	return nil
 }
 
 // runKeywordOnlyDegraded runs the keyword-only fallback and stamps the response Degraded on

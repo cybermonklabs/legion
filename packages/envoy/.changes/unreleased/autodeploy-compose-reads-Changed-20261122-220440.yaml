@@ -1,0 +1,9 @@
+kind: Changed
+body: |-
+  The auto-deployer (`deploy/scripts/autodeploy.sh`) reads the deployed tag and its schema record
+  in one `docker compose config` read at the start of each pass, and runs `docker compose version`
+  only after a read of the configuration fails, to name that cause ("docker compose cannot run").
+  A pass that deploys starts Compose twice, not four times.
+time: 2026-11-22T22:04:40Z
+custom:
+    Issue: autodeploy-compose-reads

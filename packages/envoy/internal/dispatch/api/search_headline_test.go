@@ -33,6 +33,7 @@ const searchRowShape = `select 1::int, 1::int, 'document'::text, 'issue'::text,
 // too (scanSearchRows' trees), since it reads the headline a second time and a null one is the
 // snippet tree of no text.
 func TestSearchScanTakesARowWithANullHeadline(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 
@@ -82,6 +83,7 @@ func TestSearchScanTakesARowWithANullHeadline(t *testing.T) {
 // (a code span). The scan reads the snippet out of the text the headline was cut from, which the
 // row carries beside it, so both the HTML snippet and its tree keep the key in its code span.
 func TestSearchScanReadsTheSnippetOutOfTheTextTheHeadlineWasCutFrom(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	const source = "Run `CORE-1` locally please"

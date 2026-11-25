@@ -141,8 +141,16 @@ const commandLimitMs = 35 * 60 * 1000;
  * synchronously, so a caller that is behind holds one write for as long as it stays behind, and
  * one 300,008-byte line relayed into a pipe whose reader slept eight seconds blocked for those
  * eight seconds. Every time the bound is made of — the exit, the blocked time, and each re-arm
- * of its timer — is read from performance.now(), the clock no step of the wall clock moves. */
-const drainLimitMs = 5000;
+ * of its timer — is read from performance.now(), the clock no step of the wall clock moves.
+ * APP_LOGINS_DRAIN_MS, a whole number of milliseconds from 1 to MAX_DRAIN_LIMIT_MS, sets another
+ * bound for one run: app-logins.test.ts's drain rows run at two seconds, so each waits out two
+ * rather than five. */
+export const DEFAULT_DRAIN_LIMIT_MS = 5000;
+/** The longest bound APP_LOGINS_DRAIN_MS may set: the longest delay a timer takes, 2^31 - 1 ms. A
+ * longer one fires at once (Bun 1.4.4: a 2^31 ms setTimeout fired after 10 ms), so a longer
+ * bound would end every drain at the exit. */
+export const MAX_DRAIN_LIMIT_MS = 2 ** 31 - 1;
+let drainLimitMs = DEFAULT_DRAIN_LIMIT_MS;
 /** The GitHub token forms, which a command's stderr may carry and no log or error may. */
 const tokenPattern = /(gh[opsur]_[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{16,})/g;
 /** A GitHub account login: what a release may name an installation by (internal/appauth,
@@ -314,7 +322,7 @@ async function runCredentialCommand(
   })();
   // The command's own process may exit while a descendant that left its process group still
   // holds the pipes open, which the group kill cannot reach: the run holds the streams to
-  // drainLimitMs, measured as that constant defines it, and fails rather than wait on them past
+  // drainLimitMs, measured as its comment defines it, and fails rather than wait on them past
   // it. Only the blocks after the exit are given back, because the bound runs from the exit as
   // the continuation below reads it: a block that ended before that read is no part of the
   // bound, and one that is still running at the exit delays that read itself by the rest of it.
@@ -436,7 +444,10 @@ async function githubRead(
     });
     body = await response.text();
   } catch (error) {
-    throw new Error(`${read} failed: ${error instanceof Error ? error.message : String(error)}`);
+    // No answer at all, or none whole: the connection refused or reset, or the 30 s passed. Named
+    // as that, so a reader tells it from an answer GitHub gave and this run refused.
+    const cause = error instanceof Error ? error.message : String(error);
+    throw new Error(`${read}: GitHub did not answer (${cause})`);
   }
   const head = redactTokens(body.split(credential).join("<credential>")).slice(0, 300);
   if (!response.ok) throw new Error(`${read} answered ${response.status}: ${head}`);
@@ -658,6 +669,19 @@ if (import.meta.main) {
       "usage: bun scripts/e2e/lib/app-logins.ts [--roles <role>[,<role>]] <legion.yaml> [<GitHub API URL>]\n"
     );
     process.exit(2);
+  }
+  const drain = process.env.APP_LOGINS_DRAIN_MS;
+  if (drain !== undefined) {
+    // The spelling first, so that a digit string too long for a number is refused by its text
+    // rather than read as Infinity or a rounded value.
+    if (!/^[1-9][0-9]{0,9}$/.test(drain) || Number(drain) > MAX_DRAIN_LIMIT_MS) {
+      writeAll(
+        2,
+        `app-logins: APP_LOGINS_DRAIN_MS is '${drain}', not a whole number of milliseconds from 1 to ${MAX_DRAIN_LIMIT_MS}\n`
+      );
+      process.exit(2);
+    }
+    drainLimitMs = Number(drain);
   }
   // Exit explicitly: a stream reader a token command's escaped descendant still feeds would keep
   // the event loop, and so the run, alive past the drain bound.

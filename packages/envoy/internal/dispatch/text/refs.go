@@ -250,6 +250,25 @@ func trimReference(raw string) string {
 	return ""
 }
 
+// DispatchSpans is where each `dispatch://` address stands in value, as text reads one: each
+// reference span (referencePattern) that starts with `dispatch://`, from its first byte to the end
+// of what trimReference leaves of it, in order, whether or not the address names anything. It is
+// the span pmdoc keeps an address whole over, so no email or URL autolink starts inside it. Its
+// twin is `referenceSpans(text, "dispatch://")` in @legion/contracts, the span the browser
+// editor's engine keeps whole, read by the same rule.
+func DispatchSpans(value string) [][2]int {
+	if !strings.Contains(value, "dispatch://") {
+		return nil
+	}
+	var spans [][2]int
+	for _, span := range referencePattern.FindAllStringIndex(value, -1) {
+		if raw := value[span[0]:span[1]]; strings.HasPrefix(raw, "dispatch://") {
+			spans = append(spans, [2]int{span[0], span[0] + len(trimReference(raw))})
+		}
+	}
+	return spans
+}
+
 // issueTabs is every tab of an issue's page whose address names the issue itself, holding no
 // block, slug or id: the dashboard's `PLAIN_ISSUE_TABS` and its conversation
 // (web/src/features/refs/routes.ts). A reference to a tab, `dispatch://CORE-1/plan` or the
@@ -531,13 +550,13 @@ func CanonicalBlockRef(value string) (Ref, bool) {
 // `PROJECT/artifact/<slug>/ask/<id>`), optionally pinned to revision N of the ask's parts, or a
 // block of a comment (`KEY/comment/<id>`, or a project document's
 // `PROJECT/artifact/<slug>/comment/<id>`), optionally pinned to revision N of that comment, or of
-// an issue's message (`KEY/message/<id>`). A message never changes, so a pinned message block is
-// no reference. The id is read with any valid percent-encoding (EncodeBlockID writes one), so
-// `%40` is an `@` in the id and a raw `@` is only ever the pin. Any other fragment, a raw `@` that
-// does not start a well-formed pin, a versioned document, an agent conversation's document, or an
-// id that is empty or does not decode names nothing. (Extract holds the block's id to
-// MaxBlockIDBytes and its whole target id to MaxTargetBytes in text, inBound.) A document version
-// shows only as an `@` in the document part: no key or slug holds one.
+// an issue's message (`KEY/message/<id>`). A message records no revisions, so a pinned message
+// block is no reference. The id is read with any valid percent-encoding (EncodeBlockID writes
+// one), so `%40` is an `@` in the id and a raw `@` is only ever the pin. Any other fragment, a raw
+// `@` that does not start a well-formed pin, a versioned document, an agent conversation's
+// document, or an id that is empty or does not decode names nothing. (Extract holds the block's id
+// to MaxBlockIDBytes and its whole target id to MaxTargetBytes in text, inBound.) A document
+// version shows only as an `@` in the document part: no key or slug holds one.
 func parseBlock(document, fragment string) (Ref, bool) {
 	encoded, ok := strings.CutPrefix(fragment, "b-")
 	if !ok || strings.Contains(document, "@") {

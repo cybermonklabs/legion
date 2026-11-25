@@ -51,7 +51,7 @@ func TestAForwardTheStreamDoesNotAcknowledgeDoesNotDelayAnotherIssuesEvents(t *t
 	deps := rig.deps()
 	deps.Listen = rig.database.Pool.Listener
 	deps.forwardAckWait = stalledForwardWait
-	stop := runDeps(t, deps, 15*time.Second)
+	stop := runDeps(t, deps)
 	defer stop()
 
 	held := rig.routedEvent(t, "T-1", stalledRole, model.Actor{Kind: "user", ID: "alice"})

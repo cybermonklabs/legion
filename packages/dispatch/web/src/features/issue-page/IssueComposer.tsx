@@ -3,6 +3,11 @@ import { type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState }
 
 import type { Actor } from "../../api/types";
 import { pageComposer } from "../../theme/classes";
+import {
+  type ListedReplies,
+  type ListedReply,
+  replyParentOf,
+} from "../conversation/composer-model";
 import { useHeldSend } from "../conversation/held-sends";
 import {
   MentionComposer,
@@ -11,11 +16,13 @@ import {
 } from "../conversation/MentionComposer";
 import { type StatementAnchor, sameStatement, saveCommentEdit } from "../conversation/send-request";
 import { AgentName } from "../refs/AgentName";
+import { EVENT_FRESH } from "../refs/reference-target";
 import { useMediaQuery } from "../shell/useDialog";
 import { FOOT_HEIGHT_PROPERTY, HEADER_SCROLLS_QUERY } from "./identity-block";
 import type { TreeNode } from "./issue-tree";
 import { DETAILS_ATTRIBUTE } from "./margin-slot";
 import {
+  conversationItem,
   type Landing,
   type OutlineWriter,
   replyItemOf,
@@ -26,7 +33,7 @@ import { authorText, pageChrome } from "./page-structure";
 import { ANSWER_LINES, CONTROL_LABELS, NODE_TYPE_NAMES, type NodeType } from "./page-words";
 import { TAB_STOP_ROW } from "./tree-focus";
 import { nodesInOrder } from "./tree-keys";
-import { issueCommentsQuery } from "./useIssueTree";
+import { issueCommentsQuery, issueMessagesQuery } from "./useIssueTree";
 
 /** The kinds the line writes, as its chips before Send, in this order: a comment, which is on at
  *  first, and a question, which is an ask of the issue with no options (R2). A later part adds a
@@ -283,6 +290,12 @@ function WriteLine({
   writer: OutlineWriter;
 }): ReactNode {
   const { reply, statement } = writer;
+  // The issue's comments and messages as the outline reads them, under its keys and kept fresh as
+  // it keeps them (`OutlineWriterProvider`), so they cost no request of their own: the post a reply
+  // answers as it stands now, which tells the composer a post its author deleted while the line
+  // was open (`MentionComposer`'s `replyParent`).
+  const comments = useQuery({ ...issueCommentsQuery(issueKey), ...EVENT_FRESH });
+  const messages = useQuery({ ...issueMessagesQuery(issueKey), ...EVENT_FRESH });
   // A statement's comment carries the statement's document, its whole words and its row alone,
   // never the author a Reply aimed the line with, so a send held over a refusal or a reload
   // stores those three fields and nothing more.
@@ -397,29 +410,34 @@ function WriteLine({
       }
       outline={look}
       owner={owner}
+      replyParent={replyParentOf(reply, comments.data ?? [], messages.data ?? [])}
       replyTo={reply}
     />
   );
 }
 
-/** What the outline's tree draws that a draft the write line keeps can go back to: the id of each
- *  entry a row's Reply answers (`replyItemOf`) - a comment, a message, a question - and each
- *  statement as a Reply on its row aims the line (`statementTargetOf`). The line's `drawn` holds
- *  a kept draft's statement to each by `sameStatement`, the one rule for two statements being the
- *  same: the document and the whole words, and not the row. An entry the tree draws under two
- *  parents counts once. */
+/** What the outline's tree draws that a draft the write line keeps can go back to: each entry a
+ *  row's Reply answers (`replyItemOf`) - a comment, a message, a question - as standing, each
+ *  comment or message whose author deleted it, which keeps its row and takes no Reply, as deleted
+ *  (`ListedReplies`), and each statement as a Reply on its row aims the line
+ *  (`statementTargetOf`). The line's `drawn` holds a kept draft's statement to each by
+ *  `sameStatement`, the one rule for two statements being the same: the document and the whole
+ *  words, and not the row. An entry the tree draws under two parents counts once. */
 function drawnTargets(root: TreeNode): {
-  readonly entries: ReadonlySet<string>;
+  readonly entries: ListedReplies;
   readonly statements: readonly StatementAnchor[];
 } {
-  const entries = new Set<string>();
+  const entries = new Map<string, ListedReply>();
   const statements: StatementAnchor[] = [];
   for (const node of nodesInOrder(root)) {
     const item = replyItemOf(node);
     if (item?.kind === "statement") {
       statements.push(statementTargetOf(item));
     } else if (item !== undefined) {
-      entries.add(item.id);
+      entries.set(item.id, "standing");
+    } else if (node.deletedAt !== undefined) {
+      const deleted = conversationItem(node);
+      if (deleted !== undefined) entries.set(deleted.id, "deleted");
     }
   }
   return { entries, statements };

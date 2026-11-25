@@ -896,6 +896,42 @@ test("the picker adds no stopped option while the live agents list failed", asyn
   );
 });
 
+// The agent list is Envoy's, and its failure is said by its own line alone: with every Dispatch
+// read answering, a query no row matches says neither that Dispatch is unreachable nor that
+// nothing matches, since which agent and role rows match is not known, as the mention
+// suggestions it replaced drew the listener's line alone. A Dispatch read that fails beside it
+// still says so.
+test("an agent list that failed is said by its own line alone, never as Dispatch unreachable", async () => {
+  const user = userEvent.setup();
+  const page = renderHost();
+  page.listAgents.mockRejectedValue(new Error("listener down"));
+
+  const comment = await field();
+  await user.click(comment);
+  await user.keyboard("@nobody");
+
+  await waitFor(() => expect(page.search).toHaveBeenCalledWith("nobody", expect.anything()));
+  await waitFor(() => expect(screen.queryAllByRole("option")).toHaveLength(0));
+  await waitFor(() =>
+    expect(screen.getByTestId("agent-list-unreachable").textContent).toBe(
+      REF_PICKER_PARTY_WORDS.unreachable
+    )
+  );
+  expect(screen.queryByTestId("ref-picker-unreachable")).not.toBeInTheDocument();
+  expect(screen.queryByTestId("ref-picker-empty")).not.toBeInTheDocument();
+
+  page.search.mockRejectedValue(new Error("network error"));
+  await user.keyboard("x");
+  await waitFor(() =>
+    expect(screen.getByTestId("ref-picker-unreachable").textContent).toBe(
+      REF_PICKER_WORDS.unreachable
+    )
+  );
+  expect(screen.getByTestId("agent-list-unreachable").textContent).toBe(
+    REF_PICKER_PARTY_WORDS.unreachable
+  );
+});
+
 // A refilling agent list keeps the rows an earlier read gave and never says that nothing
 // matches: it says the list is refilling instead, where the agent and role rows are read from,
 // under a query that matches no row as under none.
@@ -917,6 +953,12 @@ test("mention suggestions say the agent list is refilling instead of that no age
   );
   expect(drawnRows()).toContain("Agents: Planner");
   expect(screen.queryByTestId("ref-picker-empty")).not.toBeInTheDocument();
+  // The row kept from the earlier read draws its agent's running state as unknown, never as not
+  // running, while the list it would be judged by is refilling.
+  const kept = screen.getByRole("option", { name: /^Planner/ });
+  expect(
+    kept.querySelector('[data-agent-name="planner-session"]')?.getAttribute("data-agent-state")
+  ).toBe("unknown");
 
   await user.keyboard("nobody");
   await waitFor(() => expect(page.search).toHaveBeenCalledWith("nobody", expect.anything()));

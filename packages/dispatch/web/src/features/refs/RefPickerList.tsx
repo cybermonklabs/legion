@@ -62,11 +62,13 @@ export function RefPickerParties({ picker }: { picker: RefPicker }): ReactNode {
  * two ways.
  */
 export function RefPickerNotes({ picker }: { picker: RefPicker }): ReactNode {
-  // While the agent list refills, the picker cannot know which agent and role rows match, so it
-  // never says that no row matches: the refilling notice above stands in its place. Every door
-  // lists the agent and role rows (`kindOrder`), so this holds behind each of them.
+  // While the agent list refills or could not be read, the picker cannot know which agent and
+  // role rows match, so it never says that no row matches: the list's own line above stands in
+  // its place, as the mention suggestions it replaced drew that line alone. Every door lists the
+  // agent and role rows (`kindOrder`), so this holds behind each of them.
+  const partiesUnknown = picker.parties === "refilling" || picker.parties === "unreachable";
   const state =
-    picker.state === "rows" || (picker.state === "empty" && picker.parties === "refilling")
+    picker.state === "rows" || (picker.state === "empty" && partiesUnknown)
       ? undefined
       : picker.state;
   return (

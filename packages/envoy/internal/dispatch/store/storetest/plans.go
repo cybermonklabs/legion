@@ -7,6 +7,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // Plan is the one way a pool Planned opens lets Postgres scan a table.
@@ -47,6 +48,6 @@ func Planned(t testing.TB, pool *store.Pool, plan Plan) *store.Pool {
 		t.Fatalf("open a pool reading with a %s: %v", plan, err)
 	}
 	planned := store.NewPool(opened)
-	t.Cleanup(planned.Close)
+	testcleanup.Add(t, planned.Close)
 	return planned
 }

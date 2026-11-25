@@ -1,5 +1,5 @@
 import { beforeAll, expect, spyOn, test } from "bun:test";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { type ReactNode, useState } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
@@ -201,16 +201,19 @@ function DialogOverTheRow(): ReactNode {
   const dialog = useDialog<HTMLDivElement>({ onClose: () => setOpen(false), open });
   return open ? (
     <div aria-label="Over the row" ref={dialog.containerRef} role="dialog">
+      <p>Words of the dialog</p>
       <button type="button">in the dialog</button>
     </div>
   ) : null;
 }
 
-// Escape closes the innermost layer. A dialog open over the menu takes it even before its focus
-// has moved in, the frame after it opens. Whether a dialog is open is `useDialog`'s registry's
-// answer (`dialogOpen()`, decision 318), the one that decides which dialog the key closes and
-// that Details' drawer asks too, so a dialog's markup does not change it.
-test("below 1280 px, Escape with a dialog open over the menu closes the dialog alone, the focus outside it", async () => {
+// Escape closes the innermost layer. A dialog open over the menu takes it wherever the focus is:
+// on the dialog itself in its first frame, or on the page after a press on the dialog's text.
+// In the second case the key's target is outside the dialog, and only whether a dialog is open
+// tells the menu to leave the key to it. That is `useDialog`'s registry's answer (`dialogOpen()`,
+// decision 318), the one that decides which dialog the key closes and that Details' drawer asks
+// too, so a dialog's markup does not change it.
+test("below 1280 px, Escape with a dialog open over the menu closes the dialog alone, wherever the focus is", async () => {
   const user = userEvent.setup();
   const restoreMatchMedia = stubViewport(PHONE_WIDTH);
   const view = render(
@@ -230,20 +233,39 @@ test("below 1280 px, Escape with a dialog open over the menu closes the dialog a
     );
     const dialog = () => screen.queryByRole("dialog", { name: "Over the row" });
 
-    // The dialog moves the focus into itself a frame after it opens; with that frame held, the
-    // Escape lands on the menu's item.
+    // The dialog holds the focus itself until its control takes it a frame after it opens; with
+    // that frame held, the Escape lands on the dialog, not on the menu's item.
     const frames = spyOn(window, "requestAnimationFrame").mockImplementation(() => 0);
     try {
       await user.keyboard("?");
       expect(dialog(), "? drew no dialog").not.toBeNull();
-      expect(document.activeElement, "the dialog took the focus in its first frame").toBe(
-        menuItem("spec")
+      expect(document.activeElement, "the dialog left the focus behind it as it opened").toBe(
+        dialog()
       );
       await user.keyboard("{Escape}");
     } finally {
       frames.mockRestore();
     }
-    expect(dialog(), "Escape before the dialog took the focus left it open").toBeNull();
+    expect(dialog(), "Escape in the dialog's first frame left it open").toBeNull();
+    expect(
+      screen.queryByRole("menu"),
+      "that Escape closed the menu under the dialog"
+    ).not.toBeNull();
+
+    // Once its frame has given the focus to its control, a press on the dialog's text puts the
+    // focus on the page, and the Escape's target is no part of the dialog.
+    await user.keyboard("?");
+    await waitFor(() =>
+      expect(document.activeElement, "the dialog's frame gave its control no focus").toBe(
+        screen.getByRole("button", { name: "in the dialog" })
+      )
+    );
+    await user.click(screen.getByText("Words of the dialog"));
+    expect(document.activeElement, "a press on the dialog's text kept the focus off the page").toBe(
+      document.body
+    );
+    await user.keyboard("{Escape}");
+    expect(dialog(), "Escape with the focus on the page left the dialog open").toBeNull();
     expect(
       screen.queryByRole("menu"),
       "that Escape closed the menu under the dialog"

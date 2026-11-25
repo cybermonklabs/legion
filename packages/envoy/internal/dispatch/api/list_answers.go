@@ -223,13 +223,13 @@ func listAnswerKeyFor(r *http.Request, route, owner, etag string) listAnswerKey 
 }
 
 // listETag closes a hash with the three lines both lists' ETags and an issue's references read's
-// (referencesETag) carry, and answers the validator itself. The trees variant is in the hash
-// rather than left to `Vary: Dispatch-Trees` alone, so a caller that gains or drops the header
-// can never match an ETag given for the other reading however a cache between it and Dispatch
-// behaves - a list of nothing answers the same bytes either way, and would otherwise share one.
-// The parser version is in it for the same reason across a deploy: a build that reads markdown
-// differently answers different trees, and every validator the build before it gave is then
-// another reading's.
+// (referencesETag) carry, and answers the validator itself: the hash's hex in double quotes. The
+// trees variant is in the hash rather than left to `Vary: Dispatch-Trees` alone, so a caller that
+// gains or drops the header can never match an ETag given for the other reading however a cache
+// between it and Dispatch behaves - a list of nothing answers the same bytes either way, and
+// would otherwise share one. The parser version is in it for the same reason across a deploy: a
+// build that reads markdown differently answers different trees, and every validator the build
+// before it gave is then another reading's.
 //
 // The build commit is in it because the parser version moves for a change to what a tree holds
 // and for nothing else, while a deploy can change what these lists carry in a dozen other ways:

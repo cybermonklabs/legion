@@ -832,8 +832,8 @@ function plainLines(doc: ProseMirrorNode, naming: ReferenceNaming): ProjectedTex
     references = { addresses: [], named: [] };
     questions = false;
   };
-  // A reference never spans a newline (`reference-spans.ts`), so each line of a text is named
-  // on its own.
+  // A reference never spans a newline (`@legion/contracts`' `reference-spans.ts`), so each line
+  // of a text is named on its own.
   const write = (position: number, text: string, name: boolean): void => {
     for (const [index, line] of text.split("\n").entries()) {
       if (index > 0) {

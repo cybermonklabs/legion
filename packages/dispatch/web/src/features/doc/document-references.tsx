@@ -12,7 +12,12 @@ import {
 import { useNavigate } from "react-router-dom";
 
 import { isPartyRoute } from "../refs/party-references";
-import { fetchReferenceHref, needsSpecSlug, useReferenceTarget } from "../refs/reference-target";
+import {
+  fetchReferenceHref,
+  needsSpecSlug,
+  useReferenceLabel,
+  useReferenceTarget,
+} from "../refs/reference-target";
 import { RecordIssue } from "../refs/role-holders";
 import {
   type DispatchReferenceRoute,
@@ -71,7 +76,8 @@ interface ReferenceName {
 
 /** One resolved reference's name, reported upward as its queries answer. The queries are the
  *  ones every other surface reads a reference's title through, so a title the hover card has
- *  already read costs the editor nothing. */
+ *  already read costs the editor nothing, and the words are the label every link to a reference
+ *  shows (`useReferenceLabel`): a deleted post's deleted line, an edited post's ` · edited`. */
 function ReferenceTitle({
   onName,
   reference,
@@ -81,7 +87,11 @@ function ReferenceTitle({
   reference: string;
   route: DispatchReferenceRoute;
 }): null {
-  const { known, title } = useReferenceTarget(route, { text: false });
+  const target = useReferenceTarget(route, { text: false });
+  const { known } = target;
+  // The editor titles a reference standing as its own address alone, which reads by the naming
+  // rule (`useReferenceLabel`).
+  const { text: title } = useReferenceLabel(route, target);
   useEffect(() => {
     onName(reference, title === undefined && !known ? undefined : { known, title });
   }, [known, onName, reference, title]);

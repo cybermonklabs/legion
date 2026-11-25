@@ -446,8 +446,8 @@ export type RefPickerState = "rows" | "loading" | "empty" | "unreachable";
 
 /** The words of each state the list has no rows for, in the composer's own shapes
  *  (`MentionComposer.tsx`: "Loading live agents…", "No live agents match.", "Could not load live
- *  agents — Envoy listener unreachable."). An agent list that is refilling is a list not ready
- *  yet, so it reads as loading rather than as a failure. */
+ *  agents — Envoy listener unreachable."). `unreachable` is a Dispatch read that failed: the
+ *  agent list is Envoy's, and where it stands is said by its own line (`RefPickerParties`). */
 export const REF_PICKER_WORDS: Record<Exclude<RefPickerState, "rows">, string> = {
   empty: "No reference matches.",
   loading: "Loading references…",

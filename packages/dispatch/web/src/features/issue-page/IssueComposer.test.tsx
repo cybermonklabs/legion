@@ -5,7 +5,7 @@ import { QueryClient } from "@tanstack/react-query";
 import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 
-import { jump, realClock } from "../../__tests__/fake-clock";
+import { jump, onRealTurns, realClock } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { plannerAgent, searchResponse } from "../../__tests__/search-fixture";
 import { userOnFakeClock } from "../../__tests__/user";
@@ -1823,6 +1823,61 @@ test("a stopped reply let go with the target line's control is sent under a new 
   } finally {
     realClock();
   }
+});
+
+// A comment or a message its author deleted takes no reply (`409 POST_DELETED`), and its row
+// offers no Reply, so the box answers one only where the delete came while it was open. The box
+// reads the post as the outline's comments read holds it now (`MentionComposer`'s `replyParent`),
+// so Send refuses the reply before it goes, in the composer's words with the box's own control
+// for Cancel reply (`OutlineLook.cancelReply`), on a line under the box that Send's refusal
+// names; neither Send nor Enter sends anything, and the words and the target stay.
+test("a reply open when its comment is deleted is refused before Send, and a press sends nothing", async () => {
+  const user = userEvent.setup();
+  const createComment = stub(
+    spyOn(api, "createComment").mockResolvedValue(commentRecord("comment-9", ALICE, "Ship it."))
+  );
+  const page = renderPage();
+  await page.press(user, "comment-1", "r");
+  await waitFor(() => expect(targetWords()).toBe(replyingTo("bob", "comment")));
+  await waitFor(() => expect(writeField()).toHaveFocus());
+  await user.keyboard("Ship it.");
+
+  // bob deletes his comment: the comments read answers it with the marks of his delete, and the
+  // outline draws its row as the deleted line from that same read.
+  const deletedAt = "2026-11-05T12:00:00Z";
+  reads.comments = [
+    commentRecord("comment-1", BOB, "", { deleted_at: deletedAt, deleted_by: BOB }),
+    commentRecord("comment-2", ALICE, "My own words"),
+  ];
+  const drawn = outline();
+  page.redrawOutline({
+    ...drawn,
+    children: drawn.children.map((child) =>
+      child.id === "comment-1"
+        ? { ...child, deletedAt, deletedBy: BOB, text: `Deleted by bob · ${deletedAt}` }
+        : child
+    ),
+  });
+  await act(() => page.client.invalidateQueries({ queryKey: ["comments", KEY] }));
+
+  const refused =
+    "The comment this reply answers was deleted, so it takes no reply. " +
+    `Press ${CONTROL_LABELS.write_on_issue} to send it as a message that answers none.`;
+  const line = await within(composerBox()).findByText(refused);
+  const send = within(composerBox()).getByRole("button", { name: CONTROL_LABELS.send });
+  expect({
+    describedBy: send.getAttribute("aria-describedby"),
+    disabled: send.getAttribute("aria-disabled"),
+    offScreen: line.closest(".sr-only") !== null,
+  }).toEqual({ describedBy: line.id, disabled: "true", offScreen: false });
+
+  await user.click(send);
+  await user.click(writeField());
+  await user.keyboard("{Enter}");
+  await onRealTurns(() => createComment.mock.calls.length > 0, 100);
+  expect(createComment).not.toHaveBeenCalled();
+  expect(writeField().value).toBe("Ship it.");
+  expect(targetWords()).toBe(replyingTo("bob", "comment"));
 });
 
 // R3: the target line names the entry a reply answers by its author and the page's word for its

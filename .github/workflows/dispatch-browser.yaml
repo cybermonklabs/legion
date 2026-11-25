@@ -1,7 +1,7 @@
 name: Dispatch browser suite
 
 # why: .github/ci-notes/dispatch-browser.md#the-suite-its-two-lanes-and-the-budget-rule-every-job-follows
-# why: .github/ci-notes/dispatch-browser.md#the-third-lane-references-and-the-lane-prefix-every-artifact-name-takes
+# why: .github/ci-notes/dispatch-browser.md#the-third-lane-references
 on:
   workflow_call:
     inputs:
@@ -11,26 +11,39 @@ on:
           and the two stubbed projects, held to the rows tagged `@pr`; `full` for every
           project, the `-alone` ones and the two-process job among them, over every row; or
           `references` for `chromium` alone, over every row of the twenty-one spec files the
-          `references)` arm of .github/scripts/dispatch-browser-shard-suite.sh names, on the
-          shard and merge jobs alone. The shard job reads it for the projects it runs; no job
-          reads it for a browser to install any more, since the image the shard and alone jobs
-          run in carries all three engines. Any other value fails the shard job's browser step
-          by name, before it starts a row.
+          `references)` arm of .github/scripts/dispatch-browser-shard-suite.sh names, with the
+          binaries, shard and merge jobs alone. Each caller passes it as a literal: ci.yaml's
+          dispatch-browser-pr job `pull-request`, its dispatch-browser job and the nightly's
+          `full`, and its dispatch-references job `references`. The shard job reads it for the
+          projects it runs; no job reads it for a browser to install any more, since the image
+          the shard and alone jobs run in carries all three engines. Any other value fails the
+          shard job's browser step by name, before it starts a row.
+        type: string
+        required: true
+      job:
+        description: >-
+          The id of the job that calls this file: dispatch-browser, dispatch-browser-pr or
+          dispatch-references of ci.yaml, or dispatch-browser of the nightly. GitHub names each
+          job of this file `<that id> / <job>`, so the merge job reads only the jobs under it;
+          every artifact name starts with it, so ci.yaml's callers that share a run - a pull
+          request labelled full-ci runs dispatch-browser beside dispatch-browser-pr, and one that
+          changes what the reference rows test runs dispatch-references beside it - upload and
+          download none of each other's; and the merge job's ci-ok report, where its caller asks
+          for one, names it.
         type: string
         required: true
       ci-ok-changes:
         description: >-
           ci.yaml's `toJSON(needs.changes)`: end the merge job with ci-ok's report
-          (.github/actions/ci-ok-report), as every job of ci.yaml ends, for its dispatch-browser
-          job. Empty for the nightly workflow, which reports no check.
+          (.github/actions/ci-ok-report), as every job of ci.yaml ends, for the job that calls
+          this file. Empty for the nightly workflow and for ci.yaml's dispatch-references job,
+          neither of which reports a check.
         type: string
         default: ""
 
 env:
   # why: .github/ci-notes/dispatch-browser.md#why-goproxy-falls-through-to-direct
   GOPROXY: https://proxy.golang.org|direct
-  # why: .github/ci-notes/dispatch-browser.md#why-artifact_lane-is-written-once-in-the-workflows-env
-  ARTIFACT_LANE: ${{ inputs.lane == 'references' && 'dispatch-references' || 'dispatch-browser' }}
 
 jobs:
   # why: .github/ci-notes/dispatch-browser.md#why-the-binaries-job-builds-what-the-suite-runs
@@ -64,8 +77,8 @@ jobs:
       - name: Build the binaries the browser suite runs
         run: |
           mkdir -p "$RUNNER_TEMP/dispatch-e2e-bin"
-          CGO_ENABLED=0 go build -o "$RUNNER_TEMP/dispatch-e2e-bin/" ./cmd/dispatch ./cmd/dev-oidc-issuer ./internal/cipher/ciphertest/requestseed
-          CGO_ENABLED=0 go build -o "$RUNNER_TEMP/dispatch-e2e-bin/broker" ./cmd/cipherd
+          CGO_ENABLED=0 go build -ldflags='-s -w' -o "$RUNNER_TEMP/dispatch-e2e-bin/" ./cmd/dispatch ./cmd/dev-oidc-issuer ./internal/cipher/ciphertest/requestseed
+          CGO_ENABLED=0 go build -ldflags='-s -w' -o "$RUNNER_TEMP/dispatch-e2e-bin/broker" ./cmd/cipherd
         working-directory: packages/envoy
       # The shard and alone jobs' containers have no Go, so e2e/harness-postgres.ts reads the
       # stacks' connection limit from this output (DISPATCH_E2E_PG_CONNECTIONS) instead.
@@ -79,7 +92,7 @@ jobs:
       # why: .github/ci-notes/dispatch-browser.md#why-the-binaries-artifacts-name-holds-no-run-attempt
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: ${{ env.ARTIFACT_LANE }}-e2e-binaries
+          name: ${{ inputs.job }}-binaries
           path: ${{ runner.temp }}/dispatch-e2e-bin
           if-no-files-found: error
 
@@ -108,14 +121,14 @@ jobs:
         timeout-minutes: 2
         continue-on-error: true
         with:
-          name: ${{ env.ARTIFACT_LANE }}-e2e-binaries
+          name: ${{ inputs.job }}-binaries
           path: packages/envoy/out/dispatch-e2e-binaries-1
       - name: Download the binaries again, after a first attempt that did not complete
         if: steps.binaries.outcome != 'success'
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         timeout-minutes: 2
         with:
-          name: ${{ env.ARTIFACT_LANE }}-e2e-binaries
+          name: ${{ inputs.job }}-binaries
           path: packages/envoy/out/dispatch-e2e-binaries-2
       # why: .github/ci-notes/dispatch-browser.md#what-the-shard-job-places-and-what-its-budget-leaves-for-it
       - name: Place the binaries of the attempt that completed
@@ -151,6 +164,7 @@ jobs:
           mkdir -p "$RUNNER_TEMP/weed"
           nohup weed server -s3 -dir="$RUNNER_TEMP/weed" -ip=127.0.0.1 -s3.port=18333 \
             -volume.max=0 -master.volumePreallocate -master.volumeSizeLimitMB=1024 \
+            -master.raftHashicorp -master.raftBootstrap \
             > "$RUNNER_TEMP/weed.log" 2>&1 &
       - name: Wait for the S3-compatible server
         # why: .github/ci-notes/dispatch-browser.md#why-the-stores-readiness-wait-writes-reads-and-deletes-an-object
@@ -177,7 +191,7 @@ jobs:
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
-          name: ${{ env.ARTIFACT_LANE }}-blob-shard-${{ matrix.shard }}-${{ github.run_attempt }}
+          name: ${{ inputs.job }}-blob-shard-${{ matrix.shard }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/leg-report
       # why: .github/ci-notes/dispatch-browser.md#what-the-shard-job-collects-after-a-run
       - name: What the run left behind
@@ -186,13 +200,13 @@ jobs:
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
-          name: ${{ env.ARTIFACT_LANE }}-record-shard-${{ matrix.shard }}-${{ github.run_attempt }}
+          name: ${{ inputs.job }}-record-shard-${{ matrix.shard }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/dispatch-e2e-record
       # why: .github/ci-notes/dispatch-browser.md#why-the-shard-job-uploads-the-failed-rows-traces-always
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
-          name: ${{ env.ARTIFACT_LANE }}-test-results-shard-${{ matrix.shard }}-${{ github.run_attempt }}
+          name: ${{ inputs.job }}-test-results-shard-${{ matrix.shard }}-${{ github.run_attempt }}
           path: packages/dispatch/e2e/test-results
           if-no-files-found: ignore
 
@@ -221,14 +235,14 @@ jobs:
         timeout-minutes: 2
         continue-on-error: true
         with:
-          name: ${{ env.ARTIFACT_LANE }}-e2e-binaries
+          name: ${{ inputs.job }}-binaries
           path: packages/envoy/out/dispatch-e2e-binaries-1
       - name: Download the binaries again, after a first attempt that did not complete
         if: steps.binaries.outcome != 'success'
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         timeout-minutes: 2
         with:
-          name: ${{ env.ARTIFACT_LANE }}-e2e-binaries
+          name: ${{ inputs.job }}-binaries
           path: packages/envoy/out/dispatch-e2e-binaries-2
       - name: Place the binaries of the attempt that completed
         env:
@@ -269,7 +283,7 @@ jobs:
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
-          name: ${{ env.ARTIFACT_LANE }}-blob-alone-${{ matrix.project }}-${{ github.run_attempt }}
+          name: ${{ inputs.job }}-blob-alone-${{ matrix.project }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/leg-report
       # why: .github/ci-notes/dispatch-browser.md#what-the-alone-job-collects-after-a-run
       - name: What the run left behind
@@ -278,13 +292,13 @@ jobs:
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
-          name: ${{ env.ARTIFACT_LANE }}-record-alone-${{ matrix.project }}-${{ github.run_attempt }}
+          name: ${{ inputs.job }}-record-alone-${{ matrix.project }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/dispatch-e2e-record
       # why: .github/ci-notes/dispatch-browser.md#why-the-alone-job-uploads-the-failed-rows-traces
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
-          name: ${{ env.ARTIFACT_LANE }}-test-results-alone-${{ matrix.project }}-${{ github.run_attempt }}
+          name: ${{ inputs.job }}-test-results-alone-${{ matrix.project }}-${{ github.run_attempt }}
           path: packages/dispatch/e2e/test-results
           if-no-files-found: ignore
 
@@ -365,7 +379,7 @@ jobs:
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: failure()
         with:
-          name: ${{ env.ARTIFACT_LANE }}-multiprocess-test-results-${{ github.run_attempt }}
+          name: ${{ inputs.job }}-multiprocess-test-results-${{ github.run_attempt }}
           path: packages/dispatch/e2e/test-results
 
   # why: .github/ci-notes/dispatch-browser.md#the-embedder-job-the-lanes-it-runs-on-and-its-budgets
@@ -435,15 +449,15 @@ jobs:
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: failure()
         with:
-          name: ${{ env.ARTIFACT_LANE }}-embedder-test-results-${{ github.run_attempt }}
+          name: ${{ inputs.job }}-embedder-test-results-${{ github.run_attempt }}
           path: packages/dispatch/e2e/test-results
 
   # why: .github/ci-notes/dispatch-browser.md#the-visual-review-its-docker-run-and-its-budgets
-  # 240 + 333 + 120 = 693 s -> 12 min; 12 + 4 = 16 min with the reverse-order step.
+  # 240 + 333 + 120 = 693 s -> 12 min.
   visual:
     if: inputs.lane == 'full'
     runs-on: ubuntu-24.04
-    timeout-minutes: 16
+    timeout-minutes: 12
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -492,34 +506,19 @@ jobs:
           echo "connections=$connections" >> "$GITHUB_OUTPUT"
         working-directory: packages/envoy
       - name: Browser-test dispatch dashboard against its baselines
-        id: visual-normal
         # 183 x 1.15 = 211 s -> 4 min.
         timeout-minutes: 4
         run: |
           "$GITHUB_WORKSPACE/.github/scripts/dispatch-browser-visual-suite.sh" "${{ steps.connections.outputs.connections }}"
         working-directory: packages/dispatch
-      - name: Browser-test dispatch dashboard against its baselines, rows in reverse order
-        # why: .github/ci-notes/dispatch-browser.md#why-the-visual-job-runs-its-rows-again-in-reverse-order
-        if: ${{ !cancelled() && steps.visual-normal.outcome != 'skipped' }}
-        timeout-minutes: 4
-        run: |
-          # Exported on the command line, as the first step's script exports them, for the reason
-          # .github/ci-notes/dispatch-browser.md#the-visual-review-its-docker-run-and-its-budgets gives.
-          export TMPDIR="$RUNNER_TEMP"
-          export DISPATCH_E2E_PG_IMAGE=ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
-          export DISPATCH_E2E_PG_CONNECTIONS=${{ steps.connections.outputs.connections }}
-          export DISPATCH_E2E_VISUAL_ORDER=reverse
-          e2e/visual-run.sh --output=e2e/test-results-reverse
-        working-directory: packages/dispatch
       # why: .github/ci-notes/dispatch-browser.md#why-the-visual-jobs-upload-is-always
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
-          name: ${{ env.ARTIFACT_LANE }}-visual-${{ github.run_attempt }}
+          name: ${{ inputs.job }}-visual-${{ github.run_attempt }}
           # why: .github/ci-notes/dispatch-browser.md#why-the-visual-upload-keeps-a-pattern-that-matches-no-file
           path: |
             packages/dispatch/e2e/test-results
-            packages/dispatch/e2e/test-results-reverse
             packages/dispatch/e2e/__screenshots__
             ${{ runner.temp }}/dispatch-e2e-run-*/worker-*/log/*.log
           if-no-files-found: ignore
@@ -547,7 +546,7 @@ jobs:
         id: download-blobs
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          pattern: ${{ env.ARTIFACT_LANE }}-blob-*
+          pattern: ${{ inputs.job }}-blob-*
           path: ${{ runner.temp }}/blobs
       # why: .github/ci-notes/dispatch-browser.md#why-a-refused-blob-download-is-reported-as-a-refused-read
       - name: Report a refused blob download as a refused read
@@ -555,7 +554,8 @@ jobs:
         run: .github/scripts/dispatch-browser-run-reads.sh blobs-refused
       # why: .github/ci-notes/dispatch-browser.md#why-only-the-newest-attempt-of-each-leg-is-merged
       - name: Take the newest attempt of each leg's blob report
-        run: .github/scripts/dispatch-browser-latest-blobs.sh "$RUNNER_TEMP/blobs" "$RUNNER_TEMP/selected-blobs" "${ARTIFACT_LANE}-blob-"
+        id: select-blobs
+        run: .github/scripts/dispatch-browser-latest-blobs.sh "$RUNNER_TEMP/blobs" "$RUNNER_TEMP/selected-blobs" "${{ inputs.job }}"
       - name: Merge the legs' blob reports into one report
         # why: .github/ci-notes/dispatch-browser.md#what-the-merged-reports-three-outputs-are-for
         run: |
@@ -565,7 +565,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: ${{ env.ARTIFACT_LANE }}-report-${{ github.run_attempt }}
+          name: ${{ inputs.job }}-report-${{ github.run_attempt }}
           path: |
             ${{ runner.temp }}/report-html
             ${{ runner.temp }}/report.json
@@ -578,7 +578,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           STEP_TIMEOUT_MINUTES: 3 # this step's timeout-minutes, which gh-read.sh's wait stays within as it does the job's
-        run: .github/scripts/dispatch-browser-reading-rows.sh "${{ steps.download-blobs.conclusion }}" "${{ inputs.lane }}"
+        run: .github/scripts/dispatch-browser-reading-rows.sh "${{ steps.download-blobs.conclusion }}" "${{ steps.select-blobs.conclusion }}" "${{ inputs.job }}"
       # Reading two. Read from the merged JSON report with jq, and nowhere else: a flake is a row
       # that failed and passed on its retry, which only the report of the whole run holds.
       - name: Reading two, the flake rate
@@ -604,6 +604,6 @@ jobs:
         if: always() && inputs.ci-ok-changes != ''
         uses: ./.github/actions/ci-ok-report
         with:
-          job: dispatch-browser
+          job: ${{ inputs.job }}
           changes: ${{ inputs.ci-ok-changes }}
           job-status: ${{ job.status }}

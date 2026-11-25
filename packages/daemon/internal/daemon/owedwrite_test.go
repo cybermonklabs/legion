@@ -15,22 +15,23 @@ package daemon
 // live claim means handing that one store another target.
 //
 // That same copying is why Timeouts.ClaimWrite is one value for every machine of a supervision,
-// and why what a row names there bounds the faults alone. The real store is handed out through
-// detachedWrites, which takes that deadline off every write that reaches the database, so a
-// figure a row names is measured against the store that withholds its answer and against nothing
-// else: a healthy write to a real database is not that store, and is never cut short by a bound
-// chosen to be short enough for a test to wait out.
+// and why what a row names there bounds the faults alone. The machines take the daemon's own write
+// bound (Deps.BoundWrite, store.BoundAfterAcquire), so a fault on the store's own pool meets the
+// bound production writes meet. The real store is handed out through detachedWrites, which takes
+// that deadline and that bound off every write that reaches the database, so a figure a row names
+// is measured against the store that withholds its answer and against nothing else: a healthy
+// write to a real database is not that store, and is never cut short by a bound chosen to be short
+// enough for a test to wait out.
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
-	"net"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -41,6 +42,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -183,12 +185,13 @@ func (s detachedWrites) ReleaseHolds(ctx context.Context, c supervise.Claim, hol
 }
 
 // withoutTheClaimWriteDeadline runs call on a context that keeps the values of ctx and drops
-// every deadline ctx carries. In these rows the only one is Timeouts.ClaimWrite, which
-// Machine.write installs, and not Deps.Clock, which this file also sets; a deadline of a parent
-// would go with it, and the guard below would not cancel on that one either.
-// context.WithTimeout is no alternative, whatever value it were given: it takes the earlier of
-// parent and child, so nothing lengthens a deadline the machine has already installed. The
-// deadline has to be left behind, and the cancellation picked up again, which is what the
+// every deadline ctx carries, and the write bound the machine put on it as a value
+// (store.WithoutWriteBound): in these rows the deadline is the one Machine.write installs, through
+// Deps.BoundWrite (store.BoundAfterAcquire), as in production, and not Deps.Clock, which this file
+// also sets; a deadline of a parent would go with it, and the guard below would not cancel on that
+// one either. context.WithTimeout is no alternative, whatever value it were given: it takes the
+// earlier of parent and child, so nothing lengthens a deadline the machine has already installed.
+// The deadline has to be left behind, and the cancellation picked up again, which is what the
 // AfterFunc does: a cancellation of the decision's context would still end the write under it at
 // once, as it did before the detach.
 //
@@ -202,7 +205,7 @@ func (s detachedWrites) ReleaseHolds(ctx context.Context, c supervise.Claim, hol
 // Its residue, for whoever does cancel: once a write has run past the claim-write deadline, a
 // cancellation of the parent no longer reaches it, because the AfterFunc has already run.
 func withoutTheClaimWriteDeadline(ctx context.Context, call func(context.Context) error) error {
-	writing, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	writing, cancel := context.WithCancel(store.WithoutWriteBound(context.WithoutCancel(ctx)))
 	defer cancel()
 	stop := context.AfterFunc(ctx, func() {
 		if ctx.Err() != context.DeadlineExceeded {
@@ -249,29 +252,36 @@ func refusing(behind supervise.Store, token claim.Token, err error) *claimWriteF
 	return &claimWriteFault{Store: behind, token: token, fault: func(context.Context) error { return err }}
 }
 
-// blocked is the fault of a database that has stopped answering: the write goes to a pool pointed
-// at a listener this test opens and never accepts from, so the kernel takes the connection and no
-// server ever answers the startup message. The write returns only when something ends its wait,
-// which is the whole point — what ends it is Timeouts.ClaimWrite, through the context the machine
-// derives for the write.
+// blocked is the fault of a database that has stopped answering: the write goes, through the
+// store's own transaction (store.Transact) on a pool built as the daemon builds its own
+// (store.PoolConfig), to a proxy silenced before the pool's first dial (testdb.Outage), which
+// holds the connection and never answers the startup message. The write returns only when
+// something ends its wait, which is the whole point — what ends it is Timeouts.ClaimWrite, through
+// the bound the machine derives for the write (Deps.BoundWrite, store.BoundAfterAcquire): the pool
+// dials for the write under that bound, not under the wait in its queue.
 //
-// pgxpool.New dials nothing, so the pool is built at once and the first statement is where the
-// wait begins.
+// pgxpool dials nothing when it is built, so the pool is built at once and the write's
+// transaction is where the wait begins. The proxy dials no server, so the address it proxies is
+// one nothing serves.
 func blocked(t *testing.T, behind supervise.Store, token claim.Token) *claimWriteFault {
 	t.Helper()
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	outage := testdb.Outage(t, "postgres://legion@127.0.0.1:1/legion?sslmode=disable")
+	outage.Silence()
+	config, err := store.PoolConfig(outage.DSN)
 	if err != nil {
-		t.Fatalf("listen for the database that never answers: %v", err)
+		t.Fatalf("configure a pool on the database that never answers: %v", err)
 	}
-	t.Cleanup(func() { _ = listener.Close() })
-	pool, err := pgxpool.New(context.Background(), fmt.Sprintf("postgres://legion@%s/legion?sslmode=disable", listener.Addr().String()))
+	raw, err := pgxpool.NewWithConfig(context.Background(), config)
 	if err != nil {
 		t.Fatalf("open a pool on the database that never answers: %v", err)
 	}
+	pool := store.NewPool(raw)
 	t.Cleanup(pool.Close)
 	return &claimWriteFault{Store: behind, token: token, fault: func(ctx context.Context) error {
-		_, err := pool.Exec(ctx, "select 1")
-		return err
+		return store.Transact(store.ForConcurrentWorker(ctx), pool, func(ctx context.Context, tx pgx.Tx) error {
+			_, err := tx.Exec(ctx, "select 1")
+			return err
+		})
 	}}
 }
 
@@ -412,6 +422,9 @@ func (r *owedWriteRig) boot() {
 		Limits: supervise.Limits{LaunchFailures: 2, PromptFailures: 2, PromptRetires: 2},
 		Timeouts: supervise.Timeouts{Boot: time.Second, RegistrationIntervals: 2, RPC: time.Second,
 			Probe: time.Second, Stop: time.Second, LaunchBackoff: time.Millisecond, ClaimWrite: r.write},
+		// The daemon's own write bound (daemon.go's Deps), so INFRA-1132's rows read the
+		// production path: the write bound counted from the connection, the queue's apart.
+		BoundWrite:     store.BoundAfterAcquire,
 		PluginContract: api.DaemonAPIVersion,
 		RefreshGate:    supervise.NewRefreshGate(0),
 	}
@@ -533,6 +546,7 @@ func (r *owedWriteRig) owedTurnStart(role claim.Role) {
 // which is what every other claim's event and every read of this claim then waits for
 // (TestNoDecisionWaitsOnTheClaimWhoseWriteTheDatabaseHasNotTaken).
 func TestTheRepairDeadlineEndsADecisionsWaitOnADatabaseThatHasStoppedAnswering(t *testing.T) {
+	t.Parallel()
 	// The bound this row measures, and the bound that catches a wait which is not bounded at all:
 	// the blocked store never answers, so an unbounded decision returns at no time this test
 	// could name. What claimWrite bounds is the write put to that blocked store and nothing
@@ -591,6 +605,7 @@ func TestTheRepairDeadlineEndsADecisionsWaitOnADatabaseThatHasStoppedAnswering(t
 // claim, a read of it, and the stop all wait on, and a decision that waits out the connection's
 // own patience holds every one of them for the length of the outage.
 func TestNoDecisionWaitsOnTheClaimWhoseWriteTheDatabaseHasNotTaken(t *testing.T) {
+	t.Parallel()
 	// claimWrite is what the architect's blocked writes are measured by, and all that it is: the
 	// implementer's writes and this row's own repair reach the real database, which the rig hands
 	// out with the claim-write deadline off it (detachedWrites).
@@ -686,6 +701,7 @@ func TestNoDecisionWaitsOnTheClaimWhoseWriteTheDatabaseHasNotTaken(t *testing.T)
 // it. The next boot reads the stored row, takes the claim up from it, and the claim decides
 // again.
 func TestAnOwedWriteAcrossARestartIsLostAndTheStoredClaimIsTakenUp(t *testing.T) {
+	t.Parallel()
 	rig := newOwedWriteRig(t, unmeasuredClaimWrite, owedRole{claim.RoleArchitect, supervise.StateReady})
 	rig.refuse(claim.RoleArchitect, brokenConnection())
 	rig.owedTurnStart(claim.RoleArchitect)
@@ -738,6 +754,7 @@ func TestAnOwedWriteAcrossARestartIsLostAndTheStoredClaimIsTakenUp(t *testing.T)
 // whatever bound the other rows name. A row taking production's own 5 s default instead would
 // swallow the delay and prove nothing.
 func TestARealWriteTheDatabaseIsSlowToTakeIsNotCutShortByTheRowsBound(t *testing.T) {
+	t.Parallel()
 	const claimWrite = 250 * time.Millisecond
 	const slow = 4 * claimWrite
 	rig := newOwedWriteRig(t, claimWrite, owedRole{claim.RoleArchitect, supervise.StateReady})
@@ -772,6 +789,7 @@ func TestARealWriteTheDatabaseIsSlowToTakeIsNotCutShortByTheRowsBound(t *testing
 // did with the report: written in the transaction that applies the fact, keyed on the claim and
 // the generation the report named (terminalEventID), and never written by anything else.
 func TestTheOwedReportsReachTheDaemonOnceTheRepairLands(t *testing.T) {
+	t.Parallel()
 	rig := newOwedWriteRig(t, unmeasuredClaimWrite, owedRole{claim.RoleArchitect, supervise.StateRegistered})
 	// The daemon's own durable-state path over the rig's real pool, as the workflow installs it
 	// on every machine of its supervisor (workflowRuntime.attach).

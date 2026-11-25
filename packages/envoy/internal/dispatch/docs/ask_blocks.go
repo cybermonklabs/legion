@@ -15,6 +15,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/asks"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -55,6 +56,47 @@ type settlementReconciliation struct {
 	// rewrites are the ask blocks whose server attributes repairAsk repaired, which
 	// withholdAnswers reads again where a repair wrote back an answer.
 	rewrites []serverRewrite
+	// follows are the follows of the asks this settlement opened, each beside the ask it follows:
+	// a session author's node is written before the ask.opened that records the ask exists, and
+	// learns that event right after the settlement appends it (followsByEvent).
+	follows []openedFollow
+}
+
+// openedFollow is one ask's follow by its author, and the ask whose ask.opened causes it.
+// followed is the node the follow holds for that event, which the follow's own write step
+// fills when the write phase runs it (createAskBlock), before the step that appends the event.
+type openedFollow struct {
+	ask      string
+	followed *graphstore.Uncaused
+}
+
+// followsByEvent is, for each of events that is the ask.opened of an ask this reconciliation
+// opened, the follow whose node that event causes, by the event's place in events: the write
+// phase states the follow under it right after its append (appendEvents). It matches by the ask
+// its payload names rather than by a position recorded when the follow was, because events is
+// edited after the follows are recorded: withholdAnswers drops the block.repaired of a repair it
+// takes back, which moves every event after it. An ask this settlement opened whose ask.opened is
+// not among events is a settlement that lost the event recording an ask it wrote, and fails here
+// naming the ask.
+func (r *settlementReconciliation) followsByEvent(events []model.Event) (map[int]*graphstore.Uncaused, error) {
+	if len(r.follows) == 0 {
+		return nil, nil
+	}
+	opened := make(map[string]int, len(r.follows))
+	for index, event := range events {
+		if payload, ok := event.Payload.(model.AskEventPayload); ok && event.Type == "ask.opened" {
+			opened[payload.ID] = index
+		}
+	}
+	caused := make(map[int]*graphstore.Uncaused, len(r.follows))
+	for _, follow := range r.follows {
+		index, found := opened[follow.ask]
+		if !found {
+			return nil, fmt.Errorf("settlement opened ask %s and appended no ask.opened for it", follow.ask)
+		}
+		caused[index] = follow.followed
+	}
+	return caused, nil
 }
 
 // blockRepair is one attribute repair settlement made to the block of type blockType carrying
@@ -385,7 +427,8 @@ func (s *Service) reconcileAskBlocks(
 				}
 				continue
 			}
-			ask, err = createAskBlock(ctx, tx, artifactID, owner, block, blockActor)
+			var followed *graphstore.Uncaused
+			ask, followed, err = createAskBlock(ctx, tx, artifactID, owner, block, blockActor)
 			if err != nil {
 				return settlementReconciliation{}, err
 			}
@@ -396,7 +439,7 @@ func (s *Service) reconcileAskBlocks(
 			// this very document, which holds the question blocks they name - is named by the
 			// fields that row will hold rather than read from the row, and read only if the
 			// question names a block (refs.PendingAskDocument).
-			reader := refs.NewReaderInScope(ctx, tx, "ask", ask.ID, s.serverURL, refs.PendingAskDocument(ask))
+			reader := refs.NewReaderInScope(ctx, tx, ask.Author, "ask", ask.ID, s.serverURL, refs.PendingAskDocument(ask))
 			changes, index, err := planAskReferences(ctx, tx, reader, ask.ID, ask.Question)
 			if err != nil {
 				return settlementReconciliation{}, fmt.Errorf("index new ask block: %w", err)
@@ -416,6 +459,7 @@ func (s *Service) reconcileAskBlocks(
 			if err := write(ctx, tx, parts); err != nil {
 				return settlementReconciliation{}, fmt.Errorf("index the parts of new ask block %s: %w", ask.ID, err)
 			}
+			reconciled.follows = append(reconciled.follows, openedFollow{ask: ask.ID, followed: followed})
 			reconciled.events = append(reconciled.events, documentAskEvent(
 				owner, artifactID, "ask.opened", blockActor, model.NewAskEventPayload(ask, changes),
 			))
@@ -442,7 +486,7 @@ func (s *Service) reconcileAskBlocks(
 			// the parts alone, so their step reconciles the question's references after them too
 			// and settles the forms queue there (questionReconciled false).
 			restoredAt := refs.AskPartsAt(ask)
-			changes, parts, err := planAskPartsCounted(ctx, tx, refs.NewReader(ctx, tx, "ask", ask.ID, s.serverURL),
+			changes, parts, err := planAskPartsCounted(ctx, tx, refs.NewReader(ctx, tx, ask.Author, "ask", ask.ID, s.serverURL),
 				ask, restoredAt, false, model.ReferenceChanges{})
 			if err != nil {
 				return settlementReconciliation{}, fmt.Errorf("index the parts of restored ask %s: %w", ask.ID, err)
@@ -499,7 +543,7 @@ func (s *Service) reconcileAskBlocks(
 			ask.EditedAt = askTimestamp(&editedAt)
 			recordAskBlock(ctx, tx, artifactID, ask)
 			// The question and the parts through one reader (refs.NewReader).
-			reader := refs.NewReader(ctx, tx, "ask", ask.ID, s.serverURL)
+			reader := refs.NewReader(ctx, tx, ask.Author, "ask", ask.ID, s.serverURL)
 			changes, index, err := planEditedAskReferences(ctx, tx, reader, ask.ID, previous.Question, ask.Question)
 			if err != nil {
 				return settlementReconciliation{}, fmt.Errorf("index reconciled ask: %w", err)
@@ -968,14 +1012,14 @@ func createAskBlock(
 	owner artifactOwner,
 	block askBlock,
 	author model.Actor,
-) (model.Ask, error) {
+) (model.Ask, *graphstore.Uncaused, error) {
 	options, err := json.Marshal(block.options)
 	if err != nil {
-		return model.Ask{}, fmt.Errorf("encode new ask block options: %w", err)
+		return model.Ask{}, nil, fmt.Errorf("encode new ask block options: %w", err)
 	}
 	authorJSON, err := json.Marshal(author)
 	if err != nil {
-		return model.Ask{}, fmt.Errorf("encode new ask block author: %w", err)
+		return model.Ask{}, nil, fmt.Errorf("encode new ask block author: %w", err)
 	}
 	var ownerArtifactID *string
 	if owner.IssueKey == nil {
@@ -983,21 +1027,25 @@ func createAskBlock(
 	}
 	var ask model.Ask
 	if err := tx.QueryRow(ctx, `select gen_random_uuid()::text`).Scan(&ask.ID); err != nil {
-		return model.Ask{}, fmt.Errorf("mint ask block id: %w", err)
+		return model.Ask{}, nil, fmt.Errorf("mint ask block id: %w", err)
 	}
 	if ask.CreatedAt, err = transactionNow(ctx, tx); err != nil {
-		return model.Ask{}, err
+		return model.Ask{}, nil, err
 	}
 	id, createdAt := ask.ID, ask.CreatedAt
+	// The ask.opened that records this ask is appended with the settlement's other events, after
+	// this, so the author's node is made at the sentinel and learns it then (followsByEvent).
+	followed := new(graphstore.Uncaused)
 	if err := write(ctx, tx, func(b *store.WriteBatch) error {
 		b.Queue("create ask block row", `
 			insert into asks (id, issue_key, artifact_id, block_id, block_artifact_id, author, question, options, multiple, urgency, kind, created_at)
 			values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'question', $11)
 		`, id, owner.IssueKey, ownerArtifactID, block.id, artifactID, authorJSON, block.question, options, block.multiple, block.urgency, createdAt)
-		asks.QueueFollowAuthor(b, id, author)
-		return nil
+		var err error
+		*followed, err = asks.QueueFollowAuthor(b, id, author, createdAt, graphstore.NoEvent)
+		return err
 	}); err != nil {
-		return model.Ask{}, err
+		return model.Ask{}, nil, err
 	}
 	ask.IssueKey = owner.IssueKey
 	ask.ArtifactID = ownerArtifactID
@@ -1011,7 +1059,7 @@ func createAskBlock(
 	ask.State = "open"
 	ask.Kind = "question"
 	recordAskBlock(ctx, tx, artifactID, ask)
-	return ask, nil
+	return ask, followed, nil
 }
 
 // restoreRetractedAsk gives ask, whose block came back after settlement retracted it, the state it

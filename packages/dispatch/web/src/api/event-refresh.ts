@@ -1,5 +1,12 @@
+import { isIdPrefix } from "@legion/contracts";
+
 import { askProject } from "../features/inbox/list-row";
-import { buildDispatchReference, DECISIONS_DOCUMENT_SLUG } from "../features/refs/routes";
+import { routeItem } from "../features/refs/block-reference";
+import {
+  buildDispatchReference,
+  DECISIONS_DOCUMENT_SLUG,
+  parseNodeReference,
+} from "../features/refs/routes";
 import { issueProject } from "../lib/issue-key";
 import {
   agentMessagesQuery,
@@ -77,8 +84,9 @@ export function isViewer(login: string | undefined, viewer: string | undefined):
 }
 
 /** A list read's rows, as the reader that holds the query wrote them; none for a query with no
- *  list (an error, or not loaded). */
-function rowsOf<Row>(data: unknown): readonly Row[] {
+ *  list (an error, or not loaded), or a read of another shape. The caller names the rows' type
+ *  (`Row`): a cached answer is the one its own read returned. */
+export function rowsOf<Row>(data: unknown): readonly Row[] {
   return Array.isArray(data) ? (data as Row[]) : [];
 }
 
@@ -315,6 +323,7 @@ function eventDocument(event: DispatchEvent): string | undefined {
     case "comment.resolved":
     case "comment.reopened":
     case "comment.edited":
+    case "comment.deleted":
     case "comment.anchor_refreshed":
     case "suggestion.accepted":
     case "suggestion.rejected":
@@ -346,8 +355,8 @@ function appendCommentReads(targets: RefreshTarget[], event: DispatchEvent): voi
     event.type === "comment.delivery" ? event.payload.comment_id : payloadString(event, "id");
   if (id !== undefined) {
     targets.push({ queryKey: ["comment", id] });
-    if (event.type === "comment.edited") {
-      targets.push(commentBlockReads(id));
+    if (event.type === "comment.edited" || event.type === "comment.deleted") {
+      targets.push(itemBlockReads("comment", id));
     }
   }
   const root = payloadString(event, "reply_to");
@@ -362,14 +371,15 @@ function appendCommentReads(targets: RefreshTarget[], event: DispatchEvent): voi
 }
 
 /**
- * Every read of a block of comment `id` (`blockQuery`, which each link to the block and its own
- * panel share, pinned or not), found by its node, `comment/<id>#<block id>`. The node carries the
- * block's text, which the read keeps until an event refreshes it (`staleTime: Infinity`), and the
- * server names no block of a comment in `references_changed`: the comment's own edit does. An
- * issue message is never edited, so its blocks' text never moves.
+ * Every read of a block of comment or issue message `id` (`blockQuery`, which each link to the
+ * block and its own panel share, pinned or not), found by its node, `<kind>/<id>#<block id>`.
+ * The node carries the block's text, which the read keeps until an event refreshes it
+ * (`staleTime: Infinity`), and the server names no block of a post in `references_changed`: the
+ * post's own edit does, and its delete, which re-indexes the post with an empty body. A message
+ * has both since the post corrections gave it them.
  */
-function commentBlockReads(id: string): RefreshTarget {
-  const prefix = `comment/${id}#`;
+function itemBlockReads(kind: "comment" | "message", id: string): RefreshTarget {
+  const prefix = `${kind}/${id}#`;
   return referencePanels(({ node }) => node.kind === "block" && node.id.startsWith(prefix));
 }
 
@@ -384,21 +394,39 @@ function appendRepliedBlock(targets: RefreshTarget[], event: DispatchEvent): voi
   }
 }
 
-/** The signed-in person's answers page lists every answer and every reply on an ask, so the
- *  two events that write one refresh it. The query exists only while that page is open. */
+/** The signed-in person's answers page lists every answer and every reply on an ask, and prints
+ *  each reply's body with its edit and delete marks, so the two events that write one refresh
+ *  it, and so do the edit and the delete of a reply on an ask. The query exists only while that
+ *  page is open. */
 function appendAnswersPage(targets: RefreshTarget[], event: DispatchEvent): void {
   if (
     event.type === "ask.answered" ||
-    (event.type === "comment.created" && payloadString(event, "ask_id") !== undefined)
+    ((event.type === "comment.created" ||
+      event.type === "comment.edited" ||
+      event.type === "comment.deleted") &&
+      payloadString(event, "ask_id") !== undefined)
   ) {
     targets.push({ queryKey: ["me", "answers"] });
   }
 }
 
+/** A person's page (`["people", <login>, "nodes"]`) lists each comment its person wrote or was
+ *  delivered, with the first line of its words and its edit and delete marks (INFRA-1523, R2 and
+ *  R3). An edit or a delete of a comment refreshes every person's page, so a page that is open
+ *  reads the new words: the cached correction (corrected-post.ts) writes the mark at once, but not
+ *  the words, which an edit event can carry cut short. The query exists only while a person's page
+ *  is open. */
+function appendPersonPages(targets: RefreshTarget[], event: DispatchEvent): void {
+  if (event.type === "comment.edited" || event.type === "comment.deleted") {
+    targets.push({ queryKey: ["people"] });
+  }
+}
+
 // An ask or comment that is written, re-anchored or edited in a document is an `anchored_to` edge
 // into it, and one a project document owns an `owned_by` edge: that document's backlink panel
-// lists both, each row showing the head of the item's text, which an edit moves. A resolution, a
-// reopen, an answer, a hand-back or a suggestion's verdict moves neither the edge nor its text.
+// lists both, each row showing the head of the item's text, which an edit moves and a comment's
+// delete clears. A resolution, a reopen, an answer, a hand-back or a suggestion's verdict moves
+// neither the edge nor its text.
 function appendDocumentPanel(targets: RefreshTarget[], event: DispatchEvent): void {
   if (
     event.type !== "ask.opened" &&
@@ -407,6 +435,7 @@ function appendDocumentPanel(targets: RefreshTarget[], event: DispatchEvent): vo
     event.type !== "comment.created" &&
     event.type !== "comment.answered" &&
     event.type !== "comment.edited" &&
+    event.type !== "comment.deleted" &&
     event.type !== "comment.anchor_refreshed"
   ) {
     return;
@@ -459,6 +488,7 @@ function isCommentLikeEvent(event: DispatchEvent): boolean {
     event.type === "comment.resolved" ||
     event.type === "comment.reopened" ||
     event.type === "comment.edited" ||
+    event.type === "comment.deleted" ||
     event.type === "comment.anchor_refreshed" ||
     event.type === "suggestion.accepted" ||
     event.type === "suggestion.rejected"
@@ -504,14 +534,24 @@ function isMessageEvent(event: DispatchEvent): boolean {
     event.type === "message.created" ||
     event.type === "message.delivery" ||
     event.type === "message.accepted" ||
-    event.type === "message.answered"
+    event.type === "message.answered" ||
+    event.type === "message.edited" ||
+    event.type === "message.deleted"
   );
 }
 
 // The writes that fire a `user_threads` trigger - a comment, a session's reply to a mention
 // (`comment.answered`), an issue message or a reply to one, an answer - and an ask opening
 // (settlement restoring one) or being resolved, which decides whether the Inbox lists its thread
-// instead. An edit, a resolution of a comment, a delivery or a claim moves no row.
+// instead. A resolution of a comment, a delivery or a claim moves no row.
+//
+// An edit or a delete of a comment or an issue message (`comment.edited`, `comment.deleted`,
+// `message.edited`, `message.deleted`) moves no row either, but it changes what a row prints: a
+// Reply row draws its thread's root (`subject`, with the root's edit time and its delete marks,
+// `ThreadTitle`) and its newest reply (`reply.first_line`), so an Inbox that did not read its rows
+// again would go on printing a post's old words after its edit, and a deleted post's words after
+// its delete (R2 and R3 of dispatch://INFRA-1523). The correction's `thread_logins` decides whose
+// rows read again, as a create's does, and every viewer's do where it carries none.
 //
 // A hand-on (`ask.asked_of`) is here for the same reason an assignee move is: the Inbox leaves
 // out the Reply row of an open ask it already lists (`myRepliesOwner` in the server's
@@ -532,8 +572,12 @@ function isMessageEvent(event: DispatchEvent): boolean {
 const INBOX_THREAD_WRITES: Partial<Record<EventType, true>> = {
   "comment.created": true,
   "comment.answered": true,
+  "comment.edited": true,
+  "comment.deleted": true,
   "message.created": true,
   "message.answered": true,
+  "message.edited": true,
+  "message.deleted": true,
   "ask.opened": true,
   "ask.answered": true,
   "ask.asked_of": true,
@@ -543,13 +587,13 @@ const INBOX_THREAD_WRITES: Partial<Record<EventType, true>> = {
 
 /**
  * Whether the viewer's Inbox thread rows (`["me", "replies"]`: both states of the unpaged read,
- * the unread count and every owner's unread set) can have moved: a write above, or an issue
- * closing, reopening or being reassigned. A reassignment, a hand-on (`ask.asked_of`, among the
- * writes above) and a project's default moving all move the same rows for the same reason: whom
- * an open ask waits on is one expression, `coalesce(a.asked_of, i.assignee, p.default_assignee)`,
- * and the Reply rows leave out an ask the Inbox already lists for the viewer (`myRepliesOwner`
- * in the server's replies.go), so moving that person moves the ask's thread into one person's
- * Reply rows and out of the other's.
+ * the unread count and every owner's unread set) can have moved, or changed what they print (a
+ * correction of a post a row draws): a write above, or an issue closing, reopening or being
+ * reassigned. A reassignment, a hand-on (`ask.asked_of`, among the writes above) and a project's
+ * default moving all move the same rows for the same reason: whom an open ask waits on is one
+ * expression, `coalesce(a.asked_of, i.assignee, p.default_assignee)`, and the Reply rows leave out
+ * an ask the Inbox already lists for the viewer (`myRepliesOwner` in the server's replies.go), so
+ * moving that person moves the ask's thread into one person's Reply rows and out of the other's.
  *
  * A project-default write moves the person without touching the thread or naming an issue, so
  * it reads it for the two named people's whole Inbox as well, and every other reader's Inbox
@@ -557,12 +601,13 @@ const INBOX_THREAD_WRITES: Partial<Record<EventType, true>> = {
  * `ownerTargets`). An assignee write needs no such read: every reader's Inbox holds every open
  * ask of the issue, so the test against its rows (`inboxRowsOf`) finds each list it moves.
  *
- * `thread_logins` names whose rows the write moved - for an issue-less message the thread root's
- * author, which is the person whose Agent row it is, for a hand-on the person it moved from and
- * the one it moved to, and for a project default the previous default and the new one - so only
- * theirs, and the writer's own, refresh. Without it every one of those writes refreshes, except
- * an `issue.updated` that says it moved neither status nor assignee: the server names the logins
- * on every status move, a close and a reopen among them, and on every assignee move.
+ * `thread_logins` names whose rows the write moved or reprinted - for an issue-less message the
+ * thread root's author, which is the person whose Agent row it is, for a hand-on the person it
+ * moved from and the one it moved to, and for a project default the previous default and the new
+ * one - so only theirs, and the writer's own, refresh. Without it every one of those writes
+ * refreshes, except an `issue.updated` that says it moved neither status nor assignee: the server
+ * names the logins on every status move, a close and a reopen among them, and on every assignee
+ * move.
  *
  * The known limit: an older server mid-deploy writes no `thread_logins` on a reassignment, so a
  * Reply row that should appear here - an open ask on an issue assigned away from the viewer -
@@ -620,9 +665,12 @@ function changesReferenceGraph(event: DispatchEvent): boolean {
     case "comment.anchor_refreshed":
     case "comment.created":
     case "comment.edited":
+    case "comment.deleted":
     case "issue.created":
     case "message.answered":
     case "message.created":
+    case "message.edited":
+    case "message.deleted":
       return true;
     case "issue.updated": {
       const changes = issueChanges(event);
@@ -946,6 +994,7 @@ function documentTargets(event: DispatchEvent, viewer: string | undefined): Refr
     targets.push({ queryKey: myRepliesKey });
   }
   appendAnswersPage(targets, event);
+  appendPersonPages(targets, event);
   appendDocumentPanel(targets, event);
   if (event.type === "subscription.removed") {
     targets.push({ queryKey: ["subscribers", id] });
@@ -1258,6 +1307,7 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
       targets.push({ queryKey: ["artifact", document] });
     }
     appendAnswersPage(targets, event);
+    appendPersonPages(targets, event);
     appendDocumentPanel(targets, event);
     return targets;
   }
@@ -1284,6 +1334,7 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
     }
     appendCommentReads(targets, event);
     appendAnswersPage(targets, event);
+    appendPersonPages(targets, event);
     appendDocumentPanel(targets, event);
     return targets;
   }
@@ -1300,6 +1351,14 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
     // Every message read of the issue (a reference to a message, which shows the thread under
     // its root): a reply changes its root's read, and a payload need not name the root.
     targets.push({ queryKey: ["issue-messages", key] }, { queryKey: ["issue-message", key] });
+    // An edit and a delete rewrite the message's blocks, so every read of one of them, as a
+    // comment's own edit does (`itemBlockReads`).
+    if (event.type === "message.edited" || event.type === "message.deleted") {
+      const id = payloadString(event, "id");
+      if (id !== undefined) {
+        targets.push(itemBlockReads("message", id));
+      }
+    }
     appendRepliedBlock(targets, event);
     return targets;
   }
@@ -1490,6 +1549,27 @@ function askThreadsOn(issue: string): RefreshTarget {
   };
 }
 
+/** The kind of post each correction is of: the segment an address names it under
+ *  (`/comment/<id>`, `/message/<id>`).
+ *
+ *  The search palette keeps each answer under the words it was asked for and the request it
+ *  sent, never under the posts it holds, for its `staleTime` (`useTieredSearch.ts`, `["search",
+ *  words, request]`), and an answer holds a post's text or a block of it with the post's marks.
+ *  So an edit or a delete of a post reads every kept answer again: the post may be in any of
+ *  them, and its words may be gone. A create needs none: a kept answer that misses a post written
+ *  since shows no text of it. The names reads (`referenceTargetsQuery`) hold a post's words and
+ *  marks too, but under the addresses they name, so a correction reads again only those whose
+ *  key names an address of the issue or the project document the post is on, or names the post
+ *  by its id under any other owner (`referenceNameTargets`). */
+const POST_CORRECTIONS: Partial<Record<EventType, "comment" | "message">> = {
+  "comment.edited": "comment",
+  "comment.deleted": "comment",
+  "message.edited": "message",
+  "message.deleted": "message",
+};
+
+const SEARCH_ANSWERS: RefreshTarget = { queryKey: ["search"] };
+
 /**
  * Whether `address` is `owner` or an address under it: `owner`, then the end of the address or
  * one of `next`, the characters that may stand after an owner of that kind in an address
@@ -1504,16 +1584,17 @@ function addressUnder(address: string, owner: string, next: string): boolean {
 }
 
 /** The slug of the project document `event` is on, where its payload carries it: a created,
- *  renamed or removed document's own, an edited comment's document's (`artifact_slug`), and an
- *  edited ask's document's, the one its anchor quotes (`anchor_artifact`), for an edit through
- *  the ask's own route the one that holds its typed block (`block_artifact`), or for an approval
- *  request's rewording the one it asks approval of (`approval_artifact`, which the server's read
- *  of the event log attaches to every ask event carrying `approval`), each the document the ask
- *  is on. Four events carry none, and name the document by its id alone, which no address is
- *  written with: a new version, a comment's edit written before `artifact_slug` existed, the
- *  edit of a question asked of the document as a whole, with no anchor, no block and no
- *  approval, and a document version's rewording of a block ask, whose event the document's
- *  settlement writes without `block_artifact`. */
+ *  renamed or removed document's own, an edited or a deleted comment's document's
+ *  (`artifact_slug`, which the read of a deleted comment's event keeps beside its delete marks),
+ *  and an edited ask's document's, the one its anchor quotes (`anchor_artifact`), for an edit
+ *  through the ask's own route the one that holds its typed block (`block_artifact`), or for an
+ *  approval request's rewording the one it asks approval of (`approval_artifact`, which the
+ *  server's read of the event log attaches to every ask event carrying `approval`), each the
+ *  document the ask is on. Four events carry none, and name the document by its id alone, which
+ *  no address is written with: a new version, a comment's edit written before `artifact_slug`
+ *  existed, the edit of a question asked of the document as a whole, with no anchor, no block
+ *  and no approval, and a document version's rewording of a block ask, whose event the
+ *  document's settlement writes without `block_artifact`. */
 function projectDocumentSlug(event: DispatchEvent): string | undefined {
   switch (event.type) {
     case "artifact.created":
@@ -1527,6 +1608,7 @@ function projectDocumentSlug(event: DispatchEvent): string | undefined {
         event.payload.approval_artifact?.slug
       );
     case "comment.edited":
+    case "comment.deleted":
       return event.payload.artifact_slug;
     default:
       return undefined;
@@ -1571,9 +1653,54 @@ function eventAddresses(event: DispatchEvent): ((address: string) => boolean) | 
   return (address) => addressUnder(address, document, "@/#");
 }
 
+/** A post's id as Dispatch stores it and every read of it writes it: a uuid, canonical and in
+ *  lower case. */
+const POST_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+/**
+ * Whether an address names the post a correction (`POST_CORRECTIONS`) is of, the post itself or a
+ * block of it, as GET /api/v1/reference-targets reads the address; undefined for every other
+ * event, and for a correction whose payload names no post by an id Dispatch stores (`id`,
+ * `POST_ID`), which no address can name. The read names a comment and a message by the id the
+ * address writes, whatever owner it is written under: in the issue's form
+ * (`dispatch://<KEY>/comment/<id>`, `dispatch://<KEY>/message/<id>`), in a project document's
+ * (`dispatch://<PROJECT>/artifact/<slug>/comment/<id>`, with or without a version after the
+ * slug), and as a block's (`…#b-<block id>`, pinned or not). That id is the post's whole id as it
+ * is stored: the server looks the post up by that text, so an id spelled any other way, in upper
+ * case or without its hyphens, names nothing. An id written short - a hex digit, then seven or
+ * more hex digits or hyphens, read without case, and no whole id (`isIdPrefix`) - names the post
+ * only in an address under what the post is on (`eventAddresses`): the server resolves a short id
+ * among the items of the owner the address names and no other, so the same prefix under another
+ * owner names one of that owner's items or nothing. An address that writes no post's id - an
+ * issue, a document, a block of a document - names no post. A dashboard URL, which the server
+ * reads too, is not read here: the issue page names every read by its `dispatch://` address.
+ */
+export function correctedPostAddresses(
+  event: DispatchEvent
+): ((address: string) => boolean) | undefined {
+  const kind = POST_CORRECTIONS[event.type];
+  const id = payloadString(event, "id");
+  if (kind === undefined || id === undefined || !POST_ID.test(id)) {
+    return undefined;
+  }
+  const owned = eventAddresses(event);
+  return (address) => {
+    const route = parseNodeReference(address);
+    const item = route === undefined ? undefined : routeItem(route);
+    if (item?.kind !== kind) {
+      return false;
+    }
+    return (
+      item.id === id ||
+      (isIdPrefix(item.id) && id.startsWith(item.id.toLowerCase()) && owned?.(address) === true)
+    );
+  };
+}
+
 /**
  * Every names read whose key (`["reference-targets", <sorted addresses>]`) holds an address
- * `event` can change the words under (`eventAddresses`), or one written in a form other than
+ * `event` can change the words under (`eventAddresses`), one that names the post a correction is
+ * of under any owner (`correctedPostAddresses`), or one written in a form other than
  * `dispatch://` and its owner, which could name anything and so is refreshed for rather than
  * missed. An event on neither an issue nor a project document refreshes every names read.
  */
@@ -1582,24 +1709,28 @@ function namesReadsNaming(event: DispatchEvent): RefreshTarget {
   if (touched === undefined) {
     return { queryKey: ["reference-targets"] };
   }
+  const post = correctedPostAddresses(event);
   return {
     queryKey: ["reference-targets"],
     when: (_data, query) =>
       rowsOf<unknown>(query.queryKey[1]).some(
         (address) =>
-          typeof address === "string" && (!address.startsWith("dispatch://") || touched(address))
+          typeof address === "string" &&
+          (!address.startsWith("dispatch://") || touched(address) || post?.(address) === true)
       ),
   };
 }
 
 /**
  * Which names reads (`referenceTargetsQuery`, `["reference-targets", <sorted addresses>]`) an
- * event refreshes: those whose key holds an address it changes the words under, on a comment's
- * edit (its body), an ask's edit (its question) and a document's new version (its blocks' words),
- * and none on any other event. The issue page's names reads are kept fresh by events
- * (`reference-target.ts`'s `EVENT_FRESH`), never by their age, and a names read's key is the set of
- * addresses it names, so a page that comes to hold another set reads again under a key of its
- * own: only a change of words under the same address needs a rule.
+ * event refreshes: those whose key holds an address it changes the words under, on an edit or a
+ * delete of a comment or an issue message (its body, which a delete empties, and the marks the
+ * read answers for the post, `edited_at`, `deleted_at` and `deleted_by`), an ask's edit (its
+ * question) and a document's new version (its blocks' words), and none on any other event. The
+ * issue page's names reads are kept fresh by events (`reference-target.ts`'s `EVENT_FRESH`),
+ * never by their age, and a names read's key is the set of addresses it names, so a page that
+ * comes to hold another set reads again under a key of its own: only a change of words under the
+ * same address needs a rule.
  * An issue's write that changes its title (`issue.updated` naming `title` among its changes, or
  * naming none, as an older server sends it) renames the issue's own address, since a names read
  * names an issue by its title, so it refreshes the reads naming that address, and only those
@@ -1610,21 +1741,33 @@ function namesReadsNaming(event: DispatchEvent): RefreshTarget {
  * its blocks name nothing (`gone`), so each refreshes them too.
  *
  * Of the names reads the app holds, each event refreshes those whose key holds an address it can
- * change, of the issue or the project document it is on (`namesReadsNaming`). The test reads the
- * query's key, not the page's issue, since a page's words can cite another issue's target. Every
- * address the issue page names a read by is written `dispatch://` and its owner
- * (`treeReferences`): a node's own, a chip's, each one its words cite, a bare key asked as its
- * issue's own address, and an item id or a block id written short still under its owner, so the
- * key alone ties each address to what owns it. An event of these kinds on neither an issue nor a
- * project document never reaches this rule: `documentTargets` refuses it first, and the feed then
- * refreshes every read the app holds.
+ * change: one of the issue or the project document it is on (`eventAddresses`), and, for a
+ * post's correction, one that names the post by its id under any owner
+ * (`correctedPostAddresses`). The test reads the query's key, not the page's issue, since a
+ * page's words can cite another issue's target. Every address the issue page names a read by is
+ * written `dispatch://` and its owner (`treeReferences`): a node's own, a chip's, each one its
+ * words cite, a bare key asked as its issue's own address, and an item id or a block id written
+ * short still under its owner. So the key alone ties each address to what owns it, but for a
+ * comment's or a message's whole id: the server names a post by that id whatever owner the
+ * address is written under, so a page on CORE-2 whose words cite a CORE-1 comment as
+ * `dispatch://CORE-2/comment/<id>` holds that comment's words under a CORE-2 address. A comment
+ * or ask event on neither an issue nor a project document never reaches this rule:
+ * `documentTargets` refuses it first, and the feed then refreshes every read the app holds. A
+ * message correction always carries its issue, since the server refuses to correct any other
+ * message (`message_corrections.go`).
  *
  * A person's edit of a document (`artifact.human_edited`) is none of them: it is the notice sent
  * once the document has been quiet after those edits, each of which wrote a version that sent
- * its own `artifact.version` (the notice's branch of `ownerTargets`), so it changes no text. Nor
- * is a message: the feed has no `message.edited` (its message events are `message.created`,
- * `message.delivery`, `message.accepted` and `message.answered`), so a message's body never
- * changes under its address.
+ * its own `artifact.version` (the notice's branch of `ownerTargets`), so it changes no text. A
+ * post's correction is on what owns the post: a comment's on its issue, or on the project
+ * document it belongs to, whose slug its payload carries (`projectDocumentSlug`), and a
+ * message's on its issue, since the server corrects an issue message and refuses any other. So
+ * each reaches every names read whose key names anything of that owner, the post and its blocks
+ * among them, and every one whose key names the post or a block of it by its whole id under
+ * another owner, and no other: an id written short under another owner names one of that
+ * owner's items or nothing.
+ * The search palette's answers, which a post's words are kept under too, are keyed by no
+ * address, so a correction reads every one of them again (`POST_CORRECTIONS`).
  *
  * The feed is the workspace's (`api/event-feed.ts`): these events arrive for every issue and
  * project document of the workspace, a document's new version above all, and one that can
@@ -1640,7 +1783,16 @@ function namesReadsNaming(event: DispatchEvent): RefreshTarget {
  * every other rule does, so a read already out, or begun under a second ago, is fetched again
  * once those rules allow; since the rule tests the read's key against the answer that lands, a
  * first read out at the event that then fails holds no answer to test and is not read again by
- * it, and window focus or a later event reads it again (`refetchFailedOnFocus`).
+ * it, and window focus or a later event reads it again (`refetchFailedOnFocus`). A refetch that
+ * fails keeps the answer it would have replaced, so a post's correction writes its own marks
+ * into each answer the cache holds as it arrives (`markCorrectedPost`): a read that then fails
+ * names a deleted post by the deleted line and an edited one with its mark. An answer that a
+ * read already out at an event lands was composed before it, and a refetch of it that fails
+ * keeps it, which stands for every refresh but a correction's own facts: the feed puts each
+ * answer it marks over every read of that query still out, and reads the query again
+ * (`replaceQueryData`), and keeps a correction while a read out at its arrival of a query it
+ * marked nothing in is out, writing its marks into the answer that read lands (`keepCorrection`
+ * in `corrected-post.ts`).
  */
 function referenceNameTargets(event: DispatchEvent): RefreshTarget[] {
   switch (event.type) {
@@ -1650,6 +1802,9 @@ function referenceNameTargets(event: DispatchEvent): RefreshTarget[] {
     case "artifact.version":
     case "ask.edited":
     case "comment.edited":
+    case "comment.deleted":
+    case "message.edited":
+    case "message.deleted":
       return [namesReadsNaming(event)];
     case "issue.updated": {
       const changes = issueChanges(event);
@@ -1671,6 +1826,9 @@ export function eventRefreshTargets(event: DispatchEvent, signedInLogin?: string
   const threadsIssue = askThreadsIssue(event);
   if (threadsIssue !== null) {
     targets.push(askThreadsOn(threadsIssue));
+  }
+  if (POST_CORRECTIONS[event.type] !== undefined) {
+    targets.push(SEARCH_ANSWERS);
   }
   return targets;
 }

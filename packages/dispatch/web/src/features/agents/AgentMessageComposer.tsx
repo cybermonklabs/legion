@@ -16,7 +16,7 @@ import {
   textMutedOnCanvas,
   textSecondaryOnCanvas,
 } from "../../theme/classes";
-import type { ListedReplies, ReplyTarget } from "../conversation/composer-model";
+import type { ListedReplies, ReplyParent, ReplyTarget } from "../conversation/composer-model";
 import { useHeldSends } from "../conversation/held-sends";
 import { MentionComposer } from "../conversation/MentionComposer";
 import { PendingSendTurn } from "../conversation/PendingSendTurn";
@@ -54,6 +54,7 @@ export function AgentMessageComposer({
   listed,
   onCancelReply,
   onClose,
+  replyParent,
   replyTo,
   sendKey,
   standing = false,
@@ -73,6 +74,9 @@ export function AgentMessageComposer({
    *  Escape from an untouched draft and on Discard - and also right after a successful send,
    *  which is NOT one level out; that case is filtered below. */
   onClose: () => void;
+  /** The message `replyTo` quotes, as the host's read of the session's exchanges holds it now:
+   *  its quote says the message is deleted or edited (`MentionComposer`'s `replyParent`). */
+  replyParent?: ReplyParent;
   replyTo: AgentReply | null;
   /** The name of the composer's send: the row's `agentSendKey`, or the Inbox thread's own. */
   sendKey: MutationKey;
@@ -362,6 +366,7 @@ export function AgentMessageComposer({
         }}
         owner={composerOwner}
         ownMoves={commits}
+        replyParent={replyParent}
         replyTo={replyTo?.target ?? null}
         standing={standing}
       />

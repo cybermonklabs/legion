@@ -115,6 +115,7 @@ func TestACutReadsAVersionsBlockIDsInWorkLinearInItsSize(t *testing.T) {
 // up in it, among them an id that only begins the text after a `#`, an `id="` whose value ends at
 // the `"` of the next `id="`, and ids written `id="…"` because they hold a space, a `"` or an `&`.
 func TestAWrittenIDIsFoundWhereASearchOfTheTextFindsIt(t *testing.T) {
+	t.Parallel()
 	ids := []string{"r1", "r", "r12", "q:1", "décision", "a b", `x"y`, "a&b", "aid=", "b c", "c", "", "zz"}
 	for _, stored := range []string{
 		"",

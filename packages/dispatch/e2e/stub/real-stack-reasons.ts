@@ -1,20 +1,31 @@
 /** Why each spec file's remaining rows stay on the real stack, read by `e2e/tools/row-map.ts`.
  *
  *  dispatch://INFRA-1407's k2 asks, for every row the change did not move, the server behaviour
- *  its assertion depends on. The reasons are here rather than as a comment in each of the
- *  hundred and forty spec files that keep rows, because a comment in each would touch every
- *  file of a suite several trees edit at once and conflict with all of them; gathering them
- *  makes the list readable in one pass as well. The generation refuses a file the listing names
- *  that is absent here, so the map stays complete and machine-checked either way.
+ *  its assertion depends on. A file's reason is in one of two places:
+ *
+ *  - **The list below** holds the reasons of the files that were there when the list closed. A
+ *    change to one of those reasons is made in the list.
+ *  - **The file's own header** holds the reason of a file added after the list closed. The
+ *    reason is a `/**` comment at the very start of the file, and `headerReasons` reads it as
+ *    the generation reads a stub file's header. So two changes that each add a file with its
+ *    reason change no common line.
+ *
+ *  `realStackReasons` holds the list's entries first, then the headers' reasons. Where the list
+ *  names a file, the list gives its reason, and its header is not read.
  *
  *  A reason names what the server decides for that file's rows: the four shapes
  *  `packages/dispatch/README.md`, "The stubbed layer", sets out. Where a file's rows stay for
  *  more than one, the reasons are joined with a semicolon.
  *
- *  A file whose every row moved is absent from this list, and so is a file no project of this
- *  listing runs - the multiprocess specs among them, which the generation never names. It
- *  refuses a file it lists that has no reason here, and a reason here for a file it does not
- *  list, so this list is exactly the suite's real-stack files and nothing else. */
+ *  A file whose every row moved has no reason, and neither has a file no project of this
+ *  listing runs - the multiprocess specs among them, which the generation never names. The
+ *  generation refuses a file it lists that has no reason, and a reason for a file it does not
+ *  list. So the reasons are exactly the suite's real-stack files and nothing else. */
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { sourceFiles } from "../source-files";
+
 export const realStackReasons: Record<string, string> = {
   "accessibility.e2e.ts":
     "three of its scanned routes wait on the live document's connected status, which the Yjs socket alone gives",
@@ -129,6 +140,8 @@ export const realStackReasons: Record<string, string> = {
   "email-links.e2e.ts": "asserts in the live editor before the past version",
   "failed-room.e2e.ts": "a document room that fails and recovers",
   "followers.e2e.ts": "follower and subscriber writes change what the server delivers",
+  "foot-sweep.e2e.ts":
+    "the floats are a write Dispatch refuses and the builds every live process serves, and each page's scrollers reach the foot only with what the server holds: the review corpus, a margin of asks, a transcript the relay replays and a long Inbox document",
   "gated-step-approvals.e2e.ts":
     "gate state is the server's computation over versions; server-computed gate state; the write answers both steps server-side",
   "github-checks.e2e.ts": "the checks pill is the server's evaluation of fake GitHub runs",
@@ -141,6 +154,8 @@ export const realStackReasons: Record<string, string> = {
   "going-new-issue.e2e.ts":
     "the bar creates an issue and the row re-reads what the server stored, its messages and its results",
   "going-operators.e2e.ts": "each operator form and each chip narrows a list the server answers",
+  "graph-store.e2e.ts":
+    "both rows read the node and tuple store back through the server's own reads over a real database: one applies a supertag migration under an open editor and reads the version the live document room admits after it, and the other reads one person's page, whose rows are the authored_by and delivered_to tuples the server wrote as those comments were posted and delivered",
   "handoffs.e2e.ts": "needs the live frame",
   "heavy-bodies.e2e.ts":
     "its claim is a wall-clock time, so it runs one row at a time in the -alone projects and in no other",
@@ -181,8 +196,6 @@ export const realStackReasons: Record<string, string> = {
   "issue-page-i.e2e.ts": "the server's reads fold the outline; read marks and typed words persist",
   "issue-page-q.e2e.ts": "the server's decisions read sorts the view; a sent Change is re-read",
   "issue-page-k.e2e.ts": "the view orders the plan's blocks and needs the server stored",
-  "issue-page-l.e2e.ts":
-    "each row writes from the box at the foot and then reads its own write: the comment, reply or read mark Dispatch stored, and the row the outline draws from the server's reads",
   "issue-page-v.e2e.ts":
     "the rows record and withdraw results and file a child through the server, and the view draws its coverage and results reads",
   "issues-table.e2e.ts":
@@ -242,6 +255,8 @@ export const realStackReasons: Record<string, string> = {
     "its claim is a wall-clock time, so it runs one row at a time in chromium-alone and in no other",
   "offline-edits.e2e.ts": "document transport, IndexedDB recovery and read-only admissions",
   "overlapping-marks.e2e.ts": "two readers' marks and the server's anchor refresh",
+  "parent-status-choice.e2e.ts":
+    "each question is the server's dry run of a status change, which the row holds against its own call of that dry run, and each choice is read back from the issues the server wrote",
   "parse-count.e2e.ts":
     "every row counts what the browser parsed while the page drew a text the live server stored, which is the whole claim: a recording would answer the trees a recording holds rather than the trees this server sends, and its first row seeds the texts the rest of the file counts over, which only a live server does",
   "paste-recovery.e2e.ts": "pastes into the live document",
@@ -260,6 +275,8 @@ export const realStackReasons: Record<string, string> = {
   "popover-escape.e2e.ts":
     "the command bar's own search reads `/api/v1/search`, and the inbox peek lists the asks the server holds for the reader",
   "polish.e2e.ts": "opens the margin ask composer on the live document",
+  "post-corrections.e2e.ts":
+    "each mark is the server's record of an edit or a delete, written through the API and then read back on four pages",
   "prefix-links.e2e.ts": "`sql`-forged id twins and the server's short-id resolution",
   "priorities.e2e.ts":
     "every row reads what the server decides about a priority: the two faults are its own queries over statuses and the `advances` tuples, a priority a child inherits is its walk down the parent chain, each write is read back out of the store after a reload, the margin is the history the server answers, the rail's count falls under an open page with no reload, and another person's write of a priority reaches that open page as the server's event",
@@ -283,7 +300,7 @@ export const realStackReasons: Record<string, string> = {
   "reading-inbox-threads.e2e.ts":
     "each row writes a record through the API and reads it back in the Inbox: the server lists the Reply rows, builds the approval's question around the summary, and answers each reference's title and the session's name as they are now",
   "reading-pages.e2e.ts":
-    "each row reads a text the server stored and resolves - a component's prose that the source sync read from the fake GitHub, and a priority's description and an issue's reason for touching no component written through the API - and the server decides what each bare key, address and party in it reads as, which a recording would freeze at the state it was recorded in",
+    "each row reads a text the server stored and resolves - a component's prose that the source sync read from the fake GitHub, a priority's description and an issue's reason for touching no component written through the API, and the comments a person wrote, which their page lists from the authored_by tuples the server wrote - and the server decides what each bare key, address, `#id` and party in it reads as, which a recording would freeze at the state it was recorded in",
   "reading-references.e2e.ts":
     "each row writes a record through the API and reads it on another record's surface: a card and the hover card read their target as the server stores it, and the palette's hits are the server's ranking and its ts_headline snippet",
   "recipients-claim.e2e.ts": "claims and routes the server computes, with live card updates",
@@ -324,6 +341,8 @@ export const realStackReasons: Record<string, string> = {
     "opens the document's live room; where a result's commit stands is the server's comparison with the PR head",
   "visual.e2e.ts":
     "it compares a page against a committed baseline inside the pinned Playwright image, which is its own pair of projects",
+  "visual-guard.e2e.ts":
+    "the writes the guard must stop go to the real API and the live document room, and a second page reads the server back",
   "workspace.e2e.ts": "it asserts the counts and the titles the server groups a workspace into",
   "writer-spelling.e2e.ts": "asserts the readings inside the live document editor",
   "writes.e2e.ts":
@@ -331,3 +350,55 @@ export const realStackReasons: Record<string, string> = {
   "writing-surfaces.e2e.ts":
     "it walks every covered writing box, the document's live editor and the agent live conversation among them, and each delivering box's row is read back from the write the server stored and the frame the fake Envoy listener took",
 };
+
+/** The directories under `e2e/` that hold no spec file: `node_modules`, as Playwright's own
+ *  default ignores it, and the outputs of a browser run (`outputDir: "test-results"` in
+ *  e2e/playwright.config.ts, and the HTML report), which hold traces, videos and screenshots.
+ *  `specFiles` of e2e/no-browser-rows.ts skips `node_modules` and `test-results` for the same
+ *  reason. The walk below runs as this module loads, so this set stands above it. */
+const skippedDirectories = new Set(["node_modules", "playwright-report", "test-results"]);
+
+// A listing names a file relative to `e2e/`, so the walk starts there. The headers' reasons
+// come after the list's entries.
+Object.assign(
+  realStackReasons,
+  headerReasons(fileURLToPath(new URL("..", import.meta.url)), realStackReasons)
+);
+
+/** The reasons that the real-stack spec files under `directory` give in their own headers. Each
+ *  key is a file's path relative to `directory`, with `/` separators. A file gives a reason when
+ *  all of these are true:
+ *
+ *  - Its name ends in `.e2e.ts`, but not in `.stub.e2e.ts` or `.multiprocess.e2e.ts`.
+ *  - `listed` does not name it.
+ *  - A `/**` comment starts at its first byte.
+ *
+ *  The walk goes down every directory but `skippedDirectories`. */
+export function headerReasons(
+  directory: string,
+  listed: Readonly<Record<string, string>>
+): Record<string, string> {
+  const files = sourceFiles(directory, {
+    directory: (name) => !skippedDirectories.has(name),
+    file: (name) =>
+      name.endsWith(".e2e.ts") &&
+      !name.endsWith(".stub.e2e.ts") &&
+      !name.endsWith(".multiprocess.e2e.ts"),
+  });
+  const reasons: Record<string, string> = {};
+  for (const file of files) {
+    if (listed[file] !== undefined) continue;
+    // This is the rule of `stubReason` in e2e/tools/row-map.ts, which reads a stub file's header.
+    // It is a second copy, and not an import, because row-map.ts keeps its import line of this
+    // module unchanged. A change to the rule is made in both copies.
+    const header = /^\/\*\*([\s\S]*?)\*\//.exec(readFileSync(join(directory, file), "utf8"));
+    if (header === null) continue;
+    reasons[file] = header[1]
+      .split("\n")
+      .map((line) => line.replace(/^\s*\*? ?/, "").trimEnd())
+      .join(" ")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+  return reasons;
+}

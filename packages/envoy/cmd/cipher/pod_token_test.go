@@ -21,7 +21,7 @@ const (
 )
 
 // fakePodToken is a JWT shaped like the projected ServiceAccount token a kubelet mounts for the
-// agent-secrets audience. It is not signed by anything: the client reads its claims and never
+// broker's audience. It is not signed by anything: the client reads its claims and never
 // verifies them, and every broker a test hands it to is a fake.
 func fakePodToken(t *testing.T, subject, podUID string) string {
 	t.Helper()

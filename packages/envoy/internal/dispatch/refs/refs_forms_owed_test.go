@@ -95,8 +95,8 @@ func indexDocumentVersion(t *testing.T, tx pgx.Tx, document string, number int, 
 	`, document, number, markdown, versionAt); err != nil {
 		t.Fatalf("write version %d of %s: %v", number, document, err)
 	}
-	located := NewReader(ctx, tx, "artifact", document, refsGrammarServer).Mentions(markdown)
-	if _, err := IndexBlocks(ctx, tx, document, number, versionAt, markdown, blocks, located, nil, refsGrammarServer); err != nil {
+	located := NewReader(ctx, tx, model.Actor{}, "artifact", document, refsGrammarServer).Mentions(markdown)
+	if _, _, _, err := IndexBlocks(ctx, tx, document, number, versionAt, markdown, blocks, located, nil, refsGrammarServer); err != nil {
 		t.Fatalf("index the blocks of version %d of %s: %v", number, document, err)
 	}
 	replaceDocumentVersion(t, tx, document, number, versionAt, located, MentionExcerpts(markdown, blocks, located, refsGrammarServer), true)
@@ -261,7 +261,7 @@ func TestAVersionThatLeavesItsBlocksToTheBlockIndexStaysOwed(t *testing.T) {
 	`, document, markdown, versionAt); err != nil {
 		t.Fatalf("write version 1: %v", err)
 	}
-	located := NewReader(ctx, tx, "artifact", document, refsGrammarServer).Mentions(markdown)
+	located := NewReader(ctx, tx, model.Actor{}, "artifact", document, refsGrammarServer).Mentions(markdown)
 
 	replaceDocumentVersion(t, tx, document, 1, versionAt, located, nil, false)
 
@@ -286,7 +286,7 @@ func TestAnOlderBuildsAnswerLeavesTheAskOwed(t *testing.T) {
 	insertSecondIssue(t, tx)
 	ask := insertAsk(t, tx, "CORE-1", "Which tab holds it?",
 		model.AskOption{Label: "dispatch://CORE-2/plan"}, model.AskOption{Label: "Neither"})
-	writeAskText(t, tx, NewReader(ctx, tx, "ask", ask.ID, askPartServer), ask, time.Now(), true)
+	writeAskText(t, tx, NewReader(ctx, tx, ask.Author, "ask", ask.ID, askPartServer), ask, time.Now(), true)
 	cite := Target{Kind: "issue", ID: "CORE-2"}
 	if got := askPartTargets(t, tx, ask.ID); !slices.Equal(got, []Target{cite}) {
 		t.Fatalf("the ask's parts link %v, want the option's tab address", got)
@@ -337,7 +337,7 @@ func TestABareDeleteFromEachBlockTableLeavesItsOwnerOwed(t *testing.T) {
 	comment := insertIndexedItem(t, tx, ItemComment, "CORE-1", "See dispatch://CORE-1/plan.")
 	message := insertIndexedItem(t, tx, ItemMessage, "CORE-1", "See dispatch://CORE-1/plan.")
 	ask := insertAsk(t, tx, "CORE-1", "Is dispatch://CORE-1/plan right?", model.AskOption{Label: "Yes"})
-	writeAskText(t, tx, NewReader(ctx, tx, "ask", ask.ID, askPartServer), ask, time.Now(), true)
+	writeAskText(t, tx, NewReader(ctx, tx, ask.Author, "ask", ask.ID, askPartServer), ask, time.Now(), true)
 	if owed := formsOwed(t, tx); len(owed) != 0 {
 		t.Fatalf("the queue holds %v after this build indexed every owner, want it empty", owed)
 	}
@@ -394,7 +394,7 @@ func TestThisBuildsAskWritesSettleAfterTheirParts(t *testing.T) {
 	insertSecondIssue(t, tx)
 	ask := insertAsk(t, tx, "CORE-1", "Is dispatch://CORE-2/plan right?",
 		model.AskOption{Label: "dispatch://CORE-2/plan"}, model.AskOption{Label: "No"})
-	writeAskText(t, tx, NewReader(ctx, tx, "ask", ask.ID, askPartServer), ask, time.Now(), true)
+	writeAskText(t, tx, NewReader(ctx, tx, ask.Author, "ask", ask.ID, askPartServer), ask, time.Now(), true)
 	if owed := formsOwed(t, tx); len(owed) != 0 {
 		t.Fatalf("the queue holds %v after the ask's first write, want it empty", owed)
 	}
@@ -402,7 +402,7 @@ func TestThisBuildsAskWritesSettleAfterTheirParts(t *testing.T) {
 	// An edit that drops the option citing CORE-2: the question keeps its edge, the option's part
 	// loses its own.
 	writeAskOptions(t, tx, &ask, model.AskOption{Label: "No"})
-	writeAskText(t, tx, NewReader(ctx, tx, "ask", ask.ID, askPartServer), ask, time.Now(), true)
+	writeAskText(t, tx, NewReader(ctx, tx, ask.Author, "ask", ask.ID, askPartServer), ask, time.Now(), true)
 	cite := Target{Kind: "issue", ID: "CORE-2"}
 	if got := askPartTargets(t, tx, ask.ID); !slices.Equal(got, []Target{cite}) {
 		t.Fatalf("after the edit the ask's parts link %v, want the question's alone", got)
@@ -418,7 +418,7 @@ func TestThisBuildsAskWritesSettleAfterTheirParts(t *testing.T) {
 	if owed := formsOwed(t, tx); !slices.Equal(owed, []string{"ask " + ask.ID}) {
 		t.Fatalf("the answer's row write owes %v, want the ask", owed)
 	}
-	writeAskText(t, tx, NewReader(ctx, tx, "ask", ask.ID, askPartServer), ask, ask.Answer.At, false)
+	writeAskText(t, tx, NewReader(ctx, tx, ask.Author, "ask", ask.ID, askPartServer), ask, ask.Answer.At, false)
 	if edges := edgesFrom(t, tx, "ask", ask.ID); !slices.Equal(edges, []string{"issue CORE-2"}) {
 		t.Fatalf("after the answer the ask's edges are %v, want its question's alone", edges)
 	}

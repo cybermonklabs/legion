@@ -2,7 +2,7 @@ import { type ReactNode, useRef } from "react";
 import { useLocation } from "react-router-dom";
 
 import { primarySpec } from "../../../api/issue-cache";
-import { FOOT_HELD_ATTRIBUTE, useFootInset } from "../../../hooks/useFootInset";
+import { useFootInset } from "../../../hooks/useFootInset";
 import { type BoxPlace, IssueComposer, useComposerShown } from "../IssueComposer";
 import { IssueReadMark } from "../IssueReadMark";
 import { issueAddress } from "../issue-address";
@@ -21,9 +21,9 @@ import type { SlotProps } from "../slot-props";
  * from each side of the screen at 760 px and below, where the column's own inset is 14 px. It
  * draws no padding: the 8 px under the box and the fade above it are the box's own section
  * (`pageComposer.foot`), so nothing of the box shows while it is hidden. Its layer is over the
- * outline's rows and under the view row and Details. It says it is held at the foot
- * (`FOOT_HELD_ATTRIBUTE`), so the reach it publishes while it stands there lifts the shell's
- * floating status above it (`useFootInset`).
+ * outline's rows and under the view row and Details. It is an element of the foot's page layer
+ * (`useFootInset`), so the shell's floats - the update banner, the status corner - keep clear
+ * of it while it has a box on the screen.
  *
  * The mark stands in the flow after the stage and before the box, 12 px under the outline's last
  * row (the tree's own `mb-3`, `IssueTree.tsx`), and is moved down by the box's height less those
@@ -49,7 +49,7 @@ export function FootSlot({ issue, route }: SlotProps): ReactNode {
   const { namesHeld, readsHeld, root } = useOutlineReads(issue);
   const shown = useComposerShown(place);
   const wrapper = useRef<HTMLDivElement>(null);
-  useFootInset(wrapper, shown);
+  useFootInset(wrapper, shown, "page");
   return (
     <>
       {place.viewOn || place.documentOpen ? null : (
@@ -60,7 +60,6 @@ export function FootSlot({ issue, route }: SlotProps): ReactNode {
       <div
         className="sticky bottom-0 z-[15] mx-auto mt-auto w-full max-w-[1000px] min-w-0 max-[761px]:-mx-1 max-[761px]:w-auto"
         ref={wrapper}
-        {...{ [FOOT_HELD_ATTRIBUTE]: "" }}
       >
         <IssueComposer
           documentOpen={place.documentOpen}

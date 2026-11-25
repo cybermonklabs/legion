@@ -78,9 +78,13 @@ func TypeSecret(name, owner, tier, secretType, value string) secrets.LocalSecret
 // holding it: the policy reads and decodes each type secret's value (policy.Current), and refuses
 // one it cannot decode (policy.ReasonValueMalformed). A github-app value names App 123456 and a
 // private key made once for the test binary (fixtureAppKey), built at run time rather than written
-// here. No field holds a credential. It panics for a type ParseValue reads no value of, which is a
-// test bug.
+// here. A github-installations value holds a token of each account FixtureGitHubOwners names
+// (GitHubInstallationsValue). No field holds a credential. It panics for a type ParseValue reads no
+// value of, which is a test bug.
 func TypeValue(secretType string) string {
+	if secretType == policy.TypeGitHubInstallations {
+		return GitHubInstallationsValue()
+	}
 	fields := map[string]string{}
 	switch secretType {
 	case policy.TypeGitHubApp:
@@ -99,6 +103,28 @@ func TypeValue(secretType string) string {
 		panic(fmt.Sprintf("policytest.TypeValue: no value of type %q", secretType))
 	}
 	value, err := json.Marshal(fields)
+	if err != nil {
+		panic(err)
+	}
+	return string(value)
+}
+
+// GitHubInstallationsValue is a github-installations value as a minter outside the broker writes
+// one, at shapeVersion 1: for each account FixtureGitHubOwners names, acme and ada, its
+// installation (41, 42), a token that is no credential ("fixture-token-<account>"), which lapses
+// fifty minutes from now (the least a minter that runs every ten minutes leaves on a token GitHub
+// gives an hour, well past secrets.MintedTokenMargin), contents and metadata at read, and every
+// repository of the installation.
+func GitHubInstallationsValue() string {
+	installations := map[string]any{}
+	for i, account := range strings.Fields(FixtureGitHubOwners) {
+		installations[account] = map[string]any{
+			"installation_id": 41 + i, "token": "fixture-token-" + account,
+			"expires_at":  time.Now().Add(50 * time.Minute).UTC().Format(time.RFC3339),
+			"permissions": map[string]string{"contents": "read", "metadata": "read"}, "repository_selection": "all",
+		}
+	}
+	value, err := json.Marshal(map[string]any{"shapeVersion": 1, "installations": installations})
 	if err != nil {
 		panic(err)
 	}

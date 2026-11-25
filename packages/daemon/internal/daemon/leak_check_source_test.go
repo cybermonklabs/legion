@@ -93,6 +93,7 @@ func serveLeakCheckRepo(t *testing.T) *leakCheckRepo {
 // permissions — one request, on that installation and no other, and naming no repository, the
 // installation deciding what it reaches — and that token reads the tarball.
 func TestTheLeakCheckIsReadWithAReadLeaseOnItsOwner(t *testing.T) {
+	t.Parallel()
 	const checkInstallation, otherInstallation = "71", "72"
 	github := provisioningStandIn(t,
 		provisioningInstallation{id: checkInstallation, owner: "example-org", granted: leakCheckGrant,
@@ -130,6 +131,7 @@ func TestTheLeakCheckIsReadWithAReadLeaseOnItsOwner(t *testing.T) {
 // refusal's own sentence, and no wider token is asked for in its place: the one token request is
 // the read mint, and the repository is never read.
 func TestARefusedReadingLeaseForTheLeakCheckAsksForNoWiderToken(t *testing.T) {
+	t.Parallel()
 	const checkInstallation = "73"
 	github := provisioningStandIn(t,
 		provisioningInstallation{id: checkInstallation, owner: "example-org", granted: leakCheckGrant,
@@ -160,6 +162,7 @@ func TestARefusedReadingLeaseForTheLeakCheckAsksForNoWiderToken(t *testing.T) {
 // served. A read answered 404 drops nothing, and the next read is made with the cached lease: one
 // token request.
 func TestALeakCheckReadAnswered401MintsANewTokenAndA404DoesNot(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name     string
 		status   int
@@ -217,6 +220,7 @@ func TestALeakCheckReadAnswered401MintsANewTokenAndA404DoesNot(t *testing.T) {
 // installation on the check's owner (appauth.ErrNotInstalled), and an installation whose token
 // exchange answers 401.
 func TestAMintGitHubRefusesIsRefusedWithTheMintSentence(t *testing.T) {
+	t.Parallel()
 	const want = leakguard.RefusalPrefix + "the daemon could not mint its read-only token for example-org/deployment: "
 	for _, tc := range []struct {
 		name          string
@@ -316,6 +320,7 @@ func (b leakCheckBroker) runs(t *testing.T) []string {
 // and that token reads the check; a broker that refuses the narrowing is refused with the
 // refusal's sentence, after that one run and no wider one.
 func TestTheLeakCheckTokenInTokenModeIsTheCommandsReadOnlyRelease(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		refuse bool
@@ -376,6 +381,7 @@ func TestTheLeakCheckTokenInTokenModeIsTheCommandsReadOnlyRelease(t *testing.T) 
 // nil interface, never a nil *leakguard.Source inside one. Under the deployment's setting a daemon
 // with Apps reads the repository the setting names.
 func TestADaemonWithNoAppsOrNoLeakCheckSettingHasNoLeakCheckSource(t *testing.T) {
+	t.Parallel()
 	if source := leakCheckSource(nil, "", leakCheckSetting); source != nil {
 		t.Fatalf("the source with no Apps = %#v, want nil", source)
 	}
@@ -394,6 +400,7 @@ func TestADaemonWithNoAppsOrNoLeakCheckSettingHasNoLeakCheckSource(t *testing.T)
 // and tells every role the checker of, and the tmux runtime's carry the checker, which every pane
 // is told. A daemon that dropped either would start roles that never ran the deployment's check.
 func TestTheLeakCheckSettingReachesEitherRuntime(t *testing.T) {
+	t.Parallel()
 	cfg := config.Config{Runtime: config.Runtime{Name: "tmux"}, LeakCheck: leakCheckSetting}
 	if got := tmuxOptions(cfg, "test", nil, "", "", quietLogger()).LeakCheckManifestSHA256; got != leakCheckSetting.ManifestSHA256 {
 		t.Errorf("tmux LeakCheckManifestSHA256 = %q, want the deployment's manifest digest %q", got, leakCheckSetting.ManifestSHA256)
@@ -413,6 +420,7 @@ func TestTheLeakCheckSettingReachesEitherRuntime(t *testing.T) {
 // one line naming the repository the check is read from and the manifest digest every role is held
 // to; under none, one plain line naming the two settings that would name one.
 func TestTheBootSaysOnceWhichLeakCheckIsConfigured(t *testing.T) {
+	t.Parallel()
 	const notConfigured = "daemon: the deployment leak check is not configured (LEGION_LEAK_CHECK_REPOSITORY and LEGION_LEAK_CHECK_MANIFEST_SHA256, or leak_check.repository and leak_check.manifest_sha256 in legion.yaml): role pods start without it, and no write is refused for its absence"
 	const configured = "daemon: the deployment leak check is configured: role pods install it from the repository at the worker image's pin, and every role is held to its manifest digest"
 	for _, tc := range []struct {

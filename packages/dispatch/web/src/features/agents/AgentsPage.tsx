@@ -37,6 +37,7 @@ import { LabelPill } from "../../components/Pill";
 import { PinButton } from "../../components/PinButton";
 import { AgentListRefilling } from "../../components/QueryError";
 import { RefusableButton } from "../../components/RefusableButton";
+import { useFootInset } from "../../hooks/useFootInset";
 import { useSending } from "../../hooks/useSending";
 import { compareTimestamps } from "../../lib/timestamps";
 import {
@@ -58,6 +59,7 @@ import {
   textPrimaryOnCanvas,
   textSecondaryOnCanvas,
 } from "../../theme/classes";
+import { replyParentOf } from "../conversation/composer-model";
 import { listedReplies } from "../conversation/conversation-model";
 import { broadcastDelivery, deliveryModesOf, MODE_LABELS } from "../conversation/delivery";
 import { useHeldSends } from "../conversation/held-sends";
@@ -74,7 +76,9 @@ import {
   AgentUnresponsiveNote,
   useAgentText,
 } from "../refs/AgentName";
-import { MarkdownBody } from "../refs/MarkdownBody";
+import { PostBody } from "../refs/PostBody";
+import { EditedMark } from "../refs/PostMarks";
+import { postDeletion } from "../refs/post-marks";
 import { buildInboxPath, buildIssuePath, buildMachinePath } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
 import { textSourceOf } from "../refs/text-references";
@@ -228,7 +232,8 @@ function AgentExchangeReply({
       author={reply.author}
       body={
         <div className={textPrimaryOnCanvas}>
-          <MarkdownBody
+          <PostBody
+            deleted={postDeletion(reply)}
             markdown={reply.body}
             source={textSourceOf("message", reply.id, reply.issue_key)}
             surface="agents-row-reply"
@@ -252,6 +257,8 @@ function AgentExchangeReply({
               targetName: rowTarget(agent),
             }
       }
+      deleted={postDeletion(reply)}
+      edited={reply.edited_at}
       onReply={() => onReply(agentReplyTo(agent, read, reply))}
       quote={
         parent === undefined
@@ -259,6 +266,8 @@ function AgentExchangeReply({
           : {
               author: parent.author,
               block: reply.reply_block,
+              deleted: postDeletion(parent),
+              edited: parent.edited_at,
               excerpt: parent.body,
               excerptTree: parent.body_tree,
               source: textSourceOf("message", parent.id, parent.issue_key),
@@ -310,10 +319,14 @@ function AgentTargetedMessage({
         <>
           <p className={`flex items-baseline gap-2 text-sm ${textSecondaryOnCanvas}`}>
             <AgentName actor={read.message.author} className="font-semibold" inline />
-            <Timestamp at={read.message.created_at} />
+            <span>
+              <Timestamp at={read.message.created_at} />
+              <EditedMark at={read.message.edited_at} deleted={postDeletion(read.message)} />
+            </span>
           </p>
           <div className={textPrimaryOnCanvas}>
-            <MarkdownBody
+            <PostBody
+              deleted={postDeletion(read.message)}
               markdown={read.message.body}
               source={textSourceOf("message", read.message.id, read.message.issue_key)}
               surface="agents-row-message"
@@ -325,6 +338,7 @@ function AgentTargetedMessage({
       canAside={capabilitiesForTarget(read.message.target, liveAgents)?.includes("aside") !== false}
       canBtw={capabilitiesForTarget(read.message.target, liveAgents)?.includes("btw") !== false}
       canSteer={capabilitiesForTarget(read.message.target, liveAgents)?.includes("steer") !== false}
+      deleted={postDeletion(read.message)}
       deliveries={deliveryAttempts(read.message.deliveries ?? [], rowTarget(agent))}
       header={null}
       onReply={() => onReply(agentReplyTo(agent, read, read.message))}
@@ -831,7 +845,9 @@ function AgentRowDetails({
   // The session's conversation as the row's list reads it (`AgentMessageList`), the same read,
   // whatever a fold or a Clear shows of it: a draft the composer keeps for one of its messages
   // goes back by that message's Reply, and one kept for a message the read no longer holds is
-  // drawn itself (`ListedReplies`). Until the read answers, every kept reply is as it was.
+  // drawn itself (`ListedReplies`). Until the read answers, every kept reply is as it was. The
+  // message a reply quotes is looked up there too, so a draft open when its author deletes or
+  // edits that message quotes what became of it.
   const messages = useQuery(agentMessagesQuery(agent.session_id));
   const listed = useMemo(
     () => (messages.data === undefined ? undefined : listedReplies(messages.data)),
@@ -872,6 +888,7 @@ function AgentRowDetails({
           listed={listed}
           onCancelReply={() => setReplyTo(null)}
           onClose={leaveAgentComposer}
+          replyParent={replyParentOf(replyTo?.target ?? null, [], messages.data ?? [])}
           replyTo={replyTo}
           sendKey={sendKey}
         />
@@ -1138,6 +1155,13 @@ function BroadcastComposer({
   // line on screen shows it), so a refusal naming agents names them as `AgentName` does.
   const refusal = sendState.refusal === null ? null : sendState.refusal.map(text.part).join("");
   const noticeId = useId();
+  // On a narrow or short screen this section is what sticks to the foot of the page's scroll
+  // (`BroadcastFoot` has no box there), in the foot's page layer (`hooks/useFootInset.ts` lists
+  // the foot's layers and the elements in each). Elsewhere that wrapper holds it and sticks
+  // instead, and the wrapper's band holds the section's, so the section's band changes no inset
+  // and no ceiling there: it registers on every screen.
+  const sectionRef = useRef<HTMLElement>(null);
+  useFootInset(sectionRef, true, "page");
 
   // On a narrow or short screen (`narrow-or-short`, styles.css) the composer is a compact grid,
   // so it takes about a third of a phone screen: the heading on one line, the recipients in one
@@ -1155,6 +1179,7 @@ function BroadcastComposer({
     <section
       aria-label="Broadcast"
       className={`max-h-[50vh] overflow-y-auto rounded-xl border p-3 narrow-or-short:sticky narrow-or-short:bottom-0 narrow-or-short:z-10 narrow-or-short:mt-3 narrow-or-short:grid narrow-or-short:grid-cols-[auto_minmax(0,1fr)_auto] narrow-or-short:items-center narrow-or-short:gap-2 short:grid-cols-[auto_minmax(0,1fr)_auto_auto] ${card} ${borderDefault}`}
+      ref={sectionRef}
     >
       <h2
         className={`text-sm font-semibold narrow-or-short:col-span-full narrow-or-short:truncate short:col-span-1 ${textPrimaryOnCanvas}`}
@@ -1248,6 +1273,22 @@ function BroadcastComposer({
         {sendState.label}
       </RefusableButton>
     </section>
+  );
+}
+
+/**
+ * The page's sends and its broadcast composer, under the list and stuck to the foot of the
+ * page's scroll, in the foot's page layer (`hooks/useFootInset.ts` lists the foot's layers and the
+ * elements in each). On a narrow or short screen it has no box (`contents`), adds nothing, and the
+ * composer sticks by itself.
+ */
+function BroadcastFoot({ children }: { children: ReactNode }): ReactNode {
+  const footRef = useRef<HTMLDivElement>(null);
+  useFootInset(footRef, true, "page");
+  return (
+    <div className="sticky bottom-0 z-10 mt-3 space-y-2 narrow-or-short:contents" ref={footRef}>
+      {children}
+    </div>
   );
 }
 
@@ -1549,7 +1590,8 @@ export function AgentsPage(): ReactNode {
     ) {
       focusAfterPin.current = sessionID;
     }
-    writePin(sessionID, !pinned.includes(sessionID));
+    // The write never rejects and answers only for the shell's migration (`useAgentPinWrite`).
+    void writePin(sessionID, !pinned.includes(sessionID));
   };
   const select = (sessionID: string, next: boolean) => {
     setSelected((current) => {
@@ -1789,7 +1831,7 @@ export function AgentsPage(): ReactNode {
           narrow or short screen only the composer sticks (the wrapper is `contents`), and the
           strip stays at the end of the list: the composer alone fills the screen's budget. */}
       {queue.rows.length === 0 && !showComposer ? null : (
-        <div className="sticky bottom-0 z-10 mt-3 space-y-2 narrow-or-short:contents">
+        <BroadcastFoot>
           {queue.rows.length === 0 ? null : (
             <BroadcastSends
               className="narrow-or-short:mt-3"
@@ -1824,7 +1866,7 @@ export function AgentsPage(): ReactNode {
               selected={selected}
             />
           ) : null}
-        </div>
+        </BroadcastFoot>
       )}
       {/* A session the list does not hold has ended only when the list is current. */}
       {current ? <EndedAgentsWithReplies live={agents} /> : null}

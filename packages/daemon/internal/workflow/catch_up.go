@@ -22,15 +22,15 @@ import (
 // a re-entered child resumes its session. A tree's root architect is launched with the task its
 // record derives (ArchitectStartTask, Engine.StartArchitect), which names the decisions kept while
 // nobody in its tree could hear them (ParkedDecisionTask), or with none where the derivation gives
-// none, and a re-admitted tree resumes its session. A claim the provider refused out of its launch
-// budget has failed, and the start that retries it starts a new session (supervise's
-// freshSession), as does any launch whose session no store holds any more (startFresh). So at each
-// launch's ready the daemon sends it a catch-up notice of the issues it owns (QueueCatchUp) — a
-// root architect its whole tree, a child's architect the child and every issue under it — and so
-// does a start that finds the claim still running (the outbox's start), as the TypeScript daemon
-// sends the overseer catch-up at every ready of an active root (onTreeReady). A relaunch in the
-// same generation is told again: it may be an architect that died during the turn a catch-up
-// started, resumed idle, or a fresh agent whose workspace was lost, and nothing else wakes either.
+// none, and a re-admitted tree resumes its session. A retry that asks for a new session starts
+// one (supervise's freshSession), as does any launch whose session no store holds any more
+// (startFresh). So at each launch's ready the daemon sends it a catch-up notice of the issues it
+// owns (QueueCatchUp) — a root architect its whole tree, a child's architect the child and every
+// issue under it — and so does a start that finds the claim still running (the outbox's start), as
+// the TypeScript daemon sends the overseer catch-up at every ready of an active root
+// (onTreeReady). A relaunch in the same generation is told again: it may be an architect that died
+// during the turn a catch-up started, resumed idle, or a fresh agent whose workspace was lost, and
+// nothing else wakes either.
 // The ready is one fact per launch (workflowRuntime.applyTerminal keys it by the claim's launch
 // generation), so the boot's replay of a ready already applied tells nothing more, and one never
 // applied tells it once. The catch-up a root architect's ready writes names every decision nobody
@@ -226,7 +226,7 @@ func queuedRowCovers(run record.RoleRun, root record.Issue, current phase.Phase)
 // reads no slot and carries no entry, the claim being on the entry its row names already; the
 // owed entry's start takes the slot mark the slot rule gives its phase, as every start
 // Engine.started builds does (StartOrOwe), so it waits for the issue's admission slot in a phase
-// up to the review and for none past it (record.KeepsSlot). Most often an issue up to its review
+// that keeps a slot and for none in accepting, retro or merging (record.KeepsSlot). Most often such an issue
 // holds that slot already: a claim whose agent has just said it is ready is running, and
 // admission has long since given its tree a slot. The one such issue at work that holds none is
 // one that gave its row back to wait on another issue (admit's releaseSlotsForWaits,
@@ -284,8 +284,12 @@ func (e *Engine) readyWorkerTask(ctx context.Context, tx pgx.Tx, fact intake.Cla
 			"issue", issue.Key, "role", role, "phase", issue.Phase, "entry", row.Entry, "launch", fact.Launch)
 		return nil
 	}
+	resume, err := e.ResumeTask(ctx, tx, *issue)
+	if err != nil {
+		return err
+	}
 	if err := e.enqueue(ctx, tx, issue.Key, record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: role,
-		Generation: issue.Generation, Phase: issue.Phase, Task: ResumePhaseTask(*issue), ResumeTask: true}); err != nil {
+		Generation: issue.Generation, Phase: issue.Phase, Task: resume, ResumeTask: true}); err != nil {
 		return err
 	}
 	e.logOnCommit(ctx, "workflow: a ready worker that holds its issue's phase with nothing pending is given its phase's task",

@@ -9,7 +9,7 @@ import { MemoryRouter } from "react-router-dom";
 import { displayTree } from "../../__tests__/display-trees";
 import { graphNodeFields } from "../../__tests__/graph-fixture";
 import { renderWithQueries as render } from "../../__tests__/query-provider";
-import { api } from "../../api/client";
+import { ApiError, api } from "../../api/client";
 import type {
   AskRead,
   IssueReferenceSummary,
@@ -1030,6 +1030,82 @@ test("a block reference reads as the headline of its text: the pinned version's,
   }
 });
 
+// A block of a post its author deleted is gone with the post's text, so its link keeps the words
+// its author wrote: the block read answers a 404 `NOT_FOUND`, in words nothing reads, that has
+// the post read for its mark, and a node that carried the post's deletion and the empty text the
+// delete left would read the same. It never reads as the deleted line, which is the post's own link's
+// text, nor as an empty link (`useReferenceLabel`). A block of an edited post reads as its words
+// then ` · edited`.
+test("a block reference to a deleted post keeps the words its author wrote, and one to an edited post marks it", async () => {
+  await warmMarkdownRenderer();
+  const comment = "11111111-1111-4111-8111-111111111111";
+  const block = (id: string) => `dispatch://CORE-1/comment/${comment}#b-${id}`;
+  const node = (id: string, fields: Record<string, unknown>) => ({
+    edges: [],
+    node: {
+      ...graphNodeFields(),
+      block_id: id,
+      id: `comment/${comment}#${id}`,
+      issue_key: "CORE-1",
+      kind: "block" as const,
+      parent: { id: comment, kind: "comment", ref: `dispatch://CORE-1/comment/${comment}` },
+      project: "CORE",
+      ref: block(id),
+      ...fields,
+    },
+  });
+  const getReferences = spyOn(api, "getReferences").mockImplementation((reference) => {
+    if (reference === block("b1")) {
+      return Promise.resolve(
+        node("b1", { edited_at: "2026-11-13T12:00:00Z", text: "Keep the export at noon." })
+      );
+    }
+    if (reference === block("b2")) {
+      return Promise.resolve(
+        node("b2", {
+          deleted_at: "2026-11-13T12:00:00Z",
+          deleted_by: { id: "alice", kind: "user" },
+          text: "",
+        })
+      );
+    }
+    return Promise.reject(new ApiError(404, { code: "NOT_FOUND", error: "block gone" }));
+  });
+  const getComment = spyOn(api, "getComment").mockResolvedValue({
+    comment: {
+      author: { id: "alice", kind: "user" },
+      body: "",
+      deleted_at: "2026-11-13T12:00:00Z",
+      deleted_by: { id: "alice", kind: "user" },
+      edited_at: null,
+      id: comment,
+      issue_key: "CORE-1",
+    },
+    replies: [],
+  } as never);
+  const view = render(
+    withQueries(
+      <MarkdownBody markdown={`One ${block("b1")}\n\nTwo ${block("b2")}\n\nThree ${block("b3")}`} />
+    )
+  );
+  const link = (id: string) =>
+    view.container.querySelector(`a[data-dispatch-ref="${block(id)}"]`)?.textContent;
+
+  try {
+    await waitFor(() => expect(link("b1")).toBe("Keep the export at noon. · edited"), {
+      timeout: 2000,
+    });
+    await waitFor(() => expect(getComment).toHaveBeenCalledWith(comment));
+    expect(getReferences).toHaveBeenCalledWith(block("b2"));
+    expect(link("b2")).toBe(block("b2"));
+    expect(link("b3")).toBe(block("b3"));
+  } finally {
+    getComment.mockRestore();
+    getReferences.mockRestore();
+    view.unmount();
+  }
+});
+
 test("a dispatch reference inside a code span stays literal text, not a link", async () => {
   const view = render(<MarkdownBody markdown="Use `dispatch://CORE-1` as the ref" />);
 
@@ -1053,6 +1129,22 @@ test("an external URL unrelated to the app renders as an ordinary link", async (
     });
     expect(link).toHaveAttribute("href", "https://example.com/docs");
     expect(link).not.toHaveAttribute("data-dispatch-ref");
+  } finally {
+    view.unmount();
+  }
+});
+
+// An email standing in text outside a `dispatch://` address is linked as before: the step that
+// keeps an address whole (`@legion/proof-editor`'s `whole-addresses.ts`) puts back as text only a
+// link that starts inside an address, so a dot or a hyphen in the local part cuts nothing here.
+test("a bare email in text renders as a link to its mailto: address", async () => {
+  const view = render(<MarkdownBody markdown="Mail john.doe@example.com for details" />);
+
+  try {
+    const link = await within(view.container).findByRole("link", {
+      name: "john.doe@example.com",
+    });
+    expect(link).toHaveAttribute("href", "mailto:john.doe@example.com");
   } finally {
     view.unmount();
   }
@@ -1494,6 +1586,53 @@ describe("A long body parsed in the worker", () => {
       expect(fallbackMark(view.container)).toBeNull();
     } finally {
       getIssueSummary.mockRestore();
+      view.unmount();
+    }
+  });
+
+  // A body wholly above the top of the page that fills while the reader reads below it is put
+  // back for by how far the content under it moved, not by how far its own foot moved. The
+  // bottom margin of a body's last block collapses through the element's foot, so the first
+  // batch moves that foot against the content under it: here 18px, while the browser's own
+  // scroll anchoring has held the content under it where it was, so the page must not move.
+  test("puts the reader back by what the content under a body above them moved, not by its own foot", async () => {
+    const worker = installFakeParseWorker();
+    const box = (top: number, bottom: number) =>
+      ({
+        bottom,
+        height: bottom - top,
+        left: 0,
+        right: 600,
+        top,
+        width: 600,
+        x: 0,
+        y: top,
+      }) as DOMRect;
+    const rects = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
+      this: Element
+    ) {
+      if (this.classList.contains("dispatch-markdown")) {
+        return box(-900, this.querySelector("p") === null ? -800 : -782);
+      }
+      return this.getAttribute("data-testid") === "under" ? box(-790, -770) : box(0, 0);
+    });
+    const scrollBy = spyOn(window, "scrollBy").mockImplementation(() => undefined);
+    const view = render(
+      <>
+        <MarkdownBody markdown={paragraphBody("A long body above the reader")} />
+        <p data-testid="under">The turn the reader is reading.</p>
+      </>
+    );
+
+    try {
+      await waitFor(() => expect(pendingMark(view.container)).toBe("true"));
+      await act(() => worker.answer(0));
+      await waitFor(() => expect(topParagraphs(view.container)).toHaveLength(paragraphs + 1));
+      await waitFor(() => expect(pendingMark(view.container)).toBeNull());
+      expect(scrollBy).not.toHaveBeenCalled();
+    } finally {
+      rects.mockRestore();
+      scrollBy.mockRestore();
       view.unmount();
     }
   });

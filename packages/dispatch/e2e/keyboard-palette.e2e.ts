@@ -449,7 +449,7 @@ test("the Agents page offers a row's picker, which then commits a keyboard pick 
     await expect(toggle).toContainText("CORE-2");
     const field = row.getByRole("textbox", { name: "Comment" });
     await expect(field).toBeFocused();
-    await expect(field).toHaveValue(plannerMention);
+    await expect(field).toHaveValue(`${plannerMention} `);
   } finally {
     await context.close();
   }

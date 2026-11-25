@@ -488,6 +488,14 @@ func newEquivalenceSide(t *testing.T, name string, margin bool, write marginWrit
 	t.Helper()
 	database := storetest.Open(t)
 	service, _ := newTestServiceInstance(t, database)
+	// A flow's room is loaded in its set-up and written in its run, two rounds of parallel
+	// subtests (inParallel), and among the package's parallel tests the run's subtests can wait
+	// minutes for a slot: past roomIdleTimeout ygo's idle sweep evicted the warm room, the write
+	// met a reloaded one, and the side counted no margin-only update (build-cluster runs
+	// legion-race-docshead6-1 and -2, where the subtest waited 826 s around 4 s of work). Rooms
+	// here leave residency only through the flow's own close, so the idle window never ends. ygo
+	// reads it when the first room starts its sweeper, so it is set before any room loads.
+	service.srv.RoomIdleTimeout = time.Hour
 	if _, err := database.Pool.Exec(context.Background(), `insert into projects (key, name, default_assignee) values ('EQ', 'Equivalence', 'alice')`); err != nil {
 		t.Fatalf("create the %s's project: %v", name, err)
 	}

@@ -21,6 +21,7 @@ import (
 // launch carries the six git identity variables every worker pane gets, nothing else of the Apps,
 // and a launch whose identity cannot be resolved does not happen.
 func TestSpawnSpecCarriesTheRoleAppIdentity(t *testing.T) {
+	// Not parallel: it unsets environment variables of the whole process (Unset).
 	stateDir := t.TempDir()
 	token, err := claim.NewToken("s1", "S1-1", claim.RoleImplementer)
 	if err != nil {

@@ -52,6 +52,7 @@ func agentThread(t *testing.T, handler http.Handler, delivery, body, reply strin
 // the thread's project, the caller's read mark, how many writes they have not read, the document
 // mark an anchored root carries, and that the row is unread.
 func TestInboxRowsCarryThePriorityProjectReadMarkCountAndAnchor(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Fields", "The quick brown fox.")
 	setIssuePriority(t, handler, issue.Key, 1)
@@ -94,6 +95,7 @@ func TestInboxRowsCarryThePriorityProjectReadMarkCountAndAnchor(t *testing.T) {
 // A message thread's unread count reaches every reply, however deep: the walk follows in_reply_to
 // down, as the user_threads trigger walks it up.
 func TestInboxRowsCountEveryUnreadMessageInAThread(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Messages", "A spec")
 	root := createIssueMessage(t, handler, issue.Key, map[string]any{"body": "Status?"}, "alice")
@@ -119,6 +121,7 @@ func TestInboxRowsCountEveryUnreadMessageInAThread(t *testing.T) {
 // accepted as a user turn is a turn of its live conversation, so it is in no row - while its reply
 // still counts in the Agents page's New replies badge, which this change does not touch.
 func TestInboxRowsListOneOffAgentThreadsAndNotAnAcceptedSend(t *testing.T) {
+	t.Parallel()
 	handler, _, accepted, acceptedReply, _ := directConversationFrom(t, "alice")
 	if response := acceptDelivery(t, handler, accepted.ID, 1, "s1"); response.Code != http.StatusOK {
 		t.Fatalf("accept: status=%d body=%s", response.Code, response.Body.String())
@@ -185,6 +188,7 @@ func TestInboxRowsListOneOffAgentThreadsAndNotAnAcceptedSend(t *testing.T) {
 // as a Reply row's are (refs.FirstLine): a key or an address the 160-rune bound falls inside is
 // left out whole, rather than shown as `CORE-12`, a working link to another issue.
 func TestInboxAgentRowCutsNoReferenceInHalf(t *testing.T) {
+	t.Parallel()
 	handler, _, _, _, _ := directConversationFrom(t, "alice")
 	// 152 runes, so a reference after it starts before the cut at 159 and ends after it.
 	lead := strings.Repeat("x", 151) + " "
@@ -204,6 +208,7 @@ func TestInboxAgentRowCutsNoReferenceInHalf(t *testing.T) {
 // the Inbox's narrowing is in its own query, not in unreadDirectRepliesCTE, which the badge and
 // the conversation window share.
 func TestAgentStateStillCountsAnAcceptedSendsUnreadReply(t *testing.T) {
+	t.Parallel()
 	handler, _, root, reply, _ := directConversationFrom(t, "alice")
 	if response := acceptDelivery(t, handler, root.ID, 1, "s1"); response.Code != http.StatusOK {
 		t.Fatalf("accept: status=%d body=%s", response.Code, response.Body.String())
@@ -221,6 +226,7 @@ func TestAgentStateStillCountsAnAcceptedSendsUnreadReply(t *testing.T) {
 
 // kind=reply,agent is one list in one order, newest reply first, and total counts both kinds.
 func TestInboxRowsMergeReplyAndAgentRowsNewestFirst(t *testing.T) {
+	t.Parallel()
 	handler, _, _, _, _ := directConversationFrom(t, "alice")
 	issue := createInteractionIssue(t, handler, "TEST", "Merged", "A spec")
 	older := createThreadComment(t, handler, issue.Key, map[string]any{"body": "Ready?"}, "alice")
@@ -250,6 +256,7 @@ func TestInboxRowsMergeReplyAndAgentRowsNewestFirst(t *testing.T) {
 // state=inbox lists a thread the caller has read, drawn as read, of either kind - a thread stays in
 // the Inbox until it is dismissed - while state=unread lists neither.
 func TestInboxRowsUnderStateInboxListReadThreads(t *testing.T) {
+	t.Parallel()
 	handler, _, _, _, _ := directConversationFrom(t, "alice")
 	issue := createInteractionIssue(t, handler, "TEST", "Read", "A spec")
 	root := createThreadComment(t, handler, issue.Key, map[string]any{"body": "Ready?"}, "alice")
@@ -293,6 +300,7 @@ func TestInboxRowsUnderStateInboxListReadThreads(t *testing.T) {
 // row: one on another person's issue, and - since TEST defaults to bob below - one on an issue
 // nobody holds and one on a project document, which has no issue at all.
 func TestInboxRowsKeepAnOpenAskNobodyElsesInboxRowCovers(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	createInteractionIssue(t, handler, "TEST", "Asks", "A spec")
 	document := createProjectDocument(t, handler, "TEST", "Runbook", "# Runbook\n\nStep one.\n")
@@ -356,6 +364,7 @@ func TestInboxRowsKeepAnOpenAskNobodyElsesInboxRowCovers(t *testing.T) {
 // as_of is the database time of the snapshot the rows were read in, so it is at or after every
 // row's newest reply and no row the answer holds was written after it.
 func TestInboxRowsAnswerWithTheSnapshotsOwnTime(t *testing.T) {
+	t.Parallel()
 	handler, _, _, _, _ := directConversationFrom(t, "alice")
 	issue := createInteractionIssue(t, handler, "TEST", "As of", "A spec")
 	root := createThreadComment(t, handler, issue.Key, map[string]any{"body": "Ready?"}, "alice")
@@ -380,6 +389,7 @@ func TestInboxRowsAnswerWithTheSnapshotsOwnTime(t *testing.T) {
 // An absent limit answers every row, where the page read 50 before, and names that in total; a
 // limit the caller gives still pages.
 func TestInboxRowsWithNoLimitAnswerEveryThread(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Every row", "A spec")
 	const threads = 51
@@ -415,6 +425,7 @@ func TestInboxRowsWithNoLimitAnswerEveryThread(t *testing.T) {
 
 // What the read refuses, each before it opens its transaction.
 func TestInboxRowsRefuseAKindStateOrPageTheyCannotRead(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Refusals", "A spec")
 	document := createProjectDocument(t, handler, "TEST", "Runbook", "# Runbook\n")

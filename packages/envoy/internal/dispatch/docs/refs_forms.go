@@ -305,7 +305,7 @@ func (s *Service) drainFormsDocument(ctx context.Context, source refs.Owed, docu
 		}
 		return formsDocumentGone, nil
 	}
-	if err := oweDocumentIndex(ctx, s.store.Pool, source.ID); err != nil {
+	if err := oweDocumentIndex(ctx, s.store.Pool, source.ID, s.markingRule); err != nil {
 		return formsDocumentUnindexed, err
 	}
 	cold := s.srv.GetDoc(document.id) == nil

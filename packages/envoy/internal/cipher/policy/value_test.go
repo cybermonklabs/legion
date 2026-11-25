@@ -114,7 +114,7 @@ func TestTheBootLoadRefusesAValueTheDecoderRefusesBeforeTheFirstRequest(t *testi
 			t.Fatalf("the first load does not serve %s", name)
 		}
 	}
-	if got, want := gained(), noProfilesLine+refusedLine(bad, policy.ReasonValueMalformed, typeOwner, true, ""); got != want {
+	if got, want := gained(), noProfilesLine+valueRefusedLine(bad, typeOwner, true, decodeWhy(t, policy.TypeAzureLogin, undecodable)); got != want {
 		t.Fatalf("the first load logged:\n%s\nwant:\n%s", got, want)
 	}
 	if got, want := samplesOf(t, registry, "broker_unservable_secrets"), unservable(bad, policy.ReasonValueMalformed, typeOwner); got != want {
@@ -226,7 +226,7 @@ func TestARetagOfTheTypeOnTheSameVersionDecodesTheValueAgain(t *testing.T) {
 		served bool
 		lines  string
 	}{
-		{"a type retag to azure-login", azure, 2, false, refusedLine(id, policy.ReasonValueMalformed, typeOwner, false, "")},
+		{"a type retag to azure-login", azure, 2, false, valueRefusedLine(id, typeOwner, false, decodeWhy(t, policy.TypeAzureLogin, value))},
 		{"the type retag back", login, 3, true, servableLine(id, policy.ReasonValueMalformed, typeOwner, "servable")},
 	} {
 		store.Put(step.secret)
@@ -291,7 +291,7 @@ func TestAFailedValueReadMarksNothingAndLogsWhenItStartsAndEnds(t *testing.T) {
 
 	store.refuse(false)
 	refresh(t, cur)
-	if got, want := gained(), "INFO "+policy.ValueReadRecoveredMessage+" name="+id+" version="+version+"\n"+refusedLine(id, policy.ReasonValueMalformed, typeOwner, false, ""); got != want {
+	if got, want := gained(), "INFO "+policy.ValueReadRecoveredMessage+" name="+id+" version="+version+"\n"+valueRefusedLine(id, typeOwner, false, decodeWhy(t, policy.TypeGoogleLogin, undecodable)); got != want {
 		t.Fatalf("the load whose read succeeds logged:\n%s\nwant:\n%s", got, want)
 	}
 	refresh(t, cur)
@@ -322,11 +322,11 @@ func TestAMintTheDecoderRefusesRefusesTheSecretTheLoadCouldNotRead(t *testing.T)
 		t.Fatal("the first load could not read APP_KEY's value and does not serve it; a failed read marks nothing")
 	}
 
-	cur.RefuseValue(context.Background(), "APP_KEY", "a-version-not-listed", policy.TypeGoogleLogin)
+	cur.RefuseValue(context.Background(), "APP_KEY", "a-version-not-listed", policy.TypeGoogleLogin, nil)
 	if _, served := cur.Get().Secrets["APP_KEY"]; !served {
 		t.Fatal("a refusal at a version the policy does not list refused APP_KEY")
 	}
-	cur.RefuseValue(context.Background(), "APP_KEY", cur.Get().ValueVersion("APP_KEY"), policy.TypeGoogleLogin)
+	cur.RefuseValue(context.Background(), "APP_KEY", cur.Get().ValueVersion("APP_KEY"), policy.TypeGoogleLogin, nil)
 	if _, served := cur.Get().Secrets["APP_KEY"]; served {
 		t.Fatal("a mint's refusal at the listed version left APP_KEY served")
 	}
@@ -358,7 +358,7 @@ func TestAMintTheDecoderRefusesRefusesTheSecretTheLoadCouldNotRead(t *testing.T)
 	store.refuse(false)
 	refresh(t, cur)
 	refusedAs(t, cur.Get(), "APP_KEY", policy.ReasonValueMalformed)
-	if got, want := gained(), "INFO "+policy.ValueReadRecoveredMessage+" name="+id+" version="+cur.Get().ValueVersion("APP_KEY")+"\n"+refusedLine(id, policy.ReasonValueMalformed, typeOwner, false, ""); got != want {
+	if got, want := gained(), "INFO "+policy.ValueReadRecoveredMessage+" name="+id+" version="+cur.Get().ValueVersion("APP_KEY")+"\n"+valueRefusedLine(id, typeOwner, false, decodeWhy(t, policy.TypeGoogleLogin, undecodable+" either")); got != want {
 		t.Fatalf("the load that reads the new version logged:\n%s\nwant:\n%s", got, want)
 	}
 }
@@ -383,7 +383,7 @@ func TestASecretThatLeavesTheListingDropsItsValueRefusal(t *testing.T) {
 	}{
 		{"a delete", func() { store.Delete(id) }, 1, servableLine(id, policy.ReasonValueMalformed, typeOwner, "absent"), ""},
 		{"the same value stored again", func() { store.Put(typeSecret("APP_KEY", policy.TypeGoogleLogin, undecodable)) }, 2,
-			refusedLine(id, policy.ReasonValueMalformed, typeOwner, false, ""), unservable(id, policy.ReasonValueMalformed, typeOwner)},
+			valueRefusedLine(id, typeOwner, false, decodeWhy(t, policy.TypeGoogleLogin, undecodable)), unservable(id, policy.ReasonValueMalformed, typeOwner)},
 		{"a value the decoder reads", func() {
 			store.Put(typeSecret("APP_KEY", policy.TypeGoogleLogin, policytest.TypeValue(policy.TypeGoogleLogin)))
 		}, 3, servableLine(id, policy.ReasonValueMalformed, typeOwner, "servable"), ""},
@@ -443,7 +443,7 @@ func TestAValueThatIsNotTextIsRefusedAndReadOnce(t *testing.T) {
 	id := policytest.ID("BINARY_APP")
 
 	refusedAs(t, cur.Get(), "BINARY_APP", policy.ReasonValueMalformed)
-	if got, want := gained(), noProfilesLine+refusedLine(id, policy.ReasonValueMalformed, typeOwner, true, ""); got != want {
+	if got, want := gained(), noProfilesLine+valueRefusedLine(id, typeOwner, true, secrets.ErrValueNotText.Error()); got != want {
 		t.Fatalf("the first load logged:\n%s\nwant:\n%s", got, want)
 	}
 	if got, want := samplesOf(t, registry, "broker_unservable_secrets"), unservable(id, policy.ReasonValueMalformed, typeOwner); got != want {
@@ -662,7 +662,7 @@ func TestAValueReadWaitsForTheWriterLockOnlyWhileItsCallerDoes(t *testing.T) {
 		t.Fatalf("the policy has read %d values; want 3, the boot's, the reread's and the reload's read of the same version again", n)
 	}
 	refusedAs(t, cur.Get(), "APP_KEY", policy.ReasonValueMalformed)
-	if got, want := gained(), refusedLine(id, policy.ReasonValueMalformed, typeOwner, false, ""); got != want {
+	if got, want := gained(), valueRefusedLine(id, typeOwner, false, decodeWhy(t, policy.TypeGoogleLogin, undecodable)); got != want {
 		t.Fatalf("the reload that read the version again logged:\n%s\nwant:\n%s", got, want)
 	}
 }
@@ -693,7 +693,7 @@ func TestAMintsRefusalUnderAKeyARetagReplacedRefusesNothing(t *testing.T) {
 	}
 
 	for _, stale := range []struct{ version, secretType string }{{version, policy.TypeGoogleLogin}, {"another-version", policy.TypeAzureLogin}} {
-		cur.RefuseValue(context.Background(), "LOGIN_KEY", stale.version, stale.secretType)
+		cur.RefuseValue(context.Background(), "LOGIN_KEY", stale.version, stale.secretType, nil)
 		if _, served := cur.Get().Secrets["LOGIN_KEY"]; !served {
 			t.Fatalf("a mint's refusal at version %q as %s, a key the policy no longer lists, refused LOGIN_KEY", stale.version, stale.secretType)
 		}
@@ -701,7 +701,7 @@ func TestAMintsRefusalUnderAKeyARetagReplacedRefusesNothing(t *testing.T) {
 	if got := gained(); got != noProfilesLine {
 		t.Fatalf("the retag and the refusals of keys it replaced logged:\n%s", got)
 	}
-	cur.RefuseValue(context.Background(), "LOGIN_KEY", version, policy.TypeAzureLogin)
+	cur.RefuseValue(context.Background(), "LOGIN_KEY", version, policy.TypeAzureLogin, nil)
 	refusedAs(t, cur.Get(), "LOGIN_KEY", policy.ReasonValueMalformed)
 	if got, want := gained(), refusedLine(id, policy.ReasonValueMalformed, typeOwner, false, ""); got != want {
 		t.Fatalf("the mint's refusal under the listed key logged:\n%s\nwant:\n%s", got, want)

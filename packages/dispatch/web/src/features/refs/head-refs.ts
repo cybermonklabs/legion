@@ -1,6 +1,7 @@
+import { referenceSpans } from "@legion/contracts";
+
 import { type CodeRange, codeRanges } from "./code-ranges";
 import { type InlineLink, inlineLinks } from "./party-references";
-import { referenceSpans } from "./reference-spans";
 import { buildDispatchReference, referenceRouteFromHref } from "./routes";
 import { readTextReferences } from "./text-references";
 

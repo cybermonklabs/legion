@@ -5,9 +5,12 @@ import (
 	"net/http"
 	"sync"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // requesterKey is the context key of a request's requester (noteRequesters).
@@ -65,12 +68,15 @@ func requesterOf(ctx context.Context) claim.Token {
 func (s *server) apply(ctx context.Context, source, eventID string, fact intake.Fact) (intake.Result, error) {
 	if token := requesterOf(ctx); token != "" && s.awaitStream != nil && s.pool != nil {
 		var runs bool
-		var err error
-		if issue, named := intake.IssueOf(fact); named {
-			runs, err = record.RunsAStepOn(ctx, s.pool, string(token), issue)
-		} else {
-			runs, err = record.RunsAStep(ctx, s.pool, string(token))
-		}
+		err := store.TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+			var err error
+			if issue, named := intake.IssueOf(fact); named {
+				runs, err = record.RunsAStepOn(ctx, tx, string(token), issue)
+			} else {
+				runs, err = record.RunsAStep(ctx, tx, string(token))
+			}
+			return err
+		})
 		if err != nil {
 			s.log.Warn("api: could not read whether the requester runs a step the fact may end; waiting for its stream", "claim", token, "error", err)
 		}

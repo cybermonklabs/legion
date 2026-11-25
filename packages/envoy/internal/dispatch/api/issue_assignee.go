@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
@@ -74,9 +75,11 @@ func actorPerson(actor model.Actor) (string, bool) {
 
 // defaultAssignee is who a new issue goes to when the create names nobody, with no assignee key
 // or a JSON null, in order: the person the creating credential acts for (actorPerson - the human
-// who created it, else the owner of the token that did), the parent's assignee, and the project's
-// default assignee (projectDefault, the column a human sets through PUT
-// /api/v1/projects/{key}/default-assignee). A create that names a person never reaches here:
+// who created it, else the owner of the token that did), the parent's assignee when the parent is
+// in the issue's own project, and the project's default assignee (projectDefault, the column a
+// human sets through PUT /api/v1/projects/{key}/default-assignee). parent is nil for a parent of
+// another project, which passes on no assignee (createIssue), so such an issue falls to its own
+// project's default. A create that names a person never reaches here:
 // parseIssueAssignee checks that login instead. So no create leaves an issue nobody holds, under
 // a parent that holds nobody included; only PATCH /api/v1/issues/{key} with a null assignee does.
 //
@@ -138,6 +141,10 @@ type whoamiUser struct {
 // whoamiAgent is the body GET /api/v1/whoami answers every credential that is not a person's
 // browser session.
 type whoamiAgent struct {
+	// Cut is the past time a read-only credential reads at (model.Credential.Cut), as an RFC 3339
+	// time in UTC, and null for a credential that names no cut, which is every credential that
+	// writes.
+	Cut *string `json:"cut"`
 	// Always "agent": whoami writes this body for every credential that is not a person's
 	// browser session, the personal token holding the person scope included.
 	Kind    string   `json:"kind" enum:"agent"`
@@ -146,23 +153,37 @@ type whoamiAgent struct {
 	Scopes  []string `json:"scopes"`
 	Service *string  `json:"service"`
 	Session *string  `json:"session"`
+	// SignInRequired is whether Dispatch refuses every write this credential makes until a person
+	// signs in on its machine (403 SIGN_IN_REQUIRED): the decision writeNeedsASignedInPerson acts
+	// on, answered from that same function (signInRequired), so a client reads it rather than
+	// guessing it from the owner and the service. A Dispatch that predates it omits the field.
+	SignInRequired bool `json:"sign_in_required"`
 }
 
 // whoami tells any authenticated caller who the server takes it for: a human by login, or an
 // agent with the lowercase login of the person it acts for — the personal token's owner, or a
 // broker-issued token's person (null for the shared token and for a broker-issued token that
 // names a service and no person) — the service it is, which is the verified Kubernetes subject
-// of its service-account token or the fleet a broker-issued token naming no person belongs to
-// (null for every other credential), the session its credential proved (null for a credential
-// that proves none, which every one but a broker-issued token is) and the one project that
-// credential lets it write (null where it names none, a person-scoped token included).
+// of its service-account token, or, for a broker-issued token naming no person, the fleet its
+// machine belongs to or the account an operator's entry lists, which its writes are recorded
+// under (null for every other credential), the session its credential proved (null for a
+// credential that proves none, which every one but a broker-issued token is) and the one project
+// that credential lets it write (null where it names none, a person-scoped token included).
 //
 // Every caller is told the OAuth scopes its credential holds, which is what decides the routes it
 // may call (gateRouteScopes): both for a person at a browser, the set its own row names for a
 // personal token, and none for the shared token, a pod's service-account token and a
 // broker-issued token that names a service and no person. The kind stays `agent` for a personal
 // token holding the person scope, since the kind names the credential and not the act; the
-// person that token acts for is its `owner`, which the dispatch command reads.
+// person that token acts for is its `owner`, which the dispatch command reads. A read-only
+// credential is told read among its scopes (whoamiScopes) and the cut it reads at, null for
+// none, so a caller can see that it may only read, and at what time.
+//
+// An agent is also told whether Dispatch refuses its every write until a person signs in on its
+// machine (sign_in_required): true for a broker-issued token of a machine nobody has signed in
+// on, and false for every other credential, an account entry's token naming no person among them,
+// whose writes are recorded under its account, and every read-only credential, which writes
+// nothing whoever signs in (signInRequired).
 func (s *server) whoami(w http.ResponseWriter, r *http.Request) {
 	actor, human, err := s.optionalActor(r)
 	if err != nil {
@@ -182,21 +203,35 @@ func (s *server) whoami(w http.ResponseWriter, r *http.Request) {
 	if actor.Kind == "session" && actor.ID != "" {
 		session = &actor.ID
 	}
+	var cut *string
+	if credential := actor.Credential; credential != nil && !credential.Cut.IsZero() {
+		cut = new(cutText(credential.Cut))
+	}
+	_, signInRequired := s.signInRequired(r)
 	WriteJSON(w, http.StatusOK, whoamiAgent{
-		Kind:    "agent",
-		Owner:   owner,
-		Project: actor.Project,
-		Scopes:  scopes,
-		Service: actor.Service,
-		Session: session,
+		Cut:            cut,
+		Kind:           "agent",
+		Owner:          owner,
+		Project:        actor.Project,
+		Scopes:         scopes,
+		Service:        actor.Service,
+		Session:        session,
+		SignInRequired: signInRequired,
 	})
 }
 
 // whoamiScopes is the scopes a credential holds as whoami answers them: an empty array for a
 // credential that holds none, never null, so a reader need not tell a credential with no scope
-// from one whose scopes it could not read.
+// from one whose scopes it could not read. A read-only credential is answered model.ScopeRead
+// after the scopes it holds: the word marks the credential (model.Credential.ReadOnly) and is
+// never stored among its scopes, so it is added here, on a copy, and never to the shared slice.
 func whoamiScopes(credential *model.Credential) []string {
-	if credential == nil || len(credential.Scopes) == 0 {
+	switch {
+	case credential == nil:
+		return []string{}
+	case credential.ReadOnly:
+		return append(slices.Clip(credential.Scopes), model.ScopeRead)
+	case len(credential.Scopes) == 0:
 		return []string{}
 	}
 	return credential.Scopes

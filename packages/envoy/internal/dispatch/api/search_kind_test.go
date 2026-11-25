@@ -77,6 +77,7 @@ func kindsPresent(results []model.SearchResult) []string {
 // which is this test's negative control. This is the degraded keyword path (no embedder is
 // configured); TestSearchKindHoldsInTheMeaningPath is the meaning one.
 func TestSearchByKindRanksAndCountsThatKindAlone(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	corpus := seedKindSearchCorpus(t, handler, "KIND", "Astrolabe survey")
 
@@ -107,6 +108,7 @@ func TestSearchByKindRanksAndCountsThatKindAlone(t *testing.T) {
 // A repeated kind names a set: both kinds' rows are ranked, counted and paged, and no other
 // kind's are.
 func TestSearchByTwoKindsRanksBothAndNoOther(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	corpus := seedKindSearchCorpus(t, handler, "KIND", "Astrolabe survey")
 
@@ -127,6 +129,7 @@ func TestSearchByTwoKindsRanksBothAndNoOther(t *testing.T) {
 // answers both, the project one, and limit and offset page the two in one order while total and
 // reachable still count both.
 func TestSearchByKindKeepsTheProjectLimitAndOffsetRules(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	first := seedKindSearchCorpus(t, handler, "KIND", "Astrolabe survey")
 	second := seedKindSearchCorpus(t, handler, "OTHER", "Astrolabe census")
@@ -171,6 +174,7 @@ func TestSearchByKindKeepsTheProjectLimitAndOffsetRules(t *testing.T) {
 // shares no word with anything, so every hit here comes from a meaning leg, and a kind still
 // leaves out the item of another kind the same query matches.
 func TestSearchKindHoldsInTheMeaningPath(t *testing.T) {
+	t.Parallel()
 	const title, spec = "Celestial navigation device maintenance", "Routine upkeep notes."
 	embedder := &fakeEmbedder{vectors: map[string][]float32{
 		issueEmbeddingText(title, spec): angledVector(0.9, 2),
@@ -215,6 +219,7 @@ func TestSearchKindHoldsInTheMeaningPath(t *testing.T) {
 // rather than answering an empty page; a party and a component are read from their own routes. A
 // query under two characters is refused for the query whatever the kind says.
 func TestSearchRefusesAKindItDoesNotIndex(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	wantKindRefusal := "kind must be one of issue, document, comment, ask, message"
 
@@ -254,6 +259,7 @@ func TestSearchRefusesAKindItDoesNotIndex(t *testing.T) {
 // would renumber them. A set that leaves nothing out is the zero value, which is what a search
 // naming no kind and every other caller of the run functions searches.
 func TestSearchKindFilterIsLiteralSQLThatBindsNothing(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		values []string
 		kinds  searchKinds

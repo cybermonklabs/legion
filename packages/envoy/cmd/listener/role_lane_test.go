@@ -33,6 +33,7 @@ import (
 // too, which puts the settle counter at its number while all 100 forwards are still outstanding -
 // the window a read of the settle counter took for the gauge - and the test alone ends it.
 func TestRoleLaneForwarderPublishesEachHoldersForwardsInOrderWithoutWaitingForOutcomes(t *testing.T) {
+	t.Parallel()
 	const perHolder = 50
 	harness := newListenerDeliveryHarness(t)
 	silent, live := contracts.LegacyAgentSubject("ses_forwarder_silent"), contracts.LegacyAgentSubject("ses_forwarder_live")
@@ -41,14 +42,14 @@ func TestRoleLaneForwarderPublishesEachHoldersForwardsInOrderWithoutWaitingForOu
 	published := map[string][]string{}
 	var settled atomic.Int32
 	cfg := harness.config
-	cfg.forwardRole = func(subject string, item contracts.Envelope, _ string, _ time.Duration) (func() error, error) {
+	cfg.forwardRole = func(subject string, item contracts.Envelope, _ string, _ time.Duration) (func() (bus.StoredAck, error), error) {
 		mu.Lock()
 		published[subject] = append(published[subject], item.EventID)
 		mu.Unlock()
 		if subject == silent {
-			return func() error { <-release; return bus.ErrForwardNotStored }, nil
+			return func() (bus.StoredAck, error) { <-release; return bus.StoredAck{}, bus.ErrForwardNotStored }, nil
 		}
-		return func() error { settled.Add(1); <-settling; return nil }, nil
+		return func() (bus.StoredAck, error) { settled.Add(1); <-settling; return bus.StoredAck{}, nil }, nil
 	}
 	forwarder := newRoleForwarder(cfg)
 	closeOnce := func(held chan struct{}) {
@@ -290,6 +291,7 @@ func metricValue(t *testing.T, listener *listenerProcess, name string) int64 {
 // message on the holder's agent subject, and the two listeners forwarded 100 in all. In machine
 // groups each listener forwards every message, 200 in all, and the holder receives each twice.
 func TestRoleLaneForwardsAndStoresEachRoleMessageOnceAcrossTwoListeners(t *testing.T) {
+	t.Parallel()
 	const messages = 100
 	uri := testnats.URL(t)
 	listeners := startRoleLaneListeners(t, uri, nil, "role-lane-once-a", "role-lane-once-b")
@@ -456,6 +458,7 @@ func TestRoleLaneRefusedSharedQueueFallsBackToMachineGroupsAndStoresOneCopy(t *t
 // the agent subjects taken out of the stream, no acknowledgement comes back, and the listener
 // reports the role message delivery_failed.
 func TestRoleLaneForwardTheStreamDoesNotStoreIsDeliveryFailed(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
 	listener := startRoleLaneListeners(t, uri, nil, "role-lane-unstored")[0]
 	role := "role-lane-unstored-" + id.New()
