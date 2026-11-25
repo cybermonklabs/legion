@@ -80,7 +80,7 @@ func verifyInventory(path string) (inventory, time.Duration, error) {
 	var inv inventory
 	data, err := os.ReadFile(path)
 	if err == nil {
-		err = json.Unmarshal(data, &inv)
+		inv, err = decodeInventory(data)
 	}
 	if err != nil {
 		return inv, 0, fmt.Errorf("the inventory %s cannot be parsed: %v", path, err)
@@ -91,9 +91,6 @@ func verifyInventory(path string) (inventory, time.Duration, error) {
 	rowTimeout, err := time.ParseDuration(inv.Gate.RowTimeout)
 	if err != nil || !wholeSeconds.MatchString(inv.Gate.RowTimeout) {
 		return inv, 0, fmt.Errorf(`the inventory %s names no gate.row_timeout in whole seconds (such as "48s"), the time the test of one row may take`, path)
-	}
-	for i := range inv.Bun {
-		inv.Bun[i].bun = true
 	}
 	seen := map[string]bool{}
 	for _, r := range slices.Concat(inv.Go, inv.Bun) {

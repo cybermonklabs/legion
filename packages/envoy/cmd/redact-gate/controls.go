@@ -834,13 +834,13 @@ func runControls(repo, only string) int {
 // with the gate's output.
 func runControl(repo string, ctl control) (string, string) {
 	if ctl.own != nil {
-		var inv inventory
 		data, err := os.ReadFile(filepath.Join(repo, inventoryFile))
-		if err != nil || json.Unmarshal(data, &inv) != nil {
-			return "the head's inventory does not parse", ""
+		var inv inventory
+		if err == nil {
+			inv, err = decodeInventory(data)
 		}
-		for i := range inv.Bun {
-			inv.Bun[i].bun = true
+		if err != nil {
+			return "the head's inventory does not parse", ""
 		}
 		return ctl.own(repo, inv)
 	}

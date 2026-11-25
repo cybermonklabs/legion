@@ -516,16 +516,25 @@ func (g *gate) unknown(format string, args ...any) {
 	fmt.Fprintf(g.out, "UNKNOWN "+format+"\n", args...)
 }
 
+// decodeInventory is the inventory data holds, each Bun row marked as one (row.bun).
+func decodeInventory(data []byte) (inventory, error) {
+	var inv inventory
+	if err := json.Unmarshal(data, &inv); err != nil {
+		return inv, err
+	}
+	for i := range inv.Bun {
+		inv.Bun[i].bun = true
+	}
+	return inv, nil
+}
+
 func (g *gate) load(needSites bool) error {
 	data, err := os.ReadFile(g.inventoryPath)
 	if err != nil {
 		return err
 	}
-	if err := json.Unmarshal(data, &g.inv); err != nil {
+	if g.inv, err = decodeInventory(data); err != nil {
 		return fmt.Errorf("the inventory cannot be parsed: %v", err)
-	}
-	for i := range g.inv.Bun {
-		g.inv.Bun[i].bun = true
 	}
 	if g.inv.Gate.Base == "" || len(g.inv.Gate.Rule) == 0 {
 		return errors.New("the inventory names no gate.base or gate.rule")
