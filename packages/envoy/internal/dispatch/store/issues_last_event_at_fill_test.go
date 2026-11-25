@@ -33,6 +33,12 @@ const newestEventFillWait = 20 * time.Second
 // row still held, the held issue's pair is null and the other two hold the pair of their event of
 // last_seq. Then the second transaction appends an event to the held issue as this release's
 // QueueAppendWithLogins writes one, and commits, and the issue's pair is that event's.
+//
+// That append is a copy, written by hand here, of the `update issues` of QueueAppendWithLogins
+// (events/broker.go), which package store cannot call: events imports store. So this test cannot
+// fail on the broker; it shows that the next append of the shape the broker writes fills a row
+// the fill skipped. The broker's own write of the pair is held by
+// TestAnIssueAppendWritesTheNewestEventPairOnTheIssueRow (internal/dispatch/events).
 func TestTheNewestEventFillNeverWaitsOnAHeldIssueRow(t *testing.T) {
 	ctx := context.Background()
 	store := openMigratedTestStore(t, latestVersion)
