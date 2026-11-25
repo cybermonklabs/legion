@@ -27,15 +27,16 @@ function priorityWorkLine(work: PriorityWork): string {
   ].join(" · ");
 }
 
-/** One row of either fault list: where the issue stands, who holds it, and the cell only its
- *  own list fills — the priorities a parked issue advances, each marked own or inherited as the
- *  issue read marks it, and when it was parked, which the work under no priority has neither of. */
+/** One row of either fault list: where the issue stands, who holds it, and the cells only its
+ *  own list fills — the priorities an issue in backlog or icebox advances, each marked own or
+ *  inherited as the issue read marks it, and the move that put it in the status it stands in,
+ *  named by that status, which the work under no priority has neither of. */
 function priorityIssueLine(issue: PriorityIssue, agents: LiveAgents | undefined): string {
   const advances = issue.advances ?? [];
   const moved =
     issue.moved_at === null
       ? ""
-      : ` · parked ${issue.moved_at}${issue.moved_by === null ? "" : ` by ${actorLabel(issue.moved_by, agents?.titles)}`}`;
+      : ` · moved to ${issue.status} ${issue.moved_at}${issue.moved_by === null ? "" : ` by ${actorLabel(issue.moved_by, agents?.titles)}`}`;
   return (
     `- ${issue.key} [${issue.status}] ${issue.title} · ${issue.project}` +
     (issue.assignee === null ? "" : ` · ${issue.assignee}`) +
@@ -74,7 +75,7 @@ function priorityFaultLines(
  *  with the sentence saying so, which is printed as it came and is not an error. */
 function formatPriorities(response: Priorities, agents: LiveAgents | undefined): string {
   const priorities = response.priorities ?? [];
-  const parked = response.priority_work_parked;
+  const backlog = response.priority_work_parked;
   const unplaced = response.work_under_no_priority;
   // The server writes this field only for a deployment holding no live priority (`omitempty`).
   if (response.empty !== undefined) return response.empty;
@@ -92,8 +93,8 @@ function formatPriorities(response: Priorities, agents: LiveAgents | undefined):
     ),
     "",
     ...priorityFaultLines(
-      "Priority work parked",
-      { count: parked.count, issues: parked.issues, by: parked.by_priority },
+      "Priority work in backlog or icebox",
+      { count: backlog.count, issues: backlog.issues, by: backlog.by_priority },
       agents
     ),
   ].join("\n");

@@ -90,7 +90,7 @@ on:
       - 'packages/daemon/internal/notify/**'
       - 'packages/daemon/internal/ompdirs/**'
       - 'packages/daemon/internal/omplaunch/**'
-      - 'packages/daemon/internal/ompsessions/**'
+      - 'packages/daemon/internal/ompsessions/*'
       - 'packages/daemon/internal/pause/**'
       - 'packages/daemon/internal/phase/**'
       - 'packages/daemon/internal/plan/**'
