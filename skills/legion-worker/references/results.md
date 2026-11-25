@@ -25,6 +25,7 @@ The pull request body's `Checks` lines are in `skill://legion-worker/references/
 
 - A `before_merge` result stands while its commit is the head of an open pull request Dispatch attributes to the check's issue (`packages/envoy/internal/dispatch/delivery/attribution.go`), or the final head of a merged one, and while no part of the check's block has changed.
   So after a push, record each `before_merge` check with no `ci_check` again.
+  Beside a running fix, record at the pull request's head you read before you worked, never at a commit of your own branch: no pull request heads it, so a result there stands nowhere.
 
 ## The rules every phase's evidence follows
 

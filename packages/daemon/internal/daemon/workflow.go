@@ -314,6 +314,9 @@ type workflowRuntime struct {
 	mergeStateQueued  map[string]string
 	mergeStateRunning map[string]*mergeStateRun
 	mergeStateRetry   time.Duration
+	// dropFirstReadFailure, set only by tests, ends a climb on a read that failed with nothing to
+	// follow, as a climb ended before it read again after a failure (climbMergeState).
+	dropFirstReadFailure bool
 }
 
 // readyReleaseTimeout bounds one release of ready architects' waiting notices
@@ -1012,12 +1015,6 @@ func engineConfig(cfg config.Config, reviewAppLogin string, hookPrompts map[stri
 		RepositoryRenames:   cfg.RepositoryRenames, Hooks: engineHooks(cfg.Hooks, hookPrompts),
 		Experiments:  cfg.ExperimentsDeclared(),
 		WorkspaceDir: engineWorkspaceDir(cfg),
-		// The testing move reads every check, those a CI job runs among them, until the end of a
-		// task holds the checks a CI job runs: a task whose steps after testing hold no review and
-		// no acceptance would otherwise end with no gate on them. INFRA-5392 (INFRA-3570's fix
-		// beside the review) turns this on with its end hold, which makes the end of a task hold
-		// them. TestTheDaemonWiresTheTestingMoveToReadEveryCheck holds it false until then.
-		TestingLeavesCI: false,
 	}
 }
 
@@ -1399,6 +1396,19 @@ func (w *workflowRuntime) recordedIssue(ctx context.Context, key string) (*recor
 	return issue, err
 }
 
+// updatePushes is where each role of key pushes at an update round's ask
+// (supervision.updatePushes), the engine's one answer (workflow.(*Engine).UpdatePushes) read in a
+// transaction of its own, as recordedIssue reads: the sweep that asks holds no transaction.
+func (w *workflowRuntime) updatePushes(ctx context.Context, key string) (map[claim.Role]supervise.UpdatePush, error) {
+	var pushes map[claim.Role]supervise.UpdatePush
+	err := store.TransactWith(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		pushes, err = w.engine.UpdatePushes(ctx, tx, key)
+		return err
+	})
+	return pushes, err
+}
+
 // reconcile takes Dispatch's bounded boot read to admission. Only admission acts on a snapshot:
 // a move a human made while the daemon was down carries its own event, which the durable stream
 // consumer still holds and delivers with the actor that made it, so nothing here re-derives one.
@@ -1734,6 +1744,7 @@ func (w *workflowRuntime) attach(supervision *supervision) {
 	supervision.supervisor.OnDurableState(w.claimDurableState)
 	supervision.enqueue = w.enqueueOutbox
 	supervision.applySweepFacts = w.applySweepFacts
+	supervision.updatePushes = w.updatePushes
 	if w.pauses != nil {
 		// The flag is read again at each sweep (decision 18), so a pause made or ended through
 		// another daemon of a rolling restart reaches this daemon's machines within one sweep.

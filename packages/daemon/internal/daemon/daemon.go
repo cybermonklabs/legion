@@ -270,6 +270,11 @@ type overrides struct {
 	// the decision would hold the machine's lock, which an agent's request waits on at its grant
 	// check (supervise.Machine.Claim).
 	beforeDecision func(claim.Token, supervise.Event)
+	// engine runs on the workflow's engine once the boot has built it (openWorkflow) and before the
+	// engine serves any fact: openWorkflow starts no goroutine, and the call comes before the boot
+	// applies anything or starts a consumer. It is a test's way to set a seam of the engine, a
+	// control that takes one of its rules out, in a whole daemon. nil, in production, is nothing.
+	engine func(*workflow.Engine)
 	// experimentSource is the random source admission and the workflow draw every `random`
 	// experiment with: admission's draw of each tree and issue it records, and the workflow's of
 	// each child it records (experiment.Draw). nil, in production, is experiment.CryptoSource; a
@@ -469,6 +474,9 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		boot, cancelAfterMint = bootBudget(ctx)
 		defer cancelAfterMint()
 		workflow.controllerFirstWake, workflow.idleTick, workflow.mergeStateRetry, workflow.entrySweep = o.controllerFirstWake, o.idleTick, o.mergeStateRetry, o.entrySweep
+		if o.engine != nil {
+			o.engine(workflow.engine)
+		}
 		plan.identity = workflow.identity
 		plan.repository, plan.launchRepository = workflow.issueRepository, workflow.launchRepository
 		plan.ensureWorkspace = workflow.ensureWorkspace
@@ -1616,6 +1624,13 @@ type supervision struct {
 	// transaction each. The workflow sets it where it attaches, before supervision restores or
 	// launches any claim, as it sets enqueue above.
 	applySweepFacts func(ctx context.Context, facts []sweptFact) error
+	// updatePushes answers, for each role of issue, where it pushes at an update round's ask
+	// (supervise.UpdatePush): a step beside a running fix to its own branch, the fix to its own, the
+	// implementer while a fix reads its job nowhere, and every other role, the zero push, to the
+	// issue's branch (workflow.(*Engine).UpdatePushes, in one read transaction). askRound reads it
+	// once for each issue it asks. nil in a deployment with no workflow, whose rounds ask every role
+	// with the zero push. The workflow sets it where it attaches, as it sets enqueue above.
+	updatePushes func(ctx context.Context, issue string) (map[claim.Role]supervise.UpdatePush, error)
 	// backstopMu guards backstopOwed: the owner notices of turns the stall backstop ended that
 	// the store has refused, by claim, waiting for the next sweep to write them
 	// (stallBackstopped, tellStallsOwed). A mutex, because the machine's own goroutine records

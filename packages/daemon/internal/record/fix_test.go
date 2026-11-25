@@ -625,3 +625,165 @@ func TestAFixStartIsNoPendingPhaseStart(t *testing.T) {
 		}
 	})
 }
+
+// A step's binding to a branch beside a fix names that fix's number (StepStart.PushBranch), and
+// the text of the step reads that fix's pushes whichever fix of the task is the latest: FixAt
+// answers fix 1, ended, with its recorded push, while fix 2 runs; a number the task has not reached
+// and another generation's fix are none.
+func TestFixAtReadsTheFixABoundBranchNames(t *testing.T) {
+	st := migratedStore(t)
+	ctx := context.Background()
+	records := NewStore()
+	inTx(t, st, func(tx pgx.Tx) {
+		first := readingFix(1)
+		must(t, records.PutFix(ctx, tx, first))
+		must(t, records.RecordBesidePush(ctx, tx, fixIssue, 3, "a", 1, "tester", fixHeadY))
+		first.State, first.Entry, first.Result, first.Way = FixEnded, 7, "passed", 2
+		must(t, records.UpdateFix(ctx, tx, first))
+		second := readingFix(2)
+		second.Head = fixHeadY
+		must(t, records.PutFix(ctx, tx, second))
+
+		got, err := records.FixAt(ctx, tx, fixIssue, 3, "a", 1)
+		must(t, err)
+		first.Pushed = map[string]string{"tester": fixHeadY}
+		if got == nil || !reflect.DeepEqual(*got, first) {
+			t.Fatalf("FixAt of fix 1 while fix 2 reads its job = %+v, want fix 1 with its push: %+v", got, first)
+		}
+		latest, err := records.LatestFix(ctx, tx, fixIssue, 3, "a")
+		must(t, err)
+		if latest == nil || latest.Fix != 2 {
+			t.Fatalf("the latest fix = %+v, want fix 2", latest)
+		}
+		for _, none := range []struct {
+			generation uint64
+			fix        int
+		}{{3, 3}, {4, 1}} {
+			if got, err := records.FixAt(ctx, tx, fixIssue, none.generation, "a", none.fix); err != nil || got != nil {
+				t.Errorf("FixAt of fix %d at generation %d = %+v, %v; want none", none.fix, none.generation, got, err)
+			}
+		}
+	})
+}
+
+// besidePushes is what a fix's Pushed reads at each point of besidePushRace.
+type besidePushes struct{ afterPushes, afterStaleUpdate, afterDelete map[string]string }
+
+// besidePushRace plays, on records, the two ways a push beside fix 1 can be lost, each in
+// transactions of its own. A fact's transaction reads fix 1 (stale), then the implementer's push P
+// is written and, before it commits, the tester's push Q waits on its row; P commits, Q commits,
+// and the stale transaction writes fix 1's way from what it read. Then the tester's branch is
+// deleted. It answers Pushed after the two pushes, after the stale update and after the delete.
+func besidePushRace(t *testing.T, records *Postgres) besidePushes {
+	t.Helper()
+	st := migratedStore(t)
+	ctx := context.Background()
+	inTx(t, st, func(tx pgx.Tx) {
+		fix := readingFix(1)
+		must(t, records.PutFix(ctx, tx, fix))
+		fix.State, fix.Entry = FixRunning, 7
+		must(t, records.UpdateFix(ctx, tx, fix))
+	})
+	pushed := func() map[string]string {
+		t.Helper()
+		var got map[string]string
+		inTx(t, st, func(tx pgx.Tx) {
+			fix, err := records.FixAt(ctx, tx, fixIssue, 3, "a", 1)
+			must(t, err)
+			got = fix.Pushed
+		})
+		return got
+	}
+	begin := func() pgx.Tx {
+		t.Helper()
+		tx, err := st.Pool().BeginTx(ctx, pgx.TxOptions{})
+		must(t, err)
+		t.Cleanup(func() { _ = tx.Rollback(context.Background()) })
+		return tx
+	}
+
+	staleTx := begin()
+	stale, err := records.LatestFix(ctx, staleTx, fixIssue, 3, "a")
+	must(t, err)
+
+	pushTx := begin()
+	must(t, records.RecordBesidePush(ctx, pushTx, fixIssue, 3, "a", 1, "implementer", fixHeadX))
+	other := make(chan error, 1)
+	go func() {
+		tx, err := st.Pool().BeginTx(ctx, pgx.TxOptions{})
+		if err != nil {
+			other <- err
+			return
+		}
+		if err := records.RecordBesidePush(ctx, tx, fixIssue, 3, "a", 1, "tester", fixHeadY); err != nil {
+			_ = tx.Rollback(ctx)
+			other <- err
+			return
+		}
+		other <- tx.Commit(ctx)
+	}()
+	// The barrier at the push's commit: the tester's write waits on fix 1's row, which the
+	// uncommitted push holds.
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		var waiting int
+		must(t, st.Pool().QueryRow(ctx, `select count(*) from pg_stat_activity
+			where datname = current_database() and wait_event_type = 'Lock' and query like '%task_fixes%'`).Scan(&waiting))
+		if waiting > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the tester's push never waited on fix 1's row: the race this test plays did not happen")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	must(t, pushTx.Commit(ctx))
+	must(t, <-other)
+	var race besidePushes
+	race.afterPushes = pushed()
+
+	stale.Way = 2
+	must(t, records.UpdateFix(ctx, staleTx, *stale))
+	must(t, staleTx.Commit(ctx))
+	race.afterStaleUpdate = pushed()
+
+	inTx(t, st, func(tx pgx.Tx) {
+		must(t, records.RecordBesidePush(ctx, tx, fixIssue, 3, "a", 1, "tester", ""))
+	})
+	race.afterDelete = pushed()
+	return race
+}
+
+// A push of a branch beside a fix changes its own role's key of the fix's Pushed and nothing
+// else, so neither a write of the fix from a read made before the push nor another role's push
+// made at the same time loses it: after the implementer's push P, the tester's push Q that waited
+// on it and a stale update of the fix's way, Pushed holds P and Q, and the delete of the tester's
+// branch takes Q alone.
+//
+// The control, a kept subtest: with the seam rewritePushedWithFix, which writes the whole map from
+// the fix the writer read, the tester's push loses P and the stale update loses Q, which the
+// subtest asserts.
+func TestBesidePushRecordingDoesNotOverwriteAnotherRoleOrGetLost(t *testing.T) {
+	both := map[string]string{"implementer": fixHeadX, "tester": fixHeadY}
+	t.Run("each push keeps every other role's head", func(t *testing.T) {
+		race := besidePushRace(t, NewStore())
+		if !reflect.DeepEqual(race.afterPushes, both) {
+			t.Errorf("Pushed after the two pushes = %v, want %v", race.afterPushes, both)
+		}
+		if !reflect.DeepEqual(race.afterStaleUpdate, both) {
+			t.Errorf("Pushed after the stale update of the fix's way = %v, want %v", race.afterStaleUpdate, both)
+		}
+		if want := map[string]string{"implementer": fixHeadX}; !reflect.DeepEqual(race.afterDelete, want) {
+			t.Errorf("Pushed after the tester's branch was deleted = %v, want %v", race.afterDelete, want)
+		}
+	})
+	t.Run("control: rewritePushedWithFix loses a push to each writer", func(t *testing.T) {
+		race := besidePushRace(t, &Postgres{rewritePushedWithFix: true})
+		if want := map[string]string{"tester": fixHeadY}; !reflect.DeepEqual(race.afterPushes, want) {
+			t.Errorf("Pushed after the two pushes with the whole map rewritten = %v, want %v: the tester's push lost P", race.afterPushes, want)
+		}
+		if race.afterStaleUpdate != nil {
+			t.Errorf("Pushed after the stale update with the whole map rewritten = %v, want none: the stale fix lost Q", race.afterStaleUpdate)
+		}
+	})
+}

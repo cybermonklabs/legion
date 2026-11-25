@@ -31,7 +31,9 @@ import (
 // GET /repos/{owner}/{repo}/commits/{ref}/check-runs. Dispatch reads a check its CI job proves
 // there, through its App client (packages/envoy/internal/dispatch/githubapp): it looks the
 // installation up with the App's JWT, mints a token, and reads the commit's check runs with it,
-// and it reads the repository with that token before it stores its delivery settings.
+// and it reads the repository with that token before it stores its delivery settings. Each read of
+// a commit's check runs it answers is kept, in order, with the runs it served (Reads), so a test
+// can say what Dispatch read and when.
 //
 // It checks each credential as GitHub does. The installation and the token mint take only a JWT
 // the App's own key signed for the App's client id (App), and the repository and its check runs
@@ -51,8 +53,18 @@ type Checks struct {
 	mu         sync.Mutex
 	runs       map[string][]CheckRun // by "owner/name@sha"
 	tokens     map[string]time.Time  // each token minted, with its expiry
+	reads      []CheckRunsRead
 	unanswered []string
 	refused    []string
+}
+
+// CheckRunsRead is one read of a commit's check runs the fake answered (Reads): when it answered,
+// the repository and the commit read, and the runs it served, as they stood at that moment.
+type CheckRunsRead struct {
+	At   time.Time
+	Repo string
+	SHA  string
+	Runs []CheckRun
 }
 
 // App is a GitHub App as its client holds it: its client id, which its JWT names as the issuer,
@@ -132,6 +144,14 @@ func (c *Checks) Unanswered() []string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return slices.Clone(c.unanswered)
+}
+
+// Reads is each read of a commit's check runs the server answered, in the order it answered them,
+// with the runs each served. A read the server refused (Refused) served no run and is not in it.
+func (c *Checks) Reads() []CheckRunsRead {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return slices.Clone(c.reads)
 }
 
 // Refused is each request the server answered 401, as "METHOD /path: why", in the order it came.
@@ -267,14 +287,16 @@ func (c *Checks) repository(w http.ResponseWriter, r *http.Request) {
 }
 
 // checkRuns answers every run set on the commit, in one page: the listing GitHub gives
-// filter=all, each attempt of each check.
+// filter=all, each attempt of each check. It keeps the read, with the runs it served (Reads).
 func (c *Checks) checkRuns(w http.ResponseWriter, r *http.Request) {
+	repo, sha := r.PathValue("owner")+"/"+r.PathValue("repo"), r.PathValue("ref")
 	c.mu.Lock()
-	runs := slices.Clone(c.runs[r.PathValue("owner")+"/"+r.PathValue("repo")+"@"+r.PathValue("ref")])
+	runs := slices.Clone(c.runs[repo+"@"+sha])
+	c.reads = append(c.reads, CheckRunsRead{At: time.Now(), Repo: repo, SHA: sha, Runs: runs})
 	c.mu.Unlock()
 	listed := make([]map[string]any, 0, len(runs))
 	for _, run := range runs {
-		listed = append(listed, run.listed(r.PathValue("ref")))
+		listed = append(listed, run.listed(sha))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"total_count": len(listed), "check_runs": listed})
 }

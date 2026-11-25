@@ -33,7 +33,7 @@ After every push that answers a review, and before you complete, answer and reso
 
 ## Forward merges
 
-For the forward-merge procedure, and the merge-forward message the daemon sends you, follow `skill://legion-worker/references/conflicts-and-rewrites.md`, then push the merge as the daemon part below says — it is a genuine fast-forward and a code push like any other.
+For the forward-merge procedure, and the merge-forward message the daemon sends you, follow `skill://legion-worker/references/conflicts-and-rewrites.md`, then push the merge as the daemon part below says — it is a genuine fast-forward and a code push like any other. While a fix holds the task's branch, the daemon sends no merge-forward message; a merge you were asked for before the fix began is the fix's first act, in its own working copy, and goes out with its one push at its end.
 
 ## Workspace restrictions
 
@@ -47,11 +47,11 @@ aside. Never `jj describe` or `jj split` the
 working-copy commit you found at the turn's start. Do not replace another phase's
 commit. Create reviewable commits only with
 `jj -R "$LEGION_WORKSPACE" split -m "<message>" <paths…>`. Push only the existing issue branch, as
-the daemon part below says.
+the daemon part below says, or, in a fix, the fix's own branch until the fix ends (*A fix* below).
 
 ## A fix
 
-A fix's task is your step started again beside a later step of the task, because a check that a CI job runs failed at the task's head (the daemon part below). Its `Working copy:` line names its own directory, `<LEGION_WORKSPACE>-fix`. In that task, use that directory wherever this text names `$LEGION_WORKSPACE`, the path you give each `deep-worker` among them. Handle the failure by the rules on a red check at the head that `skill://legion-worker` gives. Where the change did not cause it, commit nothing: run its job again only as those rules allow, then complete the fix without waiting for that run. A step beside you pushes nothing: its report names its commits, the red tests a tester wrote among them. Each is in your clone by its id. Put a copy of it under `@` with `jj -R <dir> duplicate <commit> --insert-before @`, and make a red test pass unchanged. Never rebase, describe or squash the original, since another working copy stands on it.
+A fix's task is your step started again beside a later step of the task, because a check that a CI job runs failed at the task's head (the daemon part below). Its `Working copy:` line names its own directory, `<LEGION_WORKSPACE>-fix`. In that task, use that directory wherever this text names `$LEGION_WORKSPACE`, the path you give each `deep-worker` among them. Handle the failure by the rules on a red check at the head that `skill://legion-worker` gives. Where the change did not cause it, make no change of your own for it: run its job again only as those rules allow, then complete the fix without waiting for that run. A report that a step beside you gave the fix (`… It is part of your fix.`) is the fix's work all the same. Until the fix ends, push only to the fix's own branch, which its task names; at its end, push to the task's branch once, as the daemon part below says. A step beside you pushes its commits to a branch of its own and names that branch and its commits in its report, the red tests a tester wrote among them. Before your end push, take them with the commands your task gives, which copy under `@` each commit of those branches that the task's branch does not hold, and make a red test pass unchanged. A commit that a step names by its id and could not push is in your clone by that id: put a copy of it under `@` with `jj -R <dir> duplicate <commit> --insert-before @`. Never rebase, describe or squash an original, since another working copy may stand on it, and delete no branch: Legion deletes them.
 
 ## Implementation handoff
 

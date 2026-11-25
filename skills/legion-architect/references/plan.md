@@ -40,7 +40,7 @@ The table lists the steps in the order of the default steps:
 | `acceptance:owner` | review | `accepting` | Your step. Without it the last step's pass starts the retro, or holds a parent before it while issues beneath it are in the workflow, and nothing waits for you to read the evidence. A fix or its CI can hold any task there first (`retro-held`). |
 
 Without `acceptance:owner`, retro holds the checks (`skill://legion-retro`), and so does a reviewer step where the task has one.
-A reviewer step approves only once a pass stands for every `before_merge` check at the head.
+A reviewer step approves only once a pass stands for every `before_merge` check at the head, but the check a running fix holds.
 And retro's first step sends back a check with no pass standing there, except a `ci_check` whose run has not concluded or cannot be read.
 Legion holds every task before its retro until each `ci_check` check passes at its head, so no such check reaches the merge without its pass.
 

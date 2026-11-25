@@ -28,7 +28,18 @@ const maxInt64 = uint64(^uint64(0) >> 1)
 
 // Postgres implements Store exclusively through caller-owned pgx transactions. It has no pool:
 // opening, committing, and retrying a transaction belong to the layer that owns its boundary.
-type Postgres struct{}
+type Postgres struct {
+	// keepPreviousPushBranch leaves a step's binding to a branch beside a fix on the place's next
+	// start (RaiseStepStarts), rewritePushedWithFix writes a fix's whole Pushed from the fix a
+	// writer read (UpdateFix, RecordBesidePush), promptWithoutWorkIdentity joins a prompt to read
+	// Dispatch to a pending one of another generation, task or reader, and lowerSeqWins keeps the
+	// older snapshot of a check at that join (EnqueueReadPrompt). Only tests set any of them, as
+	// the control of the rule each takes out.
+	keepPreviousPushBranch    bool
+	rewritePushedWithFix      bool
+	promptWithoutWorkIdentity bool
+	lowerSeqWins              bool
+}
 
 var _ Store = (*Postgres)(nil)
 
@@ -3257,13 +3268,14 @@ var (
 // none (PauseHeldRow). project is the project token and role the payload's `role`. A start, a
 // hook's words, an update ask and a merge forward's message name the role of the row's own issue,
 // as the executors read it (the daemon's roleToken); the merge-queue message goes to the issue's merger;
-// a role message names the claim's token itself (record.RoleMessage.Role).
+// a role message and a task's CI news name the claim's token itself (record.RoleMessage.Role,
+// record.CINews.Role).
 func pauseHeldClaim(project string, row OutboxRow, role string) claim.Token {
 	switch row.Kind {
 	case OutboxKindSupervise, OutboxKindHookPrompt, OutboxKindUpdateAsk, OutboxKindMergeForward:
 	case OutboxKindMergeQueueRemoval:
 		role = string(claim.RoleMerger)
-	case OutboxKindRoleMessage:
+	case OutboxKindRoleMessage, OutboxKindCINews:
 		if _, ok := claim.Token(role).Role(); ok {
 			return claim.Token(role)
 		}

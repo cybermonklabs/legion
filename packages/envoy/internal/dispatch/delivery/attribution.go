@@ -87,9 +87,10 @@ import (
 // stored. Nothing else revisits one — an open row comes round at every reconcile pass of one
 // process that tries its whole batch while no more than a batch is due, each starting at most five
 // minutes after the one before it ended, and within the bound ListStalePullRequestHeads states
-// past that or after a pass a rate limit stopped (PullRequestHeadStaleAfter), but a merged row is
-// read again only by that arm — so a change made without raising it leaves every pull request
-// merged before it judged by the rule of its day for good.
+// past that or after a pass a rate limit stopped, and a pass that takes it reads it only once its
+// stamp of the try succeeds (PullRequestHeadStaleAfter), but a merged row is read again only by
+// that arm — so a change made without raising it leaves every pull request merged before it
+// judged by the rule of its day for good.
 const AttributionRuleVersion = 5
 
 // attributionSource names the source a pull request's issue came from.

@@ -2,9 +2,10 @@
 // NATS (`notifications.github.>`), for live updates between the five-minute reconcile's passes.
 // Every write here goes through the same upsert functions reconcile uses (store.go), so a NATS
 // redelivery or a reconcile re-reading the same fact is a no-op, not a duplicate. A GitHub call
-// that fails here is logged and the message is still acked, because the reconcile that runs
-// every five minutes is the actual catch-up mechanism ("a missed event appears by the next
-// five-minute reconcile", LEGION-567). The one failure that mechanism does not cover is a pull
+// that fails here is logged and the message is still acked, because the reconcile is the actual
+// catch-up mechanism: what a missed event carried lands when a later pass reads that pull
+// request, an open one's head once its row is due and that pass's stamp of its try succeeds
+// (PullRequestHeadStaleAfter). The one failure that mechanism does not cover is a pull
 // request's write that nothing else makes: its head row, which no pass can offer because the
 // passes read the rows that exist (ErrHeadNotStored), or the mark a settled CI run owes its
 // issue's check states, since no table stores a run (errCheckStatesNotMarked). That envelope is

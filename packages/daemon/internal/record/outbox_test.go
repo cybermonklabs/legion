@@ -104,6 +104,24 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 		MergeForwardMessage{Role: claim.RoleMerger, Step: MergeForwardHold, Head: "c0de", Base: "main", Phase: phase.Merging, PullRequest: 42, Why: ConflictMergeNext},
 		MergeForwardMessage{Role: claim.RoleTester, Step: MergeForwardLanded, Head: "c0de", Landed: "d00d", Base: "main", Phase: phase.Testing, PullRequest: 42, Why: ConflictRulesUnread},
 		MergeForwardMessage{Role: claim.RoleReviewer, Step: MergeForwardReview, Head: "c0de", Landed: "d00d", Base: "main", Phase: phase.Retro, PullRequest: 42},
+		CINews{Purpose: CINewsRuns, Role: "legion-legion-legion-208-reviewer", Generation: 3, Task: "a", Repo: "acme/widgets", PullRequest: 42, Head: "c0de",
+			Reader: &CIReader{Phase: phase.Reviewing, Entry: 4}, Runs: []CIRun{{Name: "unit", ID: 9001, Head: "c0de", Conclusion: "failure"}},
+			Statuses: []CIStatus{{Context: "ci/lint", State: "success", CreatedAt: now}}, Body: "Pull request #42 at c0de: unit failure."},
+		CINews{Purpose: CINewsRuns, Role: "legion-legion-legion-208-tester", Generation: 3, Task: "a", Repo: "acme/widgets", Head: "c0de",
+			Next: CINextTestingMove, Tested: "d00d", Runs: []CIRun{{Name: "unit", ID: 9002, Head: "c0de", Conclusion: "success"}}, Body: "Legion holds the testing step."},
+		CINews{Purpose: CINewsState, Role: "legion-legion-legion-208-implementer", Generation: 3, Task: "a", Repo: "acme/widgets", Head: "c0de",
+			Reader: &CIReader{Fix: 1, Entry: 5}, States: []CIStateSnapshot{{Check: "k-ci", State: "no", Reason: "fail", CICase: "failure", Roles: []string{"tester"}, Seq: 7}},
+			Body: ReadPromptBody("LEGION-208", "c0de", []string{"k-ci"})},
+		CINews{Purpose: CINewsState, Role: "legion-legion-legion-208-architect", Generation: 3, Task: "a", Repo: "acme/widgets", Head: "c0de",
+			Reader: &CIReader{Phase: phase.Accepting}, Checks: &[]string{}, Body: ReadPromptBody("LEGION-208", "c0de", nil)},
+		CINews{Purpose: CINewsAssignment, Role: "legion-legion-legion-208-implementer", Generation: 3, Task: "a", Head: "c0de",
+			Reader: &CIReader{Phase: phase.Implementing, Entry: 3}, Assigned: &CIAssigned{Check: "k-ci", Head: "c0de", CICase: "failure"}, Body: "Repair k-ci."},
+		CINews{Purpose: CINewsFixStarted, Role: "legion-legion-legion-208-tester", Generation: 3, Task: "a", Head: "c0de",
+			Assigned: &CIAssigned{Check: "k-ci", Head: "c0de", CICase: "failure", Fix: 1}, Branch: "legion-beside/LEGION-208/3/a/fix-1/tester", Body: "Fix 1 runs."},
+		CINews{Purpose: CINewsStepReport, Role: "legion-legion-legion-208-implementer", Generation: 3, Task: "a", Head: "c0de",
+			Reader: &CIReader{Fix: 1, Entry: 5}, Branch: "legion-beside/LEGION-208/3/a/fix-1/tester", Body: "The tester failed."},
+		BesideBranchesDelete{Generation: 3, Task: "a", Fix: 1},
+		BesideBranchesDelete{Generation: 3, Task: "a"},
 	}
 	for _, payload := range payloads {
 		t.Run(string(payload.OutboxKind()), func(t *testing.T) {
@@ -137,6 +155,32 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 			}
 			if !reflect.DeepEqual(got, payload) {
 				t.Fatalf("payload = %#v, want %#v", got, payload)
+			}
+		})
+	}
+}
+
+// An update round's ask to a step beside a fix names the branch that step pushes to, whether the
+// branch is the fix's own, and whether the fix still reads its job (supervise.UpdatePush), so a test
+// reads them from the row: the three members decode strictly and encode again unchanged. An ask
+// with no push carries none of them, so its row is the row the release before writes.
+func TestAnUpdateAskCarriesThePushOfAStepBesideAFix(t *testing.T) {
+	const ask = `"round":"pod:9d3f0c7a","pod":"9d3f0c7a","text":"The daemon must replace the pod that runs this issue's roles."`
+	for _, tc := range []struct{ name, payload string }{
+		{"a step beside a fix", `{"role":"tester",` + ask + `,"branch":"legion-beside/LEGION-208/3/a/fix-1/tester"}`},
+		{"the fix", `{"role":"implementer",` + ask + `,"branch":"legion-beside/LEGION-208/3/a/fix-1/implementer","ownFix":true}`},
+		{"the fix reading its job", `{"role":"implementer",` + ask + `,"fixReads":true}`},
+		{"no push", `{"role":"reviewer",` + ask + `}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			row := OutboxRow{ID: 7, Kind: OutboxKindUpdateAsk, Issue: "LEGION-208", Payload: json.RawMessage(tc.payload)}
+			decoded, err := DecodeOutboxPayload(row)
+			if err != nil {
+				t.Fatalf("DecodeOutboxPayload of %s: %v", tc.payload, err)
+			}
+			encoded, err := json.Marshal(decoded)
+			if err != nil || string(encoded) != tc.payload {
+				t.Fatalf("the ask encoded again = %s, %v; want %s", encoded, err, tc.payload)
 			}
 		})
 	}
@@ -279,7 +323,7 @@ func TestEveryOutboxKindIsInExactlyOneLane(t *testing.T) {
 		OutboxKindCheckWake, OutboxKindCheckLook, OutboxKindCheckBound, OutboxKindRoleMessage, OutboxKindHookPrompt, OutboxKindUpdateAsk,
 		OutboxKindIssueBundle, OutboxKindIssueRelease, OutboxKindGatedStepsPublish, OutboxKindClaimRelease, OutboxKindDesignGatesPublish,
 		OutboxKindMergeQueueRead, OutboxKindMergeQueueRemoval, OutboxKindDesignChanges, OutboxKindRoleHoldersPublish, OutboxKindStepRecord,
-		OutboxKindConflictConfirm, OutboxKindMergeForward, OutboxKindPlanRecord, OutboxKindFixJobRead}
+		OutboxKindConflictConfirm, OutboxKindMergeForward, OutboxKindPlanRecord, OutboxKindFixJobRead, OutboxKindCINews, OutboxKindBesideBranchesDelete}
 	oracle := []OutboxLane{LaneBoard, LaneClaim, LaneDocuments, LaneLifecycle, LaneRecord, LaneRoleMessage}
 	if got := OutboxLanes(); !reflect.DeepEqual(got, oracle) {
 		t.Errorf("OutboxLanes() = %v, want the lanes %v in name order", got, oracle)
@@ -326,24 +370,30 @@ func TestEveryOutboxKindIsHeldOrNotHeldByAPause(t *testing.T) {
 		OutboxKindMergeQueueRemoval: "every row",
 		// A merge forward's message goes to one role of the issue and wakes a released one, as a
 		// hook prompt does (main's dispatch://INFRA-4374).
-		OutboxKindMergeForward:       "every row",
-		OutboxKindCheckWake:          "every row",
-		OutboxKindCheckLook:          "every row",
-		OutboxKindCheckBound:         "every row",
-		OutboxKindControllerNotice:   "",
-		OutboxKindDispatchStatus:     "",
-		OutboxKindDispatchMessage:    "",
-		OutboxKindGateSeed:           "",
-		OutboxKindLingerClose:        "",
-		OutboxKindIssueSuspend:       "",
-		OutboxKindWorkspaceRemove:    "",
-		OutboxKindIssueBranch:        "",
-		OutboxKindIssueBundle:        "",
-		OutboxKindIssueRelease:       "",
-		OutboxKindGatedStepsPublish:  "",
-		OutboxKindClaimRelease:       "",
-		OutboxKindDesignGatesPublish: "",
-		OutboxKindMergeQueueRead:     "",
+		OutboxKindMergeForward: "every row",
+		// A task's CI news goes to one role of the issue and wakes a released current reader, as a
+		// hook prompt does.
+		OutboxKindCINews: "every row",
+		// The deletion of the branches beside a fix is held as the merger's merge-queue message is:
+		// it waits for the resume with the rest of what the project does for a role.
+		OutboxKindBesideBranchesDelete: "every row",
+		OutboxKindCheckWake:            "every row",
+		OutboxKindCheckLook:            "every row",
+		OutboxKindCheckBound:           "every row",
+		OutboxKindControllerNotice:     "",
+		OutboxKindDispatchStatus:       "",
+		OutboxKindDispatchMessage:      "",
+		OutboxKindGateSeed:             "",
+		OutboxKindLingerClose:          "",
+		OutboxKindIssueSuspend:         "",
+		OutboxKindWorkspaceRemove:      "",
+		OutboxKindIssueBranch:          "",
+		OutboxKindIssueBundle:          "",
+		OutboxKindIssueRelease:         "",
+		OutboxKindGatedStepsPublish:    "",
+		OutboxKindClaimRelease:         "",
+		OutboxKindDesignGatesPublish:   "",
+		OutboxKindMergeQueueRead:       "",
 		// A conflict's second read reads the pull request from GitHub and starts no turn; the merge
 		// forward its fact queues is held.
 		OutboxKindConflictConfirm: "",
@@ -547,6 +597,29 @@ func TestNewOutboxRowRefusesInvalidPayloads(t *testing.T) {
 			Phase: phase.Implementing, Generation: 3, Task: "Implement it.", FixFrom: "c0de"}, reason: "only a fix's start names the head its working copy is made at"},
 		{name: "a fix's job read of no fix", payload: FixJobRead{Generation: 3, Task: "a", Check: "k-ci", Head: "c0de"}, reason: "a fix's job read names"},
 		{name: "a fix's job read of no head", payload: FixJobRead{Generation: 3, Task: "a", Fix: 1, Check: "k-ci"}, reason: "a fix's job read names"},
+		{name: "a start of no fix naming a fix's branch", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleImplementer,
+			Phase: phase.Implementing, Generation: 3, Task: "Implement it.", FixBranch: "legion-beside/LEGION-208/3/a/fix-1/implementer"}, reason: "only a fix's start names the fix's own branch"},
+		{name: "an update ask to the fix with no branch", payload: UpdateAsk{Role: claim.RoleImplementer, Round: "pod:9d3f0c7a", Text: "Push.", OwnFix: true}, reason: "names the fix's own branch"},
+		{name: "an update ask to a reading fix naming a branch", payload: UpdateAsk{Role: claim.RoleImplementer, Round: "pod:9d3f0c7a", Text: "Push.",
+			FixReads: true, Branch: "legion-beside/LEGION-208/3/a/fix-1/implementer"}, reason: "names no branch"},
+		{name: "a CI news row of no purpose", payload: CINews{Role: "r", Generation: 3, Task: "a", Body: "b"}, reason: "is a report, a prompt"},
+		{name: "a report with no run", payload: CINews{Purpose: CINewsRuns, Role: "r", Generation: 3, Task: "a", Repo: "acme/widgets", Head: "c0de", Body: "b"},
+			reason: "carries a run or a status"},
+		{name: "a report with a state", payload: CINews{Purpose: CINewsRuns, Role: "r", Generation: 3, Task: "a", Repo: "acme/widgets", Head: "c0de", Body: "b",
+			Runs: []CIRun{{Name: "unit", ID: 1}}, States: []CIStateSnapshot{{Check: "k-ci"}}}, reason: "only a prompt to read Dispatch carries states"},
+		{name: "a report with a set of checks", payload: CINews{Purpose: CINewsRuns, Role: "r", Generation: 3, Task: "a", Repo: "acme/widgets", Head: "c0de", Body: "b",
+			Runs: []CIRun{{Name: "unit", ID: 1}}, Checks: &[]string{}}, reason: "only a prompt to read Dispatch carries states and a set of checks"},
+		{name: "a prompt with neither states nor a set", payload: CINews{Purpose: CINewsState, Role: "r", Generation: 3, Task: "a", Repo: "acme/widgets", Head: "c0de",
+			Reader: &CIReader{Phase: phase.Reviewing}, Body: "b"}, reason: "carries a check's state or the head's set of checks"},
+		{name: "a prompt for no reader", payload: CINews{Purpose: CINewsState, Role: "r", Generation: 3, Task: "a", Repo: "acme/widgets", Head: "c0de",
+			Checks: &[]string{}, Body: "b"}, reason: "is for a current reader"},
+		{name: "a reader of a phase and a fix", payload: CINews{Purpose: CINewsState, Role: "r", Generation: 3, Task: "a", Repo: "acme/widgets", Head: "c0de",
+			Reader: &CIReader{Phase: phase.Implementing, Fix: 1}, Checks: &[]string{}, Body: "b"}, reason: "one of them"},
+		{name: "a step's report for no fix", payload: CINews{Purpose: CINewsStepReport, Role: "r", Generation: 3, Task: "a", Head: "c0de",
+			Reader: &CIReader{Phase: phase.Testing}, Body: "b"}, reason: "is for the running fix"},
+		{name: "a prompt naming what Legion does next", payload: CINews{Purpose: CINewsState, Role: "r", Generation: 3, Task: "a", Repo: "acme/widgets", Head: "c0de",
+			Reader: &CIReader{Phase: phase.Reviewing}, Checks: &[]string{}, Next: CINextEndHoldCI, Body: "b"}, reason: "only a report names what Legion does next"},
+		{name: "a deletion of no task", payload: BesideBranchesDelete{Generation: 3, Fix: 1}, reason: "a deletion of the branches beside a fix names"},
 		{name: "unsupported payload", payload: unsupportedOutboxPayload{}, reason: "unknown outbox payload"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -706,6 +779,9 @@ func TestDecodeOutboxPayloadRefusesInvalidRows(t *testing.T) {
 		{name: "a claim release with a field", row: OutboxRow{ID: 54, Kind: OutboxKindClaimRelease, Payload: json.RawMessage(`{"issue":"LEGION-208"}`)}, reason: "unknown field"},
 		{name: "a fix's job read with an unknown field", row: OutboxRow{ID: 67, Kind: OutboxKindFixJobRead, Payload: json.RawMessage(`{"generation":3,"task":"a","fix":1,"check":"k-ci","head":"c0de","job":"unit"}`)}, reason: "unknown field"},
 		{name: "a fix's job read of no check", row: OutboxRow{ID: 68, Kind: OutboxKindFixJobRead, Payload: json.RawMessage(`{"generation":3,"task":"a","fix":1,"head":"c0de"}`)}, reason: "a fix's job read names"},
+		{name: "a CI news row with an unknown field", row: OutboxRow{ID: 69, Kind: OutboxKindCINews, Payload: json.RawMessage(`{"purpose":"state","role":"r","generation":3,"task":"a","repo":"acme/widgets","head":"c0de","reader":{"phase":"reviewing","entry":2},"checks":[],"body":"b","verdict":"yes"}`)}, reason: "unknown field"},
+		{name: "a prompt whose set of checks is null", row: OutboxRow{ID: 70, Kind: OutboxKindCINews, Payload: json.RawMessage(`{"purpose":"state","role":"r","generation":3,"task":"a","repo":"acme/widgets","head":"c0de","reader":{"phase":"reviewing","entry":2},"checks":null,"body":"b"}`)}, reason: "carries a check's state or the head's set of checks"},
+		{name: "a deletion of the branches beside a fix with an unknown field", row: OutboxRow{ID: 71, Kind: OutboxKindBesideBranchesDelete, Payload: json.RawMessage(`{"generation":3,"task":"a","fix":1,"prefix":"legion-beside/"}`)}, reason: "unknown field"},
 		{name: "a retro's stored reason without its rating", row: OutboxRow{ID: 62, Kind: OutboxKindStepRecord, Payload: json.RawMessage(`{"id":"` + stepRecordID +
 			`","task":"default","step":0,"kind":"retro","role":"implementer","type":"","agent":"legion-leg-leg-1-implementer","generation":1,"rating_reason":"The plan put the tests after the review."}`)},
 			reason: "its reason or neither"},

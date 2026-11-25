@@ -560,16 +560,18 @@ func TestACancelRacingAParkLeavesNoResumeAboveTheClose(t *testing.T) {
 	}
 }
 
-// The idle rule holds an issue's pod for every row of the role-message lane: each of those rows
-// speaks to a role of that pod, and a release stops the role that the row was written for. The
-// lane's own list is record.LaneKinds(record.LaneRoleMessage) and idleWaitingKinds writes its
-// kinds out as the strings the SQL compares, so nothing but this test holds the two together: a
-// kind added to the lane and left out of the idle list lets the daemon release the pod out from
-// under a row nobody has read yet.
+// The idle rule holds an issue's pod for every row of the role-message lane that speaks to a role:
+// each of those rows speaks to a role of that pod, and a release stops the role that the row was
+// written for. The lane's own list is record.LaneKinds(record.LaneRoleMessage) and idleWaitingKinds
+// writes its kinds out as the strings the SQL compares, so nothing but this test holds the two
+// together: a kind added to the lane and left out of the idle list lets the daemon release the pod
+// out from under a row nobody has read yet. A kind that speaks to no role is named in
+// idleFreeRoleMessageKinds, and is in no idleWaitingKinds.
 func TestEveryRoleMessageKindWaitsForARoleOfThePod(t *testing.T) {
 	for _, kind := range record.LaneKinds(record.LaneRoleMessage) {
-		if !slices.Contains(idleWaitingKinds, string(kind)) {
-			t.Errorf("the role-message kind %q stands in no idleWaitingKinds %v: a release would stop the role before it reads the row", kind, idleWaitingKinds)
+		waits, free := slices.Contains(idleWaitingKinds, string(kind)), slices.Contains(idleFreeRoleMessageKinds, string(kind))
+		if waits == free {
+			t.Errorf("the role-message kind %q stands in idleWaitingKinds %t and in idleFreeRoleMessageKinds %t: exactly one holds each kind", kind, waits, free)
 		}
 	}
 }

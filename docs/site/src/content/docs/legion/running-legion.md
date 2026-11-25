@@ -366,7 +366,8 @@ Dispatch read them, delete the files, then install every App from
   raised from 20Gi with the shared scratch) comes from `storage_class`, which is required. That
   disk is the pod's own: Kubernetes creates its claim with the pod, names it `<pod>-issue`, and
   deletes it when the pod goes, so an issue's clone, workspace and caches live as long as its pod
-  and no longer. What outlives a pod is what was pushed to the issue's branch, each agent's
+  and no longer. What outlives a pod is what was pushed to the issue's branch, or, beside a running
+  fix, to the branches of the fix and of the steps beside it, each agent's
   conversation, which the session database holds, and, when the daemon released an idle pod, the
   workspace's unpushed work, which the release saves as a git bundle in the daemon's database and
   the next pod restores. The daemon-launched controller's pod has a
@@ -1690,5 +1691,7 @@ legion issue status WIDGETS-12 backlog --config legion.yaml --operator-token-fil
 ```
 
 A root on the backlog or in icebox stops its tree: its agents are suspended and the slots
-its issues held go to the next issues in line. `todo` admits a labelled root again, as a new generation that starts from its
+its issues held go to the next issues in line. That leave, and the new generation a later `todo`
+starts, also has Legion delete the branches beside a fix of the tree's tasks, so a fix's work that
+was never pushed to its issue's branch goes with them. `todo` admits a labelled root again, as a new generation that starts from its
 architect.

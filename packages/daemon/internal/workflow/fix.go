@@ -69,11 +69,13 @@ func atTaskEnd(issue record.Issue) bool {
 	return fixOrCIHold(issue) && issue.Hold.From == phase.Retro
 }
 
-// fixPass is what one run of the fix rule read of an issue: its record, its walk, its task's
-// head, the task's open fix (nil for none) and whether its run takes a fix.
+// fixPass is what one run of the fix rule read of an issue: its record, its walk, its pull request
+// (nil for none), its task's head, the task's open fix (nil for none) and whether its run takes a
+// fix.
 type fixPass struct {
 	issue   record.Issue
 	w       Walk
+	pr      *record.PullRequest
 	head    string
 	open    *record.TaskFix
 	fixesCI bool
@@ -96,9 +98,9 @@ func (e *Engine) fixRule(ctx context.Context, tx pgx.Tx, key string) error {
 // failure row at that head (record.CIFailure), which says whom the failure went to:
 //
 //   - a fix of the task is open (reading its job or running), wherever the task stands: the
-//     failure joins that fix, and the implementer is told it is part of its fix where the fix
-//     runs (a fix still reading its job names it in its task). A failure some fix took already
-//     needs nothing. No second fix starts while one is open.
+//     failure joins that fix, and the implementer gets it as a repair assignment of its fix where
+//     the fix runs (assignRepair; a fix still reading its job names it in its task). A failure
+//     some fix took already needs nothing. No second fix starts while one is open.
 //   - the task stands at its retro or its merge: the failure goes to the merger, which reads
 //     GitHub, and nothing else is done.
 //   - the task is held at its end (atTaskEnd): where no fix ran for the check at that head and
@@ -106,9 +108,14 @@ func (e *Engine) fixRule(ctx context.Context, tx pgx.Tx, key string) error {
 //     is told once (endFailure).
 //   - before the task's end, for a task that takes a fix (a stored walk, record.PlanTask.FixesCI),
 //     a failure no one was given yet: where the task's implementation step runs, it goes to that
-//     step, whose implementer is told; where a step after the task's first implementation step
-//     runs or waits, a fix starts (openFix); before the first implementation step nothing is
-//     written, and that step's start names the failure.
+//     step, whose implementer gets it as a repair assignment of that step (assignRepair); where a
+//     step after the task's first implementation step runs or waits, a fix starts (openFix);
+//     before the first implementation step nothing is written, and that step's start names the
+//     failure.
+//
+// So a failure is assigned once for each check at each head, by the fix's start or by one
+// assignment row, whichever of Dispatch's state and the listener's settlement came first: the
+// settlement's report assigns nothing (reportRuns).
 //
 // A task that takes no fix gets nothing of this rule before its end, and its CI settlements are
 // told as before (tellChecks).
@@ -137,7 +144,7 @@ func (e *Engine) fixFailures(ctx context.Context, tx pgx.Tx, key string) error {
 	if err != nil || !taskRuns(*issue, w) {
 		return err
 	}
-	pass := &fixPass{issue: *issue, w: w, head: head}
+	pass := &fixPass{issue: *issue, w: w, pr: pr, head: head}
 	if w.Stored {
 		if pass.open, err = e.store.RunningFix(ctx, tx, key, issue.Generation, w.Task); err != nil {
 			return err
@@ -167,6 +174,9 @@ func (e *Engine) fixFailure(ctx context.Context, tx pgx.Tx, pass *fixPass, state
 	case pass.open != nil && !e.noFixJoin:
 		return e.joinFix(ctx, tx, pass, state, row, failure)
 	case record.StandsIn(issue, phase.Retro, phase.Merging) && !atTaskEnd(issue):
+		if first, ok := firstImplementation(w); e.fixInMerging && ok && w.Stored && pass.fixesCI && row == nil && record.StandsIn(issue, phase.Merging) {
+			return e.openFix(ctx, tx, pass, state.Check, first, failure, nil)
+		}
 		if row != nil {
 			return nil
 		}
@@ -182,15 +192,16 @@ func (e *Engine) fixFailure(ctx context.Context, tx pgx.Tx, pass *fixPass, state
 	switch {
 	case w.Place.Kind == record.PlaceStep && w.Place.Position >= 1 && w.Place.Position <= len(w.Steps) &&
 		w.Steps[w.Place.Position-1].Type == plan.TypeImplementation:
-		runs, err := e.stepRuns(ctx, tx, issue.Key, claim.Role(w.Steps[w.Place.Position-1].Role))
-		if err != nil || !runs {
+		entry, err := e.stepEntry(ctx, tx, issue.Key, claim.Role(w.Steps[w.Place.Position-1].Role))
+		if err != nil || entry == 0 {
 			return err
 		}
 		failure.WentTo = record.CIFailureToImplementer
 		if _, err := e.store.PutCIFailure(ctx, tx, failure); err != nil {
 			return err
 		}
-		return e.tellImplementer(ctx, tx, issue, ciFailureSentence(state, pass.head)+" Fix it in this step.")
+		reader := record.CIReader{Phase: w.steps()[w.Place.Position-1], Entry: entry}
+		return e.assignRepair(ctx, tx, pass, state, reader, 0, " Fix it in this step.")
 	case hasImplementation && w.Place.Kind == record.PlaceStep && w.Place.Position > first:
 		return e.openFix(ctx, tx, pass, state.Check, first, failure, nil)
 	}
@@ -243,19 +254,20 @@ func ciFailedNotice(issue record.Issue, w Walk, check, head string, fixEnded boo
 		"Check %s fails at %s of task %s of %s, and %s. Decide with the person: %s.", check, head, w.Task, issue.Key, why, act)}
 }
 
-// stepRuns says whether role's phases row of issue holds an open entry: one raised that its
-// completion has not ended.
-func (e *Engine) stepRuns(ctx context.Context, tx pgx.Tx, issue string, role claim.Role) (bool, error) {
+// stepEntry is the open entry of role's phases row of issue, one raised that its completion has
+// not ended, and 0 where the row holds none: whether role's step runs, and the work it runs.
+func (e *Engine) stepEntry(ctx context.Context, tx pgx.Tx, issue string, role claim.Role) (int64, error) {
 	row, err := e.phaseRow(ctx, tx, issue, role)
-	if err != nil {
-		return false, err
+	if err != nil || row.Completed() {
+		return 0, err
 	}
-	return row.Entry > 0 && !row.Completed(), nil
+	return row.Entry, nil
 }
 
 // joinFix is the fix rule's branch of an open fix of the task, pass.open: a failure that no fix
 // took (no row, or a row of the implementer, the merger or the owner) joins it, and the
-// implementer is told where the fix runs. A failure some fix took already needs nothing.
+// implementer gets its repair assignment for the fix where the fix runs (assignRepair). A failure
+// some fix took already needs nothing.
 func (e *Engine) joinFix(ctx context.Context, tx pgx.Tx, pass *fixPass, state record.CheckState, row *record.CIFailure, failure record.CIFailure) error {
 	fix := pass.open
 	switch {
@@ -274,7 +286,7 @@ func (e *Engine) joinFix(ctx context.Context, tx pgx.Tx, pass *fixPass, state re
 	if fix.State != record.FixRunning {
 		return nil
 	}
-	return e.tellImplementer(ctx, tx, pass.issue, ciFailureSentence(state, pass.head)+" It is part of your fix.")
+	return e.assignRepair(ctx, tx, pass, state, record.CIReader{Fix: fix.Fix, Entry: fix.Entry}, fix.Fix, " It is part of your fix.")
 }
 
 // openFix starts fix of the task of the pass for check at the pass's head, at place, the task's
@@ -283,9 +295,15 @@ func (e *Engine) joinFix(ctx context.Context, tx pgx.Tx, pass *fixPass, state re
 // (record.Store.MarkCIFailureFix), and one read of the job is queued (record.FixJobRead), whose
 // answer starts the fix's step. A task held at its end for its CI is held for its fix from then
 // on, from retro still. Each other check that fails at the head in the same pass joins it
-// (joinFix), since the pass now holds it open.
+// (joinFix), since the pass now holds it open. A merge forward of the head the implementer owes
+// does not delay it: the fix takes that merge as its own first work (takeOwedMerge).
 func (e *Engine) openFix(ctx context.Context, tx pgx.Tx, pass *fixPass, check string, place int, failure record.CIFailure, row *record.CIFailure) error {
 	issue, w := pass.issue, pass.w
+	if e.waitForOwedMerge && owedMerge(pass.pr, pass.head) != nil {
+		e.logOnCommit(ctx, "workflow: a failed CI check waits for the merge forward its implementer owes", "issue", issue.Key, "task", w.Task,
+			"check", check, "head", pass.head)
+		return nil
+	}
 	latest, err := e.store.LatestFix(ctx, tx, issue.Key, issue.Generation, w.Task)
 	if err != nil {
 		return err
@@ -297,6 +315,9 @@ func (e *Engine) openFix(ctx context.Context, tx pgx.Tx, pass *fixPass, check st
 	fix := record.TaskFix{Issue: issue.Key, Generation: issue.Generation, Task: w.Task, Fix: number, State: record.FixReading,
 		Check: check, Head: pass.head, Place: place}
 	if err := e.store.PutFix(ctx, tx, fix); err != nil {
+		return err
+	}
+	if err := e.takeOwedMerge(ctx, tx, pass, number); err != nil {
 		return err
 	}
 	if row != nil {
@@ -334,6 +355,29 @@ func ciFailureSentence(state record.CheckState, head string) string {
 	return fmt.Sprintf("Check %s fails at %s: CI job of the check ended %s.", state.Check, head, state.CICase)
 }
 
+// assignRepair gives the implementer its one repair assignment of the failure of state's check at
+// the pass's head (record.CINewsAssignment), for reader, the implementer's current work: the fix
+// it runs, fix being that fix's number, or its own implementation step, fix 0. The assignment's
+// sentence names the failure (ciFailureSentence) and ends with act. It is the fix rule's one way
+// to assign a repair besides the fix's own start task, so a failure is assigned once for each
+// check at each head, whichever of Dispatch's state and the listener's settlement came first.
+func (e *Engine) assignRepair(ctx context.Context, tx pgx.Tx, pass *fixPass, state record.CheckState, reader record.CIReader, fix int, act string) error {
+	issue := pass.issue
+	addressed, err := e.addressRoles(issue.Project, []roleRecipient{{issue: issue.Key, role: claim.RoleImplementer, row: issue.Key}}, nil)
+	if err != nil {
+		return err
+	}
+	for _, to := range addressed {
+		if err := e.enqueue(ctx, tx, to.issue, record.CINews{Purpose: record.CINewsAssignment, Role: string(to.token), Generation: issue.Generation,
+			Task: pass.w.Task, Repo: pass.pr.Repo, PullRequest: pass.pr.Number, Head: pass.head, Reader: &reader,
+			Assigned: &record.CIAssigned{Check: state.Check, Head: pass.head, CICase: state.CICase, Fix: fix},
+			Body:     ciFailureSentence(state, pass.head) + act}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // tellImplementer sends body to the implementer of issue as one role message.
 func (e *Engine) tellImplementer(ctx context.Context, tx pgx.Tx, issue record.Issue, body string) error {
 	addressed, err := e.addressRoles(issue.Project, []roleRecipient{{issue: issue.Key, role: claim.RoleImplementer, row: issue.Key}}, nil)
@@ -363,7 +407,7 @@ func (e *Engine) fixRunsAt(ctx context.Context, tx pgx.Tx, issue record.Issue, w
 }
 
 // fixJobRead applies the answer of the read of a fix's failed job (record.FixJobRead): the fix
-// starts (startFix), naming the job the read found, or the read's error where it found none. A
+// keeps the job the read found, or the read's error where it found none, and starts (startFix). A
 // fact whose fix no longer reads its job — it ended, or the issue left the run it was of — changes
 // nothing, which the log says.
 func (e *Engine) fixJobRead(ctx context.Context, tx pgx.Tx, fact intake.FixJobRead) (intake.Result, error) {
@@ -381,6 +425,9 @@ func (e *Engine) fixJobRead(ctx context.Context, tx pgx.Tx, fact intake.FixJobRe
 		return intake.Result{}, nil
 	}
 	fix.JobName, fix.JobURL, fix.ReadFailed = fact.Name, fact.URL, fact.ReadFailed
+	if err := e.store.UpdateFix(ctx, tx, *fix); err != nil {
+		return intake.Result{}, err
+	}
 	return intake.Result{}, e.startFix(ctx, tx, *issue, *fix)
 }
 
@@ -427,7 +474,9 @@ func (e *Engine) startFix(ctx context.Context, tx pgx.Tx, issue record.Issue, fi
 
 // fixTask is the task of fix, a run of the step that runs as at: the task a start of that step
 // is told (task), in that step's phase, its working copy line naming the fix's own working copy
-// (fixDirOf), and right after it the sentence of the fix (fixSentence).
+// (fixDirOf), and right after it the sentences of the fix, each built from the start's typed facts
+// (startFacts): what it fixes (fixSentence), each other check it holds, the merge forward its
+// implementer owes, which the fix makes first (owedMergeSentence), and how it pushes.
 func (e *Engine) fixTask(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, fix record.TaskFix, at phase.Phase) (string, error) {
 	fixing := issue
 	fixing.Phase, fixing.Hold = at, nil
@@ -444,27 +493,32 @@ func (e *Engine) fixTask(ctx context.Context, tx pgx.Tx, issue record.Issue, w W
 	if err != nil {
 		return "", err
 	}
-	held, err := e.store.HeadStates(ctx, tx, issue.Key, prRepo(issue, pr), fix.Head)
+	facts, err := e.startFacts(ctx, tx, fixing, w)
 	if err != nil {
 		return "", err
 	}
-	copyLine := WorkingCopy(fixing, dir).lines
-	sentences := fixSentence(issue.Key, fix, held.States[fix.Check].CICase)
-	for _, state := range failedChecks(held) {
-		if state.Check == fix.Check {
-			continue
-		}
-		row, err := e.store.CIFailureAt(ctx, tx, issue.Key, issue.Generation, fix.Task, state.Check, fix.Head)
-		if err != nil {
-			return "", err
-		}
-		if row != nil && row.Fix == fix.Fix {
-			sentences += fmt.Sprintf(" Check %s failed at %s too: CI job of the check ended %s.", state.Check, fix.Head, state.CICase)
-		}
+	if !facts.Own || facts.Fix != fix.Fix {
+		return "", fmt.Errorf("compose the task of fix %d of task %s of %s: the start at its place stands beside fix %d", fix.Fix, fix.Task, issue.Key, facts.Fix)
 	}
-	sentences += fixPushSentence
+	copyLine := WorkingCopy(fixing, dir).lines
+	sentences := fixSentence(issue.Key, facts)
+	for _, check := range facts.Failed {
+		sentences += fmt.Sprintf(" Check %s failed at %s too: CI job of the check ended %s.", check, facts.Head, facts.Cases[check])
+	}
+	sentences += owedMergeSentence(facts) + fixPushSentence
 	standing.lines = copyLine + sentences + strings.TrimPrefix(standing.lines, copyLine)
 	return task(fixing, standing, record.PhaseRow{}, pr, ""), nil
+}
+
+// owedMergeSentence is what a fix's task says of the merge forward its implementer owes
+// (startFacts' MergeHead and MergeBase): the fix makes it first, in its own working copy, and
+// pushes it with its one end push; "" where none is owed.
+func owedMergeSentence(facts startFacts) string {
+	if facts.MergeHead == "" {
+		return ""
+	}
+	return fmt.Sprintf(" Legion already asked you to merge %s into the task's branch at %s. Make that merge your first act in this fix's copy. "+
+		"Include it in your fix's one end push, and push nothing from the task's shared copy.", facts.MergeBase, facts.MergeHead)
 }
 
 // fixPushSentence is how a fix pushes, which its task says after the failures it holds: from its
@@ -475,60 +529,130 @@ const fixPushSentence = " Push only from this working copy, to the branch of the
 	"The other steps keep the task's working copy; a commit a step beside you names in its report is in this clone by its id: " +
 	"copy it onto your head with jj duplicate <commit> --insert-before @, and never rebase or rewrite it, since another working copy stands on it."
 
-// fixLines is what the task of a start of a step of issue's task, standing in issue.Phase on w,
-// says of a fix and of the task's CI: beside a fix that reads its job or runs, that the failure is
-// the fix's and that the step pushes nothing until the fix ended; and, for an implementation step
-// of a task that takes a fix, each check that a CI job runs and that fails at the task's head,
-// each of which goes to that step, so the fix rule tells its implementer of it no second time.
-// Every other start says nothing more.
-func (e *Engine) fixLines(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk) (string, error) {
+// startFacts is what a start of a step of issue's task, standing in issue.Phase on w, is told of a
+// fix and of the task's CI, as typed values; each sentence such a start's task says of them is
+// built from these alone (fixTask, fixLines):
+//
+//   - the start of a fix (Own), the step at the place of the task's open fix: its number, its
+//     check, the head it failed at with its job's case, its job, the job's page or the read's
+//     failure, each other check it holds that fails at that head (Failed, with Cases), and the
+//     head and base of the merge forward its implementer owes there, which the fix took as its own
+//     first work (owedMerge, takeOwedMerge);
+//   - a start of another step while a fix reads its job or runs: the fix's number, check and head;
+//   - a start of an implementation step of a task that takes a fix, with no fix open: the head and
+//     each check a CI job runs that fails there (Failed).
+//
+// Every other start holds none.
+type startFacts struct {
+	Fix                                        int
+	Own                                        bool
+	Check, Head, CICase, Job, Page, ReadFailed string
+	MergeHead, MergeBase                       string
+	Failed                                     []string
+	// Cases is the ci_case of each check of Failed that a fix holds.
+	Cases map[string]string
+}
+
+// startFacts is the typed facts of a start of the step of issue's task standing in issue.Phase on w
+// (the type's doc).
+func (e *Engine) startFacts(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk) (startFacts, error) {
 	place, ok := w.PlaceOf(issue.Phase)
 	if !w.Stored || !ok || place.Kind != record.PlaceStep || place.Position > len(w.Steps) {
-		return "", nil
+		return startFacts{}, nil
 	}
 	open, err := e.store.RunningFix(ctx, tx, issue.Key, issue.Generation, w.Task)
 	if err != nil {
-		return "", err
+		return startFacts{}, err
 	}
-	if open != nil {
-		if open.Place == place.Position {
-			return "", nil
-		}
-		return fmt.Sprintf(" A fix of this task runs: check %s failed at %s. Leave that failure to the fix. "+
-			"Push nothing to the branch of the task until the fix ended: name in your report each commit you would push.", open.Check, open.Head), nil
-	}
-	if w.Steps[place.Position-1].Type != plan.TypeImplementation {
-		return "", nil
-	}
-	fixesCI, err := e.store.RunFixesCI(ctx, tx, issue.Key, issue.Generation)
-	if err != nil || !fixesCI {
-		return "", err
+	if open != nil && open.Place != place.Position {
+		return startFacts{Fix: open.Fix, Check: open.Check, Head: open.Head}, nil
 	}
 	pr, err := e.store.PullRequest(ctx, tx, issue.Key)
 	if err != nil {
-		return "", err
+		return startFacts{}, err
+	}
+	if open != nil {
+		return e.fixFacts(ctx, tx, issue, w, *open, pr)
+	}
+	if w.Steps[place.Position-1].Type != plan.TypeImplementation {
+		return startFacts{}, nil
+	}
+	fixesCI, err := e.store.RunFixesCI(ctx, tx, issue.Key, issue.Generation)
+	if err != nil || !fixesCI {
+		return startFacts{}, err
 	}
 	repo, head := taskHead(pr)
 	if head == "" {
-		return "", nil
+		return startFacts{}, nil
 	}
 	held, err := e.store.HeadStates(ctx, tx, issue.Key, repo, head)
 	if err != nil {
-		return "", err
+		return startFacts{}, err
 	}
-	var checks []string
+	facts := startFacts{Head: head}
 	for _, state := range failedChecks(held) {
-		failure := record.CIFailure{Issue: issue.Key, Generation: issue.Generation, Task: w.Task, Check: state.Check, Head: head,
+		facts.Failed = append(facts.Failed, state.Check)
+	}
+	return facts, nil
+}
+
+// fixFacts is the start facts of fix's own start (startFacts), pr being issue's pull request on
+// record.
+func (e *Engine) fixFacts(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, fix record.TaskFix, pr *record.PullRequest) (startFacts, error) {
+	held, err := e.store.HeadStates(ctx, tx, issue.Key, prRepo(issue, pr), fix.Head)
+	if err != nil {
+		return startFacts{}, err
+	}
+	facts := startFacts{Fix: fix.Fix, Own: true, Check: fix.Check, Head: fix.Head, CICase: held.States[fix.Check].CICase,
+		Job: fix.JobName, Page: fix.JobURL, ReadFailed: fix.ReadFailed}
+	for _, state := range failedChecks(held) {
+		if state.Check == fix.Check {
+			continue
+		}
+		row, err := e.store.CIFailureAt(ctx, tx, issue.Key, issue.Generation, fix.Task, state.Check, fix.Head)
+		if err != nil {
+			return startFacts{}, err
+		}
+		if row != nil && row.Fix == fix.Fix {
+			if facts.Cases == nil {
+				facts.Cases = map[string]string{}
+			}
+			facts.Failed, facts.Cases[state.Check] = append(facts.Failed, state.Check), state.CICase
+		}
+	}
+	ours := record.MergeForwardFix{Generation: issue.Generation, Task: w.Task, Number: fix.Fix}
+	if owed := owedMerge(pr, fix.Head); owed != nil && !e.mergeOutsideFix && (owed.Fix == nil || *owed.Fix == ours) {
+		facts.MergeHead, facts.MergeBase = owed.Head, owed.Base
+	}
+	return facts, nil
+}
+
+// fixLines is what the task of a start of a step of issue's task, standing in issue.Phase on w,
+// says of a fix and of the task's CI (startFacts): beside a fix that reads its job or runs, that
+// the failure is the fix's and that the step pushes nothing until the fix ended; and, for an
+// implementation step of a task that takes a fix, each check that a CI job runs and that fails at
+// the task's head, each of which goes to that step (record.CIFailureToImplementer), so the fix
+// rule tells its implementer of it no second time. Every other start says nothing more, the fix's
+// own among them, whose task is the fix's (fixTask).
+func (e *Engine) fixLines(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk) (string, error) {
+	facts, err := e.startFacts(ctx, tx, issue, w)
+	switch {
+	case err != nil || facts.Own:
+		return "", err
+	case facts.Fix > 0:
+		return fmt.Sprintf(" A fix of this task runs: check %s failed at %s. Leave that failure to the fix. "+
+			"Push nothing to the branch of the task until the fix ended: name in your report each commit you would push.", facts.Check, facts.Head), nil
+	case len(facts.Failed) == 0:
+		return "", nil
+	}
+	for _, check := range facts.Failed {
+		failure := record.CIFailure{Issue: issue.Key, Generation: issue.Generation, Task: w.Task, Check: check, Head: facts.Head,
 			WentTo: record.CIFailureToImplementer, At: e.now()}
 		if _, err := e.store.PutCIFailure(ctx, tx, failure); err != nil {
 			return "", err
 		}
-		checks = append(checks, state.Check)
 	}
-	if len(checks) == 0 {
-		return "", nil
-	}
-	return fmt.Sprintf(" Failed CI checks at %s: %s.", head, strings.Join(checks, ", ")), nil
+	return fmt.Sprintf(" Failed CI checks at %s: %s.", facts.Head, strings.Join(facts.Failed, ", ")), nil
 }
 
 // prRepo is the repository of issue's pull request on record, or the issue's own where it has none.
@@ -553,19 +677,20 @@ func fixDirOf(dir func(record.Issue) string) func(record.Issue) string {
 	}
 }
 
-// fixSentence is the sentence of fix's task that names what it fixes: its check, the head the
-// check failed at, and its CI job as the read found it: its name, how it ended (ciCase) and its
-// page; its name and how to find its run where Dispatch holds no page; and the read's error and
-// how to find the run where the read found no job.
-func fixSentence(key string, fix record.TaskFix, ciCase string) string {
-	find := fmt.Sprintf("find its run from %s with dispatch results --issue %s", fix.Head, key)
+// fixSentence is the sentence of a fix's task that names what it fixes, from its start facts: its
+// check, the head the check failed at, and its CI job as the read found it: its name, how it ended
+// (CICase) and its page; its name and how to find its run where Dispatch holds no page; and the
+// read's error and how to find the run where the read found no job.
+func fixSentence(key string, facts startFacts) string {
+	find := fmt.Sprintf("find its run from %s with dispatch results --issue %s", facts.Head, key)
 	switch {
-	case fix.JobName == "" && fix.ReadFailed != "":
-		return fmt.Sprintf(" This is a fix: check %s failed at %s (Dispatch could not be read for its job: %s; %s).", fix.Check, fix.Head, fix.ReadFailed, find)
-	case fix.JobURL == "":
-		return fmt.Sprintf(" This is a fix: check %s failed at %s (CI job %s; Dispatch holds no address of its page, so %s).", fix.Check, fix.Head, jobOf(fix), find)
+	case facts.Job == "" && facts.ReadFailed != "":
+		return fmt.Sprintf(" This is a fix: check %s failed at %s (Dispatch could not be read for its job: %s; %s).", facts.Check, facts.Head, facts.ReadFailed, find)
+	case facts.Page == "":
+		return fmt.Sprintf(" This is a fix: check %s failed at %s (CI job %s; Dispatch holds no address of its page, so %s).", facts.Check, facts.Head,
+			jobOf(record.TaskFix{JobName: facts.Job}), find)
 	}
-	return fmt.Sprintf(" This is a fix: check %s failed at %s (CI job %s ended %s, page %s).", fix.Check, fix.Head, fix.JobName, ciCase, fix.JobURL)
+	return fmt.Sprintf(" This is a fix: check %s failed at %s (CI job %s ended %s, page %s).", facts.Check, facts.Head, facts.Job, facts.CICase, facts.Page)
 }
 
 // jobOf is the name of fix's CI job, or "of the check" where the read found none.
@@ -930,7 +1055,9 @@ func fixWayOf(fix record.TaskFix, steps int) (way, place int) {
 // (besideFix). It writes the way on the fix row in the transaction of its act, so the way is taken
 // once. The first two ways return the task, held or not, by the one move out of a hold
 // (moveFromHold), at the task's head, which the started step's working copy moves to. The third
-// makes pending, the move of the table transition took no row for, where there is one.
+// makes pending, the move of the table transition took no row for, where there is one. After the
+// way's act, in its transaction, the conflict that waited while the fix held the task's branch is
+// read again (mergeForwardAfterFix).
 func (e *Engine) afterFix(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, pending *rowMove) error {
 	if !w.Stored {
 		return nil
@@ -953,23 +1080,34 @@ func (e *Engine) afterFix(ctx context.Context, tx pgx.Tx, issue record.Issue, w 
 	if err != nil {
 		return err
 	}
-	_, head := taskHead(pr)
-	e.logOnCommit(ctx, "workflow: the way after a fix is taken", "issue", issue.Key, "task", w.Task, "fix", fix.Fix, "way", way,
-		"place", place, "head", head)
-	if way == wayOn {
-		if pending == nil {
-			return nil
-		}
-		return e.transition(context.WithValue(ctx, wayMoveKey{}, wayMove{}), tx, issue, pending.trigger, pending.target, pending.handoff, pending.pr, pending.why)
+	// The head the started step's working copy moves to is the fix's own end where it made commits:
+	// its completion reports the commit it pushed, and it reaches the engine before the synchronize
+	// of that push may have moved the record's head.
+	_, moveTo := taskHead(pr)
+	if fix.EndHead != "" && fix.EndHead != fix.Head && !e.wayFromRecordedHead {
+		moveTo = fix.EndHead
 	}
-	ctx = context.WithValue(context.WithValue(ctx, wayMoveKey{}, wayMove{moveTo: head}), moverKey{}, mover{fix: fix.Fix})
+	e.logOnCommit(ctx, "workflow: the way after a fix is taken", "issue", issue.Key, "task", w.Task, "fix", fix.Fix, "way", way,
+		"place", place, "moveTo", moveTo)
+	if way == wayOn {
+		if pending != nil {
+			if err := e.transition(context.WithValue(ctx, wayMoveKey{}, wayMove{}), tx, issue, pending.trigger, pending.target, pending.handoff, pending.pr, pending.why); err != nil {
+				return err
+			}
+		}
+		return e.mergeForwardAfterFix(ctx, tx, issue.Key)
+	}
+	ctx = context.WithValue(context.WithValue(ctx, wayMoveKey{}, wayMove{moveTo: moveTo}), moverKey{}, mover{fix: fix.Fix})
 	handoff, err := e.phaseRow(ctx, tx, issue.Key, claim.RoleImplementer)
 	if err != nil {
 		return err
 	}
 	steps := w.steps()
 	reason := fmt.Sprintf("fix %d of task %s, for check %s failed at %s, ended at %s", fix.Fix, w.Task, fix.Check, fix.Head, fix.EndHead)
-	return e.moveFromHold(ctx, tx, issue, w, steps[place-1], steps[fix.Place-1], handoff, pr, reason)
+	if err := e.moveFromHold(ctx, tx, issue, w, steps[place-1], steps[fix.Place-1], handoff, pr, reason); err != nil {
+		return err
+	}
+	return e.mergeForwardAfterFix(ctx, tx, issue.Key)
 }
 
 // moveFromHold is the one move that returns a held task, and the move of the way after a fix

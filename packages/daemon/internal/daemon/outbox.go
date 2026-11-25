@@ -26,6 +26,8 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/notify"
+	"github.com/sjawhar/legion/daemon/internal/phase"
+	planwords "github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store"
@@ -183,6 +185,16 @@ type outbox struct {
 	// controllerLaunched is `controller: daemon`: the daemon launches the project's controller, so
 	// its claim holds the controller topic back (heldTopic). False is `controller: operator`.
 	controllerLaunched bool
+	// ciNewsAsRoleMessage delivers every CI news row as a role message, its reader's included;
+	// noHolderDelivers finishes a CI news row whose role has no live holder as delivered;
+	// noCurrentWorkFence delivers a CI news row whatever its work is now; and delete422AsGone
+	// finishes a branch beside a fix whose DELETE GitHub answered 422 as gone, unconfirmed. Only
+	// tests set any of them, as the control of the rule each takes out (ciNews,
+	// besideBranchesDelete).
+	ciNewsAsRoleMessage bool
+	noHolderDelivers    bool
+	noCurrentWorkFence  bool
+	delete422AsGone     bool
 	// The lane registry (outbox_lanes.go). mu guards running, laneCtx and lanes; running is true
 	// between Run's start and its stop, laneCtx is Run's context, which every lane runs under, and
 	// lanes is each live lane by its key. wg counts the lane goroutines, so Run returns only once
@@ -990,6 +1002,10 @@ func (r *outbox) run(ctx context.Context, row record.OutboxRow) error {
 		return r.conflictConfirm(ctx, row, value)
 	case record.MergeForwardMessage:
 		return r.mergeForwardMessage(ctx, row, value)
+	case record.CINews:
+		return r.ciNews(ctx, row, value)
+	case record.BesideBranchesDelete:
+		return r.besideBranchesDelete(ctx, row, value)
 	default:
 		return fmt.Errorf("outbox row %d: no executor for %T", row.ID, payload)
 	}
@@ -2096,6 +2112,13 @@ func (r *outbox) deliverNotice(ctx context.Context, row record.OutboxRow, payloa
 // while its claim is not gone (supervise.Claim.Gone) or is released with an issue that can be
 // woken. A row whose debt has ended takes the path above unchanged.
 func (r *outbox) roleMessage(ctx context.Context, row record.OutboxRow, payload record.RoleMessage) error {
+	return r.deliverRoleMessage(ctx, row, payload.Role, payload.Body)
+}
+
+// deliverRoleMessage publishes body to role, a claim token, as roleMessage says a role message is
+// delivered: its pause debt, its finishes undelivered and its waits are roleMessage's. A CI news
+// row with no reader (record.CINews.Reader) is delivered by it too, as the role message it is.
+func (r *outbox) deliverRoleMessage(ctx context.Context, row record.OutboxRow, role, body string) error {
 	if r.notices == nil {
 		return errors.New("role message executor has no Envoy publisher")
 	}
@@ -2103,7 +2126,7 @@ func (r *outbox) roleMessage(ctx context.Context, row record.OutboxRow, payload 
 	// not owed.
 	var stopped int64
 	if r.supervisor != nil {
-		held := r.supervisedClaim(claim.Token(payload.Role))
+		held := r.supervisedClaim(claim.Token(role))
 		var err error
 		if stopped, err = r.heldMessageOwed(ctx, row, held); err != nil {
 			return err
@@ -2111,21 +2134,21 @@ func (r *outbox) roleMessage(ctx context.Context, row record.OutboxRow, payload 
 		if stopped != 0 {
 			if turn, parked := parkedLaunch(held); parked {
 				return r.parkedWait(turn, fmt.Sprintf("%s's role message for %s, owed to the role since pause %d stopped it, waits for the role's launch, which the wake pacing holds until %s",
-					row.Issue, payload.Role, stopped, turn.UTC().Format(time.RFC3339)))
+					row.Issue, role, stopped, turn.UTC().Format(time.RFC3339)))
 			}
 		} else if held.Released() {
 			r.log.Info("outbox role message finished undelivered: its role's pod is released, and the message is not worth a wake",
-				"row", row.ID, "issue", row.Issue, "role", payload.Role)
+				"row", row.ID, "issue", row.Issue, "role", role)
 			return nil
 		}
 	}
-	err := r.publish(ctx, notify.RoleTopicPrefix+payload.Role, payload.Body, payload.Body, record.OutboxKey(row.ID))
+	err := r.publish(ctx, notify.RoleTopicPrefix+role, body, body, record.OutboxKey(row.ID))
 	if errors.Is(err, notify.ErrHolderUnresponsive) {
 		// A wait, not a failure: settle logs a wait.ErrWaiting at INFO, then DEBUG, and at WARN
 		// from attempt waitWarnAttempts on, rather than ERROR on every attempt, as the notice
 		// executor's own unresponsive branch does (notice_exceptions.go).
 		return wait.Errorf("%s's role message for %s waits for its holder, whose session the listener reports %s: %w",
-			row.Issue, payload.Role, notify.StateUnresponsive, err)
+			row.Issue, role, notify.StateUnresponsive, err)
 	}
 	if stopped != 0 && errors.Is(err, notify.ErrNoHolder) {
 		// A wait as well: the role is coming back for the row, the listener reporting its wake
@@ -2135,26 +2158,264 @@ func (r *outbox) roleMessage(ctx context.Context, row record.OutboxRow, payload 
 		// backoff's climb to its cap, about two minutes, would otherwise be logged as a warning at
 		// every attempt from the seventh (waitWarnAttempts).
 		return routineWaiting{err: wait.Errorf("%s's role message for %s waits for the role's session to hold its topic: pause %d stopped the role, which is coming back or has not claimed its topic yet: %w",
-			row.Issue, payload.Role, stopped, err)}
+			row.Issue, role, stopped, err)}
 	}
 	var refused notify.ErrRefusedByHolder
 	var denied notify.ErrPublishDenied
 	switch {
 	case errors.Is(err, notify.ErrNoHolder):
 		r.log.Info("outbox role message finished undelivered: its role has no live holder, or its claim records a session it does not hold",
-			"row", row.ID, "issue", row.Issue, "role", payload.Role, "error", err)
+			"row", row.ID, "issue", row.Issue, "role", role, "error", err)
 		return nil
 	case errors.As(err, &refused):
 		r.log.Info("outbox role message finished undelivered: its role's holder does not advertise the delivery mode",
-			"row", row.ID, "issue", row.Issue, "role", payload.Role, "holder", refused.Holder)
+			"row", row.ID, "issue", row.Issue, "role", role, "holder", refused.Holder)
 		return nil
 	case errors.As(err, &denied):
 		r.log.Error("outbox role message finished undelivered: the listener's own NATS grant denied the forward",
-			"row", row.ID, "issue", row.Issue, "role", payload.Role, "denial", denied.Message)
+			"row", row.ID, "issue", row.Issue, "role", role, "denial", denied.Message)
 		return nil
 	}
 	if err != nil {
-		return fmt.Errorf("publish %s's message to role %s: %w", row.Issue, payload.Role, err)
+		return fmt.Errorf("publish %s's message to role %s: %w", row.Issue, role, err)
+	}
+	return nil
+}
+
+// ciNews delivers a row of a task's CI news (record.CINews) to the claim it names. A row with no
+// reader is a role message, and deliverRoleMessage delivers it as main delivers one. A row for a
+// reader is owed to that reader while its work is current (ciNewsStale): one whose work is not
+// finishes with one INFO line and wakes nothing. Otherwise a released reader is woken
+// (wakeForDelivery), as a hook prompt's role is, and the row waits on its backoff, or for the
+// launch the wake pacing holds (parkedWait), until a session holds the role; then it is published
+// once under the row's own key (record.OutboxKey), the outbox being the row's one keeper. A role
+// with no live holder, a holder that is unresponsive, one that does not advertise the delivery
+// mode and a forward the listener's grant denies are each a wait, never a delivery: the row stays
+// and runs again on its backoff, and the role's one open resume keeps it from waking the claim a
+// second time. A reader whose claim failed or retired will hold its role no more, and the row
+// finishes undelivered.
+func (r *outbox) ciNews(ctx context.Context, row record.OutboxRow, payload record.CINews) error {
+	if payload.Reader == nil || r.ciNewsAsRoleMessage {
+		return r.deliverRoleMessage(ctx, row, payload.Role, payload.Body)
+	}
+	if r.notices == nil {
+		return errors.New("CI news executor has no Envoy publisher")
+	}
+	token := claim.Token(payload.Role)
+	role, ok := token.Role()
+	if !ok {
+		return fmt.Errorf("outbox row %d: the CI news role %q is no claim token", row.ID, payload.Role)
+	}
+	attributes := []any{"row", row.ID, "issue", row.Issue, "purpose", payload.Purpose, "role", payload.Role, "task", payload.Task,
+		"generation", payload.Generation, "head", payload.Head, "readerPhase", payload.Reader.Phase, "readerFix", payload.Reader.Fix,
+		"readerEntry", payload.Reader.Entry}
+	if !r.noCurrentWorkFence {
+		stale, err := r.ciNewsStale(ctx, row.Issue, role, payload)
+		if err != nil {
+			return err
+		}
+		if stale != "" {
+			r.log.Info("outbox CI news finished undelivered: the work it is for is no longer current", append(attributes, "why", stale)...)
+			return nil
+		}
+	}
+	if r.supervisor != nil {
+		if held := r.supervisedClaim(token); held.State == supervise.StateFailed || held.State == supervise.StateRetired {
+			r.log.Info("outbox CI news finished undelivered: its reader's claim has failed or retired", append(attributes, "state", held.State)...)
+			return nil
+		}
+	}
+	what := fmt.Sprintf("the CI news (%s) of %s for its %s", payload.Purpose, row.Issue, role)
+	if waits, turn, err := r.wakeForDelivery(ctx, token, what, row.HeldByPause); err != nil {
+		return err
+	} else if !turn.IsZero() {
+		return r.parkedWait(turn, fmt.Sprintf("%s waits for the role's launch, which the wake pacing holds until %s", what, turn.UTC().Format(time.RFC3339)))
+	} else if waits {
+		return wait.Errorf("%s waits for the role's released pod to come back", what)
+	}
+	published := r.publish(ctx, notify.RoleTopicPrefix+payload.Role, payload.Body, payload.Body, record.OutboxKey(row.ID))
+	if published == nil {
+		r.log.Info("outbox CI news delivered to its reader", attributes...)
+		return nil
+	}
+	if r.noHolderDelivers && errors.Is(published, notify.ErrNoHolder) {
+		r.log.Info("outbox CI news delivered to its reader", attributes...)
+		return nil
+	}
+	var refused notify.ErrRefusedByHolder
+	var denied notify.ErrPublishDenied
+	switch {
+	case errors.Is(published, notify.ErrNoHolder):
+		return wait.Errorf("%s waits for a session to hold the role: %w", what, published)
+	case errors.Is(published, notify.ErrHolderUnresponsive):
+		return wait.Errorf("%s waits for its holder, whose session the listener reports %s: %w", what, notify.StateUnresponsive, published)
+	case errors.As(published, &refused):
+		return wait.Errorf("%s waits for a holder that advertises the delivery mode; %s does not: %w", what, refused.Holder, published)
+	case errors.As(published, &denied):
+		return wait.Errorf("%s waits for the listener's grant to allow the forward: %w", what, published)
+	}
+	return fmt.Errorf("publish %s: %w", what, published)
+}
+
+// ciNewsStale is why the work a CI news row's reader was given the row for is no longer current,
+// "" while it is: the issue's generation and task are the row's; a step's reader stands in the
+// row's phase with the phases-row entry the row names, the owner in accepting with none; a fix's
+// reader runs the row's fix at the row's entry; and a report or a prompt is of the head and the
+// repository of the issue's open pull request. These are the members EnqueueReadPrompt joins a
+// prompt by. role is the role of the row's claim.
+func (r *outbox) ciNewsStale(ctx context.Context, key string, role claim.Role, payload record.CINews) (string, error) {
+	var why string
+	if err := store.TransactWith(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		issue, err := r.records.Issue(ctx, tx, key)
+		if err != nil {
+			return err
+		}
+		if issue == nil {
+			why = "the record holds no such issue"
+			return nil
+		}
+		if issue.Generation != payload.Generation {
+			why = fmt.Sprintf("the issue's run is generation %d, not %d", issue.Generation, payload.Generation)
+			return nil
+		}
+		task := planwords.DefaultTask
+		stored, err := r.records.Plan(ctx, tx, key, issue.Generation)
+		if err != nil {
+			return err
+		}
+		if stored != nil {
+			running, err := stored.Task()
+			if err != nil {
+				return err
+			}
+			task = running.Task
+		}
+		if task != payload.Task {
+			why = fmt.Sprintf("the issue's run is on task %s, not %s", task, payload.Task)
+			return nil
+		}
+		reader := payload.Reader
+		switch {
+		case reader.Fix > 0:
+			fix, err := r.records.RunningFix(ctx, tx, key, issue.Generation, task)
+			if err != nil {
+				return err
+			}
+			if fix == nil || fix.State != record.FixRunning || fix.Fix != reader.Fix || fix.Entry != reader.Entry {
+				why = fmt.Sprintf("fix %d of the task at entry %d no longer runs", reader.Fix, reader.Entry)
+				return nil
+			}
+		case record.StandsAt(*issue) != reader.Phase:
+			why = fmt.Sprintf("the issue stands in %s, not %s", record.StandsAt(*issue), reader.Phase)
+			return nil
+		case reader.Phase != phase.Accepting:
+			rows, err := r.records.Phases(ctx, tx, key)
+			if err != nil {
+				return err
+			}
+			if entry := record.PhaseRowOf(rows, role).Entry; entry != reader.Entry {
+				why = fmt.Sprintf("the %s's entry is %d, not %d", role, entry, reader.Entry)
+				return nil
+			}
+		}
+		if payload.Purpose != record.CINewsRuns && payload.Purpose != record.CINewsState {
+			return nil
+		}
+		pr, err := r.records.PullRequest(ctx, tx, key)
+		if err != nil {
+			return err
+		}
+		if pr == nil || !strings.EqualFold(pr.Repo, payload.Repo) || pr.HeadSHA != payload.Head {
+			why = "the head or the repository it reports on is no longer the pull request's"
+		}
+		return nil
+	}); err != nil {
+		return "", fmt.Errorf("read whether the CI news of %s is for current work: %w", key, err)
+	}
+	return why, nil
+}
+
+// besideBranchesDelete deletes on GitHub the branches beside a fix of a task
+// (record.BesideBranchesDelete): those under claim.BesideFixPrefix of the row's fix, or under
+// claim.BesideTaskPrefix where the row names fix 0, every fix of the task at its generation. It
+// mints the implement App's token for the owner of the repository GitHub holds the issue's under
+// now, as createBranch does, lists the prefix (git/matching-refs) and deletes each branch it names.
+// A deletion logs the branch and the commit it stood at. GitHub answers 404 for a branch already
+// gone, which finishes that branch as absent with a line of its own; and 422 both for a branch
+// that is gone and for one it refuses to delete, so a 422 is read again by the branch's exact ref,
+// and only that read's 404 finishes it as absent. A branch still there, a read that failed, and
+// any other answer fail the row, which keeps it on its backoff, and log no deletion; its replay
+// lists the prefix again, so a branch deleted meanwhile is not asked for twice.
+func (r *outbox) besideBranchesDelete(ctx context.Context, row record.OutboxRow, payload record.BesideBranchesDelete) error {
+	prefix, err := claim.BesideTaskPrefix(row.Issue, payload.Generation, payload.Task)
+	if payload.Fix > 0 {
+		prefix, err = claim.BesideFixPrefix(row.Issue, payload.Generation, payload.Task, payload.Fix)
+	}
+	if err != nil {
+		return fmt.Errorf("outbox row %d: %w", row.ID, err)
+	}
+	issue, err := r.issue(ctx, row.Issue)
+	if err != nil {
+		return err
+	}
+	recorded, err := issue.Repository()
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(ctx, issueBranchTimeout)
+	defer cancel()
+	repo := r.repositories.serving(recorded)
+	github, err := implementClient(ctx, r.tokens, r.githubAPI, repo)
+	if err != nil {
+		return fmt.Errorf("mint the implement App token for %s to delete the branches beside a fix of %s: %w", repo, row.Issue, err)
+	}
+	type ref struct {
+		Ref    string `json:"ref"`
+		Object struct {
+			SHA string `json:"sha"`
+		} `json:"object"`
+	}
+	listed, err := githubrest.GetPages[ref](ctx, github, "/git/matching-refs/heads/"+prefix)
+	if err != nil {
+		return fmt.Errorf("list the branches under %s of %s: %w", prefix, repo, err)
+	}
+	attributes := []any{"row", row.ID, "issue", row.Issue, "repo", repo.String(), "task", payload.Task, "fix", payload.Fix, "prefix", prefix}
+	var failed []error
+	for _, found := range listed {
+		branch := strings.TrimPrefix(found.Ref, "refs/heads/")
+		at := append(slices.Clone(attributes), "branch", branch, "commit", found.Object.SHA)
+		deleted := github.Delete(ctx, "/git/refs/heads/"+branch)
+		var answer *githubrest.Answer
+		switch {
+		case deleted == nil:
+			r.log.Info("outbox deleted a branch beside a fix", at...)
+			continue
+		case !errors.As(deleted, &answer):
+		case answer.Status == http.StatusNotFound:
+			r.log.Info("outbox found a branch beside a fix already absent: GitHub answered its delete 404", at...)
+			continue
+		case answer.Status == http.StatusUnprocessableEntity && r.delete422AsGone:
+			r.log.Info("outbox deleted a branch beside a fix", at...)
+			continue
+		case answer.Status == http.StatusUnprocessableEntity:
+			var still ref
+			read := github.Get(ctx, "/git/ref/heads/"+branch, &still)
+			var readAnswer *githubrest.Answer
+			if errors.As(read, &readAnswer) && readAnswer.Status == http.StatusNotFound {
+				r.log.Info("outbox found a branch beside a fix already absent: GitHub answered its delete 422 and its ref 404", at...)
+				continue
+			}
+			if read == nil {
+				deleted = fmt.Errorf("GitHub refused to delete %s, which still stands at %s: %w", branch, still.Object.SHA, deleted)
+			} else {
+				deleted = fmt.Errorf("GitHub answered the delete of %s 422, and the read of its ref failed: %w", branch, errors.Join(deleted, read))
+			}
+		}
+		r.log.Warn("outbox could not delete a branch beside a fix; the row keeps it for its retry", append(at, "error", deleted)...)
+		failed = append(failed, deleted)
+	}
+	if len(failed) > 0 {
+		return fmt.Errorf("delete the branches beside a fix of %s under %s: %w", row.Issue, prefix, errors.Join(failed...))
 	}
 	return nil
 }
@@ -3117,15 +3378,15 @@ func childArchitectFirstStart(issue record.Issue, payload record.SuperviseReques
 // the text the start composed (news.task) and the news it carries, the row's phase, run, entry
 // and check look, the row's own delivery id, and what the row says of the work: the decisions it
 // names (kept, encoded), whether it resends its entry, names the review round or carries news
-// alone, and the fix it is of with the head the fix's working copy is made at and the head the
-// task's working copy moves to (record.SuperviseRequest.Fix, FixFrom, MoveTo). The supervise
-// executor's comment above its one call says why each travels.
+// alone, and the fix it is of with the head the fix's working copy is made at, the fix's own
+// branch and the head the task's working copy moves to (record.SuperviseRequest.Fix, FixFrom,
+// FixBranch, MoveTo). The supervise executor's comment above its one call says why each travels.
 func deliverRequestOf(token claim.Token, row record.OutboxRow, payload record.SuperviseRequest, news startNews, kept []byte) *supervise.RequestDeliver {
 	return &supervise.RequestDeliver{Claim: token, Task: news.task, Phase: payload.Phase, Generation: payload.Generation,
 		Entry: payload.Entry, ResendEntry: payload.ResendEntry, RoundNamed: news.roundNamed,
 		CheckLook: supervise.CheckLook{Look: payload.CheckLook, OpenedAt: payload.CheckOpenedAt},
 		ID:        fmt.Sprintf("%s%d", outboxDeliveryPrefix, row.ID), Row: row.ID, Kept: kept, News: news.news, NewsOnly: payload.News,
-		Fix: payload.Fix, FixFrom: payload.FixFrom, MoveTo: payload.MoveTo}
+		Fix: payload.Fix, FixFrom: payload.FixFrom, FixBranch: payload.FixBranch, MoveTo: payload.MoveTo}
 }
 
 // stopElsewhere suspends, as the daemon and keeping its session, every claim of issue that still

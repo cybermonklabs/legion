@@ -836,15 +836,18 @@ type GitIdentity struct {
 
 // Adoption is what an adoption of the working copy names beside the role's identity. FixFrom is
 // the commit a fix's working copy starts from: the shim makes or moves that working copy beside
-// its own workspace and adopts it in the workspace's place. MoveTo is the commit the task's working
-// copy moves to before anything else runs. Each is a full commit id, or "" for none; the zero value
-// is the adoption of every task that is no fix's and moves nothing.
-type Adoption struct{ FixFrom, MoveTo string }
+// its own workspace and adopts it in the workspace's place. FixBranch is the fix's own branch
+// (claim.BesideBranch), named only with FixFrom: where the shim finds no fix's working copy, it
+// makes it at that branch's head where origin holds the branch. MoveTo is the commit the task's
+// working copy moves to before anything else runs. FixFrom and MoveTo are full commit ids; each
+// member is "" for none, and the zero value is the adoption of every task that is no fix's and
+// moves nothing.
+type Adoption struct{ FixFrom, MoveTo, FixBranch string }
 
 // Adopted is the shim's echo of what an adoption acted on: FixDir, the directory of the fix's
-// working copy, for FixFrom, and MovedTo, the commit the task's working copy moved to, for MoveTo.
-// Each is "" where the adoption did not name its member, and where the shim was built before the
-// member, which it ignores.
+// working copy, for FixFrom and FixBranch, and MovedTo, the commit the task's working copy moved
+// to, for MoveTo. Each is "" where the adoption did not name its member, and where the shim was
+// built before the member, which it ignores.
 type Adopted struct{ FixDir, MovedTo string }
 
 // ErrAdoptionUnsupported is an adoption that named a fix's commit or the task's move and was

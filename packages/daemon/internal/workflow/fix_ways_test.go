@@ -114,6 +114,40 @@ func TestRow1ApprovalWhileTheFixRunsWithNewCommits(t *testing.T) {
 	r.assertWay(2, phase.Testing, claim.RoleTester, headTwo, 1, retroTesting)
 }
 
+// A fix's completion reaches the engine before the synchronize of its end push: a fix held at the
+// task's end completes at Y while the record still names X. The way returns the task to the tester
+// with its working copy moved to Y, the fix's own end, with one return, before Y's synchronize
+// arrives, and that synchronize returns nothing more and starts no step. The control, kept: with
+// the head read from the record (the seam wayFromRecordedHead) the tester starts at X.
+func TestAFixCompletionBeforeItsSynchronizeMovesTheNextStepToItsEnd(t *testing.T) {
+	for _, recorded := range []bool{false, true} {
+		name, want := "the next step moves to the fix's end", headTwo
+		if recorded {
+			name, want = "control: the head read from the record moves it to X", fixHead
+		}
+		t.Run(name, func(t *testing.T) {
+			engine := returnEngine()
+			engine.wayFromRecordedHead = recorded
+			r := fixAtTheEnd(t, engine)
+			if result := r.apply("fix-done", fixCompletion(headTwo)); result.Refusal != nil {
+				t.Fatalf("the fix's completion was refused: %+v", result.Refusal)
+			}
+			r.assertWay(2, phase.Testing, claim.RoleTester, want, 1, retroTesting)
+			if recorded {
+				return
+			}
+			starts := len(r.startsOf(claim.RoleTester))
+			r.apply("fix-sync", intake.PullRequestSynchronized{Repo: statesRepo, Number: 42, Branch: "legion/LEGION-208", Before: fixHead, HeadSHA: headTwo})
+			if counts := r.counts(); counts.Pass != 1 {
+				t.Fatalf("the task counts %+v after the synchronize, want the one return", counts)
+			}
+			if got := len(r.startsOf(claim.RoleTester)); got != starts {
+				t.Fatalf("the tester started %d times after the synchronize, want %d: the synchronize starts no step", got, starts)
+			}
+		})
+	}
+}
+
 // Row 2: an approval while the fix runs, and the fix made no commit: each step keeps its result,
 // so the fix's end reads the end again: the task waits for CI at X, where its check still fails
 // and its one fix ended, so its owner is told once; with each check passed there the retro
