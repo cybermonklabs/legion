@@ -1324,8 +1324,11 @@ test("a person invokes a lens from a node's menu @phone", async ({ browser }) =>
     // context, so those two are invoked in Graph, and the rest in Conversation.
     await gotoIssue(page, plain);
     await expectOpeningLanded(page);
-    // The open question is an ask block of the spec: its node is the one holding that block.
-    const question = answer.nodes?.find((node) => node.block_id === whole.openQuestion.blockId);
+    // The open question is the ask's own node, which Conversation's read takes by its kind
+    // (`kind=ask`) under the ask's id; the spec block that holds it is only its ancestor there.
+    const question = answer.nodes?.find(
+      (node) => node.kind === "ask" && node.id === whole.openQuestion.askId
+    );
     if (question === undefined) throw new Error(`the tree read of ${key} holds no open question`);
     for (const [target, what, view] of [
       [question.id, "the open question", "conversation"],
