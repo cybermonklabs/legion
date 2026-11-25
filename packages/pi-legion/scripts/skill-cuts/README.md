@@ -421,14 +421,17 @@ skill the profile lists (a path that ends `/<name>/SKILL.md` or holds `skills/<n
 as `count.sql` places a read); a `skill://` read, or a read by path of the cut's own copy or that
 directory, with one line range (`:N-M`, `:N..M`, `:N+K`, `:N`, `:N-`; `arms.ts`'s
 `readRange`) is one too, in every run, session and written cases alike, answered with the lines of
-its range in Oh My Pi's range form: a `skill://` read under its `[Skill file: <path>]` line with
-no row numbers, as a whole one, a read by path as the checkout's ranged reads below, each with a
-line before the range (one that does not start at line 1) and three after it (one with an end),
-then `[<n> more lines in file. Use :<next> to continue]` when lines are left (`skillFileRange`,
-`pathRangeAnswer`); where the pin widens a range of a code file to the brackets of the blocks it
-cuts, the lines alone. A read with another selector (`:raw`, a list, `:-N`) is no skill read. The
-arm's skill is answered from the
-arm (in the arm of ours, our skill; "The arm of ours" below); another listed skill from the copy
+its range in Oh My Pi's range form. Both include a line before the range (unless it starts at
+line 1) and, for a range with an end, up to three lines after it. A `skill://` read under its
+`[Skill file: <path>]` line has no row numbers or page budget; a finite range that leaves lines
+after it ends with `[<n> more lines in file. Use :<next> to continue]` (`skillFileRange`).
+A read by path has the checkout's range notice below (`pathRangeAnswer`). Where the lines shown
+leave lines of the file out, both show the pin's block context too, as the checkout's reads do
+below ("Block context"): a `skill://` read with each line whole, a read by path in its row form.
+A `skill://` range whose blocks the pin finds with a grammar it downloads is not answered, and
+the run is judged on it. A read with another selector (`:raw`, a list, `:-N`) is no skill read.
+The arm's skill is answered from the arm (in the arm of ours, our skill; "The arm of ours"
+below); another listed skill from the copy
 its capture installed (`<cache-dir>/skills/<key>`), the same text in every arm; in `none`, and in
 the arm of ours, a `skill://` read of the case's skill from the copy of another source that the
 arm lists under the skill's name (below), where it lists one, as another listed skill's; a skill
@@ -498,15 +501,67 @@ it one, since the sandbox shows jj no directory above the copy (where such a che
 `.jj` at its root, no jj command is answered: jj would answer from that store). The answers are
 the pinned Oh My Pi's forms (`checkout.ts`): `read` as a whole read by path, its rows as the
 case's reads by path show them, or `Path '<path>' not found`; a file that is no prose too (no
-notebook, SVG or document), and one of 100 lines or more, which Oh My Pi may show summarized,
-unsummarized in place of the summary, the same in every arm, its round's record saying so
-(`"wholeText": true`: unsummarized text in place of a summary); a file of more than 300 lines as
-Oh My Pi pages it unsummarized (`read.defaultLimit`): its first 300 lines, then `[<n> more lines
-in file. Use :301 to continue]`; a read with one line range with the lines of its range (the hashline line,
-a line before and three after, then `[<n> more lines in file. Use :<next> to continue]`; the
-lines alone where the pin widens a code file's range to its brackets), and a range that starts
-past the file's end with the pin's notice alone, no error (`Line <n> is beyond end of file
-(<lines> lines total). Use :1 to read from the start, or :<lines> to read the last line.`; so is
+notebook, SVG or document). A whole read of such a file of 100 lines or more (as the pin counts
+them: its newlines and one more), of at most 20,000 lines and 2 MiB, is the pin's structural
+summary where the pin's tree-sitter parse of it, through its native addon (below), is clean and
+elides a span (read.ts lines 2519-2575 and read-summary.ts's `trySummarize`, at the pin's
+settings: bodies of 4 lines or more, comments of 6, unfolded to 50 visible lines and at most
+100; a Markdown or `.txt` file is never summarized; `arms.ts`'s `summaryAnswer`): the hashline
+line, a row for each kept line, a `…` row for each elided span, or, where the line before it ends
+with `{`, `(` or `[` and the line after it opens with the matching closer, one row
+`<a>-<b>:<head> … <tail>` for the three, and after a blank line the footer `[…<n>ln elided;
+re-read needed ranges with <path>:<a>-<b>[,<c>-<d>]]` (`, e.g.` in place of ` with`, and the
+first two ranges, where more are elided), `<path>` relative to the session's working directory,
+else absolute; past 50 KB it is saved as an artifact, and not answered. Three of R4's recorded
+summaries (of a Rust and two TypeScript files) are the runner's byte for byte, text and record.
+A file the pin does not summarize is answered unsummarized. A whole read shows at most 300
+lines (`read.defaultLimit`); a ranged read includes the leading and trailing context described
+above. Both stop at a line boundary if the next line would exceed the byte budget (50 KiB less
+room for row numbers). When lines remain, the answer ends with `[Showing lines <a>-<b> of
+<total>. Use :<b+1> to continue]`, with `(<size> limit)` after `<total>` if the byte budget
+stopped the page. The column clause (`Some lines truncated to 768 chars. Use :raw:…`) joins that
+notice after `. `, or stands alone if no lines remain. Block context: where the rows shown leave
+lines of the file out, the answer shows the pin's block context too (Oh My Pi's
+block-context.ts, ported as `block-context.ts`): the boundary line of each block that opens on a
+shown row and closes after them, or closes on one and opens before them, each in the rows' form
+and cut at 768 characters as a shown row is (the column clause counts it), with a `…` row across
+each gap. The byte budget counts the shown rows alone; the artifact bound counts the whole answer.
+The blocks and the summaries are tree-sitter's, through the pinned Oh My Pi's own native addon
+(`natives.ts`): `pi_natives.<platform>-<arch>[-modern|-baseline].node` in `<natives
+dir>/18.18.6`, the natives directory found as its loader finds it (`PI_NATIVES_DIR`, else
+`$OMP_DOWNLOAD_ROOT/natives`, else `$XDG_DATA_HOME/omp/natives` where `$XDG_DATA_HOME/omp`
+exists, else `~/.omp/natives`), the first of those files that is there, opened only where its
+SHA-256 is the pin's: `d47a5f57fae382072d43e4529bc8cd1a6eb7fea9765d903bf54b6b6d81950419` for the
+`-modern` one, `2a221317126cb5563837d3673f492fc67bca862d617269aa7de4e5d455fc1189` for the
+`-baseline` one, on linux-x64, the one platform whose digests are known. A process hashes the
+file once. A later build of 18.18.6 reports the same release, and its addon is another file, so
+the runner refuses it. To get the pin's addon, run
+
+```
+gh release download v18.18.6-sami.20261119-162325 --repo cybermonklabs/oh-my-pi \
+  --pattern omp-v18.18.6-sami.20261119-162325-linux-x64.tar.gz
+tar -xzf omp-v18.18.6-sami.20261119-162325-linux-x64.tar.gz
+PI_NATIVES_DIR=<dir> omp-v18.18.6-sami.20261119-162325-linux-x64/bin/omp --help
+```
+
+which extracts it into `<dir>/18.18.6` (the `-baseline` one with `PI_NATIVE_VARIANT=baseline`, or
+on a CPU without AVX2), and run the runner with `PI_NATIVES_DIR=<dir>`. The tests whose reads
+need the addon find it the same way, and where they find none each such file prints one line
+naming itself, why and these steps, and skips those rows (`test-natives.ts`); Oh My Pi at the
+repository's pin (`.omp-pin`, `LEGION_TEST_OMP`) is a later build, whose addon gives them
+nothing. For a file of no language the addon knows or one that does not parse cleanly, the blocks
+are a scan of its brackets (`()[]{}` outside strings and comments). A read that needs the addon
+where the runner has none (no file, a file of another digest, another platform) fails the run,
+its reason naming the file or each path tried and those steps; it never falls back to the scan
+or to the unsummarized text. A file whose language's grammar is a WebAssembly one not installed
+in `<natives dir>/grammars` (Ruby, Kotlin, SQL, …) is one the pin downloads the grammar for
+before it finds the blocks or summarizes the file, its rows then from that grammar or, where the
+download failed, from the scan or unsummarized, so such a read is not answered where its rows
+leave lines out or where the pin would summarize it, its reason naming the grammar. A file past
+4 MiB, which the pin streams with a notice of its own and no block
+context, is not answered. A range past the file's end gives the
+pin's notice alone, no error (`Line <n> is beyond end of file (<lines> lines total). Use :1 to
+read from the start, or :<lines> to read the last line.`; so is
 such a range of the cut's own copy read by path, in every arm); a read of a directory with Oh My
 Pi's listing (`.`, then each entry to two levels below it, hidden ones too and `.DS_Store` left
 out, `- <name>` or `- <name>/` indented two blanks a level; a directory under it of more than 12
@@ -547,7 +602,12 @@ and a search of one file keeps 200, each with Oh My Pi's notices (`Showing files
 Use skip=<b> for the next page, or narrow paths/pattern.`, `More than 20 matches in <files>; grep
 keeps the first 20 per file when searching several. Search one file alone for up to 200.`, `More
 than 200 matches; grep keeps the first 200 in a file. …`, `No more results (<n> files total;
-skip=<k> is past the end)`). A `glob` path with no glob character is a directory, every file and
+skip=<k> is past the end)`). Match output over 50 KiB stops at the last complete row that fits
+after reserving space for those trailers; a multi-file cap trailer mentions only files whose
+full section appears. The last notice reads `[Showing lines 1-<b> of <total> (<bytes shown> limit).
+Use :<b+1> to continue]` and includes the column clause if a match line was cut. A grep output
+spilled to a session artifact is not answered because the runner cannot supply its id. A `glob`
+path with no glob character is a directory, every file and
 directory under which matches, or a file, which answers itself; a path that is a list joined by
 `;` (outside braces) answers each of its patterns, a pattern whose directory is not there noted
 after the paths (`Skipped missing paths: <patterns>`), and a limit above 200 is noted as clamped
@@ -682,7 +742,9 @@ A reply one of whose read-only calls the copy answers in no form (a read with an
 path outside the checkout or under `~`, a git or jj command where the copy is the tarball, a jj
 command where its colocation failed or whose checkout tracks a `.jj` at its root, a command whose
 sandbox cannot be made or one of whose programs the sandbox lacks, an output whose notice would
-name an artifact (past 50 KB, a line past 768 bytes, or one the minimizer may rewrite), a `find`
+name an artifact (past 50 KB, a line past 768 bytes, or one the minimizer may rewrite), a read of
+a file past 4 MiB or one whose block context or summary needs a grammar the pin downloads
+("Block context", below), a `find`
 or `ls` tool, a run past its time, a `grep` or `glob` past 30 s, a `grep` one regex test of which
 over a line took more than 100 ms; and any call but a skill read where the written case has no
 checkout, above) gets no verdict, never judged on that call: its reason begins `unanswered-read:`
@@ -694,11 +756,13 @@ calls, then the act; a reply after round 5 still all read-only calls the copy an
 verdict and is run again (`reads-past-last-round`). A session case's read-only calls are its
 judged step, as before. Each run records its checkout rounds (`checkoutRounds`) and, in
 `skillReads`, each round's answers: a checkout one as `{"from": "checkout", "tool", "input",
-"isError"}` (and `"wholeText": true` for a whole-text answer), its input naming the path, the
-pattern or the command. Each report counts, by kind of case, the runs run again for each reason
-and the whole-text answers: `runs with no verdict, run again, and reads answered whole, by kind of
-case: session: <n> reads-past-last-round, <n> unanswered-read, <n> reads answered with the file's
-whole text in place of the pin's summary; written: …`.
+"isError"}`, its input naming the path, the pattern or the command. A run saved before the runner
+rebuilt the pin's summaries may record `"wholeText": true` beside a read too: a read of a code
+file of 100 lines or more it answered with the file's whole text, where the pin may have shown a
+summary; no run records it now. Each report counts, by kind of case, the runs run again for each
+reason and those saved whole-text answers: `runs with no verdict, run again, and reads answered
+whole, by kind of case: session: <n> reads-past-last-round, <n> unanswered-read, <n> reads
+answered with the file's whole text in place of the pin's summary; written: …`.
 
 #### Read-only calls
 
@@ -2071,12 +2135,15 @@ at its default settings: no `[Skill file: …]` line; in a session that shows ha
 `[<path>#<tag>]`, where the path is the one the session's own result shows and the tag is Oh My Pi's
 snapshot tag of the arm's text, then `<n>:<line>` for each line; `<n>|<line>` or the lines alone in
 a session whose reads show those; a line longer than 768 characters cut to 768 and `…`, followed by
-Oh My Pi's notice of the cut lines. A file the arm lacks gets `Path '<path>' not found`, the path as
-the session read it. `none` keeps the read and answers every file that way, where it removes a
-`skill://` read. A replay answers a reply's whole read by path of the copy the same way. A read with
-a line range, a read of another copy, and a path the case does not name stay as the session had
-them. Oh My Pi shows some files in a form the arms do not rebuild (not Markdown or plain text, not
-UTF-8, longer than 300 lines or 50 KB, or holding a line that opens a git conflict block): building
+Oh My Pi's notice of the cut lines and, if the byte budget stopped the page, the continuation
+in the same notice; a page the byte budget stopped shows the boundary lines of the blocks it cuts
+after its rows too ("Block context", above). A file the arm lacks gets `Path '<path>' not found`,
+the path as the session read it. `none` keeps the read and answers every file that way, where it
+removes a `skill://` read. A replay answers a reply's whole read by path of the copy the same way.
+A read with a line range, a read of another copy, and a path the case does not name stay as the
+session had them. Oh My Pi shows some files in a form the arms do not rebuild (not Markdown or
+plain text, not UTF-8, past 4 MiB, longer than 300 lines, or holding a line that opens a git
+conflict block): building
 an arm of such a case stops with an error naming the case, and a replay takes such a read for the
 judged step.
 

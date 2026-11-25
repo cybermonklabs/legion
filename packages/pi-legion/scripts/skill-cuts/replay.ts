@@ -55,22 +55,21 @@
  * read-only (checkout.ts's `readOnlyCall`): each read of a skill file as above, each other call
  * from the copy of the context session's checkout (checkout.ts's `answerCall`: in the pinned Oh My
  * Pi's form, at the session's paths), and the agent runs on, at most MAX_CHECKOUT_ROUNDS such
- * rounds beside the rounds of skill reads: a `read` of a code file of 100 lines or more, which the
- * pin may show summarized, with the file's whole text in place of the summary, the round's record
- * saying so (`CheckoutRead.wholeText`); a read with one line range with the lines of its range. A
- * reply one of whose read-only calls the copy answers in no form (another selector, a path outside
- * the checkout, a git command where the copy holds no history, a form not rebuilt) gets no
- * verdict, never judged on that call: the replay rejects with UnansweredRead (UNANSWERED_READ),
- * naming the call and why, and cli.ts makes the run again as any run with no verdict. Each such
- * round's answers are recorded (`CheckoutRead`: the tool, its input, `from: "checkout"`), and its
- * calls go into the judged step before the reply that ends the run, as a round of skill reads
- * does; a reply after the last checkout round that is still all read-only calls the copy answers
- * gets no verdict (ReadsPastLastRound). A written case with no checkout (one built before
- * build-cases passed over a context session in no checkout it knows) gives, in place of a copy,
- * why it has none (`Unanswered`): no call of such a reply but its skill reads is answered, so the
- * reply gets no verdict as UnansweredRead, naming its first other call and that why. A session
- * case's run has no checkout, so no such round: its read-only calls end the run as any other call
- * does.
+ * rounds beside the rounds of skill reads: a whole `read` of a code file the pin summarizes with
+ * the pin's summary (arms.ts's `summaryAnswer`); a read with one line range with the lines of its
+ * range. A reply one of whose read-only calls the copy answers in no form (another selector, a
+ * path outside the checkout, a git command where the copy holds no history, a form not rebuilt)
+ * gets no verdict, never judged on that call: the replay rejects with UnansweredRead
+ * (UNANSWERED_READ), naming the call and why, and cli.ts makes the run again as any run with no
+ * verdict. Each such round's answers are recorded (`CheckoutRead`: the tool, its input, `from:
+ * "checkout"`), and its calls go into the judged step before the reply that ends the run, as a
+ * round of skill reads does; a reply after the last checkout round that is still all read-only
+ * calls the copy answers gets no verdict (ReadsPastLastRound). A written case with no checkout
+ * (one built before build-cases passed over a context session in no checkout it knows) gives, in
+ * place of a copy, why it has none (`Unanswered`): no call of such a reply but its skill reads is
+ * answered, so the reply gets no verdict as UnansweredRead, naming its first other call and that
+ * why. A session case's run has no checkout, so no such round: its read-only calls end the run as
+ * any other call does.
  *
  * Every round goes with the same headers (`ReplayOptions.headers`), the ones Oh My Pi sent beside
  * the body (none beside a Responses body).
@@ -237,9 +236,11 @@ export type AnsweredRead = Readonly<z.infer<typeof AnsweredRead>>;
 
 /** One read-only call a checkout round answered from the written case's checkout copy
  *  (checkout.ts's `answerCall`): its tool, its input as the reply gave it (a bash call's command
- *  among it), whether the answer is an error, and, for a read of a file the pin may show
- *  summarized, that it was answered with the file's whole text in place of the summary
- *  (`wholeText`, absent otherwise). A run record keeps each as it is (cli.ts's runs). */
+ *  among it), and whether the answer is an error. A run record keeps each as it is (cli.ts's
+ *  runs). A record made before the runner rebuilt the pin's summaries may hold `wholeText`: a
+ *  read of a code file of 100 lines or more, answered then with its whole text in place of a
+ *  summary the pin may have shown; no run writes it now, and the report still counts those it
+ *  finds. */
 export const CheckoutRead = z.strictObject({
   from: z.literal("checkout"),
   tool: z.string(),
@@ -467,14 +468,8 @@ async function checkoutRound(
     }
     const answer = "why" in checkout ? checkout : await answerCall(checkout, name, input, rows);
     if ("why" in answer) return { why: `${name} ${JSON.stringify(input)}: ${answer.why}` };
-    const { text, isError, wholeText } = answer;
-    const read = {
-      from: "checkout",
-      tool: name ?? "",
-      input,
-      isError,
-      ...(wholeText === true ? { wholeText } : {}),
-    } as const;
+    const { text, isError } = answer;
+    const read = { from: "checkout", tool: name ?? "", input, isError } as const;
     answers.push({ id, text, read });
   }
   return answers;

@@ -17,9 +17,14 @@ import {
   sandboxedBash,
   setSandboxSpawnForTests,
 } from "./checkout";
+import { pinNatives } from "./test-natives";
 import { detachedCommit, gitIn, writeTree } from "./testdata/fixtures";
 
 const scratch = temporaryDirectory("skill-cuts-checkout", { real: true });
+/** Whether the rows whose reads need the pinned Oh My Pi's native addon (a window that leaves lines
+ *  of a file out, for its block context, or a code file the pin may summarize) skip
+ *  (test-natives.ts). */
+const noNatives = pinNatives("checkout.test.ts");
 
 /** The made-up session's checkout root, as a written case names it. */
 const ROOT = "/work/acme/proj";
@@ -143,79 +148,374 @@ test("removeOutsideLinks removes each link that resolves outside the copy or now
   }
 }, 60_000);
 
-// Catches: a read of a code file the pin may summarize, or a ranged read, left unanswered (a run
+// Catches: a read of a code file of 100 lines or more left unanswered, or a ranged read (a run
 // then judged on that read; thermonuclear's runs on a range past a file's end were dropped as
 // reads-past-last-round), a range answered past the lines the pin shows, or a read with another
 // selector answered in a form the runner does not rebuild.
-test("a read of a code file of 100 lines or more is answered unsummarized and marked so, one past 300 lines with its first 300 and the count of the rest; a ranged read with the lines of its range, a line before and three after, and the pin's count of the lines left; a range past the file's end with the pin's notice; any other selector is not answered", async () => {
-  const dir = path.join(scratch, "ranges");
-  mkdirSync(path.join(dir, "src"), { recursive: true });
-  mkdirSync(path.join(dir, "docs"), { recursive: true });
-  const big = Array.from({ length: 120 }, (_, n) => `x${n + 1} = ${n + 1}\n`).join("");
-  writeFileSync(path.join(dir, "src", "big.py"), big);
-  writeFileSync(path.join(dir, "docs", "guide.md"), "# Guide\n\nRun the app.\n");
-  const copy = { dir, root: ROOT, cwd: ROOT, git: false, answers: new Map() };
-  const lines = big.replace(/\n$/, "").split("\n");
-  const rows = (from: number, to: number) =>
-    lines
-      .slice(from - 1, to)
-      .map((line, index) => `${from + index}:${line}`)
+test.skipIf(noNatives)(
+  "a whole read pages after 300 lines; a range includes context and continues only if lines remain; code whose parse elides nothing is shown whole; a range beyond EOF names the bounds",
+  async () => {
+    const dir = path.join(scratch, "ranges");
+    mkdirSync(path.join(dir, "src"), { recursive: true });
+    mkdirSync(path.join(dir, "docs"), { recursive: true });
+    // 120 one-line statements: the pin's parse finds no body to elide, so it shows no summary.
+    const big = Array.from({ length: 120 }, (_, n) => `x${n + 1} = ${n + 1}\n`).join("");
+    writeFileSync(path.join(dir, "src", "big.py"), big);
+    writeFileSync(path.join(dir, "docs", "guide.md"), "# Guide\n\nRun the app.\n");
+    const copy = { dir, root: ROOT, cwd: ROOT, git: false, answers: new Map() };
+    const lines = big.replace(/\n$/, "").split("\n");
+    const rows = (from: number, to: number) =>
+      lines
+        .slice(from - 1, to)
+        .map((line, index) => `${from + index}:${line}`)
+        .join("\n");
+    const header = `[src/big.py#${snapshotTag(big)}]`;
+    const read = (target: string) => answerCall(copy, "read", { path: target }, "hashline");
+    expect(await read("src/big.py")).toEqual({
+      text: `${header}\n${rows(1, 120)}`,
+      isError: false,
+    });
+    // A file past 300 lines whose parse elides nothing either, paged as the pin pages it.
+    const long = Array.from({ length: 350 }, (_, n) => `y${n + 1} = ${n + 1}\n`).join("");
+    writeFileSync(path.join(dir, "src", "long.py"), long);
+    const longRows = long
+      .replace(/\n$/, "")
+      .split("\n")
+      .map((line, index) => `${index + 1}:${line}`);
+    expect(await read("src/long.py")).toEqual({
+      text: `[src/long.py#${snapshotTag(long)}]\n${longRows.slice(0, 300).join("\n")}\n\n[Showing lines 1-300 of 350. Use :301 to continue]`,
+      isError: false,
+    });
+    for (const [target, text] of [
+      [
+        "src/long.py:2-310",
+        `[src/long.py#${snapshotTag(long)}]\n${longRows.slice(0, 313).join("\n")}\n\n[Showing lines 1-313 of 350. Use :314 to continue]`,
+      ],
+      [
+        "src/big.py:10-12",
+        `${header}\n${rows(9, 15)}\n\n[Showing lines 9-15 of 120. Use :16 to continue]`,
+      ],
+      [
+        "src/big.py:5+2",
+        `${header}\n${rows(4, 9)}\n\n[Showing lines 4-9 of 120. Use :10 to continue]`,
+      ],
+      [
+        "src/big.py:1..2",
+        `${header}\n${rows(1, 5)}\n\n[Showing lines 1-5 of 120. Use :6 to continue]`,
+      ],
+      [`${ROOT}/src/big.py:119-120`, `[src/big.py#${snapshotTag(big)}]\n${rows(118, 120)}`],
+      // From line 2 on: no trailing context, and the rest of the file.
+      [
+        "docs/guide.md:2",
+        `[docs/guide.md#${snapshotTag("# Guide\n\nRun the app.\n")}]\n1:# Guide\n2:\n3:Run the app.`,
+      ],
+      // A range that starts past the file's end: the pin's notice alone, no hashline line.
+      [
+        "src/big.py:200-210",
+        "Line 200 is beyond end of file (120 lines total). Use :1 to read from the start, or :120 to read the last line.",
+      ],
+    ] as const) {
+      expect({ target, answer: await read(target) }).toEqual({
+        target,
+        answer: { text, isError: false },
+      });
+    }
+    for (const target of ["src/big.py:raw", "src/big.py:1-2,5-6", "src/big.py:-5"]) {
+      expect({ target, answer: await read(target) }).toEqual({
+        target,
+        answer: { why: expect.stringContaining(target) },
+      });
+    }
+    // A read, grep or glob answer is kept on the copy and given again; a bash answer is not kept.
+    await answerCall(copy, "bash", { command: "cat docs/guide.md" }, "hashline");
+    expect([...copy.answers.keys()].every((key) => key.startsWith("read\0hashline\0"))).toBe(true);
+    expect(copy.answers.size).toBe(12);
+  }
+);
+
+test.skipIf(noNatives)(
+  "whole and ranged path reads stop at a UTF-8 byte boundary between lines",
+  async () => {
+    const line = "é".repeat(250);
+    const raw = `${line}\n`.repeat(110);
+    const copy = filesCopy("byte-pages", { "wide.txt": raw });
+    const header = `[wide.txt#${snapshotTag(raw)}]`;
+    const rows = (first: number, count: number) =>
+      Array.from({ length: count }, (_, i) => `${first + i}:${line}`).join("\n");
+    expect(await answerCall(copy, "read", { path: "wide.txt" }, "hashline")).toEqual({
+      text: `${header}\n${rows(1, 99)}\n\n[Showing lines 1-99 of 110 (48.8KB limit). Use :100 to continue]`,
+      isError: false,
+    });
+    // The range reserves four bytes per row for its 112 selected and context lines.
+    expect(await answerCall(copy, "read", { path: "wide.txt:3-110" }, "hashline")).toEqual({
+      text: `${header}\n${rows(2, 101)}\n\n[Showing lines 2-102 of 110 (49.6KB limit). Use :103 to continue]`,
+      isError: false,
+    });
+  }
+);
+
+test.skipIf(noNatives)(
+  "a path page joins its column and continuation clauses, and shows only the column clause at EOF",
+  async () => {
+    const wide = "x".repeat(800);
+    const raw = Array.from({ length: 305 }, (_, i) => ([2, 6, 303].includes(i) ? wide : "row"));
+    const copy = filesCopy("column-pages", { "rows.txt": raw.join("\n") });
+    const shown = raw.map((line) => (line === wide ? `${wide.slice(0, 768)}…` : line));
+    expect(await answerCall(copy, "read", { path: "rows.txt" }, "plain")).toEqual({
+      text: `${shown.slice(0, 300).join("\n")}\n\n[Showing lines 1-300 of 305. Use :301 to continue. Some lines truncated to 768 chars. Use :raw:3-3 to read line 3 whole; cut lines run to line 7, each read the same way]`,
+      isError: false,
+    });
+    expect(await answerCall(copy, "read", { path: "rows.txt:301-305" }, "plain")).toEqual({
+      text: `${shown.slice(299).join("\n")}\n\n[Some lines truncated to 768 chars. Use :raw:304-304 to read line 304 whole]`,
+      isError: false,
+    });
+  }
+);
+
+/** A made-up TypeScript function whose `if` block closes on line 6 and whose `for` block opens
+ *  on line 8, `wide` a comment of its own on the `if` line. */
+function meanSource(wide = ""): string {
+  return `${[
+    "export function mean(items: number[]): number {",
+    `  if (items.length === 0) {${wide}`,
+    "    // An empty list has no mean,",
+    "    // so its mean is taken as 0.",
+    "    return 0;",
+    "  }",
+    "  let sum = 0;",
+    "  for (const item of items) {",
+    "    sum += item;",
+    "    // Each item counts once.",
+    "  }",
+    "  return sum / items.length;",
+    "}",
+  ].join("\n")}\n`;
+}
+
+// Catches: a read whose window leaves lines of a file out answered with the window's rows alone,
+// where the pin shows the boundary line of each block the window cuts (keep_rule.py:900-1080 of a
+// recorded session: its function's two opening lines, `…`, the window, `…`, its `return None`);
+// those rows found by another rule than the pin's tree-sitter one or, for a language the addon
+// does not know, its scan of the brackets; a long context line not cut; or a read whose blocks
+// the pin finds with a grammar it downloads answered as if it found them otherwise.
+test.skipIf(noNatives)(
+  "a read that leaves lines out shows the boundary line of each block it cuts, as tree-sitter finds them or, for an unknown language, a scan of the brackets; none where nothing is cut; a grammar the pin downloads leaves the read unanswered",
+  async () => {
+    // 298 one-line statements and an object of three lines, too few for the pin's summary to
+    // elide (`read.summarize.minBodyLines` 4), so a whole read shows it paged.
+    const tail = `${[
+      ...Array.from({ length: 298 }, (_, n) => `export const a${n + 1} = ${n + 1};`),
+      "export const tail = {",
+      "  a: 1,",
+      "};",
+    ].join("\n")}\n`;
+    const acme = `${[
+      "section main {",
+      '  key = "1 ("',
+      "  other = 2",
+      "  list (",
+      "    a",
+      "    b",
+      "    c",
+      "  )",
+      "}",
+    ].join("\n")}\n`;
+    const notes = Array.from({ length: 12 }, (_, n) => `Note ${n + 1}.\n`).join("");
+    const wide = ` // ${"w".repeat(800)}`;
+    const tool = "def tool\n  if ready\n    run\n  end\n  done\nend\n";
+    const copy = filesCopy("block-context", {
+      "src/mean.ts": meanSource(),
+      "src/wide.ts": meanSource(wide),
+      "src/tail.ts": tail,
+      "conf/main.acme": acme,
+      "docs/notes.txt": notes,
+      "lib/tool.rb": tool,
+    });
+    const read = (target: string) => answerCall(copy, "read", { path: target }, "hashline");
+    const meanLines = meanSource().split("\n");
+    const row = (n: number, lines = meanLines) => `${n}:${lines[n - 1]}`;
+    // Lines 5 to 9 (line 6, a line before and three after) close the `if` that opens on line 2
+    // and open the `for` that closes on line 11.
+    const window = [5, 6, 7, 8, 9].map((n) => row(n)).join("\n");
+    expect(await read("src/mean.ts:6-6")).toEqual({
+      text: `[src/mean.ts#${snapshotTag(meanSource())}]\n${row(2)}\n…\n${window}\n…\n${row(11)}\n\n[Showing lines 5-9 of 13. Use :10 to continue]`,
+      isError: false,
+    });
+    // A context line is cut as a shown line is, and the notice of cut lines names it.
+    expect(await read("src/wide.ts:6-6")).toEqual({
+      text: `[src/wide.ts#${snapshotTag(meanSource(wide))}]\n${`${row(2)}${wide}`.slice(0, 770)}…\n…\n${window}\n…\n${row(11)}\n\n[Showing lines 5-9 of 13. Use :10 to continue. Some lines truncated to 768 chars. Use :raw:2-2 to read line 2 whole]`,
+      isError: false,
+    });
+    // A whole read past 300 lines shows after its 300 rows the closing line of the object they open.
+    const tailRows = tail
+      .split("\n")
+      .slice(0, 300)
+      .map((line, index) => `${index + 1}:${line}`)
       .join("\n");
-  const header = `[src/big.py#${snapshotTag(big)}]`;
-  const read = (target: string) => answerCall(copy, "read", { path: target }, "hashline");
-  expect(await read("src/big.py")).toEqual({
-    text: `${header}\n${rows(1, 120)}`,
-    isError: false,
-    wholeText: true,
-  });
-  // A file past 300 lines, paged as the pin pages it unsummarized.
-  const long = Array.from({ length: 350 }, (_, n) => `y${n + 1} = ${n + 1}\n`).join("");
-  writeFileSync(path.join(dir, "src", "long.py"), long);
-  const longRows = long
-    .split("\n")
-    .slice(0, 300)
-    .map((line, index) => `${index + 1}:${line}`)
-    .join("\n");
-  expect(await read("src/long.py")).toEqual({
-    text: `[src/long.py#${snapshotTag(long)}]\n${longRows}\n\n[50 more lines in file. Use :301 to continue]`,
-    isError: false,
-    wholeText: true,
-  });
-  for (const [target, text] of [
-    [
-      "src/big.py:10-12",
-      `${header}\n${rows(9, 15)}\n\n[105 more lines in file. Use :16 to continue]`,
-    ],
-    ["src/big.py:5+2", `${header}\n${rows(4, 9)}\n\n[111 more lines in file. Use :10 to continue]`],
-    ["src/big.py:1..2", `${header}\n${rows(1, 5)}\n\n[115 more lines in file. Use :6 to continue]`],
-    [`${ROOT}/src/big.py:119-120`, `[src/big.py#${snapshotTag(big)}]\n${rows(118, 120)}`],
-    // From line 2 on: no trailing context, and the rest of the file.
-    [
-      "docs/guide.md:2",
-      `[docs/guide.md#${snapshotTag("# Guide\n\nRun the app.\n")}]\n1:# Guide\n2:\n3:Run the app.`,
-    ],
-    // A range that starts past the file's end: the pin's notice alone, no hashline line.
-    [
-      "src/big.py:200-210",
-      "Line 200 is beyond end of file (120 lines total). Use :1 to read from the start, or :120 to read the last line.",
-    ],
-  ] as const) {
-    expect({ target, answer: await read(target) }).toEqual({
-      target,
-      answer: { text, isError: false },
+    expect(await read("src/tail.ts")).toEqual({
+      text: `[src/tail.ts#${snapshotTag(tail)}]\n${tailRows}\n301:};\n\n[Showing lines 1-300 of 301. Use :301 to continue]`,
+      isError: false,
+    });
+    // An extension the addon knows no language of: the brackets' scan, past the one in a string.
+    const acmeLines = acme.split("\n");
+    const acmeRows = [1, 2, 3, 4, 5].map((n) => row(n, acmeLines)).join("\n");
+    expect(await read("conf/main.acme:2-2")).toEqual({
+      text: `[conf/main.acme#${snapshotTag(acme)}]\n${acmeRows}\n…\n${row(8, acmeLines)}\n${row(9, acmeLines)}\n\n[Showing lines 1-5 of 9. Use :6 to continue]`,
+      isError: false,
+    });
+    // No block, no bracket: the window alone.
+    const noteRows = notes
+      .split("\n")
+      .slice(3, 9)
+      .map((line, index) => `${index + 4}:${line}`)
+      .join("\n");
+    expect(await read("docs/notes.txt:5-6")).toEqual({
+      text: `[docs/notes.txt#${snapshotTag(notes)}]\n${noteRows}\n\n[Showing lines 4-9 of 12. Use :10 to continue]`,
+      isError: false,
+    });
+    // Ruby's grammar is one the pin downloads before it looks for the blocks: not answered. A
+    // read that shows every line needs no blocks, and is answered.
+    expect(await read("lib/tool.rb:3-3")).toEqual({
+      why: expect.stringContaining(
+        "the pin downloads the ruby grammar (ruby-e77f88559b47c0fe.wasm), which is not installed beside its native addon, before it finds the blocks a read of tool.rb cuts"
+      ),
+    });
+    expect(await read("lib/tool.rb")).toEqual({
+      text: `[lib/tool.rb#${snapshotTag(tool)}]\n${tool
+        .replace(/\n$/, "")
+        .split("\n")
+        .map((line, index) => `${index + 1}:${line}`)
+        .join("\n")}`,
+      isError: false,
     });
   }
-  for (const target of ["src/big.py:raw", "src/big.py:1-2,5-6", "src/big.py:-5"]) {
-    expect({ target, answer: await read(target) }).toEqual({
-      target,
-      answer: { why: expect.stringContaining(target) },
+);
+
+/** A made-up Python module: a docstring, an import, `count` functions of five body lines with two
+ *  blank lines between them, and a table of six entries, each on a line of its own. */
+function stepsSource(count: number): string {
+  const step = (n: number) =>
+    [
+      `def step${n}(value):`,
+      "    doubled = value * 2",
+      `    shifted = doubled + ${n}`,
+      "    kept = shifted % 7",
+      "    scaled = kept * 3",
+      "    return scaled - 1",
+    ].join("\n");
+  return `${[
+    '"""Made-up steps."""',
+    "import math",
+    "",
+    Array.from({ length: count }, (_, n) => step(n + 1)).join("\n\n\n"),
+    "",
+    "",
+    "TABLE = {",
+    ...Array.from({ length: 6 }, (_, n) => `    "s${n + 1}": step${n + 1},`),
+    "}",
+  ].join("\n")}\n`;
+}
+
+// Catches: a whole read of a code file the pin summarizes answered with the file's whole text in
+// place of the summary the session saw (the sweep's class "pin summarizes a code file": R4's
+// recorded reads of wait.rs, settings.ts and fix-changelogs.ts, whose answers matched the pin's
+// for their first rows alone); a summary whose rows, elision rows or footer are not the pin's; a
+// file the pin does not summarize (under its 100 lines, or prose) shown summarized; or a read
+// whose summary needs a grammar the pin downloads answered as if the pin had none.
+test.skipIf(noNatives)(
+  "a whole read of a code file of 100 lines or more whose parse elides a span is the pin's summary, its footer naming the elided ranges; under 100 lines and prose are shown whole; a grammar the pin downloads leaves the read unanswered",
+  async () => {
+    // 108 lines as the pin counts them (107 newlines and one more).
+    const steps = stepsSource(12);
+    const table = `${[
+      "export const table = [",
+      ...Array.from({ length: 302 }, (_, n) => `  { id: ${n + 1} },`),
+      "];",
+    ].join("\n")}\n`;
+    // The first 98 lines of steps.py with their newlines: 99 lines as the pin counts them.
+    const short = `${steps.split("\n").slice(0, 98).join("\n")}\n`;
+    const prose = Array.from(
+      { length: 30 },
+      (_, n) => `## Step ${n + 1}\n\n\`\`\`ts\nconst x = ${n};\n\`\`\`\n`
+    ).join("");
+    const ruby = Array.from(
+      { length: 25 },
+      (_, n) => `def step${n + 1}(value)\n  doubled = value * 2\n  doubled + ${n + 1}\nend\n`
+    ).join("");
+    const copy = filesCopy("summaries", {
+      "src/steps.py": steps,
+      "src/table.ts": table,
+      "src/short.py": short,
+      "docs/steps.md": prose,
+      "lib/steps.rb": ruby,
+    });
+    const read = (target: string, rows: "hashline" | "numbered" = "hashline", cwd = ROOT) =>
+      answerCall({ ...copy, cwd }, "read", { path: target }, rows);
+    const whole = (text: string) =>
+      text
+        .replace(/\n$/, "")
+        .split("\n")
+        .map((line, index) => `${index + 1}:${line}`)
+        .join("\n");
+    // Each function's def and first body line, a `…` row for the three lines after them (the
+    // line before opens no bracket), its return and two blank rows; the table one row of its
+    // brace pair, `<first>-<last>`.
+    const rows = (mark: ":" | "|") =>
+      [
+        `1${mark}"""Made-up steps."""`,
+        `2${mark}import math`,
+        `3${mark}`,
+        ...Array.from({ length: 12 }, (_, index) => {
+          const at = 4 + 8 * index;
+          return [
+            `${at}${mark}def step${index + 1}(value):`,
+            `${at + 1}${mark}    doubled = value * 2`,
+            "…",
+            `${at + 5}${mark}    return scaled - 1`,
+            `${at + 6}${mark}`,
+            `${at + 7}${mark}`,
+          ];
+        }).flat(),
+        `100-107${mark}TABLE = { … }`,
+      ].join("\n");
+    // 13 elided ranges, 12 of 3 lines and the table's 6: its first two, after `, e.g.`.
+    const footer = (listed: string) =>
+      `[…42ln elided; re-read needed ranges, e.g. ${listed}:6-8,14-16]`;
+    expect(await read("src/steps.py")).toEqual({
+      text: `[src/steps.py#${snapshotTag(steps)}]\n${rows(":")}\n\n${footer("src/steps.py")}`,
+      isError: false,
+    });
+    // In a session that shows line numbers and no hashline rows: `|` rows, no hashline line.
+    expect(await read("src/steps.py", "numbered")).toEqual({
+      text: `${rows("|")}\n\n${footer("src/steps.py")}`,
+      isError: false,
+    });
+    // Read from another working directory, the hashline line and the footer name it absolute.
+    expect(await read(`${ROOT}/src/steps.py`, "hashline", `${ROOT}/docs`)).toEqual({
+      text: `[${ROOT}/src/steps.py#${snapshotTag(steps)}]\n${rows(":")}\n\n${footer(`${ROOT}/src/steps.py`)}`,
+      isError: false,
+    });
+    // One elided range: the footer's `with` form; the brace pair's tail `];`.
+    expect(await read("src/table.ts")).toEqual({
+      text: `[src/table.ts#${snapshotTag(table)}]\n1-304:export const table = [ … ];\n\n[…302ln elided; re-read needed ranges with src/table.ts:1-304]`,
+      isError: false,
+    });
+    // Under the pin's 100 lines, the whole text, though its parse would elide the same bodies;
+    // and 150 lines of Markdown, which the pin never summarizes at its defaults.
+    expect(await read("src/short.py")).toEqual({
+      text: `[src/short.py#${snapshotTag(short)}]\n${whole(short)}`,
+      isError: false,
+    });
+    expect(await read("docs/steps.md")).toEqual({
+      text: `[docs/steps.md#${snapshotTag(prose)}]\n${whole(prose)}`,
+      isError: false,
+    });
+    // Ruby's grammar is one the pin downloads before it summarizes: not answered.
+    expect(await read("lib/steps.rb")).toEqual({
+      why: "the pin downloads the ruby grammar (ruby-e77f88559b47c0fe.wasm), which is not installed beside its native addon, before it summarizes a whole read of steps.rb, and shows the summary from that grammar, or the file unsummarized where the download fails: the runner cannot tell which the session had",
     });
   }
-  // A read, grep or glob answer is kept on the copy and given again; a bash answer is not kept.
-  await answerCall(copy, "bash", { command: "cat docs/guide.md" }, "hashline");
-  expect([...copy.answers.keys()].every((key) => key.startsWith("read\0hashline\0"))).toBe(true);
-  expect(copy.answers.size).toBe(11);
-});
+);
 
 // Catches: an inspection step counted as an act, or an act (a write, a commit, a command run
 // through a substitution) taken for a read-only call: the report's inspection floors and the
@@ -1094,6 +1394,27 @@ test("a grep line past 512 bytes is cut as grep's native search cuts it: a conte
   // A cut context line alone brings no notice: the pin notes only cut match lines.
   expect(await grepText(copy, { pattern: "^\\}", path: "packages/fixtures/long.json" })).toBe(
     [` 4|  "kind": "${"w".repeat(498)}...`, "*5|}"].join("\n")
+  );
+}, 60_000);
+
+test("grep past 50 KiB keeps full rows, reserves its cap trailer and joins the byte and column clauses", async () => {
+  const line = `hit ${"x".repeat(439)}`;
+  const copy = filesCopy("grep-byte-page", {
+    "many.txt": `hit ${"x".repeat(600)}\n${`${line}\n`.repeat(204)}`,
+  });
+  // Line 114 fits without the trailer, but not once its bytes are reserved.
+  const kept = [
+    `*1|hit ${"x".repeat(505)}... [col 1]`,
+    ...Array.from({ length: 112 }, (_, i) => `*${i + 2}|${line}`),
+  ];
+  expect(await grepText(copy, { pattern: "hit", path: "many.txt" })).toBe(
+    [
+      ...kept,
+      "",
+      "More than 200 matches; grep keeps the first 200 in a file. Add a line range (`path:N-M`) or narrow the pattern for the rest.",
+      "",
+      "[Showing lines 1-113 of 200 (49.5KB limit). Use :114 to continue. Some lines truncated to 512 bytes]",
+    ].join("\n")
   );
 }, 60_000);
 

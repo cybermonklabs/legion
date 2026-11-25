@@ -46,17 +46,19 @@
  * else the one a read of another file of the copy shows (`PathCopy.shownDir`), else the absolute
  * path, never the arm's own directory; `<tag>` is Oh My Pi's snapshot tag of the arm's text
  * (`snapshotTag`). A line longer than 768 characters (`tools.outputMaxColumns`) shows its first
- * 768 and `…`, and the text ends with Oh My Pi's notice naming the cut lines. A file the arm
- * lacks (but in `ours`, below), and in `none` (which keeps the read call, unlike a `skill://`
- * read's) every file, gets Oh My Pi's not-found result: `Path '<the path as read>' not found`,
+ * 768 and `…`. A page stops at the byte budget, with one notice for the window and any cut
+ * lines; a page that leaves lines of the file out shows after its rows the boundary line of each
+ * block it cuts, as the pin does (`windowRows`, block-context.ts). A file the arm lacks (but in
+ * `ours`, below), and every file in `none` (which keeps the
+ * read call, unlike a `skill://` read's), gets `Path '<the path as read>' not found`,
  * empty `details`, `isError` (line 2258). These forms, `details` and tags included, are those of
  * recorded reads by path of the pinned Oh My Pi. Oh My Pi shows some files in a form the arms do
  * not rebuild, and buildArm throws naming the case on a read of one: a file that is no Markdown
  * or plain text (a read may summarize it, or show a notebook or an image), one that is not UTF-8
- * text, one of more than 300 lines (`read.defaultLimit`: it shows 300, then the end of each block
- * past them), one whose lines pass the 50 KB a read shows, and one with a line that opens a git
- * conflict block (a warning follows it). `pathFormFault` says which, so the case builder can leave
- * such a case out before it writes it.
+ * text, one past 4 MiB (the pin streams it), one of more than 300 lines (`read.defaultLimit`: it
+ * shows 300, then the end of each block past them), and one with a line that opens a git conflict
+ * block (a warning follows it).
+ * `pathFormFault` says which, so the case builder can leave such a case out before it writes it.
  *
  * A case that names no such copy (its session read the skill by `skill://`, and any read of it by
  * path stays as recorded, build.ts's excluded reads) takes for its copy the directory its first
@@ -183,6 +185,13 @@ import {
   withoutBodies,
 } from "../skill-scenarios/transcript";
 import {
+  BRACKET_CONTEXT_ELLIPSIS,
+  buildLineEntriesWithBlockContext,
+  type LineEntry,
+  lineEntriesToPlainText,
+  spansCoverEveryLine,
+} from "./block-context";
+import {
   type Case,
   listedName,
   type ProfileSkill,
@@ -196,6 +205,7 @@ import {
   wholeReadTarget,
 } from "./cases";
 import { ompText, splitFrontmatter } from "./common";
+import { type CodeSummary, missingGrammar, natives, type SummarySegment } from "./natives";
 import type { Arm as ScoreArm } from "./score";
 
 /** The name of an arm, as run records carry it. */
@@ -463,9 +473,14 @@ export function readResult(
  *  bounds the lines a read shows; a page of a file may pass it by INLINE_SLACK
  *  (packages/coding-agent/src/tools/output-meta.ts line 537). */
 const READ_LINES = 300;
+const MAX_READ_LINES = 3000;
 const READ_COLUMNS = 768;
 const SPILL_BYTES = 50 * 1024;
 const INLINE_SLACK = 2 * 1024;
+/** The largest file a read at the pin holds whole (read.ts's `SNAPSHOT_MAX_BYTES`, line 206): a
+ *  larger one it streams, never scanning past the page it shows, with a notice of its own and no
+ *  block context, which the runner does not rebuild. */
+const SNAPSHOT_BYTES = 4 * 1024 * 1024;
 
 /** The names of the files Oh My Pi reads as prose, which a read never summarizes at its default
  *  settings (read-summary.ts's `isProseSummaryPath` at the pin: Markdown, as
@@ -475,10 +490,23 @@ const PROSE_FILE = /\.(md|markdown|mdx|mdc|mkd|mdown|txt)$/i;
  *  notebook, an SVG image, and the documents markit converts (read.ts lines 2380-2445;
  *  utils/markit.ts line 22). */
 const OWN_FORM_FILE = /\.(ipynb|svg|pdf|docx|pptx|xlsx|epub)$/i;
-/** The lines from which a read at the pin may summarize a file that is not prose
- *  (`read.summarize.minTotalLines`, settings.ts lines 241-245; read-summary.ts's `trySummarize`
- *  counts a file's newlines and one more, `countTextLines`). */
+/** A read's structural summary at the pin's defaults (packages/coding-agent/src/tools/settings.ts
+ *  lines 192-275, read-summary.ts lines 42-43 and 73-118 at the pin): a whole read of a file that
+ *  is no prose, of SUMMARY_MIN_LINES lines or more (`read.summarize.minTotalLines`; `trySummarize`
+ *  counts a text's newlines and one more, `countTextLines`) and at most MAX_SUMMARY_LINES, of at
+ *  most MAX_SUMMARY_BYTES, is summarized with the fold settings SUMMARY_FOLDS
+ *  (`read.summarize.minBodyLines`, `minCommentLines`, `unfoldUntil` and `unfoldLimit`), and its
+ *  footer names the first FOOTER_RANGE_SAMPLES elided ranges (read-format.ts line 248). */
 const SUMMARY_MIN_LINES = 100;
+const MAX_SUMMARY_LINES = 20_000;
+const MAX_SUMMARY_BYTES = 2 * 1024 * 1024;
+const SUMMARY_FOLDS = {
+  minBodyLines: 4,
+  minCommentLines: 6,
+  unfoldUntilLines: 50,
+  unfoldLimitLines: 100,
+} as const;
+const FOOTER_RANGE_SAMPLES = 2;
 /** The lines a read with a line range shows around it (`RANGE_LEADING_CONTEXT_LINES` and
  *  `RANGE_TRAILING_CONTEXT_LINES`, read-format.ts lines 287-288 at the pin): one before a range
  *  that does not start at line 1, and three after a range with an end. */
@@ -489,13 +517,31 @@ const RANGE_AFTER = 3;
  *  (packages/coding-agent/src/tools/conflict-detect.ts at the pin). */
 const CONFLICT_OPENER = /^<<<<<<<(?: |\r?$)/;
 
-/** The bytes of a file's lines a whole read of it shows, each cut line counted as shown, with a
- *  newline between two (read.ts lines 2663-2672 at the pin, whose `Math.min` of its two bounds
- *  is always this one at its defaults): 50 KB, less four bytes for each of the 300 lines when the
- *  rows show their numbers. */
-function pageBytes(rows: PathRows): number {
-  const numbers = rows === "plain" ? 0 : String(READ_LINES).length + 1;
-  return SPILL_BYTES - READ_LINES * numbers;
+/** Page budget at the pin's defaults (read.ts's `budgetFor`): both byte caps are 50 KiB,
+ *  so the smaller one is the spill threshold less the worst-case row prefixes. */
+function pageBytes(rows: PathRows, start: number, collect: number): number {
+  const prefix = rows === "plain" ? 0 : String(start + collect).length + 1;
+  return SPILL_BYTES - Math.min(collect * prefix, SPILL_BYTES / 2);
+}
+
+/** Byte counts as the pin's output notices render them (packages/utils/src/format.ts). */
+export function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes}B`;
+  if (bytes < 1024 ** 2) return `${(bytes / 1024).toFixed(1)}KB`;
+  if (bytes < 1024 ** 3) return `${(bytes / 1024 ** 2).toFixed(1)}MB`;
+  return `${(bytes / 1024 ** 3).toFixed(1)}GB`;
+}
+
+/** The head-page clause of the pin's `formatTruncationMetaNotice`, shared by read and grep. */
+export function showingLines(first: number, last: number, total: number, budget?: number): string {
+  const limit = budget === undefined ? "" : ` (${formatBytes(budget)} limit)`;
+  return `Showing lines ${first}-${last} of ${total}${limit}. Use :${last + 1} to continue`;
+}
+
+/** The pin's `formatOutputNotice` joins limit clauses inside one pair of brackets. */
+export function outputNotice(...clauses: (string | undefined)[]): string {
+  const text = clauses.filter((clause) => clause !== undefined).join(". ");
+  return text === "" ? "" : `\n\n[${text}]`;
 }
 
 /** Oh My Pi's snapshot tag of a file's text, the `<tag>` of a hashline line (`file_hash`,
@@ -518,60 +564,351 @@ export function fileTag(raw: string): string {
 }
 
 /** A read by path, answered: its text, whether it failed, and the tool's record. replay.ts answers
- *  a written case's read of a file of its checkout copy so (checkout.ts), where `wholeText` marks a
- *  file the pin may show summarized answered with its whole text (`pathPage`). */
+ *  a written case's read of a file of its checkout copy so (checkout.ts). */
 export interface PathAnswer {
   readonly text: string;
   readonly isError: boolean;
   readonly details: Record<string, unknown>;
-  readonly wholeText?: true;
 }
 
-/** The row of line `n` of a read by path, `line` as shown, in a session that shows its rows as
- *  `rows`: `<n>:<line>`, `<n>|<line>`, or the line alone. */
-function pathRow(n: number, line: string, rows: PathRows): string {
+/** The row of line `n` of a read by path (or of the lines `n`, `<first>-<last>`, a summary's
+ *  merged row stands for), `line` as shown, in a session that shows its rows as `rows`:
+ *  `<n>:<line>`, `<n>|<line>`, or the line alone. */
+function pathRow(n: number | string, line: string, rows: PathRows): string {
   if (rows === "hashline") return `${n}:${line}`;
   return rows === "numbered" ? `${n}|${line}` : line;
 }
 
-/** A file's text as a whole read by path shows it: the decoded text, its lines (a final newline
- *  ends the last one), each line shown (at most READ_COLUMNS characters, then `…`; the first
- *  READ_LINES lines of a longer file, a checkout read only), the first and last line cut so, or
- *  undefined when none is, how many lines of the file are left after those shown (`more`), and
- *  whether it is a file the pin may show summarized, given unsummarized (`wholeText`, a checkout
- *  read only). */
-interface PathPage {
+interface ColumnCut {
+  first: number;
+  last: number;
+  firstBytes: number;
+}
+
+/** `line` as a read shows it: its first READ_COLUMNS characters and `…` when it is longer
+ *  (streaming-output.ts's `truncateLine` at the pin). */
+function columnCapped(line: string): string {
+  return line.length <= READ_COLUMNS ? line : `${line.slice(0, READ_COLUMNS)}…`;
+}
+
+/** `cut` with line `line`, of `bytes` bytes, cut too: the first and the last cut line, and the
+ *  first one's bytes (read.ts's `addColumnCut`, lines 347-358 at the pin). */
+function addColumnCut(cut: ColumnCut | undefined, line: number, bytes: number): ColumnCut {
+  if (cut === undefined) return { first: line, last: line, firstBytes: bytes };
+  const last = Math.max(cut.last, line);
+  return line < cut.first ? { first: line, last, firstBytes: bytes } : { ...cut, last };
+}
+
+interface PathWindow {
+  readonly shownLines: readonly string[];
+  readonly cut: ColumnCut | undefined;
+  readonly outputBytes: number;
+  readonly stoppedByBytes: boolean;
+  readonly budget: number;
+}
+
+/** Collect complete rows until the line or byte limit (read.ts's `collectLineWindowFromBuffer`).
+ *  Charge the UTF-8 bytes of the column-capped line and the separator before it. Even a source
+ *  line over 50 KiB fits when first: the 768 UTF-16 units plus ellipsis cost at most 2,307 bytes,
+ *  below the smallest budget (25 KiB), so the pin's partial-line preview is not needed. */
+function collectPathWindow(
+  lines: readonly string[],
+  start: number,
+  collect: number,
+  rows: PathRows
+): PathWindow {
+  const budget = pageBytes(rows, start, collect);
+  const shownLines: string[] = [];
+  let cut: ColumnCut | undefined;
+  let outputBytes = 0;
+  const end = Math.min(lines.length, start + collect);
+  for (let index = start; index < end; index++) {
+    const line = lines[index] ?? "";
+    const shown = columnCapped(line);
+    const cost = Buffer.byteLength(shown) + (index === start ? 0 : 1);
+    if (outputBytes + cost > budget) break;
+    if (shown !== line) cut = addColumnCut(cut, index + 1, Buffer.byteLength(line));
+    shownLines.push(shown);
+    outputBytes += cost;
+  }
+  return { shownLines, cut, outputBytes, stoppedByBytes: start + shownLines.length < end, budget };
+}
+
+/** The notice for a filesystem window (read.ts lines 2816-2859 and 3172-3185 at the pin). */
+function pathNotice(start: number, total: number, page: PathWindow): string {
+  const end = start + page.shownLines.length;
+  const paging =
+    end < total
+      ? showingLines(start + 1, end, total, page.stoppedByBytes ? page.budget : undefined)
+      : undefined;
+  const { cut } = page;
+  if (cut === undefined) return outputNotice(paging);
+  const { first, last, firstBytes } = cut;
+  const recovery =
+    firstBytes > SPILL_BYTES ? `uncut, byte-capped at ${formatBytes(SPILL_BYTES)}` : "whole";
+  const rest = last > first ? `; cut lines run to line ${last}, each read the same way` : "";
+  return outputNotice(
+    paging,
+    `Some lines truncated to ${READ_COLUMNS} chars. Use :raw:${first}-${first} to read line ${first} ${recovery}${rest}`
+  );
+}
+
+/**
+ * A window's rows as the pin renders them (read.ts's `formatBracketAwareText`, lines 2908-2943 at
+ * the pin): the shown lines of `page`, from line `start + 1` of the text `raw` of the file
+ * `source` (whose name picks the grammar), and the boundary line of each block the window cuts
+ * (block-context.ts's `buildLineEntriesWithBlockContext`, over the text as the pin holds it: less
+ * a leading byte order mark, each CRLF or CR as LF, its lines a final newline ending the last;
+ * read.ts's `deriveBufferedFileText`, lines 265-291), cut to READ_COLUMNS characters as a shown
+ * line is, with `…` rows across the gaps, each row as `rows` shows it. `cut` spans the cut lines
+ * of both. The page's byte budget counted the shown lines alone: the context rows ride on top
+ * (read.ts lines 3115-3117). Returns why the runner does not rebuild the rows instead, where the
+ * pin would download a grammar first (block-context.ts's `missingGrammar`).
+ */
+function windowRows(
+  source: string,
+  raw: string,
+  start: number,
+  page: PathWindow,
+  rows: PathRows
+): { rows: string; entries: LineEntry[]; cut: ColumnCut | undefined } | string {
+  const text = (raw.startsWith("\uFEFF") ? raw.slice(1) : raw).replace(/\r\n?/g, "\n");
+  const fullLines = text.split("\n");
+  if (fullLines.length > (text === raw ? 1 : 0) && fullLines.at(-1) === "") fullLines.pop();
+  const spans = [{ startLine: start + 1, endLine: start + page.shownLines.length }];
+  if (!spansCoverEveryLine(spans, fullLines.length)) {
+    const grammar = missingGrammar(source);
+    if (grammar !== undefined) {
+      return `the pin downloads the ${grammar.language} grammar (${grammar.file}), which is not installed beside its native addon, before it finds the blocks a read of ${path.basename(source)} cuts, and shows their rows from that grammar, or from a scan of the brackets where the download fails: the runner cannot tell which the session had`;
+    }
+  }
+  let { cut } = page;
+  const entries = buildLineEntriesWithBlockContext(
+    fullLines,
+    spans,
+    { path: source, text },
+    {
+      lineText: (lineNumber, sourceText) => {
+        if (lineNumber > start && lineNumber <= start + page.shownLines.length) {
+          return page.shownLines[lineNumber - start - 1] ?? sourceText;
+        }
+        const shown = columnCapped(sourceText);
+        if (shown !== sourceText)
+          cut = addColumnCut(cut, lineNumber, Buffer.byteLength(sourceText));
+        return shown;
+      },
+    }
+  );
+  const shown = entries.map((entry) =>
+    entry.kind === "ellipsis"
+      ? BRACKET_CONTEXT_ELLIPSIS
+      : pathRow(entry.lineNumber, entry.text, rows)
+  );
+  return { rows: shown.join("\n"), entries, cut };
+}
+
+/** A text's lines as the pin counts them: none for an empty text, else its newlines and one more
+ *  (read-format.ts's `countTextLines`). */
+function countTextLines(text: string): number {
+  if (text.length === 0) return 0;
+  let count = 1;
+  for (let at = text.indexOf("\n"); at !== -1; at = text.indexOf("\n", at + 1)) count++;
+  return count;
+}
+
+/** The closer of each opener whose elided body a summary shows on one row (tui read.ts's
+ *  `BRACE_PAIRS`). */
+const BRACE_PAIRS: Record<string, string> = { "{": "}", "(": ")", "[": "]" };
+
+/** One elided range of a summary, its lines inclusive (tui read.ts's `ElidedRange`). */
+interface ElidedRange {
+  readonly start: number;
+  readonly end: number;
+}
+
+/**
+ * The rows of the addon's summary `segments` (`summarizeCode`'s kept and elided spans, in source
+ * order), each row as `rows` shows it (packages/tui/src/tools/read.ts lines 836-993 at the pin,
+ * `formatReadSummary`): each line of a kept span its row (a kept span with no text shows none); an
+ * elided span a `…` row, unless the kept line before it ends with `{`, `(` or `[` and the kept
+ * line after it opens with the matching closer and holds nothing more but `;`, `,` and closers
+ * (`canMergeBracePair`), where the three are one row `<head, its trailing blanks left out> …
+ * <tail, trimmed>` numbered `<first>-<last>` (`formatMergedBraceLine`). `displayText` is the same
+ * with each line alone; `elidedRanges` the elided spans in order, a merged one from its head to
+ * its tail, and `elidedLines` their lines, a merged one's less its head and tail.
+ */
+function summaryRows(
+  segments: readonly SummarySegment[],
+  rows: PathRows
+): { text: string; displayText: string; elidedRanges: ElidedRange[]; elidedLines: number } {
+  type Unit =
+    | { kind: "line"; line: number; text: string }
+    | { kind: "elided"; start: number; end: number }
+    | { kind: "merged"; start: number; end: number; head: string; tail: string };
+  const flat: Unit[] = [];
+  for (const segment of segments) {
+    if (segment.kind === "elided") {
+      flat.push({ kind: "elided", start: segment.startLine, end: segment.endLine });
+      continue;
+    }
+    const text = segment.text ?? "";
+    if (text.length === 0) continue;
+    for (const [index, line] of text.split("\n").entries()) {
+      flat.push({ kind: "line", line: segment.startLine + index, text: line });
+    }
+  }
+  const units: Unit[] = [];
+  for (let index = 0; index < flat.length; index++) {
+    const unit = flat[index];
+    const before = units.at(-1);
+    const after = flat[index + 1];
+    if (unit?.kind === "elided" && before?.kind === "line" && after?.kind === "line") {
+      const head = before.text.trimEnd();
+      const tail = after.text.trim();
+      const closer = BRACE_PAIRS[head.slice(-1)];
+      if (
+        closer !== undefined &&
+        tail.startsWith(closer) &&
+        /^[;,)\]}]*$/.test(tail.slice(closer.length))
+      ) {
+        units.pop();
+        units.push({
+          kind: "merged",
+          start: before.line,
+          end: after.line,
+          head: before.text,
+          tail: after.text,
+        });
+        index++;
+        continue;
+      }
+    }
+    if (unit !== undefined) units.push(unit);
+  }
+  const model: string[] = [];
+  const display: string[] = [];
+  const elidedRanges: ElidedRange[] = [];
+  let elidedLines = 0;
+  for (const unit of units) {
+    if (unit.kind === "elided") {
+      model.push(BRACKET_CONTEXT_ELLIPSIS);
+      display.push(BRACKET_CONTEXT_ELLIPSIS);
+      elidedRanges.push({ start: unit.start, end: unit.end });
+      elidedLines += unit.end - unit.start + 1;
+    } else if (unit.kind === "merged") {
+      const merged = `${unit.head.trimEnd()} … ${unit.tail.trim()}`;
+      model.push(pathRow(`${unit.start}-${unit.end}`, merged, rows));
+      display.push(merged);
+      elidedRanges.push({ start: unit.start, end: unit.end });
+      elidedLines += Math.max(0, unit.end - unit.start - 1);
+    } else {
+      model.push(pathRow(unit.line, unit.text, rows));
+      display.push(unit.text);
+    }
+  }
+  return { text: model.join("\n"), displayText: display.join("\n"), elidedRanges, elidedLines };
+}
+
+/**
+ * Oh My Pi's summary of a whole read by path of a code file of a written case's checkout copy
+ * (checkout.ts), at the pin's defaults (read.ts lines 2519-2575, read-summary.ts's `trySummarize`
+ * and `renderSummary`, read-format.ts's `formatSummaryElisionFooter` at the pin): `bytes` are the
+ * file's, `source` the session's absolute path of it (whose name picks the language), `shown` the
+ * path its hashline line names, and `listed` the path its footer names
+ * (`formatPathRelativeToCwd`: relative to the session's working directory, else absolute). The
+ * pin hands the addon's `summarizeCode` the text less a leading byte order mark, with the fold
+ * settings SUMMARY_FOLDS, and shows the summary where its parse is clean and elides a span: the
+ * hashline line (in a session that shows hashline rows), the rows (`summaryRows`), and, after a
+ * blank line, `[…<n>ln elided; re-read needed ranges with <listed>:<a>-<b>[,<c>-<d>]]` (`, e.g.`
+ * in place of ` with` where more than FOOTER_RANGE_SAMPLES ranges are elided), with no paging
+ * notice; its record is the pin's (`summary`, `fileSize`, `meta.source`, no `pagedSource`).
+ * Undefined where the pin shows no summary (prose, a file of a form of its own, not UTF-8 text,
+ * past MAX_SUMMARY_BYTES, outside SUMMARY_MIN_LINES to MAX_SUMMARY_LINES lines, a parse with an
+ * error or nothing elided, or an addon call that throws, which the pin catches), so the read is
+ * answered as any other. Why it is not rebuilt where the pin downloads the language's grammar
+ * before it summarizes (natives.ts's `missingGrammar`: the session's summary came from that
+ * grammar, or, where the download failed, there was none), and where the answer passes the spill
+ * threshold, which saves it as an artifact (output-meta.ts's `spillLargeResultToArtifact`).
+ */
+function summaryAnswer(
+  read: { file: string; source: string; shown: string; listed: string; rows: PathRows },
+  bytes: Uint8Array
+): PathAnswer | string | undefined {
+  if (PROSE_FILE.test(read.file) || OWN_FORM_FILE.test(read.file)) return undefined;
+  if (bytes.length > MAX_SUMMARY_BYTES || bytes.includes(0) || !isUtf8(bytes)) return undefined;
+  const raw = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString("utf8");
+  const code = raw.startsWith("\uFEFF") ? raw.slice(1) : raw;
+  const count = countTextLines(code);
+  if (count < SUMMARY_MIN_LINES || count > MAX_SUMMARY_LINES) return undefined;
+  const grammar = missingGrammar(read.source);
+  if (grammar !== undefined) {
+    return `the pin downloads the ${grammar.language} grammar (${grammar.file}), which is not installed beside its native addon, before it summarizes a whole read of ${path.basename(read.source)}, and shows the summary from that grammar, or the file unsummarized where the download fails: the runner cannot tell which the session had`;
+  }
+  // Opened outside the try: an addon that cannot be had is the runner's fault, not a parse's.
+  const addon = natives();
+  let summary: CodeSummary;
+  try {
+    summary = addon.summarizeCode({ code, path: read.source, ...SUMMARY_FOLDS });
+  } catch {
+    return undefined;
+  }
+  if (!summary.parsed || !summary.elided) return undefined;
+  const rendered = summaryRows(summary.segments, read.rows);
+  const { elidedRanges, elidedLines } = rendered;
+  const samples = elidedRanges.slice(0, FOOTER_RANGE_SAMPLES);
+  const example = `${read.listed}:${samples.map((range) => `${range.start}-${range.end}`).join(",")}`;
+  const footer =
+    elidedRanges.length === 0
+      ? ""
+      : `\n\n[…${elidedLines}ln elided; re-read needed ranges${elidedRanges.length > samples.length ? `, e.g. ${example}` : ` with ${example}`}]`;
+  const body = `${rendered.text}${footer}`;
+  const text = read.rows === "hashline" ? `[${read.shown}#${fileTag(raw)}]\n${body}` : body;
+  if (Buffer.byteLength(text) > SPILL_BYTES) {
+    return `a whole read by path of ${read.file}, summarized, is saved as an artifact`;
+  }
+  return {
+    text,
+    isError: false,
+    details: {
+      displayContent: { text: rendered.displayText, startLine: 1 },
+      rowPrefixes: read.rows !== "plain",
+      summary: {
+        lines: countTextLines(rendered.text),
+        elidedSpans: elidedRanges.length,
+        elidedLines,
+      },
+      fileSize: bytes.length,
+      meta: { source: { type: "path", value: read.source } },
+    },
+  };
+}
+
+interface PathPage extends PathWindow {
   readonly raw: string;
   readonly lines: readonly string[];
-  readonly shownLines: readonly string[];
-  readonly cut: { readonly first: number; readonly last: number } | undefined;
-  readonly more: number;
-  readonly wholeText: boolean;
 }
 
 /** The page of `file` (a path inside the skill's directory) whose bytes are `bytes`, as a whole
  *  read by path shows it in a session that shows its rows as `rows`, or why Oh My Pi shows it in
  *  a form the arms do not rebuild (`pathFormFault`). With `checkoutRead` (a written case's read of
- *  its checkout, checkout.ts), a file that is no prose is rebuilt too, but a file of OWN_FORM_FILE;
- *  one of SUMMARY_MIN_LINES lines or more, which the pin may summarize (read.ts lines 2519-2533:
- *  a code file whose parse elides a body, which the runner cannot rebuild), is given unsummarized
- *  in place of that summary, `wholeText` set; and a file of more than READ_LINES lines is given as
- *  the pin pages it unsummarized (read.defaultLimit, read.ts lines 2652-3030): its first
- *  READ_LINES lines, then the count of the lines left (`more`). */
+ *  its checkout, checkout.ts, whose code files the pin may summarize first, `summaryAnswer`), a
+ *  file that is no prose is rebuilt too, but a file of OWN_FORM_FILE. A whole read collects at
+ *  most READ_LINES lines inside its byte budget (read.ts lines 2652-3030 at the pin). A file past
+ *  SNAPSHOT_BYTES, which the pin streams, is not rebuilt. */
 function pathPage(
   file: string,
   bytes: Uint8Array,
   rows: PathRows,
   checkoutRead = false
 ): PathPage | string {
-  let wholeText = false;
   if (!PROSE_FILE.test(file)) {
     if (!checkoutRead) {
       return `${file} is no Markdown or plain-text file, the only kinds whose read by path the arms rebuild`;
     }
     if (OWN_FORM_FILE.test(file)) return `${file} is a file a read shows in a form of its own`;
-    const newlines = bytes.reduce((count, byte) => (byte === 10 ? count + 1 : count), 0);
-    wholeText = bytes.length > 0 && newlines + 1 >= SUMMARY_MIN_LINES;
+  }
+  if (bytes.length > SNAPSHOT_BYTES) {
+    return `${file} is past the ${formatBytes(SNAPSHOT_BYTES)} a read holds whole, so the pin streams it, with a notice the runner does not rebuild`;
   }
   if (bytes.includes(0) || !isUtf8(bytes)) return `${file} is not UTF-8 text`;
   // The lines as Oh My Pi shows them: the bytes decoded as they are, a final newline ending the
@@ -581,50 +918,23 @@ function pathPage(
   if (lines.length > READ_LINES && !checkoutRead) {
     return `${file} has ${lines.length} lines, and a read by path shows ${READ_LINES}, then the end of each block past them`;
   }
-  const paged = lines.slice(0, READ_LINES);
-  const opener = paged.findIndex((line) => CONFLICT_OPENER.test(line));
+  const page = collectPathWindow(lines, 0, READ_LINES, rows);
+  const opener = lines
+    .slice(0, page.shownLines.length)
+    .findIndex((line) => CONFLICT_OPENER.test(line));
   if (opener !== -1) {
     return `line ${opener + 1} of ${file} opens a git conflict block, which a read by path follows with a warning`;
   }
-  // Each line as shown; the cut lines, the first one's bytes, and the bytes the page counts: each
-  // line as shown, and a newline between two.
-  const shownLines: string[] = [];
-  let cut: { first: number; last: number; firstBytes: number } | undefined;
-  let spent = -1;
-  for (const [index, line] of paged.entries()) {
-    const shown = line.length <= READ_COLUMNS ? line : `${line.slice(0, READ_COLUMNS)}…`;
-    if (shown !== line) {
-      cut = cut ?? { first: index + 1, last: index + 1, firstBytes: Buffer.byteLength(line) };
-      cut.last = index + 1;
-    }
-    spent += Buffer.byteLength(shown) + 1;
-    shownLines.push(shown);
-  }
-  if (spent > pageBytes(rows)) {
-    return `the lines of ${file} a read by path shows come to ${spent} bytes, past the ${pageBytes(rows)} it shows`;
-  }
-  if (cut !== undefined && cut.firstBytes > SPILL_BYTES) {
-    return `line ${cut.first} of ${file} is ${cut.firstBytes} bytes, and a read by path names a byte cap for it`;
-  }
-  return {
-    raw,
-    lines,
-    shownLines,
-    cut: cut === undefined ? undefined : { first: cut.first, last: cut.last },
-    more: lines.length - paged.length,
-    wholeText,
-  };
+  return { raw, lines, ...page };
 }
 
 /** Why Oh My Pi shows a whole read by path of `file` (a path inside the skill's directory) whose
  *  bytes are `bytes` in a form the arms do not rebuild, or undefined when they rebuild it (see the
  *  file's header): a file that is no Markdown or plain text, one that is not UTF-8 text or holds a
- *  NUL byte, one of more than 300 lines, one whose lines pass the bytes a read shows, one whose
- *  first cut line passes 50 KB, and one with a line that opens a git conflict block. `rows` is how
- *  the session shows its rows; left out, the bytes a read shows are those of rows that show their
- *  numbers, the fewer, so a caller that cannot tell (the case builder, before it writes a case)
- *  refuses every file buildArm refuses. buildArm throws, naming the case, on each fault, and on a
- *  page whose hashline path alone is some 2 KB long, which Oh My Pi saves as an artifact. */
+ *  NUL byte, one past 4 MiB, one of more than 300 lines, and one with a shown git conflict opener.
+ *  `rows` sets the byte budget, defaulting to the hashline budget. buildArm throws, naming the
+ *  case, on each fault, and on a page over the inline cap (e.g. an unusually long hashline path),
+ *  its block context's rows counted. */
 export function pathFormFault(
   file: string,
   bytes: Uint8Array,
@@ -637,10 +947,14 @@ export function pathFormFault(
 /** Oh My Pi's result for a whole read by the path `target` of `file` (a path inside the skill's
  *  directory) of the arm's directory `skillDir` (undefined for `none`), the absolute path it opens
  *  being `source`, its hashline line naming `shown` and its rows shown as `rows` (see the file's
- *  header; read.ts lines 2320-3187 at the pin). Returns why the arms do not rebuild it instead
- *  when Oh My Pi shows the file in another form (`pathFormFault`, or a page it saves as an
- *  artifact). checkout.ts answers a read of a file of a written case's checkout copy with it,
- *  `skillDir` the copy, `file` the path inside it and `checkoutRead` set (`pathPage`). */
+ *  header; read.ts lines 2320-3187 at the pin): a page that does not show every line of the file
+ *  shows the boundary lines of the blocks it cuts too (`windowRows`). Returns why the arms do not
+ *  rebuild it instead when Oh My Pi shows the file in another form (`pathFormFault`, a page it
+ *  saves as an artifact, or block context the pin finds with a grammar it downloads).
+ *  checkout.ts answers a read of a file of a written case's checkout copy with it, `skillDir` the
+ *  copy, `file` the path inside it and `checkout` given, its `listed` the path a summary's footer
+ *  names: such a read of a code file the pin summarizes is answered with the pin's summary
+ *  (`summaryAnswer`), any other as a page (`pathPage`). */
 export function pathAnswer(
   skillDir: string | undefined,
   read: {
@@ -649,7 +963,7 @@ export function pathAnswer(
     source: string;
     shown: string;
     rows: PathRows;
-    checkoutRead?: boolean;
+    checkout?: { readonly listed: string };
   }
 ): PathAnswer | string {
   const notFound = { text: `Path '${read.target}' not found`, isError: true, details: {} };
@@ -658,40 +972,65 @@ export function pathAnswer(
   if (stats === undefined) return notFound;
   if (!stats.isFile()) throw new Error(`${full} is not a file: an arm answers reads of files only`);
   const bytes = readFileSync(full);
-  const page = pathPage(read.file, bytes, read.rows, read.checkoutRead === true);
+  if (read.checkout !== undefined) {
+    const summary = summaryAnswer({ ...read, listed: read.checkout.listed }, bytes);
+    if (summary !== undefined) return summary;
+  }
+  const page = pathPage(read.file, bytes, read.rows, read.checkout !== undefined);
   if (typeof page === "string") return page;
-  const { raw, lines, shownLines, cut, more } = page;
-  const numbered = shownLines.map((line, index) => pathRow(index + 1, line, read.rows));
+  const { raw, lines, shownLines } = page;
+  const window = windowRows(read.source, raw, 0, page, read.rows);
+  if (typeof window === "string") return window;
+  const { entries, cut } = window;
   const shown =
-    read.rows === "hashline"
-      ? `[${read.shown}#${fileTag(raw)}]\n${numbered.join("\n")}`
-      : numbered.join("\n");
+    read.rows === "hashline" ? `[${read.shown}#${fileTag(raw)}]\n${window.rows}` : window.rows;
   if (Buffer.byteLength(shown) > SPILL_BYTES + INLINE_SLACK) {
     return `a read by path of ${read.file} is saved as an artifact`;
   }
-  // A paged file's count of the lines left, then the column note (read.ts lines 3022-3028, and
-  // its result builder's limits after them).
-  const left =
-    more === 0 ? "" : `\n\n[${more} more lines in file. Use :${shownLines.length + 1} to continue]`;
-  const notice =
-    cut === undefined
-      ? ""
-      : `\n\n[Some lines truncated to ${READ_COLUMNS} chars. Use :raw:${cut.first}-${cut.first} to read line ${cut.first} whole${cut.last > cut.first ? `; cut lines run to line ${cut.last}, each read the same way` : ""}]`;
+  const truncation =
+    shownLines.length < lines.length
+      ? {
+          truncated: true,
+          truncatedBy: page.stoppedByBytes ? "bytes" : "lines",
+          totalLines: lines.length,
+          totalBytes: Buffer.byteLength(lines.slice(0, READ_LINES).join("\n")),
+          outputLines: shownLines.length,
+          outputBytes: page.outputBytes,
+          lastLinePartial: false,
+          firstLineExceedsLimit: false,
+        }
+      : undefined;
   return {
-    text: `${shown}${left}${notice}`,
+    text: `${shown}${pathNotice(0, lines.length, { ...page, cut })}`,
     isError: false,
     details: {
+      ...(truncation === undefined ? {} : { truncation }),
       totalLines: lines.length,
       rowPrefixes: read.rows !== "plain",
       displayContent: {
-        text: shownLines.join("\n"),
-        startLine: 1,
-        lineNumbers: shownLines.map((_, index) => index + 1),
+        text: lineEntriesToPlainText(entries),
+        startLine: entries.find((entry) => entry.kind === "line")?.lineNumber ?? 1,
+        lineNumbers: entries.map((entry) => (entry.kind === "line" ? entry.lineNumber : null)),
       },
       fileSize: bytes.length,
       meta: {
         source: { type: "path", value: read.source },
         pagedSource: true,
+        ...(truncation === undefined
+          ? {}
+          : {
+              truncation: {
+                direction: "head",
+                truncatedBy: truncation.truncatedBy,
+                totalLines: truncation.totalLines,
+                totalBytes: truncation.totalBytes,
+                outputLines: truncation.outputLines,
+                outputBytes: truncation.outputBytes,
+                maxBytes: page.budget,
+                shownRange: { start: 1, end: truncation.outputLines },
+                nextOffset: truncation.outputLines + 1,
+              },
+            }),
         ...(cut === undefined
           ? {}
           : {
@@ -701,12 +1040,12 @@ export function pathAnswer(
                   unit: "chars",
                   lines: { first: cut.first, last: cut.last },
                   selectorBase: "",
+                  ...(cut.firstBytes > SPILL_BYTES ? { rawByteCap: SPILL_BYTES } : {}),
                 },
               },
             }),
       },
     },
-    ...(page.wholeText ? { wholeText: true as const } : {}),
   };
 }
 
@@ -758,17 +1097,16 @@ function rangeWindow(
  * arm's directory of the cut's own copy) by the path `target` with a line range, its selector taken
  * off: lines `first` to `last`, or from `first` on when `last` is undefined (`:N`, `:N-`), its
  * hashline line naming `shown` and its rows shown as `rows` (read.ts lines 2598-3035 at the pin):
- * the hashline line of the whole file (hashline rows), then the rows `rangeWindow` gives (at most
- * READ_LINES lines from `first` of a range with no end), then `[<n> more lines in file. Use
- * :<next> to continue]` when lines of the file are left after them; `Path '<target>' not found`
- * for a file `dir` lacks; and for a range that starts past the file's end the pin's notice alone
+ * the hashline line of the whole file (hashline rows), then the window with context, subject to
+ * the same byte budget as a whole read and a cap of MAX_READ_LINES, with the boundary lines of
+ * the blocks it cuts where it does not show every line of the file (`windowRows`). `pathNotice`
+ * adds the continuation and column clauses. `Path '<target>' not found` for a file `dir` lacks;
+ * for a range that starts past the file's end, the pin's notice alone
  * (read.ts lines 2750-2765), `Line <first> is beyond end of file (<n> lines total). Use :1 to read
- * from the start, or :<n> to read the last line.`, no error. Where the pin widens a range of a
- * code file to the brackets of the blocks it cuts (`buildLineEntriesWithBlockContext`), this
- * answers the lines alone. Returns why it does not rebuild the read instead: a file of
- * OWN_FORM_FILE, one that is no UTF-8 text, a range of more than READ_LINES lines, a shown line
- * past READ_COLUMNS characters or one that opens a git conflict block (the pin adds a notice of
- * either), and lines past the bytes the pin shows of the range.
+ * from the start, or :<n> to read the last line.`, no error. Returns why it does not rebuild the
+ * read instead: a file of OWN_FORM_FILE, one past SNAPSHOT_BYTES (the pin streams it), one that
+ * is no UTF-8 text, one with a shown git conflict opener (the pin warns), a page the pin saves as
+ * an artifact, or block context the pin finds with a grammar it downloads.
  */
 export function pathRangeAnswer(
   dir: string,
@@ -787,6 +1125,9 @@ export function pathRangeAnswer(
   if (OWN_FORM_FILE.test(read.file))
     return `${read.file} is a file a read shows in a form of its own`;
   const bytes = readFileSync(full);
+  if (bytes.length > SNAPSHOT_BYTES) {
+    return `${read.file} is past the ${formatBytes(SNAPSHOT_BYTES)} a read holds whole, so the pin streams it, with a notice the runner does not rebuild`;
+  }
   if (bytes.includes(0) || !isUtf8(bytes)) return `${read.file} is not UTF-8 text`;
   const raw = bytes.toString("utf8");
   const lines = raw.split("\n");
@@ -798,45 +1139,37 @@ export function pathRangeAnswer(
       isError: false,
     };
   }
-  const wanted = read.last === undefined ? READ_LINES : read.last - read.first + 1;
-  if (wanted > READ_LINES) {
-    return `its range of ${wanted} lines passes the ${READ_LINES} a read shows at once`;
-  }
-  const { start, end, collect } = rangeWindow(lines.length, read.first, read.last, READ_LINES);
-  const window = lines.slice(start, end);
-  const cut = window.findIndex((line) => line.length > READ_COLUMNS);
-  if (cut >= 0) {
-    return `line ${start + cut + 1} of ${read.file} passes the ${READ_COLUMNS} characters a read shows`;
-  }
-  const opener = window.findIndex((line) => CONFLICT_OPENER.test(line));
+  const { start, collect } = rangeWindow(lines.length, read.first, read.last, READ_LINES);
+  const page = collectPathWindow(lines, start, Math.min(collect, MAX_READ_LINES), read.rows);
+  const end = start + page.shownLines.length;
+  const opener = lines.slice(start, end).findIndex((line) => CONFLICT_OPENER.test(line));
   if (opener >= 0) {
     return `line ${start + opener + 1} of ${read.file} opens a git conflict block, which a read follows with a warning`;
   }
-  // The bytes the pin lets the lines it collects take (read.ts lines 2656-2670).
-  const prefix = read.rows === "plain" ? 0 : String(start + collect).length + 1;
-  const budget = Math.min(
-    Math.max(SPILL_BYTES, collect * 512),
-    SPILL_BYTES - Math.min(collect * prefix, Math.floor(SPILL_BYTES / 2))
-  );
-  const spent = window.reduce((sum, line) => sum + Buffer.byteLength(line) + 1, -1);
-  if (spent > budget) {
-    return `the lines of ${read.file} its range shows come to ${spent} bytes, past the ${budget} a read shows of them`;
-  }
-  const rows = window.map((line, index) => pathRow(start + index + 1, line, read.rows)).join("\n");
+  const window = windowRows(full, raw, start, page, read.rows);
+  if (typeof window === "string") return window;
   const header = read.rows === "hashline" ? `[${read.shown}#${fileTag(raw)}]\n` : "";
-  const left = lines.length - end;
-  const notice = left > 0 ? `\n\n[${left} more lines in file. Use :${end + 1} to continue]` : "";
-  return { text: `${header}${rows}${notice}`, isError: false };
+  const body = header + window.rows;
+  if (Buffer.byteLength(body) > SPILL_BYTES + INLINE_SLACK) {
+    return `a read by path of ${read.file} is saved as an artifact`;
+  }
+  const notice = pathNotice(start, lines.length, { ...page, cut: window.cut });
+  return { text: `${body}${notice}`, isError: false };
 }
 
 /** Oh My Pi's text for a `skill://` read of the skill file `text` with a line range, `first` to
  *  `last` (to the end when undefined), the file shown at `shown` (read.ts lines 2508-2517 and
  *  2039-2045, read-format.ts's `buildInMemoryTextResult` at the pin): its `[Skill file: <shown>]`
  *  line, then the lines `rangeWindow` gives (every line from `first` of a range with no end), as a
- *  whole `skill://` read shows them (no row numbers), then `[<n> more lines in file. Use :<next>
- *  to continue]` when a range with an end leaves lines after them; the lines alone where the pin
- *  widens the range to the brackets of the blocks it cuts. Undefined for a range that starts past
- *  the file's end, whose notice is not rebuilt. */
+ *  whole `skill://` read shows them (no row numbers), with the boundary lines of the blocks they
+ *  cut, whole, and `…` rows across the gaps, where they do not show every line of the file
+ *  (read-format.ts lines 491-495 and 541-561: block-context.ts's
+ *  `buildLineEntriesWithBlockContext`, the file's name picking the grammar), then `[<n> more lines
+ *  in file. Use :<next> to continue]` when a range with an end leaves lines after them. The skill
+ *  protocol is unbounded (`ignoreResultLimits`), so it uses the in-memory builder's range notice,
+ *  not the filesystem reader's `Showing lines` notice. Undefined for a range that starts past the
+ *  file's end, whose notice is not rebuilt, and for one whose blocks the pin finds with a grammar
+ *  it downloads (block-context.ts's `missingGrammar`). */
 function skillRangeText(
   text: string,
   shown: string,
@@ -845,12 +1178,17 @@ function skillRangeText(
   const lines = textLines(text);
   if (range.first > lines.length) return undefined;
   const { start, end } = rangeWindow(lines.length, range.first, range.last, lines.length);
+  const spans = [{ startLine: start + 1, endLine: end }];
+  if (!spansCoverEveryLine(spans, lines.length) && missingGrammar(shown) !== undefined) {
+    return undefined;
+  }
+  const entries = buildLineEntriesWithBlockContext(lines, spans, { path: shown, text });
   const left = lines.length - end;
   const notice =
     range.last !== undefined && left > 0
       ? `\n\n[${left} more lines in file. Use :${end + 1} to continue]`
       : "";
-  return `${skillFileHeader(shown)}\n${lines.slice(start, end).join("\n")}${notice}`;
+  return `${skillFileHeader(shown)}\n${lineEntriesToPlainText(entries)}${notice}`;
 }
 
 /** The answer to a new read of `target` from the arm's files, when it is a read of a file of the

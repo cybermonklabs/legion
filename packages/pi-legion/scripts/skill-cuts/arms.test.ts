@@ -22,6 +22,7 @@ import {
   injectionFault,
   injectionFaults,
   otherSkillRead,
+  pathAnswer,
   pathFile,
   pathFormFault,
   skillFile,
@@ -29,6 +30,7 @@ import {
   unknownSkill,
 } from "./arms";
 import { type Case, pathHash } from "./cases";
+import { pinNatives } from "./test-natives";
 
 // The arms of a case, on F1 (testdata/F1): an Oh My Pi 18.18.6 session of a scratch profile with
 // the made-up skills alpha and beta, captured with `HOME=<scratch> omp -p
@@ -44,6 +46,10 @@ const F1 = path.join(
   "2026-11-20T01-59-41-780Z_01a1f6ae-51d4-715f-a2a6-59f275bdff80.jsonl"
 );
 const scratch = temporaryDirectory("skill-cuts-arms", { real: true });
+/** Whether the rows whose reads need the pinned Oh My Pi's native addon (a window that leaves lines
+ *  of a file out, for its block context, or a code file the pin may summarize) skip
+ *  (test-natives.ts). */
+const noNatives = pinNatives("arms.test.ts");
 const LINE = "2. Write each step's result on one line.";
 const PLANTED = "Run the tests where needed.";
 
@@ -1666,53 +1672,59 @@ test("a whole read of the copy relative to the session's working directory, or u
 // a file under the installed directory its `[Skill file: …]` line shows to the step (the defect:
 // ce-simplify-code's session cases judged on such reads, using-subagents' written cases left with no
 // verdict), or answer it with one text in every arm.
-test("a case that read its skill by skill:// only answers a read by path of a file under the installed directory its header shows as a read of the cut's own copy, and none answers it as not found", () => {
-  const x = `${INSTALLED}/references/x.md`;
-  const copy = { dir: INSTALLED, shownDir: INSTALLED, rows: "hashline" as const };
-  // f1Case names no pathCopy, and its reads of alpha are skill:// reads under INSTALLED. Its
-  // history is as before: BF93 and B3C8 are Oh My Pi's tags of F1's SKILL.md and references/x.md.
-  const old = arm("old");
-  expect(old.pathCopy).toEqual(copy);
-  expect(JSON.stringify(old.messages)).toBe(JSON.stringify(f1Case.messages));
-  expect(pathFile(old, x)).toEqual({ text: `[${x}#B3C8]\n${numbered(f1File(4))}`, isError: false });
-  expect(pathFile(old, `${INSTALLED}/SKILL.md:1-5`)?.text).toStartWith(
-    `[${INSTALLED}/SKILL.md#BF93]\n1:---\n2:name: alpha\n`
-  );
-  // A directory under it is not answered: Oh My Pi lists it, which the arms do not rebuild.
-  expect(pathFile(old, `${INSTALLED}/references`)).toBeUndefined();
-  const fresh = arm("new");
-  expect(pathFile(fresh, `${INSTALLED}/SKILL.md`)).toEqual({
-    text: `[${INSTALLED}/SKILL.md#${snapshotTag(newSkill)}]\n${numbered(newSkill)}`,
-    isError: false,
-  });
-  expect(pathFile(fresh, x)).toEqual({ text: `Path '${x}' not found`, isError: true });
-  const none = arm("none");
-  expect(none.pathCopy).toEqual(copy);
-  expect(pathFile(none, x)).toEqual({ text: `Path '${x}' not found`, isError: true });
-  // The arm of ours answers it as a read of the cut's own copy: our file at that path.
-  const ours = withOurs(f1Case, "ours", RENAMED);
-  expect(ours.pathCopy).toEqual(copy);
-  expect(pathFile(ours, x)).toEqual(pathFile(old, x));
-  expect(pathFile(withOurs(f1Case, "ours", SHORT), x)).toEqual({
-    text: `Path '${x}' not found`,
-    isError: true,
-  });
+test.skipIf(noNatives)(
+  "a case that read its skill by skill:// only answers a read by path of a file under the installed directory its header shows as a read of the cut's own copy, and none answers it as not found",
+  () => {
+    const x = `${INSTALLED}/references/x.md`;
+    const copy = { dir: INSTALLED, shownDir: INSTALLED, rows: "hashline" as const };
+    // f1Case names no pathCopy, and its reads of alpha are skill:// reads under INSTALLED. Its
+    // history is as before: BF93 and B3C8 are Oh My Pi's tags of F1's SKILL.md and references/x.md.
+    const old = arm("old");
+    expect(old.pathCopy).toEqual(copy);
+    expect(JSON.stringify(old.messages)).toBe(JSON.stringify(f1Case.messages));
+    expect(pathFile(old, x)).toEqual({
+      text: `[${x}#B3C8]\n${numbered(f1File(4))}`,
+      isError: false,
+    });
+    expect(pathFile(old, `${INSTALLED}/SKILL.md:1-5`)?.text).toStartWith(
+      `[${INSTALLED}/SKILL.md#BF93]\n1:---\n2:name: alpha\n`
+    );
+    // A directory under it is not answered: Oh My Pi lists it, which the arms do not rebuild.
+    expect(pathFile(old, `${INSTALLED}/references`)).toBeUndefined();
+    const fresh = arm("new");
+    expect(pathFile(fresh, `${INSTALLED}/SKILL.md`)).toEqual({
+      text: `[${INSTALLED}/SKILL.md#${snapshotTag(newSkill)}]\n${numbered(newSkill)}`,
+      isError: false,
+    });
+    expect(pathFile(fresh, x)).toEqual({ text: `Path '${x}' not found`, isError: true });
+    const none = arm("none");
+    expect(none.pathCopy).toEqual(copy);
+    expect(pathFile(none, x)).toEqual({ text: `Path '${x}' not found`, isError: true });
+    // The arm of ours answers it as a read of the cut's own copy: our file at that path.
+    const ours = withOurs(f1Case, "ours", RENAMED);
+    expect(ours.pathCopy).toEqual(copy);
+    expect(pathFile(ours, x)).toEqual(pathFile(old, x));
+    expect(pathFile(withOurs(f1Case, "ours", SHORT), x)).toEqual({
+      text: `Path '${x}' not found`,
+      isError: true,
+    });
 
-  // A case whose reads show no installed directory names none.
-  const bare = structuredClone(f1Case);
-  for (const index of bare.skillReads) {
-    const part = bare.messages[index]?.content?.[0];
-    if (part) part.text = stripSkillHeader(part.text ?? "");
+    // A case whose reads show no installed directory names none.
+    const bare = structuredClone(f1Case);
+    for (const index of bare.skillReads) {
+      const part = bare.messages[index]?.content?.[0];
+      if (part) part.text = stripSkillHeader(part.text ?? "");
+    }
+    const plain = buildArm(
+      bare,
+      "old",
+      { old: oldDir, new: newDir },
+      path.join(scratch, "bare-copy")
+    );
+    expect(plain.pathCopy).toBeUndefined();
+    expect(pathFile(plain, "/skills/alpha/references/x.md")).toBeUndefined();
   }
-  const plain = buildArm(
-    bare,
-    "old",
-    { old: oldDir, new: newDir },
-    path.join(scratch, "bare-copy")
-  );
-  expect(plain.pathCopy).toBeUndefined();
-  expect(pathFile(plain, "/skills/alpha/references/x.md")).toBeUndefined();
-});
+);
 
 // Catches: a long line of an arm's file shown whole where Oh My Pi cuts it, and a file Oh My Pi
 // shows in another form answered as if it showed it whole.
@@ -1795,15 +1807,10 @@ test("pathFormFault names each form of a file the arms do not rebuild, as buildA
   expect(pathFormFault("SKILL.md", merging)).toBe(
     "line 3 of SKILL.md opens a git conflict block, which a read by path follows with a warning"
   );
-  // 100 lines of 500 characters come to 50,099 bytes with their newlines: past the 50,000 a read
-  // shows of rows that show their numbers, within the 51,200 it shows of the lines alone. Left
-  // out, the rows are taken to show their numbers.
-  const wide = Buffer.from(`${"y".repeat(500)}\n`.repeat(100));
-  const past =
-    "the lines of SKILL.md a read by path shows come to 50099 bytes, past the 50000 it shows";
-  expect(pathFormFault("SKILL.md", wide)).toBe(past);
-  expect(pathFormFault("SKILL.md", wide, "numbered")).toBe(past);
-  expect(pathFormFault("SKILL.md", wide, "plain")).toBeUndefined();
+  // A file past 4 MiB the pin streams, with a notice of its own.
+  expect(pathFormFault("SKILL.md", Buffer.alloc(4 * 1024 * 1024 + 1, "a"))).toBe(
+    "SKILL.md is past the 4.0MB a read holds whole, so the pin streams it, with a notice the runner does not rebuild"
+  );
 
   // buildArm refuses the arm's file with the fault pathFormFault names.
   const mergeDir = skillDir("merging", { "SKILL.md": merging.toString() });
@@ -1811,6 +1818,76 @@ test("pathFormFault names each form of a file the arms do not rebuild, as buildA
     `case c-path: the new arm cannot answer the read of ${COPY}/SKILL.md: ${pathFormFault("SKILL.md", merging)}, a form the arms do not rebuild`
   );
 });
+
+// Catches: a page the byte budget stops answered with its rows alone, where the pin shows the
+// closing line of the block the page cuts after them, outside the budget.
+test.skipIf(noNatives)(
+  "a whole read by path the byte budget stops shows the closing line of the block it cuts after its rows",
+  () => {
+    // Numbered pages stop at 50,000 bytes. Plain pages have room for all 100 lines. The 100 lines
+    // are one Markdown paragraph, which opens on line 1 and closes on line 100, past the page.
+    const line = "y".repeat(500);
+    const wide = `${line}\n`.repeat(100);
+    expect(pathFormFault("SKILL.md", Buffer.from(wide))).toBeUndefined();
+    const wideArm = pathArm(pathCase, "new", skillDir("byte-page", { "SKILL.md": wide }));
+    const rows = Array.from({ length: 100 }, (_, i) => `${i + 1}:${line}`).join("\n");
+    expect(textOf(wideArm.messages[8])).toBe(
+      `[${SHOWN}/SKILL.md#${snapshotTag(wide)}]\n${rows}\n\n[Showing lines 1-99 of 100 (48.8KB limit). Use :100 to continue]`
+    );
+    expect(detailsOf(wideArm.messages[8]).displayContent).toEqual({
+      text: wide.replace(/\n$/, ""),
+      startLine: 1,
+      lineNumbers: Array.from({ length: 100 }, (_, i) => i + 1),
+    });
+  }
+);
+
+// Catches: a summary's record unlike the pin's (R4's recorded summaries hold `displayContent`,
+// the rows' lines alone from line 1, `rowPrefixes`, `summary` with its rows, elided spans and
+// elided lines, `fileSize` and `meta.source`, in that order, and no page's `pagedSource`), or a
+// code file of a skill's own read by path summarized, where the arms rebuild no such read.
+test.skipIf(noNatives)(
+  "a checkout's whole read by path of a code file the pin summarizes gives the pin's summary and its record; a skill's own code file is still no form the arms rebuild",
+  () => {
+    const table = `${[
+      "TABLE = {",
+      ...Array.from({ length: 118 }, (_, n) => `    "k${n + 1}": ${n + 1},`),
+      "}",
+    ].join("\n")}\n`;
+    const dir = skillDir("summary", { "src/table.py": table });
+    const source = "/work/acme/proj/src/table.py";
+    const read = {
+      file: "src/table.py",
+      target: "src/table.py",
+      source,
+      shown: "src/table.py",
+      rows: "hashline" as const,
+    };
+    const answer = pathAnswer(dir, { ...read, checkout: { listed: "src/table.py" } });
+    expect(answer).toEqual({
+      text: `[src/table.py#${snapshotTag(table)}]\n1-120:TABLE = { … }\n\n[…118ln elided; re-read needed ranges with src/table.py:1-120]`,
+      isError: false,
+      details: {
+        displayContent: { text: "TABLE = { … }", startLine: 1 },
+        rowPrefixes: true,
+        summary: { lines: 1, elidedSpans: 1, elidedLines: 118 },
+        fileSize: Buffer.byteLength(table),
+        meta: { source: { type: "path", value: source } },
+      },
+    });
+    if (typeof answer === "string") throw new Error(answer);
+    expect(Object.keys(answer.details)).toEqual([
+      "displayContent",
+      "rowPrefixes",
+      "summary",
+      "fileSize",
+      "meta",
+    ]);
+    expect(pathAnswer(dir, read)).toBe(
+      "src/table.py is no Markdown or plain-text file, the only kinds whose read by path the arms rebuild"
+    );
+  }
+);
 
 /** Beta's SKILL.md and its reference, as the cache holds the copy the capture installed. */
 const BETA_MD =

@@ -175,18 +175,26 @@
  *   arms.ts writes a whole read by path (`pathAnswer`, its rows as the arm's reads by path show
  *   them), or Oh My Pi's not-found result `Path '<path>' not found` for a file the copy lacks. A
  *   file that is no prose is answered so too: a UTF-8 text file that is no notebook, SVG or
- *   document markit converts. The pin may summarize one of 100 lines or more (newlines and one
- *   more; read.ts lines 2519-2533, read-summary.ts's `trySummarize`,
- *   `read.summarize.minTotalLines` 100: a code file whose tree-sitter parse elides a body), which
- *   the runner cannot rebuild: such a file is answered unsummarized in place of the summary, the
- *   same in every arm, and the answer says so (`CheckoutAnswer.wholeText`, which the run records).
- *   A file of more than 300 lines is answered as the pin pages it unsummarized (`read.defaultLimit`
- *   300): its first 300 lines, then `[<n> more lines in file. Use :301 to continue]`. A read with
- *   one line range (arms.ts's `readRange`: `:N-M`, `:N..M`, `:N+K`, `:N`, `:N-`) is answered with
- *   the lines of its range in the pin's range form (arms.ts's `pathRangeAnswer`: the hashline line,
- *   a line before the range and three after it, then `[<n> more lines in file. Use :<next> to
- *   continue]`); where the pin widens a range of a code file to the brackets of the blocks it
- *   cuts, the lines alone; a range that starts past the file's end with the pin's notice, `Line
+ *   document markit converts. A whole read of such a file of 100 lines or more (newlines and one
+ *   more, `read.summarize.minTotalLines`) is the pin's structural summary where the pin's
+ *   tree-sitter parse, through its native addon, is clean and elides a span (arms.ts's
+ *   `summaryAnswer`; read.ts lines 2519-2575, read-summary.ts's `trySummarize`): its rows, each
+ *   elided span a `…` row or one `<a>-<b>:<head> … <tail>` row of a brace pair, and the footer
+ *   `[…<n>ln elided; re-read needed ranges with <path>:<a>-<b>[,<c>-<d>]]` (`, e.g.` in place of
+ *   ` with`, and the first two ranges, where more are elided), `<path>` relative to the session's
+ *   working directory, else absolute; a file the pin does not summarize is answered as below.
+ *   Whole reads page after 300 lines (`read.defaultLimit`) or at the byte budget, whichever
+ *   comes first. A single line range (`:N-M`, `:N..M`, `:N+K`, `:N`, `:N-`) includes a preceding
+ *   line and, for a range with an end, up to three following lines, subject to its byte budget
+ *   and line cap (`pathRangeAnswer`). If lines remain, the notice is `[Showing lines <a>-<b>
+ *   of <total>. Use :<b+1> to continue]`, with `(<size> limit)` after the total on a byte stop.
+ *   Any column truncation goes in the same notice. Where the rows shown leave lines of the file
+ *   out, the answer shows the pin's block context too (arms.ts's `windowRows`, block-context.ts):
+ *   the boundary line of each block that opens on a shown row and closes after them, or closes on
+ *   one and opens before them, as tree-sitter finds it through the pinned Oh My Pi's native addon
+ *   (else, for a language the addon does not know or a file that does not parse, a scan of the
+ *   brackets), in the rows' form, cut as a shown row is, with `…` rows across the gaps; the byte
+ *   budget counts the shown rows alone. A range past the file's end gets the pin's notice, `Line
  *   <n> is beyond end of file (<lines> lines total). Use :1 to read from the start, or :<lines> to
  *   read the last line.` A read of a directory is answered with the pin's listing (read.ts lines
  *   3281-3358, workspace-tree.ts lines 57-90 and 166-314, crates/pi-natives/src/workspace.rs
@@ -202,9 +210,12 @@
  *   symbolic link is listed as a file is; one cli.ts removed from the copy is not listed. Not
  *   answered: a read with another selector (`:raw`, a list, `:-N`, …), a ranged read of a
  *   directory, a listing that would show `.git` or `.jj` (the copy's, not the session's), or past
- *   50 KB, a read outside the root, under `~` or `.git`, and a file the arms refuse for another
- *   reason (`pathFormFault`: not UTF-8 text, a git conflict block, a page past the bytes a read
- *   shows).
+ *   50 KB, a read outside the root, under `~` or `.git`, a file past 4 MiB (the pin streams it,
+ *   with a notice of its own and no block context), a read whose block context or summary needs
+ *   a WebAssembly grammar not installed beside the addon (the pin downloads it first, and the
+ *   session's rows came from it or, where the download failed, from the scan of the brackets, or
+ *   the file was unsummarized), and a file the arms refuse for another reason (`pathFormFault`:
+ *   not UTF-8 text, a git conflict block, an artifact spill, a summary's too).
  * - `grep` (keys `pattern`, `path`, `case`, `gitignore`, `skip`, `i`): GrepTool's output
  *   (packages/coding-agent/src/tools/grep.ts lines 651-1316, its native search
  *   crates/pi-walker/src/grep/). Its `path` (`.` when absent) is a path, or a list joined by `;`
@@ -242,10 +253,14 @@
  *   matches in <files>; grep keeps the first 20 per file when searching several. Search one file
  *   alone for up to 200.` (its first five files, then `and <n> more files`) or `More than 200
  *   matches; grep keeps the first 200 in a file. Add a line range (`path:N-M`) or narrow the
- *   pattern for the rest.` where a file holds more matches than are kept; then, where a match line
- *   was cut, `[Some lines truncated to 512 bytes]` (packages/tui/src/tools/output-meta.ts lines
- *   365-431). `No matches found` when none (the missing paths' note on the next line), `No more
- *   results (<n> files total; skip=<k> is past the end)` for a page past the last. Its paths are
+ *   pattern for the rest.` where a file holds more matches than are kept. The match output stops
+ *   at a line boundary within 50 KiB, reserving space for those trailers. On a byte stop the
+ *   multi-file cap trailer names only files shown in full. The bracketed notice after the
+ *   trailers gives `Showing lines 1-<b> of <total> (<bytes shown> limit). Use :<b+1> to continue`
+ *   on a byte stop and `Some lines truncated to 512 bytes` if a match line was cut, joined with
+ *   `. ` when both apply (packages/tui/src/tools/output-meta.ts). `No matches found` when none,
+ *   the missing paths' note on the next line; `No more results (<n> files total; skip=<k> is past
+ *   the end)` for a page past the last. Its paths are
  *   relative to the working directory when under it, else absolute (path-utils.ts lines
  *   512-531); its regular expression is JavaScript's in Unicode mode, case-sensitive unless `case`
  *   is false, which backtracks where the pin's (Rust's regex) does not, so the answer is worked
@@ -265,9 +280,9 @@
  *   4 MiB (which the pin streams), a pattern over lines or with a look-around, a back-reference,
  *   a named group in Rust's own form or a flag group other than that leading one (one elsewhere,
  *   a scoped `(?i:…)`, a negated one, one of another flag), one JavaScript does not take, a cut
- *   match line of a file that is not UTF-8, an output past 50 KB with its notices, a test of its
- *   expression over a line (or of its exclusions' over a path) past 100 ms, and a search past the
- *   time limit.
+ *   match line of a file that is not UTF-8, an output the pin spills to a session artifact, a
+ *   test of its expression over a line (or of its exclusions' over a path) past 100 ms, and a
+ *   search past the time limit.
  * - `glob` (keys `path`, `hidden`, `gitignore`, `limit`, `i`): GlobTool's output
  *   (packages/coding-agent/src/tools/glob.ts lines 197-375, path-utils.ts's `parseFindPattern`
  *   and `splitDelimitedPathEntry`): `path` (`.` when absent) a pattern, or a list of patterns
@@ -349,7 +364,17 @@ import {
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { isMainThread, parentPort, Worker, workerData } from "node:worker_threads";
-import { fileTag, type PathRows, pathAnswer, pathRangeAnswer, readRange, shownPath } from "./arms";
+import {
+  fileTag,
+  formatBytes,
+  outputNotice,
+  type PathRows,
+  pathAnswer,
+  pathRangeAnswer,
+  readRange,
+  showingLines,
+  shownPath,
+} from "./arms";
 import { type Case, insideRoot, resolvedReadPath, textLines } from "./cases";
 import { bytesAt, eachChunk, firstLine, Limiter, timeLimit } from "./common";
 
@@ -1708,12 +1733,10 @@ export interface CheckoutCopy {
   readonly answers?: Map<string, Promise<CheckoutAnswer | Unanswered>>;
 }
 
-/** A call's answer: the text the tool gives, whether it is an error, and, for a read of a file the
- *  pin may show summarized, that it was given whole in place of the summary (`wholeText`). */
+/** A call's answer: the text the tool gives, and whether it is an error. */
 export interface CheckoutAnswer {
   readonly text: string;
   readonly isError: boolean;
-  readonly wholeText?: true;
 }
 
 /** Why a call is not answered. */
@@ -2413,11 +2436,10 @@ function readAnswer(
     source: full,
     shown,
     rows,
-    checkoutRead: true,
+    checkout: { listed: relativeToCwd(copy, full) },
   });
   if (typeof answer === "string") return { why: answer };
-  const { text, isError, wholeText } = answer;
-  return wholeText === true ? { text, isError, wholeText } : { text, isError };
+  return { text: answer.text, isError: answer.isError };
 }
 
 /** The read tool's listing of the directory `inside` of the copy, read as `target` (see the file's
@@ -3088,6 +3110,26 @@ function grepScope(
   };
 }
 
+/** Grep's byte-only `truncateHead`: keep the longest prefix of complete lines that fits. */
+function grepHead(text: string, budget: number): { text: string; lines: number; bytes: number } {
+  let start = 0;
+  let end = 0;
+  let lines = 0;
+  let bytes = 0;
+  for (;;) {
+    const newline = text.indexOf("\n", start);
+    const next = newline === -1 ? text.length : newline;
+    const cost = Buffer.byteLength(text.slice(start, next)) + (lines === 0 ? 0 : 1);
+    if (bytes + cost > budget) break;
+    bytes += cost;
+    end = next;
+    lines++;
+    if (newline === -1) break;
+    start = newline + 1;
+  }
+  return { text: text.slice(0, end), lines, bytes };
+}
+
 /** The `grep` call's answer (see the file's header). */
 function grepAnswer(
   copy: CheckoutCopy,
@@ -3232,6 +3274,7 @@ function grepAnswer(
     return { shown, tag, lines };
   });
   const model: string[] = [];
+  const modelEnds = new Map<string, number>();
   if (scope.multi) {
     const byShown = new Map(sections.map((section) => [section.shown, section]));
     let emitted = false;
@@ -3246,6 +3289,7 @@ function grepAnswer(
       const section = byShown.get(event.key);
       if (section === undefined) continue;
       model.push(`${hashes} ${event.name}${hashline ? `#${section.tag}` : ""}`, ...section.lines);
+      modelEnds.set(event.key, model.length);
     }
   } else {
     const [section] = sections;
@@ -3254,27 +3298,50 @@ function grepAnswer(
       model.push(...section.lines);
     }
   }
-  // The page, missing-path and cap notices after the lines (grep.ts lines 1221-1260; a cap's
-  // files named as formatCappedFiles, lines 458-463, names them), and the notice of cut lines
-  // after them (output-meta.ts's `formatOutputNotice`).
-  const rest = capped.length - 5;
-  const cappedNames = `${capped.slice(0, 5).join(", ")}${rest > 0 ? ` and ${rest} more ${rest === 1 ? "file" : "files"}` : ""}`;
-  const capNotice =
-    capped.length === 0
-      ? ""
-      : scope.multi
-        ? `More than ${cap} matches in ${cappedNames}; grep keeps the first ${cap} per file when searching several. Search one file alone for up to ${GREP_SINGLE_FILE_MATCHES}.`
-        : `More than ${cap} matches; grep keeps the first ${cap} in a file. Add a line range (\`path:N-M\`) or narrow the pattern for the rest.`;
-  const suffix = [pageNotice, missingNotice, capNotice]
-    .filter((notice) => notice !== "")
-    .map((notice) => `\n\n${notice}`)
-    .join("");
+  // grep.ts reserves space for trailers before cutting the body. Only name a capped file
+  // in multi-scope output when its entire section survived. Re-cut only if the trailer grows.
+  const trailer = (files: readonly string[]): string => {
+    const rest = files.length - 5;
+    const names = `${files.slice(0, 5).join(", ")}${rest > 0 ? ` and ${rest} more ${rest === 1 ? "file" : "files"}` : ""}`;
+    const capNotice =
+      files.length === 0
+        ? ""
+        : scope.multi
+          ? `More than ${cap} matches in ${names}; grep keeps the first ${cap} per file when searching several. Search one file alone for up to ${GREP_SINGLE_FILE_MATCHES}.`
+          : `More than ${cap} matches; grep keeps the first ${cap} in a file. Add a line range (\`path:N-M\`) or narrow the pattern for the rest.`;
+    return [pageNotice, missingNotice, capNotice]
+      .filter((notice) => notice !== "")
+      .map((notice) => `\n\n${notice}`)
+      .join("");
+  };
   const body = model.join("\n");
-  if (Buffer.byteLength(body) + Buffer.byteLength(suffix) > OUTPUT_BYTES) {
-    return { why: `its output passes the ${OUTPUT_BYTES} bytes grep shows` };
+  const bytes = Buffer.byteLength(body);
+  let suffix = trailer(capped);
+  const column = linesCut ? `Some lines truncated to ${GREP_COLUMNS} bytes` : undefined;
+  for (;;) {
+    const reserved = Buffer.byteLength(suffix);
+    if (bytes + reserved <= OUTPUT_BYTES) {
+      return { text: `${body}${suffix}${outputNotice(column)}`, isError: false };
+    }
+    const kept = grepHead(body, OUTPUT_BYTES - reserved);
+    if (scope.multi) {
+      suffix = trailer(capped.filter((file) => (modelEnds.get(file) ?? Infinity) <= kept.lines));
+    }
+    const suffixBytes = Buffer.byteLength(suffix);
+    if (suffixBytes > reserved) continue;
+    if (kept.bytes + suffixBytes > OUTPUT_BYTES) {
+      return {
+        why: "grep saves the output as a session artifact, whose id the runner cannot rebuild",
+      };
+    }
+    const total = body.split("\n").length;
+    // grep.ts passes no maxBytes to the truncation metadata, so the notice names the kept bytes.
+    const paging =
+      kept.lines === 0
+        ? `Showing line 1 (partial, 0B of ${formatBytes(bytes)}) of ${total}`
+        : showingLines(1, kept.lines, total, kept.bytes);
+    return { text: `${kept.text}${suffix}${outputNotice(paging, column)}`, isError: false };
   }
-  const cutNotice = linesCut ? `\n\n[Some lines truncated to ${GREP_COLUMNS} bytes]` : "";
-  return { text: `${body}${suffix}${cutNotice}`, isError: false };
 }
 
 /** The key of a worker's data (`answerInWorker`) under which its call is. */
