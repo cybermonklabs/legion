@@ -1,11 +1,13 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"maps"
 	"net/http"
 	"net/http/httptest"
@@ -1213,16 +1215,24 @@ func TestARecoveryWhileTheConsumerIsBehindAdmitsOnceItCatchesUp(t *testing.T) {
 // The refresher reads GitHub again of its own for an issue's unread repository (its third job,
 // recoverRepositories) on its retry's backoff (repositoryReadBounds.retry), the initial wait doubling to its cap, and
 // no more; once nothing is unread it reads nothing of its own, and the next repository left
-// unread starts again at the initial wait. The backoff runs here at 10 ms doubling to 80 ms, which
-// the refresher's clock (time.After) waits out for real, so each wait it asks for is the job's own
-// backoff: a job's wait is armed when its cause stands and moved on when the job has run.
+// unread starts again at the initial wait. The backoff runs here at 10 ms doubling to 80 ms.
+//
+// The schedule is read from the job's own runs (recoveryRuns): each logs the wait it waited.
+// The clock is no reading of it, since the refresher asks the clock (recheckAfter) for a wait at
+// every turn, whichever job or wake began it: a wake that comes while the job waits makes it ask
+// for the rest of the wait, and a wake whose run ends past the job's due time makes it ask for
+// none, the job being due at once. Counted from the clock's asks, this test failed on main when a
+// wake's run ended past the due time (daemon-go-race job 138963236285, `waits = [10ms 0s 20ms 40ms
+// 80ms 80ms]`): TestARecoveryWokenPastItsDueTimeKeepsItsBackoff forces that order every run.
 func TestTheUnreadRepositoryBackoffDoublesToItsCapAndResets(t *testing.T) {
 	t.Parallel()
 	var mu sync.Mutex
 	var waits []time.Duration
+	logs := &syncBuffer{}
 	w, client, installs, _ := repositoryRigWith(t, &installations{}, withReads(func(reads *repositoryReadBounds) {
 		reads.retry.Initial, reads.retry.Max = 10*time.Millisecond, 80*time.Millisecond
 	}), func(w *workflowRuntime) {
+		w.log = slog.New(slog.NewJSONHandler(logs, nil))
 		w.recheckAfter = func(d time.Duration) <-chan time.Time {
 			mu.Lock()
 			waits = append(waits, d)
@@ -1231,18 +1241,17 @@ func TestTheUnreadRepositoryBackoffDoublesToItsCapAndResets(t *testing.T) {
 		}
 	})
 	rigHandlers(w)
-	recorded := func() []time.Duration {
+	asked := func() int {
 		mu.Lock()
 		defer mu.Unlock()
-		return slices.Clone(waits)
+		return len(waits)
 	}
-	start := len(recorded())
 	installs.setFailing(errors.New("GitHub answered 502"), "implement orbit/gadgets")
 	deliver(t, w, client, issue("LEGION-1450", "orbit/gadgets", "todo", true, "", 1))
-	testwait.Eventually(t, "six waits", func() bool { return len(recorded()) >= start+6 })
+	testwait.Eventually(t, "six runs of the recovery of its own", func() bool { return len(recoveryRuns(t, logs)) >= 6 })
 	want := []time.Duration{10 * time.Millisecond, 20 * time.Millisecond, 40 * time.Millisecond, 80 * time.Millisecond, 80 * time.Millisecond, 80 * time.Millisecond}
-	if got := recorded()[start : start+6]; !slices.Equal(got, want) {
-		t.Fatalf("waits = %v, want %v", got, want)
+	if got := recoveryRuns(t, logs)[:6]; !slices.Equal(got, want) {
+		t.Fatalf("the recovery's runs of its own waited %v, want %v", got, want)
 	}
 
 	installs.setFailing(nil, "implement orbit/gadgets")
@@ -1250,17 +1259,88 @@ func TestTheUnreadRepositoryBackoffDoublesToItsCapAndResets(t *testing.T) {
 		return recordsOn(w, "orbit/gadgets") && len(w.unreadReasons()) == 0 && len(w.recoveringReasons()) == 0
 	})
 	time.Sleep(100 * time.Millisecond)
-	idle := len(recorded())
+	idle, ran := asked(), len(recoveryRuns(t, logs))
 	time.Sleep(100 * time.Millisecond)
-	if got := len(recorded()); got != idle {
+	if got := asked(); got != idle {
 		t.Fatalf("the refresher asked for %d more waits with nothing unread, want none", got-idle)
 	}
 	installs.setFailing(errors.New("GitHub answered 502"), "implement orbit/tools")
 	deliver(t, w, client, issue("LEGION-1451", "orbit/tools", "todo", true, "", 1))
-	testwait.Eventually(t, "a wait after orbit/tools is left unread", func() bool { return len(recorded()) > idle })
-	if got := recorded()[idle]; got != w.reads().retry.Initial {
-		t.Fatalf("the first wait after orbit/tools was left unread = %s, want %s", got, w.reads().retry.Initial)
+	testwait.Eventually(t, "a run of the recovery after orbit/tools is left unread", func() bool { return len(recoveryRuns(t, logs)) > ran })
+	if got := recoveryRuns(t, logs)[ran]; got != w.reads().retry.Initial {
+		t.Fatalf("the first run of the recovery after orbit/tools was left unread waited %s, want %s", got, w.reads().retry.Initial)
 	}
+}
+
+// A wake of the recovery whose run ends past the job's due time leaves the backoff as it was: the
+// job runs at once, its wait doubles, and the waits after it are its own. Here no timer fires until
+// the test has let the first wait's due time pass (every wait asked before then never fires), and
+// the test then wakes the recovery, so the wake's run always ends past the due time, the order
+// daemon-go-race job 138963236285 met by chance. A wake that comes meanwhile, a read of the live
+// records, runs its job and no recovery of the recovery's own, since only a timer runs that. The
+// job's own runs then wait 10 ms, 20 ms, 40 ms, 80 ms; the clock's asks read [10ms … 0s 20ms
+// 40ms …], the 0s being the turn after the wake's run, at which the job was due already.
+func TestARecoveryWokenPastItsDueTimeKeepsItsBackoff(t *testing.T) {
+	t.Parallel()
+	const initial = 10 * time.Millisecond
+	var mu sync.Mutex
+	var asked []time.Duration
+	released := false
+	logs := &syncBuffer{}
+	w, client, installs, _ := repositoryRigWith(t, &installations{}, withReads(func(reads *repositoryReadBounds) {
+		reads.retry.Initial, reads.retry.Max = initial, 80*time.Millisecond
+	}), func(w *workflowRuntime) {
+		w.log = slog.New(slog.NewJSONHandler(logs, nil))
+		w.recheckAfter = func(d time.Duration) <-chan time.Time {
+			mu.Lock()
+			defer mu.Unlock()
+			asked = append(asked, d)
+			if !released {
+				return nil
+			}
+			return time.After(d)
+		}
+	})
+	rigHandlers(w)
+	installs.setFailing(errors.New("GitHub answered 502"), "implement orbit/gadgets")
+	deliver(t, w, client, issue("LEGION-1452", "orbit/gadgets", "todo", true, "", 1))
+	testwait.Eventually(t, "orbit/gadgets left unread and the recovery's first wait asked for", func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(w.unreadReasons()) != 0 && len(asked) != 0
+	})
+	time.Sleep(5 * initial)
+	if runs := recoveryRuns(t, logs); len(runs) != 0 {
+		t.Fatalf("the recovery ran of its own (%v) while no timer could fire, so the wake below would not come past its due time", runs)
+	}
+	mu.Lock()
+	released = true
+	mu.Unlock()
+	wake(w.recoverWake)
+	testwait.Eventually(t, "four runs of the recovery of its own", func() bool { return len(recoveryRuns(t, logs)) >= 4 })
+	want := []time.Duration{initial, 2 * initial, 4 * initial, 8 * initial}
+	if got := recoveryRuns(t, logs)[:4]; !slices.Equal(got, want) {
+		mu.Lock()
+		defer mu.Unlock()
+		t.Fatalf("the recovery's runs of its own waited %v, want %v (the clock was asked for %v)", got, want, asked)
+	}
+}
+
+// recoverAgainLine is the line the refresher logs as its recovery runs of its own: its "waited" is
+// the wait the job waited before the run, a step of its backoff. The package's tests read a wait
+// from its log line where no other seam carries it, as the boot's rate-limit tests read theirs
+// (loggedDuration on "waited").
+const recoverAgainLine = "workflow: recovering again the issues of the repositories GitHub did not answer for"
+
+// recoveryRuns is the wait each run of the recovery of its own waited, in the order they ran, read
+// from the lines the refresher logged.
+func recoveryRuns(t *testing.T, logs *syncBuffer) []time.Duration {
+	t.Helper()
+	var waited []time.Duration
+	for _, line := range loggedMessages(t, logs.String(), recoverAgainLine) {
+		waited = append(waited, loggedDuration(t, line, "waited"))
+	}
+	return waited
 }
 
 // A zero retrying is a job whose cause has not stood yet, and it waits the retry it is given:
@@ -1359,6 +1439,234 @@ func TestAnIssueSilentForAnUnreadRepositoryIsRecoveredWhereverItResolvesThen(t *
 	serveAndRecover(t, w, installs)
 	if got := recordedIssue(t, w, key); got == nil || got.Repo != "acme/widgets" {
 		t.Fatalf("%s = %+v once zeta/tools is recovered, want it admitted on acme/widgets, where it resolves now", key, got)
+	}
+}
+
+// A recovery that lists Dispatch while GitHub has not answered for zeta/tools, the repository the
+// listing resolves a labelled todo root to, and whose own preparation then gets GitHub's answer,
+// records nothing from that listing: Dispatch resolves the issue to acme/widgets by then, with no
+// event of the issue to say so, and the pass after the answer reads that resolution and records the
+// issue there. Here the pass is held right after its listing is read, the issue moves and GitHub
+// answers while it is held, and the pass then runs on. Before, the held pass recorded the issue on
+// zeta/tools, where its listing, read before the answer, showed it: the interleaving
+// TestAnIssueSilentForAnUnreadRepositoryIsRecoveredWhereverItResolvesThen met about once in five.
+func TestARecoveryListedBeforeGitHubAnswersRecordsTheIssueWhereItResolvesAfter(t *testing.T) {
+	installs := &installations{}
+	installs.setFailing(errors.New("GitHub answered 502"), "implement zeta/tools")
+	const key = "LEGION-1510"
+	listing := &heldListing{key: key, repo: "zeta/tools", held: make(chan struct{}), release: make(chan struct{})}
+	w, client, installs, _ := repositoryRigWith(t, installs, quickInstallReads, func(w *workflowRuntime) {
+		listing.repositoryDispatch = w.dispatch.(*repositoryDispatch)
+		w.dispatch = listing
+	})
+	release := sync.OnceFunc(func() { close(listing.release) })
+	t.Cleanup(release)
+	deliver(t, w, client, issue(key, "zeta/tools", "todo", true, "", 1))
+	if recordedIssue(t, w, key) != nil {
+		t.Fatalf("%s recorded while zeta/tools' read fails", key)
+	}
+	listing.armed.Store(true)
+	select {
+	case <-listing.held:
+	case <-time.After(testwait.Bounded(t, time.Minute, time.Second)):
+		t.Fatalf("no recovery listed %s on zeta/tools while GitHub failed for it", key)
+	}
+	// The project's default moves to acme/widgets, and GitHub answers for zeta/tools, both after
+	// the held pass read its listing and before its preparation reads GitHub.
+	client.show(issue(key, "acme/widgets", "todo", true, "", 1))
+	installs.setFailing(nil, "implement zeta/tools")
+	release()
+	var got *record.Issue
+	testwait.Eventually(t, key+" recorded once GitHub answers for zeta/tools", func() bool {
+		got = recordedIssue(t, w, key)
+		return got != nil
+	})
+	if got.Repo != "acme/widgets" {
+		t.Fatalf("%s recorded on %s, want it on acme/widgets, where Dispatch resolves it once GitHub answers, and never on zeta/tools, where the listing read before the answer showed it", key, got.Repo)
+	}
+	testwait.Eventually(t, "zeta/tools recorded on and recovered", func() bool {
+		return recordsOn(w, "zeta/tools") && len(w.unreadReasons()) == 0 && len(w.recoveringReasons()) == 0
+	})
+}
+
+// heldListing is the rig's Dispatch with one project listing held: once armed, the next listing
+// that shows key resolved to repo is read, held is closed, and the listing is handed to the
+// recovery that asked for it only once release is closed (or that recovery's attempt ends). Every
+// other listing passes as the rig's own does, and only a test that wraps the rig's Dispatch in one
+// holds any.
+type heldListing struct {
+	*repositoryDispatch
+	key, repo     string
+	armed         atomic.Bool
+	held, release chan struct{}
+}
+
+func (d *heldListing) ListIssues(ctx context.Context, project string, statuses []string) ([]dispatch.IssueSummary, error) {
+	issues, err := d.repositoryDispatch.ListIssues(ctx, project, statuses)
+	shows := slices.ContainsFunc(issues, func(summary dispatch.IssueSummary) bool {
+		return summary.Key == d.key && summary.ResolvedRepo == d.repo
+	})
+	if err != nil || !shows || !d.armed.CompareAndSwap(true, false) {
+		return issues, err
+	}
+	close(d.held)
+	select {
+	case <-d.release:
+	case <-ctx.Done():
+	}
+	return issues, nil
+}
+
+// A labelled todo root on a configured pair's `from`, which the boot's listing left unread without
+// a read of GitHub (leaveForRecovery) before the refresher recorded the pair's `to`, is recorded on
+// the `to` by the recovery after the boot. The entry the `to` is recorded on answers for the
+// `from` (lookup), so the root's preparation reads GitHub no further (prepareUnrecorded) and no read
+// of GitHub is pending that would drop the `from`'s marker: the recovery's deferral drops it as an
+// answer does (deferUnreadIssues, readAnswered), and the pass that wakes, the `from` no longer
+// unread, records the root through that entry. Before, every pass deferred the root again and left
+// the `from` unread, so the root was never recorded and the refresher listed the project on its
+// backoff for the life of the daemon.
+func TestARecoveryRecordsAnIssueOnAPairsFromThatItsRecordedToAnswersFor(t *testing.T) {
+	ctx := context.Background()
+	const key, from, to = "LEGION-1530", "legacy/widgets", "acme/widgets"
+	// The transfer has happened: neither role App is installed on the name the repository moved
+	// away from.
+	installs := &installations{missing: map[string]bool{"implement " + from: true, "review " + from: true}}
+	w, client, _, _, _ := bootingRepositoryRig(t, installs, quickInstallReads, func(w *workflowRuntime) {
+		w.repositories = newRepositories("LEGION", ghrepo.MustRenames(ghrepo.MustRename(from, to)))
+	})
+	w.bootID = "pair-from-boot"
+	client.show(issue(key, from, "todo", true, "", 1))
+	if err := w.reconcile(ctx); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if got := recordedIssue(t, w, key); got != nil {
+		t.Fatalf("%s recorded as %+v by the boot's listing, want it left for the recovery: the boot reads GitHub for no repository", key, got)
+	}
+	if !w.repositoryUnread(from) {
+		t.Fatalf("%s is not left unread by the boot's listing (unread %q), want it left for the recovery", from, w.unreadReasons())
+	}
+	// The boot is over: the refresher starts, and its first job records the `to`, which a record
+	// names, before its recovery runs.
+	startRefresher(t, w)
+	if !recordsOn(w, from) {
+		t.Fatalf("no entry answers for %s once %s is recorded on, want the pair's `to` to answer for its `from`", from, to)
+	}
+	var got *record.Issue
+	if !within(10*time.Second, func() bool {
+		got = recordedIssue(t, w, key)
+		return got != nil && len(w.unreadReasons()) == 0 && len(w.recoveringReasons()) == 0
+	}) {
+		t.Fatalf("%s = %+v, unread %q, to recover %q; want it recorded on %s, and nothing left unread or to recover",
+			key, got, w.unreadReasons(), w.recoveringReasons(), to)
+	}
+	if got.Repo != to {
+		t.Fatalf("%s recorded on %s, want it on %s, the pair's `to`, whose entry answers for %s", key, got.Repo, to, from)
+	}
+}
+
+// A labelled todo root on a repository GitHub has not answered for is recorded once an entry
+// another issue's read wrote answers for that repository, though no read of GitHub for it ever
+// answers: GitHub answered that other issue's name, stranger/old-tools, with a 301 to
+// stranger/tools, and the read is kept under both names (prepareRead, recordRepository), while
+// stranger/tools' own installation reads keep failing under both spellings (the rig's
+// installations match a failing name by its exact case), so neither the refresher's read of the
+// live record's repository nor the root's own preparation drops its marker. The root stays todo
+// in the listing, so every pass defers it and notes it silent, and no pass lets the repository
+// go. Only the recovery's deferral, which finds the entry, drops the marker (deferUnreadIssues,
+// readAnswered), and the pass it wakes records the root through the entry. The refresher starts
+// only once both roots were delivered, so no recovery pass runs before the test has seen the
+// marker held with the entry beside it. Before, every pass deferred the root again and left
+// stranger/tools unread, so the root was never recorded.
+func TestARecoveryRecordsAnIssueOnTheNameAnotherReadsRedirectRecorded(t *testing.T) {
+	github := newNamedGitHub(t, map[string]string{
+		"acme/widgets": "acme/widgets@main", "zeta/tools": "zeta/tools@main", "orbit/gadgets": "orbit/gadgets@main",
+		"stranger/old-tools": "301 stranger/tools", strangerRepo: strangerNamed + "@trunk",
+	})
+	installs := &installations{}
+	installs.setFailing(errors.New("GitHub answered 502"), "implement "+strangerRepo, "implement "+strangerNamed)
+	w, client, _, _, _ := bootingRepositoryRig(t, installs, quickInstallReads, func(w *workflowRuntime) {
+		w.defaultBranches = newDefaultBranches(roleTokens{}, w.repositories, github.url, defaultBranchTTL, time.Now)
+	})
+	const a, b = "LEGION-1550", "LEGION-1551"
+	deliver(t, w, client, issue(a, strangerRepo, "todo", true, "", 1))
+	if got := recordedIssue(t, w, a); got != nil {
+		t.Fatalf("%s recorded as %+v while %s's installation reads fail", a, got, strangerRepo)
+	}
+	deliver(t, w, client, issue(b, "stranger/old-tools", "todo", true, "", 1))
+	if got := recordedIssue(t, w, b); got == nil || got.Repo != strangerNamed {
+		t.Fatalf("%s = %+v, want it recorded on %s, the name GitHub redirects stranger/old-tools to", b, got, strangerNamed)
+	}
+	if !recordsOn(w, strangerRepo) {
+		t.Fatalf("no entry answers for %s once GitHub's redirect from stranger/old-tools was read", strangerRepo)
+	}
+	w.recoveringMu.Lock()
+	_, held := w.unread[strangerRepo]
+	w.recoveringMu.Unlock()
+	if !held {
+		t.Fatalf("%s's marker is not held before the refresher starts (unread %q, to recover %q): %s's preparation drops only stranger/old-tools'",
+			strangerRepo, w.unreadReasons(), w.recoveringReasons(), b)
+	}
+	startRefresher(t, w)
+	if !within(10*time.Second, func() bool {
+		got := recordedIssue(t, w, a)
+		return got != nil && len(w.unreadReasons()) == 0 && len(w.recoveringReasons()) == 0
+	}) {
+		t.Fatalf("%s = %+v, unread %q, to recover %q; want it recorded on %s through the entry GitHub's redirect left, and nothing left unread or to recover",
+			a, recordedIssue(t, w, a), w.unreadReasons(), w.recoveringReasons(), strangerNamed)
+	}
+	if got := recordedIssue(t, w, a); got.Repo != strangerNamed {
+		t.Fatalf("%s recorded on %s, want it on %s, GitHub's spelling of the repository the entry answers with", a, got.Repo, strangerNamed)
+	}
+}
+
+// A recovery pass whose own bound (attempt, callBounds) ended before its first deferred issue
+// was read prepares none of the issues it defers, and logs them in one Warn for the pass that names
+// each issue and each repository it resolves to, with the bound. Each issue still takes the steps
+// made in memory: it is noted silent for the repository its listing showed (noteUnread), so the
+// next pass takes it in its scope and no repository with that todo issue on it is let go
+// (deferUnreadIssues). The refresher's own ctx is live here, since a daemon that stops logs
+// nothing.
+//
+// The negative control is the Warn's call taken out of deferUnreadIssues: the pass then logs no
+// line, and this test fails on the missing Warn.
+func TestARecoveryPassItsBoundEndedLogsTheIssuesItDeferredInOneWarn(t *testing.T) {
+	var logged bytes.Buffer
+	w := &workflowRuntime{repositories: newRepositories("LEGION", ghrepo.Renames{}), log: slog.New(slog.NewJSONHandler(&logged, nil))}
+	attempt, end := context.WithCancel(context.Background())
+	end()
+	issues := []dispatch.IssueSummary{
+		{Key: "LEGION-1560", Status: "todo", ResolvedRepo: "Zeta/Tools"},
+		{Key: "LEGION-1561", Status: "todo", ResolvedRepo: "orbit/gadgets"},
+		{Key: "LEGION-1562", Status: "todo", ResolvedRepo: "zeta/tools"},
+	}
+	w.deferUnreadIssues(context.Background(), attempt, issues)
+
+	// Every line the JSON handler writes carries a level, and the text's last, empty line none.
+	lines := loggedLines(t, logged.String(), `"level":`)
+	if len(lines) != 1 {
+		t.Fatalf("the pass logged %d lines, want the one Warn for the issues its bound left: %s", len(lines), logged.String())
+	}
+	line := lines[0]
+	if line["level"] != "WARN" || line["msg"] != "workflow: the recovery's deadline ended before it read GitHub for the repositories these unrecorded issues name; the next pass reads them again" {
+		t.Errorf("the pass logged %+v, want the Warn that its bound ended before it read GitHub", line)
+	}
+	if got, want := fmt.Sprint(line["issues"]), "[LEGION-1560 LEGION-1561 LEGION-1562]"; got != want {
+		t.Errorf("the Warn names the issues %s, want %s", got, want)
+	}
+	if got, want := fmt.Sprint(line["repositories"]), "[orbit/gadgets zeta/tools]"; got != want {
+		t.Errorf("the Warn names the repositories %s, want %s, each once", got, want)
+	}
+	if bound := w.callBounds().attempt; line["deadline"] != bound.String() {
+		t.Errorf("the Warn names the bound %v, want %s", line["deadline"], bound)
+	}
+
+	w.recoveringMu.Lock()
+	defer w.recoveringMu.Unlock()
+	for _, summary := range issues {
+		if repo := strings.ToLower(summary.ResolvedRepo); !w.silenced[repo][summary.Key] {
+			t.Errorf("%s is not noted silent for %s (silenced %v), want it in the next pass's scope", summary.Key, repo, w.silenced)
+		}
 	}
 }
 
@@ -1986,7 +2294,7 @@ func TestTheBootHearsTheRecordsRepositoriesAndCachesTheLiveOnes(t *testing.T) {
 		http.NotFound(w, r)
 	}))
 	t.Cleanup(server.Close)
-	w := &workflowRuntime{pool: isolatedOutboxPool(t), records: projectRecords{Store: record.NewStore(), project: "LEGION"}, dispatch: dispatch.New(server.URL, "dispatch-test-token"),
+	w := &workflowRuntime{pool: isolatedOutboxPool(t), records: projectRecords{Store: record.NewStore(), project: "LEGION"}, dispatch: dispatch.New(server.URL, dispatch.BearerTransport("dispatch-test-token", nil)),
 		dispatchProject: "LEGION", repositories: newRepositories("LEGION", ghrepo.MustRenames(ghrepo.MustRename("acme/widgets", "cybermonklabs/widgets"))), log: quietLogger()}
 	if err := store.Transact(ctx, w.pool, func(ctx context.Context, tx pgx.Tx) error {
 		for _, issue := range []record.Issue{anchorOn("LEGION-1", "acme/widgets"), doneOn("LEGION-2", "LEGION", "orbit/gadgets", "main")} {

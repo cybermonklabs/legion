@@ -1261,16 +1261,22 @@ func (w *workflowRuntime) recoveringReasons() []string {
 // it to, and not left unread again) and nothing fell silent for it while the pass ran
 // (settleRecovery): a pass whose own re-preparation GitHub failed again tells the architect
 // nothing, keeps its release waits and lists it again on the refresher's backoff, never in a
-// loop. The architect's notice says GitHub answered for the repository again, so a pass that ran
-// while GitHub still did not answer must not send it, nor drop the waits that it would tell.
+// loop. The architect's notice says GitHub answered for the repository again, or that GitHub's
+// answer for another name answers for it (deferUnreadIssues), so a pass that ran while neither was
+// so must not send it, nor drop the waits that it would tell.
 //
 // The silenced issues of every listed repository are taken out of the set for the pass and put
 // back only by a pass that does not finish (putBackSilenced). Each of them is in the listing's
-// scope, so its apply here either ends it or notes it again (noteUnread), and what the set holds
-// for a repository once the listing is applied is what fell silent for it since the pass began:
-// an issue GitHub failed for before another issue's preparation got GitHub's answer in the same
-// pass, or an event that fell silent meanwhile. That issue is in the next pass's scope, which
-// readAnswered's request runs at once.
+// scope, so the pass either applies it, which ends it or notes it again (noteUnread), or defers
+// it. A deferred issue is not applied in this pass: it is an unrecorded issue admission would
+// record whose repository was still unread as the pass took its set, so the listing that shows it
+// was read before GitHub answered for that repository. The pass reads GitHub for it and notes it
+// silent again, for the next pass, whose listing is read after the answer (deferUnreadIssues). So
+// what the set holds for a repository once the listing is applied is each issue the pass deferred
+// itself and what fell silent for it since the pass began: an issue GitHub failed for before
+// another issue's preparation got GitHub's answer in the same pass, or an event that fell silent
+// meanwhile. Each is in the next pass's scope, which an answer's request runs at once
+// (readAnswered), and the refresher's backoff runs otherwise.
 //
 // An issue of the scope whose summary admission found older than an issue fact of it the daemon
 // applied while the pass read GitHub records nothing (admit's Reconcile answers its key): that
@@ -1289,8 +1295,13 @@ func (w *workflowRuntime) recoverRepositories(ctx context.Context) {
 	}
 	repos := make(map[string]bool, len(w.recovering)+len(w.unread))
 	maps.Copy(repos, w.recovering)
+	// unread is each repository GitHub has not answered for as the pass takes its set: the pass
+	// lists Dispatch before any answer for it, so the resolution its listing shows may be one
+	// Dispatch no longer gives once GitHub answers (deferUnreadIssues).
+	unread := make(map[string]bool, len(w.unread))
 	for repo := range w.unread {
 		repos[repo] = true
+		unread[repo] = true
 	}
 	taken := make(map[string]map[string]bool, len(repos))
 	// silenced is every issue taken from the set, by key, with the repository it was taken for.
@@ -1321,28 +1332,28 @@ func (w *workflowRuntime) recoverRepositories(ctx context.Context) {
 	attempt, cancel := context.WithTimeout(ctx, w.callBounds().attempt)
 	defer cancel()
 	issues, err := w.dispatch.ListIssues(attempt, w.dispatchProject, nil)
-	// todo is each repository, lowercased, that an unrecorded todo issue of the listing that
-	// admission would record (intake.DispatchIssue.AdmissionBound: handed to Legion, or under a
-	// parent) resolves to: the only issue whose preparation reads GitHub for a repository no entry
-	// records issues on (prepareUnrecorded passes every other by, a person's own todo issue among
-	// them), so the only one that can drop its marker.
-	// keep is asked of every summary of the listing, against every record, which is where the
-	// records that say unrecorded are read.
-	todo := map[string]bool{}
+	// deferred is each issue of the listing that the pass reads GitHub for and does not record:
+	// unrecorded, in scope, one admission would record (intake.DispatchIssue.AdmissionBound), and
+	// resolved to a repository still unread as the pass took its set. An issue admission would not
+	// record reads GitHub for nothing (prepareUnrecorded), so it is reconciled as before: noted
+	// silent, it would keep its repository listed for ever, since nothing would ever record it.
+	var deferred []dispatch.IssueSummary
 	// scopedOn is the repository that brought each issue of the scope into it (recoveredOn).
 	scopedOn := map[string]string{}
 	var refused []string
 	if err == nil {
 		scope := recoveredOn(repos, silenced, issues)
 		refused, err = w.reconcileListing(attempt, issues, func(records map[string]*record.Issue, summary dispatch.IssueSummary) bool {
-			if records[summary.Key] == nil && intake.ListedIssue(summary).AdmissionBound() {
-				todo[strings.ToLower(summary.ResolvedRepo)] = true
-			}
 			repo, in := scope(records, summary)
-			if in {
-				scopedOn[summary.Key] = repo
+			if !in {
+				return false
 			}
-			return in
+			scopedOn[summary.Key] = repo
+			if records[summary.Key] == nil && intake.ListedIssue(summary).AdmissionBound() && unread[strings.ToLower(summary.ResolvedRepo)] {
+				deferred = append(deferred, summary)
+				return false
+			}
+			return true
 		}, false)
 	}
 	if err != nil {
@@ -1364,7 +1375,8 @@ func (w *workflowRuntime) recoverRepositories(ctx context.Context) {
 		w.log.Info("workflow: the recovery's listing was older than an issue fact the daemon applied for these issues, so they stay in the scope of its next pass",
 			"issues", refused)
 	}
-	answered, told, dropped := w.settleRecovery(names, waits, todo, marks)
+	w.deferUnreadIssues(ctx, attempt, deferred)
+	answered, told, dropped := w.settleRecovery(names, waits, marks)
 	held := w.admission != nil && w.admission.Held()
 	// heldBack is whether this pass put repositories it would let go back for the hold, which
 	// keeps the hold's clock running for them: a pass that otherwise commits must not reset it.
@@ -1417,7 +1429,7 @@ func (w *workflowRuntime) recoverRepositories(ctx context.Context) {
 	}
 	if err := w.tellReleaseWaits(attempt, answered, told); err != nil {
 		w.putBackSilenced(taken)
-		w.log.Warn("workflow: the release waits of the repositories GitHub answered for again were not told; recovering them again",
+		w.log.Warn("workflow: the release waits of the repositories GitHub answered for again, or that GitHub's answer for another name answers for, were not told; recovering them again",
 			"repositories", answered, "error", err)
 		return
 	}
@@ -1433,7 +1445,76 @@ func (w *workflowRuntime) recoverRepositories(ctx context.Context) {
 	}
 	w.recoveringMu.Unlock()
 	if len(answered) != 0 {
-		w.log.Info("workflow: recovered the issues of the repositories GitHub answered for again", "repositories", answered)
+		w.log.Info("workflow: recovered the issues of the repositories GitHub answered for again, or that GitHub's answer for another name answers for", "repositories", answered)
+	}
+}
+
+// deferUnreadIssues reads GitHub for the repository each of issues resolves to and records none of
+// them: each is an unrecorded issue of a recovery's listing whose repository GitHub had not
+// answered for when the pass took its set (recoverRepositories), so the listing was read before any
+// answer, and the resolution it shows is Dispatch's from before GitHub answered. The preparation
+// is still this pass's, since it is what reads GitHub for such a repository (prepareRead): an
+// answer moves the repository to the repositories to recover and wakes the next pass
+// (readAnswered), and a failure leaves it unread for the refresher's backoff (leaveUnread). Each
+// issue is noted silent for the repository its listing showed (noteUnread), so it stays in the
+// scope of the pass after this one (recoveredOn), whose listing is read after the answer and takes
+// the issue wherever Dispatch resolves it then; and since something fell silent for the
+// repository, this pass does not count it recovered (settleRecovery).
+//
+// A repository an entry already answers for (lookup) — a configured pair's `from` the boot's
+// listing left unread while its `to` is recorded on, or a name another read recorded GitHub's
+// answer under — is one the preparation reads GitHub for no further (prepareUnrecorded), so no
+// read of it would ever drop its marker: the issue would be deferred again at every pass, and
+// never recorded, for the life of the daemon. The entry is GitHub's answer for it, so the marker
+// is dropped here as an answer drops it (readAnswered), which moves the repository to the
+// repositories to recover and wakes the next pass; that pass finds it no longer unread and
+// records the issue through the entry. Where the preparation's own answer dropped the marker
+// already, readAnswered does nothing.
+//
+// The preparations read under attempt, the pass's own bound (callBounds), which covered its
+// listing and its reconcile too; ctx is the refresher's. Once attempt has ended, no issue is
+// prepared any longer, since every later read would fail at once on the ended context, but every
+// issue still takes the steps made in memory, the entry's drop and the note: a repository a pass
+// lists stays held only because each issue deferred on it is noted silent (settleRecovery), so an
+// issue passed by without its note would let a repository with that todo issue on it go. The
+// issues the deadline left, with their repositories, are logged in one Warn for the pass, so a
+// slow pass shows without a line per issue. Nothing is logged once ctx has ended, which is the
+// daemon stopping.
+func (w *workflowRuntime) deferUnreadIssues(ctx, attempt context.Context, issues []dispatch.IssueSummary) {
+	var left []string
+	leftOn := map[string]bool{}
+	for _, summary := range issues {
+		err := attempt.Err()
+		if err == nil {
+			_, err = w.prepareUnrecorded(attempt, intake.ListedIssue(summary), false)
+		}
+		var limited *intake.RetryLater
+		switch {
+		case err == nil:
+			// The preparation returned no error, so nothing is logged for this issue.
+		case attempt.Err() != nil:
+			// The pass's deadline ended before this read or cut it short, and the one Warn below
+			// names it.
+			left, leftOn[strings.ToLower(summary.ResolvedRepo)] = append(left, summary.Key), true
+		case errors.As(err, &limited):
+			w.log.Warn("workflow: GitHub answered the recovery's read for the repository an unrecorded issue names with its rate limit; the next pass reads it again",
+				"issue", summary.Key, "repo", summary.ResolvedRepo, "wait", limited.After.String(), "error", err)
+		default:
+			w.log.Warn("workflow: the recovery did not read GitHub for the repository an unrecorded issue names; the next pass reads it again",
+				"issue", summary.Key, "repo", summary.ResolvedRepo, "error", err)
+		}
+		if _, recorded := w.repositories.lookup(summary.ResolvedRepo); recorded {
+			// A name Parse refuses holds no marker to drop: prepareRead refuses it rather than
+			// leaving it unread.
+			if repo, err := ghrepo.Parse("the repository Dispatch resolves "+summary.Key+" to", summary.ResolvedRepo); err == nil {
+				w.readAnswered(repo)
+			}
+		}
+		w.noteUnread(summary.Key, summary.ResolvedRepo)
+	}
+	if len(left) != 0 && ctx.Err() == nil {
+		w.log.Warn("workflow: the recovery's deadline ended before it read GitHub for the repositories these unrecorded issues name; the next pass reads them again",
+			"issues", left, "repositories", slices.Sorted(maps.Keys(leftOn)), "deadline", w.callBounds().attempt.String())
 	}
 }
 
@@ -1458,22 +1539,22 @@ func (w *workflowRuntime) heldPastBound() bool {
 // is never one of them, whatever the pass did: its re-preparation's failure was swallowed
 // (prepareRead), so the listing succeeded while GitHub answered nothing.
 //
-// It also lets go of each repository left unread that no preparation will ever read GitHub for
-// again, with nothing fallen silent for it: one the listing holds no unrecorded todo issue on
-// that admission would record (todo), its only such issue having left todo, or having lost its
-// label and its parent, before a read answered, and one an entry now records issues on (lookup),
-// which a preparation reads no further (prepareUnrecorded). Only an answered read drops a marker
-// otherwise (readAnswered), so for either kind the refresher would list the whole project on its
-// backoff, up to every 10 min, for ever. An issue that comes back to todo
-// on it is prepared afresh and leaves it unread again if GitHub still does not answer.
+// It also lets go of each repository left unread with nothing fallen silent for it and no new
+// mark: one no preparation will read GitHub for again. Every unrecorded issue admission would
+// record on a repository unread as the pass took its set is in the listing's scope (recoveredOn)
+// and deferred, and the deferral notes it silent for the repository (deferUnreadIssues), so a
+// repository left with nothing silent holds no such issue in the listing, its only one having
+// left todo, or having lost its label and its parent, before a read answered. Nothing but an
+// answer drops a marker otherwise (readAnswered), so the refresher would list the whole project on
+// its backoff, up to every 10 min, for ever. An issue that comes back to todo on it is prepared
+// afresh and leaves it unread again if GitHub still does not answer.
 //
 // What a release left to that repository's recovery is taken out with its marker, in this one
 // step, and returned for its architects to be told (letGo, tellLetGoWaits): the two belong
 // together, since once the marker is gone no pass lists the repository again, so a wait left
 // behind is one no recovery would ever read and no architect would ever hear of, while its
 // release_children answered that the child was released. A telling that fails puts both back
-// (putBackLetGo), so the next pass finds the repository as this one did. Each is let go with why
-// (letGoWhy), which is what its architects are told.
+// (putBackLetGo), so the next pass finds the repository as this one did.
 //
 // Neither is settled while a preparation marked the repository during the pass: its mark is not
 // the one the pass took (marks, unreadMarks). A marker already present is no evidence that nothing
@@ -1485,17 +1566,7 @@ func (w *workflowRuntime) heldPastBound() bool {
 // the defect readAnswered's recovery exists to end. Kept, it is listed again on the backoff, with
 // that issue in its scope. An answer GitHub gave during the pass marks the repository too
 // (readAnswered), so a repository is counted recovered only by a pass that began after it.
-func (w *workflowRuntime) settleRecovery(names []string, waits map[string]map[string]releaseWait, todo map[string]bool, marks map[string]uint64) (answered []string, told map[string]releaseWait, dropped []letGo) {
-	// The lock order is recoveringMu first and the repository state's lock (repositories.mu)
-	// nested inside it, which is sound because nothing holding the state's lock ever takes
-	// recoveringMu (awaitRecovery says the same). These lookups are made before recoveringMu all
-	// the same, not because the order requires it, but because what they read is whether an entry
-	// records issues on each repository, which is a fact about the entries and not about this
-	// pass's set.
-	readElsewhere := make(map[string]bool, len(names))
-	for _, repo := range names {
-		_, readElsewhere[repo] = w.repositories.lookup(repo)
-	}
+func (w *workflowRuntime) settleRecovery(names []string, waits map[string]map[string]releaseWait, marks map[string]uint64) (answered []string, told map[string]releaseWait, dropped []letGo) {
 	told = map[string]releaseWait{}
 	w.recoveringMu.Lock()
 	for _, repo := range names {
@@ -1503,17 +1574,10 @@ func (w *workflowRuntime) settleRecovery(names []string, waits map[string]map[st
 		quiet := len(w.silenced[repo]) == 0 && w.unreadMarks[repo] == marks[repo]
 		switch {
 		case unread:
-			if !quiet || (todo[repo] && !readElsewhere[repo]) {
+			if !quiet {
 				continue
 			}
-			// A repository the listing holds no todo issue on is let go for that, whatever else
-			// answers for it now; one it holds a todo issue on is let go only because another
-			// answer than a preparation's read of GitHub stands for it.
-			why := letGoNoTodo
-			if todo[repo] {
-				why = letGoAnsweredElsewhere
-			}
-			dropped = append(dropped, letGo{repo: repo, reason: reason, why: why, waits: w.releaseWaits[repo]})
+			dropped = append(dropped, letGo{repo: repo, reason: reason, waits: w.releaseWaits[repo]})
 			delete(w.unread, repo)
 			delete(w.releaseWaits, repo)
 			delete(w.unreadMarks, repo)
@@ -1533,28 +1597,12 @@ func (w *workflowRuntime) settleRecovery(names []string, waits map[string]map[st
 
 // letGo is a repository a pass stopped waiting for GitHub to answer for (settleRecovery), with
 // everything that left the daemon's memory with its marker: the reason it was left unread, and
-// the children a release_children left to its recovery, by key, with why it was let go.
+// the children a release_children left to its recovery, by key.
 type letGo struct {
 	repo   string
 	reason string
-	why    letGoWhy
 	waits  map[string]releaseWait
 }
-
-// letGoWhy is why a pass let a repository left unread go, which is the first thing its architects
-// are told (tellLetGoWaits): each kind has its own opening, so the notice says what is true of the
-// repository it names.
-type letGoWhy uint8
-
-const (
-	// letGoNoTodo is a repository the pass's listing holds no unrecorded todo issue on that
-	// admission would record, the only issue whose preparation reads GitHub for it.
-	letGoNoTodo letGoWhy = iota
-	// letGoAnsweredElsewhere is a repository such an issue is still todo on that a read GitHub
-	// answered at another preparation (recordRepository) now answers for (lookup): an issue on it
-	// is prepared from that answer and asks GitHub nothing a marker could wait on.
-	letGoAnsweredElsewhere
-)
 
 // waitingLetGo is each of dropped a release left a child to: the repositories whose letting go
 // an architect is owed a word about. A repository no release waits on is let go whatever the
@@ -1633,6 +1681,11 @@ type releaseWait struct {
 // unread. It is called inside the apply's transaction, so it is noted before any recovery can
 // take resolved's issues, under the fact lock, and so before that recovery's scope is
 // read. A rolled-back apply leaves a note that only takes an unrecorded issue into the scope.
+//
+// deferUnreadIssues calls it too, for an issue of a recovery's listing that no apply ran on, after
+// that pass's reconcile committed and outside the fact lock. That is safe because the refresher
+// runs one recovery pass at a time, so the next pass takes the set only after this one returns,
+// with the note in it.
 func (w *workflowRuntime) noteUnread(key, resolved string) {
 	repo := strings.ToLower(resolved)
 	w.recoveringMu.Lock()
@@ -1735,7 +1788,9 @@ func (w *workflowRuntime) markLocked(repo string) {
 
 // readAnswered drops repo from the repositories left unread: GitHub answered the preparation's
 // reads, whether the answer recorded the issue or refused it, so nothing waits on a read of it
-// any longer. A repository that was left unread is moved to the repositories to recover
+// any longer. deferUnreadIssues calls it with no read, for a repository an entry already answers
+// for (lookup): that entry is GitHub's answer, and no read of the repository would ever come to
+// drop the marker. A repository that was left unread is moved to the repositories to recover
 // (recovering), and the refresher's recovery is woken to recover it (recoverRepositories). The
 // issues the earlier preparations left said nothing and recorded nothing,
 // and the preparation that got the answer may be another issue's event: dropping the marker
@@ -1820,9 +1875,9 @@ func (w *workflowRuntime) awaitRecovery(repo, tree, child, parent string) bool {
 // releases the parent's children; a parent the record does not hold, or holds in another tree, has
 // no architect of this tree, so the child is the tree's architect's to release.
 func (w *workflowRuntime) tellReleaseWaits(ctx context.Context, repos []string, waits map[string]releaseWait) error {
-	return w.tellWaitingArchitects(ctx, []waitTelling{{waits: waits, why: fmt.Sprintf(
-		"GitHub answered for %s again (both role Apps' installation reads, and the read of its name and default branch), and the daemon recovered its issues from Dispatch's listing, but these children a release_children released while it was unread are still not recorded",
-		strings.Join(repos, ", "))}},
+	why := fmt.Sprintf("GitHub answered for %s again, or GitHub's answer for another name answers for it, and the daemon recovered its issues from Dispatch's listing, but these children a release_children released while it was unread are still not recorded",
+		strings.Join(repos, ", "))
+	return w.tellWaitingArchitects(ctx, why, waits,
 		func(child string, wait releaseWait, parentRecorded bool) string {
 			if !parentRecorded {
 				return fmt.Sprintf("%s (%s)", child, releaseParentFirst(child, wait))
@@ -1834,11 +1889,9 @@ func (w *workflowRuntime) tellReleaseWaits(ctx context.Context, repos []string, 
 // tellLetGoWaits tells the architects, in the same notices tellReleaseWaits writes, which children a
 // release_children left to the recovery of the repositories a pass has just let go
 // (settleRecovery), so that no recovery will ever record them. The notice opens with why the
-// repository was let go, since that is what decides what is true of it (letGoWhy): no todo issue
-// labelled for Legion or under a parent names it now, the only issues whose preparation reads
-// GitHub for such a repository, or such an issue does and an earlier answer of GitHub's answers
-// for it without that read. Repositories let go for the two are told in two
-// notices, each with its own opening, written in one transaction.
+// repositories were let go, since that is what decides what is true of them: no todo issue
+// labelled for Legion or under a parent names any of them now, the only issues whose preparation
+// reads GitHub for such a repository. Its notices are written in one transaction.
 //
 // Each child is named with the status listing, Dispatch's own project listing of this pass, gives
 // it, since that status is why nothing records it: a child a person moved out of todo is recorded
@@ -1855,17 +1908,14 @@ func (w *workflowRuntime) tellReleaseWaits(ctx context.Context, repos []string, 
 // alone. The architect hears child-release-stalled either way, so no reader of the notices learns
 // a new kind.
 func (w *workflowRuntime) tellLetGoWaits(ctx context.Context, dropped []letGo, listing []dispatch.IssueSummary) error {
-	repos := map[letGoWhy][]string{}
-	waits := map[letGoWhy]map[string]releaseWait{}
+	var repos []string
+	waits := map[string]releaseWait{}
 	for _, gone := range dropped {
 		if len(gone.waits) == 0 {
 			continue
 		}
-		repos[gone.why] = append(repos[gone.why], gone.repo)
-		if waits[gone.why] == nil {
-			waits[gone.why] = map[string]releaseWait{}
-		}
-		maps.Copy(waits[gone.why], gone.waits)
+		repos = append(repos, gone.repo)
+		maps.Copy(waits, gone.waits)
 	}
 	if len(waits) == 0 {
 		return nil
@@ -1874,17 +1924,9 @@ func (w *workflowRuntime) tellLetGoWaits(ctx context.Context, dropped []letGo, l
 	for _, summary := range listing {
 		listed[summary.Key] = summary.Status
 	}
-	openings := map[letGoWhy]string{
-		letGoNoTodo:            "the daemon no longer waits for GitHub to answer for %s, because no todo issue labelled for Legion or under a parent names it now; these children a release_children released while it was unread were never recorded",
-		letGoAnsweredElsewhere: "the daemon no longer waits for GitHub to answer for %s, because a read GitHub answered for it at another issue's preparation answers for it now; these children a release_children released while it was unread were never recorded",
-	}
-	var tellings []waitTelling
-	for _, why := range []letGoWhy{letGoNoTodo, letGoAnsweredElsewhere} {
-		if len(waits[why]) != 0 {
-			tellings = append(tellings, waitTelling{waits: waits[why], why: fmt.Sprintf(openings[why], strings.Join(repos[why], ", "))})
-		}
-	}
-	return w.tellWaitingArchitects(ctx, tellings, func(child string, wait releaseWait, parentRecorded bool) string {
+	why := fmt.Sprintf("the daemon no longer waits for GitHub to answer for %s, because no todo issue labelled for Legion or under a parent names it now; these children a release_children released while it was unread were never recorded",
+		strings.Join(repos, ", "))
+	return w.tellWaitingArchitects(ctx, why, waits, func(child string, wait releaseWait, parentRecorded bool) string {
 		status := listed[child]
 		if status == "" {
 			status = "no longer listed"
@@ -1897,55 +1939,48 @@ func (w *workflowRuntime) tellLetGoWaits(ctx context.Context, dropped []letGo, l
 }
 
 // releaseParentFirst is the step for a child whose parent the workflow does not record, which
-// both tellings name it with: the daemon records a child only under a recorded parent.
+// tellReleaseWaits and tellLetGoWaits both name it with: the daemon records a child only under a
+// recorded parent.
 func releaseParentFirst(child string, wait releaseWait) string {
 	return fmt.Sprintf("its parent %s is not recorded: release %s first, then %s", wait.parent, wait.parent, child)
 }
 
-// waitTelling is the children of waits, told in notices that open with why.
-type waitTelling struct {
-	why   string
-	waits map[string]releaseWait
-}
-
-// tellWaitingArchitects is the body both tellings share: for each of tellings, one
+// tellWaitingArchitects is the body tellReleaseWaits and tellLetGoWaits share: one
 // child-release-stalled notice for each issue a child's notice is queued on, naming every child of
-// its waits the workflow still does not record, as its why opens the notice and line names each
-// child, with whether the workflow records that child's parent, read here once for both callers.
+// waits the workflow still does not record, as why opens the notice and line names each child,
+// with whether the workflow records that child's parent, read here once for both callers.
 // A child's notice is queued on its parent when the record holds that parent in the child's tree,
 // and else on the tree root, so the owner walk takes it to the architect that releases the
 // parent's children, or to the tree's architect where no architect of the tree owns the parent
 // (tellReleaseWaits). A child recorded since is told nothing; its record's own notices carry it. Every notice is written in one transaction, so a
 // failure tells no architect anything and the caller's put-back leaves nothing half told, and
 // nothing is written where every child is recorded.
-func (w *workflowRuntime) tellWaitingArchitects(ctx context.Context, tellings []waitTelling,
+func (w *workflowRuntime) tellWaitingArchitects(ctx context.Context, why string, waits map[string]releaseWait,
 	line func(child string, wait releaseWait, parentRecorded bool) string) error {
 	type notice struct{ issue, reason string }
 	var notices []notice
-	for _, telling := range tellings {
-		byIssue := map[string][]string{}
-		for _, child := range slices.Sorted(maps.Keys(telling.waits)) {
-			wait := telling.waits[child]
-			recorded, err := w.recordOf(ctx, child)
-			if err != nil {
-				return err
-			}
-			if recorded != nil {
-				continue
-			}
-			parent, err := w.recordOf(ctx, wait.parent)
-			if err != nil {
-				return err
-			}
-			on := wait.tree
-			if parent != nil && parent.Tree == wait.tree {
-				on = parent.Key
-			}
-			byIssue[on] = append(byIssue[on], line(child, wait, parent != nil))
+	byIssue := map[string][]string{}
+	for _, child := range slices.Sorted(maps.Keys(waits)) {
+		wait := waits[child]
+		recorded, err := w.recordOf(ctx, child)
+		if err != nil {
+			return err
 		}
-		for _, issue := range slices.Sorted(maps.Keys(byIssue)) {
-			notices = append(notices, notice{issue: issue, reason: telling.why + ": " + strings.Join(byIssue[issue], "; ")})
+		if recorded != nil {
+			continue
 		}
+		parent, err := w.recordOf(ctx, wait.parent)
+		if err != nil {
+			return err
+		}
+		on := wait.tree
+		if parent != nil && parent.Tree == wait.tree {
+			on = parent.Key
+		}
+		byIssue[on] = append(byIssue[on], line(child, wait, parent != nil))
+	}
+	for _, issue := range slices.Sorted(maps.Keys(byIssue)) {
+		notices = append(notices, notice{issue: issue, reason: why + ": " + strings.Join(byIssue[issue], "; ")})
 	}
 	if len(notices) == 0 {
 		return nil

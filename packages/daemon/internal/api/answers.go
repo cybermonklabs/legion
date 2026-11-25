@@ -47,17 +47,18 @@ const ServingFloor = 46
 // TestSupportedContractsAreTheNumberedEntriesFromTheFloorUp (`version_test.go`) reads the entry
 // headers out of version.go and holds this list to them in both directions.
 //
-// 193, 202, 205, 213, 219, 220, 228, 246, 250, 256 and the slots reading's own are constants rather
-// than their numbers, since the entries that added them name them (shapedAnswersContract, the
-// shaped answers' entry; repositoriesLiveContract, #4493's; childRouteRemovedContract, #4573's;
-// cachesSourceContract, #4553's; OwnerPlanContract, the owner's plan's; assignmentPlanContract,
-// the experiment group's; intakeGiveUpsContract, #4590's; podHoldContract, #4960's;
-// priorityContract, #5365's; causeTimesContract, #5349's; and slotsReadingContract, #4771's).
+// 193, 202, 205, 213, 219, 220, 228, 246, 250, 256, 275 and the slots reading's own are constants
+// rather than their numbers, since the entries that added them name them (shapedAnswersContract,
+// the shaped answers' entry; repositoriesLiveContract, #4493's; childRouteRemovedContract,
+// #4573's; cachesSourceContract, #4553's; OwnerPlanContract, the owner's plan's;
+// assignmentPlanContract, the experiment group's; intakeGiveUpsContract, #4590's;
+// podHoldContract, #4960's; priorityContract, #5365's; causeTimesContract, #5349's;
+// dispatchCredentialContract, #4392's; and slotsReadingContract, #4771's).
 // A renumber of any of those entries moves its constant and this list with it. Moving one alone
 // would describe a shape at a contract no entry declares. The other entries above 193 follow
 // them as numbers: 199 is version.go's entry for #4495, 217 its entry for the two changes of
 // #4273, and 232 its entry for #5271.
-var SupportedContracts = []int{46, 48, 49, 51, 52, 53, 54, 55, 56, 57, 58, 59, 62, 64, 68, 73, 75, 85, 86, 87, 94, 98, 104, 111, 123, 132, 133, 137, 141, 144, 146, 151, 152, 160, 168, 178, 188, 189, shapedAnswersContract, 199, repositoriesLiveContract, childRouteRemovedContract, cachesSourceContract, 217, OwnerPlanContract, assignmentPlanContract, intakeGiveUpsContract, 232, podHoldContract, priorityContract, causeTimesContract, slotsReadingContract}
+var SupportedContracts = []int{46, 48, 49, 51, 52, 53, 54, 55, 56, 57, 58, 59, 62, 64, 68, 73, 75, 85, 86, 87, 94, 98, 104, 111, 123, 132, 133, 137, 141, 144, 146, 151, 152, 160, 168, 178, 188, 189, shapedAnswersContract, 199, repositoriesLiveContract, childRouteRemovedContract, cachesSourceContract, 217, OwnerPlanContract, assignmentPlanContract, intakeGiveUpsContract, 232, podHoldContract, priorityContract, causeTimesContract, dispatchCredentialContract, slotsReadingContract}
 
 // AnswerID names one answer a plugin parses. It is stable: every write of this package goes
 // through `shapeAnswer(id, …)`, so the id outlives the route that happens to carry the answer

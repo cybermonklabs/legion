@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -593,13 +594,13 @@ func TestALateRenewalOfAnEarlierProcessStopsOnceSuperseded(t *testing.T) {
 
 // TestARegistrationAtAGenerationTheClaimNeverReachedIsLoggedAsForeign: the broker answers a
 // write with a registration at a generation above the claim's current one — above every process
-// this daemon has launched for the claim — so no process of this claim wrote it: another claim
-// registered the session id, or another service login wrote the row (review round 4 of #4153,
-// R4-1, R4-2). That is a permanent failure like any superseded write, logged at Error with an error
-// that says so: the answered generation, above the claim's current one as Latest reads it, and a
-// registration this daemon never made, never a later process of this claim. The log line's prefix
-// is the one every permanent refusal shares (review round 5 of #4153, R5-M1): the case lives in
-// the error, which is what the caller gets back as well.
+// this daemon has launched for the claim — so no process of this claim wrote it: another claim of
+// this daemon registered the session id, or another process of the daemon's account wrote the row
+// (review round 4 of #4153, R4-1, R4-2). That is a permanent failure like any superseded write,
+// logged at Error with an error that says so: the answered generation, above the claim's current
+// one as Latest reads it, and a registration this daemon never made, never a later process of this
+// claim. The log line's prefix is the one every permanent refusal shares (review round 5 of #4153,
+// R5-M1): the case lives in the error, which is what the caller gets back as well.
 func TestARegistrationAtAGenerationTheClaimNeverReachedIsLoggedAsForeign(t *testing.T) {
 	const (
 		pod     = "pod-uid-10"
@@ -644,5 +645,153 @@ func TestARegistrationAtAGenerationTheClaimNeverReachedIsLoggedAsForeign(t *test
 	}
 	if strings.Contains(line, "a later process of this claim") {
 		t.Errorf("logged %q: a registration no process of this claim made read as a later process of it", line)
+	}
+}
+
+// releaseBroker is POST /v1/oauth/exchange/pod-sessions/release answering every call with status
+// and body, and recording each call's credential headers and raw body.
+type releaseBroker struct {
+	status int
+	body   string
+
+	mu    sync.Mutex
+	calls []releaseCall
+}
+
+// releaseCall is one release the broker received.
+type releaseCall struct {
+	authorization, proof, contentType, body string
+}
+
+func newReleaseBroker(t *testing.T, status int, body string) (*releaseBroker, *httptest.Server) {
+	b := &releaseBroker{status: status, body: body}
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /v1/oauth/exchange/pod-sessions/release", func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		b.mu.Lock()
+		b.calls = append(b.calls, releaseCall{
+			authorization: r.Header.Get("Authorization"), proof: r.Header.Get("Proof"), contentType: r.Header.Get("Content-Type"), body: string(raw),
+		})
+		b.mu.Unlock()
+		w.WriteHeader(b.status)
+		_, _ = w.Write([]byte(b.body))
+	})
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+	return b, server
+}
+
+func (b *releaseBroker) received() []releaseCall {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return slices.Clone(b.calls)
+}
+
+// TestAReleaseIsSentAsARegistrationIsAndTakenOnlyAtItsCount: ReleasePodSessions posts the names to
+// POST /v1/oauth/exchange/pod-sessions/release as RegisterPodSession posts its write, under the
+// daemon's own ServiceAccount token and no launcher proof, the body exactly {"sessions": [...]} as
+// given. It takes the names as released only from a 200 that counts the distinct names sent: a 200
+// counting otherwise, or not at all, is an answer it cannot read and an error, and every other
+// answer is the broker's refusal with its code, a 404 read as a broker with no such route.
+//
+// The control (the pull request records the run): ReleasePodSessions taking any 200 as released
+// fails the rows of a 200 that counts every name sent and of one that counts none.
+func TestAReleaseIsSentAsARegistrationIsAndTakenOnlyAtItsCount(t *testing.T) {
+	names := []string{"ses_b", "ses_a", "ses_b"}
+	for _, c := range []struct {
+		name, body string
+		status     int
+		// apiStatus is the *APIError's status the release answers, 0 for none; permanent and
+		// unserved are what that refusal reads as.
+		apiStatus           int
+		permanent, unserved bool
+		// unread is a fragment of the error of a 200 the release cannot read, "" for none.
+		unread string
+	}{
+		{name: "a 200 counting the distinct names", status: http.StatusOK, body: `{"sessions":2,"released":1}`},
+		{name: "a 200 counting every name sent", status: http.StatusOK, body: `{"sessions":3,"released":1}`, unread: "releasing 3 sessions, where the daemon sent 2 distinct names"},
+		{name: "a 200 counting none", status: http.StatusOK, body: `{"released":1}`, unread: "releasing no count of sessions, where the daemon sent 2 distinct names"},
+		{name: "a 503", status: http.StatusServiceUnavailable, body: "no healthy upstream", apiStatus: http.StatusServiceUnavailable},
+		{name: "a 404 from a broker before the route", status: http.StatusNotFound, body: "404 page not found", apiStatus: http.StatusNotFound, permanent: true, unserved: true},
+		{name: "a 400", status: http.StatusBadRequest, body: `{"code":"SESSIONS_INVALID","error":"sessions holds 0 names"}`, apiStatus: http.StatusBadRequest, permanent: true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			broker, server := newReleaseBroker(t, c.status, c.body)
+			client := &Client{URL: server.URL, HTTP: server.Client(), TokenFile: tokenFile(t, "the-daemon's-token")}
+
+			err := client.ReleasePodSessions(context.Background(), names)
+
+			calls := broker.received()
+			if len(calls) != 1 {
+				t.Fatalf("the release made %d calls, want 1", len(calls))
+			}
+			if call := calls[0]; call.authorization != "Bearer the-daemon's-token" || call.proof != "" || call.contentType != "application/json" ||
+				call.body != `{"sessions":["ses_b","ses_a","ses_b"]}` {
+				t.Fatalf("the release was sent %+v, want the daemon's own token as its bearer, no proof, and the body {\"sessions\": the names as given}", call)
+			}
+			var api *APIError
+			switch {
+			case c.apiStatus == 0 && c.unread == "":
+				if err != nil {
+					t.Fatalf("the release answered %d %s = %v, want the names released", c.status, c.body, err)
+				}
+			case c.unread != "":
+				if err == nil || errors.As(err, &api) || IsPermanent(err) || !strings.Contains(err.Error(), c.unread) {
+					t.Fatalf("the release answered %d %s = %v, want an answer it cannot read, saying %q", c.status, c.body, err, c.unread)
+				}
+			default:
+				if !errors.As(err, &api) || api.Status != c.apiStatus || api.Permanent() != c.permanent || api.RouteUnserved() != c.unserved {
+					t.Fatalf("the release answered %d %s = %#v, want the broker's refusal %d, permanent %t, a route unserved %t", c.status, c.body, err, c.apiStatus, c.permanent, c.unserved)
+				}
+			}
+		})
+	}
+}
+
+// TestAReleasePastTheBrokersBoundsIsNotSent: the broker refuses a release of more than 4096 names,
+// or with a body longer than 1 MiB, so ReleasePodSessions sends neither, and answers a permanent
+// *ReleaseTooLargeError naming the bound. A release at the count bound whose body is under the
+// byte bound is sent, so neither bound is the client's own, tighter one.
+//
+// The control (the pull request records the run): ReleasePodSessions without its byte bound sends
+// the 4096 names of 300 bytes.
+func TestAReleasePastTheBrokersBoundsIsNotSent(t *testing.T) {
+	named := func(n, size int) []string {
+		names := make([]string, n)
+		for i := range names {
+			names[i] = fmt.Sprintf("%0*d", size, i)
+		}
+		return names
+	}
+	for _, c := range []struct {
+		name  string
+		names []string
+		bound string
+	}{
+		{"4097 names", named(4097, 8), "it names 4097 sessions, more than the 4096 one release carries"},
+		{"4096 names of 300 bytes", named(4096, 300), "longer than the 1048576 the broker reads"},
+		{"4096 names of 250 bytes", named(4096, 250), ""},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			broker, server := newReleaseBroker(t, http.StatusOK, `{"sessions":4096,"released":0}`)
+			client := &Client{URL: server.URL, HTTP: server.Client(), TokenFile: tokenFile(t, "the-daemon's-token")}
+
+			err := client.ReleasePodSessions(context.Background(), c.names)
+
+			sent := len(broker.received())
+			if c.bound == "" {
+				if err != nil || sent != 1 {
+					t.Fatalf("the release within both bounds = %v after %d calls, want it sent once and released", err, sent)
+				}
+				return
+			}
+			var tooLarge *ReleaseTooLargeError
+			if !errors.As(err, &tooLarge) || !IsPermanent(err) || !strings.Contains(err.Error(), c.bound) {
+				t.Fatalf("the release of %s = %v, want a permanent *ReleaseTooLargeError saying %q", c.name, err, c.bound)
+			}
+			if sent != 0 {
+				t.Fatalf("the release of %s was sent %d times, want never", c.name, sent)
+			}
+		})
 	}
 }

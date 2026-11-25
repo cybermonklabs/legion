@@ -64,10 +64,11 @@ const (
 )
 
 // NewDispatchReader is the DispatchReader of the Dispatch at base, read with token, which is sent
-// as the Authorization header alone: the daemon's Dispatch client for each issue's events, and a
-// GET of its own for the event log and the listing, which that client does not read.
+// as the Authorization header alone: the daemon's Dispatch client for each issue's events, which
+// presents it through dispatch.BearerTransport, and a GET of its own for the event log and the
+// listing, which that client does not read.
 func NewDispatchReader(base, token string) DispatchReader {
-	return dispatchReader{HTTPClient: dispatch.New(base, token), base: strings.TrimRight(base, "/"), token: token,
+	return dispatchReader{HTTPClient: dispatch.New(base, dispatch.BearerTransport(token, nil)), base: strings.TrimRight(base, "/"), token: token,
 		client: &http.Client{Timeout: time.Minute}}
 }
 
