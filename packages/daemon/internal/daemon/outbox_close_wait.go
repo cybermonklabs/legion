@@ -10,7 +10,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
-	"github.com/sjawhar/legion/daemon/internal/storetext"
+	"github.com/sjawhar/legion/daemon/internal/store/storetext"
 )
 
 // The lines the close_wait_publish executor logs: a version of close-wait.md the daemon's write

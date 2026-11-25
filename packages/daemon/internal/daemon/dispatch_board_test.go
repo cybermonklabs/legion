@@ -33,7 +33,7 @@ const liveRepo = "acme/widgets"
 // names another issue's record or plan 409 STEP_OTHER_ISSUE or PLAN_OTHER_ISSUE, as Dispatch's store
 // does, keeping nothing of it. It keeps no document: the read of close-wait.md's token answers a
 // missing document's 404, and an upload of close-wait.md answers the slug Dispatch files it under,
-// keeping nothing (closeWaitUpload). Anything else is a call a live proof does not expect, and
+// keeping nothing (takeCloseWait). Anything else is a call a live proof does not expect, and
 // fails the test as workflowConfig's stand-in does.
 type liveDispatch struct {
 	t       *testing.T
@@ -150,7 +150,7 @@ func (b *liveDispatch) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 		_, _ = io.WriteString(w, `{"code":"`+dispatch.ArtifactNotFound+`","error":"document \"`+record.CloseWaitDocumentSlug+`\" not found by slug"}`)
 	case req.Method == http.MethodPost && key != "" && path == "/api/v1/issues/"+key+"/artifacts":
-		b.closeWaitUpload(key, req, w)
+		b.takeCloseWait(key, req, w)
 	case req.Method == http.MethodPost && strings.HasSuffix(path, "/messages"):
 		b.record(liveDispatchWrite{Issue: key, Body: b.decode(req, w)}, w)
 	case req.Method == http.MethodPatch && key != "" && path == "/api/v1/issues/"+key:
@@ -218,11 +218,11 @@ func (b *liveDispatch) showIssue(key string, w http.ResponseWriter) {
 	}
 }
 
-// closeWaitUpload answers the upload of key's close-wait.md (dispatch.Client's
+// takeCloseWait answers the upload of key's close-wait.md (dispatch.Client's
 // UploadArtifactOver) as Dispatch answers a document upload: 201 with the artifact and its slug.
 // The board keeps nothing of it, and an upload of any other document fails the test, as a call a
 // live proof does not expect.
-func (b *liveDispatch) closeWaitUpload(key string, req *http.Request, w http.ResponseWriter) {
+func (b *liveDispatch) takeCloseWait(key string, req *http.Request, w http.ResponseWriter) {
 	var upload struct {
 		Name string `json:"name"`
 	}
