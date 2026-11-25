@@ -106,6 +106,13 @@ How it reads a step:
     it under one of the wrappers GO_WRAPPERS names (`race_memory.py go test …`) is the go command
     behind them: neither changes which test functions run. A value holding `$` and a wrapper that
     tuple does not name are refused rather than guessed at;
+  * a step of a matrix job that writes `${{ matrix.<key> }}` in its run: is one step per row of
+    the job's matrix, each with the row's value written in, since each row is a job of its own:
+    a legs job's go test step (`go_legs.py … ${{ matrix.leg }} ${{ strategy.job-total }} |
+    xargs go test …`) runs each leg's packages in that leg alone, and `${{ strategy.job-total }}`
+    is the number of rows. A matrix of lists is read, and nothing else: an
+    `include`, an `exclude` or a matrix an expression computes is refused, as is a key no row
+    has;
   * a step whose run: is the path of a script AUDITED_SCRIPTS names
     (`packages/envoy/scripts/database-skips.sh` and `packages/envoy/scripts/backend-count.sh`), alone
     or followed by one of the argument lists
@@ -139,6 +146,7 @@ pair is run twice undeclared and none is unrun, 1 when one is, 2 when it cannot 
 from __future__ import annotations
 
 import hashlib
+import itertools
 import re
 import shlex
 import subprocess
@@ -349,6 +357,10 @@ SHELL_VAR = re.compile(r"\$(?:([A-Za-z_][A-Za-z0-9_]*)|\{([A-Za-z_][A-Za-z0-9_]*
 FOR_LINE = re.compile(r"^for\s+([A-Za-z_][A-Za-z0-9_]*)\s+in\s+(.+?)\s*;\s*do$")
 ASSIGNMENT = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=\$\((.+)\)$")
 XARGS = re.compile(r"^(?P<lister>.+?)\s*\|\s*xargs\s+(?P<test>go\s+test\b.*)$")
+# A matrix value as a run: writes it, which GitHub replaces before the shell reads the line.
+MATRIX_VALUE = re.compile(r"\$\{\{\s*matrix\.([A-Za-z_][A-Za-z0-9_-]*)\s*\}\}")
+# How many jobs the matrix makes, as a run: writes it (a legs step hands it to go_legs.py).
+JOB_TOTAL = re.compile(r"\$\{\{\s*strategy\.job-total\s*\}\}")
 TAGGED_TESTS = ".github/scripts/go-tagged-tests.sh"
 
 
@@ -583,8 +595,34 @@ def steps_of(found: dict) -> list[Step]:
                     continue
                 if not re.search(r"\bgo\s+test\b", "\n".join(script_lines(script))):
                     continue
-                steps.append(Step(workflow=path, job=job, name=name, workdir=workdir, script=script))
+                if not MATRIX_VALUE.search(script):
+                    steps.append(Step(workflow=path, job=job, name=name, workdir=workdir, script=script))
+                    continue
+                rows = matrix_rows(f"{path}'s {job} / {name}", body)
+                for row in rows:
+                    def value(match: re.Match[str], row: dict = row) -> str:
+                        if match.group(1) not in row:
+                            raise Refused(f"{path}'s {job} / {name}: its run: writes matrix.{match.group(1)}, "
+                                          f"which no row of the job's matrix has")
+                        return str(row[match.group(1)])
+                    label = ", ".join(f"{key} {row[key]}" for key in row)
+                    steps.append(Step(workflow=path, job=job, name=f"{name} ({label})", workdir=workdir,
+                                      script=JOB_TOTAL.sub(str(len(rows)), MATRIX_VALUE.sub(value, script))))
     return steps
+
+
+def matrix_rows(label: str, body: dict) -> list[dict]:
+    """The rows of a job's matrix of lists, each the values one of its jobs gets, in GitHub's
+    order. Any other shape is refused rather than guessed at: an `include` or `exclude` changes the
+    rows in ways this reading does not follow, and a matrix an expression computes is known only
+    when the run starts."""
+    matrix = ((body or {}).get("strategy") or {}).get("matrix")
+    if not isinstance(matrix, dict) or not matrix:
+        raise Refused(f"{label}: its run: writes a matrix value, and the job has no matrix of lists to read it from")
+    if "include" in matrix or "exclude" in matrix or not all(isinstance(v, list) and v for v in matrix.values()):
+        raise Refused(f"{label}: its job's matrix is not a matrix of lists alone, which is the one shape read here")
+    keys = list(matrix)
+    return [dict(zip(keys, values)) for values in itertools.product(*(matrix[key] for key in keys))]
 
 
 def spellings(path: str, workdir: str) -> set[str]:

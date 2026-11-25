@@ -1,0 +1,3 @@
+jj --ignore-working-copy --color=never config list -T '""'
+Warning: Deprecated user-level config: core.fsmonitor is renamed to fsmonitor.backend
+--- exit 0

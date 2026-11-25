@@ -187,8 +187,8 @@ jobs:
       # them, and "Wait for the script harnesses and judge them",
       # the job's last step but the ci-ok report, is their verdict and prints each one's log. A
       # harness that needs an earlier step is queued after it: release-push.test.sh after
-      # install-changie, disk_watch.test.sh after the user-namespace sysctl, check-ci-filters.test.sh
-      # and go-cache-working-set.test.sh after setup-go.
+      # install-changie, disk_watch.test.sh after the user-namespace sysctl, check-ci-filters.test.sh,
+      # go-cache-working-set.test.sh and go-legs.test.sh after setup-go.
       - name: Test release scripts
         if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"release_push_test"')
         run: .github/scripts/harness-pool.sh start .github/scripts/release-push.test.sh .github/scripts/release-push.test.sh
@@ -505,6 +505,12 @@ jobs:
       - name: Test the build cache prune of the cache fills
         if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"go_cache_working_set_test"')
         run: .github/scripts/harness-pool.sh start .github/scripts/go-cache-working-set.test.sh .github/scripts/go-cache-working-set.test.sh
+
+      # After setup-go: its fixtures run the real go list over a scratch module with no
+      # requirement, which reads no module cache and no network.
+      - name: Test the Go legs' package lists
+        if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"go_legs_test"')
+        run: .github/scripts/harness-pool.sh start .github/scripts/go-legs.test.sh .github/scripts/go-legs.test.sh
 
       # Beside the check above, and needing no Go and no Bun of its own: its fixtures list each
       # program with a stand-in bunx.
