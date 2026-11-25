@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"sync"
@@ -12,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // embeddingProjectKinds is every kind of embeddings row this release writes: the four window
@@ -231,11 +233,7 @@ func TestTheEmbeddingProjectKeyFillIsFinishedByTheProcessThatSkippedWhenTheHolde
 			<-release
 		})
 	}()
-	select {
-	case <-taken:
-	case <-time.After(20 * time.Second):
-		t.Fatal("the other process never took the embeddings-project-key-fill lease")
-	}
+	testwait.Receive(t, "the other process's take of the embeddings-project-key-fill lease", taken)
 
 	// This process, as the boot starts it.
 	leases := sweepLeases(t, database)
@@ -277,11 +275,7 @@ func TestTheEmbeddingProjectKeyFillIsFinishedByTheProcessThatSkippedWhenTheHolde
 	}
 	dying.Pool.Close()
 
-	select {
-	case <-returned:
-	case <-time.After(60 * time.Second):
-		t.Fatal("the process that skipped never took the lease the dead holder left, so the rows it did not label wait for the next boot")
-	}
+	testwait.Receive(t, "the process that skipped to take the lease the dead holder left, label the rows and return", returned)
 	if left := countRows(t, database,
 		"select count(*) from embeddings where kind = any($1) and project_key is null", embeddingProjectKinds); left != 0 {
 		t.Errorf("%d rows are still unlabelled after the fill that took the lease; want none", left)
@@ -349,20 +343,32 @@ func fillStopsWhenItsProgressIsGone(t *testing.T, gone string) {
 		defer close(returned)
 		RunEmbeddingProjectKeyFill(fillCtx, database, leases)
 	}()
-	select {
-	case <-returned:
-	case <-time.After(20 * retry):
-		t.Fatalf("the fill kept trying after %q, so it takes the lease every interval for the life of the process", gone)
+	// The loop returns, or tries again: a loop that had not stopped writes an error line at each
+	// try, so a second line is the fact that it went on.
+	errorLines := func() []string {
+		var failures []string
+		for _, record := range records.Records() {
+			if record.Level >= slog.LevelError {
+				failures = append(failures, record.Message)
+			}
+		}
+		return failures
+	}
+	stopped := testwait.Until(t, fmt.Sprintf("the fill to return after %q, or to write a second error line as it tries again (whether it returned)", gone), func() (bool, bool) {
+		select {
+		case <-returned:
+			return true, true
+		default:
+			return false, len(errorLines()) > 1
+		}
+	})
+	if !stopped {
+		t.Fatalf("the fill wrote the error lines %v after %q and had not returned, so it takes the lease every interval for the life of the process", errorLines(), gone)
 	}
 
 	// Long enough for a loop that had not stopped to have tried again several times.
 	time.Sleep(10 * retry)
-	var failures []string
-	for _, record := range records.Records() {
-		if record.Level >= slog.LevelError {
-			failures = append(failures, record.Message)
-		}
-	}
+	failures := errorLines()
 	if len(failures) != 1 {
 		t.Errorf("the fill logged %d errors after %q, want the one line that says so: %v", len(failures), gone, failures)
 	}

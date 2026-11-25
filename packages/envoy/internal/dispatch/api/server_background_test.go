@@ -8,6 +8,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/horizontest"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The background wait holds for the work a request left running past its client (detached): a
@@ -35,11 +36,7 @@ func TestTheBackgroundWaitHoldsForWorkARequestLeftRunning(t *testing.T) {
 	case <-time.After(200 * time.Millisecond):
 	}
 	close(release)
-	select {
-	case <-waited:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the background wait never returned once the detached worker ended")
-	}
+	testwait.Receive(t, "the background wait's return once the detached worker ended", waited)
 }
 
 // The background wait holds for every live socket's handler, and so every subscription it ran,
@@ -62,11 +59,7 @@ func TestTheBackgroundWaitHoldsForAnOpenLiveSocket(t *testing.T) {
 	case <-time.After(200 * time.Millisecond):
 	}
 	_ = client.conn.Close()
-	select {
-	case <-waited:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the background wait never returned once the live socket closed")
-	}
+	testwait.Receive(t, "the background wait's return once the live socket closed", waited)
 }
 
 // The background wait holds for the event stream relay while an events subscription reads it, and
@@ -88,9 +81,10 @@ func TestTheBackgroundWaitHoldsForTheEventStreamRelay(t *testing.T) {
 	})
 	requireBackgroundWaitHoldsUntilTheSubscriberLeaves(t, served, "the event stream relay", func() {
 		running.stop()
-		pollUntil(t, 5*time.Second, "the stopped subscription leaves the relay", func() bool {
+		waitUntil(t, "the stopped subscription leaves the relay", func() bool {
 			return relaySubscribers(served.eventRelay) == 0
 		})
+
 	})
 }
 
@@ -104,7 +98,7 @@ func TestTheBackgroundWaitHoldsForTheDeliveryHub(t *testing.T) {
 	if !served.deliveryHub.Subscribe(conn, subscribeFrame("p", presetView(deliveryLiveTimeline, 7, ""))) {
 		t.Fatal("the hub refused the view")
 	}
-	pollUntil(t, 10*time.Second, "the hub answers the view", func() bool { return len(conn.frames) > 0 })
+	waitUntil(t, "the hub answers the view", func() bool { return len(conn.frames) > 0 })
 	requireBackgroundWaitHoldsUntilTheSubscriberLeaves(t, served, "the delivery hub", func() {
 		served.deliveryHub.Close(conn)
 	})
@@ -112,7 +106,8 @@ func TestTheBackgroundWaitHoldsForTheDeliveryHub(t *testing.T) {
 
 // requireBackgroundWaitHoldsUntilTheSubscriberLeaves requires served's background wait to hold
 // while what (the relay or the hub) still runs for an open subscription, and to return once leave
-// has taken that subscription away, without the server's lifetime ending.
+// has taken that subscription away, without the server's lifetime ending. The wait for that return
+// has one bound, the test binary's deadline (testwait.Receive).
 func requireBackgroundWaitHoldsUntilTheSubscriberLeaves(t *testing.T, served *server, what string, leave func()) {
 	t.Helper()
 	waited := make(chan struct{})
@@ -126,11 +121,7 @@ func requireBackgroundWaitHoldsUntilTheSubscriberLeaves(t *testing.T, served *se
 	case <-time.After(200 * time.Millisecond):
 	}
 	leave()
-	select {
-	case <-waited:
-	case <-time.After(10 * time.Second):
-		t.Fatalf("the background wait never returned once %s's last subscriber left", what)
-	}
+	testwait.Receive(t, "the background wait's return once "+what+"'s last subscriber left", waited)
 }
 
 // A server with no lifetime is refused where it is built, not left running the hub, the relay and
