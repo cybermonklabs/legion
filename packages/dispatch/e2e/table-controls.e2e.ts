@@ -12327,3 +12327,118 @@ test("at 390 Take out of epic with the rows marked last far below the view and n
   expect(now.focusedRow !== null || now.onTable, where).toBe(true);
   expect(now.onTable || (whole && scrolled <= least + 1), where).toBe(true);
 });
+
+// INFRA-3135, round 28 (the tester's), by the architect's rulings of 2026-11-25 05:3xZ (every
+// landing of the selection bar's return takes the least scroll to its nearest edge, and a landing
+// partly in sight is shown whole) and 20:3xZ, which counts this row: it is the 70%-cut rule of the
+// round-27 row on Take out of epic (eba5a52d), on the Inbox's Snooze, since the shared bar carries
+// one rule on both pages. Measured at 5a444912 in builds Job infra-3135-f8-h3-wwf5b and at
+// 4f1ad776 in infra-3135-f8-b3-4prbk, at 1440x900: with two asks marked and the checkbox of the
+// row marked last cut by 70% at the bottom edge of the Inbox list's box, the bar's Snooze
+// (Tomorrow) lands the focus on the checkbox of the row now at the place in Chromium and Firefox,
+// shown whole by a scroll of the cut (11 px). In WebKit it leaves the focus on the page body.
+// Its engines: the clause of the `webkit` and `firefox` projects that names the rows
+// INFRA-3135's round-28 tester pinned (e2e/playwright.config.ts).
+// SLOW(>=2s): thirty asks seeded, and one Snooze read once the list's box settles.
+test("the Inbox bar's Snooze with the row marked last cut by 70% at the list's bottom edge shows the checkbox of the row now at the place whole by the least scroll @firefox @webkit", async ({
+  page,
+}) => {
+  test.setTimeout(180_000);
+  await page.setViewportSize({ height: 900, width: 1440 });
+  await createProject({ key: "ASKS", name: "Asks" });
+  for (let index = 0; index < 30; index++) {
+    const owner = await createIssue({ force: true, project: "ASKS", title: `Ask owner ${index}` });
+    await createAsk(owner.key, { question: `Ask ${index}: which way?` }, SURFACE_SESSION);
+  }
+  const bar = page.getByRole("toolbar", { name: "Selected rows" });
+  const list = page.getByTestId("inbox-list");
+  /** The part of the window the list's box shows its rows in, and the box's scroll. */
+  const readerSight = () =>
+    list.evaluate((box) => {
+      const frame = box.getBoundingClientRect();
+      return {
+        bottom: Math.min(window.innerHeight, frame.bottom),
+        scroll: box.scrollTop,
+        top: Math.max(0, frame.top),
+      };
+    });
+  /** The rect of the checkbox of the Inbox row `id`. */
+  const checkboxRect = (id: string) =>
+    page.evaluate((id) => {
+      const own = document
+        .querySelector(`[data-inbox-row="${id}"] input[type="checkbox"]`)
+        ?.getBoundingClientRect();
+      return {
+        bottom: own?.bottom ?? Number.NaN,
+        height: own?.height ?? Number.NaN,
+        top: own?.top ?? Number.NaN,
+      };
+    }, id);
+  await page.goto("/?group=none");
+  await expect.poll(() => page.locator("[data-inbox-row]").count()).toBeGreaterThanOrEqual(20);
+  // The rows read once the poll above found the list drawn; they only name the rows marked and
+  // the one after them.
+  const ids = await page
+    .locator("[data-inbox-row]")
+    .evaluateAll((nodes) => nodes.map((node) => node.getAttribute("data-inbox-row") ?? ""));
+  const upper = ids[12] ?? "";
+  const lower = ids[13] ?? "";
+  const after = ids[14] ?? "";
+  // The lower row first, so the row marked last is the upper one.
+  for (const id of [lower, upper]) await inboxRow(page, id).getByRole("checkbox").first().check();
+  await expect(bar).toBeVisible();
+  // The upper row's checkbox is cut by 70% of its height at the bottom edge of the list's box.
+  const view = await readerSight();
+  const own = await checkboxRect(upper);
+  await list.evaluate(
+    (box, by) => box.scrollBy(0, by),
+    own.bottom - (view.bottom + own.height * 0.7)
+  );
+  await settledScrollTop(list);
+  await nextFrames(page);
+  const before = await readerSight();
+  const placed = await checkboxRect(upper);
+  const cut = placed.bottom - before.bottom;
+  const trigger = listTrigger(bar, "Snooze selected asks");
+  await trigger.focus();
+  await page.keyboard.press("Enter");
+  await page.keyboard.type("tom");
+  await expect(listOf(trigger).getByRole("option")).toHaveText(["Tomorrow"]);
+  await page.keyboard.press("Enter");
+  await expect(page.locator(`[data-inbox-row="${upper}"]`)).toHaveCount(0, { timeout: 15_000 });
+  await expect(page.locator(`[data-inbox-row="${lower}"]`)).toHaveCount(0, { timeout: 15_000 });
+  await settledScrollTop(list);
+  await settledScrollTop(page);
+  await nextFrames(page);
+  // One read is the answer: both rows have gone and the box has held still, so nothing moves the
+  // focus or the rows after this.
+  const now = await readerSight();
+  // Read in the same settled moment as the sight above, so it is where the press left it.
+  const landed = await checkboxRect(after);
+  // The focus read once, in that same settled moment: nothing moves it after the box holds still.
+  const focused = await page.evaluate(
+    (id) => ({
+      name:
+        document.activeElement?.getAttribute("aria-label") ??
+        document.activeElement?.tagName ??
+        "nothing",
+      onMark:
+        document.activeElement ===
+        document.querySelector(`[data-inbox-row="${id}"] input[type="checkbox"]`),
+    }),
+    after
+  );
+  const scrolled = Math.round(now.scroll - before.scroll);
+  const text =
+    `the checkbox of the row marked last was cut by ${Math.round(cut * 10) / 10} px; the focus is on ` +
+    `${focused.name}, the box scrolled ${scrolled} px, and the checkbox now at the place stands at ` +
+    `top ${Math.round(landed.top)} to bottom ${Math.round(landed.bottom)} in a sight from ` +
+    `${Math.round(now.top)} to ${Math.round(now.bottom)}`;
+  expect(
+    focused.onMark &&
+      landed.top >= now.top - 1 &&
+      landed.bottom <= now.bottom + 1 &&
+      Math.abs(scrolled) <= cut + 1,
+    text
+  ).toBe(true);
+});
