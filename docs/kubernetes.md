@@ -4548,11 +4548,13 @@ A gh call has these records:
   A field given to `-f`, `--raw-field`, `-F` or `--field` of `gh api` or `gh workflow run` is two records: its value, labelled `the gh call's field <name>`, and its name, labelled `the gh call's field <name> (name)`.
   Only those two commands have field options: in every other command `-f` and `-F` mean other things (`-F` is `--body-file` in `gh pr create`), so there every argument is one record, read whole.
   An option's value is read as that option's value and never as an option of its own, so `gh api -t '-f…'` is a template, read whole.
-  A `gh api` call's endpoint is also read decoded, because GitHub decodes a REST path and stores a release asset's `name` and `label` query values decoded.
+  A `gh api` call's endpoint is also read decoded, because GitHub decodes the percent-escapes of an endpoint's path and query: it decodes a REST path, and stores a release asset's `name` and `label` query values decoded.
   Its path with its percent-escapes decoded is a record, labelled `the gh call's argument <i>, path`, and so is each value of its query, decoded as a URL query is, labelled `the gh call's argument <i>, query <key>`; each is a record only where decoding changes the text.
-  A path, or a pair of a query, whose escapes do not decode is read only as written.
+  A `;` inside a query value stays in the value, as GitHub keeps it (measured on `api.github.com` on 2026-11-25: `?per_page=1&x=a%62c;d` came back as the pair `x=abc%3Bd`), so such a pair is read decoded with its `;`.
+  A path whose escapes do not decode is read only as written, and so is a pair of a query whose key or value does not decode.
 
 - The call's standard input, labelled `the gh call's standard input`, and each file the call sends, labelled by its path.
+  A call that only prints, such as gh's help of a command (`--help`, or a `-h` that no option of the command takes), sends nothing beside its arguments, so the guard opens no file its options name: `legion gh pr comment 1 --body-file <file> --help` passes where no file is at `<file>`, and its arguments are read as any call's are.
 
 - Each JSON string of a request body (`gh api --input <file>`, `gh api --input -`, or the standard input of `gh workflow run --json`) that is exactly one JSON document, labelled `<record>, JSON <path>`, where `<record>` is the body's own label.
   An object's name is a record too, labelled `<record>, JSON <path> (name)`.
@@ -4568,6 +4570,22 @@ A gh call has these records:
 - Each string literal of a GraphQL query, labelled `<record>, GraphQL string <k>`, where `<record>` is the label of the record that holds the query.
   A `gh api` call's query is read so whatever spelling of GitHub's GraphQL endpoint the call names (`graphql`, `/graphql`, the API's full URL), and wherever the query comes from: a field, a file, a JSON body's `query`, or standard input named by `-F query=@-`.
   A query that does not lex is read as written.
+
+Each text that a write to a public repository sends and GitHub stores and shows is read as GitHub stores it, but a release asset's file and a label gh takes from the name of a file a glob pattern matched, which are handled as on `main` (the last row).
+The table lists each of them, what GitHub does to it before it stores it, and the records the guard reads of it; `TestEveryTextGitHubStoresIsReadAsItIsStored` (`packages/daemon/internal/leakguard/gh_fields_test.go`) holds a row for each record the table names:
+
+| What the call sends | What GitHub stores | What the guard reads |
+| --- | --- | --- |
+| An argument, such as a title, a body or a tag | the text as written | `the gh call's argument <i>`, as written |
+| A field of `gh api` or `gh workflow run` (`-f`, `--raw-field`, `-F`, `--field`) | the name and the value as written: gh JSON-escapes them, and GitHub stores the strings | `the gh call's field <name>` and `the gh call's field <name> (name)`, as written |
+| A JSON request body sent to GitHub's REST API (`gh api --input <file>` or `--input -`) | each JSON string, its escapes decoded | `<record>, JSON <path>` and `<record>, JSON <path> (name)`, decoded |
+| A body sent to a whole URL on another host than `api.github.com`, such as a release asset uploaded to `uploads.github.com` | the bytes as sent | `<record>`, as sent, and where the body is exactly one JSON document `<record>, JSON <path>` too, decoded |
+| The file of a file option (`--body-file`, `--notes-file`, `--from-file`, and the `-F` that is one of them), and the file of a field's `@<path>` (`-F <name>=@<path>`, `--field <name>=@<path>`) but a GraphQL query's, which its own row covers | the text as written | the file's path, labelling its text as written |
+| A `gh api` endpoint's path | the path, its percent-escapes decoded | `the gh call's argument <i>, path`, decoded, beside the argument as written |
+| Each pair of a `gh api` endpoint's query | the value, its percent-escapes decoded and a `;` in it kept | `the gh call's argument <i>, query <key>`, decoded with its `;`; a pair whose key or value does not decode is read only as written, in the argument |
+| A GraphQL query (a `query` field, a file, a JSON body's `query`, or `-F query=@-`) | each string literal, its escapes decoded | `<record>, GraphQL string <k>`, decoded |
+| The inputs of `gh workflow run --json`, on standard input | each input's JSON string, its escapes decoded | `the gh call's standard input, JSON <path>`, decoded |
+| A release asset of `gh release upload` or `gh release create` | the file's bytes, its name and its label | as on `main`: each argument as written, so an asset's path or `#label` written in an argument is read and refused as any argument is; the rule pass opens no asset's file, and a label gh takes from the name of a file a glob pattern matched is in no argument and goes unread; the shared check reads the call's arguments too |
 
 A text that `legion leak-check text` checks has two records, `the title` (its first line) and `the body` (the rest).
 A path rule reads only a record's path, and only a pushed file's records carry one: its added or renamed path and each of its added lines.

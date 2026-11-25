@@ -32,10 +32,12 @@ type GhRequest struct {
 	// caller's where Sent is not nil, and the argv's tables are consulted for none of them.
 	//
 	// Nil is a caller that parsed nothing, and the guard then reads all of it from the argv with
-	// tables of its own (readGhArgv). `legion gh` hands nil only for a command its parse finds
-	// sends nothing (cmd/legion's ghTarget.sent lists those commands). So in this binary the
-	// tables are the fail-closed answer for a future caller that hands the guard bare arguments,
-	// not a path any write takes today.
+	// tables of its own (readGhArgv). `legion gh` hands nil for no call it guards: a command its
+	// parse finds sends nothing beside its argv, gh's help of a command among them, gets the zero
+	// GhSent, which names nothing, so the guard opens no file such a call's options name
+	// (cmd/legion's ghPrintsOnly lists those commands). So in this binary the tables are the
+	// fail-closed answer for a future caller that hands the guard bare arguments, not a path any
+	// call takes today.
 	//
 	// A call that sends its standard input as content (GhSent.StdinSent), as a file option given
 	// `-`, a field given `@-` and `gh workflow run --json` do, has that input read by the guard

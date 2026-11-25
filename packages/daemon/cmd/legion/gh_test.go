@@ -22,6 +22,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
@@ -3431,6 +3432,128 @@ func TestGhTargetOfReadsTheFilesTheCallWouldSend(t *testing.T) {
 			}
 		})
 	}
+}
+
+// A call that only prints gh's help of a command sends nothing, so `legion gh` hands the guard
+// the zero GhSent of it (ghPrintsOnly), and the guard opens no file its options name. With the
+// fixture's rule file named, each help call below passes the whole guard, and gh runs it with
+// its arguments untouched and prints its help: `gh release upload` and `gh release create` with a
+// tag, and with an asset whose text names the fixture's word as well, and `gh pr comment` whose
+// --body-file names a file that is not there, under `--help` and under a `-h` no option of the
+// leaf takes. Handed no parse (a nil GhRequest.Sent), the guard reads the argv with tables of its
+// own, which open the --body-file and refuse the `gh pr comment` rows as a file they could not
+// open. At bd51cbc1 those tables refused the release rows too, as calls that may upload an asset
+// no bare argv shows; they no longer refuse a release call, so for the four release rows only the
+// check of ghTargetOf's sent holds a help call to the zero GhSent. The rows stay: they are the
+// help rows of c-public-upload. Every command is read from gh 2.98.0's saved walk, whose help
+// names `gh release upload`.
+func TestLegionGhPassesAHelpCallAndOpensNothing(t *testing.T) {
+	root, defaultDir := gitCredentialBundle(t)
+	help, err := filepath.Abs(filepath.Join(ghHelpWalkDir, "2.98.0"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The gh of this test answers a help read of the resolver's, `[<command>] --help`, with that
+	// command's saved help, and any other run, a help call whose words are more than a command's
+	// path among them, with a line of help, after recording the run.
+	stub := filepath.Join(t.TempDir(), "gh")
+	script := "#!/bin/sh\nfor last; do :; done\n" +
+		"if [ \"$last\" = --help ]; then\n" +
+		"  path=$(printf '%s ' \"$@\" | sed -e 's/--help $//' -e 's/ $//' -e 's/ /_/g')\n" +
+		"  if [ -f '" + help + "'/\"${path:-gh}\".txt ]; then exec cat '" + help + "'/\"${path:-gh}\".txt; fi\n" +
+		"fi\n" +
+		"printf 'gh %s\\n' \"$*\" >>\"$GH_STANDIN_RECORD\"\n" +
+		"echo 'the help gh prints'\n"
+	if err := os.WriteFile(stub, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	asset := writeFile(t, "notes.txt", "the "+leakguardtest.Word+" notes\n")
+	absent := filepath.Join(t.TempDir(), "absent.md")
+	rules := leakguardtest.WriteRules(t, t.TempDir())
+	savedHelp := savedGhHelpOf(t, "2.98.0")
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{"release upload's help", []string{"release", "upload", "v1", "--help"}},
+		{"release create's help", []string{"release", "create", "v1", "--help"}},
+		{"release upload's help with an asset", []string{"release", "upload", "v1", asset, "--help"}},
+		{"release create's help with an asset", []string{"release", "create", "v1", asset, "--help"}},
+		{"pr comment's help with a --body-file that is not there", []string{"pr", "comment", "1", "--body-file", absent, "--help"}},
+		{"pr comment's -h with a --body-file that is not there", []string{"pr", "comment", "1", "--body-file", absent, "-h"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			target, err := ghTargetOfKept(t, tc.args, nil, savedHelp, noGitRepository, ownersOwnDirectories)
+			if err != nil || !reflect.DeepEqual(target.sent, &leakguard.GhSent{}) {
+				t.Errorf("ghTargetOf(%q) = %+v, %v; want the target of a call that sends nothing, whose sent is the zero GhSent", tc.args, target, err)
+			}
+			records := t.TempDir()
+			ghRecord, checkRecord := filepath.Join(records, "gh"), filepath.Join(records, "check")
+			code, stdout, stderr := legionGh(t, map[string]string{
+				"LEGION_GH_PATH": stub, "GH_CONFIG_DIR": defaultDir, "LEGION_GH_OWNERS_DIR": root,
+				"PUBLIC_LEAK_CHECK": leakguardtest.Write(t, t.TempDir(), ghCheckPasses), leakguard.RulesFileVar: rules,
+				"GH_STANDIN_RECORD": ghRecord, "LEAK_CHECK_RECORD": checkRecord, "XDG_STATE_HOME": filepath.Join(records, "state"),
+			}, tc.args...)
+			if code != 0 || stdout != "the help gh prints\n" || stderr != "" {
+				t.Errorf("legion gh %q = exit %d, stdout %q, stderr %q; want gh's help, exit 0, and nothing of the guard's", tc.args, code, stdout, stderr)
+			}
+			if got, want := readRecord(t, ghRecord), "gh "+strings.Join(tc.args, " ")+"\n"; got != want {
+				t.Errorf("gh recorded %q, want its one run of the call, %q", got, want)
+			}
+			if got, want := readRecord(t, checkRecord), ghGuardRun(tc.args); got != want {
+				t.Errorf("the shared check recorded %q, want its one run of the call, %q", got, want)
+			}
+		})
+	}
+}
+
+// A release asset is handled as on main: the private-name rule pass opens no positional asset
+// file of `gh release upload` or `gh release create`, and reads each argument as written. With
+// the fixture's rule file named, the guard, handed the parse `legion gh` hands it of each call
+// (ghTargetOf, at gh 2.98.0, as leakguard.GhRequest.Sent), passes an upload and a create to a
+// public repository of a file whose text names the fixture's word and whose argument holds no
+// label. The same upload of a clean file with a `#label` naming the word is refused, the report
+// naming the argument that holds the label.
+func TestGhGuardHandlesAReleaseAssetAsMainDoes(t *testing.T) {
+	help := savedGhHelpOf(t, "2.98.0")
+	rules := leakguardtest.WriteRules(t, t.TempDir())
+	asset := writeFile(t, "notes.txt", "the "+leakguardtest.Word+" notes\n")
+	clean := writeFile(t, "clean.txt", "a clean asset\n")
+	// call is the guard's answer to the call args, to a repository GitHub reports public, as
+	// runGh hands it: the repository and the parse ghTargetOf answers.
+	call := func(t *testing.T, args ...string) error {
+		t.Helper()
+		target, err := ghTargetOfKept(t, args, nil, help, noGitRepository, ownersOwnDirectories)
+		if err != nil {
+			t.Fatalf("ghTargetOf(%q) = %v", args, err)
+		}
+		guard := leakguard.New(leakguard.Options{
+			Check:      leakguardtest.Write(t, t.TempDir(), leakguardtest.Passes),
+			Visibility: func(context.Context, string) (leakguard.Visibility, error) { return leakguard.Public, nil },
+			Env:        append(fixtureenv.Isolated(t.TempDir()), leakguard.RulesFileVar+"="+rules),
+		})
+		_, err = guard.GhCall(context.Background(), leakguard.GhRequest{Args: args, Repo: target.owner + "/" + target.repo, Sent: target.sent})
+		return err
+	}
+	for _, args := range [][]string{
+		{"release", "upload", "v1", asset, "-R", "acme/widgets"},
+		{"release", "create", "v1", asset, "--notes", "the notes of a clean release", "-R", "acme/widgets"},
+	} {
+		t.Run(strings.Join(args[:2], " ")+" of an asset whose text names the word", func(t *testing.T) {
+			if err := call(t, args...); err != nil {
+				t.Errorf("the guard answered %q with %v, want it cleared", args, err)
+			}
+		})
+	}
+	t.Run("release upload of an asset whose label names the word", func(t *testing.T) {
+		args := []string{"release", "upload", "v1", clean + "#the " + leakguardtest.Word + " notes", "-R", "acme/widgets"}
+		err := call(t, args...)
+		var refused *leakguard.Refusal
+		want := "the gh call's argument 3: " + leakguardtest.WordClass + ": matched "
+		if !errors.As(err, &refused) || !slices.ContainsFunc(refused.Lines, func(line string) bool { return strings.HasPrefix(line, want) }) {
+			t.Errorf("the guard answered %q with %v, want a refusal with a line starting %q", args, err, want)
+		}
+	})
 }
 
 // gh 2.104.0's --attach uploads the file it names to GitHub, an SVG's text among what it takes,

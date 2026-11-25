@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 )
 
@@ -16,18 +17,24 @@ import (
 // which passes, and in one field, which is refused. Each joined form is refused by the rule
 // itself (refusedWhole), so a pass is the reader's and not a rule that never matched.
 
-// ghFieldCall is the error GhCall answers req with, under a guard whose destination is public: a
-// shared check that clears the call, and one that asks for its standard input first where the
-// call has one.
+// ghFieldCall is the error GhCall answers req with, under a guard whose destination is public and
+// whose shared check is fieldCheck's.
 func ghFieldCall(t *testing.T, req GhRequest) error {
+	t.Helper()
+	req.Repo = "invented-org/invented-repo"
+	_, err := guardWith(t, fieldCheck(t, req), Public).GhCall(bound(t), req)
+	return err
+}
+
+// fieldCheck is the path of a stand-in shared check for req that clears the call: one that asks
+// for its standard input first where the call has one, and one that clears it at once otherwise.
+func fieldCheck(t *testing.T, req GhRequest) string {
 	t.Helper()
 	check := passes
 	if req.Stdin != nil {
 		check = leakguardtest.Reading(0, "")
 	}
-	req.Repo = "invented-org/invented-repo"
-	_, err := guardWith(t, leakguardtest.Write(t, t.TempDir(), check), Public).GhCall(bound(t), req)
-	return err
+	return leakguardtest.Write(t, t.TempDir(), check)
 }
 
 // stdinParse is the GhSent a caller's parse hands for a call whose one option of standard input
@@ -276,17 +283,18 @@ func TestAnUploadsBodyIsReadAsGitHubStoresIt(t *testing.T) {
 	})
 }
 
-// GitHub stores a release asset's `name` and `label` query values decoded, as the asset's file
-// name and label, and decodes a REST path, where a contents API path is a file's name. So a `gh
-// api` endpoint's path and each value of its query are read decoded, beside the endpoint as
-// written, each where decoding changes its text: the fixture's one word with a letter
-// percent-escaped is refused as an upload's `name=` and as its `label=`, the report naming the
-// query value, and as a file's name in a contents API path, the report naming the path. A pair of
-// the query that holds `;` or whose escapes do not decode is skipped, as url.ParseQuery skips it,
-// and the other pairs are still read: the escaped `name=` beside either is refused all the same.
-// A clean query with no escape, a pair whose escapes do not decode, and a whole REST URL whose
-// path holds gh's `{owner}` and `{repo}` as written add no record: the endpoint is read as
-// written, and the call passes.
+// GitHub decodes the percent-escapes of an endpoint's path and query: it stores a release asset's
+// `name` and `label` query values decoded, as the asset's file name and label, and a contents API
+// path is a file's name. So a `gh api` endpoint's path and each value of its query are read
+// decoded, beside the endpoint as written, each where decoding changes its text: the fixture's one
+// word with a letter percent-escaped is refused as an upload's `name=` and as its `label=`, the
+// report naming the query value, and as a file's name in a contents API path, the report naming
+// the path. A pair whose escapes do not decode is skipped, as url.ParseQuery skips it, and the
+// other pairs are still read: the escaped `name=` beside one is refused all the same, the report
+// naming it alone. (A `;` in a value stays in it, decoded with the rest, as GitHub keeps it, which
+// the `;` row of TestEveryTextGitHubStoresIsReadAsItIsStored holds.) A clean query with no escape,
+// a pair whose escapes do not decode, and a whole REST URL whose path holds gh's `{owner}` and
+// `{repo}` as written add no record: the endpoint is read as written, and the call passes.
 func TestAnEndpointsPercentEscapesAreReadDecoded(t *testing.T) {
 	const uploads = "https://uploads.github.com/repos/invented-org/invented-repo/releases/1/assets"
 	// The fixture's one word with its t percent-escaped, so that no rule reads the word in the
@@ -308,12 +316,10 @@ func TestAnEndpointsPercentEscapesAreReadDecoded(t *testing.T) {
 		args := []string{"api", "repos/invented-org/invented-repo/contents/" + escaped + ".md", "-X", "PUT", "-f", "message=a clean commit", "-f", "content=Y2xlYW4="}
 		reports(t, refusal(t, ghFieldCall(t, GhRequest{Args: args})).Lines, "the gh call's argument 1, path: "+leakguardtest.WordClass)
 	})
-	for _, other := range []string{"label=v1;beta", "x=%zz"} {
-		t.Run("a percent-escaped name= beside "+other+" is refused", func(t *testing.T) {
-			args := []string{"api", uploads + "?name=" + escaped + ".json&" + other, "--input", clean(t)}
-			reports(t, refusal(t, ghFieldCall(t, GhRequest{Args: args})).Lines, "the gh call's argument 1, query name: "+leakguardtest.WordClass)
-		})
-	}
+	t.Run("a percent-escaped name= beside x=%zz is refused", func(t *testing.T) {
+		args := []string{"api", uploads + "?name=" + escaped + ".json&x=%zz", "--input", clean(t)}
+		reports(t, refusal(t, ghFieldCall(t, GhRequest{Args: args})).Lines, "the gh call's argument 1, query name: "+leakguardtest.WordClass)
+	})
 	for _, tc := range []struct{ name, endpoint string }{
 		{"a clean query with no escape adds no record", uploads + "?name=a.json&label=a-clean-label"},
 		{"a pair whose escapes do not decode adds no record", uploads + "?name=%zz.json"},
@@ -329,6 +335,112 @@ func TestAnEndpointsPercentEscapesAreReadDecoded(t *testing.T) {
 				t.Fatalf("readGhArgv(%q) read the records %+v, want the arguments alone, %+v", args, got, want)
 			}
 			cleared(t, ghFieldCall(t, GhRequest{Args: args}))
+		})
+	}
+}
+
+// Every text a write to a public repository sends that GitHub stores and shows is read as GitHub
+// stores it, but a release asset's file and a label gh takes from the name of a file a glob
+// pattern matched, which are handled as on main. This test holds a row for each record the guide's
+// table of those texts names (docs/kubernetes.md, "What the rules read", the table after the list
+// of a gh call's records). Each row's call holds the fixture's one word hidden by what GitHub does
+// to that text before it stores it — a JSON `\u` escape in a JSON body's string or name, in a
+// body sent to another host, in a GraphQL literal and in a workflow run's JSON inputs, a
+// percent-escape in an endpoint's path and in a query value that holds a `;` — or written plainly
+// where GitHub stores the text as the call writes it: an argument, a field's value and its name,
+// a file option's file and a field's file, a body sent to another host, and a release asset's
+// `#label` in its argument (an asset's file is opened by no rule pass, as on main; legion gh's
+// parse names no file of it, so its Sent is the zero GhSent). The call to a public repository is
+// refused, the report naming that row's record and no other; the same call to a private
+// repository passes, and so does the call to a public one where no rule file is named, which runs
+// no rule.
+func TestEveryTextGitHubStoresIsReadAsItIsStored(t *testing.T) {
+	const (
+		repo    = "repos/invented-org/invented-repo"
+		uploads = "https://uploads.github.com/repos/invented-org/invented-repo/releases/1/assets?name=a.txt"
+	)
+	plain := "the " + leakguardtest.Word + " notes"
+	// The word with a letter behind a JSON escape, and behind a percent-escape.
+	jsonWord := strings.Replace(leakguardtest.Word, "e", `\u0065`, 1)
+	percentWord := strings.Replace(leakguardtest.Word, "t", "%74", 1)
+	for _, hidden := range []string{jsonWord, percentWord} {
+		if strings.Contains(hidden, leakguardtest.Word) {
+			t.Fatalf("%q spells the word in its own bytes, so it proves nothing", hidden)
+		}
+	}
+	jsonEscaped := "the " + jsonWord + " notes"
+	for _, tc := range []struct {
+		name string
+		// call is the row's write, made afresh for each guard it meets, and the label of the one
+		// record its report names.
+		call func(t *testing.T) (GhRequest, string)
+	}{
+		{"an argument, as written", func(t *testing.T) (GhRequest, string) {
+			return GhRequest{Args: []string{"issue", "comment", "1", "--body", plain}}, "the gh call's argument 4"
+		}},
+		{"a field, the string gh JSON-escapes", func(t *testing.T) (GhRequest, string) {
+			return GhRequest{Args: []string{"api", repo + "/issues/1/comments", "-f", "body=" + plain}}, "the gh call's field body"
+		}},
+		{"a field's name, as written", func(t *testing.T) (GhRequest, string) {
+			return GhRequest{Args: []string{"workflow", "run", "w.yml", "-f", plain + "=a clean value"}}, "the gh call's field " + plain + " (name)"
+		}},
+		{"a REST JSON body, its strings decoded", func(t *testing.T) (GhRequest, string) {
+			body := fieldFile(t, "comment.json", `{"body":"`+jsonEscaped+`"}`)
+			return GhRequest{Args: []string{"api", repo + "/issues/1/comments", "--input", body}}, body + ", JSON .body"
+		}},
+		{"a REST JSON body's name, decoded", func(t *testing.T) (GhRequest, string) {
+			body := fieldFile(t, "dispatch.json", `{"ref":"main","inputs":{"`+jsonEscaped+`":"a clean value"}}`)
+			return GhRequest{Args: []string{"api", repo + "/actions/workflows/w.yml/dispatches", "--input", body}}, body + ", JSON .inputs" + jqMember(plain) + " (name)"
+		}},
+		{"a body sent to another host, as sent", func(t *testing.T) (GhRequest, string) {
+			body := fieldFile(t, "a.txt", plain)
+			return GhRequest{Args: []string{"api", uploads, "--input", body}}, body
+		}},
+		{"a body sent to another host, its strings decoded", func(t *testing.T) (GhRequest, string) {
+			body := fieldFile(t, "a.json", `{"a":"`+jsonEscaped+`"}`)
+			return GhRequest{Args: []string{"api", uploads, "--input", body}}, body + ", JSON .a"
+		}},
+		{"a file option's file, as written", func(t *testing.T) (GhRequest, string) {
+			body := fieldFile(t, "body.md", plain)
+			return GhRequest{Args: []string{"pr", "comment", "1", "--body-file", body}}, body
+		}},
+		{"a field's file, as written", func(t *testing.T) (GhRequest, string) {
+			body := fieldFile(t, "body.md", plain)
+			return GhRequest{Args: []string{"api", repo + "/issues/1/comments", "-F", "body=@" + body}}, body
+		}},
+		{"an endpoint's path, percent-decoded", func(t *testing.T) (GhRequest, string) {
+			endpoint := repo + "/contents/" + percentWord + ".md"
+			return GhRequest{Args: []string{"api", endpoint, "-X", "PUT", "-f", "message=a clean commit", "-f", "content=Y2xlYW4="}}, "the gh call's argument 1, path"
+		}},
+		{"a query value holding a semicolon, percent-decoded with it", func(t *testing.T) (GhRequest, string) {
+			endpoint := repo + "/issues/1/comments?x=the%20" + percentWord + "%20notes;v1"
+			return GhRequest{Args: []string{"api", "-X", "POST", endpoint, "-f", "body=a clean comment"}}, "the gh call's argument 3, query x"
+		}},
+		{"a GraphQL query's literal, decoded", func(t *testing.T) (GhRequest, string) {
+			return GhRequest{Args: []string{"api", "graphql", "-f", "query=" + graphQLMutation(jsonEscaped, "a clean body")}}, "the gh call's field query, GraphQL string 2"
+		}},
+		{"gh workflow run's JSON inputs, decoded", func(t *testing.T) (GhRequest, string) {
+			return GhRequest{Args: []string{"workflow", "run", "w.yml", "--json"}, Stdin: strings.NewReader(`{"notes":"` + jsonEscaped + `"}`)}, "the gh call's standard input, JSON .notes"
+		}},
+		{"a release asset's label, in its argument", func(t *testing.T) (GhRequest, string) {
+			asset := fieldFile(t, "a.txt", "a clean asset")
+			return GhRequest{Args: []string{"release", "upload", "v1", asset + "#" + plain}, Sent: &GhSent{}}, "the gh call's argument 3"
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req, record := tc.call(t)
+			reports(t, refusal(t, ghFieldCall(t, req)).Lines, record+": "+leakguardtest.WordClass)
+			req, _ = tc.call(t)
+			req.Repo = "invented-org/invented-repo"
+			if _, err := guardWith(t, fieldCheck(t, req), Private).GhCall(bound(t), req); err != nil {
+				t.Errorf("the call to a private repository = %v, want it cleared", err)
+			}
+			req, _ = tc.call(t)
+			req.Repo = "invented-org/invented-repo"
+			noRules := New(Options{Check: fieldCheck(t, req), Visibility: answers(Public, nil), Env: fixtureenv.Isolated(t.TempDir())})
+			if answer, err := noRules.GhCall(bound(t), req); err != nil || answer.Read != GhReadNoRules {
+				t.Errorf("the call with no rule file named = %+v, %v; want it cleared with no rule run", answer, err)
+			}
 		})
 	}
 }

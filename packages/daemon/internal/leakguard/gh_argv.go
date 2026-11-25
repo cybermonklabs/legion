@@ -344,20 +344,17 @@ read:
 
 // readEndpoint reads args[i], a `gh api` call's endpoint (readLeaf), once (ghAPIEndpoint): its
 // kind, kept with its text (ghArgv.endpoint), and the two parts of it GitHub reads decoded, each
-// a record beside the endpoint's own (argument) where decoding changes its text. GitHub decodes a
-// REST path, and a contents API path is a file's name, so the path decoded is "the gh call's
-// argument <i>, path"; and it stores a release asset's `name` and `label` query values decoded, as
-// the asset's file name and label, so each value of the query decoded is "the gh call's argument
-// <i>, query <key>" (decodedQuery). A path that does not decode adds nothing, nor does a pair of
-// the query that does not, and the endpoint's own record is read as ever. Every value of every
-// endpoint's query is read so, which errs toward reading more: a value GitHub stores nowhere costs
-// a record.
+// a record beside the endpoint's own (argument) where decoding changes its text. GitHub decodes the
+// percent-escapes of an endpoint's path and of its query: a contents API path is a file's name, so
+// the path decoded is "the gh call's argument <i>, path"; and a release asset's `name` and `label`
+// query values are the asset's file name and label, so each value of the query decoded is "the gh
+// call's argument <i>, query <key>" (decodedQuery), a `;` in it kept. A path that does not decode
+// adds nothing, nor does a pair of the query that does not, and the endpoint's own record is read
+// as ever. Every value of every endpoint's query is read so, which errs toward reading more: a
+// value GitHub stores nowhere costs a record.
 func (argv *ghArgv) readEndpoint(args []string, i int) {
 	kind, decodedPath, query := ghAPIEndpoint(args[i])
 	argv.endpoint = ghEndpoint{kind: kind, text: args[i]}
-	if decodedPath == "" && query == "" {
-		return
-	}
 	if decodedPath != "" {
 		argv.records = append(argv.records, Record{Label: argumentLabel(i) + ", path", Text: decodedPath})
 	}
@@ -434,17 +431,16 @@ func ghAPIEndpoint(endpoint string) (kind ghEndpointKind, decodedPath, query str
 
 // decodedQuery is records with a record of each value of query, as written in the endpoint that
 // is the call's argument i, decoded, labelled "the gh call's argument <i>, query <key>", where
-// decoding changes the value's text, in the order query writes them. It decodes as url.ParseQuery
-// does, pair by pair: the pairs parted at `&`, a key from its value at the first `=`, and each
-// read by url.QueryUnescape, so a `+` is a space. A pair holding `;`, which url.ParseQuery
-// refuses as a separator, and one whose key or value does not unescape, are skipped, as
-// url.ParseQuery skips them, and the other pairs are still read. url.ParseQuery's own answer is a
-// map, which keeps neither the order of the pairs nor the text each value had.
+// decoding changes the value's text, in the order query writes them. It reads the pairs as GitHub
+// stores them: parted at `&`, a key from its value at the first `=`, and each read by
+// url.QueryUnescape, so a `+` is a space. A `;` parts no pair and stays in its value, decoded with
+// the rest, as GitHub keeps it: api.github.com answered `?per_page=1&x=a%62c;d` on 2026-11-25 with
+// the pair `x=abc%3Bd` (spec v10's R5 of dispatch://INFRA-3929), where url.ParseQuery refuses such
+// a pair. A pair whose key or value does not unescape is skipped, as url.ParseQuery skips it, and
+// the other pairs are still read. url.ParseQuery's own answer is a map, which keeps neither the
+// order of the pairs nor the text each value had.
 func decodedQuery(records []Record, i int, query string) []Record {
 	for pair := range strings.SplitSeq(query, "&") {
-		if strings.Contains(pair, ";") {
-			continue
-		}
 		rawKey, raw, _ := strings.Cut(pair, "=")
 		key, keyErr := url.QueryUnescape(rawKey)
 		value, err := url.QueryUnescape(raw)

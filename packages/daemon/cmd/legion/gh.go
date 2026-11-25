@@ -765,20 +765,30 @@ func ghWrapperFile(path string) (bool, error) {
 // content, the use it makes of standard input, leakguard.StdinUnknown where no option names it (a
 // file option's `-`, a field's `@-`, `gh workflow run --json`) or two name it with different
 // uses, and whether any of them names it, so that the command sends its standard input as
-// content as well. It is nil in the zero target ghTargetOf answers a command that sends nothing —
-// `gh --version` alone, `gh` with no command, a group with no leaf, a leaf whose help is asked
-// for, by `--help` or by a `-h` no option of the leaf takes, and `gh help`, with a command or
-// without — and in the targets of the two exact reads, which runGh builds without ghTargetOf and
-// hands no guard. For every other command it is never nil, so the guard reads none of it out of
-// the argv again (leakguard.GhRequest.Sent). writesNothing is whether the call is in a read
-// grammar (ghWritesNothing), so that under the shared check that rule was proven against the
-// guard runs that check alone for it (runGh's ghReadCall). Such a call sends no file: no grammar
-// names an option of ghSentFileOptions (TestGhReadGrammarNamesEachOptionAsItsHelpDoes).
+// content as well. It is nil only in the targets of the two exact reads, which runGh builds
+// without ghTargetOf and hands no guard. ghTargetOf answers it for every command, so the guard
+// reads none of it out of the argv again (leakguard.GhRequest.Sent), and a command that only
+// prints gets the zero GhSent, which names nothing (ghPrintsOnly). writesNothing is whether the
+// call is in a read grammar (ghWritesNothing), so that under the shared check that rule was
+// proven against the guard runs that check alone for it (runGh's ghReadCall). Such a call sends
+// no file: no grammar names an option of ghSentFileOptions
+// (TestGhReadGrammarNamesEachOptionAsItsHelpDoes).
 type ghTarget struct {
 	dir, owner, repo string
 	command          string
 	sent             *leakguard.GhSent
 	writesNothing    bool
+}
+
+// ghPrintsOnly is ghTargetOf's target of a command gh only prints for — `gh --version` alone, `gh`
+// with no command, a group with no leaf, a leaf whose help is asked for, by `--help` or by a `-h`
+// no option of the leaf takes, and `gh help`, with a command or without — which names no owner
+// and sends nothing beside its argv. Its sent is the zero GhSent, so the guard opens no file its
+// options name: `gh pr comment 1 --body-file <path> --help` prints the leaf's help and reads no
+// <path>, and a guard that read the leaf's options with tables of its own would refuse the call
+// where no file is at <path>.
+func ghPrintsOnly() ghTarget {
+	return ghTarget{sent: &leakguard.GhSent{}}
 }
 
 // ghSentFileOptions are the options of gh 2.98.0, by long name, whose value names a file gh
@@ -861,11 +871,12 @@ func ghCallerToken(env map[string]string) string {
 	return ""
 }
 
-// ghTargetOf is the ghTarget of the gh command argv (gh's arguments, without `gh`), the zero
-// target when the command names no owner. It fails closed: whenever it cannot be certain which
-// gh directory the command needs it is an error, which names the argument it could not place, and
-// nothing is sent. `gh --version` alone, and a command whose last --help is true, name none,
-// since gh only prints.
+// ghTargetOf is the ghTarget of the gh command argv (gh's arguments, without `gh`). A command
+// naming no owner gets a target with no owner, no repository and no directory, and a sent that is
+// never nil. It fails closed: whenever it cannot be certain which gh directory the command needs
+// it is an error, which names the argument it could not place, and nothing is sent. `gh
+// --version` alone, and a command whose last --help is true, name none and send nothing, since gh
+// only prints (ghPrintsOnly).
 //
 // It reads the command as gh does, from gh's own help of each command on the way (help): the
 // path of subcommands down to the leaf the arguments run, every option's arity, and the arguments
@@ -930,12 +941,15 @@ func ghTargetOf(argv []string, env map[string]string, help func(path []string) (
 		switch {
 		case len(walk.path) == 0 && arg == "--version":
 			if len(argv) == 1 {
-				return ghTarget{}, nil
+				return ghPrintsOnly(), nil
 			}
 			// gh reads a word after it as a command, an alias's or an extension's among them.
 			return ghTarget{}, cannotPlace(arg, "comes before the command's name, and only -R/--repo and --help may (gh's version is `gh --version` alone)", false)
 		case len(walk.path) == 0 && arg == "help":
-			return ghTarget{}, ghHelpTarget(argv[i+1:], help)
+			if err := ghHelpTarget(argv[i+1:], help); err != nil {
+				return ghTarget{}, err
+			}
+			return ghPrintsOnly(), nil
 		case arg == "-R" || arg == "--repo":
 			if i+1 == len(argv) {
 				return ghTarget{}, cannotPlace(arg, "has no value", false)
@@ -964,11 +978,14 @@ func ghTargetOf(argv []string, env map[string]string, help func(path []string) (
 	}
 	if cmd == nil {
 		// No leaf: `gh`, or a group alone, which prints its help.
-		return ghTarget{}, nil
+		return ghPrintsOnly(), nil
 	}
 	parsed, err := cmd.parse(rest)
-	if err != nil || parsed.help {
+	if err != nil {
 		return ghTarget{}, err
+	}
+	if parsed.help {
+		return ghPrintsOnly(), nil
 	}
 	// A refused command only prints under --help, as any command does.
 	if err := ghRefusedCommand(cmd.path); err != nil {
