@@ -18,13 +18,13 @@ func claimsToRefreshState() State {
 // never a missing key, since a reader that found the key absent would have been served the
 // stripped body of a caller below the contract and could tell neither case from the other.
 func TestTheCountOfClaimsLeftToRefreshIsServedAsANumber(t *testing.T) {
-	body := stateFrom(t, claimsToRefreshState(), "10.1.24.9:4100", podClaims(DaemonAPIVersion))
+	body := stateFrom(t, claimsToRefreshState(), "10.1.24.9:4100", podClaims(DaemonAPIVersion()))
 	count, carried := claimsToRefreshServed(t, body)
 	if !carried || count != 7 {
 		t.Fatalf("the state %s is served %s = %d (carried %v), want the lane's 7", body, ClaimsToRefreshField, count, carried)
 	}
 
-	drained := stateFrom(t, State{}, "10.1.24.9:4100", podClaims(DaemonAPIVersion))
+	drained := stateFrom(t, State{}, "10.1.24.9:4100", podClaims(DaemonAPIVersion()))
 	count, carried = claimsToRefreshServed(t, drained)
 	if !carried || count != 0 {
 		t.Fatalf("the drained state %s is served %s = %d (carried %v), want the key naming 0", drained, ClaimsToRefreshField, count, carried)
@@ -101,12 +101,12 @@ func TestABodyWithBothStripsCarriesNeitherKey(t *testing.T) {
 
 	// And a caller at this contract is served both, which is what makes the two refusals above
 	// the strips' doing rather than a body that never carried either key.
-	at := stateFrom(t, state, statePodAddr+":4100", podClaims(DaemonAPIVersion))
+	at := stateFrom(t, state, statePodAddr+":4100", podClaims(DaemonAPIVersion()))
 	wakes, carried = wakesServed(t, at)
 	count, counted := claimsToRefreshServed(t, at)
 	if !carried || len(wakes) != 1 || !counted || count != state.ClaimsToRefresh {
 		t.Errorf("the pod at %d is served %d wakes (carried %v) and %s = %d (carried %v), want the one wake and the lane's %d: %s",
-			DaemonAPIVersion, len(wakes), carried, ClaimsToRefreshField, count, counted, state.ClaimsToRefresh, at)
+			DaemonAPIVersion(), len(wakes), carried, ClaimsToRefreshField, count, counted, state.ClaimsToRefresh, at)
 	}
 }
 
@@ -118,8 +118,8 @@ func TestClaimsToRefreshContractIsTheContractThatAddedTheCount(t *testing.T) {
 		t.Fatalf("claimsToRefreshContract = %d, want %d, the contract whose entry in version.go added the count of claims the stale-plugin lane has left",
 			claimsToRefreshContract, addedClaimsToRefresh)
 	}
-	if claimsToRefreshContract > DaemonAPIVersion {
+	if claimsToRefreshContract > DaemonAPIVersion() {
 		t.Fatalf("claimsToRefreshContract = %d, above DaemonAPIVersion %d: no caller could be served the count",
-			claimsToRefreshContract, DaemonAPIVersion)
+			claimsToRefreshContract, DaemonAPIVersion())
 	}
 }
