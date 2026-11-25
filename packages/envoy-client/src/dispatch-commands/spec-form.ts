@@ -1,9 +1,4 @@
-import type {
-  ApprovalRequestResponse,
-  Artifact,
-  SpecFormFinding,
-  SpecFormRead,
-} from "@legion/contracts";
+import type { ApprovalRequestResponse, Artifact, SpecFormRead } from "@legion/contracts";
 import type { DispatchClient } from "../dispatch-http";
 import {
   type CommandContext,
@@ -82,62 +77,26 @@ function scopeLine(form: SpecFormRead): string {
 }
 
 /**
- * How many texts hold one of `findings`, the findings the read route lists. The findings of one
- * text name its node, its kind, its place and its excerpt, as in the head of the server's refusal
- * (`textsOf` in packages/envoy/internal/dispatch/specform/message.go).
- */
-function textsBreaking(findings: readonly SpecFormFinding[]): number {
-  return new Set(
-    findings.map(({ excerpt, kind, node, where }) => JSON.stringify([where, kind, node, excerpt]))
-  ).size;
-}
-
-/**
- * One finding as the server's refusal writes it (`Finding.Said` in
- * packages/envoy/internal/dispatch/specform/specform.go): its detail, the rule's words at its
- * place, then the ways out it gives, which are no part of the finding.
- */
-function findingSaid({ detail, ways }: SpecFormFinding): string {
-  return ways === "" ? detail : `${detail}. ${ways}`;
-}
-
-/**
  * The form of one document as Dispatch read it. A document an approval request is judged on
- * (`in_scope`) gets the line that says Dispatch refuses its approval and each finding, or the
- * line of what Dispatch read. One out of scope first says why Dispatch refuses nothing for it,
- * and still lists its findings, which are then for the reader alone. The read route lists at most
- * 500 findings and counts them all (`findings_total`): when it lists fewer than that count, the
- * texts it lists are some of those that break the form, and a line after the findings says how
- * many it lists. Each approved document under the root that Dispatch could not read has a line
- * after them.
+ * (`in_scope`) gets the lines that list its findings, or the line of what Dispatch read. One out
+ * of scope first says why Dispatch refuses nothing for it, and still lists its findings, which are
+ * then for the reader alone. The server writes the lines that list the findings
+ * (`finding_lines`, from `specform.Listing` in
+ * packages/envoy/internal/dispatch/specform/message.go): the head when it refuses the approval,
+ * the line of each finding as its refusal writes it, and how many it lists when it lists fewer
+ * than it counts. This module prints them as they are. Each approved document under the root
+ * that Dispatch could not read has a line after them.
  */
 function documentLines(form: SpecFormRead): string[] {
-  const findings = form.findings ?? [];
-  const listed = findings.map(
-    (finding) => `- ${finding.kind} ${finding.node}: ${findingSaid(finding)}.`
-  );
-  const partial = form.findings_total > findings.length;
-  if (partial) {
-    listed.push(
-      `Dispatch lists the first ${findings.length} of the ${form.findings_total} findings.`
-    );
-  }
+  const listed = form.finding_lines ?? [];
   const read = readLine(form.texts, form.name, form.version);
   const unread = unreadLines(form.unread);
   if (!form.in_scope) {
-    return findings.length === 0
+    return form.findings_total === 0
       ? [scopeLine(form), read, ...unread]
       : [scopeLine(form), "The findings below are for you to read.", ...listed, ...unread];
   }
-  if (findings.length === 0) return [read, ...unread];
-  const texts = textsBreaking(findings);
-  const more = partial ? " or more" : "";
-  const breaks = texts === 1 ? `1 text${more} breaks` : `${texts} texts${more} break`;
-  return [
-    `Dispatch refuses an approval request of ${form.name} version ${form.version}, because ${breaks} the form of The Spec.`,
-    ...listed,
-    ...unread,
-  ];
+  return form.findings_total === 0 ? [read, ...unread] : [...listed, ...unread];
 }
 
 /** What a listing prints for a document that has no settled version yet (409 NO_VERSION). */

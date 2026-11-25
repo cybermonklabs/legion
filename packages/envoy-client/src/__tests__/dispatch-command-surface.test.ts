@@ -253,6 +253,7 @@ function answerFor(method: string, pathname: string, body?: unknown): Response {
         },
         findings: [],
         findings_total: 0,
+        finding_lines: [],
         terms: [],
         refuses_approval: false,
       });

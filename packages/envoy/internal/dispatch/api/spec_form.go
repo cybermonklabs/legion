@@ -228,6 +228,11 @@ type specFormRead struct {
 	Texts         map[specform.Kind]int `json:"texts"`
 	Findings      []specFormFinding     `json:"findings"`
 	FindingsTotal int                   `json:"findings_total"`
+	// FindingLines are the lines that list Findings, which `dispatch spec-form` prints as they
+	// are (specform.Listing): when RefusesApproval, a head that counts the texts that break the
+	// form; then the line of each finding that a refusal writes for it; then, when Findings holds
+	// fewer than FindingsTotal, a line that says how many it lists. Empty with no finding.
+	FindingLines []string `json:"finding_lines"`
 	// Terms is the list of terms of the root. It is empty until the list is read.
 	Terms []specFormTerm `json:"terms"`
 	// Unread is each approved document under the root that the judgment could not read.
@@ -337,8 +342,13 @@ type specFormRefusal struct {
 }
 
 func (r *specFormRefusal) plain() []specform.Finding {
-	plain := make([]specform.Finding, len(r.findings))
-	for index, finding := range r.findings {
+	return plainFindings(r.findings)
+}
+
+// plainFindings is the finding of specform in each of findings.
+func plainFindings(findings []specFormFinding) []specform.Finding {
+	plain := make([]specform.Finding, len(findings))
+	for index, finding := range findings {
 		plain[index] = finding.Finding
 	}
 	return plain

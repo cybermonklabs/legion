@@ -6098,7 +6098,7 @@ Each item below names a path with its method and identity, then its purpose.
 
   Read the form of The Spec in one version of a document, with no side effect.
   The version is `?version=N`, or else the latest settled version, which an approval request would name.
-  It answers `{artifact_id, name, version, in_scope, scope, plays, root, texts, findings, findings_total, terms, unread, refuses_approval}`.
+  It answers `{artifact_id, name, version, in_scope, scope, plays, root, texts, findings, findings_total, finding_lines, terms, unread, refuses_approval}`.
   `scope` is `covered` or `list` when the document is in scope.
   `no_root` means that the setting names no root, and `root` is a document of a root other than its `terms.md`.
   `outside` means that no named root holds the issue, or that the document has no issue.
@@ -6106,6 +6106,9 @@ Each item below names a path with its method and identity, then its purpose.
   `plays` is `spec`, `verification` or empty, and `root` is the nearest named root above the document, or `null`.
   The findings of a document out of scope are listed too, and `refuses_approval` is true only for a document in scope with a finding.
   `findings` holds at most 500 of them, as a refusal's body does, and `findings_total` counts them all.
+  `finding_lines` are the lines that list those findings, which `dispatch spec-form` prints as they are (`specform.Listing`).
+  When `refuses_approval` is true, the first line counts the texts that break the form, as the head of a refusal counts them.
+  Each finding then has the line that a refusal writes for it, and when `findings` holds fewer than `findings_total`, a last line says how many it lists.
   The route judges a document whatever the setting names, so its judgment holds the bound of the ways out above, and it stops when the caller hangs up.
   `terms` is empty: Dispatch does not read the list of terms yet.
   A version that the document does not have is `404 VERSION_NOT_FOUND`.
