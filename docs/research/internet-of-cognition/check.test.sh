@@ -7675,6 +7675,31 @@ one_failure_result "a landed proof that reads its input takes no page from --lan
     '^1 of 7 assertions failed: landed-proof$' "^FAIL landed-proof: the page 'A step that costs one day' gives its first step a cost of 1 engineer-day" \
     "$(fixture_run "$dir" --landed)"
 
+# 243. A landed step's sentences are read at the step's own commit, which the default branch's
+# history holds, and later work of other trees on the step's files is not --published's subject
+# (the tester's finding of round 52 and the architect's reading of c-published,
+# dispatch://INFRA-3134/comment/a7256704-e233-4409-9ea5-3363591343d6). On main 8ce41950 three
+# sentences of the two steps fcc746a3 landed stand in other words, since #5051 and other merges
+# changed pr-body.md and merge-gate.md after fcc746a3, and at ded1a321 published-tree read
+# main's tip and failed them, so a correct merge read as a FAIL. The case makes one commit on
+# the fixture's head, after the commit LANDED_ROWS the fixture's landed step names, that
+# rewrites the step's sentence 'one row per half' in pr-body.md as another tree would, and
+# names the fixture's own repository as our repository's url, so the mode fetches that head:
+# --published must pass both its assertions, exit 0.
+dir="$(fresh published-landed-later-words)"
+(cd "$dir/repo" && git merge-base --is-ancestor "$(jq -r '.landed[0].commit' docs/research/internet-of-cognition/sources.json)" HEAD &&
+    git show "$(jq -r '.landed[0].commit' docs/research/internet-of-cognition/sources.json):skills/legion-worker/references/pr-body.md" | grep -qF 'one row per half' &&
+    sed -i 's/one row per half/a row for each half of the pair/' skills/legion-worker/references/pr-body.md &&
+    ! grep -qF 'one row per half' skills/legion-worker/references/pr-body.md &&
+    git commit --quiet -am "docs(skills): another tree's later words for the Thermo line") &&
+    jq --arg url "$dir/repo" '.our_repository.url = $url' "$dir/repo/docs/research/internet-of-cognition/sources.json" >"$dir/sources.json" &&
+    mv "$dir/sources.json" "$dir/repo/docs/research/internet-of-cognition/sources.json" || {
+    printf "FAIL another tree's later words for the landed step's sentence could not be planted on the fixture's head\n"
+    exit 1
+}
+ending_result "a landed step whose sentence the default branch's tip holds in later words, and whose own commit in the branch's history holds it, passes --published" 0 \
+    '^all 2 assertions passed$' "$(fixture_published "$dir")"
+
 # ==== the summary of check.test.sh begins below this line, where cases_copy cuts it ====
 # The summary, by the three endings and their precedence (check.sh's header): run_ending
 # reads every case this file counted, the ones that could not run among them, and this
