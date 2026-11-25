@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	"github.com/sjawhar/legion/daemon/internal/programbound"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 )
 
 // selectors is every repository a command's selectors name, and every owner one names with no
@@ -601,12 +602,17 @@ func ghMarkerLine(line string) ghRemote {
 	return ghRemote{name: name, marker: true, key: key, resolved: value, valued: valued}
 }
 
-// what is the remote line as a refusal names it.
+// what is the remote line as a refusal names it. Its URL is named through the URL rule
+// (redact.URLCredentials), which removes a URL's user information and query: a remote's URL is
+// the configuration's word, and a clone made with a token can carry it there
+// (https://x-access-token:<token>@github.com/OWNER/REPO). An scp-like address
+// (`[user@]host:path`), which has no "://" for the rule to find, keeps its user, an ssh login
+// that holds no password.
 func (r ghRemote) what() string {
 	if r.marker {
 		return fmt.Sprintf("remote.%s.gh-resolved %s", r.name, r.resolved)
 	}
-	return fmt.Sprintf("remote %q (%s)", r.name, r.url)
+	return fmt.Sprintf("remote %q (%s)", r.name, redact.URLCredentials(r.url))
 }
 
 // ghRemoteSchemes are the URL schemes gh's git.ParseURL reads as they are; a remote with no such
@@ -803,7 +809,9 @@ func readGitRemotes() ([]ghRemote, error) {
 		gh := ghRemoteLine.FindStringSubmatch(line)
 		if git == nil || (git[3] == "push" && git[4] != "") || gh == nil ||
 			strings.TrimSpace(gh[1]) != git[1] || strings.TrimSpace(gh[2]) != git[2] || gh[3] != git[3] {
-			return nil, fmt.Errorf("git remote -v printed %q", line)
+			// The line is not printed: a URL that holds whitespace is one way to reach this, and
+			// the URL rule, which ends a URL at whitespace, would leave the URL's tail as written.
+			return nil, errors.New("git remote -v printed a line that git's shape and gh's reading of it do not agree on (the line is not printed)")
 		}
 		remotes = append(remotes, ghRemote{name: git[1], url: git[2], push: git[3] == "push"})
 	}
