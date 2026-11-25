@@ -36,7 +36,9 @@ import { sql } from "./psql";
 import {
   entryScriptPath,
   fetchedChunk,
+  holdAsset,
   PENDING_WRITES_CHUNK,
+  ranChunk,
   recordTabReloads,
   shellLoads,
   tabReloads,
@@ -48,6 +50,7 @@ import {
   expect,
   type Locator,
   type Page,
+  type Request,
   type Route,
   test,
 } from "./test";
@@ -1995,6 +1998,157 @@ test("Sign out pressed while the take-up waits for kinds of write that never arr
       await expect.poll(() => keptWrites(page)).toBe(0);
       await expect(page.getByRole("region", { name: "Kept changes" })).toHaveCount(0);
     }
+  } finally {
+    await alice.close();
+  }
+});
+
+/** Every request `page` makes for the kinds of write from here on, and each of them that has
+ *  ended, answered or failed. */
+function kindsRequests(page: Page): { asked: Set<Request>; ended: Set<Request> } {
+  const asked = new Set<Request>();
+  const ended = new Set<Request>();
+  page.on("request", (request) => {
+    if (WRITE_KINDS_CHUNK.test(new URL(request.url()).pathname)) asked.add(request);
+  });
+  const end = (request: Request) => {
+    if (asked.has(request)) ended.add(request);
+  };
+  page.on("requestfinished", end);
+  page.on("requestfailed", end);
+  return { asked, ended };
+}
+
+/**
+ * Keeps alice's change of the status of the issue `key` through a reload whose take-up of what
+ * the reload kept waits for the rest of the row (`Writes.resume`), and answers with a reader of
+ * the login (`Dispatch-Login`) of each status change the page sent from the reload on. Every
+ * status change of the issue is held at the network, so hers stays out and the tab keeps it.
+ * Every request for the kinds of write is held on the wire from before the reload and never
+ * answered (`holdAsset`). A reload starts a new document, which has the kinds only from a request
+ * of its own, and the route holds each such request. While a route is set, Playwright turns
+ * Chromium's cache off (playwright-core 1.64.1, `_updateProtocolRequestInterceptionForSession`),
+ * so no cached copy reaches the page around the route. The document before the reload has its
+ * own download of the kinds in first (`fetchedChunk`), so each request the row counts is the
+ * reloaded document's. Before it answers, it checks that the take-up still waits: the reloaded
+ * page asked for the kinds and no such request has ended, the tab still keeps the write, the
+ * store holds no row of it, and no status change went out. So a row that uses it cannot pass
+ * because the kinds came in.
+ */
+async function keptWhileTheKindsNeverArrive(
+  page: Page,
+  key: string
+): Promise<() => (string | undefined)[]> {
+  const path = `/api/v1/issues/${key}`;
+  // The reload's own "leave this page?" is accepted.
+  page.on("dialog", (dialog) => void dialog.accept());
+  const logins: (string | undefined)[] = [];
+  page.on("request", (request) => {
+    if (request.method() === "PATCH" && new URL(request.url()).pathname === path) {
+      logins.push(request.headers()["dispatch-login"]);
+    }
+  });
+  await holdStatusChanges(page, path);
+  await keepAStatusChange(page, key);
+  await fetchedChunk(page, WRITE_KINDS_CHUNK);
+  const kinds = kindsRequests(page);
+  await holdAsset(page, WRITE_KINDS_CHUNK);
+  const sentBefore = logins.length;
+  // `domcontentloaded` rather than `load`: a script download held from before the `load` event
+  // holds that event with it.
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await expect(page.getByText("Signed in as alice")).toBeVisible();
+  await expect
+    .poll(() => kinds.asked.size, { message: "the reloaded page did not ask for the kinds" })
+    .toBeGreaterThan(0);
+  expect(kinds.ended.size, "a download of the kinds ended").toBe(0);
+  expect(await keptWrites(page), "the tab does not keep the write").toBe(1);
+  await expect(pendingWrites(page), "the take-up did not wait for the kinds").toHaveCount(0);
+  expect(logins.slice(sentBefore), "a status change went out after the reload").toEqual([]);
+  return () => logins.slice(sentBefore);
+}
+
+/** Signs bob in from another tab of `page`'s browser, which changes the cookie every tab sends,
+ *  and waits until `page` draws bob's shell: it heard of the sign-in over the sign-in channel,
+ *  and `AuthGate` told its stores of bob before it drew that shell. */
+async function bobSignsInFromAnotherTab(page: Page): Promise<void> {
+  const other = await page.context().newPage();
+  await other.goto(devSignInPath("bob"));
+  await expect(page.getByText("Signed in as bob")).toBeVisible();
+}
+
+// Another person's sign-in forgets at once what the reload kept of the person before, with no
+// kind of write in (`Writes.signedIn`, `#dropKept`). `AuthGate` tells the write store of a
+// sign-in as soon as it reads it (`web/src/app.tsx`). A store told only once the kinds were in
+// kept alice's write in the tab for as long as the kinds took, here for good. Alice's status
+// change is kept through a reload whose take-up waits for kinds that never arrive
+// (`keptWhileTheKindsNeverArrive`); then bob signs in from another tab of the same browser. Her
+// tab drops her write at once. The page then reloads as bob with nothing held on the wire. Once
+// the reloaded page has run the kinds, it has sent nothing, the tab keeps nothing, and the issue's
+// status on Dispatch is unchanged.
+// SLOW(>=2s): the kept write is only observable across a real reload, so the row pays two issue
+// page loads, the browser's own "leave this page?" prompt between them, the tab bob signs in from
+// and the reload as bob.
+test("bob's sign-in from another tab while the take-up waits for kinds of write that never arrive forgets alice's kept write at once, and a reload as bob sends nothing of hers", async ({
+  browser,
+}) => {
+  await createProject({ key: "KW", name: "Keyed writes" });
+  const issue = await createIssue({ project: "KW", title: "Kept through the reload" });
+  const before = (await getIssue(issue.key)).status;
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    const sent = await keptWhileTheKindsNeverArrive(page, issue.key);
+
+    await bobSignsInFromAnotherTab(page);
+    await expect
+      .poll(() => keptWrites(page), {
+        message: "bob's sign-in did not forget the write the reload kept for alice",
+      })
+      .toBe(0);
+
+    await page.unroute(WRITE_KINDS_CHUNK);
+    await page.unroute(`**/api/v1/issues/${issue.key}`);
+    await page.reload();
+    await expect(page.getByText("Signed in as bob")).toBeVisible();
+    // The reloaded page has fetched the kinds and run them, so no write it took up waits for them.
+    await ranChunk(page, WRITE_KINDS_CHUNK);
+    expect(sent(), "the page sent a status change after alice's reload").toEqual([]);
+    expect(await keptWrites(page)).toBe(0);
+    expect((await getIssue(issue.key, agent)).status).toBe(before);
+  } finally {
+    await alice.close();
+  }
+});
+
+// A drop of the person a take-up began for ends that take-up at once, however long the kinds take
+// (`#dropKept`, `#endTakeUp`), so a write pressed after the drop joins its line at once.
+// `AuthGate` tells the write store of a sign-in as soon as it reads it (`web/src/app.tsx`). A
+// store told only once the kinds were in held bob's change behind alice's take-up for good.
+// Alice's status change is kept through a reload whose take-up waits for kinds that never arrive
+// (`keptWhileTheKindsNeverArrive`); then bob signs in from another tab of the same browser and
+// changes the same issue's status in her tab. His change goes out under his login, and no change
+// goes out under hers.
+// SLOW(>=2s): the kept write is only observable across a real reload, so the row pays two issue
+// page loads, the browser's own "leave this page?" prompt between them, and the tab bob signs in
+// from.
+test("bob's status change while the take-up waits for kinds of write that never arrive goes out under his login once his sign-in from another tab drops alice's take-up", async ({
+  browser,
+}) => {
+  await createProject({ key: "KW", name: "Keyed writes" });
+  const issue = await createIssue({ project: "KW", title: "Kept through the reload" });
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    const sent = await keptWhileTheKindsNeverArrive(page, issue.key);
+
+    await bobSignsInFromAnotherTab(page);
+    await page.getByLabel("Status").selectOption("backlog");
+    await expect.poll(sent, { message: "bob's status change did not go out" }).toContain("bob");
+    expect(
+      sent().filter((login) => login !== "bob"),
+      "a status change went out under a login other than bob's"
+    ).toEqual([]);
   } finally {
     await alice.close();
   }
