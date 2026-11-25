@@ -10243,3 +10243,137 @@ test("k-default-keys: on the Inbox page the repeats of Ctrl+- and Ctrl+=, which 
   expect(out?.repeat, step("the repeat of Ctrl+- (zoom out) is the browser's too")).toBe(false);
   expect(inward?.repeat, step("the repeat of Ctrl+= (zoom in) is the browser's too")).toBe(false);
 });
+
+// The tester's red rows of round 19 (d25fab46's held-key rule, keyboard.md: "A key that does
+// something on the page acts once for each press as well, `Enter` and `Escape` included ... a
+// held `Escape` closes one list or panel"). At c6dc939c a repeat goes on to the page where the
+// press was not default-prevented: an Escape that a handler takes with no preventDefault acts
+// again on each repeat, on the element the press moved the focus to (IssueTitleRow.tsx's edit,
+// then Margin.tsx's Details) or on the same field (MentionComposer.tsx's handleEscape). Measured
+// in Chromium, Firefox and WebKit, twice each, in builds Jobs infra-2160-t-ph19-a-fj8ml and
+// infra-2160-t-ph19-b-8k7zf.
+
+/** Every write (a non-GET request to /api) the page sends from now on, as "METHOD /path". */
+function writesFrom(page: Page): string[] {
+  const sent: string[] = [];
+  page.on("request", (request) => {
+    const url = new URL(request.url());
+    if (request.method() !== "GET" && url.pathname.startsWith("/api/")) {
+      sent.push(`${request.method()} ${url.pathname}`);
+    }
+  });
+  return sent;
+}
+
+// SLOW(>=2s): a new issue page drawn with Details open, and Escape held in its title editor.
+// @firefox: the repeats the engine sends for a held key, and where they land once the press has
+// moved the focus (playwright.config.ts names the clause).
+test("k-default-keys: on the new issue page with Details open an Escape held down in the title editor ends the edit alone, and Details stays open @firefox", async ({
+  page,
+}) => {
+  const step = (text: string) =>
+    `k-default-keys: a held Escape in the new page's title editor: ${text}`;
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title: "Ledger rollout" });
+  await withIssuePage(page.context(), "alice");
+  await page.setViewportSize(WIDE);
+  await gotoIssue(page, `/issues/${issue.key}`);
+  const details = marginShell(page);
+  await focusPage(page, step("the focus starts on the page"));
+  await page.keyboard.press("Shift+M");
+  await expect(details, step("Shift+M opens Details")).toBeVisible();
+  const title = page.locator("[data-title-control]");
+  const editor = page.getByRole("textbox", { name: "Issue title" });
+  // The row's control: one press of Escape in the editor ends the edit and leaves Details open.
+  await title.focus();
+  await page.keyboard.press("Enter");
+  await expect(editor, step("Enter on the title opens its editor")).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(editor, step("one Escape ends the edit")).toHaveCount(0);
+  await expect(title, step("one Escape puts the focus back on the title")).toBeFocused();
+  await expect(details, step("one Escape press in the editor leaves Details open")).toBeVisible();
+  await page.keyboard.press("Enter");
+  await expect(editor, step("Enter on the title opens its editor again")).toBeFocused();
+  await page.keyboard.type(" draft");
+  const writes = writesFrom(page);
+  await holdKey(page, "Escape", 10);
+  // A repeat that acted would have closed Details within this second and a half.
+  await page.waitForTimeout(1_500);
+  await expect(editor, step("the held Escape ends the edit")).toHaveCount(0);
+  await expect(title, step("the title is put back")).toHaveText("Ledger rollout");
+  await expect(details, step("the held Escape leaves Details open")).toBeVisible();
+  expect(writes, step("nothing is written")).toEqual([]);
+});
+
+// SLOW(>=2s): the Conversation tab drawn, its mention list opened twice, and Escape held.
+// @firefox: the repeats the engine sends for a held key, and where they land once the press has
+// moved the focus (playwright.config.ts names the clause).
+test("k-comment-focus: on today's issue page an Escape held down in the comment composer's open mention list closes the list alone, asks no Discard draft? and keeps the draft @firefox", async ({
+  page,
+}) => {
+  const step = (text: string) => `k-comment-focus: a held Escape in the mention list: ${text}`;
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title: "Ledger rollout" });
+  await page.setViewportSize(WIDE);
+  await page.goto(`/issues/${issue.key}/conversation`);
+  const form = page.getByRole("form", { name: "Comment composer" });
+  const field = form.getByLabel("Comment");
+  await expect(field, step("the Conversation tab draws its comment box")).toBeVisible();
+  const suggestions = page.getByRole("listbox", { name: "Mention suggestions" });
+  const discardAsk = page.getByText("Discard draft?", { exact: true });
+  // The row's control: one press of Escape closes the list and asks nothing.
+  await field.fill("Ship it now @");
+  await expect(suggestions, step("@ opens the mention list")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(suggestions, step("one Escape closes the mention list")).toHaveCount(0);
+  await expect(discardAsk, step("one Escape asks no Discard draft?")).toHaveCount(0);
+  await field.fill("Ship it later @");
+  await expect(suggestions, step("@ opens the mention list again")).toBeVisible();
+  const writes = writesFrom(page);
+  await holdKey(page, "Escape", 10);
+  // A repeat that acted would have asked Discard draft? within this second and a half.
+  await page.waitForTimeout(1_500);
+  await expect(suggestions, step("the held Escape closes the mention list")).toHaveCount(0);
+  await expect(discardAsk, step("the held Escape asks no Discard draft?")).toHaveCount(0);
+  await expect(field, step("the draft is kept")).toHaveValue("Ship it later @");
+  await expect(field, step("the caret stays in the field")).toBeFocused();
+  expect(writes, step("nothing is written")).toEqual([]);
+});
+
+// SLOW(>=2s): a spec drawn, a comment box opened over a typed draft, and Escape held in it.
+// @firefox: the repeats the engine sends for a held key, and where they land once the press has
+// moved the focus (playwright.config.ts names the clause).
+test("k-comment-focus: on today's issue page an Escape held down in the margin's comment box over a typed draft asks Discard draft? once, and the box and its draft stay @firefox", async ({
+  page,
+}) => {
+  const step = (text: string) =>
+    `k-comment-focus: a held Escape in the margin's comment box: ${text}`;
+  const seed = await seedCommentFocus();
+  await page.setViewportSize(WIDE);
+  await openSpec(page, seed.key, FOCUS_PARAGRAPHS[2][0]);
+  await selectEditorText(page, THIRD_WORD);
+  await barAction(page, "Comment");
+  await expectCaretInBox(page, THIRD_WORD, step("the bar's Comment puts the caret in the box"));
+  const body = "Why does the lease return at noon?";
+  await page.keyboard.type(body);
+  const box = commentBox(page);
+  const discardAsk = page.getByText("Discard draft?", { exact: true });
+  // The row's control: one press of Escape asks Discard draft? and keeps the box.
+  await page.keyboard.press("Escape");
+  await expect(discardAsk, step("one Escape asks Discard draft?")).toBeVisible();
+  await expect(box, step("one Escape keeps the box")).toHaveCount(1);
+  await box.getByRole("button", { exact: true, name: "Keep" }).click();
+  await expect(discardAsk, step("Keep takes the question away")).toHaveCount(0);
+  await expect(
+    box.getByLabel("Comment"),
+    step("Keep puts the caret back in the box")
+  ).toBeFocused();
+  const writes = writesFrom(page);
+  await holdKey(page, "Escape", 10);
+  // A repeat that acted would have closed the box within this second and a half.
+  await page.waitForTimeout(1_500);
+  await expect(box, step("the held Escape leaves the comment box open")).toHaveCount(1);
+  await expect(discardAsk, step("the held Escape asks Discard draft? once")).toBeVisible();
+  await expect(box.getByLabel("Comment"), step("the draft is kept")).toHaveValue(body);
+  expect(writes, step("nothing is written")).toEqual([]);
+});
