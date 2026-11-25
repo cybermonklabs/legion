@@ -97,8 +97,7 @@ read, against the goal, every check and requirement in `skill://legion-architect
 Run `task(agent="goal-red-team")` as your role prompt says, then `wait` for its report.
 Accept only when a pass stands for every `before_merge` check at the head the step before your acceptance passed, every requirement has a check (with no `before_merge` check, your comment says how each is proven), and none is unmet or read narrower than written:
 post a `dispatch comment` naming each check and its result, then `legion({ op: "sign_off", issue: "<KEY>" })`.
-Wait for a `ci_check` run still going; a name no run answers is yours to correct in the check.
-A `merge-holds-md` line naming the pull request's repository, or `all`, holds the sign-off until its end.
+Wait for a `ci_check` run still going; a name no run answers is yours to correct in the check, unless it names a job held back without its label, which has no pass standing until the implementer adds the label.
 Merge holds, finding asks, refusals and what follows: `skill://legion-architect/references/acceptance.md`.
 
 ## 7. Close
@@ -111,9 +110,9 @@ nothing after it is yours (`skill://legion-architect/references/acceptance.md`, 
 - Send the controller a child serving no criterion of the root and a need for admission slots.
   Two trees changing the same code: mention the other tree's architect on its issue (`skill://legion-worker/references/findings.md`).
 
-- Carry a clear defect another role writes to you in this tree: in an open pull request, or in a child.
+- Carry a clear defect another role writes to you in this tree, in an open pull request or a child.
 
-- An action on an agent is the controller's: ask it with a `dispatch comment` on that agent's issue that mentions its role, never with `envoy_publish`.
+- An action on an agent is the controller's: ask it in a `dispatch comment` on that agent's issue mentioning its role, never by `envoy_publish`.
 
 - Your tree's failed CI runs and its pull requests that no merger merges are yours, never another session's.
   Read `skill://legion-architect/references/operations.md` before each of these three.

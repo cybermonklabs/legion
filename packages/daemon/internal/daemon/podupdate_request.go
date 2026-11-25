@@ -182,8 +182,8 @@ func (s *supervision) postRequestedPodUpdate(ctx context.Context, issue string) 
 		return refusePodUpdate(api.PodUpdateNoPod,
 			"no claim of %s records a process in a pod: each one is suspended or between launches, or runs in no pod at all. Nothing was opened; ask again once a claim of the issue runs in its pod", issue)
 	}
-	live := s.liveGroup(group)
-	asked := noticeClaims(live)
+	told := s.noticeGroup(group)
+	asked := noticeClaims(told)
 	if len(asked) == 0 {
 		return refusePodUpdate(api.PodUpdateNoPod,
 			"no claim of %s runs a worker in its pod %s that an update round could ask: none has a session, or each one that has has failed. Nothing was opened; retry an agent that failed, or ask again once an agent of the issue has registered", issue, pod)
@@ -198,7 +198,7 @@ func (s *supervision) postRequestedPodUpdate(ctx context.Context, issue string) 
 		return api.PodUpdateResponse{}, nil, fmt.Errorf("read whether a project's pause holds the pod of %s: %w", issue, err)
 	}
 	clock := s.roundClockAt(now, holds[issue])
-	step := s.openPodUpdateUnderLimits(ctx, &sweep, issue, live, pod, requestedPodUpdateReasons, clock)
+	step := s.openPodUpdateUnderLimits(ctx, &sweep, issue, told, pod, requestedPodUpdateReasons, clock)
 	if step.pauseHeld {
 		return refusePodUpdate(api.PodUpdatePauseHeld,
 			"a project's pause holds the pod %s of %s: the pause kept the pod and the work on its disk for the roles it stopped, and no update round opens over it until the hold ends. The hold ends when the project is resumed with a role of the pod running, or when a role of the pod is ready again. Nothing was opened; ask again then", pod, issue)
@@ -208,7 +208,7 @@ func (s *supervision) postRequestedPodUpdate(ctx context.Context, issue string) 
 	}
 	if step.opened {
 		s.log.Info("supervise: the project's controller asked for the replacement of this issue's pod; its update round is posted",
-			"issue", issue, "round", round, "pod", pod, "roles", namesOf(sessionClaims(live)))
+			"issue", issue, "round", round, "pod", pod, "roles", namesOf(sessionClaims(told)))
 	}
 	return api.PodUpdateResponse{Round: round, Reasons: step.reasons, Opened: step.opened}, tokens, nil
 }
