@@ -1,5 +1,5 @@
-// Package clocktest holds the fakes of clock.Clock: clocks that move only when the test moves
-// them, and that tell the test what the code has armed on them.
+// Package clocktest is Envoy's one fake clock: a clock.Clock that moves only when the test
+// moves it, and that tells the test what the code has armed on it.
 //
 // # Two fakes
 //
@@ -14,24 +14,27 @@
 // timers due together in the order they were armed. The fake reads each timer's deadline as that
 // timer fires, so a timer which the firing of another arms inside the span fires in the same move.
 // An AfterFunc's function runs on a goroutine of its own, and the move waits for it to return before
-// it fires the next timer, so what a timer's function did is done when Advance returns; a function
-// that waits for the test to act after the move holds the move for ever. A channel timer (After,
-// NewTimer, Sleep) is fired by a non-blocking send on its channel, whose buffer holds one.
+// it fires the next timer, so what a timer's function did is done when Advance returns. The wait
+// has no bound of its own: a function that never returns, one that waits for the test to act after
+// the move among them, holds the move until go test's -timeout panics the binary, and the
+// goroutine dump it prints shows the move waiting in moveLocked. A channel timer (After, NewTimer,
+// Sleep) is fired by a non-blocking send on its channel, whose buffer holds one.
 //
 // A timer armed for a moment the fake has already reached, a wait of zero or less, fires as it is
 // armed, as the real clock's does, and is never pending: an AfterFunc's function starts on a
 // goroutine of its own that the arming call does not wait for, a channel timer's send is made at
-// once, a Sleep returns at once and a deadline context is ended before it is returned. That holds
-// for a timer a function armed while a move fires it too, so the move does not wait for such a
-// timer's function.
+// once, a Sleep returns at once and a deadline context is ended before it is returned. Such a
+// channel timer sends the moment it was armed, the fake's present, and not the moment it was
+// armed for, as Go's does: Go arms a wait of zero or less for the moment it is armed (time.when).
+// That holds for a timer a function armed while a move fires it too, so the move does not wait
+// for such a timer's function.
 //
 // # What is armed
 //
 // Armed is the deadlines pending on the fake, in order: every timer armed and neither fired nor
-// stopped, a Sleep in progress and a deadline context not yet ended among them. AwaitArmed waits for
-// them through testwait, as clockwork's BlockUntilContext does, so a test moves the fake past a
-// deadline only once the code has armed it, and a failure names what the test expected and the
-// deadlines it saw.
+// stopped, a Sleep in progress and a deadline context not yet ended among them. A test reads it
+// until the deadline it expects is pending, so it moves the fake past a deadline only once the
+// code has armed it, and a failure names what the test expected and the deadlines it saw.
 //
 // SetWhen reads the fake's present and its pending deadlines, asks a question of them and makes
 // the move the answer names, under one hold of the fake's lock. A test that reads Armed and then
@@ -41,8 +44,10 @@
 //
 // # Deadline contexts
 //
-// WithTimeout and WithDeadline give a context that ends once the fake reaches its deadline, with
-// context.DeadlineExceeded as its error and its cause, as a context derived from it does too. Its
+// WithTimeout, WithTimeoutCause and WithDeadline give a context that ends once the fake reaches its
+// deadline with context.DeadlineExceeded as its error, and as its cause or the one WithTimeoutCause
+// names, as a context derived from it does too; a cancel that runs first ends it with
+// context.Canceled as its error and cause, as the context package's own do. Its
 // Deadline reports the parent's and never the fake's own: a fake deadline that reached pgx, nats.go
 // or a net.Dialer would be compared there with the wall clock, and end the call at a moment the test
 // never chose. Code that reads ctx.Deadline() for its own logic takes the deadline from its clock
@@ -55,19 +60,19 @@ import (
 	"fmt"
 	"slices"
 	"sync"
-	"testing"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/clock"
-	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // Fake is a clock.Clock that moves only by Advance and Set. Its zero value is not ready; New and
 // Held make one.
 type Fake struct {
 	mu sync.Mutex
-	// held is whether Now reads the wall clock plus added (Held) rather than now (New).
+	// held is whether Now reads the wall clock plus added (Held) rather than now (New), and wall
+	// is that wall clock: time.Now, or the one a test of this package names (HeldOn).
 	held  bool
+	wall  func() time.Time
 	now   time.Time
 	added time.Duration
 	// arms counts every arm, so the timers due together fire in the order they were armed.
@@ -81,8 +86,9 @@ var _ clock.Clock = (*Fake)(nil)
 func New(start time.Time) *Fake { return &Fake{now: start} }
 
 // Held is a fake whose Now is the wall clock plus what Advance and Set have added.
-func Held() *Fake { return &Fake{held: true} }
+func Held() *Fake { return &Fake{held: true, wall: time.Now} }
 
+// Now is the fake's moment.
 func (c *Fake) Now() time.Time {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -91,28 +97,28 @@ func (c *Fake) Now() time.Time {
 
 func (c *Fake) nowLocked() time.Time {
 	if c.held {
-		return time.Now().Add(c.added)
+		return c.wall().Add(c.added)
 	}
 	return c.now
 }
 
 func (c *Fake) setLocked(at time.Time) {
 	if c.held {
-		c.added = at.Sub(time.Now())
+		c.added = at.Sub(c.wall())
 		return
 	}
 	c.now = at
 }
 
-// Advance moves the fake d forward, firing every timer due by then. A fake moves back only by Set.
+// Advance moves the fake d forward, firing every timer due by then. A fake moves back only by Set:
+// the move reads the fake's present and begins under one hold of its lock, and another move that
+// took the fake past the target while a timer fired leaves it there.
 func (c *Fake) Advance(d time.Duration) {
 	if d < 0 {
 		panic(fmt.Sprintf("clocktest: Advance(%v): a fake moves back only by Set", d))
 	}
 	c.mu.Lock()
-	target := c.nowLocked().Add(d)
-	c.mu.Unlock()
-	c.moveTo(target)
+	c.moveLocked(c.nowLocked().Add(d), false)
 }
 
 // Set moves the fake to at, earlier or later, firing every timer due by then. A timer keeps the
@@ -132,22 +138,26 @@ func (c *Fake) SetWhen(to func(now time.Time, armed []time.Time) (time.Time, boo
 		c.mu.Unlock()
 		return armed, false
 	}
-	c.moveLocked(target)
+	c.moveLocked(target, true)
 	return armed, true
 }
 
 func (c *Fake) moveTo(target time.Time) {
 	c.mu.Lock()
-	c.moveLocked(target)
+	c.moveLocked(target, true)
 }
 
 // moveLocked is moveTo begun under the hold of the lock its caller took: each later pass takes
-// the lock again (the loop's post statement), and the last lets it go.
-func (c *Fake) moveLocked(target time.Time) {
+// the lock again (the loop's post statement), and the last lets it go. back is whether the move
+// may end before the fake's present, as a Set may; a move that may not ends at target only when
+// target is ahead, since another move can take the fake past it while a timer of this one fires.
+func (c *Fake) moveLocked(target time.Time, back bool) {
 	for ; ; c.mu.Lock() {
 		next := c.dueLocked(target)
 		if next == nil {
-			c.setLocked(target)
+			if back || target.After(c.nowLocked()) {
+				c.setLocked(target)
+			}
 			c.mu.Unlock()
 			return
 		}
@@ -221,17 +231,6 @@ func (c *Fake) armedLocked() []time.Time {
 	return deadlines
 }
 
-// AwaitArmed waits until at least n timers are pending on the fake and returns their deadlines,
-// earliest first. what names what the test waits to see armed; a failure prints it with the
-// deadlines last seen pending.
-func (c *Fake) AwaitArmed(t testing.TB, what string, n int) []time.Time {
-	t.Helper()
-	return testwait.Until(t, fmt.Sprintf("%s (at least %d timers armed on the fake clock)", what, n), func() ([]time.Time, bool) {
-		armed := c.Armed()
-		return armed, len(armed) >= n
-	})
-}
-
 func (c *Fake) After(d time.Duration) <-chan time.Time { return c.NewTimer(d).C() }
 
 func (c *Fake) NewTimer(d time.Duration) clock.Timer {
@@ -260,11 +259,17 @@ func (c *Fake) Sleep(ctx context.Context, d time.Duration) error {
 }
 
 func (c *Fake) WithTimeout(ctx context.Context, d time.Duration) (context.Context, context.CancelFunc) {
-	return c.withDeadline(ctx, func(now time.Time) time.Time { return now.Add(d) })
+	return c.withDeadline(ctx, func(now time.Time) time.Time { return now.Add(d) }, context.DeadlineExceeded)
+}
+
+// WithTimeoutCause is WithTimeout whose end at its deadline carries cause, or
+// context.DeadlineExceeded when cause is nil, as context.WithTimeoutCause's does.
+func (c *Fake) WithTimeoutCause(ctx context.Context, d time.Duration, cause error) (context.Context, context.CancelFunc) {
+	return c.withDeadline(ctx, func(now time.Time) time.Time { return now.Add(d) }, cmp.Or(cause, context.DeadlineExceeded))
 }
 
 func (c *Fake) WithDeadline(ctx context.Context, at time.Time) (context.Context, context.CancelFunc) {
-	return c.withDeadline(ctx, func(time.Time) time.Time { return at })
+	return c.withDeadline(ctx, func(time.Time) time.Time { return at }, context.DeadlineExceeded)
 }
 
 // arm places t at the deadline due gives for the fake's present, read under the same hold of the
@@ -277,9 +282,10 @@ func (c *Fake) arm(t *timer, due func(now time.Time) time.Time) {
 }
 
 // placeLocked arms t for at, or, when the fake has already reached at, fires it at once as the real
-// clock fires a wait of zero or less: a channel timer's send is made here, under the lock, and the
-// function it answers, which the caller runs once it has let the lock go, starts an AfterFunc's
-// function on a goroutine of its own, not waited for, or ends a deadline context.
+// clock fires a wait of zero or less: a channel timer's send, of the fake's present, the moment it
+// was armed, is made here, under the lock, and the function it answers, which the
+// caller runs once it has let the lock go, starts an AfterFunc's function on a goroutine of its
+// own, not waited for, or ends a deadline context.
 func (c *Fake) placeLocked(t *timer, at time.Time) func() {
 	c.arms++
 	t.at, t.seq = at, c.arms
@@ -292,7 +298,7 @@ func (c *Fake) placeLocked(t *timer, at time.Time) func() {
 	switch {
 	case t.c != nil:
 		select {
-		case t.c <- at:
+		case t.c <- c.nowLocked():
 		default:
 		}
 		return func() {}
@@ -363,10 +369,12 @@ func (t *timer) drainLocked() {
 	}
 }
 
-func (c *Fake) withDeadline(parent context.Context, due func(now time.Time) time.Time) (context.Context, context.CancelFunc) {
+// withDeadline is a deadline context on the fake at the moment due names, which ends there with
+// context.DeadlineExceeded as its error and cause as its cause.
+func (c *Fake) withDeadline(parent context.Context, due func(now time.Time) time.Time, cause error) (context.Context, context.CancelFunc) {
 	inner, cancelInner := context.WithCancelCause(parent)
 	ctx := &deadlineContext{Context: inner, cancelInner: cancelInner, done: make(chan struct{})}
-	ctx.timer = &timer{fake: c, f: func() { ctx.end(context.DeadlineExceeded, context.DeadlineExceeded) }}
+	ctx.timer = &timer{fake: c, f: func() { ctx.end(context.DeadlineExceeded, cause) }}
 	cancel := func() { ctx.end(context.Canceled, context.Canceled) }
 	// A parent already ended ends the context with its own error, before a deadline already
 	// reached could, as context.WithDeadline orders the two.

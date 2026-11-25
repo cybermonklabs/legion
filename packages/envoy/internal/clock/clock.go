@@ -1,23 +1,20 @@
 // Package clock is the time Envoy's code reads and waits on.
 //
-// # One clock for the code a test times
+// # One clock for the module's new seams
 //
 // Code whose timers, waits or deadlines a test asserts takes a Clock, through a field that
 // defaults to Real, and a test hands it a clocktest.Fake. A package that needs only some of
 // Clock's methods declares a narrowing of it, an interface of its own whose methods have Clock's
-// signatures, so Real and the fake fit every one. The rule this serves is that no test passes or
-// fails because it read a clock.
-//
-// Only cmd/listener takes a Clock: its routes' budgets (listenerDeps.clock) and a registration's
-// consumer calls (sessionDelivery.clock). Other code keeps clocks and fakes of its own, in other
-// packages and in tests, cmd/listener's tests among them. This package replaces none of them.
+// signatures, so Real and the fake fit every one. Some packages still keep a clock of their own
+// from before this one (the delivery hub's hubClock, the delivery jobs' jobClock); a new seam
+// takes this one, so no test passes or fails because it read a clock.
 //
 // # The fake tells the test when a timer is armed
 //
 // A clocktest.Fake moves only when the test moves it, and it reports the deadlines the code has
-// armed on it (Armed, AwaitArmed). A test therefore moves time past a deadline only once the code
-// has armed it, and a test that waits for an arm that never comes fails naming the deadline it
-// expected and the ones it saw, never a moment of the machine's own clock.
+// armed on it (Armed). A test therefore moves time past a deadline only once the code has armed
+// it, and a test that waits for an arm that never comes fails naming the deadline it expected and
+// the ones it saw, never a moment of the machine's own clock.
 //
 // # testing/synctest or the fake
 //
@@ -46,6 +43,11 @@ type Clock interface {
 	Sleep(ctx context.Context, d time.Duration) error
 	// WithTimeout is a context that ends with context.DeadlineExceeded once d has passed.
 	WithTimeout(ctx context.Context, d time.Duration) (context.Context, context.CancelFunc)
+	// WithTimeoutCause is WithTimeout whose end at d carries cause (context.Cause), as
+	// context.WithTimeoutCause's does: its Err is context.DeadlineExceeded at d, with cause as its
+	// cause, or context.DeadlineExceeded when cause is nil, and context.Canceled, as error and
+	// cause both, once its cancel runs first. A d of zero or less ends it before it is returned.
+	WithTimeoutCause(ctx context.Context, d time.Duration, cause error) (context.Context, context.CancelFunc)
 	// WithDeadline is a context that ends with context.DeadlineExceeded at at.
 	WithDeadline(ctx context.Context, at time.Time) (context.Context, context.CancelFunc)
 }
@@ -86,6 +88,10 @@ func (realClock) Sleep(ctx context.Context, d time.Duration) error {
 
 func (realClock) WithTimeout(ctx context.Context, d time.Duration) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(ctx, d)
+}
+
+func (realClock) WithTimeoutCause(ctx context.Context, d time.Duration, cause error) (context.Context, context.CancelFunc) {
+	return context.WithTimeoutCause(ctx, d, cause)
 }
 
 func (realClock) WithDeadline(ctx context.Context, at time.Time) (context.Context, context.CancelFunc) {

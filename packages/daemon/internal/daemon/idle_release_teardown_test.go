@@ -618,7 +618,7 @@ func (r *idleRig) restarted(t *testing.T) *outbox {
 	t.Helper()
 	ctx := context.Background()
 	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
-	sup.deps.Runtime, sup.deps.Store, sup.deps.PluginContract = r.rt, r.st, api.DaemonAPIVersion
+	sup.deps.Runtime, sup.deps.Store, sup.deps.PluginContract = r.rt, r.st, api.DaemonAPIVersion()
 	sup.store = r.st
 	claims, err := r.st.Claims(ctx)
 	if err != nil {

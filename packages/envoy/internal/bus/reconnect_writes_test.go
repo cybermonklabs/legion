@@ -59,7 +59,7 @@ func TestAWriteThroughANATSReconnectWaitsOrFailsByName(t *testing.T) {
 	}
 
 	srv.Stop(t)
-	waitFor(t, 15*time.Second, "the client to start reconnecting", func() bool { return client.Conn.IsReconnecting() })
+	waitFor(t, "the client to start reconnecting", func() bool { return client.Conn.IsReconnecting() })
 
 	t.Run("control: a send on the client's own connection while reconnecting is nats.go's buffer refusal", func(t *testing.T) {
 		err := client.Conn.Publish("reconnect-writes.raw", []byte("{}"))
@@ -102,7 +102,7 @@ func TestAWriteThroughANATSReconnectWaitsOrFailsByName(t *testing.T) {
 
 	t.Run("neither write reaches the server once it is back", func(t *testing.T) {
 		srv.Start(t)
-		waitFor(t, 30*time.Second, "the client to reconnect", client.Connected)
+		waitFor(t, "the client to reconnect", client.Connected)
 		// A write held anywhere and sent on the reconnect would be on the server within this.
 		time.Sleep(2 * time.Second)
 		observer := testnats.Connect(t, uri)

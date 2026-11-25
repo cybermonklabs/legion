@@ -49,9 +49,10 @@ type listenerDeps struct {
 	// budget each /v1 route gives its bus work (sendRequestBudget and the read timeouts beside
 	// it). It is nil in production and in every test that does not drive time, and clk reads it
 	// as clock.Real then; a test that asserts one of those bounds hands a clocktest.Fake here,
-	// waits for the bound to be armed on it (clocktest.Fake.AwaitArmed) and moves the fake past
-	// it, rather than waiting the bound out on the machine's own clock. What nats.go and the
-	// server time for themselves is not here, nor is /healthz's budget (healthzHandler says why).
+	// reads the bound armed on it (clocktest.Fake.Armed, or SetWhen, which reads and moves under
+	// one hold of the fake's lock) and moves the fake past it, rather than waiting the bound out
+	// on the machine's own clock. What nats.go and the server time for themselves is not here,
+	// nor is /healthz's budget (healthzHandler says why).
 	clock clock.Clock
 	// known is the store of every session that registered in the last 30 days
 	// (session.KnownSessions). It keeps a cache of its own outside caches below, so the
