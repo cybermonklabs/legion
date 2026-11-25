@@ -8,9 +8,11 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/asks"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // Ask followers: the sessions an ask's answer, edits, resolution, and replies reach
@@ -24,6 +26,21 @@ import (
 // cookie, or a token of theirs that holds it, may add or remove any session and sends no body
 // of its own, and the write is recorded as the person with the agent beside them. Every other
 // credential is refused that, 403 FOLLOWER_FORBIDDEN.
+//
+// The session in the path is held to what the writer sees (sessionHiddenFromReader,
+// access.SessionClause): one it may not see is a session nobody holds. Its ask is still read
+// first, so a missing or hidden ask answers as it does for any session, and then the write
+// answers before it takes the ask's lock or reads its followers: a follow 404 SESSION_NOT_FOUND
+// and an unfollow 404 FOLLOWER_NOT_FOUND. While a project is private, and in every deployment
+// for a writer that is not open, a session nobody holds is one the writer does not see either, so
+// the two take this one path. An open writer of a deployment that holds no private project sees
+// every session and reads nothing for it (R9).
+//
+// A follow is refused, 403 SESSION_OUTSIDE_PROJECT, for a session that may not be shown the project the
+// ask is of (refuseSessionOutsideProject): a follower is sent every answer and reply of the ask
+// (the outbox's addFollowerRoutes), so following is being given the ask's thread. It is read in
+// the write's transaction, after the ask and before its lock, so a refusal writes nothing. An
+// unfollow takes nothing from a session and is refused nothing for it.
 
 func parseAskID(r *http.Request) (string, error) {
 	id := r.PathValue("id")
@@ -33,13 +50,14 @@ func parseAskID(r *http.Request) (string, error) {
 	return id, nil
 }
 
-// loadAskOwner returns the owner of an ask (its issue or unlinked document) or
-// pgx.ErrNoRows when the ask does not exist.
-func (s *server) loadAskOwner(ctx context.Context, q queryer, askID string) (owner, error) {
+// loadAskOwner returns the owner of an ask (its issue or unlinked document) or pgx.ErrNoRows
+// when the ask does not exist or who may not read it (access.ItemOwnerClause).
+func (s *server) loadAskOwner(ctx context.Context, q queryer, who model.Actor, askID string) (owner, error) {
 	var issueKey, artifactID *string
 	if err := q.QueryRow(ctx, `
-		select issue_key, artifact_id::text from asks where id = $1
-	`, askID).Scan(&issueKey, &artifactID); err != nil {
+		select a.issue_key, a.artifact_id::text from asks a
+		where a.id = $1 and `+access.ItemOwnerClause("a.issue_key", "a.artifact_id", "$2")+`
+	`, askID, refs.VisibilityArg(who)).Scan(&issueKey, &artifactID); err != nil {
 		return owner{}, err
 	}
 	return ownerOf(issueKey, artifactID), nil
@@ -50,7 +68,9 @@ type askFollowersRead struct {
 	Followers []model.AskFollower `json:"followers"`
 }
 
-// GET /api/v1/asks/{id}/followers  (any authenticated actor)
+// GET /api/v1/asks/{id}/followers  (any authenticated actor; an ask of a project the caller does
+// not see answers as an id no ask holds, and a follower whose session the caller does not see is
+// left out, as the rule of references leaves out every such reference: references_seen.go)
 func (s *server) listAskFollowers(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -60,16 +80,25 @@ func (s *server) listAskFollowers(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	if _, err := s.loadAskOwner(r.Context(), s.deps.Store.Pool, askID); err != nil {
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
+	if _, err := s.loadAskOwner(r.Context(), s.deps.Store.Pool, who, askID); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	followers, err := asks.Followers(r.Context(), s.deps.Store.Pool, askID)
+	followers, err := asks.Followers(r.Context(), s.deps.Store.Pool, askID, refs.VisibilityArg(who))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	WriteJSON(w, http.StatusOK, askFollowersRead{Followers: followers})
+	seen := map[string][]model.AskFollower{askID: followers}
+	if err := leaveOutHiddenFollowers(r.Context(), s.deps.Store.Pool, who, seen); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	WriteJSON(w, http.StatusOK, askFollowersRead{Followers: seen[askID]})
 }
 
 // PUT /api/v1/asks/{id}/followers/{session_id}
@@ -151,16 +180,45 @@ func (s *server) changeAskFollower(w http.ResponseWriter, r *http.Request, follo
 		}
 	}
 
+	// What the writer sees, resolved before the transaction holds a connection: the ask's owner
+	// is read as the writer may read it (loadAskOwner), and so is the session (the file comment).
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
+	hidden, err := s.sessionHiddenFromReader(r.Context(), sessionID)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	tx, err := s.begin(r.Context())
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
 	defer tx.Rollback(r.Context())
-	own, err := s.loadAskOwner(r.Context(), tx, askID)
+	own, err := s.loadAskOwner(r.Context(), tx, who, askID)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
+	}
+	if hidden {
+		if follow {
+			writeError(w, codeSessionNotFound, http.StatusNotFound, "no session "+sessionID)
+			return
+		}
+		writeFollowerNotFound(w)
+		return
+	}
+	if follow {
+		project, _, err := graphstore.ScopeOf(r.Context(), tx, own.IssueKey, own.ArtifactID)
+		if err == nil {
+			err = refuseSessionOutsideProject(r.Context(), tx, sessionID, project, "follow this ask")
+		}
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
 	}
 	if err := s.deps.Events.LockOwners(r.Context(), tx, own.event("", actor, nil)); err != nil {
 		s.writeHandlerError(w, err)
@@ -184,7 +242,7 @@ func (s *server) changeAskFollower(w http.ResponseWriter, r *http.Request, follo
 	}
 	if !changed {
 		if !follow {
-			writeError(w, "FOLLOWER_NOT_FOUND", http.StatusNotFound, "session does not follow this ask")
+			writeFollowerNotFound(w)
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
@@ -205,4 +263,10 @@ func (s *server) changeAskFollower(w http.ResponseWriter, r *http.Request, follo
 	}
 	s.publish(r.Context(), event)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// writeFollowerNotFound answers an unfollow of a session that does not follow the ask: one that
+// never did, and one the writer may not see (changeAskFollower), in the same words.
+func writeFollowerNotFound(w http.ResponseWriter) {
+	writeError(w, "FOLLOWER_NOT_FOUND", http.StatusNotFound, "session does not follow this ask")
 }

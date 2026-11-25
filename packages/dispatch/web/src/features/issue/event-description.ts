@@ -58,6 +58,10 @@ function describe(event: DispatchEvent): string | AgentPart[] {
       return "Kept a decision";
     case "priority.updated":
       return `Priority ${event.payload.change}: ${event.payload.id}`;
+    case "project.access_changed":
+      return `Access changed: ${event.payload.change.replace("_", " ")}`;
+    case "access_group.changed":
+      return `Group ${event.payload.change}: ${event.payload.name}`;
     case "ask.resolved":
       return askResolutionParts(event.payload.resolution);
     case "ask.answered":

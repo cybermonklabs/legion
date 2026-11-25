@@ -43,8 +43,9 @@ export type ActorOrigin = z.output<typeof ActorOriginSchema>;
  *  the credential's own person on every route a person reaches through the dashboard, and
  *  `approve` settles what a person settles — a document review, a decision's Keep, the answer of
  *  an approval ask, a machine-login decision, a credential-grant, machine-login or sign-in revoke,
- *  and minting, changing or revoking a personal token. A credential holding `approve` holds
- *  `person` too, and no token the secrets broker issued holds `approve`. */
+ *  minting, changing or revoking a personal token, and a change to a project's access list,
+ *  visibility, owner or Slack channels or to a group an access list can name. A credential
+ *  holding `approve` holds `person` too, and no token the secrets broker issued holds `approve`. */
 export const DISPATCH_SCOPES = ["person", "approve"] as const;
 export type DispatchScope = (typeof DISPATCH_SCOPES)[number];
 
@@ -92,11 +93,11 @@ export const ActorSchema = z.union([
       /** The subject of the verified service token that authenticated the write
        *  (`system:serviceaccount:<namespace>:<name>`); absent under any other bearer. */
       service: z.string().optional(),
-      /** The one project key the write's credential may write. The server reads it from an
-       *  access token the secrets broker issued for that project and never from a body, as it
-       *  reads `service` from a service token; it is absent under every credential that names
-       *  none, a browser cookie, a personal token and a broker token scoped to its person
-       *  included. */
+      /** The one project key a broker token scoped to a named project could write under. Only
+       *  servers before private projects write it: the server's Actor no longer has the field and
+       *  answers no actor with it. It stays here, optional, so a reader takes an event such a
+       *  server stored, or answers, while the two versions run side by side (a stored count of 0
+       *  of 624,002 events on 2026-11-16 is no promise about tomorrow's). */
       project: z.string().optional(),
       proven: z.literal(true).optional(),
     })
@@ -260,6 +261,9 @@ export const ProjectSchema = z
      *  project has none, and from a Dispatch older than the field. */
     default_repo: z.string().optional(),
     created_at: z.string(),
+    /** `private` for a private project, and absent for a public one, so a deployment where every
+     *  project is public carries the project as it always did. */
+    visibility: z.literal("private").optional(),
   })
   .readonly();
 
@@ -386,3 +390,36 @@ export const PriorityUpdatedEventPayloadSchema = z
   .readonly();
 
 export type PriorityUpdatedEventPayload = z.output<typeof PriorityUpdatedEventPayloadSchema>;
+
+/** `project.access_changed`: one write of a project's owner, visibility, access list or Slack
+ *  channels committed. It names the project and which change it was, and nothing else: no email,
+ *  group name or channel id, since every reader of the project's events reads it, and the list is
+ *  `GET /api/v1/projects/{key}/access`'s, under that route's own rule. It is owned by the project
+ *  and wakes nobody; every reader that resolved what its caller may see resolves it again. */
+export const ProjectAccessChangedEventPayloadSchema = z
+  .strictObject({
+    project: z.string(),
+    change: z.enum([
+      "owner",
+      "visibility",
+      "person_added",
+      "person_removed",
+      "group_added",
+      "group_removed",
+      "slack_channels",
+    ]),
+  })
+  .readonly();
+
+export type ProjectAccessChangedEventPayload = z.output<
+  typeof ProjectAccessChangedEventPayloadSchema
+>;
+
+/** `access_group.changed`: one group was made, had its members or owner written, or was deleted.
+ *  A group belongs to no project, so the event names no owner (`issue_key` null, `project` empty),
+ *  wakes nobody and the outbox publishes it on no subject. */
+export const AccessGroupChangedEventPayloadSchema = z
+  .strictObject({ name: z.string(), change: z.enum(["created", "updated", "deleted"]) })
+  .readonly();
+
+export type AccessGroupChangedEventPayload = z.output<typeof AccessGroupChangedEventPayloadSchema>;

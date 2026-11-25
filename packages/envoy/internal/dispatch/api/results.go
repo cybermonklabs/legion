@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"math"
 	"net/http"
-	"net/url"
 	"regexp"
 	"strings"
 	"time"
@@ -19,6 +18,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"golang.org/x/text/unicode/norm"
 
+	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -124,14 +125,15 @@ type checkResultDryRun struct {
 }
 
 // resultRequest is a result's body as the record and its dry run have judged it before anything
-// is written (readResultRequest): the input and its actor, the issue it is recorded on, the check
-// it names, the one repository the check's issue resolves to, the linked repository the commit is
-// taken to be of (refuseUnknownCommit, nil where it is taken to be repo's), and the rule the
-// pull-request body line keeps words by.
+// is written (readResultRequest): the input and its actor, the reader the writer is as a read binds
+// it (readerOf), the issue it is recorded on, the check it names, the one repository the check's
+// issue resolves to, the linked repository the commit is taken to be of (refuseUnknownCommit, nil
+// where it is taken to be repo's), and the rule the pull-request body line keeps words by.
 type resultRequest struct {
 	issueKey         string
 	input            checkResultInput
 	actor            model.Actor
+	who              model.Actor
 	check            resolvedCheck
 	repo             *string
 	linkedCommitRepo *string
@@ -162,7 +164,7 @@ func (s *server) recordCheckResult(w http.ResponseWriter, r *http.Request) {
 	// holds for it have not moved since, which the locked half re-reads and judges; the one
 	// re-read a moved pair needs runs there too, with every lock given back.
 	written, err := s.recordResultWithFreshWords(
-		r.Context(), request.issueKey, request.check, request.input, request.linkedCommitRepo, request.actor)
+		r.Context(), request.who, request.issueKey, request.check, request.input, request.linkedCommitRepo, request.actor)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -223,6 +225,13 @@ func (s *server) readResultRequest(w http.ResponseWriter, r *http.Request) (resu
 	if !ok {
 		return resultRequest{}, false
 	}
+	// The reader is resolved here, before any connection is held: the check is resolved as it
+	// reads it, so a result for an issue of a project it does not see is refused as one for a
+	// key no issue carries, by the record and its dry run alike.
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return resultRequest{}, false
+	}
 	if err := input.refusal(); err != nil {
 		return refused(err)
 	}
@@ -240,7 +249,7 @@ func (s *server) readResultRequest(w http.ResponseWriter, r *http.Request) (resu
 	// settled here — the check's words and its `when` are the document's, not the issue's — and
 	// what it does protect, the block's indexed version and digest, is read again under it
 	// below.
-	check, err := s.resolveCheck(r.Context(), pool, issueKey, input.Check)
+	check, err := s.resolveCheck(r.Context(), pool, who, issueKey, input.Check)
 	if err != nil {
 		return refused(err)
 	}
@@ -306,13 +315,13 @@ func (s *server) readResultRequest(w http.ResponseWriter, r *http.Request) (resu
 
 	// The project keys the line drops issue keys by are read before the transaction too, so a
 	// read that fails refuses the record with nothing written: read after the commit, it would
-	// lose the answer to a write that landed.
-	words, err := s.readLineWords(r.Context(), pool)
+	// lose the answer to a write that landed. They are the writer's (readLineWords).
+	words, err := s.readLineWords(r.Context(), pool, who)
 	if err != nil {
 		return refused(err)
 	}
 	return resultRequest{
-		issueKey: issueKey, input: input, actor: actor, check: check,
+		issueKey: issueKey, input: input, actor: actor, who: who, check: check,
 		repo: checkRepo, linkedCommitRepo: linkedCommitRepo, words: words,
 	}, true
 }
@@ -363,13 +372,15 @@ type recordedCheckResult struct {
 // Exactly one read of the live document is paid on the common path: resolveCheck already made it
 // before the transaction opened, and that reading is what the first attempt is handed. Only a
 // redo reads the document again, and it reads the attributes alone, with nothing held, against
-// the version and digest the refused attempt's locks found.
+// the version and digest the refused attempt's locks found. who is the writer as a read binds it
+// (readerOf), and the locked half reads each issue, the check's index row and the screenshots as
+// who reads them.
 //
 // linkedCommitRepo is what the row keeps as commit_repo (recordCheckResult): the linked
 // repository refuseUnknownCommit answered, or nil. A redo writes the same one, since it is the
 // commit's answer and no rewording of the check moves it.
 func (s *server) recordResultWithFreshWords(
-	ctx context.Context, issueKey string, check resolvedCheck, input checkResultInput,
+	ctx context.Context, who model.Actor, issueKey string, check resolvedCheck, input checkResultInput,
 	linkedCommitRepo *string, actor model.Actor,
 ) (recordedCheckResult, error) {
 	refusal := errorf(http.StatusConflict, checkContended,
@@ -388,7 +399,7 @@ func (s *server) recordResultWithFreshWords(
 				resolved = true
 				return check.checkResolution, nil
 			}
-			attributes, err := s.checkBlockAttributes(ctx, check.ArtifactID, check.BlockID)
+			attributes, err := s.checkBlockAttributes(ctx, who, check.ArtifactID, check.BlockID)
 			if err != nil {
 				return checkResolution{}, err
 			}
@@ -396,7 +407,7 @@ func (s *server) recordResultWithFreshWords(
 		},
 		func(ctx context.Context, resolution checkResolution) (recordedCheckResult, error) {
 			written, found, err := s.recordResultUnderOwnerLocks(
-				ctx, issueKey, check.checkBlockRef, resolution, input, linkedCommitRepo, actor)
+				ctx, who, issueKey, check.checkBlockRef, resolution, input, linkedCommitRepo, actor)
 			locked = found
 			return written, err
 		},
@@ -410,9 +421,11 @@ func (s *server) recordResultWithFreshWords(
 //
 // A resolution the locks contradict is errStaleResolution, with the transaction's deferred
 // rollback run before the error reaches resolveThenLock and nothing written; the version and
-// digest the locks found come back beside it, for the redo to read the words of.
+// digest the locks found come back beside it, for the redo to read the words of. Every read under
+// the locks reads as who reads it, so an issue, a check or a screenshot of a project who does not
+// see is one nobody holds.
 func (s *server) recordResultUnderOwnerLocks(
-	ctx context.Context, issueKey string, check checkBlockRef, resolved checkResolution,
+	ctx context.Context, who model.Actor, issueKey string, check checkBlockRef, resolved checkResolution,
 	input checkResultInput, linkedCommitRepo *string, actor model.Actor,
 ) (recordedCheckResult, indexedCheck, error) {
 	tx, err := s.begin(ctx)
@@ -428,10 +441,10 @@ func (s *server) recordResultUnderOwnerLocks(
 	// waiting for the parent and another hold the parent while waiting for the child;
 	// lockIssueOwners is the one key order every writer of two issues takes. It is the owner
 	// lock and not the issue rows, so this read phase holds no transaction id.
-	if _, err := lockIssueOwners(ctx, tx, issueKey, check.IssueKey); err != nil {
+	if _, err := lockIssueOwners(ctx, tx, who, issueKey, check.IssueKey); err != nil {
 		return recordedCheckResult{}, indexedCheck{}, err
 	}
-	recordingOpen, checkOpen, err := issuesOpenForResult(ctx, tx, issueKey, check.IssueKey)
+	recordingOpen, checkOpen, err := issuesOpenForResult(ctx, tx, who, issueKey, check.IssueKey)
 	if err != nil {
 		return recordedCheckResult{}, indexedCheck{}, err
 	}
@@ -440,7 +453,7 @@ func (s *server) recordResultUnderOwnerLocks(
 	// otherwise have the result recorded against the words it replaced, and a check reworded from
 	// before_merge to after_merge would be judged by the `when` it carried before the lock. The
 	// words and the attributes are never read here, only judged (indexedCheckBlock).
-	indexed, err := indexedCheckBlock(ctx, tx, check, input.Check)
+	indexed, err := indexedCheckBlock(ctx, tx, who, check, input.Check)
 	if err != nil {
 		return recordedCheckResult{}, indexedCheck{}, err
 	}
@@ -462,7 +475,7 @@ func (s *server) recordResultUnderOwnerLocks(
 		return recordedCheckResult{}, indexedCheck{}, errorf(http.StatusConflict, "ISSUE_CLOSED",
 			"issue is closed: only a result for a check whose when is after_merge or default_branch is recorded there, and %s is %s", check.BlockID, resolved.Attributes.When)
 	}
-	if err := s.refuseResultScreenshots(ctx, tx, issueKey, check.IssueKey, input.Screenshots); err != nil {
+	if err := s.refuseResultScreenshots(ctx, tx, who, issueKey, check.IssueKey, input.Screenshots); err != nil {
 		return recordedCheckResult{}, indexedCheck{}, err
 	}
 
@@ -506,7 +519,8 @@ type issueCheckResults struct {
 	VerificationArtifactID string             `json:"verification_artifact_id"`
 }
 
-// GET /api/v1/issues/{key}/results  (any authenticated caller)
+// GET /api/v1/issues/{key}/results  (a caller that sees the issue's project; to any other, the
+// issue is one nobody holds)
 //
 // The checks of the issue's Verification document in document order, each with what its
 // results are compared with and whether a pass of it stands, and every result recorded
@@ -523,7 +537,8 @@ type issueCheckResults struct {
 // newest pull request head as on every read: the derived result is that head's, and stands at
 // the named commit only where that commit is the head.
 func (s *server) listCheckResults(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAuthenticated(w, r) {
+	who, ok := s.readerOf(w, r)
+	if !ok {
 		return
 	}
 	at := r.URL.Query().Get("at")
@@ -533,11 +548,11 @@ func (s *server) listCheckResults(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	issueKey := r.PathValue("key")
-	if err := s.requireIssueExists(r.Context(), issueKey); err != nil {
+	if err := s.requireIssueExists(r.Context(), who, issueKey); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	artifact, held, err := s.verificationDocument(r.Context(), s.deps.Store.Pool, issueKey, "")
+	artifact, held, err := s.verificationDocument(r.Context(), s.deps.Store.Pool, who, issueKey, "")
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -548,12 +563,12 @@ func (s *server) listCheckResults(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	trees := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
-	checks, err := s.checkBlocksOf(r.Context(), s.deps.Store.Pool, artifact, trees)
+	checks, err := s.checkBlocksOf(r.Context(), s.deps.Store.Pool, who, artifact, trees)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	recorded, err := loadCheckResults(r.Context(), s.deps.Store.Pool, artifact.ID)
+	recorded, err := loadCheckResults(r.Context(), s.deps.Store.Pool, who, artifact.ID)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -638,11 +653,11 @@ func (input checkResultInput) refusal() error {
 // refusal of its own for a closed issue, as requireOpenOwnerStatus does: the results route
 // decides for itself, since a closed issue takes a result for an after-merge check. An issue
 // with no row is the route's 404, which the locks never answer: lockIssueOwners takes an owner's
-// lock whether or not a row holds that key.
-func issuesOpenForResult(ctx context.Context, tx pgx.Tx, issueKey, checkIssueKey string) (bool, bool, error) {
+// lock whether or not a row holds that key. An issue who does not see is that 404 as well.
+func issuesOpenForResult(ctx context.Context, tx pgx.Tx, who model.Actor, issueKey, checkIssueKey string) (bool, bool, error) {
 	open := map[string]bool{}
-	rows, err := tx.Query(ctx, `select key, closed_at is null from issues where key = any($1)`,
-		[]string{issueKey, checkIssueKey})
+	rows, err := tx.Query(ctx, `select key, closed_at is null from issues where key = any($1) and `+
+		access.ProjectClause("project_key", "$2"), []string{issueKey, checkIssueKey}, refs.VisibilityArg(who))
 	if err != nil {
 		return false, false, fmt.Errorf("read whether %s and %s are open: %w", issueKey, checkIssueKey, err)
 	}
@@ -669,19 +684,31 @@ func issuesOpenForResult(ctx context.Context, tx pgx.Tx, issueKey, checkIssueKey
 	return recording, check, nil
 }
 
-// requireIssueExists is the read route's 404 for an issue nobody has.
-func (s *server) requireIssueExists(ctx context.Context, key string) error {
+// requireIssueExists is the read route's 404 for an issue nobody has, and for an issue of a
+// project who does not see, which it answers alike.
+func (s *server) requireIssueExists(ctx context.Context, who model.Actor, key string) error {
 	if s.deps.Store == nil || s.deps.Store.Pool == nil {
 		return errorf(http.StatusServiceUnavailable, "DATABASE_UNAVAILABLE", "database unavailable")
 	}
-	var exists bool
-	if err := s.deps.Store.Pool.QueryRow(ctx, `select true from issues where key = $1`, key).Scan(&exists); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return errorf(http.StatusNotFound, "NOT_FOUND", "issue not found")
-		}
-		return fmt.Errorf("read issue %s: %w", key, err)
+	seen, err := s.issueSeen(ctx, who, key)
+	if err != nil {
+		return err
+	}
+	if !seen {
+		return errorf(http.StatusNotFound, "NOT_FOUND", "issue not found")
 	}
 	return nil
+}
+
+// issueSeen reports whether an issue of key is one who sees: false for a key no issue carries and
+// for an issue of a project who does not see alike.
+func (s *server) issueSeen(ctx context.Context, who model.Actor, key string) (bool, error) {
+	var seen bool
+	if err := s.deps.Store.Pool.QueryRow(ctx, `select exists (select 1 from issues where key = $1 and `+
+		access.ProjectClause("project_key", "$2")+`)`, key, refs.VisibilityArg(who)).Scan(&seen); err != nil {
+		return false, fmt.Errorf("read issue %s: %w", key, err)
+	}
+	return seen, nil
 }
 
 // verificationDocument is one issue's Verification document and whether it has one. slug, when
@@ -691,13 +718,15 @@ func (s *server) requireIssueExists(ctx context.Context, key string) error {
 // version written under its row repairs it (documentRole), and the slug is meanwhile the only
 // thing that says what the document is. Every reader of an issue's Verification document in
 // this package goes through here — the results routes, the check resolver and the approval
-// request's second document.
-func (s *server) verificationDocument(ctx context.Context, q queryer, issueKey, slug string) (model.Artifact, bool, error) {
+// request's second document — read as who reads it: the document of an issue of a project who
+// does not see is a document the issue does not have.
+func (s *server) verificationDocument(ctx context.Context, q queryer, who model.Actor, issueKey, slug string) (model.Artifact, bool, error) {
 	artifact, err := scanArtifact(q.QueryRow(ctx, `
 		select `+artifactColumns+` from artifacts
 		where issue_key = $1 and `+verificationRolePredicate+` and ($2 = '' or slug = $2)
+		  and `+access.ProjectClause("project_key", "$3")+`
 		limit 1
-	`, issueKey, slug))
+	`, issueKey, slug, refs.VisibilityArg(who)))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return model.Artifact{}, false, nil
 	}
@@ -712,8 +741,9 @@ func (s *server) verificationDocument(ctx context.Context, q queryer, issueKey, 
 // (`dispatch://KEY/artifact/verification-md#b-<id>`) that names one document when a block id is
 // not unique in that set: an id two documents share is 409 CHECK_AMBIGUOUS, and an id no
 // Verification document of the set holds — or one that is not a `check` block — is 400
-// UNKNOWN_CHECK.
-func (s *server) resolveCheck(ctx context.Context, q queryer, issueKey, value string) (resolvedCheck, error) {
+// UNKNOWN_CHECK. It reads as who reads: an issue of a project who does not see holds no check, as
+// a key no issue carries holds none.
+func (s *server) resolveCheck(ctx context.Context, q queryer, who model.Actor, issueKey, value string) (resolvedCheck, error) {
 	ancestors, err := refs.IssueAncestors(ctx, q, issueKey)
 	if err != nil {
 		return resolvedCheck{}, err
@@ -728,7 +758,7 @@ func (s *server) resolveCheck(ctx context.Context, q queryer, issueKey, value st
 			return resolvedCheck{}, unknownCheck(value)
 		}
 		blockID = ref.Block
-		document, held, err := s.verificationDocument(ctx, q, ref.IssueKey, ref.ID)
+		document, held, err := s.verificationDocument(ctx, q, who, ref.IssueKey, ref.ID)
 		if err != nil {
 			return resolvedCheck{}, err
 		}
@@ -745,8 +775,9 @@ func (s *server) resolveCheck(ctx context.Context, q queryer, issueKey, value st
 		where `+aliasedVerificationRole+`
 		  and a.issue_key = any($1) and d.type = 'check' and d.block_id = $2
 		  and ($3 = '' or d.artifact_id = $3::uuid)
+		  and `+access.ProjectClause("a.project_key", "$4")+`
 		order by a.issue_key
-	`, scope, blockID, artifactFilter)
+	`, scope, blockID, artifactFilter, refs.VisibilityArg(who))
 	if err != nil {
 		return resolvedCheck{}, fmt.Errorf("resolve check %q of %s: %w", value, issueKey, err)
 	}
@@ -782,7 +813,7 @@ func (s *server) resolveCheck(ctx context.Context, q queryer, issueKey, value st
 			blockID, strings.Join(issues, " and "), strings.Join(references, " or "))
 	}
 	check := found[0]
-	if check.Attributes, err = s.checkBlockAttributes(ctx, check.ArtifactID, check.BlockID); err != nil {
+	if check.Attributes, err = s.checkBlockAttributes(ctx, who, check.ArtifactID, check.BlockID); err != nil {
 		return resolvedCheck{}, err
 	}
 	return check, nil
@@ -817,12 +848,15 @@ func unknownCheck(value string) error {
 // (docs/read_cache.go), so the one case it would answer differently is the one it would answer
 // slowest in. The redo reads the words, with every lock given back
 // (recordResultWithFreshWords).
-func indexedCheckBlock(ctx context.Context, q queryer, check checkBlockRef, named string) (indexedCheck, error) {
+//
+// The block is read as who reads its document (documentVisible): a block of a document who does
+// not see is a block the index does not hold.
+func indexedCheckBlock(ctx context.Context, q queryer, who model.Actor, check checkBlockRef, named string) (indexedCheck, error) {
 	var indexed indexedCheck
 	err := q.QueryRow(ctx, `
 		select changed_version, text_sha256 from document_blocks
-		where artifact_id = $1::uuid and block_id = $2 and type = 'check'
-	`, check.ArtifactID, check.BlockID).Scan(&indexed.Version, &indexed.SHA256)
+		where artifact_id = $1::uuid and block_id = $2 and type = 'check' and `+documentVisible("$1::uuid", "$3")+`
+	`, check.ArtifactID, check.BlockID, refs.VisibilityArg(who)).Scan(&indexed.Version, &indexed.SHA256)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return indexedCheck{}, unknownCheck(named)
 	}
@@ -832,14 +866,14 @@ func indexedCheckBlock(ctx context.Context, q queryer, check checkBlockRef, name
 	return indexed, nil
 }
 
-// checkBlockAttributes reads the attributes of one check block out of the live document. The
-// index holds a block's type and digest but not its attributes, so the document itself is the one
-// place they are written.
-func (s *server) checkBlockAttributes(ctx context.Context, artifactID, blockID string) (docs.CheckAttributes, error) {
+// checkBlockAttributes reads the attributes of one check block out of the live document, as who
+// reads it. The index holds a block's type and digest but not its attributes, so the document
+// itself is the one place they are written.
+func (s *server) checkBlockAttributes(ctx context.Context, who model.Actor, artifactID, blockID string) (docs.CheckAttributes, error) {
 	// The index holds the block, so the live document has it too unless a write landed between
 	// the two reads; such a block carries the schema's defaults alone, `when` before_merge.
 	attributes := docs.CheckAttributes{When: docs.CheckWhenBeforeMerge}
-	err := s.typedBlocksIn(ctx, artifactID, "check", false, func(node *pmdoc.Node, id, _ string) {
+	err := s.typedBlocksIn(ctx, who, artifactID, "check", false, func(node *pmdoc.Node, id, _ string) {
 		if id == blockID {
 			attributes = docs.CheckAttributesOf(node)
 		}
@@ -877,12 +911,12 @@ func refuseCheckProvedByCI(ctx context.Context, q queryer, check resolvedCheck) 
 		check.BlockID, check.Attributes.CICheck)
 }
 
-// typedBlocksIn walks the live markdown of one document and hands visit each block of blockType
-// in document order, with its block id. The markdown is read live and parsed; nothing is
-// written. A rendering can repeat an id; the block index keys one row per id, and so does this,
-// so only the first holder of an id is visited. Both readers of a live document's typed blocks
-// come through here: the checks of a Verification document (checkBlocksIn) and the requirements
-// of a spec (requirementBlocksIn).
+// typedBlocksIn walks the live markdown of one document, as who reads it, and hands visit each
+// block of blockType in document order, with its block id. The markdown is read live and parsed;
+// nothing is written. A rendering can repeat an id; the block index keys one row per id, and so
+// does this, so only the first holder of an id is visited. Both readers of a live document's
+// typed blocks come through here: the checks of a Verification document (checkBlocksIn) and the
+// requirements of a spec (requirementBlocksIn).
 //
 // When trees is true, visit is handed as content the markdown the block's text_tree is read
 // from, and "" otherwise. That markdown is blockTextContent of the block's text as the block
@@ -894,8 +928,8 @@ func refuseCheckProvedByCI(ctx context.Context, q queryer, check resolvedCheck) 
 // The ranges come with the markdown from that one read, which serves both from the read cache
 // without a render where it can (typedBlockMarkdown); a block the read gives no range for answers
 // the block's own content (blockContent).
-func (s *server) typedBlocksIn(ctx context.Context, artifactID, blockType string, trees bool, visit func(node *pmdoc.Node, id, content string)) error {
-	markdown, texts, err := s.typedBlockMarkdown(ctx, artifactID, blockType, trees)
+func (s *server) typedBlocksIn(ctx context.Context, who model.Actor, artifactID, blockType string, trees bool, visit func(node *pmdoc.Node, id, content string)) error {
+	markdown, texts, err := s.typedBlockMarkdown(ctx, who, artifactID, blockType, trees)
 	if err != nil {
 		return err
 	}
@@ -930,19 +964,20 @@ func (s *server) typedBlocksIn(ctx context.Context, artifactID, blockType string
 	return nil
 }
 
-// typedBlockMarkdown is the live markdown of one document and, when trees is true, the text the
-// block index stores for each block of blockType in it, by id: the block's slice of that markdown
-// between the byte range the same read gives for it (docs.Service.TextWithBlocks). The read lists
-// blocks in document order, so the text kept for an id is its first holder's, the block
-// typedBlocksIn visits. When trees is false the document is read with Text alone.
+// typedBlockMarkdown is the live markdown of one document as who reads it and, when trees is
+// true, the text the block index stores for each block of blockType in it, by id: the block's
+// slice of that markdown between the byte range the same read gives for it
+// (docs.Service.TextWithBlocks). The read lists blocks in document order, so the text kept for an
+// id is its first holder's, the block typedBlocksIn visits. When trees is false the document is
+// read with Text alone.
 //
 // A read with blocks that fails is logged, and the document is read again with Text and given no
 // text at all, so every block answers its own content: a value inside a block that no block token
 // can encode refuses TextWithBlocks and not Text, and such a document still answers its blocks'
 // words. A failure Text meets as well is answered with Text's error.
-func (s *server) typedBlockMarkdown(ctx context.Context, artifactID, blockType string, trees bool) (string, map[string]string, error) {
+func (s *server) typedBlockMarkdown(ctx context.Context, who model.Actor, artifactID, blockType string, trees bool) (string, map[string]string, error) {
 	if trees {
-		markdown, blocks, err := s.deps.Docs.TextWithBlocks(ctx, artifactID)
+		markdown, blocks, err := s.deps.Docs.TextWithBlocks(ctx, who, artifactID)
 		if err == nil {
 			texts := map[string]string{}
 			for _, block := range blocks {
@@ -957,7 +992,7 @@ func (s *server) typedBlockMarkdown(ctx context.Context, artifactID, blockType s
 		}
 		slog.Warn("dispatch: read a document's blocks for its typed blocks' trees", "artifact", artifactID, "type", blockType, "error", err)
 	}
-	markdown, err := s.deps.Docs.Text(ctx, artifactID)
+	markdown, err := s.deps.Docs.Text(ctx, who, artifactID)
 	return markdown, nil, err
 }
 
@@ -966,10 +1001,10 @@ func (s *server) typedBlockMarkdown(ctx context.Context, artifactID, blockType s
 // for no tree: each check registers with it, as its text_tree, the markdown typedBlocksIn reads
 // the block's tree from (the rule GET /api/v1/reference-targets reads the same block by), once
 // the slice has stopped growing, since what is registered is a pointer into the row.
-func (s *server) checkBlocksIn(ctx context.Context, artifactID string, trees *displayTreeReader) ([]model.CheckBlock, error) {
+func (s *server) checkBlocksIn(ctx context.Context, who model.Actor, artifactID string, trees *displayTreeReader) ([]model.CheckBlock, error) {
 	var checks []model.CheckBlock
 	var contents []string
-	err := s.typedBlocksIn(ctx, artifactID, "check", trees != nil, func(node *pmdoc.Node, _, content string) {
+	err := s.typedBlocksIn(ctx, who, artifactID, "check", trees != nil, func(node *pmdoc.Node, _, content string) {
 		check := docs.CheckBlockOf(node)
 		check.ArtifactID, check.Text, check.Results = artifactID, blockWords(node), []model.CheckResult{}
 		checks = append(checks, check)
@@ -989,9 +1024,10 @@ func (s *server) checkBlocksIn(ctx context.Context, artifactID string, trees *di
 // checkBlocksOf is checkBlocksIn with each block's reference, issue and indexed version and
 // digest filled in. The reference is built from the document's own slug, which is a property of
 // the artifacts row and not of a block row, so a Verification document whose blocks the index
-// does not hold yet still answers a reference every check can be addressed by.
-func (s *server) checkBlocksOf(ctx context.Context, q queryer, artifact model.Artifact, trees *displayTreeReader) ([]model.CheckBlock, error) {
-	checks, err := s.checkBlocksIn(ctx, artifact.ID, trees)
+// does not hold yet still answers a reference every check can be addressed by. The index is read
+// as who reads it.
+func (s *server) checkBlocksOf(ctx context.Context, q queryer, who model.Actor, artifact model.Artifact, trees *displayTreeReader) ([]model.CheckBlock, error) {
+	checks, err := s.checkBlocksIn(ctx, who, artifact.ID, trees)
 	if err != nil {
 		return nil, err
 	}
@@ -1005,8 +1041,8 @@ func (s *server) checkBlocksOf(ctx context.Context, q queryer, artifact model.Ar
 	indexed := make(map[string]model.CheckBlock, len(checks))
 	rows, err := q.Query(ctx, `
 		select block_id, changed_version, text_sha256
-		from document_blocks where artifact_id = $1 and type = 'check'
-	`, artifact.ID)
+		from document_blocks where artifact_id = $1 and type = 'check' and `+documentVisible("$1", "$2")+`
+	`, artifact.ID, refs.VisibilityArg(who))
 	if err != nil {
 		return nil, fmt.Errorf("read the indexed checks of %s: %w", artifact.ID, err)
 	}
@@ -1080,10 +1116,10 @@ type lineWords struct {
 	// issueKey matches a word holding an issue key of a project this Dispatch holds; nil when it
 	// holds no project (lineWordsFor).
 	issueKey *regexp.Regexp
-	// host is the host name of this Dispatch's own URL in lower case, so a link to it written
-	// without its scheme is dropped too; "" when the configured URL names no host (none is
-	// configured, or it does not parse).
-	host string
+	// hosts are the host names of this Dispatch's own origins in lower case (text.Origins.Hosts:
+	// DISPATCH_SERVER_URL's, and DISPATCH_OUTSIDE_ORIGIN's where it answers there too), so a link
+	// to either written without its scheme is dropped too; none when no origin is configured.
+	hosts []string
 	// punctuation is the punctuation a plain word may hold: plainPunctuation, which lineWordsFor
 	// sets, and which a test widens by one rune to show its property can fail.
 	punctuation string
@@ -1147,8 +1183,19 @@ var (
 	tailnetHost = regexp.MustCompile(`(?i)[[:alnum:]-]+[.]ts[.]net([^[:alnum:]]|$)`)
 )
 
-// readLineWords is lineWords for every project q reads and for this Dispatch's own URL.
-func (s *server) readLineWords(ctx context.Context, q queryer) (lineWords, error) {
+// readLineWords is lineWords for the projects q reads and for this Dispatch's own URL, held to what
+// who sees. A reader that sees every object (seesEveryObject) - the server, and every open viewer
+// of a deployment that holds no private project - gets the words of every project, as before
+// projects could be private (R9). Any other reader gets lineWordsForAnyKey: a word dropped because
+// it holds the key of a project the reader cannot see would tell the reader, whose line answers
+// which words it kept, that the project exists; so the line drops every word of a key's shape,
+// whichever projects exist. The choice reads nothing but the reader: one that turned on whether
+// some project is hidden from the reader would tell an open viewer, by the rule its line keeps,
+// whether a private project it cannot see exists.
+func (s *server) readLineWords(ctx context.Context, q queryer, who model.Actor) (lineWords, error) {
+	if !seesEveryObject(who) {
+		return lineWordsForAnyKey(s.deps.Origins), nil
+	}
 	rows, err := q.Query(ctx, `select key from projects`)
 	if err != nil {
 		return lineWords{}, err
@@ -1157,10 +1204,25 @@ func (s *server) readLineWords(ctx context.Context, q queryer) (lineWords, error
 	if err != nil {
 		return lineWords{}, err
 	}
-	return lineWordsFor(keys, s.deps.ServerURL), nil
+	return lineWordsFor(keys, s.deps.Origins), nil
 }
 
-// lineWordsFor is lineWords for the projects keys names and the Dispatch at serverURL. A word
+// lineWordsForAnyKey is lineWordsFor with every word dropped that holds an issue key's shape: a
+// project key as contracts.ProjectKeyPattern spells one, in any case, where lineWordsFor reads one
+// of the keys it is given, followed by `-` and a number that ends there by lineWordsFor's rule. So
+// it drops UTF-8, SHA-256 and x86-64 too: what the reader's line leaves out depends on no project
+// that exists.
+func lineWordsForAnyKey(origins text.Origins) lineWords {
+	words := lineWordsFor(nil, origins)
+	words.issueKey = anyIssueKey
+	return words
+}
+
+// anyIssueKey is issueKeyWord over every project key contracts.ProjectKeyPattern allows, compiled
+// once for every reader that sees less than every project.
+var anyIssueKey = issueKeyWord(strings.TrimSuffix(strings.TrimPrefix(contracts.ProjectKeyPattern, "^"), "$"))
+
+// lineWordsFor is lineWords for the projects keys names and the Dispatch at origins. A word
 // holds an issue key where one of those keys stands in it, in any case, at the word's start or
 // after a character that is neither a letter nor a digit, followed by `-` and a number that ends
 // there: at the word's end, or before a character that is neither a letter, a digit, nor a `.`
@@ -1169,12 +1231,10 @@ func (s *server) readLineWords(ctx context.Context, q queryer) (lineWords, error
 // role tokens spell a key so. `UTF-8`, `SHA-256`, `x86-64` and `TEST-1` hold no key while no
 // project bears that name, and `kernel-6.8` holds none even where a project KERNEL exists, since a
 // number running on into a decimal part is a version. A shape alone, such as [A-Z]+-[0-9]+, would
-// drop UTF-8 and SHA-256 too, which is why the keys are the projects Dispatch holds.
-func lineWordsFor(keys []string, serverURL string) lineWords {
-	words := lineWords{punctuation: plainPunctuation}
-	if parsed, err := url.Parse(serverURL); err == nil {
-		words.host = strings.ToLower(parsed.Hostname())
-	}
+// drop UTF-8 and SHA-256 too, which is why the keys are the projects Dispatch holds for a reader
+// that sees every one of them (readLineWords).
+func lineWordsFor(keys []string, origins text.Origins) lineWords {
+	words := lineWords{punctuation: plainPunctuation, hosts: origins.Hosts()}
 	if len(keys) == 0 {
 		return words
 	}
@@ -1182,9 +1242,14 @@ func lineWordsFor(keys []string, serverURL string) lineWords {
 	for index, key := range keys {
 		quoted[index] = regexp.QuoteMeta(key)
 	}
-	words.issueKey = regexp.MustCompile(`(?i)(?:^|[^\p{L}\p{N}])(?:` + strings.Join(quoted, "|") +
-		`)-[0-9]+(?:$|[^\p{L}\p{N}.]|\.(?:$|[^0-9]))`)
+	words.issueKey = issueKeyWord(strings.Join(quoted, "|"))
 	return words
+}
+
+// issueKeyWord matches a word holding an issue key of a project key the expression key matches, by
+// lineWordsFor's rule.
+func issueKeyWord(key string) *regexp.Regexp {
+	return regexp.MustCompile(`(?i)(?:^|[^\p{L}\p{N}])(?:` + key + `)-[0-9]+(?:$|[^\p{L}\p{N}.]|\.(?:$|[^0-9]))`)
 }
 
 // drops reports whether the line leaves word out: when it is not a plain word (plainWord), or
@@ -1194,12 +1259,20 @@ func (w lineWords) drops(word string) bool {
 	return !plainWord(word, w.punctuation) || w.holds(word) || w.holds(norm.NFKC.String(word))
 }
 
-// holds reports whether word holds `://`, a private host, this Dispatch's own host or an issue
-// key of a project this Dispatch holds.
+// holds reports whether word holds `://`, a private host, one of this Dispatch's own hosts or an
+// issue key by the rule readLineWords read for the line's reader.
 func (w lineWords) holds(word string) bool {
-	return holdsLink(word) || privateHost.MatchString(word) || tailnetHost.MatchString(word) ||
-		(w.host != "" && strings.Contains(strings.ToLower(word), w.host)) ||
-		(w.issueKey != nil && w.issueKey.MatchString(word))
+	if holdsLink(word) || privateHost.MatchString(word) || tailnetHost.MatchString(word) ||
+		(w.issueKey != nil && w.issueKey.MatchString(word)) {
+		return true
+	}
+	lower := strings.ToLower(word)
+	for _, host := range w.hosts {
+		if host != "" && strings.Contains(lower, host) {
+			return true
+		}
+	}
+	return false
 }
 
 // keep is text's words joined by single blanks, less every word the line drops.
@@ -1317,10 +1390,10 @@ func nonNilStrings(values []string) []string {
 }
 
 // refuseResultScreenshots holds a result's screenshots to image documents of the recording
-// issue or of the check's issue, named by their dispatch:// reference.
-func (s *server) refuseResultScreenshots(ctx context.Context, q queryer, issueKey, checkIssueKey string, screenshots []string) error {
+// issue or of the check's issue, named by their dispatch:// reference and read as who reads them.
+func (s *server) refuseResultScreenshots(ctx context.Context, q queryer, who model.Actor, issueKey, checkIssueKey string, screenshots []string) error {
 	for _, screenshot := range screenshots {
-		ref, ok := text.ParseRef(screenshot, "")
+		ref, ok := text.ParseRef(screenshot, text.Origins{})
 		if !ok || ref.Kind != "artifact" || ref.IssueKey == "" ||
 			(ref.IssueKey != issueKey && ref.IssueKey != checkIssueKey) {
 			return errorf(http.StatusBadRequest, "RESULT_INPUT",
@@ -1329,7 +1402,8 @@ func (s *server) refuseResultScreenshots(ctx context.Context, q queryer, issueKe
 		var found bool
 		err := q.QueryRow(ctx, `
 			select true from artifacts where issue_key = $1 and slug = $2 and kind = 'image'
-		`, ref.IssueKey, ref.ID).Scan(&found)
+			  and `+access.ProjectClause("project_key", "$3")+`
+		`, ref.IssueKey, ref.ID, refs.VisibilityArg(who)).Scan(&found)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return errorf(http.StatusBadRequest, "RESULT_INPUT",
 				"screenshot %q names no image document of %s or %s", screenshot, issueKey, checkIssueKey)
@@ -1365,16 +1439,16 @@ func insertCheckResult(ctx context.Context, tx pgx.Tx, result *model.CheckResult
 }
 
 // loadCheckResults is every result recorded against the checks of one Verification document,
-// from any issue, by the block id of the check each names, newest first within each. One query
-// serves the whole document: a Verification document holding twenty checks is one round trip,
-// not twenty.
-func loadCheckResults(ctx context.Context, q queryer, artifactID string) (map[string][]model.CheckResult, error) {
+// from any issue who sees, by the block id of the check each names, newest first within each. One
+// query serves the whole document: a Verification document holding twenty checks is one round
+// trip, not twenty.
+func loadCheckResults(ctx context.Context, q queryer, who model.Actor, artifactID string) (map[string][]model.CheckResult, error) {
 	rows, err := q.Query(ctx, `
 		select `+checkResultColumns+`
 		from check_results
-		where check_artifact_id = $1::uuid
+		where check_artifact_id = $1::uuid and `+access.IssueProjectClause("check_results.issue_key", "$2")+`
 		order by check_block_id, created_at desc, id desc
-	`, artifactID)
+	`, artifactID, refs.VisibilityArg(who))
 	if err != nil {
 		return nil, fmt.Errorf("read the results of document %s: %w", artifactID, err)
 	}

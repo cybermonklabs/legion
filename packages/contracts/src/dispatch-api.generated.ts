@@ -18,6 +18,109 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/access-groups": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description Every group an access list can name, by name: {name, owner, members, not_signed_in}, its owner the full member who made it, its members' emails sorted, and the members nobody has signed in as yet, whom the group admits only once they sign in as full members; [] for none. The owner may hand the group to another full member. Needs the person scope. It pages, at most limit groups (1-100, default 100) after the name after, and next names where the next page starts. */
+    get: operations["getApiV1AccessGroups"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/access-groups/{name}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    /** @description Make a group or write it again {members, owner?}: name is lowercase letters, digits, dots, underscores and dashes, at most 63, and members the emails of the people it holds, exactly (at most 1000). The first write makes the group and its writer becomes its owner; after that only the owner writes it (403 GROUP_OWNER_REQUIRED), and owner gives it to another full member. A restricted member cannot make a group (403 RESTRICTED_MEMBER), a member who is a restricted member is 400 GROUP_MEMBER_RESTRICTED, and a bad name or email is 400 PROJECT_ACCESS_INPUT. Appends access_group.changed and answers the group. Needs the person and approve scopes. An owner holds at most 100 groups; one more is 400 CAP_EXCEEDED. */
+    put: operations["putApiV1AccessGroupsByName"];
+    post?: never;
+    /** @description Delete a group, which takes it off every access list that named it; only its owner calls it (403 GROUP_OWNER_REQUIRED), and a group no row holds is 404 GROUP_NOT_FOUND. Appends project.access_changed for each such list and access_group.changed, and answers 204. Needs the person and approve scopes. */
+    delete: operations["deleteApiV1AccessGroupsByName"];
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/access/person": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description One person's member kind as the membership answer spells it: {person, member_kind, held, as_of, not_held_until} for ?person= (full, restricted, or none for a login nobody has signed in with), and holder for a question naming the account the credential being checked records (&account_issuer=&account_subject=), as the project answer carries it; held is whether Dispatch holds the person's personal tokens and broker credentials until they sign in again (false for a login nobody has signed in with, and left out, with status 200 and member_kind still answered, when that could not be read), and as_of the database time of the read the answer rests on; under DISPATCH_IDENTITY=iap alone, every answer that is not held carries not_held_until, the time it stops being served (the last active Workspace Directory answer plus 24 hours), which is as_of itself for a person no active answer confirmed in 24 hours or no row holds, and a held answer carries none; no person, or half an account, is 400 INVALID_QUERY. Only a service account DISPATCH_ACCESS_ACCOUNTS names reads it; a caller with no credential, or one whose credential does not verify, is refused as every route refuses it (401 NO_IDENTITY for none); every other caller is 403 ACCESS_ACCOUNT_REQUIRED. */
+    get: operations["getApiV1AccessPerson"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/access/private-projects": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description Every private project's Slack channels and when they last changed, for the secrets broker's own service-account token; a caller with no credential, or one whose credential does not verify, is refused as every route refuses it (401 NO_IDENTITY for none); every other caller is 403 ACCESS_ACCOUNT_REQUIRED. */
+    get: operations["getApiV1AccessPrivateProjects"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/access/projects/{key}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description The membership answer the secrets broker reads: {project, visibility, owner, person, member_kind, visible, slack_channels, slack_channels_changed_at} for ?person= (full, restricted, or none for a login nobody has signed in with; left out, member_kind is none and visible says whether the project is public): whether the read rule lets that person see the project at a browser, a person with no people row read as a full member, and slack_channels, the owner's list, [] for none. slack_channels_changed_at is when the list last changed, null until a write changes the list. It names no repositories. With &account_issuer=&account_subject=, the Google account the credential being checked records, the answer also carries holder: false when Dispatch records another account for the person (an account of another issuer included), and then visible is false; true when it records that one or none. A project the person cannot see still answers 200; an unknown key is 404 PROJECT_NOT_FOUND; half an account, or an account with no person, is 400 INVALID_QUERY. Only a service account DISPATCH_ACCESS_ACCOUNTS names reads it, with its projected token; a caller with no credential, or one whose credential does not verify, is refused as every route refuses it (401 NO_IDENTITY for none); every other caller is 403 ACCESS_ACCOUNT_REQUIRED. */
+    get: operations["getApiV1AccessProjectsByKey"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/access/projects/{key}/repositories": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description The repositories the secrets broker relays to an edge listener for the GitHub events of a project: {project, repositories}, the repository each issue of the project resolves to, open or done (its own, else its nearest parent's, else the project's default), lower-cased, each once and sorted byte-wise, and [] when no issue resolves to one. It is read by the one rule of which repositories a project owns, which the GitHub proxy reads too: a repository the project maps and no issue of it resolves to is not in it, and no rename is read. An unknown key is 404 PROJECT_NOT_FOUND; an issue whose parent chain is deeper than 32 links, or loops, is 503 REPOSITORIES_UNRESOLVED naming it, never a shorter list. Only a service account DISPATCH_ACCESS_ACCOUNTS names reads it, with its projected token; a caller with no credential, or one whose credential does not verify, is refused as every route refuses it (401 NO_IDENTITY for none); every other caller is 403 ACCESS_ACCOUNT_REQUIRED. */
+    get: operations["getApiV1AccessProjectsByKeyRepositories"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/agents": {
     parameters: {
       query?: never;
@@ -25,7 +128,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Live sessions with roles, capabilities, open asks, and last activity, from Dispatch's copy of the Envoy listener's session list, at most 5 s old. */
+    /** @description Live sessions with roles, capabilities, open asks, and last activity, from Dispatch's copy of the Envoy listener's session list, at most 5 s old. Only the sessions the caller may see: a session of a project it sees, or its own. */
     get: operations["getApiV1Agents"];
     put?: never;
     post?: never;
@@ -42,7 +145,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description What people wrote that Dispatch delivered to one session, newest first by at, then by id: each ask's current answer (replaced when it changed an earlier answer), each comment at its current body (edited_at when edited; a resolved comment stays), each message, and each ask a person declined to answer, once however it arrived. It reads the ask.answered, comment.created, message.created, message.answered and ask.resolved events a person wrote whose published_destinations hold the session's own topic, the session's message deliveries the listener took (targeted and broadcast messages, handed to the running session or queued for it) and its comment deliveries (mentions) in those same two states; of an ask's resolutions it lists the decline alone, and it never lists an agent's or the system's words, a retraction, a withdrawal, another resolution, a hand-back, or a delivery to a role: route's topic. Each item names its relation to the session. A session owns an ask when it wrote the ask or follows it, and only an owner is told that an ask is its own: for a comment, replied_on_your_ask (a reply in the thread of an ask the session owns) over mentioned_you over replied_in_a_comment_thread over commented_on_a_document over commented_on_an_issue; for a message, replied_to_your_message over sent_you_a_message; for an answer, answered_your_ask for an owner and answered_an_ask for any other session; for a decline, declined_your_ask for an owner and declined_an_ask for any other session. A session that does not own the ask reads a reply in its thread by the reason that delivered it: the issue's route, its claim, a credit on its primary document, or a mention. Each item carries the ask and its whole question on an answer, on a decline and on a reply in an ask's thread, whoever asked it, and its owner, dispatch:// ref and href (null owner and ref, and /agents/<session_id>/live, for a direct message). A decline carries a kind of its own, declined, at the resolution's own time, its id the ask's, and its words in two parts: text, the person's own note, empty when they wrote none, and, on declined_your_ask alone, dispatch_words, the sentences Dispatch wrote for the asking agent; nobody chose an option, so it carries no selected. ?since= (RFC3339, default 72 hours ago; older than 7 days or in the future is 400 INVALID_QUERY) starts the window; ?max_chars= (1-100000, else 400 INVALID_QUERY) stops the list after the item whose words take the running sum past it, counting the UTF-16 units of text and, on a decline that carries them, of dispatch_words beside it, while total counts every item in the window; {session_id, since, total, items}. A session_id that is not a session id is 400 INVALID_SESSION_ID, as on the agent artifact routes. Not an authorization boundary: direct-message text already reaches every authenticated caller through GET /api/v1/events, and a person may read any session's list. */
+    /** @description What people wrote that Dispatch delivered to one session, newest first by at, then by id: each ask's current answer (replaced when it changed an earlier answer), each comment at its current body (edited_at when edited; a resolved comment stays), each message, and each ask a person declined to answer, once however it arrived. It reads the ask.answered, comment.created, message.created, message.answered and ask.resolved events a person wrote whose published_destinations hold the session's own topic, the session's message deliveries the listener took (targeted and broadcast messages, handed to the running session or queued for it) and its comment deliveries (mentions) in those same two states; of an ask's resolutions it lists the decline alone, and it never lists an agent's or the system's words, a retraction, a withdrawal, another resolution, a hand-back, or a delivery to a role: route's topic. Each item names its relation to the session. A session owns an ask when it wrote the ask or follows it, and only an owner is told that an ask is its own: for a comment, replied_on_your_ask (a reply in the thread of an ask the session owns) over mentioned_you over replied_in_a_comment_thread over commented_on_a_document over commented_on_an_issue; for a message, replied_to_your_message over sent_you_a_message; for an answer, answered_your_ask for an owner and answered_an_ask for any other session; for a decline, declined_your_ask for an owner and declined_an_ask for any other session. A session that does not own the ask reads a reply in its thread by the reason that delivered it: the issue's route, its claim, a credit on its primary document, or a mention. Each item carries the ask and its whole question on an answer, on a decline and on a reply in an ask's thread, whoever asked it, and its owner, dispatch:// ref and href (null owner and ref, and /agents/<session_id>/live, for a direct message). A decline carries a kind of its own, declined, at the resolution's own time, its id the ask's, and its words in two parts: text, the person's own note, empty when they wrote none, and, on declined_your_ask alone, dispatch_words, the sentences Dispatch wrote for the asking agent; nobody chose an option, so it carries no selected. ?since= (RFC3339, default 72 hours ago; older than 7 days or in the future is 400 INVALID_QUERY) starts the window; ?max_chars= (1-100000, else 400 INVALID_QUERY) stops the list after the item whose words take the running sum past it, counting the UTF-16 units of text and, on a decline that carries them, of dispatch_words beside it, while total counts every item in the window; {session_id, since, total, items}. A session_id that is not a session id is 400 INVALID_SESSION_ID, as on the agent artifact routes. A caller reads the list of a session it may see, and only the answers of projects it sees and of its own direct conversations. */
     get: operations["getApiV1AgentsBySessionIdAnswers"];
     put?: never;
     post?: never;
@@ -529,7 +632,7 @@ export interface paths {
     get?: never;
     put?: never;
     post?: never;
-    /** @description Unsubscribe a session from a document. */
+    /** @description Unsubscribe a session from a document. A session the caller may not see is 404 SUBSCRIBER_NOT_FOUND, as one not subscribed, before the listener is asked anything. */
     delete: operations["deleteApiV1ArtifactsByIdSubscribersBySessionId"];
     options?: never;
     head?: never;
@@ -715,10 +818,10 @@ export interface paths {
       cookie?: never;
     };
     get?: never;
-    /** @description Follow an ask (a credential holding the person scope for any session; every other for its own session alone). */
+    /** @description Follow an ask (a credential holding the person scope for any session; every other for its own session alone). A session the caller may not see is 404 SESSION_NOT_FOUND, as one nobody holds. */
     put: operations["putApiV1AsksByIdFollowersBySessionId"];
     post?: never;
-    /** @description Unfollow an ask (a credential holding the person scope for any session; every other for its own session alone). */
+    /** @description Unfollow an ask (a credential holding the person scope for any session; every other for its own session alone). A session the caller may not see is 404 FOLLOWER_NOT_FOUND, as one that does not follow the ask. */
     delete: operations["deleteApiV1AsksByIdFollowersBySessionId"];
     options?: never;
     head?: never;
@@ -766,10 +869,10 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Recent broadcasts, newest first, with their recipient and reply counts. */
+    /** @description Recent broadcasts, newest first, with their recipient and reply counts. Only broadcasts whose every recipient the caller may see, and that it wrote or, for a caller that sees every public project, any one. */
     get: operations["getApiV1Broadcasts"];
     put?: never;
-    /** @description Send one message to many sessions: {body, delivery, session_ids}, one targeted message per recipient under a shared broadcast, answered once it is committed while each recipient's delivery runs behind the answer. A selected session the Envoy listener knows and that is not running is a recipient like any other, its copy stored for it and its attempt recorded queued; one the listener knows nothing about, or that does not advertise the mode, is excluded and named in the response, never switched to another mode. Under an Idempotency-Key header (as every POST and PATCH takes one), a repeat with the same request answers 201 at once with the broadcast the key made, every recipient's attempts as they stand and the first answer's exclusions, Idempotency-Replayed: ?1, and puts every recipient it still owes on its way behind the answer. A recipient a stopped process left owed is resumed by the server's delivery sweep whether anyone asks again or not. */
+    /** @description Send one message to many sessions: {body, delivery, session_ids}, one targeted message per recipient under a shared broadcast, answered once it is committed while each recipient's delivery runs behind the answer. A selected session the Envoy listener knows and that is not running is a recipient like any other, its copy stored for it and its attempt recorded queued; one the listener knows nothing about, or that does not advertise the mode, is excluded and named in the response, never switched to another mode. One the sender may not see is excluded as one the listener knows nothing about, and the listener is asked nothing about it. Under an Idempotency-Key header (as every POST and PATCH takes one), a repeat with the same request answers 201 at once with the broadcast the key made, every recipient's attempts as they stand and the first answer's exclusions, Idempotency-Replayed: ?1, and puts every recipient it still owes on its way behind the answer. A recipient a stopped process left owed is resumed by the server's delivery sweep whether anyone asks again or not. */
     post: operations["postApiV1Broadcasts"];
     delete?: never;
     options?: never;
@@ -784,7 +887,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description One broadcast with every recipient's delivery attempts and replies, recipients in the order the send named them; a broadcast from before that order was stored falls back to created_at, id. */
+    /** @description One broadcast with every recipient's delivery attempts and replies, recipients in the order the send named them; a broadcast from before that order was stored falls back to created_at, id. Only broadcasts whose every recipient the caller may see, and that it wrote or, for a caller that sees every public project, any one; any other is 404 as an id nobody holds. */
     get: operations["getApiV1BroadcastsById"];
     put?: never;
     post?: never;
@@ -801,7 +904,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The CI reconcile passes of the last 24 hours, newest first: each one's id, the server process that ran it, when it started and ended, what it did (graphql_queries, graphql_points, rest_requests, rest_not_modified, heads_over_rest, records, heads, heads_known) and where it left the cursor, which is where the pass after it takes the order up: the repository, from (the number naming the page of its open pull requests, one above the last head of the page before it), number (the first pull request of that page the pass did not finish, 0 for the whole page), rest (the page is read from the repository's REST listing rather than from a query) and counted (its heads are already among the heads the cycle knows the repository has). Both the counts and the cursor are null until the pass ends. state is running, complete, deadline (its own five-minute bound cut it short), rate_limit (a shared GitHub limit ended it), cancelled (its process shut down under it) or ended_without_completing, which is a pass whose process died before it could record its end. Rows are kept for 48 hours and pruned by the pass that ends. */
+    /** @description The CI reconcile passes of the last 24 hours, newest first: each one's id, the server process that ran it, when it started and ended, what it did (graphql_queries, graphql_points, rest_requests, rest_not_modified, heads_over_rest, records, heads, heads_known) and where it left the cursor, which is where the pass after it takes the order up: the repository, from (the number naming the page of its open pull requests, one above the last head of the page before it), number (the first pull request of that page the pass did not finish, 0 for the whole page), rest (the page is read from the repository's REST listing rather than from a query) and counted (its heads are already among the heads the cycle knows the repository has). Both the counts and the cursor are null until the pass ends. A cursor in a repository the GitHub proxy's rule hides from the caller (a private project the caller does not see owns it) reads as the zero cursor, the start of the order, which a pass that reached the end of the order leaves too. state is running, complete, deadline (its own five-minute bound cut it short), rate_limit (a shared GitHub limit ended it), cancelled (its process shut down under it) or ended_without_completing, which is a pass whose process died before it could record its end. Rows are kept for 48 hours and pruned by the pass that ends. An open viewer reads the passes, a full member's credential whatever projects it lists included; a restricted member, or a credential acting for one, is 403 DEPLOYMENT_READ_REFUSED. */
     get: operations["getApiV1CiReconcilePasses"];
     put?: never;
     post?: never;
@@ -955,7 +1058,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description List the live credential grants of the caller's Live grants page (?approver=me only): those the caller approved, those of the caller's own sessions, those the model judge approved in anyone's stead, and those a pod that acts for no person took without asking (a service's pod, or a person's pod the broker no longer maps), which nobody may revoke. A grant the caller approved, or whose session acts for the caller, is listed whatever project it touches; a person's pod the broker no longer maps to the caller acts for no one, so its other grants are listed to the caller naming no operator. Any other grant of a private project the caller may not see is left out, and one the broker cannot ask Dispatch about is left out while it cannot. A caller Dispatch calls a restricted member is listed the grants of the sessions that act for them alone; while the broker cannot ask Dispatch what kind of member the caller is, the list holds no other grant either. */
+    /** @description List the live credential grants of the caller's Live grants page (?approver=me only): those the caller approved, those of the caller's own sessions, those the model judge approved in anyone's stead, and those a pod that acts for no person took without asking (a service's pod, or a person's pod the broker no longer maps), which nobody may revoke. A grant the caller approved, or whose session acts for the caller, is listed whatever project it touches; a person's pod the broker no longer maps to the caller acts for no one, so its other grants are listed to the caller naming no operator. Any other grant of a private project the caller may not see is left out, and one the broker cannot ask Dispatch about is left out while it cannot. A caller Dispatch calls a restricted member is listed the grants of the sessions that act for them alone: Dispatch leaves out every other grant the broker lists, whatever its approver. */
     get: operations["getApiV1CredentialGrants"];
     put?: never;
     post?: never;
@@ -974,7 +1077,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Revoke a credential grant as the caller: its approver, or the person its enrollment acts for, ends it whatever project it touches. A grant revoked by someone it does not name is 404 when it belongs to a private project the caller may not see, as an id no grant has, and 503 PROJECT_ACCESS_UNAVAILABLE while the broker cannot ask Dispatch; of the grants they may see, they end one whose approver is anyone, and any other is 403 NOT_APPROVER. A grant the broker saw move to another box each time it read it, three times in a row, is 409 GRANT_MOVING, revoking nothing; the same revoke succeeds once it stays put. A caller Dispatch calls a restricted member ends a grant only as the person its enrollment acts for: any other is 403 NOT_APPROVER, saying why. While Dispatch does not answer the broker what kind of member the caller is (a timeout, a failed connection, a gateway's 502, 503 or 504, Dispatch's own DATABASE_UNAVAILABLE or OIDC_ISSUER_UNAVAILABLE, or a 500 naming no code or INTERNAL, which Dispatch answers while its database fails), only the person the grant names as its approver ends it as an approver: every revoke through a group or as anyone then, whatever session holds the grant, and every revoke while Dispatch answers anything else the broker cannot read (a refused account, a kind the broker does not know, another code, a certificate or a name that does not resolve), is 503 MEMBER_KIND_UNCHECKABLE, revoking nothing. A grant on a person's session can still be ended then by that person, who asks Dispatch nothing; a grant on a session that acts for no person (a service's pod, a person's pod the broker no longer maps, or a machine's own session) is ended through the broker by nobody but its named approver until Dispatch answers. */
+    /** @description Revoke a credential grant as the caller: its approver, or the person its enrollment acts for, ends it whatever project it touches. A grant revoked by someone it does not name is 404 when it belongs to a private project the caller may not see, as an id no grant has, and 503 PROJECT_ACCESS_UNAVAILABLE while the broker cannot ask Dispatch; of the grants they may see, they end one whose approver is anyone, and any other is 403 NOT_APPROVER. A grant the broker saw move to another box each time it read it, three times in a row, is 409 GRANT_MOVING, revoking nothing; the same revoke succeeds once it stays put. A caller Dispatch calls a restricted member ends only a grant of a session that acts for them, one their own list holds: Dispatch answers any other id, an id no grant has among them, 403 RESTRICTED_MEMBER, naming nothing of the grant, and sends the broker no revoke; while Dispatch cannot read that list from the broker, it answers as the broker refused the list, or 503 AGENT_SECRETS_UNAVAILABLE, and revokes nothing. While Dispatch does not answer the broker what kind of member the caller is (a timeout, a failed connection, a gateway's 502, 503 or 504, Dispatch's own DATABASE_UNAVAILABLE or OIDC_ISSUER_UNAVAILABLE, or a 500 naming no code or INTERNAL, which Dispatch answers while its database fails), only the person the grant names as its approver ends it as an approver: every revoke through a group or as anyone then, whatever session holds the grant, and every revoke while Dispatch answers anything else the broker cannot read (a refused account, a kind the broker does not know, another code, a certificate or a name that does not resolve), is 503 MEMBER_KIND_UNCHECKABLE, revoking nothing. A grant on a person's session can still be ended then by that person, who asks Dispatch nothing; a grant on a session that acts for no person (a service's pod, a person's pod the broker no longer maps, or a machine's own session) is ended through the broker by nobody but its named approver until Dispatch answers. */
     post: operations["postApiV1CredentialGrantsByIdRevoke"];
     delete?: never;
     options?: never;
@@ -989,7 +1092,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description List credential requests the caller may decide (?approver=me only), and the expired ones nobody has dismissed: those naming the caller, a shared secret's and a service's machine login, which anyone signed in decides. Each row's state is pending (a decision may still settle it) or expired (its deadline, expires_at, passed before anybody decided it, and an expired row stays until somebody dismisses it); the pending rows come first and then the expired, each newest first, and a row with no state, from a secrets broker older than states, is pending. Each secret request carries approve_url, the secrets broker's page where it is decided; null without a configured secrets broker. A caller Dispatch calls a restricted member is no approver of a secret or of a service's machine login, so their list holds their own machine logins alone; while the broker cannot ask Dispatch what kind of member the caller is, it holds none of those other rows either. */
+    /** @description List credential requests the caller may decide (?approver=me only), and the expired ones nobody has dismissed: those naming the caller, a shared secret's and a service's machine login, which anyone signed in decides. Each row's state is pending (a decision may still settle it) or expired (its deadline, expires_at, passed before anybody decided it, and an expired row stays until somebody dismisses it); the pending rows come first and then the expired, each newest first, and a row with no state, from a secrets broker older than states, is pending. Each secret request carries approve_url, the secrets broker's page where it is decided; null without a configured secrets broker. A restricted member, or a credential acting for one, is refused this list by Dispatch, 403 DEPLOYMENT_READ_REFUSED, before the broker is asked, as every read of the deployment. */
     get: operations["getApiV1CredentialRequests"];
     put?: never;
     post?: never;
@@ -1008,7 +1111,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Resolve a pending machine login by its typed confirmation code, returning its facts. */
+    /** @description Resolve a pending machine login by its typed confirmation code, returning its facts. A restricted member looks up at their browser alone, and is answered only a machine login of their own, whose approver is them and which names no service; any other record is 403 RESTRICTED_MEMBER, naming none of its facts, and a lookup through a token of theirs is 403 OAUTH_SCOPE_REQUIRED, since no token of a restricted member holds a scope. */
     post: operations["postApiV1CredentialRequestsMachineLookup"];
     delete?: never;
     options?: never;
@@ -1025,7 +1128,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Approve a machine login as the caller with its typed code; the broker decides whether the caller is its approver, and refuses a secret request with 403 DECIDE_ON_BROKER_PAGE naming its page on the secrets broker. A secret request of a private project the caller may not see is 404, as an id no request has, and 503 PROJECT_ACCESS_UNAVAILABLE while the broker cannot ask Dispatch. */
+    /** @description Approve a machine login as the caller with its typed code; the broker decides whether the caller is its approver, and refuses a secret request with 403 DECIDE_ON_BROKER_PAGE naming its page on the secrets broker. A secret request of a private project the caller may not see is 404, as an id no request has, and 503 PROJECT_ACCESS_UNAVAILABLE while the broker cannot ask Dispatch. The approve names the approving account and its session generation to a broker whose settings say it takes them, and the approver and the code alone to one whose settings answer without; when the broker's settings cannot be read the approve is sent to no broker and answered 503 AGENT_SECRETS_SETTINGS_UNREAD, for the caller to approve again. A restricted member approves at their browser alone, and only a machine login of their own, the one their typed code looks up, whose approver is them and which names no service; every other decision of theirs is 403 RESTRICTED_MEMBER, and one through a token of theirs is 403 OAUTH_SCOPE_REQUIRED, since no token of a restricted member holds a scope. While another approve of the member's is at the broker, or a removal of theirs from an access list is being recorded, their approve is 409 MACHINE_LOGIN_APPROVAL_IN_FLIGHT, for them to approve again in a few seconds. While a revocation of the member's machine logins is owed after a removal from an access list, their approve is 409 MACHINE_LOGIN_REVOCATION_OWED, for them to approve again once it is paid, about a minute after the removal. */
     post: operations["postApiV1CredentialRequestsByIdApprove"];
     delete?: never;
     options?: never;
@@ -1042,7 +1145,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Deny a machine login as the caller with its typed code; the broker decides whether the caller is its approver, and refuses a secret request with 403 DECIDE_ON_BROKER_PAGE naming its page on the secrets broker. A secret request of a private project the caller may not see is 404, as an id no request has, and 503 PROJECT_ACCESS_UNAVAILABLE while the broker cannot ask Dispatch. A service's machine login is denied by anyone signed in but a caller Dispatch calls a restricted member: 403 NOT_APPROVER, and 503 MEMBER_KIND_UNCHECKABLE while the broker cannot ask Dispatch what kind of member the caller is, denying nothing. */
+    /** @description Deny a machine login as the caller with its typed code; the broker decides whether the caller is its approver, and refuses a secret request with 403 DECIDE_ON_BROKER_PAGE naming its page on the secrets broker. A secret request of a private project the caller may not see is 404, as an id no request has, and 503 PROJECT_ACCESS_UNAVAILABLE while the broker cannot ask Dispatch. A restricted member denies at their browser alone, and only a machine login of their own, the one their typed code looks up, whose approver is them and which names no service; every other decision of theirs is 403 RESTRICTED_MEMBER, and one through a token of theirs is 403 OAUTH_SCOPE_REQUIRED, since no token of a restricted member holds a scope. A service's machine login, which a broker before token logins opened, is denied by anyone signed in but a restricted member, whose deny of it is 403 RESTRICTED_MEMBER from Dispatch before the broker is asked; while the broker cannot ask Dispatch what kind of member the caller is, another caller's deny of such a login is 503 MEMBER_KIND_UNCHECKABLE, denying nothing. */
     post: operations["postApiV1CredentialRequestsByIdDeny"];
     delete?: never;
     options?: never;
@@ -1059,7 +1162,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Dismiss an expired credential request as the caller, a secret request or a machine login whose deadline passed before anybody decided it: it leaves every list for good, the caller's and, for a shared request, everybody's. Only a person whose list holds it may dismiss it (403 NOT_APPROVER); a request of a private project the caller may not see is 404, as an id no request has, and 503 PROJECT_ACCESS_UNAVAILABLE while the broker cannot ask Dispatch; a request that can still be decided is 409 RECORD_PENDING, one that was decided, or cancelled before its deadline, is 409 RECORD_TERMINAL, and a second dismissal answers the first one's values. A caller Dispatch calls a restricted member dismisses only their own machine logins: a secret request or a service's machine login is 403 NOT_APPROVER to them, saying why, and while the broker cannot ask Dispatch what kind of member the caller is, its dismissal is 503 MEMBER_KIND_UNCHECKABLE, dismissing nothing. */
+    /** @description Dismiss an expired credential request as the caller, a secret request or a machine login whose deadline passed before anybody decided it: it leaves every list for good, the caller's and, for a shared request, everybody's. Only a person whose list holds it may dismiss it (403 NOT_APPROVER); a request of a private project the caller may not see is 404, as an id no request has, and 503 PROJECT_ACCESS_UNAVAILABLE while the broker cannot ask Dispatch; a request that can still be decided is 409 RECORD_PENDING, one that was decided, or cancelled before its deadline, is 409 RECORD_TERMINAL, and a second dismissal answers the first one's values. A restricted member is refused every dismissal by Dispatch, 403 RESTRICTED_MEMBER, before the broker is asked, and a token of theirs, which holds no scope, 403 OAUTH_SCOPE_REQUIRED. For every other caller, while the broker cannot ask Dispatch what kind of member the caller is, the dismissal of a secret request or of a service's machine login is 503 MEMBER_KIND_UNCHECKABLE, dismissing nothing. */
     post: operations["postApiV1CredentialRequestsByIdDismiss"];
     delete?: never;
     options?: never;
@@ -1108,7 +1211,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The four delivery measures and Sami's KPI targets for [from, to) (default the last 7 days) and the same facets the timeline takes: deploys a day, lead time (merge, first commit and open to production; open to merge), change failure rate per PR and per deploy (flags_source says whether stored flags fed it), time to restore, rework share, deploy-run success, a per-UTC-day series, the open P0 issues with no owner, and whether each target is met; 404 DELIVERY_NOT_CONFIGURED without a delivery_settings row. */
+    /** @description The four delivery measures and Sami's KPI targets for [from, to) (default the last 7 days) and the same facets the timeline takes: deploys a day, lead time (merge, first commit and open to production; open to merge), change failure rate per PR and per deploy (flags_source says whether stored flags fed it), time to restore, rework share, deploy-run success, a per-UTC-day series, the open P0 issues with no owner, and whether each target is met; 404 DELIVERY_NOT_CONFIGURED without a delivery_settings row. Only the pull requests whose issue the caller sees, and, for a full member or a credential with no person that lists no project, those that name no issue; every count, facet, measure and title is computed from them, and a run that shipped pull requests none of which is left is left out, as, for any other caller, is a run that shipped none. A pull request that names no issue, a deploy run that shipped none and a PR-checks run whose number no stored pull request holds are shown to an open viewer only when their repository (the deploy repository, for a run) is not hidden from that viewer; a hidden run answers as an id no run holds. */
     get: operations["getApiV1DeliveryMeasures"];
     put?: never;
     post?: never;
@@ -1125,7 +1228,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The Pipeline page: over the seven UTC days ending today (now, or ?at= for a fixed day), by the day each run started, the PR-checks workflow's run wall time and success, its five slowest jobs (50 timed results to rank) and the jobs that failed in the last 24 hours, the duration and result of the staging end-to-end, staging deploy and production deploy jobs the settings name in push runs on main, and merge-to-production and PR-open-to-merge per merge day against their targets; not filtered by the timeline's window or facets; 400 INVALID_QUERY for a malformed at, 404 DELIVERY_NOT_CONFIGURED without a delivery_settings row. */
+    /** @description The Pipeline page: over the seven UTC days ending today (now, or ?at= for a fixed day), by the day each run started, the PR-checks workflow's run wall time and success, its five slowest jobs (50 timed results to rank) and the jobs that failed in the last 24 hours, the duration and result of the staging end-to-end, staging deploy and production deploy jobs the settings name in push runs on main, and merge-to-production and PR-open-to-merge per merge day against their targets; not filtered by the timeline's window or facets; 400 INVALID_QUERY for a malformed at, 404 DELIVERY_NOT_CONFIGURED without a delivery_settings row. Its lead times, deploy job timings and PR checks count only the pull requests and runs the timeline's rule shows the caller. A pull request that names no issue, a deploy run that shipped none and a PR-checks run whose number no stored pull request holds are shown to an open viewer only when their repository (the deploy repository, for a run) is not hidden from that viewer; a hidden run answers as an id no run holds. */
     get: operations["getApiV1DeliveryPipeline"];
     put?: never;
     post?: never;
@@ -1142,7 +1245,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description One deploy-repository run with every job it ran, by start, each with its result and timings; 400 RUN_ID_INPUT for an id that is not a positive integer, 404 NOT_FOUND for no such run, 404 DELIVERY_NOT_CONFIGURED without a delivery_settings row. */
+    /** @description One deploy-repository run with every job it ran, by start, each with its result and timings; 400 RUN_ID_INPUT for an id that is not a positive integer, 404 NOT_FOUND for no such run, 404 DELIVERY_NOT_CONFIGURED without a delivery_settings row. A run the timeline's rule does not show the caller answers 404 NOT_FOUND, as a run id no run holds does: a deploy run that shipped no pull request, and a PR-checks run whose number no stored pull request holds, are shown to an open viewer only when the deploy repository is not hidden from that viewer. */
     get: operations["getApiV1DeliveryRunsById"];
     put?: never;
     post?: never;
@@ -1161,7 +1264,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Create a Delivery session group {name, sessions}: the group becomes the Parent agent of every pull request whose first session it holds; 409 SESSION_IN_GROUP for a session another group holds, 409 SESSION_GROUP_NAME_TAKEN for a name another group has, 409 SESSION_GROUP_NAME_IS_SESSION_TITLE for a name that is the title of a session outside the group. The timeline lists every group (session_groups). */
+    /** @description Create a Delivery session group {name, sessions}: the group becomes the Parent agent of every pull request whose first session it holds; 404 SESSION_NOT_FOUND for a session the caller may not see, as for one nobody holds, before any group is read; 409 SESSION_IN_GROUP for a session another group holds, 409 SESSION_GROUP_NAME_TAKEN for a name another group has, 409 SESSION_GROUP_NAME_IS_SESSION_TITLE for a name that is the title of a session outside the group, among the sessions the caller may see, each by the newest title among the events it may read. The timeline lists every group whose every session the caller may see (session_groups). */
     post: operations["postApiV1DeliverySessionGroups"];
     delete?: never;
     options?: never;
@@ -1183,7 +1286,7 @@ export interface paths {
     delete: operations["deleteApiV1DeliverySessionGroupsById"];
     options?: never;
     head?: never;
-    /** @description Rename a Delivery session group, add sessions to it and remove sessions from it {name?, add?, remove?}, with the create route's refusals; 400 SESSION_GROUP_INPUT for an edit that would leave it empty. */
+    /** @description Rename a Delivery session group, add sessions to it and remove sessions from it {name?, add?, remove?}, with the create route's refusals, a session it adds or removes among them; 400 SESSION_GROUP_INPUT for an edit that would leave it empty. */
     patch: operations["patchApiV1DeliverySessionGroupsById"];
     trace?: never;
   };
@@ -1194,7 +1297,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The delivery timeline within [from, to) (default the last 7 days), the search q (title or PR id) and the given facets (repeatable repo, parent_agent, session, issue, priority (P0-P3), component (a parent includes its children), author, rework, deployed; __no_issue__, __no_priority__, __no_component__ and __no_session__ select by cause): merges with each PR's issue title, priority and effective components, successful production deploys with every window PR they shipped first, pipeline failures with each run's production job and failing step, and merged work waiting to deploy, each PR's deployed_status (deployed, waiting, not_tracked) computed from stored facts; facet_counts (each facet counted with every other facet applied and its own ignored), color_counts (with none applied), the components and issue titles the window names, data freshness, and measures (what GET /api/v1/delivery/measures answers for the same window, search and facets); 404 DELIVERY_NOT_CONFIGURED without a delivery_settings row. */
+    /** @description The delivery timeline within [from, to) (default the last 7 days), the search q (title or PR id) and the given facets (repeatable repo, parent_agent, session, issue, priority (P0-P3), component (a parent includes its children), author, rework, deployed; __no_issue__, __no_priority__, __no_component__ and __no_session__ select by cause): merges with each PR's issue title, priority and effective components, successful production deploys with every window PR they shipped first, pipeline failures with each run's production job and failing step, and merged work waiting to deploy, each PR's deployed_status (deployed, waiting, not_tracked) computed from stored facts; facet_counts (each facet counted with every other facet applied and its own ignored), color_counts (with none applied), the components and issue titles the window names, data freshness, and measures (what GET /api/v1/delivery/measures answers for the same window, search and facets); 404 DELIVERY_NOT_CONFIGURED without a delivery_settings row. Only the pull requests whose issue the caller sees, and, for a full member or a credential with no person that lists no project, those that name no issue; every count, facet, measure and title is computed from them, and a run that shipped pull requests none of which is left is left out, as, for any other caller, is a run that shipped none. A pull request that names no issue, a deploy run that shipped none and a PR-checks run whose number no stored pull request holds are shown to an open viewer only when their repository (the deploy repository, for a run) is not hidden from that viewer; a hidden run answers as an id no run holds. */
     get: operations["getApiV1DeliveryTimeline"];
     put?: never;
     post?: never;
@@ -1228,7 +1331,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Whether Dispatch's GitHub App, which GitHub sends the repository's webhook events through, is installed on the repository: 200 {installed}, false when GitHub answers 404; 400 INVALID_REPOSITORY, before GitHub is asked anything, when the path's owner or name has a character GitHub does not allow or the name is . or .. or empty or longer than 100 characters (a trailing .git trimmed); 503 GITHUB_APP_UNCONFIGURED when Dispatch holds no App key, 502 GITHUB_UNREADABLE naming the repository and GitHub's error on any other failure. */
+    /** @description Whether Dispatch's GitHub App, which GitHub sends the repository's webhook events through, is installed on the repository: 200 {installed}, false when GitHub answers 404; 400 INVALID_REPOSITORY, before GitHub is asked anything, when the path's owner or name has a character GitHub does not allow or the name is . or .. or empty or longer than 100 characters (a trailing .git trimmed); 503 GITHUB_APP_UNCONFIGURED when Dispatch holds no App key, 502 GITHUB_UNREADABLE naming the repository and GitHub's error on any other failure. A repository the GitHub proxy would not show the caller (no issue the caller sees resolves to it, and the caller is not an open viewer or an issue of a private project hidden from the caller resolves to it) answers exactly as one the App is not installed on (200 installed:false, or the held rate limit's 502), and GitHub is not asked. */
     get: operations["getApiV1GithubAppInstallationByOwnerByRepo"];
     put?: never;
     post?: never;
@@ -1350,7 +1453,7 @@ export interface paths {
     /** @description List issues; filters project, status (repeatable: the issues standing in any of those statuses; a blank value names none, and a value is matched as written, so a status the lifecycle does not hold matches no issue: alone it answers none, and beside another status it adds nothing), parent, label, priority (repeatable: 0-3, or none for unset), advances (repeatable: a priority id, none for the work that advances no live priority or any for the work that advances one, own or inherited; several are a union), open, updated_since, closed_since and closed_before (RFC3339; the issues closed at or after closed_since and before closed_before, so an open issue matches neither), route_status (live, no_holder or unknown; open issues only); ?pinned=true needs the person scope, since the pins are one person's. A malformed updated_since, closed_since or closed_before is 400 INVALID_UPDATED_SINCE, INVALID_CLOSED_SINCE or INVALID_CLOSED_BEFORE, and a closed_before at or before closed_since 400 INVALID_CLOSED_WINDOW. Each issue carries closed_at, when it was closed or null while it is open, and progress: {tasks, children}, its spec's task-list items and its direct children as {done, total}, each null when it has none. ?moved=true adds moved_at and moved_by to each issue standing in backlog or icebox: when it was moved there and who moved it, read from its newest issue.updated event that set one of the two statuses, as GET /api/v1/priorities' parked work reads them; an issue standing elsewhere, or whose events do not reach back to the move, carries neither, and a listing without moved=true carries neither on any issue. Pages with limit (1-250) and offset (0 or more; alone it pages 50): a paged answer is {issues, total, limit, offset}, total counting every issue the filters match; without either it is every matching issue as an array. cursor is 400 INVALID_QUERY. */
     get: operations["getApiV1Issues"];
     put?: never;
-    /** @description Create an issue (native, or from a GitHub owner/repo#n ref); assignee defaults to the creating person, the personal token's owner, the parent's assignee, or the project's default assignee. Every create names its project, a create from a ref included: external with no project, or an empty one, is 400 INVALID_ISSUE. A title over 1000 characters is 400 CAP_EXCEEDED. After the write commits, a related-item check searches the project by meaning and by its rarest words and waits at most 5 seconds; the response's advice.suggestions says whether it found related items (outcome found, none or not_made with the reason in missing), how it searched (search, search_note), the three items most like the new issue, one per owner, with each ask item's answer state, words to search with by hand (search_query), and under force the near copies forced past (title_matches), or the likely duplicate an unforced create was told (likely_duplicate). */
+    /** @description Create an issue (native, or from a GitHub owner/repo#n ref); assignee defaults to the creating person, the personal token's owner, the parent's assignee, or the project's default assignee. A restricted member, or a credential acting for one, that names repo, a string or null, is 403 RESTRICTED_MEMBER before the body's project, parent or external ref is read and before anything is written: their issues take the repository they resolve to, their nearest parent's or their project's default. A repo the caller cannot read through Dispatch's GitHub proxy is 403 REPOSITORY_NOT_AVAILABLE, naming no project, once the body's project and parent are read as the caller reads them and before anything is written: a repository that only issues of private projects the caller does not see resolve to. null is never refused, and with no private project nothing is. Every create names its project, a create from a ref included: external with no project, or an empty one, is 400 INVALID_ISSUE. A title over 1000 characters is 400 CAP_EXCEEDED. After the write commits, a related-item check searches the project by meaning and by its rarest words and waits at most 5 seconds; the response's advice.suggestions says whether it found related items (outcome found, none or not_made with the reason in missing), how it searched (search, search_note), the three items most like the new issue, one per owner, with each ask item's answer state, words to search with by hand (search_query), and under force the near copies forced past (title_matches), or the likely duplicate an unforced create was told (likely_duplicate). */
     post: operations["postApiV1Issues"];
     delete?: never;
     options?: never;
@@ -1389,7 +1492,7 @@ export interface paths {
     delete?: never;
     options?: never;
     head?: never;
-    /** @description Update title (over 1000 characters is 400 CAP_EXCEEDED), status, priority, labels (or labels_add, which adds to the labels the issue holds when the write commits rather than replacing them; not with labels), route, parent, rank, assignee (the email of a person who has signed in, or null; anyone may reassign), or components ({mode: inherit|explicit|none, ids, reason}; allowed on a closed issue). Closing the issue (status done) withdraws every open ask it holds, each recorded resolved with resolution kind withdrawn naming the closer; reopening it opens exactly those asks again. expected_sequence makes the write conditional: 409 ISSUE_CHANGED when the issue's last event is no longer that sequence. */
+    /** @description Update title (over 1000 characters is 400 CAP_EXCEEDED), status, priority, labels (or labels_add, which adds to the labels the issue holds when the write commits rather than replacing them; not with labels), route, parent, rank, assignee (the email of a person who has signed in, or null; anyone may reassign), or components ({mode: inherit|explicit|none, ids, reason}; allowed on a closed issue). Closing the issue (status done) withdraws every open ask it holds, each recorded resolved with resolution kind withdrawn naming the closer; reopening it opens exactly those asks again. expected_sequence makes the write conditional: 409 ISSUE_CHANGED when the issue's last event is no longer that sequence. repo is the issue's own repository, "owner/name", or null to clear it; a restricted member, or a credential acting for one, that names it is 403 RESTRICTED_MEMBER before the issue is read and before anything is written, so only a full member sets, changes or clears an issue's own repository. A repo the caller cannot read through Dispatch's GitHub proxy is 403 REPOSITORY_NOT_AVAILABLE in the create's words, once the issue is read as the caller reads it and before anything is written; null is never refused. */
     patch: operations["patchApiV1IssuesByKey"];
     trace?: never;
   };
@@ -1540,9 +1643,9 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Claim the issue for the calling session (or human): records who is working it. The status does not move. The answer is the issue with legion_managed_status beside it: true when the issue carries the legion label in any case, or sits under one that does, which means the Legion daemon owns the status and a status another writer sets is undone. 409 ISSUE_CLAIMED names a live holder (or a human one, whose claim has no session to end); a caller whose credential holds the person scope may pass {force: true} to take it anyway, and one that does not is 403 OAUTH_SCOPE_REQUIRED. 409 CLAIM_CONTENDED means the holder changed twice while the request ran, so nothing was applied and nobody's liveness was checked: read the issue and retry. */
+    /** @description Claim the issue for the calling session (or human): records who is working it. The status does not move. The answer is the issue with legion_managed_status beside it: true when the issue carries the legion label in any case, or sits under one that does, which means the Legion daemon owns the status and a status another writer sets is undone. 409 ISSUE_CLAIMED names a live holder (or a human one, whose claim has no session to end). A holder the caller may not see is named by no answer: the 409's claim is null and its text names no session, person or title; a caller whose credential holds the person scope may pass {force: true} to take it anyway, and one that does not is 403 OAUTH_SCOPE_REQUIRED. 409 CLAIM_CONTENDED means the holder changed twice while the request ran, so nothing was applied and nobody's liveness was checked: read the issue and retry. */
     post: operations["postApiV1IssuesByKeyClaim"];
-    /** @description Release the issue's claim: its holder, a caller whose credential holds the person scope, or anyone when the holding session is no longer live. The status does not move. The answer is the issue with legion_managed_status beside it: true when the issue carries the legion label in any case, or sits under one that does, which means the Legion daemon owns the status and a status another writer sets is undone. 409 ISSUE_CLAIMED names the holder this caller may not release (there is no force on this route); 409 CLAIM_CONTENDED means the holder changed twice while the request ran, so nothing was applied and nobody's liveness was checked. */
+    /** @description Release the issue's claim: its holder, a caller whose credential holds the person scope, or anyone when the holding session is no longer live. The status does not move. The answer is the issue with legion_managed_status beside it: true when the issue carries the legion label in any case, or sits under one that does, which means the Legion daemon owns the status and a status another writer sets is undone. 409 ISSUE_CLAIMED names the holder this caller may not release (there is no force on this route), a holder the caller may not see by no answer (the claim is null and the text names no session, person or title); 409 CLAIM_CONTENDED means the holder changed twice while the request ran, so nothing was applied and nobody's liveness was checked. */
     delete: operations["deleteApiV1IssuesByKeyClaim"];
     options?: never;
     head?: never;
@@ -1746,7 +1849,7 @@ export interface paths {
       cookie?: never;
     };
     get?: never;
-    /** @description Write the plan one run of the issue ran from {actor, generation, source, artifact_id?, version?, tasks: [{id, steps}]}: the Legion daemon writes it when the run's work starts, under the uuid it derives for the run's plan. source is owner, with the document artifact_id and the version of it Legion took, or default, the default steps of an issue whose owner gave no plan, with neither; each task's id is unique in the plan and its steps are each a role or role:key, the role one a step record's role takes, since each run of the step is a record of that role. Each field the plan does not hold yet is set and every field it holds is left, so a plan sent again changes nothing. The actor must be session legion-daemon:<PROJECT> of the issue's project (403 STEP_WRITER otherwise); a bearer caller names its own session, so any caller whose credential proves no session can name that one. A closed issue takes it, and no write appends an issue event. Answers 200 with the plan as it stands after the write {id, issue, generation, source, artifact_id, version, tasks}. A value outside its form is 400 PLAN_INPUT naming the field, a step whose role a step record refuses naming the step and its role, an id whose plan is another issue's 409 PLAN_OTHER_ISSUE, and an issue Dispatch does not know 404 ISSUE_NOT_FOUND. */
+    /** @description Write the plan one run of the issue ran from {actor, generation, source, artifact_id?, version?, tasks: [{id, steps}]}: the Legion daemon writes it when the run's work starts, under the uuid it derives for the run's plan. source is owner, with the document artifact_id and the version of it Legion took, or default, the default steps of an issue whose owner gave no plan, with neither; each task's id is unique in the plan and its steps are each a role or role:key, the role one a step record's role takes, since each run of the step is a record of that role. Each field the plan does not hold yet is set and every field it holds is left, so a plan sent again changes nothing. The actor must be session legion-daemon:<PROJECT> of the issue's project (403 STEP_WRITER otherwise); a bearer caller names its own session, so any caller whose credential proves no session can name that one. A closed issue takes it, and no write appends an issue event. Answers 200 with the plan as it stands after the write {id, issue, generation, source, artifact_id, version, tasks}. A value outside its form is 400 PLAN_INPUT naming the field, a step whose role a step record refuses naming the step and its role, an id whose plan is another issue's 409 PLAN_OTHER_ISSUE, and an issue Dispatch does not know, or one of a project the caller cannot see, 404 ISSUE_NOT_FOUND, before the actor is judged. */
     put: operations["putApiV1IssuesByKeyPlansById"];
     post?: never;
     delete?: never;
@@ -1850,7 +1953,7 @@ export interface paths {
       cookie?: never;
     };
     get?: never;
-    /** @description Write one run of one step of the issue's workflow {actor, task?, step?, kind?, role?, type?, agent?, session?, model?, generation?, started_at?, ended_at?, result?, returned_to?, report?}: the Legion daemon writes it at the run's start and at its end under one id, the uuid it derives for the run. Each field the record does not hold yet is set and every field it holds is left, but returned_to, which only the write that sets the result sets, so a start and an end land in either order and a write sent again changes nothing; a field left out or null states nothing, and so does an empty text, while returned_to 0 names place 0, the retro's. The first write of a run names its task, step, kind, role and generation. The actor must be session legion-daemon:<PROJECT> of the issue's project (403 STEP_WRITER otherwise); a bearer caller names its own session, so any caller whose credential proves no session can name that one. A closed issue takes a write too, and no write appends an issue event. Answers 200 with the record as it stands after the write and its attempt. A value outside its form is 400 STEP_INPUT naming the field, an id whose record is a run of another issue 409 STEP_OTHER_ISSUE, and an issue Dispatch does not know 404 ISSUE_NOT_FOUND. */
+    /** @description Write one run of one step of the issue's workflow {actor, task?, step?, kind?, role?, type?, agent?, session?, model?, generation?, started_at?, ended_at?, result?, returned_to?, report?}: the Legion daemon writes it at the run's start and at its end under one id, the uuid it derives for the run. Each field the record does not hold yet is set and every field it holds is left, but returned_to, which only the write that sets the result sets, so a start and an end land in either order and a write sent again changes nothing; a field left out or null states nothing, and so does an empty text, while returned_to 0 names place 0, the retro's. The first write of a run names its task, step, kind, role and generation. The actor must be session legion-daemon:<PROJECT> of the issue's project (403 STEP_WRITER otherwise); a bearer caller names its own session, so any caller whose credential proves no session can name that one. A closed issue takes a write too, and no write appends an issue event. Answers 200 with the record as it stands after the write and its attempt. A value outside its form is 400 STEP_INPUT naming the field, an id whose record is a run of another issue 409 STEP_OTHER_ISSUE, and an issue Dispatch does not know, or one of a project the caller cannot see, 404 ISSUE_NOT_FOUND, before the actor is judged. */
     put: operations["putApiV1IssuesByKeyStepsById"];
     post?: never;
     delete?: never;
@@ -1867,7 +1970,7 @@ export interface paths {
       cookie?: never;
     };
     get?: never;
-    /** @description Write the rating of a retro's run {actor, rating, rating_reason, task?, step?, kind?, role?, type?, agent?, session?, model?, generation?, started_at?, ended_at?, result?, returned_to?, report?}: rating, 1 to 5, is how well the plan the issue ran fit its work in the view of the agent that did the retro, and rating_reason its reason, not blank and at most 2000 characters counted as Unicode code points. The Legion daemon writes it under the id of the retro's run, with the fields PUT /api/v1/issues/{key}/steps/{id} takes, which make the record where the retro's start and end have not landed yet; each field the record does not hold yet is set and every field it holds is left, but returned_to, which only the write that sets the result sets, so the rating is written once and lands before or after the retro's end. The actor must be session legion-daemon:<PROJECT> of the issue's project (403 STEP_WRITER otherwise); a bearer caller names its own session, so any caller whose credential proves no session can name that one. A closed issue takes it, and no write appends an issue event. Answers 200 with the record as it stands after the write and its attempt. A rating or reason left out or outside its form, and a record that is not a retro's, are 400 STEP_INPUT naming the field; an id whose record is a run of another issue is 409 STEP_OTHER_ISSUE, and an issue Dispatch does not know 404 ISSUE_NOT_FOUND. */
+    /** @description Write the rating of a retro's run {actor, rating, rating_reason, task?, step?, kind?, role?, type?, agent?, session?, model?, generation?, started_at?, ended_at?, result?, returned_to?, report?}: rating, 1 to 5, is how well the plan the issue ran fit its work in the view of the agent that did the retro, and rating_reason its reason, not blank and at most 2000 characters counted as Unicode code points. The Legion daemon writes it under the id of the retro's run, with the fields PUT /api/v1/issues/{key}/steps/{id} takes, which make the record where the retro's start and end have not landed yet; each field the record does not hold yet is set and every field it holds is left, but returned_to, which only the write that sets the result sets, so the rating is written once and lands before or after the retro's end. The actor must be session legion-daemon:<PROJECT> of the issue's project (403 STEP_WRITER otherwise); a bearer caller names its own session, so any caller whose credential proves no session can name that one. A closed issue takes it, and no write appends an issue event. Answers 200 with the record as it stands after the write and its attempt. A rating or reason left out or outside its form, and a record that is not a retro's, are 400 STEP_INPUT naming the field; an id whose record is a run of another issue is 409 STEP_OTHER_ISSUE, and an issue Dispatch does not know, or one of a project the caller cannot see, 404 ISSUE_NOT_FOUND, before the actor is judged. */
     put: operations["putApiV1IssuesByKeyStepsByIdRating"];
     post?: never;
     delete?: never;
@@ -1903,7 +2006,7 @@ export interface paths {
     get?: never;
     put?: never;
     post?: never;
-    /** @description Unsubscribe a session from an issue. */
+    /** @description Unsubscribe a session from an issue. A session the caller may not see is 404 SUBSCRIBER_NOT_FOUND, as one not subscribed, before the listener is asked anything. */
     delete: operations["deleteApiV1IssuesByKeySubscribersBySessionId"];
     options?: never;
     head?: never;
@@ -1985,7 +2088,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description List the machine logins the caller may revoke that can still reach a secret: the secrets broker's launcher credentials for every service's login, whoever approved it, for the caller's own machines, and for the caller's own pods, unexpired or expired with a session still running, each naming who approved it. A person's pod login is the login of a pod whose Kubernetes account the broker's BROKER_POD_OPERATORS maps to a person. Only that person's list holds it, and its person field names that person. The field is null on every other login. A caller Dispatch calls a restricted member is listed their own machines' and pods' logins alone, and so is any caller while the broker cannot ask Dispatch what kind of member the caller is. */
+    /** @description List the machine logins the caller may revoke that can still reach a secret: the secrets broker's launcher credentials for every service's login, whoever approved it, for the caller's own machines, and for the caller's own pods, unexpired or expired with a session still running, each naming who approved it. A person's pod login is the login of a pod whose Kubernetes account the broker's BROKER_POD_OPERATORS maps to a person. Only that person's list holds it, and its person field names that person. The field is null on every other login. A restricted member lists at their browser alone, and is answered the logins of their own machines and of the pods the broker maps to them, the broker's own set for such a member, and no service's; a list through a token of theirs is 403 OAUTH_SCOPE_REQUIRED, since no token of a restricted member holds a scope. While the broker cannot ask Dispatch what kind of member the caller is, any caller is listed their own machines' and pods' logins alone. */
     get: operations["getApiV1MachineLogins"];
     put?: never;
     post?: never;
@@ -2004,7 +2107,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Revoke a machine login, expired or not, ending every session it enrolled, a service's pods and a person's pod included. Anyone signed in revokes a service's login. Only the person who approved a person's machine login revokes that one. Only the person that a person's pod login names (its person: the broker's BROKER_POD_OPERATORS maps the pod's Kubernetes account to that person) revokes that one, and the revoke does not keep the pod out: the pod logs in again with its token under a new login while the broker's BROKER_SERVICE_LOGINS names its account, and that login is the person's while BROKER_POD_OPERATORS still maps the account to that person. A caller Dispatch calls a restricted member revokes their own logins alone: a service's login is 404 to them, as an id no login has, and so it is to any caller while the broker cannot ask Dispatch what kind of member the caller is, who still revokes their own. */
+    /** @description Revoke a machine login, expired or not, ending every session it enrolled, a service's pods and a person's pod included. Anyone signed in revokes a service's login. Only the person who approved a person's machine login revokes that one. Only the person that a person's pod login names (its person: the broker's BROKER_POD_OPERATORS maps the pod's Kubernetes account to that person) revokes that one, and the revoke does not keep the pod out: the pod logs in again with its token under a new login while the broker's BROKER_SERVICE_LOGINS names its account, and that login is the person's while BROKER_POD_OPERATORS still maps the account to that person. A restricted member revokes at their browser alone, and only a login of their own machines or of a pod the broker maps to them; any other id, a service's login among them, is 403 RESTRICTED_MEMBER from Dispatch before the broker is asked, so the broker's own 404 for a restricted member's revoke of a service's login is never reached, and a revoke through a token of theirs is 403 OAUTH_SCOPE_REQUIRED, since no token of a restricted member holds a scope. While the broker cannot ask Dispatch what kind of member the caller is, a service's login is 404 to any caller, as an id no login has, who still revokes their own. */
     post: operations["postApiV1MachineLoginsByIdRevoke"];
     delete?: never;
     options?: never;
@@ -2036,10 +2139,10 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description List the caller's personal agent tokens, each with the scopes it holds. */
+    /** @description List the caller's personal agent tokens, each with the scopes it holds and the projects it lists, absent when it lists none. A restricted member's token is listed holding no scope, the scopes it acts with, whatever was given it before. Each list holds only the projects the caller's own credential sees, so a token whose every project is hidden from the caller reads as one that lists none. At the person's own browser, projects_hidden is true on a token that lists a project the person no longer sees; it is absent everywhere else. */
     get: operations["getApiV1MeAgentTokens"];
     put?: never;
-    /** @description Mint a personal agent token {name, scopes?}: scopes is the set the new token holds, defaulting to the scopes the caller's own credential holds. A scope this deployment does not know, or approve without person, is 400 TOKEN_SCOPES_INPUT; a scope the caller does not hold itself is 403 OAUTH_SCOPE_REQUIRED. The answer is the one time the token's plaintext is shown. */
+    /** @description Mint a personal agent token {name, scopes?, projects?}: scopes is the set the new token holds, defaulting to the scopes the caller's own credential holds. A scope this deployment does not know, or approve without person, is 400 TOKEN_SCOPES_INPUT; a scope the caller does not hold itself is 403 OAUTH_SCOPE_REQUIRED. projects is the list of projects the token may use, at most 16, each one the caller sees; 400 TOKEN_PROJECTS_INPUT otherwise. It defaults to the caller's own credential's list, and a credential that lists projects mints no token that lists none, which would reach the rows of the whole deployment its own list holds it from. A restricted member's token is their agent's: it holds no scope, so it approves no login, mints no token and decides no credential request, and it lists exactly one project they see, which a body naming none takes where they see one; a body asking for a scope, naming other than one project, or naming none while they see several is 403 RESTRICTED_MEMBER saying why. The answer is the one time the token's plaintext is shown. */
     post: operations["postApiV1MeAgentTokens"];
     delete?: never;
     options?: never;
@@ -2061,7 +2164,7 @@ export interface paths {
     delete: operations["deleteApiV1MeAgentTokensById"];
     options?: never;
     head?: never;
-    /** @description Set the scopes of one of the caller's personal agent tokens {scopes}: the whole set it is to hold, with the mint's refusals, answering the updated token. A token of another person's, or none, is 404 NOT_FOUND. */
+    /** @description Set the scopes, and the projects, of one of the caller's personal agent tokens {scopes, projects?}, answering the updated token: scopes is the whole set it is to hold, with the mint's refusals. projects is the list of projects the token may use, at most 16, each one the caller sees; 400 TOKEN_PROJECTS_INPUT otherwise. Left out, the token keeps its list, and the answer holds only the projects of it the caller sees, with projects_hidden as the list answers it. A restricted member's edit leaves the token holding no scope and listing exactly one project they see: one asking for a scope, naming other than one project, or keeping a list of other than one project they see is 403 RESTRICTED_MEMBER, writing nothing. A token of another person's, or none, is 404 NOT_FOUND. */
     patch: operations["patchApiV1MeAgentTokensById"];
     trace?: never;
   };
@@ -2278,7 +2381,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Read the conversation a message belongs to by any message id in it, issue-less or not: the thread root with its deliveries and every reply, oldest first. An issue thread follows the issue's rule. A direct (issue-less) thread is read whole by a credential holding the person scope, since the conversation is that person's own; every other credential names its session in ?session= and reads only one whose root targets that session or that it replied in (403 THREAD_FORBIDDEN), a guard against reading another session's conversation by mistake, not an authorization boundary. Direct-conversation text also reaches every authenticated caller through that caller's events view on GET /ws/live; nothing in Dispatch restricts it by session. */
+    /** @description Read the conversation a message belongs to by any message id in it, issue-less or not: the thread root with its deliveries and every reply, oldest first. An issue thread follows the issue's rule. A direct (issue-less) thread is read whole by a credential holding the person scope, since the conversation is that person's own; every other credential names its session in ?session= and reads only one whose root targets that session or that it replied in (403 THREAD_FORBIDDEN), a guard against reading another session's conversation by mistake, not an authorization boundary. A direct conversation is read by its parties and by an open viewer, each only when it may see every session in it and read each one's content as its live agent view does, since what a session writes can hold whatever it read, so a restricted member or a credential acting for one reads only its own, and only with sessions its own person proved. A thread the caller may not read answers as an id nobody holds, and the live socket sends its text by the same rule. */
     get: operations["getApiV1MessagesById"];
     put?: never;
     post?: never;
@@ -2397,7 +2500,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description One person's page: what they wrote and what reached them, newest first, read from the node and tuple store. Each row carries the node's kind and id, the relations that put it there (authored_by, delivered_to, or both), the first line of its text and the dashboard path it opens at. It takes the login and a page - limit (1-200, default 50) and offset - and no kind, filter or edge to walk. {person, rows, total, limit, offset}. Needs the person scope, so the deployment's shared token is 403 OAUTH_SCOPE_REQUIRED. A login the store holds no person for is 404 NOT_FOUND, the answer an address nobody holds gets, and so is a person none of whose nodes the reader may see, with the same body, so the answer never says whether that person exists. The reader's own login is the one exception, answered 200 with the rows they may see, none where they may see none. */
+    /** @description One person's page: what they wrote and what reached them, newest first, read from the node and tuple store. Each row carries the node's kind and id, the relations that put it there (authored_by, delivered_to, or both), the first line of its text and the dashboard path it opens at. It takes the login and a page - limit (1-200, default 50) and offset - and no kind, filter or edge to walk. {person, rows, total, limit, offset}. Needs the person scope, so the deployment's shared token is 403 OAUTH_SCOPE_REQUIRED. A login the store holds no person for is 404 NOT_FOUND, the answer an address nobody holds gets, and so is a person the caller may not see or none of whose nodes the reader may see, with the same body, so the answer never says whether that person exists. The reader's own login is the one exception, answered 200 with the rows they may see, none where they may see none. */
     get: operations["getApiV1PeopleByLoginNodes"];
     put?: never;
     post?: never;
@@ -2414,7 +2517,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Every live priority, in rank order: id, title, description (markdown of any length), owner, rank (its place in the one order), state (live; a deleted priority is gone and is not listed), and when and by whom it was made, each beside the work that advances it (work): by_status, the open issues in each lifecycle status, claimed, open_asks, closed_last_7_days and newest_event_at. The work under a priority is the issues that state the relation and every issue below one of them. Beside the list it answers the two faults: work_under_no_priority, the open issues in flight (in_progress, testing, needs_review, retro) that advance no live priority, and priority_work_parked, the issues that advance one and stand in backlog or icebox, each as a whole count, the same count by project or by priority, and the newest 50 rows. Each row carries advances as the issue read does, one {id, inherited} entry per live priority the issue advances, inherited true for one it takes from an issue above it; a row of work_under_no_priority carries the empty list. A priority belongs to no project, so this read is of the whole deployment and any authenticated caller makes it, the shared token every pod carries included. ?project=<KEY>, repeatable, narrows the work counted and both fault lists to those projects and never the priorities themselves; ?summary=true answers the two fault counts alone, with no priority row and no fault row, which is what the navigation rail reads. */
+    /** @description Every live priority, in rank order: id, title, description (markdown of any length), owner, rank (its place in the one order), state (live; a deleted priority is gone and is not listed), and when and by whom it was made, each beside the work that advances it (work): by_status, the open issues in each lifecycle status, claimed, open_asks, closed_last_7_days and newest_event_at. The work under a priority is the issues that state the relation and every issue below one of them. Beside the list it answers the two faults: work_under_no_priority, the open issues in flight (in_progress, testing, needs_review, retro) that advance no live priority, and priority_work_parked, the issues that advance one and stand in backlog or icebox, each as a whole count, the same count by project or by priority, and the newest 50 rows. Each row carries advances as the issue read does, one {id, inherited} entry per live priority the issue advances, inherited true for one it takes from an issue above it; a row of work_under_no_priority carries the empty list. A priority belongs to no project, so this read is of the whole deployment: an open viewer reads it, the shared token every pod carries and a full member's credential whatever projects it lists included, and a restricted member, or a credential acting for one, is 403 DEPLOYMENT_READ_REFUSED. Each count counts only the work of the projects the caller sees. ?project=<KEY>, repeatable, narrows the work counted and both fault lists to those projects and never the priorities themselves; ?summary=true answers the two fault counts alone, with no priority row and no fault row, which is what the navigation rail reads. */
     get: operations["getApiV1Priorities"];
     put?: never;
     /** @description Write one priority {id?, title, description?, owner?}: title is required, and a title with nothing in it or over 1000 characters (UTF-16 units, counted as an issue title is) is 400 PRIORITY_INPUT; id is the caller's and defaults to the title written as a slug, and an id that is no slug of lowercase letters, digits and single hyphens, one over 200 characters, the ids none and any (the issue listing reads advances=none as the work under no priority and advances=any as the work under any), and a title no slug can be written from are each 400 PRIORITY_INPUT, an id derived from the title as much as one given; an id the store already holds is 409 PRIORITY_EXISTS. The new priority takes the last place of the order. A credential scoped to one project is refused, since a priority belongs to none. */
@@ -2450,7 +2553,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description One priority's own history, newest first: every act stated about it as {field, value, issue, asserted, actor, at}. field is what was stated — title, description, owner and rank, the four a person writes, state (live when it was made, gone when it was deleted) and visibility; advances is the relation an issue states on it. value is what an attribute write wrote and is empty on an advances act; issue is the issue at the other end of an advances act and is empty on an attribute write; asserted is false on the act that retracted an advances and true on every other. A priority belongs to no project, so any authenticated caller reads this, the shared token every pod carries included. A deleted priority still answers its history, the delete its newest act; an id no priority carries is 404 PRIORITY_NOT_FOUND. */
+    /** @description One priority's own history, newest first: every act stated about it as {field, value, issue, asserted, actor, at}. field is what was stated — title, description, owner and rank, the four a person writes, state (live when it was made, gone when it was deleted) and visibility; advances is the relation an issue states on it. value is what an attribute write wrote and is empty on an advances act; issue is the issue at the other end of an advances act and is empty on an attribute write; asserted is false on the act that retracted an advances and true on every other. A priority belongs to no project, so an open viewer reads this, the shared token every pod carries and a full member's credential whatever projects it lists included; a restricted member, or a credential acting for one, is 403 DEPLOYMENT_READ_REFUSED. A deleted priority still answers its history, the delete its newest act; an id no priority carries is 404 PRIORITY_NOT_FOUND. */
     get: operations["getApiV1PrioritiesByIdHistory"];
     put?: never;
     post?: never;
@@ -2467,11 +2570,99 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description List projects. A project with a default repository carries it as default_repo, and a project with none carries no default_repo. A project's default assignee is not listed here: GET /api/v1/settings/project-default-assignees reads it, with the person scope. */
+    /** @description List the projects the caller sees; a private project carries visibility private, and a public one no visibility. A project with a default repository carries it as default_repo, and a project with none carries no default_repo. A project's default assignee is not listed here: GET /api/v1/settings/project-default-assignees reads it, with the person scope. */
     get: operations["getApiV1Projects"];
     put?: never;
-    /** @description Create a project {key, name, default_assignee}: any signed-in person or agent session; a bearer names its session in actor. Every project names the person its unowned work lands on, the last step of the chain that decides who a question reaches: default_assignee is the email of a person who has signed in, and a call that names none takes the person creating the project, else the person its credential acts for. A credential that acts for nobody and names no default_assignee is 400 INVALID_PROJECT; a login nobody has signed in with, the one the call names or the one its credential acts for, is 400 ASSIGNEE_NOT_ALLOWED. A key that is not a project key, an empty name, a name holding a control character or a bidi embedding, override or isolate, or a name with no visible character (a letter, number, punctuation or symbol other than the blank fillers U+115F, U+1160, U+3164, U+FFA0 and U+2800, or a code point Go's Unicode tables leave unassigned, such as an emoji newer than them, other than a noncharacter (U+FDD0-U+FDEF and each code point ending in FFFE or FFFF) or a reserved default-ignorable (U+2065, U+FFF0-U+FFF8, U+E0000-U+E0FFF); combining marks, format characters, private-use characters and whitespace don't count) is 400 INVALID_PROJECT; a name over 80 characters is 400 CAP_EXCEEDED; a key that already exists is 409 PROJECT_EXISTS. The answer is the project with the default_assignee the create stored. */
+    /** @description Create a project {key, name, default_assignee}: any signed-in person or agent session; a bearer names its session in actor. A restricted member, or a credential acting for one, is 403 RESTRICTED_MEMBER. Every project names the person its unowned work lands on, the last step of the chain that decides who a question reaches: default_assignee is the email of a person who has signed in, and a call that names none takes the person creating the project, else the person its credential acts for. The project's owner is the person creating it, else the default_assignee the call names. An owner is a full member who has signed in, as at every later change of owner: a credential acting for a person nobody has signed in as gives the project to its default_assignee, as a credential acting for nobody does. A credential that acts for nobody and names no default_assignee is 400 INVALID_PROJECT; a login nobody has signed in with, the one the call names or the one its credential acts for, is 400 ASSIGNEE_NOT_ALLOWED. A credential that acts for nobody and names a restricted member as default_assignee, who would then own the project, is 400 OWNER_NOT_ALLOWED, and so is one acting for a person nobody has signed in as. A key that is not a project key, an empty name, a name holding a control character or a bidi embedding, override or isolate, or a name with no visible character (a letter, number, punctuation or symbol other than the blank fillers U+115F, U+1160, U+3164, U+FFA0 and U+2800, or a code point Go's Unicode tables leave unassigned, such as an emoji newer than them, other than a noncharacter (U+FDD0-U+FDEF and each code point ending in FFFE or FFFF) or a reserved default-ignorable (U+2065, U+FFF0-U+FFF8, U+E0000-U+E0FFF); combining marks, format characters, private-use characters and whitespace don't count) is 400 INVALID_PROJECT; a name over 80 characters is 400 CAP_EXCEEDED; a key that already exists is 409 PROJECT_EXISTS. The answer is the project with the default_assignee the create stored. */
     post: operations["postApiV1Projects"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/projects/{key}/access": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description Who may see a project and who changes that: {project, owner, visibility, people, groups, slack_channels, not_signed_in}, the owner's email, public or private, the emails and group names its access list names, the Slack channel ids its credentials may post to, and the people of that list nobody has signed in as yet, each list sorted and never null. slack_channels_changed_at is when the list last changed, null until a write changes the list. private_before_full_switch is true while the project is private before its full switch, which DISPATCH_PRIVATE_BEFORE_FULL_SWITCH names and DISPATCH_PRIVATE_PROJECTS does not: Dispatch hides it as any private project, while its namespace, its stores and its bus gate come with its full switch; it is absent for every other project. Where passkey sign-in is on (DISPATCH_SIGNIN_PASSKEY=1), the owner's browser session also gets passkeys, [{email, enrolled_at, made_by, project?}] for each passkey of a person people names, sorted by email then enrolled_at: made_by is who made the link that enrolled it, and project that link's project, absent where the reader does not see it; invitable, the emails of people the owner can make a link for now (on no domain of the company's Workspace, no full member's, and named by no project of another owner), sorted; listed_by_another_owner, the emails of people from outside (never a full member's or a Workspace address, which no link is made for whatever else names them) a project of another owner names directly, for whom the owner makes no link until that project's owner takes them off its list, sorted; and open_invitations, [{email, made_at, expires_at}] for each link of the project that can still enroll someone (unused and not lapsed), sorted by email then made_at, with no token; each [] for none, and all four absent from every other answer. An unknown key is 404 PROJECT_NOT_FOUND. Needs the person scope. */
+    get: operations["getApiV1ProjectsByKeyAccess"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    /** @description Give a project to another owner, set its visibility or name its Slack channels {owner?, visibility?, slack_channels?}, at any time: owner is the email of a full member who has signed in, and visibility public or private. slack_channels names the Slack channel ids the project's credentials may post to, at most 16, set only by the owner; it replaces the whole list, which is stored sorted with each id once, and an id that is no Slack channel id is 400 INVALID_SLACK_CHANNEL naming it while more than 16 is 400 CAP_EXCEEDED. A private project's write of a Slack channel that another private project lists is 409 SLACK_CHANNEL_SHARED. Only the project's owner calls it (403 PROJECT_OWNER_REQUIRED); an owner who is not a full member is 400 OWNER_NOT_ALLOWED; whatever DISPATCH_SIGNIN_PASSKEY says, giving the project to another owner while a person its list names directly holds a passkey a link of someone else enrolled is 409 PASSKEY_OF_ANOTHER_OWNER, until that link's maker resets the person; a body naming none of the three, or a visibility that is neither, is 400 PROJECT_ACCESS_INPUT. private is 409 PRIVATE_PROJECTS_OFF when neither DISPATCH_PRIVATE_PROJECTS nor DISPATCH_PRIVATE_BEFORE_FULL_SWITCH names a project, 409 PRIVATE_PROJECT_NOT_PROVISIONED when neither names this one, and 409 PRIVATE_PROJECTS_INCOMPLETE until the store's backfills have run; public is never refused by them. For a full switch, of a project DISPATCH_PRIVATE_PROJECTS names, private is 409 PRIVATE_PROJECTS_UNAVAILABLE, with nothing changed, while the hub does not take the project's key in its envoy_private_projects bucket. A project DISPATCH_PRIVATE_BEFORE_FULL_SWITCH names and DISPATCH_PRIVATE_PROJECTS does not is made private before its full switch: its switch writes nothing to that bucket and answers private_before_full_switch true. Appends project.access_changed and answers the project's access as GET answers it. Needs the person and approve scopes. */
+    patch: operations["patchApiV1ProjectsByKeyAccess"];
+    trace?: never;
+  };
+  "/api/v1/projects/{key}/access/groups/{name}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    /** @description Name a group on a project's access list; a group admits only its members who are full members. Only the project's owner calls it (403 PROJECT_OWNER_REQUIRED); a group no row holds is 404 GROUP_NOT_FOUND; a list of 500 people and groups is 409 ACCESS_LIST_FULL. Appends project.access_changed and answers the project's access. Needs the person and approve scopes. */
+    put: operations["putApiV1ProjectsByKeyAccessGroupsByName"];
+    post?: never;
+    /** @description Take a group off a project's access list; one it does not name leaves it as it was. Only the project's owner calls it (403 PROJECT_OWNER_REQUIRED). Appends project.access_changed and answers the project's access. Needs the person and approve scopes. */
+    delete: operations["deleteApiV1ProjectsByKeyAccessGroupsByName"];
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/projects/{key}/access/people/{email}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    /** @description Name a person on a project's access list by email (stored trimmed, with A-Z lowered); a person it names already stays as they were. Only the project's owner calls it (403 PROJECT_OWNER_REQUIRED); a value that is no email, or that holds a capital letter beyond A-Z and so names nobody who could sign in, is 400 PROJECT_ACCESS_INPUT; a list of 500 people and groups is 409 ACCESS_LIST_FULL; whatever DISPATCH_SIGNIN_PASSKEY says, an address that holds a passkey a link of someone other than the project's owner enrolled is 409 PASSKEY_OF_ANOTHER_OWNER, since that passkey would read this project too, until that link's maker resets the person. Appends project.access_changed and answers the project's access. Needs the person and approve scopes. */
+    put: operations["putApiV1ProjectsByKeyAccessPeopleByEmail"];
+    post?: never;
+    /** @description Take a person off a project's access list; one it does not name leaves it as it was and owes nothing. Only the project's owner calls it (403 PROJECT_OWNER_REQUIRED). Taking a restricted member off it records that Dispatch owes the secrets broker the revocation of every machine login the member approved, whatever other list still names them, which Dispatch pays after the commit, again until the broker confirms; the removal never waits on the broker, and waits for an approval of the member's that Dispatch is relaying, holding no lock of the project's while it does. A removal that owes nothing, from a list that does not name the person or of a full member, holds up no approval of theirs. A removal that finds the member on the list only once it holds the project's lock, their addition having committed meanwhile, is 409 MACHINE_LOGIN_APPROVAL_IN_FLIGHT while an approval or another removal of theirs is in progress, and changes nothing, for the owner to remove them again in a few seconds. Whatever DISPATCH_SIGNIN_PASSKEY says, it also ends the person's unused links of the project, and, once no project's owner is them and no list names them directly, ends a restricted member's account in the same transaction, as the owner's Reset does: a new passkey subject, which revokes their personal tokens and owes the broker the old account's revocation, then their sign-in ended and their passkeys deleted. Appends project.access_changed and answers the project's access. Needs the person and approve scopes. */
+    delete: operations["deleteApiV1ProjectsByKeyAccessPeopleByEmail"];
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/projects/{key}/access/people/{email}/invitations": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** @description Make a single-use link for a person the project's access list names directly, with which they enroll a passkey and sign in as a restricted member at the outside origin: 201 {url, made_at, expires_at}, url the outside origin's /enroll page with 32 random bytes, base64url, in its fragment, made_at now, and expires_at 24 hours after now, both on the database's clock; made_at is the key the link is listed by in the owner's access answer (open_invitations) while it can still enroll someone. It ends the person's earlier unused links of the project. Only the project's owner calls it, in a browser session (403 PROJECT_OWNER_REQUIRED; any token is 403 BROWSER_SESSION_REQUIRED); an email the list does not name directly is 409 PERSON_NOT_LISTED, an address on a domain of the company's Workspace 400 WORKSPACE_ADDRESS, and a full member's 409 FULL_MEMBER; a person a project of another owner names directly is 409 LISTED_BY_ANOTHER_OWNER, since a passkey reads every project that names its person, so only an owner of every such project makes their link; a deployment without passkey sign-in is 409 PASSKEY_SIGNIN_OFF. The answer is the one time the link is shown: a repeat under its Idempotency-Key is 409 KEY_COMMITTED. Needs the person and approve scopes. */
+    post: operations["postApiV1ProjectsByKeyAccessPeopleByEmailInvitations"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/projects/{key}/access/people/{email}/reset": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** @description Reset a person the project's access list names directly, in one transaction: record that Dispatch owes the secrets broker the revocation of the machine logins they approved, delete their unused links of every project, give their address a new passkey account, which revokes their personal tokens and owes the broker the revocation of the old account, and end their sign-in and delete their passkeys, so they sign in again only with a new link and nothing the old account made or approved acts again; they stay on the list. Only the project's owner calls it, in a browser session (403 PROJECT_OWNER_REQUIRED; any token is 403 BROWSER_SESSION_REQUIRED); an email the list does not name directly is 409 PERSON_NOT_LISTED, an address on a domain of the company's Workspace 400 WORKSPACE_ADDRESS, and a full member's 409 FULL_MEMBER, read again under the address's lock; a Reset that finds a restricted member on the list only once it holds the project's lock is 409 MACHINE_LOGIN_APPROVAL_IN_FLIGHT while an approval or a removal of theirs is in progress, and changes nothing; a deployment without passkey sign-in is 409 PASSKEY_SIGNIN_OFF. Answers the project's access. Needs the person and approve scopes. */
+    post: operations["postApiV1ProjectsByKeyAccessPeopleByEmailReset"];
     delete?: never;
     options?: never;
     head?: never;
@@ -2555,7 +2746,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Import every architecture source of a project now, each whatever another's import did; 200 carries every updated row in the order the sources were added, each with its own last_error (an access failure included). */
+    /** @description Import every architecture source of a project now, each whatever another's import did; 200 carries every updated row in the order the sources were added, each with its own last_error (an access failure included). A source whose repository the GitHub proxy would not show the caller is not imported for that caller: its row is answered as it stands. */
     post: operations["postApiV1ProjectsByKeyArchitectureSourcesSync"];
     delete?: never;
     options?: never;
@@ -2571,7 +2762,7 @@ export interface paths {
       cookie?: never;
     };
     get?: never;
-    /** @description Add a repository as an architecture source of a project, or change the branch of the source it is {branch}, after proving the GitHub App can read it and that branch is the name of a branch it has; a missing branch, a commit SHA, a relative ref (main~1, HEAD) or a refs/ path is 409 SOURCE_ACCESS naming the value and the repository, as a credential problem is, and nothing is written. A re-save resets the source's sync bookkeeping and keeps its components. */
+    /** @description Add a repository as an architecture source of a project, or change the branch of the source it is {branch}, after proving the GitHub App can read it and that branch is the name of a branch it has; a missing branch, a commit SHA, a relative ref (main~1, HEAD) or a refs/ path is 409 SOURCE_ACCESS naming the value and the repository, as a credential problem is, and nothing is written. A re-save resets the source's sync bookkeeping and keeps its components. A repository the GitHub proxy would not show the caller answers exactly as one the App is not installed on (409 SOURCE_ACCESS, or the held rate limit's answer), and GitHub is not asked. */
     put: operations["putApiV1ProjectsByKeyArchitectureSourcesByOwnerByRepo"];
     post?: never;
     /** @description Remove one architecture source of a project and the components it projected; every other source's components stay. */
@@ -2590,7 +2781,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Import one architecture source's model now; 200 carries its updated row (last_error set when the import failed), 409 SOURCE_ACCESS a credential or branch problem. */
+    /** @description Import one architecture source's model now; 200 carries its updated row (last_error set when the import failed), 409 SOURCE_ACCESS a credential or branch problem. A source whose repository the GitHub proxy would not show the caller answers as a source of a repository the App is not installed on, and nothing is imported or written for it. */
     post: operations["postApiV1ProjectsByKeyArchitectureSourcesByOwnerByRepoSync"];
     delete?: never;
     options?: never;
@@ -2760,7 +2951,7 @@ export interface paths {
       cookie?: never;
     };
     get?: never;
-    /** @description Set or clear a project's default repository {repo}: "owner/name" sets it and null clears it. An issue of the project resolves to it when neither the issue nor an issue above it names a repository. A write of the value the project holds already changes nothing and appends no event; a change appends project.updated with the project row. A body without repo, or a repo that is not a repository GitHub could hold, is 400 INVALID_PROJECT, and an unknown project 404 PROJECT_NOT_FOUND. The default belongs to the deployment, so a project-scoped credential is refused it, the project this path names included. It declares no personal scope: the credential the deployment configured writes it, and so does a person. */
+    /** @description Set or clear a project's default repository {repo}: "owner/name" sets it and null clears it. An issue of the project resolves to it when neither the issue nor an issue above it names a repository. A write of the value the project holds already changes nothing and appends no event; a change appends project.updated with the project row. A body without repo, or a repo that is not a repository GitHub could hold, is 400 INVALID_PROJECT, and an unknown project 404 PROJECT_NOT_FOUND. The default belongs to the deployment, so a project-scoped credential is refused it, the project this path names included. It declares no personal scope: the credential the deployment configured writes it, and so does a person. A project the caller does not see is 404 PROJECT_NOT_FOUND, as a key nobody holds, before anything is written, and a repo the caller cannot read through Dispatch's GitHub proxy is 403 REPOSITORY_NOT_AVAILABLE, naming no project; null is never refused. */
     put: operations["putApiV1ProjectsByKeyDefaultRepository"];
     post?: never;
     delete?: never;
@@ -2793,7 +2984,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The Legion board of the project its path names, from what the sampler recorded of that project's daemon: eleven columns (queue, design, planning, implementing, testing, reviewing, accepting, retro, merging, awaiting_person, held), each card naming its issue's key, title, priority, phase and when that phase began, the slot it holds, the roles in a turn now, the issues a blocker link holds it on, what it waits on from a person, its tree root and the children of its tree that have not started; and a header with the slots in use, the slot cap, the queue's length and the last read of the daemon with its failure. 404 LEGION_NOT_CONFIGURED when the project names no daemon, 400 INVALID_PROJECT for a key that is not a project key, 404 PROJECT_NOT_FOUND for a project that does not exist. */
+    /** @description The Legion board of the project its path names, from what the sampler recorded of that project's daemon: eleven columns (queue, design, planning, implementing, testing, reviewing, accepting, retro, merging, awaiting_person, held), each card naming its issue's key, title, priority, phase and when that phase began, the slot it holds, the roles in a turn now, the issues a blocker link holds it on, what it waits on from a person, its tree root and the children of its tree that have not started; and a header with the slots in use, the slot cap, the queue's length and the last read of the daemon with its failure. The sampler records only the project's own issues, and the board names only an issue the caller sees: a key of a project the caller does not see, or one no issue holds, is on no card, in no count, blocker list or tree root, unless the caller sees every object (an open viewer of a deployment that holds no private project). 404 LEGION_NOT_CONFIGURED when the project names no daemon, 400 INVALID_PROJECT for a key that is not a project key, 404 PROJECT_NOT_FOUND for a project that does not exist. */
     get: operations["getApiV1ProjectsByKeyLegionBoard"];
     put?: never;
     post?: never;
@@ -3103,7 +3294,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Read only: the GitHub repository to project mappings as the last release left them, each marked whether it is its project's default and what repository it was renamed to, null for one that was never renamed. Nothing writes them: PUT /api/v1/projects/{key}/default-repository sets a project's default repository. The route stays for the Legion daemons that read it at boot, and the next release removes it. */
+    /** @description Read only: the GitHub repository to project mappings as the last release left them, each marked whether it is its project's default and what repository it was renamed to, null for one that was never renamed. Nothing writes them: PUT /api/v1/projects/{key}/default-repository sets a project's default repository. The route stays for the Legion daemons that read it at boot, and the next release removes it. It lists only the mappings of the projects the caller sees. */
     get: operations["getApiV1SettingsRepoProjects"];
     put?: never;
     post?: never;
@@ -3154,7 +3345,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Everyone who has signed in, by lowercase email: the assignee picker's options. */
+    /** @description Everyone who has signed in, by lowercase email: the assignee picker's options. Only the people of the projects the caller sees, for a restricted member or a credential acting for one. */
     get: operations["getApiV1Users"];
     put?: never;
     post?: never;
@@ -3171,7 +3362,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Who the server takes the caller for: {kind: user, login, scopes} (login is the person's lowercase email) or {kind: agent, owner, service, session, project, scopes} (owner is a personal token's owner or a broker-issued token's person by lowercase email, null for the shared token and for a broker-issued token that names a service; service is a verified service-account token's Kubernetes subject, or the fleet a broker-issued token naming no person belongs to, null for every other credential; session is the session the caller's credential proved, null for a credential that proves none, which every one but an access token the secrets broker issued is; project is the one project key that credential lets the caller write, null where it names none). scopes is the OAuth scopes the credential holds, an empty array for one that holds none: person acts as the person on every route the dashboard reaches, and approve settles what a person settles. A write records its actor with proven: true only where this credential proved that actor, the person at a browser or the session above, and never for a session a request names under a credential that proves none. */
+    /** @description Who the server takes the caller for: {kind: user, login, scopes} (login is the person's lowercase email) or {kind: agent, owner, service, session, project, scopes} (owner is a personal token's owner or a broker-issued token's person by lowercase email, null for the shared token and for a broker-issued token that names a service; service is a verified service-account token's Kubernetes subject, or the fleet a broker-issued token naming no person belongs to, null for every other credential; session is the session the caller's credential proved, null for a credential that proves none, which every one but an access token the secrets broker issued is; project is the one project key that credential lets the caller write, null where it names none). scopes is the OAuth scopes the credential holds, an empty array for one that holds none: person acts as the person on every route the dashboard reaches, and approve settles what a person settles. Every token of a restricted member holds none. projects is the credential's list of projects, sorted, absent when it lists none, and for a broker-issued token of a full member while no project is private, as before lists existed: a full member's credential reads every public project whatever it lists, and its list decides only which private projects it reads; a restricted member's list decides every project it reads. private_projects lists those of projects the caller must treat as private: a private project, or one the credential no longer sees, sorted, absent when there is none. project is deprecated, and is the one key of a one-key list, null otherwise. A write records its actor with proven: true only where this credential proved that actor, the person at a browser or the session above, and never for a session a request names under a credential that proves none. member_kind is restricted for a restricted member, and absent for everyone else; a member kind that cannot be read is 503 IDENTITY_UNAVAILABLE. */
     get: operations["getApiV1Whoami"];
     put?: never;
     post?: never;
@@ -3192,6 +3383,23 @@ export interface paths {
     put?: never;
     /** @description Test hook: {method, path, delay_ms} delays every keyed run of that method and path by delay_ms after its key is claimed, on the handler's own context; 0 disarms. */
     post: operations["postApiV1WritesTestSlow"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/metrics": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description The process's Prometheus metrics, for an open viewer; a restricted member's credential, or one acting for one, is 403 DEPLOYMENT_READ_REFUSED. */
+    get: operations["getMetrics"];
+    put?: never;
+    post?: never;
     delete?: never;
     options?: never;
     head?: never;
@@ -3251,13 +3459,40 @@ export interface components {
       session_id: string;
       state: string;
     };
+    AccessAnswer: {
+      holder?: boolean;
+      /** @enum {string} */
+      member_kind: "full" | "restricted" | "none";
+      owner: string;
+      person: string;
+      project: string;
+      slack_channels: string[] | null;
+      /** Format: date-time */
+      slack_channels_changed_at: null | string;
+      /** @enum {string} */
+      visibility: "public" | "private";
+      visible: boolean;
+    };
+    AccessGroup: {
+      members: string[] | null;
+      name: string;
+      not_signed_in: string[] | null;
+      owner: string;
+    };
+    AccessGroupInput: {
+      members: string[] | null;
+      owner?: string;
+    };
+    AccessGroupPage: {
+      groups: components["schemas"]["AccessGroup"][] | null;
+      next?: string;
+    };
     Actor: {
       act?: components["schemas"]["ActorAct"];
       id: string;
       kind: string;
       origin?: components["schemas"]["ActorOrigin"];
       owner?: string;
-      project?: string;
       proven?: boolean;
       service?: string;
     };
@@ -3311,6 +3546,7 @@ export interface components {
       last_used_at: null | string;
       name: string;
       prefix: string;
+      projects?: string[];
       /** Format: date-time */
       revoked_at: null | string;
       scopes: string[] | null;
@@ -4408,6 +4644,7 @@ export interface components {
       last_used_at: null | string;
       name: string;
       prefix: string;
+      projects?: string[];
       /** Format: date-time */
       revoked_at: null | string;
       scopes: string[] | null;
@@ -4422,6 +4659,7 @@ export interface components {
       key: string;
       name: string;
       open_asks: number;
+      visibility?: string;
     };
     CredentialCapabilities: {
       machine_code_page: boolean;
@@ -4981,6 +5219,13 @@ export interface components {
       expected: string;
       scope: string;
     };
+    EnrolledPasskey: {
+      email: string;
+      /** Format: date-time */
+      enrolled_at: string;
+      made_by: string;
+      project?: string;
+    };
     ErrorBody: {
       code: string;
       error: string;
@@ -5235,6 +5480,13 @@ export interface components {
       urgency: string;
       waiting_on?: string;
       waiting_on_person?: string;
+    };
+    InvitationAnswer: {
+      /** Format: date-time */
+      expires_at: string;
+      /** Format: date-time */
+      made_at: string;
+      url: string;
     };
     Issue: {
       advances: components["schemas"]["IssueAdvance"][] | null;
@@ -5992,6 +6244,13 @@ export interface components {
       waiting_on_agent: number;
       waiting_on_human: number;
     };
+    OpenInvitation: {
+      email: string;
+      /** Format: date-time */
+      expires_at: string;
+      /** Format: date-time */
+      made_at: string;
+    };
     OutgoingReference: {
       artifact?: components["schemas"]["Artifact"];
       kind: string;
@@ -6034,6 +6293,17 @@ export interface components {
       owner?: null | string;
       rank?: components["schemas"]["IssueRankInput"] | null;
       title?: null | string;
+    };
+    PersonAnswer: {
+      /** Format: date-time */
+      as_of: string;
+      held?: boolean;
+      holder?: boolean;
+      /** @enum {string} */
+      member_kind: "full" | "restricted" | "none";
+      /** Format: date-time */
+      not_held_until?: string;
+      person: string;
     };
     PersonNode: {
       /** Format: date-time */
@@ -6183,6 +6453,15 @@ export interface components {
       count: number;
       issues: components["schemas"]["PriorityIssue"][] | null;
     };
+    PrivateProjectChannels: {
+      project: string;
+      slack_channels: string[];
+      /** Format: date-time */
+      slack_channels_changed_at: null | string;
+    };
+    PrivateProjectsAnswer: {
+      projects: components["schemas"]["PrivateProjectChannels"][];
+    };
     ProgressCount: {
       done: number;
       total: number;
@@ -6195,6 +6474,30 @@ export interface components {
       key: string;
       name: string;
       open_asks: number;
+      visibility?: string;
+    };
+    ProjectAccess: {
+      groups: string[] | null;
+      invitable?: string[];
+      listed_by_another_owner?: string[];
+      not_signed_in: string[] | null;
+      open_invitations?: components["schemas"]["OpenInvitation"][];
+      owner: string;
+      passkeys?: components["schemas"]["EnrolledPasskey"][];
+      people: string[] | null;
+      private_before_full_switch?: boolean;
+      project: string;
+      slack_channels: string[] | null;
+      /** Format: date-time */
+      slack_channels_changed_at: null | string;
+      /** @enum {string} */
+      visibility: "public" | "private";
+    };
+    ProjectAccessInput: {
+      owner?: string;
+      slack_channels?: string[];
+      /** @enum {string} */
+      visibility?: "public" | "private";
     };
     ProjectDefaultAssignee: {
       assignee: string;
@@ -6222,6 +6525,10 @@ export interface components {
     ProjectPlans: {
       issues: components["schemas"]["FinishedIssue"][] | null;
       project: string;
+    };
+    ProjectRepositoriesAnswer: {
+      project: string;
+      repositories: string[];
     };
     PutArchitectureSourceInput: {
       actor?: components["schemas"]["Actor"] | null;
@@ -6847,8 +7154,12 @@ export interface components {
     WhoamiAgent: {
       /** @enum {string} */
       kind: "agent";
+      /** @enum {string} */
+      member_kind?: "restricted";
       owner: null | string;
+      private_projects?: string[];
       project: null | string;
+      projects?: string[];
       scopes: string[] | null;
       service: null | string;
       session: null | string;
@@ -6857,6 +7168,8 @@ export interface components {
       /** @enum {string} */
       kind: "user";
       login: string;
+      /** @enum {string} */
+      member_kind?: "restricted";
       scopes: string[] | null;
     };
     WorkUnderNoPriority: {
@@ -6918,6 +7231,252 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["RouteIndex"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  getApiV1AccessGroups: {
+    parameters: {
+      query?: {
+        limit?: number;
+        after?: string;
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["AccessGroupPage"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  putApiV1AccessGroupsByName: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        name: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["AccessGroupInput"];
+      };
+    };
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["AccessGroup"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  deleteApiV1AccessGroupsByName: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        name: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description No Content */
+      204: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  getApiV1AccessPerson: {
+    parameters: {
+      query?: {
+        person?: string;
+        account_issuer?: string;
+        account_subject?: string;
+        account?: string;
+        credential_created_at?: string;
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["PersonAnswer"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  getApiV1AccessPrivateProjects: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["PrivateProjectsAnswer"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  getApiV1AccessProjectsByKey: {
+    parameters: {
+      query?: {
+        person?: string;
+        account_issuer?: string;
+        account_subject?: string;
+        account?: string;
+        credential_created_at?: string;
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        key: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["AccessAnswer"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  getApiV1AccessProjectsByKeyRepositories: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        key: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ProjectRepositoriesAnswer"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -13259,6 +13818,288 @@ export interface operations {
       };
     };
   };
+  getApiV1ProjectsByKeyAccess: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        key: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ProjectAccess"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  patchApiV1ProjectsByKeyAccess: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        key: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["ProjectAccessInput"];
+      };
+    };
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ProjectAccess"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  putApiV1ProjectsByKeyAccessGroupsByName: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        key: string;
+        name: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ProjectAccess"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  deleteApiV1ProjectsByKeyAccessGroupsByName: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        key: string;
+        name: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ProjectAccess"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  putApiV1ProjectsByKeyAccessPeopleByEmail: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        key: string;
+        email: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ProjectAccess"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  deleteApiV1ProjectsByKeyAccessPeopleByEmail: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        key: string;
+        email: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ProjectAccess"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  postApiV1ProjectsByKeyAccessPeopleByEmailInvitations: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        key: string;
+        email: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Created */
+      201: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["InvitationAnswer"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  postApiV1ProjectsByKeyAccessPeopleByEmailReset: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        key: string;
+        email: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ProjectAccess"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
   getApiV1ProjectsByKeyArchitecture: {
     parameters: {
       query?: {
@@ -14996,10 +15837,46 @@ export interface operations {
       };
     };
   };
+  getMetrics: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description the Prometheus text exposition format the process's metrics registry writes (metrics.Registry.Handler), not JSON */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "text/plain": unknown;
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
 }
 
 export type AcceptSuggestionResponse = components["schemas"]["AcceptSuggestionResponse"];
 export type AcceptedMessageDelivery = components["schemas"]["AcceptedMessageDelivery"];
+export type AccessAnswer = components["schemas"]["AccessAnswer"];
+export type AccessGroup = components["schemas"]["AccessGroup"];
+export type AccessGroupInput = components["schemas"]["AccessGroupInput"];
+export type AccessGroupPage = components["schemas"]["AccessGroupPage"];
 export type Actor = components["schemas"]["Actor"];
 export type ActorAct = components["schemas"]["ActorAct"];
 export type ActorInput = components["schemas"]["ActorInput"];
@@ -15184,6 +16061,7 @@ export type EditPrecondition = components["schemas"]["EditPrecondition"];
 export type EditPreconditionCurrent = components["schemas"]["EditPreconditionCurrent"];
 export type EditPreconditionError = components["schemas"]["EditPreconditionError"];
 export type EditPreconditionMismatch = components["schemas"]["EditPreconditionMismatch"];
+export type EnrolledPasskey = components["schemas"]["EnrolledPasskey"];
 export type ErrorBody = components["schemas"]["ErrorBody"];
 export type Event = components["schemas"]["Event"];
 export type FinishedIssue = components["schemas"]["FinishedIssue"];
@@ -15209,6 +16087,7 @@ export type InboxIssue = components["schemas"]["InboxIssue"];
 export type InboxReadRequest = components["schemas"]["InboxReadRequest"];
 export type InboxReadResponse = components["schemas"]["InboxReadResponse"];
 export type InboxRow = components["schemas"]["InboxRow"];
+export type InvitationAnswer = components["schemas"]["InvitationAnswer"];
 export type Issue = components["schemas"]["Issue"];
 export type IssueAdvance = components["schemas"]["IssueAdvance"];
 export type IssueAskRow = components["schemas"]["IssueAskRow"];
@@ -15287,11 +16166,13 @@ export type OpenAskIssue = components["schemas"]["OpenAskIssue"];
 export type OpenAskItemOwner = components["schemas"]["OpenAskItemOwner"];
 export type OpenAskOwner = components["schemas"]["OpenAskOwner"];
 export type OpenAsksResponse = components["schemas"]["OpenAsksResponse"];
+export type OpenInvitation = components["schemas"]["OpenInvitation"];
 export type OutgoingReference = components["schemas"]["OutgoingReference"];
 export type PassCounts = components["schemas"]["PassCounts"];
 export type PassCursor = components["schemas"]["PassCursor"];
 export type PassRecord = components["schemas"]["PassRecord"];
 export type PatchPriorityInput = components["schemas"]["PatchPriorityInput"];
+export type PersonAnswer = components["schemas"]["PersonAnswer"];
 export type PersonNode = components["schemas"]["PersonNode"];
 export type PersonNodes = components["schemas"]["PersonNodes"];
 export type PersonSignInResp = components["schemas"]["PersonSignInResp"];
@@ -15309,8 +16190,12 @@ export type PriorityIssue = components["schemas"]["PriorityIssue"];
 export type PriorityRow = components["schemas"]["PriorityRow"];
 export type PriorityWork = components["schemas"]["PriorityWork"];
 export type PriorityWorkParked = components["schemas"]["PriorityWorkParked"];
+export type PrivateProjectChannels = components["schemas"]["PrivateProjectChannels"];
+export type PrivateProjectsAnswer = components["schemas"]["PrivateProjectsAnswer"];
 export type ProgressCount = components["schemas"]["ProgressCount"];
 export type Project = components["schemas"]["Project"];
+export type ProjectAccess = components["schemas"]["ProjectAccess"];
+export type ProjectAccessInput = components["schemas"]["ProjectAccessInput"];
 export type ProjectDefaultAssignee = components["schemas"]["ProjectDefaultAssignee"];
 export type ProjectDefaultAssigneeInput = components["schemas"]["ProjectDefaultAssigneeInput"];
 export type ProjectDefaultRepository = components["schemas"]["ProjectDefaultRepository"];
@@ -15318,6 +16203,7 @@ export type ProjectDefaultRepositoryInput = components["schemas"]["ProjectDefaul
 export type ProjectGatedSteps = components["schemas"]["ProjectGatedSteps"];
 export type ProjectGatedStepsInput = components["schemas"]["ProjectGatedStepsInput"];
 export type ProjectPlans = components["schemas"]["ProjectPlans"];
+export type ProjectRepositoriesAnswer = components["schemas"]["ProjectRepositoriesAnswer"];
 export type PutArchitectureSourceInput = components["schemas"]["PutArchitectureSourceInput"];
 export type PutLegionSettingInput = components["schemas"]["PutLegionSettingInput"];
 export type QueuedMessage = components["schemas"]["QueuedMessage"];

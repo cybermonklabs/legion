@@ -27,12 +27,14 @@ import (
 // pass reaches. A document whose version is null is owed an index already, and the pass that
 // indexes it finds the store stale by the same two versions. A second run finds nothing a first
 // one marked, and nothing once the reconciliation has indexed the documents it marked, since that
-// pass sets store_version to the version it indexed.
-func markStaleDocuments(ctx context.Context, database *store.Store, rule int) ([]string, error) {
+// pass sets store_version to the version it indexed. Each batch is p's, and p paces the pass
+// (pacer), whose kind is stale_document.
+func markStaleDocuments(ctx context.Context, database *store.Store, rule int, p *pacer) ([]string, error) {
 	var marked []string
 	after := "00000000-0000-0000-0000-000000000000"
+	p.begin("stale_document")
 	for {
-		rows, err := database.Pool.Query(ctx, StaleDocumentsStatement, after, backfillBatch, rule)
+		rows, err := database.Pool.Query(ctx, StaleDocumentsStatement, after, p.throttle.Batch, rule)
 		if err != nil {
 			return marked, fmt.Errorf("read the documents another release indexed after the store: %w", err)
 		}
@@ -41,6 +43,7 @@ func markStaleDocuments(ctx context.Context, database *store.Store, rule int) ([
 			return marked, fmt.Errorf("read the documents another release indexed after the store: %w", err)
 		}
 		if len(batch) == 0 {
+			p.end()
 			return marked, nil
 		}
 		after = batch[len(batch)-1]
@@ -49,7 +52,11 @@ func markStaleDocuments(ctx context.Context, database *store.Store, rule int) ([
 			return marked, err
 		}
 		marked = append(marked, written...)
-		if len(batch) < backfillBatch {
+		if err := p.after(ctx, len(batch)); err != nil {
+			return marked, err
+		}
+		if len(batch) < p.throttle.Batch {
+			p.end()
 			return marked, nil
 		}
 	}

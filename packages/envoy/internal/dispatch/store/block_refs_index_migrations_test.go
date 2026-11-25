@@ -12,12 +12,13 @@ import (
 
 // The two migrations of block_refs' index of targets: blockRefsSourceIndex builds
 // block_refs_to_source on (to_kind, to_id, ((artifact_id)::text)), and dropBlockRefsTargetIndex
-// drops block_refs_to on (to_kind, to_id), the index it replaces. beforeBlockRefsSourceIndex is a
-// version before them, not the one just before: main's 20261120021308_search_text_versions sits
-// between it and blockRefsSourceIndex, so a census from it reads that migration too, and each test
-// reads only the entry of the migration it names.
+// drops block_refs_to on (to_kind, to_id), the index it replaces. beforeBlockRefsSourceIndex is the
+// version just before them in the merged set, 20261120222130_account_binding_fleet: main's own
+// choice, 20261118020802, would leave 20261119021826_clock_guards_search_path pending in the same
+// census, whose DO block the census cannot read, so the census would refuse the drop's catalog-only
+// exemption above the table limit. Each test reads only the entry of the migration it names.
 const (
-	beforeBlockRefsSourceIndex = 20261118020802
+	beforeBlockRefsSourceIndex = 20261120222130
 	blockRefsSourceIndex       = 20261120222732
 	dropBlockRefsTargetIndex   = 20261120222733
 )

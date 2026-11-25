@@ -59,8 +59,9 @@ cd "$(dirname "$0")/.."
 # runs the packages it keeps. It takes out the race lane's packages under the broker's tree (each
 # a package of ENVOY_RACE_LANE in .github/scripts/ci_job_reads.py, which builds the same pattern
 # as DATABASE_SKIPS_PATTERN and refuses this script when DEFAULT_EXCEPT says otherwise): the auth
-# service's natscallout, the one today, opens no database, and envoy-go-race runs it under the
-# detector, so a run here would be its second in the same CI run.
+# service's natscallout, the one today, which envoy-go-race runs under the detector, so a run here
+# would be its second in the same CI run. One of its tests opens the broker's Postgres, and that
+# job runs the package through this script too, so its skips are counted there.
 DEFAULT_PACKAGES=(./internal/cipher/... ./cmd/cipherd/)
 DEFAULT_EXCEPT='/internal/cipher/natscallout$'
 

@@ -352,6 +352,22 @@ export const projectDefaultAssigneesQuery = () =>
     queryFn: () => api.listProjectDefaultAssignees(),
   });
 
+/** Who may see one project and who changes that (`GET /projects/{key}/access`), read by its
+ *  Access tab and refreshed by the `project.access_changed` its writes append. */
+export const projectAccessQuery = (project: string) =>
+  queryOptions({
+    queryKey: ["project-access", project],
+    queryFn: () => api.getProjectAccess(project),
+  });
+
+/** Every group an access list can name, read by Settings → Groups and the Access tab's group
+ *  picker, and refreshed by the `access_group.changed` each group write appends. */
+export const accessGroupsQuery = () =>
+  queryOptions({
+    queryKey: ["access-groups"],
+    queryFn: () => api.listAccessGroups(),
+  });
+
 /** The mutation key every board move on `project` carries; `projectIssuesQuery` waits on it. */
 export const boardMoveMutationKey = (project: string): readonly unknown[] => [
   "board-move",

@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -79,7 +80,7 @@ func TestASessionKeepsItsNameAfterAWriteThatCarriesNoTitle(t *testing.T) {
 		json.RawMessage(`{"kind":"session","id":"`+named+`","origin":{"session_title":""}}`))
 	writeSessionEvent(t, ctx, pool, at.Add(3*time.Minute), actorJSON(t, model.Actor{Kind: "session", ID: nameless}))
 
-	titles, err := ResolveSessionTitles(ctx, pool, []string{named, nameless})
+	titles, err := ResolveSessionTitles(ctx, pool, []string{named, nameless}, events.EveryEvent)
 	if err != nil {
 		t.Fatalf("ResolveSessionTitles: %v", err)
 	}

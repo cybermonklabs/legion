@@ -2,7 +2,10 @@ package oidc
 
 import (
 	"errors"
+	"fmt"
 	"testing"
+	"unicode"
+	"unicode/utf8"
 )
 
 // workspaceAccount is a verified Google ID token's claims, as a domain-mode code flow reads them,
@@ -52,6 +55,8 @@ func TestWorkspaceLoginRefusesEachWayWithItsReason(t *testing.T) {
 		{"no email", func(c *Claims) { c.Email = "" }, flowDomain, ErrNoEmail, ""},
 		{"an email of no address's shape", func(c *Claims) { c.Email = "not-an-address" }, flowDomain, ErrNoEmail, ""},
 		{"an email with two @", func(c *Claims) { c.Email = "a@b@example.com" }, flowDomain, ErrNoEmail, ""},
+		{"an email ending in a no-break space, which a trim would take off", func(c *Claims) { c.Email = "A.Person@example.com\u00a0" }, flowDomain, ErrNoEmail, ""},
+		{"an email starting with an em space", func(c *Claims) { c.Email = "\u2003A.Person@example.com" }, flowDomain, ErrNoEmail, ""},
 		{"no subject", func(c *Claims) { c.Subject = "" }, flowDomain, ErrNoSubject, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -63,4 +68,39 @@ func TestWorkspaceLoginRefusesEachWayWithItsReason(t *testing.T) {
 			}
 		})
 	}
+}
+
+// EmailShape refuses an address holding a Unicode space (unicode.IsSpace) in any of its parts, not
+// only the ASCII ones Go's \s names: a trim (model.CanonicalLogin) takes U+00A0 NO-BREAK SPACE or
+// U+2003 EM SPACE off an address's end, so an address holding one could be read as another's.
+// Every other character but @ is taken in each part, as before.
+func TestEmailShapeRefusesEveryUnicodeSpaceAndNoOtherCharacter(t *testing.T) {
+	var wrong []string
+	spaces, others := 0, 0
+	for r := rune(0); r <= unicode.MaxRune; r++ {
+		if r == '@' || !utf8.ValidRune(r) {
+			continue
+		}
+		c := string(r)
+		if !unicode.IsSpace(r) {
+			others++
+			if address := "a" + c + "@ex" + c + "ample.c" + c + "m"; !EmailShape.MatchString(address) {
+				wrong = append(wrong, fmt.Sprintf("refuses %U in %q", r, address))
+			}
+			continue
+		}
+		spaces++
+		for _, address := range []string{"a" + c + "@example.com", "a@ex" + c + "ample.com", "a@example.c" + c + "m", "a@example.com" + c} {
+			if EmailShape.MatchString(address) {
+				wrong = append(wrong, fmt.Sprintf("takes the space %U in %q", r, address))
+			}
+		}
+	}
+	if spaces == 0 || others == 0 {
+		t.Fatalf("tried %d spaces and %d other characters: the walk of the runes read nothing", spaces, others)
+	}
+	if len(wrong) > 0 {
+		t.Fatalf("EmailShape is wrong for %d addresses, first %q", len(wrong), wrong[:min(len(wrong), 8)])
+	}
+	t.Logf("refused each of %d spaces in every part, and took %d other characters", spaces, others)
 }

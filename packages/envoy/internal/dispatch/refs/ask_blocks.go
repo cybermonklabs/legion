@@ -12,6 +12,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 // The type of each part of an ask, its ask_blocks.type and the salt of its identity hash
@@ -302,7 +303,7 @@ func askForParts(ctx context.Context, q Queryer, askID string) (model.Ask, time.
 // reconciliation writes (ReindexOwed), where the links a part holds belong to the part index
 // this plans. The question's and the options' short ids resolve for the ask's author, whom its
 // row records (NewReader), and the answer's for its answerer (askPartPairs).
-func planAskIfOwed(ctx context.Context, q Queryer, askID, serverURL string) (ItemRepair, error) {
+func planAskIfOwed(ctx context.Context, q Queryer, askID string, origins text.Origins) (ItemRepair, error) {
 	var stated, owed bool
 	var sum *string
 	var author []byte
@@ -328,7 +329,7 @@ func planAskIfOwed(ctx context.Context, q Queryer, askID, serverURL string) (Ite
 	if err != nil {
 		return ItemRepair{}, fmt.Errorf("read the author of ask %s: %w", askID, err)
 	}
-	resolve := NewReader(ctx, q, writer, string(ItemAsk), askID, serverURL)
+	resolve := NewReader(ctx, q, writer, string(ItemAsk), askID, origins)
 	if repair.indexing, err = planAskParts(index, ask, parts, partsSum, resolve, writtenAt); err != nil {
 		return ItemRepair{}, err
 	}
@@ -348,10 +349,10 @@ func planAskIfOwed(ctx context.Context, q Queryer, askID, serverURL string) (Ite
 // document's blocks the acting person may not see.
 func asksCitingTheDocument(param, seen string) string {
 	ask := `'` + string(ItemAsk) + `', r.ask_id::text, max(r.created_at), max(r.source_seq), `
-	visibleAsk := ` and ` + VisibleKind(string(ItemAsk), `r.ask_id::text`, seen)
+	visibleAsk := VisibleKind(string(ItemAsk), `r.ask_id::text`, seen)
 	return `select r.kind, ` + ask + `null::text
 		from ` + itemBlockLinks(ItemAsk) + `
-		where ` + itemBlockCurrent + visibleAsk + ` and r.to_kind = 'artifact' and r.to_id = ` + param + `
+		where ` + itemBlockCurrent + ` and r.to_kind = 'artifact' and r.to_id = ` + param + ` and ` + visibleAsk + `
 		group by r.kind, r.ask_id
 		union all
 		select r.kind, ` + ask + `r.to_id
@@ -359,7 +360,7 @@ func asksCitingTheDocument(param, seen string) string {
 		cross join lateral (
 			select r.kind, r.ask_id, r.created_at, r.source_seq, r.to_id
 			from ` + itemBlockLinks(ItemAsk) + `
-			where ` + itemBlockCurrent + visibleAsk + ` and r.to_kind = 'block' and r.to_id = k.node_id
+			where ` + itemBlockCurrent + ` and r.to_kind = 'block' and r.to_id = k.node_id and ` + visibleAsk + `
 		) r
 		where ` + VisibleKind("block", "k.node_id", seen) + `
 		group by r.kind, r.ask_id, r.to_id`
@@ -395,11 +396,11 @@ type AskIDs struct {
 // with the same scan and matches the parts the same way, for a caller that reads the ids beside
 // its other reads (api.queueAskDetails, for the issue read's batch and every list of asks), so
 // the two paths cannot drift.
-func AskPartIDs(ctx context.Context, q Queryer, asks []*model.Ask) ([]AskIDs, error) {
+func AskPartIDs(ctx context.Context, q Queryer, who model.Actor, asks []*model.Ask) ([]AskIDs, error) {
 	if len(asks) == 0 {
 		return nil, nil
 	}
-	stored, err := askPartRows(ctx, q, askRowIDs(asks))
+	stored, err := askPartRows(ctx, q, who, askRowIDs(asks))
 	if err != nil {
 		return nil, err
 	}
@@ -413,11 +414,11 @@ func AskPartIDs(ctx context.Context, q Queryer, asks []*model.Ask) ([]AskIDs, er
 // beside its other reads instead of spending a round trip on it (api.queueAskDetails). ids holds
 // one entry per ask and is filled once the batch is closed; no ask queues nothing and leaves ids
 // as it is, so a caller need not ask whether it has any.
-func QueueAskPartIDs(b *pgx.Batch, asks []*model.Ask, ids []AskIDs) {
+func QueueAskPartIDs(b *pgx.Batch, who model.Actor, asks []*model.Ask, ids []AskIDs) {
 	if len(asks) == 0 {
 		return
 	}
-	b.Queue(askPartRowsStatement, askRowIDs(asks)).Query(func(rows pgx.Rows) error {
+	b.Queue(askPartRowsSQL(), askRowIDs(asks), VisibilityArg(who)).Query(func(rows pgx.Rows) error {
 		stored, err := scanAskPartRows(rows, len(asks))
 		if err != nil {
 			return err
@@ -488,25 +489,31 @@ func (stored storedAskParts) idsOf(parts []itemblocks.Block) []string {
 	return ids
 }
 
-// askPartRowsStatement reads the indexed parts of each ask, one row per ask with a state row,
-// with the parts of each as arrays in position order, as a comment's blocks are read; an ask
-// whose state row holds no part yet reads as an empty list. One statement for the whole list,
-// run by both halves of the read (AskPartIDs, QueueAskPartIDs).
-const askPartRowsStatement = `
+// askPartRowsSQL is the statement that reads the indexed parts of each ask, one row per ask with
+// a state row, with the parts of each as arrays in position order, as a comment's blocks are
+// read; an ask whose state row holds no part yet reads as an empty list. One statement for the
+// whole list, run by both halves of the read (AskPartIDs, QueueAskPartIDs). It reads an ask's
+// parts only where the viewer bound at $2 may see the ask (the registry's ask predicate,
+// VisibleKind), so an ask that viewer may not see has no state row here, as one no build with the
+// part index has written: no id and revision 0. It is built at the call, as every statement that
+// renders the registry's predicate is: the registry is filled at init, after the package's vars.
+func askPartRowsSQL() string {
+	return `
 		select s.ask_id::text, s.revision,
 		       coalesce(array_agg(b.block_id order by b.position) filter (where b.block_id is not null), '{}') as ids,
 		       coalesce(array_agg(b.type order by b.position) filter (where b.block_id is not null), '{}') as types,
 		       coalesce(array_agg(b.text_sha256 order by b.position) filter (where b.block_id is not null), '{}') as sums
 		from ask_block_state s
 		left join ask_blocks b on b.ask_id = s.ask_id and b.position is not null
-		where s.ask_id = any($1::uuid[])
+		where s.ask_id = any($1::uuid[]) and ` + VisibleKind(string(ItemAsk), "s.ask_id::text", "$2") + `
 		group by s.ask_id, s.revision
 	`
+}
 
-// askPartRows runs askPartRowsStatement on q, keyed by ask id; an ask with no state row, which
-// no build with the part index has written, is absent.
-func askPartRows(ctx context.Context, q Queryer, askIDs []string) (map[string]storedAskParts, error) {
-	rows, err := q.Query(ctx, askPartRowsStatement, askIDs)
+// askPartRows runs askPartRowsSQL on q for who, keyed by ask id; an ask with no state row, which
+// no build with the part index has written, is absent, as is an ask who may not see.
+func askPartRows(ctx context.Context, q Queryer, who model.Actor, askIDs []string) (map[string]storedAskParts, error) {
+	rows, err := q.Query(ctx, askPartRowsSQL(), askIDs, VisibilityArg(who))
 	if err != nil {
 		return nil, fmt.Errorf("read ask parts: %w", err)
 	}
@@ -514,7 +521,7 @@ func askPartRows(ctx context.Context, q Queryer, askIDs []string) (map[string]st
 	return scanAskPartRows(rows, len(askIDs))
 }
 
-// scanAskPartRows reads the rows askPartRowsStatement returns, keyed by ask id. A batch can hand
+// scanAskPartRows reads the rows askPartRowsSQL returns, keyed by ask id. A batch can hand
 // it rows that already hold an error - one the sequential Query would have returned itself - and
 // that error is wrapped here as askPartRows wraps its Query's.
 func scanAskPartRows(rows pgx.Rows, expected int) (map[string]storedAskParts, error) {

@@ -134,9 +134,10 @@ else:
   check "$form is kept, so the tests it skips can be subtracted" "$(is "$retained" "yes")"
 done
 
-# Two steps run database-skips.sh, each with the argument list its entry reads: envoy-go's count,
-# which runs the broker's packages less the race lane's, and its command, and envoy-go-race-api's
-# race step, which runs the API package. Each step is read out of the file that holds it, in the
+# Three steps run database-skips.sh, each with the argument list its entry reads: envoy-go's count,
+# which runs the broker's packages less the race lane's, and its command, envoy-go-race-api's race
+# step, which runs the API package, and envoy-go-race's counted step, which runs the NATS auth
+# service. Each step is read out of the file that holds it, in the
 # directory GitHub runs it from, so the case holds the entry to the steps as written; an argument
 # list the entry does not list is refused, since what the script runs then is a reading nobody
 # made.
@@ -159,6 +160,9 @@ check "envoy-go's count runs the broker's packages less the race lane's, and its
 check "envoy-go-race-api's race step runs the API package under -race through the counter" \
   "$(is "$(read_audited .github/workflows/ci-job-envoy-go-race-api.yaml "Race-test the Dispatch API" "")" \
     "packages/envoy go test -json -count=1 -race -timeout 70m ./internal/dispatch/api/")"
+check "envoy-go-race's counted step runs the NATS auth service under -race through the counter" \
+  "$(is "$(read_audited .github/workflows/ci-job-envoy-go-race.yaml "Race-test the NATS auth service and count its skips" "")" \
+    "packages/envoy go test -json -count=1 -race -timeout 10m ./internal/cipher/natscallout/")"
 check "the race step with one more argument, which the entry does not list, is refused" \
   "$(is "$(read_audited .github/workflows/ci-job-envoy-go-race-api.yaml "Race-test the Dispatch API" " --race")" "refused")"
 

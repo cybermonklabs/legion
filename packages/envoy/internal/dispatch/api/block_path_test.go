@@ -350,7 +350,7 @@ type failingBlockPath struct {
 	during func()
 }
 
-func (f failingBlockPath) BlockPath(context.Context, string, string) (model.BlockPath, error) {
+func (f failingBlockPath) BlockPath(context.Context, model.Actor, string, string) (model.BlockPath, error) {
 	if f.during != nil {
 		f.during()
 	}

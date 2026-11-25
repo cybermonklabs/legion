@@ -1,0 +1,143 @@
+name: CI job dispatch-project-access
+
+# The steps of ci.yaml's `dispatch-project-access` job, in a file of its own.
+# ci.yaml's job of the same id calls this file, and that caller keeps `needs: changes` and the
+# whole `if:` that decides whether these steps run, so this file carries no `if:` of its own.
+#
+# The split is for the filters. This job's filter names this file beside ci.yaml, so a change to
+# these steps selects this job alone, where a change to ci.yaml selects every job.
+#
+# The private-projects acceptance drivers, from packages/dispatch. project-access.sh --all-public
+# (verification's c-a-private-reads) seeds PUB and PRIV, every project public, and holds bob,
+# carol and carol's PRIV token to finding each object of PRIV and nothing of PUB, no agent outside
+# PRIV and no direct message that is not their own. project-access.sh --private-by-sql makes PRIV
+# private by the store write the switch makes, where the switch, its preconditions met, answers
+# 409 PRIVATE_PROJECTS_UNAVAILABLE until the bus writer it needs is in the tree, and runs every
+# section that needs a private project: each caller PRIV is hidden from reads every route of the
+# route table, the sockets, search and the GitHub proxy, and writes every write route, and is
+# answered as for an id nobody holds. project-access-blob.sh (c-blob-unchanged) builds the merge
+# base beside this tree through scripts/e2e/lib/two-builds.sh, seeds each alike on a database of
+# its own with every project public, and fails on any answer a caller reads differently at the
+# two, and on any list it reads that holds no row. membership-answer.sh (contract K3) reads the
+# membership answer's three routes with the secrets broker's own projected token, under the
+# harness switch that gives that token (DISPATCH_E2E_ACCESS_ISSUER=1), and holds a person's dsp_
+# token and cookie refused at each.
+# The merge base is the commit this run tests the change against: the merge group's base, else
+# the first parent of the commit checked out, which on a pull request is the merge commit's base
+# and on a dispatched run the commit before main's tip. two-builds.sh takes its tree with
+# `git archive`, so the checkout holds the whole history (fetch-depth 0). The driver runs on its
+# own rather than under e2e/acceptance/with-harness.sh, whose stack it does not read: it starts
+# both servers and a fake Envoy itself, and reads the service only to make and drop its two
+# databases, so the step makes the database it names, with the vector extension the driver's
+# shared prerequisites ask of it.
+#
+# restricted-sweep.test.ts (c-restricted-sweep) runs its stack rows here, as only a job that names
+# a harness Postgres runs them: e2e/acceptance/restricted-sweep.sh against this tree's server, and
+# against a build with no read check, which it must FAIL. That build is the stack helper's own
+# default (e2e/__tests__/restricted-sweep-stack.ts, pinnedControlBuild): where the merge base with
+# main holds no restricted members, as every commit of main's line does since the pull request that
+# brought the read check brought restricted members with it, it is b29b710bd5, kept by the tag
+# archive/INFRA-3862-slack-channels, which the helper fetches from origin. So this job names no
+# build of its own, and the check runs the same way here, in a cluster pod and on a laptop.
+#
+# The job's last step reports ci-ok for the caller: on a merge-group run this job's own result
+# decides, it posts the failing ci-ok at once (.github/actions/ci-ok-report), as every job of
+# ci.yaml ends. `ci-ok-changes` carries ci.yaml's `toJSON(needs.changes)` for it.
+on:
+  workflow_call:
+    inputs:
+      ci-ok-changes:
+        description: >-
+          ci.yaml's `toJSON(needs.changes)`: end the job with ci-ok's report
+          (.github/actions/ci-ok-report), as every job of ci.yaml ends.
+        type: string
+        required: true
+
+# A `|` between proxy entries makes a go command fall through to the next source after ANY error,
+# where a `,` falls through only after a 404 or a 410 (Go's module reference, "GOPROXY protocol").
+# proxy.golang.org reset a download mid-stream and turned a Go lane red on a module whose hash
+# go.sum already holds (sjawhar/legion#2512); with `|direct` the command fetches the same bytes
+# straight from the source and checks them against go.sum, so this is a second path, not a weaker
+# check.
+env:
+  GOPROXY: https://proxy.golang.org|direct
+
+jobs:
+  dispatch-project-access:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    services:
+      postgres:
+        # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
+        image: ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
+        env:
+          POSTGRES_PASSWORD: ci
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      JOB_TIMEOUT_MINUTES: 60 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
+      DATABASE_URL: postgres://postgres:ci@localhost:5432/dispatch_project_access?sslmode=disable
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: packages/envoy/go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
+          cache: false
+      - uses: ./.github/actions/setup-bun
+      # The fake Envoy both servers read runs under Bun and imports the contracts.
+      - run: bun install --frozen-lockfile
+      - name: Size the service for this lane's Dispatch processes
+        run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
+      - name: Make the driver's database
+        run: |
+          psql "postgres://postgres:ci@localhost:5432/postgres" -c 'create database dispatch_project_access'
+          psql "$DATABASE_URL" -c 'create extension vector'
+      - name: Read PRIV's objects as its listed callers, every project public
+        run: bash e2e/acceptance/project-access.sh --all-public
+        working-directory: packages/dispatch
+      - name: Read and write every route as the callers PRIV is hidden from, PRIV made private by the store write
+        run: bash e2e/acceptance/project-access.sh --private-by-sql
+        working-directory: packages/dispatch
+      - name: Read the membership answer as the secrets broker reads it
+        run: DISPATCH_E2E_ACCESS_ISSUER=1 bash e2e/acceptance/with-harness.sh bash e2e/acceptance/membership-answer.sh
+        working-directory: packages/dispatch
+      - name: Compare what every caller reads at the merge base and at this tree
+        run: |
+          base=$(jq -r '.merge_group.base_sha // empty' "$GITHUB_EVENT_PATH")
+          base=${base:-$(git rev-parse HEAD^1)}
+          bash e2e/acceptance/project-access-blob.sh --base-commit "$base"
+        working-directory: packages/dispatch
+      - name: Read the connections the sweep's stacks' Postgres must allow
+        id: connections
+        timeout-minutes: 2
+        run: |
+          connections=$(go run ./internal/dispatch/store/cmd/connections)
+          [[ "$connections" =~ ^[1-9][0-9]*$ ]] || { echo "::error::go run ./internal/dispatch/store/cmd/connections printed '$connections', not a positive whole number"; exit 1; }
+          echo "connections=$connections" >> "$GITHUB_OUTPUT"
+        working-directory: packages/envoy
+      # The step's limit is beyond the stack child's own bound (bounded-subprocess.ts's
+      # twoStackBuild, 30 minutes), so a hung stack is stopped by the test, which names the child.
+      - name: Sweep every GET route and both sockets as a restricted member, here and with no read check
+        timeout-minutes: 32
+        run: |
+          export DISPATCH_E2E_PG_IMAGE=ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
+          export DISPATCH_E2E_PG_CONNECTIONS=${{ steps.connections.outputs.connections }}
+          bun run test:harness e2e/__tests__/restricted-sweep.test.ts
+        working-directory: packages/dispatch
+
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always()
+        uses: ./.github/actions/ci-ok-report
+        with:
+          job: dispatch-project-access
+          changes: ${{ inputs.ci-ok-changes }}
+          job-status: ${{ job.status }}

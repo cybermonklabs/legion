@@ -1,0 +1,12 @@
+kind: Fixed
+body: |-
+  A broker token of the account that holds an address now keeps working while a revocation of
+  the account it replaced is paid at the secrets broker. A broker token of an account Google gave
+  the address to, which has not signed in to Dispatch yet, is refused
+  `401 BROKER_ACCOUNT_NOT_SIGNED_IN`, saying to sign in, rather than as a revoked token. A live
+  socket closes when its person's member kind changes, whichever credential opened it; a socket
+  whose open could not read its caller closes at its first heartbeat; and a socket stays open when
+  its person's first row appears, full.
+time: 2026-11-17T11:35:53.000000000Z
+custom:
+    Issue: pr4199

@@ -142,7 +142,7 @@ func errorCodeOf(body string) string {
 	return answer.Code
 }
 
-// ───── shared with multiprocess_test.go ─────────────────────────────────────
+// ───── shared with multiprocess_test.go, membership_pass_test.go and twobuild_hold_test.go ─────
 
 // The sign-in client the fake issuer serves, the group it admits, and the callback the client
 // registers there for a process with no DISPATCH_SERVER_URL: such a process builds its callback
@@ -156,21 +156,40 @@ const (
 	loopbackCallback   = "http://127.0.0.1/auth/callback"
 )
 
-// signInThrough signs cookiePerson in on the process, the whole code flow a browser walks:
-// /auth/start for the issuer's authorization URL and the state cookie, the issuer's own sign-in,
-// then /auth/callback, which answers the session cookie. It returns that cookie.
+// signInThrough signs cookiePerson in on the process as a member of cookieGroup and returns the
+// session cookie (signInWith).
 func signInThrough(t *testing.T, p *dispatchProcess, issuer *oidctest.Issuer) *http.Cookie {
 	t.Helper()
-	issuer.SignInAs(map[string]any{
-		"sub":              "alice-subject",
-		"cognito:username": "ExampleIdP_" + cookiePerson,
+	return signInWith(t, p, issuer, poolClaims("alice-subject", cookiePerson))
+}
+
+// poolClaims are the claims a sign-in pool's ID token carries for email, a member of cookieGroup
+// whom the provider ExampleIdP federates, under the pool account subject: the pool username
+// `ExampleIdP_<email>` names the person to a group's rule.
+func poolClaims(subject, email string) map[string]any {
+	return map[string]any{
+		"sub":              subject,
+		"cognito:username": "ExampleIdP_" + email,
 		"cognito:groups":   []string{cookieGroup},
 		"identities":       []map[string]any{{"providerName": "ExampleIdP"}},
-	})
+	}
+}
+
+// signInWith signs the person claims name in on the process, the whole code flow a browser walks:
+// the issuer queues claims for its next sign-in, /auth/start answers the issuer's authorization URL
+// and the state cookie, the issuer signs the person in, and /auth/callback answers the session
+// cookie, which signInWith returns. It fails t at the first step that does not.
+func signInWith(t *testing.T, p *dispatchProcess, issuer *oidctest.Issuer, claims map[string]any) *http.Cookie {
+	t.Helper()
+	person, _ := claims["email"].(string)
+	if person == "" {
+		person, _ = claims["cognito:username"].(string)
+	}
+	issuer.SignInAs(claims)
 	started := browserGet(t, p.url("/auth/start"), nil)
 	defer started.Body.Close()
 	if started.StatusCode != http.StatusFound {
-		t.Fatalf("/auth/start answered %d, want a redirect to the issuer", started.StatusCode)
+		t.Fatalf("/auth/start for %s answered %d, want a redirect to the issuer", person, started.StatusCode)
 	}
 	var state *http.Cookie
 	for _, cookie := range started.Cookies() {
@@ -179,7 +198,7 @@ func signInThrough(t *testing.T, p *dispatchProcess, issuer *oidctest.Issuer) *h
 		}
 	}
 	if state == nil {
-		t.Fatalf("/auth/start set no sign-in state cookie: %v", started.Cookies())
+		t.Fatalf("/auth/start for %s set no sign-in state cookie: %v", person, started.Cookies())
 	}
 	code, returned := issuer.Authorize(t, started.Header.Get("Location"))
 	callback := browserGet(t, p.url("/auth/callback?code="+url.QueryEscape(code)+"&state="+url.QueryEscape(returned)), state)
@@ -190,7 +209,7 @@ func signInThrough(t *testing.T, p *dispatchProcess, issuer *oidctest.Issuer) *h
 		}
 	}
 	body, _ := io.ReadAll(callback.Body)
-	t.Fatalf("/auth/callback answered %d and set no session cookie: %s", callback.StatusCode, body)
+	t.Fatalf("/auth/callback for %s answered %d and set no session cookie: %s", person, callback.StatusCode, body)
 	return nil
 }
 

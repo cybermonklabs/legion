@@ -310,7 +310,7 @@ func TestDocumentEditsWriteAColonLineIntoCodeInsideATypedBlock(t *testing.T) {
 		calloutInItem  = "Intro.\n\n- item\n\n  :::callout{#c1 kind=\"note\" title=\"T\"}\n  ```\n  Body.\n  ```\n  :::\n\nAfter.\n"
 	)
 	text := func(artifactID string) string {
-		markdown, err := documentService.Text(context.Background(), artifactID)
+		markdown, err := documentService.Text(context.Background(), everyReader, artifactID)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -412,7 +412,7 @@ func TestAcceptingASuggestionStoresBlocksTheDocumentReadsBack(t *testing.T) {
 		code       = "Intro.\n\n```\nBody.\n```\n"
 	)
 	text := func(artifactID string) string {
-		markdown, err := documentService.Text(context.Background(), artifactID)
+		markdown, err := documentService.Text(context.Background(), everyReader, artifactID)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -495,12 +495,12 @@ func TestAcceptingASuggestionStoresBlocksTheDocumentReadsBack(t *testing.T) {
 				// An emptied paragraph stays in the live document where the markdown drops it.
 				return
 			}
-			_, token, err := documentService.TextWithToken(context.Background(), artifactID)
+			_, token, err := documentService.TextWithToken(context.Background(), everyReader, artifactID)
 			if err != nil {
 				t.Fatal(err)
 			}
 			seeded := createInteractionIssue(t, handler, "S"+string(rune('A'+index/26))+string(rune('A'+index%26)), "seeded "+test.name, test.want)
-			if _, readBack, err := documentService.TextWithToken(context.Background(), seeded.PrimaryArtifactID); err != nil || readBack != token {
+			if _, readBack, err := documentService.TextWithToken(context.Background(), everyReader, seeded.PrimaryArtifactID); err != nil || readBack != token {
 				t.Fatalf("the accepted document's token = %s, but its markdown reads back as %s (%v)", token, readBack, err)
 			}
 		})
@@ -548,12 +548,12 @@ func checkAccept(t *testing.T, handler http.Handler, documentService *docs.Servi
 		t.Fatalf("create suggestion: status=%d body=%s", created.Code, created.Body.String())
 	}
 	comment := decodeBody[model.Comment](t, created)
-	before, err := documentService.Text(context.Background(), issue.PrimaryArtifactID)
+	before, err := documentService.Text(context.Background(), everyReader, issue.PrimaryArtifactID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	accepted := dispatchRequest(t, handler, http.MethodPost, "/api/v1/comments/"+comment.ID+"/accept", map[string]any{}, "alice")
-	stored, token, err := documentService.TextWithToken(context.Background(), issue.PrimaryArtifactID)
+	stored, token, err := documentService.TextWithToken(context.Background(), everyReader, issue.PrimaryArtifactID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -580,7 +580,7 @@ func checkAccept(t *testing.T, handler http.Handler, documentService *docs.Servi
 		return
 	}
 	seeded := createInteractionIssue(t, handler, "S"+key, "seeded "+test.name, stored)
-	if _, readBack, err := documentService.TextWithToken(context.Background(), seeded.PrimaryArtifactID); err != nil || readBack != token {
+	if _, readBack, err := documentService.TextWithToken(context.Background(), everyReader, seeded.PrimaryArtifactID); err != nil || readBack != token {
 		t.Fatalf("the accepted document's token = %s, but its markdown reads back as %s (%v)", token, readBack, err)
 	}
 }
@@ -697,7 +697,7 @@ func TestAcceptingAnEmptySuggestionInATypedBlock(t *testing.T) {
 				t.Fatalf("create suggestion: status=%d body=%s", created.Code, created.Body.String())
 			}
 			comment := decodeBody[model.Comment](t, created)
-			before, err := documentService.Text(context.Background(), issue.PrimaryArtifactID)
+			before, err := documentService.Text(context.Background(), everyReader, issue.PrimaryArtifactID)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -706,7 +706,7 @@ func TestAcceptingAnEmptySuggestionInATypedBlock(t *testing.T) {
 				if accepted.Code != http.StatusOK {
 					t.Fatalf("accept: status=%d body=%s", accepted.Code, accepted.Body.String())
 				}
-				if after, err := documentService.Text(context.Background(), issue.PrimaryArtifactID); err != nil || after != test.want {
+				if after, err := documentService.Text(context.Background(), everyReader, issue.PrimaryArtifactID); err != nil || after != test.want {
 					t.Fatalf("after accepting = %q (%v), want %q", after, err, test.want)
 				}
 				return
@@ -714,7 +714,7 @@ func TestAcceptingAnEmptySuggestionInATypedBlock(t *testing.T) {
 			if accepted.Code != http.StatusBadRequest || !strings.Contains(accepted.Body.String(), `"code":"`+test.code+`"`) {
 				t.Fatalf("accept: status=%d body=%s, want 400 %s", accepted.Code, accepted.Body.String(), test.code)
 			}
-			after, err := documentService.Text(context.Background(), issue.PrimaryArtifactID)
+			after, err := documentService.Text(context.Background(), everyReader, issue.PrimaryArtifactID)
 			if err != nil || after != before {
 				t.Fatalf("after refused accept = %q (%v), want unchanged %q", after, err, before)
 			}
@@ -789,7 +789,7 @@ func TestDocumentEditsReplaceInACodeBlockWritesWithAsSent(t *testing.T) {
 			if edited.Code != http.StatusOK || !strings.Contains(edited.Body.String(), `"changed":true`) {
 				t.Fatalf("replace: status=%d body=%s", edited.Code, edited.Body.String())
 			}
-			if markdown, err := documentService.Text(context.Background(), issue.PrimaryArtifactID); err != nil || markdown != test.want {
+			if markdown, err := documentService.Text(context.Background(), everyReader, issue.PrimaryArtifactID); err != nil || markdown != test.want {
 				t.Fatalf("after replace = %q (%v), want %q", markdown, err, test.want)
 			}
 		})
@@ -806,7 +806,7 @@ func TestDocumentEditsReplaceInACodeBlockWritesWithAsSent(t *testing.T) {
 	if accepted := dispatchRequest(t, handler, http.MethodPost, "/api/v1/comments/"+comment.ID+"/accept", map[string]any{}, "alice"); accepted.Code != http.StatusOK {
 		t.Fatalf("accept: status=%d body=%s", accepted.Code, accepted.Body.String())
 	}
-	if markdown, err := documentService.Text(context.Background(), issue.PrimaryArtifactID); err != nil || markdown != "Intro.\n\n```\n  foo &amp; **x**\n```\n" {
+	if markdown, err := documentService.Text(context.Background(), everyReader, issue.PrimaryArtifactID); err != nil || markdown != "Intro.\n\n```\n  foo &amp; **x**\n```\n" {
 		t.Fatalf("after accepting = %q (%v), want the replacement as sent", markdown, err)
 	}
 }

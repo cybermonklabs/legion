@@ -22,6 +22,11 @@ const (
 	// dispatchIAPAudience is the audience IAP signs for a load balancer's backend service:
 	// /projects/<project number>/global/backendServices/<backend service id>.
 	dispatchIAPAudience = "/projects/123456789012/global/backendServices/1234567890123456789"
+	// dispatchDirectoryAccount is the keyless service account Dispatch reads the Workspace
+	// Directory through behind the IAP door, and dispatchDirectoryAdmin the Workspace user those
+	// reads act as.
+	dispatchDirectoryAccount = "dispatch-directory@example-project.iam.gserviceaccount.com"
+	dispatchDirectoryAdmin   = "directory-reader@example.com"
 	// The app's pod at publicOrigin with Google sign-in, and behind the IAP door.
 	dispatchPublicOriginGolden = "dispatch-pod-with-public-origin.golden"
 	dispatchIAPGolden          = "dispatch-pod-with-iap.golden"
@@ -40,14 +45,17 @@ func dispatchPublicOriginArgs() *gcp.DispatchArgs {
 	return args
 }
 
-// dispatchIAPArgs is a Dispatch behind the IAP door: served at publicOrigin, with iapAudience and
-// the domain whose accounts may use Dispatch, and no Google client.
+// dispatchIAPArgs is a Dispatch behind the IAP door: served at publicOrigin, with iapAudience, the
+// domain whose accounts may use Dispatch and the two inputs of its Workspace Directory reads, and no
+// Google client.
 func dispatchIAPArgs() *gcp.DispatchArgs {
 	args := dispatchSandboxArgs()
 	args.AllowedNamespaces = nil
 	args.PublicOrigin = dispatchPublicOrigin
 	args.IapAudience = pulumi.String(dispatchIAPAudience)
 	args.SignInDomain = "example.com"
+	args.DirectoryAccount = pulumi.String(dispatchDirectoryAccount)
+	args.DirectoryAdmin = pulumi.String(dispatchDirectoryAdmin)
 	return args
 }
 
@@ -92,17 +100,15 @@ func TestDispatchPublicOriginIsRenderedAsABrowserWritesIt(t *testing.T) {
 	require.Equal(t, "https://dispatch.example.com:8443", settings.ServerURL)
 }
 
-// outsideOrigin and signInOutside, which a Dispatch without a front door used to refuse, are
-// taken beside publicOrigin as they are beside the front door: the second origin follows the
-// first in the app's environment, and outside sign-in follows the domain.
-func TestDispatchPublicOriginTakesOutsideSignIn(t *testing.T) {
+// outsideOrigin, which a Dispatch without a front door used to refuse, is taken beside
+// publicOrigin as it is beside the front door: the second origin follows the first in the app's
+// environment.
+func TestDispatchPublicOriginTakesAnOutsideOrigin(t *testing.T) {
 	args := dispatchPublicOriginArgs()
 	args.OutsideOrigin = dispatchOutsideOrigin
-	args.SignInOutside = true
 	m, err := runDispatchWithProviders(t, "example-dispatch", args, newGCPProvider, newRandomProvider)
 	require.NoError(t, err)
 	requireRightAfter(t, m, "DISPATCH_SERVER_URL", "DISPATCH_OUTSIDE_ORIGIN")
-	requireRightAfter(t, m, "DISPATCH_SIGNIN_DOMAIN", "DISPATCH_SIGNIN_OUTSIDE")
 	require.Equal(t, dispatchOutsideOrigin, appEnv(t, m)["DISPATCH_OUTSIDE_ORIGIN"])
 }
 
@@ -177,9 +183,10 @@ func TestDispatchRefusesAPublicOriginItCannotServe(t *testing.T) {
 
 // Behind the IAP door the app names its person from IAP's signed header: DISPATCH_IDENTITY=iap,
 // DISPATCH_IAP_AUDIENCE and DISPATCH_SIGNIN_DOMAIN, the domain whose accounts may use Dispatch,
-// in the place the sign-in variables hold, right after the Secret's keys and before
-// DISPATCH_SERVER_URL, which is publicOrigin. No other sign-in variable renders and the Secret
-// holds no client secret, since Dispatch runs no Google sign-in of its own; the component
+// then DISPATCH_DIRECTORY_ACCOUNT and DISPATCH_DIRECTORY_ADMIN, which its Workspace Directory reads
+// sign as and act as, in the place the sign-in variables hold, right after the Secret's keys and
+// before DISPATCH_SERVER_URL, which is publicOrigin. No other sign-in variable renders and the
+// Secret holds no client secret, since Dispatch runs no Google sign-in of its own; the component
 // declares what the sandbox declares, and nothing of a front door.
 func TestDispatchRendersTheIAPDoor(t *testing.T) {
 	_, err := runDispatchWithProviders(t, "example-dispatch", dispatchIAPArgs(), newGCPProvider, newRandomProvider)
@@ -191,11 +198,15 @@ func TestDispatchRendersTheIAPDoor(t *testing.T) {
 	require.Equal(t, "iap", env["DISPATCH_IDENTITY"])
 	require.Equal(t, dispatchIAPAudience, env["DISPATCH_IAP_AUDIENCE"])
 	require.Equal(t, "example.com", env["DISPATCH_SIGNIN_DOMAIN"])
+	require.Equal(t, dispatchDirectoryAccount, env["DISPATCH_DIRECTORY_ACCOUNT"])
+	require.Equal(t, dispatchDirectoryAdmin, env["DISPATCH_DIRECTORY_ADMIN"])
 	require.Equal(t, dispatchPublicOrigin, env["DISPATCH_SERVER_URL"])
 	requireRightAfter(t, m, "DISPATCH_SIGNING_KEY", "DISPATCH_IDENTITY")
 	requireRightAfter(t, m, "DISPATCH_IDENTITY", "DISPATCH_IAP_AUDIENCE")
 	requireRightAfter(t, m, "DISPATCH_IAP_AUDIENCE", "DISPATCH_SIGNIN_DOMAIN")
-	requireRightAfter(t, m, "DISPATCH_SIGNIN_DOMAIN", "DISPATCH_SERVER_URL")
+	requireRightAfter(t, m, "DISPATCH_SIGNIN_DOMAIN", "DISPATCH_DIRECTORY_ACCOUNT")
+	requireRightAfter(t, m, "DISPATCH_DIRECTORY_ACCOUNT", "DISPATCH_DIRECTORY_ADMIN")
+	requireRightAfter(t, m, "DISPATCH_DIRECTORY_ADMIN", "DISPATCH_SERVER_URL")
 	for name := range env {
 		if name != "DISPATCH_SIGNIN_DOMAIN" {
 			require.False(t, strings.HasPrefix(name, "DISPATCH_SIGNIN_"), "%s configures Google sign-in beside IAP", name)
@@ -205,9 +216,10 @@ func TestDispatchRendersTheIAPDoor(t *testing.T) {
 	require.Equal(t, dispatchSandboxGolden(t), dispatchRegistrations(m))
 }
 
-// The IAP door needs publicOrigin, the origin IAP's load balancer serves, and signInDomain, the
-// domain Dispatch holds the signed header's hd claim to, and runs beside no Google client of
-// Dispatch's own, no outside sign-in and no second origin: each is refused naming it before
+// The IAP door needs publicOrigin, the origin IAP's load balancer serves, signInDomain, the
+// domain Dispatch holds the signed header's hd claim to, and directoryAccount and directoryAdmin,
+// the Workspace Directory reads Dispatch checks each person through, and runs beside no Google
+// client of Dispatch's own and no second origin: each is refused naming it before
 // anything registers, a client input for being sent at all rather than for the rest of the
 // sign-in group being missing.
 func TestDispatchRefusesWhatTheIAPDoorCannotServe(t *testing.T) {
@@ -216,6 +228,10 @@ func TestDispatchRefusesWhatTheIAPDoorCannotServe(t *testing.T) {
 	clientRefusal := func(input string) string {
 		return input + " configures Google sign-in, which iapAudience replaces: IAP signs a person in and Dispatch names them from IAP's signed header, " +
 			"so it runs no sign-in of its own; unset " + input + ", or unset iapAudience"
+	}
+	needsDirectory := func(input string) string {
+		return "iapAudience needs " + input + ": behind the IAP door Dispatch checks each person's Google Workspace account through the Directory API, " +
+			"signing as directoryAccount and reading as directoryAdmin, and refuses to boot without either; set " + input + ", or unset iapAudience"
 	}
 	with := func(edit func(*gcp.DispatchArgs)) func() *gcp.DispatchArgs {
 		return func() *gcp.DispatchArgs {
@@ -241,7 +257,6 @@ func TestDispatchRefusesWhatTheIAPDoorCannotServe(t *testing.T) {
 		}, needsOrigin},
 		{"signInClientId", "signInClientId", with(func(a *gcp.DispatchArgs) { a.SignInClientId = "example-client-id" }), clientRefusal("signInClientId")},
 		{"signInClientSecret", "signInClientSecret", with(func(a *gcp.DispatchArgs) { a.SignInClientSecret = pulumi.String("example-client-secret") }), clientRefusal("signInClientSecret")},
-		{"signInOutside", "signInOutside", with(func(a *gcp.DispatchArgs) { a.SignInOutside = true }), clientRefusal("signInOutside")},
 		{"outsideOrigin", "outsideOrigin", with(func(a *gcp.DispatchArgs) { a.OutsideOrigin = dispatchOutsideOrigin }),
 			"outsideOrigin is refused beside iapAudience: a browser reaches Dispatch through IAP alone, at publicOrigin, and a second origin is for " +
 				"outside sign-in, which the IAP door does not run; unset outsideOrigin, or unset iapAudience"},
@@ -250,6 +265,9 @@ func TestDispatchRefusesWhatTheIAPDoorCannotServe(t *testing.T) {
 				"which Dispatch holds IAP's signed header's hd claim to and refuses to boot without"},
 		{"an uppercase signInDomain", "signInDomain", with(func(a *gcp.DispatchArgs) { a.SignInDomain = "Example.com" }),
 			`signInDomain "Example.com" must be a lowercase DNS name with iapAudience`},
+		{"no directoryAccount", "directoryAccount", with(func(a *gcp.DispatchArgs) { a.DirectoryAccount = nil }), needsDirectory("directoryAccount")},
+		{"no directoryAdmin", "directoryAdmin", with(func(a *gcp.DispatchArgs) { a.DirectoryAdmin = nil }), needsDirectory("directoryAdmin")},
+		{"neither Directory input", "directoryAccount", with(func(a *gcp.DispatchArgs) { a.DirectoryAccount, a.DirectoryAdmin = nil, nil }), needsDirectory("directoryAccount")},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			_, err := gcp.ResolveDispatch(row.args())
@@ -259,6 +277,73 @@ func TestDispatchRefusesWhatTheIAPDoorCannotServe(t *testing.T) {
 	}
 	_, err := gcp.ResolveDispatch(dispatchIAPArgs())
 	require.NoError(t, err, "the same door with nothing beside it")
+}
+
+// dispatchDirectoryGroup is the two inputs of Dispatch's Workspace Directory reads, which the IAP
+// door needs and which nothing else takes. Written here alone, as the tailnet and sign-in groups
+// are, so the cluster-only table takes them from here.
+var dispatchDirectoryGroup = []dispatchInput{
+	{"directoryAccount", func(a *gcp.DispatchArgs) { a.DirectoryAccount = pulumi.String(dispatchDirectoryAccount) }},
+	{"directoryAdmin", func(a *gcp.DispatchArgs) { a.DirectoryAdmin = pulumi.String(dispatchDirectoryAdmin) }},
+}
+
+// directoryAccount and directoryAdmin configure the Workspace Directory reads Dispatch makes only
+// behind the IAP door, so either one without iapAudience is refused naming it before anything
+// registers, in each mode that has no IAP door: the sandbox, publicOrigin with Google sign-in, and
+// the tailnet front door. Each mode alone resolves, so the input is what is refused.
+func TestDispatchRefusesADirectoryInputWithoutTheIAPDoor(t *testing.T) {
+	for _, mode := range []struct {
+		name string
+		args func() *gcp.DispatchArgs
+	}{
+		{"the sandbox", dispatchSandboxArgs},
+		{"publicOrigin with Google sign-in", dispatchPublicOriginArgs},
+		{"the tailnet front door", dispatchArgs},
+	} {
+		_, err := gcp.ResolveDispatch(mode.args())
+		require.NoError(t, err, "%s alone resolves", mode.name)
+		for _, in := range dispatchDirectoryGroup {
+			t.Run(mode.name+", "+in.input, func(t *testing.T) {
+				args := mode.args()
+				in.set(args)
+				_, err := gcp.ResolveDispatch(args)
+				require.EqualError(t, err, in.input+" is refused without iapAudience: Dispatch reads the Google Workspace Directory only behind the IAP door, "+
+					"and refuses the setting at boot outside it; unset "+in.input+", or set iapAudience")
+			})
+		}
+	}
+}
+
+// directoryAccount and directoryAdmin may be other resources' outputs or secret configuration, so
+// each is judged once it resolves: a blank or whitespace-only value, which Dispatch reads as unset
+// and so refuses to boot behind the IAP door without, and one holding an nkey seed, whole or inside
+// an address, are refused naming the input and never the value. The documented values pass
+// (TestDispatchRendersTheIAPDoor).
+func TestDispatchRefusesADirectoryInputOnceItResolves(t *testing.T) {
+	seed, _ := testnats.User(t)
+	for _, in := range []struct {
+		input string
+		edit  func(*gcp.DispatchArgs, pulumi.StringInput)
+	}{
+		{"directoryAccount", func(a *gcp.DispatchArgs, v pulumi.StringInput) { a.DirectoryAccount = v }},
+		{"directoryAdmin", func(a *gcp.DispatchArgs, v pulumi.StringInput) { a.DirectoryAdmin = v }},
+	} {
+		blank := in.input + " is blank: Dispatch reads it as unset and refuses to boot behind the IAP door without it"
+		for _, row := range []struct{ name, value, want string }{
+			{"empty", "", blank},
+			{"whitespace only", " \n\t", blank},
+			{"a seed", seed, in.input + " holds an nkey seed (not echoed)"},
+			{"a lowercase seed inside an address", strings.ToLower(seed) + "@example.com", in.input + " holds an nkey seed (not echoed)"},
+		} {
+			t.Run(in.input+", "+row.name, func(t *testing.T) {
+				args := dispatchIAPArgs()
+				in.edit(args, pulumi.String(row.value))
+				_, err := runDispatchWithProviders(t, "example-dispatch", args, newGCPProvider, newRandomProvider)
+				require.ErrorContains(t, err, "envoy-infra:gcp:Dispatch example-dispatch: "+row.want)
+				require.NotContains(t, strings.ToUpper(err.Error()), seed)
+			})
+		}
+	}
 }
 
 // The audience may be another resource's output, so it is judged once it resolves: any value but
@@ -310,9 +395,37 @@ func TestConstructTakesTheIAPAudienceFromAnotherResource(t *testing.T) {
 	require.NoError(t, err)
 }
 
-// dispatchIAPConstructInputs are dispatchIAPArgs as a consumer's SDK sends them: no input of the
-// tailnet group, signInDomain alone of the sign-in group, publicOrigin, and the NATS hub in the
-// pods' own cluster.
+// directoryAccount and directoryAdmin reach the plugin over the wire a consumer's SDK uses, and may
+// be other resources' outputs: the account as the export of the program that declares it, the
+// delegated user as secret configuration. The app's Deployment renders both, waits for the
+// resource each comes from, and keeps the delegated user secret; under preview, where both are
+// unknown, the component still constructs.
+func TestConstructTakesTheDirectoryInputsFromAnotherResource(t *testing.T) {
+	account := resource.URN("urn:pulumi:s::p::pulumi:pulumi:StackReference::directory-signer")
+	inputs := dispatchIAPConstructInputs()
+	inputs["iapAudience"] = property.New(dispatchIAPAudience)
+	inputs["directoryAccount"] = property.New(dispatchDirectoryAccount).WithDependencies([]resource.URN{account})
+	inputs["directoryAdmin"] = property.New(dispatchDirectoryAdmin).WithSecret(true).WithDependencies([]resource.URN{upstream})
+	m, _, err := constructDispatchWithProviders(t, inputs, false, dispatchIAPConstructProviders())
+	require.NoError(t, err)
+	env := appEnv(t, m)
+	require.Equal(t, dispatchDirectoryAccount, env["DISPATCH_DIRECTORY_ACCOUNT"])
+	require.Equal(t, "<secret>", env["DISPATCH_DIRECTORY_ADMIN"], "the delegated user stays secret in the rendered pod")
+	dependencies := m.Named(t, "kubernetes:apps/v1:Deployment", "example-dispatch").RPC.GetDependencies()
+	require.Contains(t, dependencies, string(account), "the app waits for the resource the account comes from")
+	require.Contains(t, dependencies, string(upstream), "the app waits for the resource the delegated user comes from")
+
+	preview := dispatchIAPConstructInputs()
+	preview["iapAudience"] = property.New(dispatchIAPAudience)
+	preview["directoryAccount"] = property.New(property.Computed).WithDependencies([]resource.URN{account})
+	preview["directoryAdmin"] = property.New(property.Computed).WithSecret(true).WithDependencies([]resource.URN{upstream})
+	_, _, err = constructDispatchWithProviders(t, preview, true, dispatchIAPConstructProviders())
+	require.NoError(t, err)
+}
+
+// dispatchIAPConstructInputs are dispatchIAPArgs as a consumer's SDK sends them, less iapAudience,
+// which each test sends its own way: no input of the tailnet group, signInDomain alone of the
+// sign-in group, publicOrigin, the two Directory inputs, and the NATS hub in the pods' own cluster.
 func dispatchIAPConstructInputs() map[string]property.Value {
 	inputs := dispatchConstructInputs()
 	for _, group := range [][]dispatchInput{dispatchSandboxTailnetGroup, dispatchSandboxSignInGroup} {
@@ -322,6 +435,8 @@ func dispatchIAPConstructInputs() map[string]property.Value {
 	}
 	inputs["signInDomain"] = property.New("example.com")
 	inputs["publicOrigin"] = property.New(dispatchPublicOrigin)
+	inputs["directoryAccount"] = property.New(dispatchDirectoryAccount)
+	inputs["directoryAdmin"] = property.New(dispatchDirectoryAdmin)
 	inputs["natsUrl"] = property.New(inClusterNatsURL)
 	inputs["natsSeedSecret"] = property.New("projects/example-project/secrets/example-nats-seed")
 	return inputs

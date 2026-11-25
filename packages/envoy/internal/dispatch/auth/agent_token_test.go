@@ -287,14 +287,23 @@ func TestARememberedCallerHoldsOnlyItsClippedFields(t *testing.T) {
 		runtime.ReadMemStats(&stats)
 		return int64(stats.HeapAlloc)
 	}
-	before := heap()
-	for caller := range callers {
+	authenticate := func(caller int) {
+		t.Helper()
 		request := httptest.NewRequest(http.MethodGet, "/api/v1/whoami", nil)
 		request.Header.Set("User-Agent", fmt.Sprintf("agent/%d ", caller)+strings.Repeat("u", headerBytes))
 		request.Header.Set("X-Forwarded-For", strings.Repeat("9", headerBytes)+fmt.Sprintf(", 203.0.113.%d", caller))
 		if !MatchesSharedAgentToken(request, "old-token", tokens) {
 			t.Fatal("old-token was refused")
 		}
+	}
+	// One caller before the measurement: the first request allocates what every later one
+	// shares, such as each sync.Pool's per-processor array, whose size is GOMAXPROCS and not a
+	// remembered caller's (36 KiB more on a 288-processor host, which failed the bound below
+	// on every run there).
+	authenticate(callers)
+	before := heap()
+	for caller := range callers {
+		authenticate(caller)
 	}
 	grown := heap() - before
 	runtime.KeepAlive(tokens)

@@ -158,7 +158,7 @@ EOF
 chmod +x "${fake_bin_dir}/psql"
 
 # --- Fake curl: dev-stack.sh curls its own broker's health and pod-session route, its own
-# listener's health and its own Dispatch's route index; record the exact command line (which names
+# listener's health and its own Dispatch's health; record the exact command line (which names
 # the port dev-stack.sh read from each process's own log) to the instance's own
 # DEV_STACK_TEST_CURL_CALL_FILE and answer success at once, so no readiness loop ever opens a
 # socket. The one exception is a port listed in DEV_STACK_TEST_UNSERVED_FILE, which a server stub
@@ -949,8 +949,8 @@ assert_instance_ready() {
     fail "$label did not check its own broker's health at port ${process_port[broker]} with a 5 s bound; it asked that port at $(calls_at_port "${process_port[broker]}" "$curl_call_file")"
   grep -qxF -e "-sf --max-time 5 http://127.0.0.1:${process_port[listener]}/healthz" "$curl_call_file" ||
     fail "$label did not check its own listener's health at port ${process_port[listener]} with a 5 s bound; it asked that port at $(calls_at_port "${process_port[listener]}" "$curl_call_file")"
-  grep -qxF -e "-sf --max-time 5 http://127.0.0.1:${process_port[dispatch]}/api/v1" "$curl_call_file" ||
-    fail "$label did not read its own Dispatch's route index at port ${process_port[dispatch]} with a 5 s bound; it asked that port at $(calls_at_port "${process_port[dispatch]}" "$curl_call_file")"
+  grep -qxF -e "-sf --max-time 5 http://127.0.0.1:${process_port[dispatch]}/healthz" "$curl_call_file" ||
+    fail "$label did not check its own Dispatch's health at port ${process_port[dispatch]} with a 5 s bound; it asked that port at $(calls_at_port "${process_port[dispatch]}" "$curl_call_file")"
 
   # Two databases of this run's own, named for it, and no other; each server pointed at its own,
   # the broker with production's pool size (k), whole URL to whole URL.
@@ -1277,7 +1277,6 @@ collect_started() {
 # reader saw the server gone first) cannot pass the row without testing it.
 for server in listener dispatch; do
   asked_path=/healthz
-  [[ "$server" == listener ]] || asked_path=/api/v1
   label="the run whose $server exited after it reported its address"
   : >"$unserved_file"
   : >"${unserved_file}.asked"

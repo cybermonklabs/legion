@@ -81,7 +81,7 @@ func TestConditionalDocumentEditDoesNotOverwriteWriterDuringTableAnchorCheck(t *
 			`, "00000000-0000-4000-8000-000000000003", anchorJSON); err != nil {
 				t.Fatalf("index table anchor: %v", err)
 			}
-			markdown, blocks, err := service.TextWithBlocks(context.Background(), artifactID)
+			markdown, blocks, err := service.TextWithBlocks(context.Background(), serverReader, artifactID)
 			if err != nil {
 				t.Fatalf("read document: %v", err)
 			}
@@ -167,7 +167,7 @@ func TestConditionalDocumentEditDoesNotOverwriteWriterDuringTableAnchorCheck(t *
 			if err := service.Evict(context.Background(), artifactID); err != nil {
 				t.Fatalf("evict resident document: %v", err)
 			}
-			persisted, err := service.Text(context.Background(), artifactID)
+			persisted, err := service.Text(context.Background(), serverReader, artifactID)
 			if err != nil {
 				t.Fatalf("read durable document: %v", err)
 			}
@@ -204,7 +204,7 @@ func browserStyleWrite(service *Service, artifactID string, edit func(*pmdoc.Nod
 
 func documentTokenForTest(t *testing.T, service *Service, artifactID, markdown string) string {
 	t.Helper()
-	read, token, err := service.TextWithToken(context.Background(), artifactID)
+	read, token, err := service.TextWithToken(context.Background(), serverReader, artifactID)
 	if err != nil {
 		t.Fatalf("read document token: %v", err)
 	}

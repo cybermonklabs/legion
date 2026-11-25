@@ -157,8 +157,8 @@ func TestABackfillWhoseMarkThePreviousReleaseDrainedStillReachesEveryParent(t *t
 		}
 	}
 	if census.Refused() {
-		t.Fatalf("the census refused with %d difference(s) after a backfill whose mark a pod of the previous release drained, want zero",
-			census.Differences())
+		t.Fatalf("the census refused with %d difference(s) after a backfill whose mark a pod of the previous release drained, want zero:\n%s",
+			census.Differences(), censusFindings(census))
 	}
 }
 
@@ -355,13 +355,16 @@ func TestEveryMarkingStatementKeepsOrRaisesTheRuleAsR13States(t *testing.T) {
 
 // markingStatementDigests is, for each value refs.BlockIndexMarkingRule has held, the digest of the
 // statements that decide what a build of that rule marks (markingStatements), as TestGoldenDigest
-// (internal/broker/policy/load_test.go) pins its digest. A change to those statements is a change
+// (internal/cipher/policy/load_test.go) pins its digest. A change to those statements is a change
 // of what a pass owes, which raises the rule and records the new digest here beside the old. The
 // digest is taken over each statement's words joined by single spaces, so a statement's layout -
 // its line breaks and indentation, which the text it splices in from another place gives it -
 // moves no digest, and a change of any word does.
 var markingStatementDigests = map[int]string{
 	1: "127c62eb231428cab90c580dacb6d4ceda4f8137e4ac91b2924e982e7e5357ea",
+	// Rule 2: every node's scope - the project or the parties the comment write and the backfill's
+	// block and comment reads carry, and the node write that states them.
+	2: "52743f9e06e54d437dfc5631bd5c3ce1c53a5386516f0ece2e23d624c30428bb",
 }
 
 // The marking rule is held to the statements whose results decide which documents a build marks
@@ -414,7 +417,7 @@ func markingStatements(t *testing.T) []namedStatement {
 	statements = append(statements, namedStatement{"refs.CommentsNamingNoNode", read.sql[0]})
 	author := model.Actor{Kind: "user", ID: "alice"}
 	at := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
-	node, tuples := graphstore.CommentFacts(nil, "00000000-0000-0000-0000-000000000001", author, at, 1, "CORE-1", "CORE-1")
+	node, tuples := graphstore.CommentFacts(nil, "00000000-0000-0000-0000-000000000001", author, at, 1, "CORE-1", "CORE-1", "CORE", nil)
 	write := refs.CommentWrite{Nodes: []graphstore.Node{node}, Tuples: tuples}
 	if authors, facts, named := graphstore.AuthorFacts(graphstore.KindComment, node.ID, author, at, 1); named {
 		write.Nodes = append(write.Nodes, authors...)
@@ -495,7 +498,7 @@ func (recordedResults) Close() error { return nil }
 func restateAsThePreviousRelease(t *testing.T, database *store.Store, service *Service, document string) int {
 	t.Helper()
 	ctx := context.Background()
-	markdown, blocks, err := service.TextWithBlocks(ctx, document)
+	markdown, blocks, err := service.TextWithBlocks(ctx, serverReader, document)
 	if err != nil {
 		t.Fatalf("read %s: %v", document, err)
 	}

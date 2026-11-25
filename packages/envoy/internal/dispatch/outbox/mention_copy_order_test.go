@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -416,10 +417,11 @@ func TestHeldFallbackCopiesReadTheRuleAtMostOncePerPendingDelay(t *testing.T) {
 	deps := withHeldRoles(Deps{Store: storetest.SentStore(t, database, sent), Publisher: publisher, Broker: broker})
 	holder := holding(t, deps).instance
 	// passStatements is every statement a fallback pass sends, byte for byte: its claim, its read
-	// of the rows' own events, its two reads of each row's mentions, the rule's own statement and
-	// its record, and the pool's check of a connection that sat idle (PoolPing).
+	// of the rows' own events, its read of the sight of the sessions those rows are bound for
+	// (fallbackSight), its two reads of each row's mentions, the rule's own statement and its
+	// record, and the pool's check of a connection that sat idle (PoolPing).
 	passStatements := map[string]bool{
-		fallbackClaimQuery: true, fallbackEventsQuery: true, mentionDeliveryQuery: true,
+		fallbackClaimQuery: true, fallbackEventsQuery: true, access.SessionSightSQL: true, mentionDeliveryQuery: true,
 		mentionFallbackHoldsQuery: true, model.MentionCopyRuleSQL: true, fallbackRecordQuery: true,
 		storetest.PoolPing: true,
 	}

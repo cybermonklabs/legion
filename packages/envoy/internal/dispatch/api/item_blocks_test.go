@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 // commentBlockLayout reads a comment's blocks as one line: its current blocks in body order, each
@@ -215,7 +216,7 @@ func TestAnOlderEditedCommentsFirstItemBlockIndexHasNoMakingTime(t *testing.T) {
 		}
 	}
 	owed := oweBlockGrammar(t, database, "comment", comment.ID)
-	if indexed, err := refs.ReindexOwed(context.Background(), database.Pool, owed, "https://dispatch.example"); err != nil || !indexed {
+	if indexed, err := refs.ReindexOwed(context.Background(), database.Pool, owed, text.NewOrigins("https://dispatch.example")); err != nil || !indexed {
 		t.Fatalf("reindex the comment = %v (%v), want it indexed", indexed, err)
 	}
 	requireCommentBlocks(t, database, comment.ID, "first indexing", "b1@1 b2@1", 1)

@@ -82,6 +82,12 @@ type Difference struct{ Cause, At string }
 // reads a difference has done its job, and the deployment reading it decides.
 type StoreReport struct {
 	Kinds []KindReport
+	// Projects is the project census (ProjectCensus): for each kind whose nodes carry a project
+	// or parties, its rows with no node, with a node naming neither, and with a node naming
+	// another than the row's. Every count of it refuses the census. ProjectIncomplete names the
+	// first of those rows (ProjectComplete), as many as the census names differences of a kind.
+	Projects          []ProjectKindReport
+	ProjectIncomplete []string
 	// Absent is true where the database holds no store at all: graph_nodes is created by the
 	// first migration of this branch (20261109013400), so a database it has not reached has no
 	// kind to read, and the census reads none.
@@ -89,13 +95,24 @@ type StoreReport struct {
 	// Sizing is what the sizing pass found, or nil when it was not asked for.
 	Sizing *SizingReport
 	// ReadSeq is the read sequence the census saw: the highest graph_tuples.seq its snapshot
-	// holds, which is graph_tuples.seq at the commit the census read, and 0 for a store that
-	// holds no tuple or is Absent. R29 of the parent change's specification has a query, a census
-	// and an approval each record the read sequence it saw, so storeCensus reads it inside the
-	// census's own repeatable-read transaction, in the snapshot every kind is read in. Read on
-	// any other snapshot, it could name a tuple a write committed after the census's snapshot was
-	// taken, which none of the census's counts saw.
+	// holds, and 0 for a store that holds no tuple or is Absent. It is no commit position: seq is
+	// a bigserial taken when a tuple is inserted, not when it commits, so a write holding a lower
+	// seq may commit after the census's snapshot was taken, and the census saw none of it. R29 of
+	// the parent change's specification has a query, a census and an approval each record the read
+	// sequence it saw, so storeCensus reads it inside the census's own repeatable-read
+	// transaction, in the snapshot every kind is read in. Read on any other snapshot, it could name
+	// a tuple a write committed after the census's snapshot was taken, which none of the census's
+	// counts saw.
 	ReadSeq int64
+}
+
+// ProjectFindings is how many rows and nodes the project census found incomplete over every kind.
+func (r *StoreReport) ProjectFindings() int64 {
+	var found int64
+	for _, kind := range r.Projects {
+		found += kind.Findings()
+	}
+	return found
 }
 
 // Rows is how many projection rows the census checked over every kind.
@@ -141,7 +158,7 @@ func (r *StoreReport) Refused() bool {
 	if r.Absent {
 		return r.Sizing == nil
 	}
-	return len(r.Unpopulated()) > 0 || r.Differences() > 0
+	return len(r.Unpopulated()) > 0 || r.Differences() > 0 || r.ProjectFindings() > 0
 }
 
 // The kinds the census holds the store to. The first three are the kinds a table projects, each
@@ -622,6 +639,15 @@ func storeCensus(ctx context.Context, databaseURL string, sizing bool, afterKind
 		if report.Kinds, err = censusOfKinds(ctx, tx, afterKind); err != nil {
 			return nil, err
 		}
+		if report.Projects, err = ProjectCensus(ctx, tx); err != nil {
+			return nil, err
+		}
+		if report.ProjectFindings() > 0 {
+			limit := reportedDifferences
+			if report.ProjectIncomplete, err = projectIncomplete(ctx, tx, &limit); err != nil {
+				return nil, err
+			}
+		}
 	}
 	if sizing {
 		sized, err := readSizing(ctx, tx)
@@ -794,6 +820,10 @@ func (r *StoreReport) Write(w io.Writer) {
 		writeDifferences(w, kind.Kind, kind.RowDifferences, kind.ReportedRows)
 		writeDifferences(w, kind.Kind, kind.NodeDifferences, kind.ReportedNodes)
 	}
+	writeProjectCensus(w, r.Projects)
+	for _, row := range r.ProjectIncomplete {
+		fmt.Fprintf(w, "census: project incomplete %s\n", row)
+	}
 	if !r.Absent {
 		// read_seq is printed whole, without Thousands' separators: it is no count but a position
 		// in graph_tuples, and a reader holds it against graph_tuples.seq as a statement writes it.
@@ -811,6 +841,11 @@ func (r *StoreReport) Write(w io.Writer) {
 		fmt.Fprintln(w, "census: store absent, sizing ok")
 	case r.Differences() > 0:
 		fmt.Fprintf(w, "census: store REFUSED (%s difference(s))\n", pgmigrate.Thousands(r.Differences()))
+	case r.ProjectFindings() > 0:
+		fmt.Fprintf(w, "census: store REFUSED (%s row(s) whose node names no project or the wrong one, or node(s) no row stands behind;"+
+			" run envoy-dispatch backfill-graph-store for the missing, gone and unscoped ones but those naming a party the store"+
+			" refuses, let this build's block-index tick state gone each orphaned one whose line names it, and compare each differs row with its node)\n",
+			pgmigrate.Thousands(r.ProjectFindings()))
 	case len(empty) > 0:
 		fmt.Fprintf(w, "census: store REFUSED (kind(s) %s checked no row, so the census proves nothing of them)\n",
 			strings.Join(empty, ", "))

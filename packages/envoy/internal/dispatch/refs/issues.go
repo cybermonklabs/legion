@@ -31,9 +31,10 @@ var issueDepthCapSQL = strconv.Itoa(IssueDepthCap)
 // and a block pointer's ancestor rule (docs' refuseBlockPointers) are all this query.
 //
 // It binds no visibility predicate and takes no acting person, because it lists no issue to a
-// reader: every caller is a rule of a write - those three, the near-copy gate's exclusion of the
-// new issue's chain and the scope a result's check resolves in - and a rule that skipped an issue
-// it may not see would let a cycle through that issue, or route an event short of its root.
+// reader: every caller is a rule of a write - those three and the scope a result's check resolves
+// in - and a rule that skipped an issue it may not see would let a cycle through that issue, or
+// route an event short of its root. The near-copy gate reads the chain as its caller sees it
+// (IssueAncestorsAsSeen), since it runs before the create knows its parent is one the caller sees.
 func IssueAncestors(ctx context.Context, q Queryer, key string) ([]string, error) {
 	ancestors := []string{}
 	if key == "" {
@@ -50,6 +51,35 @@ func IssueAncestors(ctx context.Context, q Queryer, key string) ([]string, error
 		)
 		select coalesce(array_agg(key order by depth), '{}') from ancestors
 	`, key, IssueDepthCap).Scan(&ancestors); err != nil {
+		return nil, fmt.Errorf("read the ancestors of %s: %w", key, err)
+	}
+	return ancestors, nil
+}
+
+// IssueAncestorsAsSeen is IssueAncestors for a write that names key on behalf of who before it
+// knows who may see it: the near-copy gate of a create with a parent, which runs before the
+// create's transaction. An issue who may not see answers [], as an issue no row has does, in the
+// same one statement, so a parent of a project who may not see costs the rows a parent nobody
+// holds costs. Only the walk's first issue is judged: a parent and the issues above it are of one
+// project, since a parent names an issue of its child's project and no route moves an issue
+// between projects.
+func IssueAncestorsAsSeen(ctx context.Context, q Queryer, who model.Actor, key string) ([]string, error) {
+	ancestors := []string{}
+	if key == "" {
+		return ancestors, nil
+	}
+	if err := q.QueryRow(ctx, `
+		with recursive ancestors as (
+			select p.key, p.parent_key, 1 as depth
+			from issues i join issues p on p.key = i.parent_key
+			where i.key = $1 and `+VisibleKind("issue", "i.key", "$3")+`
+			union
+			select i.key, i.parent_key, a.depth + 1
+			from issues i join ancestors a on i.key = a.parent_key
+			where a.depth < $2
+		)
+		select coalesce(array_agg(key order by depth), '{}') from ancestors
+	`, key, IssueDepthCap, VisibilityArg(who)).Scan(&ancestors); err != nil {
 		return nil, fmt.Errorf("read the ancestors of %s: %w", key, err)
 	}
 	return ancestors, nil
@@ -130,6 +160,14 @@ var IssueRepoTerms = `repo_chain as (
 // the default alone.
 const IssueRepoJoin = `left join repo on repo.key = i.key
 	left join projects repo_default on repo_default.key = i.project_key`
+
+// projectDefaultRepoSQL is the default repository of the project projectExpr names, read as
+// IssueRepoJoin reads it (projects.default_repo), null where it has none: the repository an issue
+// of that project resolves to when its chain names none. RepositoryClause's index path
+// (repositorySeen) reads it, so the default comes from the column IssueRepoJoin reads.
+func projectDefaultRepoSQL(projectExpr string) string {
+	return `(select repo_default.default_repo from projects repo_default where repo_default.key = (` + projectExpr + `))`
+}
 
 // IssueRepoResolved is the repository an issue resolves to, over IssueRepoJoin: the nearest one
 // its chain names, else its project's default repository, else null. A statement that holds an

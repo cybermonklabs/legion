@@ -1,0 +1,10 @@
+kind: Added
+body: |-
+  The membership answer (`GET /api/v1/access/projects/{key}` and `GET /api/v1/access/person`)
+  takes `account_issuer` and `account_subject`, the Google account the credential being checked
+  records, and then carries an optional `holder`: `false` when Dispatch records another account for
+  the person, and the project answer's `visible` is then `false`. A question naming no account
+  answers as before, with no `holder`.
+time: 2026-11-17T16:29:47.502676770Z
+custom:
+    Issue: pr4199

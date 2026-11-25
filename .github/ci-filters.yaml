@@ -51,6 +51,8 @@ daemon_envoy_deps: &daemon_envoy_deps
   - 'packages/envoy/internal/cipher/ciphertest/*'
   - 'packages/envoy/internal/cipher/enroll/*'
   - 'packages/envoy/internal/cipher/exchange/*'
+  # The hold gate the broker's API, token exchange, approval page and airlock take.
+  - 'packages/envoy/internal/cipher/hold/*'
   - 'packages/envoy/internal/cipher/machine/*'
   - 'packages/envoy/internal/cipher/netaddr/*'
   - 'packages/envoy/internal/cipher/oauth/*'
@@ -88,6 +90,7 @@ daemon_envoy_deps: &daemon_envoy_deps
   - 'packages/envoy/internal/oauthrefusal/*'
   - 'packages/envoy/internal/oidc/**'
   - 'packages/envoy/internal/pgmigrate/*'
+  - 'packages/envoy/internal/principal/*'
   - 'packages/envoy/internal/ratelimit/*'
   - 'packages/envoy/internal/redact/*'
   - 'packages/envoy/internal/tlsalert/*'
@@ -120,6 +123,7 @@ dispatch_server: &dispatch_server
   - 'packages/envoy/internal/cipherclient/*'
   - 'packages/envoy/cipheraddr/*'
   - 'packages/envoy/internal/ctxlock/*'
+  - 'packages/envoy/internal/dispatch/access/*'
   - 'packages/envoy/natscred/*'
   - 'packages/envoy/internal/cistore/*'
   - 'packages/envoy/internal/contracts/*'
@@ -142,6 +146,7 @@ dispatch_server: &dispatch_server
   - 'packages/envoy/internal/dispatch/embed/*'
   - 'packages/envoy/internal/dispatch/embedqueue/*'
   - 'packages/envoy/internal/dispatch/envoy/*'
+  - 'packages/envoy/internal/dispatch/errkind/*'
   - 'packages/envoy/internal/dispatch/events/*'
   - 'packages/envoy/internal/dispatch/files/*'
   - 'packages/envoy/internal/dispatch/githubapi/*'
@@ -160,6 +165,7 @@ dispatch_server: &dispatch_server
   - 'packages/envoy/internal/dispatch/prioritystore/*'
   - 'packages/envoy/internal/dispatch/processes/*'
   - 'packages/envoy/internal/dispatch/rank/*'
+  - 'packages/envoy/internal/dispatch/readclass/*'
   - 'packages/envoy/internal/dispatch/redeliver/*'
   - 'packages/envoy/internal/dispatch/refs/*'
   - 'packages/envoy/internal/dispatch/retry/*'
@@ -195,6 +201,7 @@ dispatch_server: &dispatch_server
   - 'packages/envoy/internal/serverwait/*'
   - 'packages/envoy/internal/session/*'
   - 'packages/envoy/internal/store/*'
+  - 'packages/envoy/internal/weborigin/*'
   - 'packages/envoy/listenerwire/*'
   - 'packages/envoy/listenfd/*'
   - 'packages/envoy/migrationid/*'
@@ -363,6 +370,7 @@ daemon_go_tests:
   - 'packages/envoy/scripts/forced-order.sh'
   - 'packages/envoy/internal/testnats/testdata/hooked/**'
   - 'packages/envoy/internal/contracts/**'
+  - 'packages/envoy/internal/principal/*'
   - 'packages/contracts/fixtures/capability-redaction.json'
   - 'packages/contracts/fixtures/capability-redaction-plugin-report.json'
   - 'packages/contracts/fixtures/checks-settlement/*'
@@ -454,6 +462,7 @@ plugin_pack:
   - *dispatch_server
   - 'packages/envoy/natsgrant/*'
   - 'packages/envoy/dispatchbody/*'
+  - 'packages/envoy/internal/principal/*'
   - 'packages/envoy/internal/testnats/*'
   - 'packages/envoy/internal/testport/*'
   - 'packages/envoy/internal/testwait/*'
@@ -1060,6 +1069,7 @@ go_test_step_expansion_test: &go_test_step_expansion_test
   - '.github/workflows/worker-image.yaml'
   - 'packages/envoy/scripts/database-skips.sh'
   - 'packages/envoy/scripts/backend-count.sh'
+  - 'packages/envoy/scripts/named-tests.sh'
   - '.github/scripts/ci_job_reads.py'
 
 # why: .github/ci-notes/ci.md#test-the-test-job-the-claude-code-plugin-build-the-changelog
@@ -1196,6 +1206,7 @@ docs:
   - 'packages/envoy/internal/cipher/exchange/*'
   - 'packages/envoy/internal/cipher/groups/*'
   - 'packages/envoy/internal/cipher/helper/*'
+  - 'packages/envoy/internal/cipher/hold/*'
   - 'packages/envoy/internal/cipher/judge/*'
   - 'packages/envoy/internal/cipher/leasetime/*'
   - 'packages/envoy/internal/cipher/machine/*'
@@ -1220,6 +1231,7 @@ docs:
   - 'packages/envoy/natsgrant/*'
   - 'packages/envoy/internal/buildversion/*'
   - 'packages/envoy/internal/fileowner/*'
+  - 'packages/envoy/internal/principal/*'
   - 'packages/envoy/internal/ratelimit/*'
   - 'packages/envoy/internal/cipher/rulehost/*'
   - 'packages/envoy/internal/cipher/logmask/*'
@@ -1290,14 +1302,51 @@ dispatch_command_tests: &dispatch_command_tests
   - 'packages/envoy/cmd/dispatch/**'
   - 'packages/envoy/going/*'
   - 'packages/envoy/going/goingtest/*'
+  # The broker cmd/dispatch/leaver_hold_rig_test.go starts in process (ciphertest), and
+  # the packages it compiles: the leaver rig, which every cmd/dispatch test binary
+  # builds, the two-build row of a hold across a roll among them.
+  - 'packages/envoy/internal/cipher/proxyrules/*'
+  - 'packages/envoy/internal/cipher/answer/*'
+  - 'packages/envoy/internal/cipher/api/*'
+  - 'packages/envoy/internal/cipher/approval/**'
+  - 'packages/envoy/internal/cipher/ciphertest/*'
+  - 'packages/envoy/internal/cipher/enroll/*'
+  - 'packages/envoy/internal/cipher/exchange/*'
+  - 'packages/envoy/internal/cipher/hold/*'
+  - 'packages/envoy/internal/cipher/machine/*'
+  - 'packages/envoy/internal/cipher/netaddr/*'
+  - 'packages/envoy/internal/cipher/oauth/*'
+  - 'packages/envoy/internal/cipher/oauthstore/*'
+  - 'packages/envoy/internal/cipher/policy/**'
+  - 'packages/envoy/internal/cipher/dispatchread/*'
+  - 'packages/envoy/internal/cipher/projectaccess/*'
+  - 'packages/envoy/internal/cipher/record/*'
+  - 'packages/envoy/internal/cipher/githubname/*'
+  - 'packages/envoy/internal/cipher/requests/*'
+  - 'packages/envoy/internal/cipher/rulehost/*'
+  - 'packages/envoy/internal/cipher/secrets/*'
+  - 'packages/envoy/internal/cipher/store/**'
+  - 'packages/envoy/internal/testpg/testdb/*'
   - 'packages/envoy/internal/cipher/oauthwire/*'
+  - 'packages/envoy/internal/cipher/proof/*'
   - 'packages/envoy/internal/ciphertoken/*'
+  - 'packages/envoy/internal/ciphertoken/ciphertokentest/*'
   - 'packages/envoy/internal/dispatch/**'
   - 'packages/envoy/internal/bus/*'
   - 'packages/envoy/internal/bus/bustest/*'
   - 'packages/envoy/internal/buildversion/*'
   - 'packages/envoy/internal/cipherclient/*'
   - 'packages/envoy/cipheraddr/*'
+  # The two commands cmd/dispatch/leaver_hold_clients_test.go builds from the tree and
+  # runs against that broker (cmdtest.BuildCommand), and what they compile beyond the
+  # rig's packages; and internal/testtmp, where that test puts the helper's socket.
+  - 'packages/envoy/cmd/cipher/*'
+  - 'packages/envoy/cmd/cipher-helper/*'
+  - 'packages/envoy/internal/cipher/helper/*'
+  - 'packages/envoy/internal/cipher/leasetime/*'
+  - 'packages/envoy/internal/buildversion/*'
+  - 'packages/envoy/internal/fileowner/*'
+  - 'packages/envoy/internal/testtmp/*'
   - 'packages/envoy/internal/ctxlock/*'
   - 'packages/envoy/natscred/*'
   - 'packages/envoy/internal/cistore/*'
@@ -1327,6 +1376,7 @@ dispatch_command_tests: &dispatch_command_tests
   - 'packages/envoy/internal/session/*'
   - 'packages/envoy/internal/store/*'
   - 'packages/envoy/internal/testsocks5/*'
+  - 'packages/envoy/internal/weborigin/*'
   - 'packages/envoy/listenerwire/*'
   - 'packages/envoy/listenfd/*'
   - 'packages/envoy/migrationid/*'
@@ -1489,6 +1539,14 @@ dispatch_ui:
   - 'packages/proof-editor/**'
   - '.github/workflows/dispatch-unit-repeat.yaml'
   - 'packages/test-fixtures/src/**'
+  # e2e/__tests__/project-access-blob-base.test.ts copies the blob driver and every shell file it
+  # sources into a repository of its own and runs it, so those files are this job's reads.
+  - 'scripts/e2e/lib/loopback-dsn.py'
+  - 'scripts/e2e/lib/loopback-dsn.sh'
+  - 'scripts/e2e/lib/port-file.sh'
+  - 'scripts/e2e/lib/process-tree.sh'
+  - 'scripts/e2e/lib/rig.sh'
+  - 'scripts/e2e/lib/two-builds.sh'
   # BEGIN listed by `.github/scripts/check-ts-filters.sh write`: the files of packages/contracts/src filter dispatch_ui's
   # tsc programs compile. An edit by hand is refused by that check, which writes these.
   - 'packages/contracts/src/actor-label.ts'
@@ -1547,6 +1605,9 @@ dispatch_ui:
   - 'packages/envoy/scripts/lib/pg-url.sh'
   - 'packages/envoy/scripts/fixtures/pg-url.json'
   - 'packages/contracts/schemas/dispatch-openapi.json'
+  # why: .github/ci-notes/ci.md#dispatch_ui-the-route-index-and-the-github-proxys-expression-the-restricted-sweeps-tests-read
+  - 'packages/envoy/internal/dispatch/api/testdata/routes.txt'
+  - 'packages/envoy/internal/dispatch/githubapi/proxy.go'
   - 'packages/envoy/going/testdata/**'
   - 'scripts/third-party-notices.ts'
   - 'scripts/e2e/lib/process-tree.sh'
@@ -1663,6 +1724,7 @@ dispatch_browser:
   - 'packages/envoy/internal/cipher/enroll/*'
   - 'packages/envoy/internal/cipher/exchange/*'
   - 'packages/envoy/internal/cipher/groups/*'
+  - 'packages/envoy/internal/cipher/hold/*'
   - 'packages/envoy/internal/cipher/judge/*'
   - 'packages/envoy/internal/cipher/leasetime/*'
   - 'packages/envoy/internal/cipher/machine/*'
@@ -1686,6 +1748,7 @@ dispatch_browser:
   - 'packages/envoy/natsgrant/*'
   - 'packages/envoy/internal/logtest/*'
   - 'packages/envoy/internal/oidc/oidctest/*'
+  - 'packages/envoy/internal/principal/*'
   - 'packages/envoy/internal/ratelimit/*'
   - 'packages/envoy/internal/testpg/testdb/*'
   - 'packages/envoy/internal/testwait/*'
@@ -1713,6 +1776,7 @@ envoy_infra_go:
   - 'packages/envoy/internal/githubtest/*'
   - 'packages/envoy/internal/logtest/*'
   - 'packages/envoy/internal/oidc/oidctest/*'
+  - 'packages/envoy/internal/principal/*'
   - 'packages/envoy/internal/testnats/*'
   - 'packages/envoy/internal/testpg/*'
   - 'packages/envoy/internal/testpg/testdb/*'
@@ -1745,6 +1809,12 @@ envoy_go:
   - 'packages/proof-editor/**'
   - 'packages/contracts/src/**'
   - 'docs/site/src/content/docs/dispatch/running-dispatch.md'
+  # Dispatch's runbook's other page, whose blocks internal/dispatch/api's and
+  # internal/cipher/store's runbook tests run (their RULES entries).
+  - 'docs/site/src/content/docs/dispatch/after-a-restore.md'
+  # The comment-delivery run's README, whose psql calls internal/dispatch/api's
+  # broker_restore_test.go holds (its RULES entry).
+  - 'scripts/dispatch/README.md'
   - 'packages/contracts/fixtures/dedupe-keys.json'
   - 'packages/contracts/fixtures/github-envelopes/**'
   - 'packages/contracts/fixtures/decision-blocks/**'
@@ -1866,6 +1936,7 @@ dispatch_memory:
   - *go_workspace
   - *dispatch_command_tests
   - 'packages/envoy/internal/githubtest/*'
+  - 'packages/envoy/internal/principal/*'
   - 'packages/envoy/internal/testnats/*'
   - 'packages/envoy/internal/testport/*'
   - 'packages/envoy/internal/testwait/*'
@@ -1874,6 +1945,8 @@ dispatch_memory:
   # BEGIN generated by `.github/scripts/check-ci-filters.sh write`: a change to a Go test file the job this filter gates does not read
   # must not select it. An edit by hand is refused (rule 17 of that check), which writes these.
   - '!packages/envoy/cipheraddr/**/*_test.go'
+  - '!packages/envoy/cmd/cipher/**/*_test.go'
+  - '!packages/envoy/cmd/cipher-helper/**/*_test.go'
   - '!packages/envoy/cmd/dispatch/awareness_flood_multiprocess_test.go'
   - '!packages/envoy/cmd/dispatch/awareness_many_sockets_multiprocess_test.go'
   - '!packages/envoy/cmd/dispatch/awareness_simultaneous_multiprocess_test.go'
@@ -1883,12 +1956,16 @@ dispatch_memory:
   - '!packages/envoy/cmd/dispatch/outbox_load_steps_test.go'
   - '!packages/envoy/cmd/dispatch/read_cost_test.go'
   - '!packages/envoy/cmd/dispatch/store_census_test.go'
+  - '!packages/envoy/cmd/dispatch/twobuild_account_binding_test.go'
   - '!packages/envoy/cmd/dispatch/twobuild_cli_test.go'
   - '!packages/envoy/cmd/dispatch/twobuild_documents_test.go'
   - '!packages/envoy/cmd/dispatch/twobuild_harness_test.go'
+  - '!packages/envoy/cmd/dispatch/twobuild_hold_test.go'
   - '!packages/envoy/cmd/dispatch/twobuild_messages_test.go'
   - '!packages/envoy/cmd/dispatch/twobuild_migrations_test.go'
+  - '!packages/envoy/cmd/dispatch/twobuild_nodes_test.go'
   - '!packages/envoy/cmd/dispatch/twobuild_owner_lock_test.go'
+  - '!packages/envoy/cmd/dispatch/twobuild_session_cookie_test.go'
   - '!packages/envoy/cmd/dispatch/twobuild_transition_test.go'
   - '!packages/envoy/cmd/dispatch/write_cost_test.go'
   - '!packages/envoy/going/**/*_test.go'
@@ -1907,6 +1984,7 @@ dispatch_multiprocess:
   - *go_workspace
   - *dispatch_command_tests
   - 'packages/envoy/internal/githubtest/*'
+  - 'packages/envoy/internal/principal/*'
   - 'packages/envoy/internal/testnats/*'
   - 'packages/envoy/internal/testport/*'
   - 'packages/envoy/internal/testwait/*'
@@ -1915,6 +1993,8 @@ dispatch_multiprocess:
   # BEGIN generated by `.github/scripts/check-ci-filters.sh write`: a change to a Go test file the job this filter gates does not read
   # must not select it. An edit by hand is refused (rule 17 of that check), which writes these.
   - '!packages/envoy/cipheraddr/**/*_test.go'
+  - '!packages/envoy/cmd/cipher/**/*_test.go'
+  - '!packages/envoy/cmd/cipher-helper/**/*_test.go'
   - '!packages/envoy/cmd/dispatch/edit_memory_test.go'
   - '!packages/envoy/cmd/dispatch/graph_cost_test.go'
   - '!packages/envoy/cmd/dispatch/history_memory_test.go'
@@ -1925,12 +2005,16 @@ dispatch_multiprocess:
   - '!packages/envoy/cmd/dispatch/memory_test.go'
   - '!packages/envoy/cmd/dispatch/read_cost_test.go'
   - '!packages/envoy/cmd/dispatch/store_census_test.go'
+  - '!packages/envoy/cmd/dispatch/twobuild_account_binding_test.go'
   - '!packages/envoy/cmd/dispatch/twobuild_cli_test.go'
   - '!packages/envoy/cmd/dispatch/twobuild_documents_test.go'
   - '!packages/envoy/cmd/dispatch/twobuild_harness_test.go'
+  - '!packages/envoy/cmd/dispatch/twobuild_hold_test.go'
   - '!packages/envoy/cmd/dispatch/twobuild_messages_test.go'
   - '!packages/envoy/cmd/dispatch/twobuild_migrations_test.go'
+  - '!packages/envoy/cmd/dispatch/twobuild_nodes_test.go'
   - '!packages/envoy/cmd/dispatch/twobuild_owner_lock_test.go'
+  - '!packages/envoy/cmd/dispatch/twobuild_session_cookie_test.go'
   - '!packages/envoy/cmd/dispatch/twobuild_transition_test.go'
   - '!packages/envoy/cmd/dispatch/write_cost_test.go'
   - '!packages/envoy/going/**/*_test.go'
@@ -1950,6 +2034,7 @@ dispatch_two_builds_go:
   - *go_workspace
   - *dispatch_command_tests
   - 'packages/envoy/internal/githubtest/*'
+  - 'packages/envoy/internal/principal/*'
   - 'packages/envoy/internal/testnats/*'
   - 'packages/envoy/internal/testport/*'
   - 'packages/envoy/internal/testwait/*'
@@ -2012,6 +2097,8 @@ dispatch_two_builds_go:
   # BEGIN generated by `.github/scripts/check-ci-filters.sh write`: a change to a Go test file the job this filter gates does not read
   # must not select it. An edit by hand is refused (rule 17 of that check), which writes these.
   - '!packages/envoy/cipheraddr/**/*_test.go'
+  - '!packages/envoy/cmd/cipher/**/*_test.go'
+  - '!packages/envoy/cmd/cipher-helper/**/*_test.go'
   - '!packages/envoy/cmd/dispatch/awareness_flood_multiprocess_test.go'
   - '!packages/envoy/cmd/dispatch/awareness_many_sockets_multiprocess_test.go'
   - '!packages/envoy/cmd/dispatch/awareness_simultaneous_multiprocess_test.go'
@@ -2046,6 +2133,7 @@ dispatch_two_builds:
   - *go_workspace
   - *dispatch_command_tests
   - 'packages/envoy/internal/githubtest/*'
+  - 'packages/envoy/internal/principal/*'
   - 'packages/envoy/internal/testnats/*'
   - 'packages/envoy/internal/testport/*'
   - 'packages/envoy/internal/testwait/*'
@@ -2111,6 +2199,8 @@ dispatch_two_builds:
   # BEGIN generated by `.github/scripts/check-ci-filters.sh write`: a change to a Go test file the job this filter gates does not read
   # must not select it. An edit by hand is refused (rule 17 of that check), which writes these.
   - '!packages/envoy/cipheraddr/**/*_test.go'
+  - '!packages/envoy/cmd/cipher/**/*_test.go'
+  - '!packages/envoy/cmd/cipher-helper/**/*_test.go'
   - '!packages/envoy/cmd/dispatch/awareness_flood_multiprocess_test.go'
   - '!packages/envoy/cmd/dispatch/awareness_many_sockets_multiprocess_test.go'
   - '!packages/envoy/cmd/dispatch/awareness_simultaneous_multiprocess_test.go'
@@ -2137,6 +2227,29 @@ dispatch_two_builds:
   - '!packages/envoy/natsversion/**/*_test.go'
   - '!packages/envoy/roleholder/**/*_test.go'
   # END generated
+# why: .github/ci-notes/ci.md#the-private-projects-blob-drivers-job
+dispatch_project_access:
+  - *ci_router
+  - *ci_filters_data
+  - '.github/workflows/ci-job-dispatch-project-access.yaml'
+  - *go_workspace
+  - 'packages/envoy/**'
+  - 'packages/dispatch/e2e/**'
+  - 'packages/contracts/**'
+  - 'packages/test-fixtures/src/**'
+  - 'scripts/e2e/lib/two-builds.sh'
+  - 'scripts/e2e/lib/rig.sh'
+  - 'scripts/e2e/lib/loopback-dsn.sh'
+  - 'scripts/e2e/lib/loopback-dsn.py'
+  - 'scripts/e2e/lib/port-file.sh'
+  - 'scripts/e2e/lib/held-port.py'
+  - 'scripts/e2e/lib/process-tree.sh'
+  - '.github/scripts/pg-connection-ceiling.sh'
+  - *bun_install
+  # BEGIN generated by `.github/scripts/check-ci-filters.sh write`: a change to a Go test file the job this filter gates does not read
+  # must not select it. An edit by hand is refused (rule 17 of that check), which writes these.
+  - '!**/*_test.go'
+  # END generated
 # why: .github/ci-notes/ci.md#listener_server_change-the-server-change-soak-listener-server-change-go
 listener_server_change:
   - *ci_router
@@ -2146,6 +2259,7 @@ listener_server_change:
   - *listener_command
   # why: .github/ci-notes/ci.md#listener_server_change-what-cmdlisteners-test-binary-compiles-that-go-list
   - 'packages/envoy/going/*'
+  - 'packages/envoy/internal/principal/*'
   - 'packages/envoy/internal/routing/*'
   - 'packages/envoy/infra/gcp/testdata/clustered-hub-listener-pod.golden'
   - 'packages/envoy/infra/gcp/testdata/dispatch-listener-pod.golden'
@@ -2160,6 +2274,7 @@ listener_server_change:
   - 'packages/envoy/internal/bus/bustest/*'
   - 'packages/envoy/internal/cmdtest/*'
   - 'packages/envoy/internal/ctxlock/*'
+  - 'packages/envoy/internal/dispatch/access/*'
   - 'packages/envoy/internal/dispatch/accesslog/*'
   - 'packages/envoy/internal/dispatch/cipher/*'
   - 'packages/envoy/internal/dispatch/agentstream/*'
@@ -2177,11 +2292,15 @@ listener_server_change:
   - 'packages/envoy/internal/dispatch/embed/*'
   - 'packages/envoy/internal/dispatch/embedqueue/*'
   - 'packages/envoy/internal/dispatch/envoy/*'
+  - 'packages/envoy/internal/dispatch/errkind/*'
   - 'packages/envoy/internal/dispatch/events/*'
   - 'packages/envoy/internal/dispatch/files/*'
   - 'packages/envoy/internal/dispatch/githubapp/*'
   - 'packages/envoy/internal/dispatch/githubapp/ratelimit/*'
   - 'packages/envoy/internal/dispatch/githubreads/*'
+  # docs imports graphcensus for the roll tick's object pass (EventsOweObjectPass,
+  # WriteOwedObjectNodes, the orphan sweep), so cmd/listener's test binary compiles it again.
+  - 'packages/envoy/internal/dispatch/graphcensus/*'
   - 'packages/envoy/internal/dispatch/graphstore/*'
   - 'packages/envoy/internal/dispatch/identity/*'
   - 'packages/envoy/internal/dispatch/itemblocks/*'
@@ -2193,6 +2312,7 @@ listener_server_change:
   - 'packages/envoy/internal/dispatch/prioritystore/*'
   - 'packages/envoy/internal/dispatch/processes/*'
   - 'packages/envoy/internal/dispatch/rank/*'
+  - 'packages/envoy/internal/dispatch/readclass/*'
   - 'packages/envoy/internal/dispatch/refs/*'
   - 'packages/envoy/internal/dispatch/retry/*'
   - 'packages/envoy/internal/dispatch/sessionanswers/*'
@@ -2269,6 +2389,7 @@ broker_multiprocess:
   - 'packages/envoy/internal/cipher/exchange/*'
   - 'packages/envoy/internal/cipher/groups/*'
   - 'packages/envoy/internal/cipher/helper/*'
+  - 'packages/envoy/internal/cipher/hold/*'
   - 'packages/envoy/internal/cipher/judge/*'
   - 'packages/envoy/internal/cipher/leasetime/*'
   - 'packages/envoy/internal/cipher/machine/*'
@@ -2313,6 +2434,7 @@ broker_multiprocess:
   - 'packages/envoy/internal/oidc/**'
   - 'packages/envoy/internal/pglisten/*'
   - 'packages/envoy/internal/pgmigrate/*'
+  - 'packages/envoy/internal/principal/*'
   - 'packages/envoy/internal/ratelimit/*'
   - 'packages/envoy/internal/redact/*'
   - 'packages/envoy/internal/tlsalert/*'
@@ -2443,6 +2565,7 @@ envoy_smoke:
   - '!packages/envoy/internal/oidc/**/*_test.go'
   - '!packages/envoy/internal/pglisten/**/*_test.go'
   - '!packages/envoy/internal/pgmigrate/**/*_test.go'
+  - '!packages/envoy/internal/principal/**/*_test.go'
   - '!packages/envoy/internal/ratelimit/**/*_test.go'
   - '!packages/envoy/internal/redact/**/*_test.go'
   - '!packages/envoy/internal/roles/**/*_test.go'
@@ -2712,6 +2835,9 @@ envoy_go_race:
   - 'packages/contracts/fixtures/dispatch-targeted-delivery.json'
   - 'packages/contracts/fixtures/envoy-session-no-interests.json'
   - 'docs/site/src/content/docs/dispatch/running-dispatch.md'
+  # Dispatch's runbook's other page, whose mode switch and reset internal/dispatch/store's
+  # mode_switch_test.go reads (its RULES entry).
+  - 'docs/site/src/content/docs/dispatch/after-a-restore.md'
   - '.dispatch/architecture/dispatch-store.md'
   - '.github/scripts/pg-connection-ceiling.sh'
   # BEGIN generated by `.github/scripts/check-ci-filters.sh write`: a change to a Go test file the job this filter gates does not read
@@ -2761,6 +2887,7 @@ envoy_go_race:
   - '!packages/envoy/internal/cipher/githubname/**/*_test.go'
   - '!packages/envoy/internal/cipher/groups/**/*_test.go'
   - '!packages/envoy/internal/cipher/helper/**/*_test.go'
+  - '!packages/envoy/internal/cipher/hold/**/*_test.go'
   - '!packages/envoy/internal/cipher/judge/**/*_test.go'
   - '!packages/envoy/internal/cipher/leasetime/**/*_test.go'
   - '!packages/envoy/internal/cipher/logmask/**/*_test.go'
@@ -2792,6 +2919,7 @@ envoy_go_race:
   - '!packages/envoy/internal/contracts/**/*_test.go'
   - '!packages/envoy/internal/ctxlock/**/*_test.go'
   - '!packages/envoy/internal/dedupe/**/*_test.go'
+  - '!packages/envoy/internal/dispatch/access/**/*_test.go'
   - '!packages/envoy/internal/dispatch/accesslog/**/*_test.go'
   - '!packages/envoy/internal/dispatch/agentstream/**/*_test.go'
   - '!packages/envoy/internal/dispatch/api/**/*_test.go'
@@ -2811,6 +2939,7 @@ envoy_go_race:
   - '!packages/envoy/internal/dispatch/embed/**/*_test.go'
   - '!packages/envoy/internal/dispatch/embedqueue/**/*_test.go'
   - '!packages/envoy/internal/dispatch/envoy/**/*_test.go'
+  - '!packages/envoy/internal/dispatch/errkind/**/*_test.go'
   - '!packages/envoy/internal/dispatch/events/**/*_test.go'
   - '!packages/envoy/internal/dispatch/files/**/*_test.go'
   - '!packages/envoy/internal/dispatch/githubapi/**/*_test.go'
@@ -2828,6 +2957,7 @@ envoy_go_race:
   - '!packages/envoy/internal/dispatch/prioritystore/**/*_test.go'
   - '!packages/envoy/internal/dispatch/processes/**/*_test.go'
   - '!packages/envoy/internal/dispatch/rank/**/*_test.go'
+  - '!packages/envoy/internal/dispatch/readclass/**/*_test.go'
   - '!packages/envoy/internal/dispatch/redeliver/**/*_test.go'
   - '!packages/envoy/internal/dispatch/refs/**/*_test.go'
   - '!packages/envoy/internal/dispatch/retry/**/*_test.go'
@@ -2863,6 +2993,7 @@ envoy_go_race:
   - '!packages/envoy/internal/oidc/oidctest/**/*_test.go'
   - '!packages/envoy/internal/pglisten/**/*_test.go'
   - '!packages/envoy/internal/pgmigrate/**/*_test.go'
+  - '!packages/envoy/internal/principal/**/*_test.go'
   - '!packages/envoy/internal/ratelimit/**/*_test.go'
   - '!packages/envoy/internal/redact/**/*_test.go'
   - '!packages/envoy/internal/roles/**/*_test.go'
@@ -2923,6 +3054,7 @@ envoy_go_race_api:
   - 'packages/envoy/internal/cipher/ciphertest/*'
   - 'packages/envoy/internal/cipher/enroll/*'
   - 'packages/envoy/internal/cipher/exchange/*'
+  - 'packages/envoy/internal/cipher/hold/*'
   - 'packages/envoy/internal/cipher/machine/*'
   - 'packages/envoy/internal/cipher/netaddr/*'
   - 'packages/envoy/internal/cipher/oauth/*'
@@ -2932,6 +3064,9 @@ envoy_go_race_api:
   - 'packages/envoy/internal/cipher/policy/policytest/*'
   - 'packages/envoy/internal/cipher/dispatchread/*'
   - 'packages/envoy/internal/cipher/projectaccess/*'
+  # The project-access stand-in the real-broker test of a restricted member's agent
+  # token serves the broker (restricted_agent_token_test.go).
+  - 'packages/envoy/internal/cipher/projectaccess/projectaccesstest/*'
   - 'packages/envoy/internal/cipher/proof/*'
   - 'packages/envoy/internal/cipher/record/*'
   - 'packages/envoy/internal/cipher/githubname/*'
@@ -2950,16 +3085,19 @@ envoy_go_race_api:
   - 'packages/envoy/internal/cputest/*'
   - 'packages/envoy/internal/ctxlock/*'
   - 'packages/envoy/natscred/*'
+  - 'packages/envoy/internal/dispatch/access/*'
   - 'packages/envoy/internal/dispatch/accesslog/*'
   - 'packages/envoy/internal/dispatch/cipher/*'
   - 'packages/envoy/internal/dispatch/agentstream/*'
   - 'packages/envoy/internal/dispatch/api/*'
   - 'packages/envoy/internal/dispatch/api/apitest/*'
   - 'packages/envoy/internal/dispatch/api/testdata/**'
+  - 'packages/envoy/internal/dispatch/approvetimingtest/*'
   - 'packages/envoy/internal/dispatch/architecture/*'
   - 'packages/envoy/internal/dispatch/architecture/notes/*'
   - 'packages/envoy/internal/dispatch/asks/*'
   - 'packages/envoy/internal/dispatch/auth/*'
+  - 'packages/envoy/internal/dispatch/auth/forwardedtest/*'
   - 'packages/envoy/internal/dispatch/benchtime/*'
   - 'packages/envoy/internal/dispatch/bytelru/*'
   # why: .github/ci-notes/ci.md#envoy_go_race_api-the-apis-ci-reconcile-passes-route-reads-cireconciles
@@ -2977,6 +3115,7 @@ envoy_go_race_api:
   - 'packages/envoy/internal/dispatch/embed/embedtest/*'
   - 'packages/envoy/internal/dispatch/embedqueue/*'
   - 'packages/envoy/internal/dispatch/envoy/*'
+  - 'packages/envoy/internal/dispatch/errkind/*'
   - 'packages/envoy/internal/dispatch/events/*'
   - 'packages/envoy/internal/dispatch/files/*'
   - 'packages/envoy/internal/dispatch/files/filestest/*'
@@ -3004,6 +3143,7 @@ envoy_go_race_api:
   - 'packages/envoy/internal/dispatch/prioritystore/*'
   - 'packages/envoy/internal/dispatch/processes/*'
   - 'packages/envoy/internal/dispatch/rank/*'
+  - 'packages/envoy/internal/dispatch/readclass/*'
   - 'packages/envoy/internal/dispatch/refs/*'
   - 'packages/envoy/internal/dispatch/refs/refstest/*'
   - 'packages/envoy/internal/dispatch/retry/*'
@@ -3035,6 +3175,7 @@ envoy_go_race_api:
   - 'packages/envoy/internal/oidc/oidctest/*'
   - 'packages/envoy/internal/pglisten/*'
   - 'packages/envoy/internal/pgmigrate/*'
+  - 'packages/envoy/internal/principal/*'
   - 'packages/envoy/internal/ratelimit/*'
   - 'packages/envoy/internal/redact/*'
   - 'packages/envoy/internal/tlsalert/*'
@@ -3057,6 +3198,14 @@ envoy_go_race_api:
   - 'packages/contracts/fixtures/live/**'
   - 'packages/contracts/fixtures/ask-reply-recipients.json'
   - '.github/scripts/pg-connection-ceiling.sh'
+  # Dispatch's runbook, both pages, whose blocks internal/dispatch/api's broker_restore_test.go
+  # reads and its runbook tests run (its RULES entry).
+  - 'docs/site/src/content/docs/dispatch/running-dispatch.md'
+  - 'docs/site/src/content/docs/dispatch/after-a-restore.md'
+  # The delivery audit's README and the comment-delivery run's, whose psql calls the same test
+  # holds (its RULES entry).
+  - 'packages/envoy/internal/dispatch/deliveryaudit/README.md'
+  - 'scripts/dispatch/README.md'
   # BEGIN generated by `.github/scripts/check-ci-filters.sh write`: a change to a Go test file the job this filter gates does not read
   # must not select it. An edit by hand is refused (rule 17 of that check), which writes these.
   - '!packages/envoy/cipheraddr/**/*_test.go'
@@ -3067,6 +3216,7 @@ envoy_go_race_api:
   - '!packages/envoy/internal/ciphertoken/**/*_test.go'
   - '!packages/envoy/internal/contracts/**/*_test.go'
   - '!packages/envoy/internal/ctxlock/**/*_test.go'
+  - '!packages/envoy/internal/dispatch/access/**/*_test.go'
   - '!packages/envoy/internal/dispatch/accesslog/**/*_test.go'
   - '!packages/envoy/internal/dispatch/agentstream/**/*_test.go'
   - '!packages/envoy/internal/dispatch/api/comment_mention_claim_model_checks_test.go'
@@ -3104,6 +3254,7 @@ envoy_go_race_api:
   - '!packages/envoy/internal/dispatch/embed/**/*_test.go'
   - '!packages/envoy/internal/dispatch/embedqueue/**/*_test.go'
   - '!packages/envoy/internal/dispatch/envoy/**/*_test.go'
+  - '!packages/envoy/internal/dispatch/errkind/**/*_test.go'
   - '!packages/envoy/internal/dispatch/events/**/*_test.go'
   - '!packages/envoy/internal/dispatch/files/**/*_test.go'
   - '!packages/envoy/internal/dispatch/githubapp/**/*_test.go'
@@ -3120,6 +3271,7 @@ envoy_go_race_api:
   - '!packages/envoy/internal/dispatch/prioritystore/**/*_test.go'
   - '!packages/envoy/internal/dispatch/processes/**/*_test.go'
   - '!packages/envoy/internal/dispatch/rank/**/*_test.go'
+  - '!packages/envoy/internal/dispatch/readclass/**/*_test.go'
   - '!packages/envoy/internal/dispatch/refs/**/*_test.go'
   - '!packages/envoy/internal/dispatch/retry/**/*_test.go'
   - '!packages/envoy/internal/dispatch/sessionanswers/**/*_test.go'
@@ -3139,6 +3291,7 @@ envoy_go_race_api:
   - '!packages/envoy/internal/oidc/**/*_test.go'
   - '!packages/envoy/internal/pglisten/**/*_test.go'
   - '!packages/envoy/internal/pgmigrate/**/*_test.go'
+  - '!packages/envoy/internal/principal/**/*_test.go'
   - '!packages/envoy/internal/ratelimit/**/*_test.go'
   - '!packages/envoy/internal/redact/**/*_test.go'
   - '!packages/envoy/internal/roles/**/*_test.go'
@@ -3166,6 +3319,12 @@ envoy_go_claim_model:
   - 'packages/contracts/fixtures/live/**'
   - 'packages/contracts/schemas/dispatch-openapi.json'
   - 'packages/contracts/fixtures/ask-reply-recipients.json'
+  # Dispatch's runbook, both pages, which internal/dispatch/api's broker_restore_test.go reads;
+  # the step compiles it with the rest of that package.
+  - 'docs/site/src/content/docs/dispatch/running-dispatch.md'
+  - 'docs/site/src/content/docs/dispatch/after-a-restore.md'
+  # The comment-delivery run's README, whose psql calls that package's broker_restore_test.go holds.
+  - 'scripts/dispatch/README.md'
   # BEGIN generated by `.github/scripts/check-ci-filters.sh write`: a change to a Go test file the job this filter gates does not read
   # must not select it. An edit by hand is refused (rule 17 of that check), which writes these.
   - '!packages/envoy/agentloop/**/*_test.go'
@@ -3185,6 +3344,7 @@ envoy_go_claim_model:
   - '!packages/envoy/internal/contracts/**/*_test.go'
   - '!packages/envoy/internal/ctxlock/**/*_test.go'
   - '!packages/envoy/internal/dedupe/**/*_test.go'
+  - '!packages/envoy/internal/dispatch/access/**/*_test.go'
   - '!packages/envoy/internal/dispatch/accesslog/**/*_test.go'
   - '!packages/envoy/internal/dispatch/agentstream/**/*_test.go'
   - '!packages/envoy/internal/dispatch/api/no_reach_base_test.go'
@@ -3204,6 +3364,7 @@ envoy_go_claim_model:
   - '!packages/envoy/internal/dispatch/embed/**/*_test.go'
   - '!packages/envoy/internal/dispatch/embedqueue/**/*_test.go'
   - '!packages/envoy/internal/dispatch/envoy/**/*_test.go'
+  - '!packages/envoy/internal/dispatch/errkind/**/*_test.go'
   - '!packages/envoy/internal/dispatch/events/**/*_test.go'
   - '!packages/envoy/internal/dispatch/files/**/*_test.go'
   - '!packages/envoy/internal/dispatch/githubapi/**/*_test.go'
@@ -3221,6 +3382,7 @@ envoy_go_claim_model:
   - '!packages/envoy/internal/dispatch/prioritystore/**/*_test.go'
   - '!packages/envoy/internal/dispatch/processes/**/*_test.go'
   - '!packages/envoy/internal/dispatch/rank/**/*_test.go'
+  - '!packages/envoy/internal/dispatch/readclass/**/*_test.go'
   - '!packages/envoy/internal/dispatch/redeliver/**/*_test.go'
   - '!packages/envoy/internal/dispatch/refs/**/*_test.go'
   - '!packages/envoy/internal/dispatch/retry/**/*_test.go'
@@ -3252,6 +3414,7 @@ envoy_go_claim_model:
   - '!packages/envoy/internal/oidc/**/*_test.go'
   - '!packages/envoy/internal/pglisten/**/*_test.go'
   - '!packages/envoy/internal/pgmigrate/**/*_test.go'
+  - '!packages/envoy/internal/principal/**/*_test.go'
   - '!packages/envoy/internal/ratelimit/**/*_test.go'
   - '!packages/envoy/internal/redact/**/*_test.go'
   - '!packages/envoy/internal/roles/**/*_test.go'
@@ -3292,9 +3455,21 @@ envoy_go_race_docs:
   - '.github/scripts/race_memory.py'
   - '.github/scripts/pg-connection-ceiling.sh'
   - *go_workspace
+  # The broker's shapes and the broker-token check internal/dispatch/cipher compiles (below).
+  - 'packages/envoy/internal/cipher/oauthwire/*'
+  - 'packages/envoy/internal/cipher/wire/*'
+  - 'packages/envoy/internal/ciphertoken/*'
   - 'packages/envoy/internal/contracts/*'
   - 'packages/envoy/internal/id/*'
+  # docs reads who may see a document's room through the access rule (roomstate.go,
+  # socket_admission.go), and access names a project's owner through principal (store.go).
+  - 'packages/envoy/internal/dispatch/access/*'
+  - 'packages/envoy/internal/principal/*'
   - 'packages/envoy/internal/dispatch/accesslog/*'
+  # internal/dispatch/identity's membership pass asks the broker through this client
+  # whether a signed-out person has access that outlives the browser
+  # (membership_pass.go).
+  - 'packages/envoy/internal/dispatch/cipher/*'
   - 'packages/envoy/internal/dispatch/asks/*'
   - 'packages/envoy/internal/dispatch/auth/*'
   - 'packages/envoy/internal/dispatch/benchtime/*'
@@ -3303,10 +3478,13 @@ envoy_go_race_docs:
   - 'packages/envoy/internal/dispatch/docs/crafted/*'
   - 'packages/envoy/internal/dispatch/docs/docstest/*'
   - 'packages/envoy/internal/dispatch/duty/*'
+  - 'packages/envoy/internal/dispatch/errkind/*'
   - 'packages/envoy/internal/dispatch/events/*'
   - 'packages/envoy/internal/dispatch/githubreads/*'
   - 'packages/envoy/internal/dispatch/graphcensus/*'
   - 'packages/envoy/internal/dispatch/graphstore/*'
+  # docs' register of the store's writers reads graphstoretest.WriteFunctions (storeWriterCall).
+  - 'packages/envoy/internal/dispatch/graphstore/graphstoretest/*'
   - 'packages/envoy/internal/dispatch/identity/*'
   - 'packages/envoy/internal/dispatch/itemblocks/*'
   - 'packages/envoy/internal/dispatch/model/*'
@@ -3324,18 +3502,31 @@ envoy_go_race_docs:
   - 'packages/envoy/internal/dispatch/store/migrations/**'
   - 'packages/envoy/internal/dispatch/store/searchtest/*'
   - 'packages/envoy/internal/dispatch/store/storetest/*'
+  # The lock-step helpers the roll tick's object-pass driver holds its steps with
+  # (docs' requireTheRollTicksObjectPassLockOrder).
+  - 'packages/envoy/internal/dispatch/store/storetest/lockstep/*'
   - 'packages/envoy/internal/dispatch/testlimits/*'
   - 'packages/envoy/internal/dispatch/text/*'
   - 'packages/envoy/internal/dispatch/texttrees/*'
   - 'packages/envoy/internal/explaintest/*'
   - 'packages/envoy/internal/fold/*'
   - 'packages/envoy/internal/githubappjwt/*'
+  # internal/ciphertoken reads this machine's Google identity token through it.
+  - 'packages/envoy/internal/googleidentity/*'
   - 'packages/envoy/internal/goroutinetest/*'
   - 'packages/envoy/internal/logtest/*'
   - 'packages/envoy/internal/oauthrefusal/*'
   - 'packages/envoy/internal/oidc/*'
   - 'packages/envoy/internal/pglisten/*'
   - 'packages/envoy/internal/pgmigrate/*'
+  # internal/ciphertoken bounds each address's introspections through it.
+  - 'packages/envoy/internal/ratelimit/*'
+  # internal/googleidentity names a failed read through redact, which reads tlsalert.
+  - 'packages/envoy/internal/redact/*'
+  - 'packages/envoy/internal/tlsalert/*'
+  # internal/ciphertoken calls Google's token mint through a client that refuses
+  # redirects (googleaccount.go).
+  - 'packages/envoy/internal/redirects/*'
   - 'packages/envoy/internal/stacktest/*'
   - 'packages/envoy/internal/testport/*'
   - 'packages/envoy/internal/testwait/*'
@@ -3344,13 +3535,18 @@ envoy_go_race_docs:
   - 'packages/contracts/fixtures/decision-blocks/**'
   # BEGIN generated by `.github/scripts/check-ci-filters.sh write`: a change to a Go test file the job this filter gates does not read
   # must not select it. An edit by hand is refused (rule 17 of that check), which writes these.
+  - '!packages/envoy/internal/cipher/**/*_test.go'
+  - '!packages/envoy/internal/ciphertoken/**/*_test.go'
   - '!packages/envoy/internal/contracts/**/*_test.go'
+  - '!packages/envoy/internal/dispatch/access/**/*_test.go'
   - '!packages/envoy/internal/dispatch/accesslog/**/*_test.go'
   - '!packages/envoy/internal/dispatch/asks/**/*_test.go'
   - '!packages/envoy/internal/dispatch/auth/**/*_test.go'
   - '!packages/envoy/internal/dispatch/benchtime/**/*_test.go'
   - '!packages/envoy/internal/dispatch/bytelru/**/*_test.go'
+  - '!packages/envoy/internal/dispatch/cipher/**/*_test.go'
   - '!packages/envoy/internal/dispatch/duty/**/*_test.go'
+  - '!packages/envoy/internal/dispatch/errkind/**/*_test.go'
   - '!packages/envoy/internal/dispatch/events/**/*_test.go'
   - '!packages/envoy/internal/dispatch/githubreads/**/*_test.go'
   - '!packages/envoy/internal/dispatch/graphcensus/**/*_test.go'
@@ -3368,14 +3564,19 @@ envoy_go_race_docs:
   - '!packages/envoy/internal/dispatch/texttrees/**/*_test.go'
   - '!packages/envoy/internal/explaintest/**/*_test.go'
   - '!packages/envoy/internal/fold/**/*_test.go'
+  - '!packages/envoy/internal/googleidentity/**/*_test.go'
   - '!packages/envoy/internal/goroutinetest/**/*_test.go'
   - '!packages/envoy/internal/oauthrefusal/**/*_test.go'
   - '!packages/envoy/internal/oidc/**/*_test.go'
   - '!packages/envoy/internal/pglisten/**/*_test.go'
   - '!packages/envoy/internal/pgmigrate/**/*_test.go'
+  - '!packages/envoy/internal/principal/**/*_test.go'
+  - '!packages/envoy/internal/ratelimit/**/*_test.go'
+  - '!packages/envoy/internal/redact/**/*_test.go'
   - '!packages/envoy/internal/stacktest/**/*_test.go'
   - '!packages/envoy/internal/testport/**/*_test.go'
   - '!packages/envoy/internal/testwait/**/*_test.go'
+  - '!packages/envoy/internal/tlsalert/**/*_test.go'
   - '!packages/envoy/listenerwire/**/*_test.go'
   - '!packages/envoy/migrationid/**/*_test.go'
   # END generated

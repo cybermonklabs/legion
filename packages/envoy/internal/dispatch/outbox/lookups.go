@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -21,9 +22,9 @@ import (
 // joined, a comment's thread root's author, a message's author, the sessions a document credits,
 // the sessions a person's reply under a comment reaches and where the read found each
 // (loadCommentRecipients, threadRecipient), the sessions an issue's primary document credits
-// (loadPrimaryDocumentAuthors), what a new comment's mentions did (mentionDeliveries), and which
-// of a comment's mentions failed (mentionFallbackKeys). A comment or message that does not exist
-// answers no author, found false.
+// (loadPrimaryDocumentAuthors), what a new comment's mentions did (mentionDeliveries), which
+// of a comment's mentions failed (mentionFallbackKeys), and whether a session may be shown a
+// project's event (sees). A comment or message that does not exist answers no author, found false.
 type lookup interface {
 	followers(askID string) ([]string, error)
 	rootCommentAuthor(commentID string) (model.Actor, bool, error)
@@ -39,6 +40,14 @@ type lookup interface {
 	// else: a comment only an edit asked for is left out of the batch's readings
 	// (lookups.editOnly, lookups.readings).
 	mentionFallbackKeys(commentID string) (map[string]string, error)
+	// judgedBy names the project an event's destinations are judged against
+	// (destinations.withheld), so the batch reads, for that project, the sight of every session its
+	// lookups answer as well as of the sessions its routes name (loadSessionSight).
+	judgedBy(project string)
+	// sees answers whether sessionID may be sent an event of project on its own subject
+	// (access.SessionSeesProjectClause). A pair the batch did not read is an error, never an
+	// answer.
+	sees(sessionID, project string) (bool, error)
 }
 
 // wanted is the lookup a batch's first pass over its events runs: it answers nothing and records
@@ -46,9 +55,12 @@ type lookup interface {
 // ask for the same ids whatever the answers are, so a second pass over resolved lookups asks for
 // exactly these. editMentions holds the comments only mentionFallbackKeys asked for, which the
 // batch reads in the same statements as mentions and leaves out of its readings
-// (lookups.editOnly).
+// (lookups.editOnly). sessions and projects are the sessions the routes named and the projects
+// the events are judged against, whose sight the batch reads (loadSessionSight); sees answers
+// every session seen, so the first pass adds every destination the second may.
 type wanted struct {
 	asks, comments, messages, documents, threads, issues, mentions, editMentions map[string]struct{}
+	sessions, projects                                                           map[string]struct{}
 }
 
 func newWanted() *wanted {
@@ -56,7 +68,7 @@ func newWanted() *wanted {
 		asks: map[string]struct{}{}, comments: map[string]struct{}{},
 		messages: map[string]struct{}{}, documents: map[string]struct{}{},
 		threads: map[string]struct{}{}, issues: map[string]struct{}{}, mentions: map[string]struct{}{},
-		editMentions: map[string]struct{}{},
+		editMentions: map[string]struct{}{}, sessions: map[string]struct{}{}, projects: map[string]struct{}{},
 	}
 }
 
@@ -100,6 +112,16 @@ func (w *wanted) mentionFallbackKeys(commentID string) (map[string]string, error
 	return nil, nil
 }
 
+func (w *wanted) judgedBy(project string) {
+	w.projects[project] = struct{}{}
+}
+
+func (w *wanted) sees(sessionID, project string) (bool, error) {
+	w.sessions[sessionID] = struct{}{}
+	w.projects[project] = struct{}{}
+	return true, nil
+}
+
 // unansweredRecipients is a recipient read - the sessions a reply under a comment reaches, the
 // sessions an issue's primary document credits, the sessions a document credits - that an event's
 // destinations needed and whose read of its id failed (loadRecipients). The event's list ends
@@ -117,7 +139,8 @@ func (e *unansweredRecipients) Unwrap() error { return e.err }
 // primaries by the issue's key. failed holds each id no read answers - an id that is no uuid,
 // which the column it is read from refuses (validIDs; a thread's is not failed but has no entry),
 // or an id whose recipient read failed (loadRecipients) - keyed by its kind and that same key,
-// with the error the event's destinations then report.
+// with the error the event's destinations then report. sight is, for each project read, the
+// sessions that see it, of the sessions read (sightSessions, sightProjects: loadSessionSight).
 type lookups struct {
 	asks      map[string][]string
 	roots     map[string]json.RawMessage
@@ -128,8 +151,11 @@ type lookups struct {
 	mentions  map[string]mentionDeliveries
 	// editOnly names each comment only an edit asked for (wanted.editMentions): its reading is
 	// read and kept whole like every other, and readings leaves it out.
-	editOnly map[string]struct{}
-	failed   map[string]error
+	editOnly      map[string]struct{}
+	failed        map[string]error
+	sight         map[string]map[string]bool
+	sightSessions map[string]struct{}
+	sightProjects map[string]struct{}
 }
 
 func (l *lookups) followers(askID string) ([]string, error) {
@@ -203,6 +229,49 @@ func (l *lookups) mentionFallbackKeys(commentID string) (map[string]string, erro
 	return l.mentions[id].fallbackKeys, nil
 }
 
+func (l *lookups) judgedBy(string) {}
+
+func (l *lookups) sees(sessionID, project string) (bool, error) {
+	_, session := l.sightSessions[sessionID]
+	_, judged := l.sightProjects[project]
+	if !session || !judged {
+		return false, fmt.Errorf("the batch read no sight of session %s for project %s", sessionID, project)
+	}
+	return l.sight[project][sessionID], nil
+}
+
+// answeredSessions is every session a read of l answered, each once: the ask followers, the
+// session authors of thread roots and of messages, the sessions documents credit, the sessions a
+// reply's thread reaches and the sessions primary documents credit. An author that does not
+// decode is left out; its event's destinations end at that read in any case (decodeAuthor).
+func (l *lookups) answeredSessions() map[string]struct{} {
+	sessions := map[string]struct{}{}
+	addAll := func(lists map[string][]string) {
+		for _, list := range lists {
+			for _, sessionID := range list {
+				sessions[sessionID] = struct{}{}
+			}
+		}
+	}
+	addAll(l.asks)
+	addAll(l.documents)
+	addAll(l.primaries)
+	for _, recipients := range l.threads {
+		for _, recipient := range recipients {
+			sessions[recipient.sessionID] = struct{}{}
+		}
+	}
+	for _, raws := range []map[string]json.RawMessage{l.roots, l.messages} {
+		for _, raw := range raws {
+			var author model.Actor
+			if json.Unmarshal(raw, &author) == nil && author.Kind == "session" {
+				sessions[author.ID] = struct{}{}
+			}
+		}
+	}
+	return sessions
+}
+
 // readings is what the batch read of each comment's mentions, in no order: what the holders of
 // the roles their unpinned attempts target are resolved for (resolveUnpinnedRoleMentions). The
 // reading of a comment only an edit asked for is left out (editOnly): the edit asks which of its
@@ -234,12 +303,14 @@ type queryer interface {
 }
 
 // loadLookups reads what want asks for, one statement per kind that asks anything, so a batch costs
-// at most eight reads however many events it holds: ask followers, thread root authors, message
+// at most nine reads however many events it holds: ask followers, thread root authors, message
 // authors, document credits (loadDocumentSessionAuthors), mention deliveries and the fallback
 // copies that own a destination of one (loadMentionDeliveries, two statements), comment recipients
-// (loadCommentRecipients) and primary document authors (loadPrimaryDocumentAuthors). Each read is
-// the per-id read the outbox made before, over a set of ids: the same rows, in the same order for
-// each id. Every kind but the issues' is a uuid, read and answered in its canonical form
+// (loadCommentRecipients), primary document authors (loadPrimaryDocumentAuthors), and, last, the
+// sight of every session the routes named or those reads answered for every project the events
+// are judged against (loadSessionSight). Each read is the per-id read the outbox made before, over
+// a set of ids: the same rows, in the same order for each id. Every kind but the issues' and the
+// sight's is a uuid, read and answered in its canonical form
 // (validIDs, canonicalID); an id that is no uuid is never sent to Postgres, which would refuse the
 // whole statement over it, and is recorded failed, as the per-id read failed on it before - but a
 // reply's reply_to, which then names no thread, has no recipients and fails nothing. The mention
@@ -249,9 +320,10 @@ type queryer interface {
 // holds, and the reading of a comment only an edit asked for is left out of the batch's readings
 // (editOnlyIDs, lookups.readings).
 //
-// A read of ask followers, thread root authors, message authors or mention deliveries that fails
-// fails the batch, which is then left unrecorded and read again. A recipient read - document
-// credits, comment recipients or primary document authors - that Postgres refuses is run again
+// A read of ask followers, thread root authors, message authors, mention deliveries or the
+// sessions' sight that fails fails the batch, which is then left unrecorded and read again. A
+// recipient read - document credits, comment recipients or primary document authors - that
+// Postgres refuses is run again
 // over halves of its ids until each refused row is run alone (loadRecipients), and an id whose own
 // run fails fails only the events that asked it: each such event's destinations end at the step
 // that needed it, after its owner topic, route and claimant (eventDestinations), the event's
@@ -293,7 +365,31 @@ func loadLookups(ctx context.Context, db queryer, want *wanted) (*lookups, error
 	}
 	_ = loadRecipients(ctx, db, loadCommentRecipients, threads, "thread", found.threads, found.failed)
 	_ = loadRecipients(ctx, db, loadPrimaryDocumentAuthors, issues, "issue", found.primaries, found.failed)
+	if err := loadSessionSight(ctx, db, want, found); err != nil {
+		return nil, err
+	}
 	return found, nil
+}
+
+// loadSessionSight reads, in one statement, which of the sessions the batch's routes named
+// (wanted.sessions) and its reads answered (lookups.answeredSessions) see which of the projects its
+// events are judged against (wanted.projects), by the access package's rule
+// (access.SessionsSeeProjects), and records what it read (lookups.sight). A batch whose events name
+// no project, or no session, reads nothing.
+func loadSessionSight(ctx context.Context, db queryer, want *wanted, found *lookups) error {
+	sessions := found.answeredSessions()
+	maps.Copy(sessions, want.sessions)
+	found.sightSessions, found.sightProjects = sessions, want.projects
+	if len(sessions) == 0 || len(want.projects) == 0 {
+		found.sight = map[string]map[string]bool{}
+		return nil
+	}
+	sight, err := access.SessionsSeeProjects(ctx, db, slices.Sorted(maps.Keys(sessions)), slices.Sorted(maps.Keys(want.projects)))
+	if err != nil {
+		return err
+	}
+	found.sight = sight
+	return nil
 }
 
 // mergedIDs is the ids of both lists, sorted and each once, as validIDs answers each: the one

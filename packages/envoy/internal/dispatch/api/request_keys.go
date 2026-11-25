@@ -26,7 +26,9 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -198,6 +200,9 @@ func keyedMethod(method string) bool {
 // a repeat with 409 KEY_COMMITTED - made, and not shown again - and one it did not runs again.
 var answerHoldsSecret = map[string]bool{
 	http.MethodPost + " /api/v1/me/agent-tokens": true,
+	// An owner's link for a person from outside carries its 32 random bytes, which
+	// outside_invitations holds only the hash of (createInvitation).
+	http.MethodPost + " /api/v1/projects/{key}/access/people/{email}/invitations": true,
 }
 
 // requestKeyClaim is a keyed request's hold on its key: whose key, which key, and the attempt that
@@ -320,7 +325,11 @@ func (s *server) keyedWrites(method, pattern string, handler http.HandlerFunc, r
 		// the key back, so a check can tell a Dispatch that judged its key from one that ignored the
 		// header.
 		w.Header().Set(contracts.IdempotencyKeyHeader, key)
-		claim, answered := s.claimRequestKey(w, r, login, key, hex.EncodeToString(digest.Sum(nil)), replay)
+		claim, answered, hidden := s.claimRequestKey(w, r, pattern, login, key, hex.EncodeToString(digest.Sum(nil)), replay)
+		if hidden {
+			handler(w, r)
+			return
+		}
 		if answered {
 			return
 		}
@@ -803,8 +812,8 @@ func (s *server) requestKeyAnswersItself(ctx context.Context, login, key string)
 // read, would leave the key in flight with no handler behind it, and every repeat told
 // KEY_IN_FLIGHT until its lease lapsed.
 func (s *server) claimRequestKey(
-	w http.ResponseWriter, r *http.Request, login, key, digest string, replay keyedReplay,
-) (claim requestKeyClaim, answered bool) {
+	w http.ResponseWriter, r *http.Request, pattern, login, key, digest string, replay keyedReplay,
+) (claim requestKeyClaim, answered, hidden bool) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), keyedBookkeeping)
 	defer cancel()
 	pool := s.deps.Store.Pool
@@ -817,23 +826,33 @@ func (s *server) claimRequestKey(
 			returning attempt
 		`, login, key, digest, r.Method, r.URL.Path).Scan(&claim.attempt)
 		if err == nil {
-			return claim, false
+			return claim, false, false
 		}
 		if !errors.Is(err, pgx.ErrNoRows) {
 			s.writeHandlerError(w, fmt.Errorf("claim an idempotency key: %w", err))
-			return claim, true
+			return claim, true, false
 		}
 		held, found, err := s.readHeldRequestKey(ctx, login, key)
 		if err != nil {
 			s.writeHandlerError(w, err)
-			return claim, true
+			return claim, true, false
 		}
 		if !found {
 			continue
 		}
 		state := held.state(digest, replay != nil)
+		hidden, err := s.heldAnswerHidden(r, pattern, held, state)
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return claim, true, false
+		}
+		if hidden {
+			// The caller does not see what the first answer is of: the route runs for it unkeyed
+			// and answers that object as missing, writing nothing (heldAnswerHidden).
+			return claim, false, true
+		}
 		if answerHeldKey(w, r, key, held, state, replay) {
-			return claim, true
+			return claim, true, false
 		}
 		if state == keyExpired {
 			if _, err := pool.Exec(ctx, `
@@ -841,7 +860,7 @@ func (s *server) claimRequestKey(
 				where login = $1 and idempotency_key = $2 and created_at < now() - make_interval(secs => $3)
 			`, login, key, contracts.IdempotencyKeyTTL.Seconds()); err != nil {
 				s.writeHandlerError(w, fmt.Errorf("expire an idempotency key: %w", err))
-				return claim, true
+				return claim, true, false
 			}
 			continue
 		}
@@ -854,15 +873,15 @@ func (s *server) claimRequestKey(
 		`, login, key, held.attempt)
 		if err != nil {
 			s.writeHandlerError(w, fmt.Errorf("take over an idempotency key: %w", err))
-			return claim, true
+			return claim, true, false
 		}
 		if tag.RowsAffected() == 1 {
 			claim.attempt = held.attempt + 1
-			return claim, false
+			return claim, false, false
 		}
 	}
 	writeKeyInFlight(w, key)
-	return claim, true
+	return claim, true, false
 }
 
 // readHeldRequestKey reads the row login's key holds; found is false when it holds none.
@@ -966,10 +985,89 @@ func (s *server) answerDrainedRepeat(
 		s.writeHandlerError(w, err)
 		return
 	}
-	if found && answerHeldKey(w, r, key, held, held.state(hex.EncodeToString(digest.Sum(nil)), replay != nil), replay) {
-		return
+	if found {
+		state := held.state(hex.EncodeToString(digest.Sum(nil)), replay != nil)
+		hidden, err := s.heldAnswerHidden(r, pattern, held, state)
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		// A repeat whose caller no longer sees what the first answer is of is told to ask again:
+		// its body is gone, and the ask runs the route, which answers that object as missing.
+		if !hidden && answerHeldKey(w, r, key, held, state, replay) {
+			return
+		}
 	}
 	writeKeyFreed(w, key)
+}
+
+// heldAnswerHidden reports whether a repeat in state would hand its caller an answer of an object
+// that caller does not see now: a replayed answer, a recovery point or a landed write's notice is
+// the first request's, and a key belongs to a person whatever credential they write through
+// (requestKeyLogin), so a token whose list leaves the object's project out, or a person taken off
+// its project's list since, would read it. The object is the one the route's address names
+// (projectResolverFor), read as the server sees it and as the caller does; a route whose address
+// names none is judged by the project, or the issue, its stored answer names (answerProject). A
+// caller that sees every object reads no statement for it (R9), and nor does a repeat in any other
+// state, which answers nothing of the first request's object.
+func (s *server) heldAnswerHidden(r *http.Request, pattern string, held heldRequestKey, state keyState) (bool, error) {
+	if state != keyAnswered && state != keyRecovered && state != keyCommitted {
+		return false, nil
+	}
+	reader, ok := readerFromContext(r.Context())
+	if !ok {
+		var err error
+		if reader, err = s.resolveReader(r); err != nil {
+			return true, err
+		}
+	}
+	if seesEveryObject(reader) {
+		return false, nil
+	}
+	ctx, pool := r.Context(), s.deps.Store.Pool
+	if resolve, addressed := s.projectResolverFor(pattern); addressed {
+		held, err := resolve(ctx, pool, r, refs.VisibilityArg(model.ServerReader))
+		if err != nil || held == "" {
+			return false, err
+		}
+		seen, err := resolve(ctx, pool, r, refs.VisibilityArg(reader))
+		return seen == "", err
+	}
+	project, issue := answerProject(held.response)
+	switch {
+	case issue != "":
+		var seen bool
+		err := pool.QueryRow(ctx, `select not exists (select 1 from issues where key = $1)
+			or exists (select 1 from issues where key = $1 and `+access.ProjectClause("project_key", "$2")+`)`,
+			issue, refs.VisibilityArg(reader)).Scan(&seen)
+		return !seen, err
+	case project != "":
+		var known bool
+		if err := pool.QueryRow(ctx, `select exists (select 1 from projects where key = $1)`, project).Scan(&known); err != nil || !known {
+			return false, err
+		}
+		seen, err := projectSeenBy(ctx, pool, reader, project)
+		return !seen, err
+	}
+	return false, nil
+}
+
+// answerProject is the project and the issue a stored answer's top-level object names: an issue's
+// `project`, any other object's `project_key`, and its `issue_key`; each "" where it names none or
+// the answer is no JSON object.
+func answerProject(response []byte) (project, issue string) {
+	var answer struct {
+		Project    string `json:"project"`
+		ProjectKey string `json:"project_key"`
+		Issue      string `json:"issue_key"`
+	}
+	if json.Unmarshal(response, &answer) != nil {
+		return "", ""
+	}
+	if answer.ProjectKey != "" {
+		return answer.ProjectKey, answer.Issue
+	}
+	return answer.Project, answer.Issue
 }
 
 // writeKeyFreed answers a repeat whose body was read and not kept while its first request gave the

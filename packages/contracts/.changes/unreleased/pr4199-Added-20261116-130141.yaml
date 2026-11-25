@@ -1,0 +1,10 @@
+kind: Added
+body: |-
+  `AUTH_SIGNED_OUT_REASONS` and `AuthSignedOutReason` name why Dispatch signed a person out, the
+  `reason` its `401 NO_IDENTITY` carries beside `login`, the address: `NOT_LISTED` once no
+  project's access list names a person from outside the sign-in domain, and `OUTSIDE_SIGNIN_OFF`
+  once the deployment signs nobody from outside in any more. Every other `401 NO_IDENTITY` carries
+  neither key.
+time: 2026-11-16T13:01:41.125501897Z
+custom:
+    Issue: pr4199

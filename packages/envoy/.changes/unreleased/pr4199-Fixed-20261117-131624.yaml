@@ -1,0 +1,12 @@
+kind: Fixed
+body: |-
+  A broker token now records the Google account it was issued for, and when the broker made the
+  sign-in or machine login behind it, when it is minted, and the broker's introspection answers
+  both from the token alone, never from the sign-in or machine login the token came from. A token
+  minted before this change records neither. No recorded account ever changes: a person's sign-in
+  on a machine from before the broker recorded accounts is ended by the next trade under its key,
+  with its access tokens, its launcher credential and the sessions enrolled under it, and a new
+  sign-in records the trade's account, so that box's sessions enrol again once.
+time: 2026-11-17T13:16:24.896522253Z
+custom:
+    Issue: pr4199

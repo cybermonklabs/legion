@@ -1,0 +1,21 @@
+kind: Added
+body: |-
+  The secrets broker revokes a replaced Google account by the account, not by time.
+  `POST /v1/person-subjects/revoke` (`{"person", "issuer", "subject", "holder_subject"}`, the
+  `dispatch` caller's power) records that the account `subject` no longer holds the address, which
+  `holder_subject` holds now, and in that one transaction ends every sign-in on a machine that
+  account's person token made and every login of the address's own machines it approved, whenever
+  issued, with their tokens and sessions; it answers how many of each it ended, and zeros for a
+  repeat. A row that records no account, from a broker before migration `0042_person_subjects`, is
+  ended too; the holder's credentials and a service's machine login are untouched, and a revoke
+  naming an account as the holder stops refusing it, as when an address comes back. From then on
+  a sign-in trade of that account's Google identity token, on any box key, is refused
+  `invalid_grant` saying another account holds the address, and a machine-login approval relayed
+  as that account (the approve body's new `approver_issuer` and `approver_subject`) is refused
+  `403 APPROVER_REPLACED` and mints nothing. The broker now records the account of every sign-in
+  trade and of every approval that names one; a box key another account signed in with is refused
+  `invalid_grant` naming `agent-secrets login`. One lock per address serializes the revoke with
+  each trade and approval of that address, so nothing the replaced account makes outlives it.
+time: 2026-11-17T04:15:04.777613388Z
+custom:
+    Issue: pr4199

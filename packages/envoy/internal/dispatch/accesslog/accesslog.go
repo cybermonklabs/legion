@@ -4,7 +4,9 @@
 // callers behind the requests it was serving. Handler wraps one route and logs, when the request
 // ends, the method, the route pattern (never a path's ids alone), the caller the authentication
 // layer resolved and the credential behind it, the address and user agent it came from, the
-// status, the time it took and the bytes of body it wrote.
+// status, the time it took and the bytes of body it wrote. A person - a signed-in browser's, a
+// personal token's owner, the person a broker-issued token acts for - is named by their login's
+// hash (model.LoginHash), never by their address.
 //
 // The line never carries a token, a cookie, a query string, a request body or a response body.
 // The text in it a caller wrote - the method, the path, the session id a bearer names, the
@@ -18,25 +20,28 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
 // The caller kinds the line names, one per way Dispatch authenticates a request.
 const (
-	// KindUser is a signed-in person, named by their lowercase email.
+	// KindUser is a signed-in person, named by their login's hash.
 	KindUser = "user"
 	// KindSession is an agent session a bearer named in its request's actor.
 	KindSession = "session"
-	// KindToken is a personal agent token with no session named, by its owner's email.
+	// KindToken is a personal agent token with no session named, by its owner's login's hash.
 	KindToken = "token"
 	// KindService is a verified Kubernetes service-account token, by its subject.
 	KindService = "service"
 	// KindBrokerToken is an access token the secrets broker issued, presented under the DPoP
-	// scheme and proved against the key it is bound to, by the person its session acts for.
+	// scheme and proved against the key it is bound to, by the login's hash of the person its
+	// session acts for.
 	KindBrokerToken = "broker-token"
 	// KindSharedToken is the deployment's shared agent token with no session named: it proves
 	// no owner, so the line names none.
@@ -66,14 +71,18 @@ type callerKey struct{}
 // copy.
 type recorder struct {
 	http.ResponseWriter
-	// mu guards kind, id and credential alone: Note may run on another goroutine than the
+	// mu guards kind, id, hash and credential alone: Note may run on another goroutine than the
 	// handler's while the handler is still writing.
 	mu   sync.Mutex
 	kind string
 	id   string
+	// hash is id's login hash (model.LoginHash) when the caller is a person (person), made by Note
+	// from the id it was handed, and empty otherwise.
+	hash string
 	// credential is the owner or subject a bearer's credential proved, kept when the bearer then
 	// names a session (which is text the caller wrote), so the line still says whose credential
-	// acted. Empty when the caller is that credential itself, a person, or the shared token.
+	// acted: a person's by their login's hash. Empty when the caller is that credential itself, a
+	// person, or the shared token.
 	credential string
 	status     int
 	written    int64
@@ -164,25 +173,49 @@ func HandlerFunc(route string, next http.HandlerFunc) http.HandlerFunc {
 // wherever it resolves a caller, and the last resolution wins: a bearer is noted by what its
 // token proved and then by the session it named, which is the caller a reader wants. A session
 // named after a credential of its own keeps that credential as the line's `credential`:
-// `token:<owner>`, `service:<subject>`, `broker-token:<person>` or `shared-token`. For the first
-// three that session is text the caller wrote, except under a broker-issued token, where the
-// token itself names it.
+// `token:<owner's login_hash>`, `service:<subject>`, `broker-token:<person's login_hash>` (or
+// `broker-token:service:<fleet>` for a broker token that acts for no person) or `shared-token`.
+// For the first three that session is text the caller wrote, except under a broker-issued token,
+// where the token itself names it.
 func Note(ctx context.Context, kind, id string) {
 	rec, _ := ctx.Value(callerKey{}).(*recorder)
 	if rec == nil {
 		return
 	}
+	hash := ""
+	if person(kind, id) {
+		hash = model.LoginHash(id)
+	}
 	rec.mu.Lock()
 	switch {
 	case kind == KindSession && rec.kind == KindSharedToken:
 		rec.credential = KindSharedToken
-	case kind == KindSession && (rec.kind == KindToken || rec.kind == KindService || rec.kind == KindBrokerToken):
+	case kind == KindSession && (rec.kind == KindToken || rec.kind == KindBrokerToken) && rec.hash != "":
+		rec.credential = rec.kind + ":" + rec.hash
+	case kind == KindSession && (rec.kind == KindService || rec.kind == KindBrokerToken):
 		rec.credential = rec.kind + ":" + rec.id
 	case kind != KindSession:
 		rec.credential = ""
 	}
-	rec.kind, rec.id = kind, id
+	rec.kind, rec.id, rec.hash = kind, id, hash
 	rec.mu.Unlock()
+}
+
+// brokerServicePrefix starts the id a broker-issued token that acts for no person is noted by
+// (api's server.brokerTokenActor: "service:" and the token's service), which is no login.
+const brokerServicePrefix = "service:"
+
+// person reports whether a caller of kind noted as id is a person, whom the line names by their
+// login's hash (`login_hash`) in place of `caller`: a signed-in person, a personal token's owner,
+// and the person a broker-issued token acts for, but not a broker token's fleet.
+func person(kind, id string) bool {
+	switch kind {
+	case KindUser, KindToken:
+		return true
+	case KindBrokerToken:
+		return !strings.HasPrefix(id, brokerServicePrefix)
+	}
+	return false
 }
 
 // Detached returns ctx with its request's recorder masked, so a caller resolved on it names no
@@ -196,7 +229,7 @@ func Detached(ctx context.Context) context.Context {
 
 func (rec *recorder) write(route string, r *http.Request, elapsed time.Duration, aborted bool) {
 	rec.mu.Lock()
-	kind, id, credential := rec.kind, rec.id, rec.credential
+	kind, id, hash, credential := rec.kind, rec.id, rec.hash, rec.credential
 	rec.mu.Unlock()
 	status := rec.status
 	if status == 0 {
@@ -208,19 +241,24 @@ func (rec *recorder) write(route string, r *http.Request, elapsed time.Duration,
 			status = http.StatusInternalServerError
 		}
 	}
-	attrs := []any{
+	who := []any{"caller", clip(id)}
+	if hash != "" {
+		who = []any{"login_hash", hash}
+	}
+	attrs := append([]any{
 		"method", clip(r.Method),
 		"route", route,
-		"path", clip(r.URL.EscapedPath()),
+		"path", clip(loggedPath(route, r.URL.EscapedPath())),
 		"caller_kind", kind,
-		"caller", clip(id),
+	}, who...)
+	attrs = append(attrs,
 		"address", clip(auth.ForwardedAddress(r)),
 		"peer", peerAddress(r),
 		"user_agent", clip(r.UserAgent()),
 		"status", status,
 		"elapsed_ms", elapsed.Milliseconds(),
 		"bytes", rec.written,
-	}
+	)
 	if credential != "" {
 		attrs = append(attrs, "credential", credential)
 	}
@@ -237,6 +275,33 @@ func peerAddress(r *http.Request) string {
 		return host
 	}
 	return clip(r.RemoteAddr)
+}
+
+// loginSegments are the route wildcards whose path segment is a person's login
+// (`/api/v1/people/{login}/nodes`, `/api/v1/projects/{key}/access/people/{email}`).
+var loginSegments = map[string]bool{"{login}": true, "{email}": true}
+
+// loggedPath is the escaped path as the line writes it: each segment that route names a person's
+// login in, and each that holds an '@' unescaped whatever the route (an `unmatched` path, a
+// method the route does not serve), is written `login_hash:<hash>` (model.LoginHash of the
+// segment, unescaped), so the line holds no address; every other segment is as it was sent.
+func loggedPath(route, path string) string {
+	// A segment unescapes to an '@' only where the path holds an '@' or a '%'.
+	if !strings.ContainsAny(path, "@%") && !strings.Contains(route, "{login}") && !strings.Contains(route, "{email}") {
+		return path
+	}
+	pattern, segments := strings.Split(route, "/"), strings.Split(path, "/")
+	aligned := len(pattern) == len(segments)
+	for i, segment := range segments {
+		text, err := url.PathUnescape(segment)
+		if err != nil {
+			text = segment
+		}
+		if strings.Contains(text, "@") || aligned && loginSegments[pattern[i]] {
+			segments[i] = "login_hash:" + model.LoginHash(text)
+		}
+	}
+	return strings.Join(segments, "/")
 }
 
 // clip cuts caller-written text to fieldBytes, dropping a rune the cut splits.

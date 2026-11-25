@@ -976,8 +976,8 @@ func TestABatchThatAsksEveryLookupKindRunsEightLookupStatements(t *testing.T) {
 	if _, err := loadLookups(ctx, counted, want); err != nil {
 		t.Fatalf("read the batch's lookups: %v", err)
 	}
-	if counted.statements != 8 {
-		t.Fatalf("the batch of %d events ran %d lookup statements, want 8: one per kind and two for the mention read (loadLookups)", len(seeded), counted.statements)
+	if counted.statements != 9 {
+		t.Fatalf("the batch of %d events ran %d lookup statements, want 9: one per kind, two for the mention read and one for the sessions' sight (loadLookups)", len(seeded), counted.statements)
 	}
 	t.Logf("the batch of %d events ran %d lookup statements", len(seeded), counted.statements)
 
@@ -993,8 +993,8 @@ func TestABatchThatAsksEveryLookupKindRunsEightLookupStatements(t *testing.T) {
 	if _, ok := counted.sql[mentionFallbackHoldsQuery]; !ok {
 		t.Fatalf("loadLookups ran no read of comment_fallback_copies (mentionFallbackHoldsQuery), so the scan's count below cannot see it")
 	}
-	if scanned != 8 {
-		t.Fatalf("the scan of the batch ran %d lookup statements, want 8: it reads the batch's lookups once (resolveDestinations, loadLookups)", scanned)
+	if scanned != 9 {
+		t.Fatalf("the scan of the batch ran %d lookup statements, want 9: it reads the batch's lookups once (resolveDestinations, loadLookups)", scanned)
 	}
 	t.Logf("the scan of the batch ran %d lookup statements", scanned)
 

@@ -97,9 +97,9 @@ func TestArtifactReadsServeARowWithNoProject(t *testing.T) {
 			t.Errorf("%s = id %q project %q, want id %q and no project", read, artifact.ID, artifact.Project, wantID)
 		}
 	}
-	read, err := s.loadArtifact(ctx, database.Pool, photoID)
+	read, err := s.loadArtifact(ctx, database.Pool, everyReader, photoID)
 	wantNoProject("loadArtifact of the conversation's file", read, err, photoID)
-	read, err = s.loadArtifactByRefKey(ctx, database.Pool, photoRefKey)
+	read, err = s.loadArtifactByRefKey(ctx, database.Pool, everyReader, photoRefKey)
 	wantNoProject("loadArtifactByRefKey of the conversation's file", read, err, photoID)
 	read, err = s.findArtifactByNameOrSlug(ctx, database.Pool, artifactTarget{Session: conversationSession}, "photo.png")
 	wantNoProject("findArtifactByNameOrSlug in the conversation", read, err, photoID)
@@ -133,7 +133,7 @@ func TestArtifactReadsServeARowWithNoProject(t *testing.T) {
 				t.Errorf("search over a comment on the conversation's file panicked: %v", recovered)
 			}
 		}()
-		found, err := s.runFusedSearchQuery(ctx, searchParameters{text: "zebraquill", limit: 10})
+		found, err := s.runFusedSearchQuery(ctx, searchParameters{text: "zebraquill", limit: 10, who: everyReader})
 		if err != nil {
 			t.Errorf("search over a comment on the conversation's file: %v", err)
 			return

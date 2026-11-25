@@ -17,7 +17,10 @@ import (
 	"github.com/jackc/pgx/v5"
 	"golang.org/x/sync/errgroup"
 
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -166,9 +169,11 @@ func (s *server) deliverySettings(w http.ResponseWriter, r *http.Request) (deliv
 // page showing both reads the population once. GET /api/v1/delivery/measures is the measures
 // alone, for another window. The answer is readDeliveryPopulation's read and
 // deliveryTimelineCompute's compute, the two halves the live hub calls too, so a live page's
-// snapshot is this body.
+// snapshot is this body. Every pull request, run, session group, unowned P0 issue and issue fact in
+// it is one the caller is shown (readDeliveryRows).
 func (s *server) getDeliveryTimeline(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAuthenticated(w, r) {
+	reader, ok := s.readerOf(w, r)
+	if !ok {
 		return
 	}
 	query := r.URL.Query()
@@ -181,7 +186,7 @@ func (s *server) getDeliveryTimeline(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	population, err := s.readDeliveryPopulation(r.Context(), settings, from, to, query, true)
+	population, err := s.readDeliveryPopulation(r.Context(), reader, settings, from, to, query, true)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -300,6 +305,16 @@ type deliveryPopulation struct {
 	components map[string]delivery.DeliveryComponentView
 	// unfetchable is how many population pull requests can no longer be fetched from GitHub.
 	unfetchable int
+	// shipsShown is, for a reader that does not see every object, whether the reader is shown one
+	// of the pull requests each run read first shipped, by run, a run that shipped none holding no
+	// entry, and unnamedShown is whether that reader is shown a run that names no pull request it
+	// is shown nothing of: an open viewer from whom the deploy repository is not hidden (cutTo);
+	// runShown reads the two, and the Pipeline page leaves out of its deploys every run it does not
+	// show, and out of its PR-checks runs every one whose number no row holds unless unnamedShown
+	// (readPipelinePopulation). Both are unset for a reader that sees every object, which is shown
+	// every run.
+	shipsShown   map[int64]bool
+	unnamedShown bool
 }
 
 // deliveryDerived is what the timeline and the measures compute from a deliveryPopulation: each
@@ -344,15 +359,36 @@ type deliveryWaitingRow struct {
 // unowned P0 list); nothing that computes from it reads again. With withWaiting it also reads the
 // deploy repository's pull requests still waiting at `from` (ListPullRequestsWaitingAt), resolved
 // through the same issue and session lookups so the timeline's waiting line filters them alike;
-// the measures read none.
-func (s *server) readDeliveryPopulation(ctx context.Context, settings delivery.DeliverySettings, from, to time.Time, query url.Values, withWaiting bool) (deliveryPopulation, error) {
-	return s.readDeliveryRows(ctx, settings, from, to, query, withWaiting, true)
+// the measures read none. reader is who the answer is read for: what it holds of a project is what
+// that reader sees (readDeliveryRows).
+func (s *server) readDeliveryPopulation(ctx context.Context, reader model.Actor, settings delivery.DeliverySettings, from, to time.Time, query url.Values, withWaiting bool) (deliveryPopulation, error) {
+	return s.readDeliveryRows(ctx, reader, settings, from, to, query, withWaiting, true)
 }
 
 // readDeliveryRows is readDeliveryPopulation, and with withMeasures false leaves out the measures'
 // runs and unowned P0 list, which the Pipeline page's lead times do not read.
-func (s *server) readDeliveryRows(ctx context.Context, settings delivery.DeliverySettings, from, to time.Time, query url.Values, withWaiting, withMeasures bool) (deliveryPopulation, error) {
+//
+// The rows are the reader's (GH-1, check c-delivery-by-issue). A pull request is shown when the
+// reader sees its issue (access.ProjectClause, read beside each issue's facts by
+// deliveryIssueFacts); one that names no issue, or a key no issue row holds, which reads as no
+// issue, is shown to an open viewer alone, and only when its repository is not hidden from that
+// viewer (repositoriesHidden). A run is shown with only the pull requests shown: to an
+// open viewer unless it shipped pull requests and none of them is shown, and to any other viewer
+// only when it shipped one that is shown, so a run that shipped none, a failed run among them, is
+// shown to an open viewer alone, and only when the deploy repository is not hidden from that
+// viewer, as a pull request that names no issue is (cutTo, runShown). Which
+// pull requests a run shipped is known only over every one it could have shipped, so the pull
+// requests are read whole, the window's and those still waiting at `from` (a run inside the window
+// can first ship one merged before it), and the rule is applied after that and before anything is
+// counted: every count, facet, measure and title is derived from what is left. A session group is
+// answered only when every session it holds passes access.SessionClause (groupsShown), so the
+// Parent agents are computed from the groups shown. The unfetchable count and the unowned P0 list
+// take the same rules in their own statements. A reader that sees every object (seesEveryObject)
+// is shown everything, and nothing is read for the rule (R9).
+func (s *server) readDeliveryRows(ctx context.Context, reader model.Actor, settings delivery.DeliverySettings, from, to time.Time, query url.Values, withWaiting, withMeasures bool) (deliveryPopulation, error) {
 	pool := s.deps.Store.Pool
+	viewer := refs.VisibilityArg(reader)
+	everything := seesEveryObject(reader)
 	pop := deliveryPopulation{query: query, withWaiting: withWaiting, jobsByRun: map[int64][]delivery.DeliveryRunJob{}, windowJobs: map[int64][]delivery.DeliveryRunJob{}}
 
 	// Independent reads, side by side. They never shared a transaction (each is its own
@@ -399,7 +435,7 @@ func (s *server) readDeliveryRows(ctx context.Context, settings delivery.Deliver
 			return delivery.ListRuns(ctx, pool, settings.DeployRepo, delivery.DeliveryRunKindDeploy, "main", from)
 		}, &pop.applyRuns, &pop.jobsByRun),
 		func(ctx context.Context) (err error) {
-			pop.unfetchable, err = delivery.CountUnfetchablePullRequests(ctx, pool)
+			pop.unfetchable, err = delivery.CountUnfetchablePullRequests(ctx, pool, viewer)
 			return err
 		},
 		func(ctx context.Context) (err error) {
@@ -416,13 +452,15 @@ func (s *server) readDeliveryRows(ctx context.Context, settings delivery.Deliver
 				return delivery.ListRunsStartedIn(ctx, pool, settings.DeployRepo, delivery.DeliveryRunKindDeploy, "main", "", from, to)
 			}, &pop.windowRuns, &pop.windowJobs),
 			func(ctx context.Context) (err error) {
-				pop.unownedP0, err = delivery.ListUnownedP0(ctx, pool)
+				pop.unownedP0, err = delivery.ListUnownedP0(ctx, pool, viewer)
 				return err
 			})
 	}
-	if withWaiting {
-		// The deploy repository's pull requests still waiting at `from`, so the waiting line
-		// starts the window at their count rather than at zero.
+	if withWaiting || !everything {
+		// The deploy repository's pull requests still waiting at `from`: the timeline's waiting
+		// line starts the window at their count rather than at zero, and for a reader not shown
+		// everything they are part of what a run inside the window shipped (cutTo), which the
+		// measures' runs and the Pipeline page's deploys follow too.
 		independent = append(independent, func(ctx context.Context) (err error) {
 			pop.waiting, err = delivery.ListPullRequestsWaitingAt(ctx, pool, settings.DeployRepo, settings.Production(), from)
 			return err
@@ -450,31 +488,164 @@ func (s *server) readDeliveryRows(ctx context.Context, settings delivery.Deliver
 	s.productionApplies(ctx, pop.applyRuns, pop.jobsByRun, settings.Production())
 	s.productionApplies(ctx, pop.windowRuns, pop.windowJobs, settings.Production())
 
-	sessionIDs := []string{}
 	issueKeys := []string{}
 	for _, pr := range pop.prs {
-		sessionIDs = append(sessionIDs, pr.Sessions...)
 		if pr.IssueKey != nil {
 			issueKeys = append(issueKeys, *pr.IssueKey)
 		}
 	}
 	for _, pr := range pop.waiting {
-		sessionIDs = append(sessionIDs, pr.Sessions...)
 		if pr.IssueKey != nil {
 			issueKeys = append(issueKeys, *pr.IssueKey)
 		}
 	}
 	var err error
-	if pop.titles, err = delivery.ResolveSessionTitles(ctx, pool, sessionIDs); err != nil {
+	if pop.issues, err = s.deliveryIssueFacts(ctx, viewer, issueKeys); err != nil {
 		return deliveryPopulation{}, err
 	}
-	if pop.issues, err = s.deliveryIssueFacts(ctx, issueKeys); err != nil {
+	if !everything {
+		if pop.groups, err = s.groupsShown(ctx, viewer, pop.groups); err != nil {
+			return deliveryPopulation{}, err
+		}
+		hidden, err := s.repositoriesHidden(ctx, reader, pop.openRepositories(reader, settings.DeployRepo))
+		if err != nil {
+			return deliveryPopulation{}, err
+		}
+		pop.cutTo(reader, settings, hidden)
+	}
+	if !withWaiting {
+		pop.waiting = nil
+	}
+	sessionIDs := []string{}
+	for _, pr := range pop.prs {
+		sessionIDs = append(sessionIDs, pr.Sessions...)
+	}
+	for _, pr := range pop.waiting {
+		sessionIDs = append(sessionIDs, pr.Sessions...)
+	}
+	if pop.titles, err = delivery.ResolveSessionTitles(ctx, pool, sessionIDs, readableEvents(reader)); err != nil {
 		return deliveryPopulation{}, err
 	}
 	if pop.components, err = s.deliveryComponents(ctx, deliveryIssueProjects(pop.issues)); err != nil {
 		return deliveryPopulation{}, err
 	}
 	return pop, nil
+}
+
+// cutTo holds the population to what reader is shown, under readDeliveryRows' rule, over the pull
+// requests and runs read whole. Each pull request's first shipping run is found over every one
+// (the window's by delivery.ContainingRun, the waiting ones by the run ListPullRequestsWaitingAt
+// read), so whether a run shipped a pull request the reader is shown, shipped only hidden ones, or
+// shipped none is known, and a run runShown does not show is left out, with its jobs, of the
+// containment runs and the measures' runs alike; shipsShown and unnamedShown keep that rule for the
+// Pipeline page (readPipelinePopulation). A pull request left keeps its first shipping run, since a
+// run left out ships none of them. A key no issue row holds is taken off the pull request, which
+// then reads as naming no issue. hidden is the repositories hidden from reader (openRepositories,
+// read by repositoriesHidden): a pull request that names no issue is shown to an open reader only
+// when hidden does not hold its repository, and a run that shipped none only when hidden does not
+// hold the deploy repository, whose run it is.
+func (p *deliveryPopulation) cutTo(reader model.Actor, settings delivery.DeliverySettings, hidden map[string]bool) {
+	open := reader.Viewer != nil && reader.Viewer.Open
+	shown := func(pr *delivery.DeliveryPullRequest) bool {
+		if pr.IssueKey == nil {
+			return open && !hidden[pr.Repo]
+		}
+		issue, found := p.issues[*pr.IssueKey]
+		if !found {
+			pr.IssueKey = nil
+			return open && !hidden[pr.Repo]
+		}
+		return issue.seen
+	}
+	// shipsShown is, for each run that shipped a pull request first, whether one of those the reader
+	// is shown.
+	shipsShown := map[int64]bool{}
+	applies := delivery.ProductionApplies(p.applyRuns, p.jobsByRun, settings.Production()).Applies
+	prs := p.prs[:0]
+	for _, pr := range p.prs {
+		visible := shown(&pr)
+		if apply := delivery.ContainingRun(pr, settings.DeployRepo, applies); apply != nil {
+			shipsShown[apply.RunID] = shipsShown[apply.RunID] || visible
+		}
+		if visible {
+			prs = append(prs, pr)
+		}
+	}
+	waiting := p.waiting[:0]
+	for _, pr := range p.waiting {
+		visible := shown(&pr.DeliveryPullRequest)
+		if pr.DeployRun != nil {
+			shipsShown[*pr.DeployRun] = shipsShown[*pr.DeployRun] || visible
+		}
+		if visible {
+			waiting = append(waiting, pr)
+		}
+	}
+	p.prs, p.waiting = prs, waiting
+	p.shipsShown, p.unnamedShown = shipsShown, open && !hidden[settings.DeployRepo]
+	kept := func(run delivery.DeliveryRun) bool { return p.runShown(run.RunID) }
+	p.applyRuns, p.jobsByRun = runsWhere(p.applyRuns, p.jobsByRun, kept)
+	p.windowRuns, p.windowJobs = runsWhere(p.windowRuns, p.windowJobs, kept)
+}
+
+// runShown is whether the reader cutTo held the population to is shown the run whose id is run: a
+// run that first shipped pull requests when one of them is shown, and one that shipped none to an
+// open viewer from whom the deploy repository is not hidden alone, as a pull request that names no
+// issue is shown only where its repository is not hidden.
+func (p deliveryPopulation) runShown(run int64) bool {
+	shown, shipped := p.shipsShown[run]
+	return shown || (!shipped && p.unnamedShown)
+}
+
+// openRepositories is the repositories whose visibility to reader decides what of the population an
+// open reader is shown (cutTo), once each: the repository of each pull request, the window's and
+// those waiting, that names no issue or a key no issue row holds, and deployRepo, whose runs that
+// shipped nothing or name no stored pull request it decides. A reader that is not open is shown none
+// of those, so none is named for it.
+func (p deliveryPopulation) openRepositories(reader model.Actor, deployRepo string) []string {
+	repositories := []string{}
+	if reader.Viewer == nil || !reader.Viewer.Open {
+		return repositories
+	}
+	add := func(repository string) {
+		if !slices.Contains(repositories, repository) {
+			repositories = append(repositories, repository)
+		}
+	}
+	add(deployRepo)
+	issueless := func(pr delivery.DeliveryPullRequest) {
+		if pr.IssueKey != nil {
+			if _, found := p.issues[*pr.IssueKey]; found {
+				return
+			}
+		}
+		add(pr.Repo)
+	}
+	for _, pr := range p.prs {
+		issueless(pr)
+	}
+	for _, pr := range p.waiting {
+		issueless(pr.DeliveryPullRequest)
+	}
+	return repositories
+}
+
+// groupsShown is the groups of which every session passes access.SessionClause for the reader whose
+// visibility argument is viewer, in their order, read in one statement: a group names its
+// sessions and their grouping, so it is answered as a broadcast is shown, only to a reader who may
+// see each one.
+func (s *server) groupsShown(ctx context.Context, viewer any, groups []delivery.SessionGroup) ([]delivery.SessionGroup, error) {
+	sessions := []string{}
+	for _, group := range groups {
+		sessions = append(sessions, group.Sessions...)
+	}
+	seen, err := s.sessionsSeen(ctx, viewer, sessions)
+	if err != nil {
+		return nil, err
+	}
+	return slices.DeleteFunc(groups, func(group delivery.SessionGroup) bool {
+		return slices.ContainsFunc(group.Sessions, func(session string) bool { return !seen[session] })
+	}), nil
 }
 
 // deliveryIssueProjects is the projects issues belong to, once each.
@@ -710,9 +881,14 @@ func nextUTCMidnight(t time.Time) time.Time {
 
 // getDeliveryRun answers GET /api/v1/delivery/runs/{id}: one run of the deploy repository with
 // every job it ran, in ListRunJobs' order (by when each started, a job that never started last,
-// then by name), for the drill-down's job lists.
+// then by name), for the drill-down's job lists. A run the timeline's rule does not show the
+// caller answers exactly as an id no run holds, so the route agrees with the timeline and the
+// Pipeline page, which leave that run out; the run's read decides that (delivery.ReadRunShown), so
+// such a run costs the one statement an id no run holds costs. A reader that sees every object
+// (seesEveryObject) is shown every run, and nothing is read for the rule (R9).
 func (s *server) getDeliveryRun(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAuthenticated(w, r) {
+	reader, ok := s.readerOf(w, r)
+	if !ok {
 		return
 	}
 	runID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
@@ -726,12 +902,17 @@ func (s *server) getDeliveryRun(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx := r.Context()
 	pool := s.deps.Store.Pool
-	run, err := delivery.ScanRun(pool.QueryRow(ctx, `select `+delivery.RunColumns+` from delivery_runs where repo = $1 and run_id = $2`, settings.DeployRepo, runID))
+	var run delivery.DeliveryRun
+	if seesEveryObject(reader) {
+		run, err = delivery.ScanRun(pool.QueryRow(ctx, `select `+delivery.RunColumns+` from delivery_runs where repo = $1 and run_id = $2`, settings.DeployRepo, runID))
+	} else {
+		run, err = delivery.ReadRunShown(ctx, pool, settings.DeployRepo, runID, settings.Production(), refs.VisibilityArg(reader))
+	}
+	if errors.Is(err, pgx.ErrNoRows) {
+		writeError(w, "NOT_FOUND", http.StatusNotFound, "no run "+strconv.FormatInt(runID, 10)+" of "+settings.DeployRepo)
+		return
+	}
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			writeError(w, "NOT_FOUND", http.StatusNotFound, "no run "+strconv.FormatInt(runID, 10)+" of "+settings.DeployRepo)
-			return
-		}
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -830,33 +1011,37 @@ func (s *server) firstToWarn(ctx context.Context, key warnedProductionRun, jobNa
 }
 
 // deliveryIssue is what the timeline reads of one issue a pull request names: its project, title,
-// priority, and effective components (qualified `<project>/<id>`, resolved as every issue read
-// resolves them: the nearest issue on its parent chain that chose, through issueComponentsTerms).
+// priority, effective components (qualified `<project>/<id>`, resolved as every issue read
+// resolves them: the nearest issue on its parent chain that chose, through issueComponentsTerms),
+// and whether the reader sees it (access.ProjectClause), which decides whether a pull request that
+// names it is shown (cutTo).
 type deliveryIssue struct {
 	project    string
 	title      string
 	priority   *int
 	components []string
+	seen       bool
 }
 
-// deliveryIssueFactsQuery is the pull-request timeline's read of the issues a delivery names,
-// with their components. The text is built once, at start, for the reason issueRowStatement
-// gives.
+// deliveryIssueFactsQuery is the pull-request timeline's read of every issue a delivery names,
+// with its components and whether the reader whose visibility argument is $2 sees it: the rule is
+// a column and not a filter, so a key no issue row holds is told apart from an issue the reader
+// does not see. The text is built once, at start, for the reason issueRowStatement gives.
 var deliveryIssueFactsQuery = `
 		with recursive subjects as (select i.key from issues i where i.key = any($1)),
 		` + issueComponentsTerms + `
-		select i.key, i.project_key, i.title, i.priority, coalesce(comp.ids, '{}'::text[])
+		select i.key, i.project_key, i.title, i.priority, coalesce(comp.ids, '{}'::text[]), ` + access.ProjectClause("i.project_key", "$2") + `
 		from issues i
 		` + issueComponentsJoin + `
 		where i.key = any($1)
 	`
 
-func (s *server) deliveryIssueFacts(ctx context.Context, keys []string) (map[string]deliveryIssue, error) {
+func (s *server) deliveryIssueFacts(ctx context.Context, viewer any, keys []string) (map[string]deliveryIssue, error) {
 	issues := make(map[string]deliveryIssue, len(keys))
 	if len(keys) == 0 {
 		return issues, nil
 	}
-	rows, err := s.deps.Store.Pool.Query(ctx, deliveryIssueFactsQuery, keys)
+	rows, err := s.deps.Store.Pool.Query(ctx, deliveryIssueFactsQuery, keys, viewer)
 	if err != nil {
 		return nil, err
 	}
@@ -865,7 +1050,7 @@ func (s *server) deliveryIssueFacts(ctx context.Context, keys []string) (map[str
 		var key string
 		var issue deliveryIssue
 		var ids []string
-		if err := rows.Scan(&key, &issue.project, &issue.title, &issue.priority, &ids); err != nil {
+		if err := rows.Scan(&key, &issue.project, &issue.title, &issue.priority, &ids, &issue.seen); err != nil {
 			return nil, err
 		}
 		issue.components = make([]string, len(ids))

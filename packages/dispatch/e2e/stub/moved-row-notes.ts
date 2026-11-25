@@ -23,7 +23,12 @@
 export const unchangedByTheMove =
   "unchanged - the move renames the file, lifts the shared seeding into the fixture and adds the lane tag to the title, and touches no line of what the row asserts";
 
-/** The rows the sentence above is false for, keyed by the spec file and the title the listing
+/** How the note of each row the private-projects access work added to this layer starts: no row
+ *  moved, so `unchangedByTheMove` is false of it. */
+const newAccessRow =
+  "not moved: a new row of the private-projects access work, written in this layer because the pull-request lane's real-stack rows are at their budget";
+
+/** The rows `unchangedByTheMove` is false for, keyed by the spec file and the title the listing
  *  gives, joined by ` › `. */
 export const movedRowNotes: Record<string, string> = {
   "agent-name.stub.e2e.ts › a claimed List row and Board card open their issue by keyboard, and the claim's agent link opens the agent @pr":
@@ -50,4 +55,9 @@ export const movedRowNotes: Record<string, string> = {
     "the Issues tab draws the table rather than a collapsed filter strip, so the row waits for the table instead of opening the strip, and the Status option it measures carries its count in its name; the fit and every other touch target are main's",
   "keyboard-palette.stub.e2e.ts › g d opens the route's project Documents, from an issue key or a project path, and g p picks a project @pr":
     "changed in one assertion, and this is the one row of the move that changed at all: the count of rows the query leaves is the Projects group's rather than main's dialog-wide one. Measured in this issue's pod, the row runs in two modes and they differ: on replay the bar's search is aborted, because no recording answers `/api/v1/search`, and `Operations` is the only row; in a recording run against the real harness the bar also offers `Make a new issue from \"operations\"`. The Projects group holds one row in both. Everything else is main's, Enter included: `g d` reads the route's project before and after, the group is visible, and Enter on the highlighted row opens `/projects/OPS/issues`",
+  "agent-tokens.stub.e2e.ts › a token's row reads the projects it names, and the mint sends the projects picked @pr": `${newAccessRow}. Its real-stack counterpart, which stores the list and reads an edit of it back after a reload, is \`agent-tokens.e2e.ts\`'s untagged row on the full lane`,
+  "agent-tokens.stub.e2e.ts › a token listing only projects its reader cannot see says so, and a scope edit leaves its list alone @pr": `${newAccessRow}. What Dispatch answers each reader of a cut list is \`TestABrowserIsToldItsTokenListsProjectsItCannotSee\` in packages/envoy's \`api\` package`,
+  "agent-tokens.stub.e2e.ts › a token listing only projects its reader cannot see is made public-only by one confirmed press @pr": `${newAccessRow}. Its recording is made against the real server, which stores the empty list the press sends; what Dispatch answers each reader of a cut list is \`TestABrowserIsToldItsTokenListsProjectsItCannotSee\` in packages/envoy's \`api\` package`,
+  "restricted-member.stub.e2e.ts › a restricted member's rail draws Inbox, Agents, Delivery, their projects and Settings, and Priorities and Pipeline answer Page not found @pr": `${newAccessRow}. Its real-stack counterpart, where the server lists bob PRIV and not the public CORE, is \`restricted-member.e2e.ts\`'s first untagged row on the full lane`,
+  "restricted-member.stub.e2e.ts › a restricted member's empty Inbox says Nothing needs you and asks for no credential list @pr": `${newAccessRow}. Its real-stack counterpart, where no page of bob's draws a refusal from Dispatch, is \`restricted-member.e2e.ts\`'s second untagged row on the full lane`,
 };

@@ -41,6 +41,15 @@
 // given (identity.GroupRule). Dispatch takes a domain only from Google's own issuer, so a Dispatch
 // signing people in here runs under DISPATCH_SIGNIN_GROUP set to --sign-in-group's group.
 //
+// While the loopback-only control route POST <issuer URL>/_dev/refuse-refresh, given {"email":
+// "…", "refuse": true}, refuses a person, every refresh of a refresh token whose ID token claims
+// carry that email, whatever its case, is answered 400 invalid_grant, as Google answers the
+// refresh of an account it no longer confirms; everyone else's refresh is served. The refusal is
+// the person's, so a refresh token a later sign-in of theirs is issued is refused too, while the
+// sign-in itself is served. It revokes nothing: {"email": "…", "refuse": false} serves that
+// person's refreshes again, with the refresh tokens they already hold. It is served whenever
+// /_dev/sign-in-as is, and its refusals are the issuer's own, shared by every client it serves.
+//
 // --device-flow serves the OAuth 2.0 device authorization grant (RFC 8628) for one confidential
 // client, in the shape of --code-flow and from a secret file read the same way, so a client with
 // no browser of its own can be driven through a person's device sign-in with no Google. It is
@@ -301,6 +310,33 @@ func approveDeviceCodeHandler(issuer *oidctest.Issuer) http.Handler {
 	})
 }
 
+// refuseRefreshHandler is POST /_dev/refuse-refresh: while its JSON body {"email": "…", "refuse":
+// true} stands, every refresh of that person's refresh tokens is answered 400 invalid_grant, as
+// Google answers for an account it no longer confirms, and {"refuse": false} serves them again. A
+// body that names no email, or does not say whether to refuse, is refused rather than read as
+// either. It answers loopback callers only (403 to any other), for the reason the sign-in control
+// does: whoever can reach it ends anyone's sign-in at every client the issuer serves. It answers 204
+// to a body it takes.
+func refuseRefreshHandler(issuer *oidctest.Issuer) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		host, _, err := net.SplitHostPort(r.RemoteAddr)
+		if ip := net.ParseIP(host); err != nil || ip == nil || !ip.IsLoopback() {
+			http.Error(w, "the refresh refusal control answers loopback callers only", http.StatusForbidden)
+			return
+		}
+		var want struct {
+			Email  string `json:"email"`
+			Refuse *bool  `json:"refuse"`
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&want); err != nil || want.Email == "" || want.Refuse == nil {
+			http.Error(w, `want {"email": "…", "refuse": true|false}, the person whose refreshes to refuse or serve again`, http.StatusBadRequest)
+			return
+		}
+		issuer.RefuseRefresh(want.Email, *want.Refuse)
+		w.WriteHeader(http.StatusNoContent)
+	})
+}
+
 // mintHandler is POST /_dev/mint: it mints one ServiceAccount token for the subject, audience and
 // pod uid its JSON body names, as a --token file's token is minted, and answers {"token": "…"}.
 // A caller that names no pod uid gets a random one, as the API server assigns a pod's. The token
@@ -378,6 +414,7 @@ func serve(ctx context.Context, specs []tokenSpec, flow codeFlow, lifetime time.
 			issuer.SignInByDefault(person(flow.signInAs, flow.signInGroup))
 		}
 		issuer.Handle("POST /_dev/sign-in-as", signInAsHandler(issuer))
+		issuer.Handle("POST /_dev/refuse-refresh", refuseRefreshHandler(issuer))
 	}
 	if len(flow.deviceClients.clients) > 0 {
 		issuer.Handle("POST /_dev/approve-device-code", approveDeviceCodeHandler(issuer))

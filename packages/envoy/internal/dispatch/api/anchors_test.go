@@ -187,7 +187,7 @@ func TestSuggestionAcceptSpansParagraphs(t *testing.T) {
 	if accepted.Code != http.StatusOK {
 		t.Fatalf("accept cross-block suggestion: status=%d body=%s", accepted.Code, accepted.Body.String())
 	}
-	if markdown, err := documentService.Text(context.Background(), issue.PrimaryArtifactID); err != nil || markdown != "replacement\n" {
+	if markdown, err := documentService.Text(context.Background(), everyReader, issue.PrimaryArtifactID); err != nil || markdown != "replacement\n" {
 		t.Fatalf("accepted cross-block document = %q (%v), want replacement", markdown, err)
 	}
 	if _, err := documentService.VerifyMark(context.Background(), issue.PrimaryArtifactID, docs.MarkSuggestion, comment.Anchor.MarkID); !errors.Is(err, docs.ErrAnchorMissing) {
@@ -285,7 +285,7 @@ func TestSuggestionActionsAreRefusedOnlyForAnAskAnAcceptBroke(t *testing.T) {
 			if acted.Code != http.StatusOK {
 				t.Fatalf("%s: status=%d body=%s", test.action, acted.Code, acted.Body.String())
 			}
-			if text, err := documentService.Text(context.Background(), issue.PrimaryArtifactID); err != nil || !strings.Contains(text, test.want) {
+			if text, err := documentService.Text(context.Background(), everyReader, issue.PrimaryArtifactID); err != nil || !strings.Contains(text, test.want) {
 				t.Fatalf("document after the %s = %q (%v), want it to hold %q", test.action, text, err, test.want)
 			}
 		})
@@ -330,7 +330,7 @@ func TestSuggestionAcceptKeepsTheCalloutItLandsIn(t *testing.T) {
 				t.Fatalf("accept: status=%d body=%s", accepted.Code, accepted.Body.String())
 			}
 			want := "Intro.\n\n:::callout{#c1 kind=\"warning\" title=\"T\"}\n" + test.body + ":::\n"
-			if text, err := documentService.Text(context.Background(), issue.PrimaryArtifactID); err != nil || text != want {
+			if text, err := documentService.Text(context.Background(), everyReader, issue.PrimaryArtifactID); err != nil || text != want {
 				t.Fatalf("document after the accept = %q (%v), want %q", text, err, want)
 			}
 		})
@@ -432,7 +432,7 @@ func TestSuggestionAcceptRewritesOnlyTheTypedBlockUnderItsOwnID(t *testing.T) {
 			if accepted.Code != http.StatusOK {
 				t.Fatalf("accept: status=%d body=%s", accepted.Code, accepted.Body.String())
 			}
-			text, err := documentService.Text(context.Background(), issue.PrimaryArtifactID)
+			text, err := documentService.Text(context.Background(), everyReader, issue.PrimaryArtifactID)
 			if got := minted.ReplaceAllString(text, "#<minted>"); err != nil || got != test.want {
 				t.Fatalf("document after the accept = %q (%v), want %q", got, err, test.want)
 			}
@@ -630,7 +630,7 @@ func TestSuggestionAcceptRefusals(t *testing.T) {
 			if test.browser != "" {
 				writeBrowserDocument(t, documentService, issue.PrimaryArtifactID, test.browser)
 			}
-			before, err := documentService.Text(context.Background(), issue.PrimaryArtifactID)
+			before, err := documentService.Text(context.Background(), everyReader, issue.PrimaryArtifactID)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -649,7 +649,7 @@ func TestSuggestionAcceptRefusals(t *testing.T) {
 				!strings.Contains(accepted.Body.String(), test.reason) {
 				t.Fatalf("accept: status=%d body=%s, want 400 %s naming %s", accepted.Code, accepted.Body.String(), test.code, test.reason)
 			}
-			if after, err := documentService.Text(context.Background(), issue.PrimaryArtifactID); err != nil || after != before {
+			if after, err := documentService.Text(context.Background(), everyReader, issue.PrimaryArtifactID); err != nil || after != before {
 				t.Fatalf("document after the refused accept = %q (%v), want it unchanged: %q", after, err, before)
 			}
 			if _, err := documentService.VerifyMark(context.Background(), issue.PrimaryArtifactID, docs.MarkSuggestion, comment.Anchor.MarkID); err != nil {
@@ -675,7 +675,7 @@ func TestSuggestionAcceptRefusals(t *testing.T) {
 				t.Fatalf("the same text through the edit route: status=%d body=%s, want 400 %s naming %s",
 					edited.Code, edited.Body.String(), test.code, test.reason)
 			}
-			if after, err := documentService.Text(context.Background(), issue.PrimaryArtifactID); err != nil || after != before {
+			if after, err := documentService.Text(context.Background(), everyReader, issue.PrimaryArtifactID); err != nil || after != before {
 				t.Fatalf("document after the refused edit = %q (%v), want it unchanged", after, err)
 			}
 		})

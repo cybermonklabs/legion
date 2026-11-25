@@ -20,6 +20,7 @@ import type {
   Message,
 } from "../../api/types";
 import { useSending } from "../../hooks/useSending";
+import { emulateChromiumFocusFixup } from "../issue-page/chromium-focus-fixup";
 import type { AgentText } from "../refs/AgentName";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import {
@@ -155,6 +156,12 @@ function holdControls(): HTMLFieldSetElement {
   if (!(controls instanceof HTMLFieldSetElement))
     throw new Error("expected composer control fieldset");
   return controls;
+}
+
+/** Whether a send out holds the composer: its control fieldset is `aria-disabled`, so each control
+ *  in it keeps the focus while the fieldset's capture takes every key and press bound for it. */
+function held(): boolean {
+  return holdControls().getAttribute("aria-disabled") === "true";
 }
 
 /** The picker reads the issue's collaborators when it opens, for the roles no live agent holds,
@@ -2154,11 +2161,11 @@ test("a send takes the Discard prompt with it and Escape raises none until the s
     await user.keyboard("{Escape}");
     expect(screen.getByRole("button", { name: "Discard" })).toBeDefined();
     await user.click(screen.getByRole("button", { name: "Send" }));
-    await waitFor(() => expect(holdControls().disabled).toBe(true));
+    await waitFor(() => expect(held()).toBe(true));
     expect(screen.queryByRole("button", { name: "Discard" })).not.toBeInTheDocument();
-    // user-event has no form for this: the send holds the field disabled, and a disabled control
-    // takes no focus and no key - the guard this line reaches past.
-    fireEvent.keyDown(field, { key: "Escape" });
+    // The held field keeps the focus, and Escape in it raises no prompt.
+    field.focus();
+    await user.keyboard("{Escape}");
     expect(screen.queryByRole("button", { name: "Discard" })).not.toBeInTheDocument();
 
     refused.reject(commentRefused);
@@ -2167,6 +2174,81 @@ test("a send takes the Discard prompt with it and Escape raises none until the s
     expect(screen.getByRole("button", { name: "Retry" })).toBeDefined();
     expect(screen.queryByRole("button", { name: "Discard" })).not.toBeInTheDocument();
   } finally {
+    view.unmount();
+    createComment.mockRestore();
+  }
+});
+
+// A keyboard reader who sends with Ctrl+Enter keeps their place in the box while the send is out,
+// so their next key reaches the composer rather than the page's body. While it is out the composer
+// says it is held, a key changes nothing, and a second Ctrl+Enter or a press of Send sends nothing.
+test("a send by Ctrl+Enter keeps the focus in the box, which takes no key and sends nothing while it is out", async () => {
+  const sent = Promise.withResolvers<Comment>();
+  const createComment = spyOn(api, "createComment").mockReturnValueOnce(sent.promise);
+  const user = userEvent.setup();
+  const { view } = renderComposer();
+  const stopFocusFixup = emulateChromiumFocusFixup();
+
+  try {
+    const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
+    await user.click(field);
+    await user.keyboard("{Control>}a{/Control}");
+    await user.paste("Status please");
+    await user.keyboard("{Control>}{Enter}{/Control}");
+    await waitFor(() => expect(createComment).toHaveBeenCalledTimes(1));
+    // The send is out: the composer says it is held, either way a fieldset can say so, and the
+    // box keeps the focus.
+    await waitFor(() =>
+      expect(holdControls().matches(":disabled, [aria-disabled='true']")).toBe(true)
+    );
+    expect(field).toHaveFocus();
+    await user.keyboard("x");
+    await user.keyboard("{Control>}{Enter}{/Control}");
+    expect(field.value).toBe("Status please");
+    await user.click(screen.getByRole("button", { name: "Sending…" }));
+    expect(createComment).toHaveBeenCalledTimes(1);
+
+    await act(async () => sent.resolve(createdComment));
+    await waitFor(() => expect(holdControls()).not.toHaveAttribute("aria-disabled"));
+    expect(createComment).toHaveBeenCalledTimes(1);
+  } finally {
+    stopFocusFixup();
+    view.unmount();
+    createComment.mockRestore();
+  }
+});
+
+// The same for a reader who pressed Send itself with Space: Send keeps the focus while the send
+// is out, and a second Space sends nothing.
+test("a send by Space on Send keeps the focus on Send, and a second Space sends nothing while it is out", async () => {
+  const sent = Promise.withResolvers<Comment>();
+  const createComment = spyOn(api, "createComment").mockReturnValueOnce(sent.promise);
+  const user = userEvent.setup();
+  const { view } = renderComposer();
+  const stopFocusFixup = emulateChromiumFocusFixup();
+
+  try {
+    const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
+    await user.click(field);
+    await user.keyboard("{Control>}a{/Control}");
+    await user.paste("Status please");
+    const send = screen.getByRole("button", { name: "Send" });
+    act(() => send.focus());
+    await user.keyboard(" ");
+    await waitFor(() => expect(createComment).toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(holdControls().matches(":disabled, [aria-disabled='true']")).toBe(true)
+    );
+    expect(send).toHaveTextContent("Sending…");
+    expect(send).toHaveFocus();
+    await user.keyboard(" ");
+    expect(createComment).toHaveBeenCalledTimes(1);
+
+    await act(async () => sent.resolve(createdComment));
+    await waitFor(() => expect(holdControls()).not.toHaveAttribute("aria-disabled"));
+    expect(createComment).toHaveBeenCalledTimes(1);
+  } finally {
+    stopFocusFixup();
     view.unmount();
     createComment.mockRestore();
   }
@@ -2193,10 +2275,14 @@ test("a send holds every suggestion control and a refusal restores the replaceme
     await user.keyboard("{Control>}a{/Control}");
     await user.paste("quick");
     await user.click(screen.getByRole("button", { name: "Send" }));
-    // user-event refuses to write into a disabled control, which the send holds this one.
+    // A change that reaches the field anyway is held too: user-event writes nothing into a field
+    // the hold makes read-only.
     fireEvent.change(replacement, { target: { value: "quick edited while sending" } });
 
-    await waitFor(() => expect(holdControls().disabled).toBe(true));
+    await waitFor(() => expect(held()).toBe(true));
+    replacement.focus();
+    await user.keyboard("x");
+    expect(replacement.value).toBe("quick");
 
     refused.reject(commentRefused);
     await screen.findByText(`Couldn't send — ${COMMENT_REFUSED}`);
@@ -2266,12 +2352,12 @@ test("a reference picker request in Send's task is refused until the send answer
     act(() => {
       // One React batch: user-event renders between its own interactions.
       fireEvent.click(screen.getByRole("button", { name: "Send" }));
-      expect(holdControls().disabled).toBe(false);
+      expect(held()).toBe(false);
       // The same batch: the key reaches the field in Send's own task.
       fireEvent.keyDown(field, { ctrlKey: true, key: "k" });
     });
     await waitFor(() => expect(createComment).toHaveBeenCalledTimes(1));
-    expect(holdControls().disabled).toBe(true);
+    expect(held()).toBe(true);
     expect(screen.queryByRole("dialog", { name: "Reference picker" })).not.toBeInTheDocument();
 
     refused.reject(commentRefused);
@@ -2333,8 +2419,11 @@ test("a send closes the mention suggestions open over its draft", async () => {
     await user.paste("hello @Pl");
     await screen.findByRole("option", { name: "Planner" });
     await user.click(screen.getByRole("button", { name: "Send" }));
-    await waitFor(() => expect(holdControls().disabled).toBe(true));
+    await waitFor(() => expect(held()).toBe(true));
     expect(screen.queryByRole("listbox", { name: "Mention suggestions" })).not.toBeInTheDocument();
+    field.focus();
+    await user.keyboard("x");
+    expect(field.value).toBe("hello @Pl");
 
     refused.reject(commentRefused);
     await screen.findByText(`Couldn't send — ${COMMENT_REFUSED}`);
@@ -2371,7 +2460,7 @@ test("a refused reply keeps the reply its send started with until the server ans
     await user.click(screen.getByRole("button", { name: "Send" }));
     await waitFor(() => expect(createComment).toHaveBeenCalledTimes(1));
     const cancel = screen.getByRole("button", { name: "Cancel reply" }) as HTMLButtonElement;
-    expect(holdControls().disabled).toBe(true);
+    expect(held()).toBe(true);
     await user.click(cancel);
     expect(cancelled).toBe(0);
 
@@ -2592,11 +2681,14 @@ test("a send the server answers at 35 s posts once: the deadline offers no Retry
     expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
     expect(screen.getByText(stillSending)).toBeTruthy();
     expect(field.value).toBe("Slow but sure");
-    expect(holdControls().disabled).toBe(true);
+    expect(held()).toBe(true);
     expect(holds()).toBe("Reply held, Back free");
-    // Ctrl+Enter is Send's other way in, and the send is still out. user-event has no form for
-    // this: the send holds the field disabled, and it takes no focus and no key.
-    fireEvent.keyDown(field, { ctrlKey: true, key: "Enter" });
+    // The held field keeps the focus and takes its keys: one writes nothing, and Ctrl+Enter,
+    // Send's other way in, sends nothing while the send is still out.
+    field.focus();
+    await user.keyboard("x");
+    expect(field.value).toBe("Slow but sure");
+    await user.keyboard("{Control>}{Enter}{/Control}");
 
     await act(async () => {
       jest.advanceTimersByTime(5_000);
@@ -2643,7 +2735,7 @@ test("a refusal after the deadline hands the draft back with Retry", async () =>
     expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
     expect(screen.queryByText(stillSending)).not.toBeInTheDocument();
     expect(field.value).toBe("Refused late");
-    expect(holdControls().disabled).toBe(false);
+    expect(held()).toBe(false);
     expect(screen.getByTestId("host-holds").textContent).toBe("Reply free, Back free");
   } finally {
     realClock();
@@ -2872,7 +2964,7 @@ test("a send kept failing shows Stop trying once late, which stops it for Retry 
     expect(screen.getByText(stoppedText)).toBeTruthy();
     expect(screen.queryByText(KEYED_SEND_LATE_TEXT)).not.toBeInTheDocument();
     expect(field.value).toBe("Status please");
-    expect(holdControls().disabled).toBe(false);
+    expect(held()).toBe(false);
     expect(screen.getByRole("button", { name: "Discard draft" })).toBeTruthy();
     await jump(30 * 60_000);
     expect(createAgentMessage).toHaveBeenCalledTimes(5);
@@ -3214,7 +3306,11 @@ test("a closed suggestion composer shows only a send of its own still out, then 
     await waitFor(() => expect(createComment).toHaveBeenCalledTimes(1));
     rerender({ anchor, closed: true, kind: "suggestion" });
     expect(screen.getByRole("form", { name: "Comment composer" })).toBeTruthy();
-    expect(holdControls().disabled).toBe(true);
+    expect(held()).toBe(true);
+    const heldReplacement = screen.getByLabelText<HTMLTextAreaElement>("Replacement");
+    heldReplacement.focus();
+    await user.keyboard("x");
+    expect(heldReplacement.value).toBe("red");
 
     refused.reject(new ApiError(409, { code: "ISSUE_CLOSED", error: "issue is closed" }));
     await screen.findByText("Couldn't send — issue is closed");
@@ -3416,7 +3512,7 @@ test("a send waits for a pasted picture still uploading, by Send and by Ctrl+Ent
     fireEvent.paste(field, { clipboardData: { files: [file] } });
 
     const send = await screen.findByRole("button", { name: "Uploading file…" });
-    expect(send.hasAttribute("disabled")).toBe(true);
+    expect(send).toHaveAttribute("aria-disabled", "true");
     await user.click(send);
     field.focus();
     await user.keyboard("{Control>}{Enter}{/Control}");
@@ -3555,7 +3651,11 @@ test("a reply composer mounted again while its send is out holds it, and then sh
     await toggle();
     await toggle();
     expect(screen.getByLabelText<HTMLTextAreaElement>("Reply").value).toBe("Out of view");
-    expect(holdControls().disabled).toBe(true);
+    expect(held()).toBe(true);
+    const heldReply = screen.getByLabelText<HTMLTextAreaElement>("Reply");
+    heldReply.focus();
+    await user.keyboard("x");
+    expect(heldReply.value).toBe("Out of view");
 
     await toggle();
     await act(async () => {
@@ -3565,7 +3665,7 @@ test("a reply composer mounted again while its send is out holds it, and then sh
     await toggle();
     expect(screen.getByText(`Couldn't send — ${COMMENT_REFUSED}`)).toBeTruthy();
     expect(screen.getByLabelText<HTMLTextAreaElement>("Reply").value).toBe("Out of view");
-    expect(holdControls().disabled).toBe(false);
+    expect(held()).toBe(false);
 
     await user.click(screen.getByRole("button", { name: "Retry" }));
     await waitFor(() => expect(createComment).toHaveBeenCalledTimes(2));
@@ -3606,7 +3706,7 @@ test("a reply that lands while its composer is unmounted refreshes the thread an
 
     await toggle();
     expect(screen.getByLabelText<HTMLTextAreaElement>("Reply").value).toBe("");
-    expect(holdControls().disabled).toBe(false);
+    expect(held()).toBe(false);
     expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
   } finally {
     view.unmount();

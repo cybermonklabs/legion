@@ -107,7 +107,8 @@ How it reads a step:
     behind them: neither changes which test functions run. A value holding `$` and a wrapper that
     tuple does not name are refused rather than guessed at;
   * a step whose run: is the path of a script AUDITED_SCRIPTS names
-    (`packages/envoy/scripts/database-skips.sh`, `packages/envoy/scripts/backend-count.sh`), alone
+    (`packages/envoy/scripts/database-skips.sh`, `packages/envoy/scripts/backend-count.sh`,
+    `packages/envoy/scripts/named-tests.sh`), alone
     or followed by one of the argument lists
     its entry reads, is read as the `go test` command that entry gives for those arguments, in
     the module it names. A step whose run: holds that script's file name anywhere else, or with
@@ -217,7 +218,7 @@ EXCEPTIONS = (
     Exception_(
         steps=frozenset({
             (".github/workflows/ci-job-envoy-go.yaml", "Test what the race build cannot run at all or at full size"),
-            (".github/workflows/ci-job-envoy-go-race.yaml", "Race-test delivery, the store, the bus, the listener, the registry store, the session cache, kvwatch, the NATS credentials, the NATS auth service and the sign-in code flow"),
+            (".github/workflows/ci-job-envoy-go-race.yaml", "Race-test the NATS auth service and count its skips"),
         }),
         package="github.com/sjawhar/envoy/internal/cipher/natscallout",
         functions=("TestACalloutStormAfterAServerRestartAdmitsEveryConnection",),
@@ -386,6 +387,17 @@ BACKEND_COUNT_TESTS = (
     "TestSettingsNameTheGoogleExchangeAudienceOnEitherStore",
 )
 
+# The tests envoy-go's "Test the leaver hold's real-time bounds" names, in the order its run:
+# passes them to named-tests.sh; ci_job_reads.LEAVER_BOUND_TESTS, which that run: and the unit
+# step's skip of them are built from, holds the same names. A step whose arguments differ from
+# these is one this script refuses, which go-test-step-expansion.test.sh's step-reader case fails on.
+LEAVER_BOUND_TESTS = (
+    "TestIAPLeaverHoldThroughTheRealBroker",
+    "TestLeaverHoldBound",
+    "TestLeaverHoldBoundByThePass",
+    "TestLeaverHoldRelease",
+)
+
 # Each script a step of ci.yaml's router runs as its whole run: line, read by a person, with the
 # one `go test` it runs for each argument list a step passes it.
 AUDITED_SCRIPTS = {
@@ -398,8 +410,9 @@ AUDITED_SCRIPTS = {
     # those packages, `--race` adds -race, `--skip P` adds -skip P, `--timeout D` sets the -timeout,
     # and `--var NAME` decides only whether it runs at all. With `--report FILE` it reads a report
     # and runs no test. envoy-go's count step passes the first argument list below, whose command
-    # is that run in the listing form this script reads, and envoy-go-race-api's race step the
-    # second. The first's --skip leaves out the backend count's test of ./internal/cipher/api/.
+    # is that run in the listing form this script reads, envoy-go-race-api's race step the second,
+    # and envoy-go-race's counted step the third. The first's --skip leaves out the backend count's
+    # test of ./internal/cipher/api/.
     "packages/envoy/scripts/database-skips.sh": AuditedScript(
         module="packages/envoy",
         commands={
@@ -409,8 +422,10 @@ AUDITED_SCRIPTS = {
                 "-timeout 20m",
             "--var DISPATCH_TEST_DATABASE_URL --var BROKER_TEST_DATABASE_URL --race --timeout 70m ./internal/dispatch/api/":
                 "go test -json -count=1 -race -timeout 70m ./internal/dispatch/api/",
+            "--var BROKER_TEST_DATABASE_URL --race --timeout 10m ./internal/cipher/natscallout/":
+                "go test -json -count=1 -race -timeout 10m ./internal/cipher/natscallout/",
         },
-        sha256="000e4d0b704d91eadefd9998a42adda9ad212587df9538b46be627ed421b9878",
+        sha256="d274c3e1c3b0c71165aa9e0082c220fe3d8de1ab4ea222c0efa443b479d1412f",
     ),
     # It moves into packages/envoy (`cd "$(dirname "$0")/.."`) and runs one `go test -json
     # -count=1 -timeout "${GO_TEST_TIMEOUT:-5m}" -run '^(TEST|…)$'` over the packages before its
@@ -425,6 +440,19 @@ AUDITED_SCRIPTS = {
                 "./cmd/cipher/ ./internal/cipher/api/",
         },
         sha256="bea62eaf32791a70c86e0350053bda35bae7dfa81685ad3338022849f0587a0e",
+    ),
+    # It moves into packages/envoy (`cd "$(dirname "$0")/.."`) and runs one `go test -json
+    # -count=1 -timeout D -run '^(TEST|…)$'` over the packages before its `--`, D its `--timeout`
+    # (15m without one) and the -run built from the test names after the `--` in their order, then
+    # counts each test's top-level runs and passes. It reads no variable. envoy-go's leaver hold
+    # step passes the argument list below.
+    "packages/envoy/scripts/named-tests.sh": AuditedScript(
+        module="packages/envoy",
+        commands={
+            "--timeout 15m ./cmd/dispatch/ -- " + " ".join(LEAVER_BOUND_TESTS):
+                f"go test -json -count=1 -timeout 15m -run '^({'|'.join(LEAVER_BOUND_TESTS)})$' ./cmd/dispatch/",
+        },
+        sha256="0e7100736f906ada7d43d42a1742da9633c726d32d6f17cdc88a688b13a81d82",
     ),
 }
 # A variable a step sets before its command, as the steps write it: GODEBUG=checkfinalizers=1.

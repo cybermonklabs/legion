@@ -14,7 +14,7 @@ import (
 // edge kind, and when and in which version of its document the source block first held it. A link
 // counts only while both of its blocks are current blocks of their documents.
 func (s *server) getBlockLinks(w http.ResponseWriter, r *http.Request) {
-	who, ok := s.actingReader(w, r)
+	who, ok := s.readerOf(w, r)
 	if !ok {
 		return
 	}
@@ -41,7 +41,7 @@ func (s *server) getBlockLinks(w http.ResponseWriter, r *http.Request) {
 // does not exist is 404 NOT_FOUND.
 func (s *server) blockLinksDocument(r *http.Request, who model.Actor, param string) (model.GraphNode, error) {
 	raw := strings.TrimSpace(r.URL.Query().Get(param))
-	ref, ok := text.ParseRef(raw, s.deps.ServerURL)
+	ref, ok := text.ParseRef(raw, s.deps.Origins)
 	if !ok || ref.Kind != "artifact" || ref.Session != "" {
 		return model.GraphNode{}, errorf(http.StatusBadRequest, "INVALID_REFERENCE", "%s must name a document: dispatch://KEY/spec, dispatch://KEY/artifact/<slug> or dispatch://PROJECT/artifact/<slug>", param)
 	}

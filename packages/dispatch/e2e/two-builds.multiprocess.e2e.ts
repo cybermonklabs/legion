@@ -514,6 +514,12 @@ function visits(seed: Seeded): readonly Visit[] {
       url: "/projects/CORE/documents",
     },
     {
+      // Who may see the project: its owner, which the access read answers.
+      route: "/projects/:key/access",
+      shows: (page) => [page.locator("#project-access-panel").getByTestId("access-owner")],
+      url: "/projects/CORE/access",
+    },
+    {
       loads: ["editor"],
       route: "/projects/:key/documents/:slug",
       shows: (page) => openDocument(page, shown.document),

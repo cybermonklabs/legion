@@ -91,7 +91,7 @@ func TestRebuildDocumentRestoresDocumentThatCannotLoad(t *testing.T) {
 		}
 	})
 	// The read meets the history that does not decode itself, the state a rebuild repairs.
-	if _, err := service.Text(context.Background(), artifactID); !errors.Is(err, ErrDocumentUnloadable) {
+	if _, err := service.Text(context.Background(), serverReader, artifactID); !errors.Is(err, ErrDocumentUnloadable) {
 		t.Fatalf("read over-cap history: %v, want ErrDocumentUnloadable", err)
 	}
 	ctx := context.Background()
@@ -118,7 +118,7 @@ func TestRebuildDocumentRestoresDocumentThatCannotLoad(t *testing.T) {
 	if err := ledger.Commit(ctx); err != nil {
 		t.Fatalf("commit rebuild: %v", err)
 	}
-	if text, err := service.Text(context.Background(), artifactID); err != nil || text != "before\n" {
+	if text, err := service.Text(context.Background(), serverReader, artifactID); err != nil || text != "before\n" {
 		t.Fatalf("read rebuilt document: %q (%v), want latest version markdown", text, err)
 	}
 	var updates, versions int
@@ -192,7 +192,7 @@ func TestAStoredHistoryYgoRefusesFromItsClocksCannotLoad(t *testing.T) {
 			t.Errorf("shutdown service: %v", err)
 		}
 	})
-	if _, err := service.Text(ctx, artifactID); !errors.Is(err, ErrDocumentUnloadable) {
+	if _, err := service.Text(ctx, serverReader, artifactID); !errors.Is(err, ErrDocumentUnloadable) {
 		t.Fatalf("read the history ygo refuses: %v, want ErrDocumentUnloadable", err)
 	}
 }
@@ -232,7 +232,7 @@ func TestTheRebuildAStoredHistoryYgoRefusesIsOfferedRestoresTheDocument(t *testi
 			t.Errorf("shutdown service: %v", err)
 		}
 	})
-	_, readErr := service.Text(ctx, artifactID)
+	_, readErr := service.Text(ctx, serverReader, artifactID)
 	if readErr == nil {
 		t.Fatal("the history ygo refuses read as a document")
 	}
@@ -242,7 +242,7 @@ func TestTheRebuildAStoredHistoryYgoRefusesIsOfferedRestoresTheDocument(t *testi
 	if _, _, err := rebuildDocument(t, service, artifactID, nil); err != nil {
 		t.Fatalf("the read offered a rebuild (%v), and the rebuild failed: %v", readErr, err)
 	}
-	if text, err := service.Text(ctx, artifactID); err != nil || text != "before\n" {
+	if text, err := service.Text(ctx, serverReader, artifactID); err != nil || text != "before\n" {
 		t.Fatalf("read the rebuilt document: %q (%v), want the latest saved version", text, err)
 	}
 }
@@ -344,7 +344,7 @@ func TestARebuildFromTheLatestVersionRestoresItWhateverItWeighs(t *testing.T) {
 	if _, _, err := rebuildDocument(t, service, artifactID, nil); err != nil {
 		t.Fatalf("rebuild from a version past the element limit: %v", err)
 	}
-	if text, err := service.Text(context.Background(), artifactID); err != nil || text != heavy {
+	if text, err := service.Text(context.Background(), serverReader, artifactID); err != nil || text != heavy {
 		t.Fatalf("the rebuilt document reads %d bytes (%v), want the version's %d", len(text), err, len(heavy))
 	}
 }
@@ -396,7 +396,7 @@ func TestARebuildFromAVersionHoldingAnElementThisBuildCannotCreateRestoresIt(t *
 	if _, _, err := rebuildDocument(t, service, artifactID, nil); err != nil {
 		t.Fatalf("rebuild from a version holding an element this build cannot create: %v", err)
 	}
-	if text, err := service.Text(context.Background(), artifactID); err != nil || text != staged {
+	if text, err := service.Text(context.Background(), serverReader, artifactID); err != nil || text != staged {
 		t.Fatalf("the rebuilt document reads %q (%v), want the version's %q", text, err, staged)
 	}
 }
@@ -492,7 +492,7 @@ func TestAnAskWrittenWithOptionsAndNoQuestion(t *testing.T) {
 	})
 	settleCurrentGeneration(t, service, artifactID)
 
-	stored, err := service.Text(context.Background(), artifactID)
+	stored, err := service.Text(context.Background(), serverReader, artifactID)
 	if err != nil {
 		t.Fatalf("the tree path: %v, want the document stored", err)
 	}
@@ -517,7 +517,7 @@ func TestAnAskWrittenWithOptionsAndNoQuestion(t *testing.T) {
 	if _, _, err := rebuildDocument(t, rebuilding, second, nil); err != nil {
 		t.Fatalf("rebuilding the stored version: %v, want it rebuilt", err)
 	}
-	if text, err := rebuilding.Text(context.Background(), second); err != nil || text != stored {
+	if text, err := rebuilding.Text(context.Background(), serverReader, second); err != nil || text != stored {
 		t.Fatalf("the rebuild restored %q (%v), want the stored bytes", text, err)
 	}
 

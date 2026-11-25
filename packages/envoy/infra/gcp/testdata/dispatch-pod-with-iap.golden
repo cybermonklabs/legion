@@ -74,6 +74,14 @@
             "value": "example.com"
           },
           {
+            "name": "DISPATCH_DIRECTORY_ACCOUNT",
+            "value": "dispatch-directory@example-project.iam.gserviceaccount.com"
+          },
+          {
+            "name": "DISPATCH_DIRECTORY_ADMIN",
+            "value": "directory-reader@example.com"
+          },
+          {
             "name": "DISPATCH_SERVER_URL",
             "value": "https://dispatch.example.com"
           },

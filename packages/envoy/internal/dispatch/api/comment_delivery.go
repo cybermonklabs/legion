@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/asks"
 	dispatchenvoy "github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
@@ -27,7 +28,9 @@ import (
 // created. SessionID is nil when no live holder was found; attemptSessionID remains internal so
 // legacy message attempts retain their existing session-id representation. unanswered says the
 // lookup was cut short by its bound while the request was still live (resolveMentionTarget), so
-// the listener has not said who holds the target.
+// the listener has not said who holds the target. hidden says the target is a session the
+// resolve's reader may not see (resolveDeliveryTarget): its "no live session" is that reader's
+// refusal, not the listener's, and nothing is queued for the session (mayQueueForUnknownSession).
 type ResolvedMention struct {
 	Target       string
 	Delivery     string
@@ -37,6 +40,7 @@ type ResolvedMention struct {
 	title            string
 	attemptSessionID string
 	unanswered       bool
+	hidden           bool
 }
 
 // mentionedSession is the session this mention delivers the comment to, as far as the comment's
@@ -81,7 +85,7 @@ func (s *server) resolveMentionTarget(
 		lookup, cancel = context.WithTimeout(ctx, timeout)
 		defer cancel()
 	}
-	sessionID, title, resolveError := s.resolveDeliveryTarget(lookup, route, delivery)
+	sessionID, title, resolveError, hidden := s.resolveDeliveryTarget(lookup, route, delivery)
 	if sessionID == "" && resolveError != "" && ctx.Err() == nil &&
 		errors.Is(lookup.Err(), context.DeadlineExceeded) {
 		item.unanswered = true
@@ -90,6 +94,7 @@ func (s *server) resolveMentionTarget(
 	item.title = title
 	item.attemptSessionID = sessionID
 	item.ResolveError = resolveError
+	item.hidden = hidden
 	// A missing session is not a resolved target, even though the legacy message delivery
 	// model retains its requested id in an attempt row. A live session that lacks a mode is
 	// still resolved and participates in the event's session-level suppression calculation.
@@ -147,15 +152,23 @@ type sendOutcome struct {
 // session, still the one Dispatch resolved, is not who receives it. The attempt keeps naming that
 // session, and the role's holder answers it as any role-route attempt is answered
 // (lookUpRoleHolderReply).
+//
+// project is the project the delivery is of (deliveryProject): a session that may not be shown it
+// is sent nothing, and the try records why (withheldFromSession, projectWithheldPrefix), which no
+// later try outlasts. Every try of a send is judged so, a role's holder that a renewed resolution
+// names among them; "" is a delivery of no project, judged by nothing.
 func (s *server) sendResolvedDelivery(
 	ctx context.Context, target ResolvedMention, route, body, idempotencyKey string, urgency *string,
-	wanted contracts.ExpectsReply, frame []byte, connectedOnly bool,
+	wanted contracts.ExpectsReply, frame []byte, connectedOnly bool, project string,
 ) sendOutcome {
 	if target.ResolveError != "" {
 		return sendOutcome{failure: target.ResolveError}
 	}
 	if target.SessionID == nil {
 		return sendOutcome{failure: noLiveSessionPrefix}
+	}
+	if withheld := s.withheldFromSession(ctx, *target.SessionID, project); withheld != "" {
+		return sendOutcome{failure: withheld}
 	}
 	input := listenerSendInput(
 		*target.SessionID, target.Delivery, body, idempotencyKey, urgency, wanted, frame, connectedOnly,
@@ -343,16 +356,32 @@ func openCommentDeliveryAttempt(
 // attempt a duplicate before the outcome it is waiting on is known.
 //
 // A zero resume is a person's or an agent's Retry: it resumes the lowest pending attempt nobody
-// holds, and otherwise opens one of its own.
+// holds, and otherwise opens one of its own. An attempt it opens for a session the writer of the
+// attempt may not see (attemptWriter: the request's reader, else actor as RecordedViewer reads
+// them) is never committed pending: it is written failed, "no live session <id>", the answer that
+// attempt's resolve would make (resolveDeliveryTarget), with the receipt its settle owes, in this
+// transaction (openHiddenCommentDeliveryAttempt), and the call reports it settled. A pending
+// attempt names no session until its resolution is recorded, so one committed pending for a hidden
+// session and stranded there by a sender that never came back would leave the delivery sweep a
+// send to make to it.
 func (s *server) claimCommentDeliveryAttempt(
-	ctx context.Context, comment model.Comment, target ResolvedMention, resume attemptClaim,
+	ctx context.Context, comment model.Comment, target ResolvedMention, actor model.Actor, resume attemptClaim,
 ) (claimedCommentDelivery, error) {
+	// The writer is resolved on the pool, before the transaction holds a connection
+	// (store.ErrNestedAcquire); only an unbound call opens an attempt.
+	var writer model.Actor
+	if resume.attempt == 0 {
+		var err error
+		if writer, err = s.attemptWriter(ctx, actor); err != nil {
+			return claimedCommentDelivery{}, err
+		}
+	}
 	tx, err := s.begin(ctx)
 	if err != nil {
 		return claimedCommentDelivery{}, err
 	}
 	defer tx.Rollback(ctx)
-	stored, err := s.lockedCommentForDelivery(ctx, tx, comment.ID)
+	stored, err := s.lockedCommentForDelivery(ctx, tx, everyReader, comment.ID)
 	if err != nil {
 		return claimedCommentDelivery{}, err
 	}
@@ -408,14 +437,20 @@ func (s *server) claimCommentDeliveryAttempt(
 		}
 		return claimed, nil
 	}
+	// An unbound call takes no pending attempt pinned to a session its writer may not see
+	// (access.SessionClause): resuming it would answer that session's id and settle another
+	// sender's owed attempt with this writer's refusal. It opens one of its own instead, resolved
+	// under the writer, and leaves that attempt pending, which the delivery sweep sends as the
+	// comment's author.
 	pending, err := scanCommentDelivery(tx.QueryRow(ctx, `
 		select `+commentDeliveryColumns+`, `+model.DeliveryClaimFreeSQL+`
 		from comment_deliveries
 		where comment_id = $1 and target = $2 and state = 'pending'
+		  and (comment_deliveries.session_id is null or `+access.SessionClause("comment_deliveries.session_id", "$3")+`)
 		order by attempt
 		limit 1
 		for update
-	`, stored.ID, target.Target), &takeable)
+	`, stored.ID, target.Target, refs.VisibilityArg(writer)), &takeable)
 	switch {
 	case err != nil && !errors.Is(err, pgx.ErrNoRows):
 		return claimedCommentDelivery{}, err
@@ -432,6 +467,18 @@ func (s *server) claimCommentDeliveryAttempt(
 	default:
 		// No attempt is pending, or a live sender holds the one that is, so this retry gets one of
 		// its own rather than two senders driving the same attempt.
+		hidden, err := hiddenSessionTarget(ctx, tx, writer, &target.Target)
+		if err != nil {
+			return claimedCommentDelivery{}, err
+		}
+		if hidden != "" {
+			settled, err := s.openHiddenCommentDeliveryAttempt(ctx, tx, stored, target, actor, hidden)
+			if err != nil {
+				return claimedCommentDelivery{}, err
+			}
+			claimed.settled = &settled
+			return claimed, nil
+		}
 		if claimed.attemptClaim, err = openCommentDeliveryAttempt(ctx, tx, stored, target); err != nil {
 			return claimedCommentDelivery{}, err
 		}
@@ -440,6 +487,41 @@ func (s *server) claimCommentDeliveryAttempt(
 		return claimedCommentDelivery{}, err
 	}
 	return claimed, nil
+}
+
+// openHiddenCommentDeliveryAttempt opens, in the claim transaction tx, the next attempt of
+// comment's mention of target, a session the attempt's writer may not see, already failed with
+// "no live session <hidden>": the answer its resolve would record (resolveDeliveryTarget), naming
+// no session, as recordCommentDeliveryResolution leaves such a resolution. It appends the
+// comment.delivery receipt that attempt's settle owes, commits, and publishes the receipt. The
+// attempt is never pending, so no sender - the delivery sweep above all - finds it owed, and no
+// listener is asked.
+func (s *server) openHiddenCommentDeliveryAttempt(
+	ctx context.Context, tx pgx.Tx, comment model.Comment, target ResolvedMention, actor model.Actor, hidden string,
+) (model.CommentDelivery, error) {
+	failure := noLiveSessionPrefix + " " + hidden
+	settled, err := scanCommentDelivery(tx.QueryRow(ctx, `
+		insert into comment_deliveries (comment_id, target, attempt, delivery, resolve_error, state, error, claimed_at)
+		values (
+			$1, $2,
+			(select coalesce(max(attempt), 0) + 1 from comment_deliveries where comment_id = $1 and target = $2),
+			$3, $4, 'failed', $4, now()
+		)
+		returning `+commentDeliveryColumns,
+		comment.ID, target.Target, target.Delivery, failure,
+	))
+	if err != nil {
+		return model.CommentDelivery{}, err
+	}
+	receipt, err := s.appendEvent(ctx, tx, commentDeliveryReceipt(comment, actor, settled))
+	if err != nil {
+		return model.CommentDelivery{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return model.CommentDelivery{}, err
+	}
+	s.publish(ctx, receipt)
+	return settled, nil
 }
 
 // take claims pending, an attempt nobody else holds - never claimed, claimed by a sender that
@@ -769,7 +851,7 @@ func (s *server) deliverResolvedCommentMention(
 	resume attemptClaim,
 	takeover takeoverRetry,
 ) (model.CommentDelivery, *mentionHeldForOrder, error) {
-	claimed, err := s.claimCommentDeliveryAttempt(ctx, comment, target, resume)
+	claimed, err := s.claimCommentDeliveryAttempt(ctx, comment, target, actor, resume)
 	if err != nil {
 		return model.CommentDelivery{}, nil, err
 	}
@@ -814,6 +896,11 @@ func (s *server) deliverResolvedCommentMention(
 	// send instead, because a try after a listener take-over resolves the mention again and
 	// sends in the mode that resolution names (mentionResolutionFor).
 	wanted := commentExpectsReply(stored)
+	// The project the comment is of, which every try's session must see (sendResolvedDelivery).
+	project, err := s.deliveryProject(ctx, stored.IssueKey, stored.ArtifactID)
+	if err != nil {
+		return model.CommentDelivery{}, nil, err
+	}
 	var outcome sendOutcome
 	// heldBy is the earlier event a try found the session must take first, which it made no try
 	// behind; orderErr is a read of that rule that failed. Either ends the tries: the answer is no
@@ -826,7 +913,7 @@ func (s *server) deliverResolvedCommentMention(
 		}
 		// A comment mention is never the live view's model and thinking switch, so it asks for no
 		// connected session: a stopped session the listener knows takes it when it runs again.
-		outcome = s.sendResolvedDelivery(ctx, target, target.Target, stored.Body, key, nil, wanted, frame, false)
+		outcome = s.sendResolvedDelivery(ctx, target, target.Target, stored.Body, key, nil, wanted, frame, false, project)
 		return outcome.failure
 	}
 	if decided && claimed.pending.SessionID == nil {
@@ -1092,14 +1179,6 @@ func scanCommentDelivery(row pgx.Row, extra ...any) (model.CommentDelivery, erro
 	return attempt, nil
 }
 
-func loadCommentDelivery(ctx context.Context, q queryer, commentID, target string, attemptNumber int) (model.CommentDelivery, error) {
-	return scanCommentDelivery(q.QueryRow(ctx, `
-		select `+commentDeliveryColumns+`
-		from comment_deliveries
-		where comment_id = $1 and target = $2 and attempt = $3
-	`, commentID, target, attemptNumber))
-}
-
 // createCommentDeliveryInput is the body of POST /api/v1/comments/{id}/deliveries.
 type createCommentDeliveryInput struct {
 	Actor    *model.Actor `json:"actor"`
@@ -1128,32 +1207,20 @@ func (s *server) createCommentDelivery(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "MENTION_INPUT", http.StatusBadRequest, "delivery must be one of btw, aside, steer")
 		return
 	}
-	comment, err := s.loadComment(r.Context(), s.deps.Store.Pool, r.PathValue("id"))
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
+	comment, err := s.loadComment(r.Context(), s.deps.Store.Pool, who, r.PathValue("id"))
 	if err != nil {
 		writeError(w, "COMMENT_NOT_FOUND", http.StatusNotFound, "comment not found")
 		return
 	}
-	rows, err := s.deps.Store.Pool.Query(r.Context(), `
-		select target from comment_mentions where comment_id = $1 order by target
-	`, comment.ID)
+	targets, err := s.readableMentionTargets(r.Context(), s.deps.Store.Pool, who, comment)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	targets := []string{}
-	for rows.Next() {
-		var target string
-		if err := rows.Scan(&target); err != nil {
-			s.writeHandlerError(w, err)
-			return
-		}
-		targets = append(targets, target)
-	}
-	if err := rows.Err(); err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	rows.Close()
 	if len(targets) == 0 {
 		writeError(w, "COMMENT_NOT_FOUND", http.StatusNotFound, "comment has no mentions")
 		return
@@ -1205,6 +1272,66 @@ func (s *server) createCommentDelivery(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusCreated, attempt)
 }
 
+// readableMentionTargets is the targets of comment's mentions, in target order, as who reads them
+// in the comment (loadCommentMentions, mentionsReadBy). A mention who does not see is left out, as
+// every read of the comment leaves it out, so a Retry (createCommentDelivery), which takes a
+// mention by its target, answers a target who does not see exactly as a target the comment does
+// not mention, counts only the mentions who reads for its one-mention default and its
+// target-required refusal, and answers a comment whose every mention who does not see as one with
+// none. A delivery's reply reads them by their targets alone (repliedMentionTargets).
+func (s *server) readableMentionTargets(ctx context.Context, q queryer, who model.Actor, comment model.Comment) ([]string, error) {
+	mentions, err := s.loadCommentMentions(ctx, q, who, []string{comment.ID})
+	if err != nil {
+		return nil, err
+	}
+	readable, err := mentionsReadBy(ctx, q, who, comment.ID, mentions[comment.ID])
+	if err != nil {
+		return nil, err
+	}
+	return mentionTargets(readable), nil
+}
+
+// repliedMentionTargets is the targets of comment's mentions, in target order, as a delivery's
+// reply reads them (loadCommentMentions, mentionsRepliedToBy): a mention whose target who does not
+// see is left out, so the reply answers it exactly as a target the comment does not mention,
+// counts only the mentions it reads for its one-mention default and its target-required refusal,
+// and answers a comment whose every mention it does not see as one with none. A mention is not left
+// out for the session it resolved to when the comment was written: the reply is judged by the
+// attempt it answers, which names the session it went to (replyAttemptHidden).
+func (s *server) repliedMentionTargets(ctx context.Context, q queryer, who model.Actor, comment model.Comment) ([]string, error) {
+	mentions, err := s.loadCommentMentions(ctx, q, who, []string{comment.ID})
+	if err != nil {
+		return nil, err
+	}
+	replied, err := mentionsRepliedToBy(ctx, q, who, mentions[comment.ID])
+	if err != nil {
+		return nil, err
+	}
+	return mentionTargets(replied), nil
+}
+
+// mentionTargets is the target of each of mentions, in their order.
+func mentionTargets(mentions []model.Mention) []string {
+	targets := make([]string, 0, len(mentions))
+	for _, mention := range mentions {
+		targets = append(targets, mention.Target)
+	}
+	return targets
+}
+
+// mentionsReadBy is mentions, comment id's, less every one who does not see - by its target, or by
+// the session it resolved to - as leaveOutHiddenCommentSessions leaves it out of every read of the
+// comment. Its read of what who sees is made whatever the mentions name, so a comment with a hidden
+// mention costs what one without it costs; a reader that sees every object reads nothing more, as
+// before (R9).
+func mentionsReadBy(ctx context.Context, q queryer, who model.Actor, id string, mentions []model.Mention) ([]model.Mention, error) {
+	read := []model.Comment{{ID: id, Mentions: mentions}}
+	if err := leaveOutHiddenCommentSessions(ctx, q, who, read); err != nil {
+		return nil, err
+	}
+	return read[0].Mentions, nil
+}
+
 // commentReplyInput is the body of POST /api/v1/comments/{id}/reply.
 type commentReplyInput struct {
 	Actor   *model.Actor `json:"actor"`
@@ -1232,7 +1359,9 @@ type commentReplyPlan struct {
 // every row lock: the thread climb, the block the reply names with the index its comment owes,
 // the reply's own index and references, and what it is in the node and tuple store, for an id
 // and a created_at reserved here. Nothing it reads is read again below, and nothing it plans is
-// written here. who is the session replying, which a block it may not see is refused to.
+// written here. actor is the session replying, which the reply's node records as its author, and
+// reader that writer as a read binds it (readerOf): a block reader may not see is refused
+// (planReplyBlock).
 //
 // The reply row is not inserted yet, so what no read of that row can answer is handed over: the
 // document its `#id`s resolve against, named by the fields that row will hold (planPendingItem,
@@ -1241,7 +1370,7 @@ type commentReplyPlan struct {
 // read that gives a stored reply its block would find no row yet, and addressing a document's
 // comment is itself a read (ownerAddress).
 func (s *server) planCommentReply(
-	ctx context.Context, tx pgx.Tx, who model.Actor, comment model.Comment, body string, replyToBlock *string,
+	ctx context.Context, tx pgx.Tx, actor, reader model.Actor, comment model.Comment, body string, replyToBlock *string,
 ) (commentReplyPlan, error) {
 	var plan commentReplyPlan
 	var err error
@@ -1251,7 +1380,7 @@ func (s *server) planCommentReply(
 		return plan, err
 	}
 	if replyToBlock != nil {
-		repair, block, err := s.planReplyBlock(ctx, tx, who, refs.ItemComment, comment.ID, *replyToBlock, "reply_to_block", "INVALID_COMMENT")
+		repair, block, err := s.planReplyBlock(ctx, tx, reader, refs.ItemComment, comment.ID, *replyToBlock, "reply_to_block", "INVALID_COMMENT")
 		if err != nil {
 			plan.refusal, err = deferredRefusal(err)
 			return plan, err
@@ -1267,11 +1396,15 @@ func (s *server) planCommentReply(
 		return plan, err
 	}
 	// The reply carries no anchor - a callback reply names none - and belongs to whatever the
-	// comment it answers belongs to.
-	if plan.stored, err = commentStored(ctx, tx, plan.id, who, plan.createdAt, nil, comment.ArtifactID); err != nil {
+	// comment it answers belongs to, in that one's project.
+	replyProject, replyParties, err := graphstore.ScopeOf(ctx, tx, comment.IssueKey, comment.ArtifactID)
+	if err != nil {
 		return plan, err
 	}
-	plan.changes, plan.write, err = s.planPendingItem(ctx, tx, who, refs.ItemComment, plan.id, body, refs.PendingSource{
+	if plan.stored, err = commentStored(ctx, tx, plan.id, actor, plan.createdAt, nil, comment.ArtifactID, replyProject, replyParties); err != nil {
+		return plan, err
+	}
+	plan.changes, plan.write, err = s.planPendingItem(ctx, tx, reader, refs.ItemComment, plan.id, body, refs.PendingSource{
 		IssueKey: comment.IssueKey, ArtifactID: comment.ArtifactID, ReplyTo: plan.thread.ReplyTo, AskID: plan.thread.AskID,
 	}, plan.createdAt, true)
 	return plan, err
@@ -1310,31 +1443,33 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "INVALID_COMMENT", http.StatusBadRequest, "reply_to_block names the block a reply's body answers; an error report has none")
 		return
 	}
+	// The writer's reader, resolved before the transaction holds a connection
+	// (lockedCommentForDelivery), and read by the role read below.
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
 	// The mention the reply answers and the session its attempt names are read before the
 	// transaction, so a reply from a session the attempt does not name, to a mention of a role,
 	// asks the listener whether that session holds the role now with nothing held
-	// (lookUpRoleHolderReply). The mention is the one the request names, else the comment's
-	// first, which is its only one wherever the transaction below takes a reply naming none. A
-	// read that finds nothing asks nothing: the transaction below answers that comment, mention
-	// or attempt as it always has. A read that fails is the route's 500. An attempt past
-	// comment_deliveries.attempt's range names no delivery, so no read is made with it: the bound
-	// below (fitsIntegerColumn) answers it, where it always has.
+	// (lookUpRoleHolderReply). The mention is picked as the transaction below picks it, among the
+	// mentions the writer reads (replyRoleHolderOf). A read that finds no such mention asks
+	// nothing: the transaction below answers that comment, mention or attempt as it always has. A
+	// read that fails is the route's 500. An attempt past comment_deliveries.attempt's range names
+	// no delivery, so no read is made with it: the bound below (fitsIntegerColumn) answers it,
+	// where it always has.
 	var roleReply roleHolderReply
 	var err error
 	if fitsIntegerColumn(input.Attempt) {
-		roleReply, err = s.roleHolderReplyOf(r.Context(), actor, r.PathValue("id"), `
-		select m.target, d.session_id
-		from comment_mentions m
-		left join comment_deliveries d on d.comment_id = m.comment_id and d.target = m.target and d.attempt = $3
-		where m.comment_id = $1 and m.target = coalesce($2, m.target)
-		order by m.target
-		limit 1
-	`, input.Target, input.Attempt)
+		roleReply, err = s.replyRoleHolderOf(r.Context(), actor, who, r.PathValue("id"), input.Target, input.Attempt)
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
 	}
+	// The role lookup above may have waited on the listener past what the refresh made with who
+	// covers, and the transaction below reads the comment by the session content rule.
+	s.refreshRosterBeforeReadBack(r.Context(), who)
 
 	tx, err := s.begin(r.Context())
 	if err != nil {
@@ -1342,7 +1477,7 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(r.Context())
-	comment, err := s.lockedCommentForDelivery(r.Context(), tx, r.PathValue("id"))
+	comment, err := s.lockedCommentForDelivery(r.Context(), tx, who, r.PathValue("id"))
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			writeError(w, "COMMENT_NOT_FOUND", http.StatusNotFound, "comment not found")
@@ -1360,7 +1495,7 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 	// route moves; every statement it plans is written with the reply's own writes.
 	var plan commentReplyPlan
 	if input.Body != nil {
-		if plan, err = s.planCommentReply(r.Context(), tx, actor, comment, *input.Body, input.ReplyToBlock); err != nil {
+		if plan, err = s.planCommentReply(r.Context(), tx, actor, who, comment, *input.Body, input.ReplyToBlock); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
@@ -1368,30 +1503,16 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 	// The mention rows are read, not locked: nothing updates or deletes one, their only writer
 	// inserts them under the comment's owner lock (createCommentFor), and this read holds that
 	// lock, so a FOR UPDATE here would guard nothing the advisory lock does not and would open
-	// the transaction id window a statement earlier.
-	rows, err := tx.Query(r.Context(), `
-		select target from comment_mentions where comment_id = $1 order by target
-	`, comment.ID)
+	// the transaction id window a statement earlier. They are read as a reply reads them
+	// (repliedMentionTargets): a credential that does not see a mention's target - its session,
+	// or the private project its role works for - answers for none of it, and is answered as for
+	// a target the comment does not mention. The session the mention resolved to when the
+	// comment was written does not decide: the attempt below is judged by its own session.
+	targets, err := s.repliedMentionTargets(r.Context(), tx, who, comment)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	targets := []string{}
-	for rows.Next() {
-		var target string
-		if err := rows.Scan(&target); err != nil {
-			rows.Close()
-			s.writeHandlerError(w, err)
-			return
-		}
-		targets = append(targets, target)
-	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
-		s.writeHandlerError(w, err)
-		return
-	}
-	rows.Close()
 	target := ""
 	if input.Target == nil {
 		if len(targets) != 1 {
@@ -1425,7 +1546,19 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 		select `+commentDeliveryColumns+`
 		from comment_deliveries where comment_id = $1 and target = $2 and attempt = $3 for update
 	`, comment.ID, target, input.Attempt))
-	if err != nil {
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		writeError(w, "COMMENT_NOT_FOUND", http.StatusNotFound, "comment delivery not found")
+		return
+	}
+	// An attempt pinned to a session the writer does not see is one no row holds, as every read
+	// of the comment's deliveries leaves it out (replyAttemptHidden), whoever replies to it. The
+	// read is made for an attempt no row holds too, so the two cost alike.
+	hidden, hiddenErr := replyAttemptHidden(r.Context(), tx, who, attempt.SessionID)
+	if hiddenErr != nil {
+		s.writeHandlerError(w, hiddenErr)
+		return
+	}
+	if err != nil || hidden {
 		writeError(w, "COMMENT_NOT_FOUND", http.StatusNotFound, "comment delivery not found")
 		return
 	}
@@ -1440,12 +1573,12 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 	// reply as it is, with no ask_waiting_on: that names whom the ask waits on once a reply is its
 	// newest, which a replayed reply need no longer be.
 	if attempt.ReplyID != nil {
-		reply, err := s.loadComment(r.Context(), tx, *attempt.ReplyID)
+		reply, err := s.loadComment(r.Context(), tx, who, *attempt.ReplyID)
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
-		if err := hydrateCommentReplyBlocks(r.Context(), tx, actor, &reply); err != nil {
+		if err := hydrateCommentReplyBlocks(r.Context(), tx, who, &reply); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
@@ -1630,9 +1763,9 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 
 // answeredDelivery is what one answer makes of the attempt it answers: the session that attempt
 // names, the state the row recorded before the answer, and the thing the attempt carried as the
-// store addresses it. itemID is empty for a thing this child gives no node, which a message is
-// (the child that moves the inbox, the messages and the read state owns messages and their
-// deliveries).
+// store addresses it. itemID is empty for a thing whose delivery this store records no tuple of
+// yet, which a message is: a message is a node of its project, but the change that records its
+// deliveries is a later one.
 type answeredDelivery struct {
 	session  string
 	was      string
@@ -1657,8 +1790,9 @@ type answeredDelivery struct {
 // The delivered_to tuple is stated only where this flip is what makes the attempt a delivery.
 // An attempt the listener had already taken carries its own comment.delivery receipt, and the
 // outbox's record of that receipt states the tuple (outbox's mentionReached); stating it again
-// under this event would write one delivery as two. A thing this child gives no node carries no
-// tuple at all, and a session past the bound is no far end the store can key.
+// under this event would write one delivery as two. A thing whose delivery this store records no
+// tuple of yet carries no tuple at all, and a session past the bound is no far end the store can
+// key.
 //
 // It is queued after the write that records who answered (graphstore.QueueAuthored), which takes
 // the author's person node and their session node in one statement in ascending (kind, id). The

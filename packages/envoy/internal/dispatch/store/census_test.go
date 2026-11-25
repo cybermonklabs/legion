@@ -1107,6 +1107,57 @@ func TestCensusAdmitsTheSplitProjectKeyMigrationsAndRefusesTheOldIndexShape(t *t
 	}
 }
 
+// TestCensusAdmitsTheCanonicalOwnerIndex holds the census to admitting the index an address's
+// personal tokens are read through (20261119020200 on canonical_login(agent_tokens.owner)), over
+// production before this release (requireCensusAdmitsConcurrentIndexes).
+func TestCensusAdmitsTheCanonicalOwnerIndex(t *testing.T) {
+	requireCensusAdmitsConcurrentIndexes(t, 20261119020200)
+}
+
+// productionBeforeThisRelease is the version that stands for production before this release:
+// the DO blocks of earlier releases (20261111210103 among them) are applied there, and every later
+// migration is pending in this release's deploy census.
+const productionBeforeThisRelease = 20261118200651
+
+// requireCensusAdmitsConcurrentIndexes holds the census, over a database at
+// productionBeforeThisRelease with every later migration pending and the limit at one byte, where
+// each table is over it, to admitting each of versions as one concurrent, non-unique index of its
+// own migration, which the limit never applies to at any size, but only while no earlier pending
+// migration runs a DO block: one voids the exemption of every later pending migration
+// (pgmigrate.Census, laterEventTrigger). This release's first DO block is 20261119021826, so each
+// of its concurrent indexes sorts before it, and its deploy census admits them whatever their
+// tables hold. Control: an index renamed to sort after 20261119021826 fails its entry. Only each
+// entry is read, never the verdict of the whole set, for the reason
+// TestCensusAdmitsTheSplitProjectKeyMigrationsAndRefusesTheOldIndexShape gives.
+func requireCensusAdmitsConcurrentIndexes(t *testing.T, versions ...int) {
+	t.Helper()
+	before := productionBeforeThisRelease
+	store := openEmptyTestStore(t)
+	migrateThrough(t, store, before)
+	report, err := census(context.Background(), store.Pool.Config().ConnString(), migrationFiles, pgmigrate.CensusOptions{TableLimit: 1})
+	if err != nil {
+		t.Fatalf("census: %v", err)
+	}
+	found := map[int]bool{}
+	for _, version := range versions {
+		found[version] = false
+	}
+	for _, entry := range report.Pending {
+		if _, wanted := found[entry.Migration.Version]; !wanted {
+			continue
+		}
+		found[entry.Migration.Version] = true
+		if !entry.ConcurrentIndex || len(entry.Refusals) != 0 {
+			t.Errorf("the census did not admit migration %d as a concurrent index: %+v", entry.Migration.Version, entry)
+		}
+	}
+	for version, present := range found {
+		if !present {
+			t.Errorf("migration %d was not pending in the census over a database at %d", version, before)
+		}
+	}
+}
+
 // queuedStateCensus is the census of INFRA-626's three migrations - the widened state checks and
 // connected_only (20261114081434), the index over a session's taken deliveries (20261114081435)
 // and the drop of the one it replaces (20261114081436) - over a database at 20261111212235, the
@@ -1118,9 +1169,18 @@ func TestCensusAdmitsTheSplitProjectKeyMigrationsAndRefusesTheOldIndexShape(t *t
 // table the limit would not have refused anyway.
 func queuedStateCensus(t *testing.T, version int) *pgmigrate.MigrationCensus {
 	t.Helper()
+	return censusEntryAtOneByte(t, 20261111212235, 20261114081436, version)
+}
+
+// censusEntryAtOneByte is version's entry in the census of the shipped migrations through through
+// over a database migrated through before, with the limit at one byte, as queuedStateCensus reads
+// it: it fails the test when version is not pending, refuses, or touches a table the limit would
+// not have refused anyway.
+func censusEntryAtOneByte(t *testing.T, before, through, version int) *pgmigrate.MigrationCensus {
+	t.Helper()
 	store := openEmptyTestStore(t)
-	migrateThrough(t, store, 20261111212235)
-	report, err := census(context.Background(), store.Pool.Config().ConnString(), migrationsThrough(t, 20261114081436), pgmigrate.CensusOptions{TableLimit: 1})
+	migrateThrough(t, store, before)
+	report, err := census(context.Background(), store.Pool.Config().ConnString(), migrationsThrough(t, through), pgmigrate.CensusOptions{TableLimit: 1})
 	if err != nil {
 		t.Fatalf("census: %v", err)
 	}
@@ -1185,10 +1245,188 @@ func TestCensusExemptsTheDropOfTheSentDeliveriesIndexAtAnyTableSize(t *testing.T
 	}
 }
 
+// 20261117064356 adds agent_tokens.subject as a nullable text column with no default, then its
+// check as a statement of its own, not valid: each a catalog-only alter table, so the census
+// exempts the migration from the table limit, as its comment says it writes the catalog alone. A
+// check written inline in the add column is validated against every row, which the census reads as
+// a scan of agent_tokens and holds to the limit.
+func TestCensusExemptsTheAgentTokenSubjectMigrationAtAnyTableSize(t *testing.T) {
+	entry := censusEntryAtOneByte(t, 20261117053553, 20261117064356, 20261117064356)
+	if entry.TableSizeExemption != "alter table" {
+		t.Errorf("TableSizeExemption = %q, want %q", entry.TableSizeExemption, "alter table")
+	}
+	if len(entry.Tables) != 1 || entry.Tables[0].Name != "agent_tokens" {
+		t.Errorf("tables = %+v, want agent_tokens alone", entry.Tables)
+	}
+}
+
+// 20261117160116 creates a plpgsql function and a trigger on agent_tokens that refuses a change of
+// a token's recorded account: catalog-only statements, so the census exempts it from the table
+// limit, and it reads no row of agent_tokens.
+func TestCensusExemptsTheAgentTokenSubjectTriggerAtAnyTableSize(t *testing.T) {
+	entry := censusEntryAtOneByte(t, 20261117064356, 20261117160116, 20261117160116)
+	if entry.TableSizeExemption != "create function and create trigger" {
+		t.Errorf("TableSizeExemption = %q, want %q", entry.TableSizeExemption, "create function and create trigger")
+	}
+	if len(entry.Tables) != 1 || entry.Tables[0].Name != "agent_tokens" {
+		t.Errorf("tables = %+v, want agent_tokens alone", entry.Tables)
+	}
+}
+
+// 20261117175133 adds people.sub_recorded_at as a nullable timestamptz with no default, a
+// catalog-only alter table, and the plpgsql function and trigger that stamp it: catalog-only
+// statements, so the census exempts it from the table limit and it reads no row of people.
+func TestCensusExemptsThePeopleRecordingTimeColumnAtAnyTableSize(t *testing.T) {
+	entry := censusEntryAtOneByte(t, 20261117160116, 20261117175133, 20261117175133)
+	if entry.TableSizeExemption != "alter table and create function and create trigger" {
+		t.Errorf("TableSizeExemption = %q, want %q", entry.TableSizeExemption, "alter table and create function and create trigger")
+	}
+	if len(entry.Tables) != 1 || entry.Tables[0].Name != "people" {
+		t.Errorf("tables = %+v, want people alone", entry.Tables)
+	}
+}
+
+// 20261118041916 adds a check on people and a foreign key from user_sessions to people, both not
+// valid, and plpgsql functions and triggers on people, user_sessions and agent_tokens, dropping
+// the two triggers and functions they replace: catalog-only statements, so the census exempts it
+// from the table limit, as its comment says it writes the catalog alone, and it touches those
+// three tables and no other.
+func TestCensusExemptsTheBindingColumnsMigrationAtAnyTableSize(t *testing.T) {
+	entry := censusEntryAtOneByte(t, 20261117175133, 20261118041916, 20261118041916)
+	if entry.TableSizeExemption == "" {
+		t.Errorf("the migration is not exempt from the table limit: %+v", entry)
+	}
+	var names []string
+	for _, table := range entry.Tables {
+		names = append(names, table.Name)
+	}
+	slices.Sort(names)
+	if !slices.Equal(names, []string{"agent_tokens", "people", "user_sessions"}) {
+		t.Errorf("tables = %v, want agent_tokens, people and user_sessions", names)
+	}
+}
+
+// 20261118152422 adds broker_revocations.session_generation where it is missing, as a nullable
+// bigint with no default, replaces a plpgsql function, and drops and makes its two triggers on
+// broker_revocations: catalog-only statements, so the census exempts it from the table limit, as
+// its comment says it writes the catalogue alone, and it touches broker_revocations and no other
+// table.
+func TestCensusExemptsTheBrokerRevocationsGuardMigrationAtAnyTableSize(t *testing.T) {
+	entry := censusEntryAtOneByte(t, 20261118041916, 20261118152422, 20261118152422)
+	if entry.TableSizeExemption == "" {
+		t.Errorf("the migration is not exempt from the table limit: %+v", entry)
+	}
+	if len(entry.Tables) != 1 || entry.Tables[0].Name != "broker_revocations" {
+		t.Errorf("tables = %+v, want broker_revocations alone", entry.Tables)
+	}
+}
+
+// earlierHeadBrokerRevocationsShape is what 7142c3108a, an earlier head of
+// cybermonklabs/legion#4199, made inside 20261118041916: broker_revocations.session_generation, the
+// guard's function and its two triggers, in that head's plain statements. The function here is a
+// stand-in that refuses nothing, so a guard that refuses is 20261118152422's own.
+const earlierHeadBrokerRevocationsShape = `
+alter table broker_revocations add column session_generation bigint;
+create function guard_broker_revocation_columns() returns trigger language plpgsql as $$ begin return new; end $$;
+create trigger broker_revocations_binding_columns before insert or update or delete on broker_revocations
+  for each row execute function guard_broker_revocation_columns();
+create trigger broker_revocations_not_truncated before truncate on broker_revocations
+  for each statement execute function guard_broker_revocation_columns();
+`
+
+// TestTheBrokerRevocationsGuardMigrationAppliesOverAnEarlierHeadsShape: a database 7142c3108a
+// migrated records 20261118041916 and holds the column, the function and the triggers
+// 20261118152422 makes. The fixture stands for one: a database migrated through 20261118041916,
+// then earlierHeadBrokerRevocationsShape. The runner then applies 20261118152422 over it, as this
+// head's boot does: it passes, and leaves the column once, each trigger once, and the guard's own
+// function in place of the stand-in, so a truncate the stand-in let through is refused with
+// SQLSTATE 23514.
+//
+// Control: the migration with a plain add column, as that head wrote it, fails here with 42701.
+func TestTheBrokerRevocationsGuardMigrationAppliesOverAnEarlierHeadsShape(t *testing.T) {
+	ctx := context.Background()
+	store := openEmptyTestStore(t)
+	migrateThrough(t, store, 20261118041916)
+	if _, err := store.Pool.Exec(ctx, earlierHeadBrokerRevocationsShape); err != nil {
+		t.Fatalf("the earlier head's shape: %v", err)
+	}
+	if _, err := store.Pool.Exec(ctx, `truncate broker_revocations`); err != nil {
+		t.Fatalf("the stand-in guard refused a truncate (%v); the fixture must refuse nothing", err)
+	}
+	migrations, err := pgmigrate.Load(migrationFiles, "migrations")
+	if err != nil {
+		t.Fatalf("load migrations: %v", err)
+	}
+	index := slices.IndexFunc(migrations, func(migration pgmigrate.Migration) bool { return migration.Version == 20261118152422 })
+	if index < 0 {
+		t.Fatal("no migration 20261118152422")
+	}
+	if err := store.applyMigration(ctx, migrations, migrations[index]); err != nil {
+		t.Fatalf("20261118152422 over the earlier head's shape: %v", err)
+	}
+	var columns, triggers int
+	if err := store.Pool.QueryRow(ctx, `select
+		(select count(*) from pg_attribute where attrelid = 'broker_revocations'::regclass and attname = 'session_generation' and not attisdropped),
+		(select count(*) from pg_trigger where tgrelid = 'broker_revocations'::regclass and not tgisinternal
+			and tgname in ('broker_revocations_binding_columns', 'broker_revocations_not_truncated'))`).Scan(&columns, &triggers); err != nil {
+		t.Fatal(err)
+	}
+	if columns != 1 || triggers != 2 {
+		t.Errorf("after 20261118152422: %d session_generation column(s) and %d guard trigger(s), want 1 and 2", columns, triggers)
+	}
+	if _, err := store.Pool.Exec(ctx, `truncate broker_revocations`); !isSQLState(err, "23514") {
+		t.Errorf("a truncate after 20261118152422 answered %v, want SQLSTATE 23514 from the guard it replaced the stand-in with", err)
+	}
+}
+
+// 20261118200651 replaces guard_people_binding_columns and guard_broker_revocation_columns whole
+// (create or replace function), catalog-only statements: the census exempts it from the table limit,
+// even at a limit of one byte, and refuses nothing. The database is migrated through the migration
+// just before it, 20261118181230_projects_slack_channels_changed_at since the base merged at
+// 9e94fb53d5, so it is the one migration pending.
+func TestCensusExemptsTheLaterClockMigrationAtAnyTableSize(t *testing.T) {
+	store := openEmptyTestStore(t)
+	migrateThrough(t, store, 20261118181230)
+	report, err := census(context.Background(), store.Pool.Config().ConnString(), migrationsThrough(t, 20261118200651), pgmigrate.CensusOptions{TableLimit: 1})
+	if err != nil {
+		t.Fatalf("census: %v", err)
+	}
+	if len(report.Pending) != 1 || report.Pending[0].Migration.Version != 20261118200651 {
+		t.Fatalf("pending = %+v, want 20261118200651 alone; report:\n%s", report.Pending, reportText(report))
+	}
+	entry := report.Pending[0]
+	if entry.TableSizeExemption != "create function" || len(entry.Refusals) != 0 {
+		t.Errorf("the census answered 20261118200651 with exemption %q and refusals %v; want exempt as create function, with no refusal", entry.TableSizeExemption, entry.Refusals)
+	}
+}
+
+// 20261119021826 sets the two clock guards' search_path in a DO block, built from current_schema()
+// as it runs. The census cannot read what a DO block runs, so it exempts none: it answers the
+// migration with no exemption, but the DO block names no table, so the census measures and refuses
+// nothing, even at a limit of one byte. The base is 20261119020200, the version before it
+// (agent_tokens_canonical_owner, the concurrent index that sorts before it,
+// TestCensusAdmitsTheCanonicalOwnerIndex); the four erase indexes that sorted between them
+// (20261119020300 to 020600) left with the erase (#3178 at 5a51d205a8).
+func TestCensusAnswersTheClockGuardsSearchPathMigration(t *testing.T) {
+	store := openEmptyTestStore(t)
+	migrateThrough(t, store, 20261119020200)
+	report, err := census(context.Background(), store.Pool.Config().ConnString(), migrationsThrough(t, 20261119021826), pgmigrate.CensusOptions{TableLimit: 1})
+	if err != nil {
+		t.Fatalf("census: %v", err)
+	}
+	if len(report.Pending) != 1 || report.Pending[0].Migration.Version != 20261119021826 {
+		t.Fatalf("pending = %+v, want 20261119021826 alone; report:\n%s", report.Pending, reportText(report))
+	}
+	t.Logf("the census's report of 20261119021826:\n%s", reportText(report))
+	if entry := report.Pending[0]; len(entry.Refusals) != 0 || len(entry.Tables) != 0 {
+		t.Errorf("the census answered 20261119021826 with refusals %v and tables %+v; want neither: it names no table", entry.Refusals, entry.Tables)
+	}
+}
+
 // blockRefsIndexCensus is the census of the two migrations of block_refs' index of targets - the
 // build of block_refs_to_source (blockRefsSourceIndex) and the drop of block_refs_to, the index it
 // replaces (dropBlockRefsTargetIndex) - over a database at beforeBlockRefsSourceIndex, a version
-// before them, under options; main's 20261120021308_search_text_versions is pending there too.
+// just before them, under options.
 // Only version's entry is read, never the verdict of the whole set, for the reason
 // TestCensusAdmitsTheSplitProjectKeyMigrationsAndRefusesTheOldIndexShape gives. It answers that
 // entry, and fails the test when that migration is not pending or touches a table of one byte or

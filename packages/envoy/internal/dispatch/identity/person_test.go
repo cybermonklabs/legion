@@ -1,10 +1,12 @@
 package identity
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/oidc"
 )
 
@@ -12,7 +14,7 @@ import (
 var dispatchMembers = GroupRule{Group: "dispatch-members"}
 
 func TestPersonIsTheLowercasedEmailTheProviderUsernameCarries(t *testing.T) {
-	email, err := dispatchMembers.Person(oidc.Claims{
+	person, err := dispatchMembers.Person(context.Background(), oidc.Claims{
 		Username:  "ExampleIdP_A.B+C@D.example",
 		Groups:    []string{"other-group", "dispatch-members"},
 		Providers: []string{"ExampleIdP"},
@@ -20,13 +22,13 @@ func TestPersonIsTheLowercasedEmailTheProviderUsernameCarries(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Person: %v", err)
 	}
-	if email != "a.b+c@d.example" {
-		t.Fatalf("Person = %q, want a.b+c@d.example", email)
+	if person != (SignedIn{Email: "a.b+c@d.example", Kind: model.MemberFull}) {
+		t.Fatalf("Person = %+v, want a.b+c@d.example as a full member", person)
 	}
 }
 
 func TestPersonOutsideTheGroupIsRefusedByName(t *testing.T) {
-	email, err := dispatchMembers.Person(oidc.Claims{
+	person, err := dispatchMembers.Person(context.Background(), oidc.Claims{
 		Username:  "ExampleIdP_contractor@d.example",
 		Groups:    []string{"other-group"},
 		Providers: []string{"ExampleIdP"},
@@ -34,16 +36,17 @@ func TestPersonOutsideTheGroupIsRefusedByName(t *testing.T) {
 	if !errors.Is(err, ErrNotMember) {
 		t.Fatalf("Person outside the group: err = %v, want ErrNotMember", err)
 	}
-	if email != "contractor@d.example" {
-		t.Fatalf("refused person = %q, want the email, so the refusal can name them", email)
+	if person != (SignedIn{Email: "contractor@d.example"}) {
+		t.Fatalf("refused person = %+v, want the email and no member kind, so the refusal can name them", person)
 	}
-	if _, err := dispatchMembers.Person(oidc.Claims{Username: "ExampleIdP_x@d.example", Providers: []string{"ExampleIdP"}}); !errors.Is(err, ErrNotMember) {
+	if _, err := dispatchMembers.Person(context.Background(), oidc.Claims{Username: "ExampleIdP_x@d.example", Providers: []string{"ExampleIdP"}}); !errors.Is(err, ErrNotMember) {
 		t.Fatalf("Person in no group: err = %v, want ErrNotMember", err)
 	}
 }
 
 // Only a username a federated provider issued carries an email Dispatch trusts: a pool's own
-// account, or a username whose remainder is not an address, names nobody.
+// account, or a username whose remainder is not an address, one holding a Unicode space included,
+// names nobody.
 func TestPersonRefusesAUsernameNoProviderIssued(t *testing.T) {
 	for _, claims := range []oidc.Claims{
 		{Username: "sami@d.example", Groups: []string{"dispatch-members"}},
@@ -51,10 +54,12 @@ func TestPersonRefusesAUsernameNoProviderIssued(t *testing.T) {
 		{Username: "OtherProvider_sami@d.example", Groups: []string{"dispatch-members"}, Providers: []string{"ExampleIdP"}},
 		{Username: "ExampleIdP_not-an-address", Groups: []string{"dispatch-members"}, Providers: []string{"ExampleIdP"}},
 		{Username: "ExampleIdP_two@at@d.example", Groups: []string{"dispatch-members"}, Providers: []string{"ExampleIdP"}},
+		{Username: "ExampleIdP_sami@d.example\u00a0", Groups: []string{"dispatch-members"}, Providers: []string{"ExampleIdP"}},
+		{Username: "ExampleIdP_\u2003sami@d.example", Groups: []string{"dispatch-members"}, Providers: []string{"ExampleIdP"}},
 		{Username: "_sami@d.example", Groups: []string{"dispatch-members"}, Providers: []string{""}},
 	} {
-		if email, err := dispatchMembers.Person(claims); !errors.Is(err, ErrNoPerson) {
-			t.Errorf("Person(%+v) = %q, %v; want ErrNoPerson", claims, email, err)
+		if person, err := dispatchMembers.Person(context.Background(), claims); !errors.Is(err, ErrNoPerson) {
+			t.Errorf("Person(%+v) = %+v, %v; want ErrNoPerson", claims, person, err)
 		}
 	}
 }
@@ -69,11 +74,11 @@ func googleAccount() oidc.Claims {
 }
 
 // Under the domain rule a person is the lowercased email of a token whose hd is the domain and
-// whose email Google has verified.
+// whose email Google has verified, a full member with that hd.
 func TestPersonUnderTheDomainIsTheVerifiedEmailOfTheDomain(t *testing.T) {
-	email, err := workspace.Person(googleAccount())
-	if err != nil || email != "a.person@example.com" {
-		t.Fatalf("Person = %q, %v; want a.person@example.com", email, err)
+	person, err := workspace.Person(context.Background(), googleAccount())
+	if err != nil || person != (SignedIn{Email: "a.person@example.com", Kind: model.MemberFull, HostedDomain: "example.com"}) {
+		t.Fatalf("Person = %+v, %v; want a.person@example.com as a full member of example.com", person, err)
 	}
 }
 
@@ -92,14 +97,16 @@ func TestPersonUnderTheDomainRefusesEachWayWithItsReason(t *testing.T) {
 		{"an email Google has not verified", func(c *oidc.Claims) { c.EmailVerified = false }, ErrEmailNotVerified, "a.person@example.com"},
 		{"no email", func(c *oidc.Claims) { c.Email = "" }, ErrNoEmail, ""},
 		{"an email of no address's shape", func(c *oidc.Claims) { c.Email = "not-an-address" }, ErrNoEmail, ""},
+		{"an email ending in a no-break space", func(c *oidc.Claims) { c.Email = "A.Person@example.com\u00a0" }, ErrNoEmail, ""},
+		{"an email starting with an em space", func(c *oidc.Claims) { c.Email = "\u2003A.Person@example.com" }, ErrNoEmail, ""},
 		{"no subject", func(c *oidc.Claims) { c.Subject = "" }, ErrNoPerson, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			claims := googleAccount()
 			tc.change(&claims)
-			email, err := workspace.Person(claims)
-			if !errors.Is(err, tc.want) || email != tc.email {
-				t.Errorf("Person = %q, %v; want %q, %v", email, err, tc.email, tc.want)
+			person, err := workspace.Person(context.Background(), claims)
+			if !errors.Is(err, tc.want) || person != (SignedIn{Email: tc.email}) {
+				t.Errorf("Person = %+v, %v; want %q with no member kind, %v", person, err, tc.email, tc.want)
 			}
 		})
 	}
@@ -114,10 +121,10 @@ func TestPersonUnderTheDomainRefusesEachWayWithItsReason(t *testing.T) {
 // nobody in, and the group rule reads none of the Workspace claims.
 func TestEachRuleReadsOnlyItsOwnClaims(t *testing.T) {
 	cognito := oidc.Claims{Username: "ExampleIdP_a@example.com", Groups: []string{"dispatch-members"}, Providers: []string{"ExampleIdP"}, Subject: "pool-subject"}
-	if _, err := workspace.Person(cognito); !errors.Is(err, ErrNoEmail) {
+	if _, err := workspace.Person(context.Background(), cognito); !errors.Is(err, ErrNoEmail) {
 		t.Errorf("a Cognito token under the domain rule: err = %v, want ErrNoEmail", err)
 	}
-	if _, err := dispatchMembers.Person(googleAccount()); !errors.Is(err, ErrNoPerson) {
+	if _, err := dispatchMembers.Person(context.Background(), googleAccount()); !errors.Is(err, ErrNoPerson) {
 		t.Errorf("a Google token under the group rule: err = %v, want ErrNoPerson", err)
 	}
 }

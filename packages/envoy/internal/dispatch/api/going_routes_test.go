@@ -133,7 +133,7 @@ func (rig goingRoutesRig) awaitTerminal(t *testing.T, id string) []string {
 	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
 	for {
-		stored, _, err := rig.server.readGoingStream(context.Background(), id, 0)
+		stored, _, err := rig.server.readGoingStream(context.Background(), everyReader, id, 0)
 		if err != nil {
 			t.Fatalf("read the run's frames: %v", err)
 		}
@@ -205,7 +205,7 @@ func TestGoingRequestRecordsTheQuestionAndItsFramesReachTheRecord(t *testing.T) 
 	if window := run.EndsAt.Sub(run.CreatedAt); window != contracts.GoingRunWindow {
 		t.Errorf("the run's window is %v, want %v", window, contracts.GoingRunWindow)
 	}
-	recorded, err := rig.server.readGoingRequest(context.Background(), run.ID)
+	recorded, err := rig.server.readGoingRequest(context.Background(), everyReader, run.ID)
 	if err != nil {
 		t.Fatalf("read the recorded run: %v", err)
 	}
@@ -318,7 +318,7 @@ func TestGoingRequestRefusesAProjectScopedCallerAnotherProject(t *testing.T) {
 func TestGoingStreamReplaysStoredFramesAndResumes(t *testing.T) {
 	t.Parallel()
 	rig := newGoingRoutesRig(t, nil)
-	run, err := rig.server.recordGoingRequest(context.Background(), goingAsker, "GOI", "who closed it?")
+	run, err := rig.server.recordGoingRequest(context.Background(), goingAsker, "GOI", "who closed it?", false)
 	if err != nil {
 		t.Fatalf("record the run: %v", err)
 	}
@@ -413,7 +413,7 @@ func TestGoingStreamCarriesAnEndingStoredBetweenItsTwoReads(t *testing.T) {
 	t.Parallel()
 	rig := newGoingRoutesRig(t, nil)
 	ctx := context.Background()
-	run, err := rig.server.recordGoingRequest(ctx, goingAsker, "", "who is answering this?")
+	run, err := rig.server.recordGoingRequest(ctx, goingAsker, "", "who is answering this?", false)
 	if err != nil {
 		t.Fatalf("record the run: %v", err)
 	}
@@ -483,7 +483,7 @@ func TestGoingStreamCarriesAnEndingStoredBetweenItsTwoReads(t *testing.T) {
 func TestGoingStreamAnswersEveryRunItWillNotServeAlike(t *testing.T) {
 	t.Parallel()
 	rig := newGoingRoutesRig(t, nil)
-	mine, err := rig.server.recordGoingRequest(context.Background(), goingAsker, "", "what is going on?")
+	mine, err := rig.server.recordGoingRequest(context.Background(), goingAsker, "", "what is going on?", false)
 	if err != nil {
 		t.Fatalf("record the run: %v", err)
 	}
@@ -649,7 +649,7 @@ func TestAGoingRunAskedUnderAnEarlierBuildsOwnerAnswersItsCanonicalOwner(t *test
 	} else if moved.RowsAffected() != 1 {
 		t.Fatalf("restated %d run(s) with id %s, want the run", moved.RowsAffected(), run.ID)
 	}
-	recorded, err := rig.server.readGoingRequest(context.Background(), run.ID)
+	recorded, err := rig.server.readGoingRequest(context.Background(), model.ServerReader, run.ID)
 	if err != nil {
 		t.Fatalf("read the recorded run: %v", err)
 	}
@@ -706,7 +706,7 @@ func TestGoingStreamRefusesARunWhoseAuthorNamesNobody(t *testing.T) {
 	t.Parallel()
 	rig := newGoingRoutesRig(t, nil)
 
-	nobodys, err := rig.server.recordGoingRequest(context.Background(), model.Actor{}, "", "whose run is this?")
+	nobodys, err := rig.server.recordGoingRequest(context.Background(), model.Actor{}, "", "whose run is this?", false)
 	if err != nil {
 		t.Fatalf("record a run naming nobody: %v", err)
 	}
@@ -719,7 +719,7 @@ func TestGoingStreamRefusesARunWhoseAuthorNamesNobody(t *testing.T) {
 	}
 
 	subject := "system:serviceaccount:dispatch:answerer"
-	pod, err := rig.server.recordGoingRequest(context.Background(), model.Actor{Service: &subject}, "", "what is this pod running?")
+	pod, err := rig.server.recordGoingRequest(context.Background(), model.Actor{Service: &subject}, "", "what is this pod running?", false)
 	if err != nil {
 		t.Fatalf("record a pod's run: %v", err)
 	}
@@ -737,7 +737,7 @@ func TestGoingStreamReadsAResumePointPastTheSequenceColumnAsNone(t *testing.T) {
 	t.Parallel()
 	rig := newGoingRoutesRig(t, nil)
 	ctx := context.Background()
-	run, err := rig.server.recordGoingRequest(ctx, goingAsker, "", "how far can a reader resume?")
+	run, err := rig.server.recordGoingRequest(ctx, goingAsker, "", "how far can a reader resume?", false)
 	if err != nil {
 		t.Fatalf("record the run: %v", err)
 	}

@@ -295,7 +295,8 @@ func seedRunDrives(t *testing.T) []StoreDrive {
 	}
 	return []StoreDrive{{
 		Name: seedDocumentsDrive, Database: database,
-		Sites: []string{"cmd/dispatch-seed/write_docs.go#writeDocument", "refs/blocks.go#Queue", "graphstore/write.go#Caused"},
+		Sites: []string{"cmd/dispatch-seed/write_docs.go#writeDocument", "cmd/dispatch-seed/write_core.go#writeIssues",
+			"refs/blocks.go#Queue", "graphstore/write.go#Caused"},
 		Ready: func(t *testing.T) {
 			t.Helper()
 			binary = cmdtest.BuildCommand(t, cmdtest.Command{Name: "dispatch-seed", Dir: "../../../cmd/dispatch-seed"})
@@ -307,18 +308,27 @@ func seedRunDrives(t *testing.T) []StoreDrive {
 				"--database-url", database.Pool.Config().ConnString(), "--scale", seedScale, "--no-migrate"))
 			queuedAt(t, asks, "asks", "insert into asks")
 		},
-		// Each document's latest version, indexed as its first: the blocks it states afresh and
-		// the references they hold.
+		// The issues' nodes, which the seed writes before their documents, each document's node,
+		// and each document's latest version, indexed as its first: the blocks it states afresh and
+		// the references they hold. Every node of the seed is in its project.
 		Counts: map[StoredKind][]string{
-			{refs.BlockNodeKind, graphstore.AttributeVisibility}: {"block"},
-			{refs.BlockNodeKind, graphstore.AttributeState}:      {"block"},
-			{refs.BlockNodeKind, refs.TupleInDocument}:           {"block"},
-			{refs.BlockNodeKind, graphstore.TuplePartOf}:         {"block"},
-			{refs.BlockNodeKind, "mentions"}:                     {"block_ref"},
+			{graphstore.KindIssue, graphstore.AttributeVisibility}:    {graphstore.KindIssue},
+			{graphstore.KindIssue, graphstore.AttributeState}:         {graphstore.KindIssue},
+			{graphstore.KindIssue, graphstore.AttributeProject}:       {graphstore.KindIssue},
+			{graphstore.KindArtifact, graphstore.AttributeVisibility}: {graphstore.KindArtifact},
+			{graphstore.KindArtifact, graphstore.AttributeState}:      {graphstore.KindArtifact},
+			{graphstore.KindArtifact, graphstore.AttributeProject}:    {graphstore.KindArtifact},
+			{refs.BlockNodeKind, graphstore.AttributeVisibility}:      {"block"},
+			{refs.BlockNodeKind, graphstore.AttributeState}:           {"block"},
+			{refs.BlockNodeKind, graphstore.AttributeProject}:         {"block"},
+			{refs.BlockNodeKind, refs.TupleInDocument}:                {"block"},
+			{refs.BlockNodeKind, graphstore.TuplePartOf}:              {"block"},
+			{refs.BlockNodeKind, "mentions"}:                          {"block_ref"},
 		},
 	}, {
 		Name: seedFollowersDrive, Database: database,
-		Sites: []string{"cmd/dispatch-seed/write_items.go#writeFollowerNodes", "graphstore/write.go#Write"},
+		Sites: []string{"cmd/dispatch-seed/write_items.go#writeFollowerNodes", "cmd/dispatch-seed/write_items.go#writeItemNodes",
+			"graphstore/write.go#Write"},
 		Drive: func(t *testing.T) {
 			t.Helper()
 			if err := asks.Rollback(ctx); err != nil {
@@ -326,13 +336,19 @@ func seedRunDrives(t *testing.T) []StoreDrive {
 			}
 			queuedAt(t, comments, "comments", "insert into comments")
 		},
+		// The asks' nodes, which their batch writes before its rows, and the session nodes of
+		// their followers.
 		Counts: map[StoredKind][]string{
+			{graphstore.KindAsk, graphstore.AttributeVisibility}:     {graphstore.KindAsk},
+			{graphstore.KindAsk, graphstore.AttributeState}:          {graphstore.KindAsk},
+			{graphstore.KindAsk, graphstore.AttributeProject}:        {graphstore.KindAsk},
 			{graphstore.KindSession, graphstore.AttributeVisibility}: {graphstore.KindSession},
 			{graphstore.KindSession, graphstore.AttributeState}:      {graphstore.KindSession},
 		},
 	}, {
 		Name: seedCommentsDrive, Database: database,
-		Sites: []string{"cmd/dispatch-seed/write_items.go#writeComments", "graphstore/write.go#Write"},
+		Sites: []string{"cmd/dispatch-seed/write_items.go#writeComments", "cmd/dispatch-seed/write_items.go#writeItemNodes",
+			"graphstore/write.go#Write"},
 		Drive: func(t *testing.T) {
 			t.Helper()
 			if err := comments.Rollback(ctx); err != nil {
@@ -347,13 +363,18 @@ func seedRunDrives(t *testing.T) []StoreDrive {
 				t.Fatalf("the seed exited %d; it wrote:\n%s", code, process.Output.String())
 			}
 		},
-		// The comments, as the comment path states one, and their one author's node.
+		// The comments, as the comment path states one, in their project, their one author's
+		// node, and the messages' nodes, which the seed writes after its comments.
 		Counts: map[StoredKind][]string{
 			{graphstore.KindComment, graphstore.AttributeVisibility}: {"comment"},
 			{graphstore.KindComment, graphstore.AttributeState}:      {"comment"},
+			{graphstore.KindComment, graphstore.AttributeProject}:    {"comment"},
 			{graphstore.KindComment, graphstore.TupleAuthoredBy}:     {graphstore.TupleAuthoredBy},
 			{graphstore.KindComment, graphstore.TupleAnchoredTo}:     {graphstore.TupleAnchoredTo},
 			{graphstore.KindComment, graphstore.TupleOwnedBy}:        {graphstore.TupleOwnedBy},
+			{graphstore.KindMessage, graphstore.AttributeVisibility}: {graphstore.KindMessage},
+			{graphstore.KindMessage, graphstore.AttributeState}:      {graphstore.KindMessage},
+			{graphstore.KindMessage, graphstore.AttributeProject}:    {graphstore.KindMessage},
 			{graphstore.KindPerson, graphstore.AttributeVisibility}:  {graphstore.KindPerson},
 			{graphstore.KindPerson, graphstore.AttributeState}:       {graphstore.KindPerson},
 		},

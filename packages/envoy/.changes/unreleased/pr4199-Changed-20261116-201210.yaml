@@ -1,0 +1,20 @@
+kind: Changed
+body: |-
+  Under `DISPATCH_SIGNIN_DOMAIN`, a Google sign-in to an address whose row records another Google
+  account now revokes every personal agent token of the address as well as ending its sessions,
+  whatever member kind the row held: such a token answers `401 TOKEN_REVOKED` from then on, and
+  the new account makes its own in Settings. So the old holder's tokens stop when Google gives an
+  address to another account, and the tokens an account outside the Workspace made at an address
+  of another domain the Workspace owns, before that address's member first signed in, stop at that
+  sign-in instead of acting as the member. A row that recorded no Google account (a Cognito pool's
+  sign-in, before a move to a domain) replaces no account: its first Google sign-in ends its
+  sessions as before, revokes only the tokens another account minted there, and holds the tokens
+  that record no account to when they were made. The WARN line of a sign-in that replaces an account
+  now reads `a sign-in under another Google account ended every session and revoked every
+  personal token of the address`, with `tokens_revoked`, how many it revoked. A personal token
+  mint that races such a sign-in waits for it and then writes nothing, refused as the replaced
+  account's next request is (`401 NO_IDENTITY` for a cookie, `401 TOKEN_REVOKED` for a token),
+  so no token outlives the account that minted it.
+time: 2026-11-16T20:12:10.719830873Z
+custom:
+    Issue: pr4199

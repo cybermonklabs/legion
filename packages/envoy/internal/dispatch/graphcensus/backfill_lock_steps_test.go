@@ -17,11 +17,14 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest/lockstep"
 )
 
-// TestEveryBackfillBatchTakesTheStoreLockOrder is the backfill's half of the check
-// c-lock-order for the three batches backfill_fence_test.go does not prove: writeBlockRefBatch,
-// writeCommentBatch and writeRoleBatch, three of the store write call sites graphstore's
-// TestEveryStoreWriteCallSiteIsListed lists. graphstore's TestEveryStoreWriteTakesOneLockOrder
-// cannot run them, since this package imports graphstore.
+// TestEveryBackfillBatchTakesTheStoreLockOrder is the backfill's half of the check c-lock-order
+// for the batches backfill_fence_test.go and
+// TestTheBlockBatchTakesEveryOwnerRowBeforeAnyFenceRow do not prove: writeBlockRefBatch,
+// writeCommentBatch, writeRoleBatch and writeSessionBatch, and the two batches of the passes over
+// the project of every node, writeObjectBatch and writeScopeBatch (projects_lock_steps_test.go),
+// each a store write call site graphstore's TestEveryStoreWriteCallSiteIsListed lists.
+// graphstore's TestEveryStoreWriteTakesOneLockOrder cannot run them, since this package imports
+// graphstore.
 //
 // Each subtest seeds the rows one batch writes from, then holds, each in a transaction of its own,
 // a row of every step the batch takes and a row of every step it does not take, and runs the real
@@ -35,9 +38,12 @@ import (
 // then reads what the run wrote, so the run it followed is the one that committed.
 func TestEveryBackfillBatchTakesTheStoreLockOrder(t *testing.T) {
 	t.Run("writeBlockRefBatch takes the owner row, the fence, its block_refs rows, then the tuple append, and no node row", requireTheBlockRefBatchLockOrder)
-	t.Run("writeCommentBatch takes no owner row, then every node row ascending, then the tuple append and the comments rows", requireTheCommentBatchLockOrder)
+	t.Run("writeCommentBatch takes its comments' owner rows, then every node row ascending, then the tuple append and the comments rows", requireTheCommentBatchLockOrder)
 	t.Run("writeRoleBatch takes no owner row, then its node rows ascending and the part_of tuple", requireTheRoleBatchLockOrder)
 	t.Run("writeSessionBatch takes no owner row, then its node rows ascending", requireTheSessionBatchLockOrder)
+	t.Run("writeObjectBatch takes its documents' owner locks in ascending owner key, then each run's node rows ascending and its tuples, and no event", requireTheObjectBatchLockOrder)
+	t.Run("writeScopeBatch over block nodes takes the owner lock, the fence, then the node rows ascending and the project tuple, and no projection row", requireTheBlockScopeBatchLockOrder)
+	t.Run("writeScopeBatch over a comment node takes no owner lock and no fence, then the node row and the project tuple", requireTheCommentScopeBatchLockOrder)
 }
 
 // requireTheBlockRefBatchLockOrder holds writeBlockRefBatch to its steps. The batch is one of the
@@ -123,12 +129,15 @@ func requireTheBlockRefBatchLockOrder(t *testing.T) {
 	}
 }
 
-// requireTheCommentBatchLockOrder holds writeCommentBatch to its steps. The batch writes every
-// node it writes - its comments' and their authors' - in one store write, which takes their rows
-// in ascending (kind, id) and then appends every tuple: the facts each comment row projects, and
-// each author's authored_by and aliases (graphstore.AuthorFacts). Only then does it name the
-// nodes on the comments rows. It takes the owner lock of its comments' issue first, as every
-// writer of a comments row does (refs.LockCommentOwners), and appends no event.
+// requireTheCommentBatchLockOrder holds writeCommentBatch to its steps. The batch first takes the
+// owner lock of its comments' issue, as every writer of a comments row does
+// (refs.LockCommentOwners), and reads under it which comments still stand unmarked
+// (refs.CommentsNamingNoNode), so a batch read before another run marked a comment writes nothing
+// for it. It then writes every node it writes - its comments' and their
+// authors' - in one store write, which takes their rows in ascending (kind, id) and then appends
+// every tuple: the facts each comment row projects, and each author's authored_by and aliases
+// (graphstore.AuthorFacts). Only then does it name the nodes on the comments rows. It appends no
+// event.
 //
 // Three comments are written with comment.created events, so every tuple carries a cause other
 // than the sentinel and so a repeat key a hold can stand on. Their ids order them c1, c2, c3, which

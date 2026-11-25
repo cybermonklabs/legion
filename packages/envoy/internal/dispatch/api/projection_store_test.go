@@ -1472,7 +1472,7 @@ func projectionWriters(t *testing.T, run *projectionRun) []projectionWriter {
 		name:  "the comment write",
 		table: "comments",
 		write: func(ctx context.Context, tx pgx.Tx) error {
-			stored, err := commentStored(ctx, tx, commentID, model.Actor{Kind: "user", ID: "alice"}, time.Now().UTC(), nil, &run.projectID)
+			stored, err := commentStored(ctx, tx, commentID, model.Actor{Kind: "user", ID: "alice"}, time.Now().UTC(), nil, &run.projectID, run.project, nil)
 			if err != nil {
 				return err
 			}
@@ -1913,13 +1913,16 @@ func requireAReparentCarriesItsTuplesTransaction(t *testing.T, ctx context.Conte
 // requireOnlyTheMovedKindsReachedTheStore fails on a node of any kind but the three this change
 // moves - the kinds the three projected tables of migration 20261109022248 name - less the
 // kinds the store holds of people and agents and the two its block schema writes, which no
-// projection backs.
+// projection backs, and the four kinds whose nodes name the project a read is limited by
+// - an issue, a document, an ask and a message, each written at its own
+// create site, beside the rows it writes, which carry no node columns.
 func requireOnlyTheMovedKindsReachedTheStore(t *testing.T, ctx context.Context, run *projectionRun) {
 	t.Helper()
 	moved := []string{"block", "block_ref", "comment"}
 	allowed := append(slices.Clone(moved),
 		graphstore.KindPerson, graphstore.KindSession, graphstore.KindRole, graphstore.KindPage,
-		"supertag", "attribute")
+		"supertag", "attribute",
+		graphstore.KindIssue, graphstore.KindArtifact, graphstore.KindAsk, graphstore.KindMessage)
 	for _, column := range []string{"select distinct kind from graph_nodes", "select distinct from_kind from graph_tuples"} {
 		kinds, err := readStrings(ctx, run.database.Pool, column+" order by 1")
 		if err != nil {

@@ -2,6 +2,8 @@
 package model
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,8 +19,9 @@ import (
 
 // The OAuth scopes a credential can hold. ScopePerson is "this credential acts as its person",
 // which every route a person reaches through the dashboard requires; ScopeApprove is the right to
-// settle what a person settles — an approval, an ask's answer — which no credential holds without
-// ScopePerson, since a credential that does not act as its person has nobody to approve for.
+// settle what a person settles — an approval, an ask's answer, who may see a project — which no
+// credential holds without ScopePerson, since a credential that does not act as its person has
+// nobody to approve for.
 const (
 	ScopePerson  = "person"
 	ScopeApprove = "approve"
@@ -72,6 +75,13 @@ type Credential struct {
 	// TokenID and TokenName name a personal token, and are empty for every other credential.
 	TokenID   string
 	TokenName string
+	// Projects are the projects the credential may use, sorted: a personal token's
+	// agent_tokens.projects (personalTokenActor), or a broker token's list (brokerTokenActor:
+	// the one project of a token an operator's entry mapped to it, or the list a token acting as
+	// its person traded for). Empty is a credential that names none. What a list decides is
+	// access.CredentialCovers': for a full member's credential, and one that names no person, only
+	// which private projects it reaches; for a restricted member's, every project it reaches.
+	Projects []string
 	// ReadOnly is a broker-issued token that holds only the scope read (ciphertoken.ScopeRead):
 	// one the secrets broker minted from a read entry, naming a service and a session and no
 	// person and no project. Dispatch serves it on the routes its read list names
@@ -81,6 +91,12 @@ type Credential struct {
 	// requirement; it narrows what this credential may call rather than widening it. False for
 	// every other credential.
 	ReadOnly bool
+	// NamedProject is the one project a broker token an operator's entry mapped to one project
+	// may write (ciphertoken.ProjectScopeNamed), set by brokerTokenActor beside Projects, and
+	// empty for every other credential. It is the write scope such a token had before projects
+	// could be private, which holds whatever the deployment holds: api's namedProjectOf reads it.
+	// A fact of the request, never written to a row or an answer.
+	NamedProject string `json:"-"`
 }
 
 // Holds reports whether the credential holds one scope. A nil Credential holds none, so a
@@ -89,20 +105,31 @@ func (c *Credential) Holds(scope string) bool {
 	return c != nil && slices.Contains(c.Scopes, scope)
 }
 
+// browserCredential is a person's own cookie: it holds every scope and names no agent that acted
+// for them. Every browser caller shares this one value, on the dashboard's hottest path, so nothing
+// writes it or appends to its Scopes.
+var browserCredential = &Credential{Scopes: Scopes}
+
+// BrowserActor is the caller a person's signed-in browser is: the person, with the cookie's
+// credential. Every reader of a cookie builds its caller here - api's optionalActor, the GitHub
+// proxy and the document socket - so access.Resolve, which reads the credential, reads each of
+// them as the browser it is.
+func BrowserActor(login string) Actor {
+	return Actor{Kind: "user", ID: login, Credential: browserCredential}
+}
+
 // Actor identifies the user or agent session that caused a change. Service is
 // the verified Kubernetes subject of the projected service-account token a
 // session authenticated with ("system:serviceaccount:<namespace>:<name>"), set
-// by the server from the token and never from a request body. Project is the
-// one project key a broker-issued access token lets its session write, set by
-// the server from that token and never from a request body; it is nil for
-// every other credential and for a token whose scope names no single project.
+// by the server from the token and never from a request body. The projects a
+// credential may use are its own (Credential.Projects), a fact of the request
+// that no record carries.
 type Actor struct {
 	Kind    string       `json:"kind"`
 	ID      string       `json:"id"`
 	Origin  *ActorOrigin `json:"origin,omitempty"`
 	Owner   *string      `json:"owner,omitempty"`
 	Service *string      `json:"service,omitempty"`
-	Project *string      `json:"project,omitempty"`
 	// Act names the agent that made this act for the person, and is set only where a
 	// credential acted as its person (actingPerson). A browser's act carries none, and so
 	// does an agent's own write on a route that always took tokens, which is recorded as the
@@ -125,10 +152,14 @@ type Actor struct {
 	// serialised; the scope gate and actingPerson read it, actingPerson copies what it needs
 	// onto Act, and Recorded drops it from the actor a handler writes and compares.
 	Credential *Credential `json:"-"`
+	// Viewer is what the caller may see, as access.Resolve answered it for this request: a
+	// fact of the request, like Credential, so it is never serialised. Recorded drops it and
+	// Reader keeps it.
+	Viewer *Viewer `json:"-"`
 }
 
-// Recorded is the actor as a write records it: the request's credential dropped. A stored actor
-// is decoded from JSON, which carries no credential, so the credential never reaches a row.
+// Recorded is the actor as a write records it: the request's credential and viewer dropped. A
+// stored actor is decoded from JSON, which carries neither, so neither ever reaches a row.
 // Dispatch decides "the same writer" by kind and id (SameAs) and "the same credential" by those
 // and the names a credential carries (SameCredential); the one == left that decides anything is
 // the document rooms' lost-write notice (docs/lostedit.go), so an actor handed to the document
@@ -142,8 +173,56 @@ type Actor struct {
 // optionalActor (callerHoldsScope). Proven is a fact of the record and stays.
 func (a Actor) Recorded() Actor {
 	a.Credential = nil
+	a.Viewer = nil
 	return a
 }
+
+// Reader is the actor as a read binds it: the request's credential dropped, as Recorded drops
+// it, and its viewer kept, because what a read may answer is the viewer's to decide.
+func (a Actor) Reader() Actor {
+	a.Credential = nil
+	return a
+}
+
+// MemberKind is how a person belongs to the deployment: a full member signed in under the
+// sign-in domain, and a restricted member signed in because a project's access list names them.
+// MemberNone is a login no `people` row holds.
+type MemberKind string
+
+const (
+	MemberNone       MemberKind = ""
+	MemberFull       MemberKind = "full"
+	MemberRestricted MemberKind = "restricted"
+)
+
+// Viewer is what one caller may see, resolved once a request (access.Resolve). Sees is every
+// project it sees, sorted. Open is a viewer that is not a restricted member: it reads every row
+// that belongs to no project, as every caller did before projects could be private, whatever its
+// credential lists, since a list decides only which private projects a full member's credential
+// sees. All is ServerViewer alone. AnyPrivate is whether the deployment holds a private project at
+// all. Lists is the credential's own list of projects (Credential.Projects) as its caller is told
+// it - every credential's but a broker token's, whose list is answered only while some project is
+// private or its person is a restricted member, as before projects could be private - and nil
+// otherwise: which projects it would see were its person to see them, which tells a read whether
+// the credential read a project before a change took it away (api: eventGapSQL), and which whoami
+// answers as projects.
+type Viewer struct {
+	Person, Session string
+	Restricted      bool
+	Open            bool
+	All             bool
+	Sees            []string
+	AnyPrivate      bool
+	Lists           []string
+}
+
+// ServerViewer is the server's own read of content that belongs to one owner, which each of its
+// uses gates per viewer where it leaves the server: it sees every project and every party.
+var ServerViewer = &Viewer{Open: true, All: true}
+
+// ServerReader is the server's own reader: an actor that proves no author and carries
+// ServerViewer, for a read the server makes for itself rather than for a caller.
+var ServerReader = Actor{Viewer: ServerViewer}
 
 // SameAs reports whether two actors are the same writer: one session id, or one human login.
 // Dispatch compares actors in this way wherever it has to decide "is this the same session" — a
@@ -178,9 +257,9 @@ func (a Actor) SameAs(other Actor) bool {
 // in, so a going run asked under "Dana@Example.COM" is the run of the token whose owner now reads
 // dana@example.com. Service is a workload's subject, no login, and is compared byte for byte.
 //
-// Origin, Project, Act and Proven are not compared: they say where a write came from, who it acted
-// for and whether its credential proved its id, which two requests of one credential differ in,
-// so comparing them would call one credential two.
+// Origin, Act and Proven are not compared: they say where a write came from, who it acted for and
+// whether its credential proved its id, which two requests of one credential differ in, so
+// comparing them would call one credential two.
 func (a Actor) SameCredential(other Actor) bool {
 	return a.SameAs(other) && sameActorName(a.Owner, other.Owner, sameLogin) && sameActorName(a.Service, other.Service, sameName)
 }
@@ -209,9 +288,27 @@ func sameName(left, right string) bool {
 // CanonicalLogin is the stored form of a person's email: trimmed, with its ASCII letters lowered
 // and nothing else folded (fold.Login, the one spelling of that rule, which the broker's
 // record.CanonicalLogin reads too), the form the identity implementations name a person by and
-// the people table holds.
+// the people table holds. canonical_login (migration 20261117000831) is this form in SQL, for a
+// statement that compares a stored login with people.email; store.TestCanonicalLoginIsModelCanonicalLogin
+// holds the two to one another, so a change here is a change there.
 func CanonicalLogin(login string) string {
 	return fold.Login(login)
+}
+
+// LoginHash is what a log line prints, as `login_hash`, in place of a person's login: the first 16
+// hex digits (64 bits) of the SHA-256 of the login's canonical form (CanonicalLogin). Every spelling
+// of one login, in every process and build, prints the same value, and the line holds no address.
+// An operator finds a person's lines by hashing their canonical login the same way, the address
+// with its ASCII capitals lowered and no white space around it
+// (`printf %s 'Alice@Example.com' | tr A-Z a-z | sha256sum | cut -c1-16`), and reads the address a
+// value stands for from the people table, which holds every signed-in person's canonical login:
+//
+//	select email from people where left(encode(sha256(convert_to(email, 'UTF8')), 'hex'), 16) = '<value>';
+//
+// store.TestTheLoginHashResolveQueryFindsThePerson holds that statement to this function.
+func LoginHash(login string) string {
+	sum := sha256.Sum256([]byte(CanonicalLogin(login)))
+	return hex.EncodeToString(sum[:8])
 }
 
 // ActorOrigin describes the client environment of a session actor.
@@ -225,12 +322,15 @@ type ActorOrigin struct {
 }
 
 // AgentToken is the safely displayable metadata for a human-owned agent token. Scopes is the
-// OAuth scopes the token holds, the set its bearer may act within.
+// OAuth scopes the token holds, the set its bearer may act within. Projects is the list of
+// projects it may use, sorted, and absent for a token that lists none, which uses the public
+// projects its person sees.
 type AgentToken struct {
 	ID         string     `json:"id"`
 	Name       string     `json:"name"`
 	Prefix     string     `json:"prefix"`
 	Scopes     []string   `json:"scopes"`
+	Projects   []string   `json:"projects,omitempty"`
 	CreatedAt  time.Time  `json:"created_at"`
 	LastUsedAt *time.Time `json:"last_used_at"`
 	RevokedAt  *time.Time `json:"revoked_at"`
@@ -317,7 +417,217 @@ type Project struct {
 	// carries no member, so a client that does not know the member reads the same project.
 	DefaultRepo *string   `json:"default_repo,omitempty"`
 	CreatedAt   time.Time `json:"created_at"`
+	// Visibility is ProjectPrivate for a private project and absent for a public one, so a
+	// deployment where every project is public answers every project as it did before projects
+	// could be private.
+	Visibility string `json:"visibility,omitempty"`
 }
+
+// The two visibilities a project has (projects.visibility). Every full member sees a public
+// project; a private one is seen only by its owner and the people and groups its access list
+// names.
+const (
+	ProjectPublic  = "public"
+	ProjectPrivate = "private"
+)
+
+// ProjectAccess is who may see one project and who changes that: its owner, its visibility, and
+// the people (lowercase emails) and groups its access list names, each list sorted and never
+// null (GET /api/v1/projects/{key}/access).
+type ProjectAccess struct {
+	Project    string   `json:"project"`
+	Owner      string   `json:"owner"`
+	Visibility string   `json:"visibility" enum:"public,private"`
+	People     []string `json:"people"`
+	Groups     []string `json:"groups"`
+	// SlackChannels are the Slack channel ids the project's credentials may post to, at most 16,
+	// sorted, always present and [] for none. Its owner names them. The secrets broker reads a
+	// private project's channels to release the Legion Slack bot token to its credentials for those
+	// channels alone (R14).
+	SlackChannels []string `json:"slack_channels"`
+	// SlackChannelsChangedAt is when SlackChannels last changed, always present and null until a
+	// write changes the list. A write of the list it already holds leaves it.
+	SlackChannelsChangedAt *time.Time `json:"slack_channels_changed_at"`
+	// NotSignedIn are the people of People nobody has signed in as yet, sorted and never null: the
+	// rule admits each of them once they sign in.
+	NotSignedIn []string `json:"not_signed_in"`
+	// PrivateBeforeFullSwitch is true while the project is private before its full switch: the
+	// deployment names it in DISPATCH_PRIVATE_BEFORE_FULL_SWITCH and not in
+	// DISPATCH_PRIVATE_PROJECTS, so Dispatch hides it as any private project while its namespace,
+	// stores and bus gate come with its full switch. Absent for every other project, so a
+	// deployment that names no such project answers what it always answered.
+	PrivateBeforeFullSwitch bool `json:"private_before_full_switch,omitempty"`
+	// Passkeys is, in the owner's answer of a deployment whose people from outside sign in with a
+	// passkey (DISPATCH_SIGNIN_PASSKEY=1), when each passkey of a person People names was enrolled,
+	// sorted by email and then by that time, [] for none; absent from every other answer. The owner
+	// sees from it whether a link they made was used first by someone else (R5).
+	Passkeys *[]EnrolledPasskey `json:"passkeys,omitempty"`
+	// Invitable is, in that same answer alone, the people of People the owner can make a link for
+	// now (POST /api/v1/projects/{key}/access/people/{email}/invitations): each on no domain of the
+	// company's Workspace, with no full member's sign-in, and named by no project of another owner,
+	// sorted, [] for none.
+	Invitable *[]string `json:"invitable,omitempty"`
+	// ListedByAnotherOwner is, in that same answer alone, the people from outside of People (no
+	// full member, no Workspace address) a project of another owner names directly, sorted, [] for
+	// none: one owner binds a person from outside, so the owner makes no link for them (409
+	// LISTED_BY_ANOTHER_OWNER) until that project's owner takes them off its list, or an operator
+	// does.
+	ListedByAnotherOwner *[]string `json:"listed_by_another_owner,omitempty"`
+	// OpenInvitations is, in that same answer alone, each link of this project that can still
+	// enroll someone: unused and not lapsed, sorted by email and then by when it was made, [] for
+	// none. It holds no token. The owner's page drops a link it shows once a read made after that
+	// link landed no longer holds it: a Reset, a newer link, a delisting or the person's
+	// enrollment ended it, wherever that was done.
+	OpenInvitations *[]OpenInvitation `json:"open_invitations,omitempty"`
+}
+
+// OpenInvitation is one link of a project that can still enroll someone
+// (ProjectAccess.OpenInvitations): the address it was made for, when it was made, and when it
+// lapses, both on the database's clock, as the owner's Invite answered them.
+type OpenInvitation struct {
+	Email     string    `json:"email"`
+	MadeAt    time.Time `json:"made_at"`
+	ExpiresAt time.Time `json:"expires_at"`
+}
+
+// EnrolledPasskey is one passkey of a person (ProjectAccess.Passkeys): when it was enrolled, who
+// made the link that enrolled it, and that link's project, which only a reader who sees it is
+// answered (nil otherwise), so the owner sees whose link a passkey came through before the person
+// reads their project.
+type EnrolledPasskey struct {
+	Email      string    `json:"email"`
+	EnrolledAt time.Time `json:"enrolled_at"`
+	MadeBy     string    `json:"made_by"`
+	Project    *string   `json:"project,omitempty"`
+}
+
+// AccessGroup is a named list of full members that an access list can name: its one owner, the
+// full member who made it or was given it, and its members, sorted and never null.
+type AccessGroup struct {
+	Name    string   `json:"name"`
+	Owner   string   `json:"owner"`
+	Members []string `json:"members"`
+	// NotSignedIn are the members nobody has signed in as yet, sorted and never null. A group
+	// admits only its full members, so each of them is admitted once they sign in as one.
+	NotSignedIn []string `json:"not_signed_in"`
+}
+
+// MaxGroupsPerOwner is how many groups one owner holds at most: a write that would make, or give
+// them, one more is refused (access.PutGroup).
+const MaxGroupsPerOwner = 100
+
+// AccessGroupPage is one page of GET /api/v1/access-groups: the groups after the page before it,
+// in name order, and Next, the name the next page starts after, absent on the last page.
+type AccessGroupPage struct {
+	Groups []AccessGroup `json:"groups"`
+	Next   string        `json:"next,omitempty"`
+}
+
+// AccessAnswer is the membership answer the secrets broker reads (GET
+// /api/v1/access/projects/{key}?person=): one project's owner and visibility, the person's member
+// kind (MemberAnswerFull, MemberAnswerRestricted or MemberAnswerNone), whether the read rule lets
+// that person see the project at a browser, and the project's Slack channels. It names no
+// repositories: GitHub events carry no project, so no reader needs a project's repositories.
+type AccessAnswer struct {
+	Project    string `json:"project"`
+	Visibility string `json:"visibility" enum:"public,private"`
+	Owner      string `json:"owner"`
+	Person     string `json:"person"`
+	MemberKind string `json:"member_kind" enum:"full,restricted,none"`
+	Visible    bool   `json:"visible"`
+	// SlackChannels is the project's own list, as ProjectAccess carries it: [] for none.
+	SlackChannels []string `json:"slack_channels"`
+	// SlackChannelsChangedAt is when that list last changed, as ProjectAccess carries it: null
+	// until a write changes the list.
+	SlackChannelsChangedAt *time.Time `json:"slack_channels_changed_at"`
+	// Holder is present for a question naming a person that describes the credential being checked
+	// (?account_issuer=&account_subject=, or ?account=none, each with ?credential_created_at=):
+	// whether that credential holds the person's address. False when Dispatch records another
+	// Google account for the person, when the credential records an account of another issuer, or
+	// when it records none and was made before Dispatch recorded the person's account, within
+	// brokerCredentialMargin after, or at a time not given (accountHolder), and Visible is then
+	// false too. A question naming a person alone carries none, as before.
+	Holder *bool `json:"holder,omitempty"`
+}
+
+// PrivateProjectChannels is one private project's Slack channels as the secrets broker reads
+// them (GET /api/v1/access/private-projects): the project's key, its channels, sorted and [] for
+// none, and when that list last changed, null until a write changes the list.
+type PrivateProjectChannels struct {
+	Project                string     `json:"project"`
+	SlackChannels          []string   `json:"slack_channels" nullable:"false"`
+	SlackChannelsChangedAt *time.Time `json:"slack_channels_changed_at"`
+}
+
+// PersonAnswer is one person's member kind as the membership answer spells it (GET
+// /api/v1/access/person?person=), with Holder as AccessAnswer carries it. Held is whether Dispatch
+// holds the person's personal tokens and broker credentials until they sign in again or a refresh
+// confirms them (identity.Membership.Standing): present whenever that answered, false for a person
+// no row holds, and left out when it failed, so a reader tells "not held" from "could not be read".
+// AsOf is the database time of the read the answer rests on: Standing's, or the database's now()
+// where Standing did not answer. NotHeldUntil is set under IAP identity alone, on every answer that
+// is not held: when it stops being served, the last Active Workspace Directory answer plus 24
+// hours, or AsOf itself for an answer that is unavailable (identity.Standing.Unavailable), a
+// person no Active answer confirmed in 24 hours or no row holds. It is left out of a held answer and
+// everywhere outside IAP.
+type PersonAnswer struct {
+	Person       string     `json:"person"`
+	MemberKind   string     `json:"member_kind" enum:"full,restricted,none"`
+	Holder       *bool      `json:"holder,omitempty"`
+	Held         *bool      `json:"held,omitempty"`
+	AsOf         time.Time  `json:"as_of"`
+	NotHeldUntil *time.Time `json:"not_held_until,omitempty"`
+}
+
+// The member kinds the membership answer spells: MemberKind's two, and MemberAnswerNone for a
+// login no `people` row holds, which MemberKind leaves empty.
+const (
+	MemberAnswerFull       = string(MemberFull)
+	MemberAnswerRestricted = string(MemberRestricted)
+	MemberAnswerNone       = "none"
+)
+
+// ProjectAccessEventPayload is `project.access_changed`: one write of a project's owner,
+// visibility, access list or Slack channels committed. It names the project and which change it
+// was, and nothing else: every reader of the project's events reads it - the event log, the live
+// socket's events view and the bus, credentials without the person scope included - so it carries
+// no email, group name or channel id. Who the change named, and the project's owner and visibility
+// as it left them, are the server's own record of the event (project_access_changes), which a live
+// resume reads to tell whether the change moved what its caller sees. A reader that needs the list
+// reads GET /api/v1/projects/{key}/access, under that route's own rule, and every reader that
+// resolved a viewer resolves again. It is owned by the project and never notifies.
+type ProjectAccessEventPayload struct {
+	Project string `json:"project"`
+	Change  string `json:"change"`
+}
+
+// The Change of a ProjectAccessEventPayload.
+const (
+	AccessOwnerChanged      = "owner"
+	AccessVisibilityChanged = "visibility"
+	AccessPersonAdded       = "person_added"
+	AccessPersonRemoved     = "person_removed"
+	AccessGroupAdded        = "group_added"
+	AccessGroupRemoved      = "group_removed"
+	// AccessSlackChannelsChanged is a write of the project's Slack channels.
+	AccessSlackChannelsChanged = "slack_channels"
+)
+
+// AccessGroupEventPayload is `access_group.changed`: one group was made, had its members or owner
+// written, or was deleted. A group belongs to no project, so it names no owner: the outbox
+// publishes it nowhere and it never notifies (events.Quiet), as a priority's write.
+type AccessGroupEventPayload struct {
+	Name string `json:"name"`
+	// Change is AccessGroupCreated, AccessGroupUpdated or AccessGroupDeleted.
+	Change string `json:"change"`
+}
+
+// The Change of an AccessGroupEventPayload.
+const (
+	AccessGroupCreated = "created"
+	AccessGroupUpdated = "updated"
+	AccessGroupDeleted = "deleted"
+)
 
 // GatedStepDecisions, GatedStepCriteria and GatedStepSpec are the three design-gate steps
 // Project.GatedSteps names, each one a document of the root issue: the issue's decisions

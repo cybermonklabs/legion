@@ -636,7 +636,7 @@ func TestAnUntouchedDocumentIsRemovedWholeAndATouchedOneIsRefused(t *testing.T) 
 
 		// The room loads, and a version pass over it writes nothing, because the document reads
 		// as it did: the settlement a typed document gets, over one nobody typed in.
-		if text, err := documents.Text(ctx, document.ID); err != nil || text != "" {
+		if text, err := documents.Text(ctx, everyReader, document.ID); err != nil || text != "" {
 			t.Fatalf("read the live document = %q, %v; want the empty document it was made as", text, err)
 		}
 		version, err := settleDocumentVersion(roomDatabase, documents, document.ID, model.Actor{Kind: "user", ID: "alice"})
@@ -678,7 +678,7 @@ func TestAnUntouchedDocumentIsRemovedWholeAndATouchedOneIsRefused(t *testing.T) 
 		}
 		issue := createInteractionIssue(t, queueHandler, "QUEUE", "A document settled as it goes", "# Spec\n")
 		document := emptyDocument(t, queueHandler, issue.Key, "Queued notes")
-		if text, err := documents.Text(ctx, document.ID); err != nil || text != "" {
+		if text, err := documents.Text(ctx, everyReader, document.ID); err != nil || text != "" {
 			t.Fatalf("read the live document = %q, %v; want the empty document it was made as", text, err)
 		}
 
@@ -817,7 +817,7 @@ func TestARemovedDocumentsRoomClosesOnEveryProcess(t *testing.T) {
 		{what: "the removing process", service: removing},
 		{what: "the second process", service: holding},
 	} {
-		if text, err := process.service.Text(ctx, document.ID); err != nil || text != "" {
+		if text, err := process.service.Text(ctx, everyReader, document.ID); err != nil || text != "" {
 			t.Fatalf("%s reads the live document as %q, %v; want the empty document it was made as", process.what, text, err)
 		}
 		if !testwait.Holds(testwait.Bounded(t, 30*time.Second, time.Second), testwait.Poll, func() bool {
@@ -898,7 +898,7 @@ func TestARemovedDocumentsRoomClosesOnEveryProcess(t *testing.T) {
 		t.Fatalf("open the document on the third process: response=%#v err=%v", thirdResponse, err)
 	}
 	t.Cleanup(func() { _ = thirdConnection.Close() })
-	if text, err := third.Text(ctx, untouched.ID); err != nil || text != "" {
+	if text, err := third.Text(ctx, everyReader, untouched.ID); err != nil || text != "" {
 		t.Fatalf("the third process reads the live document as %q, %v; want the empty document it was made as", text, err)
 	}
 	if !testwait.Holds(testwait.Bounded(t, 30*time.Second, time.Second), testwait.Poll, func() bool {

@@ -95,7 +95,7 @@ func (s *server) queueLoggedEvent(ledger *docs.Ledger, event model.Event, logins
 func (s *server) queueNewAskReferences(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, ask model.Ask) (model.ReferenceChanges, error) {
 	ctx = ledger.ReadContext(ctx)
 	document := refs.PendingAskDocument(ask)
-	located := refs.NewReaderInScope(ctx, tx, ask.Author, "ask", ask.ID, s.deps.ServerURL, document).Mentions(ask.Question)
+	located := refs.NewReaderInScope(ctx, tx, ask.Author, "ask", ask.ID, s.deps.Origins, document).Mentions(ask.Question)
 	replacement, changes, err := planFoundReferences(ctx, tx, "ask", ask.ID, text.Refs(located), nil)
 	if err != nil {
 		return model.ReferenceChanges{}, err
@@ -115,7 +115,7 @@ func (s *server) queueNewAskReferences(ctx context.Context, tx pgx.Tx, ledger *d
 // answers (refs.ScopeOf), read only if the body names a question block.
 func (s *server) queueEditedReferences(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, writer model.Actor, fromKind, fromID, previous, body string) (model.ReferenceChanges, error) {
 	ctx = ledger.ReadContext(ctx)
-	found := text.Refs(refs.NewReader(ctx, tx, writer, fromKind, fromID, s.deps.ServerURL).Mentions(body))
+	found := text.Refs(refs.NewReader(ctx, tx, writer, fromKind, fromID, s.deps.Origins).Mentions(body))
 	replacement, changes, err := planFoundReferences(ctx, tx, fromKind, fromID, found, refs.EditedTargets(previous, body, found))
 	if err != nil {
 		return model.ReferenceChanges{}, err
@@ -216,7 +216,7 @@ func (s *server) planItemWrite(
 	}
 	var located []text.Located
 	if cites {
-		located = refs.NewReaderInScope(ctx, tx, writer, string(kind), itemID, s.deps.ServerURL, document).Mentions(body)
+		located = refs.NewReaderInScope(ctx, tx, writer, string(kind), itemID, s.deps.Origins, document).Mentions(body)
 	}
 	indexing, err := refs.PlanItemIndex(index, kind, itemID, body, at, located, carried)
 	if err != nil {

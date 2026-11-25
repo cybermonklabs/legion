@@ -1,0 +1,15 @@
+kind: Changed
+body: |-
+  `envoy-dispatch backfill-graph-store` throttles itself: each pass reads and writes batches of 100
+  rows, half the old 200, and after each batch pauses so that it reads at most 500 rows a second.
+  `--batch-rows` and `--rows-per-second`, or the settings `DISPATCH_GRAPH_BACKFILL_BATCH_ROWS` and
+  `DISPATCH_GRAPH_BACKFILL_ROWS_PER_SECOND`, change that, a flag winning over its setting; a rate of
+  `0` pauses nowhere and is never the default, and a batch outside 1 to 1000 rows, a rate below 0 or
+  a value that is no whole number refuses the run with exit 2 before it opens the database. The run
+  names its throttle on its first line, and each pass prints its rows, rate and pause every 30 s and
+  when it ends (`backfill-graph-store: pace kind=...`). A production run with no pause read about
+  1,400 rows a second, took the database's CPU from 37-48% to as much as 75%, and made 18.2% of
+  search calls time out.
+time: 2026-11-24T16:57:10Z
+custom:
+    Issue: projects-backfill-throttle

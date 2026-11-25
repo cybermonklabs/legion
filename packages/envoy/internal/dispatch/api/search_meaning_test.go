@@ -1544,7 +1544,7 @@ func TestAProjectScopedSearchAnswersWhenTheFillsProgressRowCannotBeScanned(t *te
 
 	requireNoKeywordHit(t, "q=wibbleflorp&project="+project)
 	response, err := served.runSearch(context.Background(),
-		searchParameters{text: "wibbleflorp", project: project, limit: searchDefaultLimit})
+		searchParameters{text: "wibbleflorp", project: project, limit: searchDefaultLimit, who: everyReader})
 	if err != nil {
 		t.Fatalf("the first scoped search on the connection holding that plan: %v, want the joined statement's page", err)
 	}

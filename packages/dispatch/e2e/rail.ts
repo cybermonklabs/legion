@@ -134,3 +134,11 @@ export async function openInboxFromRail(page: Page): Promise<void> {
     .click();
   await expect(page).toHaveURL(/\/$/);
 }
+
+/** Where each link of the rail goes, in the order the rail draws them. */
+export function railTargets(page: Page): Promise<(string | null)[]> {
+  return page
+    .getByRole("navigation", { name: "Navigation" })
+    .getByRole("link")
+    .evaluateAll((links) => links.map((link) => link.getAttribute("href")));
+}

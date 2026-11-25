@@ -1,0 +1,10 @@
+kind: Changed
+body: |-
+  An edge listener's relay socket closes `4403 membership_held` at its next check of its token
+  once the broker answers the token's person held, and `1013 deadline_passed` once the broker
+  answers that person not held only until a deadline that has passed, as the listener refuses a
+  new upgrade with the token `401 MEMBERSHIP_HELD` and `503 BROKER_UNAVAILABLE`. Before, an open
+  socket kept the session's frames coming to a held person until the token's expiry.
+time: 2026-11-23T01:55:01Z
+custom:
+    Issue: fix-relay-socket-held

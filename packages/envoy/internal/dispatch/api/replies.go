@@ -15,7 +15,9 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -83,13 +85,22 @@ const (
 	myRepliesDismissed = myRepliesOwner + ` and u.dismissed_at is not null`
 )
 
-// myRepliesDismissedCursor resumes a Dismissed page where the last one ended ($5 the dismissal
-// time as the caller's own text, $6 the thread id), written as one row comparison so it is the
+// myRepliesDismissedCursor resumes a Dismissed page where the last one ended ($6 the dismissal
+// time as the caller's own text, $7 the thread id), written as one row comparison so it is the
 // index's own condition rather than a filter over it. It is a constant of its own, beside the
-// first page's query, for the reason the states are: `($5 is null or ...)` would leave the
+// first page's query, for the reason the states are: `($6 is null or ...)` would leave the
 // planner a filter and read every dismissed row of the caller's to answer page two.
 const myRepliesDismissedCursor = `
-	  and (u.dismissed_at, u.thread_id) < ($5::text::timestamptz, $6::uuid)`
+	  and (u.dismissed_at, u.thread_id) < ($6::text::timestamptz, $7::uuid)`
+
+// myRepliesSeen is what every read of the Reply rows adds to its state: the rows of the projects
+// the viewer bound at $4 sees (access.ProjectClause over the row's own project), so a thread of a
+// project the caller does not see, or that its credential does not list, is no row of its list
+// and counts in no total. The two writes that read the same states (inbox_read.go,
+// inbox_dismiss.go) bind their own parameters there and the same clause over the viewer after them
+// (inboxReplyMatchQuery), so they write over no row the list does not show.
+var myRepliesSeen = `
+	  and ` + access.ProjectClause("u.project_key", "$4")
 
 // myRepliesCount counts the caller's Reply rows in one state: the answer's total and the Inbox's
 // unread-thread count. It reads them into a materialized set first, so the planner reads them
@@ -101,9 +112,9 @@ const myRepliesCountRest = `
 	)
 	select count(*) from matched`
 
-const (
-	myRepliesCountQuery      = myRepliesCount + myRepliesUnread + myRepliesCountRest
-	myRepliesInboxCountQuery = myRepliesCount + myRepliesInbox + myRepliesCountRest
+var (
+	myRepliesCountQuery      = myRepliesCount + myRepliesUnread + myRepliesSeen + myRepliesCountRest
+	myRepliesInboxCountQuery = myRepliesCount + myRepliesInbox + myRepliesSeen + myRepliesCountRest
 )
 
 // myRepliesPage reads the caller's Reply rows in one state, newest reply first, and what a row
@@ -117,8 +128,8 @@ const (
 // Its ref always names the thread's root, never the reply: a reply carries no anchor, so a link
 // to it would skip the document redirect an anchored root takes.
 //
-// $4 is the number of rows to read, null for every row; a Dismissed page resumes from $5 and $6
-// (myRepliesDismissedCursor).
+// $4 is the viewer (myRepliesSeen), $5 the number of rows to read, null for every row; a
+// Dismissed page resumes from $6 and $7 (myRepliesDismissedCursor).
 //
 // The unread count is one lateral over the thread's own writes, so the read stays one statement:
 // an ask's replies and its answer, a comment thread's root and replies (every reply is stored
@@ -127,15 +138,16 @@ const (
 // than once per row. "Somebody else" is user_threads_login, the function the triggers key a row
 // on, so the count and the row's own unread flag can never disagree about who wrote a write.
 //
-// It is read in two steps. The first picks the page's thread ids out of the state's own index and
-// nothing else: every column that step reads of user_threads - the login it narrows by, the mark it
-// orders by and the thread id - is one the state's partial index holds, and its only other test is
-// keyed on the thread id too (myRepliesOwner), so the read is an index-only scan of that index in
-// the order the state answers in, with no sort and no row of the table touched. The second fetches
-// the rows the cut kept, by their primary key. One step would be neither: with the Inbox's own read
-// taking every undismissed row, a plan that fetches each row as it walks the index costs more than
-// one that scans the table, so the planner scans it - 101,540 rows read to answer 1,540 of them at
-// INFRA-450's a14 seed - and sorts what it keeps.
+// It is read in two steps. The first picks the page's thread ids out of the state's own index: the
+// login it narrows by, the mark it orders by and the thread id are what the state's partial index
+// holds, its owner test is keyed on the thread id too (myRepliesOwner), and the one column it
+// reads of the row is the project the viewer's test reads (myRepliesSeen), so the read walks that
+// index in the order the state answers in, with no sort, reading each of the caller's own rows of
+// the state once and no other row. The second fetches the rows the cut kept, by their primary
+// key. One step would be neither: with the Inbox's own read taking every undismissed row, a plan
+// that fetches each row as it walks the index costs more than one that scans the table, so the
+// planner scans it - 101,540 rows read to answer 1,540 of them at a14's seed - and sorts
+// what it keeps.
 //
 // Neither step carries an order over the joins: the route sorts the two kinds of row together
 // (listMyReplies) whatever order each half read them in, so an order here would be one sort for
@@ -168,14 +180,15 @@ const myRepliesPageRows = `
 
 // myRepliesPageCut and myRepliesDismissedCut are the two orders a state is read in, which are the
 // two the states' indexes answer in: newest reply first for the Inbox's own states, newest
-// dismissal first for the Dismissed view. Each cuts the read to $4 rows before any row of the
-// table is fetched, so a page costs one primary-key read and one set of joins per row it answers.
+// dismissal first for the Dismissed view. Each cuts the read to $5 rows before any row of the
+// page's joins is read, so a page costs one primary-key read and one set of joins per row it
+// answers.
 const myRepliesPageCut = `
 		order by u.replied_at desc, u.thread_id desc
-		limit $4`
+		limit $5`
 const myRepliesDismissedCut = `
 		order by u.dismissed_at desc, u.thread_id desc
-		limit $4`
+		limit $5`
 
 // myRepliesPageRest is what every state selects over the rows the cut kept.
 const myRepliesPageRest = `
@@ -271,15 +284,17 @@ const myRepliesPageRest = `
 	left join issues i on i.key = p.issue_key
 	left join artifacts ar on ar.id = p.artifact_id`
 
-const (
-	myRepliesPageQuery      = myRepliesPage + myRepliesUnread + myRepliesPageCut + myRepliesPageRows + myRepliesPageRest
-	myRepliesInboxPageQuery = myRepliesPage + myRepliesInbox + myRepliesPageCut + myRepliesPageRows + myRepliesPageRest
+var (
+	myRepliesPageQuery = myRepliesPage + myRepliesUnread + myRepliesSeen +
+		myRepliesPageCut + myRepliesPageRows + myRepliesPageRest
+	myRepliesInboxPageQuery = myRepliesPage + myRepliesInbox + myRepliesSeen +
+		myRepliesPageCut + myRepliesPageRows + myRepliesPageRest
 	// The Dismissed view's first page and the page that follows a cursor, two constants for the
 	// reason the states are three: a cursor behind a parameter is a filter, not an index
 	// condition.
-	myRepliesDismissedPageQuery = myRepliesPage + myRepliesDismissed +
+	myRepliesDismissedPageQuery = myRepliesPage + myRepliesDismissed + myRepliesSeen +
 		myRepliesDismissedCut + myRepliesPageRows + myRepliesPageRest
-	myRepliesDismissedFromQuery = myRepliesPage + myRepliesDismissed + myRepliesDismissedCursor +
+	myRepliesDismissedFromQuery = myRepliesPage + myRepliesDismissed + myRepliesDismissedCursor + myRepliesSeen +
 		myRepliesDismissedCut + myRepliesPageRows + myRepliesPageRest
 )
 
@@ -492,6 +507,13 @@ func (s *server) listMyReplies(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// What the caller sees, resolved before the read's transaction holds a connection: the Reply
+	// rows are those of its projects (myRepliesSeen), and the Agent rows those of the
+	// conversations it may read (agentConversationSeen), a session it may not see being no row.
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
 	wantReply, wantAgent, err := parseMyRepliesKinds(r)
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -554,7 +576,7 @@ func (s *server) listMyReplies(w http.ResponseWriter, r *http.Request) {
 	counted := limit != nil && state != myRepliesStateDismissed
 	if wantReply {
 		countQuery, pageQuery := myRepliesQueries(state, from)
-		countArgs := []any{login, issue, artifact}
+		countArgs := []any{login, issue, artifact, refs.VisibilityArg(who)}
 		if counted {
 			var total int
 			if err := tx.QueryRow(r.Context(), countQuery, countArgs...).Scan(&total); err != nil {
@@ -572,10 +594,16 @@ func (s *server) listMyReplies(w http.ResponseWriter, r *http.Request) {
 	}
 	if wantAgent {
 		// The Agent half answers its own total beside its rows when the read is counted, rather
-		// than in a second statement: it reads every root the state holds either way.
-		args := unreadDirectRepliesArgs(caller.ID, nil)
-		read, total, err := s.readMyAgentRows(r.Context(), tx,
-			myAgentPageQuery(state, from, counted), myRepliesPageArgs(args, reach, from), counted)
+		// than in a second statement: it reads every root the state holds either way. A reader
+		// that may not see every object binds its viewer after the page's own parameters, and
+		// one that sees every object reads the statements every reader read before a project
+		// could be private (myAgentSeenAnd).
+		seen := !seesEveryObject(who)
+		args := myRepliesPageArgs(unreadDirectRepliesArgs(caller.ID, nil), reach, from)
+		if seen {
+			args = append(args, refs.VisibilityArg(who))
+		}
+		read, total, err := s.readMyAgentRows(r.Context(), tx, myAgentPageQuery(state, from, counted, seen), args, counted)
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
@@ -613,7 +641,7 @@ func (s *server) listMyReplies(w http.ResponseWriter, r *http.Request) {
 	if state == myRepliesStateDismissed && limit != nil && len(rows) == *limit {
 		response.NextCursor = myRepliesCursorOf(rows[len(rows)-1])
 	}
-	if err := nameAgentSessions(r.Context(), tx, rows); err != nil {
+	if err := nameAgentSessions(r.Context(), tx, who, rows); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -745,7 +773,9 @@ const threadReadMoves = `login = $1 and thread_id = $2 and read_through < least(
 // putThreadRead answers PUT /api/v1/me/threads/{id}/read: it moves the caller's read mark on one
 // thread forward to read_through (stored as no later than now, as the Agents page's read mark is),
 // so a row a tab read less of a moment ago never comes back. A thread the caller has no row for
-// writes nothing.
+// writes nothing, and nor does a thread of a project the request's reader may not see
+// (access.ProjectClause over the row's own project, as the list reads it): its row is read as no
+// row, so its owner is never locked and its project's log is never written.
 //
 // It runs in the two phases every write route runs in (INFRA-636): a read phase holding no
 // transaction id, which takes the thread's owner lock and then the project's and reads the row
@@ -761,6 +791,10 @@ const threadReadMoves = `login = $1 and thread_id = $2 and read_through < least(
 // read-mark lock order.
 func (s *server) putThreadRead(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.actingPerson(w, r)
+	if !ok {
+		return
+	}
+	who, ok := s.readerOf(w, r)
 	if !ok {
 		return
 	}
@@ -796,8 +830,9 @@ func (s *server) putThreadRead(w http.ResponseWriter, r *http.Request) {
 	var project string
 	var issueKey, artifactID *string
 	err = tx.QueryRow(r.Context(), `
-		select project_key, issue_key, artifact_id::text from user_threads where login = $1 and thread_id = $2
-	`, login, threadID).Scan(&project, &issueKey, &artifactID)
+		select project_key, issue_key, artifact_id::text from user_threads
+		where login = $1 and thread_id = $2 and `+access.ProjectClause("project_key", "$3")+`
+	`, login, threadID, refs.VisibilityArg(who)).Scan(&project, &issueKey, &artifactID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		w.WriteHeader(http.StatusNoContent)
 		return

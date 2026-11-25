@@ -113,15 +113,32 @@ func NumericLabel(label string) bool {
 // list"). Parse takes all three, since an origin a person reaches without Google sign-in may have
 // any of them. Each refusal begins with "host" and names no setting: callers prefix their own.
 func GoogleRedirectHost(host string) error {
+	return publicDomainHost(host, "Google refuses as the host of an OAuth redirect URI", "Google requires of an OAuth redirect URI's host", "browser sign-in")
+}
+
+// PasskeyHost refuses a host Dispatch takes as no passkey's relying party, so passkey sign-in at an
+// origin on it could not complete: the hosts GoogleRedirectHost refuses, by the same rule, since a
+// relying party ID is a registrable domain name and never an IP address
+// (https://www.w3.org/TR/webauthn-3/#relying-party-identifier). It holds the outside origin, where
+// people from outside sign in with a passkey and Google signs in nobody. Each refusal begins with
+// "host" and names no setting: callers prefix their own.
+func PasskeyHost(host string) error {
+	return publicDomainHost(host, "no passkey takes as its relying party", "Dispatch requires of a passkey's relying party", "passkey sign-in")
+}
+
+// publicDomainHost refuses host unless it is a DNS name under a top-level domain in the public
+// suffix list's ICANN section: ipRefusal says who refuses an IP address, listRequirement who
+// requires a listed top-level domain, and signIn names the sign-in at host that could not complete.
+func publicDomainHost(host, ipRefusal, listRequirement, signIn string) error {
 	if net.ParseIP(host) != nil {
-		return fmt.Errorf("host %s is an IP address, which Google refuses as the host of an OAuth redirect URI, so browser sign-in at it could not complete: name the origin by a DNS name", host)
+		return fmt.Errorf("host %s is an IP address, which %s, so %s at it could not complete: name the origin by a DNS name", host, ipRefusal, signIn)
 	}
 	dot := strings.LastIndexByte(host, '.')
 	if dot < 0 {
-		return fmt.Errorf("host %s is a single label, with no top-level domain on the public suffix list, which Google requires of an OAuth redirect URI's host, so browser sign-in at it could not complete", host)
+		return fmt.Errorf("host %s is a single label, with no top-level domain on the public suffix list, which %s, so %s at it could not complete", host, listRequirement, signIn)
 	}
 	if tld := host[dot+1:]; !tldOnPublicSuffixList(tld) {
-		return fmt.Errorf("host %s ends in %s, no top-level domain on the public suffix list, which Google requires of an OAuth redirect URI's host, so browser sign-in at it could not complete", host, tld)
+		return fmt.Errorf("host %s ends in %s, no top-level domain on the public suffix list, which %s, so %s at it could not complete", host, tld, listRequirement, signIn)
 	}
 	return nil
 }

@@ -120,7 +120,8 @@ type codeFlowClient struct {
 // the next authorization requests and the one used when none is queued, and
 // the codes and refresh tokens issued. Everything that is not a client's own is
 // the issuer's, shared by every client it serves: one queue of sign-ins, one
-// token failure, one revocation state.
+// token failure, one set of per-person refresh answers, one token wait, one
+// revocation state.
 type codeFlow struct {
 	clients         map[string]*codeFlowClient
 	queued          []map[string]any
@@ -130,6 +131,10 @@ type codeFlow struct {
 	deviceCodes     map[string]*deviceGrant
 	refreshes       int
 	token           tokenFailure
+	// refreshFailures is how a refresh of a person's refresh token is
+	// answered instead of being granted, keyed by that person's email
+	// lowercased, when RefuseRefresh or FailRefreshFor set it.
+	refreshFailures map[string]tokenFailure
 	// tokenRequests is each token request's client authentication (TokenRequests).
 	tokenRequests []string
 	// tokenDelay is the token endpoint's wait before it answers (DelayToken).
@@ -143,12 +148,13 @@ type codeFlow struct {
 	spoil func(claims map[string]any)
 }
 
-// tokenFailure is how the token endpoint answers every grant instead of
-// granting it, when FailToken, DropToken, CutToken, ResetToken or StallToken
-// set it: status with code as the body's OAuth error; with drop, closing the
-// connection unanswered; or, with cut, answering status and a body it breaks
-// off part of the way through, by closing the connection (cutClose),
-// resetting it (cutReset) or sending nothing more (cutStall).
+// tokenFailure is how the token endpoint answers a grant instead of granting
+// it: every grant, when FailToken, DropToken, CutToken, ResetToken or StallToken
+// set it, and a refresh of one person's refresh tokens, when RefuseRefresh or
+// FailRefreshFor did. It is status with code as the body's OAuth error; with
+// drop, closing the connection unanswered; or, with cut, answering status and a
+// body it breaks off part of the way through, by closing the connection
+// (cutClose), resetting it (cutReset) or sending nothing more (cutStall).
 type tokenFailure struct {
 	status int
 	code   string
@@ -166,6 +172,31 @@ const (
 	cutReset
 	cutStall
 )
+
+// answer writes f in place of a grant, reading r for a cut answer's stall (breakOff).
+func (f tokenFailure) answer(w http.ResponseWriter, r *http.Request) {
+	switch {
+	case f.drop:
+		if hijacker, ok := w.(http.Hijacker); ok {
+			if conn, _, err := hijacker.Hijack(); err == nil {
+				_ = conn.Close()
+			}
+		}
+	case f.cut != cutNone:
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Length", "200")
+		w.WriteHeader(f.status)
+		_, _ = w.Write([]byte(`{"access_t`))
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		breakOff(w, r, f.cut)
+	case f.code == "":
+		http.Error(w, http.StatusText(f.status), f.status)
+	default:
+		tokenError(w, f.status, f.code)
+	}
+}
 
 // revocation is the state of the revocation endpoint: every token the client
 // sent it, in order, whatever it answered; the status and OAuth error code it
@@ -410,10 +441,11 @@ func (i *Issuer) EnableDeviceFlow(key *Key, clientID, clientSecret string) {
 func (i *Issuer) enableClient(client *codeFlowClient, clientID string) {
 	if i.codeFlow == nil {
 		i.codeFlow = &codeFlow{
-			clients:     map[string]*codeFlowClient{},
-			codes:       map[string]codeGrant{},
-			grants:      map[string]*refreshGrant{},
-			deviceCodes: map[string]*deviceGrant{},
+			clients:         map[string]*codeFlowClient{},
+			codes:           map[string]codeGrant{},
+			grants:          map[string]*refreshGrant{},
+			deviceCodes:     map[string]*deviceGrant{},
+			refreshFailures: map[string]tokenFailure{},
 		}
 	}
 	i.codeFlow.clients[clientID] = client
@@ -670,6 +702,46 @@ func (i *Issuer) Refreshes() int {
 	return i.codeFlow.refreshes
 }
 
+// RefuseRefresh makes every refresh whose refresh token's claims carry email
+// answer 400 invalid_grant while refuse is set, as Google answers the refresh
+// of an account it no longer confirms; another person's refresh is granted.
+// The address matches whatever its case. The refusal is the person's rather
+// than one refresh token's, so the refresh token a later sign-in of theirs
+// issues is refused too, while the sign-in itself, a code exchange or a device
+// code grant, is granted. It revokes nothing: refuse false grants that
+// person's refreshes again, with the refresh tokens they already hold. It and
+// FailRefreshFor set one answer per person, the later replacing the earlier,
+// and the off value of either grants that person's refreshes again.
+func (i *Issuer) RefuseRefresh(email string, refuse bool) {
+	failure := tokenFailure{}
+	if refuse {
+		failure = tokenFailure{status: http.StatusBadRequest, code: "invalid_grant"}
+	}
+	i.setRefreshFailure(email, failure)
+}
+
+// FailRefreshFor makes every refresh whose refresh token's claims carry email
+// answer status, with no OAuth error, instead of being granted, as Google's
+// token endpoint answers a refresh it cannot answer now (a 5xx or a 429);
+// another person's refresh is granted, and a status of 0 grants that person's
+// again. It matches the address, and shares one answer per person with
+// RefuseRefresh, as RefuseRefresh says.
+func (i *Issuer) FailRefreshFor(email string, status int) {
+	i.setRefreshFailure(email, tokenFailure{status: status})
+}
+
+// setRefreshFailure makes failure the answer to every refresh of email's
+// refresh tokens; a failure with no status grants them again.
+func (i *Issuer) setRefreshFailure(email string, failure tokenFailure) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	if failure.status == 0 {
+		delete(i.codeFlow.refreshFailures, strings.ToLower(email))
+		return
+	}
+	i.codeFlow.refreshFailures[strings.ToLower(email)] = failure
+}
+
 // ApproveDeviceCode approves the device authorization whose user code a person
 // has typed in, signing it in as the next person SignInAs queued or, with none
 // queued, the one SignInByDefault set, the way an authorization request signs
@@ -921,14 +993,20 @@ func tokenError(w http.ResponseWriter, status int, code string) {
 	_ = json.NewEncoder(w).Encode(map[string]string{"error": code})
 }
 
+// waitTimer starts the timer a wait ends on: time.After, unless a test of this package replaces it
+// to learn which request is waiting and how long it was told to wait, and to end the wait on an
+// event of its own rather than once that time has passed. Every issuer's waits read it, so a test
+// that replaces it does not run in parallel.
+var waitTimer = func(_ *http.Request, delay time.Duration) <-chan time.Time { return time.After(delay) }
+
 // wait holds an answer back for delay, or until the client hangs up, and reports whether the
-// client is still there to answer.
+// client is still there to answer. A delay of zero or less starts no wait.
 func wait(r *http.Request, delay time.Duration) bool {
 	if delay <= 0 {
 		return true
 	}
 	select {
-	case <-time.After(delay):
+	case <-waitTimer(r, delay):
 		return true
 	case <-r.Context().Done():
 		return false

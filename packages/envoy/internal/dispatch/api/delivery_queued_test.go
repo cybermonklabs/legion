@@ -1044,7 +1044,7 @@ func TestTheClaimHoldersLivenessReadNeverAsksForStoppedSessions(t *testing.T) {
 
 	// The same session, resolved for a delivery, is found: the two reads differ only in what
 	// they ask for.
-	sessionID, _, resolveError := direct.resolveDeliveryTarget(ctx, model.Route{Kind: "session", ID: "s1"}, "steer")
+	sessionID, _, resolveError, _ := direct.resolveDeliveryTarget(ctx, model.Route{Kind: "session", ID: "s1"}, "steer")
 	if sessionID != "s1" || resolveError != "" {
 		t.Fatalf("a delivery resolved s1 as (%q, %q), want it resolved with no error", sessionID, resolveError)
 	}

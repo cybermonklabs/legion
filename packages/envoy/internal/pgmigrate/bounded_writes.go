@@ -176,15 +176,18 @@ type reviewedTrigger struct {
 	table, trigger, bounded string
 }
 
-// reviewedTriggers are the enabled triggers boundedWrites admits a table above the limit beside.
-// A trigger runs for each row a write writes and can read any table, and the census does not read
-// its body, so a trigger is admitted only once a person has read that body and written here why
-// it is bounded: what it reads, by which key, and what it writes, for each row. A table with an
-// enabled trigger that is not here is refused, and its trigger is reviewed and added before the
-// migration can pass. An entry names a trigger as the table holds it when the entry is written:
-// a later migration that replaces the trigger's function changes the body the entry reviewed, so
-// that migration reads the entry again. The store's census tests meet no shipped migration the
-// census admits for bounded writes of a table with an enabled trigger, so the list holds none.
+// reviewedTriggers is the one place a reviewed trigger is named: the enabled triggers
+// boundedWrites admits a table above the limit beside. A trigger runs for each row a write writes
+// and can read any table, and the census does not read its body, so a trigger is admitted only
+// once a person has read that body and written here why it is bounded: what it reads, by which
+// key, and what it writes, for each row. A table with an enabled trigger that is not here is
+// refused, and its trigger is reviewed and added before the migration can pass. An entry names a
+// trigger as the table holds it when the entry is written: a later migration that replaces the
+// trigger's function changes the body the entry reviewed, so that migration reads the entry
+// again. The store's census tests meet no shipped migration the census admits for bounded writes
+// of a table with an enabled trigger, so the list holds none, and the triggers an admitted
+// table's report names (boundedVerdict.triggers, Table.Triggers) are none until an entry is added
+// here; the list and that plumbing stay so a reviewed trigger needs one entry and no new code.
 var reviewedTriggers = []reviewedTrigger{}
 
 // unreviewedTriggers says why table, whose enabled triggers are triggers, is refused for the

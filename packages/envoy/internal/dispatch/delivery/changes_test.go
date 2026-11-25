@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -518,7 +519,7 @@ func TestRunJobAndGroupAndSettingsChangesAreLogged(t *testing.T) {
 	if err != nil {
 		t.Fatalf("begin: %v", err)
 	}
-	group, err := CreateSessionGroup(ctx, tx, "Planners", []string{"s1", "s2"}, actor)
+	group, err := CreateSessionGroup(ctx, tx, "Planners", []string{"s1", "s2"}, actor, events.EveryEvent)
 	if err != nil {
 		_ = tx.Rollback(ctx)
 		t.Fatalf("CreateSessionGroup: %v", err)

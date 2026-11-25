@@ -374,6 +374,18 @@ export const reviewRoutes: readonly ReviewRoute[] = [
   },
   {
     kind: "reviewed",
+    // Scanned and not shot: a route the shot layer gains has no baseline until the `visual` job's
+    // own container writes one (`packages/dispatch/AGENTS.md`, the four steps), and the scan reads
+    // the DOM, which is where the tab's labels, its disabled controls' reasons and its refusals
+    // are. Its owner line is drawn only once the access read has answered.
+    layers: ["scan"],
+    name: "project-access",
+    path: (seed) => `/projects/${seed.project}/access`,
+    pattern: "/projects/:key/access",
+    ready: (page) => [page.locator("#project-access-panel").getByTestId("access-owner")],
+  },
+  {
+    kind: "reviewed",
     layers: bothLayers,
     name: "project-document",
     path: (seed) => `/projects/${seed.project}/documents/${seed.projectDocumentSlug}`,

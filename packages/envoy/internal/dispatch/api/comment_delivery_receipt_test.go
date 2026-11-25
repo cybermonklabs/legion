@@ -134,7 +134,7 @@ func TestInitialMentionDeliveryDoesNotAppendAfterReplyConsumesPending(t *testing
 	if reply.Code != http.StatusCreated {
 		t.Fatalf("consume pending attempt: status=%d body=%s", reply.Code, reply.Body.String())
 	}
-	comment, err := direct.loadComment(context.Background(), database.Pool, created.ID)
+	comment, err := direct.loadComment(context.Background(), database.Pool, everyReader, created.ID)
 	if err != nil {
 		t.Fatalf("load comment for initial delivery: %v", err)
 	}
@@ -207,7 +207,7 @@ func TestInitialMentionDeliveryReturnsFailedAttemptAfterErrorReplyConsumesPendin
 	if reply.Code != http.StatusOK {
 		t.Fatalf("consume pending attempt with error: status=%d body=%s", reply.Code, reply.Body.String())
 	}
-	comment, err := direct.loadComment(context.Background(), database.Pool, created.ID)
+	comment, err := direct.loadComment(context.Background(), database.Pool, everyReader, created.ID)
 	if err != nil {
 		t.Fatalf("load comment for initial delivery: %v", err)
 	}
@@ -334,7 +334,7 @@ func TestASenderPastItsLeaseLeavesTheResumedAttemptsReceiptAlone(t *testing.T) {
 
 	// The stalled sender finally returns and settles the attempt it still thinks it holds.
 	stalled := directServer(deps)
-	stored, err := stalled.loadComment(ctx, database.Pool, comment.ID)
+	stored, err := stalled.loadComment(ctx, database.Pool, everyReader, comment.ID)
 	if err != nil {
 		t.Fatalf("load the comment: %v", err)
 	}

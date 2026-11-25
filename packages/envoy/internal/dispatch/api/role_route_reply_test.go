@@ -386,8 +386,9 @@ func TestAReplyWhoseRoleHolderTheListenerDoesNotNameIsAskedAgain(t *testing.T) {
 }
 
 // routeReadFault ends the reply routes' read of the route and the attempt a reply answers
-// (roleHolderReplyOf) while armed, as a statement timeout or a reset pooled connection ends it:
-// that one statement is sent with a context already ended, and every other statement runs.
+// (messageReplyRoleHolderOf, replyRoleHolderOf) while armed, as a statement timeout or a reset
+// pooled connection ends it: that one statement is sent with a context already ended, and every
+// other statement runs.
 type routeReadFault struct{ armed atomic.Bool }
 
 func (f *routeReadFault) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {

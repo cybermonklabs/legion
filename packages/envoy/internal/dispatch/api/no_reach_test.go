@@ -530,7 +530,7 @@ func readRepositoryFile(t *testing.T, root, path string) string {
 // threeBadRequests sends every route the table held before this child three requests a declared
 // shape does not authorize.
 //
-//   - An unauthorized actor: an anonymous request, which every row but a public one refuses.
+//   - An unauthorized actor: an anonymous request, which every row refuses.
 //   - An identifier of another project: a route addressing one project's object under another
 //     project's key, which answers that object to nobody.
 //   - An undeclared traversal parameter: every word a caller would walk the graph with that the
@@ -544,9 +544,6 @@ func threeBadRequests(t *testing.T) {
 	rows := routesBeforeThisChild(t, false)
 
 	for _, route := range rows {
-		if route.Auth == authPublic {
-			continue
-		}
 		response := personPageRequest(t, handler, routeProbePath(route.Pattern), "")
 		if route.Method != http.MethodGet {
 			response = probeWithoutCredential(t, handler, route)
@@ -727,7 +724,15 @@ var routesNoSeedAnswers = map[string]string{
 	"GET /api/v1/credential-grants":                                      "the agent-secrets broker",
 	"GET /api/v1/machine-logins":                                         "the agent-secrets broker",
 	"GET /api/v1/signins":                                                "the agent-secrets broker",
-	"GET /api/v1/artifacts/{id}/changes":                                 "two stored versions of one document",
+	// The membership answer and the repository answer read nothing for a person's cookie, the
+	// probe's caller: only a service account DISPATCH_ACCESS_ACCOUNTS names reads them
+	// (access_answer_test.go reads the first two routes with one, access_private_projects_test.go
+	// the third, and access_repositories_test.go the fourth).
+	"GET /api/v1/access/projects/{key}":              "a service account DISPATCH_ACCESS_ACCOUNTS names",
+	"GET /api/v1/access/person":                      "a service account DISPATCH_ACCESS_ACCOUNTS names",
+	"GET /api/v1/access/private-projects":            "a service account DISPATCH_ACCESS_ACCOUNTS names",
+	"GET /api/v1/access/projects/{key}/repositories": "a service account DISPATCH_ACCESS_ACCOUNTS names",
+	"GET /api/v1/artifacts/{id}/changes":             "two stored versions of one document",
 }
 
 // routeProbeQueries are the queries the reads that require one are sent, each naming the
@@ -739,13 +744,13 @@ func routeProbeQueries(owned crossProject) map[string]string {
 		"GET /api/v1/search":               url.Values{"q": {"project"}}.Encode(),
 		"GET /api/v1/search/results":       url.Values{"q": {"project"}}.Encode(),
 		"GET /api/v1/references":           url.Values{"to": {"dispatch://" + owned.issue}}.Encode(),
-		"GET /api/v1/reference-targets":    url.Values{"ref": {"dispatch://" + owned.issue}}.Encode(),
 		"GET /api/v1/references/questions": url.Values{"kind": {"comment"}, "id": {owned.comment}}.Encode(),
 		"GET /api/v1/block-links":          url.Values{"from": {spec}, "to": {spec}}.Encode(),
 		"GET /api/v1/issues/resolve":       url.Values{"ref": {owned.issue}}.Encode(),
 		"GET /api/v1/asks/open":            url.Values{"project": {"TEST"}}.Encode(),
 		"GET /api/v1/credential-requests":  url.Values{"approver": {"me"}}.Encode(),
 		"GET /api/v1/near-copy-checks":     url.Values{"project": {"TEST"}}.Encode(),
+		"GET /api/v1/reference-targets":    url.Values{"ref": {"dispatch://" + owned.issue}}.Encode(),
 	}
 }
 
@@ -1093,7 +1098,7 @@ func crossProjectPath(t *testing.T, route apiRoute, owned crossProject) (string,
 //
 //   - the step write, its rating and the plan write each record only for the session of the
 //     Legion daemon of the key's project and refuse any other writer 403 STEP_WRITER before they
-//     read the id (putIssueStep, the rating's and putIssuePlan's requireIssueDaemon), so each is
+//     read the id (putIssueStep, the rating's and putIssuePlan's lockRecordedIssue), so each is
 //     sent over the deployment's shared agent credential, which proves no session, naming the
 //     session of the other project's daemon, with a body each accepts: the rating carries one,
 //     and the plan write the default plan of a run (defaultPlanBody);
@@ -1232,9 +1237,20 @@ func olderBuildReadsTheGraph(t *testing.T) {
 // holds it: a read that gained a join, lost an index or started reading the store would name a
 // different set. They are pinned rather than derived, because a derivation from the same
 // statement would move with it.
+//
+// The comment read also reads issues and artifacts: a comment holds no project of its own, so its
+// project clause reads its owner's (access.ItemOwnerClause, from private projects), one keyed probe
+// of the issue or document the comment hangs from. Nothing else the read touches changed.
+//
+// The block read also reads graph_nodes: where meaning search stands on each block is read only
+// while the reader may see the document (refs.BlockEmbeddingStates binds the registry's artifact
+// predicate, from private projects), one keyed probe of the document's node. It reads issues too:
+// a block's counts count each anchored comment and ask only where the reader may read it
+// (access.ItemOwnerClause over its own owner, from private projects), one keyed probe of the
+// issue each anchored row hangs from. Nothing else the read touches changed.
 var readRelations = map[string][]string{
-	"GET /api/v1/comments/{id}":         {"comment_deliveries", "comment_mentions", "comments", "doc_updates"},
-	"GET /api/v1/artifacts/{id}/blocks": {"artifacts", "asks", "comments", "doc_updates", "embeddings"},
+	"GET /api/v1/comments/{id}":         {"artifacts", "comment_deliveries", "comment_mentions", "comments", "doc_updates", "issues"},
+	"GET /api/v1/artifacts/{id}/blocks": {"artifacts", "asks", "comments", "doc_updates", "embeddings", "graph_nodes", "issues"},
 }
 
 // readAnswerPaths are the fields each of the two reads answers for the seed readsUnchanged

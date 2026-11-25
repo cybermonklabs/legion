@@ -373,14 +373,14 @@ func TestTheCodeFlowSignsInTheDefaultPersonUntilAnotherIsQueued(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Dispatch's code flow: %v", err)
 	}
-	email, err := identity.DomainRule{Domain: testDomain}.Person(session.Claims)
-	if err != nil || email != "alice@d.example" || session.Claims.Subject != "alice@d.example" {
-		t.Fatalf("Dispatch's domain rule names %q (%v) for subject %q, want alice@d.example, the default once bob's turn is spent", email, err, session.Claims.Subject)
+	person, err := identity.DomainRule{Domain: testDomain}.Person(ctx, session.Claims)
+	if err != nil || person.Email != "alice@d.example" || session.Claims.Subject != "alice@d.example" {
+		t.Fatalf("Dispatch's domain rule names %+v (%v) for subject %q, want alice@d.example, the default once bob's turn is spent", person, err, session.Claims.Subject)
 	}
-	if email, err := (identity.GroupRule{Group: "dispatch-members"}).Person(session.Claims); err != nil || email != "alice@d.example" {
-		t.Fatalf("Dispatch's group rule names %q (%v), want alice@d.example, a member of dispatch-members", email, err)
+	if person, err := (identity.GroupRule{Group: "dispatch-members"}).Person(ctx, session.Claims); err != nil || person.Email != "alice@d.example" {
+		t.Fatalf("Dispatch's group rule names %+v (%v), want alice@d.example, a member of dispatch-members", person, err)
 	}
-	if _, err := (identity.GroupRule{Group: "other-group"}).Person(session.Claims); !errors.Is(err, identity.ErrNotMember) {
+	if _, err := (identity.GroupRule{Group: "other-group"}).Person(ctx, session.Claims); !errors.Is(err, identity.ErrNotMember) {
 		t.Fatalf("Dispatch's group rule for another group: %v, want ErrNotMember", err)
 	}
 }
@@ -429,6 +429,124 @@ func TestTheCodeFlowRedirectsOnlyToTheRegisteredCallback(t *testing.T) {
 		if response.StatusCode != http.StatusBadRequest || response.Header.Get("Location") != "" || !strings.Contains(string(body), "redirect_uri_mismatch") {
 			t.Errorf("an authorization naming %s: status %d to %q (%s), want 400 redirect_uri_mismatch and no redirect", foreign, response.StatusCode, response.Header.Get("Location"), body)
 		}
+	}
+}
+
+// refreshAt refreshes refreshToken at the token endpoint as testClientID, and answers the status
+// and the body.
+func refreshAt(t *testing.T, tokenEndpoint, refreshToken string) (int, []byte) {
+	t.Helper()
+	return postAs(t, tokenEndpoint, testClientID, testClientSecret, url.Values{"grant_type": {"refresh_token"}, "refresh_token": {refreshToken}})
+}
+
+// TestTheRefreshRefusalControlRefusesOnePersonsRefresh drives the command through its flags, as
+// Dispatch's browser suite does: alice, --sign-in-as's person, and bob, queued at
+// /_dev/sign-in-as, each sign in through Dispatch's own code flow. A body at /_dev/refuse-refresh
+// that is not an object naming the email and whether to refuse is refused 400 and changes nothing.
+// {"email": alice, "refuse": true} answers 204, and from then alice's refresh is answered 400
+// invalid_grant, which Dispatch's code flow reads as her sign-in being over, while bob's is
+// served; {"email": alice, "refuse": false} answers 204 and serves alice's refresh again, with the
+// refresh token she already held.
+func TestTheRefreshRefusalControlRefusesOnePersonsRefresh(t *testing.T) {
+	ctx := context.Background()
+	issuerURL := startRun(t, "--code-flow", testClientID+"="+secretFile(t, testClientSecret)+"="+testCallback, "--sign-in-as", "alice@d.example")
+	_, tokenEndpoint := discoveryEndpoints(t, issuerURL)
+	flow := oidc.NewCodeFlow(issuerURL, testClientID, testClientSecret, testDomain)
+	signIn := func(state string) oidc.Session {
+		t.Helper()
+		authURL, err := flow.AuthURL(ctx, testRedirect, state, "nonce-"+state)
+		if err != nil {
+			t.Fatal(err)
+		}
+		session, err := flow.Exchange(ctx, testRedirect, authorize(t, authURL, state), "nonce-"+state)
+		if err != nil || session.RefreshToken == "" {
+			t.Fatalf("Dispatch's code flow: %v, refresh token %t, want a sign-in with a refresh token", err, session.RefreshToken != "")
+		}
+		return session
+	}
+	alice := signIn("state-alice")
+	queued, _ := json.Marshal(map[string]any{"sub": "bob-account", "email": "bob@d.example", "email_verified": true, "hd": testDomain})
+	response, err := http.Post(issuerURL+"/_dev/sign-in-as", "application/json", bytes.NewReader(queued))
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusNoContent {
+		t.Fatalf("POST /_dev/sign-in-as: status %d, want 204", response.StatusCode)
+	}
+	bob := signIn("state-bob")
+	wantServed := func(session oidc.Session, email, when string) {
+		t.Helper()
+		status, body := refreshAt(t, tokenEndpoint, session.RefreshToken)
+		var tokens struct {
+			IDToken string `json:"id_token"`
+		}
+		if err := json.Unmarshal(body, &tokens); status != http.StatusOK || err != nil {
+			t.Fatalf("%s's refresh %s: status %d, body %s, want 200 with an ID token", email, when, status, body)
+		}
+		if got := idTokenClaims(t, tokens.IDToken)["email"]; got != email {
+			t.Fatalf("%s's refresh %s: the ID token names %#v, want %s", email, when, got, email)
+		}
+	}
+	refuse := func(body string) int {
+		t.Helper()
+		response, err := http.Post(issuerURL+"/_dev/refuse-refresh", "application/json", strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		response.Body.Close()
+		return response.StatusCode
+	}
+
+	for _, body := range []string{`["alice@d.example"]`, `{"refuse": true}`, `{"email": "alice@d.example"}`, `{"email": "", "refuse": true}`} {
+		if status := refuse(body); status != http.StatusBadRequest {
+			t.Fatalf("POST /_dev/refuse-refresh %s: status %d, want 400", body, status)
+		}
+	}
+	wantServed(alice, "alice@d.example", "after the refused requests")
+
+	if status := refuse(`{"email": "alice@d.example", "refuse": true}`); status != http.StatusNoContent {
+		t.Fatalf("POST /_dev/refuse-refresh refusing alice: status %d, want 204", status)
+	}
+	if status, body := refreshAt(t, tokenEndpoint, alice.RefreshToken); status != http.StatusBadRequest || !strings.Contains(string(body), `"invalid_grant"`) {
+		t.Fatalf("alice's refresh while she is refused: status %d, body %s, want 400 invalid_grant", status, body)
+	}
+	if _, err := flow.Refresh(ctx, alice.RefreshToken); !errors.Is(err, oidc.ErrGrantRefused) {
+		t.Fatalf("Dispatch's refresh of alice while she is refused: %v, want ErrGrantRefused", err)
+	}
+	wantServed(bob, "bob@d.example", "while alice is refused")
+
+	if status := refuse(`{"email": "alice@d.example", "refuse": false}`); status != http.StatusNoContent {
+		t.Fatalf("POST /_dev/refuse-refresh serving alice again: status %d, want 204", status)
+	}
+	wantServed(alice, "alice@d.example", "once her refusal is off")
+}
+
+// TestTheRefreshRefusalControlRefusesACallerOffLoopback sends /_dev/refuse-refresh a request from
+// an address that is not loopback: it is refused 403, as the sign-in control is, and refuses
+// nobody, so the person it names still refreshes.
+func TestTheRefreshRefusalControlRefusesACallerOffLoopback(t *testing.T) {
+	issuer := oidctest.New(t)
+	issuer.EnableCodeFlow(issuer.PublishKey(t, "signing-key"), testClientID, testClientSecret, testCallback)
+	issuer.SignInByDefault(map[string]any{"sub": "alice", "email": "alice@d.example"})
+	code := authorize(t, authorizeURL(issuer.URL()+"/authorize", testClientID, "state", "nonce"), "state")
+	status, body := exchangeCode(t, issuer.URL()+"/token", testClientID, code, testClientSecret)
+	var tokens struct {
+		RefreshToken string `json:"refresh_token"`
+	}
+	if err := json.Unmarshal(body, &tokens); status != http.StatusOK || err != nil || tokens.RefreshToken == "" {
+		t.Fatalf("alice's code exchange: status %d, body %s, want 200 with a refresh token", status, body)
+	}
+
+	request := httptest.NewRequest(http.MethodPost, "/_dev/refuse-refresh", strings.NewReader(`{"email":"alice@d.example","refuse":true}`))
+	request.RemoteAddr = "192.0.2.1:40000"
+	recorder := httptest.NewRecorder()
+	refuseRefreshHandler(issuer).ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusForbidden {
+		t.Fatalf("POST /_dev/refuse-refresh from %s: status %d, want 403", request.RemoteAddr, recorder.Code)
+	}
+	if status, body := refreshAt(t, issuer.URL()+"/token", tokens.RefreshToken); status != http.StatusOK {
+		t.Fatalf("alice's refresh after a refused refusal: status %d, body %s, want 200", status, body)
 	}
 }
 

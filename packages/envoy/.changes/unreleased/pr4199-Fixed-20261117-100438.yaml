@@ -1,0 +1,10 @@
+kind: Fixed
+body: |-
+  An Approve or Deny on the secrets broker's approval page can no longer commit after the revoke
+  of the account that signed the page in: each decision now reads its session again under the
+  same per-address lock the revoke takes, so a decision posted just before the revoke either
+  commits first or decides nothing and answers that the sign-in has ended. One person's decisions
+  on the page now wait for each other on that lock.
+time: 2026-11-17T10:04:38.000000000Z
+custom:
+    Issue: pr4199

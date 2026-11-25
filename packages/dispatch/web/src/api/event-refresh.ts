@@ -2,11 +2,13 @@ import { askProject } from "../features/inbox/list-row";
 import { buildDispatchReference, DECISIONS_DOCUMENT_SLUG } from "../features/refs/routes";
 import { issueProject } from "../lib/issue-key";
 import {
+  accessGroupsQuery,
   agentMessagesQuery,
   architectureSourcesQuery,
   inboxQuery,
   inboxThreadsKey,
   myRepliesKey,
+  projectAccessQuery,
   projectArchitectureSourcesQuery,
   projectDefaultAssigneesQuery,
   projectsQuery,
@@ -1068,6 +1070,19 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
   if (event.type === "priority.updated") {
     // A create, a rename, a move, a description or a delete of a priority, by anybody.
     return priorityWriteTargets(event);
+  }
+  if (event.type === "project.access_changed") {
+    // A person or a group named or taken off, or the project given to another owner: the
+    // project's Access tab, which is the one read that carries who may see it. A switch of its
+    // visibility moves its row of the project list too, which carries the visibility, for every
+    // reader who sees the project either way.
+    const access = { queryKey: projectAccessQuery(event.payload.project).queryKey };
+    return event.payload.change === "visibility" ? [access, { queryKey: projectsKey }] : [access];
+  }
+  if (event.type === "access_group.changed") {
+    // A group made, written or deleted, by anybody. It belongs to no project; a delete's removal
+    // from each list that named it comes as that project's own project.access_changed.
+    return [{ queryKey: accessGroupsQuery().queryKey }];
   }
   if (event.type === "subscription.remove_requested") {
     return [];

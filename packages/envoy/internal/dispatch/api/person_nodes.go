@@ -7,6 +7,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -48,7 +49,7 @@ type personNodes struct {
 // personNodesTied is what both statements of the page read first: the nodes one person is tied
 // to, each with the relations that tie it there. $1 is the canonical login.
 //
-// Both arms read the tuples whose far end is the person's node or a session of theirs, which is
+// Each arm reads the tuples whose far end is the person's node or a session of theirs, which is
 // the inbound read graph_tuples_as_of_in serves, and each keeps the newest tuple per far end
 // while that newest one asserts - the current-tuple rule graphstore.CurrentIn and
 // graphstore.CurrentOut read a node by, spliced here as graphstore.CurrentTupleRead.
@@ -56,8 +57,9 @@ type personNodes struct {
 //   - authored: the authored_by tuples into the person. A thing a session wrote stays that
 //     session's, so it is on no person's page: a session is nobody's until a credential proves
 //     it, and proving it says who received a delivery, not who wrote a comment.
-//   - received: the delivered_to tuples into each session the server itself proved this
-//     person's (the alias_of tuples into them, graphstore.TupleAliasOf). A delivery ends at a
+//   - aliases: each session the server itself proved this person's (the alias_of tuples into
+//     them, graphstore.TupleAliasOf).
+//   - received: the delivered_to tuples into each of those sessions. A delivery ends at a
 //     session or a role and never at a person, so the alias is the one way a delivery reaches
 //     a person at all.
 var personNodesTied = `
@@ -92,26 +94,30 @@ var personNodesTied = `
 	)`
 
 // personPageShownQuery is whether the page of the person $1 names answers anyone but that person
-// (R15 of this change): the store holds the person, not gone, and visible to the reader
-// whose acting credential is bound at $2 (refs.VisibilityArg), and the person is tied to at least
-// one node, not gone, that the reader may see (personNodesTied). Each tied node is held to the
-// predicate of its own kind, read off the one row the store holds of it (refs.VisibleRow), and a
-// node the store holds no row of is visible, as refs.VisibleKind reads one. A node of a kind the
-// registry holds no predicate for counts for nobody, as VisibleKind refuses one: $3 is every kind
-// it holds one for (personPageKinds), so a kind a later release adds ties nobody to a page here
-// until this build registers it. A person whose only node is reserved for its author therefore
-// has a page that author alone opens.
+// (R15 of this change): the store holds the person, not gone, and the reader whose acting
+// credential is bound at $2 (refs.VisibilityArg) sees them, through the node's own predicate and
+// access.PersonClause, so a restricted member, or a credential acting for one, opens only the
+// pages of the people of the projects it sees; and the person is tied to at least one node, not
+// gone, that the reader may see (personNodesTied). Each tied node is held to the predicate of its
+// own kind, read off the one row the store holds of it (refs.VisibleRow), and a node the store
+// holds no row of is read as refs.VisibleKind reads one (refs.VisibleEnd), which fails closed once
+// any project is private. A node of a kind the registry holds no predicate for counts for nobody,
+// as VisibleKind refuses one: $3 is every kind it holds one for (personPageKinds), so a kind a
+// later release adds ties nobody to a page here until this build registers it. A person whose only
+// node is reserved for its author therefore has a page that author alone opens, and a person whose
+// every node is of a project the reader does not see has a page the reader cannot open.
 var personPageShownQuery = personNodesTied + `
 	select exists (
 		select 1 from graph_nodes
 		where kind = '` + graphstore.KindPerson + `' and id = $1 and state <> '` + graphstore.StateGone + `'
 		  and ` + refs.VisibleRow("graph_nodes", "$2") + `
+		  and ` + access.PersonClause("$1::text", "$2") + `
 	) and exists (
 		select 1
 		from related r
 		left join graph_nodes tied on tied.kind = r.from_kind and tied.id = r.from_id
 		where r.from_kind = any($3::text[])
-		  and (tied.kind is null
+		  and ((tied.kind is null and ` + refs.VisibleEnd("r.from_kind", "r.from_id", true, "$2") + `)
 		       or (tied.state <> '` + graphstore.StateGone + `' and ` + refs.VisibleRow("tied", "$2") + `))
 	)`
 
@@ -120,8 +126,9 @@ var personPageShownQuery = personNodesTied + `
 // package initializes, and nothing moves it afterwards.
 var personPageKinds = refs.VisibilityKinds()
 
-// personNodesQuery pages the nodes one person is tied to (personNodesTied). $2 is the acting
-// credential the visibility predicate is bound at (refs.VisibilityArg), $3 and $4 the page.
+// personNodesQuery pages the nodes one person is tied to (personNodesTied). $1 is the canonical
+// login, $2 the acting credential the visibility predicate is bound at (refs.VisibilityArg), $3
+// and $4 the page.
 //
 // The items arm resolves each tied node into the row a reader opens. A node of a kind this build
 // cannot open is skipped rather than refused, exactly as refs.resolveNodes skips an end a newer
@@ -156,16 +163,19 @@ var personNodesQuery = personNodesTied + `, items as (
 // refuses a credential the deployment configured with 403 OAUTH_SCOPE_REQUIRED before this
 // handler runs - and every row it answers passes the visibility predicate of its own kind.
 //
-// The page answers 200 only where the person holds at least one node the reader may see, each
-// through its own kind's predicate, or where the reader is that person (personPageShownQuery).
-// Any other login answers 404, with the body a login nobody holds answers, byte for byte: the
-// read says nothing about whether that person exists, has signed in or wrote anything, and a
-// person whose only node is reserved for its author - a node a later release writes, beside
-// which this one serves during a roll and alone after a rollback - has no page anybody else can
-// open. The caller's own login is the one exception, answered 200 with what they may see, none
-// at all where they hold nothing: a person who has written nothing and been reached by nothing
-// opens their own page from the signed-in login, and telling them they are who they signed in as
-// tells them nothing new.
+// The page answers 200 only where the reader sees the person and the person holds at least one
+// node the reader may see, each through its own kind's predicate, or where the reader is that
+// person (personPageShownQuery). Any other login answers 404, with the body a login nobody holds
+// answers, byte for byte: the read says nothing about whether that person exists, has signed in
+// or wrote anything. So a person the caller may not see (access.PersonClause) answers 404: a
+// restricted member, or a credential acting for one, opens only its own page and the pages
+// of the people of the projects it sees. So does bob's page to alice, whose node his comment in a
+// private project alice cannot see made, and the page of a person whose only node is reserved for
+// its author - a node a later release writes, beside which this one serves during a roll and alone
+// after a rollback. The caller's own login is the one exception, answered 200 with what they may
+// see, none at all where they hold nothing: a person who has written nothing and been reached by
+// nothing opens their own page from the signed-in login, and telling them they are who they signed
+// in as tells them nothing new.
 //
 // The decision and the list run in one read-only transaction at repeatable read, as
 // schemanodes.Read's reads do, so the list reads the snapshot the decision read: a write that
@@ -177,14 +187,19 @@ func (s *server) listPersonNodes(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// The acting credential is marshalled once and bound by both reads: it is one value for the
+	// request, and the two statements name the same reader. Its author is the person the request
+	// acts for, as it always was, and its viewer is what the caller sees (readerAs).
+	caller, ok = s.readerAs(w, r, caller)
+	if !ok {
+		return
+	}
 	limit, offset, err := parseMyAnswersPage(r)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
 	login := model.CanonicalLogin(r.PathValue("login"))
-	// The acting credential is marshalled once and bound by both reads: it is one value for
-	// the request, and the two statements name the same reader.
 	seen := refs.VisibilityArg(caller)
 	tx, err := s.deps.Store.Pool.BeginTx(r.Context(), pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	if err != nil {

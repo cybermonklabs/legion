@@ -991,7 +991,7 @@ start_with_only "$DISPATCH_LOG" "${dispatch_settings[@]}" -- \
 DISPATCH_PID=$started_pid
 await dispatch "$DISPATCH_PID" "$DISPATCH_LOG" "$DISPATCH_LOG" 'the address it serves on' dispatch_addr_in
 DISPATCH_URL="http://$awaited"
-await dispatch "$DISPATCH_PID" "$DISPATCH_LOG" "$DISPATCH_URL/api/v1" 'its route index answering' answered_at
+await dispatch "$DISPATCH_PID" "$DISPATCH_LOG" "$DISPATCH_URL/healthz" 'its health check answering' answered_at
 echo "dev-stack: dispatch $DISPATCH_URL" >&2
 
 # --- The stand-in for a Compute Engine metadata server, written here and started by whoever

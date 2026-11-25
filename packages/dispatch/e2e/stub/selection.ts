@@ -17,11 +17,12 @@
  *    `globalSetup` reads this answer and returns before it makes a directory or starts a server
  *    (`e2e/global-setup.ts`). Every other run gets its stacks, so a person who wanted the
  *    harness and named a real-stack project still gets one.
- *  - **Are the stub projects declared at all?** The config leaves them out of a deployed run
- *    and out of two-process mode. It is not the second question's answer - a run naming
- *    `--project chromium` declares them and holds no stubbed row - but both are read here, so
- *    that neither a project declared with no server to answer it nor a server started for a
- *    project the config left out can arise from two readings disagreeing.
+ *  - **Are the stub projects declared at all?** The config leaves them out of a deployed run,
+ *    out of two-process mode and out of outside sign-in (`DISPATCH_E2E_SIGNIN=google`). It is
+ *    not the second question's answer - a run naming `--project chromium` declares them and
+ *    holds no stubbed row - but both are read here, so that neither a project declared with no
+ *    server to answer it nor a server started for a project the config left out can arise from
+ *    two readings disagreeing.
  *
  *  A deployed run (`PLAYWRIGHT_BASE_URL`, `bun run e2e:deployed`) holds no stubbed row whatever
  *  it names. The stubbed layer replays a recording against a build this checkout made, so
@@ -29,6 +30,7 @@
  *  the stub projects out of such a run and declares no server for it.
  */
 import { projectsOnCommandLine } from "../configurations";
+import type { HarnessSignIn } from "../harness-signin";
 
 /** Set to `1` by `bun run e2e:stub:record`: the rows run against the real harness and write
  *  what they fetched. Unset, which is every other run, they replay. */
@@ -67,8 +69,9 @@ export interface StubSelection {
 /** Reads the four questions above once, and writes `stubOnlyVariable` where the answer to the
  *  third is yes, so every worker of the run reads the same answer.
  *
- *  `projects` is the names of the stubbed layer's projects, and `processes` the run's Dispatch
- *  server count: two-process mode runs its own project list, which holds no stub project.
+ *  `projects` is the names of the stubbed layer's projects, `processes` the run's Dispatch
+ *  server count and `signIn` its sign-in (`e2e/harness-signin.ts`): two-process mode and
+ *  `google` each run a project list of their own, which holds no stub project.
  *
  *  A `--project` value this cannot resolve - a `*` pattern, which Playwright expands against
  *  the config's own projects - is read as possibly naming any project: such a run may hold a
@@ -79,14 +82,15 @@ export function stubSelection(options: {
   env: NodeJS.ProcessEnv;
   processes: number;
   projects: readonly string[];
+  signIn: HarnessSignIn;
 }): StubSelection {
-  const { argv, env, processes, projects } = options;
+  const { argv, env, processes, projects, signIn } = options;
   const recording = stubRecording(env);
   const deployed = (env.PLAYWRIGHT_BASE_URL ?? "") !== "";
   const named = projectsOnCommandLine(argv);
   const stubbed = projects.map((project) => project.toLowerCase());
   const unresolved = named.filter((project) => project.includes("*"));
-  const declared = processes === 1 && !deployed;
+  const declared = processes === 1 && signIn !== "google" && !deployed;
   const holdsStubRow =
     declared &&
     (named.length === 0 ||

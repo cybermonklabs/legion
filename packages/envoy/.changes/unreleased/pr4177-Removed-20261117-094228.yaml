@@ -1,0 +1,6 @@
+kind: Removed
+body: |-
+    A recorded actor carries no `project`: Dispatch writes and answers none on an event's or an object's actor, where a write under a broker-issued token scoped to one project recorded that project there before.
+time: 2026-11-17T09:42:28.109902541Z
+custom:
+    Issue: pr4177

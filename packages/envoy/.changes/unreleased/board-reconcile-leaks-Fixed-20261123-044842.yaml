@@ -1,0 +1,19 @@
+kind: Fixed
+body: |-
+  A project's Legion board no longer shows an issue of a private project its reader does not see.
+  The board showed a card, a slot in use, a place in the waiting line or a tree for every key the
+  project's daemon reported, whatever project held it: a daemon that serves several projects
+  reports all of their issues, and any full member can name another project's daemon as a
+  project's own. Now the sampler records only the project's own issues, by Dispatch's record of
+  each key, and of the daemon's settings only the project's own `projects` entry; and
+  `GET /api/v1/projects/{key}/legion/board` and the `/ws/live` `legion` view name only an issue the
+  reader sees. A key of a project the reader does not see and a key no issue holds are on no card
+  and in no count, waiting line, blocker list or tree root, so the two read alike. A reader of a
+  deployment that holds no private project reads the board as before.
+  `GET /api/v1/ci-reconcile/passes` no longer names a private project's repository to a reader who
+  does not see that project: a pass whose cursor rests in such a repository reads as the zero
+  cursor, the start of the order, as the App-installation route answers that repository as one
+  the App is not installed on.
+time: 2026-11-23T04:48:42Z
+custom:
+    Issue: board-reconcile-leaks

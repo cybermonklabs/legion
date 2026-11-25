@@ -1,0 +1,19 @@
+kind: Added
+body: |-
+  Dispatch checks every stored refresh token about once an hour, whether or not its person makes
+  a request: the maintenance sweep ends with a membership pass, at most 20 refreshes a run, and
+  logs `dispatch: membership pass confirmed=<n> held=<n> unasked=<n> forgotten=<n>` for
+  each run that checked a row. Under `DISPATCH_SIGNIN_DOMAIN` each sign-in and confirmation records
+  the ID token's `hd`, and the boot logs `dispatch: people census checkable=<n> held=<n>
+  uncheckable=<n>`; it refuses to start when the full members' rows that hold a refresh token
+  record at least one Workspace domain and none of those rows records `DISPATCH_SIGNIN_DOMAIN`,
+  compared byte for byte, naming both and `envoy-dispatch forget-hosted-domains`, the command that
+  forgets the recorded domains for an intended change of domain. The migration
+  `20261117174706_people_hold` adds five nullable columns to `people` and the check
+  `people_hosted_domain_not_empty` as `NOT VALID`, so it reads no row. The migration
+  `20261120055702_people_directory` adds four nullable columns and two checks over them,
+  `directory_user_id <> ''` and `people_directory_deadline`, both validated, so it scans `people`
+  once under the table's lock. Neither migration changes a row.
+time: 2026-11-20T20:31:13Z
+custom:
+    Issue: pr4699

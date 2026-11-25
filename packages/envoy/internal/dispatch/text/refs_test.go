@@ -13,7 +13,7 @@ import (
 
 func TestExtractRecognizesDispatchAndServerReferences(t *testing.T) {
 	body := `dispatch://LEGION-1 dispatch://LEGION-1/spec dispatch://LEGION-1/artifact/design-md@v3 dispatch://LEGION-1/ask/ask-id dispatch://LEGION-1/comment/comment-id dispatch://LEGION-1/message/message-id https://dispatch.example/issues/LEGION-2 https://dispatch.example/issues/LEGION-2/spec https://dispatch.example/issues/LEGION-2/artifacts/design-md?v=3 https://dispatch.example/issues/LEGION-2/asks/ask-two https://dispatch.example/issues/LEGION-2/comments/comment-two https://dispatch.example/issues/LEGION-2/messages/message-two https://example.com/docs`
-	got := Extract(body, "https://dispatch.example")
+	got := Extract(body, NewOrigins("https://dispatch.example"))
 	want := []Ref{
 		{Kind: "issue", IssueKey: "LEGION-1", ID: "LEGION-1"},
 		{Kind: "artifact", IssueKey: "LEGION-1", ID: "spec"},
@@ -35,7 +35,7 @@ func TestExtractRecognizesDispatchAndServerReferences(t *testing.T) {
 }
 
 func TestExtractPreservesUnrecognizedServerAndExternalURLs(t *testing.T) {
-	got := Extract("https://dispatch.example/not-a-route https://other.example/issues/LEGION-1", "https://dispatch.example")
+	got := Extract("https://dispatch.example/not-a-route https://other.example/issues/LEGION-1", NewOrigins("https://dispatch.example"))
 	want := []Ref{
 		{Kind: "url", ID: "https://dispatch.example/not-a-route"},
 		{Kind: "url", ID: "https://other.example/issues/LEGION-1"},
@@ -46,14 +46,14 @@ func TestExtractPreservesUnrecognizedServerAndExternalURLs(t *testing.T) {
 }
 
 func TestExtractRejectsMalformedDispatchVersion(t *testing.T) {
-	got := Extract("dispatch://LEGION-1/artifact/spec@vnot-a-number", "https://dispatch.example")
+	got := Extract("dispatch://LEGION-1/artifact/spec@vnot-a-number", NewOrigins("https://dispatch.example"))
 	if len(got) != 0 {
 		t.Fatalf("malformed dispatch version produced references %#v", got)
 	}
 }
 
 func TestExtractTrimsMarkdownLinkDelimiter(t *testing.T) {
-	got := Extract("[ask](https://dispatch.example/issues/LEGION-1/asks/abc)", "https://dispatch.example")
+	got := Extract("[ask](https://dispatch.example/issues/LEGION-1/asks/abc)", NewOrigins("https://dispatch.example"))
 	want := []Ref{{Kind: "ask", IssueKey: "LEGION-1", ID: "abc"}}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("Extract() = %#v; want %#v", got, want)
@@ -61,7 +61,7 @@ func TestExtractTrimsMarkdownLinkDelimiter(t *testing.T) {
 }
 
 func TestExtractTrimsParenthesizedDispatchReference(t *testing.T) {
-	got := Extract("(dispatch://LEGION-1/spec)", "https://dispatch.example")
+	got := Extract("(dispatch://LEGION-1/spec)", NewOrigins("https://dispatch.example"))
 	want := []Ref{{Kind: "artifact", IssueKey: "LEGION-1", ID: "spec"}}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("Extract() = %#v; want %#v", got, want)
@@ -72,7 +72,7 @@ func TestExtractTrimsParenthesizedDispatchReference(t *testing.T) {
 // closing delimiters the grammar trims, so a caller can map a mention to the block around it.
 func TestExtractAtReportsByteOffsets(t *testing.T) {
 	body := "# Café\n\nSee (dispatch://LEGION-1/spec). Then [ask](https://dispatch.example/issues/LEGION-1/asks/abc), and https://example.com/docs."
-	got := ExtractAt(body, "https://dispatch.example")
+	got := ExtractAt(body, NewOrigins("https://dispatch.example"))
 	want := []Located{
 		{Ref: Ref{Kind: "artifact", IssueKey: "LEGION-1", ID: "spec"}, Offset: len("# Café\n\nSee (")},
 		{Ref: Ref{Kind: "ask", IssueKey: "LEGION-1", ID: "abc"}, Offset: len("# Café\n\nSee (dispatch://LEGION-1/spec). Then [ask](")},
@@ -91,7 +91,7 @@ func TestExtractTerminatesArtifactSlugsAtMarkdownPunctuation(t *testing.T) {
 		{Kind: "artifact", IssueKey: "CORE-2", ID: "design-md"},
 		{Kind: "artifact", IssueKey: "CORE-2", ID: "quoted-md"},
 	}
-	if got := Extract(body, "https://dispatch.example"); !reflect.DeepEqual(got, want) {
+	if got := Extract(body, NewOrigins("https://dispatch.example")); !reflect.DeepEqual(got, want) {
 		t.Fatalf("Extract() = %#v, want %#v", got, want)
 	}
 }
@@ -132,7 +132,7 @@ func TestExtractMatchesTheSharedTextTable(t *testing.T) {
 			}
 			want := []Ref{}
 			for _, ref := range row.Refs {
-				parsed := Extract(ref, server)
+				parsed := Extract(ref, NewOrigins(server))
 				if len(parsed) != 1 || parsed[0].Kind == "url" {
 					t.Fatalf("%s is not a reference: %#v", ref, parsed)
 				}
@@ -142,7 +142,7 @@ func TestExtractMatchesTheSharedTextTable(t *testing.T) {
 				want = append(want, parsed[0])
 			}
 			got := []Ref{}
-			for _, ref := range Extract(row.Body, server) {
+			for _, ref := range Extract(row.Body, NewOrigins(server)) {
 				if ref.Kind != "url" && !slices.Contains(got, ref) {
 					got = append(got, ref)
 				}
@@ -201,7 +201,7 @@ func TestMentionsMatchesTheSharedTextTable(t *testing.T) {
 				resolver.issues[key] = true
 			}
 			for id, written := range row.Questions {
-				ref, ok := ParseRef(written, server)
+				ref, ok := ParseRef(written, NewOrigins(server))
 				if !ok {
 					t.Fatalf("question %s names %s, which is no reference", id, written)
 				}
@@ -212,13 +212,13 @@ func TestMentionsMatchesTheSharedTextTable(t *testing.T) {
 			}
 			want := []Ref{}
 			for _, ref := range row.Refs {
-				parsed := Extract(ref, server)
+				parsed := Extract(ref, NewOrigins(server))
 				if len(parsed) != 1 || parsed[0].Kind == "url" {
 					t.Fatalf("%s is not a reference: %#v", ref, parsed)
 				}
 				want = append(want, parsed[0])
 			}
-			located, err := Mentions(row.Body, server, resolver)
+			located, err := Mentions(row.Body, NewOrigins(server), resolver)
 			if err != nil {
 				t.Fatalf("Mentions() error: %v", err)
 			}
@@ -325,7 +325,7 @@ func TestExtractReadsADashboardPageBlockFragment(t *testing.T) {
 		{"/issues/CORE-1/artifacts/notes-md?ask=a1#b-ship-it", Ref{Kind: "ask", IssueKey: "CORE-1", ID: "a1"}},
 	}
 	for _, tc := range cases {
-		got := Extract(server+tc.href, server)
+		got := Extract(server+tc.href, NewOrigins(server))
 		if len(got) != 1 || got[0] != tc.want {
 			t.Errorf("Extract(%s) = %#v; want %#v", tc.href, got, tc.want)
 		}
@@ -381,7 +381,7 @@ func TestExtractParsesItemBlockReferences(t *testing.T) {
 		{server + "/projects/CORE/documents/handbook-md?ask=" + ask + "#b-b3", []Ref{{Kind: "ask", Project: "CORE", ID: ask, Document: "handbook-md"}}, ask},
 	} {
 		t.Run(test.reference, func(t *testing.T) {
-			got := Extract("See "+test.reference+".", server)
+			got := Extract("See "+test.reference+".", NewOrigins(server))
 			if !reflect.DeepEqual(got, test.want) {
 				t.Fatalf("Extract() = %#v; want %#v", got, test.want)
 			}
@@ -402,14 +402,14 @@ func TestAnItemBlockIDPastTheBoundIsCitedByNoText(t *testing.T) {
 	block := Ref{Kind: "block", Item: "comment", IssueKey: "CORE-1", ID: comment, Block: long}
 	reference := "dispatch://CORE-1/comment/" + comment + "#b-" + long
 	page := server + "/issues/CORE-1/comments/" + comment + "#b-" + long
-	if got := Extract(reference, server); len(got) != 0 {
+	if got := Extract(reference, NewOrigins(server)); len(got) != 0 {
 		t.Errorf("the dispatch:// reference cites %#v; want nothing", got)
 	}
-	if got := Extract(page, server); !reflect.DeepEqual(got, []Ref{{Kind: "comment", IssueKey: "CORE-1", ID: comment}}) {
+	if got := Extract(page, NewOrigins(server)); !reflect.DeepEqual(got, []Ref{{Kind: "comment", IssueKey: "CORE-1", ID: comment}}) {
 		t.Errorf("the comment's page cites %#v; want the comment", got)
 	}
 	for _, request := range []string{reference, page} {
-		if got, ok := ParseRef(request, server); !ok || got != block {
+		if got, ok := ParseRef(request, NewOrigins(server)); !ok || got != block {
 			t.Errorf("ParseRef(%.60s…) = %#v, %t; want the block", request, got, ok)
 		}
 	}
@@ -447,14 +447,14 @@ func TestABlockReferenceIsBoundedByItsWholeTargetID(t *testing.T) {
 				if test.names {
 					want, page = []Ref{block}, block
 				}
-				if got := Extract(document.reference+test.slug+"#b-"+encoded, server); !reflect.DeepEqual(got, want) {
+				if got := Extract(document.reference+test.slug+"#b-"+encoded, NewOrigins(server)); !reflect.DeepEqual(got, want) {
 					t.Errorf("the dispatch:// reference cites %#v; want %#v", got, want)
 				}
-				if got := Extract(document.page+test.slug+"#b-"+encoded, server); !reflect.DeepEqual(got, []Ref{page}) {
+				if got := Extract(document.page+test.slug+"#b-"+encoded, NewOrigins(server)); !reflect.DeepEqual(got, []Ref{page}) {
 					t.Errorf("the dashboard page cites %#v; want %#v", got, page)
 				}
 				for _, request := range []string{document.reference + test.slug + "#b-" + encoded, document.page + test.slug + "#b-" + encoded} {
-					if got, ok := ParseRef(request, server); !ok || got != block {
+					if got, ok := ParseRef(request, NewOrigins(server)); !ok || got != block {
 						t.Errorf("ParseRef(%.60s…) = %#v, %t; want the block", request, got, ok)
 					}
 				}
@@ -492,14 +492,14 @@ func TestABlockIDPastTheBoundIsReadByARequestAndCitedByNoText(t *testing.T) {
 			if test.cited {
 				wantReference, wantPage = []Ref{block}, []Ref{block}
 			}
-			if got := Extract(reference, server); !reflect.DeepEqual(got, wantReference) {
+			if got := Extract(reference, NewOrigins(server)); !reflect.DeepEqual(got, wantReference) {
 				t.Errorf("the dispatch:// text cites %.200v; want %.200v", got, wantReference)
 			}
-			if got := Extract(page, server); !reflect.DeepEqual(got, wantPage) {
+			if got := Extract(page, NewOrigins(server)); !reflect.DeepEqual(got, wantPage) {
 				t.Errorf("the dashboard page cites %.200v; want %.200v", got, wantPage)
 			}
 			for request, want := range map[string]Ref{reference: block, reference + "@v2": pinned, page: block} {
-				if got, ok := ParseRef(request, server); !ok || got != want {
+				if got, ok := ParseRef(request, NewOrigins(server)); !ok || got != want {
 					t.Errorf("ParseRef(%.60s…) = %.200v, %t; want %.200v", request, got, ok, want)
 				}
 			}
@@ -556,26 +556,26 @@ func TestEveryReferenceIsBoundedByItsTargetID(t *testing.T) {
 		}
 		past := atBound + test.char
 		t.Run(test.name, func(t *testing.T) {
-			if got, want := Extract(test.reference+atBound+test.referenceTail, server), []Ref{test.ref(atBound)}; !reflect.DeepEqual(got, want) {
+			if got, want := Extract(test.reference+atBound+test.referenceTail, NewOrigins(server)), []Ref{test.ref(atBound)}; !reflect.DeepEqual(got, want) {
 				t.Errorf("the dispatch:// reference at the bound cites %.200v; want %.200v", got, want)
 			}
-			if got := Extract(test.reference+past+test.referenceTail, server); len(got) != 0 {
+			if got := Extract(test.reference+past+test.referenceTail, NewOrigins(server)); len(got) != 0 {
 				t.Errorf("the dispatch:// reference one byte past the bound cites %.200v; want nothing", got)
 			}
-			if got, ok := ParseRef(test.reference+past+test.referenceTail, server); !ok || got != test.ref(past) {
+			if got, ok := ParseRef(test.reference+past+test.referenceTail, NewOrigins(server)); !ok || got != test.ref(past) {
 				t.Errorf("ParseRef of the dispatch:// reference one byte past the bound = %.200v, %t; want %.200v", got, ok, test.ref(past))
 			}
 			if test.page == "" {
 				return
 			}
-			if got, want := Extract(test.page+atBound+test.pageTail, server), []Ref{test.ref(atBound)}; !reflect.DeepEqual(got, want) {
+			if got, want := Extract(test.page+atBound+test.pageTail, NewOrigins(server)), []Ref{test.ref(atBound)}; !reflect.DeepEqual(got, want) {
 				t.Errorf("the dashboard page at the bound cites %.200v; want %.200v", got, want)
 			}
 			page := test.page + past + test.pageTail
-			if got, want := Extract(page, server), []Ref{{Kind: "url", ID: page}}; !reflect.DeepEqual(got, want) {
+			if got, want := Extract(page, NewOrigins(server)), []Ref{{Kind: "url", ID: page}}; !reflect.DeepEqual(got, want) {
 				t.Errorf("the dashboard page one byte past the bound cites %.200v; want only its URL", got)
 			}
-			if got, ok := ParseRef(page, server); !ok || got != test.ref(past) {
+			if got, ok := ParseRef(page, NewOrigins(server)); !ok || got != test.ref(past) {
 				t.Errorf("ParseRef of the dashboard page one byte past the bound = %.200v, %t; want %.200v", got, ok, test.ref(past))
 			}
 		})
@@ -602,7 +602,7 @@ func TestExtractTrimsALongClosingRunInLinearTime(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			start := time.Now()
-			got := Extract(test.body, server)
+			got := Extract(test.body, NewOrigins(server))
 			if elapsed := time.Since(start); elapsed > 3*time.Second {
 				t.Errorf("Extract() took %s on a %d-byte body; want one pass", elapsed, len(test.body))
 			}
@@ -621,7 +621,7 @@ func TestInvalidArtifactReferencesDoNotProduceGraphEdges(t *testing.T) {
 		{Kind: "url", ID: "https://dispatch.example/projects/CORE/documents/design%2Fnotes"},
 		{Kind: "url", ID: "https://dispatch.example/projects/CORE/documents/Design-notes"},
 	}
-	if got := Extract(body, "https://dispatch.example"); !reflect.DeepEqual(got, want) {
+	if got := Extract(body, NewOrigins("https://dispatch.example")); !reflect.DeepEqual(got, want) {
 		t.Fatalf("Extract() = %#v, want only non-graph URLs", got)
 	}
 }
@@ -637,7 +637,7 @@ func TestExtractParsesProjectDocumentReferences(t *testing.T) {
 		{Kind: "artifact", Project: "CORE", ID: "design-notes"},
 		{Kind: "ask", Project: "CORE", ID: "a2", Document: "design-notes"},
 	}
-	if got := Extract(body, "https://dispatch.example"); !reflect.DeepEqual(got, want) {
+	if got := Extract(body, NewOrigins("https://dispatch.example")); !reflect.DeepEqual(got, want) {
 		t.Fatalf("Extract() = %#v; want %#v", got, want)
 	}
 }
@@ -650,7 +650,7 @@ func TestExtractParsesComponentReferences(t *testing.T) {
 		{Kind: "component", Project: "CORE", ID: "dispatch-server"},
 		{Kind: "component", Project: "CORE", ID: "web"},
 	}
-	if got := Extract(body, "https://dispatch.example"); !reflect.DeepEqual(got, want) {
+	if got := Extract(body, NewOrigins("https://dispatch.example")); !reflect.DeepEqual(got, want) {
 		t.Fatalf("Extract() = %#v; want %#v", got, want)
 	}
 }
@@ -669,13 +669,13 @@ func TestExtractParsesAgentArtifactReferences(t *testing.T) {
 		server + "/agents/01a1058e-f14f/artifacts/shot-png",
 		server + "/agents/01a1058e-f14f/artifacts/shot-png?v=3",
 	} {
-		got := Extract(body, server)
+		got := Extract(body, NewOrigins(server))
 		if len(got) != 1 || got[0] != want {
 			t.Errorf("Extract(%q) = %#v; want %#v", body, got, want)
 			continue
 		}
 		written := "dispatch://agent/" + got[0].Session + "/artifact/" + got[0].ID
-		if again := Extract(written, server); len(again) != 1 || again[0] != want {
+		if again := Extract(written, NewOrigins(server)); len(again) != 1 || again[0] != want {
 			t.Errorf("Extract(%q), written back from %q, = %#v; want %#v", written, body, again, want)
 		}
 	}
@@ -693,7 +693,7 @@ func TestExtractParsesAgentArtifactReferences(t *testing.T) {
 		server + "/agents/abc/artifacts/shot-png?v=0",
 		server + "/agents/abc/artifacts/shot-png?comment=c1",
 	} {
-		for _, ref := range Extract(body, server) {
+		for _, ref := range Extract(body, NewOrigins(server)) {
 			if ref.Kind != "url" {
 				t.Errorf("Extract(%q) cites %#v; want nothing", body, ref)
 			}

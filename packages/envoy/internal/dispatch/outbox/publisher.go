@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -59,6 +60,12 @@ const (
 	// pass's own context so that one ending mid-statement cannot leave its rows claimed for the
 	// claim it took. It is one statement too, so it is given the bound its pass's write is given.
 	claimTimeout = recordTimeout
+	// privateHoldRecheck is how often the outbox looks again while the private-delivery hold keeps
+	// an event or a fallback copy of a private project unpublished (Deps.holdsPrivate,
+	// Outbox.nextRetry): PrivateHubsReady is a func, which signals nothing when it turns true, so
+	// the retry timer is armed to this, and the scan it starts asks the func anew. It is the most a
+	// private project's event waits, past the moment every hub is proven, for its publish.
+	privateHoldRecheck = 5 * time.Second
 )
 
 // Publisher is the NATS client the outbox publishes through (bus.Client).
@@ -121,6 +128,34 @@ type Deps struct {
 	// rather than paging whoever alerts on publish failures.
 	PublishFailures  *metrics.Counter
 	RoleForwardsHeld *metrics.Counter
+	// PrivateHubsReady reports whether every hub admits this Dispatch to the private projects'
+	// subjects, the proof a private event waits on before it is published (the private-delivery
+	// hold, holdsPrivate): while it answers false, the batch's read leaves out every owner whose
+	// project the database holds private (readBatchSQL, privateOwnerSQL), the fallback pass claims
+	// no copy of such an owner's event (claimFallbackCopies), and the retry timer looks again every
+	// privateHoldWait while one waits (Outbox.nextRetry); once it answers true, the next scan reads
+	// and publishes them. A public project's events publish as before. Each batch and pass read
+	// asks it once, and the batches of one scan ask side by side; the timer's read asks it only
+	// when no read since the timer's last one found the hold on (heldReads). A nil func holds
+	// nothing, which is safe while no project can be private; cmd/dispatch sets it once a hub can
+	// prove it.
+	PrivateHubsReady func() bool
+	// privateHoldWait is how long the retry timer waits, while the hold keeps something, before it
+	// starts a scan that asks PrivateHubsReady again, and zero is privateHoldRecheck, which is what
+	// cmd/dispatch runs. A test shortens it; it is unexported, so no importer can.
+	privateHoldWait time.Duration
+	// heldReads notes that a read the private-delivery hold binds into - a batch's read (readRows)
+	// or the fallback pass's claim (claimFallbackCopies) - asked PrivateHubsReady and found the
+	// hold on (holdRead), and the retry timer's read takes the note and clears it
+	// (heldSinceRetry), and then arms the hold's re-poll whatever the func answers by then
+	// (Outbox.nextRetry). A read and the timer's read after it are moments apart, and the func
+	// signals nothing when it turns true: a timer that went by its own ask alone would, when the
+	// hubs turned proven in between, read the back-offs alone and arm nothing for what the read
+	// held - an event never tried, a copy never claimed, neither of which has one - which then
+	// waited for an unrelated wake. New makes it, one per outbox, which every copy of that
+	// outbox's Deps shares; a read run with none - one by itself, as this package's tests run
+	// it - notes nothing.
+	heldReads *atomic.Bool
 	// Metrics is the registry New registers the gauges of the fallback copies held behind an
 	// earlier event on (heldCopies.register); nil registers none, as this package's tests run it.
 	Metrics *metrics.Registry
@@ -147,6 +182,39 @@ func (d Deps) forwardAckTimeout() time.Duration {
 		return d.forwardAckWait
 	}
 	return roleForwardAckTimeout
+}
+
+// privateHoldDelay is how long the retry timer waits while the private-delivery hold keeps
+// something (Outbox.nextRetry), from privateHoldWait.
+func (d Deps) privateHoldDelay() time.Duration {
+	if d.privateHoldWait > 0 {
+		return d.privateHoldWait
+	}
+	return privateHoldRecheck
+}
+
+// holdsPrivate reports whether the private-delivery hold is on now: PrivateHubsReady is set and
+// answers false. A nil func is no hold. A read the hold binds into asks through holdRead instead.
+func (d Deps) holdsPrivate() bool {
+	return d.PrivateHubsReady != nil && !d.PrivateHubsReady()
+}
+
+// holdRead is holdsPrivate for a read the hold binds into, a batch's read (readRows) or the
+// fallback pass's claim (claimFallbackCopies): an answer that the hold is on is also noted
+// (heldReads), for the retry timer's next read (Outbox.nextRetry).
+func (d Deps) holdRead() bool {
+	held := d.holdsPrivate()
+	if held && d.heldReads != nil {
+		d.heldReads.Store(true)
+	}
+	return held
+}
+
+// heldSinceRetry reports whether a read found the hold on since the retry timer's last read, and
+// clears the note (heldReads), so what a read held arms the timer once: at the timer's read that
+// follows it, and not at every one after.
+func (d Deps) heldSinceRetry() bool {
+	return d.heldReads != nil && d.heldReads.Swap(false)
 }
 
 // countPublishFailure counts one destination of a publish attempt that did not reach it, under
@@ -200,10 +268,11 @@ func lostToContextEnd(ctx context.Context, err error) bool {
 }
 
 // scanBatch reads a batch (readBatch) and publishes it (publishBatch): it resolves its events'
-// destinations with the batch's followers, authors, recipients and mention deliveries read
-// in at most eight statements (loadLookups) and its role routes' holders read once per role
-// (resolveRoleHolders), and sends it through one window (Publisher.WindowUntil) as
-// chains: the sends of one owner's events to one destination key go one at a time, in id order,
+// destinations with the batch's followers, authors, recipients, mention deliveries and sessions'
+// sight read in at most nine statements (loadLookups) and its role routes' holders read once per
+// role, and their sight in one more (resolveRoleHolders), and sends it through one window
+// (Publisher.WindowUntil) as chains: the sends of one owner's events to one destination key go
+// one at a time, in id order,
 // each once the one before it reached its destination, and each send of the owner to a key other
 // than its topic family once the owner's earlier topic sends reached that family, while the chains
 // of different owners and destination keys proceed side by side (planChains, sendChains). That is
@@ -1067,7 +1136,8 @@ func resolveDestinations(ctx context.Context, deps Deps, events []*batchEvent) (
 // the event's mentions did (a new comment's alone), and mentionPending whether a session's copy
 // was held back for a mention still being sent (leftTo). failed holds the settles and the holds
 // of held-back copies that failed, which end no list: each backs the event off once the
-// destinations the list does name are sent (err).
+// destinations the list does name are sent (err). look, project and eventID are what a session's
+// copy is judged by (withheld): the batch's lookup, the event's project and its id.
 type destinations struct {
 	list           []destination
 	seen           map[string]struct{}
@@ -1076,6 +1146,9 @@ type destinations struct {
 	mentions       mentionDeliveries
 	mentionPending bool
 	failed         []error
+	look           lookup
+	project        string
+	eventID        int64
 }
 
 func (d *destinations) add(subject, label, id string) {
@@ -1112,7 +1185,7 @@ func (d *destinations) addDestination(dest destination) {
 // publishFallbackCopies). What reaches this keying is a session whose mentions have settled, or
 // one no attempt of the comment names, which is published to under the event's own key.
 func (d *destinations) addSession(sessionID, label, id string) {
-	if d.leftToMention(sessionID) {
+	if d.withheld(sessionID, label) || d.leftToMention(sessionID) {
 		return
 	}
 	d.addDestination(destination{
@@ -1150,6 +1223,9 @@ func (d *destinations) addSession(sessionID, label, id string) {
 // row of the role's own topic, so the holder's later events flow again and the comment reaches
 // it once, by that row (holdsTheForwardAsARow, unnamedForwardBound).
 func (d *destinations) addWorkingSession(sessionID, label, id string) {
+	if d.withheld(sessionID, label) {
+		return
+	}
 	hold := d.workingSessionHold(sessionID)
 	if hold == copyLeftToTheMention {
 		return
@@ -1168,6 +1244,43 @@ func (d *destinations) addSessions(sessionIDs []string, label string) {
 	for _, sessionID := range sessionIDs {
 		d.addSession(sessionID, label, sessionID)
 	}
+}
+
+// withheld reports whether sessionID's own subject is no destination of the event because the
+// session may not be shown the event's project: the person or the credential it acts for does not
+// see that project (lookup.sees, access.SessionSeesProjectClause). It is the one check every copy
+// bound for a session's own subject asks, before the mention rule is asked of it (addSession,
+// addWorkingSession) - the route's session, the claimant, a primary document's or a thread's or a
+// document's author, a follower, a session a payload names, the previous claimant - so a copy it
+// withholds is held back for no mention and kept as no fallback row: nothing of the event reaches
+// that subject. A role route's holder is judged by the same rule once it is resolved
+// (withholdUnseenHolders), and the fallback pass judges its row's session again when it publishes
+// (decideFallbackCopy).
+//
+// Every event the outbox publishes names a project: an issue's, a document's or a project's own
+// (readBatchSQL's project column, which envelope requires of a document's event); an event that
+// names none - one built with no project, as some of this package's tests build theirs - is judged
+// by nothing here and reaches every route as before. A sight the batch did not read withholds the
+// copy and backs the event off once the destinations its list names are sent (failed), so a
+// session it cannot judge is sent nothing rather than everything.
+//
+// A withheld copy is logged with the event, the project, the session and the route, at Info:
+// nothing failed, and a session's id names no person.
+func (d *destinations) withheld(sessionID, label string) bool {
+	if d.project == "" || d.look == nil {
+		return false
+	}
+	sees, err := d.look.sees(sessionID, d.project)
+	switch {
+	case err != nil:
+		d.failed = append(d.failed, err)
+		return true
+	case sees:
+		return false
+	}
+	slog.Info("dispatch outbox: a destination is withheld: its session does not see the event's project",
+		"event", d.eventID, "project", d.project, "session", sessionID, "route", label)
+	return true
 }
 
 // err joins cause, the lookup or the route failure that ended the list, with the settles and the
@@ -1201,7 +1314,10 @@ func (d *destinations) err(cause error) error {
 // neither.
 func eventDestinations(ctx context.Context, deps Deps, item *batchEvent, look lookup) (*destinations, error) {
 	event := item.event
-	d := &destinations{seen: map[string]struct{}{}, delivered: item.delivered}
+	d := &destinations{seen: map[string]struct{}{}, delivered: item.delivered, look: look, project: event.Project, eventID: event.ID}
+	if event.Project != "" {
+		look.judgedBy(event.Project)
+	}
 	var err error
 	if event.Type == "comment.created" && payloadHasMentions(event.Payload) {
 		commentID := payloadString(event.Payload, "id")

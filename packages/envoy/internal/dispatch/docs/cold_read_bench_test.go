@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 // BenchmarkColdDocumentRead measures stored-document reads at the same two sizes as the resident
@@ -25,11 +26,11 @@ func BenchmarkColdDocumentRead(b *testing.B) {
 			read func(*Service, string) error
 		}{
 			{"text", func(service *Service, artifactID string) error {
-				_, _, err := service.TextWithToken(context.Background(), artifactID)
+				_, _, err := service.TextWithToken(context.Background(), serverReader, artifactID)
 				return err
 			}},
 			{"blocks", func(service *Service, artifactID string) error {
-				_, err := service.Blocks(context.Background(), artifactID)
+				_, err := service.Blocks(context.Background(), serverReader, artifactID)
 				return err
 			}},
 		} {
@@ -110,7 +111,7 @@ func newColdBenchmarkDocument(b *testing.B, size int) (*Service, *PgVersioned, s
 	if _, err := versioned.AppendUpdate(ctx, artifactID, crdt.EncodeStateAsUpdateV1(live, nil)); err != nil {
 		b.Fatal(err)
 	}
-	service := New(Deps{Store: database, Events: events.NewBroker(), ServerURL: "https://dispatch.example", Settle: time.Hour})
+	service := New(Deps{Store: database, Events: events.NewBroker(), Origins: text.NewOrigins("https://dispatch.example"), Settle: time.Hour})
 	b.Cleanup(func() {
 		if err := service.Shutdown(context.Background()); err != nil {
 			b.Errorf("shutdown cold benchmark service: %v", err)

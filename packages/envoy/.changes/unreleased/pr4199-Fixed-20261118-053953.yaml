@@ -1,0 +1,11 @@
+kind: Fixed
+body: |-
+  The database holds every column Dispatch's account binding reads to the changes its own writers
+  make, whatever statement is sent: an address never changes, a recorded Google account is never
+  the empty string, a session's generation never moves back and its row is never removed, a
+  `people` row a session names is never deleted, and a personal token's owner, hash, account,
+  creation time and revoke are written once. Recording an account, a fresh row's first included,
+  ends the address's sessions in the same statement.
+time: 2026-11-18T05:39:53.000000000Z
+custom:
+    Issue: pr4199

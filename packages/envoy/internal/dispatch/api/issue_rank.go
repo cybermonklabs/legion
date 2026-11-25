@@ -8,7 +8,10 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/access"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/rank"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 type rankInput struct {
@@ -23,20 +26,20 @@ func lockProjectRankAllocation(ctx context.Context, tx pgx.Tx, project string) e
 	return nil
 }
 
-func (s *server) rankForInput(ctx context.Context, q queryer, project, issueKey string, input rankInput) (string, error) {
+func (s *server) rankForInput(ctx context.Context, q queryer, who model.Actor, project, issueKey string, input rankInput) (string, error) {
 	var (
 		previous string
 		next     string
 		err      error
 	)
 	if input.After != nil {
-		previous, err = rankBoundary(ctx, q, project, issueKey, *input.After)
+		previous, err = rankBoundary(ctx, q, who, project, issueKey, *input.After)
 		if err != nil {
 			return "", err
 		}
 	}
 	if input.Before != nil {
-		next, err = rankBoundary(ctx, q, project, issueKey, *input.Before)
+		next, err = rankBoundary(ctx, q, who, project, issueKey, *input.Before)
 		if err != nil {
 			return "", err
 		}
@@ -100,8 +103,9 @@ func lastProjectRank(ctx context.Context, q queryer, project, issueKey string) (
 }
 
 // rankBoundary reads a rank neighbour the PATCH already locked under this same trimmed key
-// (lockPatchOwners), so it takes no lock of its own.
-func rankBoundary(ctx context.Context, q queryer, project, issueKey, key string) (string, error) {
+// (lockPatchOwners), so it takes no lock of its own. The neighbour is read as who reads it: one of a
+// project who does not see is an issue that does not exist.
+func rankBoundary(ctx context.Context, q queryer, who model.Actor, project, issueKey, key string) (string, error) {
 	if key == "" || key == issueKey {
 		return "", errorf(http.StatusBadRequest, "RANK_INPUT", "rank neighbor must name another issue")
 	}
@@ -109,7 +113,8 @@ func rankBoundary(ctx context.Context, q queryer, project, issueKey, key string)
 		neighborProject string
 		neighborRank    string
 	)
-	if err := q.QueryRow(ctx, `select project_key, rank from issues where key = $1`, key).Scan(&neighborProject, &neighborRank); err != nil {
+	if err := q.QueryRow(ctx, `select project_key, rank from issues where key = $1 and `+access.ProjectClause("project_key", "$2"),
+		key, refs.VisibilityArg(who)).Scan(&neighborProject, &neighborRank); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return "", errorf(http.StatusBadRequest, "RANK_INPUT", "rank neighbor does not exist")
 		}

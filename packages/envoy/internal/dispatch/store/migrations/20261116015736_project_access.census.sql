@@ -1,0 +1,19 @@
+-- 20261116015736 adds columns to projects, people and agent_tokens, each nullable or with a
+-- constant default whose check every existing row satisfies, so it refuses no row and rewrites
+-- no value any reader had. It creates new tables, and its fill writes the new projects.owner
+-- column, which no earlier release names: new data, not a rewrite. So it counts 0, whatever the
+-- three tables hold. It cannot name the new columns, which do not exist when the census is taken.
+--
+-- What a deployment must read before it deploys is a different number, and it is not counted
+-- here, because a census that answers non-zero refuses the deploy (pgmigrate.Census) and these
+-- projects are repaired after it: the projects whose default assignee names nobody who has
+-- signed in, which the fill leaves with no owner. The boot names each of them and refuses to
+-- serve until DISPATCH_PROJECT_OWNER_FALLBACK names a full member to own them
+-- (store.EnsureProjectOwners). So, before the deploy, read them on the release still serving:
+--
+--   select key, default_assignee from projects p
+--   where not exists (select 1 from people where email = p.default_assignee);
+--
+-- and, when that names any, set DISPATCH_PROJECT_OWNER_FALLBACK for the deploy
+-- (cmd/dispatch/README.md, "Giving a project to another owner").
+select 0;

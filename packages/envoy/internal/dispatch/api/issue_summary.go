@@ -5,13 +5,17 @@ import (
 	"net/http"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/envoy/internal/dispatch/access"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // The summary reads serve what a rendered dispatch:// reference shows, an issue's title and status
 // and a document's name, kind and latest version, at a cost a page linking a hundred items can pay
 // on every event that touches them: the full reads (GET /api/v1/issues/{key}, GET
 // /api/v1/projects/{key}/artifacts/{slug}) read every version, approval, child and open ask, and
-// an issue's route roster. They are open to every signed-in caller, as those reads are.
+// an issue's route roster. They answer what those reads answer: an item of a project the caller
+// does not see reads as one nobody holds.
 
 // issueSummary is GET /api/v1/issues/{key}/summary: the issue's key, project, title and status,
 // and its documents and files in the order the full read lists its artifacts, so an issue link and
@@ -53,21 +57,24 @@ type documentSummary struct {
 const summaryLatestVersion = `(select max(v.number) from artifact_versions v where v.artifact_id = a.id)`
 
 func (s *server) getIssueSummary(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAuthenticated(w, r) {
+	who, ok := s.readerOf(w, r)
+	if !ok {
 		return
 	}
 	ctx := r.Context()
+	viewer := refs.VisibilityArg(who)
 	var summary issueSummary
 	if err := s.deps.Store.Pool.QueryRow(ctx, `
-		select key, project_key, title, status from issues where key = $1
-	`, r.PathValue("key")).Scan(&summary.Key, &summary.Project, &summary.Title, &summary.Status); err != nil {
+		select key, project_key, title, status from issues where key = $1 and `+access.ProjectClause("project_key", "$2")+`
+	`, r.PathValue("key"), viewer).Scan(&summary.Key, &summary.Project, &summary.Title, &summary.Status); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
 	rows, err := s.deps.Store.Pool.Query(ctx, `
 		select a.id::text, a.slug, a.name, a.kind, `+summaryLatestVersion+`, a.is_primary
-		from artifacts a where a.issue_key = $1 order by a.created_at, a.id
-	`, summary.Key)
+		from artifacts a where a.issue_key = $1 and `+access.ProjectClause("a.project_key", "$2")+`
+		order by a.created_at, a.id
+	`, summary.Key, viewer)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -81,16 +88,18 @@ func (s *server) getIssueSummary(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) getProjectDocumentSummary(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAuthenticated(w, r) {
+	who, ok := s.readerOf(w, r)
+	if !ok {
 		return
 	}
 	ctx := r.Context()
 	q := s.deps.Store.Pool
+	viewer := refs.VisibilityArg(who)
 	read := func(predicate string, value string) (documentSummary, error) {
 		var summary documentSummary
 		err := q.QueryRow(ctx, `
 			select a.id::text, coalesce(a.project_key, ''), a.slug, a.name, a.kind, `+summaryLatestVersion+`
-			from artifacts a where `+predicate, value).Scan(
+			from artifacts a where `+predicate+` and `+access.DocumentClause("a", "$2"), value, viewer).Scan(
 			&summary.ID, &summary.Project, &summary.Slug, &summary.Name, &summary.Kind, &summary.LatestVersion,
 		)
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -98,7 +107,7 @@ func (s *server) getProjectDocumentSummary(w http.ResponseWriter, r *http.Reques
 		}
 		return summary, err
 	}
-	summary, err := resolveDocumentReference(ctx, s, q, artifactTarget{Project: r.PathValue("key")}, r.PathValue("slug"),
+	summary, err := resolveDocumentReference(ctx, s, q, who, artifactTarget{Project: r.PathValue("key")}, r.PathValue("slug"),
 		func(refKey string) (documentSummary, error) { return read(`a.ref_key = $1`, refKey) },
 		func(id string) (documentSummary, error) { return read(`a.id = $1::uuid`, id) },
 	)

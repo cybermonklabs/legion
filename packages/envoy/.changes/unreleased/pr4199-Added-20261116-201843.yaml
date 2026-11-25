@@ -1,0 +1,13 @@
+kind: Added
+body: |-
+  `DISPATCH_SIGNIN_WORKSPACE_DOMAINS` names the other domains the Google Workspace owns beside
+  `DISPATCH_SIGNIN_DOMAIN`, comma-separated. A restricted member, a person from outside the domain,
+  at an address on the sign-in domain, on one of these, or on a subdomain of either is refused
+  whatever an access list names, because such an address signs in only as a Workspace account, so
+  a person from outside holding a member's address cannot use it before the member ever has. A
+  Workspace account signs in at any of those addresses as a full member, as before. Boot refuses
+  the setting without `DISPATCH_SIGNIN_DOMAIN`, and an entry that is empty or not a lowercase
+  domain name, naming its position.
+time: 2026-11-16T20:18:43.584943620Z
+custom:
+    Issue: pr4199

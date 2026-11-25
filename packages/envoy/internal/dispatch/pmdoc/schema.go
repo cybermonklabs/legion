@@ -323,7 +323,7 @@ func ParseBlockPointerValue(raw string) ([]string, error) {
 func validateBlockPointerValues(values []string) error {
 	seen := make(map[string]struct{}, len(values))
 	for _, value := range values {
-		if ref, ok := text.ParseRef(value, ""); ok && ref.Kind == "block" && ref.Item != "" {
+		if ref, ok := text.ParseRef(value, text.Origins{}); ok && ref.Kind == "block" && ref.Item != "" {
 			// The kind takes the article its noun does: an ask, a comment, a message.
 			article := "a"
 			if ref.Item == "ask" {

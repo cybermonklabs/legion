@@ -11,9 +11,11 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -570,7 +572,8 @@ func coverPass(ctx context.Context, deps Deps) (identityRun, error) {
 		"issueSourcesRecorded", recorded, "foreignVectorsDropped", steps.dropped, "deadNothingToEmbedSettled", settled,
 		"foreignDeadReadmitted", steps.readmitted, "identityStepsSkipped", steps.skipped,
 	}
-	report, err := Coverage(ctx, deps.Store, identity)
+	// The pass reports the whole deployment, which no one caller reads: the server's own reader.
+	report, err := Coverage(ctx, deps.Store, identity, model.ServerReader)
 	if err != nil {
 		if ctx.Err() != nil {
 			return identityRun{}, fmt.Errorf("coverage pass: %w", err)
@@ -682,22 +685,67 @@ func runCoverage(ctx context.Context, deps Deps) {
 
 // notIndexedKinds is every kind of node meaning search and keyword search hold no row of at
 // all, in the order the report lists them, each with the expression that counts how many of it
-// the database holds, read from the table that holds that kind: components from components,
-// sessions from the listener's stored session list (route_roster, Dispatch's one record of
-// which sessions exist, '[]' when the listener has not answered and no row at all before the
-// first answer, so a deployment that resolves none counts 0), a document version from
-// artifact_versions (only a document's latest text is indexed, and then as windows of its
-// blocks, so no version row is an item of any covered kind), a result from check_results and a
-// handoff from handoffs.
+// the reader sees ($2, refs.VisibilityArg), read from the table that holds that kind: components
+// from components, by their project; sessions from the listener's stored session list
+// (route_roster, Dispatch's one record of which sessions exist, '[]' when the listener has not
+// answered and no row at all before the first answer, so a deployment that resolves none counts
+// 0), each by the session rule (access.SessionClause); a document version from artifact_versions
+// (only a document's latest text is indexed, and then as windows of its blocks, so no version row
+// is an item of any covered kind), by its document's project, or by the node registry's rule for a
+// document of no project; a result from check_results and a handoff from handoffs, by the
+// project of the issue each is recorded on.
 //
 // Naming them is the point: with the report carrying the covered kinds alone, a reader could
 // not tell a kind that is covered with nothing left to embed from one nothing indexes.
 var notIndexedKinds = []struct{ kind, items string }{
-	{"component", "(select count(*) from components)"},
-	{"session", "coalesce((select jsonb_array_length(sessions) from route_roster), 0)"},
-	{"document_version", "(select count(*) from artifact_versions)"},
-	{"result", "(select count(*) from check_results)"},
-	{"handoff", "(select count(*) from handoffs)"},
+	{"component", "(select count(*) from components c where " + access.ProjectClause("c.project_key", "$2") + ")"},
+	{"session", "(select count(*) from route_roster r, jsonb_array_elements(r.sessions) s where " +
+		access.SessionClause("s->>'session_id'", "$2") + ")"},
+	{"document_version", "(select count(*) from artifact_versions v join artifacts a on a.id = v.artifact_id where " +
+		coverageProjectVisible("a.project_key", refs.VisibleKind("artifact", "a.ref_key", "$2")) + ")"},
+	{"result", "(select count(*) from check_results r join issues i on i.key = r.issue_key where " +
+		access.ProjectClause("i.project_key", "$2") + ")"},
+	{"handoff", "(select count(*) from handoffs h join issues i on i.key = h.issue_key where " +
+		access.ProjectClause("i.project_key", "$2") + ")"},
+}
+
+// coverageProjectVisible is the rule the report counts an item by, for the reader whose viewer
+// is bound at $2: an item of a project when the reader sees that project (access.ProjectClause),
+// and an item of no project - a comment, an ask or a message of an agent conversation, or that
+// conversation's file - by the node registry's rule for the node it belongs to, ofNoProject.
+func coverageProjectVisible(project, ofNoProject string) string {
+	return "case when " + project + " is null then " + ofNoProject + " else " + access.ProjectClause(project, "$2") + " end"
+}
+
+// coverageItemVisible is whether the reader whose viewer is bound at $2 may see a covered item of
+// kind and id, label its embeddings row's project_key: the rule the report counts an item by
+// (coverageProjectVisible), over the project the item belongs to (coverageItemProject) and, for an
+// item of no project, the node it belongs to (coverageItemOwner). Each expression names a column of
+// the arm's own row qualified by its table, since the node registry's rule reads graph_nodes in a
+// subquery of its own, whose kind and id a bare name would read instead.
+func coverageItemVisible(label, kind, id string) string {
+	return coverageProjectVisible(coverageItemProject(label, kind, id), coverageItemOwner(kind, id))
+}
+
+// coverageItemProject is the project a covered item of kind and id belongs to: its embeddings
+// row's label, which every row the fill has reached carries, else the label the fill would give it
+// (embeddings_owner_project_key, migration 20261109120000), which also answers for an issue no
+// row stands for yet. It is null for an item of no project.
+func coverageItemProject(label, kind, id string) string {
+	return "coalesce(" + label + ", embeddings_owner_project_key(" + kind + ", " + id + "))"
+}
+
+// coverageItemOwner is the node a covered item of kind and id belongs to, which the node
+// registry's rule decides an item of no project by: the issue itself; the document a document's
+// window is of, which refs.VisibleEnd reads by its uuid; and the comment, the message or the ask a
+// window's id names as "<kind>/<uuid>" (refs.ItemKind.WindowOwnerKey).
+func coverageItemOwner(kind, id string) string {
+	return refs.VisibleEnd(
+		`case `+kind+` when 'issue' then 'issue' when 'document_block' then 'artifact'
+		else split_part(split_part(`+id+`, '#', 1), '/', 1) end`,
+		`case when `+kind+` in ('issue', 'document_block') then split_part(`+id+`, '#', 1)
+		else split_part(split_part(`+id+`, '#', 1), '/', 2) end`,
+		false, "$2")
 }
 
 // notIndexedPositions is each notIndexedKinds kind's place in the report's list, so the rows of
@@ -713,20 +761,26 @@ var notIndexedPositions = func() map[string]int {
 // coverageQuery is the coverage statement: it counts, per covered kind, its items and how many of
 // them carry a current vector, are dead or lack one, and per uncovered kind (notIndexedKinds) the
 // items of it the database holds, in one statement so every count reads one snapshot. $1 is the
-// configured identity, the empty string when there is none, and then no item is current. greatest
-// ignores a null, so an item with no row ages from when it was written; the oldest age is null
-// when nothing of the kind lacks. The second column says which half a row came from: an uncovered
-// kind carries its count alone, with no current, failed or oldest age, none of which is defined
-// for a kind nothing indexes. Coverage runs it under the settings planCoverage sets.
+// configured identity, the empty string when there is none, and then no item is current. $2 is the
+// reader's viewer (refs.VisibilityArg), and an item counts only where the reader may see it
+// (coverageItemVisible in each covered arm, and each uncovered kind's own count): a kind's every
+// count is of the items of the projects the reader sees, so a project it does not see moves none
+// of them. greatest ignores a null, so an item with no row ages from when it was written; the
+// oldest age is null when nothing of the kind lacks. The second column says which half a row came
+// from: an uncovered kind carries its count alone, with no current, failed or oldest age, none of
+// which is defined for a kind nothing indexes. Coverage runs it under the settings planCoverage
+// sets.
 //
 // A window kind's items are its own rows whose text has something to embed, read in one arm whose
 // WHERE is the predicates of the two window indexes ORed, each word for word (windowEmbedded,
 // windowUnembedded), so that the planner reads the arm through a BitmapOr of both indexes
-// (planCoverage says why that is the plan). A row is current when it is of the embedded half and
-// its model is the identity, which is the halves' own two tests together; coalesce makes a null
-// in either a row that is not current, and a row of the other half is never current. A window is
-// its own item, so its written_at is its own pending_since, and its dead and pending_since are
-// read from the row itself; no window's text is tested and no row is joined back to itself.
+// (planCoverage says why that is the plan), and the reader's test of each row (coverageItemVisible)
+// beside that OR, a filter over the rows the bitmap reads that tests no window's text. A row is
+// current when it is of the embedded half and its model is the identity, which is the halves' own
+// two tests together; coalesce makes a null in either a row that is not current, and a row of the
+// other half is never current. A window is its own item, so its written_at is its own
+// pending_since, and its dead and pending_since are read from the row itself; no window's text is
+// tested and no row is joined back to itself.
 //
 // The arm groups its rows by the kind's position in the window kinds (array_position over
 // windowKindArray) and names each group's kind from that position, not by the kind itself, so
@@ -737,15 +791,16 @@ var notIndexedPositions = func() map[string]int {
 // over every window's text. A window kind's position names that kind alone, so the groups and
 // their counts are the ones grouping by kind gives.
 //
-// The issue's items are the issues whose text has something to embed (issueHasText), each with
-// its embeddings row (issueSourceFrom), current when that row holds a vector from the identity of
-// the issue's current text (issueHash). That hash is the row's content_hash wherever the recorded
-// source is the current one, so an issue whose inputs have not changed since the last run of
-// recordIssueSources reads no spec at all; any other issue builds and hashes its text as the pass
-// does (issueRows), about 0.4 ms each on a test Postgres, and the issue's written_at is its
-// created_at. So the counts are the ones issueItems left-joined to their rows would give: an
-// issue whose inputs changed is slower to count, never counted from a stale text (but for the one
-// theoretical false match issueSource names).
+// The issue's items are the issues whose text has something to embed (issueHasText) and that the
+// reader may see (coverageItemVisible), each with its embeddings row (issueSourceFrom), current
+// when that row holds a vector from the identity of the issue's current text (issueHash). That
+// hash is the row's content_hash wherever the recorded source is the current one, so an issue
+// whose inputs have not changed since the last run of recordIssueSources reads no spec at all;
+// any other issue builds and hashes its text as the pass does (issueRows), about 0.4 ms each on a
+// test Postgres, and the issue's written_at is its created_at. So the counts are the ones
+// issueItems left-joined to their rows would give: an issue whose inputs changed is slower to
+// count, never counted from a stale text (but for the one theoretical false match issueSource
+// names).
 //
 // Each arm counts its own rows by kind (coverageCounts), the window arm by the kind's position,
 // before the arms meet, and the outer select adds those counts up per kind and takes the earliest
@@ -766,15 +821,17 @@ var coverageQuery = func() string {
 			select (` + windowKindArray + `)[position] as kind, ` + coverageCounts + `
 			from (select array_position(` + windowKindArray + `, kind) as position, pending_since as written_at, pending_since, dead,
 			             coalesce(embedding is not null and embedded_hash = content_hash and $1::text <> '' and model = $1::text, false) as current
-			      from embeddings
-			      where (` + windowEmbedded + `) or (` + windowUnembedded + `)) windows
+			      from embeddings window_row
+			      where ((` + windowEmbedded + `) or (` + windowUnembedded + `))
+			        and ` + coverageItemVisible("window_row.project_key", "window_row.kind", "window_row.id") + `) windows
 			group by position
 			union all
 			select kind, ` + coverageCounts + `
 			from (select '` + issueKind + `'::text as kind, i.created_at as written_at, e.pending_since, coalesce(e.dead, false) as dead,
 			             coalesce($1::text <> '' and e.embedding is not null and e.model = $1::text and e.embedded_hash = ` + issueHash + `, false) as current
 			      from ` + issueSourceFrom + `
-			      where ` + issueHasText + `) issue_items
+			      where ` + issueHasText + `
+			        and ` + coverageItemVisible("e.project_key", "'"+issueKind+"'::text", "i.key") + `) issue_items
 			group by kind
 		)
 		select kind, true, sum(items)::bigint, sum(current)::bigint, sum(failed)::bigint,
@@ -926,9 +983,10 @@ func planCoverage(ctx context.Context, tx pgx.Tx) error {
 
 // Coverage reports how much of what meaning search covers (coverageKinds) has a current vector
 // from identity, the configured embedder's (empty when none is configured), and how many items
-// each kind it covers nothing of (notIndexedKinds) holds. Its definitions are
-// model.SearchCoverageCounts'; Total sums the covered kinds, and its oldest lacking age is
-// theirs. An uncovered kind is in no total: it has no vector to be behind on.
+// each kind it covers nothing of (notIndexedKinds) holds, counting only what reader may see: the
+// items of the projects its viewer sees. Its definitions are model.SearchCoverageCounts'; Total
+// sums the covered kinds, and its oldest lacking age is theirs. An uncovered kind is in no total:
+// it has no vector to be behind on.
 //
 // It reads in a read-only transaction whose statement runs under coverageStatementTimeout, and a
 // statement Postgres ends at that bound while ctx is live answers ErrCoverageTimedOut
@@ -944,7 +1002,7 @@ func planCoverage(ctx context.Context, tx pgx.Tx) error {
 // settings the statement runs under, and the statement runs. The rollback runs on a context the
 // caller's cancellation does not end, so a caller that leaves once the rows are read still hands
 // its connection back to the pool rather than pgx destroying it over a rollback it refused to send.
-func Coverage(ctx context.Context, database *store.Store, identity string) (model.SearchCoverage, error) {
+func Coverage(ctx context.Context, database *store.Store, identity string, reader model.Actor) (model.SearchCoverage, error) {
 	var report model.SearchCoverage
 	if identity != "" {
 		place, name := embed.IdentityPlace(identity)
@@ -976,7 +1034,7 @@ func Coverage(ctx context.Context, database *store.Store, identity string) (mode
 	if err := planCoverage(ctx, tx); err != nil {
 		return model.SearchCoverage{}, err
 	}
-	rows, err := tx.Query(ctx, coverageQuery, identity)
+	rows, err := tx.Query(ctx, coverageQuery, identity, refs.VisibilityArg(reader))
 	if err != nil {
 		return model.SearchCoverage{}, coverageFailed(ctx, err)
 	}

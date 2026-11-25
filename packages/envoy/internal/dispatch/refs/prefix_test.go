@@ -138,8 +138,9 @@ func insertPrefixBlockText(t *testing.T, tx pgx.Tx, artifactID, blockID string, 
 }
 
 // prefixReader is who the helpers below ask ResolvePrefix and ResolvePrefixes as, the same reader
-// for both: somebody who proves no author, who reads every item these fixtures write.
-var prefixReader = model.Actor{}
+// for both: the server's own reader (serverReader), who sees every project and every party and
+// reads every item these fixtures write.
+var prefixReader = serverReader
 
 // prefixAuthor is the author every comment and ask these fixtures write records, and so the
 // writer a Reader of one of them resolves its short ids for (NewReader).
@@ -259,7 +260,7 @@ func TestResolvePrefixRefusesAnAmbiguousPrefixWithItsCandidates(t *testing.T) {
 	const second = "4c9f3e12-3b60-4c4d-9e5f-70819a2b3c9f"
 	insertPrefixComment(t, tx, second, "CORE-1", "The second body.")
 	insertPrefixComment(t, tx, first, "CORE-1", "The first body.")
-	_, err := ResolvePrefix(context.Background(), tx, model.Actor{}, "comment", Scope{}, "4c9f3e12", Viewer{Human: true})
+	_, err := ResolvePrefix(context.Background(), tx, serverReader, "comment", Scope{}, "4c9f3e12", Viewer{Human: true})
 	var ambiguous *ErrPrefixAmbiguous
 	if !errors.As(err, &ambiguous) {
 		t.Fatalf("two comments under one prefix = %v, want ErrPrefixAmbiguous", err)
@@ -295,7 +296,7 @@ func TestResolvePrefixLooksWithinTheOwnerAlone(t *testing.T) {
 	if got := resolvedPrefix(t, tx, "comment", Scope{IssueKey: "CORE-1"}, "7a000000", Viewer{Human: true}); !reflect.DeepEqual(got, want) {
 		t.Fatalf("the comment of CORE-1 = %#v, want %#v", got, want)
 	}
-	_, err := ResolvePrefix(context.Background(), tx, model.Actor{}, "comment", Scope{}, "7a000000", Viewer{Human: true})
+	_, err := ResolvePrefix(context.Background(), tx, serverReader, "comment", Scope{}, "7a000000", Viewer{Human: true})
 	var ambiguous *ErrPrefixAmbiguous
 	if !errors.As(err, &ambiguous) || len(ambiguous.Candidates) != 2 {
 		t.Fatalf("the same prefix across both issues = %v, want both listed", err)
@@ -418,7 +419,7 @@ func TestResolvePrefixNamesTheBlockWrittenExactlyAsThePrefix(t *testing.T) {
 		}
 	}
 	var ambiguous *ErrPrefixAmbiguous
-	candidate, err := ResolvePrefix(context.Background(), tx, model.Actor{}, "block", Scope{Document: spec}, "DEADbeef", Viewer{Human: true})
+	candidate, err := ResolvePrefix(context.Background(), tx, serverReader, "block", Scope{Document: spec}, "DEADbeef", Viewer{Human: true})
 	if !errors.As(err, &ambiguous) || len(ambiguous.Candidates) != 2 {
 		t.Fatalf("the block prefix %q = %#v, %v; want both blocks listed", "DEADbeef", candidate, err)
 	}
@@ -572,7 +573,7 @@ func TestResolvePrefixesHoldsTheScopeChecksOfResolvePrefix(t *testing.T) {
 	const second = "b3000000-0000-4000-8000-000000000002"
 	insertPrefixMessage(t, tx, second, &issueKey, `{"kind":"user","id":"alice"}`, "The second word.", nil, nil)
 	insertPrefixMessage(t, tx, first, &issueKey, `{"kind":"user","id":"alice"}`, "The first word.", nil, nil)
-	_, err := ResolvePrefix(context.Background(), tx, model.Actor{}, "message", Scope{IssueKey: "CORE-1"}, "b3000000", Viewer{})
+	_, err := ResolvePrefix(context.Background(), tx, prefixReader, "message", Scope{IssueKey: "CORE-1"}, "b3000000", Viewer{})
 	var ambiguous *ErrPrefixAmbiguous
 	if !errors.As(err, &ambiguous) || len(ambiguous.Candidates) != 2 || ambiguous.Candidates[0].ID != first || ambiguous.Candidates[1].ID != second {
 		t.Fatalf("two messages of CORE-1 under one prefix = %v, want both listed in id order", err)

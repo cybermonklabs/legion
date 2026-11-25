@@ -288,8 +288,8 @@ jobs:
     if: inputs.lane == 'full'
     runs-on: ubuntu-24.04
     # why: .github/ci-notes/dispatch-browser.md#the-two-process-jobs-measured-steps-and-its-budgets
-    # 4 + 4 + 2 + 2 min plus 135 s and 120 s = 16 min 15 s -> 17 min.
-    timeout-minutes: 17
+    # 4 + 4 + 2 + 2 min plus 135 s and 120 s = 16 min 15 s, + 2 min for outside sign-in -> 19 min.
+    timeout-minutes: 19
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -355,6 +355,15 @@ jobs:
           export DISPATCH_E2E_PG_IMAGE=ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
           export DISPATCH_E2E_PG_CONNECTIONS=${{ steps.connections.outputs.connections }}
           DISPATCH_E2E_PROCESSES=2 DISPATCH_E2E_SIGNIN=oidc bunx playwright test --config e2e/playwright.config.ts
+        working-directory: packages/dispatch
+      - name: Browser-test Google sign-in, outside sign-in, passkeys and the leaver hold
+        # why: .github/ci-notes/dispatch-browser.md#what-the-google-sign-in-step-runs
+        # 31 s x 1.15 = 36 s -> the two-minute floor.
+        timeout-minutes: 2
+        run: |
+          export DISPATCH_E2E_PG_IMAGE=ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
+          export DISPATCH_E2E_PG_CONNECTIONS=${{ steps.connections.outputs.connections }}
+          DISPATCH_E2E_SIGNIN=google bunx playwright test --config e2e/playwright.config.ts --project=chromium
         working-directory: packages/dispatch
       # why: .github/ci-notes/dispatch-browser.md#why-the-two-process-jobs-upload-runs-on-failure-alone
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

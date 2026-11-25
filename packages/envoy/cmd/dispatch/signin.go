@@ -4,14 +4,20 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"regexp"
 	"strings"
 	"time"
+	"unicode/utf8"
 
+	"github.com/sjawhar/envoy/internal/dispatch/access"
+	"github.com/sjawhar/envoy/internal/dispatch/api"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
+	"github.com/sjawhar/envoy/internal/dispatch/routes"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/oidc"
+	"github.com/sjawhar/envoy/internal/weborigin"
 )
 
 // plainRefreshTokenRetireTimeout bounds the boot's retirement of the refresh tokens people holds
@@ -22,6 +28,20 @@ const plainRefreshTokenRetireTimeout = 30 * time.Second
 // Workspace domain of the account. go-oidc also accepts a token whose `iss` is Google's schemeless
 // `accounts.google.com` when this is the configured issuer, as Google documents.
 const googleIssuer = "https://accounts.google.com"
+
+// workspaceDomainALabels is domains, entries of DISPATCH_SIGNIN_WORKSPACE_DOMAINS
+// checkSignInSettings took, each as its A-label (oidc.WorkspaceDomainALabel), the form
+// identity.WorkspaceAddress takes them in; nil for none.
+func workspaceDomainALabels(domains []string) []string {
+	if len(domains) == 0 {
+		return nil
+	}
+	labels := make([]string, len(domains))
+	for index, domain := range domains {
+		labels[index], _ = oidc.WorkspaceDomainALabel(domain)
+	}
+	return labels
+}
 
 // iapAudienceShape is the start every audience Identity-Aware Proxy signs for shares,
 // /projects/<project number>/ (https://cloud.google.com/iap/docs/signed-headers-howto): a load
@@ -38,13 +58,22 @@ func signInClientSettings(boot bootConfig) []struct{ name, value string } {
 	}
 }
 
-// signInSettings are all five sign-in settings, each with boot's value: the client's three, then
+// signInSettings are all seven sign-in settings, each with boot's value: the client's three, then
 // the group a Cognito sign-in pool admits and the Workspace domain Google admits, of which a
-// sign-in takes exactly one.
+// sign-in takes exactly one, the Workspace's other domains, as written, and the switch that signs
+// people outside the domain in with a passkey ("1" when on).
 func signInSettings(boot bootConfig) []struct{ name, value string } {
+	on := func(set bool) string {
+		if set {
+			return "1"
+		}
+		return ""
+	}
 	return append(signInClientSettings(boot),
 		struct{ name, value string }{"DISPATCH_SIGNIN_GROUP", boot.SignInGroup},
 		struct{ name, value string }{"DISPATCH_SIGNIN_DOMAIN", boot.SignInDomain},
+		struct{ name, value string }{"DISPATCH_SIGNIN_WORKSPACE_DOMAINS", strings.Join(boot.SignInWorkspaceDomains, ",")},
+		struct{ name, value string }{"DISPATCH_SIGNIN_PASSKEY", on(boot.SignInPasskey)},
 	)
 }
 
@@ -65,11 +94,20 @@ func signInSettingNames() string {
 // checkSignInSettings refuses the sign-in settings identityMode (DISPATCH_IDENTITY) cannot take.
 // Any of them beside header identity, which is only for tests and local harnesses, is refused
 // first. IAP identity takes DISPATCH_SIGNIN_DOMAIN alone (checkIAPSignInSettings). Then the first
-// of these refuses: a group and a domain both set; some of the settings but not the issuer, client
-// ID, client secret and one of the group or domain; a domain under an issuer other than Google's,
-// whose tokens carry no `hd`; a domain that is not a lowercase DNS name; a group under Google's
-// issuer, whose tokens carry no `cognito:groups`. A deployment with the issuer, client ID, client
-// secret and group of a Cognito pool reaches none of them.
+// of these refuses: passkey sign-in without a domain, or without an outside origin, the only origin
+// a passkey signs in at; the Workspace's other domains without the domain they are listed beside; a
+// group and a domain both set; some of the settings but not the issuer, client ID, client secret
+// and one of the group or domain; a domain under an issuer other than Google's, whose tokens carry
+// no `hd`, unless the test hooks put the dev OIDC issuer in Google's place
+// (DISPATCH_TEST_SIGNIN_DOMAIN_ISSUER); a domain that is not a lowercase DNS name; an entry of the
+// Workspace's other domains that is empty or not a lowercase domain name IDNA lookup takes
+// (workspaceDomainALabel), named by its position; under Google's issuer, an outside origin whose
+// host is no public domain name, since people from outside sign in there with a passkey whose
+// relying party is that host, a registrable domain name and never an IP address, while the Google
+// client lists no outside callback (weborigin.PasskeyHost, the rule gcp:Dispatch holds its
+// outsideOrigin input to with sign-in on); a group under Google's issuer, whose tokens carry no
+// `cognito:groups`. A deployment with the issuer, client ID, client secret and group of a Cognito
+// pool reaches none of them.
 func checkSignInSettings(boot bootConfig, identityMode string) error {
 	var set []string
 	for _, setting := range signInSettings(boot) {
@@ -82,6 +120,18 @@ func checkSignInSettings(boot bootConfig, identityMode string) error {
 	}
 	if identityMode == "iap" {
 		return checkIAPSignInSettings(boot)
+	}
+	if boot.SignInPasskey && boot.SignInDomain == "" {
+		return errors.New("DISPATCH_SIGNIN_PASSKEY needs DISPATCH_SIGNIN_DOMAIN: it signs people outside the Workspace domain Dispatch signs people in for with Google in with a passkey, so set DISPATCH_SIGNIN_DOMAIN under DISPATCH_SIGNIN_ISSUER https://accounts.google.com, or unset DISPATCH_SIGNIN_PASSKEY")
+	}
+	if boot.SignInPasskey && boot.OutsideOrigin == "" {
+		return errors.New("DISPATCH_SIGNIN_PASSKEY needs DISPATCH_OUTSIDE_ORIGIN: a person from outside signs in with a passkey at the outside origin alone, whose host is the passkey's relying party, so set DISPATCH_OUTSIDE_ORIGIN, or unset DISPATCH_SIGNIN_PASSKEY")
+	}
+	if boot.SignInPasskey && len(boot.TrustedProxyRanges) == 0 {
+		return errors.New("DISPATCH_SIGNIN_PASSKEY needs DISPATCH_TRUSTED_PROXY_RANGES: the passkey begins are bounded per client address, read from X-Forwarded-For only on a connection from one of those front doors, so set it to the ranges of the load balancer in front of the outside origin (Google's: 35.191.0.0/16,130.211.0.0/22,2600:2d00:1:1::/64), or unset DISPATCH_SIGNIN_PASSKEY")
+	}
+	if len(boot.SignInWorkspaceDomains) > 0 && boot.SignInDomain == "" {
+		return errors.New("DISPATCH_SIGNIN_WORKSPACE_DOMAINS needs DISPATCH_SIGNIN_DOMAIN: it lists the other domains of the Workspace whose people sign in with Google, so set DISPATCH_SIGNIN_DOMAIN under DISPATCH_SIGNIN_ISSUER https://accounts.google.com, or unset DISPATCH_SIGNIN_WORKSPACE_DOMAINS")
 	}
 	if boot.SignInGroup != "" && boot.SignInDomain != "" {
 		return errors.New("DISPATCH_SIGNIN_GROUP and DISPATCH_SIGNIN_DOMAIN are both set; set one: a Cognito pool's group, or a Google Workspace domain")
@@ -104,11 +154,26 @@ func checkSignInSettings(boot bootConfig, identityMode string) error {
 		}
 	}
 	if boot.SignInDomain != "" {
-		if boot.SignInIssuer != googleIssuer {
+		if boot.SignInIssuer != googleIssuer && !boot.TestSignInDomainIssuer {
 			return fmt.Errorf("DISPATCH_SIGNIN_DOMAIN needs DISPATCH_SIGNIN_ISSUER %s, since only Google's tokens carry hd; DISPATCH_SIGNIN_ISSUER is %s", googleIssuer, boot.SignInIssuer)
 		}
 		if err := checkDomainShape(boot.SignInDomain); err != nil {
 			return err
+		}
+		for index, domain := range boot.SignInWorkspaceDomains {
+			if domain == "" {
+				return fmt.Errorf("DISPATCH_SIGNIN_WORKSPACE_DOMAINS entry %d of %d is empty", index+1, len(boot.SignInWorkspaceDomains))
+			}
+			if _, ok := oidc.WorkspaceDomainALabel(domain); !ok {
+				return oidc.DomainNameRefusal(fmt.Sprintf("DISPATCH_SIGNIN_WORKSPACE_DOMAINS entry %d of %d", index+1, len(boot.SignInWorkspaceDomains)), domain)
+			}
+		}
+		if boot.OutsideOrigin != "" && boot.SignInIssuer == googleIssuer {
+			// parseOutsideOrigin stored the origin weborigin.Parse returned, so it parses.
+			outside, _ := url.Parse(boot.OutsideOrigin)
+			if err := weborigin.PasskeyHost(outside.Hostname()); err != nil {
+				return fmt.Errorf("DISPATCH_OUTSIDE_ORIGIN's %w", err)
+			}
 		}
 	}
 	if boot.SignInGroup != "" && boot.SignInIssuer == googleIssuer {
@@ -117,16 +182,27 @@ func checkSignInSettings(boot bootConfig, identityMode string) error {
 	return nil
 }
 
-// checkIAPSignInSettings refuses the sign-in settings IAP identity cannot take. Identity-Aware
-// Proxy signs people in, so Dispatch runs no sign-in of its own: the issuer, client ID, client
-// secret and group are refused, each by name. DISPATCH_SIGNIN_DOMAIN is required, a lowercase DNS
-// name, since it is who may use Dispatch: an account whose assertion's hd is that domain.
+// checkIAPSignInSettings refuses the sign-in and origin settings IAP identity cannot take.
+// Identity-Aware Proxy signs people in at IAP's one origin, so Dispatch runs no sign-in of its own:
+// the issuer, client ID, client secret and group are refused, each by name, and so are the outside
+// origin, passkey sign-in and the Workspace's other domains, which widen Dispatch's own sign-in.
+// DISPATCH_SIGNIN_DOMAIN is required, a lowercase DNS name, since it is who may use Dispatch: an
+// account whose assertion's hd is that domain.
 func checkIAPSignInSettings(boot bootConfig) error {
 	var refused []string
 	for _, setting := range append(signInClientSettings(boot), struct{ name, value string }{"DISPATCH_SIGNIN_GROUP", boot.SignInGroup}) {
 		if setting.value != "" {
 			refused = append(refused, setting.name)
 		}
+	}
+	if boot.OutsideOrigin != "" {
+		refused = append(refused, "DISPATCH_OUTSIDE_ORIGIN")
+	}
+	if boot.SignInPasskey {
+		refused = append(refused, "DISPATCH_SIGNIN_PASSKEY")
+	}
+	if len(boot.SignInWorkspaceDomains) > 0 {
+		refused = append(refused, "DISPATCH_SIGNIN_WORKSPACE_DOMAINS")
 	}
 	if len(refused) > 0 {
 		return fmt.Errorf("%s must be unset under DISPATCH_IDENTITY=iap: Identity-Aware Proxy signs people in, so Dispatch runs no sign-in of its own and admits the people of DISPATCH_SIGNIN_DOMAIN", strings.Join(refused, ", "))
@@ -135,6 +211,32 @@ func checkIAPSignInSettings(boot bootConfig) error {
 		return errors.New("DISPATCH_IDENTITY=iap needs DISPATCH_SIGNIN_DOMAIN: the Google Workspace domain whose accounts may use Dispatch, which each assertion's hd must name")
 	}
 	return checkDomainShape(boot.SignInDomain)
+}
+
+// directorySettings reads DISPATCH_DIRECTORY_ACCOUNT and DISPATCH_DIRECTORY_ADMIN, each trimmed
+// (K12). IAP identity needs both: it confirms each person through the Workspace Directory as that
+// signer service account and delegated Workspace user (requestIdentityFor), and an IAP server that
+// could not would hold nobody, so the refusal names each one missing. Any other identity refuses
+// either, which it would leave unread.
+func directorySettings(env settingValues, iap bool) (account, admin string, err error) {
+	account, admin = strings.TrimSpace(env.get("DISPATCH_DIRECTORY_ACCOUNT")), strings.TrimSpace(env.get("DISPATCH_DIRECTORY_ADMIN"))
+	var named []string
+	for _, setting := range []struct{ name, value string }{{"DISPATCH_DIRECTORY_ACCOUNT", account}, {"DISPATCH_DIRECTORY_ADMIN", admin}} {
+		if (setting.value == "") == iap {
+			named = append(named, setting.name)
+		}
+	}
+	switch {
+	case len(named) == 0:
+		return account, admin, nil
+	case iap:
+		return "", "", fmt.Errorf("DISPATCH_IDENTITY=iap needs %s: Dispatch checks each person's Google Workspace account through the Directory API, as the signer service account DISPATCH_DIRECTORY_ACCOUNT names for the delegated Workspace user DISPATCH_DIRECTORY_ADMIN names, and without them would hold nobody",
+			strings.Join(named, " and "))
+	case len(named) == 1:
+		return "", "", fmt.Errorf("%s is read only with DISPATCH_IDENTITY=iap; unset it, or set DISPATCH_IDENTITY=iap", named[0])
+	default:
+		return "", "", fmt.Errorf("%s are read only with DISPATCH_IDENTITY=iap; unset them, or set DISPATCH_IDENTITY=iap", strings.Join(named, " and "))
+	}
 }
 
 // checkDomainShape refuses a DISPATCH_SIGNIN_DOMAIN that is not a lowercase DNS name
@@ -147,20 +249,157 @@ func checkDomainShape(domain string) error {
 	return nil
 }
 
-// signInRule is who boot's sign-in admits: the members of a Cognito pool's group, or the people of
-// a Google Workspace domain, whether Google signs them in to Dispatch or Identity-Aware Proxy signs
-// them in to the load balancer in front of it; nil when boot configures neither (header identity,
-// dev sign-in, or a cookie server with no DISPATCH_SIGNIN_* setting, which admits nobody at all),
-// matching signInFlow.
-func signInRule(boot bootConfig) identity.SignInRule {
+// signInRule is who boot's sign-in admits: the members of a Cognito pool's group; the people of a
+// Google Workspace domain, whether Google signs them in to Dispatch or Identity-Aware Proxy signs
+// them in to the load balancer in front of it; or, with DISPATCH_SIGNIN_PASSKEY=1 (which IAP
+// identity refuses), the domain's people with Google and, with a passkey, the people outside it
+// that lister says a project names directly, at an address on no domain the Workspace owns (the
+// domain and DISPATCH_SIGNIN_WORKSPACE_DOMAINS, each entry as its A-label: workspaceDomainALabels;
+// identity.PasskeyRule). No Google sign-in admits an account outside the domain. It is nil when
+// boot configures neither a group nor a domain (header identity, dev sign-in, or a cookie server
+// with no DISPATCH_SIGNIN_* setting, which admits nobody at all), matching signInFlow. Passkey
+// sign-in with no lister is refused, so no path builds a rule that cannot read the access lists.
+func signInRule(boot bootConfig, lister identity.Lister) (identity.SignInRule, error) {
 	switch {
+	case boot.SignInDomain != "" && boot.SignInPasskey:
+		if lister == nil {
+			return nil, errors.New("DISPATCH_SIGNIN_PASSKEY=1 reads the projects' access lists, and this server has no database to read them from")
+		}
+		return identity.PasskeyRule{OutsideRule: identity.OutsideRule{
+			DomainRule:       identity.DomainRule{Domain: boot.SignInDomain},
+			People:           lister,
+			WorkspaceDomains: workspaceDomainALabels(boot.SignInWorkspaceDomains),
+		}}, nil
 	case boot.SignInDomain != "":
-		return identity.DomainRule{Domain: boot.SignInDomain}
+		return identity.DomainRule{Domain: boot.SignInDomain}, nil
 	case boot.SignInGroup != "":
-		return identity.GroupRule{Group: boot.SignInGroup}
+		return identity.GroupRule{Group: boot.SignInGroup}, nil
 	default:
+		return nil, nil
+	}
+}
+
+// passkeySignIn is boot's passkeys over people's database: the store of the passkeys, the passkey
+// accounts and the owners' links, recording each passkey's subject under the outside origin, which
+// it answers wherever there is a people store, whatever DISPATCH_SIGNIN_PASSKEY says (the
+// one-owner refusals and the end of an account at the last list's removal read and write it with
+// the setting off too: api.Deps.PasskeyAccounts); and, with the setting on, the ceremonies of that
+// origin over the same store, which admit a person as rule does, else nil.
+func passkeySignIn(boot bootConfig, people *store.PgPeopleStore, rule identity.SignInRule) (*store.PgPasskeys, *identity.Passkeys, error) {
+	if people == nil {
+		return nil, nil, nil
+	}
+	var issuer string
+	if boot.OutsideOrigin != "" {
+		issuer = oidc.CanonicalIssuer(boot.OutsideOrigin)
+	}
+	accounts := store.NewPgPasskeys(people, issuer)
+	passkeyRule, ok := rule.(identity.PasskeyRule)
+	if !boot.SignInPasskey || !ok {
+		return accounts, nil, nil
+	}
+	ceremonies, err := identity.NewPasskeys(boot.OutsideOrigin, accounts, passkeyRule)
+	if err != nil {
+		return nil, nil, err
+	}
+	return accounts, ceremonies, nil
+}
+
+// ceremonyStore is the passkey store ceremonies sign people in through, where passkey sign-in is
+// on, and nil where it is off (ceremonies nil): what the hourly confirmation of a passkey's sign-in
+// reads (requestIdentityFor).
+func ceremonyStore(ceremonies *identity.Passkeys) *store.PgPasskeys {
+	if ceremonies == nil {
 		return nil
 	}
+	return ceremonies.Store()
+}
+
+// accessLister is who passkey sign-in asks whether some project names an email directly, as its
+// owner or on its access list as a person and never through a group: access.Listed over database's
+// pool. It is nil with no database.
+func accessLister(database *store.Store) identity.Lister {
+	if database == nil {
+		return nil
+	}
+	return identity.ListerFunc(func(ctx context.Context, email string) (bool, error) {
+		return access.Listed(ctx, database.Pool, email)
+	})
+}
+
+// devRestrictedAdmission is what a dev sign-in server (DISPATCH_DEV_SIGNIN=1, which refuses every
+// DISPATCH_SIGNIN_* setting and so has no sign-in rule) holds a restricted member's credentials to:
+// the outside rule's list arm over database's access lists (identity.ListedAdmission,
+// accessLister), so a restricted member's token acts there while a project names them directly, as
+// it does under passkey sign-in. It is nil for every other server, whose sign-in rule, or none,
+// holds them, and with no database.
+func devRestrictedAdmission(boot bootConfig, database *store.Store) identity.RestrictedAdmission {
+	if !boot.DevSignIn || database == nil {
+		return nil
+	}
+	return identity.ListedAdmission{People: accessLister(database)}
+}
+
+// parseSignInSwitch reads the value of name, an on-or-off sign-in setting (DISPATCH_SIGNIN_PASSKEY):
+// "1" turns it on, unset or empty leaves it off, and any other value refuses startup, without
+// echoing it.
+func parseSignInSwitch(name, raw string) (bool, error) {
+	switch value := strings.TrimSpace(raw); value {
+	case "":
+		return false, nil
+	case "1":
+		return true, nil
+	default:
+		return false, fmt.Errorf("%s must be 1 or unset; got a value of %d characters", name, utf8.RuneCountInString(value))
+	}
+}
+
+// parseOutsideOrigin reads DISPATCH_OUTSIDE_ORIGIN's value, raw: empty for none; else the origin
+// weborigin.Parse returns for it, the rule gcp:Dispatch's outsideOrigin input is judged by, so a
+// value written by hand is refused exactly as the component refuses it, with its trailing "/"
+// trimmed as the component trims it. Beside that rule the origin must be https, or http only with
+// the test hooks on (testHooks), for a local harness. Each refusal names the setting. Its host
+// under Google sign-in, which the component judges too, is checkSignInSettings', which reads the
+// sign-in settings.
+func parseOutsideOrigin(raw string, testHooks bool) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", nil
+	}
+	origin, err := weborigin.Parse(raw)
+	if err != nil {
+		return "", fmt.Errorf("DISPATCH_OUTSIDE_ORIGIN: %w", err)
+	}
+	if origin.Scheme != "https" && !testHooks {
+		return "", errors.New("DISPATCH_OUTSIDE_ORIGIN: must be an https origin; http is for a local harness with DISPATCH_TEST_HOOKS=1")
+	}
+	return origin.String(), nil
+}
+
+// checkOutsideOrigin refuses an outside origin that is not a second origin beside serverURL, the
+// canonical one (DISPATCH_SERVER_URL, or dispatch.serverUrl in envoy.json): one with no canonical
+// origin, and one on the canonical origin's host, whatever the port, since a browser keeps one
+// host's cookies for every port of it and a request's Host decides which origin answers. The hosts
+// are compared as the router compares them (routes.HostName: a non-ASCII name mapped as IDNA
+// lookup maps it, then no case and no trailing dots), so a canonical host written with a trailing
+// dot, in fullwidth letters or as a U-label is the outside origin's too. Main checks it once the
+// canonical origin resolves; an empty outsideOrigin passes.
+func checkOutsideOrigin(outsideOrigin, serverURL string) error {
+	if outsideOrigin == "" {
+		return nil
+	}
+	canonical, err := url.Parse(serverURL)
+	if err != nil || canonical.Hostname() == "" {
+		return errors.New("DISPATCH_OUTSIDE_ORIGIN: needs DISPATCH_SERVER_URL (or dispatch.serverUrl in envoy.json), the canonical origin it is the second of")
+	}
+	outside, err := url.Parse(outsideOrigin)
+	if err != nil {
+		return fmt.Errorf("DISPATCH_OUTSIDE_ORIGIN: %w", err)
+	}
+	if routes.HostName(outside.Hostname()) == routes.HostName(canonical.Hostname()) {
+		return fmt.Errorf("DISPATCH_OUTSIDE_ORIGIN: its host %s is DISPATCH_SERVER_URL's; the outside origin must be on another host", outside.Hostname())
+	}
+	return nil
 }
 
 // signInFlow is the sign-in issuer's code flow for boot's DISPATCH_SIGNIN_* settings, asking
@@ -180,7 +419,7 @@ func signInFlow(boot bootConfig) *oidc.CodeFlow {
 // signed with (sessionSigningKey): the store seals each refresh token under the current key and
 // opens one sealed under any of them, and revokes a token stored in plain text at signIn's pool,
 // nil when boot configures none. A revocation the undiscovered issuer cannot take fails that one
-// token, which stays for the next boot.
+// token, which stays for the next boot. Its options are peopleOptions(boot).
 func openPeople(boot bootConfig, dataDir string, pool *store.Pool, signIn *oidc.CodeFlow) (*store.PgPeopleStore, auth.SigningKeys, error) {
 	signingKey, err := sessionSigningKey(boot, dataDir)
 	if err != nil {
@@ -190,7 +429,22 @@ func openPeople(boot bootConfig, dataDir string, pool *store.Pool, signIn *oidc.
 	if signIn != nil {
 		revoker = signIn
 	}
-	return store.NewPgPeopleStore(pool, signingKey, revoker), signingKey, nil
+	return store.NewPgPeopleStore(pool, signingKey, revoker, peopleOptions(boot)...), signingKey, nil
+}
+
+// peopleOptions is the options of the people store main serves boot with: with a secrets broker
+// configured (DISPATCH_AGENT_SECRETS_URL) and a sign-in issuer, a sign-in that replaces the
+// account an address records, whatever member kind that account's row held, records the broker
+// revocation of that account the server's loop pays, naming it under boot's sign-in issuer
+// (store.WithBrokerRevocations); with no broker it records nothing,
+// since only a process with a broker pays one. Every process of a deployment with a broker sets
+// DISPATCH_AGENT_SECRETS_URL: a replacement a process without it serves records nothing, and the
+// replaced account's broker credentials are never revoked.
+func peopleOptions(boot bootConfig) []store.PeopleOption {
+	if boot.AgentSecretsURL == "" || boot.SignInIssuer == "" {
+		return nil
+	}
+	return []store.PeopleOption{store.WithBrokerRevocations(boot.SignInIssuer)}
 }
 
 // retirePlainRefreshTokens is the boot's retirement of the refresh tokens people holds in plain
@@ -209,31 +463,83 @@ func retirePlainRefreshTokens(ctx context.Context, people *store.PgPeopleStore, 
 // requestIdentityFor is how a browser request names its person under boot: a header-identity
 // server takes the header's email; an IAP server verifies the assertion Identity-Aware Proxy signs
 // for each request, against IAP's key set at boot.IAPKeySetURL, and admits the people of
-// DISPATCH_SIGNIN_DOMAIN (signInRule); a cookie server verifies its signed session cookie and, with
-// sign-in configured, confirms at least hourly that the person is still in DISPATCH_SIGNIN_GROUP
-// or DISPATCH_SIGNIN_DOMAIN (signInRule). A cookie server with no sign-in setting names nobody
+// DISPATCH_SIGNIN_DOMAIN (rule, boot's sign-in rule: signInRule); a cookie server verifies its
+// signed session cookie and, with sign-in configured, confirms at least hourly that rule still
+// admits the person: still in DISPATCH_SIGNIN_GROUP or DISPATCH_SIGNIN_DOMAIN, or, from outside
+// the domain, still named by a project. A cookie server with no sign-in setting names nobody
 // (identity.NoBrowserIdentity): nobody can sign in there, and a cookie minted while sign-in was on
 // would otherwise go on naming its person for its thirty days, signed by the deployment's own
 // DISPATCH_SIGNING_KEY and confirmed by nobody. Dev sign-in has no issuer either and keeps its
 // cookie: it mints that cookie itself. That case is read from boot, which says what the
-// deployment configured, and not from signIn.
-func requestIdentityFor(boot bootConfig, signingKey auth.SigningKeys, people auth.PeopleStore, sessions auth.SessionStore, signIn *oidc.CodeFlow) identity.Identity {
+// deployment configured, and not from signIn. passkeys is the passkey store where passkey sign-in
+// is on (passkeySignIn), which confirms a passkey's sign-in hourly, and nil elsewhere, where a
+// passkey's cookie is refused at its next use. It also answers the *identity.Membership it built:
+// the one the router's Standing (standingFor) and the membership pass ask, so a request and a pass
+// share one refresh, or one Directory check, of a person. A cookie server builds one that confirms
+// the person with the issuer; an IAP server, which keeps no refresh token, one that checks each
+// person's Workspace account through the Directory reader it builds here, signing through
+// boot.DirectoryAccount for boot.DirectoryAdmin (identity.NewDirectoryReader), with no sign-in
+// issuer; and every other server none (nil: no signIn, header identity or no browser identity).
+// Its error is a Directory reader IAP identity cannot build, which stops the boot: an IAP server
+// that could not check the Directory would hold nobody.
+func requestIdentityFor(ctx context.Context, boot bootConfig, signingKey auth.SigningKeys, people auth.PeopleStore, sessions auth.SessionStore, signIn *oidc.CodeFlow, rule identity.SignInRule, passkeys *store.PgPasskeys) (identity.Identity, *identity.Membership, error) {
 	if boot.IdentityHeader != "" {
-		return identity.HeaderIdentity{Header: boot.IdentityHeader, People: people}
+		return identity.HeaderIdentity{Header: boot.IdentityHeader, People: people}, nil, nil
 	}
 	if boot.IAPAudience != "" {
+		reader, err := identity.NewDirectoryReader(ctx, boot.DirectoryAccount, boot.DirectoryAdmin, boot.DirectoryOptions...)
+		if err != nil {
+			return nil, nil, err
+		}
 		return identity.IAPIdentity{
 			Verifier: oidc.NewIAPVerifier(boot.IAPAudience, oidc.NewKeysAt(boot.IAPKeySetURL)),
-			Rule:     signInRule(boot),
+			Rule:     rule,
 			People:   people,
-		}
+		}, &identity.Membership{People: people, Rule: rule, Directory: reader}, nil
 	}
 	if boot.SignInIssuer == "" && !boot.DevSignIn {
-		return identity.NoBrowserIdentity{}
+		return identity.NoBrowserIdentity{}, nil, nil
 	}
 	cookieIdentity := identity.CookieIdentity{SigningKey: signingKey, Sessions: sessions}
 	if signIn != nil {
-		cookieIdentity.Membership = &identity.Membership{People: people, Sessions: sessions, SignIn: signIn, Rule: signInRule(boot)}
+		cookieIdentity.Membership = &identity.Membership{People: people, SignIn: signIn, Rule: rule}
+		// Set only when on: a nil *store.PgPasskeys in the interface field would read as a store.
+		if passkeys != nil {
+			cookieIdentity.Membership.Passkeys = passkeys
+		}
 	}
-	return cookieIdentity
+	return cookieIdentity, cookieIdentity.Membership, nil
+}
+
+// standingFor is the Standing the router is handed (routes.AppContextOptions.Standing, which the
+// API reads as api.Deps.Standing): membership where a Google rule signs people in (rule.Holds,
+// DISPATCH_SIGNIN_DOMAIN with passkey sign-in on or off, or under IAP identity, whose
+// membership follows the Workspace Directory), and nil, which holds nobody, under any other rule or
+// where requestIdentityFor built no membership. It answers the interface so a nil membership is a
+// nil Standing, never a non-nil one holding a nil pointer.
+func standingFor(rule identity.SignInRule, membership *identity.Membership) api.PersonStanding {
+	if membership == nil || rule == nil || !rule.Holds() {
+		return nil
+	}
+	return membership
+}
+
+// buildAppContext is the router's app context main serves for boot, built from built with
+// membership, the one requestIdentityFor built (nil for none), as the router's Standing
+// (standingFor). It then hands membership the router's check of access that outlives the browser
+// (routes.AppContext.Outliving, api.Deps.Outliving), the one a sign-out asks, so a Directory check
+// of an address deleted and created again asks the same database and broker client and no second
+// client is built (identity.Membership.Outliving). requestIdentityFor runs before the router can
+// be built, so the handoff is here, before the app context serves a request or the maintenance
+// sweep starts a membership pass.
+func buildAppContext(boot bootConfig, rule identity.SignInRule, built routes.AppContextOptions, membership *identity.Membership) (*routes.AppContext, error) {
+	built.Standing = standingFor(rule, membership)
+	app, err := routes.BuildAppContext(appContextOptions(boot, rule, built))
+	if err != nil {
+		return nil, err
+	}
+	if membership != nil {
+		membership.Outliving = app.Outliving()
+	}
+	return app, nil
 }

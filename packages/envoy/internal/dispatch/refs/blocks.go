@@ -109,16 +109,22 @@ func ReadBlockIndex(ctx context.Context, q Queryer, artifactID string) (BlockInd
 	return BlockIndex{blocks: blocks, links: links, stand: stand}, nil
 }
 
-// IndexedVersion is what a version's own row says of its block index: the document's ref_key,
-// which every block's address starts with, and the actor the row records as the version's writer,
-// which every node and tuple the index writes carries. A version no row records - a caller
-// indexing blocks of its own, as the seed does - leaves the writer nobody, the zero actor, exactly
-// as a node of the store written on a credential that names nobody carries. A writer whose
-// version row is only queued hands it over from what that row will hold (docs' planBlockIndex),
-// since no read of the row answers yet; one whose row is stored reads it (ReadIndexedVersion).
+// IndexedVersion is what a version's own row and its document's row say of its block index: the
+// document's ref_key, which every block's address starts with; the actor the row records as the
+// version's writer, which every node and tuple the index writes carries; and the project the
+// document belongs to, or for an agent conversation's file the session it is between, which every
+// block node the index writes carries (graphstore.Node's Project and Parties). A conversation
+// holds no markdown document (api's agentOwnsFilesOnly), so no block has parties today; the record
+// keeps the one rule every document's node follows. A version no row records - a caller indexing
+// blocks of its own, as the seed does - leaves the writer nobody, the zero actor, exactly as a
+// node of the store written on a credential that names nobody carries. A writer whose version row
+// is only queued hands it over from what that row will hold (docs' planBlockIndex), since no read
+// of the row answers yet; one whose row is stored reads it (ReadIndexedVersion).
 type IndexedVersion struct {
-	RefKey string
-	Writer model.Actor
+	RefKey  string
+	Writer  model.Actor
+	Project string
+	Parties []string
 }
 
 // VersionBlocks is the version a block-index pass indexes (PlanBlocks), the inputs that travel
@@ -273,7 +279,7 @@ func PlanBlocks(ctx context.Context, q Queryer, index BlockIndex, rule int, now 
 	writer := version.Record.Writer
 	nodes, fits := indexing.indexedNodes(version.Blocks)
 	texts := indexing.planBlockTexts(index, version.Markdown, nodes, fits, now)
-	statement, err := indexing.planBlockNodes(ctx, q, stale, nodes, texts, writer, now)
+	statement, err := indexing.planBlockNodes(ctx, q, stale, nodes, texts, version.Record, now)
 	if err != nil {
 		return BlockIndexing{}, err
 	}
@@ -589,25 +595,38 @@ const DocumentWindowKind = "document_block"
 const windowKinds = `('document_block', 'comment_block', 'message_block', 'ask_part')`
 
 // BlockEmbeddingStates is where meaning search stands on each block of the owner whose windows
-// are kind kind under ownerKey: model.BlockEmbedded for a block every window covering it holds
-// a vector of its current text for, model.BlockEmbeddingPending while one of them waits for its
-// vector. A block no window covers is in no entry of the map, which a reader of one block reads
-// as model.BlockNotEmbedded - a block the indexer puts in no window, and every block of an owner
-// whose windows are not written yet. The read names the window kinds as literals beside the
-// parameter, as every read and write of a window does (writeWindows), so the planner can prove
-// embeddings_window_owner's partial predicate and reach the owner's rows through that index.
+// are kind kind under ownerKey, as who reads it: model.BlockEmbedded for a block every window
+// covering it holds a vector of its current text for, model.BlockEmbeddingPending while one of
+// them waits for its vector. A block no window covers is in no entry of the map, which a reader of
+// one block reads as model.BlockNotEmbedded - a block the indexer puts in no window, and every
+// block of an owner whose windows are not written yet. The read names the window kinds as
+// literals beside the parameter, as every read and write of a window does (writeWindows), so the
+// planner can prove embeddings_window_owner's partial predicate and reach the owner's rows through
+// that index.
+//
+// The windows are read only while who may see their owner, the registry's predicate of that node
+// (VisibleKind): the document the key is the uuid of, or the comment, message or ask `<kind>/<uuid>`
+// names. An owner who may not see answers as one no window covers.
 //
 // It lives here, with the writes of the rows it reads, so the list of window kinds is held in
 // one place: this package's windowKinds, migration 20261102233630's index predicate and the
 // column the two of them name.
-func BlockEmbeddingStates(ctx context.Context, q Queryer, kind, ownerKey string) (map[string]string, error) {
+func BlockEmbeddingStates(ctx context.Context, q Queryer, who model.Actor, kind, ownerKey string) (map[string]string, error) {
+	var args queryArgs
+	kindParam, ownerParam := args.param(kind), args.param(ownerKey)
+	var owner string
+	if itemKind, itemID, item := strings.Cut(ownerKey, "/"); item {
+		owner = args.visible(&who, itemKind, args.param(itemID))
+	} else {
+		owner = args.visible(&who, "artifact", artifactRefKeyOf(args.param(ownerKey)+`::uuid`))
+	}
 	rows, err := q.Query(ctx, `
 		select covered.block_id, bool_and(e.embedded_hash is not distinct from e.content_hash)
 		from embeddings e cross join unnest(e.covers) as covered(block_id)
-		where e.kind = $1 and e.kind in `+windowKinds+`
-		  and split_part(e.id, '#', 1) = $2
+		where e.kind = `+kindParam+` and e.kind in `+windowKinds+`
+		  and split_part(e.id, '#', 1) = `+ownerParam+` and `+owner+`
 		group by covered.block_id
-	`, kind, ownerKey)
+	`, args.values...)
 	if err != nil {
 		return nil, fmt.Errorf("read the embedding state of the blocks of %s %s: %w", kind, ownerKey, err)
 	}
@@ -1064,8 +1083,9 @@ func pointerPairs(nodes []model.ArtifactBlock, pointers []Pointer) ([]blockPair,
 // blocks of their documents: a deleted block's links drop out, and its stored mentions bring them
 // back when a version holds its id again. A pointer's link counts only while its target has a
 // type the pointer allows, tested as the arm of graph_edges that answers the row tests it
-// (blockRefListed). A link either of whose blocks who may not see drops out the same way, since
-// neither end resolves to a node.
+// (blockRefListed). The links are read only while who may see both documents (the artifact
+// predicate of each), and a link either of whose blocks who may not see drops out the same way,
+// since neither end resolves to a node.
 func BlockLinks(ctx context.Context, q Queryer, who model.Actor, fromArtifact, toArtifact string) ([]model.BlockLink, error) {
 	rows, err := q.Query(ctx, `
 		select r.kind, r.from_node, r.to_id, r.created_at, r.created_version
@@ -1073,7 +1093,9 @@ func BlockLinks(ctx context.Context, q Queryer, who model.Actor, fromArtifact, t
 		join document_blocks f on f.artifact_id = r.artifact_id and f.block_id = r.block_id
 		join document_blocks t on t.node_id = r.to_id and t.artifact_id = $2::uuid
 		where r.artifact_id = $1::uuid and r.to_kind = 'block' and `+blockRefListed("r")+`
-		order by r.created_at desc, r.from_node, r.to_id`, fromArtifact, toArtifact)
+		  and `+VisibleKind("artifact", artifactRefKeyOf(`$1::uuid`), "$3")+`
+		  and `+VisibleKind("artifact", artifactRefKeyOf(`$2::uuid`), "$3")+`
+		order by r.created_at desc, r.from_node, r.to_id`, fromArtifact, toArtifact, VisibilityArg(who))
 	if err != nil {
 		return nil, fmt.Errorf("list the block links from %s to %s: %w", fromArtifact, toArtifact, err)
 	}
@@ -1179,6 +1201,12 @@ type DocumentAddress struct {
 	// that parent followed by its own. A pending issue with no parent is a root, and both paths
 	// answer the empty list.
 	PendingParent string
+	// Project is the project the document belongs to, an issue's or its own, and Session the
+	// session whose conversation holds it, "" where it is a project's: the scope its block
+	// nodes carry (IndexedVersion's Project and Parties). Only an address this transaction
+	// recorded for a row it is creating carries them; a stored row's version is read with its
+	// scope (ReadIndexedVersion).
+	Project, Session string
 }
 
 // BlockTargets is where a write to document artifactID, which sits at address, lands and the

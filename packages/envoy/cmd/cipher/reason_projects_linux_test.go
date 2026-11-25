@@ -15,7 +15,6 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/ciphertest"
 	"github.com/sjawhar/envoy/internal/cipher/helper"
-	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess/projectaccesstest"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipher/record"
@@ -28,7 +27,7 @@ import (
 // (requests.TestABrokerWithNoProjectAccessTakesAReasonNamingAnyNumberOfProjects).
 func TestARequestWhoseReasonNamesMoreThanSixteenProjectsIsRefusedAtTheCLI(t *testing.T) {
 	dispatch := projectaccesstest.NewServer(t, nil, nil)
-	rig := ciphertest.NewRig(t, ciphertest.WithProjectAccess(projectaccess.New(dispatch.URL, dispatch.Account, nil)))
+	rig := ciphertest.NewRig(t, ciphertest.WithDispatchAccess(dispatch.URL, dispatch.Account, nil))
 	binary := buildAgentSecrets(t)
 	_, sock := serveRealHelper(t, rig.URL, rig.Operator)
 	if code, exit, stderr := machineLoginThen(t, rig, binary, sock, "approve", nil); exit != 0 {

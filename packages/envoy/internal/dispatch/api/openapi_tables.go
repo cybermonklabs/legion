@@ -214,6 +214,20 @@ var rawFieldSchemas = map[rawFieldKeyOf]rawField{
 	}},
 }
 
+// unservedFields names the fields of an answer's Go type that no answer carries, each with why,
+// so the document declares no property a client would wait for and never read. Its key is the
+// object that carries the field, an embedded struct's fields included (rawFieldKeyOf), so one row
+// leaves out a field and the embedded one it shadows alike. A row naming no field of any type the
+// document describes fails the emit, as a stale rawFieldSchemas row does.
+var unservedFields = map[rawFieldKeyOf]string{
+	// agentResponse.Projects shadows the listener's list of a session's projects
+	// (envoy.Session.Projects), which Dispatch stores in the route roster and reads to decide which
+	// sessions a reader sees, and nothing sets it: a viewer of one project would otherwise read the
+	// keys of another (R4), and a listed session's row would change in a deployment with no
+	// private project (R9).
+	{reflect.TypeOf(agentResponse{}), "projects"}: "the projects of a session's token, which no answer carries",
+}
+
 // The schemas rawFieldSchemas writes out, where no Go type names what a field's bytes hold.
 var (
 	openAPITimestamp = map[string]any{

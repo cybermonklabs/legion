@@ -7,7 +7,9 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 const (
@@ -36,9 +38,14 @@ func parseMyAnswersPage(r *http.Request) (limit, offset int, err error) {
 }
 
 // listMyAnswers returns the caller's real answer transitions (answerEventsQuery) and their replies
-// on asks, newest first.
+// on asks, newest first, on the asks the caller may read (access.ItemOwnerClause): an answer given on a
+// project the caller no longer sees, or that its credential does not list, is not in its list.
 func (s *server) listMyAnswers(w http.ResponseWriter, r *http.Request) {
 	caller, ok := s.actingPerson(w, r)
+	if !ok {
+		return
+	}
+	who, ok := s.readerOf(w, r)
 	if !ok {
 		return
 	}
@@ -54,7 +61,7 @@ func (s *server) listMyAnswers(w http.ResponseWriter, r *http.Request) {
 			       e.payload->'answer' as answer, null::uuid as reply_id, null::text as body, e.id as event_id`,
 		// The canonical login on both halves: a row a build stored under a login before sign-in
 		// lower-cased it is the same person's (user_threads_login, as the replies half reads).
-		`user_threads_login(e.actor->>'id') = $1`)+`
+		`user_threads_login(e.actor->>'id') = $1`, "$4")+`
 		), mine as (
 			select * from answered
 			union all
@@ -70,9 +77,10 @@ func (s *server) listMyAnswers(w http.ResponseWriter, r *http.Request) {
 		join asks a on a.id = m.ask_id::uuid
 		left join issues i on i.key = a.issue_key
 		left join artifacts ar on ar.id = a.artifact_id
+		where `+access.ItemOwnerClause("a.issue_key", "a.artifact_id", "$4")+`
 		order by m.at desc, m.event_id desc nulls last, m.reply_id desc nulls last
 		limit $2 offset $3
-	`, model.CanonicalLogin(caller.ID), limit, offset)
+	`, model.CanonicalLogin(caller.ID), limit, offset, refs.VisibilityArg(who))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

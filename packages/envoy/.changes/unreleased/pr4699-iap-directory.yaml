@@ -1,0 +1,23 @@
+kind: Added
+body: |-
+  Under `DISPATCH_IDENTITY=iap`, Dispatch checks each full member's Workspace account through the
+  Directory API about once an hour, signing through the service account `DISPATCH_DIRECTORY_ACCOUNT`
+  names, with no key, for the delegated user `DISPATCH_DIRECTORY_ADMIN` names; both settings are
+  required under IAP and refused without it, and `gcp:Dispatch` renders them from its new
+  `directoryAccount` and `directoryAdmin` inputs. An active answer for the person's own account
+  confirms them for 24 hours (`not_held_until`, which the person answer carries) and releases a
+  hold with no sign-in; a suspended, archived or missing account, or an answer for another
+  address's account, holds them. An address created again for another person confirms its new
+  account once the address holds no access that outlives the browser. A held person's approve or
+  deny of a machine login, mint of a personal token and change of a token's scopes at their
+  browser are `401 MEMBERSHIP_HELD`, though IAP still admits the browser. After 24 hours with no
+  active answer, personal tokens and such requests are `503 IDENTITY_UNAVAILABLE` and broker
+  tokens `503 BROKER_UNAVAILABLE` with `Retry-After: 60`. The broker of such a deployment sets
+  `BROKER_HOLD_REQUIRES_DEADLINE=true`, which refuses an answer past or without its deadline
+  `503 HOLD_UNCHECKABLE`, and keeps each deadline in `person_standing` (migration
+  `0046_person_standing_deadline`).
+  `envoy-dispatch directory-check` checks the Directory reads, and that the delegation grant gives
+  nothing more, before IAP admits anyone.
+time: 2026-11-20T20:31:13Z
+custom:
+    Issue: pr4699

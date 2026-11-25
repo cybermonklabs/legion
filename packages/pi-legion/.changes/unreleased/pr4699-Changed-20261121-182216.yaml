@@ -1,0 +1,10 @@
+kind: Changed
+body: |-
+  The bundled TypeScript client of the secrets broker prints an Identity-Aware Proxy deployment's
+  `membership_held` refusal as the broker writes it,
+  `Google's Workspace Directory no longer confirms <person>; their credentials work again once it does`,
+  where it printed `(its text is withheld)`. On a person's sign-in it prints that sentence only
+  when `<person>` is the signed-in person.
+time: 2026-11-21T18:22:16Z
+custom:
+    Issue: pr4699

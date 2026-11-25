@@ -521,9 +521,10 @@ packages/envoy/scripts/database-skips.sh --report REPORT.json [PACKAGE...]
 A `PACKAGE` is a pattern under `packages/envoy`, `./dir/` or `./dir/...`. With none it runs
 its default table, `./internal/cipher/...` and `./cmd/cipherd/`, less the packages its
 `DEFAULT_EXCEPT` takes out of them: the race lane's packages under the broker's tree, of which the
-auth service's `natscallout`, which opens no database, is the one today (`DATABASE_SKIPS_PATTERN`
-in `.github/scripts/ci_job_reads.py`, which refuses the script when `DEFAULT_EXCEPT` says
-anything else). That is one `go test -json -count=1 -timeout 15m` from `packages/envoy`, then it
+auth service's `natscallout`, which `envoy-go-race` runs through this script under `-race`, is the
+one today (`DATABASE_SKIPS_PATTERN` in `.github/scripts/ci_job_reads.py`, which refuses the script
+when `DEFAULT_EXCEPT` says anything else). That is one `go test -json -count=1 -timeout 15m` from
+`packages/envoy`, then it
 reads that report. `--var NAME` names a variable the packages need, and repeats; with none it is
 `BROKER_TEST_DATABASE_URL`. A named variable that is unset or empty prints
 `database_skips=UNKNOWN` naming it, and nothing runs.
@@ -556,8 +557,10 @@ stderr. A run of its own also prints each package's `pass|fail PACKAGE <seconds>
 `--timeout 20m`, the unit step's own `-timeout`, `--skip` of the one test of
 `./internal/cipher/api/` that the job's "Count the store-form rows on each backend" runs
 (`backend-count.sh`, above), and a step limit of its own
-(`timeout-minutes: 30`) that its time budget counts, and `envoy-go-race-api` runs the
-Dispatch API through it as the second line above.
+(`timeout-minutes: 30`) that its time budget counts, `envoy-go-race-api` runs the
+Dispatch API through it as the second line above, and `envoy-go-race` runs the auth service
+(`--var BROKER_TEST_DATABASE_URL --race --timeout 10m ./internal/cipher/natscallout/`) as
+"Race-test the NATS auth service and count its skips".
 `database-skips.test.sh` holds it to five controls, which `envoy-go` runs as "Test the database
 skip counter": a skip planted through a Go overlay in `./internal/cipher/api/`, `./cmd/cipherd/`
 and `./internal/dispatch/api/` is counted; either variable unset or empty is UNKNOWN; a report

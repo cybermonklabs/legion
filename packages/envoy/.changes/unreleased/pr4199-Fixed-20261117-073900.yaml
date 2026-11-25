@@ -1,0 +1,13 @@
+kind: Fixed
+body: |-
+  A machine login's deny is relayed to the secrets broker only while its sender still holds the
+  address, checked again once the request's body has arrived by the same check an approve gets: the
+  broker decides a denial whatever account asks, so before this the account another Google account
+  replaced could deny the new holder's pending machine login by holding its request's body back. A
+  deny names no Google account. An account that takes its address back while the revocation of it
+  is still owed is no longer revoked: the sign-in that takes the address back settles that
+  revocation in its own transaction, so the broker is told only to revoke the account it took the
+  address back from, and keeps what the returning account made after taking the address back.
+time: 2026-11-17T07:39:00.833927014Z
+custom:
+    Issue: pr4199

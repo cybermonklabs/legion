@@ -70,7 +70,7 @@ func TestSettlementSkipsACraftedTreeOutsideTheSchema(t *testing.T) {
 			if versions != 1 {
 				t.Fatalf("settlement wrote %d versions for a document outside the schema, want 1", versions)
 			}
-			if _, err := service.Text(context.Background(), artifactID); !errors.Is(err, ErrDocSchema) {
+			if _, err := service.Text(context.Background(), serverReader, artifactID); !errors.Is(err, ErrDocSchema) {
 				t.Fatalf("read the document: %v, want ErrDocSchema", err)
 			}
 			state.mu.Lock()

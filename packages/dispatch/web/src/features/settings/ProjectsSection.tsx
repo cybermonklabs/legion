@@ -18,6 +18,7 @@ import type {
   ProjectDefaultRepository,
 } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
+import { useRestrictedMember } from "../../hooks/useRestrictedMember";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
 import {
   borderDefault,
@@ -36,6 +37,7 @@ import {
 import { Timestamp } from "../refs/Timestamp";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { LandedWithoutAnswer } from "../writes/LandedWithoutAnswer";
+import { dropSettledWrites } from "../writes/settled-writes";
 import { type KeyedPress, stoppedNote, useKeyedWrite } from "../writes/useKeyedWrite";
 import {
   NOT_OWNER_NAME,
@@ -58,7 +60,12 @@ import {
  *  - The default repository: the `owner/name` an issue of the project resolves to when neither
  *    the issue nor an issue above it names a repository. A project has one or none, and a person
  *    sets or clears it in the project's row. The project list (`projectsQuery`) holds it, as
- *    `default_repo`, which a project with none does not carry. */
+ *    `default_repo`, which a project with none does not carry.
+ *
+ * A new project and a project's default repository belong to the deployment, whose writes
+ * Dispatch refuses a restricted member (403 RESTRICTED_MEMBER), so their page lists the projects
+ * that name them, shows each one's default repository as text, and offers no create form and no
+ * control that sets or clears a default repository. */
 export function ProjectsSection(): ReactNode {
   const queryClient = useQueryClient();
   const [projectKey, setProjectKey] = useState("");
@@ -68,6 +75,7 @@ export function ProjectsSection(): ReactNode {
   const [projectAssignee, setProjectAssignee] = useState<string | null>(null);
   const projectSubmitGuard = useSubmitGuard();
   const projects = useQuery(projectsQuery());
+  const restricted = useRestrictedMember();
   // The form shows a refused create beside the key it was refused over.
   const createProject = useKeyedWrite({
     inline: true,
@@ -181,11 +189,19 @@ export function ProjectsSection(): ReactNode {
                         />
                       </td>
                       <td className="px-4 py-3">
-                        <DefaultRepositoryCell
-                          project={candidate.key}
-                          // A project with no default repository carries no `default_repo`.
-                          stored={candidate.default_repo ?? null}
-                        />
+                        {/* The default belongs to the deployment, whose writes Dispatch refuses a
+                            restricted member: their row shows it and offers nothing to change. */}
+                        {restricted ? (
+                          <span className={`font-mono ${textSecondaryOnSurface}`}>
+                            {candidate.default_repo ?? "None"}
+                          </span>
+                        ) : (
+                          <DefaultRepositoryCell
+                            project={candidate.key}
+                            // A project with no default repository carries no `default_repo`.
+                            stored={candidate.default_repo ?? null}
+                          />
+                        )}
                       </td>
                       <td className={`px-4 py-3 ${textMutedOnSurface}`}>
                         <Timestamp at={candidate.created_at} />
@@ -213,89 +229,93 @@ export function ProjectsSection(): ReactNode {
             </div>
           ) : null}
 
-          <form
-            className={`mt-6 grid gap-4 rounded-xl border p-4 sm:grid-cols-[1fr_2fr_1fr_auto] sm:items-end ${borderDefault}`}
-            onSubmit={submitProject}
-          >
-            <label className={settingsFieldLabel} htmlFor="project-key">
-              Key
-              <input
-                className={settingsMonoInput}
-                disabled={createProject.isPending}
-                id="project-key"
-                onChange={(event) => {
-                  createProject.forgetUnanswered();
-                  setProjectKey(event.target.value.trim().toUpperCase());
-                }}
-                placeholder="CORE"
-                required
-                value={projectKey}
-              />
-            </label>
-            <label className={settingsFieldLabel} htmlFor="project-name">
-              Name
-              <input
-                className={`rounded-md px-3 py-2 ${inputClasses(false)} ${textPrimaryOnSurface}`}
-                disabled={createProject.isPending}
-                id="project-name"
-                maxLength={PROJECT_NAME_MAX}
-                onChange={(event) => setProjectName(event.target.value)}
-                placeholder="Core"
-                required
-                value={projectName}
-              />
-            </label>
-            <label className={settingsFieldLabel} htmlFor="project-default-assignee">
-              Default assignee
-              <select
-                className={`w-full min-w-0 rounded-md px-3 py-2 ${inputClasses(false)} ${textPrimaryOnSurface}`}
-                disabled={createProject.isPending || newProjectAssignee === ""}
-                id="project-default-assignee"
-                onChange={(event) => setProjectAssignee(event.target.value)}
-                onFocus={() => setWantUsers(true)}
-                onPointerEnter={() => setWantUsers(true)}
-                onTouchStart={() => setWantUsers(true)}
-                required
-                value={newProjectAssignee}
+          {restricted ? null : (
+            <>
+              <form
+                className={`mt-6 grid gap-4 rounded-xl border p-4 sm:grid-cols-[1fr_2fr_1fr_auto] sm:items-end ${borderDefault}`}
+                onSubmit={submitProject}
               >
-                {/* The viewer is a person who has signed in, so they are in the list once it is
-                    read; until it is, they are the only option. An empty value is nobody picked
-                    yet, which is the page before the viewer resolves. */}
-                {assigneeOptions(
-                  newProjectAssignee === "" ? undefined : newProjectAssignee,
-                  logins
-                ).map((login) => (
-                  <option key={login} value={login}>
-                    {login}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <button
-              className={settingsSubmitButton}
-              disabled={createProject.isPending}
-              type="submit"
-            >
-              New project
-            </button>
-          </form>
-          {createProject.unanswered === undefined ? null : (
-            <div className="mt-4">
-              <LandedWithoutAnswer what={`Project ${createProject.unanswered.variables.key}`} />
-            </div>
+                <label className={settingsFieldLabel} htmlFor="project-key">
+                  Key
+                  <input
+                    className={settingsMonoInput}
+                    disabled={createProject.isPending}
+                    id="project-key"
+                    onChange={(event) => {
+                      createProject.forgetUnanswered();
+                      setProjectKey(event.target.value.trim().toUpperCase());
+                    }}
+                    placeholder="CORE"
+                    required
+                    value={projectKey}
+                  />
+                </label>
+                <label className={settingsFieldLabel} htmlFor="project-name">
+                  Name
+                  <input
+                    className={`rounded-md px-3 py-2 ${inputClasses(false)} ${textPrimaryOnSurface}`}
+                    disabled={createProject.isPending}
+                    id="project-name"
+                    maxLength={PROJECT_NAME_MAX}
+                    onChange={(event) => setProjectName(event.target.value)}
+                    placeholder="Core"
+                    required
+                    value={projectName}
+                  />
+                </label>
+                <label className={settingsFieldLabel} htmlFor="project-default-assignee">
+                  Default assignee
+                  <select
+                    className={`w-full min-w-0 rounded-md px-3 py-2 ${inputClasses(false)} ${textPrimaryOnSurface}`}
+                    disabled={createProject.isPending || newProjectAssignee === ""}
+                    id="project-default-assignee"
+                    onChange={(event) => setProjectAssignee(event.target.value)}
+                    onFocus={() => setWantUsers(true)}
+                    onPointerEnter={() => setWantUsers(true)}
+                    onTouchStart={() => setWantUsers(true)}
+                    required
+                    value={newProjectAssignee}
+                  >
+                    {/* The viewer is a person who has signed in, so they are in the list once it
+                        is read; until it is, they are the only option. An empty value is nobody
+                        picked yet, which is the page before the viewer resolves. */}
+                    {assigneeOptions(
+                      newProjectAssignee === "" ? undefined : newProjectAssignee,
+                      logins
+                    ).map((login) => (
+                      <option key={login} value={login}>
+                        {login}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <button
+                  className={settingsSubmitButton}
+                  disabled={createProject.isPending}
+                  type="submit"
+                >
+                  New project
+                </button>
+              </form>
+              {createProject.unanswered === undefined ? null : (
+                <div className="mt-4">
+                  <LandedWithoutAnswer what={`Project ${createProject.unanswered.variables.key}`} />
+                </div>
+              )}
+              {createProject.isError ? (
+                <div className="mt-4">
+                  <QueryError
+                    message={
+                      stoppedNote(createProject, "the new project", "made") ??
+                      apiErrorMessage(createProject.error, "Couldn't create the project.")
+                    }
+                    onRetry={() => projectSubmitGuard.retryLast(createProject)}
+                    retrying={createProject.isPending}
+                  />
+                </div>
+              ) : null}
+            </>
           )}
-          {createProject.isError ? (
-            <div className="mt-4">
-              <QueryError
-                message={
-                  stoppedNote(createProject, "the new project", "made") ??
-                  apiErrorMessage(createProject.error, "Couldn't create the project.")
-                }
-                onRetry={() => projectSubmitGuard.retryLast(createProject)}
-                retrying={createProject.isPending}
-              />
-            </div>
-          ) : null}
         </>
       ) : null}
     </section>
@@ -460,16 +480,9 @@ function useProjectSettingWrite<TAnswer extends object, TValue, TRows>({
       replaceQueryData<TRows>(queryClient, read, (rows) => store(rows, saved));
     },
     onSettled: (saved) => {
-      // With gcTime Infinity nothing else clears this project's saves. A save settles in pick
-      // order and is still pending while this runs, so every settled save left is older than it
-      // and no longer the one a row reports: drop them, keeping at most the newest settled save
-      // and the pending ones.
-      const cache = queryClient.getMutationCache();
-      for (const older of cache.findAll({ exact: true, mutationKey })) {
-        if (older.state.status !== "pending") {
-          cache.remove(older);
-        }
-      }
+      // With gcTime Infinity nothing else clears this project's saves: keep at most the newest
+      // settled save and the pending ones.
+      dropSettledWrites(queryClient, mutationKey);
       // A superseded save changed nothing on the server. Not awaited: the next pick in the scope
       // need not wait for this refetch.
       if (saved == null || !("superseded" in saved)) {

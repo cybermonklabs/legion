@@ -333,6 +333,26 @@ describe("dispatch inbox", () => {
     expect(stdout).toContain("Later 1\n");
   });
 
+  // The credential list is a read of the whole deployment, which Dispatch refuses a restricted
+  // member and a credential that lists projects. Such a caller has no list to read, so its Inbox
+  // counts and lists none and warns nothing, as the web Inbox never asks them for it; the row
+  // above is what any other refusal still reads as.
+  test("a credential the deployment's reads are refused to counts no credential request and warns nothing", async () => {
+    pendingAnswer = refusal(
+      "DEPLOYMENT_READ_REFUSED",
+      "this read is the deployment's, which a restricted member may not make",
+      403
+    );
+
+    const { code, stdout, stderr } = await runInbox();
+
+    expect(stderr).toBe("");
+    expect(code).toBe(0);
+    expect(stdout).toContain("Needs you 2\n");
+    expect(stdout).toContain("Waiting on agents 2\n");
+    expect(stdout.trimEnd().endsWith("Credential requests 0")).toBe(true);
+  });
+
   test("a null credential-requests body counts 0 and lists nothing", async () => {
     // A Dispatch with no secrets broker configured, which is an ordinary deployment.
     pendingAnswer = { status: 200, body: null };

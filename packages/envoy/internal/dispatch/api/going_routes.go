@@ -97,13 +97,14 @@ func (s *server) createGoingRequest(w http.ResponseWriter, r *http.Request) {
 	// The caller's own credential names the writer: this route takes no `actor`, so a question
 	// is recorded for whoever asked it - the person at the browser, the session a broker-issued
 	// token proved, or the person a personal token belongs to - and the stream compares the
-	// reader with it. Recorded, as every actor a row holds is (model.Actor.Recorded).
-	caller, _, err := s.optionalActor(r)
-	if err != nil {
-		s.writeAuthenticationError(w, err)
+	// reader with it. Recorded, as every actor a row holds is (model.Actor.Recorded). The reader
+	// is resolved here, at the start, with what that credential may see (readerOf), and the run's
+	// search reads as it (goingSearch).
+	reader, ok := s.readerOf(w, r)
+	if !ok {
 		return
 	}
-	actor := caller.Recorded()
+	actor := reader.Recorded()
 	// A credential that names nobody asks nothing: see codeGoingAskerNamesNobody. The rule is
 	// graphstore.ProvesAuthor, which lives beside the store that records an author, and which
 	// every author-private read of the graph asks too, in Go and in SQL
@@ -132,16 +133,16 @@ func (s *server) createGoingRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	project := strings.TrimSpace(input.Project)
-	if project != "" && !projectKeyPattern.MatchString(project) {
+	if project != "" && !contracts.ValidProjectKey(project) {
 		writeError(w, "INVALID_PROJECT", http.StatusBadRequest, projectKeyProblem("project", project))
 		return
 	}
 	// The project comes from the body, not from the address, so this row is classed
 	// scopeProjectInBody and withinProjectScope leaves the check here, as it leaves createIssue's
-	// (issue_create.go). It runs before the row is written: a credential that may write one
-	// project asks only of that project, and asking of every project is asking outside it.
-	if covers, scoped := s.callerProject(r); scoped && covers != project {
-		refuseWriteOutsideProjectScope(w, covers, project)
+	// (issue_create.go). It runs before the row is written: a credential asks only of a project its
+	// list covers (access.CredentialCovers), and a broker token scoped to one project only of that
+	// one; a restricted member's list covers no question over every project.
+	if s.refuseOutsideCallerProjects(w, r, project) {
 		return
 	}
 	// Detached from the request, as a broadcast's deliveries are (broadcasts.go): SIGTERM
@@ -168,21 +169,26 @@ func (s *server) createGoingRequest(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	request, err := s.recordGoingRequest(r.Context(), actor, project, words)
+	// A project the asker does not see is recorded so (asked_unseen): the run reads as the asker,
+	// so it holds nothing of that project, and its author reads it as a run of a key no project
+	// holds, which is what a hidden key must answer as.
+	unseen := project != "" && !viewerSees(reader.Viewer, project)
+	request, err := s.recordGoingRequest(r.Context(), actor, project, words, unseen)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	s.detached.goDetached(func() { s.startGoingRun(answering, request) })
+	s.detached.goDetached(func() { s.startGoingRun(answering, request, reader) })
 	WriteJSON(w, http.StatusCreated, request)
 }
 
-// startGoingRun answers one recorded run and stores its frames. The run itself is bounded by the
-// window the record gave it (goingRequest.EndsAt), which is what every reader of the run reads
-// too; the writes are bounded by that window and goingStreamGrace, because the terminal frame of
-// a run reaching its deadline is stored at the moment the deadline passes and a context that
-// ended with the run could not store it.
-func (s *server) startGoingRun(ctx context.Context, request goingRequest) {
+// startGoingRun answers one recorded run and stores its frames, searching as reader, the asker
+// with what it may see. The run itself is bounded by the window the record gave it
+// (goingRequest.EndsAt), which is what every reader of the run reads too; the writes are bounded
+// by that window and goingStreamGrace, because the terminal frame of a run reaching its deadline
+// is stored at the moment the deadline passes and a context that ended with the run could not
+// store it.
+func (s *server) startGoingRun(ctx context.Context, request goingRequest, reader model.Actor) {
 	storing, endStoring := context.WithDeadline(ctx, request.EndsAt.Add(goingStreamGrace))
 	defer endStoring()
 	if s.deps.Answerer == nil {
@@ -203,7 +209,7 @@ func (s *server) startGoingRun(ctx context.Context, request goingRequest) {
 	}
 	err := s.deps.Answerer.Run(answering, going.Request{
 		Words:  request.Words,
-		Search: s.goingSearch(request.Project, request.Author),
+		Search: s.goingSearch(request.Project, reader),
 		Bodies: s.goingBodies,
 	}, emit)
 	switch {
@@ -221,15 +227,15 @@ func (s *server) startGoingRun(ctx context.Context, request goingRequest) {
 
 // goingSearch is the one search the answerer makes, within the project the question was asked
 // of: the route supplies the project, the limit and the offset, so the model cannot widen the
-// search past what the caller asked of. It searches as the run's author, the credential that
-// asked the question and the only one the stream serves, so the answer is drawn from what that
-// credential may read and no more.
-func (s *server) goingSearch(project string, author model.Actor) func(context.Context, string) ([]going.Hit, error) {
+// search past what the caller asked of. It searches as reader, the credential that asked the
+// question and the only one the stream serves, with the viewer that credential resolved when it
+// asked, so the answer is drawn from what that credential may read and no more.
+func (s *server) goingSearch(project string, reader model.Actor) func(context.Context, string) ([]going.Hit, error) {
 	return func(ctx context.Context, q string) ([]going.Hit, error) {
 		// No display tree: the answerer reads a hit's title and its href, never its markdown, so
 		// reading each hit for display would be work no reader of this answer ever sees, which is
 		// what these parameters leaving trees unset says.
-		parameters := searchParameters{text: q, project: project, limit: searchDefaultLimit, offset: 0, who: author}
+		parameters := searchParameters{text: q, project: project, limit: searchDefaultLimit, offset: 0, who: reader}
 		found, err := s.runSearch(ctx, parameters)
 		if err != nil {
 			return nil, err
@@ -270,10 +276,17 @@ func (s *server) goingBodies(ctx context.Context, hits []going.Hit) (map[string]
 func (s *server) streamGoingAnswer(w http.ResponseWriter, r *http.Request) {
 	// Resolved once rather than through requireAuthenticated and a second resolution: the actor
 	// is what this route compares the run's author with, and a credential resolves at a cost -
-	// a token row, the sign-in issuer's confirmation - worth paying once.
+	// a token row, the sign-in issuer's confirmation - worth paying once. The reader the run is
+	// read as (readGoingRequest) is resolved from that same resolution, kept in the request's
+	// context (withCallerResolved).
+	r = s.withCallerResolved(r)
 	actor, _, err := s.optionalActor(r)
 	if err != nil {
 		s.writeAuthenticationError(w, err)
+		return
+	}
+	who, ok := s.readerOf(w, r)
+	if !ok {
 		return
 	}
 	id := r.PathValue("id")
@@ -284,7 +297,7 @@ func (s *server) streamGoingAnswer(w http.ResponseWriter, r *http.Request) {
 		writeGoingRequestNotFound(w)
 		return
 	}
-	request, err := s.readGoingRequest(r.Context(), id)
+	request, err := s.readGoingRequest(r.Context(), who, id)
 	if errors.Is(err, pgx.ErrNoRows) {
 		writeGoingRequestNotFound(w)
 		return
@@ -319,10 +332,11 @@ func (s *server) streamGoingAnswer(w http.ResponseWriter, r *http.Request) {
 	ctx, done := context.WithDeadline(r.Context(), until)
 	defer done()
 	for {
-		frames, state, err := s.readGoingStream(ctx, id, after)
+		frames, state, err := s.readGoingStream(ctx, who, id, after)
 		if err != nil {
 			// pgx.ErrNoRows is the sweep having deleted the run under this reader
-			// (contracts.GoingRequestTTL); either way there is nothing left to read.
+			// (contracts.GoingRequestTTL), or the run having become one this reader may not
+			// read (goingRunSeen); either way there is nothing left to read.
 			return
 		}
 		for _, frame := range frames {

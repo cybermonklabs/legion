@@ -13,9 +13,11 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 type adviceAsk struct {
@@ -619,6 +621,7 @@ func (s *server) supersededApprovalAdvice(
 	ctx context.Context,
 	tx pgx.Tx,
 	ledger *docs.Ledger,
+	who model.Actor,
 	route string,
 	issueKey string,
 	artifactID string,
@@ -649,7 +652,7 @@ func (s *server) supersededApprovalAdvice(
 	// read of them costs the gate list alone - never the write, which commits as it always
 	// does, and never the first sentence, since the approval this write superseded is true
 	// whatever Dispatch holds about gates.
-	gates, err := supersededApprovalGates(ctx, adviceTx, artifactID)
+	gates, err := supersededApprovalGates(ctx, adviceTx, artifactID, refs.VisibilityArg(who))
 	if err != nil {
 		s.logAdviceError(route, issueKey, "superseded_approval", err)
 		return approval
@@ -692,9 +695,15 @@ func (s *server) supersededApprovalAdvice(
 // reader told nothing asks the architect, where a reader told a gate that is not there stops
 // working.
 //
+// The issue must also be one the writer sees ($4, the writer's viewer, through
+// access.ProjectClause on the issue's project): a document can be recorded by a gate of an issue
+// of another project, and a writer that does not see that project is told nothing of its issue,
+// as every other read of the stack tells them nothing of it. A writer that sees every object
+// reads every gate, as before a project could be private.
+//
 // The order is the issue's key and then the order a gate runs the steps in ($2,
 // model.GatedStepsKnown), the order the issue read lists an issue's own gates in.
-func supersededApprovalGates(ctx context.Context, q docs.Queryer, artifactID string) ([]supersededApprovalGate, error) {
+func supersededApprovalGates(ctx context.Context, q docs.Queryer, artifactID string, viewer any) ([]supersededApprovalGate, error) {
 	rows, err := q.Query(ctx, `
 		select g.issue, g.step
 		from design_gates g
@@ -702,8 +711,9 @@ func supersededApprovalGates(ctx context.Context, q docs.Queryer, artifactID str
 		join projects p on p.key = i.project_key
 		where g.artifact_id = $1 and not (i.status = any($3::text[]))
 			and coalesce(g.holds, g.step = any(p.gated_steps))
+			and `+access.ProjectClause("i.project_key", "$4")+`
 		order by g.issue, array_position($2::text[], g.step)
-	`, artifactID, model.GatedStepsKnown, model.IssueStatusesOutOfWorkflow)
+	`, artifactID, model.GatedStepsKnown, model.IssueStatusesOutOfWorkflow, viewer)
 	if err != nil {
 		return nil, fmt.Errorf("read the design gates this document records: %w", err)
 	}

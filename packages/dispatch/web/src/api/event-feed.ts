@@ -10,7 +10,7 @@ import {
 
 import { askThreadsIssue, eventRefreshTargets } from "./event-refresh";
 import { liveSocketFor } from "./live-socket";
-import { inboxQuery } from "./queries";
+import { inboxQuery, projectsQuery } from "./queries";
 import { hearLiveEvent } from "./query-client";
 import { type RefreshTarget, refreshQueries, trackQueryFetches } from "./query-refresh";
 import type { AuthenticatedUser, DispatchEvent } from "./types";
@@ -245,10 +245,19 @@ export function useEventFeed({
         // does not replay in full refresh spread as well.
         if (!replayComplete) {
           refreshEverything();
+        } else {
+          // A resume Dispatch replays in full still holds no event of an access change no event
+          // carried - one written by SQL alone, which the socket's heartbeat finds and ends the
+          // subscription for (api/live_events.go, recheckEventsReader) - so the project list the
+          // shell, the project routes and Settings read, which says which projects the caller
+          // sees, is read again after every gap: one small read, and the list can never stay
+          // behind a change of what the caller may see.
+          queueRefresh([{ queryKey: projectsQuery().queryKey }]);
         }
-        // The one query a refresh skips: a credential list held at `null` (no broker), which a
-        // server restarted since with a broker configured would now answer with a list. A
-        // restart replays nothing that says so.
+        // The queries a refresh may pass over: a credential list held at `null`, and a grants
+        // list held at 404 FEATURE_OFF that only a restricted member's Settings reads (no broker
+        // either way), which a server restarted since with a broker configured would now answer
+        // with a list. A restart replays nothing that says so.
         reaskHeldCredentialList(queryClient);
       },
       onEvent: (id, raw) => {

@@ -613,7 +613,7 @@ func (s *Service) onLoadDocument(ctx context.Context, room string, doc *crdt.Doc
 	// write's publish - reads it here.
 	issue, admitted := s.admittedIssueRead(room)
 	if !admitted {
-		if issue, err = s.readIssue(ctx, rooms, room); err != nil {
+		if issue, err = s.readIssue(ctx, rooms, room, model.ServerReader); err != nil {
 			return err
 		}
 	}

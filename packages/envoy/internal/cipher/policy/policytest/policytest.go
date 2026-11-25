@@ -300,6 +300,14 @@ func MeteredProfiledCurrent(t testing.TB, store *secrets.Local, registry *metric
 	if file != "" {
 		loader.Profiles = Profiles(t, file, services...)
 	}
+	return Metered(t, loader, registry)
+}
+
+// Metered is loader's policy with the policy's two metrics on registry, as MeteredCurrent says,
+// for a caller that sets more of the loader than Loader does, as cmd/cipherd/main.go sets its
+// ProjectChecks.
+func Metered(t testing.TB, loader policy.Loader, registry *metrics.Registry) *policy.Current {
+	t.Helper()
 	loader.StoreReads = policy.NewStoreReads(registry)
 	cur := current(t, loader)
 	policy.NewUnservableSecrets(registry, cur)

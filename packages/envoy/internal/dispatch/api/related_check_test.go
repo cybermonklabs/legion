@@ -148,7 +148,7 @@ func TestRelatedCheckRanksMoreChosenWordsAboveOneRepeated(t *testing.T) {
 			holder := createSearchIssue(t, handler, "COORD", "Zymurgy ledger quokka", "")
 			refreshTermStats(t, database, "COORD")
 
-			suggestions := directServer(deps).relatedCheck(context.Background(), relatedInput{project: "COORD", text: "Zymurgy ledger quokka marmot"})
+			suggestions := directServer(deps).relatedCheck(context.Background(), relatedInput{who: everyReader, project: "COORD", text: "Zymurgy ledger quokka marmot"})
 			if suggestions.Search != stage.search {
 				t.Fatalf("suggestions = %+v, want searched by %s", suggestions, stage.search)
 			}
@@ -242,7 +242,7 @@ func TestRelatedCheckMeaningListsASameMeaningItemWithNoSharedWord(t *testing.T) 
 	key := createSearchIssue(t, handler, "MEAN", title, spec)
 	processAllPending(t, database, embedder)
 
-	suggestions := srv.relatedCheck(context.Background(), relatedInput{project: "MEAN", text: text})
+	suggestions := srv.relatedCheck(context.Background(), relatedInput{who: everyReader, project: "MEAN", text: text})
 	if suggestions.Outcome != "found" || suggestions.Search != "meaning_and_keywords" || suggestions.SearchNote != "" {
 		t.Fatalf("suggestions = %+v, want found by meaning and keywords", suggestions)
 	}
@@ -291,7 +291,7 @@ func TestRelatedCheckMeaningListsASameMeaningItemBehindAFullKeywordPage(t *testi
 	refreshTermStats(t, database, "CROWD")
 	processAllPending(t, database, embedder)
 
-	crowded := srv.relatedCheck(context.Background(), relatedInput{project: "CROWD", text: text, keywordsOnly: true})
+	crowded := srv.relatedCheck(context.Background(), relatedInput{who: everyReader, project: "CROWD", text: text, keywordsOnly: true})
 	if crowded.Outcome != "found" || crowded.Search != "keywords_only" || len(crowded.Related) != suggestionRelatedCount {
 		t.Fatalf("the keyword-only check = %+v, want %d items found by keywords only", crowded, suggestionRelatedCount)
 	}
@@ -302,7 +302,7 @@ func TestRelatedCheckMeaningListsASameMeaningItemBehindAFullKeywordPage(t *testi
 		}
 	}
 
-	suggestions := srv.relatedCheck(context.Background(), relatedInput{project: "CROWD", text: text})
+	suggestions := srv.relatedCheck(context.Background(), relatedInput{who: everyReader, project: "CROWD", text: text})
 	if suggestions.Outcome != "found" || suggestions.Search != "meaning_and_keywords" || suggestions.SearchNote != "" {
 		t.Fatalf("suggestions = %+v, want found by meaning and keywords", suggestions)
 	}
@@ -336,11 +336,11 @@ func TestRelatedCheckMeaningLeavesExcludedIssuesOutOfItsWindow(t *testing.T) {
 	keeper := createSearchIssue(t, handler, "MWIN", keeperTitle, "")
 	processAllPending(t, database, embedder)
 
-	crowded := srv.relatedCheck(context.Background(), relatedInput{project: "MWIN", text: text})
+	crowded := srv.relatedCheck(context.Background(), relatedInput{who: everyReader, project: "MWIN", text: text})
 	if owners := relatedOwnerKeys(crowded.Related); slices.Contains(owners, keeper) {
 		t.Fatalf("related owners with nothing excluded = %v, want %s behind the %d nearer issues", owners, keeper, len(excluded))
 	}
-	suggestions := srv.relatedCheck(context.Background(), relatedInput{project: "MWIN", text: text, excludeIssues: excluded})
+	suggestions := srv.relatedCheck(context.Background(), relatedInput{who: everyReader, project: "MWIN", text: text, excludeIssues: excluded})
 	if suggestions.Outcome != "found" || suggestions.Search != "meaning_and_keywords" {
 		t.Fatalf("suggestions = %+v, want found by meaning and keywords", suggestions)
 	}
@@ -357,7 +357,7 @@ func TestRelatedCheckMeaningEmbedderFailingSearchesByKeywordsOnly(t *testing.T) 
 	createSuggestionProject(t, handler, "MFAIL")
 	key := createSearchIssue(t, handler, "MFAIL", "Nightly backups overrun their window", "")
 
-	suggestions := srv.relatedCheck(context.Background(), relatedInput{project: "MFAIL", text: "Nightly snapshots finish late"})
+	suggestions := srv.relatedCheck(context.Background(), relatedInput{who: everyReader, project: "MFAIL", text: "Nightly snapshots finish late"})
 	if suggestions.Outcome != "found" || suggestions.Search != "keywords_only" ||
 		suggestions.SearchNote != "the text could not be embedded for meaning search" {
 		t.Fatalf("suggestions = %+v, want found by keywords only, the embedding having failed", suggestions)
@@ -388,7 +388,7 @@ func TestRelatedCheckMeaningEmbedderPastThreeSecondsSearchesByKeywordsOnly(t *te
 
 	started := time.Now()
 	suggestions := answeredBeforeTheBinaryDeadline(t, "the check", func() *model.Suggestions {
-		answer, _ := srv.runRelatedCheck(context.Background(), relatedInput{project: "MSLOW", text: "Nightly snapshots finish late"}, started)
+		answer, _ := srv.runRelatedCheck(context.Background(), relatedInput{who: everyReader, project: "MSLOW", text: "Nightly snapshots finish late"}, started)
 		return answer
 	})
 	elapsed := time.Since(started)
@@ -457,7 +457,7 @@ func TestRelatedCheckMeaningFindsAProjectsItemBeyondOtherProjectsNearerVectors(t
 	indexDeps := deps
 	indexDeps.Store = indexStore
 
-	suggestions := directServer(indexDeps).relatedCheck(context.Background(), relatedInput{project: "MINE", text: text})
+	suggestions := directServer(indexDeps).relatedCheck(context.Background(), relatedInput{who: everyReader, project: "MINE", text: text})
 	if suggestions.Search != "meaning_and_keywords" {
 		t.Fatalf("suggestions = %+v, want the meaning search to have answered", suggestions)
 	}
@@ -486,7 +486,7 @@ func TestRelatedCheckBoundsCompletesBehindAOneSecondLock(t *testing.T) {
 	started := time.Now()
 	answered := make(chan *model.Suggestions, 1)
 	go func() {
-		answered <- srv.relatedCheck(context.Background(), relatedInput{project: "SLOW", text: "Zymurgy ledger totals drift"})
+		answered <- srv.relatedCheck(context.Background(), relatedInput{who: everyReader, project: "SLOW", text: "Zymurgy ledger totals drift"})
 	}()
 	time.Sleep(time.Second)
 	if err := lockTx.Rollback(context.Background()); err != nil {
@@ -525,7 +525,7 @@ func TestRelatedCheckBoundsPastTheAllowanceIsNotMadeAndRecorded(t *testing.T) {
 		t.Fatalf("lock search_term_stats: %v", err)
 	}
 	suggestions := srv.relatedCheck(context.Background(), relatedInput{
-		project: "STUCK", text: "Zymurgy ledger totals drift",
+		who: everyReader, project: "STUCK", text: "Zymurgy ledger totals drift",
 		source: suggestionSource{kind: "issue", issueKey: source, actor: model.Actor{Kind: "user", ID: "alice"}},
 		record: true,
 	})
@@ -581,7 +581,7 @@ func TestRelatedCheckBoundsARequestThatEndsFirstIsRecordedCancelled(t *testing.T
 	answered := make(chan *model.Suggestions, 1)
 	go func() {
 		answered <- srv.relatedCheck(request, relatedInput{
-			project: "GONE", text: "Zymurgy ledger totals drift",
+			who: everyReader, project: "GONE", text: "Zymurgy ledger totals drift",
 			source: suggestionSource{kind: "issue", issueKey: source, actor: model.Actor{Kind: "user", ID: "alice"}},
 			record: true,
 		})
@@ -657,7 +657,7 @@ func TestRelatedCheckBoundsDecisionBlocksPastTheAllowanceAreRecordedTimeout(t *t
 	}
 	artifact := model.Artifact{ID: issue.PrimaryArtifactID, IssueKey: &issue.Key, Project: "DBTO"}
 	checks := srv.decisionBlockChecks(context.Background(), artifact, blocks,
-		model.Actor{Kind: "user", ID: "alice"}, false)
+		model.Actor{Kind: "user", ID: "alice"}, everyReader, false)
 	if err := lockTx.Rollback(context.Background()); err != nil {
 		t.Fatalf("release the lock: %v", err)
 	}
@@ -717,7 +717,7 @@ func TestRelatedCheckRecordBlockedPastItsSecondIsWrittenOnceTheLockIsReleased(t 
 		t.Fatalf("lock asks: %v", err)
 	}
 	suggestions := srv.relatedCheck(context.Background(), relatedInput{
-		project: "MIGR", text: "Zymurgy ledger totals drift",
+		who: everyReader, project: "MIGR", text: "Zymurgy ledger totals drift",
 		source: suggestionSource{kind: "issue", issueKey: source, actor: model.Actor{Kind: "user", ID: "alice"}},
 		record: true,
 	})
@@ -802,7 +802,7 @@ func TestRelatedCheckRecordRetryStartedWhileShutdownWaitsIsWaitedFor(t *testing.
 	}()
 
 	srv.relatedCheck(context.Background(), relatedInput{
-		project: "SHUT", text: "Zymurgy ledger totals drift",
+		who: everyReader, project: "SHUT", text: "Zymurgy ledger totals drift",
 		source: suggestionSource{kind: "issue", issueKey: source, actor: model.Actor{Kind: "user", ID: "alice"}},
 		record: true,
 	})
@@ -842,7 +842,7 @@ func TestRelatedCheckBoundsBlankTextIsNotMade(t *testing.T) {
 	createSearchIssue(t, handler, "BLANK", "Is it to be or not to be", "")
 	srv := directServer(deps)
 	for _, text := range []string{"   \n\t", "Is it to be or not to be?"} {
-		suggestions := srv.relatedCheck(context.Background(), relatedInput{project: "BLANK", text: text})
+		suggestions := srv.relatedCheck(context.Background(), relatedInput{who: everyReader, project: "BLANK", text: text})
 		if suggestions.Outcome != "not_made" || suggestions.Missing != "the text holds no word to search for" ||
 			suggestions.Related == nil || len(suggestions.Related) != 0 || suggestions.SearchQuery != "" {
 			t.Fatalf("check of %q = %+v, want not made for a blank text", text, suggestions)
@@ -1012,7 +1012,7 @@ func TestRelatedCheckShowsAnAnswerWithNoOptionChosen(t *testing.T) {
 	fixture.answer(t, "no-option", "alice", map[string]any{"selected": []string{}, "text": "Neither; use enamel."})
 
 	encoded, err := json.Marshal(fixture.srv.relatedCheck(context.Background(), relatedInput{
-		project: "NOOPT", text: "Which lacquer for the dirigible gondolas?",
+		who: everyReader, project: "NOOPT", text: "Which lacquer for the dirigible gondolas?",
 	}))
 	if err != nil {
 		t.Fatalf("encode the check's result: %v", err)
@@ -1041,7 +1041,7 @@ func TestRelatedCheckShowsAnAskClosedWithNoAnswer(t *testing.T) {
 		t.Fatalf("resolve: status=%d body=%s", response.Code, response.Body.String())
 	}
 
-	suggestions := checkThroughJSON(t, fixture.srv, relatedInput{project: "CLOSED", text: "Who pilots the airship?"})
+	suggestions := checkThroughJSON(t, fixture.srv, relatedInput{who: everyReader, project: "CLOSED", text: "Who pilots the airship?"})
 	item := relatedAsk(t, suggestions, fixture.asks["closed"])
 	if item.Ask == nil || item.Ask.State != "resolved" || item.Ask.Answer != nil || item.Ask.Resolution == nil ||
 		item.Ask.Resolution.Kind != "resolved" || item.Ask.Resolution.Reason != "The roster settles it." {
@@ -1053,7 +1053,7 @@ func TestRelatedCheckShowsAnAskClosedWithNoAnswer(t *testing.T) {
 func TestRelatedCheckShowsAnOpenAsk(t *testing.T) {
 	t.Parallel()
 	fixture := newAskStateFixture(t, "OPENASK")
-	suggestions := checkThroughJSON(t, fixture.srv, relatedInput{project: "OPENASK", text: "Should the balloon cross the fjord?"})
+	suggestions := checkThroughJSON(t, fixture.srv, relatedInput{who: everyReader, project: "OPENASK", text: "Should the balloon cross the fjord?"})
 	item := relatedAsk(t, suggestions, fixture.asks["open"])
 	if item.Ask == nil || item.Ask.State != "open" || item.Ask.Answer != nil || item.Ask.Resolution != nil {
 		t.Fatalf("ask state = %+v, want open with no answer or resolution", item.Ask)
@@ -1095,7 +1095,7 @@ func TestRelatedCheckCarriesNoAskStateWhenTheAnswersCannotBeRead(t *testing.T) {
 	}
 	fill := func(ctx context.Context) (model.Suggestions, map[string]map[string]json.RawMessage) {
 		suggestions := model.Suggestions{}
-		fixture.srv.fillRelatedItems(ctx, relatedInput{project: "PARTIAL"}, slices.Clone(results), &suggestions)
+		fixture.srv.fillRelatedItems(ctx, relatedInput{who: everyReader, project: "PARTIAL"}, slices.Clone(results), &suggestions)
 		encoded, err := json.Marshal(suggestions)
 		if err != nil {
 			t.Fatalf("encode the related items: %v", err)
@@ -1165,7 +1165,7 @@ func TestRelatedCheckListsOneItemPerOwner(t *testing.T) {
 	createSuggestionProject(t, handler, "OWNER")
 	key := createSearchIssue(t, handler, "OWNER", "Zymurgy ledger drifts", "The zymurgy ledger drifts every quarter.")
 
-	suggestions := directServer(deps).relatedCheck(context.Background(), relatedInput{project: "OWNER", text: "zymurgy ledger drift"})
+	suggestions := directServer(deps).relatedCheck(context.Background(), relatedInput{who: everyReader, project: "OWNER", text: "zymurgy ledger drift"})
 	if keys := relatedOwnerKeys(suggestions.Related); !slices.Equal(keys, []string{key}) {
 		t.Fatalf("related = %+v, want %s once, though its title and its spec both match", suggestions.Related, key)
 	}
@@ -1278,7 +1278,7 @@ func TestRelatedCheckListsTheIssueItselfAndNotItsOwnDocument(t *testing.T) {
 	refreshTermStats(t, database, "OWNROW")
 
 	suggestions := srv.relatedCheck(context.Background(),
-		relatedInput{project: "OWNROW", text: text, keywordsOnly: true})
+		relatedInput{who: everyReader, project: "OWNROW", text: text, keywordsOnly: true})
 	if suggestions.Outcome != "found" {
 		t.Fatalf("suggestions = %+v, want the issue found by its own words", suggestions)
 	}
@@ -1332,7 +1332,7 @@ func TestRelatedCheckKeepsAnOpenAskOverTheIssueThatOwnsIt(t *testing.T) {
 	refreshTermStats(t, database, "ASKROW")
 
 	suggestions := srv.relatedCheck(context.Background(),
-		relatedInput{project: "ASKROW", text: text, keywordsOnly: true})
+		relatedInput{who: everyReader, project: "ASKROW", text: text, keywordsOnly: true})
 	if suggestions.Outcome != "found" {
 		t.Fatalf("suggestions = %+v, want the issue's rows found by their own words", suggestions)
 	}
@@ -1428,7 +1428,7 @@ func TestRelatedCheckKeepsAnOpenAskWhoseDocumentRowArrivesFirst(t *testing.T) {
 	}
 
 	suggestions := srv.relatedCheck(context.Background(),
-		relatedInput{project: "DOCROW", text: text, keywordsOnly: true})
+		relatedInput{who: everyReader, project: "DOCROW", text: text, keywordsOnly: true})
 	if suggestions.Outcome != "found" {
 		t.Fatalf("suggestions = %+v, want the issue's rows found by their own words", suggestions)
 	}
@@ -1522,7 +1522,7 @@ func TestRelatedCheckKeepsTheBetterRankedOfAnIssuesTwoDocuments(t *testing.T) {
 	}
 
 	suggestions := srv.relatedCheck(context.Background(),
-		relatedInput{project: "TWODOC", text: text, keywordsOnly: true})
+		relatedInput{who: everyReader, project: "TWODOC", text: text, keywordsOnly: true})
 	if suggestions.Outcome != "found" {
 		t.Fatalf("suggestions = %+v, want the issue's documents found by their own words", suggestions)
 	}
