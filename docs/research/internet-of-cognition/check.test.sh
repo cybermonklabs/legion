@@ -240,10 +240,7 @@ fixture_build "$WORK/base" >/dev/null 2>&1
 fresh() {
     # fresh <name>; a copy of the fixture to break, as --self-test copies it.
     local dir="$WORK/$1"
-    mkdir -p "$dir"
-    cp -r "$WORK/base/repo" "$dir/repo"
-    cp -r "$WORK/base/dispatch" "$dir/dispatch"
-    cp "$WORK/base/judgement.md" "$WORK/base/base" "$WORK/base/rows" "$dir/"
+    fixture_copy "$WORK/base" "$dir"
     printf '%s' "$dir"
 }
 
@@ -287,6 +284,39 @@ symbol_plant() {
         "$evidence/claims.jsonl"
     grep -F '"id":"f-our-1"' "$evidence/claims.jsonl" | grep -qF "\"file\":\"$file\",\"symbol\":\"$symbol\"" || return 1
     printf '%s' "$dir"
+}
+
+# dir_copy <name> <check.test.sh>; a scratch copy of this directory that --self-test can
+# run, whose check.test.sh is the file <check.test.sh> names.
+dir_copy() {
+    local copy="$WORK/$1"
+    mkdir -p "$copy/evidence"
+    cp "$HERE/check.sh" "$HERE/env.sh" "$HERE/citations.py" "$HERE/sources.json" "$HERE/claims.jsonl" "$copy/"
+    cp "$HERE/evidence/ioc-venv.lock" "$HERE/evidence/ioc-venv.in" "$HERE/evidence/tm-constraints.txt" \
+        "$HERE/evidence/build-constraints.txt" "$copy/evidence/"
+    mkdir -p "$copy/tests" && cp -r "$HERE/tests/omp-stub" "$copy/tests/"
+    cp "$2" "$copy/check.test.sh"
+    printf '%s' "$copy"
+}
+
+# missing_result <name> <mode> <what is missing> <what provides it> <run>; the second and
+# third are extended regular expressions. It passes when the mode cannot run, exit 2, and
+# its last line names what is missing and ends with what provides it.
+missing_result() {
+    ending_result "$1" 2 "^check\\.sh cannot run --$2: $3; provided by: $4\$" "$5"
+}
+
+missing_tool() {
+    # missing_tool <mode> <tool> <what provides it, an extended regular expression>
+    local dir out
+    path_without "$2"
+    dir="$(fresh "missing-$2-$1")"
+    if [ "$1" = admitted ]; then
+        out="$(PATH="$WORK/path-without-$2" gate_run "$HERE/check.sh" --admitted)"
+    else
+        out="$(PATH="$WORK/path-without-$2" fixture_run "$dir" "--$1")"
+    fi
+    missing_result "--$1 with no $2 on PATH cannot run, naming $2 and what provides it" "$1" "the tool $2 is not on PATH" "$3" "$out"
 }
 
 # ==== the cases of check.test.sh begin below this line, where cases_copy cuts it ====
@@ -1536,13 +1566,6 @@ ending_result "--landed on a checkout with no node_modules passes, its proofs in
 # fault passed at 533506542a, or ended there in a verdict on the deliverable or in a reason
 # that named nothing that provides what was missing; each honest form beside it passes
 # there and here.
-#
-# missing_result <name> <mode> <what is missing> <what provides it> <run>; the second and
-# third are extended regular expressions. It passes when the mode cannot run, exit 2, and
-# its last line names what is missing and ends with what provides it.
-missing_result() {
-    ending_result "$1" 2 "^check\\.sh cannot run --$2: $3; provided by: $4\$" "$5"
-}
 
 # 78. A tool missing from PATH. At 533506542a --replay, --shape and --landed read no tool
 # their recorded commands, their judgement or their proof need before they judged, so each
@@ -1551,18 +1574,6 @@ missing_result() {
 # --admitted, over this tree, with PATH lacking one tool its table names, and cannot run,
 # naming the tool and, last, what provides it. The honest form is the fixture with PATH
 # whole, which passes each mode it judges.
-missing_tool() {
-    # missing_tool <mode> <tool> <what provides it, an extended regular expression>
-    local dir out
-    path_without "$2"
-    dir="$(fresh "missing-$2-$1")"
-    if [ "$1" = admitted ]; then
-        out="$(PATH="$WORK/path-without-$2" gate_run "$HERE/check.sh" --admitted)"
-    else
-        out="$(PATH="$WORK/path-without-$2" fixture_run "$dir" "--$1")"
-    fi
-    missing_result "--$1 with no $2 on PATH cannot run, naming $2 and what provides it" "$1" "the tool $2 is not on PATH" "$3" "$out"
-}
 missing_tool replay go 'curl -fsSL https://go\.dev/dl/go1\.27\.3\.linux-amd64\.tar\.gz \| tar -xzC /usr/local, then PATH=/usr/local/go/bin:\$PATH'
 missing_tool shape dispatch 'the dispatch command of a Legion pod, /opt/legion/pi-envoy/bin/dispatch on its PATH'
 missing_tool citations python3 'apt-get install python3'
@@ -1748,16 +1759,12 @@ ending_result "a variable of the caller's that the header does not name does not
 # exported beside it, it ends the same way, so the fixture's --shape and --replay, which
 # run first, read no history of their caller's. The honest form is the same copy's
 # --self-test, which passes.
-self_copy="$WORK/self-test-copy"
-mkdir -p "$self_copy/evidence"
-cp "$HERE/check.sh" "$HERE/env.sh" "$HERE/citations.py" "$HERE/sources.json" "$HERE/claims.jsonl" "$self_copy/"
-cp "$HERE/evidence/ioc-venv.lock" "$HERE/evidence/ioc-venv.in" "$HERE/evidence/tm-constraints.txt" \
-    "$HERE/evidence/build-constraints.txt" "$self_copy/evidence/"
-mkdir -p "$self_copy/tests" && cp -r "$HERE/tests/omp-stub" "$self_copy/tests/"
+#
 # A check.test.sh that runs no case: it sources the copy's check.sh and writes its ending
 # record, all 0 cases passed, by run_ending, as this file's summary does.
 CASES_STUB='. "$(dirname "$0")/check.sh" && run_ending cases'
-printf '%s\n' "$CASES_STUB" >"$self_copy/check.test.sh"
+printf '%s\n' "$CASES_STUB" >"$WORK/cases-stub.sh"
+self_copy="$(dir_copy self-test-copy "$WORK/cases-stub.sh")"
 SELF_CANNOT='^check\.sh cannot run --self-test: --citations over the fixture deliverable could not run, so the self-test stops at self-test-baseline: check\.sh cannot run --citations: Dispatch, the read of dispatch://[^ ]* did not answer'
 out="$(DISPATCH_URL=http://127.0.0.1:1 IOC_EVIDENCE="$self_copy" gate_run "$self_copy/check.sh" --self-test)"
 ending_result "--self-test whose fixture's --citations has no Dispatch to read cannot run, naming the run and Dispatch" 2 "$SELF_CANNOT" "$out"
@@ -1895,19 +1902,6 @@ fi
 # ending record. Each fault ended at 9c82069807 in a mode that could not run, in a pass, or
 # in a failure read for a run that could not run; each honest form beside it passes there
 # and here.
-#
-# dir_copy <name> <check.test.sh>; a scratch copy of this directory that --self-test can
-# run, whose check.test.sh is the file <check.test.sh> names.
-dir_copy() {
-    local copy="$WORK/$1"
-    mkdir -p "$copy/evidence"
-    cp "$HERE/check.sh" "$HERE/env.sh" "$HERE/citations.py" "$HERE/sources.json" "$HERE/claims.jsonl" "$copy/"
-    cp "$HERE/evidence/ioc-venv.lock" "$HERE/evidence/ioc-venv.in" "$HERE/evidence/tm-constraints.txt" \
-        "$HERE/evidence/build-constraints.txt" "$copy/evidence/"
-    mkdir -p "$copy/tests" && cp -r "$HERE/tests/omp-stub" "$copy/tests/"
-    cp "$2" "$copy/check.test.sh"
-    printf '%s' "$copy"
-}
 
 # 88. One parse of claims.jsonl, before any environment is built or any reader starts. At
 # 9c82069807 --replay read claims.jsonl through the install reader, which stopped on a
@@ -1954,7 +1948,6 @@ for form in 'LIST_COMMAND:a row whose command is a list' 'NUMBER_ID:a row whose 
     one_failure_result "--admitted over a claims.jsonl holding ${form#*:} fails admitted-rows alone, naming the line, exit 1" admitted-rows \
         '^1 of 4 assertions failed: admitted-rows$' "^FAIL admitted-rows: line $(wc -l <"$copy/claims.jsonl") of claims\\.jsonl is no row" "$out"
 done
-printf '%s\n' "$CASES_STUB" >"$WORK/cases-stub.sh"
 copy="$(dir_copy parse-self-test "$WORK/cases-stub.sh")"
 printf '%s\n' "$LIST_COMMAND" >>"$copy/claims.jsonl"
 out="$(IOC_EVIDENCE="$copy" gate_run "$copy/check.sh" --self-test)"
@@ -7245,13 +7238,16 @@ accord_stub() {
     printf '%s' "$copy"
 }
 # accord_plant <name>; prints a fresh copy of the fixture whose claims.jsonl holds the row
-# i-skills-run as this directory's holds it, its command and its predicate among them.
+# i-skills-run as this directory's holds it, its command and its predicate among them, and
+# stops when it could not be planted.
 accord_plant() {
     local dir
-    dir="$(fresh "$1")" || return 1
-    jq -c 'select(.id == "i-skills-run")' "$HERE/claims.jsonl" >>"$dir/repo/docs/research/internet-of-cognition/claims.jsonl" || return 1
-    [ "$(grep -c '"id":"i-skills-run"' "$dir/repo/docs/research/internet-of-cognition/claims.jsonl")" = 1 ] || return 1
-    printf '%s' "$dir"
+    dir="$(fresh "$1")" &&
+        jq -c 'select(.id == "i-skills-run")' "$HERE/claims.jsonl" >>"$dir/repo/docs/research/internet-of-cognition/claims.jsonl" &&
+        [ "$(grep -c '"id":"i-skills-run"' "$dir/repo/docs/research/internet-of-cognition/claims.jsonl")" = 1 ] &&
+        printf '%s' "$dir" && return 0
+    printf 'FAIL the row i-skills-run could not be planted into the fixture\n' >&2
+    exit 1
 }
 # accord_run <stub dir> [<argument>...]; the script run by hand, under env -i, with the stub first on
 # PATH and its models.yml as IOC_OMP_MODELS.
@@ -7261,10 +7257,7 @@ accord_run() {
     env -i PATH="$stub:$PATH" HOME="$ACCORD_CASE/home" TMPDIR="$ACCORD_CASE/tmp" IOC_CLONES="$ACCORD_CLONES" IOC_OMP_MODELS="$stub/models.yml" \
         sh "$HERE/evidence/accord-skills-run.sh" "$@"
 }
-dir="$(accord_plant accord-models-unset)" || {
-    printf 'FAIL the row i-skills-run could not be planted into the fixture\n'
-    exit 1
-}
+dir="$(accord_plant accord-models-unset)" || exit 1
 out="$(FIXTURE_OMP_STUB="$(accord_stub locked)" FIXTURE_OMP_MODELS='' IOC_EVID="$HERE/evidence" IOC_CLONES="$ACCORD_CLONES" fixture_run "$dir" --replay)"
 models_case="--replay with IOC_OMP_MODELS unset cannot run, exit 2, of the kind prerequisite, naming the variable and what provides it, and the row i-skills-run runs no session"
 ending_read "$out"
@@ -7289,13 +7282,10 @@ fi
 # fail, its one line naming the row, its command, the predicate and "not locked".
 stalled_case="a session that does not lock fails replay-command alone, naming the row i-skills-run, the predicate and what the run printed"
 if ! accord_unrun "$stalled_case"; then
-    dir="$(accord_plant accord-stalled)" || {
-        printf 'FAIL the row i-skills-run could not be planted into the fixture\n'
-        exit 1
-    }
+    dir="$(accord_plant accord-stalled)" || exit 1
     out="$(FIXTURE_OMP_STUB="$(accord_stub stalled)" IOC_EVID="$HERE/evidence" IOC_CLONES="$ACCORD_CLONES" fixture_run "$dir" --replay)"
     one_failure_result "$stalled_case" replay-command '^1 of 18 assertions failed: replay-command$' \
-        "^FAIL replay-command: i-skills-run ran '.*accord-skills-run\\.sh\" --max-cost 2 .*' and its output does not meet \\{\"one_of\":\\[\"locked\"\\]\\}: not locked" "$out"
+        "^FAIL replay-command: i-skills-run ran '.*accord-skills-run\\.sh\" --max-cost 2\\.15 .*' and its output does not meet \\{\"one_of\":\\[\"locked\"\\]\\}: not locked" "$out"
 fi
 
 # 227. A model gateway that does not answer is a source that did not, never a verdict on the
@@ -7319,14 +7309,11 @@ for gateway in 429 503 401; do
     esac
     gateway_case="a model gateway that answers $gateway cannot run --replay, exit 2, of the kind source, naming the row i-skills-run and the model gateway, and fails no assertion"
     accord_unrun "$gateway_case" && continue
-    dir="$(accord_plant "accord-gateway-$gateway")" || {
-        printf 'FAIL the row i-skills-run could not be planted into the fixture\n'
-        exit 1
-    }
+    dir="$(accord_plant "accord-gateway-$gateway")" || exit 1
     out="$(FIXTURE_OMP_STUB="$(accord_stub "$gateway")" IOC_EVID="$HERE/evidence" IOC_CLONES="$ACCORD_CLONES" fixture_run "$dir" --replay)"
     ending_read "$out"
     if [ "$RUN_CRASH" != 1 ] && [ "$RUN_STATUS" = 2 ] && [ -z "$RUN_FAILED" ] && ! grep -q '^FAIL' "$out/text" &&
-        printf '%s\n' "$RUN_LINE" | grep -qxF -- "check.sh cannot run --replay now: $refused, so the row's failure is no verdict on the deliverable: 'omp -p --mode json --max-cost 2' exited 3 and printed 'result: model not reached ($said)'" &&
+        printf '%s\n' "$RUN_LINE" | grep -qxF -- "check.sh cannot run --replay now: $refused, so the row's failure is no verdict on the deliverable: 'omp -p --mode json --max-cost 2.15' exited 3 and printed 'result: model not reached ($said)'" &&
         [ "$(printf '%s' "$RUN_UNRUN" | cut -f2 | sort -u)" = source ]; then
         case_passed "$gateway_case"
     else
@@ -7340,10 +7327,7 @@ done
 # fixture's run carried no IOC_OMP_MODELS, so the script ended 2 and the row failed.
 locked_case="--replay over the fixture and the row i-skills-run on the stub in its locked mode passes every assertion"
 if ! accord_unrun "$locked_case"; then
-    dir="$(accord_plant accord-locked)" || {
-        printf 'FAIL the row i-skills-run could not be planted into the fixture\n'
-        exit 1
-    }
+    dir="$(accord_plant accord-locked)" || exit 1
     ending_result "$locked_case" 0 '^all 18 assertions passed$' \
         "$(FIXTURE_OMP_STUB="$(accord_stub locked)" IOC_EVID="$HERE/evidence" IOC_CLONES="$ACCORD_CLONES" fixture_run "$dir" --replay)"
 fi
@@ -7356,13 +7340,9 @@ fi
 # case runs the fixture's --replay with FIXTURE_OMP_STUB empty and a PATH without omp
 # (path_without), then with FIXTURE_OMP_MODELS naming a file that is not there.
 dir="$(fresh accord-omp-missing)"
-path_without omp
-out="$(FIXTURE_OMP_STUB='' PATH="$WORK/path-without-omp" fixture_run "$dir" --replay)"
-ending_result "--replay with no omp on PATH cannot run, naming omp and what provides it" 2 \
-    '^check\.sh cannot run --replay: the tool omp is not on PATH; provided by: the omp coding agent, with its print mode, on PATH$' "$out"
+FIXTURE_OMP_STUB='' missing_tool replay omp 'the omp coding agent, with its print mode, on PATH'
 out="$(FIXTURE_OMP_MODELS="$dir/no-such-models.yml" fixture_run "$dir" --replay)"
-ending_result "--replay whose IOC_OMP_MODELS names no readable file cannot run, naming the variable" 2 \
-    '^check\.sh cannot run --replay: the variable IOC_OMP_MODELS names no readable file; provided by: export IOC_OMP_MODELS=<the path of an omp models\.yml that reaches a model>$' "$out"
+missing_result "--replay whose IOC_OMP_MODELS names no readable file cannot run, naming the variable" replay 'the variable IOC_OMP_MODELS names no readable file' 'export IOC_OMP_MODELS=<the path of an omp models\.yml that reaches a model>' "$out"
 if grep -qF -- 'no-such-models' "$out/text"; then
     case_failed "--replay whose IOC_OMP_MODELS names no readable file prints no line that names its path" "$(grep -F -- 'no-such-models' "$out/text" | head -1 | cut -c1-300)"
 else
@@ -7442,9 +7422,32 @@ one_failure_result "a delivery message without the paragraph on where the two ac
 # of the page's "Default if nobody answers" line after the page's title (R13). At 3e1e50ce a
 # message that named the candidate 'One definitions record' with another default passed,
 # exit 0. It must now fail published-delivery alone, naming the candidate and its default.
+# The second form gives two candidates each other's default. At e6a13e4e the text after the
+# first place a title stands, which is its item of the ranking, was searched for the default,
+# so a default under any title passed, exit 0. The text is now read after the last place the
+# title stands, up to the title of another candidate: each of the two candidates must fail,
+# naming its default.
 dir="$(delivery_plant delivery-default default)" || exit 1
 one_failure_result "a delivery message that names a candidate above one engineer-day without its default fails published-delivery alone, naming the candidate" published-delivery \
     '^1 of 2 assertions failed: published-delivery$' "${DELIVERY_NEWEST}the candidate 'One definitions record', above one engineer-day, with its default: its default does not follow its title$" "$(fixture_published "$dir")"
+swapped_case="a delivery message that gives two candidates each other's default fails published-delivery alone, naming each candidate and that its default does not follow its title"
+dir="$(fresh delivery-swapped)"
+jq '.[0].message.body |= sub("(?<a>- \\*\\*Structured metadata on an Envoy message:\\*\\* )(?<x>[^\n]*)\n(?<b>- \\*\\*One definitions record:\\*\\* )(?<y>[^\n]*)"; "\(.a)\(.y)\n\(.b)\(.x)")' "$dir/dispatch/messages.json" >"$dir/messages.json" &&
+    mv "$dir/messages.json" "$dir/dispatch/messages.json" &&
+    jq -e '.[0].message.body | contains("- **Structured metadata on an Envoy message:** terms stay prose in each issue.\n- **One definitions record:** the envelope keeps no field of the record a fact came from.")' "$dir/dispatch/messages.json" >/dev/null || {
+    printf 'FAIL the delivery message with two defaults swapped could not be planted into the fixture\n'
+    exit 1
+}
+out="$(fixture_published "$dir")"
+if case_read "$swapped_case" "$out"; then
+    if [ "$RUN_STATUS" = 1 ] && [ "$RUN_FAILED" = published-delivery$'\n' ] && [ "$(grep -c '^FAIL ' "$out/text")" = 2 ] &&
+        grep -qE -- "${DELIVERY_NEWEST}the candidate 'Structured metadata on an Envoy message', above one engineer-day, with its default: its default does not follow its title\$" "$out/text" &&
+        grep -qE -- "${DELIVERY_NEWEST}the candidate 'One definitions record', above one engineer-day, with its default: its default does not follow its title\$" "$out/text"; then
+        case_passed "$swapped_case"
+    else
+        case_failed "$swapped_case" "exit $RUN_STATUS, $(grep '^FAIL' "$out/text" | head -3 | cut -c1-300 | tr '\n' ' ')last line: $RUN_LINE"
+    fi
+fi
 
 # 234. The comment on dispatch://INFRA-1098 records the gaps R8 found, each by the row
 # node-model.md's section "## 3. The gaps" cites for it, or, where that section cites none,
@@ -7563,7 +7566,7 @@ dir="$(fresh published-landed-file)"
 (cd "$dir/repo" && git rm --quiet skills/legion-worker/references/pr-body.md && git commit --quiet -m "the landed step's file removed") &&
     jq --arg url "$dir/repo" '.our_repository.url = $url' "$dir/repo/docs/research/internet-of-cognition/sources.json" >"$dir/sources.json" &&
     mv "$dir/sources.json" "$dir/repo/docs/research/internet-of-cognition/sources.json" || {
-    printf 'FAIL the landed step'"'"'s file could not be removed from the fixture'"'"'s head\n'
+    printf "FAIL the landed step's file could not be removed from the fixture's head\n"
     exit 1
 }
 one_failure_result "a landed step's file the default branch's commit lacks fails published-tree alone, naming the file" published-tree \

@@ -6,10 +6,10 @@
 # its form. One session plays both parties of ACCORD: the orchestrator runs the initiator's
 # script, and each specialist is a task subagent of that session, which reads accord-receiver
 # and replies by it. It reads the clone under IOC_CLONES with git, never its working tree,
-# and the omp model configuration whose path IOC_OMP_MODELS gives at run time, which it
-# copies, private to its owner, into the new HOME and never prints; nothing it writes
-# outside the run's directory holds it, and that directory is removed when the script ends.
-# The model is IOC_OMP_MODEL, or anthropic/claude-sonnet-5-5.
+# and the omp model configuration whose path IOC_OMP_MODELS gives at run time, which must
+# reach anthropic/claude-sonnet-5-5, or the model IOC_OMP_MODEL names; the script copies it,
+# private to its owner, into the new HOME and never prints it, nothing it writes outside the
+# run's directory holds it, and that directory is removed when the script ends.
 #
 #   sh accord-skills-run.sh --max-cost <USD>
 #
@@ -40,11 +40,11 @@
 #      or a refusal of the credential, on the first request or on the last attempt of a
 #      turn or of a subagent. Run by check.sh's --replay, which sets __IOC_FAILED, the
 #      script first writes into that record the line check.sh's function of a program
-#      writes for it, the status 3, no declared status, "omp" and the arguments of its
-#      session, and the "result:" line, so that check.sh reads the row's failure as the
-#      model gateway not answering (its source_answer), and never as a verdict on the
-#      deliverable. The cause is one of those four words and never omp's own message, which
-#      can name the gateway's address.
+#      writes for it, the status 3, no declared status, the fixed command text
+#      "omp -p --mode json --max-cost <N>", and the "result:" line, so that check.sh reads
+#      the row's failure as the model gateway not answering (its source_answer), and never
+#      as a verdict on the deliverable. The cause is one of those four words and never omp's
+#      own message, which can name the gateway's address.
 # IOC_ACCORD_KEEP, when set to a directory, receives the session's event stream, omp's
 # stderr, which may name the gateway's address, and the state file before the run's
 # directory is removed.
@@ -108,8 +108,13 @@ git -C "$CP" archive --format=tar -o "$RUN/skills.tar" "$COMMIT" protocols/accor
 tar -x -C "$AGENT/skills" --strip-components=3 -f "$RUN/skills.tar" ||
     cannot_run "unpacking the two ACCORD skills of $COMMIT failed"
 cp -- "$IOC_OMP_MODELS" "$AGENT/models.yml" || cannot_run 'copying IOC_OMP_MODELS failed'
-# Every model role on one model, and task subagents run in the foreground, so that the
-# orchestrator gets each specialist's reply as the task tool's result in print mode.
+# Every model role on one model; task subagents run in the foreground, so that the
+# orchestrator gets each specialist's reply as the task tool's result in print mode; and no
+# line of a tool's output is cut. omp cuts each line at tools.outputMaxColumns, 768 bytes by
+# default, and the initiator prints each phase message as one long line of JSON, so with the
+# cut the orchestrator rebuilt the messages from the script's own source and its state file:
+# in a kept run of 2026-11-25, 17 bash calls, 3 of them cut, against 9 calls and none cut with
+# the cap at 0, which disables it.
 cat >"$AGENT/config.yml" <<EOF
 modelRoles:
   default: $MODEL
@@ -121,6 +126,8 @@ modelRoles:
   commit: $MODEL
 async:
   enabled: false
+tools:
+  outputMaxColumns: 0
 EOF
 
 set -- PATH="$PATH" HOME="$NEWHOME" TMPDIR="$RUN/tmp" LANG=C.UTF-8 \

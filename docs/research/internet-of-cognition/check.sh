@@ -184,83 +184,78 @@
 #
 # The live-read rule: every read of a live source the gate makes itself goes through one
 # function, live_read, in the mode's own shell before any assertion over what it reads
-# judges: the judgement and the two records under check from Dispatch, whose copies every
-# row that reads a record reads too, Dispatch's answer to each dispatch:// reference, the
+# judges: the judgement and the two records under check from Dispatch, whose copies every row
+# that reads a record reads too, Dispatch's answer to each dispatch:// reference, the
 # Dispatch API, the GitHub budget, GitHub's own name for the deployment repository and its
 # answer to git ls-remote of that private repository rows read, the default branch and its
-# fetch, the fetch of each commit a
-# landed step merged in another pull request names, the fetch of each
-# pinned clone, and the run of coordination/count.py, the walker of the count, which
-# reads the feed of the count's window, so that a read inside it that fails is that feed
-# not answering. A source that does not answer is a mode that cannot run, naming the
-# source, exit 2, or exit 1 after a FAIL, by the precedence above; it is never an
-# assertion's failure. A source that answers that it holds no such thing has answered, and
-# judges the deliverable: Dispatch's "not found", "No block", "no version N of" or
-# "document ... not found" for a reference fails citation-dispatch, for the record of a
-# step that is not landed fails landed-proof, and for the judgement or a record under
-# check leaves the text empty, which every assertion over it then fails by its floor or
-# its committed rows. One such answer is read as no answer, on purpose: git answers the
-# fetch of a commit GitHub does not hold "upload-pack: not our ref", which live_read does not
-# take for an answer, so a merged-in step whose commit GitHub does not hold leaves --landed
-# unable to run, of the kind source, and never reaches landed-proof's FAIL that the fetch did
-# not bring that commit; check.test.sh's case 146 holds that. The live-read rule covers the
-# gate's own reads. A row's own failed read of a live source, GitHub, Dispatch or the model
-# gateway, is read by one rule of its own (source_answer), since only an answer from the
-# source judges the deliverable: a curl of GitHub's REST API or of the Dispatch API, by the
-# status the row got, curl's own error line, which the curl's record holds, and by one read
-# of the gate's own of the URL, with the header file the record names, for the source's
-# message, and for the status where the record holds none; a curl inside a script a row
-# runs, as evidence/concord-build-run.sh's two reads of GitHub are, by the same record, which
-# the script leaves; a dispatch command, by the first line it printed; a python3 of a row
-# whose command reads DISPATCH_URL, by the last urllib or transport error its output holds,
-# where the record holds no curl of a source beside it; and an omp session of a script a row
-# runs, as evidence/accord-skills-run.sh's is, by the line the script leaves in the same
-# record when the gateway gave no answer, which names the cause, HTTP 429, HTTP 5xx, a
-# refusal of the credential or no answer, and never omp's own message. A read that got no
-# answer, a server
-# error (5xx) or a rate limit the row got, whatever a later read answers, and an answer about
-# the reader's credential (a 401, or a 403 that names authentication, a permission or a token
-# rather than a rate limit, or that a read again answers below 400) are no verdict on the
-# deliverable: the row prints no FAIL and the mode cannot run, of the kind source, naming the
-# row, the source, the read and the line that shows it, exit 2, or exit 1 after an earlier
-# FAIL, by the precedence above ("The GitHub tokens stand on no command line" below). Any
-# other answer, such as a 404 or Dispatch's NOT_FOUND, is the source's answer about the
-# record, and the row fails, naming it; so does a row's failed read of anything else. The one
-# live read that is no input is the report of each published page's live address, which
-# reports an address that does not answer rather than stopping, as the Verification document
-# asks of it.
+# fetch, the fetch of each commit a landed step merged in another pull request names, the
+# fetch of each pinned clone, and the run of coordination/count.py, the walker of the count,
+# which reads the feed of the count's window, so that a read inside it that fails is that
+# feed not answering. A source that does not answer is a mode that cannot run, naming the
+# source, exit 2, or exit 1 after a FAIL, by the precedence above; it is never an assertion's
+# failure. A source that answers that it holds no such thing has answered, and judges the
+# deliverable: Dispatch's "not found", "No block", "no version N of" or "document ... not
+# found" for a reference fails citation-dispatch, for the record of a step that is not landed
+# fails landed-proof, and for the judgement or a record under check leaves the text empty,
+# which every assertion over it then fails by its floor or its committed rows. One such
+# answer is read as no answer, on purpose: git answers the fetch of a commit GitHub does not
+# hold "upload-pack: not our ref", which live_read does not take for an answer, so a
+# merged-in step whose commit GitHub does not hold leaves --landed unable to run, of the kind
+# source, and never reaches landed-proof's FAIL that the fetch did not bring that commit;
+# check.test.sh's case 146 holds that. The live-read rule covers the gate's own reads. A
+# row's own failed read of a live source, GitHub, Dispatch or the model gateway, is read by
+# one rule of its own (source_answer), since only an answer from the source judges the
+# deliverable: a curl of GitHub's REST API or of the Dispatch API, by the status the row got,
+# curl's own error line, which the curl's record holds, and by one read of the gate's own of
+# the URL, with the header file the record names, for the source's message, and for the
+# status where the record holds none; a curl inside a script a row runs, as
+# evidence/concord-build-run.sh's two reads of GitHub are, by the same record, which the
+# script leaves; a dispatch command, by the first line it printed; a python3 of a row whose
+# command reads DISPATCH_URL, by the last urllib or transport error its output holds, where
+# the record holds no curl of a source beside it; and an omp session of a script a row runs,
+# as evidence/accord-skills-run.sh's is, by the line the script leaves in the same record
+# when the gateway gave no answer, which names the cause, HTTP 429, HTTP 5xx, a refusal of
+# the credential or no answer, and never omp's own message. A read that got no answer, a
+# server error (5xx) or a rate limit the row got, whatever a later read answers, and an
+# answer about the reader's credential (a 401, or a 403 that names authentication, a
+# permission or a token rather than a rate limit, or that a read again answers below 400) are
+# no verdict on the deliverable: the row prints no FAIL and the mode cannot run, of the kind
+# source, naming the row, the source, the read and the line that shows it, exit 2, or exit 1
+# after an earlier FAIL, by the precedence above ("The GitHub tokens stand on no command
+# line" below). Any other answer, such as a 404 or Dispatch's NOT_FOUND, is the source's
+# answer about the record, and the row fails, naming it; so does a row's failed read of
+# anything else. The one live read that is no input is the report of each published page's
+# live address, which reports an address that does not answer rather than stopping, as the
+# Verification document asks of it.
 #
 # Prerequisites. Nothing in CI runs this script, and a gate nobody else can start passes by
 # default, so each mode declares what it needs in one table, prerequisite_table below: the
-# tools on PATH, the history, the clones, the environment variables, and a git or a grep
-# that reads a Perl-compatible regular expression where the mode reads a token an author
-# wrote by one (whole_token), each with what provides it. One step, prerequisites, checks
-# every line of the mode before its first live read and its first assertion, and one that
-# is missing ends the mode exit 2, naming it and, at the end of the line, what provides it.
-# --help prints the same table after this header, from the same function, so the list a
-# reader reads is the list the mode checks.
-# --self-test needs its own lines and every line of --replay, --shape, --citations,
-# --landed and --published, since it runs each of them; check.test.sh checks the lines of
-# --self-test alone before its first case, since each run a case makes checks its own
-# mode's. Before any of
-# them, every run checks the tools its ending is written with ("The run's own scratch and
-# record" above), which --help prints first. GNU timeout is the one line read before the
-# mode starts, since the mode itself runs under it (run_mode): a run with no timeout on PATH
-# ends exit 2 there, of the kind prerequisite, every assertion the mode declares unrun,
-# naming timeout and what provides it by the mode's own line of the table, never the 127 of
-# a program that is not there.
+# tools on PATH, the history, the clones, the environment variables, and a git or a grep that
+# reads a Perl-compatible regular expression where the mode reads a token an author wrote by
+# one (whole_token), each with what provides it. One step, prerequisites, checks every line
+# of the mode before its first live read and its first assertion, and one that is missing
+# ends the mode exit 2, naming it and, at the end of the line, what provides it. --help
+# prints the same table after this header, from the same function, so the list a reader reads
+# is the list the mode checks. --self-test needs its own lines and every line of --replay,
+# --shape, --citations, --landed and --published, since it runs each of them; check.test.sh
+# checks the lines of --self-test alone before its first case, since each run a case makes
+# checks its own mode's. Before any of them, every run checks the tools its ending is written
+# with ("The run's own scratch and record" above), which --help prints first. GNU timeout is
+# the one line read before the mode starts, since the mode itself runs under it (run_mode): a
+# run with no timeout on PATH ends exit 2 there, of the kind prerequisite, every assertion
+# the mode declares unrun, naming timeout and what provides it by the mode's own line of the
+# table, never the 127 of a program that is not there.
 #
-# The row i-skills-run makes the one model session --replay spends on: evidence/accord-
-# skills-run.sh installs the two ACCORD skills into a new omp HOME and runs one headless omp
-# session on them, capped by the --max-cost its row's command passes, a flag omp --help
-# prints. It needs IOC_OMP_MODELS, the path of an omp models.yml that reaches a model, omp,
-# and tar, three lines of the prerequisite table for --replay and so for the --self-test that
-# runs it; the credential in that file reaches no file of this tree and no line the gate
-# prints.
-# --self-test and check.test.sh run the row under tests/omp-stub/omp, a stub that plays the
-# session on canned replies (FIXTURE_OMP_STUB), and no run of theirs reaches a model. A
-# session whose gateway gave no answer is a read of a source that did not answer, by the
-# live-read rule above, and never a FAIL.
+# The row i-skills-run makes the one model session --replay spends on:
+# evidence/accord-skills-run.sh installs the two ACCORD skills into a new omp HOME and runs
+# one headless omp session on them, capped by the --max-cost its row's command passes, a flag
+# omp --help prints. It needs IOC_OMP_MODELS, the path of an omp models.yml that reaches a
+# model, omp, and tar, three lines of the prerequisite table for --replay and so for the
+# --self-test that runs it; the credential in that file reaches no file of this tree and no
+# line the gate prints. --self-test and check.test.sh run the row under tests/omp-stub/omp, a
+# stub that plays the session on canned replies (FIXTURE_OMP_STUB), and no run of theirs
+# reaches a model. A session whose gateway gave no answer is a read of a source that did not
+# answer, by the live-read rule above, and never a FAIL.
 #
 # --landed runs the committed proof of each landed step, the command sources.json commits
 # for it, from the root of this tree, and a proof that exits non-zero is the step failing, a
@@ -470,22 +465,23 @@
 # judgement as Dispatch holds it, each part read by rule: the ranking, every item of the list
 # under "## The ranking", in order; the paragraph, the text under "## Where the authors'
 # account and the checked reading differ"; and each candidate page whose Cost cost_read reads
-# as above one engineer-day, its title and, after it, the text of its "Default if nobody
+# as above one engineer-day, its title and, after the last place the title stands in the
+# message and up to the title of another candidate, the text of its "Default if nobody
 # answers" line. Both sides are read after one normalisation: each run of whitespace one
 # space, Markdown emphasis and backticks taken out, and each row citation in square brackets
-# taken out with the space before it. A message reaches the assignee the issue names when
-# the assignee did not write it and it is addressed to no session or role, a reply among
-# them; one such message holds every part, and where none does, a FAIL names each part the
-# newest of them lacks. The gaps R8 found are the rows node-model.md's section "## 3. The
-# gaps" cites on the bold line of each gap: one comment of dispatch://INFRA-1098 names
-# INFRA-3134 and cites each of them, or, where that section cites none, the judgement holds
-# R8's sentence, R8_NO_GAP, after the normalisation. The publication to the controller is
-# judged by its record, as the approved departure of the plan has it, and the mode prints
-# that it reads the record and not the publication: one comment of this issue names the
-# topic CONTROLLER_TOPIC, gives the time of the publication as a UTC time in RFC 3339 form,
-# as 2026-11-25T02:09:09Z, after no digit, and holds every item of the ranking, in order, as
-# the message must; where none does, a FAIL names each of the two the newest comment naming
-# the topic lacks.
+# taken out with the space before it. A message reaches the assignee the issue names when the
+# assignee did not write it and it is addressed to no session or role, a reply among them;
+# one such message holds every part, and where none does, a FAIL names each part the newest
+# of them lacks. The gaps R8 found are the rows node-model.md's section "## 3. The gaps"
+# cites on the bold line of each gap: one comment of dispatch://INFRA-1098 names INFRA-3134
+# and cites each of them, or, where that section cites none, the judgement holds R8's
+# sentence, R8_NO_GAP, after the normalisation. The publication to the controller is judged
+# by its record, as the approved departure of the plan has it, and the mode prints that it
+# reads the record and not the publication: one comment of this issue names the topic
+# CONTROLLER_TOPIC, gives the time of the publication as a UTC time in RFC 3339 form, as
+# 2026-11-25T02:09:09Z, after no digit, and holds every item of the ranking, in order, as the
+# message must; where none does, a FAIL names each of the two the newest comment naming the
+# topic lacks.
 # --self-test runs the mode over its fixture's own Dispatch (fixture_published).
 #
 # --admitted reads the one table of the forms the evaluator admits, ADMITTED in reader_py:
@@ -2363,7 +2359,7 @@ GAPS
 # report coverage-complete makes: a line that starts with the family and a space.
 # --self-test reads this script's own report by it, and the planted copy's.
 coverage_missing() {
-    local coverage family
+    local coverage family _mode _asserts _fault
     coverage="$(bash "$1" --coverage)"
     while IFS='|' read -r family _mode _asserts _fault; do
         printf '%s\n' "$coverage" | grep -q "^$family " || printf '%s\n' "$family"
@@ -3060,20 +3056,19 @@ github_headers_fresh() {
 
 # source_answer <id> <output-file>; reads the first failed read of a live source, GitHub,
 # Dispatch or the model gateway, that the row's record holds with a status the row did not
-# declare, and says
-# whether the source's answer judges the row (the header's live-read rule). Only an answer
-# about the record judges it. A read that got no answer, a server error (5xx), a rate limit,
-# and an answer about the reader's credential, a 401 or a 403 that names authentication, a
-# permission or a token rather than a rate limit, judge nothing of the deliverable: an
-# expired token is the reader's, never a wrong deliverable. IOC_SOURCE_STOP then holds the
-# reason the mode cannot run, naming the row, the source, the read and the line that shows
-# it, as "GitHub refused the credential of tc-input-1's read of its REST API, so the row's
-# failure is no verdict on the deliverable: ... GitHub answered 401: Bad credentials". Any
-# other answer judges the row, and IOC_SOURCE_ANSWER names it for the row's FAIL line. Both
-# are empty when no read of a source failed, or when one failed and printed nothing this
-# rule reads. A source's reads are four, each found by its record (run_recorded), and a
-# python3's is read only where the record holds no curl or dispatch command of a source,
-# whose own line names the read the python3 was handed:
+# declare, and says whether the source's answer judges the row (the header's live-read rule).
+# Only an answer about the record judges it. A read that got no answer, a server error (5xx),
+# a rate limit, and an answer about the reader's credential, a 401 or a 403 that names
+# authentication, a permission or a token rather than a rate limit, judge nothing of the
+# deliverable: an expired token is the reader's, never a wrong deliverable. IOC_SOURCE_STOP
+# then holds the reason the mode cannot run, naming the row, the source, the read and the
+# line that shows it, as "GitHub refused the credential of tc-input-1's read of its REST API,
+# so the row's failure is no verdict on the deliverable: ... GitHub answered 401: Bad
+# credentials". Any other answer judges the row, and IOC_SOURCE_ANSWER names it for the row's
+# FAIL line. Both are empty when no read of a source failed, or when one failed and printed
+# nothing this rule reads. A source's reads are four, each found by its record
+# (run_recorded), and a python3's is read only where the record holds no curl, dispatch or
+# omp command of a source, whose own line names the read the python3 was handed:
 #
 #   - A curl of https://api.github.com/ or of DISPATCH_URL, by the URL its record holds.
 #     Each such curl of a row runs with --fail-with-body, which exits 22 when the source
@@ -3169,8 +3164,8 @@ source_answer() {
             [ "$failed_said" = - ] || said="$failed_said"
             ;;
         "python3 "*)
-            # Read only when no curl or dispatch command of a source stands in the record,
-            # whichever of the two wrote its line first.
+            # Read only when no curl, dispatch or omp command of a source stands in the
+            # record, whichever of the three wrote its line first.
             [ -n "$python_status" ] || ! grep -qF DISPATCH_URL "$out.command" 2>/dev/null || python_status="$failed_status"
             ;;
         esac
@@ -8186,13 +8181,16 @@ def lacking($items): reduce range(0; $items | length) as $i ({rest: ., lacks: []
     (.rest | after($items[$i])) as $r | if $r == null then .lacks += [$i + 1] else .rest = $r end) | .lacks;
 def items: (if length > 1 then "items " else "item " end) + (map(tostring) | join(", "))
     + " of the list under '## The ranking' " + (if length > 1 then "are" else "is" end);
+def not_in_order($label): if length > 0 then "\($label): \(items) not in it, one after another in the list's order" else empty end;
+# under($c; $p): where the default of the candidate $c stands: the text after the last place its title stands, since the ranking names it first, up to the first title of another candidate; null where the title is not in the text.
+def under($c; $p): split($c.title) as $s | if ($s | length) > 1 then reduce ($p.candidates[] | select(.title != $c.title) | .title) as $t ($s[-1]; split($t)[0]) else null end;
 def when: (.created_at // "") | rtrimstr("Z") | split(".") | [.[0], ((.[1] // "") + "000000000")[0:9]];
 def list: if type == "array" then .[] | select(type == "object") else empty end;
 def cites($id): (.body // "") | test("(^|[^a-z0-9-])" + $id + "($|[^a-z0-9-])");
 def lacks($p): ((.body // "") | norm) as $b
-    | [(($b | lacking($p.ranking)) as $l | if ($l | length) > 0 then "the ranking: \($l | items) not in it, one after another in the list's order" else empty end),
+    | [($b | lacking($p.ranking) | not_in_order("the ranking")),
        (if ($b | contains($p.differ)) then empty else "the paragraph on where the two accounts differ, the text under '## Where the authors' account and the checked reading differ'" end),
-       ($p.candidates[] as $c | ($b | after($c.title)) as $r
+       ($p.candidates[] as $c | ($b | under($c; $p)) as $r
          | if $r == null then "the candidate '\($c.name)', above one engineer-day, with its default: its title is not in it"
            elif ($r | contains($c.default)) then empty
            else "the candidate '\($c.name)', above one engineer-day, with its default: its default does not follow its title" end)];
@@ -8200,8 +8198,8 @@ def lacks($p): ((.body // "") | norm) as $b
 def stamp: "(^|[^0-9])(?<t>[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z)";
 # recorded_lacks($p): what a record of the publication lacks of the ranking as published and
 # the time of the publication, one sentence each.
-def recorded_lacks($p): ((.body // "") | norm | lacking($p.ranking)) as $l
-    | [(if ($l | length) > 0 then "the ranked list as published: \($l | items) not in it, one after another in the list's order" else empty end),
+def recorded_lacks($p):
+    [((.body // "") | norm | lacking($p.ranking) | not_in_order("the ranked list as published")),
        (if ((.body // "") | test(stamp)) then empty else "the time of the publication, a UTC time in RFC 3339 form, as 2026-11-25T02:09:09Z" end)];
 ($parts | {ranking: [.ranking[] | norm | select(length > 0)], differ: (.differ | norm),
     candidates: [.candidates[] | {name: .title, title: (.title | norm), default: (.default | norm)}]}) as $p
@@ -8214,12 +8212,12 @@ def recorded_lacks($p): ((.body // "") | norm | lacking($p.ranking)) as $l
 | (if ($gaps | length) > 0 then
      ([$named[] | select(. as $c | all($gaps[]; . as $g | $c | cites($g)))] | first) as $gapped
      | if $gapped != null then {pass: "the comment dispatch://INFRA-1098/comment/\($gapped.id) names this issue and cites each of the \($gaps | length) gaps node-model.md records"}
-       elif ($named | length) == 0 then {fail: "no comment of dispatch://INFRA-1098 names INFRA-3134, so none records the gaps node-model.md's section of the gaps lists, the rows \($gaps | join(", "))"}
+       elif ($named | length) == 0 then {fails: ["no comment of dispatch://INFRA-1098 names INFRA-3134, so none records the gaps node-model.md's section of the gaps lists, the rows \($gaps | join(", "))"]}
        else ($named | sort_by(when) | last) as $c
-         | {fail: "no comment of dispatch://INFRA-1098 that names INFRA-3134 cites each gap node-model.md's section of the gaps lists: the newest, dispatch://INFRA-1098/comment/\($c.id), does not cite \([$gaps[] | . as $g | select($c | cites($g) | not)] | join(", "))"}
+         | {fails: ["no comment of dispatch://INFRA-1098 that names INFRA-3134 cites each gap node-model.md's section of the gaps lists: the newest, dispatch://INFRA-1098/comment/\($c.id), does not cite \([$gaps[] | . as $g | select($c | cites($g) | not)] | join(", "))"]}
        end
    elif ($judgement | norm | contains($nogap | norm)) then {pass: "node-model.md's section of the gaps cites no gap, and the judgement says so in R8's words"}
-   else {fail: "node-model.md's section of the gaps cites no gap's row, and the judgement does not say '\($nogap)', the sentence R8 asks for where no gap is found"} end) as $d
+   else {fails: ["node-model.md's section of the gaps cites no gap's row, and the judgement does not say '\($nogap)', the sentence R8 asks for where no gap is found"]} end) as $d
 | [$comments[0] | list | select((.body // "") | norm | contains($topic))] as $recorded
 | ([$recorded[] | select(recorded_lacks($p) | length == 0)] | first) as $published
 | (if ($recorded | length) == 0 then {fails: ["no comment of this issue records the publication of the ranked list to the project's controller: none names the topic \($topic)"]}
@@ -8233,7 +8231,7 @@ def recorded_lacks($p): ((.body // "") | norm | lacking($p.ranking)) as $l
     elif ($holding | length) > 0 then empty
     elif $newest == null then "no message on this issue reaches its assignee: none is one the assignee did not write and that is addressed to no session or role"
     else ($newest | lacks($p))[] as $part | "the newest message on this issue to its assignee, dispatch://INFRA-3134/message/\($newest.id) of \($newest.created_at // "no time"), does not carry \($part)" end),
-   ($d.fail // empty), ($e.fails // [] | .[])] as $fails
+   ($d, $e | (.fails // [])[])] as $fails
 | if ($fails | length) > 0 then $fails[] | "fail\t" + .
   else "pass\tthe record of the delivery is on the issue: the message dispatch://INFRA-3134/message/\($holding[0].id) carries the \($p.ranking | length) items of the ranking in order, the paragraph on where the two accounts differ and the \($p.candidates | length) candidates above one engineer-day, each with its default; \($d.pass); and \($e.pass)" end
 JQ
@@ -8657,22 +8655,31 @@ STUB
     chmod +x "$dir/dispatch/bin/curl"
 }
 
+# fixture_copy <from> <to>; <to> as a copy of the fixture <from> that a plant breaks: its
+# repository, its Dispatch, its judgement and the files its plants read, as --self-test and
+# check.test.sh each copy it.
+fixture_copy() {
+    mkdir -p "$2"
+    cp -r "$1/repo" "$2/repo"
+    cp -r "$1/dispatch" "$2/dispatch"
+    cp "$1/judgement.md" "$1/base" "$1/rows" "$2/"
+}
+
 fixture_run() {
     # fixture_run <dir> <mode>; runs the gate over the fixture <dir> once, prints the
     # directory it made for that run under <dir>, and ends with the run's status. The
     # directory holds the gate's own output (text), its ending record (ending, the file
-    # IOC_ENDING names for this run alone) and the status it exited with (status), and a
-    # case of check.test.sh and --self-test read the run by ending_read. The fixture's own
-    # rows read its own repository alone, so it needs nothing env.sh prepares and skips it.
-    # It runs in an environment of its own, as the header's "The fixture of --self-test"
-    # states: FIXTURE_CARRIED and FIXTURE_INPUTS, each where it is set, the fixture's own
-    # tree, judgement and head, FIXTURE_DEPLOYMENT_REPO as IOC_DEPLOYMENT_REPO and
-    # FIXTURE_OMP_MODELS as IOC_OMP_MODELS, each unless it is empty, FIXTURE_OMP_STUB first on
-    # PATH unless it is empty, the run's own record, and an IOC_CACHE of its own unless a case
-    # names one; no
-    # other variable of the caller's. The run is a child the caller waits on, under
-    # BOUND_RUN (the header's "Every child the gate waits on ends"): one that a signal or its
-    # bound ended holds the record bound_record writes for it.
+    # IOC_ENDING names for this run alone) and the status it exited with (status), and a case
+    # of check.test.sh and --self-test read the run by ending_read. The fixture's own rows
+    # read its own repository alone, so it needs nothing env.sh prepares and skips it. It
+    # runs in an environment of its own, as the header's "The fixture of --self-test" states:
+    # FIXTURE_CARRIED and FIXTURE_INPUTS, each where it is set, the fixture's own tree,
+    # judgement and head, FIXTURE_DEPLOYMENT_REPO as IOC_DEPLOYMENT_REPO and
+    # FIXTURE_OMP_MODELS as IOC_OMP_MODELS, each unless it is empty, FIXTURE_OMP_STUB first
+    # on PATH unless it is empty, the run's own record, and an IOC_CACHE of its own unless a
+    # case names one; no other variable of the caller's. The run is a child the caller waits
+    # on, under BOUND_RUN (the header's "Every child the gate waits on ends"): one that a
+    # signal or its bound ended holds the record bound_record writes for it.
     local dir="$1" mode="$2" name carried=() run status
     for name in $FIXTURE_CARRIED $FIXTURE_INPUTS; do
         [ -n "${!name+set}" ] && carried+=("$name=${!name}")
@@ -8726,12 +8733,12 @@ fixture_mode() {
 # message to its assignee, dispatch/messages.json, carrying the two items of the fixture's
 # ranking in order, the paragraph on where the two accounts differ and each of the three
 # candidates above one engineer-day with its default, and the comment that records the
-# publication of the ranked list to the controller, dispatch/comments.json, naming its
-# topic, the time of the publication and the ranking. Given <part>, it writes them with
-# that part missing: ranking, the message holds the first item alone; order, the two items in
-# the other order; differ, a sentence in place of the paragraph; default, the candidate 'One
-# definitions record' with no default after its title; publication, the comment holds the
-# first item alone; time, the comment gives its time in words and no UTC time. It returns
+# publication of the ranked list to the controller, dispatch/comments.json, naming its topic,
+# the time of the publication and the ranking. Given <part>, it writes them with that part
+# missing: ranking, the message holds the first item alone; order, the two items in the other
+# order; differ, a sentence in place of the paragraph; default, the candidate 'One
+# definitions record' with another default after its title; publication, the comment holds
+# the first item alone; time, the comment gives its time in words and no UTC time. It returns
 # non-zero when either file could not be written.
 fixture_delivery() {
     local dir="$1" part="${2:-}" first second ranking differ defaults published at
@@ -9141,32 +9148,23 @@ mode_self_test() {
     [ "$broken" -eq 0 ] || return 0
     pass "self-test-baseline" "the fixture deliverable passes --$(printf '%s' "$modes" | sed 's/ /, --/g')"
 
-    local family planted
+    local family planted coverage_planted="" coverage_fault=""
     while IFS='|' read -r family mode asserts fault; do
         [ "$fault" = "-" ] && continue
         planted="$work/$family"
         rm -rf "$planted"
-        mkdir -p "$planted"
-        cp -r "$work/base/repo" "$planted/repo"
-        cp -r "$work/base/dispatch" "$planted/dispatch"
-        cp "$work/base/judgement.md" "$planted/judgement.md"
-        cp "$work/base/base" "$planted/base"
-        cp "$work/base/rows" "$planted/rows"
+        fixture_copy "$work/base" "$planted"
         if ! fixture_plant "$planted" "$family"; then
             fail "$family" "the self-test plants no fault of this kind, so nothing proves the gate reads it"
             continue
         fi
         # coverage-complete is a row of --self-test itself, and the run that judges it over
-        # the fixture would be the self-test again: its plant is read by coverage_missing, the
-        # one reader coverage-complete reads this script's own report by, over the planted
-        # copy of this script.
+        # the fixture would be the self-test again: its plant is kept for the end of this
+        # function, where coverage_missing, the one reader coverage-complete reads this
+        # script's own report by, reads the planted copy of this script and then this tree's
+        # own, so that the assertion prints its PASS after both parts have run (finish).
         if [ "$family" = coverage-complete ]; then
-            if [ -n "$(coverage_missing "$planted/repo/docs/research/internet-of-cognition/check.sh")" ]; then
-                pass "$family" "the gate fails the planted fault and names it: $fault"
-            else
-                fail "$family" "the gate passed the planted fault ($fault)"
-            fi
-            rm -rf "$planted"
+            coverage_planted="$planted" coverage_fault="$fault"
             continue
         fi
         local out
@@ -9208,12 +9206,23 @@ mode_self_test() {
         fail admitted-table "check.sh --admitted does not pass, exit $RUN_STATUS: $(grep '^FAIL' "$admitted/text" | head -3 | tr '\n' ' ')$RUN_LINE"
     fi
 
-    # --coverage names every family the gate holds, so a mode nothing runs is still read.
-    local unnamed
+    # --coverage names every family the gate holds, so a mode nothing runs is still read:
+    # this tree's own report, and the planted copy's, which has to leave a family out. Both
+    # are read before coverage-complete prints a PASS, since a PASS printed before the later
+    # part would stand however that part ended.
+    local unnamed caught=""
     unnamed="$(coverage_missing "$EVIDENCE/check.sh")"
     while IFS= read -r family; do
         [ -n "$family" ] && fail coverage-complete "the coverage report does not name the family $family"
     done <<<"$unnamed"
+    if [ -n "$coverage_planted" ]; then
+        if [ -n "$(coverage_missing "$coverage_planted/repo/docs/research/internet-of-cognition/check.sh")" ]; then
+            caught=1
+        else
+            fail coverage-complete "the gate passed the planted fault ($coverage_fault)"
+        fi
+    fi
+    [ -z "$caught" ] || pass coverage-complete "the gate fails the planted fault and names it: $coverage_fault"
     [ -n "$unnamed" ] || pass coverage-complete "the coverage report names every assertion family the gate holds"
     rm -rf "$work"
 }
