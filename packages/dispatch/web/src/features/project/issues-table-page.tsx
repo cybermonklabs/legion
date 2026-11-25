@@ -1,5 +1,5 @@
 import type { Table } from "@tanstack/react-table";
-import { type ReactNode, type RefObject, useState } from "react";
+import { type ReactNode, useState } from "react";
 import type { IssueSummary } from "../../api/types";
 import { Chip } from "../../components/Chip";
 import { ColumnsMenu } from "../../components/ColumnsMenu";
@@ -120,7 +120,6 @@ type ToolbarPanel = "flags" | "view";
  */
 export function IssueTableToolbar({
   keyScope,
-  searchRef,
   selection,
   stateKey,
   table,
@@ -129,9 +128,6 @@ export function IssueTableToolbar({
   /** Where the row's Shift+F and Shift+V are registered (`ControlRow`): the project scope for
    *  the page's one table, or its main one, and none for a table drawn beside it. */
   keyScope?: "project";
-  /** The search box. The List's hand-off (`IssuesTable`'s `noteFocus`) never lands in it: its
-   *  walk back passes over every control that takes typed text, and it names no fallback. */
-  searchRef: RefObject<HTMLInputElement | null>;
   /** The chip of the issues a link names, which the row draws first among its chips. */
   selection?: FilterChip;
   /** The prefix this table's view is written under (`useTableView`), which **Clear filters**
@@ -275,7 +271,6 @@ export function IssueTableToolbar({
             label="Search issues"
             onChange={(value) => setSearch(value)}
             placeholder="Search issues: key, title, epic, assignee, author, labels"
-            ref={searchRef}
             size="compact"
             value={search}
           />

@@ -183,10 +183,8 @@ export function IssuesTable({
   const [selection, setSelection] = useState<RowSelectionState>({});
   // The issue the reader marked last - by its own checkbox, or `x` on its row: where the focus
   // goes when the bar goes with it (`returnFocus`, below). A select-all marks no row of the
-  // reader's own, so it records none. The List's hand-off (`noteFocus`, below) never lands in the
-  // search box (`searchRef`), which takes typed text.
+  // reader's own, so it records none.
   const lastMarked = useRef<string | null>(null);
-  const searchRef = useRef<HTMLInputElement>(null);
   const recordMark = useCallback((key: string) => {
     lastMarked.current = key;
   }, []);
@@ -515,7 +513,6 @@ export function IssuesTable({
           // Shift+F and Shift+V belong to the page's one table, or its main one: a table drawn
           // beside it leaves them to that one.
           keyScope={moveFrom === "page" ? "project" : undefined}
-          searchRef={searchRef}
           selection={pickedChip}
           stateKey={stateKey}
           table={table}
