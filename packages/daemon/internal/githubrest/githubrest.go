@@ -246,24 +246,29 @@ const restAccept = "application/vnd.github+json"
 // target, and with shown "" names target: GitHub's answer as ShownPath names it, and a request
 // that got no answer as oauth2call.Unanswered names it.
 func (c Client) call(ctx context.Context, method, target, shown string, body []byte, into any) (string, http.Header, error) {
-	next, response, err := c.exchange(ctx, method, target, shown, body, into, restAccept)
+	next, response, answer, err := c.exchange(ctx, method, target, shown, body, restAccept)
 	if response == nil {
 		return next, nil, err
+	}
+	if err == nil && into != nil {
+		err = answer.Decode(into)
 	}
 	return next, response.Header, err
 }
 
-// exchange is call with accept as the request's Accept header, answering GitHub's response, its
-// body read and closed, in place of its headers alone (nil for a request that got no answer):
-// GraphQL reads the rate-limit headers of a 200 from it as the rule reads them (limitHeaders).
-func (c Client) exchange(ctx context.Context, method, target, shown string, body []byte, into any, accept string) (string, *http.Response, error) {
+// exchange is call with accept as the request's Accept header, and without its decode: it answers
+// GitHub's 2xx as it was read (oauth2call.ReadAnswer), or as it was kept for a 304, for its caller
+// to decode, and GitHub's response, its body read and closed, in place of its headers alone (nil
+// for a request that got no answer). GraphQL decodes a query's answer from it in parts and reads
+// the rate-limit headers of a 200 as the rule reads them (limitHeaders).
+func (c Client) exchange(ctx context.Context, method, target, shown string, body []byte, accept string) (string, *http.Response, oauth2call.Answer, error) {
 	var payload io.Reader
 	if body != nil {
 		payload = bytes.NewReader(body)
 	}
 	request, err := http.NewRequestWithContext(ctx, method, target, payload)
 	if err != nil {
-		return "", nil, oauth2call.Unanswered(err, nil, shown)
+		return "", nil, oauth2call.Answer{}, oauth2call.Unanswered(err, nil, shown)
 	}
 	request.Header.Set("Authorization", "Bearer "+c.Token)
 	request.Header.Set("Accept", accept)
@@ -281,32 +286,26 @@ func (c Client) exchange(ctx context.Context, method, target, shown string, body
 	}
 	response, err := client.Do(request)
 	if err != nil {
-		return "", nil, oauth2call.Unanswered(err, request, shown)
+		return "", nil, oauth2call.Answer{}, oauth2call.Unanswered(err, request, shown)
 	}
 	defer response.Body.Close()
 	read, err := oauth2call.ReadAnswer(response, 64<<20)
 	if err != nil {
-		return "", response, err
+		return "", response, oauth2call.Answer{}, err
 	}
 	if response.StatusCode == http.StatusNotModified && kept.etag != "" {
 		// Unchanged since the answer kept for target: that answer is GitHub's answer now, read as
 		// it was kept, with the record of the request it answered.
-		if into == nil {
-			return kept.next, response, nil
-		}
-		return kept.next, response, kept.answer.Decode(into)
+		return kept.next, response, kept.answer, nil
 	}
 	if response.StatusCode < 200 || response.StatusCode > 299 {
-		return "", response, AnswerOf(method, ShownPath(c.API, request.URL, shown), response, read)
+		return "", response, oauth2call.Answer{}, AnswerOf(method, ShownPath(c.API, request.URL, shown), response, read)
 	}
 	next := nextPage(response.Header.Get("Link"))
 	if conditional {
 		c.ETags.keep(cacheKey, response.Header.Get("ETag"), read, next)
 	}
-	if into == nil {
-		return next, response, nil
-	}
-	return next, response, read.Decode(into)
+	return next, response, read, nil
 }
 
 // AnswerOf is response, GitHub's answer other than 2xx to method at path, read as read
@@ -381,15 +380,9 @@ func RateLimitSignals(response *http.Response, read oauth2call.Answer) bool {
 	return signals(response.Header, oauth2call.Holds(read, namesSecondaryLimit))
 }
 
-// limitSignals says whether headers or text, an answer's errors' messages as they came, carry
-// GitHub's rate limit (RateLimitSignals); GraphQL's 200 answers are read through it
-// (GraphQLErrors.rateLimited).
-func limitSignals(headers http.Header, text string) bool {
-	return signals(headers, NamesSecondaryLimit(text))
-}
-
 // signals is RateLimitSignals of an answer whose headers are headers and whose body names the
-// secondary limit or does not (named).
+// secondary limit or does not (named); GraphQL's 200 answers are read through it too
+// (graphQLRateLimited).
 func signals(headers http.Header, named bool) bool {
 	return headers.Get("X-RateLimit-Remaining") == "0" || headers.Get("Retry-After") != "" || named
 }
