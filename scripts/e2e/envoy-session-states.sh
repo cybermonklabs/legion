@@ -891,7 +891,7 @@ write_omp_profile() {
   local natives=$HOME/.omp/natives role url id key
   # The caller's native-module cache, linked as lib/omp-home.sh links it, so a fresh home downloads
   # nothing and the caller's own ~/.omp is neither written nor removed.
-  if [ -n "${XDG_DATA_HOME:-}" ] && [ -d "$XDG_DATA_HOME/omp" ]; then natives=$XDG_DATA_HOME/omp/natives; fi
+  if [ -n "${XDG_CACHE_HOME:-}" ] && [ -e "$XDG_CACHE_HOME/omp" ]; then natives=$XDG_CACHE_HOME/omp/natives; fi
   mkdir -p "$natives" "$work/home/.omp" "$work/agent"
   ln -sfT "$natives" "$work/home/.omp/natives"
   # A selection with no check that needs a model turn needs no model route, and still needs a

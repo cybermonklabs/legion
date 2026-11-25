@@ -900,7 +900,7 @@ note "the run's team topic is ${team_topic}; the setup prompt makes both session
 readonly pi_note="This session is an automated delivery test. Do exactly what the user's first message says, using the Envoy tools it names. After that, answer every message and every Envoy card with the single word ok, and call no tools."
 readonly cc_note="This session is an automated delivery test. Do exactly what the user's first message says, using the Envoy tools it names. After that, answer every message with exactly one line, WAITING for test events, and call no tools."
 natives=$HOME/.omp/natives
-if [ -n "${XDG_DATA_HOME:-}" ] && [ -d "$XDG_DATA_HOME/omp" ]; then natives=$XDG_DATA_HOME/omp/natives; fi
+if [ -n "${XDG_CACHE_HOME:-}" ] && [ -e "$XDG_CACHE_HOME/omp" ]; then natives=$XDG_CACHE_HOME/omp/natives; fi
 
 # prepare_session LABEL: the session's directories and its envoy.json. A run that drives the
 # windows leaves Dispatch off: it publishes everything itself and no person is at a page. --serve

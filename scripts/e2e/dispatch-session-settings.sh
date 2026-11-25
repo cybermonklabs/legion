@@ -271,7 +271,7 @@ broken_port=$(cat "$work/broken-port")
 # lib/omp-home.sh's make_omp_home links it, so nothing is downloaded and nothing of the caller's
 # ~/.omp is written. The agent directory holds the profile every session of the run shares.
 natives=$HOME/.omp/natives
-if [ -n "${XDG_DATA_HOME:-}" ] && [ -d "$XDG_DATA_HOME/omp" ]; then natives=$XDG_DATA_HOME/omp/natives; fi
+if [ -n "${XDG_CACHE_HOME:-}" ] && [ -e "$XDG_CACHE_HOME/omp" ]; then natives=$XDG_CACHE_HOME/omp/natives; fi
 mkdir -p "$natives" "$work/home/.omp" "$work/agent" "$work/session" "$work/tmp"
 ln -sfT "$natives" "$work/home/.omp/natives"
 # rig-broken answers nothing: its one model is the fallback check's, and retry.fallbackChains (the
