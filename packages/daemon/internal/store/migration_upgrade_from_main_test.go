@@ -152,19 +152,19 @@ import (
 // claims.agent_resume_generation at its default, 0, on every row it finds, and touches no
 // outbox_kind_check, so it needs no row of its own here.
 // dispatch://INFRA-4729's sequence of each value of the copy of Dispatch's issues (20261120055717)
-// is applied after all of these, the design news among them, but dispatch://INFRA-1575's intake
-// failures, the check states, the phase verdict's removal, the copy's applied sequence, the plan
-// of an experiment's draw, dispatch://INFRA-5463's clear and the verdict records, and touches no
+// is applied after all of these, the design news among them, but the intake failures, the check
+// states, the phase verdict's removal, the copy's applied sequence, the plan of an experiment's
+// draw, the clear of a start failure and the verdict records, and touches no
 // outbox_kind_check: it adds columns to dispatch_issues at their defaults, an index on its parent,
 // and a refill mark for each project the copy holds rows of.
 // dispatch://INFRA-1575's intake failures (20261120144241) are applied after all of these but the
 // check states, the phase verdict's removal, the copy's applied sequence, the plan of an
-// experiment's draw, dispatch://INFRA-5463's clear and the verdict records: they create
+// experiment's draw, the clear of a start failure and the verdict records: they create
 // intake_failures, cleared_pull_requests and pull_request_settled_heads, all three empty, and touch
 // no dispatch_issues column and no outbox_kind_check.
 // The check states the daemon keeps of Dispatch's check.state_changed (20261121065041) are applied
 // after all of these but the phase verdict's removal, the copy's applied sequence, the plan of an
-// experiment's draw, dispatch://INFRA-5463's clear and the verdict records, and touch no
+// experiment's draw, the clear of a start failure and the verdict records, and touch no
 // outbox_kind_check: the migration creates check_states, check_state_sets and check_state_serials,
 // empty, and adds issues.check_states_seq at 0.
 // The phase verdict's removal (20261121074614) is applied after it, before the copy's applied

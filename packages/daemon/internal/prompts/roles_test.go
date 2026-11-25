@@ -121,6 +121,30 @@ func TestNoReusablePartNamesARepositoryOrLibrary(t *testing.T) {
 	}
 }
 
+// The repository is public, and its AGENTS.md forbids the tracker's issue keys in what it ships, so
+// no prompt part, of either tree, names one: a part describes the step a key stands for instead.
+// The one key a part names is the worked example of a role token, LEGION-41, which is no issue of
+// any tracker.
+func TestNoPromptPartNamesAnIssueKey(t *testing.T) {
+	key := regexp.MustCompile(`\b[A-Z]{2,}-[0-9]+\b`)
+	for _, tree := range []struct {
+		parts embed.FS
+		dir   string
+	}{{roleParts, "roles"}, {goParts, "go"}} {
+		err := eachPart(tree.parts, tree.dir, func(name string, body []byte) error {
+			for _, found := range key.FindAllString(string(body), -1) {
+				if found != "LEGION-41" {
+					t.Errorf("%s/%s names the issue key %s", tree.dir, name, found)
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("read the %s parts: %v", tree.dir, err)
+		}
+	}
+}
+
 // Every role a claim can be on has its own part, and none is blank: a blank part boots a worker with
 // no instructions at all. The merger composes no core.
 func TestEveryRoleHasItsPartAndTheMergerHasNoCore(t *testing.T) {

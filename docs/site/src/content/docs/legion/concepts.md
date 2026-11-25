@@ -608,7 +608,8 @@ step's verdict names the new head; the merger's own merge of the base, below, is
 way. Where that check reads `failure` for a commit with no reader (its title reads
 `legion-verdict: failure (a commit with no reader)`, and its summary names each such commit), no
 worker's change cures it: the merger merges nothing, sends nothing back and tells the architect
-once for that head, and only a person can merge that head, by INFRA-455's break-glass step.
+once for that head, and only a person can merge that head, by a break-glass merge: a GitHub owner
+turns the ruleset's rule off for that one merge and on again right after it.
 
 When a merge fails, the decision is the merger's, on GitHub's own answer: wait for what GitHub
 waits for, merge again at the head it re-reads, or tell the architect what no worker can do — a
