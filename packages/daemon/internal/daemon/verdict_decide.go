@@ -43,9 +43,9 @@ const (
 //
 // GitHub lists the pull requests of a commit (GET /commits/{sha}/pulls), and only the open ones whose
 // head is that commit are decided, each by decideVerdict; pulls is the write's one read of that list
-// (headPulls). A failure needs no other read, and the callers ask for none then. The reason of a
-// failure for a commit with no reader, and the commits it names, stay only where the head's
-// conclusion is the pull request's own.
+// (headPulls). The run's output is the head's too, whichever pull request's write makes it
+// (headOutput), so two writes of one head never write it two ways. Every write of a head that is not
+// alone there asks atHead, a failure among them, for that output.
 func (w *workflowRuntime) atHead(ctx context.Context, entry config.VerdictRepository, repository ghrepo.Repository, number int, decided verdictDecision,
 	pulls *headPulls) (verdictDecision, error) {
 	if decided.head == currentHead {
@@ -55,7 +55,7 @@ func (w *workflowRuntime) atHead(ctx context.Context, entry config.VerdictReposi
 	if err != nil {
 		return verdictDecision{}, err
 	}
-	at := []verdictDecision{decided}
+	at, numbers := []verdictDecision{decided}, []int{number}
 	for _, other := range others {
 		if other == number {
 			continue
@@ -64,12 +64,11 @@ func (w *workflowRuntime) atHead(ctx context.Context, entry config.VerdictReposi
 		if err != nil {
 			return verdictDecision{}, err
 		}
-		at = append(at, each)
+		at, numbers = append(at, each), append(numbers, other)
 	}
 	combined := decided
-	if combined.conclusion = headConclusion(at); combined.conclusion != decided.conclusion {
-		combined.reason, combined.noReader = "", nil
-	}
+	combined.conclusion = headConclusion(at)
+	combined.kind, combined.reason, combined.noReader = headOutput(at, numbers, combined.conclusion)
 	combined.unanswered = nil
 	for _, each := range at {
 		if combined.conclusion == verdict.Undecided && combined.unanswered == nil {
@@ -77,6 +76,30 @@ func (w *workflowRuntime) atHead(ctx context.Context, entry config.VerdictReposi
 		}
 	}
 	return combined, nil
+}
+
+// headOutput is what the run's output at one head names (verdictOutput), from the decisions of the
+// open pull requests there, numbers being each one's number, and the head's conclusion: the kind of
+// head, a Legion one where any of them is a Legion head; and the reason of a failure and the
+// commits it names, those of the Legion pull request of the lowest number whose own conclusion is
+// the head's, none where no Legion decision concludes so. The choice is the same for every pull
+// request's write of the head.
+func headOutput(at []verdictDecision, numbers []int, conclusion verdict.Conclusion) (kind string, reason verdict.Reason, noReader []string) {
+	kind = at[0].kind
+	chosen := -1
+	for i, decided := range at {
+		if decided.kind != headLegion {
+			continue
+		}
+		kind = headLegion
+		if decided.conclusion == conclusion && (chosen < 0 || numbers[i] < numbers[chosen]) {
+			chosen = i
+		}
+	}
+	if chosen < 0 {
+		return kind, "", nil
+	}
+	return kind, at[chosen].reason, at[chosen].noReader
 }
 
 // headConclusion is legion-verdict's conclusion at one head from the decisions of the open pull

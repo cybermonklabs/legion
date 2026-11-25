@@ -420,9 +420,11 @@ func (w *workflowRuntime) writeVerdictOver(ctx context.Context, target verdictTa
 
 // decideHead is what writeVerdictOver writes on target's head, written being that head of target's
 // pull request: the pull request's decision (decideVerdict), made over every open pull request at
-// the head unless it is failure or the sweep found the pull request alone there (atHead), and
-// failure where that is none and the newest run or status this daemon wrote there concluded success
-// (wroteSuccess). The write reads the open pull requests at the head once (headPulls).
+// the head unless the sweep found the pull request alone there (atHead), and failure where that is
+// none and the newest run or status this daemon wrote there concluded success (wroteSuccess). A
+// failure is made over the others too, for the head's output alone (headOutput): its conclusion
+// needs no other read, so where the others cannot be read the pull request's own failure stands.
+// The write reads the open pull requests at the head once (headPulls).
 func (w *workflowRuntime) decideHead(ctx context.Context, entry config.VerdictRepository, target, written verdictTarget) (verdictDecision, error) {
 	pulls := &headPulls{}
 	decided, err := w.decideVerdict(ctx, entry, target.repository, target.number, target.head, pulls)
@@ -436,8 +438,12 @@ func (w *workflowRuntime) decideHead(ctx context.Context, entry config.VerdictRe
 		}
 		read = true
 	}
-	if decided.conclusion != verdict.Failure && !target.alone {
-		if decided, err = w.atHead(ctx, entry, target.repository, target.number, decided, pulls); err != nil {
+	if !target.alone {
+		combined, err := w.atHead(ctx, entry, target.repository, target.number, decided, pulls)
+		switch {
+		case err == nil:
+			decided = combined
+		case decided.conclusion != verdict.Failure:
 			return verdictDecision{}, err
 		}
 	}

@@ -1353,13 +1353,30 @@ func TestLegionVerdictTheCIReviewersRefusalRefusesALegionHead(t *testing.T) {
 // so two open pull requests at one commit share one legion-verdict, and the writer decides that
 // head over both. Here outside pull request 90 stands at code, the head of CAPTURE-1's pull request
 // 86, whose every step passed there. A person's refusal of either one leaves code at failure, however
-// often the other's verdict is decided after it: by a fact of the other, and by two sweeps that list
-// both.
+// often the other's verdict is decided after it: by a fact of the other, and by the sweeps that list
+// both. The run's output is the head's, whichever pull request's write makes it, so a sweep after
+// the first writes nothing; and so it is where the failure is the Legion pull request's own, for a
+// commit with no reader, whose title stays the one the merger reads (R4).
 func TestLegionVerdictARefusalOfOnePullRequestAtAHeadBeatsAnotherOnesVerdict(t *testing.T) {
 	atCode := func(id int64, state string) intake.OutsideReview {
 		review := outsideReview(id, "a-writer", state)
 		review.CommitID, review.HeadSHA = "code", "code"
 		return review
+	}
+	// sweptQuietly runs three sweeps, and fails the test unless the second and the third write
+	// nothing: nothing changed at code between them.
+	sweptQuietly := func(t *testing.T, rig *sweepRig) {
+		t.Helper()
+		var made []int
+		for range 3 {
+			before, _ := rig.github.recorded()
+			rig.swept(t)
+			after, _ := rig.github.recorded()
+			made = append(made, len(after)-len(before))
+		}
+		if made[1] != 0 || made[2] != 0 {
+			t.Fatalf("three sweeps of code with nothing changed made %v writes, want none after the first: the run's output is the head's", made)
+		}
 	}
 	for _, tc := range []struct {
 		name    string
@@ -1390,11 +1407,23 @@ func TestLegionVerdictARefusalOfOnePullRequestAtAHeadBeatsAnotherOnesVerdict(t *
 			tc.another(t, rig)
 			rig.written(t)
 			atFailure("after the other pull request's fact")
-			rig.swept(t)
-			rig.swept(t)
-			atFailure("after two sweeps")
+			sweptQuietly(t, rig)
+			atFailure("after three sweeps")
 		})
 	}
+	t.Run("a commit with no reader at the Legion pull request, and an outside one at the head", func(t *testing.T) {
+		rig := newSweepRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, unreadReviewersCommit,
+			openCapture, sweptPull{number: 90, ref: "feature/faster-builds", head: "code"})
+		rig.apply(t, intake.OutsidePullRequest{Repo: "acme/widgets", Number: 90, Branch: "feature/faster-builds", HeadSHA: "code"})
+		rig.github.mu.Lock()
+		rig.github.messages["code"] = commitOf(captureReviewerSession)
+		rig.github.mu.Unlock()
+		rig.apply(t, rig.signOff(t))
+		rig.written(t)
+		rig.noReader(t, "code", wantNoReaderOpening, "code")
+		sweptQuietly(t, rig)
+		rig.noReader(t, "code", wantNoReaderOpening, "code")
+	})
 }
 
 // N9 (R19): the legion_verdict_write line names each run and status the daemon wrote on GitHub,
