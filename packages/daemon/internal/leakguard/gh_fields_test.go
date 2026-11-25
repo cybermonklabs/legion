@@ -173,24 +173,45 @@ func TestGhJSONReadsOneFieldAtATime(t *testing.T) {
 }
 
 // GitHub stores a release asset uploaded to uploads.github.com as the bytes gh sends, so a `gh
-// api` body sent to a whole URL on any host but api.github.com is read whole, and not one JSON
-// string at a time as a body GitHub's REST API parses is: an asset that is one compact JSON object
-// whose two fields hold the fixture's two words is refused, as an --input file, as --input - and
-// as standard input the caller names the request body, the report naming the whole body. The host
-// is api.github.com in ASCII case alone: in upper case the upload's host is another host still,
-// and a host holding a rune above ASCII is another host even where Unicode lowering makes
+// api` body sent to a whole URL on any host but api.github.com is read whole, and not only one
+// JSON string at a time as a body GitHub's REST API parses is: an asset that is one compact JSON
+// object whose two fields hold the fixture's two words is refused, as an --input file, as
+// --input - and as standard input the caller names the request body, the report naming the
+// whole body. Beside the whole body, the strings of a body that is one JSON document are read
+// decoded, as whoever parses the asset reads them: the fixture's one word with a letter behind a
+// `\u` escape is refused, as an --input file and as --input -, the report naming the string by
+// its JSON path.
+// The host is api.github.com in ASCII case alone: in upper case the upload's host is another host
+// still, and a host holding a rune above ASCII is another host even where Unicode lowering makes
 // api.github.com of it. The same asset sent to the REST API's whole URL passes: the host decides.
 // Fields with no --input are the body gh sends, one JSON document the guard would read one field
-// at a time, so such a call is a setup failure that names the endpoint and --input; beside
-// --input gh puts them in the URL's query string, which GitHub stores apart as the asset's name
-// and label, and they are read apart. A GET puts them in the query string too, under -X GET and
-// under --method=get alike, since gh reads the method in any case, and they are read apart.
+// at a time, so such a call is a setup failure that names the endpoint and --input; so is one
+// whose last --input names nothing, since gh keeps the last --input as pflag keeps any option's
+// value. Beside --input gh puts the fields in the URL's query string, which GitHub stores apart
+// as the asset's name and label, and they are read apart. A GET puts them in the query string
+// too, under -X GET and under --method=get alike, since gh reads the method in any case, and they
+// are read apart.
 func TestAnUploadsBodyIsReadAsGitHubStoresIt(t *testing.T) {
 	const upload = "https://uploads.github.com/repos/invented-org/invented-repo/releases/1/assets?name=a.json"
 	asset := `{"a":"the ` + leakguardtest.PairName + ` notes","b":"a ` + leakguardtest.PairWord + ` aside"}`
 	refusedWhole(t, asset)
 	if strings.Contains(asset, "\n") {
 		t.Fatalf("the asset %q is on more than one line, so a read of it whole would not join its fields", asset)
+	}
+	// The fixture's one word with its t written as a JSON escape, so that no rule reads the word
+	// in the asset's bytes.
+	escaped := `{"a":"the ` + strings.Replace(leakguardtest.Word, "t", `\u0074`, 1) + ` notes"}`
+	if strings.Contains(escaped, leakguardtest.Word) {
+		t.Fatalf("the asset %q spells the word in its own bytes, so it proves nothing", escaped)
+	}
+	// fieldsAreTheBody fails the test unless args, a call to the upload, is the setup failure of
+	// fields gh sends as the asset.
+	fieldsAreTheBody := func(t *testing.T, args []string) {
+		t.Helper()
+		failed := setupFailure(t, ghFieldCall(t, GhRequest{Args: args}))
+		if failed.What != whatGhCall || !strings.Contains(failed.Why, upload) || !strings.Contains(failed.Why, "--input") {
+			t.Fatalf("the setup failure is %q, want one of %s whose why names %s and --input", failed.Error(), whatGhCall, upload)
+		}
 	}
 	t.Run("--input <file> is refused", func(t *testing.T) {
 		body := fieldFile(t, "a.json", asset)
@@ -209,6 +230,15 @@ func TestAnUploadsBodyIsReadAsGitHubStoresIt(t *testing.T) {
 		})
 		reports(t, refusal(t, err).Lines, "the gh call's standard input: "+leakguardtest.PairClass)
 	})
+	t.Run("a word behind a JSON escape in --input <file> is refused", func(t *testing.T) {
+		body := fieldFile(t, "a.json", escaped)
+		err := ghFieldCall(t, GhRequest{Args: []string{"api", upload, "--input", body}})
+		reports(t, refusal(t, err).Lines, body+", JSON .a: "+leakguardtest.WordClass)
+	})
+	t.Run("a word behind a JSON escape in --input - is refused", func(t *testing.T) {
+		err := ghFieldCall(t, GhRequest{Args: []string{"api", upload, "--input", "-"}, Stdin: strings.NewReader(escaped)})
+		reports(t, refusal(t, err).Lines, "the gh call's standard input, JSON .a: "+leakguardtest.WordClass)
+	})
 	t.Run("the host in upper case is refused", func(t *testing.T) {
 		body := fieldFile(t, "a.json", asset)
 		args := []string{"api", "https://UPLOADS.GITHUB.COM/repos/invented-org/invented-repo/releases/1/assets?name=a.json", "--input", body}
@@ -220,11 +250,11 @@ func TestAnUploadsBodyIsReadAsGitHubStoresIt(t *testing.T) {
 		cleared(t, ghFieldCall(t, GhRequest{Args: args}))
 	})
 	t.Run("fields and no --input are a setup failure", func(t *testing.T) {
-		args := []string{"api", upload, "-f", "a=a clean note", "-f", "b=another clean note"}
-		failed := setupFailure(t, ghFieldCall(t, GhRequest{Args: args}))
-		if failed.What != whatGhCall || !strings.Contains(failed.Why, upload) || !strings.Contains(failed.Why, "--input") {
-			t.Fatalf("the setup failure is %q, want one of %s whose why names %s and --input", failed.Error(), whatGhCall, upload)
-		}
+		fieldsAreTheBody(t, []string{"api", upload, "-f", "a=a clean note", "-f", "b=another clean note"})
+	})
+	t.Run("fields after a last --input that names nothing are a setup failure", func(t *testing.T) {
+		body := fieldFile(t, "a.json", `{"a":"a clean note"}`)
+		fieldsAreTheBody(t, []string{"api", upload, "--input", body, "--input", "", "-f", "a=a clean note", "-f", "b=another clean note"})
 	})
 	t.Run("fields beside --input <file> pass", func(t *testing.T) {
 		body := fieldFile(t, "a.json", `{"a":"a clean note","b":"another clean note"}`)
@@ -244,6 +274,63 @@ func TestAnUploadsBodyIsReadAsGitHubStoresIt(t *testing.T) {
 		args := []string{"api", "https://ap\u0130.github.com/repos/invented-org/invented-repo/pulls/1/reviews", "--input", body}
 		reports(t, refusal(t, ghFieldCall(t, GhRequest{Args: args})).Lines, body+": "+leakguardtest.PairClass)
 	})
+}
+
+// GitHub stores a release asset's `name` and `label` query values decoded, as the asset's file
+// name and label, and decodes a REST path, where a contents API path is a file's name. So a `gh
+// api` endpoint's path and each value of its query are read decoded, beside the endpoint as
+// written, each where decoding changes its text: the fixture's one word with a letter
+// percent-escaped is refused as an upload's `name=` and as its `label=`, the report naming the
+// query value, and as a file's name in a contents API path, the report naming the path. A pair of
+// the query that holds `;` or whose escapes do not decode is skipped, as url.ParseQuery skips it,
+// and the other pairs are still read: the escaped `name=` beside either is refused all the same.
+// A clean query with no escape, a pair whose escapes do not decode, and a whole REST URL whose
+// path holds gh's `{owner}` and `{repo}` as written add no record: the endpoint is read as
+// written, and the call passes.
+func TestAnEndpointsPercentEscapesAreReadDecoded(t *testing.T) {
+	const uploads = "https://uploads.github.com/repos/invented-org/invented-repo/releases/1/assets"
+	// The fixture's one word with its t percent-escaped, so that no rule reads the word in the
+	// endpoint as written.
+	escaped := strings.Replace(leakguardtest.Word, "t", "%74", 1)
+	clean := func(t *testing.T) string {
+		t.Helper()
+		return fieldFile(t, "a.json", `{"a":"a clean note"}`)
+	}
+	t.Run("a percent-escaped name= is refused", func(t *testing.T) {
+		args := []string{"api", uploads + "?name=" + escaped + ".json", "--input", clean(t)}
+		reports(t, refusal(t, ghFieldCall(t, GhRequest{Args: args})).Lines, "the gh call's argument 1, query name: "+leakguardtest.WordClass)
+	})
+	t.Run("a percent-escaped label= is refused", func(t *testing.T) {
+		args := []string{"api", uploads + "?name=a.json&label=the%20" + escaped + "%20notes", "--input", clean(t)}
+		reports(t, refusal(t, ghFieldCall(t, GhRequest{Args: args})).Lines, "the gh call's argument 1, query label: "+leakguardtest.WordClass)
+	})
+	t.Run("a percent-escaped file name in a contents API path is refused", func(t *testing.T) {
+		args := []string{"api", "repos/invented-org/invented-repo/contents/" + escaped + ".md", "-X", "PUT", "-f", "message=a clean commit", "-f", "content=Y2xlYW4="}
+		reports(t, refusal(t, ghFieldCall(t, GhRequest{Args: args})).Lines, "the gh call's argument 1, path: "+leakguardtest.WordClass)
+	})
+	for _, other := range []string{"label=v1;beta", "x=%zz"} {
+		t.Run("a percent-escaped name= beside "+other+" is refused", func(t *testing.T) {
+			args := []string{"api", uploads + "?name=" + escaped + ".json&" + other, "--input", clean(t)}
+			reports(t, refusal(t, ghFieldCall(t, GhRequest{Args: args})).Lines, "the gh call's argument 1, query name: "+leakguardtest.WordClass)
+		})
+	}
+	for _, tc := range []struct{ name, endpoint string }{
+		{"a clean query with no escape adds no record", uploads + "?name=a.json&label=a-clean-label"},
+		{"a pair whose escapes do not decode adds no record", uploads + "?name=%zz.json"},
+		{"a whole REST URL whose path holds gh's placeholders adds no record", "https://api.github.com/repos/{owner}/{repo}/contents/README.md"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			args := []string{"api", tc.endpoint, "--input", clean(t)}
+			want := make([]Record, len(args))
+			for i, arg := range args {
+				want[i] = Record{Label: argumentLabel(i), Text: arg}
+			}
+			if got := readGhArgv(args).records; !slices.Equal(got, want) {
+				t.Fatalf("readGhArgv(%q) read the records %+v, want the arguments alone, %+v", args, got, want)
+			}
+			cleared(t, ghFieldCall(t, GhRequest{Args: args}))
+		})
+	}
 }
 
 // `gh workflow run <workflow> --json` reads the run's inputs from standard input as one JSON

@@ -4524,6 +4524,9 @@ A gh call has these records:
   A field given to `-f`, `--raw-field`, `-F` or `--field` of `gh api` or `gh workflow run` is two records: its value, labelled `the gh call's field <name>`, and its name, labelled `the gh call's field <name> (name)`.
   Only those two commands have field options: in every other command `-f` and `-F` mean other things (`-F` is `--body-file` in `gh pr create`), so there every argument is one record, read whole.
   An option's value is read as that option's value and never as an option of its own, so `gh api -t '-f…'` is a template, read whole.
+  A `gh api` call's endpoint is also read decoded, because GitHub decodes a REST path and stores a release asset's `name` and `label` query values decoded.
+  Its path with its percent-escapes decoded is a record, labelled `the gh call's argument <i>, path`, and so is each value of its query, decoded as a URL query is, labelled `the gh call's argument <i>, query <key>`; each is a record only where decoding changes the text.
+  A path, or a pair of a query, whose escapes do not decode is read only as written.
 
 - The call's standard input, labelled `the gh call's standard input`, and each file the call sends, labelled by its path.
 
@@ -4533,7 +4536,8 @@ A gh call has these records:
   An empty string is no record, since no rule can match it.
   A body that is not exactly one JSON document is read as one record.
   A body sent to a whole URL on another host than `api.github.com`, such as a release asset uploaded to `uploads.github.com`, is read as one record, because GitHub stores it as sent.
-  Such a call that gives fields, no `--input` and a method other than `GET` is refused, because gh would send its fields as one JSON document that GitHub stores as sent; send the asset's bytes with `--input <file>` or `--input -`.
+  Where such a body is exactly one JSON document, its JSON strings are read beside that record too, because whoever parses the stored document reads each string decoded, `\u0074` as `t`.
+  A call to such a URL that gives fields, no `--input` and a method other than `GET` is refused, because gh would send its fields as one JSON document that GitHub stores as sent; send the asset's bytes with `--input <file>` or `--input -`.
   With `--input`, or with the method `GET` (`-X GET` or `--method GET`, in any case), gh puts the fields in the URL's query string instead, and they are read as any field of the call is.
   A file or standard input longer than 1 MiB (1,048,576 bytes) is refused, because the guard reads no more than that of what a call sends, so a release asset past that size is refused too.
 

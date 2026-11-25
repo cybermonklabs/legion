@@ -79,11 +79,9 @@ const (
 	// both ways, the raw record and the strings of a JSON document beside it, which errs toward
 	// reading more.
 	StdinUnknown StdinUse = iota
-	// StdinRequestBody is `gh api --input -`: the input is the request body, one JSON document
-	// GitHub's REST API parses. So is `gh workflow run --json`'s, the run's inputs as one JSON
-	// object, each of which GitHub keeps as a value of its own. A `gh api` call to a whole URL on
-	// another host than api.github.com, a release asset's upload among them, sends a body GitHub
-	// stores as sent, which GhCall reads as StdinText (ghArgv.storedAsSent).
+	// StdinRequestBody is `gh api --input -`: the input is the request body, read as the call's
+	// endpoint says (jsonBody). So is `gh workflow run --json`'s, the run's inputs as one JSON
+	// object, each of which GitHub keeps as a value of its own.
 	StdinRequestBody
 	// StdinField is a `-F <name>=@-` or a `--field <name>=@-` of `gh api` or `gh workflow run`:
 	// the input is the value of the fields that name it, and is read by their names.
@@ -167,10 +165,10 @@ const whatGhCall = "the gh call"
 // still whole. Where the check did not buffer the input, the guard reads it itself as
 // GhRequest.Sent says.
 //
-// A `gh api` call to a whole URL on another host than api.github.com, a release asset's upload to
-// uploads.github.com among them, sends a body GitHub stores as the bytes sent, which the guard
-// reads whole, as one record, and not one JSON string at a time (ghArgv.storedAsSent). Such a call
-// whose fields are its body is refused as a setup failure (ghArgv.fieldsAsBody).
+// A `gh api` call whose body GitHub stores as gh sends it (ghEndpointStoredAsSent), a release
+// asset's upload among them, has that body read whole and as its decoded JSON strings beside it
+// (jsonBody), and such a call whose fields are its body is refused as a setup failure
+// (ghArgv.fieldsAsBody).
 func (g *Guard) GhCall(ctx context.Context, req GhRequest) (GhAnswer, error) {
 	var answer GhAnswer
 	check, err := g.sharedCheck(whatGhCall)
@@ -215,12 +213,12 @@ func (g *Guard) GhCall(ctx context.Context, req GhRequest) (GhAnswer, error) {
 	// sends is the caller's parse where it handed one and the argv's tables where it did not
 	// (GhRequest.Sent).
 	call := readGhArgv(req.Args)
-	if call.storedAsSent != "" && call.fieldsAsBody {
+	if call.endpoint.kind == ghEndpointStoredAsSent && call.fieldsAsBody {
 		// gh would send the fields as one JSON document, which GitHub stores as sent, two
 		// fields on one line, and which the guard reads one field at a time (readLeaf).
 		return answer, &SetupFailure{
 			What: whatGhCall,
-			Why:  "GitHub stores the body of a call to " + shownText(call.storedAsSent) + " as gh sends it, and gh sends this call's fields as that body, one JSON document, which this guard reads one field at a time; send the asset's bytes with --input <file> or --input -",
+			Why:  "GitHub stores the body of a call to " + shownText(call.endpoint.text) + " as gh sends it, and gh sends this call's fields as that body, one JSON document, which this guard reads one field at a time; send the asset's bytes with --input <file> or --input -",
 		}
 	}
 	sent := req.Sent
@@ -243,12 +241,7 @@ func (g *Guard) GhCall(ctx context.Context, req GhRequest) (GhAnswer, error) {
 	records := call.records
 	if len(answer.Stdin) > 0 {
 		stdin := Record{Label: "the gh call's standard input", Text: string(answer.Stdin)}
-		use := sent.stdinUse
-		if use == StdinRequestBody && call.storedAsSent != "" {
-			// A body GitHub stores as sent is text, read whole (ghArgv.storedAsSent).
-			use = StdinText
-		}
-		records = append(records, stdinRecords(stdin, use, sent.stdinFields, call.graphQL)...)
+		records = append(records, stdinRecords(stdin, sent.stdinUse, sent.stdinFields, call.endpoint.kind)...)
 	}
 	for _, named := range sent.Files {
 		text, err := readGhFile(named)
@@ -257,10 +250,10 @@ func (g *Guard) GhCall(ctx context.Context, req GhRequest) (GhAnswer, error) {
 		}
 		record := Record{Label: named.Path, Text: text}
 		switch {
-		case call.graphQL && named.Field == graphQLQuery:
+		case call.endpoint.kind == ghEndpointGraphQL && named.Field == graphQLQuery:
 			records = append(records, queryRecords(record)...)
-		case named.Option == inputOption && call.storedAsSent == "":
-			records = append(records, jsonBody(record, call.graphQL)...)
+		case named.Option == inputOption:
+			records = append(records, jsonBody(record, call.endpoint.kind)...)
 		default:
 			records = append(records, record)
 		}
@@ -287,27 +280,28 @@ func (g *Guard) ghGuard(ctx context.Context, check sharedRun, req GhRequest) ([]
 }
 
 // stdinRecords is the records of record, the call's buffered standard input, by the use the call
-// makes of it (GhSent.UsesStdin), and fields, the names of the fields whose value it is
-// (GhSent.stdinFields). As the request body it is read as JSON (jsonBody), where GitHub's REST API
-// parses it; GhCall hands a body GitHub stores as sent here as text (ghArgv.storedAsSent). As text
-// it is one record: a body option's input is the body. Of no known use it is read both ways, the
-// raw record and the strings of a JSON document beside it, which errs toward reading more.
+// makes of it (GhSent.UsesStdin), fields, the names of the fields whose value it is
+// (GhSent.stdinFields), and endpoint, the kind of the call's endpoint (ghEndpointKind). As the
+// request body it is read as the endpoint says (jsonBody). As text it is one record: a body
+// option's input is the body. Of no known use it is read both ways, the raw record and the strings
+// of a JSON document beside it (rawAndJSON), which errs toward reading more.
 //
 // As fields' value it is text too, one record, since gh makes one JSON string of a field's bytes
-// itself; but for the query of a `gh api graphql` call (graphQL), whose bytes gh sends as the
-// query, which GitHub parses, so they are read one literal at a time (graphQLRecords), as the
-// same query is from a file. All of the fields `query` is the query alone, with no raw record,
-// which would join its literals on one line. Some `query` and some not is a call whose one input
-// goes to one field, which gh's order of reading decides and the guard does not guess: the raw
-// record and the literals are both read. None `query` is text. A use nobody knows in a `gh api
-// graphql` call whose argv names fields of standard input is read as those fields' value.
-func stdinRecords(record Record, use StdinUse, fields []string, graphQL bool) []Record {
+// itself; but for the query of a `gh api graphql` call (ghEndpointGraphQL), whose bytes gh sends
+// as the query, which GitHub parses, so they are read one literal at a time (graphQLRecords), as
+// the same query is from a file. All of the fields `query` is the query alone, with no raw
+// record, which would join its literals on one line. Some `query` and some not is a call whose
+// one input goes to one field, which gh's order of reading decides and the guard does not guess:
+// the raw record and the literals are both read. None `query` is text. A use nobody knows in a
+// `gh api graphql` call whose argv names fields of standard input is read as those fields' value.
+func stdinRecords(record Record, use StdinUse, fields []string, endpoint ghEndpointKind) []Record {
+	graphQL := endpoint == ghEndpointGraphQL
 	if use == StdinUnknown && graphQL && len(fields) > 0 {
 		use = StdinField
 	}
 	switch use {
 	case StdinRequestBody:
-		return jsonBody(record, graphQL)
+		return jsonBody(record, endpoint)
 	case StdinText:
 		return []Record{record}
 	case StdinField:
@@ -324,8 +318,7 @@ func stdinRecords(record Record, use StdinUse, fields []string, graphQL bool) []
 		}
 		return literals
 	}
-	decoded, _ := jsonFields(record, graphQL)
-	return append([]Record{record}, decoded...)
+	return rawAndJSON(record, graphQL)
 }
 
 // maxGhFile is the most this package reads from one file a gh call would send, and from the
@@ -333,8 +326,8 @@ func stdinRecords(record Record, use StdinUse, fields []string, graphQL bool) []
 // 65,536 characters, and a body is the largest thing these options carry to its REST API:
 // `gh api --input` wraps one in a JSON request, which that escaping and the rest of the request
 // leave well inside a mebibyte. A mebibyte is sixteen times that body, so no call to the REST API
-// meets the bound. A release asset uploaded through `gh api --input` (ghArgv.storedAsSent) can be
-// larger, and GitHub takes one of up to 2 GiB; the guard refuses one past the bound, since it
+// meets the bound. A release asset uploaded through `gh api --input` (ghEndpointStoredAsSent) can
+// be larger, and GitHub takes one of up to 2 GiB; the guard refuses one past the bound, since it
 // has not read it. Such a file is a setup failure rather than a pass — the call is refused either
 // way — and the rule pass never reads a gigabyte into memory to run its regexes over.
 const maxGhFile = 1 << 20

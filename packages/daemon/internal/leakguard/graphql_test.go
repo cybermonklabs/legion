@@ -44,8 +44,8 @@ func TestGhAPIGraphQLIsTheEndpointsPath(t *testing.T) {
 			{"api", "-t", "-X", tc.endpoint},
 		} {
 			t.Run(strings.Join(args, " "), func(t *testing.T) {
-				if got := readGhArgv(args).graphQL; got != tc.want {
-					t.Fatalf("readGhArgv(%q).graphQL = %v, want %v", args, got, tc.want)
+				if got := readGhArgv(args).endpoint.kind == ghEndpointGraphQL; got != tc.want {
+					t.Fatalf("readGhArgv(%q).endpoint.kind == ghEndpointGraphQL is %v, want %v", args, got, tc.want)
 				}
 			})
 		}

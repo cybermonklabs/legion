@@ -3,29 +3,47 @@ package leakguard
 import (
 	"encoding/json"
 	"io"
+	"slices"
 	"strconv"
 	"strings"
 )
 
-// jsonBody is the records of record, a request body GitHub parses as JSON: the strings of the
-// document where its text is exactly one (jsonFields), and record itself, raw, where it is not.
-// A text that is not one document is no body GitHub parses, and is read as the one record it
-// was: a Markdown body named by `--input` by mistake is still read.
+// jsonBody is the records of record, a request body, by endpoint, the kind of the endpoint the
+// call sends it to (ghEndpointKind). A body GitHub's REST API or its GraphQL endpoint parses as
+// JSON is the strings of the document where its text is exactly one (jsonFields), and record
+// itself, raw, where it is not. A text that is not one document is no body GitHub parses, and is
+// read as the one record it was: a Markdown body named by `--input` by mistake is still read.
 //
-// Three of a gh call's records are such a body where the call's endpoint is GitHub's REST API:
-// `gh api --input <file>`, whose whole file is the request body; standard input named by `gh api
-// --input -`; and the standard input of `gh workflow run --json`, the run's inputs as one JSON
-// object. The shared check's exit-4 handshake has buffered either standard input. A `gh api` body
-// sent to a whole URL on another host than api.github.com, a release asset uploaded to
-// uploads.github.com among them, is not such a body: GitHub stores it as the bytes sent, and
-// GhCall reads it as one record (ghArgv.storedAsSent). A `-F <name>=@<path>` field's file is not
-// one either, since gh makes one JSON string of its bytes, escaping them itself: the file holds the
-// text GitHub shows.
-func jsonBody(record Record, graphQL bool) []Record {
-	if fields, ok := jsonFields(record, graphQL); ok {
+// A body GitHub stores as gh sends it (ghEndpointStoredAsSent) is read both ways (rawAndJSON), as
+// a standard input of no known use is (stdinRecords): record itself, since the stored bytes hold
+// two fields of a JSON document on one line, and beside it the strings of the document where its
+// text is exactly one, since whoever parses the stored document reads each string decoded. A name
+// behind a `\u` escape in an asset's JSON is the name to that reader, and an escape needs no one
+// dodging the guard: Python's json.dump escapes every character above ASCII by default, and Go's
+// json.Marshal escapes `<`, `>` and `&`.
+//
+// Three of a gh call's records are request bodies: `gh api --input <file>`, whose whole file is
+// the body; standard input named by `gh api --input -`; and the standard input of `gh workflow run
+// --json`, the run's inputs as one JSON object, which names no endpoint and is read as a body of
+// the REST API's. The shared check's exit-4 handshake has buffered either standard input. A `-F
+// <name>=@<path>` field's file is no request body, since gh makes one JSON string of its bytes,
+// escaping them itself: the file holds the text GitHub shows.
+func jsonBody(record Record, endpoint ghEndpointKind) []Record {
+	if endpoint == ghEndpointStoredAsSent {
+		return rawAndJSON(record, false)
+	}
+	if fields, ok := jsonFields(record, endpoint == ghEndpointGraphQL); ok {
 		return fields
 	}
 	return []Record{record}
+}
+
+// rawAndJSON is record read both ways, which errs toward reading more: record itself, and beside
+// it the strings of the JSON document its text is where it is exactly one (jsonFields, graphQL as
+// there).
+func rawAndJSON(record Record, graphQL bool) []Record {
+	decoded, _ := jsonFields(record, graphQL)
+	return slices.Insert(decoded, 0, record)
 }
 
 // jsonFields is the records of the strings record's text holds where that text is exactly one

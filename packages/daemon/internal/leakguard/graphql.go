@@ -1,11 +1,8 @@
 package leakguard
 
 import (
-	"net/url"
-	"path"
 	"strconv"
 	"strings"
-	"unicode"
 	"unicode/utf8"
 )
 
@@ -16,76 +13,6 @@ import (
 // and sends it beside the query under any other spelling of the endpoint; either way its value is
 // read as the field it is.
 const graphQLQuery = "query"
-
-// ghAPIGraphQLEndpoint is whether endpoint, a `gh api` call's endpoint (its first positional
-// argument, readLeaf), is GitHub's GraphQL endpoint, the path /graphql of api.github.com, under
-// whatever spelling the call gives it, read as a server reads a path. An endpoint holding `://` is
-// a whole URL to gh, which sends the request there, so it is parsed as one and its host, in any
-// ASCII case and on any port, must be api.github.com (ghAPIRESTHost); any other endpoint is a path
-// gh appends to the API's. The path is read up to its query or fragment, its percent-escapes
-// decoded and its `.` and `..` segments resolved, and what is left, its slashes trimmed, is
-// `graphql` in any case. A path whose escapes do not decode is none.
-//
-// The endpoint is read by the path it reaches, not by gh's own rule, the exact word `graphql`.
-// That rule is how gh groups the fields: for that word alone it puts `query` and `operationName`
-// at the top of the request body and every other field under `variables`. Any other spelling is a
-// REST path to gh, which POSTs the fields as one flat JSON body to that path; where the path is
-// /graphql, GitHub's GraphQL endpoint parses the body's `query` member as the query all the same
-// and decodes its literals (TestGhJSONGraphQLEndpointSpellingsReadOneFieldAtATime records the
-// measurement), so a name escaped inside one reaches GitHub as the name.
-//
-// It errs toward reading no query for anything else. A call it does not find is read as written,
-// its query one field among the others, as every query was before literals were read; a call it
-// found that was none would have a REST field named `query` read as a GraphQL document, which
-// leaves out the text outside its literals.
-//
-// cmd/legion's ghAPIRESTEndpoint reads the same endpoint for the other question, whether a call
-// is a REST read, and names the same spellings — `/graphql`, `GRAPHQL`, `%67raphql`,
-// `graphql#x` — as GitHub's GraphQL API by other names.
-func ghAPIGraphQLEndpoint(endpoint string) bool {
-	escaped := endpoint
-	if strings.Contains(endpoint, "://") {
-		whole, err := url.Parse(endpoint)
-		if err != nil || !ghAPIRESTHost(whole.Hostname()) {
-			return false
-		}
-		escaped = whole.EscapedPath()
-	} else if end := strings.IndexAny(escaped, "?#"); end >= 0 {
-		escaped = escaped[:end]
-	}
-	decoded, err := url.PathUnescape(escaped)
-	if err != nil {
-		return false
-	}
-	return strings.EqualFold(strings.Trim(path.Clean("/"+decoded), "/"), "graphql")
-}
-
-// ghAPIStoredAsSent is whether GitHub stores the body of a `gh api` call to endpoint, the call's
-// endpoint (readLeaf), as the bytes gh sends: an endpoint holding `://`, a whole URL gh sends the
-// request to, on any host but api.github.com (ghAPIRESTHost), such as a release asset's upload,
-// `https://uploads.github.com/repos/<owner>/<repo>/releases/<id>/assets?name=<file>`. GitHub's
-// REST API parses a JSON body and stores its strings apart (jsonFields), where the upload host
-// stores the asset whole, two fields on one line as that one line. A URL that does not parse is
-// such an endpoint too, the strict side, whose body is read whole. Any other endpoint is a path gh
-// appends to the REST API's.
-func ghAPIStoredAsSent(endpoint string) bool {
-	if !strings.Contains(endpoint, "://") {
-		return false
-	}
-	whole, err := url.Parse(endpoint)
-	return err != nil || !ghAPIRESTHost(whole.Hostname())
-}
-
-// ghAPIRESTHost is whether host, a whole URL's host with no port (url.URL.Hostname), is
-// api.github.com, GitHub's REST API, in any ASCII case. A host holding a rune above ASCII is not.
-// Outside ASCII, strings.EqualFold folds only `ſ` (U+017F) onto `s` and the Kelvin sign (U+212A)
-// onto `k`, neither of which api.github.com holds, so the ASCII test is what keeps the comparison
-// to ASCII case should the name it compares with change; and it keeps out the reading
-// strings.ToLower would give, `İ` (U+0130) lowered to `i`, as cmd/legion's isASCII does
-// (gh_selectors.go).
-func ghAPIRESTHost(host string) bool {
-	return !strings.ContainsFunc(host, func(r rune) bool { return r > unicode.MaxASCII }) && strings.EqualFold(host, "api.github.com")
-}
 
 // graphQLRecords is record read as a GraphQL query: one record for each string literal of its
 // text, decoded, labelled "<record>, GraphQL string <k>" with k counted from 1, the record's label

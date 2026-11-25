@@ -1,6 +1,8 @@
 package leakguard
 
 import (
+	"net/url"
+	"path"
 	"slices"
 	"strconv"
 	"strings"
@@ -9,17 +11,9 @@ import (
 // ghArgv is a gh call's argv as readGhArgv reads it: every answer GhCall needs of the argv, from
 // one walk of it.
 type ghArgv struct {
-	// graphQL is whether the call sends GitHub a GraphQL query: a `gh api` call whose endpoint is
-	// GitHub's GraphQL endpoint under any spelling (ghAPIGraphQLEndpoint). A call it is true of is
-	// what this package's comments call `gh api graphql`.
-	graphQL bool
-	// storedAsSent is the endpoint of a `gh api` call whose body GitHub stores as the bytes gh
-	// sends (ghAPIStoredAsSent), a whole URL on another host than api.github.com, such as a
-	// release asset's upload to uploads.github.com, and "" for every other call. GhCall reads such
-	// a body whole, as one record, where it reads a body GitHub's REST API parses one JSON string
-	// at a time (jsonBody), and refuses such a call whose fields are its body (fieldsAsBody),
-	// naming the endpoint.
-	storedAsSent string
+	// endpoint is a `gh api` call's endpoint as readEndpoint read it, and the zero ghEndpoint,
+	// a REST endpoint with no text, for every other call and for a `gh api` call that names none.
+	endpoint ghEndpoint
 	// fieldsAsBody is whether gh sends the call's fields as its request body, one JSON document:
 	// the call names a field option (ghFieldOptions), its body option (ghLeaf.bodyOption) names
 	// no file and no standard input, and its method (ghLeaf.methodOption) is not GET. A `gh api`
@@ -37,12 +31,40 @@ type ghArgv struct {
 	upload string
 }
 
-// readGhArgv reads args, a gh call's argv, once, for everything GhCall asks of it: whether the
-// call is GraphQL, whether GitHub stores its body as sent and whether gh sends its fields as that
-// body, the records the rules read, the files it sends, the use it makes of standard input and the
-// fields that read that input. One walk answers all of them, so that no two answers read one argv
-// two ways: a reader that takes an option's value for an option of its own reads a field where
-// another reads a title.
+// ghEndpoint is a `gh api` call's endpoint, classified once (ghAPIEndpoint): its kind, which says
+// how the call's body is read (jsonBody, stdinRecords) and whether its `query` fields are a
+// GraphQL query (readLeaf), and its text as the argv wrote it, which GhCall's setup failure for
+// fields sent as a body GitHub stores as sent names.
+type ghEndpoint struct {
+	kind ghEndpointKind
+	text string
+}
+
+// ghEndpointKind is what GitHub makes of the body of a `gh api` call by the endpoint the call
+// sends it to (ghAPIEndpoint), which says how the guard reads that body (jsonBody, stdinRecords).
+type ghEndpointKind int
+
+const (
+	// ghEndpointREST is a path of GitHub's REST API, which parses a JSON body and stores its
+	// strings apart (jsonFields). It is the zero value, the kind of every command but `gh api`
+	// and of a `gh api` call that names no endpoint, so the run's inputs of `gh workflow run
+	// --json` are read as such a body.
+	ghEndpointREST ghEndpointKind = iota
+	// ghEndpointGraphQL is GitHub's GraphQL endpoint, which parses the query a field or a body
+	// carries and decodes its literals (graphQLRecords). A call to it is what this package's
+	// comments call `gh api graphql`.
+	ghEndpointGraphQL
+	// ghEndpointStoredAsSent is an endpoint whose body GitHub stores as the bytes gh sends, a
+	// release asset's upload among them, where the REST API would store a JSON body's strings
+	// apart: two fields of the body on one line stand on that one line in what GitHub keeps.
+	ghEndpointStoredAsSent
+)
+
+// readGhArgv reads args, a gh call's argv, once, for everything GhCall asks of it: the kind of
+// its endpoint and whether gh sends its fields as its body, the records the rules read, the files
+// it sends, the use it makes of standard input and the fields that read that input. One walk
+// answers all of them, so that no two answers read one argv two ways: a reader that takes an
+// option's value for an option of its own reads a field where another reads a title.
 //
 // The command is read first (ghLeafOf). Two commands are read by the arity of each of their
 // options, `gh api` and `gh workflow run` (readLeaf), which are the two whose help gives them
@@ -53,10 +75,11 @@ type ghArgv struct {
 // holds the argument as it was written, and no record joins two: a rule that needs two words on
 // one line matches only where one argument holds both, and the joined argv would put every
 // argument on one line. A field of `gh api` and `gh workflow run` is read as two records, its
-// name and its value, in place of the argument that holds it (readLeaf). Arguments past a bare
-// `--` that ends gh's options are read as arguments, with no field among them, and name no file:
-// gh's parser takes no option after one, so a `-f` or a `--body-file` there is a word of some
-// other program's, and reading the words costs nothing.
+// name and its value, in place of the argument that holds it (readLeaf), and `gh api`'s endpoint
+// is read decoded as well, beside its own record (readEndpoint). Arguments past a bare `--` that
+// ends gh's options are read as arguments, with no field among them, and name no file: gh's
+// parser takes no option after one, so a `-f` or a `--body-file` there is a word of some other
+// program's, and reading the words costs nothing.
 func readGhArgv(args []string) ghArgv {
 	argv := ghArgv{records: make([]Record, 0, len(args))}
 	leaf, start := ghLeafOf(args)
@@ -81,8 +104,7 @@ type ghLeaf struct {
 	long  map[string]bool
 	short string
 	// endpoint is whether the command's first positional argument is an endpoint, which says
-	// whether the call is GraphQL and whether GitHub stores its body as sent (readEndpoint):
-	// `gh api`'s.
+	// how the call's body is read (readEndpoint): `gh api`'s.
 	endpoint bool
 	// bodyOption is the option whose value names the request body, a file or, as `-`, standard
 	// input: `gh api`'s --input (inputOption). "" is a command with none, and no option.
@@ -218,12 +240,12 @@ func ghLeafOf(args []string) (*ghLeaf, int) {
 // written.
 //
 // `gh api`'s endpoint (ghLeaf.endpoint) is its first positional argument, the first past the bare
-// `--` where none comes before it; a `-` alone is a positional to pflag. It is read once, for
-// whether the call is GraphQL and whether GitHub stores its body as sent (readEndpoint). Its
-// `--input <path>` (ghLeaf.bodyOption) names the request body's file, and its `--input -`
-// standard input (GhSent.Names). A field option named where the last --input names neither makes
-// the fields the body gh sends (ghArgv.fieldsAsBody), but where the last -X or --method
-// (ghLeaf.methodOption) is GET, in any case: a GET puts the fields in the URL's query string.
+// `--` where none comes before it; a `-` alone is a positional to pflag. It is read once, for its
+// kind and for its path and query decoded (readEndpoint). Its `--input <path>`
+// (ghLeaf.bodyOption) names the request body's file, and its `--input -` standard input
+// (GhSent.Names). A field option named where the last --input names neither makes the fields the
+// body gh sends (ghArgv.fieldsAsBody), but where the last -X or --method (ghLeaf.methodOption) is
+// GET, in any case: a GET puts the fields in the URL's query string.
 //
 // `gh workflow run`'s `--json` (ghLeaf.stdinBodyOption) is a boolean, `--json` or
 // `--json=<bool>`, whose last value is the one pflag keeps; a value that is no boolean leaves it
@@ -248,11 +270,12 @@ read:
 		var attached bool
 		switch {
 		case arg == "--":
-			if endpointNext && i+1 < len(args) {
-				argv.readEndpoint(args[i+1])
-			}
-			for ; i < len(args); i++ {
-				argv.argument(args, i)
+			for at := i; at < len(args); at++ {
+				argv.argument(args, at)
+				if endpointNext && at > i {
+					endpointNext = false
+					argv.readEndpoint(args, at)
+				}
 			}
 			break read
 		case strings.HasPrefix(arg, "--"):
@@ -275,7 +298,7 @@ read:
 			argv.argument(args, i)
 			if endpointNext {
 				endpointNext = false
-				argv.readEndpoint(arg)
+				argv.readEndpoint(args, i)
 			}
 			continue
 		}
@@ -314,23 +337,125 @@ read:
 		argv.sent.UsesStdin(StdinRequestBody)
 	}
 	argv.fieldsAsBody = fields && !body && !strings.EqualFold(method, "GET")
-	if argv.graphQL {
+	if argv.endpoint.kind == ghEndpointGraphQL {
 		argv.records = spliceQueries(argv.records, queries)
 	}
 }
 
-// readEndpoint reads endpoint, a `gh api` call's endpoint (readLeaf), for what the call's body is
-// read by. An endpoint whose body GitHub stores as sent (ghAPIStoredAsSent) is kept for a setup
-// failure to name (ghArgv.storedAsSent), and is never GraphQL: ghAPIGraphQLEndpoint is false for
-// every whole URL on another host than api.github.com and for one that does not parse, so such an
-// endpoint is parsed once. Every other endpoint is read for whether the call is GraphQL
-// (ghAPIGraphQLEndpoint).
-func (argv *ghArgv) readEndpoint(endpoint string) {
-	if ghAPIStoredAsSent(endpoint) {
-		argv.storedAsSent = endpoint
+// readEndpoint reads args[i], a `gh api` call's endpoint (readLeaf), once (ghAPIEndpoint): its
+// kind, kept with its text (ghArgv.endpoint), and the two parts of it GitHub reads decoded, each
+// a record beside the endpoint's own (argument) where decoding changes its text. GitHub decodes a
+// REST path, and a contents API path is a file's name, so the path decoded is "the gh call's
+// argument <i>, path"; and it stores a release asset's `name` and `label` query values decoded, as
+// the asset's file name and label, so each value of the query decoded is "the gh call's argument
+// <i>, query <key>" (decodedQuery). A path that does not decode adds nothing, nor does a pair of
+// the query that does not, and the endpoint's own record is read as ever. Every value of every
+// endpoint's query is read so, which errs toward reading more: a value GitHub stores nowhere costs
+// a record.
+func (argv *ghArgv) readEndpoint(args []string, i int) {
+	kind, decodedPath, query := ghAPIEndpoint(args[i])
+	argv.endpoint = ghEndpoint{kind: kind, text: args[i]}
+	if decodedPath == "" && query == "" {
 		return
 	}
-	argv.graphQL = ghAPIGraphQLEndpoint(endpoint)
+	if decodedPath != "" {
+		argv.records = append(argv.records, Record{Label: argumentLabel(i) + ", path", Text: decodedPath})
+	}
+	argv.records = decodedQuery(argv.records, i, query)
+}
+
+// ghAPIEndpoint reads endpoint, a `gh api` call's endpoint (its first positional argument,
+// readLeaf), once, and answers its kind; its path with its percent-escapes decoded, where they
+// decode and decoding changes the path, and "" otherwise; and its query as written, "" for none.
+// The path and the query are what readEndpoint reads decoded beside the endpoint's own record.
+//
+// An endpoint holding `://` is a whole URL to gh, which sends the request there, and is parsed as
+// one, and its host decides its kind. GitHub stores the body of a call to any host but
+// api.github.com as gh sends it (ghEndpointStoredAsSent), a release asset's upload to
+// `https://uploads.github.com/repos/<owner>/<repo>/releases/<id>/assets?name=<file>` among them;
+// and so is the body of a URL that does not parse, the strict side, which has no path and no
+// query to read either. The host is api.github.com on any port and in any case strings.EqualFold
+// folds, which folds onto ASCII only `ſ` (U+017F) and the Kelvin sign (U+212A), neither of which
+// the name holds. So `apİ.github.com` is another host: strings.ToLower lowers `İ` (U+0130) to `i`
+// and would read it as api.github.com, and EqualFold does not. Any other endpoint is a path gh
+// appends to the REST API's, read up to its query or fragment.
+//
+// The path then says whether the call is GraphQL, the path /graphql of api.github.com under
+// whatever spelling the call gives it, read as a server reads a path: its percent-escapes decoded
+// and its `.` and `..` segments resolved, what is left, its slashes trimmed, is `graphql` in any
+// case. A path whose escapes do not decode is none.
+//
+// The endpoint is read by the path it reaches, not by gh's own rule, the exact word `graphql`.
+// That rule is how gh groups the fields: for that word alone it puts `query` and `operationName`
+// at the top of the request body and every other field under `variables`. Any other spelling is a
+// REST path to gh, which POSTs the fields as one flat JSON body to that path; where the path is
+// /graphql, GitHub's GraphQL endpoint parses the body's `query` member as the query all the same
+// and decodes its literals (TestGhJSONGraphQLEndpointSpellingsReadOneFieldAtATime records the
+// measurement), so a name escaped inside one reaches GitHub as the name.
+//
+// It errs toward reading no query for anything else. A call it does not find is read as written,
+// its query one field among the others, as every query was before literals were read; a call it
+// found that was none would have a REST field named `query` read as a GraphQL document, which
+// leaves out the text outside its literals.
+//
+// cmd/legion's ghAPIRESTEndpoint reads the same endpoint for the other question, whether a call
+// is a REST read, and names the same spellings — `/graphql`, `GRAPHQL`, `%67raphql`,
+// `graphql#x` — as GitHub's GraphQL API by other names.
+func ghAPIEndpoint(endpoint string) (kind ghEndpointKind, decodedPath, query string) {
+	escaped := endpoint
+	if strings.Contains(endpoint, "://") {
+		whole, err := url.Parse(endpoint)
+		if err != nil {
+			return ghEndpointStoredAsSent, "", ""
+		}
+		if !strings.EqualFold(whole.Hostname(), "api.github.com") {
+			kind = ghEndpointStoredAsSent
+		}
+		escaped, query = whole.RawPath, whole.RawQuery
+		if escaped == "" {
+			escaped = whole.EscapedPath()
+		}
+	} else {
+		escaped, _, _ = strings.Cut(escaped, "#")
+		escaped, query, _ = strings.Cut(escaped, "?")
+	}
+	decoded, err := url.PathUnescape(escaped)
+	if err != nil {
+		return kind, "", query
+	}
+	if kind == ghEndpointREST && strings.EqualFold(strings.Trim(path.Clean("/"+decoded), "/"), "graphql") {
+		kind = ghEndpointGraphQL
+	}
+	if decoded == escaped {
+		decoded = ""
+	}
+	return kind, decoded, query
+}
+
+// decodedQuery is records with a record of each value of query, as written in the endpoint that
+// is the call's argument i, decoded, labelled "the gh call's argument <i>, query <key>", where
+// decoding changes the value's text, in the order query writes them. It decodes as url.ParseQuery
+// does, pair by pair: the pairs parted at `&`, a key from its value at the first `=`, and each
+// read by url.QueryUnescape, so a `+` is a space. A pair holding `;`, which url.ParseQuery
+// refuses as a separator, and one whose key or value does not unescape, are skipped, as
+// url.ParseQuery skips them, and the other pairs are still read. url.ParseQuery's own answer is a
+// map, which keeps neither the order of the pairs nor the text each value had.
+func decodedQuery(records []Record, i int, query string) []Record {
+	for pair := range strings.SplitSeq(query, "&") {
+		if strings.Contains(pair, ";") {
+			continue
+		}
+		rawKey, raw, _ := strings.Cut(pair, "=")
+		key, keyErr := url.QueryUnescape(rawKey)
+		value, err := url.QueryUnescape(raw)
+		if keyErr != nil || err != nil {
+			continue
+		}
+		if value != raw {
+			records = append(records, Record{Label: argumentLabel(i) + ", query " + key, Text: value})
+		}
+	}
+	return records
 }
 
 // spliceQueries is records with the record at each index of queries, ascending, replaced by the
@@ -516,9 +641,15 @@ func (sent *GhSent) StdinSent() bool {
 	return sent.stdinNamed
 }
 
-// argument records args[i], as it was written, as "the gh call's argument <i>".
+// argument records args[i], as it was written, as "the gh call's argument <i>" (argumentLabel).
 func (argv *ghArgv) argument(args []string, i int) {
-	argv.records = append(argv.records, Record{Label: "the gh call's argument " + strconv.Itoa(i), Text: args[i]})
+	argv.records = append(argv.records, Record{Label: argumentLabel(i), Text: args[i]})
+}
+
+// argumentLabel is the label of the record of a gh call's argument i, "the gh call's argument
+// <i>", and the start of the label of each record readEndpoint reads from that argument decoded.
+func argumentLabel(i int) string {
+	return "the gh call's argument " + strconv.Itoa(i)
 }
 
 // GhFile is one file a gh call would send as content: the option that named it, which a setup
@@ -530,9 +661,8 @@ type GhFile struct {
 	Option, Path, Field string
 }
 
-// inputOption is `gh api`'s request body, the one option whose file is itself a JSON document
-// (jsonBody), and one of the two whose standard input is (stdinRecords), where the call's endpoint
-// is GitHub's REST API.
+// inputOption is `gh api`'s request body, the one option whose file is itself the body, read as
+// the call's endpoint says (jsonBody), and one of the two whose standard input is (stdinRecords).
 const inputOption = "--input"
 
 // jsonInputsOption is the other: `gh workflow run --json`, a boolean that makes standard input
