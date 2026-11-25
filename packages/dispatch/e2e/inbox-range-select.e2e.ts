@@ -162,6 +162,14 @@ const CUT_PX = 4;
  *  scrolls by whole ones. */
 const EDGE_SLACK_PX = 1;
 
+/** How much of its height a landing checkbox stands cut by the list column's edge where its
+ *  centre is cut off with it. */
+const CENTRE_CUT_SHARE = 0.7;
+
+/** The scroll padding the page keeps at its foot below 1280 px (`styles.css`, 5rem), which
+ *  `scrollIntoView` keeps clear of what it shows and the bar's return does not. */
+const FOOT_PADDING_PX = 80;
+
 /** Where a row's checkbox stands against the list column's visible box, the list's own box cut
  *  to the window's, in viewport pixels. */
 interface MarkSight {
@@ -1148,6 +1156,231 @@ test("the return to the row marked last takes the least scroll to its checkbox",
     expect(after.window, `the window's scroll, ${before.window} before the press`).toBe(
       before.window
     );
+  } finally {
+    await alice.close();
+  }
+});
+
+// SLOW(>=2s): twenty-four seeded rows, the last three marked, the list scrolled to cut the
+// landing checkbox by 70% of its height and one Dismiss pressed.
+test("a range action that lands on a checkbox whose centre is cut off still lands on it and shows it whole", async ({
+  browser,
+}) => {
+  await setLiveSessions([THREAD_SESSION]);
+  await createProject({ key: "CORE", name: "Core" });
+  const mirror = await createIssue({ project: "CORE", title: "Mirror retries" });
+  await patchIssue(mirror.key, { priority: 2 });
+  const count = 24;
+  await seedBulkReplyThreads({ count, issueKey: mirror.key, prefix: "Mirror" });
+
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await inboxPage(alice);
+    await expect(rows(page)).toHaveCount(count);
+    // The count above waited for every row, and nothing moves them before the marks do.
+    const drawn = await drawnIds(inboxList(page));
+
+    // The list's last three rows, the last one marked first: the row marked last without the
+    // shift key is the list's last, so no row stands after it, at its place. The press takes
+    // nothing away above the row before the three, which lands as the nearest row in sight
+    // before that place.
+    const range = drawn.slice(-3);
+    const landing = drawn.at(-4) ?? "";
+    const previous = drawn.at(-5) ?? "";
+    await mark(page, range[2] ?? "").click();
+    await mark(page, range[0] ?? "").click({ modifiers: ["Shift"] });
+    await expectCount(page, 3);
+    expect(await markedIds(page)).toEqual(range);
+
+    // The list is scrolled back up until the landing checkbox stands cut by the list's bottom
+    // edge by 70% of its height, its centre outside the list's visible box. Nothing above it
+    // goes, so it stands there once the three have gone too. The middle of the part of it that
+    // shows is in sight, the point the bar's return tests (`markShown`); its own centre is not,
+    // and a return that tests that point passes it over for the row before it, whose checkbox
+    // stands whole in sight. The three stand wholly below the view, and the landing row still
+    // reaches below it, so the list's scroll range still holds the scroll once they have gone.
+    const placing = await markSight(page, landing);
+    const cutWanted = CENTRE_CUT_SHARE * (placing.bottom - placing.top);
+    const scroll = placing.bottom - (placing.seenBottom + cutWanted);
+    await inboxList(page).evaluate((list, by) => {
+      list.scrollTop += by;
+    }, scroll);
+    await frameAndTask(page);
+    const cut = await markSight(page, landing);
+    expect(
+      Math.abs(cut.cutBelow - cutWanted),
+      `the landing checkbox stands cut by the list's bottom edge by ${cutWanted} px, ${CENTRE_CUT_SHARE * 100}% of its height; ${sightWords(cut)}`
+    ).toBeLessThanOrEqual(EDGE_SLACK_PX);
+    expect(
+      cut.centreInside,
+      `the landing checkbox has its centre outside the list's visible box; ${sightWords(cut)}`
+    ).toBe(false);
+    expect(
+      await markInSight(page, previous),
+      `the checkbox of the row before the landing (${previous}) stands whole in the list's visible box`
+    ).toBe(true);
+    expect(
+      await rowsBelowSight(page),
+      "the three marks, and no other row, stand wholly below the view"
+    ).toEqual(range);
+    const before = await scrollPositions(page);
+    await bar(page).getByRole("button", { name: "Dismiss selected threads" }).click();
+    for (const id of range) await expect(row(page, id)).toHaveCount(0);
+    await frameAndTask(page);
+
+    // The focus is on the landing checkbox, not on the row before it, and the bar's return has
+    // shown it whole at the list's bottom edge: the list scrolled down by the cut and no more.
+    expect(
+      await drawnIds(inboxList(page)),
+      "the press took the three marks away and no other row"
+    ).toEqual(drawn.slice(0, -3));
+    expect(
+      await holdsFocus(mark(page, landing)),
+      `the focus is on the landing checkbox (${landing}), its centre cut off before the press, and not on the row before it (${previous}); it is on ${await describeFocus(page)}`
+    ).toBe(true);
+    const shown = await markSight(page, landing);
+    expect(
+      wholeInSight(shown),
+      `the landing checkbox stands whole in the list's visible box; ${sightWords(shown)}`
+    ).toBe(true);
+    expect(
+      Math.abs(shown.bottom - shown.seenBottom),
+      `the landing checkbox stands with its bottom edge at the view's bottom edge; ${sightWords(shown)}`
+    ).toBeLessThanOrEqual(EDGE_SLACK_PX);
+    const after = await scrollPositions(page);
+    expect(
+      Math.abs(after.list - before.list - cut.cutBelow),
+      `the list scrolled down by ${after.list - before.list} px, from ${before.list} to ${after.list}; want the cut of ${cut.cutBelow} px`
+    ).toBeLessThanOrEqual(EDGE_SLACK_PX);
+    expect(after.window, `the window's scroll, ${before.window} before the press`).toBe(
+      before.window
+    );
+  } finally {
+    await alice.close();
+  }
+});
+
+// SLOW(>=2s): sixteen seeded rows drawn as cards at 390x664, two marked, the window scrolled and
+// one Dismiss pressed.
+test("at 390 px a landing the press leaves cut at the window's foot scrolls by the cut alone", async ({
+  browser,
+}) => {
+  await setLiveSessions([THREAD_SESSION]);
+  await createProject({ key: "CORE", name: "Core" });
+  const mirror = await createIssue({ project: "CORE", title: "Mirror retries" });
+  await patchIssue(mirror.key, { priority: 2 });
+  const count = 16;
+  await seedBulkReplyThreads({ count, issueKey: mirror.key, prefix: "Mirror" });
+
+  const alice = await asUser(browser, "alice");
+  try {
+    // The iPhone 13's window, where the window scrolls the Inbox's list and the page keeps its
+    // foot padding, which `scrollIntoView` keeps clear of what it shows.
+    const phone = { height: 664, width: 390 };
+    const page = await alice.newPage();
+    await page.setViewportSize(phone);
+    await page.goto("/");
+    await expect(rows(page)).toHaveCount(count);
+    // The count above waited for every row, and nothing moves them before the marks do.
+    const drawn = await drawnIds(inboxList(page));
+    expect(
+      await page.evaluate(() => getComputedStyle(document.documentElement).scrollPaddingBottom),
+      "the page's scroll padding at its foot"
+    ).toBe(`${FOOT_PADDING_PX}px`);
+
+    // The first row marked with its checkbox, then row 11 with `x` on the focused row, as the
+    // keys act below the reading column's width: row 11 is the row marked last. Once both have
+    // gone, row 12 stands at its place, moved up by the space the two take, each from its own
+    // top to the top of the row after it.
+    const above = drawn[0] ?? "";
+    const last = drawn[10] ?? "";
+    const landing = drawn[11] ?? "";
+    await mark(page, above).click();
+    await expectCount(page, 1);
+    await row(page, last).focus();
+    await page.keyboard.press("x");
+    await expectCount(page, 2);
+    expect(await markedIds(page)).toEqual([above, last]);
+    const up = await inboxList(page).evaluate(
+      (list, ids) => {
+        const top = (id: string) =>
+          list.querySelector(`[data-inbox-row="${id}"]`)?.getBoundingClientRect().top ?? Number.NaN;
+        return top(ids.afterAbove) - top(ids.above) + (top(ids.landing) - top(ids.last));
+      },
+      { above, afterAbove: drawn[1] ?? "", landing, last }
+    );
+    expect(up, `the two marks take ${up} px of the page`).toBeGreaterThan(0);
+
+    // The window is scrolled until, once both have gone, row 12's checkbox stands cut by the
+    // window's bottom edge by a pixel more than CUT_PX, so a scroll by whole pixels still cuts it
+    // by at least CUT_PX, with its centre in sight: in sight under either reading of
+    // `markShown`, the middle of the part of it that shows or its own centre. The first row then
+    // stands wholly above the window, and row 11 just below it, the first row wholly below it.
+    // Below the window the page holds room to scroll by the cut and by the foot padding too, so
+    // neither scroll is held at the page's end.
+    const placing = await markSight(page, landing, up);
+    const scroll = placing.bottom - (phone.height + CUT_PX + EDGE_SLACK_PX);
+    await page.evaluate((by) => window.scrollBy(0, by), scroll);
+    await frameAndTask(page);
+    const coming = await markSight(page, landing, up);
+    expect(
+      coming.seenBottom,
+      `the list reaches below the window, so the window's bottom edge cuts row 12's checkbox; ${sightWords(coming)}`
+    ).toBe(phone.height);
+    expect(
+      coming.cutBelow,
+      `once both have gone, row 12's checkbox stands cut by the window's bottom edge by at least ${CUT_PX} px; ${sightWords(coming)}`
+    ).toBeGreaterThanOrEqual(CUT_PX);
+    expect(
+      coming.centreInside,
+      `once both have gone, row 12's checkbox has its centre in sight; ${sightWords(coming)}`
+    ).toBe(true);
+    const aboveFoot = await row(page, above).evaluate((box) => box.getBoundingClientRect().bottom);
+    expect(
+      aboveFoot,
+      "the first row stands wholly above the window: its bottom edge, in px from the window's top"
+    ).toBeLessThanOrEqual(0);
+    expect(
+      (await rowsBelowSight(page))[0],
+      "row 11, the row marked last, is the first row wholly below the window"
+    ).toBe(last);
+    const room = await page.evaluate(
+      () => document.documentElement.scrollHeight - window.innerHeight - window.scrollY
+    );
+    expect(
+      room - up,
+      `once both have gone the window can scroll ${room - up} px further, more than the cut and the ${FOOT_PADDING_PX} px foot padding`
+    ).toBeGreaterThan(coming.cutBelow + FOOT_PADDING_PX);
+    const before = await scrollPositions(page);
+    await bar(page).getByRole("button", { name: "Dismiss selected threads" }).click();
+    for (const id of [above, last]) await expect(row(page, id)).toHaveCount(0);
+    await frameAndTask(page);
+
+    // The focus is on row 12's checkbox, and the list's anchor has shown it whole with its
+    // bottom edge at the window's: the window scrolled down by the cut alone. A scroll that kept
+    // the foot padding would leave that edge about the padding above the window's.
+    expect(
+      await drawnIds(inboxList(page)),
+      "the press took the two marks away and no other row"
+    ).toEqual(drawn.filter((id) => id !== above && id !== last));
+    expect(
+      await holdsFocus(mark(page, landing)),
+      `the focus is on row 12's checkbox (${landing}), at the place of the row marked last; it is on ${await describeFocus(page)}`
+    ).toBe(true);
+    const after = await scrollPositions(page);
+    expect(
+      Math.abs(after.window - before.window - coming.cutBelow),
+      `the window scrolled down by ${after.window - before.window} px, from ${before.window} to ${after.window}; want the cut of ${coming.cutBelow} px alone, where a scroll that kept the ${FOOT_PADDING_PX} px foot padding goes ${coming.cutBelow + FOOT_PADDING_PX} px`
+    ).toBeLessThanOrEqual(EDGE_SLACK_PX);
+    const shown = await markSight(page, landing);
+    expect(
+      wholeInSight(shown),
+      `row 12's checkbox stands whole in the window; ${sightWords(shown)}`
+    ).toBe(true);
+    expect(
+      Math.abs(shown.bottom - shown.seenBottom),
+      `row 12's checkbox stands with its bottom edge at the window's bottom edge; ${sightWords(shown)}`
+    ).toBeLessThanOrEqual(EDGE_SLACK_PX);
   } finally {
     await alice.close();
   }
