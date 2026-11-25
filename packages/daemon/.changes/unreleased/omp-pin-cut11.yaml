@@ -1,0 +1,20 @@
+kind: Changed
+body: |-
+    The worker image carries Oh My Pi `18.18.6-sami.20261125-001804` of cybermonklabs/oh-my-pi,
+    which `.omp-pin` names. It carries the fork's prompt-cache fix (fork pull request #27): a
+    session whose model does not change keeps the previous request's cached prefix, and a cut of
+    the context breaks that prefix only where the cut saves more than the cache write it causes.
+    Do not set `task.disabledAgents` in the pods' Oh My Pi settings overlay on this build: the
+    cache fix does not yet cover a disabled agent, and a subagent revived from a parked session
+    keeps the prompt of a setting that was set back. A background job in a role's shell keeps the
+    shell's variables, positional parameters, functions, aliases and options as they were when the
+    job started, so `for i in 1 2 3; do echo $i & done; wait` prints `1 2 3` in some order, not
+    `3 3 3`. The copy is shared until either side writes, so its memory grows with the number of
+    live background jobs (323 MB with 3,000 live `( : ) &` jobs). That build writes shell frames
+    version 37: a frame stored by an earlier build (`18.18.6-sami.20261123-024918` wrote version
+    31) is refused, not restored. Its SQL session store makes and checks the same tables, indexes
+    and grants as `18.18.6-sami.20261122-091943`, so a deployment already on that pin or on
+    `18.18.6-sami.20261123-024918` needs no owner run before this one.
+time: 2026-11-25T01:21:06Z
+custom:
+    Issue: omp-pin-cut11

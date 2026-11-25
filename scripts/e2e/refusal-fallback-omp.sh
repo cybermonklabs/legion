@@ -3,7 +3,7 @@
 # plugin's cooldown and goes back to it when the cooldown ends (dispatch://INFRA-956 R1, the check
 # c-r1-chain). It is a script of its own because the window it measures is a quarter of an hour:
 # Oh My Pi's own floor for suppressing a model whose error it cannot classify is five minutes
-# (packages/coding-agent/src/session/turn-recovery.ts:2202-2209 at the pinned tag) and the
+# (packages/coding-agent/src/session/turn-recovery.ts:2276-2283 at the pinned tag) and the
 # plugin's cooldown here is ten, so the only way to see that nothing goes back at the five-minute
 # mark and something does after the tenth is to spend the quarter of an hour. The pi-legion job
 # that runs the plugin's suite (.github/workflows/ci-job-pi-legion.yaml) has timeout-minutes: 28,
