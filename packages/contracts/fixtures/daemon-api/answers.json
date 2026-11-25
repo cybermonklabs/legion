@@ -181,14 +181,5 @@
     ],
     "since": 228,
     "noBody": false
-  },
-  {
-    "id": "p0-bound",
-    "routes": [
-      "POST /legion/v1/project/p0-bound",
-      "POST /legion/v1/project/p0-bound/clear"
-    ],
-    "since": 282,
-    "noBody": false
   }
 ]

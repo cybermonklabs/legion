@@ -23,13 +23,6 @@ import (
 // says; a clear takes the live value away, which returns the project to legion.yaml's
 // admission_p0_bound.
 
-// p0BoundContract is version.go's entry for dispatch://INFRA-5636: the four P0 bound routes, the
-// controller's answer (AnswerP0Bound), and the state's `admission.p0Holders` and
-// `admission.p0Bound`, which a caller below it is served without (shaping.go's withoutP0Start). Its
-// constant rather than its number stands in SupportedContracts, as priorityContract's does, so a
-// renumber of the entry moves the two together.
-const p0BoundContract = 282
-
 // ProjectP0BoundRequest is the controller's POST /legion/v1/project/p0-bound: its grant, the bound
 // to set, either `bound`, a whole number of at least 1, or `unbounded`, true for no bound, exactly
 // one of the two, and why.
