@@ -1,6 +1,6 @@
 package legion
 
-//ci:reads packages/contracts/fixtures/daemon-api/state-events.json TestAnApplyThatFailsIsRetriedBeforeAnyLaterMessage os.ReadFile (daemonAPIFixture, golden_state_test.go:17, ../../../../contracts/fixtures/daemon-api): the daemon's golden of its state lane, which packages/daemon/internal/daemon/state_events_golden_test.go writes and TestEventsWriteTheRowsAWholeReadOfTheSameStatesWrites applies
+//ci:reads packages/contracts/fixtures/daemon-api/state-events.json TestAnApplyThatFailsIsRetriedBeforeAnyLaterMessage os.ReadFile (`packages/envoy/internal/dispatch/legion/golden_state_test.go#daemonAPIFixture`, ../../../../contracts/fixtures/daemon-api): the daemon's golden of its state lane, which packages/daemon/internal/daemon/state_events_golden_test.go writes and TestEventsWriteTheRowsAWholeReadOfTheSameStatesWrites applies
 
 import (
 	"context"
