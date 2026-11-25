@@ -369,6 +369,9 @@ func (e *Engine) holdSentWorker(ctx context.Context, tx pgx.Tx, issue record.Iss
 // role's claim later than the one the ask was last told (record.MergeForward.SentLaunch), while
 // the merge of the head is still owed to role where issue stands (owedAsk) and no row of that ask
 // is queued for role and head (record.Store.QueuedMergeForwardAsk), and records launch on the ask.
+// The row carries launch and the launch the record's ask named before
+// (record.MergeForwardMessage.SentLaunch, SentBefore), so a row that ends undelivered puts that
+// launch back (MergeForwardAskEnded): launch is recorded at the queue, before anything told it.
 // It answers the pull request it wrote, nil where it sent nothing. Launch 0 is no launch: a claim
 // that failed or retired, or one the daemon holds none of, is asked at the ready of its next
 // launch. A pull request that is not open and a tree that lingers tell nobody. Its callers are a
@@ -394,7 +397,9 @@ func askAgain(ctx context.Context, store record.Store, tx pgx.Tx, issue record.I
 	if lingers, err := record.TreeLingers(ctx, store, tx, issue.Tree); err != nil || lingers {
 		return nil, err
 	}
-	row, err := queuedRow(ctx, tx, store, issue.Key, mergeForwardMessageOf(issue, *pr, role, record.MergeForwardAsk, asked.Why), now)
+	ask := mergeForwardMessageOf(issue, *pr, role, record.MergeForwardAsk, asked.Why)
+	ask.SentLaunch, ask.SentBefore = launch, asked.SentLaunch
+	row, err := queuedRow(ctx, tx, store, issue.Key, ask, now)
 	if err != nil {
 		return nil, err
 	}
@@ -410,41 +415,60 @@ func askAgain(ctx context.Context, store record.Store, tx pgx.Tx, issue record.I
 	return pr, nil
 }
 
-// MergeForwardAskEnded settles the end of a row of the merge-forward ask of head to role on issue
-// key, which the daemon's executor deletes in tx under the fact lock tx holds
-// (intake.SerializeFacts), so the end is ordered with every fact, the ready of each launch of
-// role's claim among them (askAgainAtLaunch). told is the launch of role's claim the row was
-// delivered to, which the executor reads before the publish, and 0 for a row that ends
-// undelivered; launch is the claim's launch as the executor reads it in tx, 0 where the claim has
-// failed or retired or the daemon holds none. It answers whether it sent the ask again.
+// MergeForwardAskEnded settles the end of ask, a row of the merge-forward ask of its head to its
+// role on issue key, which the daemon's executor deletes in tx under the fact lock tx holds
+// (intake.SerializeFacts), so the end is ordered with every fact, the ready of each launch of the
+// role's claim among them (askAgainAtLaunch). delivered says whether the row was delivered; told
+// is the launch of the role's claim the delivery reached, which the executor reads before the
+// publish, and 0 for a row that ends undelivered; launch is the claim's launch as the executor
+// reads it in tx, 0 where the claim has failed or retired or the daemon holds none. It answers
+// whether it sent the ask again.
 //
-// A row delivered to told keeps told on the record's ask (record.MergeForward.SentLaunch) where the
-// ask is of head, names role, has not landed and was last told an earlier launch, so the ready of
-// told, which can come after the delivery, sends nothing again. Then, delivered or not, the ask is
-// sent again at launch (askAgain): a launch whose ready came while the row was still queued sent
-// nothing and left the ask to the row, which reached an earlier launch or none. So each launch is
-// told the ask once, whichever of the row's end and the launch's ready comes first. told is a
-// launch whose own session the listener stored the message for, read before the publish, and 0
-// where the listener named no holder: the executor publishes the ask only once the launch it reads
-// has registered its session, and does not end the row as delivered where the listener stored it
-// for another session (the daemon's deliverHeld), so a copy an earlier launch's session took credits no
-// later launch, and a launch that came up and took the publish between that read and the publish
-// is told the ask again here. No launch is left untold.
-func MergeForwardAskEnded(ctx context.Context, store record.Store, tx pgx.Tx, key string, role claim.Role, head string, told, launch uint64, now time.Time) (bool, error) {
+// Where the record's ask is the row's own - of its head, naming its role, not landed - a row
+// delivered to told keeps told on it (record.MergeForward.SentLaunch) where it was last told an
+// earlier launch, so the ready of told, which can come after the delivery, sends nothing again.
+// A row sent again at a launch (askAgain) recorded that launch at the queue, before anything told
+// it; where it ends undelivered and the record's ask still names that launch, the end puts back
+// the launch the ask named before (record.MergeForwardMessage.SentBefore), so no later send skips
+// a launch nothing told. A newer ask, of another head or to another role, is not the row's own and
+// is left as it is, and a launch told since the queue is never taken back: the record names it in
+// place of the row's launch. A delivery the listener named no holder of is delivered and takes
+// nothing back, or the ask would be sent to the same launch at every end.
+//
+// Then, delivered or not, the ask is sent again at launch (askAgain): a launch whose ready came
+// while the row was still queued sent nothing and left the ask to the row, which reached an earlier
+// launch or none. So each launch is told the ask once, whichever of the row's end and the launch's
+// ready comes first. told is a launch whose own session the listener stored the message for, read
+// before the publish, and 0 where the listener named no holder: the executor publishes the ask
+// only once the launch it reads has registered its session, and does not end the row as delivered
+// where the listener stored it for another session (the daemon's deliverHeld), so a copy an
+// earlier launch's session took credits no later launch, and a launch that came up and took the
+// publish between that read and the publish is told the ask again here. No launch is left untold.
+func MergeForwardAskEnded(ctx context.Context, store record.Store, tx pgx.Tx, key string, ask record.MergeForwardMessage, delivered bool, told, launch uint64, now time.Time) (bool, error) {
 	issue, err := store.Issue(ctx, tx, key)
 	if err != nil || issue == nil {
 		return false, err
 	}
-	if told > 0 {
+	role := ask.Role
+	if (delivered && told > 0) || (!delivered && ask.SentLaunch != 0) {
 		pr, err := store.PullRequest(ctx, tx, key)
 		if err != nil {
 			return false, err
 		}
 		if pr != nil && pr.MergeForward != nil {
-			delivered := *pr.MergeForward
-			if delivered.Head == head && delivered.Landed == "" && delivered.Asked() == role && told > delivered.SentLaunch {
-				delivered.SentLaunch = told
-				pr.MergeForward = &delivered
+			own := *pr.MergeForward
+			sent := own.SentLaunch
+			if own.Head == ask.Head && own.Landed == "" && own.Asked() == role {
+				switch {
+				case delivered && told > own.SentLaunch:
+					sent = told
+				case !delivered && own.SentLaunch == ask.SentLaunch:
+					sent = ask.SentBefore
+				}
+			}
+			if sent != own.SentLaunch {
+				own.SentLaunch = sent
+				pr.MergeForward = &own
 				if err := store.PutPullRequest(ctx, tx, *pr); err != nil {
 					return false, err
 				}

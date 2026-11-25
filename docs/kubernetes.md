@@ -2685,22 +2685,26 @@ The outbox and the plan rows are shared by every project's daemon on the databas
 
 This release holds the worker of each phase that starts while another role's merge forward of the head is owed, the planner among them, tells the implementer when the merge forward it was asked for is no longer its work, and asks a role again at the ready of its claim's next launch while the merge it was asked for is still owed to it (cybermonklabs/legion#5312).
 It adds no migration: a `merge_forward` row's payload and `pull_requests.merge_forward` are JSON.
-The release before refuses two kinds of `merge_forward` row that this release writes:
+The release before refuses three kinds of `merge_forward` row that this release writes:
 
 - a row whose step is `withdrawn`, which it knows as no step;
 
-- a hold or a landed row to the planner, since it sends those to the tester, the reviewer and the merger alone (`mergeForwardRoles` in `record/outbox.go`).
+- a hold or a landed row to the planner, since it sends those to the tester, the reviewer and the merger alone (`mergeForwardRoles` in `record/outbox.go`);
 
-Its decode refuses each one (`validateOutboxPayload` in `record/outbox.go`), which is no permanent refusal for that kind (`permanentRefusal` in `internal/daemon/outbox.go`), so it fails the row at every attempt and retries it on its backoff until the roll forward.
+- an `ask` row sent again to a role's later launch, which carries the keys `sentLaunch` and `sentBefore` (the launch it was sent at and the launch the record's ask named before), and the release before decodes the outbox strictly (`DecodeOutboxPayload`, `DisallowUnknownFields`, in `record/outbox.go`).
+
+Its decode refuses each one (`DecodeOutboxPayload` and `validateOutboxPayload` in `record/outbox.go`), which is no permanent refusal for that kind (`permanentRefusal` in `internal/daemon/outbox.go`), so it fails the row at every attempt and retries it on its backoff until the roll forward.
 Run this with the daemon stopped, before the earlier image is pinned:
 
 ```sql
 delete from outbox where kind = 'merge_forward' and split_part(issue, '-', 1) = '<PROJECT>'
-  and (payload->>'step' = 'withdrawn' or (payload->>'step' in ('hold', 'landed') and payload->>'role' = 'planner'));
+  and (payload->>'step' = 'withdrawn' or (payload->>'step' in ('hold', 'landed') and payload->>'role' = 'planner')
+    or payload ? 'sentLaunch' or payload ? 'sentBefore');
 ```
 
 A deleted withdrawal leaves the implementer with the ask it was told is no longer its work; a deleted row to the planner is a hold or a new head the planner does not read.
-The ask sent again to a role's later launch, at that launch's ready or at the end of a row of the ask that did not reach it, is an `ask` row like the first one, naming the phase the issue stands in when it is sent, which the release before decodes and delivers as it does every ask, so the statement leaves it.
+A deleted ask that was sent again leaves that launch untold, as the release before leaves it anyway: it never sends an ask again at a launch.
+The first ask of a merge forward carries neither key, so the statement leaves it.
 `pull_requests.merge_forward` can hold the keys `withdrawn` and `sentLaunch`.
 The release before decodes that column without them (`json.Unmarshal` in `record/store.go`), and its next write of the pull request's record drops both.
 Without `withdrawn` it reads a withdrawn ask as one its role still holds.

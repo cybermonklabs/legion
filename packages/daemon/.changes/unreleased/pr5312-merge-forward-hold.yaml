@@ -23,7 +23,10 @@ body: |-
   it stored it for another session: a copy Envoy stored for the session of an earlier launch, whose
   stop has not yet reached Envoy, tells the new launch nothing, so the row waits until the new
   session holds the role. The record's ask keeps the launch it was delivered or
-  sent to (`sentLaunch`), and a failed claim's notice tells the owning architect. One case can be
+  sent to (`sentLaunch`); an ask sent again records that launch as its row is queued, and a row
+  of it that ends undelivered puts back the launch the record named before, where the record's
+  ask is still the row's own (the same head and role, not landed, still naming that launch), so
+  no later send skips a launch nothing told. A failed claim's notice tells the owning architect. One case can be
   told two times: a launch that resumes the session of an earlier launch, where the message was
   stored for that session. Envoy stores a message for a session, and it cannot say which launch read
   it. The second ask names the same merge and the same commit, and changes nothing that the
@@ -39,12 +42,13 @@ body: |-
   The news of an approved design to the architect that holds an issue in
   `accepting` names, as its move-back targets, the phases of the task's steps before the acceptance.
 
-  The release before refuses a merge-forward row whose step is `withdrawn` and a hold or landed
-  row to the planner. A rollback past this release deletes those queued `merge_forward` rows first
-  (docs/kubernetes.md, "Rolling back the release that holds every worker while a merge forward is
-  owed"). An ask sent again at a launch is a plain ask row, which the release before delivers. The
-  release before reads the record's ask without `withdrawn` and `sentLaunch`, drops both at its
-  next write, and sends no ask again at a role's next launch.
+  The release before refuses a merge-forward row whose step is `withdrawn`, a hold or landed
+  row to the planner, and an ask sent again at a launch, which carries `sentLaunch` and
+  `sentBefore` that its strict decode knows as no field. A rollback past this release deletes
+  those queued `merge_forward` rows first (docs/kubernetes.md, "Rolling back the release that
+  holds every worker while a merge forward is owed"); the first ask of a merge forward carries
+  neither key and stays. The release before reads the record's ask without `withdrawn` and
+  `sentLaunch`, drops both at its next write, and sends no ask again at a role's next launch.
 time: 2026-11-24T01:50:00Z
 custom:
     Issue: pr5312

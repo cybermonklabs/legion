@@ -306,6 +306,13 @@ func implementerAsked(at phase.Phase, why record.ConflictWhy) record.MergeForwar
 		Phase: at, PullRequest: 42, Why: why}
 }
 
+// sentAgain is ask as askAgain queues it at launch: it carries launch and before, the launch the
+// record's ask named before (record.MergeForwardMessage.SentLaunch, SentBefore).
+func sentAgain(ask record.MergeForwardMessage, launch, before uint64) record.MergeForwardMessage {
+	ask.SentLaunch, ask.SentBefore = launch, before
+	return ask
+}
+
 // An ask made in implementing covers implementing alone (mergeForwardOnEntry), and a move to where
 // the merge comes next asks nothing at a conflicting head (classify.MergeComesNext). A parent whose
 // last step is the implementer's is held before its retro while an issue beneath it is still in

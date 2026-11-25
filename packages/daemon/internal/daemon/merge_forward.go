@@ -76,10 +76,10 @@ func (r *outbox) mergeForwardMessage(ctx context.Context, row record.OutboxRow, 
 		left = "the issue is not recorded"
 	}
 	attributes := []any{"row", row.ID, "issue", row.Issue, "role", payload.Role, "step", payload.Step, "head", payload.Head}
-	var end func(context.Context, uint64) error
+	var end func(context.Context, bool, uint64) error
 	if payload.Step == record.MergeForwardAsk {
-		end = func(ctx context.Context, told uint64) error {
-			return r.endMergeForwardAsk(ctx, row, payload, token, told, attributes)
+		end = func(ctx context.Context, delivered bool, told uint64) error {
+			return r.endMergeForwardAsk(ctx, row, payload, token, delivered, told, attributes)
 		}
 	}
 	if left != "" {
@@ -87,7 +87,7 @@ func (r *outbox) mergeForwardMessage(ctx context.Context, row record.OutboxRow, 
 			r.beforeUndeliveredEnd(row)
 		}
 		if end != nil {
-			if err := end(ctx, 0); err != nil {
+			if err := end(ctx, false, 0); err != nil {
 				return err
 			}
 		}
@@ -104,14 +104,15 @@ func (r *outbox) mergeForwardMessage(ctx context.Context, row record.OutboxRow, 
 // endMergeForwardAsk ends row, a row of payload's ask, in one transaction that holds the fact lock
 // (intake.SerializeFacts): it deletes the row under the lease this attempt holds
 // (record.Store.FinishLeasedOutbox), reads the asked role's claim there, and hands the workflow
-// told, the launch the row was delivered to (0 for a row that ends undelivered), and the claim's
-// launch as read under the lock, 0 where the claim has failed or retired or the daemon supervises
-// none (workflow.MergeForwardAskEnded). A ready applied before the lock was taken is one the
-// claim read shows the launch of, since a launch's ready comes after the decision that relaunched
-// the claim published that launch (supervise.Machine.View); one applied after it finds the row
-// gone. The settle that follows finds the row finished. A lease another attempt took since is
-// record.ErrOutboxLeaseLost, and that attempt ends the row.
-func (r *outbox) endMergeForwardAsk(ctx context.Context, row record.OutboxRow, payload record.MergeForwardMessage, token claim.Token, told uint64, attributes []any) error {
+// the row's payload, whether the row was delivered, told, the launch the delivery reached (0 for
+// a row that ends undelivered, and for a delivery the listener named no holder of), and the
+// claim's launch as read under the lock, 0 where the claim has failed or retired or the daemon
+// supervises none (workflow.MergeForwardAskEnded). A ready applied before the lock was taken is
+// one the claim read shows the launch of, since a launch's ready comes after the decision that
+// relaunched the claim published that launch (supervise.Machine.View); one applied after it finds
+// the row gone. The settle that follows finds the row finished. A lease another attempt took since
+// is record.ErrOutboxLeaseLost, and that attempt ends the row.
+func (r *outbox) endMergeForwardAsk(ctx context.Context, row record.OutboxRow, payload record.MergeForwardMessage, token claim.Token, delivered bool, told uint64, attributes []any) error {
 	var launch uint64
 	var asked bool
 	if err := store.Transact(ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
@@ -126,7 +127,7 @@ func (r *outbox) endMergeForwardAsk(ctx context.Context, row record.OutboxRow, p
 			launch = held.Generation
 		}
 		var err error
-		asked, err = workflow.MergeForwardAskEnded(ctx, r.records, tx, row.Issue, payload.Role, payload.Head, told, launch, r.now().UTC())
+		asked, err = workflow.MergeForwardAskEnded(ctx, r.records, tx, row.Issue, payload, delivered, told, launch, r.now().UTC())
 		return err
 	}); err != nil {
 		return fmt.Errorf("end the merge-forward ask of %s to its %s: %w", row.Issue, payload.Role, err)
