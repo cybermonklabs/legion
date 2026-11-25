@@ -2660,9 +2660,8 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		// entry queues no second task of it (supervise.Claim.GivenEntry). A start that hands
 		// the role the work of the entry its row already names travels with the mark that
 		// says so (record.SuperviseRequest.ResendEntry), and the claim takes its task though
-		// it was given that entry. A check start's look
-		// and check instance travel the same way, and are what say the completion this task's
-		// turn reports is a report on that look rather than a phase completion
+		// it was given that entry. A check start's look and check instance travel the same way,
+		// and attribute a report that names its check to the look this task gave the worker
 		// (supervise.Claim.ServingCheck, api/handoff.go). The row travels as well: the claim
 		// writes it with the delivery, so a retry of this row (a
 		// settle or a ClaimReady below that failed, a crash before the row finished) queues the
