@@ -10009,3 +10009,32 @@ test("k-filter-keys: on the Inbox page an Escape held down in the Filter panel's
   await expect(panel, step("the repeats leave the panel open")).toBeVisible();
   await expect(field, step("the focus is on the field")).toBeFocused();
 });
+
+// The tester's red row of round 17 (62b47002's "a held key acts once but for the steps and scrolls
+// that repeat", and keyboard.md's "Every other key acts once for each press"): Enter held down on
+// the issue header's focused Pin issue writes the pin once. At 1e21af01 a repeat that no binding
+// takes goes on to the browser, which presses the focused button again on each repeat: one held
+// Enter wrote 16 pins and unpins in Chromium, Firefox and WebKit.
+// SLOW(>=2s): an issue page drawn and Enter held on its Pin issue for a third of a second.
+// @firefox: the repeats the engine sends for a held key, and where they land once the press has
+// moved the focus (playwright.config.ts names the clause).
+test("k-default-keys: on today's issue page an Enter held down on the header's focused Pin issue writes the pin once and leaves the issue pinned @firefox", async ({
+  page,
+}) => {
+  const step = (text: string) => `k-default-keys: a held Enter on Pin issue: ${text}`;
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title: "Ledger rollout" });
+  const pins = watchWrites(page, "PUT", `/api/v1/me/issues/${issue.key}/state`);
+  await page.setViewportSize(WIDE);
+  await openIssue(page, issue.key, "Ledger rollout");
+  const header = page.getByTestId("issue-header");
+  await header.getByRole("button", { name: "Pin issue" }).focus();
+  await holdKey(page, "Enter", 10);
+  // A write the repeats sent reaches the page's request events within this second and a half.
+  await page.waitForTimeout(1_500);
+  expect(writesSent(pins), step("a held Enter writes the pin once")).toBe(1);
+  await expect(
+    header.getByRole("button", { name: "Unpin issue" }),
+    step("the issue is pinned once the held Enter is let go")
+  ).toBeVisible();
+});
