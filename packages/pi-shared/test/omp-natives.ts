@@ -5,11 +5,13 @@
 // @oh-my-pi/pi-natives native/loader-state.js, in this order): PI_NATIVES_DIR or
 // OMP_DOWNLOAD_ROOT, which no pod or pane sets, then an existing $XDG_DATA_HOME/omp, which moves
 // its whole profile, then OMP_CONFIG_ROOT, which moves its whole config root. Each HOME's natives
-// are instead hardlinks to one copy per binary under the user's cache directory.
+// are instead hardlinks to one copy per binary under the user's cache directory, or symlinks to it
+// where the HOME is on another filesystem than the cache (`linkTree`).
 //
 // The copy is the one the Go tests keep (packages/daemon/internal/testbin/natives.go,
-// testbin.OMPHome): the same directory, name, layout, lock and fill, so a machine holds one copy per
-// pin for both languages and either fills it for the other. A change to one is a change to both.
+// testbin.OMPHome): the same directory, name, layout, lock, fill and links, so a machine holds one
+// copy per pin for both languages and either fills it for the other. A change to one is a change to
+// both.
 import {
   chmod,
   link,
@@ -20,6 +22,7 @@ import {
   rename,
   rm,
   stat,
+  symlink,
   writeFile,
 } from "node:fs/promises";
 import * as path from "node:path";
@@ -28,9 +31,9 @@ import * as path from "node:path";
 const caches = new Map<string, Promise<string>>();
 
 /**
- * Hardlinks `binary`'s natives into `home`'s .omp/natives from the shared copy, filling the copy
- * first if no process has. The test's environment must name no XDG_DATA_HOME, as none does here:
- * Oh My Pi keeps its natives under $XDG_DATA_HOME/omp when that directory exists.
+ * Links `binary`'s natives into `home`'s .omp/natives from the shared copy, filling the copy first
+ * if no process has. The test's environment must name no XDG_DATA_HOME, as none does here: Oh My
+ * Pi keeps its natives under $XDG_DATA_HOME/omp when that directory exists.
  */
 export async function linkOmpNatives(binary: string, home: string): Promise<void> {
   let cache = caches.get(binary);
@@ -222,11 +225,26 @@ async function exists(file: string): Promise<boolean> {
   }
 }
 
-/** Makes each directory under `source` at `destination` and hardlinks each file into it. */
-export async function linkTree(source: string, destination: string): Promise<void> {
+/**
+ * Makes each directory under `source` at `destination` and hardlinks each file into it. A file
+ * whose hardlink fails with EXDEV, since `destination` is on another filesystem than `source` (a
+ * TMPDIR on a data disk, the cache under $HOME), is a symlink to the cached file instead, so the
+ * HOME works wherever the machine puts the two. Oh My Pi stats a native through the link, finds it
+ * at its embedded size and loads it, and writes none. A symlink costs the HOME no bytes, where a
+ * copy would cost each HOME the whole native and a second copy on the HOME's filesystem would be
+ * one more cache that no hook of `bun test` or `go test` can remove. The cached files are
+ * read-only, so neither kind of link lets a write reach the copy, and Oh My Pi replaces a native
+ * only by renaming a file over it, which replaces the link. `hardLink` is `link(2)`, which a test
+ * replaces to fail with EXDEV on one filesystem.
+ */
+export async function linkTree(
+  source: string,
+  destination: string,
+  hardLink: (from: string, to: string) => Promise<void> = link
+): Promise<void> {
   await mkdir(destination, { recursive: true, mode: 0o755 });
   for (const relative of await readdir(source, { recursive: true })) {
-    const from = path.join(source, relative);
+    const from = path.resolve(source, relative);
     const to = path.join(destination, relative);
     if ((await stat(from)).isDirectory()) {
       await mkdir(to, { recursive: true, mode: 0o755 });
@@ -234,12 +252,10 @@ export async function linkTree(source: string, destination: string): Promise<voi
     }
     await mkdir(path.dirname(to), { recursive: true, mode: 0o755 });
     try {
-      await link(from, to);
+      await hardLink(from, to);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EXDEV") throw error;
-      throw new Error(
-        `link ${from} ${to}: the cache and the test's temporary directory are on different filesystems; point XDG_CACHE_HOME or TMPDIR so they share one`
-      );
+      await symlink(from, to);
     }
   }
 }

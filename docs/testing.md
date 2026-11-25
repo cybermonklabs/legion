@@ -239,7 +239,11 @@ itself, whose tests import its sources by relative path.
   `XDG_CACHE_HOME` is unset (`nativesCacheRoot` in `packages/pi-shared/test/omp-natives.ts`);
   `nativesCache` in `packages/daemon/internal/testbin/natives.go` computes that same path with
   `os.UserCacheDir` and `OMPHome` hardlinks out of it, so moving the Bun side alone would split a
-  cache that exists to be shared by both languages and either fills for the other. The Go build and
+  cache that exists to be shared by both languages and either fills for the other. Where the test's
+  `TMPDIR` is on another filesystem than that cache, as on a dev box whose `TMPDIR` is on a data
+  disk, `link(2)` fails with `EXDEV` and both sides' `linkTree` puts a symlink to the cached file in
+  the HOME instead: the pin loads its native through it and writes nothing there, so the result of a
+  test does not depend on where the machine puts the two. The Go build and
   module caches of the `go run` in `runDaemonPane`
   (`packages/pi-legion/scripts/skill-scenarios/daemon-pane.ts`) stay for the same reason: CI's
   `pi-legion` job restores `~/.cache/go-build` and `~/go/pkg/mod`, keyed
