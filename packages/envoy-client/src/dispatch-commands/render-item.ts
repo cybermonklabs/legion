@@ -31,7 +31,8 @@ import { edgeLine, graphSectionLines } from "./render-graph";
  * edge stays under the ask, the ones at its question among them: no read carries the question's
  * part id. An ask whose parts carry no id — an older server, or an ask the index has not reached,
  * whose revision is 0 — reads as it did before the parts: its options bare, every edge under the
- * ask. At a cut (`asOf`) a reply's body the records at the cut cannot give is left out.
+ * ask. At a cut (`asOf`) a reply's body or an ask's wording the records at the cut cannot give is
+ * left out.
  */
 export function askSummary(
   { ask, replies, answers }: AskRead,
@@ -50,16 +51,26 @@ export function askSummary(
     ...postBodyLines(reply, asOf),
   ]);
   const resolutionWords = dispatchWordsText(ask.resolution?.dispatch_words);
+  // A read at a cut leaves out an ask's wording where a restore changed it with no event.
+  const question: string | undefined = ask.question;
+  const questionText = question === undefined && asOf !== undefined ? leftOutAt(asOf) : question;
+  const options: AskWithTrees["options"] | undefined = ask.options;
+  const optionLines =
+    options === undefined && asOf !== undefined
+      ? [`Options: ${leftOutAt(asOf)}`]
+      : [
+          "Options:",
+          ...((options ?? []).length === 0
+            ? ["- none"]
+            : (options ?? []).flatMap((option) => [
+                `- ${optionText(option)}${option.id === undefined ? "" : ` (${partRef(option.id)})`}`,
+                ...partReferenceLines(parts.at, option.id),
+              ])),
+        ];
   return [
-    `Question: ${ask.question}`,
+    `Question: ${questionText}`,
     ...anchorLines(ask),
-    "Options:",
-    ...((ask.options ?? []).length === 0
-      ? ["- none"]
-      : (ask.options ?? []).flatMap((option) => [
-          `- ${optionText(option)}${option.id === undefined ? "" : ` (${partRef(option.id)})`}`,
-          ...partReferenceLines(parts.at, option.id),
-        ])),
+    ...optionLines,
     `State: ${ask.state}`,
     // A read can name the ask by its block's id; the writes to it take this one.
     `Ask id: ${ask.id}`,
@@ -459,14 +470,17 @@ export async function openAnchoredThreads(
   for (const comment of comments) {
     if (comment.ask_id) askReplies.get(comment.ask_id)?.push(comment);
   }
-  const askThreads = asks.map((ask) =>
-    [
+  const askThreads = asks.map((ask) => {
+    const question: string | undefined = ask.question;
+    const questionText =
+      question === undefined && read.asOf !== undefined ? leftOutAt(read.asOf) : question;
+    return [
       `ask ${ask.id} · ${actorText(ask.author)} · ${ask.created_at}`,
       ...anchorLines(ask),
-      `Question: ${ask.question}`,
+      `Question: ${questionText}`,
       ...threadReplyLines(askReplies.get(ask.id) ?? [], read.asOf),
-    ].join("\n")
-  );
+    ].join("\n");
+  });
   const byId = new Map(comments.map((comment) => [comment.id, comment]));
   const roots = comments.filter(
     (comment) =>

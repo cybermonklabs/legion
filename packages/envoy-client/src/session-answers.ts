@@ -4,7 +4,7 @@ import { actorActText, type SessionAnswer } from "@legion/contracts";
 import { urlForText } from "@legion/contracts/log-text";
 import { deletedMark, editedMark } from "./actor-text";
 import { dispatchWordsText, QUESTION_HEAD, textHead } from "./ask-answer";
-import type { ReadTime } from "./dispatch-commands/as-of";
+import { leftOutAt, type ReadTime } from "./dispatch-commands/as-of";
 import type { DispatchConfigResolution } from "./dispatch-config";
 import { DispatchClient, DispatchNoRouteError, isNoRoute } from "./dispatch-http";
 import { ownerTitle } from "./dispatch-owner";
@@ -84,6 +84,10 @@ export function isNoAnswersRoute(error: unknown): boolean {
  * newer Dispatch adds keeps them.
  */
 export function renderSessionAnswerItem(item: SessionAnswer): string {
+  return renderSessionAnswerItemAt(item, undefined);
+}
+
+function renderSessionAnswerItemAt(item: SessionAnswer, asOf: string | undefined): string {
   const phrase = sessionAnswerRelationPhrase(item.relation);
   const relation = `${phrase}${item.replaced === true ? " (replaces an earlier answer)" : ""}`;
   const head = [item.at, actorActText(`user ${item.author.id}`, item.author.act), relation];
@@ -102,8 +106,14 @@ export function renderSessionAnswerItem(item: SessionAnswer): string {
   if (item.ask !== undefined) {
     // The question is the ask's, whoever asked it - the session, another session or a person -
     // and not what the person wrote in this item, which prints whole below; it is cut to the
-    // length every surface quotes a question at (QUESTION_HEAD).
-    lines.push(`Question: ${textHead(item.ask.question, QUESTION_HEAD)}`);
+    // length every surface quotes a question at (QUESTION_HEAD). At a cut (`asOf`) a question the
+    // records at the cut cannot give is left out.
+    const question: string | undefined = item.ask.question;
+    const text =
+      question === undefined && asOf !== undefined
+        ? leftOutAt(asOf)
+        : textHead(item.ask.question, QUESTION_HEAD);
+    lines.push(`Question: ${text}`);
   }
   if (item.kind === "answer") {
     const selected = item.selected ?? [];
@@ -292,13 +302,14 @@ export function renderSessionAnswers(
  *  a cut counts the 72 hours back from the instant its answer named (`at`), and says so in the
  *  words the read names the cut in (`asOf`). */
 export function renderSessionAnswersList(items: readonly SessionAnswer[], time: ReadTime): string {
+  const asOf = "asOf" in time ? time.asOf : undefined;
   const now = "asOf" in time ? time.at : time.now;
-  const window = "asOf" in time ? `in the 72 hours before ${time.asOf}` : "in the last 72 hours";
+  const window = asOf === undefined ? "in the last 72 hours" : `in the 72 hours before ${asOf}`;
   const shown = withinWindow(items, now);
   if (shown.length === 0) return `No person wrote to this session ${window}.`;
   return [
     `${shown.length} ${shown.length === 1 ? "item" : "items"} people wrote to this session ${window}, newest first, word for word:`,
-    ...shown.map(renderSessionAnswerItem),
+    ...shown.map((item) => renderSessionAnswerItemAt(item, asOf)),
   ].join("\n\n");
 }
 

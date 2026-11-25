@@ -86,6 +86,7 @@ export const ABSENT_FIELD_WORDS: Readonly<Record<string, string>> = {
   waiting_on_person: "the person an ask waits on by its project's default",
   "approval/documents": "the documents of each approval request",
   question: "the question of each ask whose wording a restore changed",
+  question_tree: "the question tree of each ask whose wording a restore changed",
   options: "the options of each ask whose wording a restore changed",
   multiple: "whether each ask whose wording a restore changed takes several options",
   urgency: "the urgency of each ask whose wording a restore changed",
@@ -121,6 +122,8 @@ export const ABSENT_FIELD_WORDS: Readonly<Record<string, string>> = {
   check_words_moved: "whether the words of a check moved after each result",
   "query/broadened": "the broadened query",
   href: "the link of each ask hit whose document changed since",
+  snippet: "the snippet of each ask hit whose wording a restore changed",
+  snippet_tree: "the snippet tree of each ask hit whose wording a restore changed",
 };
 
 /** A field an answer named absent, in words (`ABSENT_FIELD_WORDS`). */

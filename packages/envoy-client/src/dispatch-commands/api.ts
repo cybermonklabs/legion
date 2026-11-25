@@ -20,7 +20,6 @@ export async function apiCommand(context: SessionContext): Promise<DispatchToolR
   const warnings: string[] = [];
   const answer = await context.newClient().readRoute(path, (cut, absent) => {
     const read = new ReadCut(cut);
-    read.answeredAt(cut);
     read.absent(absent);
     warnings.push(read.line());
   });

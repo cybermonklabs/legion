@@ -471,7 +471,10 @@ export async function readCommand(
     graphReferences(client, { from: issueRef }, cut),
     liveAgents(client, holdsSession(read.issue.claim) || routeHeldBySession(read.issue), cut),
     picturesOf([
-      ...(read.issue.open_asks ?? []).map((ask) => ({ text: ask.question, at: ask.created_at })),
+      ...(read.issue.open_asks ?? []).flatMap((ask) => {
+        const question: string | undefined = ask.question;
+        return question === undefined ? [] : [{ text: question, at: ask.created_at }];
+      }),
       ...(await eventTextsWhole(client, read.events, cut)),
     ]),
     issueCoverageOrReason(client, read.issue.key, cut),

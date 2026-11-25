@@ -208,10 +208,12 @@ export function datedBodies(
   });
 }
 
-/** The texts an ask read shows, dated: its question, typed answer, resolution reason and replies. */
+/** The texts an ask read shows, dated: its question, typed answer, resolution reason and replies.
+ *  A question a read at a cut left out (`Dispatch-As-Of-Absent`) shows no picture. */
 export function askTexts({ ask, replies }: AskRead): DatedText[] {
+  const question: string | undefined = ask.question;
   return [
-    { text: ask.question, at: ask.created_at },
+    ...(question === undefined ? [] : [{ text: question, at: ask.created_at }]),
     ...(ask.answer?.text ? [{ text: ask.answer.text, at: ask.answer.at }] : []),
     ...(ask.resolution === undefined
       ? []

@@ -27,7 +27,8 @@ export function pageSummaryText(offset: number, count: number, total: number): s
  *  snippet is empty: the deleted line every read prints for one (`deletedMark`) stands where
  *  the snippet would. A hit of a post its author edited carries the mark every line prints for
  *  one (`editedMark`) after its snippet. A search at a cut (`asOf`) leaves out the link of an ask
- *  hit whose block's document changed after the cut, and the line says so in its place. */
+ *  hit whose block's document changed after the cut, and the snippet of an ask hit whose wording a
+ *  restore changed with no event, and the line says so in their place. */
 function searchHitLine(
   result: SearchResult,
   linkBase: string | undefined,
@@ -38,9 +39,14 @@ function searchHitLine(
     link === undefined && asOf !== undefined
       ? `link ${leftOutAt(asOf)}`
       : linkFor(result.href, linkBase);
+  const snippet: string | undefined = result.snippet;
+  const renderedSnippet =
+    snippet === undefined && asOf !== undefined
+      ? `snippet ${leftOutAt(asOf)}`
+      : snippetText(result.snippet);
   const text =
     result.deleted_at == null
-      ? withEditedMark(snippetText(result.snippet), result.edited_at)
+      ? withEditedMark(renderedSnippet, result.edited_at)
       : deletedMark(result.deleted_at, result.deleted_by);
   const { owner } = result;
   if (owner.kind === "document") {

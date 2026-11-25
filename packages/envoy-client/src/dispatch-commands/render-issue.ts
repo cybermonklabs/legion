@@ -498,7 +498,13 @@ export function issueSummary(
     "Documents:",
     ...documentListLines(issue.artifacts ?? []),
     "Open asks:",
-    ...(asks.length === 0 ? ["- none"] : asks.map((ask) => `- ${ask.id}: ${ask.question}`)),
+    ...(asks.length === 0
+      ? ["- none"]
+      : asks.map((ask) => {
+          const question: string | undefined = ask.question;
+          const text = question === undefined && asOf !== undefined ? leftOutAt(asOf) : question;
+          return `- ${ask.id}: ${text}`;
+        })),
     "References:",
     ...sections.references,
     "Events:",

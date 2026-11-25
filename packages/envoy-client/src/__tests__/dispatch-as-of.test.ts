@@ -104,8 +104,16 @@ function daysAndHours(fromMs: number, toMs: number): string {
   return `${Math.floor(hours / 24)}d ${hours % 24}h`;
 }
 
+/** The words for an ask's wording left out at the cut where a restore changed it with no event. */
+const ASK_WORDING_FIELDS = [
+  "the question of each ask whose wording a restore changed",
+  "the options of each ask whose wording a restore changed",
+  "whether each ask whose wording a restore changed takes several options",
+  "the urgency of each ask whose wording a restore changed",
+];
+
 /** The words for the fields the issue read leaves out at the cut: its route, its holder's
- *  liveness, its components and its place in the reference graph. */
+ *  liveness, its components, its place in the reference graph and its open ask's wording. */
 const ISSUE_FIELDS = [
   "the route's state now",
   "the route's holder now",
@@ -117,6 +125,7 @@ const ISSUE_FIELDS = [
   "how many nodes reference each item now",
   "the component ids",
   "the unknown components",
+  ...ASK_WORDING_FIELDS,
 ];
 
 describe("each read command with and without --as-of", () => {
@@ -136,6 +145,7 @@ describe("each read command with and without --as-of", () => {
         `Claimed by: ${HOLDER_TITLE} since ${AT}`,
         `Route: role:implementer (held by ${HOLDER_TITLE})`,
         "Components: cli",
+        "- a5c00001-0000-4000-8000-000000000001: Which way should the release go?",
       ])
     );
     const pastLines = body(past.stdout);
@@ -146,6 +156,7 @@ describe("each read command with and without --as-of", () => {
         `Route: role:implementer (whether it reaches anyone is left out at ${CUT})`,
         `Components: left out at ${CUT}`,
         `Coverage: left out at ${CUT}`,
+        `- a5c00001-0000-4000-8000-000000000001: left out at ${CUT}`,
       ])
     );
     for (const present of [
@@ -185,14 +196,39 @@ describe("each read command with and without --as-of", () => {
     );
   });
 
-  test("read of an ask prints a reply's body the records at the cut cannot give as left out", async () => {
+  test("read of an ask prints its wording and a reply's body the records at the cut cannot give as left out", async () => {
     const { present, past } = await readBothWays(READ_FORMS.ask, {
       noHistory: ["GET /api/v1/references"],
       parts: [LEFT_OUT.graph],
-      fields: ["the bodies of posts deleted or edited since"],
+      fields: [...ASK_WORDING_FIELDS, "the bodies of posts deleted or edited since"],
     });
-    expect(body(present.stdout)).toContain("Body: The words of the reply before its edit.");
-    expect(body(past.stdout)).toContain(`Body: left out at ${CUT}`);
+    expect(body(present.stdout)).toEqual(
+      expect.arrayContaining([
+        "Question: Which way should the release go?",
+        "Options:",
+        "- Ship it",
+        "Body: The words of the reply before its edit.",
+      ])
+    );
+    const pastLines = body(past.stdout);
+    expect(pastLines).toEqual(
+      expect.arrayContaining([
+        `Question: left out at ${CUT}`,
+        `Options: left out at ${CUT}`,
+        `Body: left out at ${CUT}`,
+      ])
+    );
+    expect(pastLines).not.toContain("Options:");
+  });
+
+  test("doc-read prints an open anchored ask's question the records at the cut cannot give as left out", async () => {
+    const { present, past } = await readBothWays(READ_FORMS.document, {
+      noHistory: [],
+      parts: [],
+      fields: [...ISSUE_FIELDS, "the document token"],
+    });
+    expect(body(present.stdout)).toContain("Question: Which way should the release go?");
+    expect(body(past.stdout)).toContain(`Question: left out at ${CUT}`);
   });
 
   test("doc-read --blocks prints a token, an id, the anchored counts and a table's ids left out as left out, never as none", async () => {
@@ -243,23 +279,28 @@ describe("each read command with and without --as-of", () => {
     ]);
   });
 
-  test("search at a cut names the broadened query and an ask hit's link left out", async () => {
+  test("search at a cut names the broadened query and an ask hit's link and snippet left out", async () => {
     const { present, past } = await readBothWays(READ_FORMS.search, {
       noHistory: [],
       parts: [],
-      fields: ["the broadened query", "the link of each ask hit whose document changed since"],
+      fields: [
+        "the broadened query",
+        "the link of each ask hit whose document changed since",
+        "the snippet of each ask hit whose wording a restore changed",
+      ],
     });
-    const hit = `${ISSUE} [todo] Native workspace - ask: Which way should the **release** go? -> `;
-    const hitLine = (run: Run) => body(run.stdout).find((line) => line.startsWith(hit));
+    const label = `${ISSUE} [todo] Native workspace - ask: `;
+    const hitLine = (run: Run) => body(run.stdout).find((line) => line.startsWith(label));
+    expect(hitLine(present)).toStartWith(`${label}Which way should the **release** go? -> `);
     expect(hitLine(present)).toEndWith(`/issues/${ISSUE}/ask/a5c00001-0000-4000-8000-000000000001`);
-    expect(hitLine(past)).toBe(`${hit}link left out at ${CUT}`);
+    expect(hitLine(past)).toBe(`${label}snippet left out at ${CUT} -> link left out at ${CUT}`);
   });
 
-  test("answers counts its 72 hours back from the cut, and says so", async () => {
+  test("answers counts its 72 hours back from the cut, says so, and prints an ask's question left out", async () => {
     const { present, past } = await readBothWays(READ_FORMS.answers, {
       noHistory: [],
       parts: [],
-      fields: [],
+      fields: ["the question of each ask whose wording a restore changed"],
     });
     expect(body(present.stdout)[0]).toBe(
       "1 item people wrote to this session in the last 72 hours, newest first, word for word:"
@@ -267,6 +308,8 @@ describe("each read command with and without --as-of", () => {
     expect(body(past.stdout)[0]).toBe(
       `1 item people wrote to this session in the 72 hours before ${CUT}, newest first, word for word:`
     );
+    expect(body(present.stdout)).toContain("Question: Which way should the release go?");
+    expect(body(past.stdout)).toContain(`Question: left out at ${CUT}`);
     for (const run of [present, past]) {
       expect(run.stdout).toContain("The words of an hour before.");
       expect(run.stdout).not.toContain("The words of 80 hours before.");
@@ -333,18 +376,19 @@ describe("each read command with and without --as-of", () => {
     ]);
   });
 
-  test("inbox at a cut lists each ask under whose turn it is, and leaves out Later, threads and credential requests", async () => {
+  test("inbox at a cut lists each ask under whose turn it is, prints a left-out question, and leaves out Later, threads and credential requests", async () => {
     const { present, past } = await readBothWays(READ_FORMS.inbox, {
       noHistory: ["GET /api/v1/credential-requests", "GET /api/v1/me/replies"],
       parts: [LEFT_OUT.unreadThreads, LEFT_OUT.credentialRequests, LEFT_OUT.snoozes],
-      fields: ["snoozes"],
+      fields: ["snoozes", ...ASK_WORDING_FIELDS],
     });
-    const ask = (key: string, id: string) =>
-      `- ${key} · P1 · question · Question of ${key}? · dispatch://${key}/ask/${id}`;
+    const ask = (key: string, id: string, question = `Question of ${key}?`) =>
+      `- ${key} · P1 · question · ${question} · dispatch://${key}/ask/${id}`;
     const human = ask("DSP-11", "11111111-1111-4111-8111-111111111111");
     const deferred = ask("DSP-12", "22222222-2222-4222-8222-222222222222");
     const deferralEnded = ask("DSP-13", "33333333-3333-4333-8333-333333333333");
     const agent = ask("DSP-14", "44444444-4444-4444-8444-444444444444");
+    const agentAtCut = ask("DSP-14", "44444444-4444-4444-8444-444444444444", `left out at ${CUT}`);
     expect(body(present.stdout)).toEqual([
       "Needs you 2",
       human,
@@ -368,7 +412,7 @@ describe("each read command with and without --as-of", () => {
       deferralEnded,
       "",
       "Waiting on agents 1",
-      agent,
+      agentAtCut,
       "",
       `Later left out at ${CUT}`,
     ]);

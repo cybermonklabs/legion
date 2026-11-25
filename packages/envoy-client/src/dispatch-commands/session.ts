@@ -210,10 +210,16 @@ function inboxAskOwner(row: InboxRow): { readonly label: string; readonly ref: s
   return { label: row.id, ref: row.id };
 }
 
-function inboxAskLine(row: InboxRow): string {
+function inboxAskLine(row: InboxRow, asOf: string | undefined): string {
   const { label, ref } = inboxAskOwner(row);
   const priority = row.priority === null ? "P-" : `P${row.priority}`;
-  return `- ${label} · ${priority} · ${row.kind} · ${textHead(row.question, INBOX_QUESTION_HEAD)} · ${ref}`;
+  // A read at a cut leaves out an ask's question where a restore changed its wording with no event.
+  const question: string | undefined = row.question;
+  const text =
+    question === undefined && asOf !== undefined
+      ? leftOutAt(asOf)
+      : textHead(row.question, INBOX_QUESTION_HEAD);
+  return `- ${label} · ${priority} · ${row.kind} · ${text} · ${ref}`;
 }
 
 /** What an unread thread's line is named by: the issue key of a thread on an issue, the slug of
@@ -357,16 +363,20 @@ function formatInboxSummary(
     const section = inboxSection(row, time);
     if (section !== undefined) sections[section].push(row);
   }
+  const asOf = "asOf" in time ? time.asOf : undefined;
   return [
     `Needs you ${sections.human.length + (requests ?? []).filter(awaitsDecision).length}`,
-    ...sections.human.map(inboxAskLine),
+    ...sections.human.map((row) => inboxAskLine(row, asOf)),
     "",
     `Waiting on agents ${sections.agent.length}`,
-    ...sections.agent.map(inboxAskLine),
+    ...sections.agent.map((row) => inboxAskLine(row, asOf)),
     "",
     ...("asOf" in time
       ? [`Later ${leftOutAt(time.asOf)}`]
-      : [`Later ${sections.later.length}`, ...sections.later.map(inboxAskLine)]),
+      : [
+          `Later ${sections.later.length}`,
+          ...sections.later.map((row) => inboxAskLine(row, asOf)),
+        ]),
     // A band read at a cut from a route that holds no history is left out whole, and the
     // `Left out at` line names it: only a read of the present lists the threads, whose ages
     // count from its clock.

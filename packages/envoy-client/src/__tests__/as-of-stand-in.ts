@@ -13,6 +13,7 @@ import { runDispatchCli } from "../dispatch-cli";
 import { resetAdviceMemory } from "../dispatch-execute";
 import { forgetShownPictures } from "../dispatch-picture-tools";
 import {
+  ARTIFACT_ID,
   AT,
   actor,
   askBody,
@@ -193,12 +194,34 @@ const ISSUE_ABSENT = [
   "/referenced_by_count",
   "/components/ids",
   "/components/unknown",
+  "/open_asks/*/question",
+  "/open_asks/*/options",
+  "/open_asks/*/multiple",
+  "/open_asks/*/urgency",
 ];
 
-/** `GET /api/v1/issues/{key}`: a session holds the claim and the route, and the issue names one
- *  component. At a cut the route's state, the holder's liveness and the component split are left
- *  out. */
+/** `GET /api/v1/issues/{key}`: a session holds the claim and the route, the issue names one
+ *  component, and it carries one open ask anchored on the spec. At a cut the route's state, the
+ *  holder's liveness, the component split, and the ask's wording (as where a restore changed it
+ *  with no event) are left out. */
 function issueRead(when: When): Answered {
+  const openAsk = presentOnly(
+    {
+      ...askBody(),
+      id: ASK,
+      question: "Which way should the release go?",
+      anchor: {
+        artifact_id: ARTIFACT_ID,
+        block_id: null,
+        mark_id: "m1",
+        orphaned: false,
+        quote: "The workspace opens natively.",
+        version: 1,
+      },
+    },
+    when,
+    ["question", "options", "multiple", "urgency"]
+  );
   const issue = {
     ...issueBody(ISSUE),
     claim: { actor: { kind: "session", id: HOLDER }, at: AT },
@@ -212,6 +235,7 @@ function issueRead(when: When): Answered {
       when,
       ["ids", "unknown"]
     ),
+    open_asks: [openAsk],
   };
   return {
     body: presentOnly(issue, when, [
@@ -282,9 +306,15 @@ function commentRead(when: When): Answered {
   };
 }
 
-/** `GET /api/v1/asks/{id}`: a question with one reply in its thread. At a cut the reply's body is
- *  left out, as for a long reply edited since. */
+/** `GET /api/v1/asks/{id}`: a question with one option and one reply in its thread. At a cut the
+ *  ask's wording (as where a restore changed it with no event) and the reply's body (as for a long
+ *  reply edited since) are left out. */
 function askRead(when: When): Answered {
+  const ask = {
+    ...askBody(),
+    id: ASK,
+    options: [{ label: "Ship it" }],
+  };
   const reply = {
     ...commentBody(),
     id: ASK_REPLY,
@@ -294,10 +324,10 @@ function askRead(when: When): Answered {
   return {
     body: {
       ...askReadBody(),
-      ask: { ...askBody(), id: ASK },
+      ask: presentOnly(ask, when, ["question", "options", "multiple", "urgency"]),
       replies: [presentOnly(reply, when, ["body"])],
     },
-    absent: ["/replies/*/body"],
+    absent: ["/ask/question", "/ask/options", "/ask/multiple", "/ask/urgency", "/replies/*/body"],
   };
 }
 
@@ -344,8 +374,8 @@ function issueListing(when: When): Answered {
 }
 
 /** `GET /api/v1/search` and `GET /api/v1/search/results`: one ask hit. At a cut its link is left
- *  out, as for an ask whose block's document changed after the cut, and so is the broadened
- *  query. */
+ *  out, as for an ask whose block's document changed after the cut, its snippet is left out, as
+ *  for an ask whose wording a restore changed with no event, and so is the broadened query. */
 function searchResults(when: When): Answered {
   const hit = {
     kind: "ask",
@@ -356,10 +386,10 @@ function searchResults(when: When): Answered {
     href: `/issues/${ISSUE}/ask/${ASK}`,
     ask: { state: "open" },
   };
-  const body = fakeSearchResponse([presentOnly(hit, when, ["href"]) as SearchResult]);
+  const body = fakeSearchResponse([presentOnly(hit, when, ["href", "snippet"]) as SearchResult]);
   return {
     body: when.cut === undefined ? body : { ...body, query: { operators: [] } },
-    absent: ["/query/broadened", "/results/*/href"],
+    absent: ["/query/broadened", "/results/*/href", "/results/*/snippet"],
   };
 }
 
@@ -472,19 +502,34 @@ function sessionMessage(id: string, at: number, text: string): SessionAnswer {
   };
 }
 
-/** `GET /api/v1/agents/{session_id}/answers`: a message an hour before the read, inside the
- *  72-hour window that ends at it, and one 80 hours before it, outside. */
+/** `GET /api/v1/agents/{session_id}/answers`: an answer on an ask an hour before the read, inside
+ *  the 72-hour window that ends at it (its ask's question left out at a cut, as where a restore
+ *  changed its wording with no event), and a message 80 hours before it, outside. */
 function answers(when: When): Answered {
+  const answered: SessionAnswer = {
+    kind: "answer",
+    relation: "answered_your_ask",
+    id: ASK,
+    at: iso(when.ms - HOUR),
+    author: { kind: "user", id: "cy@example.com" },
+    text: "The words of an hour before.",
+    selected: ["Ship it"],
+    ask: presentOnly({ id: ASK, question: "Which way should the release go?" }, when, ["question"]),
+    owner: { issue: { key: ISSUE, title: "Native workspace" } },
+    ref: `dispatch://${ISSUE}/ask/${ASK}`,
+    href: `/issues/${ISSUE}/asks/${ASK}`,
+  };
   return {
     body: {
       session_id: SESSION,
       since: iso(when.ms - 72 * HOUR),
       total: 2,
       items: [
-        sessionMessage("m-recent", when.ms - HOUR, "The words of an hour before."),
+        answered,
         sessionMessage("m-old", when.ms - 80 * HOUR, "The words of 80 hours before."),
       ],
     },
+    absent: ["/items/*/ask/question"],
   };
 }
 
@@ -556,17 +601,23 @@ function inboxRow(id: string, key: string, waitingOn: string, snoozedUntil: numb
 
 /** `GET /api/v1/inbox`: two asks that wait on the person, one the person deferred to a day after
  *  the read and one whose deferral ended a day before it, and one an agent owes. At a cut no
- *  snooze is known, so each is listed under whose turn it is. */
+ *  snooze is known, so each is listed under whose turn it is, and the ask the agent owes has its
+ *  wording left out, as where a restore changed it with no event. */
 function inbox(when: When): Answered {
   const rows = [
     inboxRow("11111111-1111-4111-8111-111111111111", "DSP-11", "human", null),
     inboxRow("22222222-2222-4222-8222-222222222222", "DSP-12", "human", when.ms + 24 * HOUR),
     inboxRow("33333333-3333-4333-8333-333333333333", "DSP-13", "human", when.ms - 24 * HOUR),
-    inboxRow("44444444-4444-4444-8444-444444444444", "DSP-14", "agent", null),
+    presentOnly(inboxRow("44444444-4444-4444-8444-444444444444", "DSP-14", "agent", null), when, [
+      "question",
+      "options",
+      "multiple",
+      "urgency",
+    ]),
   ];
   return {
     body: rows.map((row) => presentOnly(row, when, ["snoozed_until"])),
-    absent: ["/*/snoozed_until"],
+    absent: ["/*/snoozed_until", "/*/question", "/*/options", "/*/multiple", "/*/urgency"],
   };
 }
 
@@ -803,6 +854,7 @@ export const READ_FORMS = {
   issue: ["read", "--issue", ISSUE],
   comment: ["read", "--ref", `dispatch://${ISSUE}/comment/${COMMENT}`],
   ask: ["read", "--ref", `dispatch://${ISSUE}/ask/${ASK}`],
+  document: ["doc-read", "--issue", ISSUE],
   blocks: ["doc-read", "--issue", ISSUE, "--blocks"],
   search: ["search", "--query", "astrolabe"],
   answers: ["answers"],
