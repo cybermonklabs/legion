@@ -1610,11 +1610,13 @@ describe("health: rule 1, finished, on the run's boot record", () => {
 
 // Rule 3, taken, read for the run's case (completion-answers.ts's ANSWERS' `takes`): a text-only
 // reviewer that pushed its fix records no pass at it, approves nothing and waits for the
-// implementer's last chance (Verification v47's k1), so it completes nothing while it waits, and a
-// defect or last-push reviewer completes its round. Each row is a run directory named as cmd_run
-// named a run before the names left the world, which is its record of its scenario, case and label.
-// Catches: a world that calls a waiting text-only reviewer unhealthy, and one that requires no
-// completion of the cases whose round ends with one.
+// implementer's last chance (Verification v47's k1), so it completes nothing while it waits, a
+// last-push reviewer that waits instead of approving completes nothing either (what it does there
+// is k3's measurement, which a void run would hide), and a defect reviewer completes its round.
+// Each row is a run directory named as cmd_run named a run before the names left the world, which
+// is its record of its scenario, case and label.
+// Catches: a world that calls a waiting reviewer unhealthy where the case does not end its round
+// with a completion, and one that requires no completion of the case that does.
 describe("health: rule 3, taken, by the run's case", () => {
   const runs = temporaryDirectories("health-taken");
   const COMPLETED = JSON.stringify({
@@ -1652,8 +1654,8 @@ describe("health: rule 3, taken, by the run's case", () => {
     expect(taken("reviewer-text-findings-defect-head-2", true)).toBe(undefined);
   });
 
-  test("a last-push reviewer whose completion the world took none of is unhealthy", () => {
-    expect(taken("reviewer-text-findings-last-push-head-1", false)).toBe(NONE);
+  test("a last-push reviewer that completed nothing is no unhealthy run", () => {
+    expect(taken("reviewer-text-findings-last-push-head-1", false)).toBe(undefined);
     expect(taken("reviewer-text-findings-last-push-head-2", true)).toBe(undefined);
   });
 
@@ -1667,10 +1669,7 @@ describe("health: rule 3, taken, by the run's case", () => {
           named,
           true,
         ]);
-    expect(ANSWERS["reviewer-text-findings"]?.takes).toEqual({
-      defect: "reviewer",
-      "last-push": "reviewer",
-    });
+    expect(ANSWERS["reviewer-text-findings"]?.takes).toEqual({ defect: "reviewer" });
   });
 });
 

@@ -2133,6 +2133,10 @@ describe("push_guard", () => {
     expect(readFileSync(path.join(R, "pane.env"), "utf8").split("\n")).toContain(
       `PUBLIC_LEAK_CHECK=${run}`
     );
+    // The hook a pane's git runs refuses a check that is no executable file (`[ ! -x ]`), and a
+    // push whose check is refused fails with LEAK CHECK SETUP ERROR: a reviewer's push was
+    // refused so on 2026-11-25, in a pod whose shared check is 0755 and whose copy here was 0644.
+    expect(lstatSync(run).mode & 0o111).not.toBe(0);
     expect(result.stdout.split("\n")).toContain(`ro ${path.dirname(named)}`);
     writeFileSync(named, '#!/bin/sh\nprintf "%s|%s\\n" "$GIT_EXEC_PATH" "$*"\n');
     const ran = spawnChecked(["bash", run, "origin", "https://github.com/fernbrook/widgets"], {

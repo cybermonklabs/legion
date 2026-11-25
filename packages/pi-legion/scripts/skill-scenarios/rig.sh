@@ -1160,6 +1160,8 @@ push_guard() {
       check=$R/lib/public-leak-check.sh
       printf '#!/usr/bin/env bash\nGIT_EXEC_PATH=%q exec bash "$(<%q)" "$@"\n' \
         "$R/lib/git-core" "$R/lib/leak-check" >"$check"
+      # The pane's git hook refuses a check that is no executable file.
+      chmod +x "$check"
     fi
     printf 'PUBLIC_LEAK_CHECK=%s\n' "$check"
     return 0
@@ -4818,9 +4820,9 @@ run_tester_proof() {
 # which reviewerTextFindings reads back and holds to the name. The reviewer is booted in
 # `reviewing`, its own phase, and its review moves the issue (daemon-standin.ts's `servedPhase`),
 # so a completion after that is a late one, answered as the run's label's daemon answers it. What
-# each label's daemon may answer it here, and in which cases the world must take at least one of
-# the reviewer's completions (defect and last-push; a text-only reviewer that pushed its fix waits
-# for the implementer and completes nothing), is completion-answers.ts's
+# each label's daemon may answer it here, and in which case the world must take at least one of
+# the reviewer's completions (defect alone; a text-only or last-push reviewer that waits for the
+# implementer completes nothing), is completion-answers.ts's
 # ANSWERS["reviewer-text-findings"], which `rig.sh health` and the score read.
 run_reviewer_text_findings() {
   local name=$1 project=$2 index=$3 start=$4 review=$5 pr head implemented version round

@@ -1114,8 +1114,10 @@ label's name"): every run of a case is scored by that case's one rule, and each 
 whether the run's verdict was `REQUEST_CHANGES`
 (`requested=`). k1 and k3 read their `base` arms, the cost they measure, off the report's
 `requested` count for that arm (`scenario  label  requested`): at least 4 of the 5 `base` runs.
-The world must take the reviewer's completion in `defect` and `last-push`, whose round ends on
-the review, and need take none in `text-only`, whose reviewer waits for the implementer
+The world must take the reviewer's completion in `defect`, whose round ends on the review, and
+need take none in `text-only` or `last-push`, whose reviewer may wait for the implementer: a
+world that called such a run unhealthy would void exactly the runs in which the reviewer waited
+where `last-push` asks it to approve, and leave the rest to be scored
 (`completion-answers.ts`'s `ANSWERS` `takes`, keyed by case, which health's taken rule reads).
 
 - `text-only` (k1): the change's code is correct, so no behavioural finding stands. A run passes

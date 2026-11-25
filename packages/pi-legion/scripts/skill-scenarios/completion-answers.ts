@@ -245,11 +245,14 @@ function allows(allowed: readonly string[], lines: readonly DaemonLine[], index:
  * not allow either. The review reaches `implementing` on a change request, and the approval of
  * the head leaves it in `reviewing`: GitHub reports that head `BLOCKED` while a thread is open
  * (rig.sh's review_world), and the workflow's thread the review App cannot push a fix for stays
- * open. The reviewer's completion is required in defect, whose change request ends its round,
- * and in last-push, whose approval of the head as it stands does; in text-only the reviewer that
- * pushed its own text fix records no pass at it, approves nothing and waits for the implementer's
- * last chance (spec v36's R1, steps 2 and 3, and Verification v47's k1), so it completes nothing
- * while it waits, and the world requires no completion of it.
+ * open. The reviewer's completion is required in defect alone, whose change request ends its
+ * round. A text-only reviewer that pushed its own text fix records no pass at it, approves
+ * nothing and waits for the implementer's last chance (spec v36's R1, steps 2 and 3, and
+ * Verification v47's k1), so it completes nothing while it waits. A last-push reviewer completes
+ * once it has approved the head as it stands, but one that posts a `COMMENT` review and waits
+ * completes nothing: what it does there is k3's measurement, and a world that voided such a run
+ * as unhealthy would leave only the runs that completed to be scored, so the world requires no
+ * completion of it either.
  *
  * threads-closed boots the implementer in `reviewing` (accept, correct and crossing, whose
  * reviewer pushed its own text commit and has not approved yet) or `accepting` (code-defect, whose
@@ -299,7 +302,7 @@ export const ANSWERS: Readonly<
       "recorded left": { reviewer: [`409 ${NOT_CURRENT_PHASE}${AFTER_TAKEN}`] },
       "refused issue": { reviewer: [`409 ${NOT_CURRENT_PHASE}`] },
     },
-    takes: { defect: "reviewer", "last-push": "reviewer" },
+    takes: { defect: "reviewer" },
   },
   "threads-closed": {
     boots: ["implementer", "reviewer"],
