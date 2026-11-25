@@ -91,6 +91,11 @@ const PLANNER: Actor = { id: "planner-session", kind: "session" };
  *  picker writes the same link for a pick of the planner. */
 const PLANNER_SEED = PLANNER_MENTION.replace("[@Old]", "[@Planner]");
 
+/** The draft a Reply on the planner's comment starts the box with: its mention of the planner,
+ *  and the one space after it that a seed ends with (`replyPrefill`), so the reader's words
+ *  typed at once follow that space. */
+const PLANNER_PREFILL = `${PLANNER_SEED} `;
+
 /** The reads the box and the writer draw from: each case's own (`composer-fixture.tsx`). */
 let reads: BoxReads;
 
@@ -583,7 +588,7 @@ async function replyToPlanner(user: UserEvent, page: DrawnPage): Promise<void> {
   await page.press(user, "comment-3", "r");
   await waitFor(() => expect(targetWords()).toBe(replyingTo("Planner", "comment")));
   await waitFor(() => expect(writeField()).toHaveFocus());
-  expect(writeField().value).toBe(PLANNER_SEED);
+  expect(writeField().value).toBe(PLANNER_PREFILL);
 }
 
 // The reviewer's finding 5942007779: a Reply on an agent's comment writes the agent's mention into
@@ -659,12 +664,13 @@ const KEPT_FOR_PLANNER = { held: "", kept: [keptReplyLine("Planner")] };
 // a person's comment is a move of the page's, which carries nothing: it keeps them for the
 // agent's comment with the mention, and its Reply brings them back as they were; the reader's own
 // end of the reply then keeps them on the issue and takes out the mention the box wrote, even
-// with the words typed straight after its link and no space between them.
+// with the words typed straight after its link and no space between them: the reader deletes the
+// space the box wrote after it.
 test("ending a reply to an agent's comment keeps the words typed straight after the agent's mention, and takes the mention out", async () => {
   const user = userEvent.setup();
   const page = renderWithPlannerComment();
   await replyToPlanner(user, page);
-  await user.keyboard("please look again");
+  await user.keyboard("{Backspace}please look again");
   expect(writeField().value).toBe(`${PLANNER_SEED}please look again`);
 
   expect(await toBobAndBack(user, page)).toEqual(KEPT_FOR_PLANNER);
@@ -687,9 +693,9 @@ test("a mention of the agent the reader wrote stays when the reader ends the rep
   const page = renderWithPlannerComment();
   await replyToPlanner(user, page);
   // The reader picks the planner after their own word, which writes the link the box wrote.
-  await user.keyboard(" cc ");
+  await user.keyboard("cc ");
   await user.paste(PLANNER_SEED);
-  const written = `${PLANNER_SEED} cc ${PLANNER_SEED}`;
+  const written = `${PLANNER_PREFILL}cc ${PLANNER_SEED}`;
   expect(writeField().value).toBe(written);
 
   expect(await toBobAndBack(user, page)).toEqual(KEPT_FOR_PLANNER);
@@ -797,23 +803,23 @@ test("a reply carried to the issue with the reader's words before the agent's me
   const page = renderWithPlannerComment();
   await replyToPlanner(user, page);
   await user.keyboard("{Home}cc ");
-  expect(writeField().value).toBe(`cc ${PLANNER_SEED}`);
+  expect(writeField().value).toBe(`cc ${PLANNER_PREFILL}`);
   await user.click(
     within(composerBox()).getByRole("button", { name: CONTROL_LABELS.write_on_issue })
   );
   await waitFor(() => expect(targetWords()).toBeNull());
-  expect(writeField().value).toBe(`cc ${PLANNER_SEED}`);
+  expect(writeField().value).toBe(`cc ${PLANNER_PREFILL}`);
 
   page.view.unmount();
   const kept = unsentDraftsOf(page.client).readAway(composerNameOf(["issue-composer", KEY]), null);
-  expect(kept?.draft.body).toBe(`cc ${PLANNER_SEED}`);
+  expect(kept?.draft.body).toBe(`cc ${PLANNER_PREFILL}`);
   expect(kept?.seeds).toBeUndefined();
 });
 
 /** The draft of the refused reply to the planner's comment in the grid below, by who wrote its
  *  link: the planner's link the Reply wrote, then the reader's words; or the reader's own link to
  *  the planner in its place, in the words the reader wrote it in, then theirs. */
-const PLANNER_HELLO = `${PLANNER_SEED} hello`;
+const PLANNER_HELLO = `${PLANNER_PREFILL}hello`;
 const OWN_HELLO = `${PLANNER_MENTION} hello`;
 
 /** What Send says on bob's row while the refused reply, let go, is held for the issue. */
@@ -859,7 +865,7 @@ async function afterRefusedPlannerReply(
     await user.keyboard("{Control>}a{/Control}{Backspace}");
     await user.paste(OWN_HELLO);
   } else {
-    await user.keyboard(" hello");
+    await user.keyboard("hello");
   }
   const written = ownLink ? OWN_HELLO : PLANNER_HELLO;
   expect(writeField().value).toBe(written);
@@ -1067,7 +1073,7 @@ test("a link to the agent the reader writes at the front over a refused reply, i
   );
   const first = renderWithPlannerComment();
   await replyToPlanner(user, first);
-  await user.keyboard(" hello{Enter}");
+  await user.keyboard("hello{Enter}");
   await waitFor(() =>
     expect(within(composerBox()).getByRole("alert")).toHaveTextContent("The reply was refused.")
   );
