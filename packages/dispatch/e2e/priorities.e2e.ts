@@ -722,9 +722,11 @@ test("the priorities page opens on the order, and each fault list is a tab of it
     // cap: the chip, and the title wrapping whole after it.
     await page.setViewportSize(DESKTOP);
     await expect.poll(() => tablesOverflow(page)).toEqual({ [BACKLOG_TABLE]: 0 });
+    // The header's name starts with the column's: the column's Move menu and grip stand in the
+    // header too, and their names join it, as `/^Title/` reads the Title header below.
     expect(
       await backlogTable
-        .getByRole("columnheader", { exact: true, name: "Advances" })
+        .getByRole("columnheader", { name: /^Advances/ })
         .evaluate((header) => header.getBoundingClientRect().width)
     ).toBeLessThanOrEqual(BACKLOG_ADVANCES_CAP);
     await priorityPage(page);
