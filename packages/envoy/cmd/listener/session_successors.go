@@ -66,22 +66,18 @@ func sessionSuccessorsHandler(d *listenerDeps) http.HandlerFunc {
 	}
 }
 
-// handoverChainMax bounds the hops handoverSuccessors follows from the session it is asked about:
-// a session replaced, its successor replaced in turn, and so on. Each hop is one session lost
-// before it read what it was handed, so a chain this long is far past any that happens, and the
-// bound keeps one read of the route to a few stream reads.
-const handoverChainMax = 8
-
 // handoverSuccessors is every session that replaced sessionID, sorted and each once: each session
 // a handover record names as the successor of sessionID (bus.Client.HandoverSuccessors), and each
-// session that replaced one of those in turn, up to handoverChainMax hops, since a copy of a
-// message handed to a session that is replaced before it reads it is handed on to the session that
-// replaced it, its delivery unchanged. A session is followed only while its last registration
-// names the principal sessionID last registered as (recordedPrincipal), the rule each record was
-// written under (handoverRefusal); one that does not is not named, nor is any session only it
-// leads to. A sessionID whose principal nobody recorded, or the bucket holds no record of, has
-// none, and so has every session on a listener with no known-session store. A read that did not
-// answer is the error.
+// session that replaced one of those in turn, however long the chain, since a copy of a message
+// handed to a session that is replaced before it reads it is handed on to the session that
+// replaced it, its delivery unchanged, and the copies have no bound on their hops. A session is
+// followed only while its last registration names the principal sessionID last registered as
+// (recordedPrincipal), the rule each record was written under (handoverRefusal); one that does not
+// is not named, nor is any session only it leads to. Each session is read once, so a chain that
+// comes back round ends there. A sessionID whose principal nobody recorded, or the bucket holds no
+// record of, has none, and so has every session on a listener with no known-session store. A read
+// that did not answer - one the request's budget ended before the whole chain was read among them
+// - is the error, never a list that names part of the chain.
 func handoverSuccessors(ctx context.Context, client *bus.Client, known *session.KnownSessions, sessionID string) ([]string, error) {
 	principal, recorded, err := recordedPrincipal(ctx, known, sessionID)
 	if err != nil || !recorded {
@@ -89,7 +85,7 @@ func handoverSuccessors(ctx context.Context, client *bus.Client, known *session.
 	}
 	named := map[string]bool{sessionID: true}
 	successors := []string{}
-	for hop, from := 0, []string{sessionID}; hop < handoverChainMax && len(from) > 0; hop++ {
+	for from := []string{sessionID}; len(from) > 0; {
 		var next []string
 		for _, replaced := range from {
 			listed, err := client.HandoverSuccessors(ctx, replaced)

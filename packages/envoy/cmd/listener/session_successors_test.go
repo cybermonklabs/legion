@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -124,6 +125,44 @@ func TestTheSuccessorsRouteFollowsAChainOfOnePrincipal(t *testing.T) {
 		if !slices.Equal(answer.Successors, want) {
 			t.Errorf("the successors of %s = %v, want %v", session, answer.Successors, want)
 		}
+	}
+}
+
+// A copy handed on from one session to the next has no bound on its hops, so neither has the
+// route: a session replaced ten times over, each successor of its principal, has all ten named,
+// the last of them among them, and so may answer the deliveries of every session before it. The
+// case fails where the route stops after a fixed number of hops and answers the sessions it
+// reached as the whole list; the control is the session one before the end, which has one.
+func TestTheSuccessorsRouteFollowsAChainOfAnyLength(t *testing.T) {
+	client := setupPublishTestClient(t)
+	known := openKnownSessionsOn(t, client.Conn, time.Now)
+	chain := make([]string, 11)
+	for i := range chain {
+		chain[i] = fmt.Sprintf("ses_long_chain_%02d", i)
+	}
+	registerAs(t, known, "example-fleet", chain...)
+	subjects := make([]string, 0, len(chain)-1)
+	for i := 1; i < len(chain); i++ {
+		subjects = append(subjects, bus.HandoverSubject("plain-role", chain[i-1], chain[i]))
+	}
+	writeHandoverRecords(t, client, subjects...)
+	mux := http.NewServeMux()
+	registerV1Routes(mux, &listenerDeps{client: client, known: known}, "test-machine", logging.New("test"))
+
+	for _, c := range []struct {
+		name, session string
+		want          []string
+	}{
+		{"case: the first session of the chain", chain[0], chain[1:]},
+		{"control: the session one before the end", chain[len(chain)-2], chain[len(chain)-1:]},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			answer, recorder := readSuccessors(t, mux, c.session)
+			requireStatus(t, recorder, http.StatusOK, "the successors of "+c.session)
+			if !slices.Equal(answer.Successors, c.want) {
+				t.Errorf("the successors of %s = %v, want %v", c.session, answer.Successors, c.want)
+			}
+		})
 	}
 }
 

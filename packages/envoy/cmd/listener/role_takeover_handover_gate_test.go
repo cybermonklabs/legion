@@ -486,6 +486,76 @@ func TestAHandoverEndsWhenTheReplacedSessionRegistersAsAnotherPrincipal(t *testi
 	}
 }
 
+// A pass holds each copy to the rule as well, not only its start: a registration as another
+// principal that lands while the pass runs ends it before its next copy (handoverStillStands). The
+// replaced session has two unread messages and stops; the sweep's pass copies the first, and just
+// before that copy the claimant registers again, as another person in the case row and as the
+// same person in the control. In the case the second message is copied nowhere and stays unread on
+// the replaced session; in the control both reach the claimant. The case fails where the rule is
+// read only at the pass's start.
+func TestAHandoverPassEndsWhenASessionRegistersAsAnotherPrincipalWhileItRuns(t *testing.T) {
+	for _, row := range []struct {
+		name       string
+		registered string
+		both       bool
+	}{
+		{name: "case: the claimant registers again as another person between two copies", registered: gateOther},
+		{name: "control: the claimant registers again as the same person between two copies", registered: gatePerson, both: true},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			rig := newGateRig(t)
+			standIn := startCopiesStandIn(t, rig.url, gateReplaced, copiesHolderAnswer)
+			rig.registerOn(t, rig.personToken(gateReplaced, gatePerson), gateReplaced)
+			// The message it reads keeps it live until it stops, so the claim's own pass copies
+			// nothing and the sweep's pass after the stop is the one the fault runs in.
+			read := rig.sendDirect(t, gateReplaced, "dispatch", copiesReadMark+"a message to "+gateReplaced+" it read")
+			first := rig.sendDirect(t, gateReplaced, "dispatch", "the first unread message to "+gateReplaced)
+			seqs := copiesSeqs(t, standIn.collect(t, 2, copiesWatchBound), read, first)
+			awaitAckState(t, rig.consumers, gateReplaced, 1, seqs[read])
+
+			taker := startCopiesStandIn(t, rig.url, gateClaimant, answerDone)
+			token := rig.personToken(gateClaimant, gatePerson)
+			rig.registerOn(t, token, gateClaimant)
+			if warning, warned := gateWarning(rig.claimOn(t, token)); warned {
+				t.Fatalf("the claim of one person's session naming that person's other session warned %q", warning)
+			}
+			if n := rig.handedOverCopies(t, gateClaimant, first); n != 0 {
+				t.Fatalf("the claim's own pass copied %s while %s was live: %d copies", first, gateReplaced, n)
+			}
+			second := rig.sendDirect(t, gateReplaced, "dispatch", "the second unread message to "+gateReplaced)
+			for eventID, seq := range copiesSeqs(t, standIn.collect(t, 1, copiesWatchBound), second) {
+				seqs[eventID] = seq
+			}
+			registered := false
+			setTakeoverFaults(t, rig.harness.config, takeoverFaultSet{beforeCopy: func(_, previous string, _ uint64) error {
+				if previous == gateReplaced && !registered {
+					registered = true
+					rig.registerOn(t, rig.personToken(gateClaimant, row.registered), gateClaimant)
+				}
+				return nil
+			}})
+			rig.crash(t, gateReplaced, standIn)
+			rig.sessionClock.advance(session.LiveWindow + 30*time.Second)
+			rig.sweepPass()
+			if !registered {
+				t.Fatalf("the sweep's pass made no copy of %s's messages", gateReplaced)
+			}
+			received := rig.watch(t, taker, gateClaimant, gateRole, append([]string{first}, wantIf(row.both, second)...)...)
+
+			copiesRequireEach(t, received, gateClaimant, first)
+			if row.both {
+				copiesRequireEach(t, received, gateClaimant, second)
+				return
+			}
+			copiesRequireNone(t, received, gateClaimant, second)
+			if n := rig.handedOverCopies(t, gateClaimant, second); n != 0 {
+				t.Errorf("%s's own subject holds %d copies of %s; want none", gateClaimant, n, second)
+			}
+			rig.requireUnacknowledged(t, gateReplaced, seqs, second)
+		})
+	}
+}
+
 // A registration whose known-session write failed leaves the record naming the principal the
 // session registered as before, which the handover gate would read as the one it last registered
 // as. So the registration route answers such a registration 503 with Retry-After: 1 rather than

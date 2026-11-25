@@ -22,9 +22,10 @@ body: |-
     handed over, so an agent session that names a person's session receives none of its messages.
     A rule the listener could not read (the known-session bucket not open or not answering, or the
     claimant's own registration not yet recorded with its principal) is answered `503` with
-    `Retry-After: 1`, the claim standing, rather than refused for good. Each pass, and the successor
-    read below, hold the two sessions to the rule again, so a session that registers as another
-    principal after the claim is handed nothing more. A known-session record now says whether a
+    `Retry-After: 1`, the claim standing, rather than refused for good. Each pass, before it starts
+    and before each copy, and the successor read below, hold the two sessions to the rule again, so
+    a session that registers as another principal after the claim, or while a pass runs, is handed
+    nothing more. A known-session record now says whether a
     registration of this build recorded its principal (`principal_recorded`): a record an earlier
     build wrote back reads as one whose principal nobody knows, and is refused, and an interest
     change or a clean stop keeps the principal the bucket's leader holds, by a compare-and-swap,
@@ -38,7 +39,8 @@ body: |-
     reply routes ask the listener's new `GET /v1/sessions/{session_id}/successors` for the session
     the delivery names and accept the reply of a session it names, where they refused it `403
     REPLY_FORBIDDEN`; that read names each session that replaced it and each that replaced one of
-    those in turn, while each last registered as its principal.
+    those in turn, however long the chain, while each last registered as its principal, and answers
+    `503` rather than part of the chain when it cannot read the whole of it in time.
 time: 2026-11-25T03:15:04Z
 custom:
     Issue: replaced-session-handover
