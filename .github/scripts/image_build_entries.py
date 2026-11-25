@@ -25,8 +25,8 @@ build in any Dockerfile and is no step here fails the check until a row names it
 """
 
 # pi-plugin-prepack.sh, which `bun pm pack` runs, builds the Envoy plugin's bundle
-# (scripts/pi-plugin-prepack.sh:95), the dispatch command beside it
-# (packages/envoy-client/scripts/build-dispatch-cli.sh:18) and their notices
+# (`scripts/pi-plugin-prepack.sh#bun build extensions/envoy.ts`), the dispatch command beside it
+# (`packages/envoy-client/scripts/build-dispatch-cli.sh#dispatch.js`) and their notices
 # (scripts/third-party-notices.ts, run with Bun).
 PI_ENVOY_BUILDS = [
     ("bundle", "packages/pi-envoy", "extensions/envoy.ts",
@@ -56,7 +56,7 @@ CLAUDE_ENVOY_BUILDS = [
 
 # The listener image's web stage: the contracts' Go code generator, then Vite's build of the
 # dashboard. Vite resolves `@legion/contracts` and the proof editor to their sources
-# (packages/dispatch/web/vite.config.ts:115-153), which the `bun` condition gives Bun too. Each Web
+# (`packages/dispatch/web/vite.config.ts#alias`), which the `bun` condition gives Bun too. Each Web
 # Worker the page starts with `new Worker(new URL(...))` is a bundle of its own that Bun does not
 # follow from the page, so each is a row; so is the config, which Vite loads, with its packages
 # left out since `bun install` puts them in place.

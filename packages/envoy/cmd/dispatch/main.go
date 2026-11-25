@@ -61,6 +61,7 @@ import (
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/pglisten"
+	"github.com/sjawhar/envoy/internal/principal"
 	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/internal/roles"
 	"github.com/sjawhar/envoy/listenfd"
@@ -86,6 +87,10 @@ type bootConfig struct {
 	// AgentTokens is DISPATCH_AGENT_TOKEN parsed: every value the API accepts as the shared agent
 	// token, the first the current one.
 	AgentTokens *auth.SharedAgentTokens
+	// ProjectOwnerFallback is DISPATCH_PROJECT_OWNER_FALLBACK, a lowercase email: the full member
+	// the boot makes the owner of every project with no owner (store.EnsureProjectOwners); empty
+	// gives none, and the boot then refuses to serve while a project has no owner.
+	ProjectOwnerFallback string
 	// ParentStatusRule is DISPATCH_PARENT_STATUS_RULE=on: main runs R25's one-time fix at boot
 	// (api.RunParentStatusFixAtBoot), and the server it builds refuses a write that leaves a
 	// parent's status out of line with its children's. Unset or off is false.
@@ -834,6 +839,16 @@ func main() {
 		slog.Error("dispatch: run the parent status fix", "error", err)
 		os.Exit(1)
 	}
+	// Every project has an owner: a project the access migration left with none is given to
+	// DISPATCH_PROJECT_OWNER_FALLBACK's full member, recorded as an operator's grant is
+	// (giveOwnerlessProject), and while one still has none the boot refuses, naming each and both
+	// repairs. The grant appends events, so it runs after every step of the boot that takes the copy
+	// lock (restoreDecidedWordings above, the parent status fix just before it), and before the
+	// outbox, every loop and the listen, so the server serves no project without an owner.
+	if err := store.EnsureProjectOwners(store.WithTransactionTracking(ctx), database.Pool, boot.ProjectOwnerFallback, giveOwnerlessProject); err != nil {
+		slog.Error("dispatch: give every project an owner", "error", err)
+		os.Exit(1)
+	}
 	// The app context is built only now, so the rule the fix answered reaches the server
 	// (api.DepsInput through appContextOptions). Nothing above reads it.
 	built.ParentStatusRule = parentStatusRule
@@ -1489,6 +1504,7 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 	}
 	boot := bootConfig{
 		DatabaseURL:           strings.TrimSpace(env.get("DATABASE_URL")),
+		ProjectOwnerFallback:  strings.TrimSpace(env.get("DISPATCH_PROJECT_OWNER_FALLBACK")),
 		NewIssueLabel:         strings.TrimSpace(env.get("DISPATCH_NEW_ISSUE_LABEL")),
 		NewIssueSession:       strings.TrimSpace(env.get("DISPATCH_NEW_ISSUE_SESSION")),
 		SpecRoots:             strings.TrimSpace(env.get("DISPATCH_SPEC_ROOTS")),
@@ -1510,6 +1526,11 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 	}
 	if boot.DatabaseURL == "" {
 		return bootConfig{}, errors.New("DATABASE_URL required")
+	}
+	if fallback := boot.ProjectOwnerFallback; fallback != "" {
+		if err := principal.CheckPersonLogin(fallback); err != nil {
+			return bootConfig{}, fmt.Errorf("DISPATCH_PROJECT_OWNER_FALLBACK must be a lowercase email, the one a full member signed in with; got a value of %d characters", len(fallback))
+		}
 	}
 	if boot.EnvoyAccountTokenFile != "" && boot.EnvoyGoogleAudience != "" {
 		return bootConfig{}, errors.New("ENVOY_ACCOUNT_TOKEN_FILE and ENVOY_ACCOUNT_GOOGLE_AUDIENCE each name Dispatch's identity at the Envoy listener; set one of them")
