@@ -354,15 +354,22 @@ type basisRun struct {
 // basisReason is the reason every registration of these proofs carries.
 const basisReason = "The checks serve the ancestor's requirement; both fresh reviews passed."
 
-// ancestor creates an issue of the rig's project as a session with fields, under title, and
-// writes the requirement blocks ids into its primary document as its next version, which it
-// answers with the issue: a primary document that marks requirements, as requirementsMarkdown's
-// does. The blocks come by an edit rather than the create's spec because Dispatch refuses a
-// create whose text its near-copy gate reads as an open issue's (409 POSSIBLE_DUPLICATE), and the
-// blocks every ancestor of a proof that makes many of them marks read so; an edit is no create.
+// ancestor creates an issue of the rig's project with fields, under title, and writes the
+// requirement blocks ids into its primary document as its next version, which it answers with the
+// issue: a primary document that marks requirements, as requirementsMarkdown's does. A session
+// creates it, unless fields name a parent: Dispatch refuses a session that is no architect a create
+// under a parent Legion runs (403 DOCUMENT_WRITER_NOT_ARCHITECT), so the person files that one, as
+// createBlockersIssue files a child. The blocks come by an edit rather than the create's spec
+// because Dispatch refuses a create whose text its near-copy gate reads as an open issue's (409
+// POSSIBLE_DUPLICATE), and the blocks every ancestor of a proof that makes many of them marks read
+// so; an edit is no create.
 func (r *personHandoverRig) ancestor(title string, fields map[string]any, ids ...string) (scratchIssue, int) {
 	r.t.Helper()
-	issue := r.create(asSession, title, fields)
+	identity := asSession
+	if _, under := fields["parent"]; under {
+		identity = asPerson
+	}
+	issue := r.create(identity, title, fields)
 	return issue, r.editDocument(issue.PrimaryArtifactID, insertAtEnd(requirementBlocks(ids...)))
 }
 
@@ -955,7 +962,9 @@ func (r *personHandoverRig) pendingWorld(names []string, opt pendingOptions) pen
 		r.openedOnBasis(run.root, run.parent, 1, run.basisVersion)
 		r.dispatchRowsDone(run.root.Key)
 		if opt.member != "" {
-			run.member = r.create(asSession, opt.member, map[string]any{"labels": []string{"legion"}, "parent": run.root.Key})
+			// The person files the member: Dispatch refuses a session that is no architect a create
+			// under a parent Legion runs (403 DOCUMENT_WRITER_NOT_ARCHITECT).
+			run.member = r.create(asPerson, opt.member, map[string]any{"labels": []string{"legion"}, "parent": run.root.Key})
 			r.setStatus(run.member.Key, "todo")
 			// The member is an open Dispatch child of the root, whose own phases have started, so
 			// the admission pass moves the root to awaiting_children, where it holds no slot, for
