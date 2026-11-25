@@ -361,6 +361,17 @@ async function expectDrawnOpen(
   return found;
 }
 
+/** Turns Graph on and waits for the page to go quiet, as `readAsReader` does after each view it
+ *  turns on. Graph sends its own outline read, and the outline lands its opening focus on a row
+ *  once that read settles (`IssueTree.tsx`), so a reading that blurs the focus before then has
+ *  it taken back. */
+async function pickGraphSettled(page: Page, traffic: ApiRequests): Promise<void> {
+  const name = graphName();
+  await pickPreset(page, name);
+  await expectActivePreset(page, name);
+  await expectLoadSettled(traffic);
+}
+
 /** In Graph, the row of the node `readId` names carries `mark`, read as `what`. */
 async function expectMarkedInGraph(
   page: Page,
@@ -932,9 +943,7 @@ async function expectOvertakenRows(page: Page, read: ProposedPage): Promise<void
 async function expectProposedInGraph(page: Page, read: ProposedPage): Promise<void> {
   if (!noteOwed(read.graph)) return;
   const { ids } = read.seeded;
-  const name = graphName();
-  await pickPreset(page, name);
-  await expectActivePreset(page, name);
+  await pickGraphSettled(page, read.traffic);
   for (const [readId, what, mark] of [
     [ids.check2, "check 2", PROPOSED],
     [ids.decision1, "the first decision", PROPOSED],
@@ -1554,9 +1563,7 @@ async function expectQuestionInGraph(page: Page, read: SeededPage): Promise<void
   if (!noteOwed(await graphGate(page))) return;
   const { ids } = read.seeded;
   const { named, under } = drawnUnderQuestion(read);
-  const name = graphName();
-  await pickPreset(page, name);
-  await expectActivePreset(page, name);
+  await pickGraphSettled(page, read.traffic);
   await expectMarkedInGraph(page, ids.overtakenQuestion, OVERTAKEN, "the overtaken question");
   await expectDrawnOpen(
     page,
@@ -1827,9 +1834,7 @@ async function expectQuestionMarks(page: Page, read: LoadedPage): Promise<void> 
 /** Each question carries its mark in Graph, read only where the page draws a Graph control. */
 async function expectQuestionMarksInGraph(page: Page, read: LoadedPage): Promise<void> {
   if (!noteOwed(await graphGate(page))) return;
-  const name = graphName();
-  await pickPreset(page, name);
-  await expectActivePreset(page, name);
+  await pickGraphSettled(page, read.traffic);
   for (const { mark, readId, what } of statedQuestions(read)) {
     await expectMarkedInGraph(page, readId, mark, what);
   }
