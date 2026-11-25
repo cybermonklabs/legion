@@ -1830,7 +1830,8 @@ func (w *workflowRuntime) applySweepFacts(ctx context.Context, facts []sweptFact
 // attempt read no answer hands the head to this runtime's merge-state reader to follow
 // (queueMergeStateFollow). The outbox's hold is `gates.hold` as the configuration resolves it
 // (config.Gates.Holds), the engine's own (engineConfig), which its fence of every start of a
-// phase worker reads (startWaitsForTheHold). All are set before the records' wake can reach the
+// phase worker reads (startWaitsForTheHold). The outbox's branch create runs the private-name
+// rules boot compiled (privateNameRules). All are set before the records' wake can reach the
 // outbox (outboxWake). Whether an issue still holds its workspace, which a repository kept for an
 // unrecorded issue is answered while (keptRepository), is read from the runtime (workspaceHeldBy),
 // and so is the rule the end of an issue's pod runs the rename pass under, the outbox's podEnded,
@@ -1844,6 +1845,7 @@ func (w *workflowRuntime) attach(supervision *supervision) {
 	w.outbox.readPullRequest, w.outbox.applyMergeability, w.outbox.mergeStateWait = w.readPullRequest, w.applyMergeability, w.mergeStateWait
 	w.outbox.queueMergeStateFollow = w.queueMergeStateFollow
 	w.outbox.hold = supervision.cfg.Gates.Holds()
+	w.outbox.privateNameRules = supervision.plan.privateNameRules
 	w.outbox.podEnded = w.podEndsOn(supervision.supervisor.deps.Runtime)
 	w.outbox.sweepEvery = w.outboxSweep
 	w.outboxWake.Store(w.outbox)
