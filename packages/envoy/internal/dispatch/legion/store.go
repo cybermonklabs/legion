@@ -125,13 +125,9 @@ func GetSettings(ctx context.Context, db RowQueryer, project string) (Settings, 
 // and keeps it.
 //
 // In the same transaction the write resets the project's cursor or leaves it as it is
-// (settingWritten), by the rule that resetCursor and cursor.reset hold whole (read-rule-cases rows
-// 6.1 to 6.4b). A reset leaves the intake no starting point for the project, so the intake reads
-// the daemon whole once that read is due, at the wake of the write's notification or at the
-// redelivery of a message that holds the read meanwhile, and a cursor left as it is keeps the
-// whole read a message holds already. So a write of the same URL is the way to have a project's
-// state read whole again. The write reads the URL the setting named before it under a lock of its
-// row (writeSetting), a new setting's included, so two writes of one project take turns and each
+// (settingWritten), by the rule resetCursor holds whole, which says too when the intake then reads
+// the daemon whole. The write reads the URL the setting named before it under a lock of its row
+// (writeSetting), a new setting's included, so two writes of one project take turns and each
 // compares its URL with the one the write before it left.
 func PutSettings(ctx context.Context, pool *store.Pool, project, stateURL string, actor model.Actor) (Settings, error) {
 	createdBy, err := json.Marshal(actor)
@@ -197,14 +193,8 @@ func writeSetting(ctx context.Context, tx pgx.Tx, project, stateURL string, crea
 // DeleteSettings removes a project's setting and reports whether it had one. The project's reads
 // and observations stay: they are what was observed, and nothing re-reads them. The delete reads
 // the URL the setting named as it deletes the row, under the row's lock, and where it had one it
-// resets the project's cursor in the same transaction as a write of another URL does
-// (settingWritten), by the rule that resetCursor and cursor.reset hold whole (read-rule-cases row
-// 6.5). The cursor keeps its row, with the start of the project's newest whole read, so a delete
-// and a write within a minute make their two whole reads at least a minute apart (R3). While the
-// project has no setting, the intake drops each of its messages before it reads the cursor
-// (applyBatch). So a message whose hold the delete ended, and which comes back meanwhile, is
-// dropped; its record (released_holders) follows the rule cursor.reset holds, and its stream
-// sequence comes again only in a take-over's replay.
+// resets the project's cursor in the same transaction (settingWritten), by the rule resetCursor and
+// cursor.reset hold whole (read-rule-cases row 6.5).
 func DeleteSettings(ctx context.Context, pool *store.Pool, project string) (bool, error) {
 	tx, err := pool.Begin(ctx)
 	if err != nil {
@@ -289,7 +279,7 @@ func readBytes(size int64) int64 {
 }
 
 // The kinds of legion_reads row (migration 20261118212431): a whole read of a daemon's state, and
-// one message of state events the intake applied.
+// one transaction of state events the intake applied, which its last message writes (applyBatch).
 const (
 	readKindRead   = "read"
 	readKindEvents = "events"
@@ -298,9 +288,8 @@ const (
 // ReadRetention is how long legion_reads keeps a read of a daemon. The Legion board reads the
 // newest row of a project and nothing reads an older one, so the rest are a week of history for
 // whoever asks why a daemon stopped answering, or how late its events reached Dispatch
-// (recorded_at beside read_at). The table gains a row for each message of state events the intake
-// applies, one per daemon transaction that moved what Dispatch observes, and one for each whole
-// read.
+// (recorded_at beside read_at). The table gains a row for each transaction of state events the
+// intake applies, which its last message writes (applyBatch), and one for each whole read.
 const ReadRetention = 7 * 24 * time.Hour
 
 // PruneReads deletes every read older than ReadRetention that is not its project's newest, and

@@ -162,8 +162,8 @@ const selectLive = `
 // Legion observations from each daemon's state events (legion.Intake) and reads a daemon's state
 // whole only for a reason it logs. A row at 0, the column's default, is written by a build before
 // this one, whose sampler reads each daemon's state whole every minute and writes its rows at its
-// own clock. The intake takes no starting point while such a row is in the fleet
-// (EarlierLegionIntake), so no row of the sampler lands after a starting point.
+// own clock. What the intake does while such a row is in the fleet (EarlierLegionIntake) is the
+// rule of legion's startBlocked.
 const LegionStateIntake = 1
 
 // selectEarlierLegionIntake is the owner lock's fleet read of an earlier build
@@ -363,8 +363,8 @@ func tryRegister(ctx context.Context, pool *pgxpool.Pool, id string, instance In
 // carries: the column's default, 0, is an earlier build's, whose insert takes the owner lock gate
 // and stamps the earlier build's mark (migration 20261115200014), which a registration of this
 // build must never do. It names this build's Legion state intake, LegionStateIntake, as well: the
-// column's default, 0, is an earlier build's, beside which the Legion intake takes no starting
-// point (EarlierLegionIntake).
+// column's default, 0, is an earlier build's, which legion's startBlocked reads
+// (EarlierLegionIntake).
 func admit(ctx context.Context, tx pgx.Tx, id string, instance Instance) (refusal error, err error) {
 	live, err := Live(ctx, tx)
 	if err != nil {

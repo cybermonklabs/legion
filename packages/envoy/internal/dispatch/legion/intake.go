@@ -14,25 +14,16 @@ package legion
 // project applies, and its snapshot is never older than a message already applied. A message that
 // arrives while a read is in flight waits on the runner behind it, for one RequestTimeout at the
 // most, and is judged against the cursor that read leaves. A message of a store the project's
-// cursor drops (cursor.drops) runs on the runner too: it applies nothing and calls for no read
-// of its own, and the one read it can call for is queued on the runner behind it (callRead). A
-// project keeps at most stateMaxWaiting messages waiting on its runner: a message past that runs on
-// a key of its own beside the runner, makes no read and owes one. The read in flight leaves the gap
-// read owed where a message past the cap that joined it carries a sequence of the read's store
-// above its snapshot, the store read owed where such a message is of another store that the cursor
-// the read leaves does not drop, and otherwise the first such message's redelivery is judged as any
-// message's (judgeCrowded, cursor.afterRead). A message that holds the owed read, whatever store it is
-// of, makes it at its redelivery or goes back to the stream again: no message is acknowledged while
-// the cursor names it as the holder, unless the read rule releases it (cursor.readFor), a write of
-// the setting ended its hold (endHold), or a Dispatch process of an earlier build keeps the intake
-// from the starting point the message calls for (applyMessage), where the holder is released first.
-// So a project has at most one whole read in flight; it has at most one owed (cursor.readReasons),
-// and one rule decides whether a call for a read makes it now or owes it (cursor.readFor). Every
-// two whole reads of a project start ReadRetryAfter apart at the least, whatever their reasons,
-// the starting read included: a starting read that a write's wake or a take-over finds not due is
-// made when the minute ends, by one deferred call (startingPoint). legion_event_cursors says how
-// far the project's observations have followed its daemon (cursor), and legion_event_parts holds
-// the messages of a transaction the daemon split over several until the last one arrives (part).
+// cursor drops runs on the runner too, and applies nothing (cursor.drops). A project keeps at most
+// stateMaxWaiting messages waiting on its runner: a message past that runs on a key of its own
+// beside the runner and makes no read (judgeCrowded), and what the read in flight then leaves
+// owed is cursor.afterRead's rule. A project has at most one whole read in flight, since its reads
+// run on its runner, and at most one owed (cursor.readReasons). One rule decides whether a call
+// for a read makes it now or owes it, and which message holds an owed read (cursor.readFor), and
+// a project's whole reads start ReadRetryAfter apart at the least, whatever their reasons, the
+// starting read included. legion_event_cursors says how far the project's observations have
+// followed its daemon (cursor), and legion_event_parts holds the messages of a transaction the
+// daemon split over several until the last one arrives (part).
 //
 // This file holds the intake's lifecycle and wiring: the durable and its policy, the intake's run,
 // its take-over and its starting points, each message's key and delivery and what an attempt at it
@@ -75,13 +66,11 @@ const stateSubject = contracts.LegionNoticeTopicPrefix + "*" + contracts.LegionS
 // long and fills the window, and NATS then delivers no message of any project until those writes go
 // through again. The messages wait in the stream meanwhile: none is lost. A whole read holds its
 // project's runner for one read at the most, since a message that calls for a read inside
-// ReadRetryAfter of the last one makes none (cursor.readFor): the first such message goes back to
-// the stream until the read is due, and every later one is acknowledged once the cursor records its
-// reason. Meanwhile the project keeps at most stateMaxWaiting messages waiting on its runner: each
-// message past that owes a read, one of them holds it, and the others are acknowledged
-// (judgeCrowded). So a burst of messages, forged or from a bug, or a read the daemon does not
-// answer, holds stateMaxWaiting+1 messages of the window for one read at the most, and each project
-// that owes a read holds one message of it, for stateMaxHolds hand-backs at the most.
+// ReadRetryAfter of the last one makes none (cursor.readFor). Meanwhile the project keeps at most
+// stateMaxWaiting messages waiting on its runner, and judges each message past that beside the
+// runner (judgeCrowded). So a burst of messages, forged or from a bug, or a read the daemon does
+// not answer, holds the part of the window that stateMaxWaiting states, and a message that holds
+// its project's owed read holds one message of the window for as long as stateMaxHolds states.
 const (
 	stateAckWait       = 2 * time.Minute
 	stateMaxAckPending = 256
@@ -93,12 +82,10 @@ const (
 // nothing that read does not. A take-over of a durable that exists creates it again at its ack
 // floor (delivery's takeOverConfig), so a stopped process's messages are replayed.
 //
-// Three settings hold the rule of an owed read (cursor.readFor): the message that holds the read
-// goes back to the stream unacknowledged (delivery.HeldMessage.HandBackAfter) for the time left
-// until the read is due, and its redelivery makes the read. A read that fails sends the message
-// back until ReadRetryAfter after that read began. Once the message has gone back stateMaxHolds
-// times, its next delivery is acknowledged whatever its read comes to, and the cursor names no
-// holder from then on.
+// Three settings hold the rule of an owed read (cursor.readFor), by which the message that holds
+// the read goes back to the stream unacknowledged (delivery.HeldMessage.HandBackAfter) until the
+// read is due, its redelivery makes the read, and the intake lets the message go itself after
+// stateMaxHolds hand-backs.
 //   - MaxDeliver is unset, which the server takes as -1, no limit: a redelivery never counts toward
 //     a drop, so the server never drops the message that holds the read, which would leave the
 //     cursor naming a holder that never comes back. The intake lets the message go itself, after
@@ -112,13 +99,7 @@ const (
 //
 // While the message waits, the durable's ack floor stays below it, so a take-over, which creates
 // the durable again at that floor, delivers the message again and replays every message of every
-// project after it. stateMaxHolds bounds that: the cursor counts the message's hand-backs, so a
-// take-over does not reset the count, and each hand-back after a read lasts until ReadRetryAfter
-// after that read began, holdAtLeast at the least. A take-over's own call for the project's read
-// (takenOver, startingPoint) makes no read while the message holds it, so no take-over adds a read
-// to the hold. A read lasts RequestTimeout at the most, a minute, so the message holds the floor
-// for about 11 minutes at the most in all, whether or not the daemon answers its reads and however
-// many take-overs there are, and a take-over replays at most that long of messages.
+// project after it, for as long as stateMaxHolds bounds the hold.
 func consumerConfig() natsgo.ConsumerConfig {
 	return natsgo.ConsumerConfig{
 		Durable:        bus.DispatchLegionStateDurable,
@@ -133,7 +114,7 @@ func consumerConfig() natsgo.ConsumerConfig {
 
 // The log lines of a state message the intake acknowledges and does not apply, and of a starting
 // point it does not take, each at INFO, once per line and project per dropLogEvery (reportEvery). A
-// message that goes back to the stream logs none of them: its delivery logs heldLine alone.
+// message that goes back to the stream logs none of them (heldLine).
 const (
 	// droppedLine is a message for a project with no Legion setting.
 	droppedLine = "legion intake: a state message for a project with no Legion setting is dropped"
@@ -167,7 +148,7 @@ const (
 
 // refusedLine is the log line of a message the database refused for good, at WARN, on the delivery
 // that acknowledges it. A delivery that sends the message back to the stream, because it holds its
-// project's owed read, logs heldLine alone, and the message's next delivery is refused again.
+// project's owed read, logs heldLine instead, and the message's next delivery is refused again.
 const refusedLine = "legion intake: the database refuses a state message for good, so it is finished and the project is read whole"
 
 // heldLine is the log line of a message that goes back to the stream unacknowledged because it
@@ -176,9 +157,9 @@ const refusedLine = "legion intake: the database refuses a state message for goo
 // back before the read is due. It names the read the message calls for (reason, "" for none), how
 // many times this durable has delivered the message (delivery, which a take-over starts again at
 // 1), and which of the hold's hand-backs this is as the cursor counts them (handBack, which a
-// take-over keeps; stateMaxHolds). It is the one line of that delivery, and is logged only for a
-// hand-back made (delivery.HeldMessage.HandBackAfter): such a message is not logged as
-// acknowledged unapplied (reportEvery) or as refused.
+// take-over keeps; stateMaxHolds). It is logged only for a hand-back HandBackAfter admits
+// (delivery.HeldMessage.HandBackAfter), and such a delivery logs no line of reportEvery and no
+// refusedLine; a whole read it made logs its own line before it (finishWhole).
 const heldLine = "legion intake: a state message goes back to the stream until its project's owed whole read is due"
 
 // writeReleasedLine is the log line of a message whose hold of its project's owed whole read a
@@ -187,11 +168,13 @@ const heldLine = "legion intake: a state message goes back to the stream until i
 // store.
 const writeReleasedLine = "legion intake: a write or a delete of the project's Legion setting ended a state message's hold of the owed whole read, so it is acknowledged unapplied"
 
-// releasedLine is the log line of a message that went back to the stream stateMaxHolds times
-// holding its project's owed whole read, at WARN, on the delivery that acknowledges it, naming
-// the hand-backs the cursor counted (handBacks) and how many times this durable has delivered the
-// message (delivery). The cursor names no holder from then on, and the read stays owed for the
-// project's next message, boot, settings change or take-over.
+// releasedLine is the log line of a delivery that stops its message's hold of the project's owed
+// whole read after stateMaxHolds hand-backs with the read still owed (readAnswer.release), at
+// WARN, as it acknowledges the message, naming the hand-backs the cursor counted (handBacks) and
+// how many times this durable has delivered the message (delivery). The cursor names no holder
+// from then on, and the read stays owed for the project's next message, boot, settings change or
+// take-over. That delivery makes the read first where it is due (cursor.readFor), and a good read
+// that leaves nothing owed clears the holder with no such line (cursor.afterRead).
 const releasedLine = "legion intake: a state message went back to the stream the most times allowed for its project's owed whole read, so it is acknowledged and the read stays owed"
 
 // dropLogEvery bounds how often one line of reportEvery is logged for one project, and pruneEvery
@@ -341,18 +324,11 @@ func (in *Intake) Run(ctx context.Context) {
 // (startingPoint). A write of a Legion setting wakes it (SettingsChannel), and each take-over
 // queues it (takenOver). A message that arrives meanwhile, a message of a store the project's
 // cursor drops included, waits on the runner behind that starting point and is judged against the
-// cursor it leaves. A project with no starting point (no read yet, or a write of its setting that
-// left its cursor following no daemon: PutSettings) is read whole once, when that read is due: at
-// once, or ReadRetryAfter after the project's newest whole read began, for which the call queues
-// the starting point once more (startLater). A project whose cursor owes a read that is due and
-// that no message holds is read for the reasons it owes it for, and every other project is not
-// read at all. Where a message holds the owed read, the starting read included, the call joins
-// that read, which the message's redelivery makes, and queues nothing; a write of the URL the
-// setting names already leaves such a cursor as it is (settingWritten), so its wake joins the read
-// too. A settings read that fails queues nothing: a project with no starting point is read at its
-// next message all the same, and the listener's wake fires again once it listens again. A process
-// that does not hold the durable queues nothing: the process that holds it heard the same
-// notification.
+// cursor it leaves. Whether the starting point reads the daemon whole, and when, is the read
+// rule's (startingPoint, cursor.readFor). A settings read that fails queues nothing: a project
+// with no starting point is read at its next message all the same, and the listener's wake fires
+// again once it listens again. A process that does not hold the durable queues nothing: the
+// process that holds it heard the same notification.
 func (in *Intake) SettingsChanged(ctx context.Context) {
 	settings, err := ListSettings(ctx, in.pool)
 	if err != nil {
@@ -398,11 +374,9 @@ func (in *Intake) takenOver() {
 // rule answers such a call the time left until the read is due (readAnswer.later). Where a
 // message holds the starting read, it queues nothing: that message's redelivery makes the read
 // once it is due (R3: "its redelivery makes the read"), and a deferred call would only join it. A
-// wake or a take-over makes the starting read only where no message holds it: before a message
-// takes it, or once the holder is released (its stateMaxHolds hand-backs, a write of another URL
-// or a delete of the setting, or a starting read an earlier build blocks). The deferred call and a
-// message's call (callRead) pass false: each wake and each take-over defers one call at the most,
-// and no timer recurs.
+// wake or a take-over makes the starting read only where no message holds it (cursor.readFor). The
+// deferred call and a message's call (callRead) pass false: each wake and each take-over defers
+// one call at the most, and no timer recurs.
 func (in *Intake) startingPoint(ctx context.Context, project string, wake bool) {
 	var pending *wholeRead
 	in.untilDone(ctx, nil, project, func(ctx context.Context) (outcome, error) {
@@ -454,8 +428,11 @@ func (in *Intake) startLater(project string, d time.Duration) {
 // not take now: ReadReasonStart while a Dispatch process of an earlier build is in the fleet
 // (processes.EarlierLegionIntake). Such a build reads every daemon whole each minute and writes
 // its rows at its own clock, so a row of it could land after the starting point and after the
-// events applied on it. The next message, settings change or take-over after that process has left
-// the fleet takes the starting point; no timer does.
+// events applied on it. A starting point it blocks reads nothing (startingPoint), and a message
+// whose starting read it blocks is acknowledged unapplied (outcomeEarlierBuild): where the cursor
+// names that message as the owed read's holder, it names no holder from then on, since the
+// message is acknowledged with no read made (applyMessage). The next message, settings change or
+// take-over after that process has left the fleet takes the starting point; no timer does.
 func (in *Intake) startBlocked(ctx context.Context, reason string) (bool, error) {
 	if reason != ReadReasonStart {
 		return false, nil
@@ -504,20 +481,8 @@ const (
 	outcomeNoStore
 	// outcomeOtherStore is a message whose stateId is not the cursor's (judge).
 	outcomeOtherStore
-	// outcomeForgotten is a message of a store the project's cursor drops (cursor.drops): the
-	// store the project followed before a write of its setting named another daemon, or before a
-	// delete of the setting, or a store a whole read found is no daemon of the project. A boot of
-	// such a store, while the cursor follows the setting's URL in a store a read verified, is none:
-	// it is judged as a message of another store (outcomeOtherStore). It is never applied. It waits
-	// on the project's runner behind a read in flight, as every message does, and is judged against
-	// the cursor that read leaves: it queues a call for the owed read behind itself where that read
-	// is due and no message holds it, whatever store the cursor holds (callRead;
-	// judge, applyBatch). On its project's crowded key it calls for none while no whole read of the
-	// project is in flight, and otherwise owes the read as every message past stateMaxWaiting does
-	// (judgeCrowded). A message the cursor names as the owed read's holder, which one past
-	// stateMaxWaiting of any store can be (judgeCrowded), is not finished so: it makes that read
-	// when it is due and goes back to the stream otherwise, as every holder does
-	// (cursor.finishesUnapplied; applyBatch, answerRead, readRefused).
+	// outcomeForgotten is a message of a store the project's cursor drops (cursor.drops), which is
+	// never applied: drops says what it calls for and when it holds a read.
 	outcomeForgotten
 	// outcomeReleased is a message whose hold of its project's owed read a write of the setting
 	// that named another URL, or a delete of the setting, ended (cursor.releases, endHold): it is
@@ -543,21 +508,21 @@ const (
 // deliver applies one state message on its project's runner and acknowledges it (applyMessage),
 // or, where the message holds its project's owed whole read (cursor.readFor), hands it back to the
 // stream unacknowledged for the time left until the read is due, so its redelivery makes the read,
-// and logs that hand-back and nothing else (heldLine). A hand-back withheld because a stop began or
-// the hold lapsed is not made, so deliver logs no heldLine for it: the hand-back's own line is the
-// delivery's one line (delivery.HeldMessage.HandBackAfter), and the next holder's take-over
-// delivers the message again. A message that went back stateMaxHolds times
-// holds the read no more: it is acknowledged, and logged at WARN (releasedLine). A message whose
-// hold a write of the setting ended is acknowledged unapplied, and logged at INFO
-// (writeReleasedLine). A message on its project's crowded key is judged there and applies nothing
-// (judgeCrowded): it is acknowledged, or goes back to the stream where it holds the read it owes. A
-// message that does not decode is acknowledged and logged: the next one of its project is then a
-// gap, which a whole read covers. A message the runner could not apply before the handling ended
-// is handed back rather than acknowledged, so the next holder applies it. A message the database
-// refused for good is logged at WARN once it is acknowledged (refusedLine), and a message the
-// intake acknowledges unapplied is logged once per reason and project per dropLogEvery
-// (reportEvery). As it returns, deliver counts the message down among those that wait on its
-// project's runner (finished).
+// and logs that hand-back (heldLine). A hand-back HandBackAfter does not admit is not made, so
+// deliver logs no heldLine for it: HandBackAfter logs its own line, and the next holder's
+// take-over delivers the message again. A message that went back stateMaxHolds times is
+// acknowledged at its next delivery, which logs releasedLine at WARN only where it ends the hold
+// with the read still owed. A message whose hold a write of the setting ended is acknowledged
+// unapplied, and logged at INFO (writeReleasedLine). A message on its project's crowded key is
+// judged there and applies nothing (judgeCrowded): it is
+// acknowledged, or goes back to the stream where it holds the read it owes. A message that does
+// not decode is acknowledged and logged: the next one of its project is then a gap, which a whole
+// read covers. A message the runner could not apply before the handling ended is handed back
+// rather than acknowledged, so the next holder applies it. A message the database refused for
+// good is logged at WARN once it is acknowledged (refusedLine), and a message the intake
+// acknowledges unapplied is logged once per reason and project per dropLogEvery (reportEvery). As
+// it returns, deliver counts the message down among those that wait on its project's runner
+// (finished).
 func (in *Intake) deliver(m delivery.HeldMessage) {
 	defer in.finished(m.Msg)
 	message, err := decodeStateMessage(m.Envelope, m.Msg.Data)

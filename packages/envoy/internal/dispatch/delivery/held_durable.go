@@ -482,7 +482,7 @@ func (d *heldDurable) takeOver(ctx context.Context) {
 // replays every message after that one that the durable had acknowledged. A message handed back
 // with a delay holds the floor there for a bounded time: an envelope whose head row was not stored
 // for headWriteMaxDeliveries deliveries, and a Legion state message that holds its project's owed
-// read for about 11 minutes (legion's stateMaxHolds).
+// read for the time legion's stateMaxHolds bounds, past which that bound names one case.
 // The take-over records that start in its hold's token before it deletes the durable, and
 // finishTakeOver says what a create that fails after the delete leaves behind.
 // The deployed metadata keeps its own keys and drops the ones nats-server sets itself (the

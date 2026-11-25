@@ -15,12 +15,12 @@ import (
 
 // stateMaxWaiting is how many messages one project keeps waiting on its runner, the one running
 // included (Intake.waiting). A message that arrives while that many wait does not wait: it runs on
-// its project's crowded key (crowdedKey) and owes a read (judgeCrowded). A read the daemon does not
-// answer holds the runner for RequestTimeout, and every message that waits holds one message of the
-// durable's window (stateMaxAckPending) until it is acknowledged, a message handed back with a
-// delay included. So a project in such a read holds stateMaxWaiting messages that wait and one that
-// holds the owed read, 17 of the 256, and 15 projects can be in such a read at once before the
-// window is full.
+// its project's crowded key (crowdedKey), where judgeCrowded finishes it or has it owe a read. A
+// read the daemon does not answer holds the runner for RequestTimeout, and every message that
+// waits holds one message of the durable's window (stateMaxAckPending) until it is acknowledged, a
+// message handed back with a delay included. So a project in such a read holds stateMaxWaiting
+// messages that wait and one that holds the owed read, 17 of the 256, and 15 projects can be in
+// such a read at once before the window is full.
 const stateMaxWaiting = 16
 
 // crowdedKeyPrefix begins each project's crowded key (crowdedKey). Its first byte is not UTF-8, so
@@ -73,29 +73,22 @@ func (in *Intake) finished(msg *natsgo.Msg) {
 // the project's position (lockCursor), it answers outcomeDropped for a project with no setting,
 // finishes a message whose hold a write of the setting ended (cursor.releases, endHold), and
 // answers outcomeForgotten, writing nothing, for a message the cursor finishes unapplied
-// (cursor.finishesUnapplied: of a store the cursor drops, and not the owed read's holder, which is
-// never finished unapplied while it holds the read) while no whole read of the project is in
-// flight (readsNow). A read in flight can find that store behind the setting's URL (the same store
-// behind a new URL, a marked store a redeploy started there), and the cursor it leaves then
-// applies that store's later events, so a message of it past the cap is judged as any other: its
-// events may be past that read's snapshot. A boot of such a store, while the cursor follows the
-// setting's URL in a store a read verified, is no message the cursor drops (read-rule-cases row
-// 3.5): it is judged as any other message of another store, read in flight or not. Every other
-// message owes a read: ReadReasonStore for a message of another store than the one a read verified
-// behind the setting's URL, as judge answers it; otherwise the one its position calls for against
-// the cursor as it stands (stateMessage.unfollowed: a boot that does not follow calls for
-// ReadReasonBoot), and ReadReasonGap where it calls for none, since its events may be past the
-// snapshot of the read in flight. The read rule decides the rest as for a delivery that has made
-// its read already (cursor.readFor), so it never makes the read now. The first such message since
-// the read in flight began takes the hold of the read after it (cursor.readFor, read-rule-cases row
-// 8.1): it goes back to the stream until ReadRetryAfter after the start of the read in flight, and
-// its redelivery, keyed to the runner once fewer messages wait there, makes the read on the runner.
-// Where no read is in flight, a message holds the read where no message holds it, and goes back
-// until ReadRetryAfter after the last read. Where another message holds it, this message joins it
-// and is acknowledged unapplied (outcomeCrowded), and the cursor keeps its sequence as the highest
-// it skipped in its store (cursor.skips, writeSkipped), so the read in flight, which clears the
-// reasons it was made for, leaves the gap read owed where that sequence is past its snapshot, and
-// the store read owed where it is of another store that the cursor the read leaves does not drop
+// (cursor.finishesUnapplied, a message of a store the cursor drops) while no whole read of the
+// project is in flight (readsNow). A read in flight can find that store behind the setting's URL
+// (the same store behind a new URL, a marked store a redeploy started there), and the cursor it
+// leaves then applies that store's later events, so a message of it past the cap is judged as any
+// other: its events may be past that read's snapshot. Every other message owes a read:
+// ReadReasonStore for a message of another store than the one a read verified behind the
+// setting's URL, as judge answers it, unless the cursor drops it (cursor.drops); otherwise the one
+// its position calls for against the cursor as it stands (stateMessage.unfollowed: a boot that
+// does not follow calls for ReadReasonBoot), and ReadReasonGap where it calls for none, since its
+// events may be past the snapshot of the read in flight. The read rule decides the rest as for a
+// delivery that has made its read already, with the read in flight that inFlight answers
+// (cursor.readFor), so it never makes the read now: which message holds the read and goes back to
+// the stream, and which is acknowledged unapplied (outcomeCrowded). A message that goes back is
+// keyed to the runner at its redelivery once fewer messages wait there, and makes the read there
+// once it is due. A message the rule does not send back leaves its sequence as the highest the
+// cursor skipped in its store (cursor.skips, writeSkipped), for the read in flight to judge
 // (cursor.afterRead). A project with no cursor yet, whose starting read is queued and has not
 // begun, is given one that follows no daemon (lockCursor), so the read it owes is recorded; a read
 // gives its project a cursor before it calls the daemon (Intake.readWhole).

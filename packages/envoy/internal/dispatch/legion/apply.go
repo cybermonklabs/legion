@@ -20,25 +20,26 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 )
 
-// callRead is the read a message of a store project's cursor drops (outcomeForgotten) calls for, on
-// current, the cursor its batch holds (applyBatch): the message has waited on the project's runner
-// behind any read in flight, so current is the cursor that read left. The message calls for no read
-// of its own, but it may be the setting's own daemon's: until a good read of that daemon has given
-// the cursor a store, no read has shown whether it serves another store or the same store behind
-// another URL, and a daemon the cursor follows in another store can be redeployed into the store a
-// write recorded (previousStateID) with no write of the setting, after which each of its messages
-// is of a store the cursor drops (read-rule-cases row 4.3). Its id is the old daemon's, so the
-// intake cannot tell the two apart. So where a call no message makes would make a read now
-// (cursor.readFor: an owed read that is due and that no message holds), whatever store the cursor
-// holds, callRead queues the project's starting point on the project's runner behind the message
-// (startingPoint), which makes that read as such a call. Such a read is owed already, and the read
-// rule makes it at most once a minute, so an old daemon that still publishes adds no read the
-// project does not owe. The message does not wait for it, never holds it, and is acknowledged
-// unapplied at once; the read rule starts the project's whole reads ReadRetryAfter apart. At most
-// one such call waits per project (calling), until it has run, so the messages of such a store that
-// the runner judges meanwhile join it and queue none: a read the daemon never answers lasts
-// RequestTimeout, which is ReadRetryAfter, so each call queued behind it would find the read due
-// again and make one more, back to back on the project's runner.
+// callRead is the read a message that project's cursor finishes unapplied as a message of a store
+// it drops (cursor.finishesUnapplied) calls for, on current, the cursor its batch holds
+// (applyBatch): the message has waited on the project's runner behind any read in flight, so
+// current is the cursor that read left. The message calls for no read of its own, but it may be
+// the setting's own daemon's: until a good read of that daemon has given the cursor a store, no
+// read has shown whether it serves another store or the same store behind another URL, and a
+// daemon the cursor follows in another store can be redeployed into the store a write recorded
+// (previousStateID) with no write of the setting, after which each of its messages is of a store
+// the cursor drops (read-rule-cases row 4.3). Its id is the old daemon's, so the intake cannot
+// tell the two apart. So where a call no message makes would make a read now (cursor.readFor: an
+// owed read that is due and that no message holds), whatever store the cursor holds, callRead
+// queues the project's starting point on the project's runner behind the message (startingPoint),
+// which makes that read as such a call. Such a read is owed already, and the read rule makes it
+// at most once a minute, so an old daemon that still publishes adds no read the project does not
+// owe. The message does not wait for it, never holds it, and is acknowledged unapplied at once;
+// the read rule starts the project's whole reads ReadRetryAfter apart. At most one such call waits
+// per project (calling), until it has run, so the messages of such a store that the runner judges
+// meanwhile join it and queue none: a read the daemon never answers lasts RequestTimeout, which is
+// ReadRetryAfter, so each call queued behind it would find the read due again and make one more,
+// back to back on the project's runner.
 func (in *Intake) callRead(project string, current cursor) {
 	if !current.readFor("", in.now(), 0, false, nil).read {
 		return
@@ -93,9 +94,7 @@ type messageAttempt struct {
 	// holds its project's owed read, and 0 where it is acknowledged. released is whether it went
 	// back stateMaxHolds times and the cursor no longer names it as the read's holder. holds is
 	// which of the hold's hand-backs the cursor counts this one as, where it goes back, and how
-	// many it counted, where it is released. answered sets the three from the read rule's answer
-	// (answerRead), and applyBatch and readRefused call it only once the write that records the
-	// answer has committed.
+	// many it counted, where it is released. answered sets the three.
 	back     time.Duration
 	released bool
 	holds    int
@@ -105,8 +104,8 @@ type messageAttempt struct {
 }
 
 // answered sets the message's back, released and holds from answer, the read rule's answer for it
-// (answerRead). applyBatch and readRefused call it once the write that recorded answer has
-// committed, and never before.
+// (cursor.readFor, through answerRead or judgeCrowded). applyBatch, readRefused and judgeCrowded
+// call it once the write that recorded answer has committed, and never before.
 func (a *messageAttempt) answered(answer readAnswer) {
 	a.back, a.released, a.holds = answer.back, answer.release, answer.holds
 }
@@ -128,13 +127,10 @@ func deliveryOf(msg *natsgo.Msg) (seq int64, delivered uint64) {
 // the batch's transaction (makeRead), and the attempt is then made again: the batch decides once
 // more on the cursor the read left. A read that is owed and not due is recorded owed by the batch
 // (answerRead), which takes the message or leaves it unapplied as judge says, and the message goes
-// back to the stream where it holds the owed read (messageAttempt.back). A starting point is not
-// taken while a Dispatch process of an earlier build is in the fleet (startBlocked): the message is
-// acknowledged unapplied, and where the cursor names it as the owed read's holder (a message past
-// stateMaxWaiting holds the read of a cursor that follows no daemon: judgeCrowded), the cursor
-// names no holder from then on (owe, release), since the message is acknowledged with no read
-// made. A batch the database refuses for good (refusedForGood) is not tried again: it calls for one
-// whole read of the project (readRefused), and deliver logs the refusal.
+// back to the stream where it holds the owed read (messageAttempt.back). A read that startBlocked
+// blocks ends the attempt as that rule says (outcomeEarlierBuild). A batch the database refuses
+// for good (refusedForGood) is not tried again: it calls for one whole read of the project
+// (readRefused), and deliver logs the refusal.
 func (in *Intake) applyMessage(ctx context.Context, attempt *messageAttempt) (outcome, error) {
 	if attempt.refusal != nil {
 		return in.readRefused(ctx, attempt)
@@ -166,13 +162,11 @@ func (in *Intake) applyMessage(ctx context.Context, attempt *messageAttempt) (ou
 // the message goes back to the stream where it holds the owed read, and is acknowledged otherwise
 // (messageAttempt.answered). Nothing is read where the project has no setting, or a setting whose
 // starting point its change queues (a cursor that does not follow it), or where the cursor
-// finishes the message unapplied (cursor.finishesUnapplied): a message of a store the cursor drops
-// calls for no read of its own, unless the cursor names it as the owed read's holder: a holder
-// makes the read it holds, adds no reason, and is never finished unapplied while it holds the read
-// (judge, applyBatch). Nothing is read either where the database refuses for good the read's
-// record as well, the record of the owed read, or the project's position itself (a key it does not
-// take): the message is acknowledged all the same. Any other failure of the database is tried
-// again in place, as every database step is.
+// finishes the message unapplied (cursor.finishesUnapplied); a holder of a store the cursor drops
+// calls for no reason (cursor.drops). Nothing is read either where the database refuses for good
+// the read's record as well, the record of the owed read, or the project's position itself (a key
+// it does not take): the message is acknowledged all the same. Any other failure of the database
+// is tried again in place, as every database step is.
 func (in *Intake) readRefused(ctx context.Context, attempt *messageAttempt) (outcome, error) {
 	setting, current, found, err := in.position(ctx, attempt.message.Project)
 	finishes, dropped := current.finishesUnapplied(attempt.message, setting.StateURL, attempt.seq)
@@ -220,8 +214,8 @@ func refusedForGood(err error) *pgconn.PgError {
 // attempt's message calls for, and answers what the rule decides. A read made now for a message of
 // another store carries that message's store (readAnswer.store). Where the rule makes no read now,
 // answerRead first records what the rule owes (owe) through db: the batch's transaction
-// (applyBatch), or the pool (readRefused). The caller sets the message's answer from it
-// (messageAttempt.answered) only once that write has committed.
+// (applyBatch), or the pool (readRefused). The caller sets the message's answer from it afterwards
+// (messageAttempt.answered).
 func (in *Intake) answerRead(ctx context.Context, db Execer, attempt *messageAttempt, current cursor, reason string) (readAnswer, error) {
 	answer := current.readFor(reason, in.now(), attempt.seq, attempt.readMade, nil)
 	if answer.read {
@@ -246,30 +240,15 @@ func (in *Intake) answerRead(ctx context.Context, db Execer, attempt *messageAtt
 //
 //   - A message of a store the cursor drops (cursor.drops), the store recorded by a write that
 //     named another daemon or by a delete of the setting, or a store marked as no daemon of the
-//     project, is never applied, whatever else holds (outcomeForgotten): R3 applies none of the
-//     messages of a daemon the setting named before once the setting names another. Such a message
-//     has waited on the project's runner behind any read in flight, as every message does, so it is
-//     judged against the cursor that read left. It calls for no read of its own, not even a
-//     starting point: the setting's daemon may not have published it, and R3 says a failed starting
-//     read is one that no message holds.
-//     It holds the owed read only where it took that hold past stateMaxWaiting while a read was in
-//     flight (judgeCrowded), and applyBatch then has it make that read or go back as the holder.
-//     Otherwise it is finished unapplied: applyBatch queues the read the cursor owes on the
-//     project's runner behind the message where that read is due and no message holds it, whatever
-//     store the cursor holds (callRead), and the message does not wait for it. The cursor does not
-//     drop a boot of such a store while it follows the setting's daemon in a store a read verified:
-//     the boot may say that the daemon behind the setting's URL now counts in that store (a
-//     redeploy that started it where the verified daemon ran). R3 reads another store so that a
-//     daemon whose store was replaced is found again, so that boot is judged as a message of
-//     another store below (outcomeOtherStore, ReadReasonStore): it calls for a store read and holds
-//     it as any message does. A good read that finds that store takes the mark off, or clears the
-//     record of the store the setting named before (cursor.afterRead); a read that finds the cursor's
-//     store unchanged leaves it.
-//   - A project with no starting point calls for a read whatever else holds (ReadReasonStart). It
-//     is due ReadRetryAfter after the project's newest whole read began, as every read is, and
-//     where it is not due the message holds it as any owed read (cursor.readFor). Nothing of the
-//     message is applied where no read is made first (outcomeNoStore): no read since the write has
-//     said which store the daemon the setting names counts in, and the starting read holds the
+//     project, is never applied, whatever else holds (outcomeForgotten), and calls for no read
+//     here, not even a starting point: the setting's daemon may not have published it, and R3
+//     says a failed starting read is one that no message holds. What it does from there is
+//     drops' rule, which applyBatch follows through cursor.finishesUnapplied.
+//   - A project with no starting point calls for a read (ReadReasonStart). It is due
+//     ReadRetryAfter after the project's newest whole read began, as every read is, and where it
+//     is not due it is owed and held as every read is (cursor.readFor). Nothing of the message
+//     is applied where no read is made first (outcomeNoStore): no read since the write has said
+//     which store the daemon the setting names counts in, and the starting read holds the
 //     message's events.
 //   - A cursor that holds no store, one whose every read since the setting was written failed,
 //     takes no message (outcomeNoStore), since no good read has said which store the daemon the
@@ -340,15 +319,10 @@ func ownRead(reason string, readMade bool) string {
 // is finished unapplied at this delivery and holds no read, and its store is marked as no daemon of
 // the project (endHold). Any other message is judged (judge), and applyBatch hands the read it
 // calls for to the read rule (answerRead).
-// A message of a store the cursor drops (outcomeForgotten) writes nothing and hands
-// no read to the rule where the cursor finishes it unapplied (cursor.finishesUnapplied): it is
-// acknowledged unapplied and holds no read, and it queues the call for the owed read that callRead
-// decides, whatever store the cursor holds, on the project's runner behind it. That is every such
-// message unless the cursor names it as the owed read's holder, which a message past
-// stateMaxWaiting of any store can become (judgeCrowded): a held read is made by its holder's
-// redelivery, whatever store the holder is of, so such a message goes on to the rule with no
-// reason of its own (answerRead), and makes the read where it is due, goes back to the stream as
-// the holder where it is not, or is released after stateMaxHolds hand-backs; it is never applied.
+// A message the cursor finishes unapplied (cursor.finishesUnapplied) writes nothing, hands no
+// read to the rule, and queues on the project's runner behind it the call for the owed read that
+// callRead decides. A holder of a store the cursor drops goes on to the rule with no reason of its
+// own (judge) and is never applied (cursor.drops).
 // Where the rule makes a read now, the batch writes nothing and answers that read: the caller makes
 // it outside the transaction (makeRead) and tries again. Otherwise the transaction records what the
 // rule owes (answerRead, owe), and the message comes to judge's outcome: it is acknowledged once

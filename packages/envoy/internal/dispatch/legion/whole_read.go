@@ -22,27 +22,9 @@ import (
 // ReadRetryAfter is how long a project's whole read waits after the one before it began, for
 // every reason, the starting read included (read-rule-cases v11). The cursor keeps the start of the
 // project's newest whole read (last_read_started_at), and a write of the setting does not reset
-// it. A read called for inside the minute is owed rather than made (cursor.readFor). The first
-// message that owes it goes back to the stream unacknowledged for the time left until it is due,
-// and its redelivery makes the read; every later message is acknowledged once the cursor records
-// its reason, and a settings change or a take-over makes no read of its own while that message
-// holds the read. So where a message holds the owed read, a project that goes quiet is
-// ReadRetryAfter behind at the most. A read that fails sends that message back until
-// ReadRetryAfter after the read began, holdAtLeast at the least, so a read the daemon is slow to
-// answer, or never answers within RequestTimeout, adds no time to the minute. It does so at most
-// stateMaxHolds times in all, and then lets the message go. A failed read that no message
-// holds - a starting read's that no message made, or one whose message has gone back
-// stateMaxHolds times - waits for the project's next message, boot, settings change or
-// take-over, which makes it once it is due. A message of a store the cursor drops (cursor.drops)
-// calls for no read of its own, and holds one only where, past stateMaxWaiting while a read of
-// the project was in flight, it took the hold of the gap read after it (judgeCrowded): its
-// redelivery then makes that read, as every holder's does. It waits on the project's runner behind
-// a read in flight, as every message does, and is judged against the cursor that read leaves: it
-// queues a call for a read that is due and that no message holds behind itself, whatever store the
-// cursor holds, which the runner makes after the message is acknowledged (callRead). No recurring
-// timer makes a read. A starting read that a write's wake or a take-over finds not due, and that no
-// message holds, is made when the minute ends, by one deferred call of that wake or take-over
-// (startingPoint). A project with no read yet has no read to wait after.
+// it. What a call for a read inside the minute does, and which message holds the read until it is
+// due, is the read rule's (cursor.readFor). No recurring timer makes a read. A project with no
+// read yet has no read to wait after.
 const ReadRetryAfter = time.Minute
 
 // The reasons a whole read is made, which legion_reads.reason records and the whole read's log
@@ -53,11 +35,11 @@ const (
 	// ReadReasonStart is a project with a setting and no starting point: no cursor, or one that
 	// follows another daemon than the setting names, or none at all, as a write of the setting
 	// leaves it (settingWritten). It is read at the intake's take-over (which covers the durable's
-	// first creation), on a settings change, and at the project's next message if neither has read
-	// it yet, and at none of them while a Dispatch process of an earlier build is in the fleet
-	// (processes.EarlierLegionIntake). Where a message holds it, the redelivery of that message
-	// makes it, and neither a take-over nor a settings change does (cursor.readFor). It is due
-	// ReadRetryAfter after the project's newest whole read began, as every read is.
+	// first creation), on a settings change, and at the project's next message that calls for it
+	// (judge) if neither has read it yet, at none of them while startBlocked blocks it. Where a
+	// message holds it, the redelivery of that message makes it, and neither a take-over nor a
+	// settings change does (cursor.readFor). It is due ReadRetryAfter after the project's newest
+	// whole read began, as every read is.
 	ReadReasonStart = "start"
 	// ReadReasonBoot is a boot event that does not follow the cursor: its sequence is not the next
 	// one, or it is at or below the cursor under another run (a daemon whose counter went back).
@@ -101,7 +83,9 @@ var (
 	ErrNoStateID = errors.New("the daemon serves no daemon.stateId, so its state messages cannot be matched to its store")
 )
 
-// wholeReadLine is the log line of every whole read, at INFO.
+// wholeReadLine is the log line of each whole read the intake records, at INFO (finishWhole). A
+// read whose setting moved or went before its record logs another line there and records nothing,
+// and a read that a stop of the intake cuts short logs neither (readWhole).
 const wholeReadLine = "legion intake: whole read"
 
 // makeRead makes read, the whole read the attempt's message calls for, outside any transaction
@@ -226,7 +210,8 @@ func ReadWhole(ctx context.Context, pool *store.Pool, setting Settings, reason s
 // database restore took the daemon's counter back, and to its daemon.stateRun where it serves one
 // (recordWhole). A read that fails, and one fetchWhole judges failed, records a failed legion_reads
 // row naming why, its observations where the state is the project's own, and leaves the read owed.
-// Each read is announced on StateChannel and logged at INFO with its reasons (finishWhole).
+// Each read it records is announced on StateChannel and logged at INFO with its reasons
+// (finishWhole, wholeReadLine).
 //
 // Before it calls the daemon, it writes the read's start on the project's cursor and empties the
 // sequences the cursor skipped past stateMaxWaiting (writeReadStart, read-rule-cases row 7.6), so
@@ -236,9 +221,10 @@ func ReadWhole(ctx context.Context, pool *store.Pool, setting Settings, reason s
 //
 // It keeps the read it fetched in pending until it is recorded, so an attempt made again after a
 // refused record records that read rather than reading the daemon again. It answers the read as it
-// was recorded, failed or good, and nil where it was not recorded: when the setting moved
-// meanwhile. It answers an error only for a write the database refused, the record or the write of
-// the read's start, which empties the skipped sequences, and for a stop that cut the read short.
+// was recorded, failed or good, and nil where it was not recorded: when the setting moved or went
+// meanwhile (recordWhole). It answers an error only for a write the database refused, the record
+// or the write of the read's start, which empties the skipped sequences, and for a stop that cut
+// the read short.
 func (in *Intake) readWhole(ctx context.Context, owed owedRead, pending **wholeRead) (*wholeRead, error) {
 	read := *pending
 	if read == nil || read.stateURL != owed.setting.StateURL {
@@ -277,12 +263,13 @@ func (in *Intake) reads(project string, started *time.Time) {
 }
 
 // finishWhole records read, made for owed (recordWhole, which announces it on StateChannel), then
-// logs it, naming owed's recorded reason as its reason and every reason it joined as its reasons,
-// comma-separated, and answers the read as it was recorded, nil where it was not recorded. A
-// record Postgres refused is recorded as a failed read instead, its failure `record: <why>` and
-// none of its observations, so the last good observations stand and the read is owed rather than
-// its project's runner held on a value the database will never take. An error is answered only
-// when that record is refused too: the database itself is failing, and the caller tries the record
+// logs it (wholeReadLine), naming owed's recorded reason as its reason and every reason it joined
+// as its reasons, comma-separated, and answers the read as it was recorded. A read it does not
+// record, its setting moved or gone, it logs with a line of its own and answers as nil. A record
+// Postgres refused is recorded as a failed read instead, its failure `record: <why>` and none of
+// its observations, so the last good observations stand and the read is owed rather than its
+// project's runner held on a value the database will never take. An error is answered only when
+// that record is refused too: the database itself is failing, and the caller tries the record
 // again in place.
 func finishWhole(ctx context.Context, pool *store.Pool, owed owedRead, read *wholeRead) (*wholeRead, error) {
 	project := owed.setting.Project
@@ -326,10 +313,12 @@ func finishWhole(ctx context.Context, pool *store.Pool, owed owedRead, read *who
 // failed read of the daemon the cursor follows keeps them: the read holds none of the events, and
 // a part held is applied whole when its transaction's last part arrives.
 //
-// recorded is false when the setting no longer names the daemon read. Then nothing of the read is
-// written but its start (last_read_started_at), which readWhole wrote before the call already and
-// which this writes again, the later of the two kept: the daemon was read all the same, so the
-// read that the setting's change calls for waits ReadRetryAfter after it.
+// recorded is false when the project has no setting any more, and when its setting names another
+// URL than the daemon read. Where it has no setting, nothing is written here. Where the setting
+// names another URL, nothing of the read is written but its start (last_read_started_at), which
+// readWhole wrote before the call already and which this writes again, the later of the two kept:
+// the daemon was read all the same, so the read that the setting's change calls for waits
+// ReadRetryAfter after it.
 func recordWhole(ctx context.Context, pool *store.Pool, owed owedRead, read *wholeRead) (recorded bool, written int64, err error) {
 	project := owed.setting.Project
 	tx, err := pool.Begin(ctx)

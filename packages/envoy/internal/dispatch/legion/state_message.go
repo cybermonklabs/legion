@@ -25,10 +25,8 @@ import (
 // none of its events is applied until the last arrives (applyBatch), so no observation holds a
 // value of a transaction Dispatch has not read whole. A part is held only where it follows the
 // cursor or the part before it (stateMessage.continues), so the parts of a project are one run of
-// sequences under one run and one store. A good whole read deletes them, since its snapshot holds
-// them, and so does every write of the project's setting that leaves the cursor no starting point,
-// the delete of the setting included, which resets the cursor as a write of another URL does
-// (settingWritten); a failed read keeps them (recordWhole).
+// sequences under one run and one store. Every write of the project's setting that resets the
+// cursor deletes them (resetCursor), and recordWhole says which whole reads delete them.
 type part struct {
 	firstSeq, lastSeq int64
 	run, stateID      string
@@ -419,8 +417,9 @@ func (m stateMessage) unfollowed(current cursor, held []part) string {
 	return ""
 }
 
-// boots reports whether the message carries a boot event: its daemon run started (judge reads a
-// boot of a store the cursor drops as a sign that the setting's daemon may now count in it).
+// boots reports whether the message carries a boot event: its daemon run started (cursor.drops
+// reads a boot of a store the cursor forgets as a sign that the setting's daemon may now count in
+// it).
 func (m stateMessage) boots() bool {
 	for _, event := range m.Events {
 		if event.Kind == eventBoot {

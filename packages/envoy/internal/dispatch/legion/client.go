@@ -5,20 +5,18 @@
 // change of what Dispatch observes as a state event on notifications.legion.<token>.state. The
 // intake (intake.go, apply.go) takes those events from the held durable
 // bus.DispatchLegionStateDurable and writes every value that moved in legion_observations, with one
-// legion_reads row for each message it applies. It reads the daemon's `GET /legion/v1/state` whole
-// (Intake.readWhole, through this file's Client) only for the reasons the ReadReason constants name
-// (whole_read.go): a project with no starting point, a boot that does not follow, a boot whose
-// schema version moved, a gap the stream no longer holds, a read owed since one failed, a message
-// of another store and a message the database refuses for good, and a project's reads start at
-// least ReadRetryAfter apart. No recurring timer reads a daemon. So the Legion board
-// (api/legion_board.go) and the four metrics (legion/metrics) read Dispatch's own tables rather
-// than a daemon.
+// legion_reads row for each transaction whose events it applies, which the transaction's last
+// message writes (applyBatch). It reads the daemon's `GET /legion/v1/state` whole
+// (Intake.readWhole, through this file's Client) only for the reasons the ReadReason constants
+// name (whole_read.go), and a project's reads start at least ReadRetryAfter apart. No recurring
+// timer reads a daemon. So the Legion board (api/legion_board.go) and the four metrics
+// (legion/metrics) read Dispatch's own tables rather than a daemon.
 //
 // Two bounds hold a read (the plan's D14, the spec's contract 6): RequestTimeout on the call and
 // ResponseLimit, 64 MiB, on the body. The read asks for the route's observed view, which carries
-// only the members Dispatch decodes (Client.State). A read over the cap stops one byte past it and
-// is a failed read that names the cap and what the read knows of the answer's size — the board's
-// header says so and the last good observations stand — never a parse of the first 64 MiB.
+// only the members Dispatch decodes (Client.State). An answer over the cap is a failed read that
+// names the cap and what the read knows of the answer's size (readBounded) — the board's header
+// says so and the last good observations stand — never a parse of the first 64 MiB.
 package legion
 
 import (
@@ -52,14 +50,14 @@ const RequestTimeout = 60 * time.Second
 const stateView = "observed"
 
 // ResponseLimit is the most of a daemon's answer Dispatch reads: 64 MiB. A body over it is a
-// failed read, and the read stops one byte past it (readBounded). The observed view (stateView)
-// measured 665,962 bytes of the INFRA daemon's state at 2026-11-20T20:35Z: 187 bytes for each of
-// its 3,273 issues and about 54 KB for the project. INFRA gains about 210 issues a day (INFRA-1000
-// was created 2026-11-02T08:52Z, INFRA-4855 2026-11-20T20:21Z), so the view is about 15 MB after a
-// year and reaches the cap after about four and a half years. A daemon of an earlier build serves
-// its whole state, which measured 7,307,929 bytes at the same time and 4,055,424 bytes on
-// 2026-11-12, about 0.4 MB more each day: it stays under the cap for about 150 days, which covers a
-// rollout of the daemon that serves the view.
+// failed read (readBounded, and readBytes for the size its row records). The observed view
+// (stateView) measured 665,962 bytes of the INFRA daemon's state at 2026-11-20T20:35Z: 187 bytes
+// for each of its 3,273 issues and about 54 KB for the project. INFRA gains about 210 issues a day
+// (INFRA-1000 was created 2026-11-02T08:52Z, INFRA-4855 2026-11-20T20:21Z), so the view is about
+// 15 MB after a year and reaches the cap after about four and a half years. A daemon of an earlier
+// build serves its whole state, which measured 7,307,929 bytes at the same time and 4,055,424
+// bytes on 2026-11-12, about 0.4 MB more each day: it stays under the cap for about 150 days,
+// which covers a rollout of the daemon that serves the view.
 const ResponseLimit = 64 << 20
 
 // ErrUnavailable is every failed call to a daemon: it could not be reached, it answered something

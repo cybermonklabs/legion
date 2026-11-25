@@ -464,9 +464,10 @@ func (d *intakeDelivery) handBack(msg *natsgo.Msg) {
 // when a stop begins between the two checks. A handler makes it before or after any stop
 // begins, and the stop waits for that handler.
 //
-// It reports whether it handed the hand-back to NATS (publishHandBack). It returns false when it
-// withheld the hand-back, and then it logs one line that names the cause. A caller that logs the
-// hand-back it made logs it only when this returns true.
+// It reports publishHandBack's answer, whether the hand-back was admitted for its publish, and not
+// whether NATS took it. It returns false when it withheld the hand-back, and then it logs one line
+// that names the cause. A caller that logs the hand-back it made logs it only when this returns
+// true.
 func (d *intakeDelivery) handBackOwn(msg *natsgo.Msg, after time.Duration) bool {
 	if !d.mayAnswer() {
 		d.tuning.log.Warn("dispatch delivery: a stop began or the hold lapsed, so the message is left with the durable for the next holder's take-over",
@@ -497,8 +498,9 @@ func (d *intakeDelivery) handBackOwn(msg *natsgo.Msg, after time.Duration) bool 
 // before a reconnect -- is reset, so bytes of the hand-back still in its kernel send queue are
 // discarded rather than sent after the release.
 //
-// It reports whether the hand-back was admitted, and so handed to NATS: false when the delivery was
-// sealed and the hand-back withheld (handBackSealed).
+// It reports whether the hand-back was admitted, and so handed to callNATS for its publish, not
+// whether NATS took it: false when the delivery was sealed and the hand-back withheld
+// (handBackSealed).
 func (d *intakeDelivery) publishHandBack(msg *natsgo.Msg, after time.Duration) bool {
 	if hook := d.beforeHandBackPublish.Load(); hook != nil {
 		(*hook)()

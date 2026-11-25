@@ -6,9 +6,9 @@
 // The answer is read from what Dispatch holds, never from the daemon: the Legion intake
 // (internal/dispatch/legion) records each value that moved, from the daemon's state events and
 // from a whole read where the events cannot carry the state, and this reads the newest value of
-// each field it recorded, the verdict of the newest legion_reads row, and the project's issues. A
-// board that called the daemon would read its whole state once per open page and once per event
-// burst.
+// each field it recorded, the read of the daemon that readDaemonRead picks from legion_reads, and
+// the project's issues. A board that called the daemon would read its whole state once per open
+// page and once per event burst.
 //
 // Two disciplines, as in the metrics package:
 //
@@ -116,11 +116,10 @@ type legionBoardResponse struct {
 
 // legionBoardHeader is what the view's header shows: the slots in use against the cap, the live
 // trees, the queue's length, and the last read of the daemon — when it was made, whether it
-// succeeded and why it did not. While a whole read is owed, ReadOK is false and ReadError is that
-// read's failure, whatever batches of events came after it (readDaemonRead). SlotCap is null until
-// a read records the daemon's admission block, Trees is 0 until a daemon that reports its live
-// trees does (dispatch://INFRA-980), and ReadAt is null for a project whose daemon has never
-// answered at all, which shows the board with empty columns.
+// succeeded and why it did not, as readDaemonRead picks them. SlotCap is null until a read records
+// the daemon's admission block, Trees is 0 until a daemon that reports its live trees does
+// (dispatch://INFRA-980), and ReadAt is null for a project whose daemon has never answered at all,
+// which shows the board with empty columns.
 type legionBoardHeader struct {
 	SlotsInUse  int        `json:"slots_in_use"`
 	SlotCap     *int       `json:"slot_cap"`
@@ -306,10 +305,10 @@ func (p *legionBoardPopulation) readRecorded(ctx context.Context, pool *store.Po
 // time is the newest legion_reads row's, the newest Dispatch wrote, by recorded_at and then id:
 // a batch's read_at is the daemon's commit time and a whole read's is Dispatch's clock, so
 // read_at does not order the two kinds. Its ok and its error are that row's too, except while
-// the project's cursor owes a whole read (legion_event_cursors.read_owed): they are then the
-// newest whole read's, so a batch applied after a failed read does not show a good read. A read
-// owed after a good one, for a message that called for a read inside a minute of it, shows
-// that good read's ok.
+// the project's cursor owes a whole read (legion_event_cursors.read_owed) and the project has a
+// whole read: they are then the newest whole read's, good or failed, so a batch applied after a
+// failed read does not show a good read. A read owed after a good one, for a message that called
+// for a read inside a minute of it, shows that good read's ok.
 func readDaemonRead(ctx context.Context, tx pgx.Tx, project string) (*legionBoardDaemonRead, error) {
 	var read legionBoardDaemonRead
 	err := tx.QueryRow(ctx, `

@@ -113,9 +113,10 @@ func (m HeldMessage) HandBack() {
 // HandBackAfter hands the message back for redelivery in after: the handler's own answer that the
 // message is to come round again later, not now (legion.Intake's owed read). It is published only
 // while this delivery may still answer the durable, and withheld otherwise, the message left with
-// the durable for the next holder's take-over (intakeDelivery.handBackOwn). It reports whether it
-// published: when it did not, it has logged one line that names why, and the message goes back to
-// the stream only through that take-over.
+// the durable for the next holder's take-over (intakeDelivery.handBackOwn). It reports whether the
+// hand-back was admitted for its publish (intakeDelivery.publishHandBack), not whether NATS took
+// it: when it was not, it has logged one line that names why, and the message goes back to the
+// stream only through that take-over.
 func (m HeldMessage) HandBackAfter(after time.Duration) bool {
 	return m.delivery.handBackOwn(m.Msg, after)
 }

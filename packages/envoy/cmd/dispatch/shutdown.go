@@ -111,19 +111,12 @@ func serveUntilStopped(ctx context.Context, cancel context.CancelFunc, server *h
 // A hand-back still pending then is settled when waitIntakes closes each intake's NATS client
 // through its durable, sent in its close flush or dropped with the connection; waitIntakes then
 // waits for its finalizer to release the hold through the pool. That wait normally ends
-// 10 s inside the latest the document service's budget ends (stopGrace less its 5 s reserve, 25 s after the signal).
-// One exception can outlive that bound, by a span no fixed time bounds: Client.Close waits for
-// nats.go's connection lock, which a frozen link keeps for the write that holds it, then for each
-// write queued on the lock ahead of the close, the ping timer's PING among them, and the close then
-// flushes what was queued behind them to the same socket under the lock. Each of those writes lasts
-// up to delivery's IntakeWriteDeadline (5 s, the write deadline every intake's client connects with)
-// while the socket takes no byte (nats.go v1.55.0: natsWriter.flush leaves the socket open after a
-// write that sent no byte, nats.go:2389-2395; timeoutWriter gives each write a deadline of its own,
-// 7026-7031; processPingTimer and sendPing write the PING under the lock, 6081-6101 and 6071-6076;
-// close flushes under the lock before it closes the socket, 6277-6281), and a reconnect attempt
-// through a frozen link holds the lock through its dial and its handshake. Then a finalizer can
-// spend up to intakeHoldRenew (5 s) releasing its hold. The kubelet's kill is safe in that case: it
-// closes the connection and the renewal, and the hold lapses. It comes before the
+// 10 s inside the latest the document service's budget ends (stopGrace less its 5 s reserve, 25 s
+// after the signal). One exception can outlive that bound, by a span no fixed time bounds:
+// Client.Close waits behind the writes on nats.go's connection lock, as delivery's
+// IntakeWriteDeadline accounts for them, and then a finalizer can spend up to intakeHoldRenew
+// (5 s) releasing its hold. The kubelet's kill is safe in that case: it closes the connection and
+// the renewal, and the hold lapses. It comes before the
 // pool closes because nothing else keeps the pool open for a handler: one waiting on GitHub holds
 // no connection, so waitUntilIdle finds the pool idle and its writes would fail on the closed pool
 // once GitHub answered, with its message acknowledged all the same. A hold's finalizer has already
