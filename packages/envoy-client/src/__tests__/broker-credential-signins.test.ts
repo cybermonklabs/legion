@@ -572,7 +572,7 @@ test("a person's approve route is a proxy placeholder their sign-in trades for, 
   const issuer = await issuerFor();
   const record = await signedIn(PERSON, { client_id: CLIENT_ID });
   const { env } = await signedInPod(broker.url, dispatch.url, issuer.url, [record]);
-  const resolution = dispatchSettings(env, noFile(env), {});
+  const resolution = await dispatchSettings(env, await noFile(env), {});
   if (!resolution.enabled) throw new Error(`Dispatch is off: ${resolution.error}`);
 
   const route = await resolution.credential.approveRoute?.();
@@ -604,7 +604,7 @@ test("with nobody signed in there is no approve route, and nothing is traded for
     ...podEnvironment(broker.url, dispatch.url),
     AGENT_SECRETS_SESSION: MACHINE_SESSION,
   };
-  const resolution = dispatchSettings(env, noFile(env), {});
+  const resolution = await dispatchSettings(env, await noFile(env), {});
   if (!resolution.enabled) throw new Error(`Dispatch is off: ${resolution.error}`);
   expect(await resolution.credential.approveRoute?.()).toBeUndefined();
   expect(
