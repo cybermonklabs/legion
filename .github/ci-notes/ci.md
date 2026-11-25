@@ -1376,6 +1376,23 @@ shell scripts over the image's own gh, jq, git and coreutils, and builds or fetc
 so the architecture reaches nothing they compute; at busy hours the x64 pool queues a job for
 about 15 minutes where the arm64 pool starts one in seconds (INFRA-4222).
 
+## Why the docs job is selected like any other
+
+The `docs` output is selected like any other job's, now that no run of ci.yaml is a push to
+main. .github/workflows/docs-pages.yaml still builds and deploys main's site, on a push
+trigger of its own.
+
+## The jobs with no `full-ci` term, which come back on every push
+
+Three outputs carry no `full-ci` term, only the dispatched one, so each job comes back on
+every push that selects it:
+
+- `dispatch_ui`: the dashboard's and the proof editor's fast checks.
+- `text_checks`: the checks whose subject is text, in a job with no database, one of the
+  cheapest jobs of the file.
+- `airlock_lean`: the Lean model's own job, which takes minutes rather than tens of them, as
+  the two suites before it in ci.yaml do.
+
 ## What the changes job selects, and the two terms every job carries
 
 Selects the jobs that read what this change touched. Skipped on a draft pull request, so no
