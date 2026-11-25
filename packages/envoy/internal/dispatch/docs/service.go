@@ -204,6 +204,10 @@ type Service struct {
 	shutdownRooms       sync.Map
 	nextConnection      atomic.Uint64
 	stopping            atomic.Bool
+	// shutdownDrain makes the context Shutdown's drain of the rooms runs under, its drain budget
+	// (ShutdownDrainBudget) long: context.WithTimeout, set in New. Tests replace it, as they
+	// replace now, to read the budget the drain was given and to end the drain themselves.
+	shutdownDrain func(ctx context.Context, budget time.Duration) (context.Context, context.CancelFunc)
 	// quiescing holds off every settlement while Quiesce empties the rooms, so a timer that
 	// fires mid-quiesce cannot re-arm the room Quiesce just closed.
 	quiescing atomic.Bool
@@ -943,6 +947,7 @@ func New(deps Deps) *Service {
 		roomCap:           roomCap,
 		connectionCap:     connectionCap,
 		maxPendingItems:   maxUpdateItems,
+		shutdownDrain:     context.WithTimeout,
 	}
 	service.catchUps = newRoomCatchUps(service)
 	service.roomSyncSender = newRoomSyncSender(service)
@@ -1239,7 +1244,7 @@ func (s *Service) Shutdown(ctx context.Context) error {
 		return true
 	})
 	s.stopAllSettleTimers()
-	drainCtx, cancelDrain := context.WithTimeout(ctx, ShutdownDrainBudget)
+	drainCtx, cancelDrain := s.shutdownDrain(ctx, ShutdownDrainBudget)
 	defer cancelDrain()
 	rooms := make([]string, 0, len(loaded))
 	for _, room := range loaded {

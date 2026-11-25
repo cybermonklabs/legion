@@ -240,6 +240,13 @@ func TestShutdownSettlesEveryOtherRoomWhileOneRoomsQueuedAppendIsHeld(t *testing
 // connected before the scan is the only writer that can land a genuinely new append afterward.
 // The barrier on service.shuttingDown makes that ordering deterministic rather than a race the
 // goroutine scheduler happens to win (LEGION-501).
+//
+// The drain is the row's own (shutdownDrain): the row reads the budget Shutdown gave it and never
+// ends it, so the appends are held for as long as the row needs and no verdict reads a wall
+// clock. The row once held both appends 7 s by the wall clock inside the real 9 s budget, which
+// left the machine 2 s for the second append, the settlement's read, render and commit; under
+// -race beside the package's parallel tests on a 4-vCPU runner that ran the budget out
+// (envoy-go-race-docs job 139551254095).
 func TestShutdownSettlesABurstOfAppendsIncludingOneRecordedAfterItsScan(t *testing.T) {
 	t.Parallel()
 	database := storetest.Open(t)
@@ -272,35 +279,52 @@ func TestShutdownSettlesABurstOfAppendsIncludingOneRecordedAfterItsScan(t *testi
 		t.Fatal(err)
 	}
 
-	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 20*time.Second)
+	budgets := make(chan time.Duration, 1)
+	service.shutdownDrain = func(ctx context.Context, budget time.Duration) (context.Context, context.CancelFunc) {
+		budgets <- budget
+		return context.WithCancel(ctx)
+	}
+	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), roomWait(t))
 	defer cancelShutdown()
 	shutdown := make(chan error, 1)
 	go func() { shutdown <- service.Shutdown(shutdownCtx) }()
-	waitFor(t, 10*time.Second, "Shutdown to have scanned the room", func() bool {
+	waitFor(t, roomWait(t), "Shutdown to have scanned the room", func() bool {
 		return service.shuttingDown(artifactID)
 	})
+	// The budget a burst still landing when Shutdown begins has room in: 9 s, 5 s short of
+	// cmd/dispatch's documentShutdownTimeout, where the drain once had 5 s.
+	select {
+	case budget := <-budgets:
+		if budget != 9*time.Second {
+			t.Errorf("Shutdown gave its drain %v, want 9s", budget)
+		}
+	case <-time.After(roomWait(t)):
+		t.Fatal("Shutdown made no drain")
+	}
 
 	// Only now, deterministically after the scan, does a second write land - the already-connected
 	// editor's own keystroke, which Shutdown's inject refusal never reaches.
 	typeOver(t, editor, "first", "second")
-	waitFor(t, 10*time.Second, "both appends to be recorded as outstanding", func() bool {
+	waitFor(t, roomWait(t), "both appends to be recorded as outstanding", func() bool {
 		return service.room(artifactID).durableAppends.Load() >= 2
 	})
-	// Both appends stay queued past the pre-fix 5 s drain budget, and land with time to spare
-	// inside the 9 s per-room budget this round widened it to.
-	time.Sleep(7 * time.Second)
 	first.let()
 	select {
 	case <-second.entered:
-	case <-time.After(10 * time.Second):
+	case <-time.After(roomWait(t)):
 		t.Fatal("the second append never reached the store once the first let go")
+	}
+	select {
+	case err := <-shutdown:
+		t.Fatalf("Shutdown returned %v while the second append was still held", err)
+	default:
 	}
 	second.let()
 
 	var shutdownErr error
 	select {
 	case shutdownErr = <-shutdown:
-	case <-time.After(10 * time.Second):
+	case <-time.After(roomWait(t)):
 		t.Fatal("Shutdown did not return once both appends landed")
 	}
 	if shutdownErr != nil {
