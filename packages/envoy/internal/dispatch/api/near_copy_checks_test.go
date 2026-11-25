@@ -116,8 +116,9 @@ func TestNearCopyChecksRecordEveryAnswerOfTheGate(t *testing.T) {
 		t.Fatalf("refused row = %+v", refused)
 	}
 	if one := nearCopyCheckOf(t, handler, refused.ID); one.Spec == nil || *one.Spec != duplicateSpecAstrolabe ||
-		one.ID != refused.ID || one.Outcome != nearCopyRefused {
-		t.Fatalf("refused row read by id = %+v, want it with the spec it refused", one)
+		one.ID != refused.ID || one.Outcome != nearCopyRefused || one.ReadMS == nil ||
+		*one.ReadMS != *refused.ReadMS || deref(one.ReadStage) != nearCopyStageScore {
+		t.Fatalf("refused row read by id = %+v, want it with the spec it refused and the page's read time and step", one)
 	}
 	if one := nearCopyCheckOf(t, handler, page.Checks[3].ID); one.Spec != nil || one.Issue == nil || *one.Issue != plain.Key {
 		t.Fatalf("passed row read by id = %+v, want %s and no spec, which its issue holds", one, plain.Key)

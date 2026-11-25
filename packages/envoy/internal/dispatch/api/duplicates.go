@@ -276,9 +276,10 @@ type duplicateGateResult struct {
 	// Candidates are the project's open non-ancestor issues whose score reaches
 	// duplicateNudgeScore, best score first, at most duplicateCandidateLimit.
 	Candidates []scoredDuplicate
-	// ReadMS is how long the read took, from its start to its answer or its end, and ReadStage
-	// the step it was in at that moment (nearCopyReadStage), as near_copy_checks.read_ms and
-	// read_stage record them: with NotMade, where a read that did not answer was waiting.
+	// ReadMS is how long the create waited on the read, from the gate's start until the read
+	// returned, its transaction's rollback included, and ReadStage the step the read was in when
+	// it answered or ended (nearCopyReadStage), as near_copy_checks.read_ms and read_stage record
+	// them: with NotMade, the step where a read that did not answer was waiting.
 	ReadMS    *int
 	ReadStage string
 }

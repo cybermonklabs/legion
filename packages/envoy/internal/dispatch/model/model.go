@@ -1139,12 +1139,14 @@ type RelatedCheckTiming struct {
 // for a refusal. Candidates are the candidates the gate read at or above NudgeScore, at most
 // five, best score first, with each one's title as it then stood; RefuseScore and NudgeScore are
 // the bars the build read them against, and BuildCommit is the legion commit it was built from,
-// null for a build nothing stamped. ReadMS is how long the gate's read took, in milliseconds, to
-// its answer or its end, and ReadStage the step it was in then: connect (taking a pool connection
-// and opening the read transaction), terms (picking the new text's rarest words), keys (reading
-// the lexemes the project's issue keys give) or score (scoring the project's open issues, which
-// every answered read ends in); a row whose reason is bound or failed says by them where its read
-// was waiting. Both are null together on a row written before Dispatch recorded them.
+// null for a build nothing stamped. ReadMS is how long the create waited on the gate's read, in
+// milliseconds, from the gate's start until the read returned, its transaction's rollback
+// included, and ReadStage the step the read was in when it answered or ended: connect (taking a
+// pool connection and opening the read transaction), terms (picking the new text's rarest words),
+// keys (reading the lexemes the project's issue keys give) or score (scoring the project's open
+// issues, which every answered read ends in); a row whose reason is bound or failed says by them
+// at which step its read was waiting. Both are null together on a row written before Dispatch
+// recorded them.
 type NearCopyCheck struct {
 	ID          string                   `json:"id"`
 	CreatedAt   time.Time                `json:"created_at"`
