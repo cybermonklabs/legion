@@ -1,7 +1,6 @@
 package bus
 
 import (
-	"context"
 	"errors"
 	"strconv"
 	"strings"
@@ -11,6 +10,7 @@ import (
 	"github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // leaderReadBucket opens bucket on a connection of its own and answers the server's URL with it,
@@ -114,8 +114,8 @@ func TestTheLeaderReadSendsTheStreamMessageGetWhereGetSendsTheDirectGet(t *testi
 		t.Errorf("Get(%s) sent %s too, want the direct get alone", key, sent.Subject)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	// No span of its own: an answer can come late on a loaded machine with nothing wrong.
+	ctx := testwait.Context(t)
 	if _, err := kv.GetFromLeader(ctx, key); err != nil {
 		t.Fatalf("GetFromLeader(%s): %v", key, err)
 	}
@@ -142,8 +142,8 @@ func TestTheLeaderReadAnswersAKeyAsGetDoes(t *testing.T) {
 	t.Parallel()
 	const bucket = "kv_leader_answers"
 	_, kv := leaderReadBucket(t, bucket)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	// No span of its own: an answer can come late on a loaded machine with nothing wrong.
+	ctx := testwait.Context(t)
 
 	revision, err := kv.Put("ses_live", []byte("live"))
 	if err != nil {
@@ -206,8 +206,7 @@ func TestTheLeaderLatestReadAnswersAKeyAsGetLatestDoes(t *testing.T) {
 	t.Parallel()
 	const bucket = "kv_leader_latest"
 	_, kv := leaderReadBucket(t, bucket)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 
 	if _, err := kv.Put("ses_live", []byte("live")); err != nil {
 		t.Fatalf("put ses_live: %v", err)
@@ -257,8 +256,8 @@ func TestTheNewestLeaderReadAnswersAMarkerAtTheSequenceItIsStoredAt(t *testing.T
 	const bucket = "kv_leader_newest"
 	_, kv := leaderReadBucket(t, bucket)
 	conn := kv.Streams().Conn()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	// No span of its own: an answer can come late on a loaded machine with nothing wrong.
+	ctx := testwait.Context(t)
 
 	put, err := kv.Put("ses_live", []byte("live"))
 	if err != nil {

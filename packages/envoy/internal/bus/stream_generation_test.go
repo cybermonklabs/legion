@@ -17,7 +17,9 @@ import (
 const generationKey = "dispatch.stream-generation"
 
 // rawJetStream is a JetStream context on a plain connection to url, which ensures nothing: the
-// test plays another build's process with it.
+// test plays another build's process with it. Its requests have no span of their own, since an
+// answer can come late on a loaded machine with nothing wrong: they end at the test binary's
+// deadline (testnats.MaxWait).
 func rawJetStream(t *testing.T, url string) nats.JetStreamContext {
 	t.Helper()
 	conn, err := nats.Connect(url, nats.Timeout(5*time.Second))
@@ -25,7 +27,7 @@ func rawJetStream(t *testing.T, url string) nats.JetStreamContext {
 		t.Fatalf("connect: %v", err)
 	}
 	t.Cleanup(conn.Close)
-	js, err := conn.JetStream(nats.MaxWait(10 * time.Second))
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("open JetStream: %v", err)
 	}

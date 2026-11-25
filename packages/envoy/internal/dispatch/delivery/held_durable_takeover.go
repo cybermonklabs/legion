@@ -7,7 +7,6 @@ package delivery
 import (
 	"context"
 	"errors"
-	"log/slog"
 	"time"
 
 	natsgo "github.com/nats-io/nats.go"
@@ -43,7 +42,7 @@ func (d *heldDurable) readDurable(ctx context.Context) (*natsgo.ConsumerInfo, er
 		if !errors.Is(err, bus.ErrRequestLostWithConnection) || !d.holds() {
 			return info, err
 		}
-		slog.Info("dispatch delivery: the NATS consumer read was lost with its connection; reading it again", "name", d.name)
+		d.tuning.log.Info("dispatch delivery: the NATS consumer read was lost with its connection; reading it again", "name", d.name)
 	}
 }
 
@@ -82,7 +81,7 @@ func (d *heldDurable) takeOver(ctx context.Context) {
 			create = startingAt(wanted, d.recorded.start)
 		}
 	case err != nil:
-		slog.Error("dispatch delivery: look up NATS consumer", "name", name, "error", err)
+		d.tuning.log.Error("dispatch delivery: look up NATS consumer", "name", name, "error", err)
 		return
 	case d.boundElsewhere(info):
 		return
@@ -93,7 +92,7 @@ func (d *heldDurable) takeOver(ctx context.Context) {
 		}
 		pending := intakeHoldToken{subject: d.recorded.subject, start: create.OptStartSeq}
 		if err := d.hold.SetToken(ctx, pending.String()); err != nil {
-			slog.Error("dispatch delivery: record the take-over's start before deleting NATS consumer", "name", name, "start_seq", create.OptStartSeq, "error", err)
+			d.tuning.log.Error("dispatch delivery: record the take-over's start before deleting NATS consumer", "name", name, "start_seq", create.OptStartSeq, "error", err)
 			return
 		}
 		d.recorded = pending
@@ -228,7 +227,7 @@ func (d *heldDurable) finishTakeOver(create natsgo.ConsumerConfig, deleteFirst b
 		return
 	}
 	d.recorded, d.subject = bound, create.DeliverSubject
-	slog.Info("dispatch delivery: NATS consumer bound", "name", d.name, "subject", create.FilterSubject,
+	d.tuning.log.Info("dispatch delivery: NATS consumer bound", "name", d.name, "subject", create.FilterSubject,
 		"start_seq", create.OptStartSeq, "generation", bus.MetadataGeneration(create.Metadata, consumerGenerationKey))
 	if d.boundHook != nil {
 		d.boundHook()
@@ -273,7 +272,7 @@ func (d *heldDurable) retryHeld(finish context.Context, doing string, step func(
 		if errors.Is(err, bus.ErrRequestLostWithConnection) {
 			retryIn = 0
 		}
-		slog.Warn("dispatch delivery: take-over step failed; trying it again", "name", d.name, "step", doing, "retry_in", retryIn, "error", err)
+		d.tuning.log.Warn("dispatch delivery: take-over step failed; trying it again", "name", d.name, "step", doing, "retry_in", retryIn, "error", err)
 		timer := time.NewTimer(retryIn)
 		select {
 		case <-finish.Done():
@@ -290,6 +289,6 @@ func (d *heldDurable) retryHeld(finish context.Context, doing string, step func(
 // failedStep logs the take-over step retryHeld gave up on at ERROR, as "dispatch delivery: " and
 // doing, with the durable's name, the caller's own attributes and err, and answers err.
 func (d *heldDurable) failedStep(doing string, err error, attributes []any) error {
-	slog.Error("dispatch delivery: "+doing, append(append([]any{"name", d.name}, attributes...), "error", err)...)
+	d.tuning.log.Error("dispatch delivery: "+doing, append(append([]any{"name", d.name}, attributes...), "error", err)...)
 	return err
 }

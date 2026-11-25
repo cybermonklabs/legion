@@ -14,6 +14,7 @@ import (
 	"github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A stored-message read returns the first message at or after its sequence on a subject its filter
@@ -37,8 +38,8 @@ func TestNextStoredMessageReadsByFilterAfterASequence(t *testing.T) {
 	publish("notifications.dispatch.issue.KEY-1.ask.opened", `{"n":1}`)
 	publish("notifications.agent.ses_a", `{"n":2}`)
 	third := publish("notifications.dispatch.issue.KEY-1.ask.answered", `{"n":3}`)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	// No span of its own: an answer can come late on a loaded machine with nothing wrong.
+	ctx := testwait.Context(t)
 
 	stored, err := client.NextStoredMessage(ctx, "notifications.dispatch.issue.KEY-1.>", 2)
 	if err != nil {
@@ -106,8 +107,8 @@ func TestARequestCoreCarriesItsHeaderAndReadsTheThreeAnswers(t *testing.T) {
 		t.Fatalf("flush the subscriptions: %v", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	// No span of its own: an answer can come late on a loaded machine with nothing wrong.
+	ctx := testwait.Context(t)
 	reply := SessionReplySubject(nats.NewInbox(), "ses_answers")
 	if _, err := client.RequestCore(ctx, DeliverSubject("ses_answers"), reply, probeHeader); err != nil {
 		t.Fatalf("request to a subscriber that answers = %v, want its reply", err)
@@ -150,8 +151,8 @@ func TestARequestCoreAllocatesNoSubscriptionChannelOfTheDefaultSize(t *testing.T
 	const requests = 64
 	perRequest := func(request func(ctx context.Context) error) uint64 {
 		t.Helper()
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
+		// No span of its own: an answer can come late on a loaded machine with nothing wrong.
+		ctx := testwait.Context(t)
 		if err := request(ctx); err != nil {
 			t.Fatalf("warm-up request: %v", err)
 		}

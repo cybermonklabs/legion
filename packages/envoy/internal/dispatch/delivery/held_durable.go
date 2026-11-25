@@ -178,10 +178,10 @@ type bindThrottle struct {
 	standbyReason string
 }
 
-// reportStandby logs message at INFO -- this durable is not this process's to deliver from yet,
-// for the reason message names -- unless this intake logged that same message within
-// standbyLogEvery.
-func (t *bindThrottle) reportStandby(name, message string) {
+// reportStandby logs message at INFO to logger, the intake's -- this durable is not this
+// process's to deliver from yet, for the reason message names -- unless this intake logged that
+// same message within standbyLogEvery.
+func (t *bindThrottle) reportStandby(logger *slog.Logger, name, message string) {
 	t.mu.Lock()
 	if t.standbyReason == message && time.Since(t.standby) < standbyLogEvery {
 		t.mu.Unlock()
@@ -189,7 +189,7 @@ func (t *bindThrottle) reportStandby(name, message string) {
 	}
 	t.standby, t.standbyReason = time.Now(), message
 	t.mu.Unlock()
-	slog.Info(message, "name", name)
+	logger.Info(message, "name", name)
 }
 
 // heldDurable is one intake's delivery from its durable, which it does only while it holds the
@@ -367,7 +367,7 @@ func (d *heldDurable) run(ctx context.Context, wake func() <-chan struct{}, read
 		case <-checks.C:
 			d.check(ctx)
 		case <-lost:
-			slog.Warn(intakeHoldLost, "name", d.name)
+			d.tuning.log.Warn(intakeHoldLost, "name", d.name)
 			// The hold lasts intakeHoldMargin longer on the database's clock, so a handler that
 			// finishes within it finished while the hold still held; the rest are given up,
 			// since another process may take the hold from that moment. The delivery's loss
@@ -433,11 +433,11 @@ func (d *heldDurable) takeHold(ctx context.Context) (left time.Duration) {
 	switch {
 	case err != nil:
 		if ctx.Err() == nil {
-			slog.Error("dispatch delivery: read the intake's hold", "name", d.name, "hold", holdName, "error", err)
+			d.tuning.log.Error("dispatch delivery: read the intake's hold", "name", d.name, "hold", holdName, "error", err)
 		}
 		return 0
 	case left > 0:
-		d.throttle.reportStandby(d.name, heldElsewhere)
+		d.throttle.reportStandby(d.tuning.log, d.name, heldElsewhere)
 		return left
 	}
 	hold, err := duty.TryHold(bounded, d.leases, holdName, d.holder, duty.HoldOptions{
@@ -445,16 +445,16 @@ func (d *heldDurable) takeHold(ctx context.Context) (left time.Duration) {
 	})
 	if err != nil {
 		if ctx.Err() == nil {
-			slog.Error("dispatch delivery: take the intake's hold", "name", d.name, "hold", holdName, "error", err)
+			d.tuning.log.Error("dispatch delivery: take the intake's hold", "name", d.name, "hold", holdName, "error", err)
 		}
 		return 0
 	}
 	if hold == nil {
-		d.throttle.reportStandby(d.name, heldElsewhere)
+		d.throttle.reportStandby(d.tuning.log, d.name, heldElsewhere)
 		return 0
 	}
 	d.hold, d.settled, d.recorded = hold, new(atomic.Bool), parseIntakeHoldToken(token)
-	slog.Info("dispatch delivery: took the intake's hold", "name", d.name, "hold", holdName)
+	d.tuning.log.Info("dispatch delivery: took the intake's hold", "name", d.name, "hold", holdName)
 	return 0
 }
 
@@ -465,7 +465,7 @@ func (d *heldDurable) boundElsewhere(info *natsgo.ConsumerInfo) bool {
 	if !info.PushBound || info.Config.DeliverSubject == d.recorded.subject {
 		return false
 	}
-	d.throttle.reportStandby(info.Config.Durable, "dispatch delivery: NATS consumer bound to a process that holds no hold; standing by until it lets go")
+	d.throttle.reportStandby(d.tuning.log, info.Config.Durable, "dispatch delivery: NATS consumer bound to a process that holds no hold; standing by until it lets go")
 	return true
 }
 
@@ -495,7 +495,7 @@ func (d *heldDurable) check(ctx context.Context) {
 	case info.Config.DeliverSubject == d.subject:
 		return
 	}
-	slog.Warn(durableDeliversElsewhere, "name", d.name)
+	d.tuning.log.Warn(durableDeliversElsewhere, "name", d.name)
 	// The durable's messages are the next holder's from here, so a handler still running after
 	// the renewal interval is given up rather than left to write what that holder writes too.
 	d.stopDeliveringWithin(intakeHoldRenew)
@@ -543,7 +543,7 @@ func (d *heldDurable) stop(ctx context.Context) {
 		// Another holder may act once the row lapses, and there is no hold left to keep. The
 		// delivery's loss watcher severs what may still reach NATS (watchLoss).
 	default:
-		slog.Warn(intakeHoldFinalizing, "name", d.name)
+		d.tuning.log.Warn(intakeHoldFinalizing, "name", d.name)
 		d.finalizers.Add(1)
 		go func() {
 			defer d.finalizers.Done()
@@ -621,7 +621,7 @@ const intakeHandBacksSevered = "dispatch delivery: the intake's hold is lost wit
 // the hand-backs named stay outstanding, and the next holder's take-over recreates the durable at
 // its ack floor and is handed them once (takeOverConfig).
 func (d *heldDurable) severHandBacks() {
-	slog.Warn(intakeHandBacksSevered, "name", d.name)
+	d.tuning.log.Warn(intakeHandBacksSevered, "name", d.name)
 	d.nats.Sever()
 }
 
@@ -743,7 +743,7 @@ func (d *heldDurable) releaseHold(hold *duty.Hold, lapse bool) {
 	releasing, cancel := context.WithTimeout(context.Background(), intakeHoldRenew)
 	defer cancel()
 	if err := release(releasing); err != nil {
-		slog.Error("dispatch delivery: release the intake's hold", "name", d.name, "error", err)
+		d.tuning.log.Error("dispatch delivery: release the intake's hold", "name", d.name, "error", err)
 	}
 }
 

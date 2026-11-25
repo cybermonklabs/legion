@@ -184,16 +184,56 @@ func pullSession(t *testing.T, consumers *SessionConsumers, sessionID string) *S
 	return pull
 }
 
-// next returns the next message pull holds within 5 s.
+// next returns the next message pull holds. The wait has no span of its own, since the hand-over
+// can come late on a loaded machine with nothing wrong: it ends at the test binary's deadline.
 func next(t *testing.T, pull *SessionPull) SessionMessage {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	msg, err := pull.Next(ctx)
+	msg, err := pull.Next(testwait.Context(t))
 	if err != nil {
 		t.Fatalf("next message: %v", err)
 	}
 	return msg
+}
+
+// nextBefore returns the next message pull holds, and fails the row naming why if none comes
+// before end. A row that requires a message back by its own cause -- a nak, a shortened ack wait
+// -- rather than by the consumer's ack wait passes end from beforeAckWait. The server sends a
+// message nobody answered again once its ack wait has passed since it delivered it, as delivery 2,
+// the same count a nak gives, so only this bound tells the two apart; a read bounded by the test's
+// deadline alone takes the ack wait's redelivery as the nak's.
+func nextBefore(t *testing.T, pull *SessionPull, end time.Time, why string) SessionMessage {
+	t.Helper()
+	ctx, cancel := context.WithDeadline(testwait.Context(t), end)
+	defer cancel()
+	msg, err := pull.Next(ctx)
+	if err != nil {
+		t.Fatalf("next message %s: %v", why, err)
+	}
+	return msg
+}
+
+// beforeAckWait is the end nextBefore takes for a message delivered after this call: half of
+// ackWait from now. The server cannot send that message again on its ack wait before ackWait from
+// its delivery, which comes after this call, so a message back by then came back by the row's own
+// cause, and a redelivery on the ack wait misses the end by half an ack wait, not by a timer's
+// latency.
+func beforeAckWait(ackWait time.Duration) time.Time {
+	return time.Now().Add(ackWait / 2)
+}
+
+// requireAckWait requires the consumer of sessionID to carry want as its ack wait, for a row
+// whose redelivery is meant to come on a shortened one. Its read waits until the test's deadline
+// (forgedWait): a read with no deadline of its own takes the product's storedMessageWait, 10 s
+// (requestConfirmed), which a slow answer on a loaded machine outlasts with nothing wrong.
+func requireAckWait(t *testing.T, consumers *SessionConsumers, sessionID string, want time.Duration) {
+	t.Helper()
+	info, err := consumers.Info(forgedWait(t), sessionID)
+	if err != nil {
+		t.Fatalf("info: %v", err)
+	}
+	if info.Config.AckWait != want {
+		t.Fatalf("the consumer of %s carries an ack wait of %s, want %s", sessionID, info.Config.AckWait, want)
+	}
 }
 
 // requireNoMessage requires pull to hold no message for window.
@@ -560,6 +600,10 @@ func TestAMessageWhoseAckWaitPassedStillAwaitsAnAck(t *testing.T) {
 	if _, err := consumers.Ensure(ctx, session, filters, 0); err != nil {
 		t.Fatalf("ensure: %v", err)
 	}
+	// The redelivery the row reads below as the ack wait's own comes a second after the delivery
+	// only on the ack wait the row set; on the default it would come a minute later, which that
+	// read, bounded only by the test's deadline, would take as this one.
+	requireAckWait(t, consumers, session, consumers.ackWait)
 	unanswered := publishStored(t, owner, agent, "never answered")
 	pull := pullSession(t, consumers, session)
 	if msg := next(t, pull); msg.StreamSeq != unanswered || msg.Delivered != 1 {
@@ -941,7 +985,10 @@ func TestEnsureAddsAFilterAtTheConsumersPosition(t *testing.T) {
 }
 
 // InProgress restarts a message's ack wait: a message kept in progress past several ack waits is
-// not delivered again, and once InProgress stops it is, a wait later.
+// not delivered again, and once InProgress stops it is, a wait later. The consumer must carry the
+// shortened ack wait the row sets (requireAckWait): on the default SessionConsumerAckWait, the
+// redelivery after InProgress stops would come a minute later, which the read below, bounded only
+// by the test's deadline, would take as this one.
 func TestInProgressExtendsTheAckWait(t *testing.T) {
 	owner, consumers := sessionConsumersOnStream(t)
 	consumers.ackWait = 2 * time.Second
@@ -951,6 +998,7 @@ func TestInProgressExtendsTheAckWait(t *testing.T) {
 	if _, err := consumers.Ensure(ctx, session, []string{agent}, 0); err != nil {
 		t.Fatalf("ensure: %v", err)
 	}
+	requireAckWait(t, consumers, session, consumers.ackWait)
 	seq := publishStored(t, owner, agent, "held")
 	pull := pullSession(t, consumers, session)
 	msg := next(t, pull)
@@ -969,7 +1017,9 @@ func TestInProgressExtendsTheAckWait(t *testing.T) {
 	}
 }
 
-// A NAK with a delay has the message delivered again once the delay has passed.
+// A NAK with a delay has the message delivered again once the delay has passed, by the nak and not
+// by the consumer's own ack wait, which the row tells apart by reading it before half that ack
+// wait has passed (nextBefore). It does not time the delay: a nak that asked 20 s would pass too.
 func TestNakWithDelayRedelivers(t *testing.T) {
 	t.Parallel()
 	owner, consumers := sessionConsumersOnStream(t)
@@ -980,11 +1030,12 @@ func TestNakWithDelayRedelivers(t *testing.T) {
 		t.Fatalf("ensure: %v", err)
 	}
 	seq := publishStored(t, owner, agent, "refused")
+	end := beforeAckWait(consumers.ackWait)
 	pull := pullSession(t, consumers, session)
 	if err := next(t, pull).NakWithDelay(200 * time.Millisecond); err != nil {
 		t.Fatalf("nak: %v", err)
 	}
-	if again := next(t, pull); again.StreamSeq != seq || again.Delivered != 2 {
+	if again := nextBefore(t, pull, end, "after the NAK, before the ack wait could send it again"); again.StreamSeq != seq || again.Delivered != 2 {
 		t.Fatalf("after the NAK got seq %d delivery %d, want %d delivery 2", again.StreamSeq, again.Delivered, seq)
 	}
 }
@@ -1062,17 +1113,19 @@ func waitForAckPending(t *testing.T, consumers *SessionConsumers, sessionID stri
 	return info
 }
 
-// Release gives the server back, at once, every message the pull holds that its caller never
-// read: the next pull of that consumer is delivered both of them straight away, each as a second
-// delivery, rather than after SessionConsumerAckWait. Stop in its place drops them, and the next
-// pull waits out that ack wait for them. A returned message is still awaiting an ack -- a nak
-// schedules a redelivery, it does not undo the delivery it answers -- so the consumer holds
-// nothing for an ack only once the next owner has taken and acked them, which is the state this
-// row ends on. The order the two come back in is the server's, not this row's to assert: with no
-// pull request that still has interest, the server's first redelivery attempt puts that message
-// behind the other in its redelivery queue. A relay's next owner is pulling by then, and one that
-// is not restarts the consumer at its ack floor (RestartAtFloor), which is where stream order
-// comes from.
+// Release gives the server back every message the pull holds that its caller never read, by a nak
+// with no delay: the next pull of that consumer is delivered both of them, each as a second
+// delivery, by that nak and not after SessionConsumerAckWait, which the row tells apart by reading
+// them before half that ack wait has passed (nextBefore). It proves the nak returned them, not how
+// soon the server acted on it: a nak that asked a delay under that half, 20 s say, passes too.
+// Stop in its place drops them, and the next pull waits out that ack wait for them. A returned
+// message is still awaiting an ack -- a nak schedules a redelivery, it does not undo the delivery
+// it answers -- so the consumer holds nothing for an ack only once the next owner has taken and
+// acked them, which is the state this row ends on. The order the two come back in is the server's,
+// not this row's to assert: with no pull request that still has interest, the server's first
+// redelivery attempt puts that message behind the other in its redelivery queue. A relay's next
+// owner is pulling by then, and one that is not restarts the consumer at its ack floor
+// (RestartAtFloor), which is where stream order comes from.
 func TestReleaseReturnsTheMessagesThePullHoldsUnread(t *testing.T) {
 	t.Parallel()
 	owner, consumers := sessionConsumersOnStream(t)
@@ -1086,6 +1139,7 @@ func TestReleaseReturnsTheMessagesThePullHoldsUnread(t *testing.T) {
 	for i := range 3 {
 		stored = append(stored, publishStored(t, owner, agent, strconv.Itoa(i)))
 	}
+	end := beforeAckWait(consumers.ackWait)
 	pull := pullSession(t, consumers, session)
 	first := next(t, pull)
 	if first.StreamSeq != stored[0] {
@@ -1104,7 +1158,7 @@ func TestReleaseReturnsTheMessagesThePullHoldsUnread(t *testing.T) {
 	again := pullSession(t, consumers, session)
 	back := map[uint64]uint64{}
 	for range stored[1:] {
-		msg := next(t, again)
+		msg := nextBefore(t, again, end, "returned by Release, before the ack wait could send it again")
 		back[msg.StreamSeq] = msg.Delivered
 		if err := msg.Ack(); err != nil {
 			t.Fatalf("ack %d: %v", msg.StreamSeq, err)
@@ -1202,9 +1256,8 @@ func TestSessionsWithoutAConsumer(t *testing.T) {
 	}
 	// A pull reads nothing before it starts: its first Next reports the consumer missing.
 	pull := pullSession(t, consumers, "ses_absent")
-	nextCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	if msg, err := pull.Next(nextCtx); !errors.Is(err, ErrSessionConsumerNotFound) {
+	// No span of its own: an answer can come late on a loaded machine with nothing wrong.
+	if msg, err := pull.Next(testwait.Context(t)); !errors.Is(err, ErrSessionConsumerNotFound) {
 		t.Fatalf("Next of a pull of a missing consumer = %+v, %v, want ErrSessionConsumerNotFound", msg, err)
 	}
 	if _, err := consumers.Ensure(ctx, "ses.dotted", []string{"notifications.agent.ses.dotted"}, 0); !errors.Is(err, ErrNoSessionConsumerName) {
