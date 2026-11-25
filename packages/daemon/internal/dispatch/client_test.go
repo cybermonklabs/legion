@@ -536,7 +536,7 @@ func TestAnUploadOverATokenNamesItAndAStaleTokenAnswersTheTokenThatStands(t *tes
 		}
 	}))
 	defer server.Close()
-	client := New(server.URL, dispatchToken)
+	client := New(server.URL, BearerTransport(dispatchToken, nil))
 	ctx := context.Background()
 
 	read, err := client.ArtifactToken(ctx, "LEGION-5", "close-wait-md")
