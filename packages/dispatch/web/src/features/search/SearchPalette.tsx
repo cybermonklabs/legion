@@ -101,6 +101,7 @@ import {
   searchOperators,
   searchResultKind,
   snippetFromSentence,
+  snippetStartsLater,
   snippetWasCut,
   snippetWithoutDirectives,
   stepActive,
@@ -395,7 +396,8 @@ function ItemRow({
  *  of a Proof directive the window cut is taken out of its text (`snippetWithoutDirectives`; rule
  *  1, no marker text), and a window the server began on the tail of a sentence starts at the next
  *  sentence's first word (`snippetFromSentence`). A snippet the server cut out of a longer text
- *  ends with "…" (`snippetWasCut`). */
+ *  ends with "…" (`snippetWasCut`), and begins with one where it starts later than that text
+ *  (`snippetStartsLater`). */
 function ResultOption({
   active,
   onSelect,
@@ -428,10 +430,12 @@ function ResultOption({
   const cut = snippetWasCut(source);
   // The same tree, and so the same drawing, on every render of the row: a tree cut anew each
   // time would paint the snippet again on each.
-  const snippetTree = useMemo(() => {
+  const snippet = useMemo(() => {
     const drawn = snippetWithoutDirectives(result.snippet_tree);
-    return cut ? snippetFromSentence(drawn) : drawn;
-  }, [cut, result.snippet_tree]);
+    if (!cut) return { later: false, tree: drawn };
+    const tree = snippetFromSentence(drawn);
+    return { later: snippetStartsLater(drawn, tree, source), tree };
+  }, [cut, result.snippet_tree, source]);
   // A delete takes the post's windows with its body, so a deleted post is no hit once the
   // delete commits. The mark is the backstop for a hit of one all the same, whose snippet is
   // empty: the deleted line stands where the snippet would, as it does in the referenced-by
@@ -487,11 +491,12 @@ function ResultOption({
                 <MarkdownPreview
                   className={`min-w-0 flex-1 ${textMutedOnSurface}`}
                   highlightClassName={highlight}
+                  lead={snippet.later ? "…" : undefined}
                   lines={1}
                   links="text"
                   markdown={withoutDirectiveSyntax(source)}
                   trail={cut ? "…" : undefined}
-                  tree={snippetTree}
+                  tree={snippet.tree}
                 />
               ) : (
                 <DeletedBody className="min-w-0 flex-1 text-xs" deleted={deleted} />
@@ -1491,8 +1496,19 @@ function PaletteDialog({
                 </p>
               ) : null}
               {rows.length === 0 ? null : (
+                // The list keeps one row's height (5rem), but never more than the frame holds
+                // under the box: the frame clips, so a list that reaches past it cuts the foot
+                // of the row the arrows bring to the list's foot. That room is the window's
+                // height less the frame's place above and below it, its two borders, and the
+                // box's part: its padding (`p-3`), its row, and the rule under it. From `xl` the
+                // frame stands at `top-20` and `bottom-4` and the row is the input's (`py-2` and
+                // a `text-sm` line) and its frame's two borders: 9.75rem and 5 px. Below `xl`
+                // (1280 px, where `styles.css` floors every button and input at 44 px) the frame
+                // stands at `top-12` and the row is 44 px and those two borders: 4.5rem and
+                // 49 px. At 1440x240 and at 1279x200 that room is 79 px, where 5rem reached 1 px
+                // past the clip and a 44 px row showed 43 px of itself.
                 <div
-                  className="max-h-[60vh] min-h-20 flex-1 overflow-y-auto"
+                  className="max-h-[60vh] min-h-[min(5rem,calc(100dvh-4.5rem-49px))] flex-1 overflow-y-auto xl:min-h-[min(5rem,calc(100dvh-9.75rem-5px))]"
                   id="search-results"
                   ref={listRef}
                   role="listbox"

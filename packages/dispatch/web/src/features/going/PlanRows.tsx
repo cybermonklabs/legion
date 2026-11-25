@@ -46,7 +46,7 @@ import {
   textPrimaryOnSurface,
   textSecondaryOnSurface,
 } from "../../theme/classes";
-import { changedWords } from "../doc/change-set";
+import { changedWords, type WordPart } from "../doc/change-set";
 import { AssigneeEditor } from "../issue/AssigneeControl";
 import { IssueLabels } from "../issue/IssueLabels";
 import { issuePriority } from "../issue/issue-priority";
@@ -72,6 +72,7 @@ import {
   documentChange,
   documentNaming,
   editedDraft,
+  editPreview,
   fieldWords,
   irreversibleWords,
   type LabelMark,
@@ -279,11 +280,9 @@ export function usePlanDraft(plan: GoingPlanAnswer | undefined): PlanDraft | und
   return draft;
 }
 
-/** The words of one change marked as a diff marks them (`changedWords`): those taken out struck
- *  through in red, those put in in green, the rest as they are. Each pair is diffed once, within
- *  the bound `changedWords` keeps. */
-function MarkedWords({ added, removed }: ChangePiece): ReactNode {
-  const parts = useMemo(() => changedWords(removed, added), [removed, added]);
+/** Word runs marked as a diff marks them: those taken out struck through in red, those put in in
+ *  green, the rest as they are. */
+function MarkedParts({ parts }: { readonly parts: readonly WordPart[] }): ReactNode {
   return parts.map((part, index) => {
     const Mark = part.kind === "added" ? "ins" : part.kind === "removed" ? "del" : "span";
     const marked =
@@ -299,6 +298,13 @@ function MarkedWords({ added, removed }: ChangePiece): ReactNode {
       </Mark>
     );
   });
+}
+
+/** The words of one change marked as a diff marks them (`changedWords`, `MarkedParts`). Each
+ *  pair is diffed once, within the bound `changedWords` keeps. */
+function MarkedWords({ added, removed }: ChangePiece): ReactNode {
+  const parts = useMemo(() => changedWords(removed, added), [removed, added]);
+  return <MarkedParts parts={parts} />;
 }
 
 /** One piece of a document change, its words out and in marked as a diff marks them. */
@@ -320,28 +326,51 @@ const INLINE_BODY_MAX = 160;
 /**
  * An edit of a post's body (review a3), drawn as VS Code's inline diff draws a change: the body
  * once, the words the edit takes out struck through in red and the words it puts in in green,
- * the rest as they are, so the change is read and not hunted for between two copies. A long body
- * - more than one line, or past `INLINE_BODY_MAX` - reads as the first two or three sentences of
- * what the edit writes, with its diff under them, closed, as a document's text change does (R4).
+ * the rest as they are, so the change is read and not hunted for between two copies; then the
+ * line's Edit and "Edited" (`trailing`). A long body - more than one line, or past
+ * `INLINE_BODY_MAX` - reads as two or three of its sentences with the words the edit changes
+ * marked the same way (`editPreview`, review m1), and its whole diff under them, closed, as a
+ * document's text change has (R4); its Edit and "Edited" stand on the diff's line, as an Edit
+ * stands on the line of what it edits in every other row (review m2).
  */
-function BodyDiff({ next, now }: { readonly next: string; readonly now: string }): ReactNode {
+function BodyDiff({
+  next,
+  now,
+  trailing,
+}: {
+  readonly next: string;
+  readonly now: string;
+  readonly trailing: ReactNode;
+}): ReactNode {
   const long = [now, next].some((body) => body.includes("\n") || body.length > INLINE_BODY_MAX);
+  const preview = useMemo(() => (long ? editPreview(now, next) : []), [long, now, next]);
   if (!long) {
     return (
-      <span className="whitespace-pre-wrap break-words" data-testid="going-plan-body-diff">
-        <MarkedWords added={next} removed={now} />
-      </span>
+      <>
+        <span className={textSecondaryOnSurface} data-testid="going-plan-next">
+          <span className="whitespace-pre-wrap break-words" data-testid="going-plan-body-diff">
+            <MarkedWords added={next} removed={now} />
+          </span>
+        </span>
+        {trailing}
+      </>
     );
   }
   return (
-    <span className="block w-full space-y-1" data-testid="going-plan-body-diff">
-      <span className="block" data-testid="going-plan-sentences">
-        {specSentences(next)}
+    <span className={`block w-full ${textSecondaryOnSurface}`} data-testid="going-plan-next">
+      <span className="block space-y-1" data-testid="going-plan-body-diff">
+        <span className="block break-words" data-testid="going-plan-sentences">
+          <MarkedParts parts={preview} />
+        </span>
+        {/* The diff gives way to Edit, so an open diff keeps Edit on its line too. */}
+        <span className="flex items-baseline gap-x-2">
+          <details className="min-w-0" data-testid="going-plan-diff">
+            <summary className={`cursor-pointer text-xs ${textMutedOnSurface}`}>The diff</summary>
+            <PieceDiff piece={{ added: next, removed: now }} />
+          </details>
+          {trailing}
+        </span>
       </span>
-      <details data-testid="going-plan-diff">
-        <summary className={`cursor-pointer text-xs ${textMutedOnSurface}`}>The diff</summary>
-        <PieceDiff piece={{ added: next, removed: now }} />
-      </details>
     </span>
   );
 }
@@ -523,6 +552,35 @@ function FieldChange({
     setEditing(false);
   };
   const nextValue = <FieldValue against={now} field={field} newIssues={shown} value={next} />;
+  // A post's body that is not being edited is drawn with its line's Edit and "Edited" in it, where
+  // its length puts them (`BodyDiff`); every other value has them after it.
+  const inBody = shape === "diff" && !editing;
+  const trailing = (
+    <>
+      {lineEdit && !editing ? (
+        <>
+          {" "}
+          <button
+            aria-label={`Edit ${named}`}
+            className={secondaryButtonCompact}
+            data-plan-edit=""
+            onClick={() => setEditing(true)}
+            type="button"
+          >
+            Edit
+          </button>
+        </>
+      ) : null}
+      {change.edited ? (
+        <>
+          {" "}
+          <span className={`font-medium ${textMutedOnSurface}`} data-testid="going-plan-edited">
+            Edited
+          </span>
+        </>
+      ) : null}
+    </>
+  );
   let value: ReactNode;
   if (edit === "priority" && (editing || (!lineEdit && next !== null))) {
     value = (
@@ -633,12 +691,8 @@ function FieldChange({
         )}
       </>
     );
-  } else if (shape === "diff") {
-    value = (
-      <span className={textSecondaryOnSurface} data-testid="going-plan-next">
-        <BodyDiff next={textOf(next)} now={textOf(now)} />
-      </span>
-    );
+  } else if (inBody) {
+    value = <BodyDiff next={textOf(next)} now={textOf(now)} trailing={trailing} />;
   } else {
     value = (
       <span className={textPrimaryOnSurface} data-testid="going-plan-next">
@@ -668,28 +722,7 @@ function FieldChange({
         </>
       ) : null}
       {value}
-      {lineEdit && !editing ? (
-        <>
-          {" "}
-          <button
-            aria-label={`Edit ${named}`}
-            className={secondaryButtonCompact}
-            data-plan-edit=""
-            onClick={() => setEditing(true)}
-            type="button"
-          >
-            Edit
-          </button>
-        </>
-      ) : null}
-      {change.edited ? (
-        <>
-          {" "}
-          <span className={`font-medium ${textMutedOnSurface}`} data-testid="going-plan-edited">
-            Edited
-          </span>
-        </>
-      ) : null}
+      {inBody ? null : trailing}
     </div>
   );
 }
@@ -1721,7 +1754,15 @@ export function PlanCard({
               >
                 {covered.length} more <span aria-hidden="true">↓</span>
               </button>
-              {final === "" ? null : ` · includes ${final} that cannot be undone`}
+              {final === "" ? null : (
+                // "↓" keeps room on its right that the words keep none of on their left, about
+                // 4 px in the shots, so the words keep it as padding and the "·" stands as far
+                // from the arrow as from them (review m4, as N5 did for the notice).
+                <>
+                  {" · "}
+                  <span className="pl-1">includes {final} that cannot be undone</span>
+                </>
+              )}
             </p>
           )}
           <PlanControls answering={answering} draft={draft} enterApproves />

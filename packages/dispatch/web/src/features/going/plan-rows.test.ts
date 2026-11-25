@@ -9,6 +9,7 @@ import {
   cardTitle,
   changeLabel,
   documentNaming,
+  editPreview,
   fieldWords,
   irreversibleWords,
   keptValue,
@@ -668,6 +669,47 @@ test("a new issue's spec shows as its first two or three sentences, in plain wor
   ).toBe("The dome splits in two. Each half turns alone. The motor stays.");
   const long = `${"A".repeat(200)}. ${"B".repeat(150)}. Short.`;
   expect(specSentences(long)).toBe(`${"A".repeat(200)}.`);
+});
+
+// The preview of a long edit of a post's body (review m1): two or three of its sentences, its
+// lines run together, with the words the edit takes out and puts in marked, so the person reads
+// what changes without opening the diff. A change of several words reads as one run out and one
+// in. A change past the body's first sentences shows from the sentence that holds it, led by
+// "…", and a sentence too long for the preview shows from a few words before the change.
+test("a long edit's preview marks the words it takes out and puts in, in the sentences that hold them", () => {
+  const rails =
+    "Wipe its rails with a dry cloth after each night of use.\n\nTighten the four bolts at both ends of the track once a month, and replace the felt strip when it frays.";
+  expect(editPreview(rails, rails.replace("once a month", "every two weeks"))).toEqual([
+    {
+      kind: "same",
+      value:
+        "Wipe its rails with a dry cloth after each night of use. Tighten the four bolts at both ends of the track ",
+    },
+    { kind: "removed", value: "once a month" },
+    { kind: "added", value: "every two weeks" },
+    { kind: "same", value: ", and replace the felt strip when it frays." },
+  ]);
+
+  const dome =
+    "The dome turns by hand. Its crank sits by the door. Its rails need oil. The shutter opens at dusk. It shuts at dawn. Nothing else moves. It stays that way.";
+  expect(editPreview(dome, dome.replace("at dusk", "at noon"))).toEqual([
+    { kind: "same", value: "…" },
+    { kind: "same", value: "The shutter opens at " },
+    { kind: "removed", value: "dusk" },
+    { kind: "added", value: "noon" },
+    { kind: "same", value: ". It shuts at dawn. Nothing else moves." },
+    { kind: "same", value: "…" },
+  ]);
+
+  const unbroken = Array.from({ length: 90 }, (_, index) => `w${index}`).join(" ");
+  const cut = editPreview(unbroken, unbroken.replace("w70", "x70"));
+  expect(cut.filter((part) => part.kind !== "same")).toEqual([
+    { kind: "removed", value: "w70" },
+    { kind: "added", value: "x70" },
+  ]);
+  expect(cut[0]).toEqual({ kind: "same", value: "…" });
+  expect(cut[1]?.value).toMatch(/^w\d+ /u);
+  expect(cut.at(-1)).toEqual({ kind: "same", value: "…" });
 });
 
 test("a row whose item changed after the plan showed is unticked once for each change, with what needs it", () => {

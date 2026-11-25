@@ -309,6 +309,35 @@ export function snippetFromSentence(tree: DisplayTree | undefined): DisplayTree 
   return started === undefined ? tree : (started as DisplayTree);
 }
 
+/** The first text a snippet's tree draws, where it has one. */
+function firstText(node: TreeNode): string | undefined {
+  if (node.type === "text") return node.text ?? "";
+  for (const child of node.content ?? []) {
+    const text = firstText(child);
+    if (text !== undefined) return text;
+  }
+  return undefined;
+}
+
+/**
+ * Whether a cut snippet starts later than the text the server cut it from, which its row then
+ * begins with "…" (review m5), as a cut end ends with one (`snippetWasCut`): where
+ * `snippetFromSentence` took the tail of a sentence off its head (`started` is not `drawn`), or
+ * where its line starts on a small letter, inside a sentence, where the server's window began.
+ * `words`, the snippet's plain text, stands for a snippet that came with no tree. A window that
+ * began on a sentence's first word inside the text reads as the text's start: the hit carries no
+ * offset that tells the two apart.
+ */
+export function snippetStartsLater(
+  drawn: DisplayTree | undefined,
+  started: DisplayTree | undefined,
+  words: string
+): boolean {
+  if (started !== drawn) return true;
+  const head = started === undefined ? words : firstText(started as TreeNode);
+  return /^\p{Ll}/u.test((head ?? "").trimStart());
+}
+
 /** How many words a hit's snippet holds where the server's headline cut its body to the
  *  headline's window: `pmdoc.SearchSnippetWords` (`packages/envoy/internal/dispatch/pmdoc/
  *  fragment.go`; `headlineOptions` in `api/search.go`, MaxWords=24). A body that fits the window

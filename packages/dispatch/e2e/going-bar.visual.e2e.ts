@@ -762,7 +762,8 @@ const barRows: readonly BarRow[] = [
       const { dome, mount, project, shutter } = seed.bar;
       // Sharing no word with any row's search, so no comment is a hit of one: state 13's shot
       // draws the hits of its words. Two are short; the third is long enough to fold, so its edit
-      // reads as its first sentences with its diff closed under them (review a3).
+      // reads as its first sentences, the words it changes marked, with its diff closed under them
+      // and Edit on the diff's line (reviews a3, m1 and m2).
       const hingeNow = "Oil its hinge every week.";
       const hingeNext = "Oil its hinge every month.";
       const latchNow = "Its latch rattles in wind.";
@@ -842,7 +843,8 @@ const barRows: readonly BarRow[] = [
       // row's own login (`drawState`; review a3). The short edit shows its body once, the words
       // it changes marked as a diff marks them; the delete shows the words it takes out, struck
       // through, and that a delete cannot be undone. Both stand in view under the question. The
-      // long edit reads as the first sentences of what it writes, its diff folded under them.
+      // long edit reads as the first sentences of what it writes, "once a month" struck and
+      // "every two weeks" marked in them, its diff folded under them (review m1).
       const postRows = planCard(page).locator('[data-testid="going-plan-row"][data-kind="post"]');
       const longEdit = postRows.nth(2);
       const postRowsDrawn = async (): Promise<void> => {
@@ -872,6 +874,9 @@ const barRows: readonly BarRow[] = [
         await expect(longEdit.getByTestId("going-plan-sentences")).toHaveText(
           /^Wipe its rails with a dry cloth after each night of use\. /u
         );
+        const preview = longEdit.getByTestId("going-plan-sentences");
+        await expect(preview.locator("del")).toHaveText("once a month");
+        await expect(preview.locator("ins")).toHaveText("every two weeks");
         await expect(longEdit.getByTestId("going-plan-diff")).toHaveJSProperty("open", false);
       };
       await openTheBar(page, seed);

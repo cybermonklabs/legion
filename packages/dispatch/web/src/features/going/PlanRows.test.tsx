@@ -910,9 +910,11 @@ test("post rows name the author and the issue, show an edit's body as an inline 
 });
 
 // A comment the signed-in person wrote reads "your comment", never "the comment by <their own
-// login>" (review a3). A body too long for one line reads as the first sentences of what the
-// edit writes, with its diff folded under them, as a document's text change does (R4).
-test("an edit of the signed-in person's own comment says your comment, and a long body folds its diff", async () => {
+// login>" (review a3). A body too long for one line reads as two or three of its sentences, the
+// words the edit takes out struck and the words it puts in marked as the short row marks them
+// (review m1), with its whole diff folded under them, as a document's text change does (R4), and
+// its Edit on the diff's line, as an Edit stands on the line of what it edits (review m2).
+test("an edit of the signed-in person's own comment says your comment, and a long body marks its changed words above its folded diff, with Edit on the diff's line", async () => {
   const signedIn = spyOn(api, "whoAmI").mockResolvedValue({
     event_head: "0",
     kind: "user",
@@ -946,14 +948,21 @@ test("an edit of the signed-in person's own comment says your comment, and a lon
     );
 
     const long = fieldOf(drawnRow(0), "body");
-    expect(within(long).getByTestId("going-plan-sentences")).toHaveTextContent(
-      /^The window is 72 hours\./u
+    const preview = within(long).getByTestId("going-plan-sentences");
+    expect(preview).toHaveTextContent(
+      /^The window is 2472 hours\. It starts when the plan is approved\. The window is 24 hours\.…$/u
     );
+    expect([...preview.querySelectorAll("del")].map((part) => part.textContent)).toEqual(["24"]);
+    expect([...preview.querySelectorAll("ins")].map((part) => part.textContent)).toEqual(["72"]);
     const folded = within(long).getByTestId("going-plan-diff");
     expect(folded.tagName).toBe("DETAILS");
     expect(folded).not.toHaveAttribute("open");
     expect(folded.querySelector("del")?.textContent).toBe("24");
     expect(folded.querySelector("ins")?.textContent).toBe("72");
+    // Edit stands beside the diff's summary, on its line, and outside the fold.
+    const edit = within(long).getByRole("button", { name: "Edit body" });
+    expect(edit.parentElement).toBe(folded.parentElement);
+    expect(folded.contains(edit)).toBe(false);
   } finally {
     restore();
     signedIn.mockRestore();

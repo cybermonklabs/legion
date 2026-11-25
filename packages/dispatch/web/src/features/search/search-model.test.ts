@@ -11,6 +11,7 @@ import {
   optionId,
   ownerWords,
   snippetFromSentence,
+  snippetStartsLater,
   snippetWasCut,
   snippetWithoutDirectives,
   stepActive,
@@ -217,6 +218,30 @@ test("a cut snippet that begins on a sentence's tail starts at the next sentence
     expect(snippetFromSentence(kept)).toBe(kept);
   }
   expect(snippetFromSentence(undefined)).toBeUndefined();
+});
+
+// A cut snippet that starts later than the text it was cut from says so: its row begins with "…"
+// (review m5), as a cut end ends with one. It starts later where `snippetFromSentence` took a
+// sentence's tail off its head, or where the server's window began inside a sentence, which its
+// small first letter shows; a snippet that starts on a sentence's first word starts as it does.
+test("a cut snippet that starts past its text's start begins with …, and one that starts a sentence does not", () => {
+  const paragraph = (...content: object[]): DisplayTree =>
+    ({ content: [{ content, type: "paragraph" }], type: "doc" }) as DisplayTree;
+  const tail = paragraph({ text: "table. A page is read once it is drawn", type: "text" });
+  expect(snippetStartsLater(tail, snippetFromSentence(tail), "")).toBe(true);
+  const inside = paragraph(
+    { text: "the page is read once ", type: "text" },
+    { marks: [{ type: "searchHighlight" }], text: "drawn", type: "text" }
+  );
+  expect(snippetFromSentence(inside)).toBe(inside);
+  expect(snippetStartsLater(inside, inside, "")).toBe(true);
+  expect(snippetStartsLater(undefined, undefined, "  the page is read once it is drawn")).toBe(
+    true
+  );
+
+  const whole = paragraph({ text: "A page is read once it is drawn", type: "text" });
+  expect(snippetStartsLater(whole, snippetFromSentence(whole), "")).toBe(false);
+  expect(snippetStartsLater(undefined, undefined, "A page is read once it is drawn")).toBe(false);
 });
 
 // The server's headline cuts a body longer than its window to 24 words, and hands a shorter body

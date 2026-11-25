@@ -9,6 +9,7 @@ import type {
   GoingUndoLine,
   IssueDetails,
 } from "../../api/types";
+import { changedWords, type WordPart } from "../doc/change-set";
 import { issuePriority } from "../issue/issue-priority";
 import { PROPERTY_LABELS } from "../issue-page/page-structure";
 import { CONTROL_LABELS, issueStatusWord } from "../issue-page/page-words";
@@ -1282,6 +1283,137 @@ export function specSentences(spec: string): string {
 export interface ChangePiece {
   readonly removed: string;
   readonly added: string;
+}
+
+/** A run between two changes that holds nothing but space. */
+const ONLY_SPACE = /^\s+$/u;
+
+/**
+ * The changes of an edit as `changedWords` finds them, with changes that only spaces part joined
+ * into one run taken out and one put in: "~~once a month~~every two weeks", which reads as the
+ * one edit it is, rather than "~~once~~every ~~a~~two ~~month~~weeks", which reads as three. The
+ * spaces between two joined changes stay on each side that holds words on both sides of them.
+ */
+function joinedChanges(parts: readonly WordPart[]): WordPart[] {
+  const joined: WordPart[] = [];
+  let out = "";
+  let into = "";
+  let space = "";
+  let outGap = "";
+  let intoGap = "";
+  const flush = () => {
+    if (out !== "") joined.push({ kind: "removed", value: out });
+    if (into !== "") joined.push({ kind: "added", value: into });
+    if (space !== "") joined.push({ kind: "same", value: space });
+    out = "";
+    into = "";
+    space = "";
+    outGap = "";
+    intoGap = "";
+  };
+  for (const part of parts) {
+    if (part.kind === "same") {
+      if ((out !== "" || into !== "") && ONLY_SPACE.test(part.value)) {
+        space += part.value;
+        continue;
+      }
+      flush();
+      joined.push(part);
+      continue;
+    }
+    outGap += space;
+    intoGap += space;
+    space = "";
+    if (part.kind === "removed") {
+      out += (out === "" ? "" : outGap) + part.value;
+      outGap = "";
+    } else {
+      into += (into === "" ? "" : intoGap) + part.value;
+      intoGap = "";
+    }
+  }
+  flush();
+  return joined;
+}
+
+/** Where each sentence of `text` ends: after its full stop, question mark or exclamation mark and
+ *  any closing quote or bracket, where a space or the text's end comes next; and at its end. */
+function sentenceEnds(text: string): number[] {
+  const ends = [...text.matchAll(/[.!?]+["'’”)\]]*(?=\s|$)/gu)].map(
+    (stop) => stop.index + stop[0].length
+  );
+  if (ends.at(-1) !== text.length) ends.push(text.length);
+  return ends;
+}
+
+/** How many characters before an edit's first change the preview of a sentence too long for it
+ *  starts: the few words that place the change in its sentence. */
+const PREVIEW_LEAD = 40;
+
+/**
+ * The preview of a long edit of a post's body (review m1): two or three of its sentences, its
+ * lines run together, the words the edit takes out struck and the words it puts in marked, as the
+ * diff folded under it marks them (`changedWords`), so the person reads what changes without
+ * opening the diff. They are the body's first sentences where those hold the edit's first change
+ * and fit `SPEC_SENTENCES_MAX`, as a new issue's spec shows (`specSentences`); else the sentence
+ * that holds it and those after it, led by "…"; a sentence too long for the preview shows from
+ * `PREVIEW_LEAD` characters before the change. A preview that stops before the body ends ends
+ * with "…". Changes that only spaces part read as one run out and one in (`joinedChanges`).
+ */
+export function editPreview(now: string, next: string): WordPart[] {
+  const parts = joinedChanges(changedWords(now, next)).map((part) => ({
+    kind: part.kind,
+    value: part.value.replace(/\s+/gu, " "),
+  }));
+  const text = parts.map((part) => part.value).join("");
+  const ends = sentenceEnds(text);
+  const starts = [0, ...ends.slice(0, -1)];
+  const changeAt = parts.findIndex((part) => part.kind !== "same");
+  const first =
+    changeAt === -1
+      ? 0
+      : parts.slice(0, changeAt).reduce((length, part) => length + part.value.length, 0);
+  const held = Math.max(
+    0,
+    ends.findIndex((end) => end > first)
+  );
+  const span = (from: number, to: number): readonly [number, number] => [
+    starts[from] ?? 0,
+    ends[Math.min(to, ends.length) - 1] ?? text.length,
+  ];
+  const windows = [
+    ...(held < 3 ? [span(0, 3)] : []),
+    ...(held < 2 ? [span(0, 2)] : []),
+    span(held, held + 3),
+    span(held, held + 2),
+    span(held, held + 1),
+  ];
+  // A sentence too long for the preview: from the word `PREVIEW_LEAD` characters before the
+  // change, to the last whole word the preview's length holds.
+  const lead = Math.max(
+    starts[held] ?? 0,
+    text.lastIndexOf(" ", Math.max(0, first - PREVIEW_LEAD)) + 1
+  );
+  const stop = text.lastIndexOf(" ", lead + SPEC_SENTENCES_MAX);
+  const [from, to] = windows.find(
+    ([start, end]) => text.slice(start, end).trim().length <= SPEC_SENTENCES_MAX
+  ) ?? [lead, Math.min(ends[held] ?? text.length, stop > first ? stop : lead + SPEC_SENTENCES_MAX)];
+  const shown: WordPart[] = [];
+  let at = 0;
+  for (const part of parts) {
+    const start = Math.max(from, at);
+    const end = Math.min(to, at + part.value.length);
+    if (start < end) shown.push({ kind: part.kind, value: part.value.slice(start - at, end - at) });
+    at += part.value.length;
+  }
+  const head = shown[0];
+  if (head !== undefined) head.value = head.value.trimStart();
+  const last = shown.at(-1);
+  if (last !== undefined) last.value = last.value.trimEnd();
+  const preview = shown.filter((part) => part.value !== "");
+  if (text.slice(0, from).trim() !== "") preview.unshift({ kind: "same", value: "…" });
+  if (text.slice(to).trim() !== "") preview.push({ kind: "same", value: "…" });
+  return preview;
 }
 
 /** A change of a document's text, as the plan shows it first: two or three sentences that say what

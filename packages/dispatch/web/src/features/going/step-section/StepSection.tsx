@@ -44,7 +44,7 @@ import {
   textMutedOnSurface,
   textSecondaryOnSurface,
 } from "../../../theme/classes";
-import { TimedWords } from "../../refs/dispatch-time";
+import { TimedWords, timeWords } from "../../refs/dispatch-time";
 import { buildReferencePath } from "../../refs/routes";
 import type { RunStep } from "../run-frames";
 
@@ -453,29 +453,37 @@ function StepList({
   const newest = more > 0 || !callRuns ? undefined : steps.at(-1)?.id;
   return (
     <div className="space-y-0.5" data-testid="going-steps">
-      {headed(steps).map((group) => (
-        <div className="space-y-0.5" key={group.first}>
-          {group.header === "" ? null : (
-            // Once every call of the run ended, the header is in the past tense (`pastHeader`),
-            // so it does not read as work still going on.
-            <p
-              className={`truncate text-[13px] ${textMutedOnSurface}`}
-              data-testid="going-step-words"
-            >
-              <TimedWords
-                text={
-                  group.steps.some((step) => step.running) ? group.header : pastHeader(group.header)
-                }
-              />
-            </p>
-          )}
-          <ol aria-label="Steps" className={`space-y-0.5 ${group.header === "" ? "" : "pl-3"}`}>
-            {group.steps.map((step) => (
-              <StepLine key={step.id} since={step.id === newest ? since : undefined} step={step} />
-            ))}
-          </ol>
-        </div>
-      ))}
+      {headed(steps).map((group) => {
+        // Once every call of the run ended, the header is in the past tense (`pastHeader`), so it
+        // does not read as work still going on.
+        const header = group.steps.some((step) => step.running)
+          ? group.header
+          : pastHeader(group.header);
+        return (
+          <div className="space-y-0.5" key={group.first}>
+            {group.header === "" ? null : (
+              // The line is cut where the row is narrower than it, and keeps its whole words, as
+              // the page shows them, on hover (review m6).
+              <p
+                className={`truncate text-[13px] ${textMutedOnSurface}`}
+                data-testid="going-step-words"
+                title={timeWords(header)}
+              >
+                <TimedWords text={header} />
+              </p>
+            )}
+            <ol aria-label="Steps" className={`space-y-0.5 ${group.header === "" ? "" : "pl-3"}`}>
+              {group.steps.map((step) => (
+                <StepLine
+                  key={step.id}
+                  since={step.id === newest ? since : undefined}
+                  step={step}
+                />
+              ))}
+            </ol>
+          </div>
+        );
+      })}
       {more === 0 ? null : (
         <p
           className={`flex items-baseline gap-2 text-[13px] ${textSecondaryOnSurface}`}

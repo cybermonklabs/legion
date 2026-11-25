@@ -187,6 +187,28 @@ test("while a call runs, its header keeps the words the model wrote, and no Thin
   expect(screen.getAllByTestId("going-step-timer")).toHaveLength(1);
 });
 
+// A header too long for its row is cut at the row's edge (`truncate`), so it keeps its whole
+// words on hover (review m6): its title holds them as the page shows them, with a time the model
+// wrote in the words the line draws it in.
+test("a long header keeps its whole words in its title, a time in the words the page shows", () => {
+  const words =
+    "Reading every issue of the telescope's mount, its spec and its comments since 5 days ago, to find the one that orders the motor";
+  const header = words.replace("5 days ago", "[5 days ago](dispatch-time:2026-11-20T11:35:00Z)");
+  render(
+    <StepSection
+      folded={false}
+      live
+      since={Date.now()}
+      steps={[{ ...running(3, "Reading DEMO-4"), header }]}
+      workedMs={undefined}
+    />
+  );
+  const line = screen.getByTestId("going-step-words");
+  expect(line.className).toContain("truncate");
+  expect(line).toHaveAttribute("title", words);
+  expect(line.textContent).toBe(words);
+});
+
 // Rule 2: a step is in the present tense while it runs and in the past tense once it ends, and so
 // is the header the model wrote over its calls (review M5): its first word, a verb in "-ing", takes
 // its past form, regular or not, and a header that starts any other way keeps its words.

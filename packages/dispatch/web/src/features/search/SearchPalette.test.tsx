@@ -348,14 +348,18 @@ test("a document hit's snippet shows no directive fence or attributes a cut wind
 
 // A snippet the server cut out of a longer text ends with "…" (review R4, 13-filing-line): the
 // headline's window is 24 words, so a snippet that wide stopped mid-phrase at the row's edge with
-// nothing to say so, and a shorter one is the whole text and ends as it does. The issue's status
-// stands in a column of its own beside both of the hit's lines, so the snippet's line stops
-// before it rather than running on under it.
-test("a snippet the server cut ends with …, a whole one ends as its text does, and the status keeps a column of its own", async () => {
+// nothing to say so, and a shorter one is the whole text and ends as it does. A cut snippet whose
+// window began inside a sentence begins with "…" too (review m5), and one that begins on a
+// sentence's first word begins as it does. The issue's status stands in a column of its own
+// beside both of the hit's lines, so the snippet's line stops before it rather than running on
+// under it.
+test("a snippet the server cut ends with …, begins with … where it starts inside a sentence, a whole one ends as its text does, and the status keeps a column of its own", async () => {
   await warmMarkdownRenderer();
   const user = userOnFakeClock();
   const cut =
     "Draw each page and read it against the design before the next one is drawn so that no page of the set is left";
+  const inside =
+    "each page and read it against the design before the next one is drawn so that no page of the set is left unread";
   const whole = "Read each page against the design.";
   const hit = (id: string, text: string): SearchResult => ({
     artifact: { name: "plan.md", slug: "plan" },
@@ -367,16 +371,20 @@ test("a snippet the server cut ends with …, a whole one ends as its text does,
     snippet: text.replace("page", "<mark>page</mark>"),
   });
   const search = spyOn(api, "search").mockResolvedValue(
-    searchAnswer([hit("document-cut", cut), hit("document-whole", whole)])
+    searchAnswer([
+      hit("document-cut", cut),
+      hit("document-whole", whole),
+      hit("document-inside", inside),
+    ])
   );
   const view = renderPalette();
   try {
     await searchFor(user, "page");
-    const [cutHit, wholeHit] = within(
+    const [cutHit, wholeHit, insideHit] = within(
       screen.getByRole("group", { name: "Documents" })
     ).getAllByRole("option");
-    if (cutHit === undefined || wholeHit === undefined) {
-      throw new Error("the bar lists no two document hits");
+    if (cutHit === undefined || wholeHit === undefined || insideHit === undefined) {
+      throw new Error("the bar lists no three document hits");
     }
     const drawn = (option: HTMLElement): string =>
       within(option)
@@ -386,6 +394,7 @@ test("a snippet the server cut ends with …, a whole one ends as its text does,
         .trim() ?? "";
     await waitFor(() => expect(drawn(cutHit)).toBe(`${cut}…`));
     await waitFor(() => expect(drawn(wholeHit)).toBe(whole));
+    await waitFor(() => expect(drawn(insideHit)).toBe(`…${inside}…`));
     expect(within(cutHit).getByText("page", { selector: "mark" })).toBeTruthy();
 
     const status = within(cutHit).getByTestId("search-hit-status");
