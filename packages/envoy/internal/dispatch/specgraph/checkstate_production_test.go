@@ -186,6 +186,31 @@ func programResult(q Check, kind ResultKind, outcome Outcome, testCommit string,
 	return r
 }
 
+// passReadAnotherSubject is the change of a row of TestCheckState: q, a program check of
+// production or of the graph, with C's tie, and one pass of its test at c1 that read the deploy d1
+// or the transaction tx2; subject c2 under deploy d2 at tx1, where c2 differs from c1 outside the
+// tie, so the test of the pass is the test at c2 and what the pass read is not the subject; a run
+// of q's job that ended at c2; and, with refused, CI's refusal of q at c1.
+func passReadAnotherSubject(q Check, refused bool) func(c *checkCase) {
+	return func(c *checkCase) {
+		c.add(q)
+		c.tieLikeC(q.ID)
+		c.commit("c2", "c1", "docs/x.md")
+		c.Subject = Point{Commit: "c2", Deploy: "d2", GraphTx: "tx1"}
+		pass := programResult(q, ResultRun, OutcomePass, "c1", time.Hour)
+		if q.Subject == SubjectGraph {
+			pass.GraphTx = "tx2"
+		} else {
+			pass.Deploy = "d1"
+		}
+		c.Results = append(c.Results, pass)
+		c.JobRuns = []JobRun{{Job: q.Test.Job, Commit: "c2", Ended: true}}
+		if refused {
+			c.Uncited = map[string]map[string]string{"c1": {q.ID: "test-not-in-code"}}
+		}
+	}
+}
+
 // productionRun is a run of a production check under deploy, recorded at at.
 func productionRun(c Check, deploy string, outcome Outcome, at time.Time) Result {
 	r := Result{Check: c.ID, Kind: ResultRun, Outcome: outcome, Deploy: deploy, At: at}

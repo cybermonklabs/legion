@@ -621,6 +621,19 @@ func TestCheckState(t *testing.T) {
 			c.programPass(checkStateProductionProgram, "c2", "c2")
 			c.Results = append(c.Results, programResult(checkStateProductionProgram, ResultRun, OutcomeFail, "c1", 2*time.Hour))
 		}, want: CheckState{ID: checkStateProductionProgram.ID, State: "false", Reason: "failed", From: "d2"}},
+		// uncited at a subject names a refusal that took out a result that would count there (step
+		// 2). A pass of the test of c1 that read the deploy d1, or the transaction tx2, never counts
+		// at the subject under d2 at tx1, so CI's refusal at c1 takes out no result that counts
+		// there, and the run of the job that ended at c2 with no result that counts reads ci_fault
+		// (R9), with the refusal as without it.
+		{name: "R48, a refusal of a program check of production at the commit of the test of a pass under another deploy: the job that ended at c2 reads ci_fault",
+			change: passReadAnotherSubject(checkStateProductionProgram, true), want: CheckState{ID: checkStateProductionProgram.ID, State: "unknown", Reason: "ci_fault"}},
+		{name: "control: with no refusal, a pass of a program check of production under another deploy counts nowhere, and the job that ended at c2 reads ci_fault",
+			change: passReadAnotherSubject(checkStateProductionProgram, false), want: CheckState{ID: checkStateProductionProgram.ID, State: "unknown", Reason: "ci_fault"}},
+		{name: "R48, a refusal of a program check of the graph at the commit of the test of a pass at another transaction: the job that ended at c2 reads ci_fault",
+			change: passReadAnotherSubject(checkStateGraphProgram, true), want: CheckState{ID: checkStateGraphProgram.ID, State: "unknown", Reason: "ci_fault"}},
+		{name: "control: with no refusal, a pass of a program check of the graph at another transaction counts nowhere, and the job that ended at c2 reads ci_fault",
+			change: passReadAnotherSubject(checkStateGraphProgram, false), want: CheckState{ID: checkStateGraphProgram.ID, State: "unknown", Reason: "ci_fault"}},
 		// An agent or a query of the code counts its runs at their own commit alone, and its failing
 		// examples also at another commit, by C's rule for files (countsAtACommit): a refusal at c1
 		// takes out its caught failing example at c2, where it counts. With its pass at c1, no run

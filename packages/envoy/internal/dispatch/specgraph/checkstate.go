@@ -520,17 +520,25 @@ func (j *checkJudge) newestApproval(statement string) (string, time.Time) {
 	return newest, at
 }
 
-// countingRuns is the runs of c that count at the subject (step 4).
+// countingRuns is the runs of c that count at the subject (step 4; runCountsAt).
 func (j *checkJudge) countingRuns(c Check, runs []Result) []Result {
-	if countsAtACommit(c) {
-		runs = resultsWhere(runs, func(r Result) bool { return j.runCounts(c, resultCommit(r)) })
+	return resultsWhere(runs, func(r Result) bool { return j.runCountsAt(c, r) })
+}
+
+// runCountsAt is whether the run r of c counts at the subject (step 4): by the commit where its job
+// ran (runCounts), and for a check of production or of the graph by the deploy or the transaction
+// of the graph that it read too. countingRuns and withoutRefused read it alike, so a refusal marks
+// as counted only a run that would count.
+func (j *checkJudge) runCountsAt(c Check, r Result) bool {
+	if countsAtACommit(c) && !j.runCounts(c, resultCommit(r)) {
+		return false
 	}
 	if c.Subject == SubjectCode {
-		return runs
+		return true
 	}
 	s := j.in.Subject
 	subject := readOf(c, s.Commit, s.Deploy, s.GraphTx)
-	return resultsWhere(runs, func(r Result) bool { return subject != "" && readOf(c, r.Commit, r.Deploy, r.GraphTx) == subject })
+	return subject != "" && readOf(c, r.Commit, r.Deploy, r.GraphTx) == subject
 }
 
 // runCounts is whether a run of c, or a run of c's job, at commit counts at the subject by that
@@ -704,28 +712,28 @@ func (j *checkJudge) carries(check, commit string) bool {
 // withoutRefused takes out of runs and faults, the candidates of c, each result of a commit where
 // CI refused c that supports true (step 2; supportsTrue), a run by the commit where its job ran
 // (resultCommit) and a failing example by the commit that it counts from (faultCommit). refused is
-// whether a result taken out would have counted at the subject, and rule the least rule, by its
-// name, of those refusals. A check whose results count at no commit (countsAtACommit) keeps each
-// candidate.
+// whether a result taken out would have counted at the subject (runCountsAt for a run, carries for
+// a failing example), and rule the least rule, by its name, of those refusals. A check whose
+// results count at no commit (countsAtACommit) keeps each candidate.
 func (j *checkJudge) withoutRefused(c Check, runs, faults []Result) (rule string, refused bool, keptRuns, keptFaults []Result) {
 	if !countsAtACommit(c) {
 		return "", false, runs, faults
 	}
-	kept := func(commitOf func(Result) string, counts func(commit string) bool) func(Result) bool {
+	kept := func(commitOf func(Result) string, counts func(r Result, commit string) bool) func(Result) bool {
 		return func(r Result) bool {
 			commit := commitOf(r)
 			other, at := j.in.Uncited[commit][c.ID]
 			if !at || !supportsTrue(r) {
 				return true
 			}
-			if counts(commit) && (!refused || other < rule) {
+			if counts(r, commit) && (!refused || other < rule) {
 				rule, refused = other, true
 			}
 			return false
 		}
 	}
-	keptRuns = resultsWhere(runs, kept(resultCommit, func(commit string) bool { return j.runCounts(c, commit) }))
-	keptFaults = resultsWhere(faults, kept(func(r Result) string { return j.faultCommit(c, r) }, func(commit string) bool { return j.carries(c.ID, commit) }))
+	keptRuns = resultsWhere(runs, kept(resultCommit, func(r Result, _ string) bool { return j.runCountsAt(c, r) }))
+	keptFaults = resultsWhere(faults, kept(func(r Result) string { return j.faultCommit(c, r) }, func(_ Result, commit string) bool { return j.carries(c.ID, commit) }))
 	return rule, refused, keptRuns, keptFaults
 }
 
