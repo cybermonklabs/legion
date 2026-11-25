@@ -107,6 +107,9 @@ func TestVerifyMarkWaitsForTheBrowserUpdate(t *testing.T) {
 		t.Fatalf("VerifyMark = %q, %v", anchored.Quote, err)
 	}
 
+	// The looks around the wait cost what the machine gives them: here one takes longer than
+	// the bound below, as the package's parallel tests made them take on CI (job 138998017546).
+	service.afterReadWarm = func(string) { time.Sleep(1200 * time.Millisecond) }
 	started := time.Now()
 	if _, err := service.VerifyMark(context.Background(), artifactID, MarkComment, "never"); !errors.Is(err, ErrAnchorMissing) {
 		t.Fatalf("missing mark err = %v", err)
