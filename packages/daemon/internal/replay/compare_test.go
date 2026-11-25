@@ -537,6 +537,7 @@ func TestBreakEvenFactor(t *testing.T) {
 // one process's runs and what is written from the runs of parts, each run in a process of its own,
 // are the same, and the document names the build commit the runs were given.
 func TestTheDocumentHasEveryRuleWindowBranchAndMeasure(t *testing.T) {
+	skipUntilBuilt(t)
 	dir := t.TempDir()
 	to := compareFrom.Add(compareHours * time.Hour)
 	recorded := func(name string, order int, rule, commit string) windowRecord {

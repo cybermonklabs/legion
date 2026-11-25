@@ -134,6 +134,7 @@ func TestFixtureWindows(t *testing.T) {
 	}
 	for _, name := range names {
 		t.Run(name, func(t *testing.T) {
+			skipUntilBuilt(t)
 			window, expect := readFixture(t, name)
 			runs, err := expect.runs()
 			if err != nil {

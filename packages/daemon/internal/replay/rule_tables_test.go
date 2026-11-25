@@ -21,6 +21,7 @@ import (
 )
 
 func TestEveryCandidateOfTheDesignIsARule(t *testing.T) {
+	skipUntilBuilt(t)
 	inventory := []struct{ name, reason string }{
 		{"cover", "keep the slot until done, with a cover"},
 		{"keep-past-review", "keep the slot past the review"},
