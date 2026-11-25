@@ -18,8 +18,11 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"cloud.google.com/go/auth/credentials"
+
+	"github.com/sjawhar/envoy/internal/oauthrefusal"
 )
 
 // TestAnExternalAccountIdentityPrintsItsAudienceAndAccountOnlyWhereTheyAreWhatTheyName: an
@@ -214,6 +217,62 @@ func TestAnExternalAccountMintsFailureSaysWhatFailed(t *testing.T) {
 	}
 }
 
+// TestARefusalAtIAMCredentialsImpersonationNamesIt: the exchange's federated token of a credential
+// with a subject token file is spent at its service_account_impersonation_url, IAM Credentials'
+// generateAccessToken, and a refusal there names IAM Credentials, its status and its registered
+// code, and never the rest of its body, as it did before Google's library read the file.
+func TestARefusalAtIAMCredentialsImpersonationNamesIt(t *testing.T) {
+	const secret = "hunter2pw-impersonation-4be7"
+	sts, _ := federatedExchange(t)
+	impersonation := newRawServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"error":{"code":403,"message":"echo: ` + secret + `","status":"PERMISSION_DENIED"}}`))
+	})
+	iam, _ := accountIAM(t)
+	externalAccountFile(t, sts, "https://iamcredentials.googleapis.com")
+	source, _, err := externalAccountFor(testAudience)
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity := source.(*ExternalAccountIdentity)
+	identity.IAMCredentialsURL = iam
+	identity.HTTP = iamCredentialsAt(t, impersonation)
+	_, _, err = identity.Token(context.Background())
+	want := "mint an access token as robot@example.iam.gserviceaccount.com with the external_account credential " + credentialsFileVar +
+		" names: IAM Credentials: the server answered HTTP 403 PERMISSION_DENIED"
+	if err == nil || err.Error() != want {
+		t.Fatalf("Token: %v; want %q", err, want)
+	}
+}
+
+// TestOnlyTheLibrarysOwnQuoteIsReadAsAnAnswer: an X.509 certificate's exchange goes out on Google's
+// library's own client, which no refusal recorder wraps, so a refusal is read from the library's
+// error, and only where that error is, from its first word to its last, the library's quote of the
+// security token service's answer (libraryAnswer), over as many lines as the body runs. An error
+// worded otherwise, or one that quotes those words further in, prints as a request that failed and
+// never as an answer nobody recorded.
+func TestOnlyTheLibrarysOwnQuoteIsReadAsAnAnswer(t *testing.T) {
+	var fields credentialFields
+	fields.TokenURL = "https://sts.mtls.googleapis.com/v1/token"
+	fields.Source.Certificate = &certificateSource{}
+	for _, row := range []struct{ name, text, want string }{
+		{"the library's quote of a refusal", `credentials: status code 403: {"error":"access_denied","error_description":"echo"}`,
+			"Google's security token service: the server answered HTTP 403 access_denied"},
+		{"the library's quote of a body of many lines", "credentials: status code 400: {\n  \"error\": \"invalid_target\",\n  \"error_description\": \"echo\"\n}\n",
+			"Google's security token service: the server answered HTTP 400 invalid_target"},
+		{"another wording", `credentials: HTTP 403: {"error":"access_denied"}`, "the request failed"},
+		{"an error that quotes the library's words further in", `a certificate parse error containing credentials: status code 403: {"error":"access_denied"}`,
+			"the request failed"},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			if got := externalAccountFailure(fields, &oauthrefusal.Recorder{}, errors.New(row.text)); got != row.want {
+				t.Fatalf("externalAccountFailure(%q) = %q; want %q", row.text, got, row.want)
+			}
+		})
+	}
+}
+
 // externalAccountJSON is an external_account credential whose security token service is sts and
 // whose subject token comes from source, with no service account to act as.
 func externalAccountJSON(t *testing.T, sts string, source map[string]any) []byte {
@@ -305,23 +364,37 @@ func captureStderr(t *testing.T, fn func()) string {
 
 // TestAnExternalAccountMintPrintsNothingWhenGoogleLibrariesLog: GOOGLE_SDK_GO_LOGGING_LEVEL makes
 // Google's Go libraries log each request and answer with its body to stderr, which a session's
-// transcript keeps, and the exchange's request carries the subject token and its answer the
-// federated access token. A mint prints neither, whatever that variable says. Control: the
-// library's own mint of the same credential, with its default logger, prints both, so the probe
-// sees the library's log at this variable.
+// transcript keeps: the exchange's request carries the subject token and its answer the
+// federated access token, and the impersonation URL's request carries the federated access token
+// and its answer the account's. A mint prints none of them, whatever that variable says. Control:
+// the library's own mint of the same credential, with its default logger, prints each, so the
+// probe sees the library's log at this variable.
 func TestAnExternalAccountMintPrintsNothingWhenGoogleLibrariesLog(t *testing.T) {
 	const subjectToken = "subject-token-externallog-5d1e"
 	const federated = "federated-token-externallog-a07c"
+	const account = "account-token-externallog-91b2"
 	t.Setenv("GOOGLE_SDK_GO_LOGGING_LEVEL", "debug")
 	sts := newRawServer(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"` + accessField + `":"` + federated + `","issued_token_type":"urn:ietf:params:oauth:token-type:access_token","token_type":"Bearer","expires_in":3600}`))
 	})
+	impersonation := newRawServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"accessToken":"` + account + `","expireTime":"` + time.Now().Add(time.Hour).UTC().Format(time.RFC3339) + `"}`))
+	})
 	iam := newRawServer(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"token":"robot-identity-token"}`))
 	})
-	data := externalAccountJSON(t, sts, map[string]any{"file": subjectTokenFile(t, subjectToken)})
+	var credential map[string]any
+	if err := json.Unmarshal(externalAccountJSON(t, sts, map[string]any{"file": subjectTokenFile(t, subjectToken)}), &credential); err != nil {
+		t.Fatal(err)
+	}
+	credential["service_account_impersonation_url"] = impersonation + "/v1/projects/-/serviceAccounts/robot@example.iam.gserviceaccount.com:generateAccessToken"
+	data, err := json.Marshal(credential)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	control := captureStderr(t, func() {
 		creds, err := credentials.NewCredentialsFromJSON(credentials.ExternalAccount, data,
@@ -333,7 +406,7 @@ func TestAnExternalAccountMintPrintsNothingWhenGoogleLibrariesLog(t *testing.T) 
 			t.Fatal(err)
 		}
 	})
-	for _, logged := range []string{subjectToken, federated} {
+	for _, logged := range []string{subjectToken, federated, account} {
 		if !strings.Contains(control, logged) {
 			t.Fatalf("control: the library's own mint at debug printed no %q, so this probe cannot see its log:\n%s", logged, control)
 		}
@@ -347,7 +420,7 @@ func TestAnExternalAccountMintPrintsNothingWhenGoogleLibrariesLog(t *testing.T) 
 	if mintErr != nil || token != "robot-identity-token" {
 		t.Fatalf("Token = %q, %v; want the identity token", token, mintErr)
 	}
-	for _, leaked := range []string{subjectToken, federated} {
+	for _, leaked := range []string{subjectToken, federated, account} {
 		if strings.Contains(out, leaked) {
 			t.Errorf("the mint printed %q to stderr:\n%s", leaked, out)
 		}

@@ -40,9 +40,10 @@ const (
 // --credential-cert-configuration-output-file` writes it) or takes the default one
 // (use_default_certificate_config, as `create-cred-config` writes it otherwise, which
 // GOOGLE_API_CERTIFICATE_CONFIG names here). A client that presents no certificate is refused in
-// the handshake, so the mint fails. The service's refusal of such an exchange prints its status and
-// registered code, read from the text of the library's error (libraryAnswer), and never the rest of
-// its body.
+// the handshake, so the mint fails. The federated token is spent on generateIdToken itself
+// (federationIAM), and the credential's service_account_impersonation_url is never called. The
+// service's refusal of such an exchange prints its status and registered code, read from the text
+// of the library's error (libraryAnswer), and never the rest of its body.
 func TestAnX509CredentialPresentsItsCertificateToTheTokenService(t *testing.T) {
 	if path := os.Getenv(x509ChildCredential); path != "" {
 		mintAsX509Child(t, path)
@@ -79,12 +80,10 @@ func TestAnX509CredentialPresentsItsCertificateToTheTokenService(t *testing.T) {
 			sts.TLS = &tls.Config{ClientAuth: tls.RequireAnyClientCert}
 			sts.StartTLS()
 			t.Cleanup(sts.Close)
-			iam := newRawServer(t, func(w http.ResponseWriter, _ *http.Request) {
-				w.Header().Set("Content-Type", "application/json")
-				_, _ = w.Write([]byte(`{"token":"robot-identity-token"}`))
-			})
+			impersonation, impersonated := impersonationStandIn(t)
+			iam, _ := federationIAM(t)
 			dir := t.TempDir()
-			files := writeX509Credential(t, dir, sts.URL, "https://iamcredentials.invalid")
+			files := writeX509Credential(t, dir, sts.URL, impersonation)
 			env := []string{x509ChildIAM + "=" + iam}
 			if row.useDefault {
 				rewriteCertificateSource(t, files.credential, map[string]any{"use_default_certificate_config": true})
@@ -113,6 +112,9 @@ func TestAnX509CredentialPresentsItsCertificateToTheTokenService(t *testing.T) {
 			defer mu.Unlock()
 			if len(shown) == 0 || !bytes.Equal(shown[0], block.Bytes) {
 				t.Fatalf("the security token service was shown %d certificates, the first not the credential's own", len(shown))
+			}
+			if n := impersonated.Load(); n != 0 {
+				t.Fatalf("the service_account_impersonation_url saw %d requests; want none", n)
 			}
 		})
 	}

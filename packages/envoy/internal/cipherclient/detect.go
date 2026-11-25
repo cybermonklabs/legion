@@ -142,15 +142,24 @@ func impersonatedAccount(raw string) string {
 }
 
 // ExternalAccountIdentity is the identity of a workload that holds an external_account credential
-// file (workload identity federation) naming a service account to act as: the file's own
-// exchange at the security token service mints a federated access token, which IAM Credentials'
-// generateIdToken spends on the identity token the broker reads, for Audience and with
-// includeEmail set, as a workload identity pool's federated token is spent (PoolIdentity). The
-// federation's principal so needs getOpenIdToken on the account, which
-// roles/iam.workloadIdentityUser carries, and the account needs no role on itself. The file may
-// take its subject token from any credential_source cloud.google.com/go/auth reads: a file, a
-// URL, an executable, AWS, or an X.509 certificate whose configuration names a workload
-// certificate and key (certificateFailure).
+// file (workload identity federation) naming a service account to act as. The file may take its
+// subject token from any credential_source cloud.google.com/go/auth reads, and which one decides
+// the token that IAM Credentials' generateIdToken spends on the identity token the broker reads,
+// for Audience and with includeEmail set, and so the IAM grants the account needs:
+//
+//   - A file, a URL, an executable or AWS, as golang.org/x/oauth2 read them before: the file's own
+//     exchange at the security token service and its service_account_impersonation_url (IAM
+//     Credentials' generateAccessToken) mint the account's access token, which generateIdToken
+//     spends. The federation's principal needs getAccessToken on the account
+//     (roles/iam.workloadIdentityUser carries it), and the account needs getOpenIdToken on itself
+//     (roles/iam.serviceAccountOpenIdTokenCreator). An executable is told the account
+//     (GOOGLE_EXTERNAL_ACCOUNT_IMPERSONATED_EMAIL).
+//   - An X.509 certificate whose configuration names a workload certificate and key
+//     (certificateFailure), which no client read before: the exchange's federated access token is
+//     spent on generateIdToken itself, and the impersonation URL only names the account, as
+//     cloud.google.com/go/auth's own credentials/idtoken does for an external_account credential
+//     (baseCredsForImpersonation). The federation's principal needs getOpenIdToken on the account
+//     (roles/iam.workloadIdentityUser carries it), and the account needs no role on itself.
 type ExternalAccountIdentity struct {
 	// CredentialsJSON is the credentials file as it was read.
 	CredentialsJSON []byte
@@ -188,13 +197,13 @@ func (e *ExternalAccountIdentity) account() string {
 // read.
 var errCredentialUnread = errors.New("the external_account credential " + credentialsFileVar + " names is not one this client reads")
 
-// Token trades the credentials file at the security token service for a federated access token
-// and spends it on one generateIdToken. The file's service_account_impersonation_url only names
-// the account: it is never called. Every error names the step that failed and never a token, a
-// part of the file or a library's text: cloud.google.com/go/auth's errors quote the paths the file
-// names and the body of an answer (externalAccountFailure). The library logs nothing, whatever
-// GOOGLE_SDK_GO_LOGGING_LEVEL says: its log of a request holds the subject token, and of an
-// answer the federated token.
+// Token mints the token generateIdToken spends, the account's access token or, for an X.509
+// certificate, the federated one (ExternalAccountIdentity), and spends it on one generateIdToken.
+// Every error names the step that failed and never a token, a part of the file or a library's
+// text: cloud.google.com/go/auth's errors quote the paths the file names and the body of an
+// answer (externalAccountFailure). The library logs nothing, whatever GOOGLE_SDK_GO_LOGGING_LEVEL
+// says: its log of a request holds the subject token or the federated token, and of an answer the
+// federated token or the account's.
 //
 // An X.509 certificate's files are checked before the library reads them (certificateFailure),
 // and its exchange goes out on the library's own client, which presents the certificate: the
@@ -204,42 +213,51 @@ func (e *ExternalAccountIdentity) Token(ctx context.Context) (string, string, er
 	ctx, cancel := context.WithTimeout(ctx, 2*poolTimeout)
 	defer cancel()
 	var fields credentialFields
-	federation, err := withoutImpersonation(e.CredentialsJSON)
-	if err != nil || json.Unmarshal(e.CredentialsJSON, &fields) != nil {
+	if json.Unmarshal(e.CredentialsJSON, &fields) != nil {
 		return "", "", errCredentialUnread
 	}
+	x509 := fields.Source.Certificate != nil
+	credential := e.CredentialsJSON
 	answered := &oauthrefusal.Recorder{}
 	options := &credentials.DetectOptions{Scopes: []string{poolScope}, Logger: slog.New(slog.DiscardHandler)}
-	if certificate := fields.Source.Certificate; certificate == nil {
+	if !x509 {
 		options.Client = oauthrefusal.Client(e.HTTP, answered)
-	} else if reason := certificateFailure(*certificate); reason != "" {
-		return "", "", e.mintFailure(reason)
+	} else if reason := certificateFailure(*fields.Source.Certificate); reason != "" {
+		return "", "", e.mintFailure(x509, reason)
+	} else if federation, err := withoutImpersonation(credential); err != nil {
+		return "", "", errCredentialUnread
+	} else {
+		credential = federation
 	}
-	creds, err := credentials.NewCredentialsFromJSON(credentials.ExternalAccount, federation, options)
+	creds, err := credentials.NewCredentialsFromJSON(credentials.ExternalAccount, credential, options)
 	if err != nil {
 		if reason := credentialFileFailure(fields); reason != "" {
-			return "", "", e.mintFailure(reason)
+			return "", "", e.mintFailure(x509, reason)
 		}
 		return "", "", errCredentialUnread
 	}
-	federated, err := creds.Token(ctx)
+	access, err := creds.Token(ctx)
 	if err != nil {
-		return "", "", e.mintFailure(externalAccountFailure(fields, answered, err))
+		return "", "", e.mintFailure(x509, externalAccountFailure(fields, answered, err))
 	}
-	if federated.Value == "" {
-		return "", "", e.mintFailure("the security token service answered no access_token")
+	if access.Value == "" {
+		return "", "", e.mintFailure(x509, "the exchange answered no access token")
 	}
-	token, err := generateIDToken(ctx, e.HTTP, e.IAMCredentialsURL, e.ServiceAccount, e.account(), e.Audience, federated.Value)
+	token, err := generateIDToken(ctx, e.HTTP, e.IAMCredentialsURL, e.ServiceAccount, e.account(), e.Audience, access.Value)
 	if err != nil {
 		return "", "", err
 	}
 	return token, oauthwire.SubjectTokenTypeGoogle, nil
 }
 
-// mintFailure is the error of a federated mint that failed for reason, which names the account
-// and never the file or a library's text.
-func (e *ExternalAccountIdentity) mintFailure(reason string) error {
-	return fmt.Errorf("mint a federated access token with the external_account credential %s names, to act as %s: %s", credentialsFileVar, e.account(), reason)
+// mintFailure is the error of a mint that failed for reason, which names the account and never
+// the file or a library's text: of the account's access token, or for an X.509 certificate (x509)
+// of the federated one.
+func (e *ExternalAccountIdentity) mintFailure(x509 bool, reason string) error {
+	if x509 {
+		return fmt.Errorf("mint a federated access token with the external_account credential %s names, to act as %s: %s", credentialsFileVar, e.account(), reason)
+	}
+	return fmt.Errorf("mint an access token as %s with the external_account credential %s names: %s", e.account(), credentialsFileVar, reason)
 }
 
 // withoutImpersonation is the credentials file less its service_account_impersonation_url, in any
@@ -278,25 +296,26 @@ type certificateSource struct {
 	TrustChain string `json:"trust_chain_path"`
 }
 
-// externalAccountFailure is why an external_account credential's exchange failed, err, in words
-// of this client's own. A file its credential_source names that cannot be read prints as
+// externalAccountFailure is why an external_account credential's mint failed, err, in words of
+// this client's own. A file its credential_source names that cannot be read prints as
 // credentialFileFailure says; a refusal names the service that answered - the security token
-// service, the token service the credential names (token_url), or else the subject token source
-// its credential_source names (a url, or AWS's metadata) - and the status and registered code its
-// answer carried (redact.Answered); any other failure prints as its class (redact.Class). An X.509
-// certificate's exchange goes out on the library's own client, which answered does not see, so
-// the status and body of the security token service's answer are read from the library's error
-// text instead (libraryAnswer), and only its registered code printed.
+// service, IAM Credentials (at the impersonation URL), the token service the credential names
+// (token_url), or else the subject token source its credential_source names (a url, or AWS's
+// metadata) - and the status and registered code its answer carried (redact.Answered); any other
+// failure prints as its class (redact.Class). An X.509 certificate's exchange goes out on the
+// library's own client, which answered does not see, so the status and body of the security token
+// service's answer are read from the library's error instead (libraryAnswer), and only its
+// registered code printed.
 func externalAccountFailure(fields credentialFields, answered *oauthrefusal.Recorder, err error) string {
 	if reason := credentialFileFailure(fields); reason != "" {
 		return reason
 	}
 	tokenURL, _ := url.Parse(fields.TokenURL)
 	status, body, host := answered.Status, answered.Answer(), answered.Host
-	if text := err.Error(); status == 0 && fields.Source.Certificate != nil && tokenURL != nil {
-		if quoted := libraryAnswer.FindStringSubmatchIndex(text); quoted != nil {
-			status, _ = strconv.Atoi(text[quoted[2]:quoted[3]])
-			body, host = []byte(text[quoted[1]:]), tokenURL.Host
+	if status == 0 && fields.Source.Certificate != nil && tokenURL != nil {
+		if quoted := libraryAnswer.FindStringSubmatch(err.Error()); quoted != nil {
+			status, _ = strconv.Atoi(quoted[1])
+			body, host = []byte(quoted[2]), tokenURL.Host
 		}
 	}
 	if status/100 <= 2 {
@@ -306,17 +325,21 @@ func externalAccountFailure(fields credentialFields, answered *oauthrefusal.Reco
 	switch {
 	case host == "sts.googleapis.com" || host == "sts.mtls.googleapis.com":
 		service = "Google's security token service"
+	case host == "iamcredentials.googleapis.com":
+		service = "IAM Credentials"
 	case tokenURL != nil && host == tokenURL.Host:
 		service = "the token service the credential names"
 	}
 	return service + ": " + redact.Answered(status, body)
 }
 
-// libraryAnswer is how cloud.google.com/go/auth quotes, in its error, the answer of a security
-// token service that refused an exchange: `credentials: status code <status>: <body>`
-// (credentials/internal/stsexchange). TestAnExternalAccountMintsFailureSaysWhatFailed fails where
-// a release of the library words it otherwise.
-var libraryAnswer = regexp.MustCompile(`credentials: status code ([0-9]{3}): `)
+// libraryAnswer is the whole of the error cloud.google.com/go/auth answers for a security token
+// service that refused an exchange, from its first word: `credentials: status code <status>:
+// <body>` (credentials/internal/stsexchange). Another error that quotes those words further in is
+// no answer. TestAnExternalAccountMintsFailureSaysWhatFailed and
+// TestAnX509CredentialPresentsItsCertificateToTheTokenService fail where a release of the library
+// words it otherwise.
+var libraryAnswer = regexp.MustCompile(`(?s)\Acredentials: status code ([0-9]{3}): (.*)\z`)
 
 // credentialFileFailure is why a file the credential's credential_source names cannot be read,
 // and "" where each can: the subject token file, or an X.509 certificate's files

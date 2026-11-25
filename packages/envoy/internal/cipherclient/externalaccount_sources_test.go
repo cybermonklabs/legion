@@ -2,9 +2,10 @@
 //
 // Each credential_source an external_account credential file takes its subject token from mints
 // the broker's identity token the same way: the file's own exchange at the security token
-// service, whose federated access token generateIdToken spends. Each row runs the real reader
-// against local stand-ins: the file GOOGLE_APPLICATION_CREDENTIALS names, the security token
-// service its token_url names, and the source of its subject token.
+// service, whose federated access token its service_account_impersonation_url spends on the
+// account's access token, which generateIdToken spends. Each row runs the real reader against
+// local stand-ins: the file GOOGLE_APPLICATION_CREDENTIALS names, the security token service its
+// token_url names, the impersonation URL, and the source of its subject token.
 
 package cipherclient
 
@@ -24,13 +25,16 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 )
 
-// TestEachCredentialSourceMintsWithTheFederatedToken: a credential file of the url kind (the shape
-// `create-cred-config --azure` writes, with a header and a JSON answer), of the executable kind and
-// of the aws kind (with the AWS credential in the environment) each sends its subject token to the
-// security token service, never calls its service_account_impersonation_url, and spends the
-// federated token on generateIdToken. So does one whose impersonation key is spelt in another
-// case, which Go's JSON decoder, and so Google's library, reads as the same key.
-func TestEachCredentialSourceMintsWithTheFederatedToken(t *testing.T) {
+// TestEachCredentialSourceMintsWithTheAccountsAccessToken: a credential file of the url kind (the
+// shape `create-cred-config --azure` writes, with a header and a JSON answer), of the executable
+// kind and of the aws kind (with the AWS credential in the environment) each sends its subject
+// token to the security token service, spends the federated token at its
+// service_account_impersonation_url, and spends the account's access token that answers on
+// generateIdToken. The executable is told the account it acts as
+// (GOOGLE_EXTERNAL_ACCOUNT_IMPERSONATED_EMAIL), and answers no subject token without it. So does
+// one whose impersonation key is spelt in another case, which Go's JSON decoder, and so Google's
+// library, reads as the same key.
+func TestEachCredentialSourceMintsWithTheAccountsAccessToken(t *testing.T) {
 	impersonationKey := "service_account_impersonation_url"
 	for _, row := range []struct {
 		name        string
@@ -53,9 +57,13 @@ func TestEachCredentialSourceMintsWithTheFederatedToken(t *testing.T) {
 		}, equals("url-subject-token")},
 		{"executable", "urn:ietf:params:oauth:token-type:jwt", impersonationKey, func(t *testing.T) map[string]any {
 			t.Setenv("GOOGLE_EXTERNAL_ACCOUNT_ALLOW_EXECUTABLES", "1")
+			t.Setenv("GOOGLE_EXTERNAL_ACCOUNT_IMPERSONATED_EMAIL", "")
 			answer := fmt.Sprintf(`{"version":1,"success":true,"token_type":"urn:ietf:params:oauth:token-type:jwt","id_token":"executable-subject-token","expiration_time":%d}`, time.Now().Add(time.Hour).Unix())
+			refusal := `{"version":1,"success":false,"code":"no_account","message":"GOOGLE_EXTERNAL_ACCOUNT_IMPERSONATED_EMAIL is not the account"}`
 			command := filepath.Join(t.TempDir(), "subject-token")
-			if err := os.WriteFile(command, []byte("#!/bin/sh\nprintf '%s' '"+answer+"'\n"), 0o700); err != nil {
+			script := "#!/bin/sh\nif [ \"$GOOGLE_EXTERNAL_ACCOUNT_IMPERSONATED_EMAIL\" = robot@example.iam.gserviceaccount.com ]; then\n" +
+				"printf '%s' '" + answer + "'\nelse\nprintf '%s' '" + refusal + "'\nfi\n"
+			if err := os.WriteFile(command, []byte(script), 0o700); err != nil {
 				t.Fatal(err)
 			}
 			return map[string]any{"executable": map[string]any{"command": command, "timeout_millis": 5000}}
@@ -107,18 +115,13 @@ func TestEachCredentialSourceMintsWithTheFederatedToken(t *testing.T) {
 		t.Run(row.name, func(t *testing.T) {
 			sts, exchange := federatedExchange(t)
 			impersonation, impersonated := impersonationStandIn(t)
-			var mintBearer string
-			iam := newRawServer(t, func(w http.ResponseWriter, r *http.Request) {
-				mintBearer = r.Header.Get("Authorization")
-				w.Header().Set("Content-Type", "application/json")
-				_, _ = w.Write([]byte(`{"token":"robot-identity-token"}`))
-			})
+			iam, _ := accountIAM(t)
 			data, err := json.Marshal(map[string]any{
 				"type":               "external_account",
 				"audience":           "//iam.googleapis.com/projects/1/locations/global/workloadIdentityPools/p/providers/v",
 				"subject_token_type": row.subjectType,
 				"token_url":          sts + "/v1/token",
-				row.key:              impersonation + "/v1/projects/-/serviceAccounts/robot@example.iam.gserviceaccount.com:generateAccessToken",
+				row.key:              "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/robot@example.iam.gserviceaccount.com:generateAccessToken",
 				"credential_source":  row.source(t),
 			})
 			if err != nil {
@@ -136,6 +139,7 @@ func TestEachCredentialSourceMintsWithTheFederatedToken(t *testing.T) {
 				t.Fatalf("externalAccountFor = %#v, %q, %v; want the credential acting as robot@example.iam.gserviceaccount.com", source, reason, err)
 			}
 			external.IAMCredentialsURL = iam
+			external.HTTP = iamCredentialsAt(t, impersonation)
 			token, tokenType, err := external.Token(context.Background())
 			if err != nil || token != "robot-identity-token" || tokenType != oauthwire.SubjectTokenTypeGoogle {
 				t.Fatalf("Token = %q, %q, %v; want the identity token generateIdToken minted", token, tokenType, err)
@@ -147,11 +151,8 @@ func TestEachCredentialSourceMintsWithTheFederatedToken(t *testing.T) {
 					t.Errorf("the security token service was sent %s %q; want %q", field, got, want)
 				}
 			}
-			if mintBearer != "Bearer not-a-secret-federated-access-token" {
-				t.Errorf("generateIdToken was called with %q; want the federated access token", mintBearer)
-			}
-			if n := impersonated.Load(); n != 0 {
-				t.Errorf("the service_account_impersonation_url saw %d requests; want none", n)
+			if n := impersonated.Load(); n != 1 {
+				t.Errorf("the service_account_impersonation_url saw %d requests; want the one that mints the account's access token", n)
 			}
 		})
 	}
@@ -167,9 +168,28 @@ func equals(want string) func(t *testing.T, got string) {
 	}
 }
 
-// TestAnExchangeThatAnswersNoAccessTokenMintsNothing: a security token service whose answer holds
-// an empty access_token is refused before generateIdToken, as a workload identity pool's is, rather
-// than spending no credential there and blaming IAM Credentials.
+// iamCredentialsAt is a client that sends a request for Google's IAM Credentials
+// (iamcredentials.googleapis.com) to the stand-in at base, and any other as it stands. The
+// credential names IAM Credentials' own impersonation URL because Google's library tells an
+// executable the account it acts as only where the URL is that one.
+func iamCredentialsAt(t *testing.T, base string) *http.Client {
+	t.Helper()
+	standIn, err := url.Parse(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Host == "iamcredentials.googleapis.com" {
+			r = r.Clone(r.Context())
+			r.URL.Scheme, r.URL.Host, r.Host = standIn.Scheme, standIn.Host, standIn.Host
+		}
+		return http.DefaultTransport.RoundTrip(r)
+	})}
+}
+
+// TestAnExchangeThatAnswersNoAccessTokenMintsNothing: an exchange whose answer holds an empty
+// access token is refused before generateIdToken, as a workload identity pool's is, rather than
+// spending no credential there and blaming IAM Credentials.
 func TestAnExchangeThatAnswersNoAccessTokenMintsNothing(t *testing.T) {
 	sts := newRawServer(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -183,7 +203,7 @@ func TestAnExchangeThatAnswersNoAccessTokenMintsNothing(t *testing.T) {
 	identity := &ExternalAccountIdentity{CredentialsJSON: externalAccountJSON(t, sts, map[string]any{"file": subjectTokenFile(t, "file-subject-token")}),
 		ServiceAccount: "robot@example.iam.gserviceaccount.com", Audience: testAudience, HTTP: HTTPClient(), IAMCredentialsURL: iam}
 	_, _, err := identity.Token(context.Background())
-	if err == nil || !strings.Contains(err.Error(), "the security token service answered no access_token") {
+	if err == nil || !strings.Contains(err.Error(), "the exchange answered no access token") {
 		t.Fatalf("Token: %v; want the empty access_token named", err)
 	}
 	if n := minted.Load(); n != 0 {

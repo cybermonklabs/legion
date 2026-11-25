@@ -12,13 +12,22 @@ body: |-
   <account> with the external_account credential GOOGLE_APPLICATION_CREDENTIALS names: the request
   failed`.
 
+  An X.509 certificate's federated access token mints the identity token itself, as Google's own
+  `cloud.google.com/go/auth/credentials/idtoken` does for an `external_account` credential, and its
+  impersonation URL only names the account: the federation's principal needs
+  `iam.serviceAccounts.getOpenIdToken` on the account, which `roles/iam.workloadIdentityUser`
+  carries, and the account needs no role on itself. A credential of any other `credential_source`
+  mints as before: its impersonation URL mints the account's access token, which mints the identity
+  token.
+
   A trust chain, certificate configuration, certificate or private key that cannot be read is named
   in the error with the file call's reason, never its path, and so is a subject token file that is
   a directory. A certificate configuration that names no workload certificate and private key, an
   enterprise certificate proxy's among them, is refused before Google's library would start the
   signer program it names. An exchange whose answer holds no access token is refused before
-  `generateIdToken`. The exchange logs nothing, whatever `GOOGLE_SDK_GO_LOGGING_LEVEL` says: the
-  library's log of it would hold the subject token and the federated token.
+  `generateIdToken`. A refused X.509 exchange names the security token service, its status and its
+  registered code. The exchange logs nothing, whatever `GOOGLE_SDK_GO_LOGGING_LEVEL` says: the
+  library's log of it would hold the subject token and the tokens it mints.
 time: 2026-11-25T05:52:47Z
 custom:
     Issue: external-account-x509

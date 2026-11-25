@@ -98,18 +98,93 @@ func externalAccountFile(t *testing.T, sts, impersonation string) {
 	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", path)
 }
 
-// impersonationStandIn is a service_account_impersonation_url that answers every call with the
-// account's own access token, not-a-secret-robot-access-token, and counts them: a client that
-// called it would spend that token on generateIdToken, and a row's bearer check names the cause.
+// impersonationStandIn is a service_account_impersonation_url, IAM Credentials'
+// generateAccessToken, that answers a call carrying the federated access token
+// not-a-secret-federated-access-token with the account's own access token,
+// not-a-secret-robot-access-token, refuses any other with HTTP 401, and counts the calls.
 func impersonationStandIn(t *testing.T) (string, *atomic.Int64) {
 	t.Helper()
 	var calls atomic.Int64
-	base := newRawServer(t, func(w http.ResponseWriter, _ *http.Request) {
+	base := newRawServer(t, func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
 		w.Header().Set("Content-Type", "application/json")
+		if r.Header.Get("Authorization") != "Bearer not-a-secret-federated-access-token" {
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"error":{"code":401,"status":"UNAUTHENTICATED"}}`))
+			return
+		}
 		_, _ = w.Write([]byte(`{"accessToken":"not-a-secret-robot-access-token","expireTime":"` + time.Now().Add(time.Hour).UTC().Format(time.RFC3339) + `"}`))
 	})
 	return base, &calls
+}
+
+// accountIAM is an IAM Credentials stand-in whose policy is the one an external_account credential
+// of a file, a URL, an executable or AWS has always needed: the federation's principal holds
+// iam.serviceAccounts.getAccessToken on the account (roles/iam.workloadIdentityUser) and nothing
+// else, and the account holds iam.serviceAccounts.getOpenIdToken on itself. So generateIdToken
+// mints for the account's own access token alone.
+func accountIAM(t *testing.T) (string, func() (string, map[string]any)) {
+	t.Helper()
+	return iamGranting(t, "not-a-secret-robot-access-token")
+}
+
+// federationIAM is an IAM Credentials stand-in whose policy is the one an X.509 certificate's
+// external_account credential needs, since its federated token is spent as Google's own idtoken
+// package spends it: the federation's principal holds iam.serviceAccounts.getOpenIdToken on the
+// account (roles/iam.workloadIdentityUser), and the account no role on itself. So generateIdToken
+// mints for the federated access token alone.
+func federationIAM(t *testing.T) (string, func() (string, map[string]any)) {
+	t.Helper()
+	return iamGranting(t, "not-a-secret-federated-access-token")
+}
+
+// iamGranting is an IAM Credentials stand-in whose generateIdToken mints robot-identity-token for
+// a call that carries bearer, and refuses any other with HTTP 403 PERMISSION_DENIED. Each call's
+// path and body are kept.
+func iamGranting(t *testing.T, bearer string) (string, func() (string, map[string]any)) {
+	t.Helper()
+	var mu sync.Mutex
+	var path string
+	var request map[string]any
+	base := newRawServer(t, func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		path, request = r.URL.Path, readJSONBody(t, r)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		if r.Header.Get("Authorization") != "Bearer "+bearer {
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(`{"error":{"code":403,"status":"PERMISSION_DENIED"}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"token":"robot-identity-token"}`))
+	})
+	return base, func() (string, map[string]any) {
+		mu.Lock()
+		defer mu.Unlock()
+		return path, request
+	}
+}
+
+// renameKey moves the value of the key from to the key to in the JSON object in the file at path.
+func renameKey(t *testing.T, path, from, to string) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var object map[string]any
+	if err := json.Unmarshal(data, &object); err != nil {
+		t.Fatal(err)
+	}
+	value := object[from]
+	delete(object, from)
+	object[to] = value
+	if data, err = json.Marshal(object); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // federatedExchange is a security token service that answers every exchange with the federated
@@ -233,16 +308,9 @@ func reasons(skipped []Skipped) []string {
 
 func TestMachineIdentityIsFoundWithNoSetting(t *testing.T) {
 	t.Run("external_account", func(t *testing.T) {
-		var mintPath, mintBearer string
-		var mintRequest map[string]any
 		sts, exchange := federatedExchange(t)
 		impersonation, impersonated := impersonationStandIn(t)
-		iam := newRawServer(t, func(w http.ResponseWriter, r *http.Request) {
-			mintPath, mintBearer = r.URL.Path, r.Header.Get("Authorization")
-			mintRequest = readJSONBody(t, r)
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"token":"robot-identity-token"}`))
-		})
+		iam, minted := accountIAM(t)
 		externalAccountFile(t, sts, impersonation)
 		metadata := startDetectMetadata(t)
 
@@ -266,17 +334,15 @@ func TestMachineIdentityIsFoundWithNoSetting(t *testing.T) {
 			t.Fatalf("Token = %q, %q; want the identity token generateIdToken minted, as a Google identity token", token, tokenType)
 		}
 		checkExchange(t, exchange(), "the.workload.credential", "urn:ietf:params:oauth:token-type:jwt")
+		// The federated token is spent at the service_account_impersonation_url on the account's
+		// own access token, and that one on generateIdToken (accountIAM): the federation's
+		// principal needs getAccessToken on the account alone.
+		if n := impersonated.Load(); n != 1 {
+			t.Fatalf("the service_account_impersonation_url saw %d requests; want the one that mints the account's access token", n)
+		}
+		mintPath, mintRequest := minted()
 		if want := "/v1/projects/-/serviceAccounts/robot@example.iam.gserviceaccount.com:generateIdToken"; mintPath != want {
 			t.Fatalf("generateIdToken was called at %s, want %s", mintPath, want)
-		}
-		// The federated token is spent on generateIdToken itself, as a workload identity pool's
-		// is: the federation's principal holds roles/iam.workloadIdentityUser on the account,
-		// which carries getOpenIdToken, and the account needs no role on itself.
-		if mintBearer != "Bearer not-a-secret-federated-access-token" {
-			t.Fatalf("generateIdToken was called with %q; want the federated access token the security token service answered", mintBearer)
-		}
-		if n := impersonated.Load(); n != 0 {
-			t.Fatalf("the service_account_impersonation_url saw %d requests; want none: the account's own access token is never asked for", n)
 		}
 		if mintRequest["audience"] != testAudience || mintRequest["includeEmail"] != true {
 			t.Fatalf("generateIdToken was asked %v; want audience %s and includeEmail", mintRequest, testAudience)
@@ -290,50 +356,51 @@ func TestMachineIdentityIsFoundWithNoSetting(t *testing.T) {
 	// certificate: its credential_source names a certificate configuration, which names the
 	// certificate and its key, and the security token service reads the certificate as the
 	// subject token. The stand-in is plain http, so this row reads what the exchange sends;
-	// x509tls_linux_test.go reads the certificate its TLS presents.
-	t.Run("external_account of an X.509 certificate", func(t *testing.T) {
-		sts, exchange := federatedExchange(t)
-		impersonation, impersonated := impersonationStandIn(t)
-		var mintBearer string
-		iam := newRawServer(t, func(w http.ResponseWriter, r *http.Request) {
-			mintBearer = r.Header.Get("Authorization")
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"token":"robot-identity-token"}`))
-		})
-		files := writeX509Credential(t, t.TempDir(), sts, impersonation)
-		t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", files.credential)
-		metadata := startDetectMetadata(t)
+	// x509tls_linux_test.go reads the certificate its TLS presents. The federated token is spent on
+	// generateIdToken itself (federationIAM), as Google's own idtoken package spends an
+	// external_account credential's, and the impersonation URL is never called, whichever case its
+	// key is spelt in: Go's JSON decoder, and so Google's library, reads each as the same key.
+	for _, key := range []string{"service_account_impersonation_url", "Service_Account_Impersonation_URL"} {
+		t.Run("external_account of an X.509 certificate, impersonation key "+key, func(t *testing.T) {
+			sts, exchange := federatedExchange(t)
+			impersonation, impersonated := impersonationStandIn(t)
+			iam, minted := federationIAM(t)
+			files := writeX509Credential(t, t.TempDir(), sts, impersonation)
+			renameKey(t, files.credential, "service_account_impersonation_url", key)
+			t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", files.credential)
+			metadata := startDetectMetadata(t)
 
-		source, skipped, err := DetectMachineIdentity(context.Background(), testAudience)
-		if err != nil {
-			t.Fatal(err)
-		}
-		external, ok := source.(*ExternalAccountIdentity)
-		if !ok || external.ServiceAccount != "robot@example.iam.gserviceaccount.com" {
-			t.Fatalf("source = %#v (skipped %v); want the X.509 external_account credential acting as robot@example.iam.gserviceaccount.com", source, reasons(skipped))
-		}
-		external.IAMCredentialsURL = iam
-		token, tokenType, err := external.Token(context.Background())
-		if err != nil {
-			t.Fatalf("Token: %v", err)
-		}
-		if token != "robot-identity-token" || tokenType != oauthwire.SubjectTokenTypeGoogle {
-			t.Fatalf("Token = %q, %q; want the identity token generateIdToken minted, as a Google identity token", token, tokenType)
-		}
-		checkExchange(t, exchange(), files.subjectToken, x509SubjectTokenType)
-		if got := exchange().Get("audience"); got != x509PoolProvider {
-			t.Fatalf("the security token service was sent audience %q; want the credential's pool provider, %s", got, x509PoolProvider)
-		}
-		if mintBearer != "Bearer not-a-secret-federated-access-token" {
-			t.Fatalf("generateIdToken was called with %q; want the federated access token the security token service answered", mintBearer)
-		}
-		if n := impersonated.Load(); n != 0 {
-			t.Fatalf("the service_account_impersonation_url saw %d requests; want none", n)
-		}
-		if n := metadata.requests.Load(); n != 0 {
-			t.Fatalf("the metadata server saw %d requests; a credentials file found first asks it nothing", n)
-		}
-	})
+			source, skipped, err := DetectMachineIdentity(context.Background(), testAudience)
+			if err != nil {
+				t.Fatal(err)
+			}
+			external, ok := source.(*ExternalAccountIdentity)
+			if !ok || external.ServiceAccount != "robot@example.iam.gserviceaccount.com" {
+				t.Fatalf("source = %#v (skipped %v); want the X.509 external_account credential acting as robot@example.iam.gserviceaccount.com", source, reasons(skipped))
+			}
+			external.IAMCredentialsURL = iam
+			token, tokenType, err := external.Token(context.Background())
+			if err != nil {
+				t.Fatalf("Token: %v", err)
+			}
+			if token != "robot-identity-token" || tokenType != oauthwire.SubjectTokenTypeGoogle {
+				t.Fatalf("Token = %q, %q; want the identity token generateIdToken minted, as a Google identity token", token, tokenType)
+			}
+			checkExchange(t, exchange(), files.subjectToken, x509SubjectTokenType)
+			if got := exchange().Get("audience"); got != x509PoolProvider {
+				t.Fatalf("the security token service was sent audience %q; want the credential's pool provider, %s", got, x509PoolProvider)
+			}
+			if n := impersonated.Load(); n != 0 {
+				t.Fatalf("the service_account_impersonation_url saw %d requests; want none: the federated token is spent on generateIdToken itself", n)
+			}
+			if path, _ := minted(); path != "/v1/projects/-/serviceAccounts/robot@example.iam.gserviceaccount.com:generateIdToken" {
+				t.Fatalf("generateIdToken was called at %q; want it called on the account the impersonation URL names", path)
+			}
+			if n := metadata.requests.Load(); n != 0 {
+				t.Fatalf("the metadata server saw %d requests; a credentials file found first asks it nothing", n)
+			}
+		})
+	}
 
 	t.Run("credentials file does not parse", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "credentials.json")

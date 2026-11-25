@@ -261,12 +261,21 @@ certificate, whose configuration the file names (`certificate_config_location`) 
 `GOOGLE_API_CERTIFICATE_CONFIG`, else gcloud's default (`use_default_certificate_config`). A
 certificate configuration must name a workload certificate and its private key: an enterprise
 certificate proxy's is refused, since Google's library would start the signer program it names.
-The file's exchange at Google's security token service mints a federated access token, which
-mints the account's identity token with `generateIdToken`, as a workload identity pool's does; the
-impersonation URL is never called, so an executable is not told the account
-(`GOOGLE_EXTERNAL_ACCOUNT_IMPERSONATED_EMAIL`). The federation's principal needs
-`iam.serviceAccounts.getOpenIdToken` on the account, which `roles/iam.workloadIdentityUser`
-carries, and the account needs no role on itself.
+Which kind it is decides the token that mints the account's identity token with IAM Credentials'
+`generateIdToken`, and so the grants the account needs:
+
+- A file, a URL, AWS or an executable: the file's exchange at Google's security token service
+  mints a federated access token, which the file's impersonation URL (IAM Credentials'
+  `generateAccessToken`) spends on the account's access token, and that one mints the identity
+  token. The federation's principal needs `iam.serviceAccounts.getAccessToken` on the account,
+  which `roles/iam.workloadIdentityUser` carries, and the account needs
+  `iam.serviceAccounts.getOpenIdToken` on itself, which `roles/iam.serviceAccountOpenIdTokenCreator`
+  carries. An executable is told the account in `GOOGLE_EXTERNAL_ACCOUNT_IMPERSONATED_EMAIL`.
+- An X.509 certificate: the federated access token mints the identity token itself, and the
+  impersonation URL only names the account, as Google's own Go library mints an identity token
+  with an `external_account` credential (`cloud.google.com/go/auth/credentials/idtoken`). The
+  federation's principal needs `iam.serviceAccounts.getOpenIdToken` on the account, which
+  `roles/iam.workloadIdentityUser` carries, and the account needs no role on itself.
 
 `AGENT_SECRETS_MACHINE_IDENTITY` still names the one identity to trade (`metadata` or `pool`,
 with its own variables; `kubernetes` is refused, exit 2, before anything is traded), and then
