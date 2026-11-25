@@ -3115,14 +3115,15 @@ type source struct {
 // Its writes take the same rule from the other side: no row is written into the outbox keyed by
 // another project's issue (ownsKey, claim.KeyOfProject). Every write of record.Store that inserts,
 // upserts, expedites or deletes outbox rows by a key — Enqueue, EnqueueID, EnqueueStart,
-// ExpediteOutbox, EnqueueDesignGates, EnqueueGatedSteps, DropCatchUps, DropStatusWrites, and
-// ClearGeneration and ClearTreeGeneration, which queue the publication of the gates they empty —
-// refuses a key of another project, and EnqueueID refuses it with claim.ErrKeyOfAnotherProject.
-// The rest act on a row by its id under a lease this daemon holds of a row its own scope gave it
-// (ClaimRow, RenewOutboxLease, FinishOutbox, FinishLeasedOutbox, RetryOutbox), and need no rule
-// here.
+// EnqueueFixStart, EnqueueReadPrompt, ExpediteOutbox, EnqueueDesignGates, EnqueueGatedSteps,
+// DropCatchUps, DropStatusWrites, and ClearGeneration and ClearTreeGeneration, which queue the
+// publication of the gates they empty — refuses a key of another project, and EnqueueID refuses
+// it with claim.ErrKeyOfAnotherProject. The rest act on a row by its id under a lease this daemon
+// holds of a row its own scope gave it (ClaimRow, RenewOutboxLease, FinishOutbox,
+// FinishLeasedOutbox, RetryOutbox), and need no rule here.
 //
-// It is also where the outbox learns of its rows: every write that makes a row due — Enqueue, and
+// It is also where the outbox learns of its rows: every write that makes a row due — Enqueue,
+// EnqueueID, EnqueueStart, EnqueueFixStart, EnqueueReadPrompt, EnqueueDesignGates and
 // ExpediteOutbox — wakes the row's lane (outbox.wake) once the transaction has committed, through
 // the transaction's commit hooks (store.OnCommit), so no lane runs a row it cannot yet read, and
 // no lane polls for one. wake is nil where there is no workflow to wake, or where the writer wakes
@@ -3285,6 +3286,39 @@ func (s projectRecords) EnqueueStart(ctx context.Context, tx pgx.Tx, row record.
 	}
 	s.wakeOnCommit(ctx, row)
 	return nil
+}
+
+// EnqueueFixStart wakes the row's lane as EnqueueStart does: the workflow writes a fix's start
+// through this statement, beside the line of starts that wait for a slot
+// (record.Store.EnqueueFixStart), so without the wake here the fix whose failed job was just read
+// would wait for the lane's next sweep, up to one outbox lease after the read committed.
+func (s projectRecords) EnqueueFixStart(ctx context.Context, tx pgx.Tx, row record.OutboxRow) error {
+	if !s.ownsKey(row.Kind, row.Issue) {
+		return nil
+	}
+	if err := s.Store.EnqueueFixStart(ctx, tx, row); err != nil {
+		return err
+	}
+	s.wakeOnCommit(ctx, row)
+	return nil
+}
+
+// EnqueueReadPrompt wakes the lane of a prompt to read Dispatch that it queued as a row of its
+// own, as Enqueue does: the record writes that row with its own Enqueue
+// (record.Postgres.EnqueueReadPrompt), past this store, so without the wake here the prompt would
+// wait for the lane's next sweep or for another row of its lane. A prompt joined to a pending one
+// wakes nothing: the pending row's own write woke its lane, and the join leaves it as due as it
+// was.
+func (s projectRecords) EnqueueReadPrompt(ctx context.Context, tx pgx.Tx, issue string, n record.CINews, now time.Time) (bool, error) {
+	if !s.ownsKey(record.OutboxKindCINews, issue) {
+		return false, nil
+	}
+	joined, err := s.Store.EnqueueReadPrompt(ctx, tx, issue, n, now)
+	if err != nil || joined {
+		return joined, err
+	}
+	s.wakeOnCommit(ctx, record.OutboxRow{Issue: issue, Kind: record.OutboxKindCINews})
+	return false, nil
 }
 
 // EnqueueID wakes the row's lane as Enqueue does: a start or catch-up naming kept decisions is
