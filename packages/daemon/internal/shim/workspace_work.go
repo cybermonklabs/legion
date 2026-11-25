@@ -68,7 +68,8 @@ func (s *shim) workspaceWork(request shimwire.WorkspaceWork) {
 }
 
 // maxAnswerErrorBytes is the most of a refusal's reason that a one-line answer to the daemon
-// carries: the answer to `workspace-work` (workspaceWork) and to `adopt-working-copy` (adopt).
+// carries: the answer to `workspace-work` (workspaceWork), to `adopt-working-copy` (adopt) and to
+// `start-at-branch` (startAtBranch).
 // A failed command's reason holds all of jj's standard error (workspace.RunCommand), which has no
 // bound of its own. Such an answer goes out as one line, and the writer refuses a line over
 // shimwire.MaxFrameBytes: the outbox then closes the connection and sends that line first again

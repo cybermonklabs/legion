@@ -427,6 +427,10 @@ func (c *stubConn) AdoptWorkingCopy(context.Context, runtime.GitIdentity, time.D
 	return errors.New("the stream stub does not adopt working copies")
 }
 
+func (c *stubConn) StartAtBranch(context.Context, runtime.StartAt, time.Duration) (runtime.StartedAt, error) {
+	return runtime.StartedAt{}, errors.New("the stream stub starts no working copy")
+}
+
 func (c *stubConn) Compact(context.Context, string, time.Duration) error {
 	return errors.New("the stream stub does not compact sessions")
 }

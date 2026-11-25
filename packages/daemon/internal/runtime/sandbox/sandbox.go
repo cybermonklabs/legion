@@ -1096,6 +1096,23 @@ func (r *Runtime) AdoptWorkingCopy(ctx context.Context, loc runtime.Locator, id 
 	return nil
 }
 
+// StartAtBranch has the agent's shim start the working copy of the pod's own workspace, on the
+// issue's volume, at the issue's branch (workspace.StartAtBranch, which the shim runs) over the
+// claim's connection, bounded by runtime.StartAtBranchTimeout. The recorded process must still be
+// the claim's running pod, by the one rule for a request a role's shim answers in the issue's
+// workspace (runningProcessConn), and each of its refusals opens with "start <claim>'s working copy".
+func (r *Runtime) StartAtBranch(ctx context.Context, loc runtime.Locator, at runtime.StartAt) (runtime.StartedAt, error) {
+	conn, err := r.runningProcessConn(loc)
+	if err != nil {
+		return runtime.StartedAt{}, fmt.Errorf("start %s's working copy at %s: %w", loc.Claim, at.Bookmark, err)
+	}
+	started, err := conn.StartAtBranch(ctx, at, runtime.StartAtBranchTimeout)
+	if err != nil {
+		return runtime.StartedAt{}, fmt.Errorf("start %s's working copy at %s: %w", loc.Claim, at.Bookmark, err)
+	}
+	return started, nil
+}
+
 var _ runtime.WorkspaceWorkReader = (*Runtime)(nil)
 
 // WorkspaceWork has role's shim read whether the issue workspace every role of the issue shares
@@ -1141,7 +1158,7 @@ func (r *Runtime) runningRoleConn(ctx context.Context, issue string, role claim.
 }
 
 // runningProcessConn is the one rule for a request a role's shim answers in the issue's workspace
-// (AdoptWorkingCopy, and WorkspaceWork through runningRoleConn): the process
+// (AdoptWorkingCopy, StartAtBranch, and WorkspaceWork through runningRoleConn): the process
 // loc records must run in the issue's own running pod, since the shim of loc's claim works in that
 // workspace. It answers the connection to that claim's shim. A locator this runtime did not mint,
 // a pod that is not the recorded one or not running, and a claim with no connection are each a

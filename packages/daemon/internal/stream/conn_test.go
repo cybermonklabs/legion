@@ -895,6 +895,65 @@ func TestAdoptWorkingCopyAsksTheShimAndReadsItsResult(t *testing.T) {
 	}
 }
 
+// The start at the branch is a request the shim answers itself: the frame names the bookmark, the
+// base and the shim's budget, and the answer is what the shim did. A refusal is
+// runtime.ErrStartAtRefused carrying the shim's words, and so is an older shim's, which forwards
+// the frame to Oh My Pi and gets its unknown-command answer. An answer whose commit is no commit id
+// is no answer to act on, and is not read as a refusal either.
+func TestStartAtBranchAsksTheShimAndReadsItsAnswer(t *testing.T) {
+	h := startListener(t, harnessOptions{})
+	p := h.connect(testToken)
+	conn := h.conn()
+	at := runtime.StartAt{Bookmark: "legion/ACME-1", Base: "main"}
+	from, head := strings.Repeat("a", 40), strings.Repeat("b", 40)
+	var started runtime.StartedAt
+	start := func() <-chan error {
+		return async(func() error {
+			var err error
+			started, err = conn.StartAtBranch(context.Background(), at, 3*time.Second)
+			return err
+		})
+	}
+
+	result := start()
+	request := p.expect(shimwire.TypeStartAtBranch).(shimwire.StartAtBranch)
+	if request.Bookmark != at.Bookmark || request.Base != at.Base || request.TimeoutMs != 3000 || request.ID == "" {
+		t.Fatalf("start-at-branch frame = %#v", request)
+	}
+	p.send(shimwire.StartAtBranchResult{ID: request.ID, OK: true, Moved: true, From: from, At: head, BehindBase: true})
+	if err := awaitResult(t, result); err != nil {
+		t.Fatalf("StartAtBranch: %v", err)
+	}
+	if want := (runtime.StartedAt{Moved: true, From: from, At: head, BehindBase: true}); started != want {
+		t.Fatalf("StartAtBranch = %+v, want %+v", started, want)
+	}
+
+	for _, answer := range []func(id string) shimwire.Frame{
+		func(id string) shimwire.Frame {
+			return shimwire.StartAtBranchResult{ID: id, Error: "Bookmark legion/ACME-1 is conflicted."}
+		},
+		func(id string) shimwire.Frame {
+			return shimwire.Response{ID: id, Command: shimwire.TypeStartAtBranch, Success: false, Error: "Unknown command: start-at-branch"}
+		},
+	} {
+		result := start()
+		request := p.expect(shimwire.TypeStartAtBranch).(shimwire.StartAtBranch)
+		refusal := answer(request.ID)
+		p.send(refusal)
+		err := awaitResult(t, result)
+		if !errors.Is(err, runtime.ErrStartAtRefused) || runtime.RefusalReason(err) == "" {
+			t.Fatalf("StartAtBranch answered %#v = %v, want runtime.ErrStartAtRefused carrying the far side's words", refusal, err)
+		}
+	}
+
+	result = start()
+	request = p.expect(shimwire.TypeStartAtBranch).(shimwire.StartAtBranch)
+	p.send(shimwire.StartAtBranchResult{ID: request.ID, OK: true, From: "main", At: head})
+	if err := awaitResult(t, result); err == nil || errors.Is(err, runtime.ErrStartAtRefused) {
+		t.Fatalf("StartAtBranch answered with no commit id = %v, want an error that is no refusal", err)
+	}
+}
+
 func TestAgentSecretsEnrollmentIsAnsweredByTheShim(t *testing.T) {
 	h := startListener(t, harnessOptions{})
 	p := h.connect(testToken)

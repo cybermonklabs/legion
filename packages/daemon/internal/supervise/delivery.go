@@ -214,6 +214,62 @@ type Delivery struct {
 	// release before this one, an operator or a delivery the release before stored can be, is sent
 	// with the daemon's sentences naming no commit and no entry at its end.
 	RoundNamed bool
+	// StartAt is where this task starts the working copy every role of its issue shares before it
+	// is sent: the first task of a next change, whose start row names the issue's branch and the
+	// base the branch moved to (RequestDeliver.StartAt). Its send asks the runtime to start the
+	// working copy there (Runtime.StartAtBranch) before the adoption and the prompt, under the
+	// adoption's hold (sendPending), and keeps what the runtime answered (StartAt.Started), so a
+	// later send of the task moves nothing again and still says what moved (message). The zero
+	// value is a task that starts nothing: every other task. It is the delivery's own column
+	// (pending_task_deliveries.start_at), so a restart between the queue and the send still
+	// starts the working copy first.
+	StartAt StartAt
+}
+
+// StartAt is a task's start of the working copy at its issue's branch (Delivery.StartAt): the
+// branch and its base (runtime.StartAt), what the runtime answered once the start ran (Started,
+// nil before it has), and whether the owning architect was told that the shim refused it (Told),
+// which a task's start tells once. A Bookmark of "" is no start. Each change of it is a new value
+// with a new Started, so a copy of a delivery never shares a change it did not make.
+type StartAt struct {
+	runtime.StartAt
+	Started *runtime.StartedAt `json:"started,omitempty"`
+	Told    bool               `json:"told,omitempty"`
+}
+
+// Set is whether s names a start at all.
+func (s StartAt) Set() bool { return s.Bookmark != "" }
+
+// owed is whether a send of the task must still start the working copy: a start the runtime has
+// not answered yet.
+func (s StartAt) owed() bool { return s.Set() && s.Started == nil }
+
+// note is what the task is sent behind once its start ran (startedNote), "" before.
+func (s StartAt) note() string {
+	if s.Started == nil {
+		return ""
+	}
+	return startedNote(s.StartAt, *s.Started)
+}
+
+// startedNote is the sentences a task starts with once the runtime started its working copy at
+// the branch at names: that the working copy moved, from which commit to which, and, where
+// origin's base holds commits the branch does not, that the role merges the base forward first.
+// A start that moved nothing and finds the branch level with its base says nothing.
+func startedNote(at runtime.StartAt, started runtime.StartedAt) string {
+	var sentences []string
+	if started.Moved {
+		sentences = append(sentences, fmt.Sprintf("Legion moved your working copy from commit %s to %s, the head of %s after the merge.",
+			started.From, started.At, at.Bookmark))
+	}
+	if started.BehindBase {
+		sentences = append(sentences, fmt.Sprintf("Branch %s on origin holds commits that %s does not hold.", at.Base, at.Bookmark),
+			fmt.Sprintf("Merge %s into %s before you start this task.", at.Base, at.Bookmark))
+	}
+	if len(sentences) == 0 {
+		return ""
+	}
+	return strings.Join(sentences, " ") + "\n\n"
 }
 
 // StillWorked says whether a claim in state will still work this task as the task of generation's
@@ -305,6 +361,11 @@ type sentences struct{ abandoned, ended bool }
 // error took back carries its own sentence last of all (ProviderErrorNote), so the agent reads
 // what the provider did and then the task; each of these says something the others do not.
 //
+// In front of all of them goes what the start of the working copy at the issue's branch did, once
+// it ran (Delivery.StartAt, startedNote): the agent reads where its working copy stands now before
+// what became of its earlier work. The send that ran the start puts the same sentences in front of
+// the prompt it composed before the start (startSend), so every send of the task carries them.
+//
 // The daemon's own delivery of a relaunch's record (Delivery.Relaunch, queueRelaunch) has no task:
 // its text is the record's sentence alone (RelaunchSentence), composed from the record as it
 // stands when the prompt goes, so a let-go recorded after it was queued is told in it too. One
@@ -363,7 +424,7 @@ func (d Delivery) message(c Claim) (string, sentences) {
 	if d.ProviderErrorNote != "" {
 		prefix += d.ProviderErrorNote + "\n\n"
 	}
-	return prefix + text, carried
+	return d.StartAt.note() + prefix + text, carried
 }
 
 // HashBootToken is the one hash a boot token is stored and looked up by. A launch mints the token
@@ -609,7 +670,7 @@ func (m *Machine) queue(ctx context.Context, request RequestDeliver) error {
 	}
 	d := Delivery{ID: id, Task: request.Task, Phase: request.Phase, Generation: request.Generation, Kept: request.Kept,
 		News: request.News, NewsOnly: request.NewsOnly, Entry: request.Entry, CheckLook: request.CheckLook, QueuedAt: m.deps.Clock.Now(),
-		RoundNamed: request.RoundNamed}
+		RoundNamed: request.RoundNamed, StartAt: StartAt{StartAt: request.StartAt}}
 	if request.Row > 0 || request.Entry > 0 {
 		// The claim records the row, the entry and its handshake only once the store has them
 		// with the delivery: a write that failed leaves the row undelivered and the entry ungiven,
@@ -1037,9 +1098,13 @@ func (m *Machine) sendPending(ctx context.Context) error {
 	// machine's decision publishes (ClaimView.SendInFlight), a tail of its own locked section
 	// with no agent round trip in it. Two sends that start inside each other's tail are what
 	// remains, and no answer read outside the other machine's lock can rule that out.
-	if m.adopts(*p) {
+	//
+	// A task that must still start the working copy at its issue's branch (Delivery.StartAt) is
+	// held the same way, whatever adopts answers: the start moves that one working copy too, and
+	// the branch moved whether or not this daemon mints the role's identity.
+	if m.adopts(*p) || p.StartAt.owed() {
 		if other, inTurn := m.issueInTurn(); inTurn {
-			m.log.Info("supervise: a claim of this issue is in a turn; the phase task waits rather than adopt the working copy they share",
+			m.log.Info("supervise: a claim of this issue is in a turn; the phase task waits rather than move the working copy they share",
 				"delivery", p.ID, "issue", m.claim.Issue, "inTurn", other)
 			return nil
 		}
@@ -1512,9 +1577,15 @@ func (m *Machine) streaming(ctx context.Context, conn runtime.Conn) (streaming, 
 // task is marked as put to the agent before the goroutine starts (Delivery.Prompted), whatever
 // the agent then answers: from here on, a prompt of it has gone out. Of the claim's two untold
 // records, this marks which the prompt carries the sentence of, as message composed it
-// (Machine.carried), and tells neither, as confirmCarrying states. Whether the send adopts the
-// working copy first is decided here, under the machine's lock, so the goroutine acts on the claim
-// the hold in sendPending was decided against.
+// (Machine.carried), and tells neither, as confirmCarrying states. Whether the send starts the
+// working copy at the issue's branch and adopts it first is decided here, under the machine's lock,
+// so the goroutine acts on the claim the hold in sendPending was decided against.
+//
+// A send that starts the working copy (Delivery.StartAt) does so before the adoption, since the
+// start puts a new working copy on the branch, which the adoption then gives the role's identity.
+// What the start answered goes in front of this prompt (startedNote) and with the outcome back to
+// the machine (PromptAcked.Started), whose fence keeps it on the delivery (keepStarted). A start
+// that failed sends nothing and adopts nothing: the outcome is that failure (refused).
 //
 // The news of the approved design this prompt carries is the pending delivery's own (d.News, as
 // sendPending's render left it), and nothing keeps a second copy of it: every rendering takes a new
@@ -1524,7 +1595,7 @@ func (m *Machine) streaming(ctx context.Context, conn runtime.Conn) (streaming, 
 // the task's while the send is in flight credits the same (turnAnswers).
 func (m *Machine) startSend(conn runtime.Conn, d Delivery) {
 	token, generation, role, loc := m.claim.Token, m.claim.Generation, m.claim.Role, m.claim.Locator
-	adopting := m.adopts(d)
+	adopting, starting := m.adopts(d), d.StartAt.owed()
 	prompt, carried := d.message(m.claim)
 	m.carried.abandoned = m.carried.abandoned || carried.abandoned
 	m.carried.ended = m.carried.ended || carried.ended
@@ -1538,11 +1609,19 @@ func (m *Machine) startSend(conn runtime.Conn, d Delivery) {
 	}
 	m.goroutines++
 	go func() {
-		// The send runs on a goroutine of its own, so its adoption, its prompt and its outcome's
-		// decision share one fresh context, one after another.
+		// The send runs on a goroutine of its own, so its start at the branch, its adoption, its
+		// prompt and its outcome's decision share one fresh context, one after another.
 		working := m.worker()
 		var err error
-		if adopting {
+		var started *runtime.StartedAt
+		if starting {
+			var answer runtime.StartedAt
+			if answer, err = m.startAtBranch(working, token, loc, &d); err == nil {
+				started = &answer
+				prompt = startedNote(d.StartAt.StartAt, answer) + prompt
+			}
+		}
+		if err == nil && adopting {
 			err = m.adopt(working, role, loc, &d)
 		}
 		if err == nil {
@@ -1550,9 +1629,9 @@ func (m *Machine) startSend(conn runtime.Conn, d Delivery) {
 			err = conn.Prompt(sending, d.ID, prompt)
 			cancel()
 		}
-		var ev Event = PromptAcked{Claim: token, Generation: generation, DeliveryID: d.ID}
+		var ev Event = PromptAcked{Claim: token, Generation: generation, DeliveryID: d.ID, Started: started}
 		if err != nil {
-			ev = PromptRefused{Claim: token, Generation: generation, DeliveryID: d.ID, Err: err}
+			ev = PromptRefused{Claim: token, Generation: generation, DeliveryID: d.ID, Err: err, Started: started}
 		}
 		if err := m.Handle(working, ev); err != nil {
 			m.log.Error("supervise: prompt outcome", "delivery", d.ID, "error", err)
@@ -1619,6 +1698,46 @@ func (m *Machine) adopt(ctx context.Context, role claim.Role, loc *runtime.Locat
 	m.log.Info("supervise: the working copy was adopted for the phase task",
 		"delivery", d.ID, "phase", string(d.Phase), "identity", id.Name, "took", m.deps.Clock.Now().Sub(started))
 	return nil
+}
+
+// startAtBranch starts the working copy every role of the issue shares at the issue's branch
+// before d, the first task of a next change, reaches the agent (Delivery.StartAt): the runtime
+// asks the claim's shim (Runtime.StartAtBranch). Who starts, and when, is startSend and
+// sendPending's hold, which holds the start while another claim of the issue is in a turn. A start
+// the shim answers is logged here, once, at Info, with the commit the working copy left and the one
+// it stands on now. A refusal is logged where the send's outcome is (refused).
+func (m *Machine) startAtBranch(ctx context.Context, token claim.Token, loc *runtime.Locator, d *Delivery) (runtime.StartedAt, error) {
+	if loc == nil {
+		return runtime.StartedAt{}, fmt.Errorf("start the working copy of %s at %s: the claim has no locator", token, d.StartAt.Bookmark)
+	}
+	begun := m.deps.Clock.Now()
+	started, err := m.deps.Runtime.StartAtBranch(ctx, *loc, d.StartAt.StartAt)
+	if err != nil {
+		return runtime.StartedAt{}, err
+	}
+	m.log.Info("supervise: the working copy was started at the branch for the next change's task",
+		"delivery", d.ID, "phase", string(d.Phase), "branch", d.StartAt.Bookmark, "base", d.StartAt.Base,
+		"moved", started.Moved, "from", started.From, "at", started.At, "behindBase", started.BehindBase,
+		"took", m.deps.Clock.Now().Sub(begun))
+	return started, nil
+}
+
+// tellStartRefused tells, once per task (StartAt.Told), that the shim refused to start p's working
+// copy at its issue's branch, with the shim's words (Deps.StartAtRefused): the owning architect
+// reads it, and a person or the architect resolves the branch by the refusal's ways out. The task
+// waits, charged nothing (refused), since only that act resolves it and a charge that failed the
+// claim would not wait for it. The mark reaches the store with the refusal's own write of the
+// delivery.
+func (m *Machine) tellStartRefused(p *Delivery, err error) {
+	if !p.StartAt.Set() || p.StartAt.Told || m.deps.StartAtRefused == nil {
+		return
+	}
+	reason := runtime.RefusalReason(err)
+	if reason == "" {
+		reason = err.Error()
+	}
+	p.StartAt.Told = true
+	m.deps.StartAtRefused(m.current(), *p, reason)
 }
 
 // confirmCarrying records that the pending delivery's turn started: the claim and the delivery

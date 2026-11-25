@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -437,5 +438,35 @@ func TestAdoptWorkingCopyAsksTheRecordedProcess(t *testing.T) {
 	}
 	if err := g.r.AdoptWorkingCopy(g.ctx, sandboxLocator(workerToken, "uid-pod-stale"), id); err == nil {
 		t.Fatal("a stale locator's adoption was asked")
+	}
+}
+
+// The start of a next change's working copy at its branch goes over the claim's connection, to the
+// recorded process only, within the runtime's budget, and answers what the shim answered. A shim's
+// refusal comes back as that refusal, and a stale locator asks nothing.
+func TestStartAtBranchAsksTheRecordedProcess(t *testing.T) {
+	g := newRig(t, nil)
+	conn := fake.NewConn()
+	g.conns.Register(workerToken, conn)
+	loc := g.spawn(workerSpec(t))
+	at := runtime.StartAt{Bookmark: "legion/ACME-1", Base: "main"}
+	answer := runtime.StartedAt{Moved: true, From: strings.Repeat("a", 40), At: strings.Repeat("b", 40)}
+	conn.AnswerStartAtBranch(answer)
+	started, err := g.r.StartAtBranch(g.ctx, loc, at)
+	if err != nil || started != answer {
+		t.Fatalf("StartAtBranch = %+v, %v; want the shim's %+v", started, err, answer)
+	}
+	if asked := conn.StartAts(); len(asked) != 1 || asked[0].StartAt != at || asked[0].Timeout != runtime.StartAtBranchTimeout {
+		t.Fatalf("starts asked %+v, want one of %+v within the runtime's budget", asked, at)
+	}
+	conn.FailStartAtBranch(fmt.Errorf("worker-stream: refused start-at-branch: %w", runtime.ErrStartAtRefused))
+	if _, err := g.r.StartAtBranch(g.ctx, loc, at); !errors.Is(err, runtime.ErrStartAtRefused) {
+		t.Fatalf("StartAtBranch the shim refused = %v, want runtime.ErrStartAtRefused", err)
+	}
+	if _, err := g.r.StartAtBranch(g.ctx, sandboxLocator(workerToken, "uid-pod-stale"), at); err == nil {
+		t.Fatal("a stale locator's start was asked")
+	}
+	if asked := conn.StartAts(); len(asked) != 2 {
+		t.Fatalf("starts asked %+v, want none for the stale locator", asked)
 	}
 }

@@ -54,6 +54,8 @@ type Call struct {
 	PodUID string
 	// Role is WorkspaceWork's role.
 	Role claim.Role
+	// StartAt is StartAtBranch's bookmark and base.
+	StartAt runtime.StartAt
 }
 
 // SpawnResult is one scripted answer to Spawn or Resume.
@@ -125,6 +127,7 @@ type Runtime struct {
 	keptVolumes  map[string]time.Time
 	sessions     map[claim.Token]string
 	work         map[string]runtime.WorkspaceWork
+	startedAt    runtime.StartedAt
 	holdReplace  func()
 	replaceNoPod bool
 	holdIssue    func()
@@ -218,6 +221,17 @@ func (r *Runtime) FailReconcileOrphans(err error) { r.fail("ReconcileOrphans", e
 
 // FailAdoptWorkingCopy makes every later AdoptWorkingCopy return err.
 func (r *Runtime) FailAdoptWorkingCopy(err error) { r.fail("AdoptWorkingCopy", err) }
+
+// FailStartAtBranch makes every later StartAtBranch return err; nil clears it.
+func (r *Runtime) FailStartAtBranch(err error) { r.fail("StartAtBranch", err) }
+
+// AnswerStartAtBranch makes every later StartAtBranch that does not fail answer started. Until a
+// test sets it, the answer is the zero StartedAt: nothing moved.
+func (r *Runtime) AnswerStartAtBranch(started runtime.StartedAt) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.startedAt = started
+}
 
 // FailCleanupTree makes every later CleanupTree return err; nil clears it.
 func (r *Runtime) FailCleanupTree(err error) { r.fail("CleanupTree", err) }
@@ -689,6 +703,19 @@ func (r *Runtime) AdoptWorkingCopy(_ context.Context, loc runtime.Locator, id ru
 	defer r.mu.Unlock()
 	r.calls = append(r.calls, Call{Method: "AdoptWorkingCopy", Locator: loc, Identity: id})
 	return r.failures["AdoptWorkingCopy"]
+}
+
+// StartAtBranch records the start of the working copy at the branch the daemon asked for, and
+// answers what AnswerStartAtBranch scripted, or FailStartAtBranch's error. The fake runs no shim
+// and no jj: the start itself is the shim's, which its own tests run (internal/shim).
+func (r *Runtime) StartAtBranch(_ context.Context, loc runtime.Locator, at runtime.StartAt) (runtime.StartedAt, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.calls = append(r.calls, Call{Method: "StartAtBranch", Locator: loc, StartAt: at})
+	if err := r.failures["StartAtBranch"]; err != nil {
+		return runtime.StartedAt{}, err
+	}
+	return r.startedAt, nil
 }
 
 func (r *Runtime) ProvisionsWorkspaces() bool {

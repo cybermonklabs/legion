@@ -648,6 +648,12 @@ func (r *localRuntime) AdoptWorkingCopy(context.Context, runtime.Locator, runtim
 	return nil
 }
 
+// StartAtBranch is nothing to do, for the reason AdoptWorkingCopy is: this proof's working
+// directory is no jj workspace, and no next change of its issue is started.
+func (r *localRuntime) StartAtBranch(context.Context, runtime.Locator, runtime.StartAt) (runtime.StartedAt, error) {
+	return runtime.StartedAt{}, nil
+}
+
 // ProvisionsWorkspaces answers true, as the Sandbox runtime does, so the daemon clones no
 // repository on its host; launch makes each claim's working directory.
 func (r *localRuntime) ProvisionsWorkspaces() bool { return true }

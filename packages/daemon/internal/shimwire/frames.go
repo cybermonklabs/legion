@@ -68,6 +68,11 @@ const (
 	// It is a jj query that moves none of the work, so the answer is small and crosses on one line.
 	TypeWorkspaceWork       = "workspace-work"
 	TypeWorkspaceWorkResult = "workspace-work-result"
+	// The start of a next change's working copy: the daemon asking the shim of the role about to
+	// take the change's first task to start its workspace's working copy at the issue's branch,
+	// which the daemon moved for the change, and the shim's answer. Its answer is one short line.
+	TypeStartAtBranch       = "start-at-branch"
+	TypeStartAtBranchResult = "start-at-branch-result"
 	// The launcher's memory guard reports each process it ended, unasked, so the daemon can tell
 	// that process's role why it is gone (INFRA-3557). The settings the guard runs by travel the
 	// other way, on the launcher_hello_ack (LauncherMemoryGuard).
@@ -922,6 +927,32 @@ type WorkspaceWorkResult struct {
 	Count   int      `json:"count"`
 }
 
+// StartAtBranch asks the shim to start the working copy of the workspace it runs in at Bookmark,
+// the issue's branch, which the daemon moved to the head of Base, the branch the issue's last pull
+// request merged into, for the issue's next change (workspace.StartAtBranch). The daemon names the
+// two branches and the budget, never a command or a path: the shim works in the one workspace its
+// environment names, with the jj and the git credential its role already works with.
+type StartAtBranch struct {
+	ID        string `json:"id"`
+	Bookmark  string `json:"bookmark"`
+	Base      string `json:"base"`
+	TimeoutMs int    `json:"timeoutMs"`
+}
+
+// StartAtBranchResult answers StartAtBranch: whether the shim started a new working copy on the
+// bookmark (Moved), the working copy's commit before the request (From), the bookmark's commit the
+// working copy stands on now (At), and whether origin's base holds a commit the bookmark does not
+// (BehindBase). A refusal carries its reason and nothing moved.
+type StartAtBranchResult struct {
+	ID         string `json:"id"`
+	OK         bool   `json:"ok"`
+	Error      string `json:"error,omitempty"`
+	Moved      bool   `json:"moved"`
+	From       string `json:"from,omitempty"`
+	At         string `json:"at,omitempty"`
+	BehindBase bool   `json:"behindBase"`
+}
+
 // LauncherRestored is the report an earlier launcher sends, unasked, once it has restored a
 // released pod's saved work into the pod that replaced it, and again on each later connection
 // until one carries it. Earlier daemons saved a released pod's unpushed work and sent it to the
@@ -1021,6 +1052,8 @@ func (LauncherStop) FrameType() string                 { return TypeLauncherStop
 func (LauncherStopResult) FrameType() string           { return TypeLauncherStopResult }
 func (WorkspaceWork) FrameType() string                { return TypeWorkspaceWork }
 func (WorkspaceWorkResult) FrameType() string          { return TypeWorkspaceWorkResult }
+func (StartAtBranch) FrameType() string                { return TypeStartAtBranch }
+func (StartAtBranchResult) FrameType() string          { return TypeStartAtBranchResult }
 func (LauncherRestored) FrameType() string             { return TypeLauncherRestored }
 func (LauncherMemoryKill) FrameType() string           { return TypeLauncherMemoryKill }
 func (LauncherVolumeReport) FrameType() string         { return TypeLauncherVolumeReport }
@@ -1170,6 +1203,16 @@ func (f WorkspaceWorkResult) MarshalJSON() ([]byte, error) {
 	return marshalFrame(TypeWorkspaceWorkResult, plain(f))
 }
 
+func (f StartAtBranch) MarshalJSON() ([]byte, error) {
+	type plain StartAtBranch
+	return marshalFrame(TypeStartAtBranch, plain(f))
+}
+
+func (f StartAtBranchResult) MarshalJSON() ([]byte, error) {
+	type plain StartAtBranchResult
+	return marshalFrame(TypeStartAtBranchResult, plain(f))
+}
+
 func (f LauncherRestored) MarshalJSON() ([]byte, error) {
 	type plain LauncherRestored
 	return marshalFrame(TypeLauncherRestored, plain(f))
@@ -1293,6 +1336,37 @@ func (f WorkspaceWorkResult) Validate() error {
 // commitIDShape is a commit id as jj prints one for a git repository: 40 lowercase hexadecimal
 // digits.
 var commitIDShape = regexp.MustCompile(`^[0-9a-f]{40}$`)
+
+// Validate refuses a start at the branch the shim would refuse. The daemon is its only sender.
+func (f StartAtBranch) Validate() error {
+	switch {
+	case f.ID == "":
+		return fmt.Errorf("%w: start-at-branch carries no id", ErrMalformedFrame)
+	case f.Bookmark == "" || f.Base == "":
+		return fmt.Errorf("%w: start-at-branch names no bookmark or no base", ErrMalformedFrame)
+	case f.TimeoutMs <= 0:
+		return fmt.Errorf("%w: start-at-branch timeoutMs is %d", ErrMalformedFrame, f.TimeoutMs)
+	}
+	return nil
+}
+
+// Validate refuses a start's answer the daemon could not act on: one answering no request, a
+// refusal with no reason, and a start whose commit before or after is not a commit id. The two
+// commits come from the jj of the role's workspace, and the daemon writes them into the task it
+// sends, so it reads no other shape (commitIDShape).
+func (f StartAtBranchResult) Validate() error {
+	switch {
+	case f.ID == "":
+		return fmt.Errorf("%w: start-at-branch-result carries no id", ErrMalformedFrame)
+	case !f.OK && f.Error == "":
+		return fmt.Errorf("%w: start-at-branch-result refuses without a reason", ErrMalformedFrame)
+	case f.OK && !commitIDShape.MatchString(f.From):
+		return fmt.Errorf("%w: start-at-branch-result from %q is not a commit id", ErrMalformedFrame, cutForError(f.From))
+	case f.OK && !commitIDShape.MatchString(f.At):
+		return fmt.Errorf("%w: start-at-branch-result at %q is not a commit id", ErrMalformedFrame, cutForError(f.At))
+	}
+	return nil
+}
 
 // cutForError is at most the first 64 bytes of a value a refusal names, so a refusal of a long
 // value stays one short line.
@@ -1687,6 +1761,10 @@ func Decode(line []byte) (Frame, error) {
 		return decodeInto[WorkspaceWork](trimmed)
 	case TypeWorkspaceWorkResult:
 		return decodeInto[WorkspaceWorkResult](trimmed)
+	case TypeStartAtBranch:
+		return decodeInto[StartAtBranch](trimmed)
+	case TypeStartAtBranchResult:
+		return decodeInto[StartAtBranchResult](trimmed)
 	case TypeLauncherRestored:
 		return decodeInto[LauncherRestored](trimmed)
 	case TypeLauncherMemoryKill:
