@@ -233,6 +233,13 @@ export function throwIfExited(stack: EnvoyStack, doing: string): void {
   if (exited !== undefined) throw new Error(`${doing}: ${exited}`);
 }
 
+/** Throws `stopped ${doing}: the row ended` once `ended`, the signal of the row that is `doing`
+ *  it, has aborted. A live describe's `afterEach` aborts each row's signal, so a wait of a row
+ *  its limit abandoned stops at its next poll rather than poll on into the row after it. */
+export function throwIfRowEnded(ended: AbortSignal, doing: string): void {
+  if (ended.aborted) throw new Error(`stopped ${doing}: the row ended`);
+}
+
 /**
  * How long a rig gives a process to come up, and how much of its log an error quotes. With no
  * `timeoutMs` the wait has no deadline of its own: it ends when the process serves or exits, and
@@ -271,9 +278,14 @@ export async function awaitReady(
   budget: ReadyBudget,
   ready: (signal: AbortSignal) => Promise<boolean>
 ): Promise<void> {
-  const timeoutMs = budget.timeoutMs === undefined ? undefined : Math.max(0, budget.timeoutMs);
-  const spent =
-    timeoutMs === undefined ? new AbortController().signal : AbortSignal.timeout(timeoutMs);
+  const { timeoutMs } = budget;
+  // The budget's deadline, where it has one: the signal that aborts once it passes, with the
+  // budget it was read from.
+  const deadline =
+    timeoutMs === undefined
+      ? undefined
+      : { timeoutMs, spent: AbortSignal.timeout(Math.max(0, timeoutMs)) };
+  const spent = deadline?.spent ?? new AbortController().signal;
   const checks = budget.signal === undefined ? spent : AbortSignal.any([spent, budget.signal]);
   const passed = Promise.withResolvers<false>();
   checks.addEventListener("abort", () => passed.resolve(false), { once: true });
@@ -284,11 +296,11 @@ export async function awaitReady(
       throw new Error(`${what} was not ready: its wait was stopped`);
     }
     if (await Promise.race([ready(checks).catch(() => false), passed.promise])) return;
-    if (spent.aborted) {
+    if (deadline?.spent.aborted === true) {
       const why =
-        (timeoutMs ?? 0) > 0
-          ? `within ${timeoutMs} ms`
-          : `by its deadline, which had passed ${-(budget.timeoutMs ?? 0)} ms before its wait began`;
+        deadline.timeoutMs > 0
+          ? `within ${deadline.timeoutMs} ms`
+          : `by its deadline, which had passed ${-deadline.timeoutMs} ms before its wait began`;
       throw new Error(`${what} was not ready ${why}: ${tail(log, budget.tailLines)}`);
     }
     await Bun.sleep(100);

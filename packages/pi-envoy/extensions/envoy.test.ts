@@ -28530,13 +28530,14 @@ describe.skipIf(process.env.LEGION_E2E !== "1")(
           else process.env.NATS_NKEY_SEED = originalSeed;
         }
       }
-      // A hang guard: what can hang is the session's start on a real connection, or a flush of
-      // the requester's connection (`runReplayGrantScenario`), which has no deadline of its own.
-      // The scenario's other waits are bounded: 10 s for the first answer, 10 s for the server's
-      // log line and 5 s for the last answer. The row runs only with LEGION_E2E=1, which the
-      // whole-file Jobs infra-1580-t27-j1-l27pc and infra-1580-r27wf-4rk46 did not set. Worst
-      // measured cost: 172.17 ms, its one run in CI's pi-envoy job at 06d187e7 (run
-      // 45437325102). Main's 60_000 is 348.5 times that, so it is kept.
+      // A hang guard: what can hang is the session's start on a real connection, or a wait of
+      // `runReplayGrantScenario` for a replay answer or for the server's log of the refused
+      // publish; none of them has a deadline of its own. The row runs only with LEGION_E2E=1,
+      // which the whole-file Jobs infra-1580-t27-j1-l27pc and infra-1580-r27wf-4rk46 did not set.
+      // Worst measured cost: 177.60 ms, in CI's pi-envoy job at 473ab6ae (run 45515356217), and
+      // 172.17 ms at 06d187e7 (run 45437325102). Main's 60_000 is 337.8 times the worst, so it is
+      // kept. The pi-envoy job leaves one hang 569 s: its `timeout-minutes: 15` less its 331 s in
+      // run 45515356217, and 60 s is inside that.
     }, 60_000);
   }
 );
