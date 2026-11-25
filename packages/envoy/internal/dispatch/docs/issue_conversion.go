@@ -337,12 +337,13 @@ type conversionStop struct {
 // commits, or under dryRun rolls back once every write and the write phase's end have run, and
 // answers what it did. A done issue, and one that holds its room already, is passed over before
 // the gate runs, with nothing read but its row. Every document of the issue's room is flushed by
-// every process that holds it first, holding no lock. Then, inside the transaction, gate runs
-// before anything else: its refusal (ConvertRefusal) is answered as the error, with nothing
-// written. Under the issue's owner lock the issue is read again, and it is deferred, with nothing
-// written, while one of its documents owes its block index or a room's text reads otherwise than
-// its latest version while it owes a settlement. A failure answers the error, with nothing
-// written.
+// every process that holds it first, holding no lock. Then, inside the transaction, after the
+// statement that has Postgres plan its statements at the tables' sizes as they run
+// (graphstore.PlanAtCurrentSizes), gate runs before anything else: its refusal (ConvertRefusal) is
+// answered as the error, with nothing written. Under the issue's owner lock the issue is read
+// again, and it is deferred, with nothing written, while one of its documents owes its block index
+// or a room's text reads otherwise than its latest version while it owes a settlement. A failure
+// answers the error, with nothing written.
 func (s *Service) ConvertIssue(ctx context.Context, issueKey string, gate ConvertGate, dryRun bool) (ConvertedIssue, error) {
 	ctx = store.WithTransactionTracking(ctx)
 	began := time.Now()
@@ -378,6 +379,9 @@ func (s *Service) ConvertIssue(ctx context.Context, issueKey string, gate Conver
 		return answer(fmt.Errorf("begin the conversion of %s: %w", issueKey, err))
 	}
 	defer tx.Rollback(context.Background())
+	if err := graphstore.PlanAtCurrentSizes(ctx, tx); err != nil {
+		return answer(err)
+	}
 	joined, ledger := s.joinAtOnce(ctx, tx)
 	defer ledger.Discard()
 	if err := gate(joined, tx); err != nil {
