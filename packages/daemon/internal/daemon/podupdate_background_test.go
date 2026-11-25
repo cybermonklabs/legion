@@ -82,7 +82,7 @@ func (r *podUpdateRig) openRoundAnsweredBy(roles ...claim.Role) {
 }
 
 // sweepSettled is one sweep over machines that decide nothing: a claim whose machine is deciding
-// reads as one that has not answered (roundGroup's mask), so a sweep over a settled rig decides
+// reads as one that has not answered (masked), so a sweep over a settled rig decides
 // by the rule under test and by nothing else, and its outcome can be read once.
 func (r *podUpdateRig) sweepSettled() {
 	r.t.Helper()

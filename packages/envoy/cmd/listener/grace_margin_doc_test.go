@@ -57,6 +57,7 @@ var graceMarginWhitespace = regexp.MustCompile(`\s+`)
 // The subtests stay serial: files and sentences are written inside them and compared after the
 // loop, so a t.Parallel() added to one would make the counts fail rather than pass wrongly.
 func TestDocumentedGraceMarginIsTheListenerGraceMargin(t *testing.T) {
+	t.Parallel()
 	margin := int(listenerGraceMargin.Seconds())
 	files, sentences := 0, 0
 	for _, doc := range graceMarginDocs {
