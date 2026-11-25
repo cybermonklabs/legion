@@ -119,7 +119,8 @@ pass
 begin binaries
 CGO_ENABLED=0 go -C "$root/packages/daemon" test -c -tags e2e -o "$work/share-volumes.test" ./internal/daemon
 CGO_ENABLED=0 go -C "$root/packages/daemon" build -o "$work/legion" ./cmd/legion
-note "$("$work/legion" version | head -1)"
+version=$("$work/legion" version) || fail "the legion just built cannot print its version"
+note "${version%%$'\n'*}"
 pass
 
 begin cluster

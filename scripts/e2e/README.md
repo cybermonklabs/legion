@@ -7902,7 +7902,8 @@ Each item below names a function, then what it does.
 
 - `kind_sandbox_install_gvisor WORK`
 
-  installs gVisor's dated release, pinned by sha512, into the node's containerd as the `runsc` handler with a `gvisor` RuntimeClass, and fails unless a `runtimeClassName: gvisor` pod's `dmesg` says `Starting gVisor`
+  installs gVisor's dated release, pinned by sha512, into the node's containerd as the `runsc` handler with a `gvisor` RuntimeClass, and fails unless a `runtimeClassName: gvisor` pod's `dmesg` says `Starting gVisor`.
+  The pod's whole log is read before it is matched: kubectl writes a log in several writes, so under the caller's `pipefail` a `grep -q` that exits at its first match lets kubectl die of `SIGPIPE` and fails the check on a log that holds the line
 
 - `kind_sandbox_load_image IMAGE`
 
@@ -7915,7 +7916,8 @@ Each item below names a function, then what it does.
 - `kind_sandbox_teardown STATUS EVIDENCE`
 
   when `STATUS` is not 0, writes the cluster's pods, the `legion` namespace's Sandboxes, volume claims, events and container logs to `EVIDENCE/cluster-at-failure.txt`; then deletes the cluster.
-  It does nothing before `kind_sandbox_create` named a cluster, or once the cluster is gone
+  It does nothing before `kind_sandbox_create` named a cluster, or once the cluster is gone.
+  kind's whole cluster list is read before the name is matched, for the reason the gvisor check's log is: kind writes a line per cluster, and a lookup that killed kind before its last line would leave the cluster running as one already gone
 
 ## lib/live-daemon-proof.sh
 
