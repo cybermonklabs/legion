@@ -549,6 +549,10 @@ func populatedOutbox(s *seeding) populatedRows {
 // both are durable.
 func populatedDeployment(s *seeding) composition {
 	cfg := apifixture.LoadSettings(s.t, apiSettings(s.t, "settingsFixtureFile"))
+	// The deployment runs under dispatch_token_broker in its move (contract 275). The file names
+	// dispatch_token_file, which the loader refuses beside the setting, so the setting is turned on
+	// in the loaded configuration, with no token file, as the loader leaves it under the setting.
+	cfg.DispatchTokenBroker, cfg.DispatchTokenFile = true, ""
 	// Four boots of this project, the first four days before this read (store.Store.RecordBoot).
 	for _, booted := range []time.Time{at(18, 14, 3, 27), at(19, 6, 12, 0), at(21, 2, 44, 9), at(22, 9, 15, 2)} {
 		_, err := s.st.RecordBoot(s.ctx, "LEGION", booted)
@@ -597,6 +601,10 @@ func populatedDeployment(s *seeding) composition {
 			{Claim: s.token("LEGION", "LEGION-207", claim.RoleImplementer), Issue: "LEGION-207", Role: claim.RoleImplementer, Kind: supervise.WakePluginRefresh, At: at(22, 9, 17, 56)},
 			{Claim: s.token("LEGION", "LEGION-208", claim.RolePlanner), Issue: "LEGION-208", Role: claim.RolePlanner, Kind: supervise.WakeLaunch, At: at(22, 9, 18, 11)},
 		},
+		// Two launches since this boot kept pods built before dispatch_token_broker and carried the
+		// transition token, the latest two minutes after the boot, and three live generations still
+		// hold a Dispatch token, one of them started before this boot.
+		dispatchTokens: &sandbox.DispatchTokens{TransitionLaunches: 2, LastTransitionLaunch: at(22, 9, 17, 3), LiveLaunches: 3},
 		// The broker login holds a credential. The image passed its probe after two attempts the
 		// pool had no room for, a gap the deployment's file decides
 		// (capabilities.decided.pool-capacity).

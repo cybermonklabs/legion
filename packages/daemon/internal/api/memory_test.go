@@ -41,8 +41,9 @@ func drawnAt(t *testing.T, experiment string) string {
 // of them the times of the task they hold of that entry, two roots carry the architect-stalled arm
 // the daemon reads for them, each reviewing root of it carries what its round waits on from GitHub,
 // every issue of a live tree carries that tree's quiet time, the issues of its drawn tree carry the
-// experiment answers they hold, and its capability report holds the repository caches' row with
-// that source's own word. The same record ten seconds into a pause is the paused state
+// experiment answers they hold, its capability report holds the repository caches' row with that
+// source's own word, and the body carries the daemon's Dispatch credential under
+// dispatch_token_broker. The same record ten seconds into a pause is the paused state
 // (pausedState), which carries `paused`; narrowing_test.go's narrowingState puts that pause beside
 // this state, so one state proves every band of stateNarrowings, that they compose, and the value
 // strip of a capability row's `source` beside them. It stands no member of the line of the kind 132
@@ -135,7 +136,7 @@ var (
 func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 	full := stateFrom(t, populatedState(t), "192.0.2.1:41000", podClaims(memoryContract-1))
 	fullWakes, fullCarried := wakesServed(t, full)
-	fields := []string{"memoryGroup", "updateRound", "gatedSteps", "waitingLine", "leakCheckCause", TreeMovedAtField, QuietHoursField, "assignments", "apps"}
+	fields := []string{"memoryGroup", "updateRound", "gatedSteps", "waitingLine", "leakCheckCause", TreeMovedAtField, QuietHoursField, "assignments", "apps", "dispatchCredential"}
 	for _, field := range append(fields, recordFieldKeys...) {
 		field := `"` + field + `"`
 		if !strings.Contains(string(full), field) {
@@ -228,6 +229,12 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 		// `repositories.refused` (repositoryAppsContract), the contract that added it, so a pod at
 		// it is served the key and every pod below it is not.
 		apps bool
+		// credential is whether the caller is served `dispatchCredential`, the daemon's Dispatch
+		// credential under dispatch_token_broker (dispatchCredentialContract), the contract that
+		// added it. No pod is placed at it: a plugin at shapedAnswersContract or later states its
+		// contract in the header (podContracts), so every pod this table places is below it and is
+		// served no object, and a caller served this daemon's own body is served it.
+		credential bool
 		// pause is whether the caller is served the project's pause, `paused` here, which
 		// pauseContract added beside `lastPause`, so a pod at it is served the key and every pod
 		// below it is not.
@@ -350,9 +357,9 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 		// its top alike.
 		{name: "a pod at pauseContract", remote: statePodAddr + ":41000", claims: podClaims(pauseContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, apps: true, pause: true, contract: pauseContract},
 		{name: "a pod just below shapedAnswersContract", remote: statePodAddr + ":41000", claims: podClaims(shapedAnswersContract - 1), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, apps: true, pause: true, contract: shapedAnswersContract - 1},
-		{name: "a pod at this contract", remote: statePodAddr + ":41000", claims: podClaims(DaemonAPIVersion), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, apps: true, pause: true, repos: true, plans: true, priority: true, caches: true, giveUps: true, contract: DaemonAPIVersion},
-		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, apps: true, pause: true, repos: true, plans: true, priority: true, caches: true, giveUps: true, contract: DaemonAPIVersion},
-		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(memoryContract - 1), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, apps: true, pause: true, repos: true, plans: true, priority: true, caches: true, giveUps: true, contract: DaemonAPIVersion},
+		{name: "a pod at this contract", remote: statePodAddr + ":41000", claims: podClaims(DaemonAPIVersion), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, apps: true, pause: true, repos: true, plans: true, priority: true, caches: true, giveUps: true, contract: DaemonAPIVersion, credential: true},
+		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, apps: true, pause: true, repos: true, plans: true, priority: true, caches: true, giveUps: true, contract: DaemonAPIVersion, credential: true},
+		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(memoryContract - 1), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, apps: true, pause: true, repos: true, plans: true, priority: true, caches: true, giveUps: true, contract: DaemonAPIVersion, credential: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			body := stateFrom(t, populatedState(t), tc.remote, tc.claims)
@@ -489,6 +496,12 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 			}
 			if !tc.refresh {
 				delete(want, ClaimsToRefreshField)
+			}
+			// A caller below dispatchCredentialContract is served no `dispatchCredential`, the one
+			// key that contract added (api's withoutDispatchCredential), which is every pod this
+			// table places, since a plugin at shapedAnswersContract or later states its contract.
+			if !tc.credential {
+				delete(want, "dispatchCredential")
 			}
 			if !tc.giveUps {
 				delete(want, "intakeGiveUps")
@@ -635,6 +648,9 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 			if mark, carried := got["contract"]; carried != tc.failure {
 				t.Errorf("the state %s carries the mark %v = %v, want %v: it rides under the contract of the decided record",
 					body, mark, carried, tc.failure)
+			}
+			if credential, carried := got["dispatchCredential"]; carried != tc.credential {
+				t.Errorf("the state %s carries the daemon's Dispatch credential %v = %v, want %v", body, credential, carried, tc.credential)
 			}
 			delete(got, "contract")
 			wantJSON, _ := json.Marshal(want)

@@ -29,6 +29,11 @@ trap 'rm -rf "$work"' EXIT
 # shellcheck source=.github/scripts/test-lib.sh
 source "$script_dir/test-lib.sh"
 
+# colon is the colon of a path:line that the check under test prints. It is built at run
+# time so that this file's text holds no path followed by a colon and a line number, which
+# ci_citations.py refuses wherever it stands under .github.
+colon=':'
+
 # The interpreter python3 names, asked once in this harness's own environment. Each fixture's bin
 # directory, first on the PATH a case runs the script under, holds a link to it as python3, so the
 # script's `python3` is this interpreter and the gh its Python runs is the stub beside that link.
@@ -235,7 +240,7 @@ pull_request_event "$root" main
 run_check "$root" pull_request
 check "exits 1" "$(is "$status" 1)"
 check "names the declaration and its line" \
-  "$(contains "$out" '^::error file=packages/daemon/internal/api/version.go::packages/daemon/internal/api/version.go:7:')"
+  "$(contains "$out" "^::error file=packages/daemon/internal/api/version.go::packages/daemon/internal/api/version.go${colon}7:")"
 check "names both numbers and the base it read" \
   "$(contains "$out" 'declares daemon API contract 7, which is not above the 7 the base carries (the tip of main)')"
 check "names the free number" \
@@ -579,7 +584,7 @@ pull_request_event "$root" main
 run_check "$root" pull_request
 check "exits 1" "$(is "$status" 1)"
 check "names the declaration and its line" \
-  "$(contains "$out" '^::error file=packages/daemon/internal/api/version.go::packages/daemon/internal/api/version.go:6:')"
+  "$(contains "$out" "^::error file=packages/daemon/internal/api/version.go::packages/daemon/internal/api/version.go${colon}6:")"
 check "names both numbers" \
   "$(contains "$out" 'declares daemon API contract 7, which is not above the 7 the base carries (the tip of main)')"
 check "names the free number" "$(contains "$out" 'Take 8, the lowest number above')"

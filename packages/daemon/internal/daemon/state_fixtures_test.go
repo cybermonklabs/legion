@@ -192,9 +192,15 @@ type composition struct {
 	// records.
 	startedAt time.Time
 	// wakes are the launches the pacing holds in the machines (supervision.waitingWakes). A
-	// machine holds one only inside a wave, and none restored from the store does, so this is the
-	// one input of the source served gives by hand.
+	// machine holds one only inside a wave, and none restored from the store does, so this is one
+	// of the two inputs of the source served gives by hand.
 	wakes []supervise.WaitingWake
+	// dispatchTokens are the Sandbox runtime's counts of the Dispatch tokens its launches handed
+	// out (sandbox.Runtime.DispatchTokens), which the source reads under dispatch_token_broker
+	// alone (dispatchTokensOf); nil is a deployment without the setting, whose state carries no
+	// `dispatchCredential`. The runtime counts them in memory as it launches, and the composition
+	// runs no runtime, so this is the other input served gives by hand.
+	dispatchTokens *sandbox.DispatchTokens
 	// secretsIssued is whether the daemon's broker login holds a credential (plan.secretsLogin,
 	// issuedSecretsLogin); false is a deployment that enrolls no pod, whose daemon holds no login.
 	secretsIssued bool
@@ -255,6 +261,13 @@ func (s *seeding) served(c composition) []byte {
 	admission := workflowAdmission(records, workflow.New(records, engineCfg, log), cfg, clock.Now, log)
 	view := stateSource(cfg, s.st, records, c.startedAt, supervising, p, admission.ArchitectStallArms)
 	view.wakes = func() []supervise.WaitingWake { return c.wakes }
+	if c.dispatchTokens != nil {
+		if !cfg.DispatchTokenBroker {
+			s.t.Fatal("the seed gives Dispatch token counts to a daemon without dispatch_token_broker, which reads none (dispatchTokensOf)")
+		}
+		tokens := *c.dispatchTokens
+		view.dispatchTokens = func() sandbox.DispatchTokens { return tokens }
+	}
 	opts := api.Options{State: view, StateTransactions: s.st.Pool(), Steps: cfg.Gates.Steps(), Log: log}
 	if c.consumers != nil {
 		opts.ConsumerLag = func(context.Context) []intake.ConsumerLag { return c.consumers }
