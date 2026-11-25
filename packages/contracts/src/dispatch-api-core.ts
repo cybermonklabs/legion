@@ -244,6 +244,11 @@ export const ProjectSchema = z
      *  `PUT /api/v1/projects/{key}/default-repository` sets and clears it. Absent when the
      *  project has none, and from a Dispatch older than the field. */
     default_repo: z.string().optional(),
+    /** Whether the project needs a credential that proves the session: when it is on, an
+     *  architect's write of an issue's spec or Verification document passes only on a credential
+     *  that proves the architect's session, and a role-holder publication only on one that proves
+     *  `legion-daemon:<project>`. Off by default. Dispatch always answers it. */
+    proven_sessions: z.boolean(),
     created_at: z.string(),
   })
   .readonly();

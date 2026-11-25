@@ -214,6 +214,7 @@ const validCalls = {
   dispatch_issues: { project: "ACME" },
   dispatch_project: { key: "CORE", name: "Core" },
   dispatch_projects: {},
+  dispatch_project_update: { project: "CORE", proven_sessions: "off" },
   dispatch_priorities: { project: ["DSP"] },
   dispatch_architecture_sync: { project: "CORE" },
   dispatch_open_asks: {},
@@ -336,6 +337,7 @@ describe("dispatchToolSpecs", () => {
       "dispatch_issues",
       "dispatch_project",
       "dispatch_projects",
+      "dispatch_project_update",
       "dispatch_priorities",
       "dispatch_architecture_sync",
       "dispatch_open_asks",
@@ -422,6 +424,28 @@ describe("dispatchToolSpecs", () => {
     expect(schema.safeParse({ project: "INFRA", since: 1 }).success).toBe(false);
     // An empty key would send `GET /api/v1/projects//plans`, so it is refused like any other.
     expectNotAProjectKey(schema, [{ project: "infra" }, { project: "" }]);
+  });
+
+  test("dispatch_project_update takes a project key and on or off, and nothing else", () => {
+    const schema = schemaFor("dispatch_project_update");
+
+    for (const proven_sessions of ["on", "off"]) {
+      expect(schema.safeParse({ project: "CORE", proven_sessions }).success, proven_sessions).toBe(
+        true
+      );
+    }
+    expect(schema.safeParse({ project: "CORE" }).success).toBe(false);
+    expect(schema.safeParse({ project: "CORE", proven_sessions: true }).success).toBe(false);
+    expect(schema.safeParse({ project: "CORE", proven_sessions: "yes" }).success).toBe(false);
+    expect(schema.safeParse({ project: "CORE", proven_sessions: "on", name: "Core" }).success).toBe(
+      false
+    );
+    // An empty key would send `PUT /api/v1/projects//proven-sessions`, so it is refused like any
+    // other.
+    expectNotAProjectKey(schema, [
+      { project: "core", proven_sessions: "on" },
+      { project: "", proven_sessions: "off" },
+    ]);
   });
 
   test("dispatch_search rejects a one-character query and a limit above 50", () => {

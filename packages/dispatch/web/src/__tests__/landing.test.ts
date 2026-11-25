@@ -148,6 +148,7 @@ const shell: LandingShell = {
       key: "CORE",
       name: "Core",
       open_asks: 0,
+      proven_sessions: false,
     },
   ],
   unread_replies: 2,
