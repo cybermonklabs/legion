@@ -359,9 +359,11 @@ Dispatch read them, delete the files, then install every App from
   Autopilot adds its own to an issue or controller pod): an issue pod carries a disk of its own and
   shares none, so the
   scheduler places it wherever the pool has room and Karpenter
-  adds nodes under the pool's limits. Concurrent issue pods are bounded by what the pool's
-  `limits.cpu` and `limits.memory` leave for pods of that size (three per 8-vCPU floor node, about
-  120 at `limits.cpu: 256`, or `limits.memory` / 8 GiB when that is smaller) once the probe pod and,
+  adds nodes under the pool's limits. Concurrent issue pods are bounded by the nodes the pool's
+  `limits.cpu` and `limits.memory` let Karpenter make, since Karpenter counts each node's whole
+  capacity against those limits (three pods per 8-vCPU floor node, so about 96 on the 32 floor
+  nodes of `limits.cpu: 256`, or three on each of `limits.memory` / 64 GiB floor nodes when that is
+  smaller) once the probe pod and,
   under `controller: daemon`, the controller's pod are counted; `admission_cap` counts the issues
   the daemon has started rather than the pods, since an issue keeps its pod where it holds no slot —
   through `accepting`, `retro` and `merging`, which hold none, on to its own close — and an issue
