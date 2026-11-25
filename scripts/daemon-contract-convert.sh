@@ -8,10 +8,11 @@
 # check refuses a numbered entry added after the cutover. This script is the one round each such
 # branch pays, once.
 #
-# It runs on the current branch against the branch's merge base with main, which must be a commit
-# from before the cutover (one whose version.go declares `const DaemonAPIVersion`): a branch that
-# has already merged the cutover is refused. It reads the branch at HEAD and that base out of git,
-# and does the six steps of the design ("The cutover and open pull requests"):
+# It runs on the current branch against the branch's merge base with main (or with the base branch
+# that --base names), which must be a commit from before the cutover (one whose version.go declares
+# `const DaemonAPIVersion`): a branch that has already merged the cutover is refused. It reads the
+# branch at HEAD and that base out of git, and does the six steps of the design ("The cutover and
+# open pull requests"):
 #
 #   1. Each numbered entry the branch adds, a `// <n>: ` paragraph of version.go that the base does
 #      not hold, becomes a new entry file, packages/daemon/internal/api/contract_<id>_<slug>.go,
@@ -64,15 +65,17 @@
 # before the merge fails. Where the merge conflicts, the conversion alone is committed and the
 # conflicting files are named; the author merges main and runs the `-update` of step 5 by hand.
 #
-#   --main <ref>  main after the cutover, default refs/remotes/origin/main. A main whose version.go
-#                 still declares `const DaemonAPIVersion` is refused, naming the ref: the entry
-#                 files call registerEntry, which a tree from before the cutover does not define.
-#   --base <ref>  the pull request's base branch, default main. A branch stacked on another branch
-#                 names that branch, converted first, and it takes main's place in each step above:
+#   --base <ref>  the ref the branch merges, its pull request's base branch: main after the cutover,
+#                 default refs/remotes/origin/main, which messages call main. A branch stacked on
+#                 another branch names that branch, and it takes main's place in each step above:
 #                 the script converts only the entries the branch adds over its merge base with
 #                 that branch, so no entry the base branch converted is converted again under
-#                 another id. A base branch that still declares `const DaemonAPIVersion` is
-#                 refused: convert it first.
+#                 another id. A ref whose version.go git cannot read, or that still declares
+#                 `const DaemonAPIVersion`, is refused, naming it: the entry files call
+#                 registerEntry, which a tree from before the cutover does not define. Where it is
+#                 main, fetch main. Where it is the base branch, that branch has not merged the
+#                 cutover yet: convert it if it adds a numbered entry, else merge main into it, then
+#                 run this with --base naming it.
 #   --report      steps 1 to 4 read and nothing done: no file written, no merge, no Go toolchain,
 #                 and no git read but of commits, trees and the blobs of the files the branch
 #                 changed, so it runs in a blobless clone. It prints, for <rev> (default HEAD):
@@ -86,8 +89,8 @@
 # frozen table left for the author keeps step 5 from writing an entry's fixture, which records that
 # row: the author runs the `-update` once the row has moved. Non-zero on a failure.
 #
-# Run from anywhere in the checkout: scripts/daemon-contract-convert.sh [--main <ref>] [--base <ref>]
-#   or: scripts/daemon-contract-convert.sh --report [--main <ref>] [--base <ref>] [<rev>]
+# Run from anywhere in the checkout: scripts/daemon-contract-convert.sh [--base <ref>]
+#   or: scripts/daemon-contract-convert.sh --report [--base <ref>] [<rev>]
 # Its test: scripts/daemon-contract-convert.test.sh.
 set -euo pipefail
 
@@ -100,25 +103,16 @@ die() {
   exit 1
 }
 
-# before_cutover REV succeeds when REV's version.go declares `const DaemonAPIVersion`, as a tree
-# from before the cutover does.
-before_cutover() {
-  local text
-  text=$(git show "$1:packages/daemon/internal/api/version.go" 2>/dev/null) || return 1
-  grep -Eq '^const DaemonAPIVersion = [0-9]+[[:space:]]*$' <<<"$text"
-}
-
 report=0
-main=refs/remotes/origin/main
-onto=
+# The ref the branch merges, and the name messages give it: main, or the ref --base names.
+onto=refs/remotes/origin/main
+onto_name=main
 rev=
 while [ $# -gt 0 ]; do
   case $1 in
   --report) report=1 ;;
-  --main) main=${2:?--main needs a ref}; shift ;;
-  --main=*) main=${1#--main=} ;;
-  --base) onto=${2:?--base needs a ref}; shift ;;
-  --base=*) onto=${1#--base=} ;;
+  --base) onto=${2:?--base needs a ref}; onto_name=$onto; shift ;;
+  --base=*) onto=${1#--base=}; onto_name=$onto ;;
   -h | --help) sed -n '2,/^set -euo/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'; exit 0 ;;
   -*) die "unknown option $1" ;;
   *) [ -z "$rev" ] || die "one revision at most"; rev=$1 ;;
@@ -131,19 +125,9 @@ fi
 
 root=$(git rev-parse --show-toplevel) || die "not in a git checkout"
 cd "$root"
-main_sha=$(git rev-parse --verify -q "$main^{commit}") || die "cannot read main at $main"
-if before_cutover "$main_sha"; then
-  die "main at $main (${main_sha:0:10}) declares \`const DaemonAPIVersion\` in packages/daemon/internal/api/version.go: it is from before the cutover, and the entry files would call registerEntry, which it does not define. Fetch main, or give --main a ref that holds the cutover"
-fi
-# The ref the conversion reads the branch over and merges: the pull request's base branch.
-onto_name=${onto:-main}
-onto=${onto:-$main}
-onto_sha=$(git rev-parse --verify -q "$onto^{commit}") || die "cannot read the base branch $onto"
-if [ "$onto_sha" != "$main_sha" ] && before_cutover "$onto_sha"; then
-  die "the base branch $onto (${onto_sha:0:10}) declares \`const DaemonAPIVersion\` in packages/daemon/internal/api/version.go: it is not converted yet. Convert it first, then this branch with --base $onto"
-fi
+onto_sha=$(git rev-parse --verify -q "$onto^{commit}") || die "cannot read $onto"
 head_sha=$(git rev-parse --verify -q "${rev:-HEAD}^{commit}") || die "cannot read ${rev:-HEAD}"
-base=$(git merge-base "$head_sha" "$onto_sha") || die "${rev:-HEAD} and $onto share no commit"
+base=$(git merge-base "$head_sha" "$onto_sha") || die "${rev:-HEAD} and $onto_name share no commit"
 
 # convert_py runs the conversion's reading and writing, one phase per call:
 #   analyze report|convert BASE HEAD MAIN NAME STATE REQUESTS REQUESTS_AT
@@ -678,7 +662,17 @@ class Edits:
 
 def analyze(mode, base, head, main, main_name, state_path, requests_path="", requests_at=""):
     version_specs = read_blobs([f"{base}:{VERSION_GO}", f"{head}:{VERSION_GO}", f"{main}:{VERSION_GO}"])
-    base_version, head_version = version_specs[f"{base}:{VERSION_GO}"], version_specs[f"{head}:{VERSION_GO}"]
+    base_version, head_version, main_version = (version_specs[f"{rev}:{VERSION_GO}"] for rev in (base, head, main))
+    # The entry files call registerEntry, which a tree from before the cutover does not define, so the
+    # ref the branch merges must hold the cutover; a version.go that git cannot read shows no cutover,
+    # and is refused too.
+    if main_version is None:
+        die(f"{main_name} ({main[:10]}) holds no {VERSION_GO} that git can read")
+    if CONST_LINE.search(main_version):
+        die(f"{main_name} ({main[:10]}) declares `const DaemonAPIVersion` in {VERSION_GO}: it has not merged the "
+            "cutover, and the entry files would call registerEntry, which it does not define. Where it is main, "
+            "fetch main. Where it is the base branch of a stacked branch, that branch has not merged the cutover "
+            "yet: convert it if it adds a numbered entry, else merge main into it, then run this with --base naming it")
     if base_version is None or not CONST_LINE.search(base_version):
         die(f"the merge base {base[:10]} of {head[:10]} and {main_name} declares no `const DaemonAPIVersion` in "
             f"{VERSION_GO}: the branch has merged {main_name} after the cutover, and this script converts a branch "
@@ -694,7 +688,7 @@ def analyze(mode, base, head, main, main_name, state_path, requests_path="", req
     # An entry whose text main holds under a number of its own is main's change, which this branch
     # carries from another branch it was stacked on and main took as a squash: the branch has to
     # merge main as it was before the cutover first, and then it adds only its own entries.
-    on_main = {summary(e): e["number"] for e in numbered(version_specs[f"{main}:{VERSION_GO}"] or "")[2]}
+    on_main = {summary(e): e["number"] for e in numbered(main_version)[2]}
     stale = [(e["number"], on_main[summary(e)]) for e in entries if summary(e) in on_main]
     for number, theirs in stale:
         print(f"onmain {number} {theirs}")
@@ -1186,13 +1180,13 @@ git add -A -- "${touched[@]}"
 converted=$(git commit-tree "$(git write-tree)" -p "$head_sha" \
   -m "chore(daemon): convert the numbered contract entries of $branch to entry files")
 
-echo "== step 5: merge ${onto} (${onto_sha:0:10})"
+echo "== step 5: merge $onto_name (${onto_sha:0:10})"
 if ! merged=$(git merge-tree --write-tree --no-messages --name-only "$converted" "$onto_sha"); then
   git update-ref -m "daemon-contract-convert: conversion" "refs/heads/$branch" "$converted" "$head_sha"
   git reset -q
-  echo "the merge of $onto conflicts in:" >&2
+  echo "the merge of $onto_name conflicts in:" >&2
   sed 1d <<<"$merged" | sort -u | sed 's/^/  /' >&2
-  die "the conversion is committed as ${converted:0:10}; merge $onto by hand, then run go test ./internal/api -run '$UPDATE_RUN' -update -entry-requests=$requests in packages/daemon"
+  die "the conversion is committed as ${converted:0:10}; merge $onto_name by hand, then run go test ./internal/api -run '$UPDATE_RUN' -update -entry-requests=$requests in packages/daemon"
 fi
 tree=$(head -1 <<<"$merged")
 git read-tree -m -u "$converted" "$tree"
@@ -1206,7 +1200,7 @@ git add -u
 convert_py fixtures "$state" "${fixtures[@]}"
 convert_py finish "$state"
 final=$(git commit-tree "$(git write-tree)" -p "$head_sha" -p "$onto_sha" -F "$state.message")
-git update-ref -m "daemon-contract-convert: conversion and merge of $onto" "refs/heads/$branch" "$final" "$head_sha"
+git update-ref -m "daemon-contract-convert: conversion and merge of $onto_name" "refs/heads/$branch" "$final" "$head_sha"
 git reset -q
 for f in "${fixtures[@]}"; do echo "wrote $f"; done
 echo "committed ${final:0:10}: $(head -1 "$state.message")"
