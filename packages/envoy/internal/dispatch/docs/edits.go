@@ -258,6 +258,63 @@ func oneCellAdvice(field string, cells []string) string {
 
 func (e *ErrQuoteSpansBlocks) Unwrap() error { return pmdoc.ErrTargetSpansBlocks }
 
+// ErrInsertDoesNotFit names an insert whose markdown the typed block holding its anchor cannot
+// hold where the anchor puts it. An insert anchored on a block inside a typed block, by the
+// block's id or by a quote of its text, lands inside that typed block, beside the block it names
+// (pmdoc.ValidDocument.BlockBoundary), so the typed block's content rule decides what it may write
+// there: a requirement holds paragraphs alone, and an ask no paragraph after its options. Such an
+// insert was written after the typed block, at the document's own level, and refused nothing
+// (dispatch://INFRA-3142, INFRA-4345 R13). The fix is to write what the rule holds there, or to
+// anchor the insert on the typed block itself, which writes the markdown beside it.
+type ErrInsertDoesNotFit struct {
+	opIndex
+	// Field is the anchor's field, "after" or "before", and Anchor the anchor it names.
+	Field, Anchor string
+	// HolderType and HolderID are the typed block's type and id, Rule its content rule, and
+	// Broken what of the markdown breaks that rule there (pmdoc.TypedContentBreak).
+	HolderType, HolderID string
+	Rule                 pmdoc.BlockContentRule
+	Broken               string
+}
+
+func (e *ErrInsertDoesNotFit) Error() string {
+	holder := strings.ReplaceAll(e.HolderType, "_", " ")
+	beside := "anchor the insert on the " + holder + " block itself"
+	if e.HolderID != "" {
+		beside += fmt.Sprintf(" (%s: %q)", e.Field, "block:"+e.HolderID)
+	}
+	return fmt.Sprintf(
+		"%sinsert %s %q lands inside the %s block %q, whose content rule, %s, cannot hold %s there; write what that rule holds there, or %s to write the markdown beside it",
+		e.prefix(), e.Field, e.Anchor, holder, e.HolderID, e.Rule, e.Broken, beside,
+	)
+}
+
+// insertDoesNotFit is the refusal of an insert of fragment's blocks at boundary, among the
+// children of the typed block holding the insert's anchor, whose content rule cannot hold them
+// there, and nil where the rule holds them or the boundary is the document's. A typed block that
+// already breaks its rule, an ask a browser edit left so, is no reason to refuse this insert: the
+// batch's ask check weighs the ask it leaves (validateEditedAskBlocks).
+func insertDoesNotFit(boundary pmdoc.Boundary, fragment *pmdoc.Node, field, anchor string) error {
+	holder := boundary.Holder
+	if holder == nil {
+		return nil
+	}
+	if _, broken := pmdoc.TypedContentBreak(holder, holder.Children); broken != "" {
+		return nil
+	}
+	children := make([]*pmdoc.Node, 0, len(holder.Children)+len(fragment.Children))
+	children = append(children, holder.Children[:boundary.Index]...)
+	children = append(children, fragment.Children...)
+	children = append(children, holder.Children[boundary.Index:]...)
+	rule, broken := pmdoc.TypedContentBreak(holder, children)
+	if broken == "" {
+		return nil
+	}
+	return &ErrInsertDoesNotFit{
+		Field: field, Anchor: anchor, HolderType: holder.Type, HolderID: blockID(holder), Rule: rule, Broken: broken,
+	}
+}
+
 // stampOperation gives index to an error that renders its own operation, and falls back to
 // wrapping everything else with the same prefix.
 func stampOperation(index int, err error) error {
@@ -278,13 +335,15 @@ func isEditRefusal(err error) bool {
 	var invalid *ErrInvalidOp
 	var ambiguous *ErrAnchorAmbiguous
 	var ciCheck *ErrInvalidCICheck
+	var doesNotFit *ErrInsertDoesNotFit
 	return errors.Is(err, pmdoc.ErrTargetNotFound) ||
 		errors.Is(err, pmdoc.ErrTargetSpansBlocks) ||
 		errors.Is(err, pmdoc.ErrTableWidth) ||
 		IsTooLarge(err) ||
 		errors.As(err, &invalid) ||
 		errors.As(err, &ambiguous) ||
-		errors.As(err, &ciCheck)
+		errors.As(err, &ciCheck) ||
+		errors.As(err, &doesNotFit)
 }
 
 // ErrInvalidPrecondition identifies a malformed optimistic-concurrency guard.
@@ -715,6 +774,9 @@ type editBatch struct {
 	// batch - every insertion is that operation's, with nothing to diff - from the rest.
 	operations int
 	written    []operationWrite
+	// moved is every block a move operation of the batch names, which the read-back names as the
+	// block that moved (movedDocumentBlocks).
+	moved map[string]bool
 }
 
 // operationWrite is one operation's W: the blocks whose own inline content it wrote. A block the
@@ -844,16 +906,33 @@ func (b editBatch) readBack(written pmdoc.ValidDocument) (string, error) {
 	for _, block := range after {
 		standing[block.id] = struct{}{}
 	}
+	// A block a move took into another block, or out of one, is still the document's: it is named
+	// as moved, where a listing of the root's children alone would name it removed, or print it as
+	// new (INFRA-4345 R13).
+	wasNested, isNested := nestedBlockParents(b.beforeTree), nestedBlockParents(written.Node())
+	gone := func(block documentBlock) string {
+		if parent, nested := isNested[block.id]; nested {
+			return block.named("moved into " + parent.Type + " " + blockID(parent))
+		}
+		return block.named("removed")
+	}
 	first, removed := removedDocumentBlocks(before, standing)
-	moved := movedDocumentBlocks(after, order)
+	moved := movedDocumentBlocks(before, after, order, b.moved)
 	entries := make([]string, 0, len(after)+len(first))
 	for _, block := range first {
-		entries = append(entries, block.named("removed"))
+		entries = append(entries, gone(block))
 	}
 	previous := ""
 	for _, block := range after {
 		prior, kept := held[block.id]
+		_, fromInside := wasNested[block.id]
 		switch {
+		case !kept && fromInside || kept && block.node.Equal(prior) && moved[block.id]:
+			if previous == "" {
+				entries = append(entries, block.named("moved to the start of the document"))
+				break
+			}
+			entries = append(entries, block.named("moved after "+previous))
 		case !kept || !block.node.Equal(prior):
 			text := strings.TrimRight(markdown[spans[block.id].From:spans[block.id].To], "\n")
 			if strings.TrimSpace(text) != "" {
@@ -868,19 +947,34 @@ func (b editBatch) readBack(written pmdoc.ValidDocument) (string, error) {
 				break
 			}
 			entries = append(entries, block.named("empty"))
-		case moved[block.id]:
-			if previous == "" {
-				entries = append(entries, block.named("moved to the start of the document"))
-				break
-			}
-			entries = append(entries, block.named("moved after "+previous))
 		}
-		for _, gone := range removed[block.id] {
-			entries = append(entries, gone.named("removed"))
+		for _, block := range removed[block.id] {
+			entries = append(entries, gone(block))
 		}
 		previous = block.id
 	}
 	return boundedReadBack(entries), nil
+}
+
+// nestedBlockParents is the block holding each block of tree that stands below the root, by the
+// block's id.
+func nestedBlockParents(tree *pmdoc.Node) map[string]*pmdoc.Node {
+	parents := map[string]*pmdoc.Node{}
+	var walk func(parent *pmdoc.Node)
+	walk = func(parent *pmdoc.Node) {
+		for _, child := range parent.Children {
+			if id := blockID(child); id != "" {
+				parents[id] = parent
+			}
+			walk(child)
+		}
+	}
+	if tree != nil {
+		for _, child := range tree.Children {
+			walk(child)
+		}
+	}
+	return parents
 }
 
 // documentBlock is one of a document's own blocks: the node and the id it carries.
@@ -932,22 +1026,40 @@ func removedDocumentBlocks(before []documentBlock, standing map[string]struct{})
 }
 
 // movedDocumentBlocks are the blocks of after, the written tree's own, that stand in another
-// place than the tree before the batch had them: the ones left over once the longest run of them
-// that is still in the document's old order is taken out (longestRunInOrder). Taking that run as
-// the blocks that stayed is what makes one block moved past two others one move and not two.
-func movedDocumentBlocks(after []documentBlock, order map[string]int) map[string]bool {
+// place than before, the tree before the batch, had them: the ones left over once the longest run
+// of them that is still in the document's old order is taken out (longestRunInOrder). Taking that
+// run as the blocks that stayed is what makes one block moved past two others one move and not
+// two. A block a move operation of the batch names (ops) is left out of that run, so the block
+// the caller moved is the one named, where a run of equal length could have taken it as the one
+// that stayed and named its neighbour instead (INFRA-4345 R13); it is moved where the block before
+// it is another than before the batch.
+func movedDocumentBlocks(before, after []documentBlock, order map[string]int, ops map[string]bool) map[string]bool {
 	places := make([]int, 0, len(after))
 	ids := make([]string, 0, len(after))
-	for _, block := range after {
+	moved := map[string]bool{}
+	previousBefore := make(map[string]string, len(before))
+	for index, block := range before {
+		if index > 0 {
+			previousBefore[block.id] = before[index-1].id
+		}
+	}
+	for index, block := range after {
 		place, kept := order[block.id]
 		if !kept {
+			continue
+		}
+		if ops[block.id] {
+			previous := ""
+			if index > 0 {
+				previous = after[index-1].id
+			}
+			moved[block.id] = previous != previousBefore[block.id]
 			continue
 		}
 		places = append(places, place)
 		ids = append(ids, block.id)
 	}
 	stayed := longestRunInOrder(places)
-	moved := map[string]bool{}
 	for position, id := range ids {
 		if !stayed[position] {
 			moved[id] = true
@@ -1174,6 +1286,12 @@ func applyBatch(start *batchTree, ops []model.EditOp, validate operationValidato
 		}
 		tree = newBatchTree(next)
 	}
+	moves := map[string]bool{}
+	for _, op := range ops {
+		if op.Op == "move" && op.Block != "" {
+			moves[op.Block] = true
+		}
+	}
 	return editBatch{
 		tree:       tree.node,
 		beforeTree: beforeTree,
@@ -1181,6 +1299,7 @@ func applyBatch(start *batchTree, ops []model.EditOp, validate operationValidato
 		unchanged:  unchanged,
 		operations: len(ops),
 		written:    written,
+		moved:      moves,
 	}, nil
 }
 
@@ -1543,11 +1662,17 @@ func applyOperation(tree *batchTree, op model.EditOp, budget *pmdoc.WriteBudget)
 		if after {
 			position = target.To
 		}
+		// An anchor on a block, by its id or by a quote of its text, lands the insert beside that
+		// block among the children of the innermost typed block holding it, or of the document
+		// where none does (pmdoc.ValidDocument.BlockBoundary), so markdown anchored on a
+		// requirement's paragraph is that requirement's, where it was written after the
+		// requirement (dispatch://INFRA-3142, INFRA-4345 R13).
+		var boundary pmdoc.Boundary
 		if anchor != "start" && anchor != "end" {
-			position, err = valid.BlockBoundary(target, after)
-			if err != nil {
+			if boundary, err = valid.BlockBoundary(target, after); err != nil {
 				return nil, err
 			}
+			position = boundary.Position
 		}
 		// A document with nothing in it holds one empty paragraph, which the insert takes the place
 		// of rather than leaving an empty line beside what it writes, so it lands at the start.
@@ -1561,18 +1686,25 @@ func applyOperation(tree *batchTree, op model.EditOp, budget *pmdoc.WriteBudget)
 			return nil, invalidMarkdownOp("markdown", err)
 		}
 		// List content anchored inside a list joins that list: beside the item the anchor stands
-		// in, or as the last item of the list whose own block it is (pmdoc.ListBoundary). Every
-		// other content keeps the document-level boundary read above, so a paragraph anchored on a
-		// block of a list lands after the whole list, and one on a block of a decision beside the
-		// decision. A fragment that is list content holds no front matter, so the reading above is
-		// the same wherever it lands.
+		// in, or as the last item of the list whose own block it is (pmdoc.ListBoundary), where
+		// that list lies inside the typed block holding the anchor; a list holding that typed
+		// block is outside it. Every other content keeps the boundary read above, so a paragraph
+		// anchored on a block of a list lands after the whole list, and one on a block of a
+		// decision in the decision, beside that block. A fragment that is list content holds no
+		// front matter, so the reading above is the same wherever it lands.
+		inList := false
 		if anchor != "start" && anchor != "end" && pmdoc.ListContent(with) {
-			inside, inList, err := valid.ListBoundary(target, after)
+			inside, found, err := valid.ListBoundary(target, after)
 			if err != nil {
 				return nil, err
 			}
-			if inList {
-				at = pmdoc.Range{From: inside, To: inside}
+			if found && (boundary.Holder == nil || boundary.Content.From <= inside && inside <= boundary.Content.To) {
+				at, inList = pmdoc.Range{From: inside, To: inside}, true
+			}
+		}
+		if !inList {
+			if err := insertDoesNotFit(boundary, with, anchorField(after), anchor); err != nil {
+				return nil, err
 			}
 		}
 		out, err := valid.Splice(at, with)
