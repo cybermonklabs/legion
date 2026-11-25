@@ -1,11 +1,15 @@
 import { afterEach, beforeEach, expect, jest, spyOn, test } from "bun:test";
 import { QueryClient } from "@tanstack/react-query";
+import { http } from "msw";
 
 import {
   type FakeLiveSockets,
   installFakeLiveSockets,
 } from "../../../__tests__/live-socket-harness";
+import { answerRequests } from "../../../__tests__/network";
 import { liveFeedUp, liveSocketFor, onLiveFeedBack } from "../../../api/live-socket";
+import { treeAnswer, treeNode } from "./tree-fixtures";
+import { readNextTreePage, viewKey, viewQuery } from "./tree-read";
 
 /**
  * How the tree read asks whether the live feed is up (`liveFeedUp`), which it does on a window
@@ -240,4 +244,58 @@ test("listening for the live feed coming back opens no socket", () => {
   } finally {
     stopListening();
   }
+});
+
+// A view read at a version asks the route for the view at that version (`?view=<view>&v=<n>`) on
+// each page it reads: its first, the next one a press reads, and each one the walk of a read made
+// again reads to get as far. It is a read of its own in the cache, under the view's key, beside
+// the view's read at no version, which sends no `v` and keeps the view's own key. The route is
+// answered where the page's request reaches the network, so each case reads what was sent.
+test("a view read at a version sends v with the view, and none without one", async () => {
+  const key = "CORE-1";
+  const first = treeAnswer([treeNode("c1", "comment", key)], [], { cursor: "page-2" });
+  const second = treeAnswer([treeNode("c2", "comment", key)], [], { cursor: null });
+  const current = treeAnswer([treeNode("c9", "comment", key)], [], { cursor: null });
+  const sent: string[] = [];
+  answerRequests(
+    http.get("/api/v1/issues/:key/tree", ({ request }) => {
+      const asked = new URL(request.url).searchParams;
+      sent.push(asked.toString());
+      if (!asked.has("v")) return Response.json(current);
+      return Response.json(asked.has("cursor") ? second : first);
+    })
+  );
+  const atVersion = viewQuery(key, "spec", 3);
+  const atNone = viewQuery(key, "spec");
+  expect<unknown>(atVersion.queryKey, "the read at a version").toEqual([
+    ...viewKey(key, "spec"),
+    { v: 3 },
+  ]);
+  expect<unknown>(atNone.queryKey, "the read at no version").toEqual(viewKey(key, "spec"));
+
+  await client.fetchQuery(atVersion);
+  expect(sent.splice(0), "the first page at the version").toEqual(["view=spec&v=3"]);
+  await readNextTreePage(client, key, "spec", 3);
+  expect(sent.splice(0), "the next page the press reads").toEqual(["view=spec&v=3&cursor=page-2"]);
+  await client.refetchQueries({ exact: true, queryKey: atVersion.queryKey });
+  expect(sent.splice(0), "the read made again, as far as the press read").toEqual([
+    "view=spec&v=3",
+    "view=spec&v=3&cursor=page-2",
+  ]);
+  await client.fetchQuery(atNone);
+  expect(sent.splice(0), "the read at no version").toEqual(["view=spec"]);
+
+  const views = client.getQueryCache().findAll({ queryKey: viewKey(key, "spec") });
+  expect(
+    views.map((view) => view.queryKey),
+    "two reads under the view's key"
+  ).toEqual([atVersion.queryKey, atNone.queryKey]);
+  expect(
+    client.getQueryData(atVersion.queryKey)?.nodes?.map((node) => node.id),
+    "the read at the version"
+  ).toEqual(["c1", "c2"]);
+  expect(
+    client.getQueryData(atNone.queryKey)?.nodes?.map((node) => node.id),
+    "the read at no version"
+  ).toEqual(["c9"]);
 });
