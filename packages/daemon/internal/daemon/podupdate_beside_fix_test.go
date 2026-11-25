@@ -286,6 +286,21 @@ func (r *podUpdateRig) endFix() {
 	})
 }
 
+// latestFix is the latest fix of task a (record.Store.LatestFix), and fails where it has none.
+func (r *podUpdateRig) latestFix() record.TaskFix {
+	r.t.Helper()
+	var fix *record.TaskFix
+	r.inTx("read the latest fix", func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		fix, err = r.records.LatestFix(ctx, tx, podUpdateIssue, 1, "a")
+		return err
+	})
+	if fix == nil {
+		r.t.Fatalf("task a of %s holds no fix", podUpdateIssue)
+	}
+	return *fix
+}
+
 // startAt is the latest start of place of task a (record.Store.StepStarts).
 func (r *podUpdateRig) startAt(place int) record.StepStart {
 	r.t.Helper()
@@ -467,7 +482,21 @@ func TestAnUpdateAfterTheFixEndsKeepsEachOpenStepsBranch(t *testing.T) {
 			rig.seedBesideTask(tc.place, tc.at)
 			rig.openFix(record.FixRunning)
 			rig.startStanding()
+			rig.inTx("probe: bind the start as the engine will", func(ctx context.Context, tx pgx.Tx) error {
+				at := besidePlace(tc.place)
+				start, err := rig.records.StepStarts(ctx, tx, podUpdateIssue, at)
+				if err != nil {
+					return err
+				}
+				if err := rig.records.MarkStepBesideFix(ctx, tx, podUpdateIssue, at, start.Starts, 1); err != nil {
+					return err
+				}
+				return rig.records.SetStepPushBranch(ctx, tx, podUpdateIssue, at, start.Starts, besideBranch(t, tc.role))
+			})
 			rig.endFix()
+			if fix := rig.latestFix(); fix.State != record.FixEnded || fix.EndHead != besideY || fix.Way != 0 {
+				t.Fatalf("fix 1 after its end = %+v, want it ended at %s with its way still to take (Way 0)", fix, besideY)
+			}
 			own := besideBranch(t, tc.role)
 			if start := rig.startAt(tc.place); start.Run != record.RunOpen || start.PushBranch != own {
 				t.Fatalf("the start of the %s after fix 1 ended = %+v, want it open and bound to %s", tc.role, start, own)
