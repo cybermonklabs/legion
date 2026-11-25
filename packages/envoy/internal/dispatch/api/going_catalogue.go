@@ -45,6 +45,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/sjawhar/envoy/going"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -199,7 +200,8 @@ func BuildGoingCatalogue() (GoingCatalogue, error) {
 // as a write, a placeholder no argument of the tool fills, a relation in neither edge family, a
 // row with no translation, a row whose undo is none of the four or writes through a row that is
 // no write of this table, a tool whose entry and spec disagree on its rows (goingToolRows), a
-// spec that binds its routes and that neither table names, and a tool name no tool spec has.
+// tool of Dispatch the bar neither serves nor leaves out (goingUnheldTool), and a tool name no
+// tool spec has.
 // register refuses to mount a table it answers an error for, so a catalogue entry can only ever
 // name an action the server serves, and every row states how its write is undone.
 func buildGoingCatalogue(routes []apiRoute) (GoingCatalogue, error) {
@@ -217,8 +219,8 @@ func buildGoingCatalogue(routes []apiRoute) (GoingCatalogue, error) {
 	for _, tool := range contracts.DispatchTools {
 		written, writes := goingWriteTools[tool.Name]
 		if !writes {
-			if _, reads := goingReadTools[tool.Name]; !reads && len(tool.Routes) > 0 {
-				refusals = append(refusals, tool.Name+": its spec binds its routes, and neither goingWriteTools nor goingReadTools names it")
+			if refusal := goingUnheldTool(tool); refusal != "" {
+				refusals = append(refusals, refusal)
 			}
 			continue
 		}
@@ -296,6 +298,24 @@ func buildGoingCatalogue(routes []apiRoute) (GoingCatalogue, error) {
 		return GoingCatalogue{}, fmt.Errorf("%d catalogue entry problem(s):\n%s", len(refusals), strings.Join(refusals, "\n"))
 	}
 	return catalogue, nil
+}
+
+// goingUnheldTool is the refusal of tool, a tool of Dispatch goingWriteTools does not name, where
+// the bar neither serves it nor leaves it out, "" for any other: a spec that binds its routes and
+// that goingReadTools does not name, and a spec that binds none, that goingReadTools does not name
+// and that going.UnofferedTools does not name, which the bar's model would find with find_tools,
+// which answers every tool of Dispatch that list leaves in, and be refused when it called it.
+func goingUnheldTool(tool contracts.DispatchTool) string {
+	if _, reads := goingReadTools[tool.Name]; reads {
+		return ""
+	}
+	if len(tool.Routes) > 0 {
+		return tool.Name + ": its spec binds its routes, and neither goingWriteTools nor goingReadTools names it"
+	}
+	if _, unoffered := going.UnofferedTools[tool.Name]; !unoffered {
+		return tool.Name + ": its spec binds no route, neither goingWriteTools nor goingReadTools names it, and going.UnofferedTools does not leave it out, so find_tools offers the bar's model a tool no row serves"
+	}
+	return ""
 }
 
 // goingBindingProblems is what is wrong with how one row of tool binds a call's arguments: a

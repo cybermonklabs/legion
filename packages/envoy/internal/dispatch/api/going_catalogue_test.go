@@ -14,6 +14,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/envoy/going"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -152,6 +153,48 @@ func TestTheCatalogueIsTheDispatchToolsThatWrite(t *testing.T) {
 			t.Fatalf("the build answered %v, want the two statements of the rows refused", err)
 		}
 	})
+}
+
+// TestTheCatalogueRefusesAToolTheBarNeitherServesNorLeavesOut: find_tools answers every tool of
+// Dispatch going.UnofferedTools leaves in, so a tool of Dispatch that binds no route, that neither
+// goingWriteTools nor goingReadTools names and that the list does not name - a tool main adds -
+// would be found by the bar's model and refused when it called it. The build refuses such a tool
+// by name, as it refuses a spec that binds its routes and that neither table names; each tool the
+// list names, a read tool of the table and the served table's own build are the controls.
+func TestTheCatalogueRefusesAToolTheBarNeitherServesNorLeavesOut(t *testing.T) {
+	t.Parallel()
+	unserved := contracts.DispatchTool{Name: "dispatch_paint_widget", Arguments: []contracts.ToolField{
+		{Name: "widget", Kind: contracts.ToolFieldString, Required: true},
+	}}
+	if refusal := goingUnheldTool(unserved); !strings.HasPrefix(refusal, "dispatch_paint_widget: its spec binds no route, neither goingWriteTools nor goingReadTools names it, and going.UnofferedTools does not leave it out") {
+		t.Errorf("the build judges a tool that binds no route and that no table and no list names %q, want it refused by name", refusal)
+	}
+	bound := unserved
+	bound.Routes = []contracts.ToolRoute{{Method: http.MethodGet, Pattern: "/api/v1/widgets/{id}", Path: map[string]string{"id": "widget"}}}
+	if refusal := goingUnheldTool(bound); refusal != "dispatch_paint_widget: its spec binds its routes, and neither goingWriteTools nor goingReadTools names it" {
+		t.Errorf("the build judges a tool that binds its routes and that no table names %q, want it refused by name", refusal)
+	}
+
+	specs := make(map[string]contracts.DispatchTool, len(contracts.DispatchTools))
+	for _, spec := range contracts.DispatchTools {
+		specs[spec.Name] = spec
+	}
+	for name := range going.UnofferedTools {
+		spec, stated := specs[name]
+		if !stated {
+			t.Errorf("going.UnofferedTools names %s, which is no tool of Dispatch", name)
+			continue
+		}
+		if refusal := goingUnheldTool(spec); refusal != "" {
+			t.Errorf("the build refuses %s, which going.UnofferedTools leaves out: %s", name, refusal)
+		}
+	}
+	if refusal := goingUnheldTool(specs["dispatch_whoami"]); refusal != "" {
+		t.Errorf("the build refuses dispatch_whoami, a read tool of goingReadTools: %s", refusal)
+	}
+	if _, err := BuildGoingCatalogue(); err != nil {
+		t.Fatalf("build the catalogue of the served table: %v", err)
+	}
 }
 
 // TestEveryGoingActionAcceptsItsExampleAndRefusesAMissingArgument: each entry's schema accepts

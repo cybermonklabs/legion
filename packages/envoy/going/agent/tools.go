@@ -313,13 +313,22 @@ func barTool(tool contracts.DispatchTool) contracts.DispatchTool {
 	return tool
 }
 
-// findableTools is each tool of Dispatch as the bar's model is given it (barTool), with
+// findableTools is each tool find_tools answers (findablesOf): every tool of Dispatch but those the
+// bar does not offer its model (going.UnofferedTools), made findable once, at find_tools' first
+// call.
+var findableTools = sync.OnceValue(func() []findable {
+	return findablesOf(slices.DeleteFunc(slices.Clone(contracts.DispatchTools), func(tool contracts.DispatchTool) bool {
+		_, unoffered := going.UnofferedTools[tool.Name]
+		return unoffered
+	}))
+})
+
+// findablesOf is each of dispatchTools as the bar's model is given it (barTool), with
 // dispatch_read's form that lists an issue's comments (issueCommentsRead); the reads the server
 // makes by going's names for them (going.ReadSpecs: the roster of agent sessions and the rest,
-// which no spec of Dispatch states); the two reads outside Dispatch and draw_block, made findable
-// once, at find_tools' first call.
-var findableTools = sync.OnceValue(func() []findable {
-	tools := slices.Concat(contracts.DispatchTools, []contracts.DispatchTool{issueCommentsRead}, outsideReads, []contracts.DispatchTool{drawBlockTool})
+// which no spec of Dispatch states); and the two reads outside Dispatch and draw_block.
+func findablesOf(dispatchTools []contracts.DispatchTool) []findable {
+	tools := slices.Concat(dispatchTools, []contracts.DispatchTool{issueCommentsRead}, outsideReads, []contracts.DispatchTool{drawBlockTool})
 	reads := going.ReadSpecs()
 	out := make([]findable, 0, len(tools)+len(reads))
 	add := func(name, description string, schema json.RawMessage) {
@@ -334,7 +343,7 @@ var findableTools = sync.OnceValue(func() []findable {
 		add(read.Name, read.Description, read.Schema)
 	}
 	return out
-})
+}
 
 // needFillers are words of a need that name no tool's work - "list the agent sessions and which
 // issue they work on" asks for agent, session, issue and work - and that find_tools does not match:
@@ -439,11 +448,15 @@ const nearestNames = 5
 // (noSuchToolTold), which a step's words read back as a slip (slipWords).
 const noSuchTool = "no tool of Dispatch is named"
 
-// noSuchToolTold is what call_tool tells the model of name, which no findable tool has: the model
-// guessed it. It names the findable tools nearest to it: those find_tools fits the words of the
-// name to (fitting), less "dispatch", which every tool of Dispatch holds, the ones whose own names
-// hold more of the words first; and find_tools for any other.
+// noSuchToolTold is what call_tool tells the model of name, which no findable tool has. A tool of
+// Dispatch the bar does not offer (going.UnofferedTools) is told so, with its reason. Any other
+// name the model guessed: it names the findable tools nearest to it, those find_tools fits the
+// words of the name to (fitting), less "dispatch", which every tool of Dispatch holds, the ones
+// whose own names hold more of the words first; and find_tools for any other.
 func noSuchToolTold(name string) string {
+	if reason, unoffered := going.UnofferedTools[name]; unoffered {
+		return fmt.Sprintf("%s %q that you may call. It is not offered here: %s. Call find_tools with what you need, and call_tool with a name it gives.", noSuchTool, name, reason)
+	}
 	words := slices.DeleteFunc(needWords(strings.ReplaceAll(name, "_", " ")), func(word string) bool { return word == "dispatch" })
 	inName := func(tool findable) int {
 		held := 0
@@ -521,8 +534,9 @@ func firstSentence(description string) string {
 
 // callTool runs one read by a tool's name, as the person: a tool of Dispatch through the
 // server's route table, or a GitHub or web read the server makes; or draws a block (drawBlock).
-// A name no findable tool has is refused before any call, with the names nearest to it
-// (noSuchToolTold). The server refuses a tool that changes something.
+// A name no findable tool has is refused before any call, with the names nearest to it, or, for a
+// tool the bar does not offer, with its reason (noSuchToolTold). The server refuses a tool that
+// changes something.
 func (w *worker) callTool(ctx context.Context, step int, input json.RawMessage) (string, bool) {
 	var arguments struct {
 		Tool      string          `json:"tool"`
@@ -600,10 +614,10 @@ type planChange struct {
 // the step numbered step, and ends the run's turn: the server keeps the plan, whose rows wait for
 // the person, or, for a new-issue run, whose create the Enter that started the run approved, which
 // runs now (agentwire.PlanAnswer.Run), and the step is saved with it. A plan of no change, of a
-// tool Dispatch has no spec of, or one that needs a change it does not hold, is refused back to
-// the model, and so is one the server refuses: a change whose arguments its tool's schema refuses,
-// over an item the person may not read, or naming as "$N" a new issue it may not name
-// (newIssueArgument).
+// tool Dispatch has no spec of, of one the bar does not offer (going.UnofferedTools), with its
+// reason, or one that needs a change it does not hold, is refused back to the model, and so is one
+// the server refuses: a change whose arguments its tool's schema refuses, over an item the person
+// may not read, or naming as "$N" a new issue it may not name (newIssueArgument).
 func (w *worker) proposePlan(ctx context.Context, step int, input json.RawMessage) (string, bool) {
 	var plan struct {
 		Summary string       `json:"summary"`
@@ -616,6 +630,9 @@ func (w *worker) proposePlan(ctx context.Context, step int, input json.RawMessag
 	for index, change := range plan.Changes {
 		if _, known := dispatchTool(change.Tool); !known {
 			return fmt.Sprintf("change %d names the tool %q, which Dispatch has no spec of; find_tools names the tools", index, change.Tool), true
+		}
+		if reason, unoffered := going.UnofferedTools[change.Tool]; unoffered {
+			return fmt.Sprintf("change %d names the tool %q, which is not offered here: %s; find_tools names the tools", index, change.Tool, reason), true
 		}
 		for _, need := range change.Needs {
 			if need < 0 || need >= len(plan.Changes) || need == index {

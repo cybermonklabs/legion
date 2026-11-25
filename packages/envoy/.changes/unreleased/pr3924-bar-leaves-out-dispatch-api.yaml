@@ -1,0 +1,9 @@
+kind: Changed
+body: |-
+  The command bar does not offer its model `dispatch_api`, the generic read of any route by its
+  path: the bar's tools are one per route, so it reads each route through the tool of that route.
+  `going.UnofferedTools` names each tool of Dispatch the bar leaves out, with its reason.
+  `find_tools` answers none of them, and `call_tool` or a plan's change that names one is refused
+  with its reason before any call. The server's catalogue build refuses a tool of Dispatch that
+  binds no route, that neither of the bar's tables names and that the list does not name, so a new
+  tool of Dispatch is served or left out, never found by the model and refused when it calls it.
