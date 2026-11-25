@@ -105,7 +105,7 @@ func (e *fixEnd) testerAloneAndGate() {
 	artifact := r.document("plan.md", planOf("tester"))
 	if err := store.Transact(context.Background(), r.st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		version := record.PlanVersion{Issue: e.key, Generation: 1, Version: 1, ArtifactID: artifact, Source: record.PlanSourceOwner,
-			GivenBy: string(r.token(claim.RoleArchitect)), GivenAt: time.Now().UTC()}
+			GivenBy: r.token(claim.RoleArchitect), GivenAt: time.Now().UTC()}
 		task := record.PlanTask{Issue: e.key, Generation: 1, Task: "a", PlanVersion: 1, BlockText: "Make the change the issue asks for.",
 			State: record.TaskWaiting}
 		steps := []record.PlanStep{{Issue: e.key, Generation: 1, Task: "a", Position: 1, Role: "tester", Type: "testing"}}
