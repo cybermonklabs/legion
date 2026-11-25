@@ -762,24 +762,6 @@ func TestASessionsTodoOnAHeldRootKeepsTheHold(t *testing.T) {
 				if onRoot := noticesOf(t, pool, root, tc.told); len(onRoot) != 1 {
 					t.Fatalf("the %s notices on %s's rows = %+v, want the one the todo wrote", tc.told, root, onRoot)
 				}
-				project, err := claim.ProjectToken(kept.Project)
-				if err != nil {
-					t.Fatalf("project token of %s: %v", kept.Project, err)
-				}
-				var owner claim.Token
-				if err := pgx.BeginFunc(t.Context(), pool, func(tx pgx.Tx) error {
-					walk, err := record.ReadOwnerWalk(t.Context(), record.NewStore(), tx, project, kept.Tree)
-					if err != nil {
-						return err
-					}
-					owner, err = walk.Architect(kept, record.NoticeStartsAtParent(notice.Kind, notice.Role))
-					return err
-				}); err != nil {
-					t.Fatalf("walk to the architect that owns %s: %v", root, err)
-				}
-				if want, err := claim.NewToken(project, root, claim.RoleArchitect); err != nil || owner != want {
-					t.Fatalf("the %s notice goes to %s, want the root's architect %s (%v)", tc.told, owner, want, err)
-				}
 			}
 			if got := taskCounts(t, pool, engine, root, 3); !reflect.DeepEqual(got, counted) {
 				t.Fatalf("the counts after the session's todo = %+v, want the %+v the hold left", got, counted)

@@ -874,6 +874,16 @@ func TestADeletesFailedAttemptReopensNoCreditRowWhileAFailedRetryStillDoes(t *te
 		t.Run(tc.name, func(t *testing.T) {
 			w := creditRowReply(t)
 			tc.steps(w)
+			if !tc.reopened {
+				// Read the receipt before the fallback pass. The pass now also refuses deleted
+				// comments, so the final state alone cannot show whether the receipt reopened A's row.
+				if _, err := scanBatch(w.ctx, w.deps, unfenced{}, w.instance); err != nil {
+					t.Fatalf("scan the delete's receipt: %v", err)
+				}
+				if row := readHeldCopy(t, w.database, w.reply, contracts.LegacyAgentSubject(w.issue.a.ID)); !row.settled || row.published {
+					t.Fatalf("A's row after the delete's receipt = %+v; want settled and unpublished", row)
+				}
+			}
 			w.settle()
 			wantCopies := 0
 			if tc.reopened {

@@ -526,9 +526,9 @@ func registryUnanswered(err error) bool {
 // it, is still to be decided, within that same bound and holding nothing of the owner's later
 // events; past the bound each reaches the session that got, or is owed, the comment's copy by the
 // failed-mention rule, and no other credit (mentionDeliveries.editCreditCopyOf), and a session
-// whose copy of the comment is a credit's row gets the edit and the delete from that row, sent
-// right after the comment should the row publish it (creditRowEdits). addPrimaryDocumentAuthors
-// and addAuthorRoutes both ask it.
+// whose copy of the comment is a credit's row gets its missed edits from that row
+// (creditRowEdits). A withdrawn row sends no comment. addPrimaryDocumentAuthors and
+// addAuthorRoutes both ask this filter.
 type creditFilter struct {
 	leavesOut bool
 	// mentions is what the comment's mentions did, as the batch read them: the reading the
