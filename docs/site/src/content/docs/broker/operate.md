@@ -788,6 +788,15 @@ the account's tokens `401`. Bring the session images' pi-envoy and claude-envoy 
 the same release's `dispatch` command there first too: an older `dispatch whoami` ignores
 Dispatch's `sign_in_required` and tells such a session that its writes are refused, though they
 succeed.
+An entry whose fixed session is `legion-daemon:<its own project>` is a Legion daemon's own, for
+example `system:serviceaccount:example-ns:example-daemon=EXAMPLE=ada@example.com=legion-daemon:EXAMPLE`.
+The token of such an entry holds the OAuth scope `legion-status` alone, which Dispatch reads
+(`DISPATCH_LEGION_STATUS_SCOPE`): where that setting is on, a write of a Legion issue's status
+needs it or the `person` scope, but for a status write of the architect of an issue above,
+which writes with its own broker token. The broker reads the session the entry fixes, letter case
+included, and never a session a request names. No other token the exchange mints holds
+`legion-status`, whatever session it carries, and a request that names that scope is refused
+`invalid_scope` under every entry.
 `BROKER_EXCHANGE_READ_ACCOUNTS` lists the accounts whose tokens only read, as whitespace-separated
 `<service account>=<service>=<session>` entries, for example
 `BROKER_EXCHANGE_READ_ACCOUNTS=system:serviceaccount:example-ns:example-reader=example-reader=example-reader-session`.

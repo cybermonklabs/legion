@@ -144,14 +144,17 @@ func lostReplyAfterTheCancel(t *testing.T, eventID string, hold time.Duration) {
 }
 
 func TestAFactWhoseCommitReplyComesAfterTheCancelIsAppliedAndRunsItsHooks(t *testing.T) {
+	// Not parallel: its cancel has to land inside the commit reply's 300 ms hold, a margin the load of tests beside it can eat.
 	lostReplyAfterTheCancel(t, "event-reply-after-the-cancel", 300*time.Millisecond)
 }
 
 func TestAFactWhoseCommitReplyNeverComesIsReadAsApplied(t *testing.T) {
+	t.Parallel()
 	lostReplyAfterTheCancel(t, "event-reply-never-comes", time.Hour)
 }
 
 func TestAFactCutBeforeItsCommitRunsNoHookAndItsRetryApplies(t *testing.T) {
+	t.Parallel()
 	rig := newFactFaultRig(t)
 	var ran atomic.Int32
 
@@ -185,6 +188,7 @@ func TestAFactCutBeforeItsCommitRunsNoHookAndItsRetryApplies(t *testing.T) {
 }
 
 func TestAFactWhoseOutcomeTheStoreCannotSayRunsItsHooksOnceItCan(t *testing.T) {
+	t.Parallel()
 	rig := newFactFaultRig(t)
 	var ran atomic.Int32
 

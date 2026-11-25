@@ -50,7 +50,7 @@ func TestAFailedReconnectAttemptLogsOneWarnAMinute(t *testing.T) {
 	uri := gate.URL()
 	t.Setenv("NATS_NKEY_SEED", seed)
 
-	logs := captureBusLogs(t)
+	logs := captureBusLogs()
 	const reconnectFailed = "envoy nats reconnect attempt failed"
 
 	clock := &reconnectErrClock{now: time.Now()}
@@ -58,7 +58,8 @@ func TestAFailedReconnectAttemptLogsOneWarnAMinute(t *testing.T) {
 	client, err := bus.ConnectOwningStream([]string{uri},
 		bus.WithName(name),
 		bus.WithReconnectErrClock(clock.Now),
-		bus.WithReplicas(1))
+		bus.WithReplicas(1),
+		bus.WithLogger(logs.logger))
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}

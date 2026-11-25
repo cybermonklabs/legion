@@ -17,7 +17,8 @@ import (
 // failure's class, and the refusal of a remote server names that server by its position; both are
 // logged, so neither carries a URL's userinfo or host.
 func TestLoggedNATSURLsCarryNoUserinfo(t *testing.T) {
-	logs := captureLogs(t)
+	t.Parallel()
+	logs := captureLogs()
 	urls := []string{
 		"nats://user-marker-0:pw-marker-1@127.0.0.1:4222",
 		"nats://tok-marker-2@127.0.0.1:4223",
@@ -25,10 +26,9 @@ func TestLoggedNATSURLsCarryNoUserinfo(t *testing.T) {
 	}
 	secrets := []string{"user-marker-0", "pw-marker-1", "tok-marker-2", "u-marker-5", "pw-marker-3", "127.0.0.1"}
 
-	options("log-url-test", urls, nil, nil, nil, nil, nil).ReconnectErrCB(nil, &net.OpError{Op: "dial", Net: "tcp", Err: syscall.ECONNREFUSED})
+	options(logs.logger, "log-url-test", urls, nil, nil, nil, nil, nil).ReconnectErrCB(nil, &net.OpError{Op: "dial", Net: "tcp", Err: syscall.ECONNREFUSED})
 
-	// Only this client's records: a client an earlier test left reconnecting logs through the same
-	// default.
+	// Only records that name the client count, so the WARN must carry its client's name.
 	var mine []map[string]any
 	for _, record := range logs.records(t) {
 		if record["name"] == "log-url-test" {
@@ -70,6 +70,7 @@ func TestLoggedNATSURLsCarryNoUserinfo(t *testing.T) {
 // nats.go renders with its userinfo (ConnectedUrl); testnats.URL is a user:password URL, so the
 // line must hold neither part, nor the host.
 func TestTheReconnectedLineCarriesNoUserinfo(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
 	configured, err := url.Parse(uri)
 	if err != nil {
@@ -83,9 +84,9 @@ func TestTheReconnectedLineCarriesNoUserinfo(t *testing.T) {
 		t.Fatalf("connect: %v", err)
 	}
 	t.Cleanup(nc.Close)
-	logs := captureLogs(t)
+	logs := captureLogs()
 
-	options("reconnected-url-test", []string{"nats://127.0.0.1:1", uri}, nil, nil, nil, nil, nil).ReconnectedCB(nc)
+	options(logs.logger, "reconnected-url-test", []string{"nats://127.0.0.1:1", uri}, nil, nil, nil, nil, nil).ReconnectedCB(nc)
 
 	var logged string
 	var record map[string]any

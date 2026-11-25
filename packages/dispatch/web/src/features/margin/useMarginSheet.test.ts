@@ -1,7 +1,14 @@
-import { expect, test } from "bun:test";
+import { beforeAll, expect, test } from "bun:test";
 
 import type { AskResolution } from "../../api/types";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { isFoldedAsk } from "./useMarginSheet";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 const retracted: AskResolution = {
   actor: { id: "0123456789abcdef", kind: "session" },

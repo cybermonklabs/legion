@@ -33,6 +33,7 @@ import (
 // unrecorded (settleObserved). A replay that skipped the preparation would record the event's old
 // title at its old sequence, which this test refuses.
 func TestAReplayOfAnUnrecordedChildsOldEventRecordsItAsDispatchShowsItNow(t *testing.T) {
+	t.Parallel()
 	const project, root, child, repo = "LEGION", "LEGION-7", "LEGION-8", "acme/widgets"
 	ctx := context.Background()
 	pool := testpg.ClonePool(t, "legion_intake_replay_test")

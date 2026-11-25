@@ -335,11 +335,11 @@ func TestTheBusCredentialPrintsNoSeedOrToken(t *testing.T) {
 	// written with after the comma: nats.go dials the head as a host, whose lookup fails, and hands
 	// that failure, naming the host, to the reconnect callback.
 	t.Run("the reconnect line of a list a comma in a token split", func(t *testing.T) {
-		logs := captureLogs(t)
+		logs := captureLogs()
 		for scheme := range splitTokens {
 			name := "printed-split-" + scheme
 			lookup := &net.OpError{Op: "dial", Net: "tcp", Err: &net.DNSError{Err: "no such host", Name: splitHead, IsNotFound: true}}
-			options(name, splitURLs(scheme), nil, nil, nil, nil, nil).ReconnectErrCB(nil, lookup)
+			options(logs.logger, name, splitURLs(scheme), nil, nil, nil, nil, nil).ReconnectErrCB(nil, lookup)
 			var line map[string]any
 			for _, record := range logs.records(t) {
 				if record["name"] == name && record["msg"] == "envoy nats reconnect attempt failed" {
@@ -354,7 +354,7 @@ func TestTheBusCredentialPrintsNoSeedOrToken(t *testing.T) {
 	})
 
 	t.Run("every line logged while a server refuses the connection", func(t *testing.T) {
-		logs := captureLogs(t)
+		logs := captureLogs()
 		logged := func(name, message string) bool {
 			for _, record := range logs.records(t) {
 				if record["name"] == name && record["msg"] == message {
@@ -389,7 +389,7 @@ func TestTheBusCredentialPrintsNoSeedOrToken(t *testing.T) {
 		// reconnects, is refused twice and closes the connection (TestANkeyConnectionRefusedTwice-
 		// ClosesAsAtTheMergeBase).
 		server, seedURL := testnats.StartNkeyAuthorizedServer(t, public)
-		seeded, err := Dial("printed-seed-refused", []string{seedURL}, lookupOf(map[string]string{NkeySeedEnvVar: seed}))
+		seeded, err := Dial("printed-seed-refused", []string{seedURL}, lookupOf(map[string]string{NkeySeedEnvVar: seed}), WithLogger(logs.logger))
 		require.NoError(t, err)
 		defer seeded.Close()
 		_, other := testnats.User(t)
@@ -401,13 +401,13 @@ func TestTheBusCredentialPrintsNoSeedOrToken(t *testing.T) {
 		// A service token the server refuses from the first connect, in the background, which logs
 		// each refusal until the connection connects (reportRefusalsUntilConnected).
 		_, serviceURL := testnats.StartConfig(t, "authorization {\n  users = [ { user: \"service\", password: \"another-service-password\" } ]\n}\n", nil, false)
-		serviced, err := Dial("printed-token-refused", []string{serviceURL}, lookupOf(map[string]string{ServiceTokenFileEnvVar: tokenFile}), WithConnectInBackground())
+		serviced, err := Dial("printed-token-refused", []string{serviceURL}, lookupOf(map[string]string{ServiceTokenFileEnvVar: tokenFile}), WithConnectInBackground(), WithLogger(logs.logger))
 		require.NoError(t, err)
 		defer serviced.Close()
 
 		// The same token written as the server URL's user name, which nats.go presents as a token.
 		_, tokenServerURL := testnats.StartConfig(t, "authorization {\n  token: \"another-nats-token\"\n}\n", nil, false)
-		refusedInURL, err := Dial("printed-url-token-refused", []string{withUser(t, tokenServerURL, token)}, lookupOf(nil), WithConnectInBackground())
+		refusedInURL, err := Dial("printed-url-token-refused", []string{withUser(t, tokenServerURL, token)}, lookupOf(nil), WithConnectInBackground(), WithLogger(logs.logger))
 		require.NoError(t, err)
 		defer refusedInURL.Close()
 		requireLogged("the refusals of the service token and of the URL's token",
@@ -418,7 +418,7 @@ func TestTheBusCredentialPrintsNoSeedOrToken(t *testing.T) {
 		// it starts again. testnats holds the stopped server's port and refuses each connection
 		// there after accepting it, which nats.go reports to no callback.
 		admitting, admittingURL := testnats.StartConfig(t, fmt.Sprintf("authorization {\n  token: %q\n}\n", token), nil, false)
-		admittedInURL, err := Dial("printed-url-token-admitted", []string{withUser(t, admittingURL, token)}, lookupOf(nil), WithConnectInBackground())
+		admittedInURL, err := Dial("printed-url-token-admitted", []string{withUser(t, admittingURL, token)}, lookupOf(nil), WithConnectInBackground(), WithLogger(logs.logger))
 		require.NoError(t, err)
 		defer admittedInURL.Close()
 		requireLogged("the URL token's connect", [2]string{"printed-url-token-admitted", "envoy nats connected"})
@@ -436,7 +436,7 @@ func TestTheBusCredentialPrintsNoSeedOrToken(t *testing.T) {
 		requireLogged("the reconnect", [2]string{"printed-url-token-admitted", "envoy nats reconnected"})
 
 		// The token in the URL of a server nothing answers at: each failed dial is logged.
-		unanswered, err := Dial("printed-url-token-unanswered", []string{"nats://" + token + "@127.0.0.1:1"}, lookupOf(nil), WithConnectInBackground())
+		unanswered, err := Dial("printed-url-token-unanswered", []string{"nats://" + token + "@127.0.0.1:1"}, lookupOf(nil), WithConnectInBackground(), WithLogger(logs.logger))
 		require.NoError(t, err)
 		defer unanswered.Close()
 		requireLogged("the failed dial", [2]string{"printed-url-token-unanswered", "envoy nats reconnect attempt failed"})

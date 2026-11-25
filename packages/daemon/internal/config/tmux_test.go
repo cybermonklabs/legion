@@ -82,10 +82,10 @@ func TestTheTmuxBlockTakesOverKubernetesOnlyWhenTheKeySaysSo(t *testing.T) {
 
 // A take_over naming anything but kubernetes is refused at load, naming the key and the value; so
 // is a pane variable that places the session a resume reads, one the runtime sets on a Claude Code
-// pane or on a resumed Oh My Pi pane, a launch secret's pointer, and a value that is a URL carrying
-// a password — each named by the entry's position with why, never with its name or its value: a
-// credential made only of letters, digits and underscores passes the name rule, as the made-up one
-// of the last row does.
+// pane or on a resumed Oh My Pi pane, a launch secret's pointer, the table of every role's identity
+// each launch sets, and a value that is a URL carrying a password — each named by the entry's
+// position with why, never with its name or its value: a credential made only of letters, digits
+// and underscores passes the name rule, as the made-up one of the last row does.
 func TestTheTmuxBlockRefusesWhatTheRuntimeOwnsOrWhatHoldsAPassword(t *testing.T) {
 	const password = "hunter2-load"
 	const credentialName = "madeUp_pane_credential_0123456789"
@@ -107,6 +107,8 @@ func TestTheTmuxBlockRefusesWhatTheRuntimeOwnsOrWhatHoldsAPassword(t *testing.T)
 			"runtime.tmux.pane_env entry 1: the runtime sets it on every resumed Oh My Pi pane itself, after the operator's variables"},
 		{"the Envoy bearer's pointer", "runtime: {tmux: {pane_env: {ENVOY_TOKEN_FILE: /etc/acme/envoy}}}\n",
 			"runtime.tmux.pane_env entry 1: it points at the launch secret ENVOY_TOKEN, which the runtime hands every launch as a file of the launch's own"},
+		{"the identities of the issue's roles", "runtime: {tmux: {pane_env: {LEGION_ROLE_IDENTITIES: '{\"implementer\":{\"name\":\"x\",\"email\":\"x@example.invalid\"}}'}}}\n",
+			"runtime.tmux.pane_env entry 1: every launch sets it (the identities of the issue's roles, which the push step reads)"},
 		{"a URL with a password", "runtime: {tmux: {pane_env: {WIDGETS_DATABASE_URL: \"postgres://acme:" + password + "@db.internal.example/widgets\"}}}\n",
 			"runtime.tmux.pane_env entry 1: its value is a URL carrying a password: a secret reaches a pane as a file (provider_keys), never as a value on tmux's command line"},
 		{"a URL with a password under a token-shaped name", "runtime: {tmux: {pane_env: {ELAN_HOME: /opt/elan, " + credentialName + ": \"postgres://acme:" + password + "@db.internal.example/widgets\"}}}\n",

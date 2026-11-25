@@ -64,9 +64,9 @@ func TestAServersUnreadableBytesReachNoBusLine(t *testing.T) {
 		{"control: a valid PING", "PING\r\n", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			logs := captureLogs(t)
+			logs := captureLogs()
 			name := "server-bytes-" + strings.ReplaceAll(tc.name, " ", "-")
-			nc, err := Dial(name, []string{"nats://" + fakeNATS(t, tc.after)}, lookupOf(nil))
+			nc, err := Dial(name, []string{"nats://" + fakeNATS(t, tc.after)}, lookupOf(nil), WithLogger(logs.logger))
 			require.NoError(t, err)
 			defer nc.Close()
 			disconnect := func() map[string]any {
@@ -119,9 +119,9 @@ func TestTheAsyncErrorLinePrintsItsClass(t *testing.T) {
 		{"control: the slow consumer's error", nats.ErrSlowConsumer, nats.ErrSlowConsumer.Error()},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			logs := captureLogs(t)
+			logs := captureLogs()
 			name := "async-class-" + strings.ReplaceAll(tc.name, " ", "-")
-			options(name, []string{"nats://127.0.0.1:4222"}, nil, nil, nil, nil, nil).AsyncErrorCB(nil, nil, tc.err)
+			options(logs.logger, name, []string{"nats://127.0.0.1:4222"}, nil, nil, nil, nil, nil).AsyncErrorCB(nil, nil, tc.err)
 			var line map[string]any
 			for _, record := range logs.records(t) {
 				if record["name"] == name && record["msg"] == "envoy nats async error" {

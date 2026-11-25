@@ -848,9 +848,15 @@ type Config struct {
 	// may name neither a project nor a person (<service account>==): a job's own account, whose
 	// tokens name no person and no project and act as the account itself, which Dispatch records
 	// their writes under. An entry naming a project and no person is refused: an entry that names
-	// a project names its person, so no token held to a project is personless. The session is
-	// everything after the third "=", so it alone may carry one. A namespace's default account is
-	// refused, as is an account listed twice. Needs BROKER_K8S_OIDC_ISSUER and
+	// a project names its person, so no token held to a project is personless. An entry whose
+	// fixed session is legion-daemon:<its own project> is a Legion daemon's own: the token minted
+	// for its pods holds the OAuth scope legion-status too. Dispatch reads that scope
+	// (DISPATCH_LEGION_STATUS_SCOPE): where the setting is on, a write of a Legion issue's status
+	// needs it or the person scope, but for a status write of the architect of an issue
+	// above, which writes with its own broker token. No other token the exchange mints holds legion-status,
+	// whatever session it carries. The session is everything after the third "=", so it alone
+	// may carry one. A namespace's default account is refused, as is an account listed twice.
+	// Needs BROKER_K8S_OIDC_ISSUER and
 	// BROKER_EXCHANGE_K8S_AUDIENCE, whose tokens its pods present. A broker of a build older than
 	// the entry naming no person refuses to start on one. Unset, no account exchanges.
 	ExchangeAccounts []exchange.AccountEntry

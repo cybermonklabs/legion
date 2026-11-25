@@ -94,20 +94,21 @@ func exchangeOf(agentSecrets *AgentSecrets, broker bool) PodExchange {
 // session it resumes (runtime.SessionExclusiveVariable), which it tells a launch that resumes a
 // recorded Oh My Pi session alone, in its start command, and the name the
 // providers volume mounts the session database's URL under, ompsessions.DSNFileName), the worker
-// image (ImageEnv), every launch's spec (the role App's git identity, and each launch secret's
-// `<NAME>_FILE` pointer), the pod baseline, the two names this runtime composes for each role out
-// of the operator's own value (roleOperatorEnv: the settings overlays, which are hand-added here
-// since `composed` deliberately leaves them out, and every name of `composed`, the spend
-// attributes alone today), and the operator's own pod env. The exchange identity's two variables
-// (exchangeOwned) are the runtime's only where exchange carries that identity (ExchangeIdentity or
-// ExchangeAndBroker); otherwise nothing of Legion's sets them, and the operator's pod env may, as
-// it could before the key existed. DISPATCH_TOKEN_BROKER (brokerOwned) is the runtime's in the
-// same way, only under ExchangeAndBroker, where the deployment sets dispatch_token_broker: a
-// deployment that does not keeps the name the operator's, as it was before the setting existed.
-// OMP_CONFIG_ROOT (ompdirs.ConfigRootVariable) is named beside the session store's variables though
-// nothing of Legion's sets it: from the pinned Oh My Pi on it replaces the config root the agent
-// directory and a session's path key sit under, so it is refused like them.
-// The first setter of a name is the one named.
+// image (ImageEnv), every launch's spec (the role App's git identity, the table of every role's
+// identity, runtime.RoleIdentitiesVariable, which a workflow role's launch alone carries, and each
+// launch secret's `<NAME>_FILE` pointer), the pod baseline, the two names this runtime composes
+// for each role out of the operator's own value (roleOperatorEnv: the settings overlays, which are
+// hand-added here since `composed` deliberately leaves them out, and every name of `composed`, the
+// spend attributes alone today), and the operator's own pod env. The exchange identity's two
+// variables (exchangeOwned) are the runtime's only where exchange carries that identity
+// (ExchangeIdentity or ExchangeAndBroker); otherwise nothing of Legion's sets them, and the
+// operator's pod env may, as it could before the key existed. DISPATCH_TOKEN_BROKER (brokerOwned)
+// is the runtime's in the same way, only under ExchangeAndBroker, where the deployment sets
+// dispatch_token_broker: a deployment that does not keeps the name the operator's, as it was
+// before the setting existed. OMP_CONFIG_ROOT (ompdirs.ConfigRootVariable) is named beside the
+// session store's variables though nothing of Legion's sets it: from the pinned Oh My Pi on it
+// replaces the config root the agent directory and a session's path key sit under, so it is
+// refused like them. The first setter of a name is the one named.
 func podVariables(pod Pod, launchSecrets []string, exchange PodExchange) map[string]setter {
 	set := map[string]setter{}
 	add := func(name, who string, operatorMay bool) {
@@ -159,6 +160,7 @@ func podVariables(pod Pod, launchSecrets []string, exchange PodExchange) map[str
 	for name := range (runtime.GitIdentity{}).Env() {
 		add(name, "every launch sets (the git identity the role's GitHub App commits as)", false)
 	}
+	add(runtime.RoleIdentitiesVariable, "every launch sets (the identities of the issue's roles, which the push step reads)", false)
 	for _, name := range launchSecrets {
 		add(name+"_FILE", "every launch sets (the pointer to the launch secret "+name+")", false)
 	}
