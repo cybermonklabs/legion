@@ -847,6 +847,13 @@ export const STEP_KINDS = ["step", "retro", "merge"] as const;
  *  `contracts.StepResultFailed` and `contracts.StepResultStopped`. A run that still runs has none. */
 export const STEP_RESULTS = ["passed", "failed", "stopped"] as const;
 
+/** Where a step of an issue's plan stands in the steps read (`PlannedStep.state`), from the records
+ *  of the plan's own run of the issue: not started before any run of it, running while its newest
+ *  run has no end, then that run's result (`STEP_RESULTS`). Generated into Go as
+ *  `contracts.PlannedStepNotStarted` and `contracts.PlannedStepRunning`, which Dispatch's steps read
+ *  writes; the OpenAPI document names them as the state's enum, which the web client switches on. */
+export const PLANNED_STEP_STATES = ["not started", "running", ...STEP_RESULTS] as const;
+
 /** The codes of the step write's refusals that no retry changes: a value outside its form, a writer
  *  that is not the daemon's session, and an id whose record is a run of another issue. Generated
  *  into Go as `contracts.StepInputCode`, `contracts.StepWriterCode` and
