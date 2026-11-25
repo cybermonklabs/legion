@@ -97,6 +97,15 @@ func UncapturedTopicRefusal(topic, sessionID string) string {
 	return topic + " was not registered: no stream subject captures it, so nothing would be delivered to " + sessionID + " on it; follow a notifications.team.<name> topic instead"
 }
 
+// MessageNotSentPrefix opens the error of the 503 POST /v1/messages/send and POST
+// /v1/messages/publish answer for a message the bus refused before it sent anything, because the
+// deployed stream does not capture a topic this build stores (bus.ErrSubjectNotDeployed): nothing
+// was stored, and the same message may be sent again once the stream captures the topic. Generated
+// from MESSAGE_NOT_SENT_PREFIX in packages/contracts, which envoy-client's transport reads to tell
+// this answer from a 5xx after which the message may have been stored, so the listener and the
+// client cannot word it apart.
+const MessageNotSentPrefix = "envoy: the message was not sent, and may be sent again later"
+
 // DeliveryDuplicateWindow is how long a repeated delivery is recognised as a duplicate, by the
 // notification stream and by every host that reads it. Generated from
 // DELIVERY_DUPLICATE_WINDOW_MS in packages/contracts, whose doc comment states the retry promise
@@ -364,6 +373,7 @@ var DispatchEventTypes = []string{
 	"message.delivery",
 	"message.edited",
 	"priority.updated",
+	"project.access_changed",
 	"project.created",
 	"project.updated",
 	"result.recorded",
