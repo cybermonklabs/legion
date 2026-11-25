@@ -25,6 +25,20 @@ from pathlib import Path
 
 from ci_filter_coverage import REPO, error
 
+# The files a program lists that no commit holds, each with the committed files it is rendered
+# from: git ignores the file and every `bun install` writes it (the root package.json's
+# postinstall), so no change ever carries it, and a filter holding it would select nothing. What
+# changes it is a change to its sources, so the listing gives those in its place: the changes job's
+# generation and check-ts-filters.sh hold a program's filter to them, and a listed block lists the
+# sources under its tree, never the file. Each entry is generated file: (source, ...), every path
+# repository-relative.
+RENDERED = {
+    "packages/contracts/src/dispatch-api.generated.ts": (
+        "packages/contracts/schemas/dispatch-openapi.json",
+        "packages/contracts/scripts/gen-api.ts",
+    ),
+}
+
 # The files of this repository the listings resolve with besides the sources they list, which a
 # change can edit to move a listing while none of the files it lists changes: each program's
 # tsconfig and every tsconfig it extends or references, each bundle's nearest tsconfig and its
@@ -106,7 +120,8 @@ def record_resolution(kind: str, path: str, files: list) -> None:
 def kept(paths) -> list:
     """The paths inside the repository and outside node_modules, repository-relative and sorted.
     A relative path is read against the repository root, which is where both commands run and
-    what each prints a relative path against."""
+    what each prints a relative path against. A file no commit holds, which every `bun install`
+    renders, stands for the committed files it is rendered from (RENDERED)."""
     files = set()
     for line in paths:
         if not line.strip():
@@ -120,7 +135,7 @@ def kept(paths) -> list:
             continue
         if "node_modules" in relative.parts:
             continue
-        files.add(relative.as_posix())
+        files.update(RENDERED.get(relative.as_posix(), (relative.as_posix(),)))
     return sorted(files)
 
 

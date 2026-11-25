@@ -70,6 +70,7 @@ func (g *rig) pendingPod(name string, status func(*corev1.Pod)) time.Time {
 // is still provisioning then keeps waiting for its launcher, and starts the role in that same pod
 // once the launcher connects: the claim is charged no launch failure.
 func TestALaunchWaitsForAPodProvisioningPastTheBootTimeout(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	g.autoStart.Store(false)
 	spec := workerSpec(t)
@@ -111,6 +112,7 @@ func TestALaunchWaitsForAPodProvisioningPastTheBootTimeout(t *testing.T) {
 // boot timeout to connect, and a launch whose launcher never does fails then, not at the end of
 // ProvisionBound.
 func TestALaunchGivesUpTheBootTimeoutAfterItsPodStopsProvisioning(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	g.autoStart.Store(false)
 	result := make(chan error, 1)
@@ -140,6 +142,7 @@ func TestALaunchGivesUpTheBootTimeoutAfterItsPodStopsProvisioning(t *testing.T) 
 // A pod that never runs an init container, as one whose image pull never finishes, is not
 // provisioning: its launch gives up at the boot timeout.
 func TestALaunchWhosePodNeverProvisionsGivesUpAtTheBootTimeout(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	g.autoStart.Store(false)
 	result := make(chan error, 1)
@@ -171,6 +174,7 @@ func TestALaunchWhosePodNeverProvisionsGivesUpAtTheBootTimeout(t *testing.T) {
 // still waits is starting; a pod whose creation or scheduling time is unknown is not judged; and a
 // pod that has left Pending has started, whatever its node reports of it since.
 func TestAPodNotReadyToStartHasNeverStartedOnceCreatedPastTheBoundAndScheduledPastItsMargin(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 11, 17, 15, 8, 0, 0, time.UTC)
 	bound, short := 10*time.Minute, 90*time.Second
 	waited := 15 * time.Minute
@@ -285,6 +289,7 @@ func TestAPodNotReadyToStartHasNeverStartedOnceCreatedPastTheBoundAndScheduledPa
 // margin ago, half the rig's boot timeout: it is about to start. The last row is that case, the
 // pod placed half a second before the next try, three boot timeouts after it appeared.
 func TestALaunchReplacesAPodItsNodeNeverStartedOncePastTheBootTimeout(t *testing.T) {
+	t.Parallel()
 	const said = neverStartedWarning
 	boot := testOptions().BootTimeout
 	for _, tc := range []struct {
@@ -370,6 +375,7 @@ func TestALaunchReplacesAPodItsNodeNeverStartedOncePastTheBootTimeout(t *testing
 // this case gives it, then a 90 s workspace-init, whose launcher connects 32 min 30 s after the
 // wait began.
 func TestTheLauncherDeadlineFollowsProvisioningUpToItsBound(t *testing.T) {
+	t.Parallel()
 	start := time.Date(2026, 10, 13, 17, 49, 23, 0, time.UTC)
 	boot, bound := 2*time.Minute, 30*time.Minute
 	for _, tc := range []struct {
@@ -401,6 +407,7 @@ func TestTheLauncherDeadlineFollowsProvisioningUpToItsBound(t *testing.T) {
 // repository's cache is still waited on, and one whose fetch runs its whole FetchBudget leaves
 // workspace-init the boot timeout.
 func TestTheLauncherWaitOutlastsTheFetchsWholeBudget(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	start := time.Date(2026, 10, 16, 23, 0, 0, 0, time.UTC)
 	first, boot := start.Add(time.Minute), 2*time.Minute
@@ -424,6 +431,7 @@ func TestTheLauncherWaitOutlastsTheFetchsWholeBudget(t *testing.T) {
 // of the repository cache that fetch fills a fresh feed from: the fetch's own failure, which would
 // name it, has not come.
 func TestALaunchThatGivesUpOnAFetchNamesTheRepositorysCache(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	g.autoStart.Store(false)
 	g.r.provisionBound = time.Second
@@ -449,6 +457,8 @@ func TestALaunchThatGivesUpOnAFetchNamesTheRepositorysCache(t *testing.T) {
 // past the 5 s a cap from the wait's start would allow; its launcher connects then, and the launch
 // starts the role.
 func TestALaunchCountsItsProvisioningBoundFromTheFirstInitContainer(t *testing.T) {
+	// Not parallel: it moves its pod into provisioning by the wall clock 500 ms before the 2 s boot
+	// timeout runs out, a window other tests' load could make the runtime miss.
 	g := newRig(t, nil)
 	g.autoStart.Store(false)
 	g.r.provisionBound = 3 * time.Second
@@ -503,6 +513,8 @@ const neverStartedWarning = "sandbox runtime: replacing a pod older than its sta
 // deadline that launcherDeadline sets, and the wait's backstop does not end it first. With
 // keep_volume on, the launch try's own bound (LaunchBound) counts a start of 7 minutes.
 func TestAKeptVolumePodWaitsOutADetach(t *testing.T) {
+	// Not parallel: a subtest moves its pod into provisioning by the wall clock 1 s before an 8 s
+	// start bound runs out, a window other tests' load could make the runtime miss.
 	const boot, infraBoot = 120 * time.Second, 600 * time.Second
 	for _, tc := range []struct {
 		name string

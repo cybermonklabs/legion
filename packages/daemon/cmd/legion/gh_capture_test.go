@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/daemon"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
+	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
@@ -129,8 +130,10 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 		"GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_TERMINAL_PROMPT=0",
 		// `legion gh` passes every call through the leak guard, which refuses one it can run no
 		// shared check for; what this test reads is which token each call carries, so its check
-		// clears every call and the guard's own visibility read is answered by the proxy.
+		// clears every call and the guard's own visibility read is answered by the proxy. The guard
+		// reads the visibility only where the deployment names its rule file, so the fixture's is.
 		"PUBLIC_LEAK_CHECK=" + leakguardtest.Write(t, t.TempDir(), ghCheckPasses),
+		leakguard.RulesFileVar + "=" + leakguardtest.WriteRules(t, t.TempDir()),
 		// The capture proxy's CA, for the gh `legion gh` runs: its environment keeps the caller's
 		// proxy, the capture proxy above, but no trust store (ghChildEnviron), so only the test
 		// binary hands it this CA, which stands in for GitHub's own. SSL_CERT_DIR names an empty

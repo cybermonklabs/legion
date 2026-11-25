@@ -1,0 +1,11 @@
+kind: Changed
+body: |-
+  `src/dispatch-api.generated.ts` is no longer committed. Every `bun install` at the repository
+  root renders it from `schemas/dispatch-openapi.json` (the root `package.json`'s postinstall), and
+  `bun run gen:api` renders it again. `bun run check:api` is gone: no committed copy is left to
+  compare. `src/dispatch-api.ts` re-exports the module with `export type *`, so Bun and every
+  bundler erase it and only a type check reads it. A branch made before this change runs
+  `scripts/adopt-api-layout.sh` while it merges main.
+time: 2026-11-24T00:55:02Z
+custom:
+    Issue: INFRA-1075
