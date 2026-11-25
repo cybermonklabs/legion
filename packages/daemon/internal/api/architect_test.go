@@ -926,6 +926,18 @@ func setIssue(t *testing.T, h *harness, key string, change func(*record.Issue)) 
 	}
 }
 
+// readmitRoot is the re-admission of root's tree: the root's next generation, and the tree's run
+// raised with it, as the re-admission's clear of the whole tree raises it
+// (record.Postgres.ClearTreeGeneration). PutIssue alone writes a root's next change, which leaves
+// the tree's run.
+func readmitRoot(t *testing.T, h *harness, root string) {
+	t.Helper()
+	setIssue(t, h, root, func(issue *record.Issue) { issue.Generation++ })
+	if _, err := h.store.Pool().Exec(context.Background(), `update issues set tree_generation = generation where key = $1 and tree = key`, root); err != nil {
+		t.Fatalf("raise the tree's run of %s: %v", root, err)
+	}
+}
+
 // The design gate is the only human checkpoint before planning, so it opens only on the tree
 // root's own document. A document another issue carries is refused naming both, as the shipped
 // daemon refuses it (routes/issues.ts seedGateFromDispatch), and so is a gate on a child, whose
@@ -986,18 +998,7 @@ func TestGateRegistrationIsItsOwnFactInEachGeneration(t *testing.T) {
 		}
 	}
 	register()
-	err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
-		records := record.NewStore()
-		root, err := records.Issue(context.Background(), tx, "LEGION-208")
-		if err != nil {
-			return err
-		}
-		root.Generation++
-		return records.PutIssue(context.Background(), tx, *root)
-	})
-	if err != nil {
-		t.Fatalf("re-admit LEGION-208: %v", err)
-	}
+	readmitRoot(t, h, "LEGION-208")
 	register()
 	if got := facts.recorded(); len(got) != 2 {
 		t.Fatalf("gate facts = %#v, want one registration per generation", got)

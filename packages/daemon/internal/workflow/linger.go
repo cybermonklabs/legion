@@ -141,7 +141,7 @@ func (e *Engine) leave(ctx context.Context, tx pgx.Tx, issue record.Issue, statu
 	}
 	if except == "" {
 		if err := e.enqueue(ctx, tx, issue.Key, record.IssueSuspend{
-			Tree: issue.Tree, Generation: issue.Generation, TreeGeneration: root.Generation,
+			Tree: issue.Tree, Generation: issue.Generation, TreeGeneration: root.TreeRun(),
 		}); err != nil {
 			return err
 		}
@@ -394,7 +394,7 @@ func (e *Engine) beginLinger(ctx context.Context, tx pgx.Tx, root record.Issue, 
 			return err
 		}
 		if err := e.enqueue(ctx, tx, member.Key, record.IssueSuspend{
-			Tree: member.Tree, Generation: member.Generation, TreeGeneration: root.Generation,
+			Tree: member.Tree, Generation: member.Generation, TreeGeneration: root.TreeRun(),
 		}); err != nil {
 			return err
 		}

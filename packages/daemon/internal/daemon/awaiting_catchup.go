@@ -421,9 +421,9 @@ func (w *workflowRuntime) bindGateRequest(ctx context.Context, root catchUpRoot,
 		if approval.AskID == "" {
 			continue
 		}
-		fact := intake.GateRequestFound{Issue: root.issue.Key, Generation: root.issue.Generation, ArtifactID: gate.ArtifactID,
+		fact := intake.GateRequestFound{Issue: root.issue.Key, Generation: root.issue.TreeRun(), ArtifactID: gate.ArtifactID,
 			RequestAsk: approval.AskID, WaitsOnAgent: approval.WaitingOn == "agent", Since: since}
-		if err := w.applyCatchUp(ctx, fmt.Sprintf("gate-request:%s:%d:%s:%d", root.issue.Key, root.issue.Generation, approval.AskID, since), fact); err != nil {
+		if err := w.applyCatchUp(ctx, fmt.Sprintf("gate-request:%s:%d:%s:%d", root.issue.Key, root.issue.TreeRun(), approval.AskID, since), fact); err != nil {
 			return err
 		}
 	}

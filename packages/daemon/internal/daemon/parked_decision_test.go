@@ -457,7 +457,7 @@ func TestADecisionAStaleStartReleasesReachesTheRunningArchitect(t *testing.T) {
 	// The tree is parked and re-admitted while that start waits out its backoff: generation 3's start
 	// names nothing (the answer is claimed), and its architect comes up and is told its tree.
 	root.Generation = 3
-	putOutboxIssue(t, pool, records, root)
+	readmitOutboxRoot(t, pool, records, root)
 	if _, err := intake.ApplyFact(ctx, pool, "outbox", "generation-3-ready", intake.ClaimReady{Issue: root.Key, Role: claim.RoleArchitect, Launch: 1}, engine); err != nil {
 		t.Fatalf("apply generation 3's architect ready: %v", err)
 	}
@@ -748,7 +748,7 @@ func TestAStartThatFindsTheRootArchitectRunningNamesEachKeptDecisionOnce(t *test
 	answer := record.ParkedDecision{Issue: root.Key, Ref: "dispatch://LEGION-208/ask/ask-1", Decision: record.DecisionAskAnswered, Actor: "user:alice",
 		At: time.Date(2026, 10, 24, 9, 0, 0, 0, time.UTC)}
 	root.Generation = 2
-	putOutboxIssue(t, pool, records, root)
+	readmitOutboxRoot(t, pool, records, root)
 	var task string
 	var kept *record.KeptDecisions
 	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {

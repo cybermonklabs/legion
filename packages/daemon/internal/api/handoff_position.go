@@ -81,7 +81,7 @@ func (s *server) handoffPosition(ctx context.Context, key string, role claim.Rol
 		if err != nil {
 			return err
 		}
-		position = completionPosition{issue: issue, treeGeneration: root.Generation, lingers: root.Lingers(), task: task, pass: counts.Pass,
+		position = completionPosition{issue: issue, treeGeneration: root.TreeRun(), lingers: root.Lingers(), task: task, pass: counts.Pass,
 			lastHandoff: record.PhaseRowOf(rows, claim.RoleImplementer).LastHandoff, entry: completing.Entry, entryMovedBack: completing.EntryMovedBack,
 			pullRequest: pr, check: check}
 		return nil
