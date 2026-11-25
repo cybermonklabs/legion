@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
 // The events. Each carries the claim it is for and the fields its fences read: an observation its
@@ -300,6 +301,10 @@ type PodUpdateOpen struct {
 // the reviewer creates no commit and pushes nothing (its role part), so its text says so in step 1
 // and asks no commit or push of what its work made (createsNoCommit).
 //
+// push is where role pushes (UpdatePush): its zero value gives the text above, step 1 pushing to
+// the issue's branch, and a step beside a fix, the fix, and the implementer while a fix reads its
+// job each get their own step 1 (updatePushStep), every other sentence the same.
+//
 // The step to answer is the one step a role can be unable to do: the op list its `legion` tool
 // holds is a closed enum compiled into its plugin, and a plugin below PodUpdateContract has no
 // ready_for_update in it. Such a role is told to do the first three steps all the same, because
@@ -317,15 +322,17 @@ type PodUpdateOpen struct {
 //
 // Another agent reads it, so it follows ASD-STE100: one instruction per sentence, active voice,
 // and no word that has a second reading.
-func UpdateTask(role claim.Role, round, reasons string, endsAt time.Time) string {
+func UpdateTask(role claim.Role, round, reasons string, endsAt time.Time, push UpdatePush) string {
 	ends := endsAt.UTC().Format(time.RFC3339)
-	push := "1. Push every commit that you want to keep to this issue's branch."
+	step := updatePushStep(push)
 	made := " Then commit and push what it made."
 	after := "If a subagent or a background job finishes after you answer, commit and push what it made. Then call `ready_for_update` again"
-	if createsNoCommit(role) {
-		push = "1. You create no commit, so you push nothing."
+	if createsNoCommit(role) || push.FixReads {
 		made = ""
 		after = "If a subagent or a background job finishes after you answer, call `ready_for_update` again"
+	}
+	if createsNoCommit(role) {
+		step = "1. You create no commit, so you push nothing."
 	}
 	return "The daemon must replace the pod that runs this issue's roles. " +
 		fmt.Sprintf("The reasons are: %s.", reasons) +
@@ -357,7 +364,36 @@ These things go with the pod when the round ends:
 - The pod's test database.
 - The pod's caches.
 
-The daemon starts your process again on the new pod, in this same session. The daemon holds your next task until your process runs again. Do not start new work now.`, round, ends, push, made, after)
+The daemon starts your process again on the new pod, in this same session. The daemon holds your next task until your process runs again. Do not start new work now.`, round, ends, step, made, after)
+}
+
+// UpdatePush is where a role pushes at an update round's ask: the zero value for a role that
+// pushes to the issue's branch, as every role does where no fix of the issue reads or runs. Branch
+// is the role's own branch beside the fix (claim.BesideBranch), which a step beside a running fix
+// pushes to, and which the fix's own push names with OwnFix. FixReads marks the implementer while a
+// fix of the issue reads its failed job: that fix's working copy and branch do not exist yet, and
+// the issue's branch has one writer then, so the implementer pushes nothing.
+type UpdatePush struct {
+	Branch   string
+	OwnFix   bool
+	FixReads bool
+}
+
+// updatePushStep is step 1 of the update task for push. It receives the push alone and no branch
+// of the issue: the zero push pushes to the issue's branch, as every role did before a fix ran
+// beside the other steps, and every other push names only its own branch.
+func updatePushStep(push UpdatePush) string {
+	switch {
+	case push.FixReads:
+		return "1. A fix of this issue reads its failed job, and you run that fix next. Its task names the branch that you push to. Push nothing to this issue's branch now."
+	case push.OwnFix:
+		return fmt.Sprintf("1. Push every commit of your fix that you want to keep to the branch %[1]s, not to this issue's branch: run jj -R \"$LEGION_WORKSPACE-fix\" bookmark set %[1]s -r @-, then jj -R \"$LEGION_WORKSPACE-fix\" git push --remote origin --bookmark %[1]s. Push to this issue's branch only when your fix ends. On the new pod, the daemon gives you your fix's task again, and the start of that task makes your fix's working copy first.", push.Branch)
+	case push.Branch != "":
+		return "1. This step keeps its own branch until it ends. Push nothing to this issue's branch. Push every commit that you want to keep to the branch " + push.Branch + ": " +
+			workspace.BesidePushCommand(push.Branch) + ". On the new pod, the daemon gives you your task again, and that task names the branch of your pushed commits where the daemon holds a push of it."
+	default:
+		return "1. Push every commit that you want to keep to this issue's branch."
+	}
 }
 
 // createsNoCommit says whether role creates no commit and pushes nothing: the reviewer, whose

@@ -101,7 +101,7 @@ func TestPodUpdateAsksEachRoleOnceOnItsOwnTopicOverTenSweeps(t *testing.T) {
 	rows := map[claim.Role]int{}
 	for _, ask := range rig.asks() {
 		rows[ask.Role]++
-		text := supervise.UpdateTask(ask.Role, podUpdateRound, podUpdateDrift, podUpdateStart.Add(podUpdateGrace))
+		text := supervise.UpdateTask(ask.Role, podUpdateRound, podUpdateDrift, podUpdateStart.Add(podUpdateGrace), supervise.UpdatePush{})
 		if ask.Round != podUpdateRound || ask.Pod != podUpdatePod || ask.Text != text {
 			t.Errorf("the ask to the %s = %+v, want round %s of pod %s with the round's text:\n%s", ask.Role, ask, podUpdateRound, podUpdatePod, text)
 		}
@@ -223,7 +223,7 @@ func TestPodUpdateALaterSweepThatReadsOtherDriftKeepsTheRoundsTerms(t *testing.T
 		t.Fatalf("the sweeps enqueued %d asks, want one for each of the %d roles: %+v", len(asks), len(roles), asks)
 	}
 	for _, ask := range asks {
-		if text := supervise.UpdateTask(ask.Role, podUpdateRound, podUpdateDrift, podUpdateStart.Add(podUpdateGrace)); ask.Text != text {
+		if text := supervise.UpdateTask(ask.Role, podUpdateRound, podUpdateDrift, podUpdateStart.Add(podUpdateGrace), supervise.UpdatePush{}); ask.Text != text {
 			t.Errorf("the ask to the %s says:\n%s\nwant the round's own terms:\n%s", ask.Role, ask.Text, text)
 		}
 	}
