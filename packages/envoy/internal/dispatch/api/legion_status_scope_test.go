@@ -3,7 +3,7 @@
 // writes need a credential that holds the person scope or the legion-status scope: a write of a
 // Legion issue's status, the removal of the legion label from an issue, and a move of a Legion
 // issue out from under every labelled issue. A Legion issue carries the label, in any case, or
-// is under an issue that carries it. The server refuses such a write from any other credential
+// is under an issue of its own project that carries it. The server refuses such a write from any other credential
 // with 403 LEGION_STATUS_SCOPE_REQUIRED, and the issue keeps its status, labels, parent and
 // events (requireLegionIssueUnchanged).
 //
@@ -1106,17 +1106,12 @@ func TestADaemonsWriteRecordsNoScopeAnActCannotCarry(t *testing.T) {
 			if written := rig.credential(t, c.name).send(t, http.MethodPatch, "/api/v1/issues/"+issue, map[string]any{"status": "in_progress"}); written.Code != http.StatusOK {
 				t.Fatalf("%s writes the status of %s: status=%d body=%s", c.name, issue, written.Code, written.Body.String())
 			}
-			actor := scanEventActor(t, rig.database, `select actor from events where type = 'issue.updated' and issue_key = $1 order by id desc limit 1`, issue)
+			actor := latestEventActor(t, rig.database, issue, "issue.updated")
 			if actor.Act == nil || !actor.Act.SessionProven || actor.Act.Session == "" {
 				t.Fatalf("the write's actor = %+v, want an act naming the session its token proved", actor)
 			}
 			if !slices.Equal(actor.Act.Scopes, c.scopes) {
 				t.Errorf("the act records scopes %q, want %q", actor.Act.Scopes, c.scopes)
-			}
-			for _, scope := range actor.Act.Scopes {
-				if !slices.Contains(model.Scopes, scope) {
-					t.Errorf("the act records %q, which is not a scope of model.Scopes (DISPATCH_SCOPES)", scope)
-				}
 			}
 		})
 	}
@@ -1165,7 +1160,7 @@ func TestAnIssueUnderALabelledIssueIsALegionIssue(t *testing.T) {
 }
 
 // TestTheLegionStatusRefusalWaitsForItsSetting: with Deps.LegionStatusScope off, every write of
-// legionStatusWrites, legionLabelRemovals, legionBeforeAndAfterWrites, legionParentMoves,
+// legionStatusWrites, legionHandOver, legionLabelRemovals, legionBeforeAndAfterWrites, legionParentMoves,
 // legionLabelRemovalUnderALabelledParent and legionDeepStatusWrites that the shared token sends,
 // and that R26 refuses with the setting on, is taken. So is every call of the status-change route
 // of legionStatusChanges that the shared token sends and that R26 refuses with the setting on, with

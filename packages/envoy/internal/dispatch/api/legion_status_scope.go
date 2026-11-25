@@ -274,18 +274,18 @@ func (options statusChangeOptions) architectWrites(status string) bool {
 	return status != "done" || !options.includeChildren
 }
 
-// owningArchitectSQL answers whether an issue above the step's issue $4, whose parent is $1 and
-// whose project is $2, has marked role holders that name the session $3 as its architect. The
+// owningArchitectSQL answers whether an issue above a step's issue, whose parent is $1 and whose
+// project is $2, has marked role holders that name the session $3 as its architect. The
 // chain is legionChainSQL's, the one the legion walk reads: it climbs only to a parent of the
 // step's issue's own project, so it ends at the first issue of another project as at a root, and
-// it stops at parentDepthCap links above the step's issue. The step's own row is depth 0, and its
-// role holders do not count. A pair is marked when the daemon's own broker token published it
+// it stops at parentDepthCap links above the step's issue. The step's own row names no key, as
+// legionManagedStatusOfRowSQL's does, so its role holders do not count. A pair is marked when the daemon's own broker token published it
 // (daemon_proven, putIssueRoleHolders). The role holders key (issue_key, role) finds each issue's
 // architect.
-var owningArchitectSQL = legionChainSQL(`select $4::text as key, $1::text as parent_key, '{}'::text[] as labels, $2::text as project_key, 0 as depth`) + `
+var owningArchitectSQL = legionChainSQL(`select null::text as key, $1::text as parent_key, '{}'::text[] as labels, $2::text as project_key, 0 as depth`) + `
 	select exists (
 		select 1 from chain c join issue_role_holders h on h.issue_key = c.key
-		where c.depth > 0 and h.role = 'architect' and h.session = $3 and h.daemon_proven
+		where h.role = 'architect' and h.session = $3 and h.daemon_proven
 	)`
 
 // architectAbove reads owningArchitectSQL for the step's issue key: whether the chain from
@@ -296,7 +296,7 @@ func architectAbove(ctx context.Context, q pgx.Tx, key, project string, parent *
 		return false, nil
 	}
 	var named bool
-	if err := q.QueryRow(ctx, owningArchitectSQL, *parent, project, session, key).Scan(&named); err != nil {
+	if err := q.QueryRow(ctx, owningArchitectSQL, *parent, project, session).Scan(&named); err != nil {
 		return false, fmt.Errorf("read whether session %s is the architect of an issue above %s, for R26's refusal: %w", session, key, err)
 	}
 	return named, nil

@@ -11,6 +11,7 @@ import (
 	"time"
 	"unicode/utf16"
 
+	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/fold"
 )
@@ -35,8 +36,10 @@ const (
 // and a new token's default scopes all read Scopes, and none of them may hold this scope: it is
 // the daemon's broker token's alone. A person-scoped broker token holds ScopePerson alone
 // (brokerPersonScopes), never this scope either. DISPATCH_SCOPES in @legion/contracts and the
-// check on agent_tokens.scopes do not name it either, so no personal token can hold it.
-const ScopeLegionStatus = "legion-status"
+// check on agent_tokens.scopes do not name it either, so no personal token can hold it. The word
+// is the broker's own (oauthwire), so the scope the broker grants and the one Dispatch reads are
+// one string.
+const ScopeLegionStatus = oauthwire.ScopeLegionStatus
 
 // Scopes is every OAuth scope a person's own credential can hold (ScopeLegionStatus is not one),
 // in the order a credential holding both carries them: the whole set a person's own credential
@@ -56,7 +59,8 @@ const ScopeRead = "read"
 // ActorAct names the agent that acted when a credential acted for its person, so a write records
 // which credential made it and not only whom it was made for: Session is the session a
 // broker-issued token proved, TokenID and TokenName the personal token presented, and Scopes the
-// scopes that credential holds. A browser's cookie is the person themselves acting, so it names
+// scopes of Scopes that credential holds (api's actScopes: a Legion daemon's ScopeLegionStatus is
+// never recorded). A browser's cookie is the person themselves acting, so it names
 // no agent and carries none of this.
 //
 // Scopes is a snapshot of the credential as it stood at the act, and is never read back from the

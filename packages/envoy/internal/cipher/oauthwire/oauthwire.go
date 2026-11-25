@@ -2,9 +2,10 @@
 // callers it answers share: the clients they present, the scope a machine login asks for, the one
 // a read token holds and the one a Legion daemon's token holds, the names the token exchange
 // knows a subject token by, the header of a read trade's holder proof, the fields the broker adds
-// to a token answer, and the one grammar of a token's list of projects. It imports nothing of the
-// broker — only the standard library and the project-key rule internal/contracts generates — so
-// the agent-secrets helper reads it without the broker's storage.
+// to a token answer, the session prefix a Legion daemon's own entry fixes, and the one grammar of
+// a token's list of projects. It imports nothing of the broker — only the standard library and
+// the project-key rule internal/contracts generates — so the agent-secrets helper reads it without
+// the broker's storage.
 package oauthwire
 
 import (
