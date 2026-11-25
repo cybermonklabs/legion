@@ -515,6 +515,10 @@ mapfile -t stacked < <(git diff --no-renames --name-only --diff-filter=A "$branc
 git merge-base --is-ancestor "$branch" HEAD || fail "the stacked branch does not hold its base branch $branch after the conversion"
 [[ $(git log -1 --format=%s) == *", and merge $branch" ]] ||
   fail "the stacked branch's conversion commit names no merge of its base branch $branch: $(git log -1 --format=%s)"
+# The body names the ref merged and its commit, the base branch's, which is not main's.
+body=$(git log -1 --format=%b | tr '\n' ' ')
+[[ $body == *"and merged $branch ($(git rev-parse "$branch")) into the branch."* ]] ||
+  fail "the stacked branch's conversion commit does not say it merged $branch at $(git rev-parse --short "$branch"): ${body:0:300}"
 stacked_fixture=$(fixture_of "${stacked[0]}")
 [ "$(git diff --no-renames --name-only "$branch" HEAD | sort)" = "$(printf '%s\n' "${stacked[0]}" "$stacked_fixture" | sort)" ] ||
   { git diff --stat "$branch" HEAD; fail "the stacked branch differs from its base branch $branch by more than ${stacked[0]} and $stacked_fixture"; }
