@@ -70,7 +70,7 @@ type message struct {
 	Provider        string          `json:"provider"`
 	Model           string          `json:"model"`
 	StopReason      string          `json:"stopReason"`
-	RetryRecovery   bool            `json:"retryRecovery"`
+	RetryRecovery   json.RawMessage `json:"retryRecovery"` // true in older builds, an object now
 	ProviderPayload json.RawMessage `json:"providerPayload"`
 	// toolResult
 	ToolCallID string   `json:"toolCallId"`

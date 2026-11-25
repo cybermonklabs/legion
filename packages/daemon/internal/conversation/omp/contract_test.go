@@ -517,7 +517,8 @@ func TestThePinnedOhMyPiResumesTheConversationTheReaderRebuilds(t *testing.T) {
 
 // The pinned Oh My Pi and the reader rebuild alike a session that, after a real first run, holds
 // records written by hand: a compaction (its summary in Oh My Pi's template, the entries it keeps
-// after it), a tool call interrupted before its result, an aborted turn and its result, a torn last
+// after it), a tool call interrupted before its result, an aborted turn and its result, an errored
+// turn a retry recovered (its retryRecovery an object) and the turn that recovered it, a torn last
 // record, a branch summary, an extension's custom message. Each resumed request is the reader's
 // conversation, then the follow-up.
 func TestThePinnedOhMyPiResumesHandWrittenRecordsAsTheReaderRebuildsThem(t *testing.T) {
@@ -545,6 +546,16 @@ func TestThePinnedOhMyPiResumesHandWrittenRecordsAsTheReaderRebuildsThem(t *test
 				`{"type":"text","text":"Reading once more."},{"type":"toolCall","id":"toolu_aborted","name":"read","arguments":{"path":"note.txt"}}],` +
 				`"api":"anthropic-messages","provider":"` + standInProvider + `","model":"` + standInModel + `","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"aborted","timestamp":` + ms + `}}` + "\n" +
 				`{"type":"message","id":"3c3c3c3c","parentId":"2b2b2b2b","timestamp":"` + stamp() + `","message":{"role":"toolResult","toolCallId":"toolu_aborted","toolName":"read","content":[{"type":"text","text":"aborted"}],"isError":true,"timestamp":` + ms + `}}` + "\n"
+		}},
+		{"an errored turn a retry recovered", func(_ map[string]string, leaf string) string {
+			ms := fmt.Sprint(time.Now().UnixMilli())
+			usage := `"usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}}`
+			return `{"type":"message","id":"7a7a7a7a","parentId":"` + leaf + `","timestamp":"` + stamp() + `","message":{"role":"assistant","content":[{"type":"text","text":"Reading it ag"}],` +
+				`"api":"anthropic-messages","provider":"` + standInProvider + `","model":"` + standInModel + `",` + usage + `,"stopReason":"error","errorMessage":"overloaded",` +
+				`"retryRecovery":{"kind":"auto-retry","status":"recovered","attempt":1,"recoveredAt":"` + stamp() + `","recovery":"plain","note":"error; retried",` +
+				`"supersededBy":{"timestamp":` + ms + `,"responseId":"resp_x","provider":"` + standInProvider + `","model":"` + standInModel + `"}},"timestamp":` + ms + `}}` + "\n" +
+				`{"type":"message","id":"8b8b8b8b","parentId":"7a7a7a7a","timestamp":"` + stamp() + `","message":{"role":"assistant","content":[{"type":"text","text":"It still says plum."}],` +
+				`"api":"anthropic-messages","provider":"` + standInProvider + `","model":"` + standInModel + `",` + usage + `,"stopReason":"stop","timestamp":` + ms + `}}` + "\n"
 		}},
 		{"a torn last record", func(_ map[string]string, leaf string) string {
 			return `{"type":"message","id":"4d4d4d4d","parentId":"` + leaf + `","timestamp":"` + stamp() + `","message":{"role":"user","content":[{"type":"text","text":"cut o`

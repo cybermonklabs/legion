@@ -229,6 +229,32 @@ func TestReadDropsInterruptedAndFailedTurns(t *testing.T) {
 	})
 }
 
+// A turn whose retryRecovery is truthy to JavaScript is skipped as Oh My Pi skips it: the object
+// the pinned Oh My Pi writes, as the true older builds wrote; a false or null one keeps the turn.
+func TestReadSkipsARetryRecoveryTurnOfEitherShape(t *testing.T) {
+	for _, testCase := range []struct {
+		name, retryRecovery string
+		kept                bool
+	}{
+		{"true", `true`, false},
+		{"an object", `{"kind":"auto-retry","status":"recovered","attempt":1,"recoveredAt":"2026-11-25T11:56:19.129Z","recovery":"plain","note":"error; retried","supersededBy":{"timestamp":1795607764754,"responseId":"resp_x","provider":"openai","model":"gpt-6.1-sol"}}`, false},
+		{"false", `false`, true},
+		{"null", `null`, true},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			f := newFixture()
+			f.add(userEntry("request"))
+			f.add(`{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"recovering"}],"api":"anthropic-messages","provider":"anthropic","model":"claude-opus-5-5","stopReason":"stop","retryRecovery":` + testCase.retryRecovery + `,"timestamp":2}}`)
+			f.add(userEntry("again"))
+			want := []conversation.Message{user("request"), user("again")}
+			if testCase.kept {
+				want = []conversation.Message{user("request"), claude(text("recovering")), user("again")}
+			}
+			assertMessages(t, read(t, f.bytes()).Messages, want)
+		})
+	}
+}
+
 // Tool call ids reach Anthropic as Oh My Pi's normalizeToolCallId leaves them: an OpenAI
 // "call_…|fc_…" id with every character outside [a-zA-Z0-9_-] replaced, cut to 64; the Responses
 // API's call_id is the id's part before the '|'. Each result follows its call, pulled forward past

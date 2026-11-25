@@ -1,7 +1,9 @@
 package omp
 
 import (
+	"bytes"
 	"encoding/json"
+	"strconv"
 	"strings"
 
 	"github.com/sjawhar/legion/daemon/internal/conversation"
@@ -387,7 +389,7 @@ func messageEntryMessages(e *entry) ([]llmMessage, error) {
 		}
 		return []llmMessage{{role: "user", blocks: blocks}}, nil
 	case "assistant":
-		if m.RetryRecovery {
+		if jsTruthy(m.RetryRecovery) {
 			return nil, nil
 		}
 		blocks, err := parseBlocks(m.Content, assistantBlocks, where)
@@ -513,6 +515,30 @@ func prunedContent(blocks []block) []block {
 		}
 	}
 	return out
+}
+
+// jsTruthy is JavaScript's truthiness of a JSON value: an absent value, null, false, 0 and "" are
+// false, any other value true, an empty object or array included. The pinned Oh My Pi's
+// buildSessionContext leaves an assistant turn out of the model context when its retryRecovery is
+// truthy (its bundle: `message.role === "assistant" && (message.retryRecovery || …)`), and the
+// field's shape changed: older builds wrote true, the pinned one an object such as
+// {"kind":"auto-retry","status":"recovered",…}.
+func jsTruthy(raw json.RawMessage) bool {
+	value := bytes.TrimSpace(raw)
+	if len(value) == 0 {
+		return false
+	}
+	switch value[0] {
+	case 'n', 'f': // null, false
+		return false
+	case '"':
+		return len(value) > len(`""`)
+	case '-', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9':
+		// A number too small for a double reads as 0 here as in JSON.parse; one too large as ±Inf.
+		n, _ := strconv.ParseFloat(string(value), 64)
+		return n != 0
+	}
+	return true // true, an object, an array
 }
 
 // emptyErrorTurn is isEmptyErrorTurn's content test: no text, thinking or tool call worth keeping.
