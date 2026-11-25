@@ -6,8 +6,9 @@
 -- (record.Store.AddPlanGiver), and a give by a giver writes nothing. A version is its owners' while
 -- one of its givers is an architect of the issue's tree (record.GivenByOwner), the rule by which a
 -- first step passes a version over as an earlier owner's (workflow's passOverEarlierOwners) and a
--- give is answered as taken (workflow's planGiven). given_by stays the owner that gave the version
--- last, and given_at the time of that give, which record.OwnersNewestPlan orders by.
+-- give is answered as taken (workflow's planGiven). given_by is the giver added last, and given_at
+-- the time of its first give, which record.OwnersNewestPlan orders by: a giver already in
+-- earlier_givers that gives the version again stays there and moves neither.
 --
 -- It back-fills nothing. Every row written before it names its one giver in given_by and reads no
 -- earlier giver, which is what it was. A copy a carry writes (record.Store.CarryPlan) copies the

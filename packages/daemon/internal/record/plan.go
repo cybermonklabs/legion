@@ -60,12 +60,16 @@ const (
 
 // PlanVersion is one version of the plan of an issue at one generation. The highest version of a
 // generation is the plan in force. An owner's version is the version of its document (ArtifactID)
-// it gave, and GivenBy the claim token of the owner that gave it last, at GivenAt; a default plan
-// has version 0, no document and no giver. EarlierGivers is each other owner that gave the same
-// version at the same generation before GivenBy did (store migration
-// 20261124033010_plan_earlier_givers), nil for none: a version's givers are a set, and an owner's
-// give of a version in force that names another giver adds that owner (AddPlanGiver). A version
-// is its owners' while one of its givers is an architect of the issue's tree (GivenByOwner).
+// it gave; a default plan has version 0, no document and no giver. GivenBy is the claim token of
+// the giver the store added last, and GivenAt the time of that giver's first give of the version.
+// A give by an owner the version names already, as GivenBy or among EarlierGivers, changes nothing
+// (AddPlanGiver), so an earlier giver that gives the version again stays an earlier giver: GivenBy
+// is not always the owner that gave the version last, nor GivenAt the time of its last give.
+// EarlierGivers is each other owner the store added as a giver of the same version at the same
+// generation before GivenBy (store migration 20261124033010_plan_earlier_givers), nil for none: a
+// version's givers are a set, and an owner's give of a version in force that names another giver
+// adds that owner (AddPlanGiver). A version is its owners' while one of its givers is an architect
+// of the issue's tree (GivenByOwner).
 type PlanVersion struct {
 	Issue         string
 	Generation    uint64
@@ -283,9 +287,10 @@ const planVersionColumns = `issue, generation, version, source, artifact_id, giv
 
 // AddPlanGiver adds giver to the givers of version of the plan of issue at generation
 // (PlanVersion.EarlierGivers): the giver it named moves to the end of the earlier givers, and
-// giver, at at, is the one that gave it last, which a release before this column reads as the one
-// giver. It answers whether it changed the row: a giver the version names already changes nothing,
-// and so does a version the store does not hold.
+// giver, at at, becomes GivenBy, which a release before this column reads as the one giver. It
+// answers whether it changed the row: a giver the version names already, as GivenBy or among the
+// earlier givers, changes nothing, so an earlier giver never becomes GivenBy again; and so does a
+// version the store does not hold.
 func (s *Postgres) AddPlanGiver(ctx context.Context, tx pgx.Tx, issue string, generation uint64, version int, giver claim.Token, at time.Time) (bool, error) {
 	tag, err := tx.Exec(ctx, `update issue_plans set earlier_givers = earlier_givers || given_by, given_by = $4, given_at = $5
 		where issue = $1 and generation = $2 and version = $3 and given_by <> $4 and not ($4 = any(earlier_givers))`,
@@ -401,10 +406,10 @@ const inForce = `source = 'owner' and issue = $1
 // PlansInForce is each owner's version of the plan of issue that is the plan in force of its
 // generation, generation 0 among them, which holds a plan given before the daemon recorded the
 // issue, and each copy a carry wrote to a later generation (CarryPlan) among them, in the order
-// they were given (PlanVersion.GivenAt, the last give of the version), and of two given at one
-// moment the earlier generation's first. A default plan is nobody's, so none is among them. It
-// judges no giver: OwnersNewestPlan, PlansOfEarlierOwners and PlansOfOwners judge each version
-// through the store their caller hands (GivenByOwner).
+// they were given (PlanVersion.GivenAt, the first give of the giver the store added last), and of
+// two given at one moment the earlier generation's first. A default plan is nobody's, so none is
+// among them. It judges no giver: OwnersNewestPlan, PlansOfEarlierOwners and PlansOfOwners judge
+// each version through the store their caller hands (GivenByOwner).
 func (s *Postgres) PlansInForce(ctx context.Context, tx pgx.Tx, issue string) ([]PlanVersion, error) {
 	rows, err := tx.Query(ctx, "select "+planVersionColumns+` from issue_plans where `+inForce+`
 		order by given_at, generation`, issue)
