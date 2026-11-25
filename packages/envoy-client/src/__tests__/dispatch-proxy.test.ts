@@ -20,7 +20,7 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { connect, createServer, type Socket } from "node:net";
-import { dirname, join } from "node:path";
+import { dirname, join, posix } from "node:path";
 import { gzipSync } from "node:zlib";
 import {
   dispatchToolSpecs,
@@ -1167,6 +1167,58 @@ test("refuses a target in absolute form and one that starts with // with 400 PRO
 
   expect(dispatch.received).toEqual([]);
   expect(elsewhere.received).toEqual([]);
+  expect((await finish(run)).code).toBe(0);
+}, 15_000);
+
+/**
+ * The path Dispatch's server serves a request at when no API route takes it: Go's `url.URL.Path`,
+ * the raw path percent-decoded once, joined and cleaned by `staticHandler` (`filepath.Clean` in
+ * packages/envoy/internal/dispatch/routes/router.go), which resolves `..` and collapses `//`.
+ */
+function routedPath(path: string): string {
+  return posix.normalize(decodeURIComponent(path));
+}
+
+test("sends no request whose target names a route its raw form does not: a # and a percent-encoded slash, in each case", async () => {
+  const broker = standInBroker({ kind: "token", seconds: 3600 });
+  const dispatch = standInDispatch();
+  const run = await startedProxy(podProxyEnvironment(broker.url, dispatch.url));
+  const body = JSON.stringify({ body: "Posted under a target that names another route." });
+
+  // A keyed comment POST whose fragment holds the /comments: the URL the proxy sends drops it.
+  const hashed = "/api/v1/issues/DSP-1#/comments";
+  const requests = [
+    [
+      `POST ${hashed} HTTP/1.1`,
+      "Host: dispatch",
+      "Content-Type: application/json",
+      `Idempotency-Key: ${randomUUID()}`,
+      `Content-Length: ${Buffer.byteLength(body)}`,
+      "Connection: close",
+      "",
+      body,
+    ].join("\r\n"),
+    // GETs whose %2F, in either case, Dispatch decodes to a / that a .. then climbs out of /api/.
+    rawGet("/api/%2F..%2F..%2Fassets/app.js"),
+    rawGet("/api/%2f..%2f..%2fassets/app.js"),
+    rawGet("/api/%2F..%2f..%2Fassets/app.js"),
+    rawGet("/api/..%2Fmetrics"),
+    rawGet("/api/v1/..%2F..%2Fmetrics"),
+    rawGet("/api/%2e%2e%2fmetrics"),
+  ];
+  // Each answer is the proxy's own refusal or Dispatch's; which it is, the received list says.
+  for (const request of requests) await rawRequest(run.socket, request);
+
+  // What reached Dispatch is a GET that Dispatch serves under /api/, or the keyed comment POST
+  // at the comment route itself; never a POST at another route, nor a GET outside /api/.
+  const outside = dispatch.received
+    .filter((asked) =>
+      asked.method === "POST"
+        ? !/^\/api\/v1\/issues\/[^/]+\/comments$/.test(asked.path)
+        : !routedPath(asked.path).startsWith("/api/")
+    )
+    .map((asked) => `${asked.method} ${asked.path} (served at ${routedPath(asked.path)})`);
+  expect(outside).toEqual([]);
   expect((await finish(run)).code).toBe(0);
 }, 15_000);
 
