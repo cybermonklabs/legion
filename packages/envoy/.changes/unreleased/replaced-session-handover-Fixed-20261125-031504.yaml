@@ -1,0 +1,19 @@
+kind: Fixed
+body: |-
+    A session that replaces another now receives the replaced session's unread messages, whether or
+    not the replaced session's claim of the role still stood. Before, a direct message to a session
+    that a Legion claim replaced (`legion claims forget-session`, a fresh session) stayed on the old
+    session's subject, which no session reads, and the takeover copy moved role messages only, and
+    only when the new claim read the old session as the holder; the role claim reaper frees a dead
+    holder's claim first, so a fresh session after a released pod got nothing. `POST /v1/roles/set`
+    now reads `previous_session_id` on an outright claim as well as a soft one, as the session the
+    claim replaces. Once such a claim lands, the claim route writes one handover record for the
+    claimant and that session (`bus.HandoverSubject`, on the takeover lane), and answers `503` with
+    `Retry-After: 1` when it did not store, the claim standing. The record's passes copy nothing
+    while the replaced session is `live`; otherwise, from its acknowledgement floor, they copy each
+    message to the session itself to the claimant's own agent subject and each role message of any
+    role to that role's kept lane, for the role's next live holder. Delivery is at least once: the
+    stream keeps one copy of each message for the claimant, and a copy keeps the message's event id.
+time: 2026-11-25T03:15:04Z
+custom:
+    Issue: replaced-session-handover

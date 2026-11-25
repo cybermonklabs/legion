@@ -1,6 +1,7 @@
 // The takeover lane: where the listener records that a session took a role from a different
 // session, so that the role messages the previous holder did not read are copied to the role's
-// kept lane for whoever holds the role next (cmd/listener/role_takeover.go).
+// kept lane for whoever holds the role next, and that a claim named the session it replaces, so
+// that session's unread messages go to the claimant as well (cmd/listener/role_takeover.go).
 //
 // The lane is the listener's own, as the session resume lane is (session_resume.go): the stream
 // carries its prefix (listenerOwnStreamLanes, streamCarriedSubjects) where no consumer filter takes
@@ -37,6 +38,34 @@ const TakeoverSubjectPrefix = NotificationTopicPrefix + "envoy.takeover."
 // contracts.SubjectProject reads its project from that key.
 func TakeoverSubject(role, previous, attempt string) string {
 	return TakeoverSubjectPrefix + role + "." + previous + "." + attempt
+}
+
+// handoverAttemptPrefix begins the attempt token of a handover record's subject
+// (HandoverSubject), which names the successor after it. No attempt id the claim route draws for
+// a try (id.New, hex digits) begins with it.
+const handoverAttemptPrefix = "handover-"
+
+// HandoverSubject is the subject of the handover record of a claim of role that landed for
+// successor and named previous as the session it replaces (the claim route's
+// previous_session_id): TakeoverSubject with an attempt that names successor. Every claim of role
+// by successor naming previous has this one subject, so the claim route writes one such record
+// however often successor claims the role again, and its passes go on from where the last one
+// stopped. previous and successor are session ids a session consumer can be named for
+// (SessionConsumerName), so neither holds a dot and the successor is the subject's last token
+// past the prefix (TakeoverSuccessor). The body is a TakeoverRecord as every record's is: the
+// successor lives in the subject alone, which no write changes, so a listener that reads the body
+// as a record of a role taken from previous - one from before handover records - still copies the
+// role's messages, and no rewrite of its loses the successor.
+func HandoverSubject(role, previous, successor string) string {
+	return TakeoverSubject(role, previous, handoverAttemptPrefix+successor)
+}
+
+// TakeoverSuccessor is the session the record on subject hands its previous session's messages
+// to, and whether subject is a handover record's (HandoverSubject); a takeover record of a claim
+// that named no session it replaces names none.
+func TakeoverSuccessor(subject string) (string, bool) {
+	successor, ok := strings.CutPrefix(subject[strings.LastIndexByte(subject, '.')+1:], handoverAttemptPrefix)
+	return successor, ok && successor != ""
 }
 
 // TakeoverRecord is the body of one takeover record (TakeoverSubject): what a pass of the

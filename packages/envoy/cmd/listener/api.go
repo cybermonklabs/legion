@@ -2081,6 +2081,16 @@ func adminInterestsHandler(registry *store.Registry, sessions *session.SessionRe
 // none of it. A try whose takeover record did not store writes no claim and answers 503
 // (errTakeoverUnrecorded).
 //
+// A claim that landed and names a session other than its own as previous_session_id, soft or
+// outright, writes that session's handover record first (publishHandover), whether or not that
+// session still held the role: the role claim reaper frees a dead holder's claim, so the claim of
+// the session that replaces it often reads no holder at all. The record's passes, the claim's own
+// handover's first, copy the named session's unread messages - its direct messages to the
+// claimant, its role messages of every role to that role's kept lane - while that session is not
+// live (runTakeoverPass). A record that did not store is answered 503 with Retry-After: 1
+// (errHandoverUnrecorded): the claim stands, the role's lane is handed over, and the client's
+// next claim writes the record.
+//
 // A claim that landed over another session's claim of a Legion controller role narrows that
 // session before it is answered (narrowFormerHolder), as an unsubscribe does: its known-session
 // record is written from its stored row, which the claim took the role's topic off, and its
@@ -2137,19 +2147,20 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 			// own role without ever taking one from a peer. Default false:
 			// last-claim-wins.
 			Soft bool `json:"soft"`
-			// The session id this claimant is continuing (a /fork, /branch, or
-			// /handoff mints a new id in the same process). Naming it is not
-			// enough to take the role from it: a soft claim naming a
-			// predecessor takes the role only when that predecessor has no live
-			// registry entry, when its live entry carries this claimant's own
-			// client instance id (the same conversation continuing inside its
-			// own Oh My Pi Envoy extension instance or Claude Code
-			// channel-server process), or when the claimant's entry or the
-			// predecessor's carries no client instance id at all, which is a
-			// client predating the field and whose takeover is logged. A
-			// predecessor still live in another client instance keeps the role,
-			// and the claim answers 409 naming it. Only honoured with soft;
-			// ignored otherwise.
+			// The session id this claimant is continuing or replacing (a /fork, /branch, or
+			// /handoff mints a new id in the same process; a Legion claim's fresh session
+			// replaces the session its claim abandoned). On a soft claim it is also the
+			// predecessor the role may be taken from, and naming it is not enough to take the
+			// role: a soft claim naming a predecessor takes the role only when that predecessor
+			// has no live registry entry, when its live entry carries this claimant's own client
+			// instance id (the same conversation continuing inside its own Oh My Pi Envoy
+			// extension instance or Claude Code channel-server process), or when the claimant's
+			// entry or the predecessor's carries no client instance id at all, which is a client
+			// predating the field and whose takeover is logged. A predecessor still live in
+			// another client instance keeps the role, and the claim answers 409 naming it. On a
+			// claim of either kind that lands, the session it names hands its unread messages
+			// to the claimant (publishHandover): its direct messages and the role messages of
+			// each of its roles, copied for as long as it is not live.
 			PreviousSessionID string `json:"previous_session_id"`
 			// The revision GET /v1/roles/<role> reported as claim_revision when this
 			// claimant read the role. The claim lands only while the role bucket still
@@ -2330,6 +2341,12 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 		previous := ""
 		if body.Soft {
 			previous = strings.TrimSpace(body.PreviousSessionID)
+		}
+		// replaced is the session a claim that lands hands its unread messages over from, on a soft
+		// claim and an outright one alike: the session the claimant names, unless that is its own.
+		replaced := strings.TrimSpace(body.PreviousSessionID)
+		if replaced == body.SessionID {
+			replaced = ""
 		}
 		// liveWindow is the window this listener's session registry judges a record's age by,
 		// read from that registry itself (session.SessionRegistry.Windows) so that the claim a
@@ -2563,12 +2580,32 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 				return
 			}
 			landed = true
+			// A claim that names the session it replaces writes that session's handover record
+			// before the claim's own handover reads the role's records (publishHandover), so the
+			// first pass runs there. A record that did not store leaves nothing to copy that
+			// session's messages, so the claim, which stands, is answered 503 and its client
+			// claims again, which writes the record; the role's lane is handed over and a former
+			// holder narrowed all the same.
+			var handoverErr error
+			if replaced != "" {
+				handoverErr = publishHandover(ctx, *d.delivery, body.Role, replaced, body.SessionID)
+			}
 			go runTakenRoleDrain(*d.delivery, body.Role)
 			// A claim that took a controller role from another session narrows that session
 			// before it is answered, within this route's budget (narrowFormerHolder), so a notice
 			// published once this claim is answered reaches the new holder alone.
 			if tries.replaced != "" {
 				narrowFormerHolder(ctx, d, logger, body.Role, body.SessionID, tries.replaced)
+			}
+			if handoverErr != nil {
+				logger.Warn("listener role claim landed, but the handover record of the session it replaces did not store; the claim is answered 503 so its client claims again",
+					slog.String("role", body.Role),
+					slog.String("previous_session_id", replaced),
+					slog.String("session_id", body.SessionID),
+					slog.String("error", handoverErr.Error()))
+				w.Header().Set("Retry-After", "1")
+				writeJSONError(w, http.StatusServiceUnavailable, handoverErr.Error())
+				return
 			}
 			answer := roleSetResponse{Interest: item}
 			if roleWarning != "" {
