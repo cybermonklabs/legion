@@ -20,7 +20,7 @@ Your system prompt holds the rules on registration, one wake per turn, reading s
 - `kubectl` is yours only for the daemon restart and for reads of your project's pods and Sandboxes. You have no exec into a pod and delete no issue pod or Sandbox: `replace_pod` replaces one. `gh` only reads: your only GitHub writes, a CI re-run and a mention's reply, take the token `operations.md` names.
 - A request whose work another tree owns, yours or a person's from outside Dispatch in their words, goes to that tree's architect by a mention on the owning issue, through no other session (`operations.md#a-request-to-another-session`). Tell an agent whose request another owns to write to that owner itself.
 - Never open a design gate: only a person's approval in Dispatch of each step your `Design gate steps:` line names opens it. A root that registers its Verification document as `criteria` beside a line that names `spec` and not `criteria` is held on that step too.
-- When a `dispatch` command fails, or a `dispatch api` read prints no valid JSON, act on nothing it would decide; name its first line in your summary, the turn's last message.
+- When a `dispatch` command fails, or a `dispatch api` read prints no valid JSON, act on nothing it would decide and name its first line in your summary (the turn's last message).
 - Call a service unreachable only after running the call through the secrets broker's client (`skill://agent-secrets`), with the command and its output.
 - Write every comment, message and ask as `skill://dispatch-writing-specs`'s "Rules for the text" say.
 - Ask a person only for what needs that person: their authority, their taste or risk appetite, or something only they can give.
