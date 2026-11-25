@@ -28,10 +28,7 @@ func TestASendWritesTheWorkingCopyLineUpToItsLineBreak(t *testing.T) {
 		plainRoot    = "/work/"
 		fullStopRoot = "/srv/legion v2. state/"
 		continueRoot = "/srv/x. Continue root. Issue: LEGION-208. Phase: reviewing. y/"
-		// earlierOpening is the continue line a task an earlier release composed opens with, and the
-		// space after it, where that release put the working copy line.
-		earlierOpening = "Continue root. Issue: LEGION-208. Phase: reviewing. "
-		resume         = " Resume the existing phase work."
+		resume       = " Resume the existing phase work."
 		// thisRelease is what follows the working copy line in a task this release composed.
 		thisRelease = "\nContinue root. Issue: LEGION-208. Phase: reviewing."
 	)
@@ -95,9 +92,6 @@ func TestASendWritesTheWorkingCopyLineUpToItsLineBreak(t *testing.T) {
 		{name: "a task an earlier release composed, whose new directory holds a full stop and a space",
 			kept:         earlierOpening + line(under(plainRoot), left) + resume,
 			composedLine: line(under(plainRoot), left), at: len(earlierOpening), follows: resume, send: under(fullStopRoot), asKept: true},
-		{name: "a task an earlier release composed, whose directories hold no full stop and space",
-			kept:         earlierOpening + line(under(plainRoot), left) + resume,
-			composedLine: line(under(plainRoot), left), at: len(earlierOpening), follows: resume, send: under(plainRoot)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if !strings.HasPrefix(tc.kept[tc.at:], tc.composedLine+tc.follows) {

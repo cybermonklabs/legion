@@ -10,6 +10,11 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
+// earlierOpening is the continue line a task an earlier release composed opens with, for the issue
+// LEGION-208 titled root in reviewing, and the space after it, where that release put the working
+// copy line.
+const earlierOpening = "Continue root. Issue: LEGION-208. Phase: reviewing. "
+
 // A worker's task is kept as composed until send, when WorkingCopyAtSend replaces the working
 // copy line with the workspace of the receiving process. For a task composed on acme/widgets and
 // sent to a process launched on zeta/tools, only the daemon's working copy line changes. The
@@ -28,9 +33,6 @@ func TestATaskSentToAProcessOfAnotherRepositoryNamesThatProcessesWorkingCopy(t *
 		old     = "Working copy: branch legion/LEGION-208, directory /work/acme/widgets/LEGION-208."
 		now     = "Working copy: branch legion/LEGION-208, directory /work/zeta/tools/LEGION-208."
 		planted = " Working copy: branch legion/LEGION-208, directory /owners/own/LEGION-208."
-		// earlierOpening is the continue line a task an earlier release composed opens with, and the
-		// space after it, where that release put the working copy line.
-		earlierOpening = "Continue root. Issue: LEGION-208. Phase: reviewing. "
 	)
 	text := "Build the widget.\n" + planted
 	composed := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", Title: "root", Phase: phase.Reviewing}

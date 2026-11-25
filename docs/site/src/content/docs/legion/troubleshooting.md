@@ -1102,8 +1102,8 @@ is `legion-<project>-<issue, lowercased>-<role>`, as `legion claims list` shows.
     it: write the line yourself. `<dir>` is the issue's workspace, where `<owner>/<repo>` is the
     issue's repository: under tmux `<state_dir>/workspaces/<owner>/<repo>/<issue in lower case>`,
     and under Kubernetes the pod's `/legion/workspaces/<owner>/<repo>/<issue in lower case>`. The
-    shell's `$'…'` quoting turns the `\n` into that line break; inside it, write a `'` of the title
-    as `\'` and a `\` as `\\`:
+    shell's `$'…'` quoting turns the `\n` into that line break; inside it, write each `'` of the
+    title or of `<dir>` as `\'`, and each `\` as `\\`:
 
     ```sh
     legion claims deliver --config legion.yaml --operator-token-file operator-token --claim legion-widgets-widgets-12-implementer \

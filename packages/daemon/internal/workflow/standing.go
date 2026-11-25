@@ -144,19 +144,14 @@ func workingCopyLine(task, key, line string) (start, end int, ok bool) {
 //
 // A directory that holds a full stop followed by a space breaks that rule: the line would end
 // inside the directory, and a send would write the new line in front of the rest of the kept
-// directory. So a task that holds exactly line there, followed by a space, a line end or the end
-// of the task, has that line, which the send leaves as it is. Otherwise a task has no line when the
-// directory of line holds a full stop followed by a space, and a send leaves it as it was kept. A
-// kept line whose own directory holds the two bytes, sent where the directory of line does not,
-// is still cut where they first stand: in this shape nothing marks where such a line ends but its
-// directory.
+// directory. So a task has no line here when the directory of line, the line the send would
+// write, holds a full stop followed by a space, and a send leaves it as it was kept. A kept line
+// whose own directory holds the two bytes, sent where the directory of line does not, is still cut
+// where they first stand: in this shape nothing marks where such a line ends but its directory.
 func earlierLine(task, key, opening, line string) (start, end int, ok bool) {
 	start, ok = earlierWorkingCopy(task, key, opening)
 	if !ok {
 		return 0, 0, false
-	}
-	if end = start + len(line); strings.HasPrefix(task[start:], line) && endsEarlierLine(task, end) {
-		return start, end, true
 	}
 	if strings.Contains(line[len(opening):], ". ") {
 		return 0, 0, false

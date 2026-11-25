@@ -1095,8 +1095,15 @@ func resolve(file fileConfig, env func(string) string, configDir string) (Config
 		return Config{}, errors.New("state_dir is required")
 	}
 	cfg.StateDir = underConfig(*file.StateDir, configDir)
-	if strings.ContainsAny(cfg.StateDir, "\n\r") {
-		return Config{}, fmt.Errorf("state_dir %q holds a line break, which a state directory may not hold: the working copy line every phase task opens with names a workspace directory under it and ends at its line break", cfg.StateDir)
+	// The start makes the path absolute against its working directory (cmd/legion's start), so a
+	// relative state_dir under a working directory that holds a line break is read as the daemon
+	// will use it.
+	absolute, err := filepath.Abs(cfg.StateDir)
+	if err != nil {
+		return Config{}, fmt.Errorf("resolve state_dir %q: %w", cfg.StateDir, err)
+	}
+	if strings.ContainsAny(absolute, "\n\r") {
+		return Config{}, fmt.Errorf("state_dir %q holds a line break, which a state directory may not hold: under tmux the working copy line every phase task opens with names a workspace directory under it and ends at its line break", absolute)
 	}
 
 	cfg.PostgresDSN = env("LEGION_POSTGRES_DSN")

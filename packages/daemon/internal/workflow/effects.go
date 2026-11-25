@@ -1165,19 +1165,17 @@ func sentence(s string) string {
 }
 
 // taskOpening is how every task of a phase worker opens (task, resumeText): the working copy line
-// of at, where the work stands (Standing.workingCopy), then a line break and the continue line. A
-// standing that holds no working copy line opens its task with the continue line. The working copy
-// line comes first, so the Dispatch title, the one part of the opening a person wrote, stands
-// after it and can neither move it nor be read in its place when a send writes it again
-// (workingCopyLine). The line break ends the line, and the line holds no other: an issue key
-// (claim.IsIssueKey) and a repository's owner and name (ghrepo.Parse) hold none, and the directory,
-// the line's one free text, stands under the state directory under tmux, where the configuration
-// refuses a state_dir that holds a line break, and under the fixed sandbox.TreeRoot under
-// Kubernetes. So a send finds where the line ends without reading the directory.
+// of at, where the work stands (Standing.workingCopy), then a line break and the continue line.
+// Every standing holds that line (WorkingCopy writes the branch alone where it names no
+// directory). The working copy line comes first, so the Dispatch title, the one part of the
+// opening a person wrote, stands after it and can neither move it nor be read in its place when a
+// send writes it again (workingCopyLine). The line break ends the line, and the line holds no
+// other: an issue key (claim.IsIssueKey) and a repository's owner and name (ghrepo.Parse) hold
+// none, and the directory, the line's one free text, stands under the state directory under tmux,
+// where the configuration refuses a state_dir that holds a line break, and under the fixed
+// sandbox.TreeRoot under Kubernetes. So a send finds where the line ends without reading the
+// directory.
 func taskOpening(issue record.Issue, at Standing) string {
-	if at.workingCopy == "" {
-		return continueLine(issue)
-	}
 	return at.workingCopy + "\n" + continueLine(issue)
 }
 
