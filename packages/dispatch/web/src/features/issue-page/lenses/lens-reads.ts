@@ -15,7 +15,7 @@ import { parseIssuePath } from "../../refs/routes";
 import { useKeyedWrite } from "../../writes/useKeyedWrite";
 import { issueAddress, presetPath } from "../issue-address";
 import { LENS_WORDS } from "../page-words";
-import { dropViews, type Outline, outlineOf, outlineQuery } from "../tree-read/tree-read";
+import { type Outline, outlineOf, outlineQuery } from "../tree-read/tree-read";
 import { outlineRowPath } from "./store-link";
 
 /**
@@ -127,15 +127,16 @@ export function rowPathIn(outline: Outline, key: string, readId: string, filter?
 
 /**
  * Reads again the outline read the page holds for `outline` of the issue `issueKey`, Graph's or
- * Conversation's (`outlineQuery`), through the app's refresh scheduler (`refreshQueries`), drops
- * every view of the issue the cache holds (`dropViews`), and answers once that read is done: when
- * the first read of it that begins from the refresh on has settled. The scheduler answers nothing
- * itself and may begin that read later than its call: once a read already out has settled, or a
- * second after the last read began. Where nothing observes the read, the scheduler reads nothing
- * and only marks it stale, to be read when a page draws it, and an observer that holds its answer
- * for good (`isStatic`) reads nothing either, so this answers at once; and it answers as soon as
- * the read is let go, or its last observer goes, while it waits, since no read comes then. It
- * never answers with a timer of its own. The other outline's read is left as it is (R6).
+ * Conversation's (`outlineQuery`), through the app's refresh scheduler (`refreshQueries`), and
+ * answers once that read is done: when the first read of it that begins from the refresh on has
+ * settled. The scheduler answers nothing itself and may begin that read later than its call: once
+ * a read already out has settled, or a second after the last read began. Where nothing observes
+ * the read, the scheduler reads nothing and only marks it stale, to be read when a page draws it,
+ * and an observer that holds its answer for good (`isStatic`) reads nothing either, so this
+ * answers at once; and it answers as soon as the read is let go, or its last observer goes, while
+ * it waits, since no read comes then. It never answers with a timer of its own. It reads no view
+ * of the issue and leaves the other outline's read as it is (R6): no view draws a lens, a finding
+ * or a risk, so a lens leaves every view current.
  */
 function readTreeAgain(
   queryClient: QueryClient,
@@ -164,7 +165,6 @@ function readTreeAgain(
     });
   }
   refreshQueries(queryClient, [tree]);
-  dropViews(queryClient, issueKey);
   return promise;
 }
 
@@ -202,17 +202,17 @@ export interface LensInvocation {
  * A landing reads the outline's read again through the app's refresh scheduler, as the page does
  * for a write it sees, so it never calls off a read already out and keeps to one start a second:
  * the write and the event it raises read the open view's tree once or twice, never more, and the
- * other outline's not at all (R6). It drops every view of the issue the cache holds, since a view
- * read before the write does not hold the lens it made and would be drawn older than the tree;
- * the one an observer draws is read again. It waits for the outline's read (`readTreeAgain`), so
- * the outline holds the lens's row when the address names it. Then, where Dispatch answered the
- * lens it made and the reader still stands on this issue in the same outline, it replaces the
- * address with that outline's row of the lens (`?node=`, `rowPathIn`), keeping the words filter
- * (`?q=`) and dropping every other part of the address, so the page lands on the new row and a
- * reload lands there too. The address is the one that stands as the read answers (`standing`),
- * whichever row has the focus then. A reader who has left the outline, for another page, another
- * issue, the other outline or one of this issue's views, is left where they went, and so is one
- * who has come back to it since: the outline drawn again keeps an address of its own.
+ * other outline's not at all (R6). It reads no view of the issue and resets none, since no view
+ * draws a lens, a finding or a risk: a view read before the write is still current. It waits for
+ * the outline's read (`readTreeAgain`), so the outline holds the lens's row when the address
+ * names it. Then, where Dispatch answered the lens it made and the reader still stands on this
+ * issue in the same outline, it replaces the address with that outline's row of the lens
+ * (`?node=`, `rowPathIn`), keeping the words filter (`?q=`) and dropping every other part of the
+ * address, so the page lands on the new row and a reload lands there too. The address is the one
+ * that stands as the read answers (`standing`), whichever row has the focus then. A reader who
+ * has left the outline, for another page, another issue, the other outline or one of this
+ * issue's views, is left where they went, and so is one who has come back to it since: the
+ * outline drawn again keeps an address of its own.
  */
 export function useInvokeLens(
   issueKey: string,

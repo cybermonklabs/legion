@@ -1,6 +1,6 @@
 import { expect, jest, test } from "bun:test";
 import type { BlockSchemaRead, LensInvoked, LensKindRead } from "@legion/contracts";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { act, type RenderResult, render, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http } from "msw";
@@ -37,7 +37,13 @@ import {
   type TreeNodeExtra,
   treeNode,
 } from "../tree-read/tree-fixtures";
-import { type TreeAnswer, type TreeAnswerNode, useTreeRead, viewKey } from "../tree-read/tree-read";
+import {
+  type TreeAnswer,
+  type TreeAnswerNode,
+  useTreeRead,
+  viewKey,
+  viewQuery,
+} from "../tree-read/tree-read";
 import { lensActFor } from "./LensMenu";
 
 /**
@@ -241,18 +247,26 @@ function treeAnswer(lenses: number): TreeAnswer {
 }
 
 /** Answers every tree read of this issue, the first with its statement alone and each one after
- *  it with one lens more, and counts them, keeping the kinds each read names (`?kind=`):
- *  Conversation's read names its kinds, and Graph's none. Each read after the first answers once
- *  `later` has settled, where the test holds them back. */
+ *  it with one lens more, and counts them, keeping the kinds each read names (`?kind=`) and the
+ *  view it names (`?view=`), null where it names none: Conversation's read names its kinds, and
+ *  Graph's none, and neither names a view. Each read after the first answers once `later` has
+ *  settled, where the test holds them back. */
 function answerTreeReads(later?: Promise<void>): {
   readonly kinds: string[][];
   readonly reads: number;
+  readonly views: (string | null)[];
 } {
-  const asked: { kinds: string[][]; reads: number } = { kinds: [], reads: 0 };
+  const asked: { kinds: string[][]; reads: number; views: (string | null)[] } = {
+    kinds: [],
+    reads: 0,
+    views: [],
+  };
   answerRequests(
     http.get(`/api/v1/issues/${KEY}/tree`, async ({ request }) => {
       asked.reads += 1;
-      asked.kinds.push(new URL(request.url).searchParams.getAll("kind"));
+      const query = new URL(request.url).searchParams;
+      asked.kinds.push(query.getAll("kind"));
+      asked.views.push(query.get("view"));
       const lenses = asked.reads - 1;
       if (lenses > 0) await later;
       return Response.json(treeAnswer(lenses));
@@ -267,6 +281,13 @@ function answerTreeReads(later?: Promise<void>): {
 function TreeReadRows() {
   const { answer } = useTreeRead(ISSUE);
   return <Rows nodes={nodesInOrder(buildIssueTree({ issue: ISSUE, tree: answer })).slice(1)} />;
+}
+
+/** An observer of the issue's Spec view, as a filter's view read watches it while the filter is
+ *  on (`ViewReadProvider`): it reads the view where the view holds no answer, or a stale one. */
+function SpecViewRead(): null {
+  useQuery(viewQuery(KEY, "spec"));
+  return null;
 }
 
 /** A client signed in as alice, as the page is, whose reads are held once read and whose failed
@@ -752,12 +773,13 @@ test("a 201 lands on the outline the reader still stands on", async () => {
   }
 });
 
-// A 201 reads the tree again and lets go of every view of the issue the cache holds, since a view
-// read before the pick does not hold the lens it made. The page lands on the new lens's row only
-// once the tree read the pick made has answered: until then the menu says the pick is out and the
-// address stays where it was. The client records when each read begins, as the page's event feed
-// has it do, so the pick's read keeps to the scheduler's interval.
-test("a 201 lets go of the held views and lands once the tree is read again", async () => {
+// A 201 reads the open view's tree again and no view of the issue: no view draws a lens, a
+// finding or a risk, so a view held before the pick, which an observer reads, keeps its answer
+// and is neither reset nor read again (R6). The page lands on the new lens's row only once the
+// tree read the pick made has answered: until then the menu says the pick is out and the address
+// stays where it was. The client records when each read begins, as the page's event feed has it
+// do, so the pick's read keeps to the scheduler's interval.
+test("a 201 reads the open view's tree again and no view", async () => {
   const user = userEvent.setup();
   const [read] = buildIssueTree({ issue: ISSUE, tree: treeAnswer(0) }).children;
   if (read?.reference === undefined) throw new Error("the tree read draws no statement");
@@ -767,11 +789,14 @@ test("a 201 lets go of the held views and lands once the tree is read again", as
   const bodies = answerInvocations(() => Response.json(invoked("trade-off"), { status: 201 }));
   const client = signedIn();
   trackQueryFetches(client);
-  client.setQueryData(viewKey(KEY, "spec"), treeAnswer(0));
+  const held = treeAnswer(0);
+  client.setQueryData(viewKey(KEY, "spec"), held);
+  const heldAt = client.getQueryState(viewKey(KEY, "spec"))?.dataUpdatedAt;
   const address: Address = { at: "", go: undefined };
   const view = renderAt(
     <>
       <TreeReadRows />
+      <SpecViewRead />
       <Where address={address} />
     </>,
     undefined,
@@ -791,13 +816,20 @@ test("a 201 lets go of the held views and lands once the tree is read again", as
 
     reread.resolve();
     await waitFor(() => expect(address.at).toBe(`/issues/${KEY}?node=${invoked("trade-off").id}`));
-    expect(client.getQueryData(viewKey(KEY, "spec")), "the held view outlived the 201").toBe(
-      undefined
-    );
-    expect(tree.reads, "the 201 read the tree more than once").toBe(2);
+    expect(
+      client.getQueryData<TreeAnswer>(viewKey(KEY, "spec")),
+      "the 201 reset the held view"
+    ).toBe(held);
+    expect(
+      client.getQueryState(viewKey(KEY, "spec"))?.dataUpdatedAt,
+      "the 201 read the held view again"
+    ).toBe(heldAt);
     await waitFor(() =>
       expect(view.container.querySelectorAll("[data-node-row]")).toHaveLength(rows + 1)
     );
+    await letRequestsSettle();
+    expect(tree.reads, "the 201 read the tree more than once").toBe(2);
+    expect(tree.views, "a read was a view's").toEqual([null, null]);
     expect(menuOf(view)).toBeNull();
   } finally {
     reread.resolve();
@@ -808,7 +840,7 @@ test("a 201 lets go of the held views and lands once the tree is read again", as
 // The same 201 where the tree read is already marked stale as the pick is made, as a write the
 // page saw before it can leave it. TanStack marks no query stale twice, and a mark it does not
 // make tells the cache's listeners nothing, so the pick's read of the tree must not wait on that
-// notice: the tree is read again, the held view is let go and the page lands on the new row.
+// notice: the tree is read again, the held view stays as it was and the page lands on the new row.
 test("a 201 on a tree read already marked stale reads it again and lands", async () => {
   const user = userEvent.setup();
   const [read] = buildIssueTree({ issue: ISSUE, tree: treeAnswer(0) }).children;
@@ -818,11 +850,14 @@ test("a 201 on a tree read already marked stale reads it again and lands", async
   const bodies = answerInvocations(() => Response.json(invoked("trade-off"), { status: 201 }));
   const client = signedIn();
   trackQueryFetches(client);
-  client.setQueryData(viewKey(KEY, "spec"), treeAnswer(0));
+  const held = treeAnswer(0);
+  client.setQueryData(viewKey(KEY, "spec"), held);
+  const heldAt = client.getQueryState(viewKey(KEY, "spec"))?.dataUpdatedAt;
   const address: Address = { at: "", go: undefined };
   const view = renderAt(
     <>
       <TreeReadRows />
+      <SpecViewRead />
       <Where address={address} />
     </>,
     undefined,
@@ -847,10 +882,16 @@ test("a 201 on a tree read already marked stale reads it again and lands", async
     await user.click((await drawnItems(view))[0] as HTMLElement);
     await waitFor(() => expect(address.at).toBe(`/issues/${KEY}?node=${invoked("trade-off").id}`));
     expect(bodies).toEqual([{ kind: "trade-off", on: read.reference }]);
+    expect(
+      client.getQueryData<TreeAnswer>(viewKey(KEY, "spec")),
+      "the 201 reset the held view"
+    ).toBe(held);
+    expect(
+      client.getQueryState(viewKey(KEY, "spec"))?.dataUpdatedAt,
+      "the 201 read the held view again"
+    ).toBe(heldAt);
     expect(tree.reads, "the 201 did not read the tree again").toBe(2);
-    expect(client.getQueryData(viewKey(KEY, "spec")), "the held view outlived the 201").toBe(
-      undefined
-    );
+    expect(tree.views, "a read was a view's").toEqual([null, null]);
     await waitFor(() =>
       expect(view.container.querySelectorAll("[data-node-row]")).toHaveLength(rows + 1)
     );
