@@ -57,8 +57,8 @@ import { renderTemplate } from "./text";
 
 // The hang guards this file's own rows and hooks set are 30_000, 60_000, 80_000, 120_000,
 // 230_000, 270_000, 300_000 and 470_000. A row or hook that sets none takes the 250 s that
-// `bun run test` gives it (`bun test --timeout 250000`, package.json); the hooks that
-// `temporaryTmpdir` and `temporaryDirectory` register here carry limits of their own. Where a
+// `bun run test` gives it (`bun test --timeout 250000`, package.json), the hooks that
+// `temporaryTmpdir` and `temporaryDirectory` register here included. Where a
 // guard's comment gives a measured worst, the guard is at least six times that worst, at the load
 // the comment names. Only the room the pi-envoy job leaves for one hang caps a guard. That job's
 // `timeout-minutes: 15` (.github/workflows/ci-job-pi-envoy.yaml) is 900 s. CI run 45437325102,
@@ -4466,12 +4466,12 @@ console.log(JSON.stringify({ argv, consumed: consumeMarker([process.env.ASKGATE_
       // row 250 s. The row's remaining load ceiling is the gate's own, not this guard: at 240
       // busy loops a real `dispatch` subprocess cannot finish inside DRY_RUN_TIMEOUT_MS, so the
       // gate cuts it and runs it once more with what is left of the reads' half. On the held
-      // clock that is the whole half, so that second
-      // `g.dryRuns` entry carries `timeoutMs: 45000`, not DRY_RUN_TIMEOUT_MS, which fails the
-      // `every` above — 2 runs in 20 went that way, charged 43534.88 ms and 53192.69 ms against
-      // this 120_000 guard, so no per-test limit guards it. So this row's acceptance rung is 96
-      // busy loops, 48 per CPU, the rung the here-document row takes for the same ceiling, where
-      // this row is 20 of 20 on the slower pod of 2026-11-16 as well.
+      // clock that is the whole half, so that second `g.dryRuns` entry carries `timeoutMs: 45000`,
+      // not DRY_RUN_TIMEOUT_MS, which fails the `every` above — 2 runs in 20 went that way,
+      // charged 43534.88 ms and 53192.69 ms against this 120_000 guard, so no per-test limit
+      // guards it. So this row's acceptance rung is 96 busy loops, 48 per CPU, the rung the
+      // here-document row takes for the same ceiling, where this row is 20 of 20 on the slower
+      // pod of 2026-11-16 as well.
     }, 120_000);
     // The second final review of #2159: Oh My Pi at its pin takes a leading `cd X &&` into the
     // call's directory with no CDPATH (`extractLeadingCdTarget`, then `resolveToCwd`), and its

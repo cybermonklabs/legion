@@ -56,11 +56,25 @@ describe("exportJjSessionAttribution", () => {
     dirs.push(dir);
     return dir;
   }
-  // A bound on work, not a hang guard: nothing here waits on another process. The body removes the
-  // rows' directories, a part of the work of the `userConfigChain` afterEach below, and it carries
-  // that hook's 60_000 for the reading recorded there.
+  /** The real jj command the templates row below is running, if any: its words and its process.
+   *  A row its limit ends inside a command never clears this, so the afterEach right below finds
+   *  the command here. */
+  let jjRunning: { command: string; child: Bun.Subprocess<"ignore", "pipe", "pipe"> } | undefined;
+  // A bound on work, not a hang guard: the one process waited on here is a jj this hook has just
+  // sent SIGKILL. The body kills a jj command a row's limit left running and waits for it to
+  // exit, removes the rows' directories, a part of the work of the `userConfigChain` afterEach
+  // below, and carries that hook's 60_000 for the reading recorded there. The kill and its exit
+  // come first, so the removal never races a jj still working in its tree, and the error that
+  // names the command comes last, so it skips no removal.
   afterEach(async () => {
+    const running = jjRunning;
+    jjRunning = undefined;
+    running?.child.kill("SIGKILL");
+    await running?.child.exited;
     await Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
+    if (running !== undefined) {
+      throw new Error(`${running.command} still ran when its row ended, killed here`);
+    }
   }, 60_000);
   /** The overlay the writer wrote under `dir`. */
   async function overlayText(dir: string): Promise<string> {
@@ -546,27 +560,15 @@ describe("exportJjSessionAttribution", () => {
   const TEMPLATE_ROW_JJ_COMMANDS = 34;
   /** The templates row's own limit. A hang guard: what can hang is a real jj command, which runs
    *  with no deadline of its own. This limit alone ends a jj that never ends, and it names the
-   *  row. The afterEach below names the command and kills it. Worst measured cost: over 20 runs
-   *  of this file at the 240 rung, a run charged up to 442 299 ms, all of it this row's but the
-   *  22.9 s its other rows took together, in the Job infra-1580-t27-j3-99kcl of the cluster's
-   *  `builds` namespace, two CPUs and 8 GiB (417 busy loops for the 240 rung, row A 35.3 s), at
-   *  06d187e7. The row took 300 338 ms in the Job infra-1580-t27-j15-tx7cm at that commit. The
-   *  pi-shared job's room sizes the limit: its `timeout-minutes: 10` less its 45 s at 06d187e7
-   *  (CI run 45437325102) leaves 555 s. Six times either reading is past that room. So the room
-   *  decides 540_000, 1.2 times 442 299 ms. */
+   *  row. The describe's first afterEach kills the command and names it. Worst measured cost:
+   *  over 20 runs of this file at the 240 rung, a run charged up to 442 299 ms, all of it this
+   *  row's but the 22.9 s its other rows took together, in the Job infra-1580-t27-j3-99kcl of the
+   *  cluster's `builds` namespace, two CPUs and 8 GiB (417 busy loops for the 240 rung, row A
+   *  35.3 s), at 06d187e7. The row took 300 338 ms in the Job infra-1580-t27-j15-tx7cm at that
+   *  commit. The pi-shared job's room sizes the limit: its `timeout-minutes: 10` less its 45 s at
+   *  06d187e7 (CI run 45437325102) leaves 555 s. Six times either reading is past that room. So
+   *  the room decides 540_000, 1.2 times 442 299 ms. */
   const TEMPLATE_ROW_LIMIT_MS = 540_000;
-  /** The real jj command the templates row below is running, if any: its words and its process.
-   *  A row its limit ends inside a command never clears this, so the afterEach below finds the
-   *  command here. */
-  let jjRunning: { command: string; child: Bun.Subprocess<"ignore", "pipe", "pipe"> } | undefined;
-  // Nothing here waits: the kill is a signal, and the error names the command the row was in.
-  afterEach(() => {
-    const running = jjRunning;
-    jjRunning = undefined;
-    if (running === undefined) return;
-    running.child.kill("SIGKILL");
-    throw new Error(`${running.command} still ran when its row ended, killed here`);
-  });
 
   // The one case here that runs the real jj, which is not on every host: it skips where PATH has
   // none, except on GitHub Actions, where the pi-shared job installs one and a skip would hide

@@ -10,10 +10,9 @@ import { expect, test } from "bun:test"
 import { agentStreamControlSubject, legacyAgentSubject } from "@legion/contracts"
 import { deliverSubject } from "@legion/envoy-client/consumer-delivery"
 import { nkeys } from "nats"
-import { modSocketPath } from "../hooks/mod-protocol"
 import { sessionHandoffFile, writeSessionHandoff } from "../src/session-identity"
 import { waitFor } from "./channel-session-harness"
-import { type FakeMod, startFakeMod } from "./fake-mod"
+import type { FakeMod } from "./fake-mod"
 import {
   count,
   PROCESS_WAIT_MS,
@@ -21,6 +20,7 @@ import {
   ROW_TIMEOUT_MS,
   sessionBroker,
   startReopenServer,
+  startSessionMod,
 } from "./reopen-server"
 
 const SESSION = "ses_reopen"
@@ -42,21 +42,13 @@ function startServer(
   })
 }
 
-/** The fake mod of `run`'s session, and the notices this server wrote into it under `heading`: a
- *  notice is the one card that names no Envoy event. The mod's probe for the socket waits
- *  `PROCESS_WAIT_MS`, as each wait of this file does: the row's limit (`ROW_TIMEOUT_MS`) is past
- *  what the claude-envoy job leaves one hang, so a socket that never answers fails here by name.
- *  A mod that does not start stops the server, since the row's `finally` comes after this call. */
+/** The fake mod of `run`'s session (`startSessionMod`), and the notices this server wrote into it
+ *  under `heading`: a notice is the one card that names no Envoy event. A mod that does not start
+ *  stops the server, since the row's `finally` comes after this call. */
 async function sessionMod(run: Pick<ReopenServer, "stateDirectory" | "server" | "stop">) {
   let mod: FakeMod
   try {
-    const socketPath = modSocketPath(SESSION, { XDG_RUNTIME_DIR: run.stateDirectory })
-    if (socketPath === undefined) throw new Error("the session names no mod socket")
-    mod = await startFakeMod(socketPath, {
-      sessionId: SESSION,
-      exited: run.server.exited,
-      answerWithinMs: PROCESS_WAIT_MS,
-    })
+    mod = await startSessionMod(run, SESSION)
   } catch (error) {
     await run.stop()
     throw error

@@ -29,7 +29,7 @@
  */
 import type { Subprocess } from "bun"
 
-/** The hang guard the header names five files for, which each sets as its rows' default. */
+/** The hang guard the header names its files for, which each sets as its rows' default. */
 export const ROW_GUARD_MS = 120_000
 /**
  * The hang guard of the files whose rows a loaded host stretches past a sixth of `ROW_GUARD_MS`

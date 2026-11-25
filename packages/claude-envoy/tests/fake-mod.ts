@@ -178,8 +178,8 @@ export async function startFakeMod(
     }
   }
 
-  const send = async (event: ModEvent): Promise<void> => {
-    await post(MOD_ROUTE_EVENTS, { events: [event] })
+  const send = async (event: ModEvent, signal?: AbortSignal): Promise<void> => {
+    await post(MOD_ROUTE_EVENTS, { events: [event] }, signal)
   }
 
   // The server binds its socket while its MCP transport starts, so a mod started beside it
@@ -205,13 +205,15 @@ export async function startFakeMod(
     }
     try {
       if (options.hello !== false) {
-        const hello: ModEvent = {
-          kind: "hello",
-          sessionId: options.sessionId,
-          claudeVersion: "2.1.310",
-          interactive: true,
-        }
-        await post(MOD_ROUTE_EVENTS, { events: [hello] }, probeSignal)
+        await send(
+          {
+            kind: "hello",
+            sessionId: options.sessionId,
+            claudeVersion: "2.1.310",
+            interactive: true,
+          },
+          probeSignal,
+        )
       }
       break
     } catch (error) {

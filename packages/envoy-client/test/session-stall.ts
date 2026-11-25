@@ -29,6 +29,7 @@ import { delivered } from "./delivered";
 import {
   type EnvoyStack,
   envoyStackEnabled,
+  readInRow,
   startStoppableEnvoyStack,
   throwIfExited,
   throwIfRowEnded,
@@ -407,17 +408,7 @@ async function rowRead<T>(
 ): Promise<T> {
   throwIfRowEnded(ended, doing);
   throwIfExited(stack, doing);
-  let value: T;
-  try {
-    value = await read();
-  } catch (error) {
-    throwIfRowEnded(ended, doing);
-    const exited = stack.exited();
-    if (exited === undefined) throw error;
-    throw new Error(`${doing}: ${exited}`, { cause: error });
-  }
-  throwIfRowEnded(ended, doing);
-  return value;
+  return await readInRow(ended, doing, () => stack.exited(), read);
 }
 
 /** Polls the session until it reads `want`, each read a `rowRead` in the row whose signal is

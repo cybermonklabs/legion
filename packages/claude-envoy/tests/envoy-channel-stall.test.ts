@@ -4,6 +4,8 @@ import { join, resolve } from "node:path"
 import {
   type EnvoyStack,
   envoyStackEnabled,
+  readInRow,
+  releaseAll,
   STOP_GRACE_MS,
   startStoppableEnvoyStack,
   useEnvoyStackDirectory,
@@ -60,7 +62,8 @@ interface ChannelServer {
 
 /** The stop of each host started whose releases have not all run. The describe's `afterEach`
  *  runs each one: a row its limit abandoned never reaches its own `finally`, and its host must not
- *  outlive it. A host whose stop is still running stays here until that stop has released all. */
+ *  outlive it. A host whose stop is still running stays here until that stop has released all,
+ *  or until the `afterEach` takes it out to wait on that stop. */
 const openHosts = new Set<() => Promise<void>>()
 
 /**
@@ -83,20 +86,12 @@ async function startChannelServer(
     stopping = stopping
       .catch(() => undefined)
       .then(async () => {
-        const failures: unknown[] = []
-        for (let release = releases.pop(); release !== undefined; release = releases.pop()) {
-          try {
-            await release()
-          } catch (error) {
-            failures.push(error)
-          }
-        }
-        // Only now: a row whose limit fired while its own `finally` ran this stop leaves the host
-        // here, and the `afterEach`'s stop of it waits for these releases to settle.
-        openHosts.delete(stop)
-        if (failures.length === 1) throw failures[0]
-        if (failures.length > 1) {
-          throw new AggregateError(failures, `${failures.length} of the host's releases failed`)
+        try {
+          await releaseAll(releases, "the host's releases")
+        } finally {
+          // Only now: a row whose limit fired while its own `finally` ran this stop leaves the
+          // host here, and the `afterEach`'s stop of it waits for these releases to settle.
+          openHosts.delete(stop)
         }
       })
     return stopping
@@ -210,24 +205,12 @@ async function startChannelServer(
       // ended it throws before each poll and in place of its answer, so a wait of a row its limit
       // abandoned does not poll on into the row after it.
       async waitFor(condition, deadline, what) {
-        const stillOpen = () => {
-          if (ended.signal.aborted) throw new Error(`stopped waiting for ${what}: the row ended`)
-        }
+        const doing = `waiting for ${what}`
         for (;;) {
-          stillOpen()
-          let met: boolean
-          try {
-            met = await condition()
-          } catch (error) {
-            stillOpen()
-            const exited = exit()
-            if (exited === undefined) throw error
-            throw new Error(`waiting for ${what}: ${exited}`, { cause: error })
-          }
-          stillOpen()
+          const met = await readInRow(ended.signal, doing, exit, condition)
           if (met) return
           const exited = exit()
-          if (exited !== undefined) throw new Error(`waiting for ${what}: ${exited}`)
+          if (exited !== undefined) throw new Error(`${doing}: ${exited}`)
           if (deadline !== undefined && Date.now() > deadline) {
             throw new Error(`timed out waiting for ${what}: ${stderr}`)
           }
@@ -288,7 +271,12 @@ describe.skipIf(!envoyStackEnabled)(
       // its waits throw and its server, home and proxy go with the row. A row whose limit fired
       // while its `finally` stopped its host left that host here, and its stop below waits for
       // those releases to settle. A row whose `finally` finished its stop left no host open.
-      for (const stop of openHosts) await stop()
+      // Each host leaves the set before its stop is waited on, so a stop that hangs here is
+      // waited on by this row's hook alone and not again by every row after it.
+      for (const stop of [...openHosts]) {
+        openHosts.delete(stop)
+        await stop()
+      }
       // A hang guard: what can hang is a host's stop. Its server's release ends 10 s after the
       // SIGTERM at the latest (`STOP_GRACE_MS`), when the server is sent SIGKILL. The home's
       // removal and the proxy's close come after that release and have no bound of their own.
@@ -297,7 +285,7 @@ describe.skipIf(!envoyStackEnabled)(
       // `stop`, 2026-11-25T04:47Z to 04:52Z, at 353017d0 with these edits. The server exited on
       // its SIGTERM each time, so no run reached the SIGKILL. No reading under load exists.
       // 30_000 is three times `STOP_GRACE_MS`. A server that ignores its SIGTERM holds the stop
-      // 10 s of it, and the 20 s left for the rest are 348 times the whole stop's idle worst.
+      // 10 s of it, and the 20 s left for the rest are 349 times the whole stop's idle worst.
     }, 30_000)
 
     test("a session whose NATS path freezes subscribes its relay subject again on the new connection within 60 s, registers a new epoch, and shows each message once", async () => {
@@ -399,8 +387,8 @@ describe.skipIf(!envoyStackEnabled)(
       } finally {
         await stop()
       }
-      // A hang guard, not a bound on work: what can hang is a wait for the registration or an
-      // exit that never comes.
+      // A hang guard, not a bound on work: what can hang is a wait for the registration, for the
+      // session to subscribe again, or an exit that never comes.
       // Worst measured cost: 177 296.68 ms over 20 runs at the 96 rung in the Job
       // infra-1580-krows-kc-4bm4r of the cluster's `builds` namespace, two CPUs and 8 GiB (199
       // busy loops, at which row A's runs took 39.1 s against the calibration's 31.2 s),

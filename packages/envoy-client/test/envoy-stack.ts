@@ -241,6 +241,53 @@ export function throwIfRowEnded(ended: AbortSignal, doing: string): void {
 }
 
 /**
+ * Answers `read` inside the row whose signal is `ended`: throws once that row has ended, before
+ * the read and in place of its answer, so a wait of a row its limit abandoned stops there. A read
+ * that fails while `exited` names an exit throws naming that exit, with the read's error as its
+ * cause: with the listener gone, a fetch fails on a refused connection, which names neither the
+ * exit nor its log tail.
+ */
+export async function readInRow<T>(
+  ended: AbortSignal,
+  doing: string,
+  exited: () => string | undefined,
+  read: () => T | Promise<T>
+): Promise<T> {
+  throwIfRowEnded(ended, doing);
+  let value: T;
+  try {
+    value = await read();
+  } catch (error) {
+    throwIfRowEnded(ended, doing);
+    const exit = exited();
+    if (exit === undefined) throw error;
+    throw new Error(`${doing}: ${exit}`, { cause: error });
+  }
+  throwIfRowEnded(ended, doing);
+  return value;
+}
+
+/**
+ * Runs each of `releases`, the last added first, until none is left, one added while this runs
+ * included. Every release runs even when one fails; this then throws that failure, or an
+ * `AggregateError` of them all, named `<n> of <what> failed`, where several failed.
+ */
+export async function releaseAll(releases: (() => Promise<void>)[], what: string): Promise<void> {
+  const failures: unknown[] = [];
+  for (let release = releases.pop(); release !== undefined; release = releases.pop()) {
+    try {
+      await release();
+    } catch (error) {
+      failures.push(error);
+    }
+  }
+  if (failures.length === 1) throw failures[0];
+  if (failures.length > 1) {
+    throw new AggregateError(failures, `${failures.length} of ${what} failed`);
+  }
+}
+
+/**
  * How long a rig gives a process to come up, and how much of its log an error quotes. With no
  * `timeoutMs` the wait has no deadline of its own: it ends when the process serves or exits, and
  * a process that does neither is the caller's hook limit to end.
@@ -279,13 +326,11 @@ export async function awaitReady(
   ready: (signal: AbortSignal) => Promise<boolean>
 ): Promise<void> {
   const { timeoutMs } = budget;
-  // The budget's deadline, where it has one: the signal that aborts once it passes, with the
-  // budget it was read from.
-  const deadline =
+  // Aborts once the budget's deadline passes; with no deadline, a signal that never aborts.
+  const spent =
     timeoutMs === undefined
-      ? undefined
-      : { timeoutMs, spent: AbortSignal.timeout(Math.max(0, timeoutMs)) };
-  const spent = deadline?.spent ?? new AbortController().signal;
+      ? new AbortController().signal
+      : AbortSignal.timeout(Math.max(0, timeoutMs));
   const checks = budget.signal === undefined ? spent : AbortSignal.any([spent, budget.signal]);
   const passed = Promise.withResolvers<false>();
   checks.addEventListener("abort", () => passed.resolve(false), { once: true });
@@ -296,11 +341,11 @@ export async function awaitReady(
       throw new Error(`${what} was not ready: its wait was stopped`);
     }
     if (await Promise.race([ready(checks).catch(() => false), passed.promise])) return;
-    if (deadline?.spent.aborted === true) {
+    if (timeoutMs !== undefined && spent.aborted) {
       const why =
-        deadline.timeoutMs > 0
-          ? `within ${deadline.timeoutMs} ms`
-          : `by its deadline, which had passed ${-deadline.timeoutMs} ms before its wait began`;
+        timeoutMs > 0
+          ? `within ${timeoutMs} ms`
+          : `by its deadline, which had passed ${-timeoutMs} ms before its wait began`;
       throw new Error(`${what} was not ready ${why}: ${tail(log, budget.tailLines)}`);
     }
     await Bun.sleep(100);

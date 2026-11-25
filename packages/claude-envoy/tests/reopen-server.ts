@@ -9,12 +9,14 @@ import { deliverSubject } from "@legion/envoy-client/consumer-delivery"
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer"
 import type { DeliveryRequest } from "@legion/envoy-client/transport"
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
+import { modSocketPath } from "../hooks/mod-protocol"
 import {
   codexSessionRecordFile,
   processStarted,
   writeCodexSessionRecord,
 } from "../src/codex/codex-session-record"
 import { waitFor } from "./channel-session-harness"
+import { type FakeMod, startFakeMod } from "./fake-mod"
 import { FakeNatsServer } from "./fake-nats-server"
 import { type NatsGate, natsGate } from "./nats-gate"
 import { socketOwner } from "./socket-owner"
@@ -29,6 +31,23 @@ const entry = resolve(import.meta.dir, "..", "bin", "envoy-channel.ts")
 export const PROCESS_WAIT_MS = 120_000
 /** Each row's: above its chain of waits, so a stuck wait names its step before the runner does. */
 export const ROW_TIMEOUT_MS = 600_000
+
+/** The fake mod of `run`'s session `sessionId`, once the server's mod socket answers its hello.
+ *  The probe waits `PROCESS_WAIT_MS`, as each wait of these files does: a row's limit
+ *  (`ROW_TIMEOUT_MS`) is past what the claude-envoy job leaves one hang, so a socket that never
+ *  answers fails here by name. */
+export async function startSessionMod(
+  run: Pick<ReopenServer, "stateDirectory" | "server">,
+  sessionId: string,
+): Promise<FakeMod> {
+  const socketPath = modSocketPath(sessionId, { XDG_RUNTIME_DIR: run.stateDirectory })
+  if (socketPath === undefined) throw new Error("the session names no mod socket")
+  return await startFakeMod(socketPath, {
+    sessionId,
+    exited: run.server.exited,
+    answerWithinMs: PROCESS_WAIT_MS,
+  })
+}
 
 /** How many times `text` holds `part`. */
 export function count(text: string, part: string): number {

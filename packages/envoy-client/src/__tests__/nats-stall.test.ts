@@ -3,6 +3,7 @@ import { connect, Events, StringCodec } from "nats";
 import {
   type EnvoyStack,
   envoyStackEnabled,
+  releaseAll,
   startStoppableEnvoyStack,
   throwIfExited,
   throwIfRowEnded,
@@ -13,6 +14,9 @@ import { RECOVERY_BOUND_MS } from "../../test/stall-scenario";
 import { natsConnectionOptions } from "../nats-connection";
 
 const codec = StringCodec();
+
+/** `ms` as the seconds this file's logs print. */
+const seconds = (ms: number): string => `${(ms / 1000).toFixed(1)} s`;
 
 // Reserved here, at the file's module scope: the file's own `afterAll` removes it once the
 // `describe` below has stopped the stack writing into it.
@@ -51,23 +55,20 @@ describe.skipIf(!envoyStackEnabled)("a NATS connection whose path freezes", () =
   // publisher or proxy open into the row after it.
   let rowEnd = new AbortController();
   const closes: (() => Promise<void>)[] = [];
+  /** `opening`, whose result the row closes once it has ended, an open its limit cut off included:
+   *  the close is held from the moment the open starts, and waits for the open to settle. */
+  const closedWithRow = <T extends { close(): Promise<void> }>(opening: Promise<T>): Promise<T> => {
+    closes.push(async () => {
+      await (await opening.catch(() => undefined))?.close();
+    });
+    return opening;
+  };
   beforeEach(() => {
     rowEnd = new AbortController();
   });
   afterEach(async () => {
     rowEnd.abort(new Error("the row ended"));
-    const failures: unknown[] = [];
-    for (let close = closes.pop(); close !== undefined; close = closes.pop()) {
-      try {
-        await close();
-      } catch (error) {
-        failures.push(error);
-      }
-    }
-    if (failures.length === 1) throw failures[0];
-    if (failures.length > 1) {
-      throw new AggregateError(failures, `${failures.length} of the row's closes failed`);
-    }
+    await releaseAll(closes, "the row's closes");
     // A hang guard: what can hang is a close, or a connect the row's limit cut off, which its own
     // dial timeout ends: nats.js's 20 s default for the publisher, `NATS_DIAL_TIMEOUT_MS`'s 10 s
     // for the client. The opens run one after another, so at most one is pending. In CI runs
@@ -105,21 +106,19 @@ describe.skipIf(!envoyStackEnabled)("a NATS connection whose path freezes", () =
     test(row, async () => {
       if (stack === undefined) throw new Error("the Envoy stack did not start");
       const { signal: ended } = rowEnd;
-      const proxying = startStallProxy(stack.natsHostPort);
-      closes.push(async () => (await proxying.catch(() => undefined))?.close());
-      const proxy = await proxying;
-      const publishing = connect({ servers: [stack.natsUrl], name: `nats-stall-pub-${slug}` });
-      closes.push(async () => (await publishing.catch(() => undefined))?.close());
-      const publisher = await publishing;
-      const connecting = connect(
-        natsConnectionOptions({
-          servers: [proxy.url],
-          name: `nats-stall-${slug}`,
-          credential: { kind: "none" },
-        })
+      const proxy = await closedWithRow(startStallProxy(stack.natsHostPort));
+      const publisher = await closedWithRow(
+        connect({ servers: [stack.natsUrl], name: `nats-stall-pub-${slug}` })
       );
-      closes.push(async () => (await connecting.catch(() => undefined))?.close());
-      const client = await connecting;
+      const client = await closedWithRow(
+        connect(
+          natsConnectionOptions({
+            servers: [proxy.url],
+            name: `nats-stall-${slug}`,
+            credential: { kind: "none" },
+          })
+        )
+      );
       const subject = `nats-stall.${slug}.${crypto.randomUUID()}`;
       const before = Promise.withResolvers<void>();
       let arrivedAt: number | undefined;
@@ -176,8 +175,11 @@ describe.skipIf(!envoyStackEnabled)("a NATS connection whose path freezes", () =
 
       const reconnectMs = reconnectedAt === undefined ? undefined : reconnectedAt - frozenAt;
       const receiveMs = arrivedAt === undefined ? undefined : arrivedAt - frozenAt;
+      const reconnected = reconnectMs === undefined ? "none" : seconds(reconnectMs);
+      const received = receiveMs === undefined ? "never" : seconds(receiveMs);
+      const label = `nats-stall row ${slug.toUpperCase()}`;
       console.log(
-        `nats-stall row ${slug.toUpperCase()}: reconnect ${reconnectMs === undefined ? "none" : `${(reconnectMs / 1000).toFixed(1)} s`}, first publish received ${receiveMs === undefined ? "never" : `${(receiveMs / 1000).toFixed(1)} s`} after the freeze`
+        `${label}: reconnect ${reconnected}, first publish received ${received} after the freeze`
       );
       expect(reconnectMs).toBeDefined();
       expect(reconnectMs ?? Number.POSITIVE_INFINITY).toBeLessThan(RECOVERY_BOUND_MS);
@@ -206,8 +208,10 @@ describe.skipIf(!envoyStackEnabled)("a NATS connection whose path freezes", () =
           await Bun.sleep(250);
           closedAt = hung.closedAt;
         }
+        const accepted = seconds(hung.acceptedAt - frozenAt);
+        const closed = seconds(closedAt - hung.acceptedAt);
         console.log(
-          `nats-stall row ${slug.toUpperCase()} hung redial: accepted ${((hung.acceptedAt - frozenAt) / 1000).toFixed(1)} s after the freeze, closed ${((closedAt - hung.acceptedAt) / 1000).toFixed(1)} s after it was accepted`
+          `${label} hung redial: accepted ${accepted} after the freeze, closed ${closed} after it was accepted`
         );
       }
       // A hang guard, not a bound on work: what can hang is a wait for the freeze's recovery or
