@@ -218,7 +218,7 @@ declare module "@oh-my-pi/pi-ai" {
     readonly stopReason: string;
     readonly errorMessage?: string;
     /** The HTTP status of the provider request an `error` stop failed on, where the provider gave
-     * one (`packages/ai/src/types.ts:1517-1518` at the pinned tag). */
+     * one (`packages/ai/src/types.ts:1524-1525` at the pinned tag). */
     readonly errorStatus?: number;
   }
   export function completeSimple<TApi extends Api>(

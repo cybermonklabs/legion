@@ -28,9 +28,10 @@
 //     the session where it is and the plugin walks the chain itself.
 //   - rate-limited: HTTP 429 with `retry-after: 60`, which is no content filter, so the host notes
 //     a suppression of the model for the 60 s the provider asked for, the arming's cause is
-//     `other`, and the return waits on that suppression instead of on the cooldown. The host
-//     spends its same-model retries on a rate limit first, so this pane's chain walk comes about
-//     ten minutes in and its return about three minutes after that.
+//     `other`, and the return waits on that suppression instead of on the cooldown. With
+//     `retry.rateLimitWalksChain` on and a context under `retry.rateLimitFallbackMaxContextTokens`,
+//     the host walks its chain at the first 429 rather than after its same-model retries
+//     (`writeProfile` below).
 //
 // Every expectation prints `== <name>`, what was measured and `ok <name>`, or `FAIL <name>: <why>`
 // on stderr. Unlike a stage proof, a failed expectation does not stop the run: the twelve minutes
@@ -88,7 +89,7 @@ const WEAK = `${PROVIDER}/${WEAK_ID}`;
 
 /**
  * Oh My Pi's own floor for how long it suppresses a model it could not classify
- * (`packages/coding-agent/src/session/turn-recovery.ts:2202-2209` at the pinned tag): five
+ * (`packages/coding-agent/src/session/turn-recovery.ts:2530-2537` at the pinned tag): five
  * minutes. Without `retry.fallbackRevertPolicy: never` the host's own restore would come at about
  * this mark, so a pane with no request to the refused model between it and the cooldown's end
  * is the proof that the overlay's `never` and the plugin's ten minutes are both in force.
@@ -363,11 +364,14 @@ async function writeProfile(home: string, base: string): Promise<void> {
       "retry:",
       "  modelFallback: true",
       "  fallbackRevertPolicy: never",
-      // On, a rate limit is admitted to the chain consult rather than deferred to another attempt
-      // on the same model (`sourceRateLimited`, `session/turn-recovery.ts:3395-3397` and
-      // `:3747-3765` at the pinned tag); Oh My Pi has it off. The host spends its same-model
-      // retries either way — `retry.maxRetries` is 10 and each one waits out the 60 s the
-      // stand-in's 429 asks for — so the walk this pane measures comes about ten minutes in.
+      // On, a rate limit on this model goes to the chain consult at once rather than waiting for
+      // another attempt on the same model (`sourceRateLimited` and `deferToSameModel`,
+      // `session/turn-recovery.ts:3732-3734` and `:4078` at the pinned tag). Oh My Pi has it off,
+      // and off, a rate limit waits on the same model until `retry.maxRetries` (10) is spent or
+      // the stated wait is past `retry.maxDelayMs` (five minutes). Either way the consult keeps the
+      // model for a context larger than `retry.rateLimitFallbackMaxContextTokens`, 100,000 tokens by
+      // default (`rateLimitHoldsModel`, `:4092-4093` and `:4103`), so for a context under it the
+      // host walks the chain at the stand-in's first 429.
       "  rateLimitWalksChain: true",
       "  fallbackChains:",
       `    ${STRONG}: [${WEAK}]`,

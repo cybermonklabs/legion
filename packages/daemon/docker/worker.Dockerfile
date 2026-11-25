@@ -1398,8 +1398,11 @@ WORKDIR /home/legion
 #    path (bootgate.go's pod lane reads the explicit root's manifest for the contract and holds
 #    pi-envoy to its root): explicit roots and an unlinked profile are one decision. This is OMP's
 #    first run in the image, so the CodeGraph link also extracts OMP's native module from the
-#    binary (no network) into /home/legion/.omp/natives/<version>/ — the build's success is the
-#    check. From 18.11.0 OMP writes only the variant the CPU selects, so this is the build runner's
+#    binary (no network) into /home/legion/.omp/natives/<version>-<digest prefix>/ (the version and
+#    the first 12 hexadecimal digits of the embedded addons' digest; getNativesDir in
+#    @oh-my-pi/pi-natives native/natives-dir.js names .omp/natives, since the build sets none of
+#    PI_NATIVES_DIR, OMP_DOWNLOAD_ROOT, XDG_CACHE_HOME and OMP_CONFIG_ROOT) — the build's success is
+#    the check. From 18.11.0 OMP writes only the variant the CPU selects, so this is the build runner's
 #    (ubuntu-24.04, AVX2), 123 MiB; this layer ships it, so a pod whose node selects the same
 #    variant extracts nothing, while a node that selects the other has each role write that one into
 #    its own home overlay's upper layer, on the pod's role-homes volume, at its first OMP run: up to

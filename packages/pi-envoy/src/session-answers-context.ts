@@ -80,14 +80,18 @@ function isSideTurn(messages: readonly unknown[]): boolean {
 
 /**
  * The context message a branch entry becomes, as far as matching reads it, or undefined for an
- * entry that becomes none. The pinned host (18.12.2) builds a compaction's messages from the
- * branch with `MI`:
- *   if (e.type === "message") return e.message;
- *   if (e.type === "custom_message") return yu(e.customType, e.content, e.display, e.details, e.timestamp, e.attribution);
- *   if (e.type === "branch_summary") return hm(e.summary, e.fromId, e.timestamp);
- * where `yu` returns `{role: "custom", ..., timestamp: new Date(s).getTime()}` and `hm` returns
- * `{role: "branchSummary", ..., timestamp: new Date(o).getTime()}`. A `compaction` entry becomes
- * no message there: the earlier summary heads the conversion, so no cut ends on it.
+ * entry that becomes none. Oh My Pi builds a compaction's messages from the branch with
+ * `getMessageFromEntry` (`packages/agent/src/compaction/messages.ts:302-320` at the pinned tag;
+ * 18.12.2's bundle named it `MI`, and the two constructors `yu` and `hm`):
+ *   if (entry.type === "message") return entry.message;
+ *   if (entry.type === "custom_message") return createCustomMessage(entry.customType, entry.content,
+ *     entry.display, entry.details, entry.timestamp, entry.attribution);
+ *   if (entry.type === "branch_summary") return createBranchSummaryMessage(entry.summary,
+ *     entry.fromId, entry.timestamp);
+ * where `createCustomMessage` returns `{role: "custom", ..., timestamp: new Date(timestamp).getTime()}`
+ * and `createBranchSummaryMessage` `{role: "branchSummary", ..., timestamp: new Date(timestamp).getTime()}`.
+ * A `compaction` entry becomes no message there: the earlier summary heads the conversion, so no cut
+ * ends on it.
  */
 function entryMessage(entry: unknown):
   | {

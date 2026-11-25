@@ -3,7 +3,7 @@
 # plugin's cooldown and goes back to it when the cooldown ends (dispatch://INFRA-956 R1, the check
 # c-r1-chain). It is a script of its own because the window it measures is a quarter of an hour:
 # Oh My Pi's own floor for suppressing a model whose error it cannot classify is five minutes
-# (packages/coding-agent/src/session/turn-recovery.ts:2202-2209 at the pinned tag) and the
+# (packages/coding-agent/src/session/turn-recovery.ts:2530-2537 at the pinned tag) and the
 # plugin's cooldown here is ten, so the only way to see that nothing goes back at the five-minute
 # mark and something does after the tenth is to spend the quarter of an hour. The pi-legion job
 # that runs the plugin's suite (.github/workflows/ci-job-pi-legion.yaml) has timeout-minutes: 28,
@@ -18,7 +18,8 @@
 # chain steps from standin/strong-model to standin/weak-model with `retry.fallbackRevertPolicy:
 # never`, the shape INFRA's operator overlay carries (deploy/kubernetes/operator-route/overlay.yml),
 # and `retry.rateLimitWalksChain: true`, which Oh My Pi has off: on, a rate limit is admitted to the
-# chain consult rather than deferred to another attempt on the same model.
+# chain consult rather than deferred to another attempt on the same model, for a context no larger
+# than `retry.rateLimitFallbackMaxContextTokens` (100,000 tokens by default).
 # Each pane is driven about once a minute for about twelve and a half minutes — the stand-in answers
 # every turn with a `bash sleep`, so one long turn asks again each minute — and the model of each
 # request says where that session stood at that minute
@@ -30,10 +31,10 @@
 #     the session where it is and the plugin walks the chain itself;
 #   - rate-limited: HTTP 429 with `retry-after: 60`, which is no content filter, so the host notes a
 #     suppression of that model for the 60 s the provider asked for, the arming's cause is `other`,
-#     and the return waits on that suppression, which is a different clock from the cooldown. Oh My
-#     Pi spends its same-model retries first — `retry.maxRetries` is 10 and it waits out a
-#     `retry-after` of 60 s each time — so this pane's chain walk is about ten minutes in and its
-#     return about two minutes after that, inside the same span.
+#     and the return waits on that suppression, which is a different clock from the cooldown. For
+#     a context under that cap, Oh My Pi walks the chain at the first 429 rather than after its
+#     same-model retries (packages/coding-agent/src/session/turn-recovery.ts:4078 and :4092-4103
+#     at the pinned tag).
 # What the run holds each pane to: the first request goes to the refused model and the next to the
 # chain's next one; the arming the pane recorded has the cause and the due time that fallback calls
 # for; no request at all goes to the refused model between the fifth minute and the end of the
