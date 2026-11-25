@@ -98,9 +98,12 @@ func ListSettings(ctx context.Context, pool *store.Pool) ([]Settings, error) {
 	return listed, nil
 }
 
-// RowQueryer is what GetSettings needs of its connection: the pool, or a transaction a reader
-// holds open so the setting answers the moment its other reads of what the intake writes answer
-// (api/legion_issue.go's readLegionIssue, whose `configured` and state are one moment's).
+// RowQueryer is the one call two readers of this package make of their connection. GetSettings
+// reads through the pool, or through a transaction a reader holds open so the setting answers the
+// moment its other reads of what the intake writes answer (api/legion_issue.go's readLegionIssue,
+// whose `configured` and state are one moment's). readPosition reads a project's setting and its
+// cursor through the pool outside any transaction (Intake.position), or through the transaction
+// that locks them (lockPosition).
 type RowQueryer interface {
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }

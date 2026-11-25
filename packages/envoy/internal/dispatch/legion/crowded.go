@@ -72,10 +72,10 @@ func (in *Intake) finished(msg *natsgo.Msg) {
 // read in flight for example. It makes no read and waits for none. In one transaction that holds
 // the project's position (lockCursor), it answers outcomeDropped for a project with no setting,
 // finishes a message whose hold a write of the setting ended (cursor.releases, endHold), and
-// answers outcomeForgotten, writing nothing, for a message of a store the cursor drops
-// (cursor.drops) while no whole read of the project is in flight (readsNow), unless the cursor
-// names that message as the owed read's holder: a holder is never finished unapplied while it
-// holds the read. A read in flight can find that store behind the setting's URL (the same store
+// answers outcomeForgotten, writing nothing, for a message the cursor finishes unapplied
+// (cursor.finishesUnapplied: of a store the cursor drops, and not the owed read's holder, which is
+// never finished unapplied while it holds the read) while no whole read of the project is in
+// flight (readsNow). A read in flight can find that store behind the setting's URL (the same store
 // behind a new URL, a marked store a redeploy started there), and the cursor it leaves then
 // applies that store's later events, so a message of it past the cap is judged as any other: its
 // events may be past that read's snapshot. A boot of such a store, while the cursor follows the
@@ -93,9 +93,9 @@ func (in *Intake) finished(msg *natsgo.Msg) {
 // Where no read is in flight, a message holds the read where no message holds it, and goes back
 // until ReadRetryAfter after the last read. Where another message holds it, this message joins it
 // and is acknowledged unapplied (outcomeCrowded), and the cursor keeps its sequence as the highest
-// it skipped in its store (cursor.skips), so the read in flight, which clears the reasons it was
-// made for, leaves the gap read owed where that sequence is past its snapshot, and the store read
-// owed where it is of another store that the cursor the read leaves does not drop
+// it skipped in its store (cursor.skips, writeSkipped), so the read in flight, which clears the
+// reasons it was made for, leaves the gap read owed where that sequence is past its snapshot, and
+// the store read owed where it is of another store that the cursor the read leaves does not drop
 // (cursor.afterRead). A project with no cursor yet, whose starting read is queued and has not
 // begun, is given one that follows no daemon (lockCursor), so the read it owes is recorded; a read
 // gives its project a cursor before it calls the daemon (Intake.readWhole).
@@ -109,6 +109,7 @@ func (in *Intake) judgeCrowded(ctx context.Context, attempt *messageAttempt) (ou
 	defer func() { _ = tx.Rollback(ctx) }()
 	stateURL, current, found, err := lockCursor(ctx, tx, project)
 	attempt.cursor = current
+	finishes, dropped := current.finishesUnapplied(message, stateURL, attempt.seq)
 	switch {
 	case err != nil:
 		return outcomeDone, err
@@ -116,13 +117,13 @@ func (in *Intake) judgeCrowded(ctx context.Context, attempt *messageAttempt) (ou
 		return outcomeDropped, nil
 	case current.releases(attempt.seq):
 		return endHold(ctx, tx, project, current, attempt.seq, message.StateID)
-	case current.drops(message, stateURL) && !in.readsNow(project) && !current.heldBy(attempt.seq):
+	case finishes && !in.readsNow(project):
 		return outcomeForgotten, nil
 	}
 	reason := ReadReasonGap
 	switch unfollowed := message.unfollowed(current, nil); {
 	case current.follows(stateURL) && current.stateID != nil && !current.holdsStore(message.StateID) &&
-		!current.drops(message, stateURL):
+		!dropped:
 		reason = ReadReasonStore
 	case unfollowed != "":
 		reason = unfollowed
@@ -136,10 +137,8 @@ func (in *Intake) judgeCrowded(ctx context.Context, attempt *messageAttempt) (ou
 	}
 	if answer.back == 0 {
 		stateIDs, seqs := current.skips(message.StateID, message.Seq)
-		if _, err := tx.Exec(ctx, `
-			update legion_event_cursors set skipped_state_ids = $2, skipped_seqs = $3 where project = $1
-		`, project, stateIDs, seqs); err != nil {
-			return outcomeDone, fmt.Errorf("record the state message of %s skipped past the cap: %w", project, err)
+		if err := writeSkipped(ctx, tx, project, stateIDs, seqs); err != nil {
+			return outcomeDone, err
 		}
 	}
 	if err := tx.Commit(ctx); err != nil {

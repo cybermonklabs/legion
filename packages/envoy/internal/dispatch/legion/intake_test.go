@@ -46,6 +46,10 @@ type intakeRig struct {
 	run string
 	// published numbers the rig's messages, so each has an id and a dedupe key of its own.
 	published int
+	// firstRetry and lastRetry are the retry waits of each intake the rig starts
+	// (Intake.firstRetry, Intake.lastRetry): NewIntake's unless a test shrinks them before it
+	// starts one.
+	firstRetry, lastRetry time.Duration
 
 	// intake is the intake running now, stop stops it, and subject is the deliver subject its
 	// take-over bound the durable to.
@@ -136,6 +140,7 @@ func newIntakeRig(t *testing.T) *intakeRig {
 	return &intakeRig{
 		t: t, database: database, publisher: publisher, leases: leases, wake: make(chan struct{}, 1),
 		clock: &intakeClock{done: t.Context().Done()}, logs: logs, run: rigRun,
+		firstRetry: applyFirstRetry, lastRetry: applyLastRetry,
 	}
 }
 
@@ -147,7 +152,8 @@ func (r *intakeRig) start() {
 }
 
 // startOn is start with now as the intake's clock rather than the rig's. The intake's deferred
-// calls (Intake.after) run on the rig's clock either way.
+// calls (Intake.after) run on the rig's clock either way, and it retries a failed database step
+// after the rig's waits (firstRetry, lastRetry).
 func (r *intakeRig) startOn(now func() time.Time) {
 	r.t.Helper()
 	client, err := bus.ConnectOwningStream([]string{testnats.URL(r.t)})
@@ -157,6 +163,7 @@ func (r *intakeRig) startOn(now func() time.Time) {
 	r.t.Cleanup(client.Close)
 	intake := NewIntake(client, r.database.Pool, r.leases, r.wake)
 	intake.now, intake.after = now, r.clock.after
+	intake.firstRetry, intake.lastRetry = r.firstRetry, r.lastRetry
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
@@ -1399,10 +1406,8 @@ func TestTheIntakePrunesTheReadsAtMostOnceAnHour(t *testing.T) {
 // writes again both are applied in sequence order and the history holds each value the daemon
 // committed.
 func TestAnApplyThatFailsIsRetriedBeforeAnyLaterMessage(t *testing.T) {
-	first, last := applyFirstRetry, applyLastRetry
-	applyFirstRetry, applyLastRetry = 20*time.Millisecond, 100*time.Millisecond
-	t.Cleanup(func() { applyFirstRetry, applyLastRetry = first, last })
 	rig := newIntakeRig(t)
+	rig.firstRetry, rig.lastRetry = 20*time.Millisecond, 100*time.Millisecond
 	daemon := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
 	seedLegionProject(t, rig.database, "INFRA", daemon.URL)
 	rig.start()

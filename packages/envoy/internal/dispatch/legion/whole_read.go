@@ -4,15 +4,15 @@ package legion
 // plan's D9): the reasons a read is made, how soon the next one may be and why a read the daemon
 // answered fails all the same (ReadReason, ReadRetryAfter, the Err values); the read as it is
 // fetched and judged (wholeRead, fetchWhole); its record and its log line (finishWhole,
-// recordWhole, wholeReadLine, owedSince); and the read made on a project's runner (Intake.readWhole,
-// Intake.makeRead, Intake.reads) and made for a caller outside the intake (ReadWhole).
+// recordWhole, wholeReadLine); and the read made on a project's runner (Intake.readWhole,
+// Intake.makeRead, Intake.reads) and made for a caller outside the intake (ReadWhole). What a
+// read's record leaves on the cursor is in cursor.go (cursor.afterRead, owedSince).
 
 import (
 	"context"
 	"errors"
 	"fmt"
 	"log/slog"
-	"slices"
 	"strings"
 	"time"
 
@@ -197,16 +197,18 @@ func fetchWhole(ctx context.Context, setting Settings, started time.Time, now fu
 }
 
 // ReadWhole is the intake's whole read (Intake.readWhole) of setting's daemon for reason, made once
-// and on Dispatch's wall clock, for a caller that is not on the project's runner: the record's
-// tests outside the intake drive the intake's own read through it, and the intake calls readWhole.
-// Its record clears every reason the project's cursor owes as it begins, as the record of a read
-// the read rule makes does (owedRead.clears). It answers an error only for a cursor it could not
-// read, for the write of the read's start, which empties the skipped sequences, that the database
-// refused, for a record the database refused, refused again as a failed read, and for a context
-// that ended, and records nothing when the setting no longer names setting.StateURL by the time it
-// is written.
+// and on Dispatch's wall clock, for a caller that is not on the project's runner. It is the test
+// seam of the read's record: the record's tests outside this package (api/legion_board_test.go,
+// api/legion_issue_capture_test.go) and this package's own tests drive the intake's own read
+// through it, and the intake itself calls readWhole. Its intake is built as NewIntake builds one,
+// with every map, but for the durable (newIntake). Its record clears every reason the project's
+// cursor owes as it begins, as the record of a read the read rule makes does (owedRead.clears). It
+// answers an error only for a cursor it could not read, for the write of the read's start, which
+// empties the skipped sequences, that the database refused, for a record the database refused,
+// refused again as a failed read, and for a context that ended, and records nothing when the
+// setting no longer names setting.StateURL by the time it is written.
 func ReadWhole(ctx context.Context, pool *store.Pool, setting Settings, reason string) error {
-	in := &Intake{pool: pool, now: time.Now, reading: map[string]readInFlight{}}
+	in := newIntake(pool, nil)
 	_, current, _, err := in.position(ctx, setting.Project)
 	if err != nil {
 		return err
@@ -387,21 +389,4 @@ func recordWhole(ctx context.Context, pool *store.Pool, owed owedRead, read *who
 		return false, 0, fmt.Errorf("commit the Legion state read of %s: %w", project, err)
 	}
 	return true, written, nil
-}
-
-// owedSince is reasons, the reasons a cursor owes as a read's record is written, less one of each
-// reason in clears, the reasons it owed as the read was decided: the reasons a message added while
-// the read was in flight, in the order they were added. Never nil: the column read_reasons is not
-// null.
-func owedSince(reasons, clears []string) []string {
-	left := slices.Clone(clears)
-	since := []string{}
-	for _, reason := range reasons {
-		if index := slices.Index(left, reason); index >= 0 {
-			left = slices.Delete(left, index, index+1)
-			continue
-		}
-		since = append(since, reason)
-	}
-	return since
 }
