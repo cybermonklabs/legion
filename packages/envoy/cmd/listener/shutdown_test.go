@@ -461,16 +461,17 @@ func (p *listenerProcess) healthUnder(ctx context.Context, t *testing.T) map[str
 	return health
 }
 
-// waitHealth waits through the shared wait for the listener to log that it listens on its own
-// loopback port, then for /healthz there to report "healthy" with every field of want, and fails
-// the test when it never does. The socket the listener inherited is not readiness: the kernel
-// queues connections on it from before the process starts, so a request there waits rather than
-// fails until the process serves, and only its listening line says it does. Each request carries
-// the shared wait's context (testwait.Context), so one that waits on a process that does not
-// answer ends where the wait does, and no request has a bound of its own. It asks every
-// healthPoll, an HTTP call to the listener. /healthz answers 503 "starting" from the moment the
-// listener serves until it is ready, which it is only after it installs its SIGTERM handler, and
-// a SIGTERM before that kills the process without an ordered shutdown.
+// waitHealth waits for the listener to log that it listens on its own loopback port, within
+// WaitForOutput's own 30 s (listeningAddr), then through the shared wait for /healthz there to
+// report "healthy" with every field of want, and fails the test when either never comes. The
+// socket the listener inherited is not readiness: the kernel queues connections on it from before
+// the process starts, so a request there waits rather than fails until the process serves, and
+// only its listening line says it does. Each request carries the shared wait's context
+// (testwait.Context), so one that waits on a process that does not answer ends where the wait
+// does, and no request has a bound of its own. It asks every healthPoll, an HTTP call to the
+// listener. /healthz answers 503 "starting" from the moment the listener serves until it is
+// ready, which it is only after it installs its SIGTERM handler, and a SIGTERM before that kills
+// the process without an ordered shutdown.
 //
 // A listener that exits during its start-up fails this wait at once, naming its exit status and
 // its last output line, rather than being waited for until the test binary's own deadline: a

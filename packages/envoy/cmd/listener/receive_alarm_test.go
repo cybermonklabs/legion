@@ -43,8 +43,8 @@ func durableAlarmRecords(logs *cmdtest.LockedBuffer) []map[string]any {
 // neither deletes the durable to take it nor rewrites its policy under the old build (whose
 // nats.Bind refuses a durable whose filter is not its own), and receives as soon as the old build
 // lets go, correcting the policy then.
+// It must not run in parallel: its test lease lapses if one renewal is 300 ms late.
 func TestAPreLeaseBindingIsWaitedOutAndAlarmedOn(t *testing.T) {
-	t.Parallel()
 	uri := testnats.URL(t)
 	const machineID = "box-pre-lease"
 	consumer := bus.ListenerDurable(machineID)
@@ -229,8 +229,8 @@ func refusedDurableHolder(t *testing.T, machineID, step string, deny ...string) 
 // naming the refusal at ERROR at each try as the server's answer arrives. #4343 ended the start
 // at this refusal, exit 1 within 0.03 s; before #4343 the refusal was read only after the
 // create's own 10 s wait.
+// It must not run in parallel: its test lease lapses if one renewal is 300 ms late.
 func TestAHolderWhoseDurableCreateTheGrantRefusesNamesItAtOnceAndTriesAgain(t *testing.T) {
-	t.Parallel()
 	const machineID = "box-create-refused"
 	consumer := bus.ListenerDurable(machineID)
 	create := "$JS.API.CONSUMER.CREATE." + bus.Stream + "." + consumer
@@ -240,8 +240,8 @@ func TestAHolderWhoseDurableCreateTheGrantRefusesNamesItAtOnceAndTriesAgain(t *t
 // A lease holder whose read of its durable the NATS grant refuses stays up and tries again,
 // naming the refusal at ERROR at each try as the server's answer arrives. #4343 ended a rebuild's
 // wait for the durable at this refusal; before #4343 the read waited out its own 10 s.
+// It must not run in parallel: its test lease lapses if one renewal is 300 ms late.
 func TestAHolderWhoseDurableReadTheGrantRefusesNamesItAtOnceAndTriesAgain(t *testing.T) {
-	t.Parallel()
 	const machineID = "box-read-refused"
 	refusedDurableHolder(t, machineID, "read the durable consumer", "$JS.API.CONSUMER.INFO."+bus.Stream+"."+bus.ListenerDurable(machineID))
 }
@@ -253,8 +253,8 @@ func TestAHolderWhoseDurableReadTheGrantRefusesNamesItAtOnceAndTriesAgain(t *tes
 // stuck pod, a standby again, does not take it back from a pod that receives. Before, the holder
 // retried forever and renewed its lease, so no standby ever tried, /healthz answered 200 healthy
 // and no alarm fired.
+// It must not run in parallel: its test lease lapses if one renewal is 300 ms late.
 func TestAHolderThatCannotPrepareItsDurableAlarmsAndGivesTheLeaseUp(t *testing.T) {
-	t.Parallel()
 	const machineID = "box-stuck"
 	granted, denied := consumerInfoUnansweredNATS(t, machineID)
 	// The bound is past one failed read, so /healthz is read between the first failure and the

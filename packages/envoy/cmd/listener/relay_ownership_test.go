@@ -50,8 +50,8 @@ func startRelayingReceiverRig(t *testing.T, uri, machineID, instance string, han
 // A lease lost between an unbound probe and the resubscribe that follows it leaves the pod not
 // relaying: its term is over, and the resubscribe that reports success for a pod with no term
 // elects nobody.
+// It must not run in parallel: its test lease lapses if one renewal is 300 ms late.
 func TestALeaseLostBetweenAnUnboundProbeAndTheResubscribeLeavesThePodNotRelaying(t *testing.T) {
-	t.Parallel()
 	uri := testnats.URL(t)
 	const machineID = "box-relay-ownership-lost"
 	handle, _ := recordingHandler()
@@ -94,8 +94,8 @@ func TestALeaseLostBetweenAnUnboundProbeAndTheResubscribeLeavesThePodNotRelaying
 // resubscribes after it: the durable's binding is repaired by the receive loop as well (repair),
 // and a rebuild whose probe then finds the durable bound returns without resubscribing. Neither
 // says anything about the term, which is what elects this pod.
+// It must not run in parallel: its test lease lapses if one renewal is 300 ms late.
 func TestAnUnboundProbeInsideALiveTermLeavesTheHolderRelaying(t *testing.T) {
-	t.Parallel()
 	uri := testnats.URL(t)
 	const machineID = "box-relay-ownership-live"
 	handle, _ := recordingHandler()

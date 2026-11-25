@@ -385,9 +385,7 @@ func TestTheDispatchPublishersKeeperRestoresALoweredStream(t *testing.T) {
 	lowered := testnats.AwaitSettledStream(t, js, bus.Stream).Config
 	lowered.Replicas = 1
 	lowered.MaxBytes = bustest.StreamMaxBytes / 2
-	if _, err := js.UpdateStream(&lowered); err != nil {
-		t.Fatalf("operator lowering: %v", err)
-	}
+	testnats.UpdateStream(t, js, lowered)
 	for deadline := time.Now().Add(keeperRestoreWait); ; {
 		info, err := js.StreamInfo(bus.Stream)
 		if err == nil && info.Config.Replicas == 3 && info.Config.MaxBytes == bustest.StreamMaxBytes {

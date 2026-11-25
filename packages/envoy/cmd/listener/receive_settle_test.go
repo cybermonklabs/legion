@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"reflect"
 	"strconv"
 	"strings"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // bindAsADeadHolder creates machineID's durable and subscribes to its deliver subject on a
@@ -45,9 +47,8 @@ func bindAsAHolder(t *testing.T, uri, machineID string, handle natsgo.MsgHandler
 	if err != nil {
 		t.Fatalf("subscribe as the holder: %v", err)
 	}
-	waitFor(t, 5*time.Second, "the durable to read push-bound", func() bool {
-		info, err := client.JS().ConsumerInfo(bus.Stream, consumer)
-		return err == nil && info.PushBound
+	awaitDurable(t, client, consumer, "the durable to read push-bound", func(info *natsgo.ConsumerInfo) bool {
+		return info.PushBound
 	})
 	return client, sub
 }
@@ -69,17 +70,12 @@ func leaveARetryOutstanding(t *testing.T, uri, machineID, data string) *bus.Clie
 		}
 	})
 	publishDurable(t, client, data)
-	select {
-	case <-naked:
-	case <-time.After(5 * time.Second):
-		t.Fatalf("the holder never NAKed %q", data)
-	}
+	testwait.Receive(t, fmt.Sprintf("the holder to NAK %q", data), naked)
 	if err := holder.Unsubscribe(); err != nil {
 		t.Fatalf("unsubscribe the holder: %v", err)
 	}
-	waitFor(t, 5*time.Second, "the retry to stay outstanding with no subscriber", func() bool {
-		info, err := client.JS().ConsumerInfo(bus.Stream, bus.ListenerDurable(machineID))
-		return err == nil && !info.PushBound && info.NumAckPending == 1 && info.NumPending == 0
+	awaitDurable(t, client, bus.ListenerDurable(machineID), "the retry to stay outstanding with no subscriber", func(info *natsgo.ConsumerInfo) bool {
+		return !info.PushBound && info.NumAckPending == 1 && info.NumPending == 0
 	})
 	return client
 }
@@ -92,11 +88,27 @@ func leaveARetryOutstanding(t *testing.T, uri, machineID, data string) *bus.Clie
 func publishToTheDeadHolder(t *testing.T, client *bus.Client, machineID, data string) time.Time {
 	t.Helper()
 	publishDurable(t, client, data)
-	waitFor(t, 5*time.Second, "the dead holder to have "+data, func() bool {
-		info, err := client.JS().ConsumerInfo(bus.Stream, bus.ListenerDurable(machineID))
-		return err == nil && info.NumAckPending == 1 && info.NumPending == 0
+	awaitDurable(t, client, bus.ListenerDurable(machineID), "the dead holder to have "+data, func(info *natsgo.ConsumerInfo) bool {
+		return info.NumAckPending == 1 && info.NumPending == 0
 	})
 	return deliveredLast(t, client, bus.ListenerDurable(machineID))
+}
+
+// awaitDurable waits until consumer's durable, read through client every durableStatePoll, holds
+// what held asks of it. The wait ends on that state, bounded only by the test binary's deadline
+// (testwait.UntilPolling), as awaitDurableState's does: the state follows a push, a NAK or an
+// unsubscribe the server takes in its own time, which a loaded machine delays without anything
+// being wrong, so a fixed span (5 s, before) failed rows whose server answered late. A read that
+// fails is read again. Its failure names what it waited for and what the last read held.
+func awaitDurable(t *testing.T, client *bus.Client, consumer, what string, held func(*natsgo.ConsumerInfo) bool) {
+	t.Helper()
+	testwait.UntilPolling(t, durableStatePoll, what, func() (string, bool) {
+		info, err := client.JS().ConsumerInfo(bus.Stream, consumer)
+		if err != nil {
+			return fmt.Sprintf("read the durable %s: %v", consumer, err), false
+		}
+		return fmt.Sprintf("push-bound %v, %d pending ack, %d pending", info.PushBound, info.NumAckPending, info.NumPending), held(info)
+	})
 }
 
 // settleHoldEnd waits for the rig's log record of its settle hold's end and returns it.
@@ -464,8 +476,8 @@ func TestAGracefulStopDuringAnAckWaitHoldOwesTheNextHolderAnAckWait(t *testing.T
 // before any other pod subscribed) NAKs it with the hand-back delay again rather than dropping it,
 // so the pod that takes the lease next delivers it after that delay instead of one ack wait later,
 // which its hold, the hand-back delay and a second, does not wait for.
+// It must not run in parallel: the repeat, due 4.3 s after the stop, must come within 6 s of it.
 func TestAStoppingPodHandsARepeatBackAgain(t *testing.T) {
-	t.Parallel()
 	uri := testnats.URL(t)
 	const machineID = "box-repeat"
 	inHand := make(chan struct{}, 1)
@@ -514,8 +526,8 @@ func TestAStoppingPodHandsARepeatBackAgain(t *testing.T) {
 // out, a hand-back candidate's included: only the stopping pod's mark says that binding was its
 // own linger, and no pod wrote one here. A released record with neither flag still counts a
 // binding as a pre-lease build's, and waits it out.
+// It must not run in parallel: its test lease lapses if one renewal is 300 ms late.
 func TestAReleasedRecordUnsettledOrWithAStaleBindingSettlesBesideTheBinding(t *testing.T) {
-	t.Parallel()
 	for _, row := range []struct {
 		name, machineID, record string
 		settle                  bool
@@ -528,7 +540,6 @@ func TestAReleasedRecordUnsettledOrWithAStaleBindingSettlesBesideTheBinding(t *t
 		{"neither flag", "box-released-plain", `{"holder":"pod-gone","boot":"0123456789abcdef","released":true}`, false, false},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			t.Parallel()
 			uri := testnats.URL(t)
 			var handedBack atomic.Bool
 			client, _ := bindAsAHolder(t, uri, row.machineID, func(msg *natsgo.Msg) {

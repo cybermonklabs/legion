@@ -13,6 +13,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A graceful stop gives the message in hand its grace and then cancels its handling, NAKs every
@@ -20,8 +21,8 @@ import (
 // released and unsettled, keeping its subscription until the standby receives: the standby takes
 // the lease at its next poll, settles, and delivers the stopped pod's messages in the order they
 // were published once the hand-back delay has run, with no ack wait.
+// It must not run in parallel: its test lease lapses if one renewal is 300 ms late.
 func TestAGracefulStopHandsWhatItHeldBackAndReleasesTheLeaseToTheStandby(t *testing.T) {
-	t.Parallel()
 	uri := testnats.URL(t)
 	const machineID = "box-handover"
 	inHand := make(chan context.Context, 1)
@@ -180,8 +181,8 @@ func TestAGracefulStopOverASlowLinkHandsBackWhatWasOnTheWire(t *testing.T) {
 // A graceful stop keeps the stopping pod's subscription until the standby's lease record says it
 // receives, so the durable is push-bound at every instant of the hand-over, and ends its linger as
 // soon as the record says so, well before its cap.
+// It must not run in parallel: its test lease lapses if one renewal is 300 ms late.
 func TestAGracefulStopKeepsItsSubscriptionUntilTheStandbyReceives(t *testing.T) {
-	t.Parallel()
 	uri := testnats.URL(t)
 	const machineID = "box-linger"
 	activeHandle, _ := recordingHandler()
@@ -249,8 +250,8 @@ func TestAGracefulStopKeepsItsSubscriptionUntilTheStandbyReceives(t *testing.T) 
 // handback.<durable>.<the released revision> in the listener state bucket, naming the pod that
 // wrote it, and it is written after the drain - after the standby is receiving - so the standby
 // reads it inside its settle hold rather than at its subscribe.
+// It must not run in parallel: its test lease lapses if one renewal is 300 ms late.
 func TestAGracefulStopMarksTheHandBackForTheRecordItReleased(t *testing.T) {
-	t.Parallel()
 	uri := testnats.URL(t)
 	const machineID = "box-marked-stop"
 	handle, _ := recordingHandler()
@@ -528,8 +529,8 @@ func TestAStoppingPodsLingerHoldsItsFloorThoughItsCapHasRun(t *testing.T) {
 // this machine's and comes back only at its ack wait, so the successor's unmarked 7 s hold is
 // what keeps that message in its held batch, delivered in stream order before the newer one
 // published after it subscribed.
+// It must not run in parallel: pod-b's take must land in the 200 ms before pod-a's linger ends.
 func TestASuccessorThatSubscribesAfterTheLingerLetGoSettlesForTheAckWait(t *testing.T) {
-	t.Parallel()
 	uri := testnats.URL(t)
 	const machineID = "box-late-subscriber"
 	// A flush and a release that both ran to their bounds leave the linger's deadline in the
@@ -565,7 +566,12 @@ func TestASuccessorThatSubscribesAfterTheLingerLetGoSettlesForTheAckWait(t *test
 	}()
 	released := awaitReleased(t, active)
 
-	// pod-b takes the released record while pod-a still lingers, as a standby's poll does.
+	// pod-b takes the released record while pod-a still lingers, as a standby's poll does. Only
+	// timing places the take there: pod-a holds the deliver subject for its floor alone,
+	// lingerUntaken and a poll (1.05 s) after the release, and the take comes about 850 ms after
+	// it, so a take some 200 ms late lands once the linger has ended. The linger ends "timeout"
+	// either way, its cap being past, so once pod-a has stopped the row reads the take against the
+	// linger's end, as the two pods logged them, and fails as UNARRANGED on a take that missed it.
 	time.Sleep(time.Until(released.Add(850 * time.Millisecond)))
 	standby.lease.Start(context.Background())
 	waitFor(t, 2*time.Second, "pod-b to take the released lease", standby.lease.Holding)
@@ -573,6 +579,14 @@ func TestASuccessorThatSubscribesAfterTheLingerLetGoSettlesForTheAckWait(t *test
 		t.Fatalf("pod-b took the record as %+v: the row needs a hand-back candidate, which only a mark could confirm", took)
 	}
 	<-stopped
+	releasedAt := recordTime(t, active.logRecord(t, "listener lease released", time.Second))
+	end := handBackEnd(t, active)
+	lingered, _ := end["lingered_ms"].(float64)
+	lingerEnded := releasedAt.Add(time.Duration(lingered) * time.Millisecond)
+	if took := recordTime(t, standby.logRecord(t, "listener lease acquired", time.Second)); !took.Before(lingerEnded) {
+		t.Fatalf("UNARRANGED: pod-b took the released record %s after pod-a released it, and pod-a's linger had ended %s after the release (%v): the row needs the take while pod-a still lingers",
+			took.Sub(releasedAt), lingerEnded.Sub(releasedAt), end)
+	}
 	// pod-a's stop has returned, so its linger ended and it has let go of the deliver subject:
 	// what the durable pushes now reaches a binding of a lost node alone.
 	pushToALostBinding(t, uri, active.client, active.consumer, "lost", len(published)+1)
@@ -592,7 +606,7 @@ func TestASuccessorThatSubscribesAfterTheLingerLetGoSettlesForTheAckWait(t *test
 		}
 	}
 	noneReceived(t, received, time.Second, "after every message was delivered once")
-	if end := handBackEnd(t, active); end["hand_back_marked"] != false {
+	if end["hand_back_marked"] != false {
 		t.Fatalf("pod-a's hand-back ended %v, want no mark: it let go of the deliver subject before pod-b subscribed", end)
 	}
 	if end := standby.settleHoldEnd(t, time.Second); end["outcome"] != "settled" || end["messages"] != float64(4) || end["hand_back_marked"] != false {
@@ -716,14 +730,13 @@ func pushToALostBinding(t *testing.T, uri string, client *bus.Client, consumer, 
 		t.Fatalf("subscribe as a lost node's binding: %v", err)
 	}
 	publishDurable(t, client, data)
-	if _, err := sub.NextMsg(5 * time.Second); err != nil {
+	if _, err := sub.NextMsgWithContext(testwait.Context(t)); err != nil {
 		t.Fatalf("the durable did not push %q to the lost binding: %v", data, err)
 	}
 	if err := sub.Unsubscribe(); err != nil {
 		t.Fatalf("unsubscribe the lost node's binding: %v", err)
 	}
-	waitFor(t, 5*time.Second, "the pushed message to stay outstanding with no subscriber", func() bool {
-		info, err := client.JS().ConsumerInfo(bus.Stream, consumer)
-		return err == nil && info.NumAckPending == pending && info.NumPending == 0
+	awaitDurable(t, client, consumer, "the pushed message to stay outstanding with no subscriber", func(info *natsgo.ConsumerInfo) bool {
+		return info.NumAckPending == pending && info.NumPending == 0
 	})
 }

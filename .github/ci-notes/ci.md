@@ -1841,16 +1841,17 @@ them; the wait passes `--allow-none` for that run.
 
 ## Two jobs that call one file
 
-ci.yaml calls 45 unique reusable workflows, the most .github/scripts/check-workflow-files.sh
-allows it (its rule 5 keeps five below the 50 GitHub counts over every tree of nested calls),
-so a job split in two takes no file of its own for its new half, and a new job takes none
-either. test and tooling-checks call ci-job-test.yaml, pi-legion and pi-legion-build call
-ci-job-pi-legion.yaml, envoy-infra-go and envoy-infra-build call ci-job-envoy-infra-go.yaml,
-and broker-multiprocess and listener-multiprocess call ci-job-broker-multiprocess.yaml, since
-listener-multiprocess came after ci.yaml reached the limit. Such a file holds one job per
-caller and takes a `job` input: each of its jobs carries exactly `if: inputs.job == '<its id>'`,
-each caller passes `job: <its own id>`, and each job ends with the ci-ok-report step under its own
-id. A call runs the one job named for its caller, and the other reads `skipped` under it.
+ci.yaml calls 44 unique reusable workflows, one below the 45 that
+.github/scripts/check-workflow-files.sh allows it (its rule 5 keeps five below the 50 GitHub
+counts over every tree of nested calls), so a job split in two takes no file of its own for its
+new half, and a new job takes none either. test and tooling-checks call ci-job-test.yaml,
+pi-legion and pi-legion-build call ci-job-pi-legion.yaml, envoy-infra-go and envoy-infra-build
+call ci-job-envoy-infra-go.yaml, and broker-multiprocess and listener-multiprocess call
+ci-job-broker-multiprocess.yaml, since listener-multiprocess came after ci.yaml reached the
+limit. Such a file holds one job per caller and takes a `job` input: each of its jobs carries
+exactly `if: inputs.job == '<its id>'`, each caller passes `job: <its own id>`, and each job ends
+with the ci-ok-report step under its own id. A call runs the one job named for its caller, and
+the other reads `skipped` under it.
 
 .github/scripts/ci_filter_coverage.py holds that shape (check_called_jobs): once a file two
 ci.yaml jobs call holds a job named for any of its callers, each caller must have a job of it

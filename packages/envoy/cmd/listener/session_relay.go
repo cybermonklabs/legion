@@ -1380,10 +1380,10 @@ func (m *sessionRelays) restartFailed(ctx context.Context, sessionID string, err
 // A message the pull receives once the term is over, before that unsubscribe lands, is not
 // forwarded to the session and is not answered, with no done, nak or progress. The server
 // delivers it again once the session consumer's ack wait has passed, 60 s
-// (bus.SessionConsumerAckWait, internal/bus/session_consumers.go:27, which applySettings sets on
-// every session consumer at :933). The next holder's restart of the consumer at its ack floor
-// delivers it sooner, since a message that awaits an ack makes that restart a delete and a
-// create (bus.SessionConsumers.KeepListed keeps no consumer with one, :862).
+// (bus.SessionConsumerAckWait, which bus.SessionConsumers.applySettings sets as the AckWait of
+// every session consumer). The next holder's restart of the consumer at its ack floor delivers it
+// sooner, since a message that awaits an ack makes that restart a delete and a create
+// (bus.SessionConsumers.KeepListed keeps no consumer whose NumAckPending is not zero).
 //
 // When the pull got a message is what tells the two apart. The pull reads its bound as each
 // message arrives, and again as Next hands the message out, and this run publishes a message as

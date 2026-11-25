@@ -43,10 +43,15 @@
 //     crypto/rand generation of its own. This listener's copy saw the head whose chunks it deletes
 //     before this write's own head landed, so that head comes earlier in the bucket than this
 //     write's head, and no later write names that generation again; the delete is made only once
-//     this write's head has landed, so it removes only chunks no head names. The chunks of a head
-//     the copy had not taken, which landed between the two, are left for the collection, and so is
-//     a generation another record of the copy names, a manifest copied under another key
-//     (session's ownLayout). Session's
+//     this write's head has landed, so no head of this record's key names the generation it
+//     deletes. The chunks of a head the copy had not taken, which landed between the two, are left
+//     for the collection, and so is a generation another record of the copy names (session's
+//     ownLayout). The delete is safe so far as the copy holds every head that names the
+//     generation: a manifest copied under another key, which any writer of the bucket can store
+//     and the server stores as its answer to a direct get that names that key's subject as its
+//     reply, still names the generation while this listener's copy has not taken it, and its
+//     chunks are deleted under it, so that key then reads as a damaged record. No record a write
+//     of this build stored loses a chunk so. Session's
 //     TestAKnownSessionWriteFromACopyBehindTheBucketDeletesOnlyChunksNoHeadNames pins it.
 //   - The known-session store's purge of the markers its chunk keys' deletes left (session's
 //     purgeChunkMarkers, kvchunk.PurgeMarkers), each one its watcher was delivered

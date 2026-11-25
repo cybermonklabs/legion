@@ -704,8 +704,9 @@ func TestAKnownSessionWriteOverACopiedManifestLeavesTheOwnersChunks(t *testing.T
 
 // A known-session write deletes the chunks of the record its listener's copy holds, not those of
 // the bucket's head, and that copy can be behind the bucket (internal/bus/kv_leader_read.go). Each
-// write names its chunks by a generation of its own, so a copy behind the bucket names a generation
-// no head names once the write's own head lands, and the write deletes only chunks no head names.
+// write names its chunks by a generation of its own, so once the write's own head lands no head of
+// the session's key names the generation its copy held, and only a manifest copied under another
+// key, which this row writes none of, could still name it.
 // Listener A's copy holds the session's chunked record G0 and its watch is stopped, so it takes
 // nothing more. Listener B, whose watch was stopped before G0 so its copy holds no record of the
 // session and its write deletes nothing, writes G1. A then writes G2 over its copy's G0: the bucket

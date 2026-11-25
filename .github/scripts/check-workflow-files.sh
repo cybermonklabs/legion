@@ -25,8 +25,8 @@
 #   5. a file calling more than 45 unique reusable workflows. GitHub allows 50 from a single
 #      workflow file, counting every tree of nested calls. This check follows only the calls to
 #      this repository's own workflows (`./.github/workflows/…`) and counts a call to another
-#      repository's workflow as one call. ci.yaml calls 45 today, the limit, which keeps five
-#      below GitHub's cap for a surprise; a job split in two calls the file it was split from
+#      repository's workflow as one call. ci.yaml calls 44 today, one below the limit, which keeps
+#      five below GitHub's cap for a surprise; a job split in two calls the file it was split from
 #      (.github/ci-notes/ci.md#two-jobs-that-call-one-file);
 #   6. a job whose `env:`, or one of whose steps' `env:`, sets JOB_TIMEOUT_MINUTES to anything but
 #      the job's timeout-minutes (GitHub's default of 360 where the job sets none), and a step whose

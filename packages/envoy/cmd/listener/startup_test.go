@@ -37,8 +37,8 @@ import (
 // balancer and the private DNS name already send the new pod traffic by then. Neither a webhook nor
 // /v1 reads the durable, so the new pod serves both, and runs its role lane, while it waits:
 // GitHub does not redeliver a refused delivery on its own, and a refused /v1 call is a failed
-// Dispatch delivery or a lost publish. /healthz answers it 200 healthy as a standby that is
-// waiting to receive, and active once the old build lets go.
+// Dispatch delivery or a lost publish. /healthz answers it 200 degraded, a standby waiting for the
+// binding to end, and 200 healthy and active once the old build lets go.
 func TestTheV1APIIsServedWhileAPreLeaseBuildHoldsTheDurable(t *testing.T) {
 	t.Parallel()
 	const (
