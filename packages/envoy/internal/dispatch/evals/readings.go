@@ -78,8 +78,9 @@ type Written struct {
 // replaces and the standing readings of the days it corrects. A batch that would leave a day row
 // holding a value past what a float holds is refused (CodeReadingDayOverflow), and so is one that
 // would leave a day row holding more than MaxDaySamples values (CodeReadingDaySamplesLimit), or a
-// logged eval holding more than MaxEvalSeries series (CodeSeriesLimit, registerMissing), or a
-// reading too large for any statement within statementBytes (CodeReadingTooLarge). Every list the
+// logged eval holding more than MaxEvalSeries series (CodeSeriesLimit, registerMissing), or
+// register a version past MaxVersionBytes (CodeVersionTooLarge, registerMissing), or a reading
+// too large for any statement within statementBytes (CodeReadingTooLarge). Every list the
 // write sends that grows with its batch goes in statements of at most statementBytes, all in its
 // transaction: its readings (insertReadings), the ids it corrects (lockReplaced, the supersede,
 // foldedReadings), and the day rows and standing readings writeDays writes and reads. A refusal
@@ -227,9 +228,13 @@ func foldedReadings(ctx context.Context, tx pgx.Tx, evalID string, replaced []Re
 // counted under that lock, before the write registers anything: one row, so the refusal of a
 // batch of thousands of new series stays a short answer; an eval this write registers is logged,
 // and a computed eval's series a reading registers are unlisted and never folded, so it is held to
-// no bound. An eval it registers gets its section first, before its version's insert: the write
-// takes the document's owner lock (lockDocument) and queues the section's writes for the commit
-// (writeMethod), so that document work runs before the write's first statement that writes.
+// no bound. Each version it would register is judged against MaxVersionBytes before it stores
+// any, as a register write's is: the eval's, whose writer is the caller (written_by, from the
+// body's actor for a bearer caller), refused naming `actor`, and each new series', whose unit is
+// the first row's of it, refused at that row naming `unit` (CodeVersionTooLarge). An eval it
+// registers gets its section first, before its version's insert: the write takes the document's
+// owner lock (lockDocument) and queues the section's writes for the commit (writeMethod), so that
+// document work runs before the write's first statement that writes.
 func (s *Store) registerMissing(ctx context.Context, w *writeTx, batch Batch, rows []Reading) (Definition, bool, []Series, map[string]Series, error) {
 	evalID := EvalID(batch.Project, batch.Slug)
 	definition, found, err := newestDefinition(ctx, w.Tx, evalID)
@@ -246,39 +251,62 @@ func (s *Store) registerMissing(ctx context.Context, w *writeTx, batch Batch, ro
 				Message: seriesLimitReason(evalID, rows[index].Series, count, total)}})
 		}
 	}
+	if !found {
+		definition = firstDefinition(batch.Project, batch.Slug, batch.Caller)
+		definition.Version, definition.WrittenVia, definition.WrittenBy = 1, ViaReading, batch.Caller.Recorded()
+		definition.DocBlock, definition.CreatedAt = uuid.NewString(), w.now
+		if err := definitionTooLarge(definition); err != nil {
+			return Definition{}, false, nil, nil, err
+		}
+	}
+	// The first version of each series no version holds, in the batch's order, each judged
+	// before any is stored; series holds it from then on, and the stored version once it is.
+	var added []Series
+	var refused []RowError
+	for index, row := range rows {
+		if _, has := series[row.Series]; has {
+			continue
+		}
+		first := firstSeries(evalID, row.Series, len(series) == 0, !definition.Computed(), row.Unit)
+		first.CreatedAt = w.now
+		size, field, err := seriesVersionSize(first, "")
+		if err != nil {
+			return Definition{}, false, nil, nil, err
+		}
+		if field != "" {
+			refused = append(refused, RowError{Index: index, Code: CodeVersionTooLarge, Field: field, Message: versionTooLargeReason(seriesVersionName(first), size, field)})
+		}
+		series[first.Series] = first
+		added = append(added, first)
+	}
+	if len(refused) > 0 {
+		return Definition{}, false, nil, nil, rowsRefusal(refused)
+	}
 	registered := false
 	if !found {
 		document, documentFound, err := lockDocument(ctx, w)
 		if err != nil {
 			return Definition{}, false, nil, nil, err
 		}
-		first := firstDefinition(batch.Project, batch.Slug, batch.Caller)
-		first.Version, first.WrittenVia, first.WrittenBy = 1, ViaReading, batch.Caller.Recorded()
-		first.DocBlock = uuid.NewString()
 		sentence := registrationSentence(ViaReading, batch.Caller, w.now)
-		if err := s.writeMethod(ctx, w, document, documentFound, first.Slug, "", first.DocBlock, sentence, RegistryActor); err != nil {
+		if err := s.writeMethod(ctx, w, document, documentFound, definition.Slug, "", definition.DocBlock, sentence, RegistryActor); err != nil {
 			return Definition{}, false, nil, nil, err
 		}
-		stored, err := insertDefinition(ctx, w.Tx, first)
+		stored, err := insertDefinition(ctx, w.Tx, definition)
 		if err != nil {
 			return Definition{}, false, nil, nil, err
 		}
 		definition, registered = stored, true
 	}
-	var added []Series
-	for _, row := range rows {
-		if _, has := series[row.Series]; has {
-			continue
-		}
-		stored, inserted, err := insertSeries(ctx, w.Tx, firstSeries(evalID, row.Series, len(series) == 0, !definition.Computed(), row.Unit))
+	for index, first := range added {
+		stored, inserted, err := insertSeries(ctx, w.Tx, first)
 		if err != nil {
 			return Definition{}, false, nil, nil, err
 		}
 		if !inserted {
-			return Definition{}, false, nil, nil, fmt.Errorf("series %s of %s was registered by a write that holds no lock of the eval", row.Series, evalID)
+			return Definition{}, false, nil, nil, fmt.Errorf("series %s of %s was registered by a write that holds no lock of the eval", first.Series, evalID)
 		}
-		series[stored.Series] = stored
-		added = append(added, stored)
+		series[stored.Series], added[index] = stored, stored
 	}
 	return definition, registered, added, series, nil
 }
@@ -356,14 +384,27 @@ func textBytes(text *string) int {
 // reading it is given, beside its two scalars (the eval and the recorder).
 const readingArrays = 19
 
-// readingBytes is the most bytes row adds to the parameters of insertReadings' statement, as pgx
-// encodes them in binary, attributes and links being the JSON it stores of them: in each of the
+// readingBytes is the bytes row adds to the parameters of insertReadings' statement, as pgx encodes
+// them in binary, attributes and links being the JSON it stores of them: in each of the
 // statement's arrays 4 bytes of length and the element, each text its bytes (the id a correction
-// replaces among them, none for a reading that replaces none), and each of its value, n, ci_low,
-// ci_high, ci_level and measured_at at most 8.
+// replaces among them, none for a reading that replaces none), measured_at 8, and each of its
+// value, n, ci_low, ci_high and ci_level 8 where the row holds it and nothing where it is null,
+// which pgx sends as its length alone. It is what the statement sends of the row, never less, so
+// a run of rows statementChunks cuts at statementBytes is sent within it, and no more, so a batch
+// whose readings fit one statement is sent in one.
 func readingBytes(row *Reading, attributes, links string) int {
 	return readingArrays*4 + len(row.ID) + len(row.Series) + len(row.RowKey) + len(row.RowKind) + len(row.Col) + len(row.ValueAbsentReason) +
-		len(row.Unit) + len(row.NUnit) + len(attributes) + len(links) + len(row.Source) + len(row.Note) + len(row.Replaces) + 6*8
+		len(row.Unit) + len(row.NUnit) + len(attributes) + len(links) + len(row.Source) + len(row.Note) + len(row.Replaces) + 8 +
+		numberBytes(row.Value) + numberBytes(row.N) + numberBytes(row.CILow) + numberBytes(row.CIHigh) + numberBytes(row.CILevel)
+}
+
+// numberBytes is what a number of a reading (value, n, ci_low, ci_high, ci_level) adds to its
+// array beside its length: 8 bytes where the reading holds it, none where it is null.
+func numberBytes[T float64 | int64](number *T) int {
+	if number == nil {
+		return 0
+	}
+	return 8
 }
 
 // largestText is the field of row, as a row spells it, whose text takes the most bytes as the
@@ -482,7 +523,7 @@ func insertReadings(ctx context.Context, tx pgx.Tx, evalID string, rows []Readin
 // rowsRefusal is the refusal of a batch with refused rows, under the code of the first by index:
 // the first MaxRefusedRows row errors by index, each text bounded (fieldTextBytes,
 // errorTextBytes), and how many more there are (RowsOmitted), so the refusal of a megabyte of bad
-// rows is an answer of at most statementBytes.
+// rows is an answer of at most MaxAnswerBytes.
 func rowsRefusal(refused []RowError) *Error {
 	sort.SliceStable(refused, func(i, j int) bool { return refused[i].Index < refused[j].Index })
 	var indexes []string

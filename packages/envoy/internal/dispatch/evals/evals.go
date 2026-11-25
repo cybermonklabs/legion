@@ -447,6 +447,13 @@ const (
 	// attributes, links and other texts) than one statement of the write sends, so no statement
 	// within statementBytes could store it.
 	CodeReadingTooLarge = "READING_TOO_LARGE"
+	// CodeVersionTooLarge: a write would store a version of an eval's definition, or of one of
+	// its series, that takes more than MaxVersionBytes as JSON: a register write's version once
+	// the fields it leaves out are copied forward, naming the version's largest field as the body
+	// spells it (`question`, `series[3].links`, `actor` for the writer the body names); a readings
+	// write's first version of its eval (`actor`), or of a row's new series, whose unit is the
+	// row's (`unit`).
+	CodeVersionTooLarge = "EVAL_VERSION_TOO_LARGE"
 )
 
 // Error is a write the registry refused before it wrote anything: a stable code, the reason in
@@ -454,9 +461,9 @@ const (
 // a readings write the errors of its refused rows, a row's each beside its others: the first
 // MaxRefusedRows of them by row index (Rows), and how many it leaves out (RowsOmitted, 0 where it
 // lists every one). A readings write's code is the code of its first refused row. Every text an
-// Error holds is bounded (errorTextBytes,
-// fieldTextBytes), so its answer, which the idempotency store keeps in one statement, takes at
-// most statementBytes whatever the body that was refused (MaxRefusedRows).
+// Error holds is bounded (errorTextBytes, fieldTextBytes), so its answer, which the idempotency
+// store keeps in one statement, takes at most MaxAnswerBytes whatever the body that was refused
+// (MaxRefusedRows).
 type Error struct {
 	Code        string     `json:"code"`
 	Message     string     `json:"error"`
@@ -489,15 +496,27 @@ const (
 	codeBytes      = 32
 )
 
+// MaxAnswerBytes is the most bytes the answer of an eval write takes as its route encodes it (api's
+// WriteJSON, the newline it ends with among them). The idempotency store keeps a write's answer in
+// one statement (api's settleRequestKey: update request_keys), and it is the most whose statement
+// sends within statementBytes beside answerStatementReserve, the statement's other parameters:
+// 262,144 - 4,096 = 258,048. Each answer that grows with its body stays within it by listing the
+// first of its rows and counting the rest: a refusal of a readings write its row errors
+// (MaxRefusedRows, RowsOmitted), and api's 201 of a readings write its readings, and the answer of
+// a register write its eval's series. So a repeat under the write's key is answered the first
+// answer whatever the body, where an answer past the most the store keeps would be kept as its
+// status alone.
+const MaxAnswerBytes = statementBytes - answerStatementReserve
+
+// answerStatementReserve is what the statement that keeps an answer (MaxAnswerBytes) sends besides
+// the answer's body: 4 bytes of length before each of its six parameters, the idempotency key (at
+// most 128 bytes, contracts.IdempotencyKeyMax), the attempt and the status, the caller's login
+// and the answer's headers as JSON, a few hundred bytes: 4,096 reserved in all.
+const answerStatementReserve = 4096
+
 // MaxRefusedRows is the most row errors a refusal of a readings write lists (Error.Rows), the
-// first by index; RowsOmitted counts the rest. The route answers the refusal whole and the
-// idempotency store keeps that answer in one statement (api's settleRequestKey: update
-// request_keys), so the most whose answer, every text at its bound, that statement sends within
-// statementBytes:
-//   - refusalStatementReserve, the statement's parameters besides the answer's body: 4 bytes of
-//     length before each of its six, the idempotency key (at most 128 bytes,
-//     contracts.IdempotencyKeyMax), the attempt and the status, the caller's login and the
-//     answer's headers as JSON, a few hundred bytes: 4,096 reserved in all;
+// first by index; RowsOmitted counts the rest. The route answers the refusal whole, so the most
+// whose answer, every text at its bound, takes at most MaxAnswerBytes:
 //   - refusalBodyReserve, the body's members besides its row errors: `{"code":"` 9, the code,
 //     `","error":"` 11, the error, `","rows":[` 10, `],"rows_omitted":` 17, a count of at most 20
 //     digits, `}` and the encoder's newline 2: 1,125;
@@ -505,13 +524,12 @@ const (
 //     20 digits, `,"code":"` 9, the code, `","field":"` 11, the field, `","error":"` 11, the
 //     error and `"}` 2: 1,247.
 //
-// (262,144 - 4,096 - 1,125) / 1,247 = 206; with 207 the statement would take 263,350 bytes.
-const MaxRefusedRows = (statementBytes - refusalStatementReserve - refusalBodyReserve) / refusedRowBytes
+// (258,048 - 1,125) / 1,247 = 206; with 207 the statement would take 263,350 bytes.
+const MaxRefusedRows = (MaxAnswerBytes - refusalBodyReserve) / refusedRowBytes
 
 const (
-	refusalStatementReserve = 4096
-	refusalBodyReserve      = 9 + codeBytes + 11 + errorTextBytes + 10 + 17 + 20 + 2
-	refusedRowBytes         = 1 + 9 + 20 + 9 + codeBytes + 11 + fieldTextBytes + 11 + errorTextBytes + 2
+	refusalBodyReserve = 9 + codeBytes + 11 + errorTextBytes + 10 + 17 + 20 + 2
+	refusedRowBytes    = 1 + 9 + 20 + 9 + codeBytes + 11 + fieldTextBytes + 11 + errorTextBytes + 2
 )
 
 func refusal(code, format string, args ...any) *Error {

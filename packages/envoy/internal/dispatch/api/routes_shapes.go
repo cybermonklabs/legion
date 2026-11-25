@@ -732,9 +732,9 @@ var routeShapes = map[string]routeShape{
 		// A body that changes no field of the definition or of a series answers the versions that
 		// stand, 200.
 		Also: []routeAnswer{{Status: http.StatusOK, Body: evalRegisterResponse{}}},
-		// The registry's refusals (writeEvalError): a field the tables would refuse, 400; a
-		// project no row holds, 404 PROJECT_NOT_FOUND; a project whose evals-md slug names a
-		// file, 409 EVALS_DOCUMENT_NOT_A_DOCUMENT.
+		// The registry's refusals (writeEvalError): a field the tables would refuse, or a version
+		// past evals.MaxVersionBytes, 400; a project no row holds, 404 PROJECT_NOT_FOUND; a
+		// project whose evals-md slug names a file, 409 EVALS_DOCUMENT_NOT_A_DOCUMENT.
 		Refusals: evalRefusals,
 	},
 	"GET /api/v1/projects/{key}/evals/{slug}": {
@@ -746,9 +746,10 @@ var routeShapes = map[string]routeShape{
 	"POST /api/v1/projects/{key}/evals/{slug}/readings": {
 		Status: http.StatusCreated, Response: evalReadingsResponse{}, Request: evalReadingsInput{},
 		// A refused batch names every refused row by its index beside the code of the first; a
-		// slug that is no slug and an empty batch are 400 too, a project no row holds 404 and a
-		// project whose evals-md slug names a file 409, each the registry's own body
-		// (writeEvalError); every other refusal is errorBody's.
+		// slug that is no slug, an empty batch and a first reading whose writer would pass
+		// evals.MaxVersionBytes are 400 too, a project no row holds 404 and a project whose
+		// evals-md slug names a file 409, each the registry's own body (writeEvalError); every
+		// other refusal is errorBody's.
 		Refusals: evalRefusals,
 	},
 	// The two rows that refuse every change of a reading answer no success: 204 is the shape a

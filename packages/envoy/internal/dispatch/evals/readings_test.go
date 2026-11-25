@@ -715,14 +715,95 @@ func TestTheMostCorrectionsABodyHoldsGoInBoundedStatements(t *testing.T) {
 	}
 }
 
+// TestAWeeksCorrectionOfSmallReadingsIsInsertedInOneStatement: a week of readings as the bench
+// writes them, 1,408 over 8 series and 7 days with short series names and row keys, each with a
+// value and with n and the confidence fields null, and then one body correcting every one of them,
+// which adds the id each replaces: about 180 bytes a reading as the insert sends it, some 250,000
+// in all. The correction's readings are inserted in exactly one statement, within statementBytes
+// as pgx encodes its parameters and within what readingBytes estimates of them beside the
+// statement's own (paramBytes), which statementChunks cuts by: an estimate that counted the 8
+// bytes of a number for each null would pass the bound and cut them in two.
+func TestAWeeksCorrectionOfSmallReadingsIsInsertedInOneStatement(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	statements := &sentStatements{}
+	r.registry = New(storetest.TracedStore(t, r.database, statements), r.documents, r.registry.events, r.registry.attributor)
+	const slug, count = "week-of-corrections", 1408
+	evalID := EvalID(r.project, slug)
+	reading := func(index int, value float64, replaces string) json.RawMessage {
+		fields := map[string]any{"series": fmt.Sprintf("s%d", index/7%8), "row_kind": "run", "row_key": fmt.Sprintf("k%d", index), "value": value,
+			"measured_at": at(6+index%7, 10, 0)}
+		if replaces != "" {
+			fields["replaces"] = replaces
+		}
+		return row(t, fields)
+	}
+	originals := make([]json.RawMessage, count)
+	for index := range originals {
+		originals[index] = reading(index, float64(1+index%7), "")
+	}
+	stored := r.write(t, slug, alice, originals...)
+	corrections := make([]json.RawMessage, count)
+	for index, original := range stored.Readings {
+		corrections[index] = reading(index, *original.Value+1, original.ID)
+	}
+	statements.take()
+	written := r.write(t, slug, alice, corrections...)
+	var inserts []sentStatement
+	for _, statement := range r.measured(t, statements.take()) {
+		if strings.Contains(statement.sql, "insert into eval_readings") {
+			inserts = append(inserts, statement)
+		}
+	}
+	recordedBy, err := json.Marshal(alice.Recorded())
+	if err != nil {
+		t.Fatalf("encode the recorder: %v", err)
+	}
+	estimate, nulls := paramBytes(readingArrays, evalID)+4+len(recordedBy), 0
+	for index := range written.Readings {
+		one := &written.Readings[index]
+		attributes, err := json.Marshal(one.Attributes)
+		if err != nil {
+			t.Fatalf("encode the attributes of reading %d: %v", index, err)
+		}
+		links, err := json.Marshal(nonNil(one.Links))
+		if err != nil {
+			t.Fatalf("encode the links of reading %d: %v", index, err)
+		}
+		estimate += readingBytes(one, string(attributes), string(links))
+		for _, null := range []bool{one.Value == nil, one.N == nil, one.CILow == nil, one.CIHigh == nil, one.CILevel == nil} {
+			if null {
+				nulls++
+			}
+		}
+	}
+	if estimate+8*nulls <= statementBytes {
+		t.Fatalf("the correction's readings take an estimated %d bytes, %d with 8 for each of their %d null numbers, and the check needs the second past %d",
+			estimate, estimate+8*nulls, nulls, statementBytes)
+	}
+	sizes := make([]int, len(inserts))
+	for index, insert := range inserts {
+		sizes[index] = insert.bytes
+	}
+	if len(inserts) != 1 || inserts[0].bytes > statementBytes || inserts[0].bytes > estimate {
+		t.Errorf("the correction of %d readings was inserted in %d statements of %v bytes of parameters as pgx encodes them, want one within %d and within the estimate %d",
+			count, len(inserts), sizes, statementBytes, estimate)
+	}
+	if superseded := r.count(t, `select count(*) from eval_readings where eval_id = $1 and superseded_at is not null`, evalID); superseded != count || len(written.Readings) != count {
+		t.Errorf("the correction stored %d readings and left %d superseded, want %d of each", len(written.Readings), superseded, count)
+	}
+	t.Logf("a correction of %d readings: %d insert statement(s) of %v bytes of parameters, estimated %d (%d counting 8 for each of %d null numbers), of %d",
+		count, len(inserts), sizes, estimate, estimate+8*nulls, nulls, statementBytes)
+}
+
 // TestARefusalListsAtMostItsBoundOfRowsAndCountsTheRest: a refusal of 20,000 refused rows, given
 // out of order, each with a field and an error past their bounds and full of characters JSON
 // escapes, lists the first MaxRefusedRows by index, each text within its bound as JSON encodes it,
 // and counts the rest (rows_omitted), its JSON, as the route's encoder writes it, within
-// statementBytes less what the stored answer's statement holds besides it
-// (refusalStatementReserve). MaxRefusedRows row errors at their largest (every text at its bound,
-// a code of codeBytes, an index and a count of 20 digits) encode within that; one more passes it.
-// Every code of the registry takes at most codeBytes.
+// MaxAnswerBytes, what the stored answer's statement leaves it within statementBytes.
+// MaxRefusedRows row errors at their largest (every text at its bound, a code of codeBytes, an
+// index and a count of 20 digits) encode within that; one more passes it. Every code of the
+// registry takes at most codeBytes.
 func TestARefusalListsAtMostItsBoundOfRowsAndCountsTheRest(t *testing.T) {
 	t.Parallel()
 	encoded := func(value any) []byte {
@@ -760,7 +841,7 @@ func TestARefusalListsAtMostItsBoundOfRowsAndCountsTheRest(t *testing.T) {
 			break
 		}
 	}
-	if room := statementBytes - refusalStatementReserve; len(body) > room {
+	if room := MaxAnswerBytes; len(body) > room {
 		t.Errorf("the refusal of %d rows encodes in %d bytes, past the %d the stored answer's statement leaves it", count, len(body), room)
 	}
 	t.Logf("a refusal of %d rows: %d listed, %d counted, %d bytes as JSON; %s", count, len(answer.Rows), answer.RowsOmitted, len(body), refusal.Message)
@@ -772,7 +853,7 @@ func TestARefusalListsAtMostItsBoundOfRowsAndCountsTheRest(t *testing.T) {
 		}
 		return len(encoded(&Error{Code: strings.Repeat("C", codeBytes), Message: strings.Repeat("m", errorTextBytes), Rows: listed, RowsOmitted: math.MinInt64}))
 	}
-	room := statementBytes - refusalStatementReserve
+	room := MaxAnswerBytes
 	if most, past := largest(MaxRefusedRows), largest(MaxRefusedRows+1); most > room || past <= room {
 		t.Errorf("%d row errors at their largest encode in %d bytes and %d in %d, want the first within the %d the stored answer's statement leaves and the second past it",
 			MaxRefusedRows, most, MaxRefusedRows+1, past, room)
@@ -782,7 +863,7 @@ func TestARefusalListsAtMostItsBoundOfRowsAndCountsTheRest(t *testing.T) {
 	for _, code := range []string{CodeSlugInvalid, CodeProjectNotFound, CodeFieldInvalid, CodeSeriesInvalid, CodeDocTextEmpty, CodeDocumentNotDocument,
 		CodeReadingsEmpty, CodeReadingInvalid, CodeValueOrReason, CodeFieldServerSet, CodeReplacesUnknown, CodeAlreadyReplaced, CodeLinkHrefNotAbsolute,
 		CodeLinkHrefNotHTTP, CodeLinkRelMissing, CodeReadingSeriesInvalid, CodeReadingDayOverflow, CodeMeasuredAtOutOfRange, CodeKeyTooLong,
-		CodeFieldComputed, CodeSeriesLimit, CodeReadingDaySamplesLimit, CodeReadingTooLarge} {
+		CodeFieldComputed, CodeSeriesLimit, CodeReadingDaySamplesLimit, CodeReadingTooLarge, CodeVersionTooLarge} {
 		if len(code) > codeBytes {
 			t.Errorf("the code %s takes %d bytes, past codeBytes, %d", code, len(code), codeBytes)
 		}

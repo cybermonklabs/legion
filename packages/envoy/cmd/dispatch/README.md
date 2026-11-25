@@ -5178,6 +5178,11 @@ Each item below names a path with its method and identity, then its purpose.
 
   - A write that names more series than that, or that adds a series to a logged eval that would then hold more, is `400 EVAL_SERIES_LIMIT` naming the first series past the bound in `field`; the series are counted under the eval's lock, so two writes cannot pass the bound together, and a write that adds no series is not refused for the series the eval holds.
 
+  - A version of the definition, or of one series, takes at most 32 KiB as JSON (`evals.MaxVersionBytes`), judged once the fields the body leaves out are copied forward, under the eval's lock and before the write stores anything: a write that would store a larger one is `400 EVAL_VERSION_TOO_LARGE` naming the version's largest field in `field` as the body spells it (`question`, `series[3].links`, or `actor` for the writer a bearer caller names), so no run of writes each within the bound leaves a version past it.
+
+  - The answer's one item is `{definition, series, series_total, wrote}`: `series` lists the eval's series by name, as many as keep the answer within 258,048 bytes (`evals.MaxAnswerBytes`: 256 KiB less 4,096 for the other parameters of the statement that keeps it), the most the write's `Idempotency-Key` keeps in one statement, so a repeat under the key is answered the same answer; `series_total` counts every series the eval holds.
+    A definition and six series at 32 KiB each fit within that bound, so `series` lists at least one series of an eval that holds any.
+
   - `404 PROJECT_NOT_FOUND` names an unknown project, and a project-scoped credential of another project is `403 PROJECT_SCOPE`, as the read refuses them.
 
 - `/api/v1/projects/{key}/evals/{slug}` (GET; cookie, trusted header, or bearer)
@@ -5206,6 +5211,10 @@ Each item below names a path with its method and identity, then its purpose.
 
   - Each `error` holds at most 1,024 bytes and each `field` 128 as JSON encodes them, cut to fit with a trailing `…`, so the answer, which the write's `Idempotency-Key` keeps in one statement, stays under 256 KiB whatever the body: 206 is the most row errors at those bounds that fit there, (262,144 − 4,096 for the statement's other parameters − 1,125 for the body's other members) / 1,247 for one row error.
 
+  - The `201` is `{items, total, limit, offset, definition, registered}`: `total` counts every reading the write stored, and `items` lists the first of them in the batch's order, `limit` how many, as many as keep the answer within 258,048 bytes (`evals.MaxAnswerBytes`), the most the write's `Idempotency-Key` keeps in one statement, so a repeat under the key is answered the same answer rather than `ANSWER_NOT_KEPT`.
+    The ids of the readings it leaves out are read from the eval's items (`GET .../evals/{slug}/items`, each reading's `cols.id`).
+    A definition takes at most 32 KiB (above), which leaves most of the answer to the readings; one reading can take more than the whole bound as JSON (a note of some hundred kilobytes), so `items` can list none while `total` counts them.
+
   - A row's `measured_at` lies from 2025-01-01T00:00:00Z (`evals.MeasuredAtFloor`) to 24 hours after the server's time, else the row is refused `MEASURED_AT_OUT_OF_RANGE`: the refresher writes a logged eval's zero rows from its first day on, and one reading at 0001-01-01 made it write 739,934 rows.
 
   - A row's `series`, `row_kind`, `row_key` and `attributes.repo`, and the slug, hold at most 512 bytes each (`EVAL_KEY_TOO_LONG`), and a link's `href` is an absolute `http` or `https` URL (`LINK_HREF_NOT_ABSOLUTE`, `LINK_HREF_NOT_HTTP`).
@@ -5214,9 +5223,11 @@ Each item below names a path with its method and identity, then its purpose.
 
   - The write keeps its day rows in statements of at most that bound: the insert, the lock and the update of the rows it touches are each cut into runs of the rows in their keys' byte order.
 
-  - So does the rest of the write: its readings are inserted in runs of at most that bound in the batch's order, and a reading whose fields alone would take more than one statement of the write sends (a note or attributes of some hundred kilobytes) is refused `READING_TOO_LARGE`, naming its largest field; the ids of the readings it corrects are locked, superseded and read in runs of that bound, the locks in id order across them; and the standing readings of the days it folds again are read in runs of its day rows' keys.
+  - So does the rest of the write: its readings are inserted in runs of at most that bound in the batch's order, each reading counted as the bytes the insert sends of it (a null `value`, `n`, `ci_low`, `ci_high` or `ci_level` as its length alone), so a batch whose readings fit one statement is inserted in one, and a reading whose fields alone would take more than one statement of the write sends (a note or attributes of some hundred kilobytes) is refused `READING_TOO_LARGE`, naming its largest field; the ids of the readings it corrects are locked, superseded and read in runs of that bound, the locks in id order across them; and the standing readings of the days it folds again are read in runs of its day rows' keys.
 
   - However many statements insert a batch's readings, the write logs one `eval_readings` change of its eval, spanning their `measured_at` (migration 20261117100012), as it logs one `eval_days` change.
+
+  - A version the write registers takes at most 32 KiB as JSON, as a register write's does: a row whose new series, which takes the row's `unit`, would take more is refused `EVAL_VERSION_TOO_LARGE` (`field` `unit`), and a first reading of a slug whose writer, the `actor` a bearer caller names, would make the eval's first version take more is refused `EVAL_VERSION_TOO_LARGE` naming `actor`.
 
   - A correction is a new reading naming the one it replaces in `replaces`; `PUT` and `DELETE` of `.../readings/{id}` are `405 READING_APPEND_ONLY`.
 

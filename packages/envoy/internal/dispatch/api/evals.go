@@ -399,8 +399,16 @@ type evalReadingsBody struct {
 	Readings []json.RawMessage `json:"readings"`
 }
 
-// evalReadingsResponse is the readings write's answer: the readings stored, in the batch's order,
-// the eval's definition, and whether this write registered it (R3).
+// evalReadingsResponse is the readings write's answer: the readings it stored, the eval's
+// definition, and whether this write registered it (R3). Total is how many readings the write
+// stored, and Items the first of them in the batch's order, as many as keep the answer within
+// evals.MaxAnswerBytes, the most the write's Idempotency-Key keeps in one statement, so that a
+// repeat under the key is answered this same answer however large the batch; Limit is how many
+// Items lists. The ids of the readings it leaves out are read from the eval's items route, each
+// reading's cols.id (evalItemRow). A definition takes at most evals.MaxVersionBytes, which leaves
+// most of the answer to the readings, but one reading may take more than the bound itself as JSON
+// (a note of some hundred kilobytes is within what one statement stores), so Items may list none
+// while Total counts every one.
 type evalReadingsResponse struct {
 	Items      []evals.Reading  `json:"items"`
 	Total      int              `json:"total"`
@@ -455,12 +463,17 @@ type evalRegisterInput struct {
 }
 
 // evalRegistered is what a register write left: the eval's newest definition, the newest version
-// of each of its series, and whether the write stored a new version of the definition or of a
-// series.
+// of its series by name, and whether the write stored a new version of the definition or of a
+// series. SeriesTotal is how many series the eval holds, and Series the first of them, as many as
+// keep the answer within evals.MaxAnswerBytes, the most the write's Idempotency-Key keeps in one
+// statement, so that a repeat under the key is answered this same answer. A version, of the
+// definition or of a series, takes at most evals.MaxVersionBytes, so Series lists at least one
+// series of an eval that holds any.
 type evalRegistered struct {
-	Definition evals.Definition `json:"definition"`
-	Series     []evals.Series   `json:"series"`
-	Wrote      bool             `json:"wrote"`
+	Definition  evals.Definition `json:"definition"`
+	Series      []evals.Series   `json:"series"`
+	SeriesTotal int              `json:"series_total"`
+	Wrote       bool             `json:"wrote"`
 }
 
 // evalRegisterResponse is the register write's answer: the one version it left.
@@ -1097,7 +1110,9 @@ func (s *server) writeEvalError(w http.ResponseWriter, err error) {
 // any other key, and that one named twice, is 400 INVALID_QUERY naming it (R7). The body's actor
 // follows Dispatch's bearer rule (bearerSessionActor); the server sets recorded_by and
 // recorded_at, and a row carrying either is refused (READING_FIELD_SERVER_SET). The day rows the
-// write keeps record s.deps.Build as the build that wrote them.
+// write keeps record s.deps.Build as the build that wrote them. It answers 201 with how many
+// readings it stored and the first of them, as many as the keyed layer keeps in its answer
+// (evalReadingsResponse, answerPrefix).
 func (s *server) logEvalReadings(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -1133,10 +1148,18 @@ func (s *server) logEvalReadings(w http.ResponseWriter, r *http.Request) {
 		s.writeEvalError(w, err)
 		return
 	}
-	WriteJSON(w, http.StatusCreated, evalReadingsResponse{
-		Items: written.Readings, Total: len(written.Readings), Limit: len(written.Readings),
-		Definition: written.Definition, Registered: written.Registered,
-	})
+	stored := len(written.Readings)
+	// The answer listing no reading, its limit as many digits as it can hold.
+	answer := evalReadingsResponse{
+		Items: []evals.Reading{}, Total: stored, Limit: stored, Definition: written.Definition, Registered: written.Registered,
+	}
+	listed, err := answerPrefix(answer, written.Readings)
+	if err != nil {
+		s.writeHandlerError(w, fmt.Errorf("encode the answer of a readings write of %d readings: %w", stored, err))
+		return
+	}
+	answer.Items, answer.Limit = listed, len(listed)
+	WriteJSON(w, http.StatusCreated, answer)
 }
 
 // refuseReadingChange answers PUT and DELETE /api/v1/projects/{key}/evals/{slug}/readings/{id}
@@ -1157,10 +1180,12 @@ func (s *server) refuseReadingChange(w http.ResponseWriter, r *http.Request) {
 // body leaves out copied forward (evals.Store.Register). doc_text, when given and not the method
 // the eval's section of the project's `evals-md` holds already, replaces that method. It answers
 // 201 with what it wrote, a version of the definition or of a series, and 200 with the versions
-// that stand where the body changed no field of the definition or of a series it names. A field
-// the body names that no earlier write of the eval named is a change of the version's record of
-// what a person set, so `target: null` on an eval whose target is already off is answered 201,
-// and sent again 200 (evals.Definition's SetByPerson).
+// that stand where the body changed no field of the definition or of a series it names, each
+// answer listing the eval's series by name as far as the keyed layer keeps them and counting them
+// all (evalRegistered, answerPrefix). A field the body names that no earlier write of the eval
+// named is a change of the version's record of what a person set, so `target: null` on an eval
+// whose target is already off is answered 201, and sent again 200 (evals.Definition's
+// SetByPerson).
 func (s *server) registerEval(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -1184,10 +1209,45 @@ func (s *server) registerEval(w http.ResponseWriter, r *http.Request) {
 	if registered.Wrote {
 		status = http.StatusCreated
 	}
-	WriteJSON(w, status, evalRegisterResponse{
-		Items: []evalRegistered{{Definition: registered.Definition, Series: registered.Series, Wrote: registered.Wrote}},
+	answer := evalRegisterResponse{
+		Items: []evalRegistered{{Definition: registered.Definition, Series: []evals.Series{}, SeriesTotal: len(registered.Series), Wrote: registered.Wrote}},
 		Total: 1, Limit: 1,
-	})
+	}
+	listed, err := answerPrefix(answer, registered.Series)
+	if err != nil {
+		s.writeHandlerError(w, fmt.Errorf("encode the answer of a register write of %s: %w", registered.Definition.EvalID, err))
+		return
+	}
+	answer.Items[0].Series = listed
+	WriteJSON(w, status, answer)
+}
+
+// answerPrefix is the longest leading part of items with which an eval write's answer takes at
+// most evals.MaxAnswerBytes as WriteJSON encodes it, the most the write's Idempotency-Key keeps in
+// one statement, so a repeat under the key is answered the first answer rather than
+// ANSWER_NOT_KEPT. answer is that answer listing none of items, every count in it as many digits
+// as it will hold; each item adds its JSON as the answer encodes it, and a comma before every one
+// but the first. Each item is encoded once, in order, and none past the first that passes the
+// bound, so a batch far past it is not encoded whole.
+func answerPrefix[T any](answer any, items []T) ([]T, error) {
+	var encoded bytes.Buffer
+	if err := json.NewEncoder(&encoded).Encode(answer); err != nil {
+		return nil, err
+	}
+	used := encoded.Len()
+	for index := range items {
+		item, err := json.Marshal(&items[index])
+		if err != nil {
+			return nil, err
+		}
+		if index > 0 {
+			used++
+		}
+		if used += len(item); used > evals.MaxAnswerBytes {
+			return items[:index], nil
+		}
+	}
+	return items, nil
 }
 
 // decodeEvalRegistration reads a register write's body into the registration it asks for: each
