@@ -28,6 +28,7 @@ import {
   NODE_TYPE_NAMES,
   PRESET_NAMES,
   PRESET_ORDER,
+  PULL_REQUEST_STATE_WORDS,
   STATE_LINES,
   UNASKED_SOURCES,
   wordsIn,
@@ -93,6 +94,7 @@ import {
 import {
   closeDetails,
   contentsPane,
+  filterRow,
   gotoIssue,
   iconRail,
   issuePage,
@@ -157,6 +159,9 @@ import {
   filterControl,
   filterRowLooks,
   filterRowReading,
+  type HeaderSize,
+  headerLimit,
+  headerSize,
   INVENTORY_PARENT_ROWS,
   INVENTORY_RENAMES,
   type InventoryEntry,
@@ -191,7 +196,18 @@ import {
   zoomCrumbs,
 } from "./issue-page-n";
 import { withIssuePage } from "./issue-page-option";
-import { IPHONE_13, MEASURED_TITLE, viewportAt, waitingCount } from "./issue-page-p";
+import {
+  expectHeaderDrawn,
+  TWENTY_LABELS as HEADER_LABELS,
+  IPHONE_13,
+  issueHeader,
+  lineOrder,
+  MEASURED_TITLE,
+  propertiesLine,
+  seedHeader,
+  viewportAt,
+  waitingCount,
+} from "./issue-page-p";
 import { openIssue } from "./keyboard-issue";
 import { connect, isLiveSocket, type LiveSockets, watchLiveSockets } from "./live-socket-watch";
 import { sql } from "./psql";
@@ -5309,5 +5325,236 @@ test("a press on a row puts the caret where it lands @phone", async ({ browser }
         expect(await caretInNode(page), "a press on the link opened an editor").toBe(false);
       });
     }
+  });
+});
+
+/** The repository the pull requests of `c-pull-request-link` are written in. */
+const PULL_REQUEST_REPOSITORY = "acme/widgets";
+
+/** One `pull_request_heads` row attributed to `issue`, written as the `pull_request` envelope
+ *  would have stored it (`e2e/verification.e2e.ts`'s `seedCICheck`), with the address and the
+ *  time of the event it reported set by the row. */
+async function writePullRequestHead(row: {
+  readonly event: string;
+  readonly issue: string;
+  readonly number: number;
+  readonly state: "closed" | "merged" | "open";
+  readonly url: string;
+}): Promise<void> {
+  const sha = String(row.number).padStart(40, "0");
+  await sql(
+    `INSERT INTO pull_request_heads (repo, number, head_sha, state, issue_key, attribution_source, title, url, event_at, checked_at)
+     VALUES ('${PULL_REQUEST_REPOSITORY}', ${row.number}, '${sha}', '${row.state}', '${row.issue}', 'title_body', '${row.issue} the header', '${row.url}', '${row.event}', now())`
+  );
+}
+
+/** The header as it is drawn at `width`, read with the page at its top, and what it took, in the
+ *  run's annotations and its output. `where` names the seed. At 390 px the title is drawn whole,
+ *  so the reading counts all of it. */
+async function readHeader(page: Page, width: number, where: string): Promise<HeaderSize> {
+  await expect(filterRow(page), `the page draws no view row ${where}`).toBeVisible();
+  // The view row waited for above is drawn after the header and under it, so both are in the page
+  // by now and a null reading only throws.
+  const reading = await headerSize(page);
+  if (reading === null) throw new Error(`the page draws no header or no view row ${where}`);
+  const description = `${where} at ${width} px: ${reading.lines.length} lines, ${reading.height.toFixed(1)} px`;
+  console.log(`header ${description}: ${JSON.stringify(reading.lines)}`);
+  test.info().annotations.push({ description, type: "header" });
+  if (width === IPHONE_13.width) {
+    await assertWhole(issueHeader(page).getByRole("heading", { level: 1 }));
+  }
+  return reading;
+}
+
+/** The header's limit at 390 px on the worst seed, the 115-character title with 20 labels and an
+ *  approval request waiting on the reader: part P's own, 9 lines and 280 px (decision 17 of
+ *  dispatch://INFRA-1196/artifact/part-decisions-md, `headerLimit` of `e2e/issue-page-p.ts`).
+ *  Root R13's 6 lines and 180 px hold for a title of at most two lines: the owner's answer to
+ *  the root's ask, "Long titles excepted"
+ *  (dispatch://INFRA-1196/ask/7c644731-f514-498b-b57a-4e76136ce1a3), which the architect of
+ *  INFRA-3940 applied to N's measurement (dispatch://INFRA-3940/comment/a5dd812e-6287-4be1-823a-220f3c1fa097).
+ *  This title takes four lines, and the header takes 9 lines and 265.0 px there with no pull
+ *  request link. A ruling that sets another limit changes this one line. */
+const WORST_HEADER_AT_390 = { height: 280, lines: 9 } as const;
+
+/** The limit on the header at `width` for a seed of the row: root R13's, but on the worst seed at
+ *  390 px `WORST_HEADER_AT_390`. */
+function headerLimitOf(width: number, worst: boolean): { height: number; lines: number } {
+  const limit = worst && width === IPHONE_13.width ? WORST_HEADER_AT_390 : headerLimit(width);
+  if (limit === undefined) throw new Error(`no limit on the header at ${width} px`);
+  return limit;
+}
+
+/** `reading` against the limit on the header at `width`, soft so that one run reports every
+ *  width and seed, with the lines it counted in the message. `worst` is the worst seed. */
+function expectHeaderWithinItsLimit(
+  reading: HeaderSize,
+  width: number,
+  where: string,
+  worst: boolean
+): void {
+  const limit = headerLimitOf(width, worst);
+  const drawnAs = `${reading.lines.length} lines, ${reading.height.toFixed(1)} px`;
+  expect
+    .soft(
+      reading.lines.length,
+      `the header takes ${drawnAs} ${where} at ${width} px: ${JSON.stringify(reading.lines)}`
+    )
+    .toBeLessThanOrEqual(limit.lines);
+  expect
+    .soft(reading.height, `the header takes ${drawnAs} ${where} at ${width} px`)
+    .toBeLessThanOrEqual(limit.height);
+}
+
+/** The header with the link against the same header without it: the link takes no line and no
+ *  pixel of the header's height. */
+function expectLinkAddsNothing(
+  reading: HeaderSize,
+  without: HeaderSize,
+  width: number,
+  where: string
+): void {
+  const lines = reading.lines.length - without.lines.length;
+  const height = reading.height - without.height;
+  expect
+    .soft(lines, `the link adds ${lines} lines to the header ${where} at ${width} px`)
+    .toBeLessThanOrEqual(0);
+  expect
+    .soft(height, `the link adds ${height.toFixed(1)} px to the header ${where} at ${width} px`)
+    .toBeLessThanOrEqual(0);
+}
+
+// c-pull-request-link (R22): the header draws the issue's pull request as one link on the
+// properties line, after the children's progress and before the count of what waits on the
+// reader, with its number and its state in the page's words, and keeps root R13's sizes: 3 lines
+// and 130 px at 1440 px, 6 lines and 180 px at 390 px. The harness runs with NATS off and serves
+// no webhook, so the row writes the `pull_request_heads` rows an issue's pull requests would
+// have left, an open one and a newer merged one, and reads the answer of `GET /api/v1/issues/{key}`
+// as the server gives it. An issue with none carries no `pull_request` and draws no link. Then the
+// worst header, with the 115-character title, 20 labels and an approval request waiting on the
+// reader, is read without the link and with it: at 1440 px inside R13's sizes, at 390 px inside
+// `WORST_HEADER_AT_390`, and with the link taking no line and no pixel of the header the issue
+// draws without it. A pass does not show a state change while the page stays open (the field
+// comes with the issue's read).
+// SLOW(>=2s): 11.1 s on chromium and 5.7 s on iphone (one worker, the pod, at g12): a project and
+// the header's seed, two pull request rows written and deleted, a title, 20 labels and an
+// approval request written, and four loads of the issue at each of the row's widths, each read
+// for its header's size.
+test("the header links the issue's pull request @phone", async ({ browser }) => {
+  test.setTimeout(180_000);
+  await phase(browser, seedHeader, async (page, seeded) => {
+    const desktopProject = test.info().project.name !== "iphone";
+    const widths = desktopProject ? [DESKTOP.width, IPHONE_13.width] : [IPHONE_13.width];
+    const openUrl = `https://github.com/${PULL_REQUEST_REPOSITORY}/pull/101`;
+    const mergedUrl = `https://github.com/${PULL_REQUEST_REPOSITORY}/pull/102`;
+    /** The header's links to a pull request: the one link the line draws, none where absent. */
+    const link = () => propertiesLine(page).getByRole("link");
+    const loadAt = async (width: number) => {
+      await page.setViewportSize(viewportAt(width));
+      await gotoIssue(page, `/issues/${seeded.key}`);
+      await expectHeaderDrawn(page);
+    };
+    /** The line's parts in the order it draws them: the progress, the link, the count. */
+    const lineParts = () =>
+      lineOrder(page, [
+        { name: "progress", selector: '[data-testid="issue-progress-subtree"]' },
+        { name: "pull request", selector: '[data-testid="issue-pull-request"]' },
+        { name: "count", selector: '[data-testid="issue-whose-turn"]' },
+      ]);
+    /** Reads the header's link as the open pull request, before the count, at each width, and
+     *  hands the header's size to `judge`. */
+    const expectOpenLinked = async (
+      where: string,
+      judge: (reading: HeaderSize, width: number) => void
+    ) => {
+      for (const width of widths) {
+        await loadAt(width);
+        await expect(link(), "the header draws no pull request link").toHaveCount(1);
+        await expect(link(), "the header's link names another pull request").toHaveAttribute(
+          "href",
+          openUrl
+        );
+        await expect(link(), "the header's link says no number or no state").toHaveText(
+          `#101 ${PULL_REQUEST_STATE_WORDS.open}`
+        );
+        expect(await lineParts(), "the link is not between the progress and the count").toEqual([
+          "progress",
+          "pull request",
+          "count",
+        ]);
+        judge(await readHeader(page, width, where), width);
+      }
+    };
+
+    // An issue that holds no pull request carries no field, and draws no link.
+    expect(
+      Object.hasOwn(await getIssue(seeded.key), "pull_request"),
+      "an issue with no pull request carries a pull_request"
+    ).toBe(false);
+    for (const width of widths) {
+      await loadAt(width);
+      await expect(link(), "an issue with no pull request draws a link").toHaveCount(0);
+    }
+
+    // An open pull request and a newer merged one: the server names the open one, and the header
+    // links it.
+    await writePullRequestHead({
+      event: "2026-11-10T10:00:00Z",
+      issue: seeded.key,
+      number: 101,
+      state: "open",
+      url: openUrl,
+    });
+    await writePullRequestHead({
+      event: "2026-11-12T10:00:00Z",
+      issue: seeded.key,
+      number: 102,
+      state: "merged",
+      url: mergedUrl,
+    });
+    expect(
+      (await getIssue(seeded.key)).pull_request,
+      "the issue names another pull request"
+    ).toEqual({ number: 101, repo: PULL_REQUEST_REPOSITORY, state: "open", url: openUrl });
+    const seededIssue = "on the seeded issue";
+    await expectOpenLinked(seededIssue, (reading, width) =>
+      expectHeaderWithinItsLimit(reading, width, seededIssue, false)
+    );
+
+    // The pull requests gone, the field and the link go with them.
+    await sql(`DELETE FROM pull_request_heads WHERE issue_key = '${seeded.key}'`);
+    expect(
+      Object.hasOwn(await getIssue(seeded.key), "pull_request"),
+      "the issue still carries a pull_request"
+    ).toBe(false);
+
+    // The worst header: the 115-character title, 20 labels and an approval request waiting on the
+    // reader, first with no pull request and then with the open one.
+    await patchIssue(seeded.key, { labels: [...HEADER_LABELS], title: MEASURED_TITLE });
+    await requestApproval(seeded.specArtifactId, { summary: "Read it back." });
+    const worst = "with the longest title, 20 labels and a request";
+    const without = new Map<number, HeaderSize>();
+    for (const width of widths) {
+      await loadAt(width);
+      await expect(issueHeader(page)).toContainText(MEASURED_TITLE);
+      await expect(link(), "an issue with no pull request draws a link").toHaveCount(0);
+      const reading = await readHeader(page, width, `${worst}, no pull request`);
+      without.set(width, reading);
+      expectHeaderWithinItsLimit(reading, width, `${worst}, no pull request`, true);
+    }
+    await writePullRequestHead({
+      event: "2026-11-10T10:00:00Z",
+      issue: seeded.key,
+      number: 101,
+      state: "open",
+      url: openUrl,
+    });
+    await expectOpenLinked(`${worst}, and a pull request`, (reading, width) => {
+      const bare = without.get(width);
+      if (bare === undefined)
+        throw new Error(`no reading of the header without the link at ${width} px`);
+      expectHeaderWithinItsLimit(reading, width, `${worst}, and a pull request`, true);
+      expectLinkAddsNothing(reading, bare, width, worst);
+    });
   });
 });

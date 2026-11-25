@@ -41,6 +41,7 @@ import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { writesOf } from "../writes/write-store";
 import { ACTION_WORDS } from "./approval-chip-box";
 import { CONTROL_LABELS } from "./page-words";
+import { PULL_REQUEST_STATE_WORDS } from "./page-words-n";
 import { ShellNavigationContext } from "./shell-navigation";
 import { HeaderSlot } from "./slots/header";
 import { titleWrittenElsewhere } from "./title-elsewhere-fixture";
@@ -2958,6 +2959,66 @@ test("a second status pick while the first one's dry run is out shows at once, a
   } finally {
     view.unmount();
     patchIssue.mockRestore();
+    restore();
+  }
+});
+
+// Part N's R22: where the issue's read carries `pull_request`, the properties line draws one link
+// after the children's progress and before the count of what waits on the reader, named by its
+// number and its state in the page's own words, and linking to its address.
+test("the header links the issue's pull request by its number and its state", async () => {
+  for (const [state, word] of [
+    ["open", PULL_REQUEST_STATE_WORDS.open],
+    ["merged", PULL_REQUEST_STATE_WORDS.merged],
+    ["closed", PULL_REQUEST_STATE_WORDS.closed],
+  ] as const) {
+    const url = `https://github.com/cybermonklabs/legion/pull/5545`;
+    const restore = stubHeader({
+      ...issue,
+      children: [
+        {
+          active_at: "2026-09-09T00:00:00Z",
+          external_links: null,
+          key: "CORE-2",
+          status: "done",
+          subtree_done: 1,
+          subtree_total: 1,
+          title: "Child",
+        },
+      ],
+      open_asks: [{ ...openIssueAsk, last_reply: null, waiting_on: "human" }],
+      pull_request: { number: 5545, repo: "cybermonklabs/legion", state, url },
+    });
+    const view = renderHeader("/issues/CORE-1");
+    try {
+      const line = await screen.findByTestId("issue-state-actions");
+      const links = within(line).getAllByRole("link");
+      expect(links).toHaveLength(1);
+      const link = links[0];
+      expect(link).toHaveAttribute("href", url);
+      expect(link).toHaveTextContent(`#5545`);
+      expect(link).toHaveTextContent(word);
+      const progress = within(line).getByTestId("issue-progress-subtree");
+      const count = within(line).getByTestId("issue-whose-turn");
+      expect(
+        progress.compareDocumentPosition(link) & Node.DOCUMENT_POSITION_FOLLOWING
+      ).toBeTruthy();
+      expect(link.compareDocumentPosition(count) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    } finally {
+      view.unmount();
+      restore();
+    }
+  }
+});
+
+test("an issue with no pull request draws no link", async () => {
+  const restore = stubHeader({ ...issue, pull_request: undefined });
+  const view = renderHeader("/issues/CORE-1");
+  try {
+    const line = await screen.findByTestId("issue-state-actions");
+    expect(within(line).queryAllByRole("link")).toEqual([]);
+  } finally {
+    view.unmount();
     restore();
   }
 });

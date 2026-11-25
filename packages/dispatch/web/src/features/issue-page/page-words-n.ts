@@ -51,6 +51,16 @@ export const VIEW_LOADING_LINES = freeze({
     results: "the checks' results",
   },
 } as const);
+/**
+ * How the issue's pull request stands, in the page's own words, drawn on the header's pull
+ * request link beside its number (part N's R22, `PullRequestLink.tsx`): one word per state
+ * `IssueDetails.pull_request.state` carries (`open`, `merged`, `closed`).
+ */
+export const PULL_REQUEST_STATE_WORDS = freeze({
+  closed: "Closed",
+  merged: "Merged",
+  open: "Open",
+} as const);
 
 export default {
   add: {
@@ -114,6 +124,6 @@ export default {
       versions_for: "Versions for",
     },
   },
-  unasked: [VIEW_LOADING_LINES],
+  unasked: [VIEW_LOADING_LINES, PULL_REQUEST_STATE_WORDS],
   answers: [],
 } as const satisfies PartWords;

@@ -1604,3 +1604,113 @@ export async function openPageState(page: Page, key: string, state: PageState): 
     }
   }
 }
+
+/** The header's size as root R13 states it: the height from the top of the identity block to the
+ *  top of the filter row, and the lines of text and control values drawn between the two, each as
+ *  the words it holds, left to right. */
+export interface HeaderSize {
+  readonly height: number;
+  readonly lines: readonly string[];
+}
+
+/** Root R13's limit on the header at `width` (R22 repeats it for the pull request's link): at
+ *  1440 px 3 lines and 130 px, at 390 px 6 lines and 180 px, none at any other width. */
+export function headerLimit(
+  width: number
+): { readonly height: number; readonly lines: number } | undefined {
+  if (width === 1440) return { height: 130, lines: 3 };
+  if (width === 390) return { height: 180, lines: 6 };
+  return undefined;
+}
+
+/**
+ * The header as it is drawn now, with the page at its top: the lines are those of the text nodes
+ * and the controls' values that stand between the top of the identity block and the top of the
+ * filter row, each text that wraps counted line by line, and a line is every piece whose top
+ * lies above the lowest bottom of the pieces gathered into it. Text laid out unseen (hidden,
+ * transparent, or a clipped box a pixel wide or high) is left out, as are the options of a
+ * select, which stand in the list and are drawn as its value. Null where the page draws no
+ * header or no filter row.
+ */
+export function headerSize(page: Page): Promise<HeaderSize | null> {
+  return page.evaluate((selectors) => {
+    window.scrollTo(0, 0);
+    const header = document.querySelector(`${selectors.issuePage} ${selectors.identityBlock}`);
+    const band = header?.querySelector(selectors.identityBand) ?? null;
+    const row = document.querySelector(`${selectors.issuePage} ${selectors.filterRow}`);
+    if (header === null || band === null || row === null) return null;
+    const top = band.getBoundingClientRect().top;
+    const bottom = row.getBoundingClientRect().top;
+    const inBand = (box: DOMRect): boolean =>
+      box.width > 0 && box.height > 0 && box.bottom > top && box.top < bottom;
+    const drawn = (element: Element): boolean => {
+      for (let at: Element | null = element; at !== null; at = at.parentElement) {
+        const style = getComputedStyle(at);
+        if (style.visibility !== "visible" || style.opacity === "0") return false;
+        const box = at.getBoundingClientRect();
+        if (style.overflow !== "visible" && (box.width <= 1 || box.height <= 1)) return false;
+      }
+      return true;
+    };
+    const pieces: { bottom: number; left: number; text: string; top: number }[] = [];
+    const range = document.createRange();
+    const walker = document.createTreeWalker(header, NodeFilter.SHOW_TEXT);
+    for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+      const content = node.textContent ?? "";
+      const element = node.parentElement;
+      if (content.trim() === "" || element === null || element.closest("select") !== null) continue;
+      range.selectNodeContents(node);
+      const boxes = [...range.getClientRects()].filter(inBand);
+      if (boxes.length === 0 || !drawn(element)) continue;
+      // A text that wraps is one box per line: each line is given the characters drawn in it.
+      const words = boxes.length === 1 ? [content] : boxes.map(() => "");
+      for (let at = 0; boxes.length > 1 && at < content.length; at += 1) {
+        range.setStart(node, at);
+        range.setEnd(node, at + 1);
+        const glyph = range.getClientRects()[0];
+        if (glyph === undefined) continue;
+        const line = boxes.findIndex(
+          (box) => glyph.top >= box.top - 1 && glyph.bottom <= box.bottom + 1
+        );
+        if (line >= 0) words[line] += content[at];
+      }
+      boxes.forEach((box, line) => {
+        const text = (words[line] ?? "").replace(/\s+/g, " ").trim();
+        pieces.push({ bottom: box.bottom, left: box.left, text, top: box.top });
+      });
+    }
+    for (const control of header.querySelectorAll("select, input:not([type='hidden']), textarea")) {
+      const box = control.getBoundingClientRect();
+      if (!inBand(box) || !drawn(control)) continue;
+      const size = Number.parseFloat(getComputedStyle(control).fontSize);
+      const middle = (box.top + box.bottom) / 2;
+      const text =
+        control instanceof HTMLSelectElement
+          ? (control.selectedOptions[0]?.textContent ?? "").trim()
+          : (control as HTMLInputElement).value;
+      pieces.push({ bottom: middle + size / 2, left: box.left, text, top: middle - size / 2 });
+    }
+    pieces.sort((a, b) => a.top - b.top);
+    const lines: (typeof pieces)[] = [];
+    let lineBottom = Number.NEGATIVE_INFINITY;
+    for (const piece of pieces) {
+      const line = lines.at(-1);
+      if (line !== undefined && piece.top < lineBottom - 1) {
+        line.push(piece);
+        lineBottom = Math.max(lineBottom, piece.bottom);
+      } else {
+        lines.push([piece]);
+        lineBottom = piece.bottom;
+      }
+    }
+    return {
+      height: bottom - top,
+      lines: lines.map((line) =>
+        line
+          .sort((a, b) => a.left - b.left)
+          .map((piece) => piece.text)
+          .join(" ")
+      ),
+    };
+  }, SELECTORS);
+}

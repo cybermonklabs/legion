@@ -35,6 +35,7 @@ import { APPROVAL_CHIP } from "./approval-chip-box";
 import { decisionsDocumentId } from "./decision-review";
 import { presetPath } from "./issue-address";
 import { statusGlyph, statusTone } from "./issue-status";
+import { PullRequestLink } from "./PullRequestLink";
 import { authorText, PROPERTY_LABELS, pageChrome } from "./page-structure";
 import { CONTROL_LABELS } from "./page-words";
 import { StatusGlyph } from "./StatusGlyph";
@@ -222,6 +223,7 @@ export function IssuePropertiesRow({
         variant="header"
       />
       <ChildrenProgress childIssues={issue.children ?? []} />
+      <PullRequestLink pullRequest={issue.pull_request} />
       {waiting.total > 0 ? (
         // The prototype's `.waitchip`: a control, because the reader acts on what it counts.
         <button
