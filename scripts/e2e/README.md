@@ -5617,11 +5617,14 @@ Each item below names what it reads, then how.
 - The completion's response of a step that its agent ended is found by its call, never by its time.
   It is the last response that holds the call after the start read and up to the end read.
   Where there is none, it is the first response after the end read, where that one holds the call.
+  That response must come before the claim's next read.
   The clock of the agent's machine may run ahead of the daemon's clock, and then the completion's response ends after the end read.
+  The bound of the claim's next read keeps a later step's call from counting as this step's.
 
 - Each read has two gaps: the seconds since the last response before it, and the seconds to the next response after it.
   Every response counts here, error and synthetic ones too.
-  At the end read of a step that its agent ended, both gaps leave out the completion's response.
+  The check looks for that response only on a step with one start read and one end read of one launch, neither final.
+  Then both gaps of the end read leave out the completion's response.
   A read is within 2 s of a response where either gap is under 2 s.
 
 Each item below names a comparison, then what it takes and judges.
@@ -5631,6 +5634,7 @@ Each item below names a comparison, then what it takes and judges.
   The step needs one start read and one end read of one launch, neither final totals, and neither within 2 s of a response.
   Where a response holds its completion call, the 2 s test of its end read leaves that response out.
   Every other response keeps the test at both reads, and where no response holds the call, the end read leaves out none.
+  At the start read every response keeps the test, the completion's too, since that read may not yet count it.
   Its set model must be the agent's `setModel`, and its counts must be known and total at least 1.
   Its counts must equal, model by model, the transcript's counted responses after the start read and up to the end read, with the completion's response.
   That response counts where its time lies after the end read too.
@@ -5643,7 +5647,7 @@ Each item below names a comparison, then what it takes and judges.
 
 - For each step that its agent ended, taken or not, it prints one `GAP:` line.
   That line gives each read's two gaps, or says why the read is missing or final.
-  It names the completion's response that the end read leaves out, and how far before or after the read that response ended.
+  Where the check looked for the completion's response, the line names it and how far before or after the end read it ended.
   Where no response holds the completion call, it says so.
   A harness with no such step prints `GAP: harness <harness>: saw no step that its agent ended`.
 
