@@ -71,6 +71,7 @@ var roleForReaders = map[roleForSite]roleForReader{
 	{file: "internal/api/handoff.go", fn: "entryFence"}:                             {calls: 1, test: "TestArchitectUnchangedByItsCompletionAtAdmitted"},
 	{file: "internal/daemon/daemon.go", fn: "serve"}:                                {calls: 1, test: "TestAnOperatorRetryOfAStoppedArchitectRelaunchesItThroughItsMachine"},
 	{file: "internal/daemon/design_news_holders.go", fn: "phaseHolder"}:             {calls: 1, test: "TestOnlyAPhaseWorkerHoldsAMembersPhase"},
+	{file: "internal/daemon/outbox.go", fn: "outbox.readyResume"}:                   {calls: 1, test: "TestArchitectUnchangedByAReadyResumeOfAnIssueAtAdmitted"},
 	{file: "internal/phase/phase.go", fn: "Of"}:                                     {calls: 1, test: "TestArchitectUnchangedByItsCompletionAtAdmitted"},
 	{file: "internal/projection/project.go", fn: "Project"}:                         {calls: 1, test: "TestProjectShowsARootsArchitectHandshake"},
 	{file: "internal/record/design_news.go", fn: "untold"}:                          {calls: 1, test: "TestOwedNewsOwesEachHolderTheVersionsItHasNotTaken"},

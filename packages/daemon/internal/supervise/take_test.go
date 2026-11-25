@@ -471,6 +471,109 @@ func TestTakeAcceptedHoldsTheIssueInTurnForAnotherRoleUntilItsTurnEnds(t *testin
 	tester.wantCalls("AdoptWorkingCopy", 1)
 }
 
+// A take refused issue-in-turn records that the claim's pending task waits behind another claim's
+// turn, and the machine publishes the task's number on its view (ClaimView.HeldTask), which the
+// daemon names to the claim in that turn (internal/daemon's HeldBehind). The record is the
+// refusal's own: the take accepted once that turn has ended leaves the view naming none, and so
+// does a refusal by any other hold. A take that fails decides nothing, so it leaves the task
+// named. A held task retired outside the take — a newer task in its place, or its phase ended —
+// is named by nobody either, though no take was decided since.
+func TestATakeRefusedIssueInTurnRecordsTheClaimItWaitsBehind(t *testing.T) {
+	type arrangement struct {
+		inTurn, phaseHolds bool
+		phaseErr           error
+	}
+	// held is the arrangement of TestTakeIsRefusedByEachHoldByName's issue-in-turn case: the
+	// claim's take of its phase task refused while another claim of the issue is in a turn.
+	held := func(t *testing.T, a *arrangement) (*harness, uint64) {
+		t.Helper()
+		a.inTurn, a.phaseHolds = true, true
+		h := newHarness(t)
+		h.deps.Identity = adoptingIdentity
+		h.deps.IssueInTurn = func(string, claim.Token) (claim.Token, bool) { return testerToken, a.inTurn }
+		h.deps.PhaseHolds = func(context.Context, string, phase.Phase, uint64) (bool, error) { return a.phaseHolds, a.phaseErr }
+		h.restart()
+		h.manualTakes()
+		h.reach(StateReady)
+		h.must(RequestDeliver{Claim: h.token, Task: "implement the plan", Phase: phase.Implementing, Generation: 7, ID: "outbox:7", Row: 7})
+		h.wantRefused(HoldIssueInTurn)
+		number := h.pending().Number
+		if got := h.m.View().HeldTask; got != number {
+			t.Fatalf("after the issue-in-turn refusal the view names task %d held, want the pending task %d", got, number)
+		}
+		return h, number
+	}
+	namesNone := func(t *testing.T, h *harness, after string) {
+		t.Helper()
+		if got := h.m.View().HeldTask; got != 0 {
+			t.Fatalf("after %s the view names task %d held, want none", after, got)
+		}
+	}
+
+	t.Run("the holder's turn ends and the take is accepted", func(t *testing.T) {
+		var a arrangement
+		h, _ := held(t, &a)
+		a.inTurn = false
+		h.must(IssueTurnEnded{Claim: h.token})
+		if text := h.mustTake(); text != "implement the plan" {
+			t.Fatalf("the take after the holder's turn ended = %q, want its task", text)
+		}
+		namesNone(t, h, "the accepted take")
+	})
+
+	// Another claim's turn end reaches the held claim while the holder is still in its turn, and
+	// the issue-record read the take makes (phaseHolds) fails once: nothing was decided, so the
+	// held take stays named to the holder, whose turn end still takes it once the store answers.
+	t.Run("a record read that fails while the holder is still in its turn", func(t *testing.T) {
+		var a arrangement
+		h, number := held(t, &a)
+		a.phaseErr = errBoom
+		if err := h.handle(IssueTurnEnded{Claim: h.token}); err == nil {
+			t.Fatal("the take at another claim's turn end decided with the record read failing: this case proves nothing")
+		}
+		if got := h.m.View().HeldTask; got != number {
+			t.Fatalf("after one failed record read while the holder's turn still ran, the view names task %d held, want %d: that turn's end still takes it", got, number)
+		}
+		a.phaseErr = nil
+		a.inTurn = false
+		h.must(IssueTurnEnded{Claim: h.token})
+		if text := h.mustTake(); text != "implement the plan" {
+			t.Fatalf("the take at the holder's turn end = %q, want its task", text)
+		}
+		namesNone(t, h, "the accepted take")
+	})
+
+	t.Run("a take refused by the stale-plugin hold", func(t *testing.T) {
+		var a arrangement
+		h, _ := held(t, &a)
+		h.m.deps.PluginContract = refreshContract
+		h.m.deps.PluginRelaunchable = true
+		h.wantRefused(HoldStalePlugin)
+		namesNone(t, h, "the stale-plugin refusal")
+	})
+
+	t.Run("a newer task takes the held task's place", func(t *testing.T) {
+		var a arrangement
+		h, number := held(t, &a)
+		a.phaseHolds = false
+		h.must(RequestDeliver{Claim: h.token, Task: "look at production after the merge", ID: "outbox:9", Row: 9})
+		if p := h.pending(); p.Number == number {
+			t.Fatalf("pending %+v, want the newer task in the held task's place", p)
+		}
+		namesNone(t, h, "the newer task took the held task's place")
+	})
+
+	t.Run("the held task's phase ends", func(t *testing.T) {
+		var a arrangement
+		h, _ := held(t, &a)
+		h.must(RequestSuspend{Claim: h.token, Reason: "LEGION-209 left implementing", By: SuspendedByDaemon})
+		if p := h.claim().Pending; p != nil {
+			t.Fatalf("pending %+v after the daemon's suspension, want the phase's task retired with its phase", p)
+		}
+		namesNone(t, h, "the phase's end retired the held task")
+	})
+}
+
 // A take sent again while the first is still being answered — its adoption of the working copy
 // still running — waits for that answer and is answered from it: one adoption, one acceptance,
 // and one answer logged, which is no repeat from the record (answerAgain). The test runs in a
@@ -724,4 +827,124 @@ func TestTakeOfARelaunchedProcessIsDecidedAfreshWhileItsPredecessorsTakeAdopts(t
 		}
 		h.wantCalls("AdoptWorkingCopy", 2)
 	})
+}
+
+// A turn that starts while a take's adoption of the working copy runs, with the machine's lock let
+// go, is not that take's turn: no take was accepted when it started, so it is the agent's own and
+// its start line names no task. The adoption's outcome then reaches a working claim, which
+// refuses the take in-turn (adoptedTooLate), so the workflow is told nothing. The refusal is
+// recorded at the value's revision, so the turn's end writes the value again at a newer one
+// (offerPending), and the worker's take at that revision is accepted (R3 of
+// dispatch://INFRA-4130).
+//
+// The negative control is the adoption's outcome accepted over a working claim (adopted asked
+// there, passing over the in-turn hold): the take is accepted into the running turn and the
+// workflow told.
+func TestATurnThatStartsDuringTheAdoptionIsNotTheTasks(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		h := newHarness(t)
+		gate := newGatedAdopt(h.rt)
+		h.deps.Runtime = gate
+		h.deps.Identity = adoptingIdentity
+		confirmed := 0
+		h.deps.TaskConfirmed = func(Claim) { confirmed++ }
+		h.restart()
+		h.manualTakes()
+		h.reach(StateReady)
+		h.must(RequestDeliver{Claim: testToken, Task: "implement the plan", Phase: phase.Implementing, Generation: 7})
+		value := h.seen()
+		request := RequestTake{Claim: testToken, Generation: h.generation(), Session: session,
+			Number: value.Number, Revision: value.revision()}
+
+		var wg sync.WaitGroup
+		var answer TakeAnswer
+		var err error
+		wg.Go(func() { answer, err = h.m.Take(h.ctx, request) })
+		synctest.Wait()
+		if started := len(gate.entered); started != 1 {
+			t.Fatalf("%d adoptions started, want the take in its adoption", started)
+		}
+		h.must(StreamTurnStart{Claim: testToken})
+		gate.release <- struct{}{}
+		wg.Wait()
+		h.m.Wait()
+
+		if err != nil || answer.Outcome != TakeOutcomeRefused || answer.Hold != HoldInTurn {
+			t.Fatalf("the take whose adoption a turn's start overtook = %+v, %v, want it refused %q", answer, err, HoldInTurn)
+		}
+		wantTurnLine(t, h, startedLine, h.generation(), 0)
+		if p := h.pending(); p.taken() {
+			t.Fatalf("pending %+v after the refusal, want the task untaken: the turn is the agent's own", p)
+		}
+		if confirmed != 0 {
+			t.Fatalf("the workflow was told %d times of a take that was refused, want never", confirmed)
+		}
+
+		h.must(StreamTurnEnd{Claim: testToken})
+
+		again, held := h.values.value(testToken)
+		if !held || again.Number != value.Number || !again.revision().after(value.revision()) {
+			t.Fatalf("after the turn's end the bucket holds %+v (held %t), want task %d written again at a revision newer than %d",
+				again, held, value.Number, value.Revision)
+		}
+		gate.release <- struct{}{}
+		if answer, err := h.takeValue(again); err != nil || answer.Outcome != TakeOutcomeAccepted || answer.Text != "implement the plan" {
+			t.Fatalf("the take at the newer revision = %+v, %v, want it accepted with the task's text", answer, err)
+		}
+		if confirmed != 1 {
+			t.Fatalf("the workflow was told %d times of the accepted take, want once", confirmed)
+		}
+	})
+}
+
+// TestAHeldTakeIsNamedNoLongerOnceItsClaimCannotTakeIt holds ClaimView.HeldTask to its own word: it
+// names a task a take of which waits for another claim's turn, "and the task is taken once that
+// turn ends". A claim that is suspended or retired while its take stands refused issue-in-turn
+// keeps its pending task untaken, and no takeable runs for it, so the end of the other claim's turn
+// takes nothing; its view must name no held task then, or the daemon's HeldBehind names that task
+// to every claim of the issue that starts a turn, each of whose workers is told a task waits for
+// its turn's end (dispatch://INFRA-4130 R2) that never starts then.
+func TestAHeldTakeIsNamedNoLongerOnceItsClaimCannotTakeIt(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		end  func(h *harness)
+	}{
+		{"an operator suspends the held claim", func(h *harness) {
+			h.must(RequestSuspend{Claim: h.token, Reason: "drain", By: SuspendedByOperator})
+			h.wantState(StateSuspended)
+		}},
+		{"the held claim's pod is released", func(h *harness) {
+			h.must(RequestSuspend{Claim: h.token, By: SuspendedByReleased})
+			h.wantState(StateSuspended)
+		}},
+		{"an operator stops the held claim", func(h *harness) {
+			h.must(RequestStop{Claim: h.token})
+			h.wantState(StateRetired)
+		}},
+		{"the held claim's issue closes", func(h *harness) {
+			h.must(RequestIssueClose{Claim: h.token})
+			h.wantState(StateRetired)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t)
+			h.deps.Identity = adoptingIdentity
+			h.deps.IssueInTurn = func(string, claim.Token) (claim.Token, bool) { return testerToken, true }
+			h.deps.PhaseHolds = func(context.Context, string, phase.Phase, uint64) (bool, error) { return true, nil }
+			h.restart()
+			h.manualTakes()
+			h.reach(StateReady)
+			h.must(RequestDeliver{Claim: h.token, Task: "implement the plan", Phase: phase.Implementing, Generation: 7, ID: "outbox:7", Row: 7})
+			h.wantRefused(HoldIssueInTurn)
+			number := h.pending().Number
+			if got := h.m.View().HeldTask; got != number {
+				t.Fatalf("after the issue-in-turn refusal the view names task %d held, want the pending task %d", got, number)
+			}
+			tc.end(h)
+			if got := h.m.View().HeldTask; got != 0 {
+				t.Fatalf("the claim is %s with its pending task %d untaken, and its view still names task %d held behind another claim's turn; want none, since that turn's end does not have it taken",
+					h.claim().State, number, got)
+			}
+		})
+	}
 }

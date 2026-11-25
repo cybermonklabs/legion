@@ -1,0 +1,7 @@
+kind: Fixed
+body: |-
+  A worker that comes back ready with its phase open and nothing pending holds its phase's resume
+  task, with the task's value written, when `claims/ready` answers. The ready's own decision
+  queues the resume row its workflow fact wrote, so the read of the claim's value after the ready
+  carries it. An Envoy card waiting at the ready no longer takes the session's first turn ahead of
+  the resume. The outbox's later run of that row queues nothing more.

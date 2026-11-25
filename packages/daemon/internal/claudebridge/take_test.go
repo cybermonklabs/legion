@@ -633,6 +633,54 @@ func TestNothingIsTakenBeforeTheReadyLine(t *testing.T) {
 	})
 }
 
+// R5 of dispatch://INFRA-4130: a card waits for the resume's turn, or for its take's refusal or
+// drop, and no longer. The registration held no value, and a delivery that comes before the ready
+// line waits for it. The reading of the value the ready decision wrote comes ahead of that line.
+// The card still waits while the take of that value is asked. The daemon refuses the take for a
+// hold, since another role's turn holds the issue, so once its answer comes the bridge holds no
+// take: the delivery starts its turn at once, a turn of no task.
+func TestACardWaitingAtTheReadyStartsItsTurnOnceTheTakeOfTheReadysValueIsRefused(t *testing.T) {
+	d := newTaskDaemon(t)
+	released := make(chan struct{})
+	release := sync.OnceFunc(func() { close(released) })
+	t.Cleanup(release)
+	d.answerTake = func(claim.TakeRequest) (int, any) {
+		<-released
+		return http.StatusOK, claim.TakeResponse{Outcome: takeRefused, Hold: "issue-in-turn"}
+	}
+	r := newTakingRig(t, d, "", daemonCalls{})
+	inbox := r.dialInbox()
+
+	r.handFinished(testTask - 1)
+	inbox.deliver("ev1", "say the card")
+	r.logged("Envoy delivery ev1 waits for the claim's ready line")
+	r.handReading(testTask, 1, testTask-1)
+	r.waitFor("the value to be reported seen", func() bool { return len(d.seenReports()) == 1 })
+	r.quiet()
+
+	r.handReady()
+	r.waitFor("the take to reach the daemon", func() bool { return len(d.takesMade()) == 1 })
+	r.quiet()
+
+	release()
+	r.logged("the daemon refused the take of task 7 (hold issue-in-turn)")
+	r.expect("agent_start", nil)
+	if answer := inbox.answer(); answer != (InboxAnswer{ID: "ev1", OK: true}) {
+		t.Fatalf("the inbox answered %+v, want ev1 taken", answer)
+	}
+	r.expect("agent_end", nil)
+	r.quiet()
+	if takes := pairsOf(t, d.takesMade()); !slices.Equal(takes, []string{"7 at 1"}) {
+		t.Fatalf("the bridge asked to take %q, want task 7 once", takes)
+	}
+	if texts := r.userTexts(); !slices.Equal(texts, []string{"say the card"}) {
+		t.Fatalf("Claude Code read %q, want the card alone", texts)
+	}
+	if report := d.reportOf(1); report.Task != 0 {
+		t.Fatalf("the card's turn was reported %+v, want a turn of no task", report)
+	}
+}
+
 // A value naming a task the daemon's reading says the claim finished is owed nothing: it is
 // reported seen, as every value is, and not taken, and an Envoy delivery does not wait for it. The
 // highest finished number a line carried stands: a later relayed value of the same number, which

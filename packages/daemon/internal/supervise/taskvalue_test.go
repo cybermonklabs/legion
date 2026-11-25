@@ -7,6 +7,7 @@ package supervise
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -67,9 +68,11 @@ func TestRelaunchTakesTheSameNumberOnce(t *testing.T) {
 	}
 }
 
-// A released pod's role is woken by a task of its own (origin wake), which resumes the released
-// claim; the process the resume starts takes that task once, and nothing gives it again.
-func TestRelaunchTakesAWakeTaskOnce(t *testing.T) {
+// wokenHarness is a released claim a task of its own (origin wake) has woken: the claim is
+// launching, and the wake's task is pending. It returns the harness, the number of the worker's
+// takes accepted before the wake, and the wake's pending task.
+func wokenHarness(t *testing.T) (*harness, int, Delivery) {
+	t.Helper()
 	h := newHarness(t)
 	h.reach(StateIdle)
 	// The session reports at the turn's end that nothing of its own runs, as Oh My Pi's does, so the
@@ -80,10 +83,18 @@ func TestRelaunchTakesAWakeTaskOnce(t *testing.T) {
 	base := len(h.prompts())
 
 	h.must(RequestDeliver{Claim: testToken, Task: "a notice woke this role", Origin: OriginWake})
-	if p := h.pending(); p.Origin != OriginWake {
-		t.Fatalf("pending %+v, want the wake's task", p)
+	wake := h.pending()
+	if wake.Origin != OriginWake {
+		t.Fatalf("pending %+v, want the wake's task", wake)
 	}
 	h.wantState(StateLaunching)
+	return h, base, wake
+}
+
+// A released pod's role is woken by a task of its own (origin wake), which resumes the released
+// claim; the process the resume starts takes that task once, and nothing gives it again.
+func TestRelaunchTakesAWakeTaskOnce(t *testing.T) {
+	h, base, _ := wokenHarness(t)
 	h.relaunched()
 
 	taken := h.wantPrompts(base + 1)[base]
@@ -93,6 +104,42 @@ func TestRelaunchTakesAWakeTaskOnce(t *testing.T) {
 	h.ready()
 	h.observe(runtime.Alive)
 	h.wantPrompts(base + 1)
+}
+
+// A woken claim takes the task it holds first. A released pod's role is woken by a task of its
+// own (origin wake), which resumes the claim; a second task that arrives while the claim is
+// launching finds the wake's task untaken and still owed, and is refused behind it
+// (ErrDeliveryPending) rather than put in its place (queue). The process the resume starts takes
+// the wake's task under its number, and the second task's retry after the wake's turn has ended is
+// queued and taken next (R5 of dispatch://INFRA-4130).
+//
+// The negative control is queue replacing the untaken owed task with the newer one: the first
+// take is accepted on the newer task, and the wake's task is never taken.
+func TestAWokenClaimTakesItsHeldTaskFirstWhileANewerTaskWaits(t *testing.T) {
+	h, base, wake := wokenHarness(t)
+
+	newer := RequestDeliver{Claim: testToken, Task: "review the pull request", ID: "outbox:42", Row: 42, Generation: 7}
+	if err := h.handle(newer); !errors.Is(err, ErrDeliveryPending) {
+		t.Errorf("the second task while the woken claim launches = %v, want %v behind the wake's untaken task", err, ErrDeliveryPending)
+	}
+	h.relaunched()
+
+	first := h.wantPrompts(base + 1)[base]
+	if first.Number != wake.Number || first.Message != "a notice woke this role" {
+		t.Fatalf("the relaunched worker's first take = %+v, want the wake's task %d it holds", first, wake.Number)
+	}
+
+	h.must(StreamTurnStart{Claim: testToken})
+	h.must(StreamTurnEnd{Claim: testToken})
+	if p := h.claim().Pending; p != nil {
+		t.Fatalf("pending %+v after the wake's turn ended, want the wake's task finished", p)
+	}
+
+	h.must(newer)
+	next := h.wantPrompts(base + 2)[base+1]
+	if next.Number == wake.Number || next.Message != "review the pull request" {
+		t.Fatalf("the take after the wake's turn = %+v, want the second task's retry queued and taken next", next)
+	}
 }
 
 // What a registering worker is told of its task (CurrentTask): the value the bucket holds for the

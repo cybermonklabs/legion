@@ -1480,6 +1480,17 @@ func (w *workflowRuntime) treeClosable(ctx context.Context, c supervise.Claim) (
 	return issue == nil, nil
 }
 
+// readyResume answers supervise's Deps.ReadyResume from the outbox's read of the resume task the
+// claim's ready queued (outbox.readyResume), which the ready's decision then queues before
+// claims/ready answers. A runtime with no outbox runs no row and answers nil, so its ready queues
+// nothing.
+func (w *workflowRuntime) readyResume(ctx context.Context, c supervise.Claim) (*supervise.RequestDeliver, error) {
+	if w.outbox == nil {
+		return nil, nil
+	}
+	return w.outbox.readyResume(ctx, c)
+}
+
 // recordedIssue reads one issue in a transaction of its own, which is what both supervisor
 // predicates need: the machine asks them while holding its own lock, and neither answer may take
 // a lock of the daemon's.

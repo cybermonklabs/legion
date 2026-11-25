@@ -33,10 +33,21 @@ import type { StallWatchdogAborter } from "@legion/pi-shared/stall-watchdog";
  * `pi-shared/src/phase-stall.ts:172-176`), so a worker restarting itself would reset that check's
  * own count of what it has reminded about.
  *
+ * **No message ahead of a pending take** (dispatch://INFRA-4130 R6). The run the abort ended asks
+ * the take of an owed task at its `agent_end`, and the take's text, if the daemon accepts it,
+ * starts the next run, which is that task's turn; a message of the worker's own would start a turn
+ * ahead of it. So where the take is pending when the message would go, after the abort, the
+ * message waits for that take, and one line says so; it goes once the take settles with no run
+ * starting first (`TaskTake.deferUntilSettled` says when), since an aborted run's `session_stop`
+ * arms nothing (`extensions/legion.ts`) and nothing else then starts the work again. It is sent
+ * then, once, as it would have been at once. A run that starts first, the take's own or another,
+ * is the work going again, and it is not sent.
+ *
  * **Both halves fail loudly, and the ladder goes on.** A host with no `abort()`, an `abort()`
  * that throws or whose Promise rejects, and a message the host refuses each throw from here; the
  * detector records what happened and carries the call to the last step at the next gap, rather
- * than leaving the ladder with a turn it ended and nothing to restart it.
+ * than leaving the ladder with a turn it ended and nothing to restart it. A held message the host
+ * refuses once the take settles has no step left to record it, and the take logs it as a warning.
  */
 
 /** The custom type the restart message carries, beside the phase reminder's
@@ -51,6 +62,15 @@ export interface StallAborterDeps {
   /** `pi.sendMessage`: the host's own delivery, which queues the message and starts a turn on
    * it. */
   readonly sendMessage: PiApi["sendMessage"];
+  /** Holds the message's send for the claim's pending take (`ClaimSession.deferUntilTakeSettles`):
+   * where the take is pending, it keeps the callback, calls it once the take settles with no run
+   * starting first, and answers the number of the task the take waits for
+   * (`TaskTake.deferUntilSettled` says when, and which); undefined, keeping nothing, where it is
+   * not. */
+  readonly deferUntilTakeSettles: (callback: () => void) => number | undefined;
+  readonly log: {
+    readonly info: (message: string, context?: Record<string, unknown>) => void;
+  };
 }
 
 /** The detector's `StallWatchdogAborter`: the host's `abort()`, and the one message the worker
@@ -69,11 +89,23 @@ export function createStallAborter(deps: StallAborterDeps): StallWatchdogAborter
       await abort.call(context);
     },
 
-    sendMessage: (text: string): void => {
-      deps.sendMessage(
-        { customType: STALL_RESTART_MESSAGE, content: text, display: true },
-        { deliverAs: "steer", triggerTurn: true }
-      );
+    sendMessage: (text: string): "sent" | "held" => {
+      const send = (): void => {
+        deps.sendMessage(
+          { customType: STALL_RESTART_MESSAGE, content: text, display: true },
+          { deliverAs: "steer", triggerTurn: true }
+        );
+      };
+      const task = deps.deferUntilTakeSettles(send);
+      if (task !== undefined) {
+        deps.log.info(
+          "legion: a stall abort's restart message waits for the take, because a take of the claim's task is pending: the task's text, if the daemon accepts the take, starts the next run, and the message is sent if the take is refused by another hold or dropped, or once a take refused in-turn has waited its bound",
+          { task }
+        );
+        return "held";
+      }
+      send();
+      return "sent";
     },
   };
 }

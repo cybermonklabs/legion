@@ -3,6 +3,7 @@ package supervise
 import (
 	"context"
 	"crypto/rand"
+	"errors"
 	"strings"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -253,12 +254,15 @@ func HoldsWork(pending *Delivery) bool { return HoldsTask(pending) && !pending.N
 // It is queued by finishReady after the ready's durable write and report, which the workflow reads
 // synchronously (Machine.OnDurableState, the daemon's applyTerminal): the workflow's ready reads
 // the claim holding nothing, so a phase worker the workflow still owes a resume task is queued it
-// (workflow's readyWorkerTask), and that task takes this delivery's place while no take of it is
-// accepted, or waits behind that take (queue, replaceable). It is queued again where takeable drops
-// the task a claim held and leaves it holding nothing — its phase gone, an older daemon's ask of an
-// update round, or a root architect's held task left naming nothing (currentRootTask) — since the
-// task that would have carried the sentence is gone, and the ready that queues it for a claim
-// holding nothing ran before that drop, while the claim still held the task.
+// (workflow's readyWorkerTask). The ready queues that task before this (queueReadyResume), and
+// this then finds the claim holding it and queues nothing. A resume the outbox's row delivers
+// instead (no Deps.ReadyResume, a read of it that failed, or a row the ready leaves to its own
+// run, as a merger's behind a closed design gate) takes this delivery's place while no take of it
+// is accepted, or waits behind that take (queue, replaceable). It is queued again where takeable
+// drops the task a claim held and leaves it holding nothing — its phase gone, an older daemon's
+// ask of an update round, or a root architect's held task left naming nothing (currentRootTask) —
+// since the task that would have carried the sentence is gone, and the ready that queues it for a
+// claim holding nothing ran before that drop, while the claim still held the task.
 //
 // Nothing there recurses: this queues the delivery and writes its value (queue), and offers
 // nothing. The delivery has no phase, no round and no run, so neither the phase check nor the
@@ -288,4 +292,47 @@ func (m *Machine) queueRelaunch(ctx context.Context) error {
 		"cause", ended.Cause, "ended", ended.Generation)
 	return m.queue(ctx, RequestDeliver{Claim: m.claim.Token, ID: relaunchTaskID(), Task: RelaunchSentence(ended),
 		Origin: OriginNotice})
+}
+
+// queueReadyResume queues at the ready the resume task that ready's report queued for a phase
+// worker (workflow's readyWorkerTask), as the delivery the outbox's start of that row would queue
+// (Deps.ReadyResume). The queue writes its value, so the task is pending and its value written
+// before claims/ready answers (dispatch://INFRA-4130 R5): the worker reads its value right after
+// that answer, and a card waiting at the ready takes the session's first turn when the read finds
+// no task. finishReady calls it after the report, which wrote the row, and before queueRelaunch,
+// so the resume carries the relaunch record's sentence in front of itself (Delivery.message).
+//
+// A claim of no issue is asked nothing: the workflow queues it no resume. A read that fails is
+// logged and queues nothing, and the outbox delivers any row the ready queued as it runs. A
+// refusal because the claim holds a task its worker has not done (ErrDeliveryPending) is logged
+// and queues nothing too: the row waits on the outbox's backoff behind that task, as its own run
+// would. queue also queues nothing for a claim that holds this delivery already or records its row
+// (a retried ready), so the ready's queue of the task is logged only where queue wrote the claim a
+// new number (Claim.TaskWritten). Any other error is returned, as queueRelaunch returns its own.
+func (m *Machine) queueReadyResume(ctx context.Context) error {
+	if m.deps.ReadyResume == nil || m.claim.Issue == "" {
+		return nil
+	}
+	resume, err := m.deps.ReadyResume(ctx, m.claim)
+	if err != nil {
+		m.log.Warn("supervise: the read of a resume task the ready may have queued failed; the outbox delivers any such row as it runs",
+			"error", err)
+		return nil
+	}
+	if resume == nil {
+		return nil
+	}
+	written := m.claim.TaskWritten
+	switch err := m.queue(ctx, *resume); {
+	case errors.Is(err, ErrDeliveryPending):
+		m.log.Info("supervise: the resume task the ready queued waits behind the pending task; the outbox delivers it",
+			"delivery", resume.ID, "row", resume.Row)
+		return nil
+	case err != nil:
+		return err
+	}
+	if m.claim.TaskWritten != written {
+		m.log.Info("supervise: the ready queued the resume task its report queued", "delivery", resume.ID, "row", resume.Row)
+	}
+	return nil
 }

@@ -26,6 +26,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/notify"
+	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store"
@@ -2665,15 +2666,9 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		// too.
 		var task *supervise.RequestDeliver
 		if payload.Task != "" || payload.News {
-			kept, err := keptJSON(payload.Kept)
-			if err != nil {
+			if task, err = startDelivery(token, row.ID, payload, news); err != nil {
 				return err
 			}
-			task = &supervise.RequestDeliver{Claim: token, Task: news.task, Phase: payload.Phase, Generation: payload.Generation,
-				Entry: payload.Entry, ResendEntry: payload.ResendEntry, RoundNamed: news.roundNamed,
-				CheckLook: supervise.CheckLook{Look: payload.CheckLook, OpenedAt: payload.CheckOpenedAt},
-				ID:        fmt.Sprintf("%s%d", outboxDeliveryPrefix, row.ID), Row: row.ID, Kept: kept, Origin: payload.Origin,
-				News: news.news, NewsOnly: payload.News}
 		}
 		// The claim remembers the newest start run against it, so a stop written before this one
 		// is finished rather than acted on however late it arrives (see "suspend" below). A claim
@@ -3022,6 +3017,101 @@ func claimToStop(machine *supervise.Machine) (supervise.Claim, bool) {
 func keepsStartTask(held supervise.Claim, payload record.SuperviseRequest) bool {
 	pending := held.Pending
 	return pending != nil && payload.Phase != "" && pending.StillWorked(payload.Generation, payload.Phase, held.State)
+}
+
+// startDelivery is the delivery of a start row's task (supervise.RequestDeliver): the row's own id
+// as its row and, under outboxDeliveryPrefix, as its delivery id, the text and the news the start
+// composed (startNews), and the rest as the row carries it. Both deliveries of such a task are
+// composed here — the start's own run of the row (supervise) and the claim's ready that queued
+// the row, before the row runs (readyResume) — so the two never compose one row's task differently.
+func startDelivery(token claim.Token, row int64, payload record.SuperviseRequest, news startNews) (*supervise.RequestDeliver, error) {
+	kept, err := keptJSON(payload.Kept)
+	if err != nil {
+		return nil, err
+	}
+	return &supervise.RequestDeliver{Claim: token, Task: news.task, Phase: payload.Phase, Generation: payload.Generation,
+		Entry: payload.Entry, ResendEntry: payload.ResendEntry, RoundNamed: news.roundNamed,
+		CheckLook: supervise.CheckLook{Look: payload.CheckLook, OpenedAt: payload.CheckOpenedAt},
+		ID:        fmt.Sprintf("%s%d", outboxDeliveryPrefix, row), Row: row, Kept: kept, Origin: payload.Origin,
+		News: news.news, NewsOnly: payload.News}, nil
+}
+
+// readyResume answers supervise's Deps.ReadyResume: the resume task c's ready queued, as the
+// delivery the start's own run of that row would queue (startDelivery), or nil for none. The row
+// is the newest of c's run still queued of exactly the shape the workflow's readyWorkerTask
+// writes: a start marked a resume task under a resume's origin, with no mark of the boot's resume
+// by rule, no wait for an admission slot, no entry, no news and no production check's look. The
+// boot's resume by rule (workflow's startPhaseOwner) writes a resume task under a resume's origin
+// too, marked RuleResume, and its row may wait for the issue's admission slot, so that row is left
+// to its own run. The ready's own decision queues the task, so it is pending and its value written
+// before claims/ready answers: queued by the row's own run, it was written after the worker's read
+// that follows that answer, and a card waiting at the ready took the session's first turn ahead of
+// it (dispatch://INFRA-4130 R5).
+//
+// The issue and the run are read in one read-only transaction. Three things the issue alone shows
+// are answered nil as soon as it is read, and the run is not read, since no resume of c can be
+// delivered then: an issue out of the workflow (record.OutOfWorkflow), a phase c's role does not
+// work (phase.RoleFor), and a role a stopped task's step holds (workflow.StoppedStepRole). The row
+// is then held to the fences the start's own run holds it to before that run delivers
+// (supervise), against the record as it stands now: a row whose phase or tree is not the issue's
+// is answered nil, and so is a merger its tree's design gate holds back, which the start's own
+// composer of the text answers as a wait (startNewsOf, mergerWaitsForTheDesignGate). In each case
+// the ready queues nothing and the row's own run decides it as it did before. An issue the record
+// does not keep, a run with no such row, and an architect's claim are answered nil too:
+// readyWorkerTask queues no resume for any of them. The run's generation is the issue's
+// (record.Store.RoleRun), which is the start's generation fence. The text and the round are
+// composed by that same composer, which gives a start of no entry and no news the text and the
+// round its row carries.
+//
+// The row's own run then queues nothing more: the claim holds that phase's task, which a resume
+// row does not deliver again (keepsStartTask), or, once its worker has finished it, records the
+// row (supervise.Claim.DeliveredRows), which queue reads as given.
+func (r *outbox) readyResume(ctx context.Context, c supervise.Claim) (*supervise.RequestDeliver, error) {
+	if c.Role == claim.RoleArchitect {
+		return nil, nil
+	}
+	var issue *record.Issue
+	var resume *record.QueuedSupervise
+	if err := store.TransactWith(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		if issue, err = r.records.Issue(ctx, tx, c.Issue); err != nil || issue == nil {
+			return err
+		}
+		if record.OutOfWorkflow(issue.Status) || phase.RoleFor(issue.Phase) != c.Role || workflow.StoppedStepRole(*issue) == c.Role {
+			return nil
+		}
+		run, err := r.records.RoleRun(ctx, tx, c.Token, issue.Key, c.Role, issue.Generation)
+		if err != nil {
+			return err
+		}
+		for i := len(run.Queued) - 1; i >= 0; i-- {
+			request := run.Queued[i].Request
+			if request.Op == "start" && request.ResumeTask && request.Origin == supervise.OriginResume && !request.RuleResume &&
+				!request.NeedsSlot && request.Entry == 0 && !request.News && request.CheckLook == 0 {
+				resume = &run.Queued[i]
+				break
+			}
+		}
+		return nil
+	}); err != nil {
+		return nil, fmt.Errorf("read the resume task the ready of %s queued: %w", c.Token, err)
+	}
+	if resume == nil {
+		return nil, nil
+	}
+	payload := resume.Request
+	if payload.Phase != issue.Phase || payload.Tree != issue.Tree {
+		return nil, nil
+	}
+	// startNewsOf reads the machine only for a start of news alone, which this row never is.
+	news, finished, err := r.startNewsOf(ctx, record.OutboxRow{ID: resume.ID, Issue: issue.Key}, *issue, payload, nil, false, c.Token)
+	if errors.Is(err, wait.ErrWaiting) {
+		return nil, nil
+	}
+	if err != nil || finished {
+		return nil, err
+	}
+	return startDelivery(c.Token, resume.ID, payload, news)
 }
 
 // childArchitectFirstStart says whether payload is the plain start of issue's own architect that a

@@ -94,8 +94,9 @@ export interface LegionClaimBoot {
  * The daemon writes the number of the task a claim is owed as the claim's value, which the
  * listener relays to the session holding the role, and the session takes it once its host is idle
  * (`src/task-take.ts`). The registration's answer carries the value the daemon held then, but the
- * ready decision can write one of its own (the relaunch record's task), and the listener relays a
- * value only when its watch of the role's holder fires, after the role claim has handed the
+ * ready decision can write one of its own (the relaunch record's task, or the phase's resume task,
+ * which the daemon queues in that decision: `supervise.Deps.ReadyResume`), and the listener relays
+ * a value only when its watch of the role's holder fires, after the role claim has handed the
  * role's kept lane over. So the value is read once the ready has answered and before the role is
  * claimed, and the host holds it, with its take's mark, when the lane the listener kept for the
  * role arrives (`packages/pi-envoy/src/card-wake.ts`): every value the ready decision wrote is
@@ -103,14 +104,13 @@ export interface LegionClaimBoot {
  * addressed to the session itself can arrive while the ready or that read is still on its way:
  * the host holds every card until that read has answered — Oh My Pi's take from the registration
  * on, until `afterReadyRead` ends its hold; the Claude bridge until the ready line
- * `afterReadyRead` writes — so none starts a turn ahead of a task the ready decision wrote. A
- * value written later — the resume the daemon's outbox queues after the ready, a task queued
- * later still — reaches the session as the listener relays it, and a card that arrives before it
- * may take a turn first, which the take then waits behind. A read that fails is logged and the
- * boot goes on, its hold ended all the same: the daemon's next write of the value reaches the
- * session as well. Nothing of a message is held, delayed, reordered or read here; the host does
- * that. A regain reads the value rather than sending the ready again, since a ready makes the
- * daemon send nothing.
+ * `afterReadyRead` writes — so none starts a turn ahead of a task the ready decision wrote. A task
+ * queued after the ready decision reaches the session only as the listener relays it, and a card
+ * that arrives before it may take a turn first, which the take then waits behind. A read that
+ * fails is logged and the boot goes on, its hold ended all the same: the daemon's next write of
+ * the value reaches the session as well. Nothing of a message is held, delayed, reordered or read
+ * here; the host does that. A regain reads the value rather than sending the ready again, since a
+ * ready makes the daemon send nothing.
  *
  * The ready carries no capability report. The session measures its capability rows later, on the
  * interval it runs while it is idle (`packages/pi-legion/src/capability-schedule.ts`).

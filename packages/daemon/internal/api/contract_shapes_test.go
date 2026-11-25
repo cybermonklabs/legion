@@ -727,10 +727,12 @@ func answerFixtures(t *testing.T) map[AnswerID]answerFixture {
 		// The discard golden's own value (goldenIntakeDiscard, TestIntakeDiscardAnswerGolden).
 		AnswerIntakeDiscard: {roots: typesOf(IntakeDiscardResponse{}), bodies: []any{goldenIntakeDiscard}},
 		// Richer than the golden, which reads a bucket that holds no value: the record describes
-		// every key of the value a read answers (contract 274).
+		// every key of the value a read answers (contract 274) and of the takes held behind the
+		// caller's turn (contract 281).
 		AnswerTask: {roots: typesOf(claim.TaskResponse{}), bodies: []any{claim.TaskResponse{
 			Task:     &claim.TaskValue{Number: 4, Epoch: "2026-11-13T16:21:44.123456789Z", Revision: 12},
 			Finished: 3,
+			Holds:    []claim.HeldTake{{Role: claim.RoleTester, Task: 7}},
 		}}},
 		// The three goldens' own values (TestTakeResponseGolden), one for each outcome of a take,
 		// which between them carry every key of the answer (contract 274).

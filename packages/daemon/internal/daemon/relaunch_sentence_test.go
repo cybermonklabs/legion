@@ -437,48 +437,99 @@ func TestARelaunchSentenceIsTheOneTaskWrittenToAFinishedWorkerWhoseSubagentDied(
 	}
 }
 
-// A newer task takes the place of the daemon's own delivery of the sentence while no take of it is
-// accepted, and carries the sentence in front of itself: the phase worker's resume task is not
-// held behind a sentence nobody has read. The worker here was never written a task (its start
-// carried none), so its first ready queued it its phase's resume task, which has not run when its
-// process, a subagent reported running, dies. The relaunch's ready finds that row covering the
-// phase and queues none of its own, and finishReady gives the claim, which holds nothing, the
-// delivery of the sentence. The resume task's row then runs and replaces that delivery.
-func TestARelaunchSentenceDeliveryGivesWayToAPhaseWorkersResumeTask(t *testing.T) {
+// A phase worker relaunched before it took its phase's resume task takes that task first, with
+// the relaunch's sentence in front of it. The worker here was never written a task (its start
+// carried none), so its first ready's report queued it its phase's resume task row. Its process,
+// a subagent reported running, dies before any take of that resume. R5 of dispatch://INFRA-4130
+// gives the claim that resume at the first ready (finishReady, queueReadyResume), so the
+// relaunch finds it held and queues no delivery of the sentence alone (queueRelaunch). The
+// sentence rides in front of the resume at its take, and the row's run changes nothing the claim
+// holds. Where the outbox's row delivers the resume instead (queueRelaunch's doc says when), as
+// it does for a rig with no Deps.ReadyResume, the claim holds nothing at the relaunch. The
+// sentence's own delivery then holds the slot, and the row's run takes its place. In both, the
+// phase worker's resume is not held behind a sentence nobody has read. The replacement rule
+// itself (replaceable) is held by supervise's TestARelaunchSentenceDeliveryGivesWayToANewerTask.
+func TestARelaunchSentenceGoesInFrontOfAPhaseWorkersResumeTask(t *testing.T) {
 	t.Parallel()
-	rig := newStartedTesterRig(t, "")
-	if held := rig.claim().Pending; held != nil || rig.claim().TaskWritten != 0 {
-		t.Fatalf("the tester started with no task holds %+v with task %d written, want nothing written", held, rig.claim().TaskWritten)
-	}
-	if rows := outboxRows(t, rig.pool); rows != 1 {
-		t.Fatalf("the first ready of a tester never written a task left %d outbox rows, want the one start of its phase's resume task", rows)
-	}
-	rig.report("subagent")
-
-	rig.observe(runtime.Gone, false)
-	rig.boot(testerSession)
-
-	relaunch := rig.claim().Pending
-	if relaunch == nil || !relaunch.Relaunch() || !relaunch.ConfirmedAt.IsZero() {
-		t.Fatalf("the relaunched tester holds %+v, want the daemon's own delivery of the relaunch's sentence, untaken", relaunch)
-	}
-	if rows := outboxRows(t, rig.pool); rows != 1 {
-		t.Fatalf("the relaunch left %d outbox rows, want the one start of the phase's resume task its first ready queued", rows)
+	// takesTheResumeBehindTheSentence fails the test unless the relaunched tester's first accepted
+	// take is the resume task it holds, under that delivery's id, behind the relaunch's sentence.
+	takesTheResumeBehindTheSentence := func(t *testing.T, rig *readyWorkerRig, held supervise.Delivery) {
+		t.Helper()
+		took, accepted := takeOffered(context.Background(), t, rig.machine)
+		if !accepted || took.DeliveryID != held.ID || !strings.HasPrefix(took.Message, "Your previous process ended because the process died") ||
+			!strings.Contains(took.Message, "Each subagent that you started stopped with that process.") ||
+			!strings.HasSuffix(took.Message, "\n\n"+held.Task) {
+			t.Fatalf("the tester took %+v (accepted %v), want the resume task under %s behind the relaunch's sentence", took, accepted, held.ID)
+		}
 	}
 
-	// The resume task's row takes the place of the sentence's delivery.
-	rig.run()
-	held := rig.claim().Pending
-	resume := resumeTaskOf(t, rig.pool, rig.engine, rig.issue.Key)
-	if held == nil || held.Task != resume || held.Relaunch() || held.Origin != supervise.OriginResume {
-		t.Fatalf("after the resume task's row the tester holds %+v, want the resume task in the place of the sentence's delivery", held)
-	}
-	took, accepted := takeOffered(context.Background(), t, rig.machine)
-	if !accepted || took.DeliveryID != held.ID || !strings.HasPrefix(took.Message, "Your previous process ended because the process died") ||
-		!strings.Contains(took.Message, "Each subagent that you started stopped with that process.") ||
-		!strings.HasSuffix(took.Message, "\n\n"+resume) {
-		t.Fatalf("the tester took %+v (accepted %v), want the resume task under %s behind the relaunch's sentence", took, accepted, held.ID)
-	}
+	t.Run("the first ready gives the resume", func(t *testing.T) {
+		rig := newStartedTesterRig(t, "", true)
+		if rows := outboxRows(t, rig.pool); rows != 1 {
+			t.Fatalf("the first ready of a tester never written a task left %d outbox rows, want the one start of its phase's resume task", rows)
+		}
+		held := rig.holdsResume(theOneStartRow(t, rig.pool, rig.issue.Key).row.ID)
+		if !held.ConfirmedAt.IsZero() {
+			t.Fatalf("the tester's first ready left the resume task %s taken, want it untaken", held.ID)
+		}
+		rig.report("subagent")
+
+		rig.observe(runtime.Gone, false)
+		rig.boot(testerSession)
+
+		// The relaunch's ready finds the resume held, so no delivery of the sentence alone is queued.
+		relaunched := rig.claim()
+		if p := relaunched.Pending; p == nil || p.ID != held.ID || relaunched.TaskWritten != held.Number || !p.ConfirmedAt.IsZero() {
+			t.Fatalf("the relaunched tester holds %+v with task %d written, want the resume task %s it held as task %d, untaken, and no delivery of the sentence alone",
+				p, relaunched.TaskWritten, held.ID, held.Number)
+		}
+		if rows := outboxRows(t, rig.pool); rows != 1 {
+			t.Fatalf("the relaunch left %d outbox rows, want the one start of the phase's resume task its first ready queued", rows)
+		}
+
+		// The resume task's row finds the claim holding the phase's task, and leaves it as it is.
+		rig.run()
+		if c := rig.claim(); c.Pending == nil || c.Pending.ID != held.ID || !c.Pending.ConfirmedAt.IsZero() ||
+			c.TaskWritten != relaunched.TaskWritten {
+			t.Fatalf("after the resume task's row the tester holds %+v with task %d written, want the resume %s it held, untaken, and no task written past %d",
+				c.Pending, c.TaskWritten, held.ID, relaunched.TaskWritten)
+		}
+		if rows := outboxRows(t, rig.pool); rows != 0 {
+			t.Fatalf("the outbox's run left %d rows, want the resume task's row run and finished", rows)
+		}
+		takesTheResumeBehindTheSentence(t, rig, held)
+	})
+
+	t.Run("the ready leaves the resume to its row", func(t *testing.T) {
+		rig := newStartedTesterRig(t, "", false)
+		if held := rig.claim().Pending; held != nil || rig.claim().TaskWritten != 0 {
+			t.Fatalf("the tester started with no task holds %+v with task %d written, want nothing written", held, rig.claim().TaskWritten)
+		}
+		if rows := outboxRows(t, rig.pool); rows != 1 {
+			t.Fatalf("the first ready of a tester never written a task left %d outbox rows, want the one start of its phase's resume task", rows)
+		}
+		rig.report("subagent")
+
+		rig.observe(runtime.Gone, false)
+		rig.boot(testerSession)
+
+		relaunch := rig.claim().Pending
+		if relaunch == nil || !relaunch.Relaunch() || !relaunch.ConfirmedAt.IsZero() {
+			t.Fatalf("the relaunched tester holds %+v, want the daemon's own delivery of the relaunch's sentence, untaken", relaunch)
+		}
+		if rows := outboxRows(t, rig.pool); rows != 1 {
+			t.Fatalf("the relaunch left %d outbox rows, want the one start of the phase's resume task its first ready queued", rows)
+		}
+
+		// The resume task's row takes the place of the sentence's delivery.
+		rig.run()
+		held := rig.claim().Pending
+		resume := resumeTaskOf(t, rig.pool, rig.engine, rig.issue.Key)
+		if held == nil || held.Task != resume || held.Relaunch() || held.Origin != supervise.OriginResume {
+			t.Fatalf("after the resume task's row the tester holds %+v, want the resume task in the place of the sentence's delivery", held)
+		}
+		takesTheResumeBehindTheSentence(t, rig, *held)
+	})
 }
 
 // The operator's stop of a phase worker in the turn of its phase's task, its session reporting a

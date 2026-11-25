@@ -88,6 +88,7 @@ function reminderRig() {
     project: "legion",
     limits: DEFAULT_STALL_LIMITS,
     log: { debug: () => {}, warn: () => {} },
+    taskPending: () => false,
   });
   reminder.apply({ kind: "assignment" });
   return { reminder, timers };

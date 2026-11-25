@@ -57,9 +57,12 @@ type supervisor struct {
 	// mu, replaces the slice with a longer copy, and the stop's log lines read it without mu, which
 	// Create holds through a store write.
 	all atomic.Pointer[[]*supervise.Machine]
-	// issues is the lock of each issue a take that adopts the working copy holds from its in-turn
-	// check to its answer (lockIssue, supervise's Deps.LockIssue), counted by its holders and
-	// waiters so an issue no take is asking about holds no entry (keyedLocks).
+	// issues is the lock of each issue that every take of one of its claims holds from its
+	// in-turn check to its answer (lockIssue, supervise's Deps.LockIssue), counted by its holders
+	// and waiters so an issue no take is asking about holds no entry (keyedLocks). A take that
+	// adopts nothing holds it as well: it could otherwise be accepted while another role's
+	// adoption runs with that role's machine lock let go, and its turn start under that adoption,
+	// since the adoption's outcome asks only the adopting claim's own holds.
 	issues keyedLocks
 }
 
@@ -121,9 +124,42 @@ func (s *supervisor) claimInTurn(issue string, except claim.Token) (claim.Token,
 	return "", false
 }
 
-// lockIssue takes issue's take lock and answers what lets it go (supervise's Deps.LockIssue). A
-// take holds it from its in-turn check to its answer, adoption included, so two roles of one
-// issue cannot both find the other in no turn and both adopt the working copy they share. It is
+// HeldBehind names the takes of issue's other claims that wait for holder's turn to end, as each
+// held claim's role and its task's number (claim.HeldTake), while holder is in a turn as
+// claimInTurn counts one (supervise.Claim.InTurn), and nothing otherwise. A take waits there
+// when it was refused issue-in-turn and its claim still holds that task untaken, which its
+// machine publishes (supervise.ClaimView.HeldTask). Every claim in a turn holds such a take
+// (claimInTurn reads every claim of the issue), so each of them is named it: two roles in a
+// turn at once each read the take on their own task route (api's task) and each worker can come
+// to a safe point (dispatch://INFRA-4130). It reads what each machine published of its claim
+// (supervise.Machine.IssueTurn, which copies no claim) over the lock-free snapshot of the
+// machines, for the reasons claimInTurn does.
+func (s *supervisor) HeldBehind(issue string, holder claim.Token) []claim.HeldTake {
+	if issue == "" {
+		return nil
+	}
+	var held []claim.HeldTake
+	inTurn := false
+	for _, machine := range s.supervised() {
+		turn := machine.IssueTurn()
+		switch {
+		case turn.Issue != issue:
+		case turn.Token == holder:
+			inTurn = turn.InTurn
+		case turn.HeldTask != 0:
+			held = append(held, claim.HeldTake{Role: turn.Role, Task: turn.HeldTask})
+		}
+	}
+	if !inTurn {
+		return nil
+	}
+	return held
+}
+
+// lockIssue takes issue's take lock and answers what lets it go (supervise's Deps.LockIssue).
+// Every take of one of the issue's claims holds it from its in-turn check to its answer, adoption
+// included, so two roles of one issue cannot both find the other in no turn and both adopt the
+// working copy they share (issues says why a take that adopts nothing holds it too). It is
 // taken before the taking claim's own machine lock and never under any other lock of the
 // supervisor's, so it is the outermost lock a take holds.
 func (s *supervisor) lockIssue(issue string) func() {

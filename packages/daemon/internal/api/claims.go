@@ -42,6 +42,10 @@ type Supervisor interface {
 	// operator answer about one claim reads it here (operatorAnswer), as the listing of them all
 	// reads it with the claims. A claim the store no longer holds has the zero record.
 	Step(ctx context.Context, token claim.Token) (supervise.StepRecord, error)
+	// HeldBehind is the takes of issue's other claims held behind holder's turn: each refused
+	// issue-in-turn while holder is in a turn, named by its claim's role and its task's number,
+	// and nothing while holder is in none. The task route serves it to holder (task).
+	HeldBehind(issue string, holder claim.Token) []claim.HeldTake
 }
 
 // register is the agent's first call: its pane's boot token, and the session it became. The token

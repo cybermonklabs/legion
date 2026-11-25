@@ -145,11 +145,12 @@ test("registers, hands the registration to afterRegister, records the capability
   expect(lines).toEqual([`read claims/task after role ${claimToken} was reregistered`]);
 });
 
-// The ready decision itself can write the claim's value (the
-// relaunch record's task), after the registration answered with none, and the listener relays a
-// value only once the role claim has changed the role's holder, after it handed the kept lane
-// over. So the boot reads the value once the ready has answered and hands it to the host before
-// it claims the role: the host's take holds it, and its mark, ahead of every card the lane brings.
+// The ready decision itself can write the claim's value (the relaunch record's task, or the
+// phase's resume task, which the daemon queues in that decision: supervise.Deps.ReadyResume),
+// after the registration answered with none, and the listener relays a value only once the role
+// claim has changed the role's holder, after it handed the kept lane over. So the boot reads the
+// value once the ready has answered and hands it to the host before it claims the role: the
+// host's take holds it, and its mark, ahead of every card the lane brings.
 test("hands the host the value the ready decision wrote, read once the ready answered, before the role is claimed", async () => {
   const written = { task: { number: 5, epoch: "2026-11-13T16:21:44.123456789Z", revision: 13 } };
   const { host, steps, values, lines } = claimHost({

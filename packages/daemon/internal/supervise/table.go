@@ -2567,17 +2567,26 @@ func ready(m *Machine, ctx context.Context, _ Event) error {
 // claim's not being ready refused. reready may reach it while the claim is idle or working, so it
 // must not rewrite the state to ready.
 //
-// Between the ready's durable report and the offer, a claim that holds no delivery while its
-// record of what the last let-go ended is untold and shows running work is given the daemon's own
-// delivery of that record (queueRelaunch), whose queue writes its value, so the new process takes
-// the sentence at once. The order is the point: the report is the workflow's ready, read in its
-// own transaction while this decision runs (Machine.OnDurableState, the daemon's applyTerminal),
-// and it must find the claim holding nothing, or a phase worker the workflow still owes a resume
-// task would be queued none (workflow's readyWorkerTask). A claim that holds a delivery takes it
+// Between the ready's durable report and the offer, two deliveries may be queued, in this order,
+// and the queue of each writes its value. First the resume task the report queued for a phase
+// worker (queueReadyResume, Deps.ReadyResume), so the task is pending and its value written
+// before claims/ready answers (dispatch://INFRA-4130 R5). Then, for a claim that still holds no
+// delivery while its record of what the last let-go ended is untold and shows running work, the
+// daemon's own delivery of that record (queueRelaunch), so the new process takes the sentence at
+// once. The order is the point. The report is the workflow's ready, read in its own transaction
+// while this decision runs (Machine.OnDurableState, the daemon's applyTerminal), and it must
+// find the claim holding nothing, or a phase worker the workflow still owes a resume task would
+// be queued none (workflow's readyWorkerTask); the resume is read from the row that report
+// wrote, so it comes after it. A resume queued before queueRelaunch is a delivery the claim
+// holds, so it carries the record's sentence in front of itself (Delivery.message) and no
+// delivery of that record alone is queued ahead of it. A claim that holds a delivery takes it
 // with the sentence in front, and one whose held task the offer drops instead is given the
 // daemon's own delivery there (takeable, queueRelaunch).
 func finishReady(m *Machine, ctx context.Context) error {
 	if err := m.durableWrite(ctx, StateReady, m.persist); err != nil {
+		return err
+	}
+	if err := m.queueReadyResume(ctx); err != nil {
 		return err
 	}
 	if err := m.queueRelaunch(ctx); err != nil {

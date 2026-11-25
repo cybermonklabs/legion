@@ -244,6 +244,13 @@ func queuedRowCovers(run record.RoleRun, root record.Issue, current phase.Phase)
 // slot repair's does (admit's resumeSlottedWorkers). The rule is "Admission and the `legion`
 // label" in docs/site/src/content/docs/legion/concepts.md.
 //
+// The resume row is delivered inside the ready's own decision, once this fact has committed it
+// (supervise.Deps.ReadyResume, the daemon's outbox.readyResume): the claim holds the task, its
+// value written, before claims/ready answers, where the row's own run came after the worker's
+// read that follows that answer (dispatch://INFRA-4130 R5). The row's own run then queues
+// nothing more, since the claim holds that task or records the row
+// (supervise.Claim.DeliveredRows).
+//
 // A level claim that finished the last task written to it, in the session it runs now, is sent
 // nothing (finishedInItsSession, dispatch://INFRA-2811 R4). Such a worker is one that waits: it
 // did its work and ended its turn, and its process was relaunched under it — a death, a stale

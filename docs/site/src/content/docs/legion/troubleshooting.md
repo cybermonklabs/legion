@@ -1275,6 +1275,11 @@ Notices, an architect's catch-up, a pod update round's ask, hooks, merge-forward
 **A phase task waits for the turns of the other roles.**
 The daemon refuses a role's take of a phase task while another claim of the same issue is in a turn, or holds an accepted take whose turn has not ended (the hold `issue-in-turn`).
 It writes the task's value again when that turn ends, the role takes it then, and the adoption runs before that take is answered.
+The worker of each claim whose turn holds the take is told, within a minute and two tool boundaries of the refusal.
+While its host is in a turn, its plugin reads `POST /legion/v1/claims/task` at a tool result, at most once a minute, and the answer's `holds` names each held take by its role and its task number.
+The next tool result carries one note for each held take, which asks the agent to stop at a safe point and end its turn.
+A plugin on a daemon API contract below 281 is served no `holds`, and its worker is told nothing.
+A turn that is in one long tool call reads no note until that call returns.
 A second hold, named `in-turn` as a take refused in a turn of the claim's own is, also refuses the take of a phase task while the issue's record holds a merge forward that is owed to a role and has not landed, whatever role takes it, the asked role's own included.
 A merge forward is a message to the asked role and no take, so between two runs of that merge no claim of the issue is in a turn, and an adoption then would leave an empty commit on the merge in progress.
 A take of a task that adopts nothing is not held by it.
@@ -1306,7 +1311,7 @@ A search that finds no line for a time before the first line does not show that 
   The release that carries cybermonklabs/legion#3971 is the first to write this line.
 
 - `supervise: a claim of this issue is in a turn; the phase task waits rather than adopt the working copy they share` is a phase task whose take waits.
-  `inTurn` names the claim whose turn holds it.
+  `inTurn` names a claim whose turn holds it, and that claim's worker is told of the held take at its next tool results.
 
 - `supervise: the shim refused to adopt the working copy; the take is refused` is an adoption that failed, with the shim's own words.
   The task stays pending under its number, and the refusal counts against the prompt budget of the claim (a charge whose `wait` is `adoption`).

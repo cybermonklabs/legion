@@ -283,10 +283,13 @@ type adoption struct {
 // refused. Every take returns an answer with an outcome, an error, or both where the decision
 // failed after its answer (answerTake).
 //
-// The issue's roles share one working copy, so a take that adopts holds the issue's lock from the
-// in-turn check to its answer (Deps.LockIssue): two roles cannot both pass the check and both
-// adopt. The lock is taken before the machine's own, and never the other way round, so no machine
-// waits on an issue while holding its claim.
+// The issue's roles share one working copy, so every take of a claim with an issue holds the
+// issue's lock from the in-turn check to its answer (Deps.LockIssue): two roles cannot both pass
+// the check and both adopt. A take that adopts nothing holds it too. Without it, such a take could
+// be accepted while another role's adoption runs with that machine's lock let go, and its turn
+// could start under that adoption, because the adoption's outcome (adopted) asks only the
+// adopting claim's own holds (claimHold). The lock is taken before the machine's own, and never
+// the other way round, so no machine waits on an issue while holding its claim.
 //
 // A second take of this claim that arrives while one is being answered waits for that answer.
 // One of the same number, epoch and revision from the same process — a worker sending again a
@@ -800,6 +803,14 @@ func (m *Machine) accept(ctx context.Context, request RequestTake) error {
 // would leave an empty commit on the merge in progress. A take that adopts nothing never reads it.
 // A read of it that fails decides nothing, and the take is undecided (undecided).
 //
+// The issue-in-turn answer is recorded, in memory, as the number of the task it holds
+// (Machine.heldTask), and every other answer clears it: the machine publishes the number
+// (ClaimView.HeldTask), and the daemon names it to the claim whose turn holds it
+// (dispatch://INFRA-4130). An error is no answer, so it leaves the record as the last answer left
+// it: a read of the issue's record that fails at another claim's turn end, while the turn that
+// holds the take still runs, would otherwise name the take to nobody until the next answer, though
+// that turn's end still takes it.
+//
 // This daemon queues no ask of an update round as a task: it publishes the ask to the role's
 // Envoy topic (record.UpdateAsk). A task under an `update:` delivery id (updateTaskPrefix) is one
 // an older daemon queued, and a claim restored from the store can hold one. Such a task is
@@ -822,6 +833,12 @@ func (m *Machine) accept(ctx context.Context, request RequestTake) error {
 // dropped at a take or a hold's end would otherwise leave the sentence waiting for whatever task
 // comes next.
 func (m *Machine) takeable(ctx context.Context, owed bool) (hold string, dropped bool, err error) {
+	var held uint64
+	defer func() {
+		if err == nil {
+			m.heldTask = held
+		}
+	}()
 	if hold := m.claimHold(); hold != "" {
 		return hold, false, nil
 	}
@@ -887,6 +904,7 @@ func (m *Machine) takeable(ctx context.Context, owed bool) (hold string, dropped
 	if other, inTurn := m.adoptionWaits(); inTurn {
 		m.log.Info("supervise: a claim of this issue is in a turn; the phase task waits rather than adopt the working copy they share",
 			"task", p.Number, "issue", m.claim.Issue, "inTurn", other)
+		held = p.Number
 		return HoldIssueInTurn, false, nil
 	}
 	if m.adopts(*p) {

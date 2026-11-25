@@ -85,7 +85,7 @@ func refreshCountState(t *testing.T, cfg config.Config, st *store.Store, view *s
 func TestTheStateCountsTheClaimsTheStalePluginLaneHasLeftToRefresh(t *testing.T) {
 	t.Parallel()
 	cfg := testConfig(t)
-	stale := api.DaemonAPIVersion - 1
+	stale := supervise.TaskTakeContract - 1
 
 	type seeded struct {
 		issue   string

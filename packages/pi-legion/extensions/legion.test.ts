@@ -62,6 +62,8 @@ import {
   type StallProcessTree,
   type StallWatchdogProcesses,
 } from "@legion/pi-shared/stall-watchdog";
+import { heldTakeNote, taskWaitingNote } from "@legion/pi-shared/task-notes";
+import type { TaskValue } from "@legion/pi-shared/task-take";
 import { hostAgentRegistryMock, testAgentRoster } from "@legion/pi-shared/test/host-registry";
 import { deliveryFor } from "@legion/pi-shared/test/omp-harness";
 import { taskStandIn } from "@legion/pi-shared/test/task-stand-in";
@@ -2307,15 +2309,8 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       ]);
     });
 
-    // The plan's decision 15, at the pane: the registration
-    // answers no value and the ready decision writes one, as it writes the relaunch record's task.
-    // The session's agent subject is open from its start, so a card sent to the session itself
-    // can reach it while the ready, or the read of the claim's value after it, is on its way. The
-    // take holds the task-turn mark from the registration until that read has answered, so
-    // pi-envoy's card wake hands such a card over with no turn, and the task is the first turn.
-    test("a card that reaches the pane while its ready and the read after it are on their way starts no turn: the take holds the task-turn mark from the registration until that read answers, and the task the ready decision wrote is the first turn", async () => {
-      const text = "Implement REPO-43 on its branch.";
-      const tasks = taskStandIn();
+    /** A card's hand-over by pi-envoy's card wake to an idle host, recorded where it is asked. */
+    const cardHandOvers = () => {
       // pi-envoy's own card wake, reading the marks the pane keeps as the Envoy entry wires it,
       // and an idle host outside any startup phase: what decides a card's hand-over is the mark.
       const cardWake = new CardWake({
@@ -2331,6 +2326,19 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       const cardAt = (at: string) => {
         handOvers.push({ at, triggerTurn: cardWake.deliveryFor(false, idleHost).triggerTurn });
       };
+      return { handOvers, cardAt };
+    };
+
+    // The plan's decision 15, at the pane: the registration
+    // answers no value and the ready decision writes one, as it writes the relaunch record's task.
+    // The session's agent subject is open from its start, so a card sent to the session itself
+    // can reach it while the ready, or the read of the claim's value after it, is on its way. The
+    // take holds the task-turn mark from the registration until that read has answered, so
+    // pi-envoy's card wake hands such a card over with no turn, and the task is the first turn.
+    test("a card that reaches the pane while its ready and the read after it are on their way starts no turn: the take holds the task-turn mark from the registration until that read answers, and the task the ready decision wrote is the first turn", async () => {
+      const text = "Implement REPO-43 on its branch.";
+      const tasks = taskStandIn();
+      const { handOvers, cardAt } = cardHandOvers();
       const worker = await bootStalling({
         idle: () => true,
         routes: (url, body) => {
@@ -2356,6 +2364,60 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       expect(envoyPluginInterface().taskTurnPending).toEqual({ session: "ses_stall" });
       await hook(worker.handlers, "agent_start")({}, worker.context);
       expect(envoyPluginInterface().taskTurnPending).toBeUndefined();
+    });
+
+    // R5 of dispatch://INFRA-4130, at the pane: a card waits for the resume's turn, or for its
+    // take's refusal or drop, and no longer. The ready decision writes the claim's value, as it
+    // writes the phase's resume task, and the daemon refuses the take of it for a hold: another
+    // role's turn holds the issue. A card that reaches the pane at the ready, at the read after it
+    // or at the role claim starts no turn, as above. Once the refusal has answered, the take holds
+    // no task, so the task-turn mark is down, a card starts its own turn, and no text is sent.
+    test("a take of the task the ready decision wrote that the daemon refuses for a hold frees a card waiting at the ready at once: the card starts its turn, and the task's text starts none", async () => {
+      const text = "Implement REPO-43 on its branch.";
+      const tasks = taskStandIn();
+      const { handOvers, cardAt } = cardHandOvers();
+      let written: TaskValue | undefined;
+      const takes: unknown[] = [];
+      const worker = await bootStalling({
+        idle: () => true,
+        routes: (url, body) => {
+          if (url.pathname === "/legion/v1/claims/ready") {
+            cardAt("ready");
+            written = tasks.give(text);
+            return undefined;
+          }
+          if (url.pathname === "/legion/v1/claims/task") cardAt("the read after the ready");
+          if (url.pathname === "/v1/roles/set") cardAt("role claim");
+          // Another role's turn holds the issue.
+          if (url.pathname === "/legion/v1/claims/take") {
+            takes.push(body);
+            return Response.json({ outcome: "refused", hold: "issue-in-turn" });
+          }
+          return tasks.answer(url.pathname, body as Record<string, unknown>);
+        },
+      });
+
+      await turns(() => takes.length > 0);
+      // The refusal's answer is read over the stub's fetch.
+      await turns(() => false);
+      expect(takes).toEqual([
+        {
+          claimToken: worker.claimToken,
+          sessionId: "ses_stall",
+          secret: worker.registration.secret,
+          generation: 2,
+          ...written,
+        },
+      ]);
+      expect(envoyPluginInterface().taskTurnPending).toBeUndefined();
+      cardAt("the take's refusal");
+      expect(handOvers).toEqual([
+        { at: "ready", triggerTurn: false },
+        { at: "the read after the ready", triggerTurn: false },
+        { at: "role claim", triggerTurn: false },
+        { at: "the take's refusal", triggerTurn: true },
+      ]);
+      expect(worker.sentUserMessages).toEqual([]);
     });
 
     // The same window when the read answers that the claim is owed nothing: the hold ends with the
@@ -2674,6 +2736,239 @@ describe.skipIf(skip)("Legion OMP extension", () => {
         [1, value.number],
         [2, value.number],
       ]);
+    });
+
+    // dispatch://INFRA-4130: what a run's tool results tell the model of a task that waits for the
+    // run to end. R1's note names the claim's own task; R2's names another claim's take that the
+    // daemon holds behind this claim's turn, which the session learns of from the `holds` of its
+    // own `claims/task` read. Neither note carries a task or starts a turn: each is the
+    // `additionalContext` of the tool result, which the host hands the model at its next step.
+    describe("the notes a run's tool results carry", () => {
+      afterEach(() => {
+        setSystemTime();
+      });
+
+      /** A tool result of the session's own agent, as the host hands it to `tool_result`. */
+      const toolResult = (toolCallId: string) => ({
+        toolName: "bash",
+        toolCallId,
+        input: { command: "echo ran" },
+        content: [{ type: "text", text: "ran" }],
+        details: {},
+        isError: false,
+      });
+      /** The listener's relay of `value`, the claim's task value, to the session holding it. */
+      const relay = (
+        sessionId: string,
+        claimToken: string,
+        value: { readonly number: number; readonly epoch: string; readonly revision: number }
+      ): void =>
+        envoyPluginInterface().taskValues.taker?.({
+          kind: "value",
+          session: sessionId,
+          value: {
+            claim: claimToken,
+            epoch: value.epoch,
+            revision: value.revision,
+            op: "put",
+            task: value.number,
+          },
+        });
+      const ended = { messages: [{ role: "assistant", stopReason: "stop" }] };
+
+      // Rows S2, S7 and S14: the value is written while the worker's run goes on. The next tool
+      // result notes it once; nothing is taken until the run ends; the run's settle gives no
+      // continuation, so the take's text, sent at `agent_end`, is the next turn and no reminder is.
+      test("a task value held during a run adds one note to the next tool result, takes nothing until agent_end, and the take goes ahead of the reminder's continuation", async () => {
+        const text = "Implement REPO-43's review fixes.";
+        const tasks = taskStandIn();
+        let running = false;
+        const worker = await bootStalling({
+          idle: () => !running,
+          routes: (url, body) => tasks.answer(url.pathname, body as Record<string, unknown>),
+        });
+        // A run of the worker's own, its phase open.
+        running = true;
+        await hook(worker.handlers, "agent_start")({}, worker.context);
+        await worker.arrives(assignment);
+
+        // The daemon writes the claim's next task mid-run, and the listener relays it.
+        const value = tasks.give(text);
+        relay("ses_stall", worker.claimToken, value);
+        await turns(() => false);
+
+        const result = hook(worker.handlers, "tool_result");
+        expect(await result(toolResult("toolu_1"), worker.context)).toEqual({
+          additionalContext: taskWaitingNote(value.number),
+        });
+        // Once for the number: the run's next tool result carries no note.
+        expect(await result(toolResult("toolu_2"), worker.context)).toBeUndefined();
+        // The note rides the tool result alone: nothing is sent into the session, and nothing is
+        // taken while the run goes on.
+        expect(worker.sentMessages).toEqual([]);
+        expect(tasks.takes()).toEqual([]);
+
+        // The run settles with its phase open: the take is pending, so no continuation.
+        expect(await worker.settles("I pushed the change and CI is green.")).toBeUndefined();
+        expect(steered(worker)).toEqual([]);
+        expect(tasks.takes()).toEqual([]);
+
+        // The run's end asks the take, and the accepted text starts the next turn.
+        running = false;
+        await worker.ends(ended);
+        await turns(() => worker.sentUserMessages.length > 0);
+        expect(tasks.takes().map((take) => take.number)).toEqual([value.number]);
+        expect(worker.sentUserMessages).toEqual([text]);
+        expect(worker.sentUserMessageOptions).toEqual([undefined]);
+        expect(steered(worker)).toEqual([]);
+      });
+
+      // Row S5: a `task` subagent's tool result is not the worker's, and an architect is no phase
+      // worker, so neither carries R1's note, though each run's claim is owed a value.
+      test("a subagent's tool result and an architect's tool result carry no task note", async () => {
+        const tasks = taskStandIn();
+        const worker = await bootStalling({
+          idle: () => false,
+          routes: (url, body) => tasks.answer(url.pathname, body as Record<string, unknown>),
+        });
+        await hook(worker.handlers, "agent_start")({}, worker.context);
+        const value = tasks.give("Implement REPO-43's review fixes.");
+        relay("ses_stall", worker.claimToken, value);
+        await turns(() => false);
+        const subagent: SessionContext = { ...worker.context, agent: { kind: "sub" } };
+
+        const workerResult = hook(worker.handlers, "tool_result");
+        expect(await workerResult(toolResult("toolu_sub"), subagent)).toBeUndefined();
+        // The worker's own next tool result is where the note goes.
+        expect(await workerResult(toolResult("toolu_main"), worker.context)).toEqual({
+          additionalContext: taskWaitingNote(value.number),
+        });
+
+        const architectTasks = taskStandIn();
+        const architect = await bootPane({
+          role: "architect",
+          issue: "REPO-42",
+          sessionId: "ses_note_architect",
+          idle: () => false,
+          extraRoutes: (url, body) =>
+            architectTasks.answer(url.pathname, body as Record<string, unknown>),
+        });
+        await hook(architect.handlers, "agent_start")({}, architect.context);
+        const owed = architectTasks.give("Decide REPO-42's next child.");
+        relay("ses_note_architect", architect.claimToken, owed);
+        await turns(() => false);
+        expect(
+          await hook(architect.handlers, "tool_result")(
+            toolResult("toolu_architect"),
+            architect.context
+          )
+        ).toBeUndefined();
+        // The architect's claim held the value all the same: its take is asked at the run's end.
+        await hook(architect.handlers, "agent_end")(ended, architect.context);
+        await turns(() => architectTasks.takes().length > 0);
+        expect(architectTasks.takes().map((take) => take.number)).toEqual([owed.number]);
+      });
+
+      // Rows H1 to H5, for a phase worker and for a root architect as the holder: every claim in
+      // a turn holds its issue's phase takes. The clock is the machine's, moved by the case.
+      for (const holder of ["implementer", "architect"] as const) {
+        test(`a hold named in the claim task answer adds one note to the next tool result, with the ${holder} as the holder`, async () => {
+          const sessionId = `ses_holds_${holder}`;
+          type Held = { readonly role: string; readonly task: number };
+          // Every `claims/task` read after the boot, each answered when the case says so, with the
+          // takes the daemon names then.
+          const reads: { readonly body: unknown; readonly answer: PromiseWithResolvers<Held[]> }[] =
+            [];
+          let booted = false;
+          const pane = await bootPane({
+            role: holder,
+            issue: holder === "architect" ? "REPO-42" : "REPO-43",
+            sessionId,
+            extraRoutes: (url, body) => {
+              if (!booted || url.pathname !== "/legion/v1/claims/task") return undefined;
+              const answer = Promise.withResolvers<Held[]>();
+              reads.push({ body, answer });
+              return answer.promise.then((holds) =>
+                Response.json({ task: null, finished: 0, ...(holds.length > 0 ? { holds } : {}) })
+              );
+            },
+          });
+          booted = true;
+          const start = Date.now();
+          const at = (ms: number): void => {
+            setSystemTime(new Date(start + ms));
+          };
+          const result = (toolCallId: string) =>
+            hook(pane.handlers, "tool_result")(toolResult(toolCallId), pane.context);
+          const SECOND = 1_000;
+          const MINUTE = 60 * SECOND;
+
+          // H4: the host is idle. Time passes, and a tool result outside any run reads nothing.
+          at(5 * MINUTE);
+          expect(await result("toolu_idle")).toBeUndefined();
+          await turns(() => false);
+          expect(reads).toEqual([]);
+
+          // H1: the run's first tool result starts one read, with the claim's caller, and is
+          // answered while that read is still unanswered.
+          await hook(pane.handlers, "agent_start")({}, pane.context);
+          expect(await result("toolu_1")).toBeUndefined();
+          expect(reads.map((read) => read.body)).toEqual([
+            {
+              claimToken: pane.claimToken,
+              sessionId,
+              secret: pane.registration.secret,
+              generation: pane.registration.generation,
+            },
+          ]);
+          reads[0]?.answer.resolve([{ role: "tester", task: 7 }]);
+          await turns(() => false);
+
+          // H1b and H2: ten seconds on, the next tool result names the held take, and a tool
+          // result within a minute of the last read starts none.
+          at(5 * MINUTE + 10 * SECOND);
+          expect(await result("toolu_2")).toEqual({
+            additionalContext: heldTakeNote("tester", 7),
+          });
+          at(5 * MINUTE + 50 * SECOND);
+          // H3: a take noted once is noted no more.
+          expect(await result("toolu_3")).toBeUndefined();
+          await turns(() => false);
+          expect(reads).toHaveLength(1);
+
+          // A minute after the last read started, the next tool result reads again. Its answer
+          // names the tester's take again and two new ones, each of which gets its own note.
+          at(6 * MINUTE);
+          expect(await result("toolu_4")).toBeUndefined();
+          expect(reads).toHaveLength(2);
+          reads[1]?.answer.resolve([
+            { role: "tester", task: 7 },
+            { role: "reviewer", task: 9 },
+            { role: "planner", task: 11 },
+          ]);
+          await turns(() => false);
+          at(6 * MINUTE + SECOND);
+          expect(await result("toolu_5")).toEqual({
+            additionalContext: `${heldTakeNote("reviewer", 9)}\n\n${heldTakeNote("planner", 11)}`,
+          });
+
+          // H5: a read still unanswered when the run ends is dropped when it answers.
+          at(7 * MINUTE);
+          expect(await result("toolu_6")).toBeUndefined();
+          expect(reads).toHaveLength(3);
+          await hook(pane.handlers, "agent_end")(ended, pane.context);
+          reads[2]?.answer.resolve([{ role: "merger", task: 12 }]);
+          await turns(() => false);
+          // H4: an answer that reaches an idle host notes nothing and starts no turn.
+          expect(pane.sentMessages).toEqual([]);
+          expect(pane.sentUserMessages).toEqual([]);
+          at(7 * MINUTE + 10 * SECOND);
+          await hook(pane.handlers, "agent_start")({}, pane.context);
+          expect(await result("toolu_7")).toBeUndefined();
+          await turns(() => false);
+          expect(reads).toHaveLength(3);
+        });
+      }
     });
 
     // dispatch://INFRA-264: every turn of that implementer was refused by its provider, and every

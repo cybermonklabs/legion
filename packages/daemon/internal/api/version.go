@@ -3867,4 +3867,70 @@ package api
 // this line, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
-const DaemonAPIVersion = 274
+//
+// 281: INFRA-4130 -- holds on POST /legion/v1/claims/task, the takes of other claims of the issue
+// held behind the caller's turn. The answer of `claims/task` takes an optional `holds`
+// (`claim.TaskResponse.Holds`, contracts' `LegionTaskResponse`), `[{role, task}]`: each a take
+// of another claim of the caller's issue that was refused `issue-in-turn` while the caller is
+// in a turn (its agent working, or an accepted take whose turn has not started), named by that
+// claim's role and its task's number, so the worker of that turn can come to a safe point before
+// the turn ends and the held take is accepted. The key is absent where none is held, and the
+// registration's answer never carries it, since a registering process is in no turn. This daemon
+// serves it down through the shaping 193 brought: a caller whose header states a contract below
+// 281 is answered without it (shapeAnswer's AnswerTask row, taskHoldsContract). The record of a
+// held take is the daemon's memory alone (supervise's ClaimView.HeldTask), so it adds no store
+// migration, and no shape of `GET /legion/v1/state` moves, so no caller is served a narrower one.
+// `supervise.TaskTakeContract` stays 274.
+// (This entry took 179 against the branch's base, which declared 174. It took 206 at the forward
+// merge of 2026-11-21 that brought cybermonklabs/legion#3993's branch in at
+// d61d7da5e458078e99d93b6890ebd87bb7e1d62f, which declared 203: a reading of
+// `const DaemonAPIVersion` at refs/pull/<n>/head for every open pull request from
+// 2026-11-21T02:54:37Z to 02:58:57Z found 203 (#2230, #3993, #4065, #4175, #4553, #4592 and
+// #4661), 204 (#3831 and #4030) and 205 (#4573) declared by open pull requests, so 206 was the
+// lowest number above 203 that none declared. It took 209 at the forward merge of 2026-11-21
+// that brought #3993's branch in at 7ade1c0c32a4798795dc5ba22e30e5a6009a6e07, which declares 207,
+// the entry right above: a reading of `const DaemonAPIVersion` at refs/pull/<n>/head for every
+// one of the 357 open pull requests from 2026-11-21T05:46:01Z to 05:57:04Z found 207 (#3993,
+// #4030, #4392, #4432, #4590 and #4592) and 208 (#4611) declared by open pull requests, so 209
+// was the lowest number above 207 that none declared. It took 216 at the forward merge of
+// 2026-11-21 that brought #3993's branch in at a7d7d94ec9a48826e2c5248f5bb23fdd6f535fc3, which
+// declares 207: a reading of `const DaemonAPIVersion` at the head of every one of the 411 open
+// pull requests from 2026-11-21T19:52:35Z to 20:13:23Z found 208 (#2230), 209 (#4049 and #4580),
+// 210 (#4661), 211 (#4611), 212 (#4771), 213 (#4030 and #4553), 214 (#4592 and #4596) and 215
+// (#4065) declared by open pull requests, so 216 was the lowest number above 207 that none
+// declared. It took 212 at the forward merge of 2026-11-21 that brought #3993's branch in at
+// fe79c4d9dd2b0958b976abeae350ae3ca8e95931, which declares 207: a reading of
+// `const DaemonAPIVersion` at the head of every one of the 421 open pull requests from
+// 2026-11-21T22:15:53Z to 22:21:36Z found 208 (#4175), 209 (#4049 and #4580), 210 (#4661), 211
+// (#4611 and #4902), 213 (#4030 and #4553), 214 (#4592 and #4596), 215 (#4065), 216 (#3831,
+// #4173 and #4259) and 217 (#2230, #4273 and #4771) declared by open pull requests, so 212 was the
+// lowest number above 207 that none declared. It took 231 at the forward merge of 2026-11-22
+// that brought #3993's branch in at b48764f67a8d53a2a72f4927552d56da264e02c9, which declares 221:
+// a reading of `const DaemonAPIVersion` at the head of every one of the 514 open pull requests
+// from 2026-11-22T22:07:02Z to 22:14:20Z found 222 (#4661), 223 (#4805), 224 (#4960), 225
+// (#3712), 226 (#4175 and #5017), 227 (#4065), 228 (#4590), 229 (#2230) and 230 (#4580)
+// declared by open pull requests and none above 230, so 231 was the lowest number above 221
+// that none declared. It keeps 231 at the forward merge of 2026-11-23 that brought #3993's branch
+// in at 4ce1b85d80023796346da387cf0af77b7cafbab2, which declares 223: a reading of
+// `const DaemonAPIVersion` at the head of every one of the 498 open pull requests from
+// 2026-11-23T20:34:51Z to 20:37:27Z found 224 to 230 and 232 to 237 declared by open pull
+// requests and 231 by this change's alone, so 231 is still the lowest number above 223 that no
+// other declares. It keeps 231 at the forward merge of 2026-11-24 that brought #3993's branch in
+// at f4c87322fcdfa436cf84ab328cf47ce85382403f, which declares 223: a reading of
+// `const DaemonAPIVersion` at the head of every one of the 510 open pull requests from
+// 2026-11-24T00:10:26Z to 00:13:28Z found 224 to 230 and 232 to 240 declared by open pull
+// requests, with none at 233, and 231 by this change's alone. It took 252 at the forward merge of
+// 2026-11-24 that brought #3993's branch in at e63fe1f57842a88c48f18bee9054ef6b6a97d8a0, which
+// declares 240: INFRA-3118's architect gave it 252, since 246 to 250 are that tree's and 251 is
+// #5307's, and a reading of `const DaemonAPIVersion` at the head of every one of the 479 open pull
+// requests from 2026-11-24T15:04:07Z to 15:05:40Z found 241 to 247, 250, 251 and 254 declared by
+// open pull requests and none at 252. It takes 281 at the forward merge of 2026-11-25 that brought
+// #3993's branch in at 88ed2ae74cdf62621190715343d1c6b755d946fa, which declares 274, while main
+// declares 256: INFRA-3118's architect allocates the numbers until INFRA-1569's #5399 merges and
+// gave it 281, and a reading of `const DaemonAPIVersion` at the head of every one of the 487 open
+// pull requests from 2026-11-25T03:03:14Z to 03:04:38Z found 275 to 277, 280 and 283 declared above
+// 274 and none at 281. Read the base's own number and every open pull request again at the next
+// merge rather than from this line, as
+// docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
+// says.)
+const DaemonAPIVersion = 281
