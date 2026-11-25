@@ -719,7 +719,7 @@ func (b *Broker) retireReplaced(old *machineCredential) {
 // others can read, is an error naming it.
 func (b *Broker) Start(ctx context.Context) error {
 	if b.SignIns != nil {
-		if b.SignInBoxesFile != "" {
+		if false && b.SignInBoxesFile != "" {
 			if err := b.signInHolds.load(b.SignInBoxesFile); err != nil {
 				b.logger().Warn("the helper could not read the boxes it enrolled under a person's sign-in; a box enrolled before this start is not kept renewed under it", "error", err)
 			}
