@@ -1572,22 +1572,29 @@ func (RoleHoldersPublish) OutboxKind() OutboxKind { return OutboxKindRoleHolders
 // left out, so for a text field the pointer only says what the write knows; for a time and for
 // ReturnedTo it is what tells "not known" apart from a value: a zero time would be a moment
 // Dispatch keeps for good, and ReturnedTo 0 is a return to the retro, whose place is 0.
+//
+// SetModel and Answers are written by the end of a step alone. SetModel is the model the step's
+// role was set to. Answers is each model that answered the step's agent, with its calls. A nil
+// Answers says the end does not know them, and a pointer to an empty list is a step with no call.
+// A pointer to a nil list is refused where it is queued (validateOutboxPayload).
 type StepRecord struct {
-	ID         string     `json:"id"`
-	Task       string     `json:"task"`
-	Step       int        `json:"step"`
-	Kind       string     `json:"kind"`
-	Role       string     `json:"role"`
-	Type       string     `json:"type"`
-	Agent      string     `json:"agent"`
-	Generation uint64     `json:"generation"`
-	Session    *string    `json:"session,omitempty"`
-	Model      *string    `json:"model,omitempty"`
-	StartedAt  *time.Time `json:"started_at,omitempty"`
-	EndedAt    *time.Time `json:"ended_at,omitempty"`
-	Result     *string    `json:"result,omitempty"`
-	ReturnedTo *int       `json:"returned_to,omitempty"`
-	Report     *string    `json:"report,omitempty"`
+	ID         string        `json:"id"`
+	Task       string        `json:"task"`
+	Step       int           `json:"step"`
+	Kind       string        `json:"kind"`
+	Role       string        `json:"role"`
+	Type       string        `json:"type"`
+	Agent      string        `json:"agent"`
+	Generation uint64        `json:"generation"`
+	Session    *string       `json:"session,omitempty"`
+	Model      *string       `json:"model,omitempty"`
+	SetModel   *string       `json:"set_model,omitempty"`
+	Answers    *[]ModelCalls `json:"answers,omitempty"`
+	StartedAt  *time.Time    `json:"started_at,omitempty"`
+	EndedAt    *time.Time    `json:"ended_at,omitempty"`
+	Result     *string       `json:"result,omitempty"`
+	ReturnedTo *int          `json:"returned_to,omitempty"`
+	Report     *string       `json:"report,omitempty"`
 	// PlanRating is the rating the retro gave the plan, with its reason: the one write that carries
 	// it is the retro's rating, which Dispatch takes on the record's rating route
 	// (dispatch.HTTPClient.PutStep), and every other write leaves it out. It is embedded, so its two
@@ -1605,6 +1612,14 @@ type StepRecord struct {
 type PlanRating struct {
 	Rating int    `json:"rating"`
 	Reason string `json:"rating_reason"`
+}
+
+// ModelCalls is one model that answered a step's agent and the calls it answered. It mirrors
+// dispatch.ModelCalls, which the publication converts it to (stepWriteOf), because the dispatch
+// package imports no record of the daemon's.
+type ModelCalls struct {
+	Model string `json:"model"`
+	Calls uint64 `json:"calls"`
 }
 
 func (StepRecord) OutboxKind() OutboxKind { return OutboxKindStepRecord }
@@ -2697,6 +2712,16 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 			return fmt.Errorf("a step record carries the rating of the plan with its reason or neither; it carries the rating %d with the reason %q",
 				value.PlanRating.Rating, value.PlanRating.Reason)
 		}
+		// Dispatch refuses a whole write whose set model or answers break its rules (400
+		// STEP_INPUT), which ends the row, and the step's end would never land. The workflow
+		// builds both within those rules, so a write outside them is a defect of the daemon. A set
+		// model of "" is left out, as Dispatch takes any text field sent as "".
+		if value.SetModel != nil && *value.SetModel != "" && !steprecord.AgentTextHolds(*value.SetModel) {
+			return fmt.Errorf("a step record's set model %q is not an agent's text Dispatch takes", *value.SetModel)
+		}
+		if err := answersHold(value.Answers); err != nil {
+			return err
+		}
 	// The rest of a plan Dispatch judges, as it judges a step record's; its id is held here for the
 	// same reason a step record's is.
 	case PlanRecord:
@@ -2705,6 +2730,37 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		}
 	default:
 		return fmt.Errorf("unknown outbox payload %T", payload)
+	}
+	return nil
+}
+
+// answersHold is nil where answers keep the rules Dispatch holds a step record's answers to, and
+// else the first rule they break. Nil answers state nothing and keep every rule. A pointer to a nil
+// list is refused: it is stored as null, which reads back as not known, so a step with no call
+// states an empty list. There are at most steprecord.AnswersMax entries. Each names a model in the
+// form of a step's agent text, with 1 call or more, and no model is named twice.
+func answersHold(answers *[]ModelCalls) error {
+	if answers == nil {
+		return nil
+	}
+	if *answers == nil {
+		return fmt.Errorf("a step record's answers point to no list: a step with no call states an empty list")
+	}
+	if len(*answers) > steprecord.AnswersMax {
+		return fmt.Errorf("a step record's answers hold %d entries, more than the %d a step record holds", len(*answers), steprecord.AnswersMax)
+	}
+	named := make(map[string]bool, len(*answers))
+	for i, answer := range *answers {
+		if !steprecord.AgentTextHolds(answer.Model) {
+			return fmt.Errorf("a step record's answers entry %d names %q, which is not an agent's text Dispatch takes", i+1, answer.Model)
+		}
+		if answer.Calls == 0 {
+			return fmt.Errorf("a step record's answers entry %d (%s) has 0 calls: a model that answered has 1 or more", i+1, answer.Model)
+		}
+		if named[answer.Model] {
+			return fmt.Errorf("a step record's answers name %s twice: each model is listed once with all its calls", answer.Model)
+		}
+		named[answer.Model] = true
 	}
 	return nil
 }

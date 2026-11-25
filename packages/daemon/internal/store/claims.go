@@ -359,6 +359,14 @@ func (s *Store) putClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) erro
 // earlier release retired carries the column's default, 0, which is below every number the
 // sequence hands out, so no owed row of it is ever ended and it behaves as it did before the
 // column existed (20261109191929_outbox_write_mark).
+//
+// The write that records a claim's process records its launch too, in the same statement: the
+// leading insert adds the row of claim_launches at the claim's generation where the write carries
+// a locator. A launch is the generation a locator is first written under (supervise's launchNow),
+// so a later write of the same launch finds the row and adds none. A write with no locator adds
+// none either, and nor does one at generation 0, which no launch has: launchNow raises the
+// generation before it starts a process. The rows are what a step's counts read of its agent's
+// launches (record.Store.AgentLaunches).
 func upsertClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) error {
 	if c.Generation > math.MaxInt64 {
 		return fmt.Errorf("put claim %s: generation %d does not fit a bigint", c.Token, c.Generation)
@@ -420,7 +428,9 @@ func upsertClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) error {
 	if delivered == nil {
 		delivered = []int64{}
 	}
-	_, err := tx.Exec(ctx, `insert into claims (token, project, tree, issue, role, generation, tree_epoch,
+	_, err := tx.Exec(ctx, `with launched as (insert into claim_launches (claim, generation)
+		select $1::text, $6::bigint where $10::jsonb is not null and $6::bigint > 0 on conflict do nothing)
+		insert into claims (token, project, tree, issue, role, generation, tree_epoch,
 		session, session_file, locator, state, failure, launch_failures, deaths, prompt_failures, prompt_retires,
 		boot_token_hash, capability_hash, uncertain_streak, last_start_row,
 		serving_generation, given_entry, served_entry, agent_secrets_enrollment, agent_secrets_enrollment_incarnation, suspended_by,

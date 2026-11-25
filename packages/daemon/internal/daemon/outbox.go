@@ -1558,12 +1558,21 @@ func (r *outbox) publishStepRating(ctx context.Context, row record.OutboxRow, pa
 }
 
 // stepWriteOf is the step write of payload's fields, the rating aside: the identity of the run, and
-// each field of its start or its end that payload carries.
+// each field of its start or its end that payload carries. Answers stay nil where payload's are,
+// and an empty list stays an empty list, which Dispatch keeps as a step with no call.
 func stepWriteOf(payload record.StepRecord) dispatch.StepWrite {
+	var answers *[]dispatch.ModelCalls
+	if payload.Answers != nil {
+		converted := make([]dispatch.ModelCalls, len(*payload.Answers))
+		for i, answer := range *payload.Answers {
+			converted[i] = dispatch.ModelCalls(answer)
+		}
+		answers = &converted
+	}
 	return dispatch.StepWrite{Task: payload.Task, Step: payload.Step, Kind: payload.Kind, Role: payload.Role,
 		Type: payload.Type, Agent: payload.Agent, Generation: payload.Generation, Session: payload.Session,
-		Model: payload.Model, StartedAt: payload.StartedAt, EndedAt: payload.EndedAt, Result: payload.Result,
-		ReturnedTo: payload.ReturnedTo, Report: payload.Report}
+		Model: payload.Model, SetModel: payload.SetModel, Answers: answers, StartedAt: payload.StartedAt,
+		EndedAt: payload.EndedAt, Result: payload.Result, ReturnedTo: payload.ReturnedTo, Report: payload.Report}
 }
 
 // publishPlanRecord writes the plan one run of an issue carries out onto Dispatch, under the row's

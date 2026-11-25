@@ -110,23 +110,36 @@ type RoleHolder struct {
 // every identity field of the step, written whatever its value, and each field the write may not
 // know as a pointer, left out when nil. Dispatch writes each field once and keeps what a write
 // leaves out, and it takes a text field sent as "" as left out; a time and ReturnedTo are pointers
-// because their zero is a value (a moment, and the retro's place 0). It mirrors the record's own
-// StepRecord, the rating aside, because this package imports no record of the daemon's.
+// because their zero is a value (a moment, and the retro's place 0). Answers is a pointer because
+// an empty list is a value too, a step with no call, apart from not knowing. It mirrors the
+// record's own StepRecord, the rating aside, because this package imports no record of the
+// daemon's.
 type StepWrite struct {
-	Task       string     `json:"task"`
-	Step       int        `json:"step"`
-	Kind       string     `json:"kind"`
-	Role       string     `json:"role"`
-	Type       string     `json:"type"`
-	Agent      string     `json:"agent"`
-	Generation uint64     `json:"generation"`
-	Session    *string    `json:"session,omitempty"`
-	Model      *string    `json:"model,omitempty"`
-	StartedAt  *time.Time `json:"started_at,omitempty"`
-	EndedAt    *time.Time `json:"ended_at,omitempty"`
-	Result     *string    `json:"result,omitempty"`
-	ReturnedTo *int       `json:"returned_to,omitempty"`
-	Report     *string    `json:"report,omitempty"`
+	Task       string        `json:"task"`
+	Step       int           `json:"step"`
+	Kind       string        `json:"kind"`
+	Role       string        `json:"role"`
+	Type       string        `json:"type"`
+	Agent      string        `json:"agent"`
+	Generation uint64        `json:"generation"`
+	Session    *string       `json:"session,omitempty"`
+	Model      *string       `json:"model,omitempty"`
+	SetModel   *string       `json:"set_model,omitempty"`
+	Answers    *[]ModelCalls `json:"answers,omitempty"`
+	StartedAt  *time.Time    `json:"started_at,omitempty"`
+	EndedAt    *time.Time    `json:"ended_at,omitempty"`
+	Result     *string       `json:"result,omitempty"`
+	ReturnedTo *int          `json:"returned_to,omitempty"`
+	Report     *string       `json:"report,omitempty"`
+}
+
+// ModelCalls is one model that answered a step's agent and the calls it answered, as Dispatch's
+// step route takes an entry of answers. It mirrors the record's own ModelCalls, which the outbox
+// converts to it; internal/daemon's TestAStepRecordReachesDispatchWithEveryField holds the two to
+// the same fields.
+type ModelCalls struct {
+	Model string `json:"model"`
+	Calls uint64 `json:"calls"`
 }
 
 // PlanRating is a retro's rating of the plan, from 1 to 5, and its reason, as the record's rating

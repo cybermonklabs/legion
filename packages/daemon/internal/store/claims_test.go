@@ -1549,3 +1549,37 @@ func TestAStepOfAnUnknownClaimIsNotRecorded(t *testing.T) {
 		t.Fatal("a step of a claim the store does not hold was recorded")
 	}
 }
+
+// A launch is the generation a claim's locator is first written under (supervise's launchNow): the
+// claim write that records the process records the launch in the same statement. A write with no
+// process records none, and nor does a write at generation 0, which no launch has. A later write
+// of the same launch records it no second time, and the next launch is a row of its own.
+func TestAClaimWriteWithAProcessRecordsItsLaunchOnce(t *testing.T) {
+	ctx := context.Background()
+	store := migratedStore(t)
+	c := tmuxClaim("legion-LEGION-209-implementer")
+	locator := c.Locator
+	launches := func() []string {
+		t.Helper()
+		return rowsAsText(t, store, `select row(claim, generation)::text from claim_launches order by claim, generation`)
+	}
+	put := func(what string, generation uint64, state supervise.ClaimState, withLocator bool, want ...string) {
+		t.Helper()
+		c.Generation, c.State, c.Locator = generation, state, nil
+		if withLocator {
+			c.Locator = locator
+		}
+		if err := store.PutClaim(ctx, c); err != nil {
+			t.Fatalf("%s: put the claim: %v", what, err)
+		}
+		if got := launches(); !slices.Equal(got, want) {
+			t.Fatalf("after %s the launches are %v, want %v", what, got, want)
+		}
+	}
+	put("a write at generation 0 that carries a locator", 0, supervise.StateIdle, true)
+	put("the write of a launch that has no process yet", 3, supervise.StateLaunching, false)
+	put("the write that records the launch's process", 3, supervise.StateLaunching, true, "(legion-LEGION-209-implementer,3)")
+	put("a later write of the same launch", 3, supervise.StateIdle, true, "(legion-LEGION-209-implementer,3)")
+	put("the write of the next launch's process", 4, supervise.StateLaunching, true,
+		"(legion-LEGION-209-implementer,3)", "(legion-LEGION-209-implementer,4)")
+}
