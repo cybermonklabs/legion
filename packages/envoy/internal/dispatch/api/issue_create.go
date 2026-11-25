@@ -492,7 +492,7 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	// index's projection rows name the spec's node. The node write and the issue's row go to the
 	// server as one batch (store.WriteBatch), the node write first, as createStoredMessage writes
 	// a message's node and row: the node write adds no round trip while the create holds its
-	// transaction id (INFRA-636).
+	// transaction id, which the xid window tests count.
 	// Both nodes are ones this write creates (graphstore.Created).
 	issueNodes := graphstore.PlanUncaused([]graphstore.Node{
 		graphstore.Created(graphstore.IssueNode(key, input.Project, actor, createdAt)),

@@ -165,6 +165,8 @@ An issue imported from GitHub (`POST /api/v1/issues` with `external`) names its 
 No setting seeds a default repository or chooses the project of an import.
 A boot that still sets one of the two settings that did is refused, naming what replaced it (`removedSettings` in `cmd/dispatch/settings.go`).
 
+Every project has an owner, and a boot over a project with none refuses to serve until `DISPATCH_PROJECT_OWNER_FALLBACK` names a full member to own it, or an operator gives it one (Giving a project to another owner, below).
+
 Where browser sign-in is configured, `DISPATCH_SERVER_URL` IS the sign-in callback origin:
 it must equal the URL humans type into their browser, and the sign-in pool's app client must list `<DISPATCH_SERVER_URL>/auth/callback` as a callback URL.
 With no `DISPATCH_SIGNIN_*` setting nobody signs in through a browser, and the variable is the origin Dispatch builds its own links from and nothing more.
@@ -3188,6 +3190,38 @@ that one-release gap is the author's to reason about, and the two-build test (Tw
 The five-second `pgmigrate.LockTimeout` also bites harder under a rolling update than under `Recreate`, which stops the previous pods before the new one boots:
 while a deployment rolls, the old build's connections are still open and still holding locks on the tables the migration wants, so a migration that applies cleanly against an idle database can fail the new pod's boot.
 
+### Giving a project to another owner
+
+Every project has one owner, the full member who changes its access list and whether it is public or private (`projects.owner`).
+An operator gives any project to another full member with the database credential alone, with no server running if need be:
+
+```sh
+envoy-dispatch project-owner <KEY> <email>
+```
+
+It reads `DATABASE_URL`, as every other subcommand does, and makes the change in one transaction that appends `project.access_changed` with change `owner`, written by the actor `{"kind": "system", "id": "envoy-dispatch project-owner"}` (`access.SetOwner`).
+Who owned the project before, and whether that person is still a member, makes no difference.
+It exits 0 once the change commits;
+2 for a key no project holds, for an email that is not a full member's (a restricted member, or a login nobody has signed in with), and for arguments that are not exactly a key and an email, writing nothing;
+and 1 when the database cannot be opened or written.
+No write clears an owner: an update that would is refused with `check_violation` (`23514`, the trigger `projects_owner_kept`), and so is an owner that is empty or not lowercase (the column's check).
+Giving a project to the person who owns it already writes nothing, and the command says so.
+
+Migration `20261116015736_project_access` gives each project its default assignee as owner where that person has signed in.
+An insert that names no owner, every project create included, takes its default assignee as owner (`projects_owner_from_default`).
+A project whose default assignee had never signed in when the migration ran would keep no owner, so the migration's census counts such projects, and a count above `0` refuses the deploy.
+Repair them before it, on the release still serving: give each a default assignee who has signed in with `PUT /api/v1/projects/{key}/default-assignee`, then deploy again.
+They are listed there by the query `20261116015736_project_access.census.sql`'s header gives:
+
+```sql
+select key, default_assignee from projects p
+where not exists (select 1 from people where email = p.default_assignee);
+```
+
+Should a project still have no owner at boot, the boot refuses to serve while any project has none, naming each one by its key, and both repairs, and no person's email, since it writes the refusal to its log (`store.EnsureProjectOwners`, run at boot, before the server serves):
+set `DISPATCH_PROJECT_OWNER_FALLBACK` to the lowercase email of a full member who has signed in, and the next boot makes that person the owner of every such project, each grant recorded as the command's is (`project.access_changed`, written by the actor `{"kind": "system", "id": "DISPATCH_PROJECT_OWNER_FALLBACK"}`);
+or give each one an owner with the command above.
+
 ### Pre-deploy census
 
 `envoy-dispatch census` is run before a new image goes out, with the service's `DATABASE_URL` and under the service's own database credentials, and it is a gate:
@@ -6134,16 +6168,16 @@ Each item below names a path with its method and identity, then its purpose.
   A closed issue's document is `409 ISSUE_CLOSED`, before any other 409; an issue's plan is `409 PLAN_APPROVED_BY_REVIEW`, as its plan review approves it, and a project `plan.md` is no plan.
   The question is `Approve <name> (version <N>)?`, or `Approve <name> (version <N>) and <name> (version <N>)?` for a request naming two documents, followed by the optional `summary` (blank is `400 SUMMARY_INPUT`;
   past the ask cap at the longest version a request can reach, ten digits, is `400 CAP_EXCEEDED` naming `summary`).
-  A request on a document a human approved earlier names that approval in `ask.approval.approved` (`{version, at, by}`);
-  a first request carries no `approved` key.
-  One open approval row follows every document version in place, rewording its question and emitting `ask.edited`;
-  while its `requested_version` is below the new version it waits on the agent.
-  A row waiting on the human keeps its turn, quietly, at a settlement's version with the bytes of the named one, or with those bytes but for the server-owned attributes of its ask blocks, each block agreeing with its ask, as the version a person's answer, resolve, decline or an issue's reopen writes;
+  A request on a document a human approved earlier names that approval in `ask.approval.approved` (`{version, at, by}`); a first request carries no `approved` key.
+  One open approval row follows every document version in place, rewording its question and emitting `ask.edited`; while its `requested_version` is below the new version it waits on the agent.
+  A row waiting on the human keeps its turn, quietly, at a settlement's version with the bytes of the named one, or with those bytes but for the server-owned attributes of its ask blocks, each block agreeing with its ask, as the version a person's answer, resolve, decline or an issue's reopen writes when that is its whole change;
   a version a route writes (a named version, an upload, an edit) moves it to the agent whatever its bytes.
   Only the first move since the request was opened or handed back notifies, even when a thread reply had already left it waiting on the agent;
   a later move, while `requested_version` is already below the version it named, is `quiet: true`, `notify: false`, and reaches no follower.
-  A person's answer, resolve, decline, close or reopen of an ask writes one version, changing only its block's `state`, `answered_by` and `answered_at`:
+  A person's answer, resolve, decline, close or reopen of an ask writes one version, which changes only its block's `state`, `answered_by` and `answered_at` when that is the version's whole change:
   a standing approval carries to it and the row keeps its turn, but a close withdraws the row and its version carries no approval, until the reopen's carries it.
+  The version carries an approval only when the person's answer, resolve or decline is its whole change.
+  If text that a person was editing in the browser is settled into the same version, the approval does not carry, and the request goes back to its agent.
   A second call does one of two things, by what the row waits on:
 
   - Calling this route again while the row waits on the agent - moved, or a thread reply newer than its last hand-back holds the turn - hands it back to the human:

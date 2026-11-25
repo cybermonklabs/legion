@@ -3660,7 +3660,7 @@ package api
 // names of `DESIGN_GATE_STEPS`, and `register_gate` offers no other step. The `design_gates` rows
 // and the kept approvals an earlier release wrote of the step stay in the store, which no reader
 // of this release is handed (record.Postgres.GatesOf), so no state of this daemon names the step.
-// A plugin of the release before (256, the number main declares at 25be677859) reads that state
+// A plugin of the release before (256, the number main declares at 0c368b3907) reads that state
 // as before, since it parses the three names, and the boot
 // gate and `legion probe-image` pair a daemon with a plugin of its own number. A loader of this release
 // refuses a file whose `gates.design` names `decisions`, so a deployment takes the step out of the
@@ -3691,7 +3691,7 @@ package api
 // #4049, #4495 and #4573, 192 #3993, #4175, #4182, #4193, #4273, #4392 and #4580, 193 #3659,
 // #3712, #4065, #4432, #4539 and #4553, 194 #3831 and #4030, 195 #4493 and #4590, and nothing
 // above 195.)
-// (At the forward merge of 2026-11-21 that brings legion/INFRA-1149 in at f0d08bf24f, which holds
+// (At the forward merge of 2026-11-21 that brings the node store's branch in at f0d08bf24f, which holds
 // main at f3e26096c7, main declares 202, the entry before this one, and this change takes 204 in
 // place of 196: the lowest number above main's 202 that no open pull request declares, in a
 // reading of `const DaemonAPIVersion` at refs/pull/<n>/head for each of the 358 pull requests
@@ -3759,6 +3759,6 @@ package api
 // #5349, 257 #4580, 261 #5332, 262 #5204 and 265 #5285.)
 // (After that merge #4049 and #4065 declared 253 as well. This change takes the allocated number
 // 271 at the forward merge of main at fd2f03fb07, where main still declares 250.)
-// (At the forward merge of main at 25be677859, main declares 256, the entry before this one, and
+// (At the forward merge of main at 0c368b3907, main declares 256, the entry before this one, and
 // this change keeps 271.)
 const DaemonAPIVersion = 271

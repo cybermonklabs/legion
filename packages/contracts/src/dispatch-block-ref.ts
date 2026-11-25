@@ -517,7 +517,9 @@ export function askOpenerLines(markdown: string): string[] {
     const [, colons, name] = TYPED_OPENER.exec(text) ?? [];
     return colons === undefined || name === undefined ? undefined : { colons: colons.length, name };
   };
-  return readAskBlocks(lines, { frontMatter: true, typedOpener }).map((block) => block.opener);
+  return readAskBlocks(lines, { frontMatter: true, bodies: false, typedOpener }).map(
+    (block) => block.opener
+  );
 }
 
 /** The character references `typedBlockIdAttribute` writes in a quoted id, each with its character. */
