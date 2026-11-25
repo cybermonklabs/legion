@@ -204,6 +204,58 @@ func TestGatedStepsKeepADecisionForEachDocumentAPersonReviewed(t *testing.T) {
 	}
 }
 
+// A person's changes request that a newer one of the same document replaced is still the person's
+// words, and the workflow tells it when no approval followed it — a late one, or one replayed from
+// a message the intake gave up on, however late — but on a stopped tree it relays nothing: the gate
+// of the document records the newer request as the one told (record.DesignGate.ToldChangesVersion
+// and ToldChangesReason), so the older notice reaching the controller would replace the newer
+// decision kept under the document's ref, and the claim a start holds on it. Here alice asked for
+// changes at version 3 ("cut the migration"), that request was relayed and kept, and a start
+// claimed it; her earlier request at version 2 then reaches the stopped tree. The newer decision
+// stays kept, at its own time, and claimed, and the controller has the one notice.
+func TestALateChangesRequestLeavesTheNewerParkedDecision(t *testing.T) {
+	ctx := context.Background()
+	pool := isolatedOutboxPool(t)
+	records := record.NewStore()
+	noticeTree(t, pool, records, true)
+	told := 3
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
+		return records.PutGate(ctx, tx, record.DesignGate{Issue: "LEGION-1", Step: record.DesignStepSpec, ArtifactID: "artifact-1",
+			LatestVersion: 3, ToldChangesVersion: &told, ToldChangesReason: "cut the migration", ToldChangesMark: record.EventMark{Seq: 12}})
+	}); err != nil {
+		t.Fatalf("seed the gate the newer request was told on: %v", err)
+	}
+	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
+	architectClaim(t, sup, "LEGION-1", supervise.StateSuspended)
+	runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, notices: &holderPublisher{},
+		supervisor: sup, project: "legion", now: time.Now}
+	relay := func(notice record.Notice) {
+		t.Helper()
+		row := leasedOutboxRow(t, pool, records, mustOutboxRow(t, "LEGION-1", notice, time.Now()))
+		if err := runner.notice(ctx, row, notice); err != nil {
+			t.Fatalf("relay the changes request at version %d: %v", notice.Version, err)
+		}
+	}
+	const ref = "dispatch://LEGION-1/spec"
+	relay(record.Notice{Kind: "design-changes-requested", Version: 3, Reason: "cut the migration", Actor: "user:alice", Ref: ref})
+	if _, err := pool.Exec(ctx, `update parked_decisions set claimed_by = (select max(id) from outbox) where issue = 'LEGION-1'`); err != nil {
+		t.Fatalf("claim the kept decision: %v", err)
+	}
+	newer := keptDecisions(t, pool, records, "LEGION-1")
+	if len(newer) != 1 || newer[0].ClaimedBy == 0 {
+		t.Fatalf("kept before the late request = %+v, want the newer request kept and claimed", newer)
+	}
+
+	relay(record.Notice{Kind: "design-changes-requested", Version: 2, Reason: "name the rollback path", Actor: "user:alice", Ref: ref})
+
+	if kept := keptDecisions(t, pool, records, "LEGION-1"); len(kept) != 1 || !kept[0].At.Equal(newer[0].At) || kept[0].ClaimedBy != newer[0].ClaimedBy {
+		t.Fatalf("kept after the late request = %+v, want the newer %+v as it stood, claimed", kept, newer[0])
+	}
+	if told := parkedDecisions(t, pool); len(told) != 1 || told[0].Version != 3 {
+		t.Fatalf("parked-decision notices = %+v, want the one of the request at version 3", told)
+	}
+}
+
 // The parked-decision notice goes where every controller notice goes: the outbox's next run
 // publishes it on the project's controller topic, as "parked-decision on <issue>".
 func TestAParkedDecisionIsPublishedOnTheControllerTopic(t *testing.T) {

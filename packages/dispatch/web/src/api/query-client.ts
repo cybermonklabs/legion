@@ -425,8 +425,8 @@ function holdEnded(
  * write is still out: Dispatch can take a write after its deadline, and its event then comes after
  * it too. The event can come seconds after the answer even with the live socket up all along:
  * Dispatch commits the write, then answers it, and its feed carries the event only once the event
- * stream relay's safe horizon has passed it, which trails the longest write transaction open on
- * Dispatch's whole Postgres instance (`events/horizon.go`), however little of it is Dispatch's.
+ * stream relay's safe horizon has passed it, which trails the longest event write open in
+ * Dispatch's database (`events/horizon.go`), whichever client of the database holds it.
  * Nothing bounds that lag, so a hold waits for its event until `SEND_DEADLINE_MS` after its answer:
  * it holds no read meanwhile, so where its event never comes it only takes a later write's, whose
  * hold then ends at its own answer, later and never sooner. A write Dispatch refused with no

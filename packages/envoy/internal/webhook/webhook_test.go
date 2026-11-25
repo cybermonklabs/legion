@@ -29,10 +29,13 @@ type mockPublisher struct {
 	err       error
 }
 
-func (m *mockPublisher) PublishWithin(_ context.Context, item contracts.Envelope) error {
+func (m *mockPublisher) PublishEachWithin(_ context.Context, item contracts.Envelope, published func(topic string, duplicate, resent bool)) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.published = append(m.published, item)
+	if m.err == nil && published != nil {
+		published(item.Topic, false, false)
+	}
 	return m.err
 }
 
@@ -99,7 +102,7 @@ func TestAWebhookDeliveryStillInProcessIsNotLoggedAsAFailedPublish(t *testing.T)
 		request func() *http.Request
 	}{
 		{"github", func(p Publisher) http.Handler {
-			return GitHubHandler(secret, "@legion", "", p, &mockRecorder{}, NewBodyBudget(DefaultBodyBudget, nil))
+			return GitHubHandler(secret, "@legion", "", "", p, &mockRecorder{}, NewBodyBudget(DefaultBodyBudget, nil))
 		}, func() *http.Request {
 			req := httptest.NewRequest(http.MethodPost, "/webhook/github", bytes.NewReader(push))
 			req.Header.Set("X-GitHub-Delivery", "d-in-process")

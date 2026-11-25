@@ -9,6 +9,8 @@ import {
   createMessage,
   createProject,
   declineAsk,
+  getIssueDecisions,
+  getIssueEvents,
   getMeInbox,
   markThreadRead,
   patchIssue,
@@ -380,14 +382,34 @@ test("an answered ask stays in the threads a person takes part in", async ({ bro
   // every write of theirs is made as them.
   const asReader = { login: named };
   await createProject({ key: "CORE", name: "Core" }, asReader);
+  // Two asks wait on somebody else, on an issue assigned to them, so nothing holds the reader in
+  // either but their own answer of the one and their decline of the other. The other two are on
+  // an issue assigned to the reader, who takes part in each as the person it waits on: one
+  // somebody else answered, and one the reader answered whose answer was then retracted.
+  const elsewhere = await createIssue({ project: "CORE", title: "Rollout pages" }, asReader);
+  await patchIssue(elsewhere.key, { assignee: other }, asReader);
   const issue = await createIssue({ project: "CORE", title: "Rollout gates" }, asReader);
   await patchIssue(issue.key, { assignee: named }, asReader);
-  const asked = (question: string) =>
-    createAsk(issue.key, { options: [{ label: "Yes" }, { label: "No" }], question }, asSession());
-  const answeredByReader = await asked("Open the gate on Monday?");
-  const answeredByOther = await asked("Keep the old gate?");
-  const retracted = await asked("Freeze the schedule?");
-  const declined = await asked("Page the on-call?");
+  const asked = (key: string, question: string) =>
+    createAsk(key, { options: [{ label: "Yes" }, { label: "No" }], question }, asSession());
+  const answeredByReader = await asked(elsewhere.key, "Open the gate on Monday?");
+  const declined = await asked(elsewhere.key, "Page the on-call?");
+  const answeredByOther = await asked(issue.key, "Keep the old gate?");
+  const retracted = await asked(issue.key, "Freeze the schedule?");
+  // Before the reader answers the one and declines the other, the one read ties them to neither,
+  // read once it ties them to the last ask opened, which waits on them.
+  await expect
+    .poll(async () => tiesOf(await getMeInbox({}, asReader), "ask", retracted.id) ?? [], {
+      message: `the one read ties the reader to "${retracted.question}", which waits on them`,
+    })
+    .toContain("participates_in outbound");
+  const before = await getMeInbox({}, asReader);
+  for (const ask of [answeredByReader, declined]) {
+    expect(
+      tiesOf(before, "ask", ask.id),
+      `what ties the reader to "${ask.question}", which waits on ${other}, before they answer or decline it`
+    ).toBeUndefined();
+  }
   await answerAsk(answeredByReader.id, { expected_edited_at: null, selected: ["Yes"] }, asReader);
   await answerAsk(
     answeredByOther.id,
@@ -408,8 +430,8 @@ test("an answered ask stays in the threads a person takes part in", async ({ bro
           'actor', jsonb_build_object('kind', 'user', 'id', ${sqlLiteral(named)}))
     where id = ${sqlLiteral(retracted.id)}::uuid`);
   await declineAsk(declined.id, { note: "Not mine to call." }, asReader);
-  // A thread the reader wrote in and has read, on the same issue: somebody else's root, the
-  // reader's reply under it, nothing written after, so today's Inbox does not list it.
+  // A thread the reader wrote in and has read, on the issue assigned to them: somebody else's root,
+  // the reader's reply under it, nothing written after, so today's Inbox does not list it.
   const thread = await createComment(
     issue.key,
     { body: "Is the gate log kept?" },
@@ -425,9 +447,10 @@ test("an answered ask stays in the threads a person takes part in", async ({ bro
     { login: other }
   );
   await expectMentioned(named, mentioned.id);
+  await patchIssue(elsewhere.key, { status: "done" }, asReader);
   await patchIssue(issue.key, { status: "done" }, asReader);
 
-  // The one read asked as a caller, after the close, for the threads the reader takes part in.
+  // The one read asked as a caller, after both closes, for the threads the reader takes part in.
   const taking = await getMeInbox({ kind: "participates_in" }, asReader);
   const asks = [answeredByReader, answeredByOther, retracted, declined];
   const left = asks.find((ask) => tiesOf(taking, "ask", ask.id) === undefined);
@@ -450,6 +473,43 @@ test("an answered ask stays in the threads a person takes part in", async ({ bro
     tiesOf(await getMeInbox({}, asReader), "comment", mentioned.id),
     "what ties the reader, after the close, to the thread they were only mentioned in"
   ).toContain("mentions inbound");
+
+  // The answer and the decline as a caller reads them, after the close. The retracted ask's answer
+  // survives in its ask.answered event and in its answer tuples: the answered_by and decided_by
+  // into the reader, and the answer its node holds, which the Decisions read answers. The declined
+  // ask has neither: a decline appends no answer tuple and raises no ask.answered event.
+  const answeredEvents = async (key: string, askId: string) =>
+    (await getIssueEvents(key, { limit: 200 }, asReader)).flatMap((event) =>
+      event.type === "ask.answered" && event.payload.id === askId
+        ? [[event.payload.answer?.user, event.payload.answer?.selected]]
+        : []
+    );
+  expect(
+    await answeredEvents(issue.key, retracted.id),
+    `the ask.answered events of "${retracted.question}"`
+  ).toEqual([[named, ["Yes"]]]);
+  expect(
+    await answeredEvents(elsewhere.key, declined.id),
+    `the ask.answered events of "${declined.question}"`
+  ).toEqual([]);
+  const whole = await getMeInbox({}, asReader);
+  expect(
+    tiesOf(whole, "ask", retracted.id),
+    `what ties the reader to "${retracted.question}" after the close`
+  ).toEqual(expect.arrayContaining(["answered_by inbound", "decided_by inbound"]));
+  const retractedAnswer = (await getIssueDecisions(issue.key, asReader)).entries?.find(
+    (entry) => entry.node.kind === "ask" && entry.node.id === retracted.id
+  );
+  expect(
+    [retractedAnswer?.answered_by, retractedAnswer?.selected],
+    `the answer the node of "${retracted.question}" holds`
+  ).toEqual([named, ["Yes"]]);
+  expect(
+    (tiesOf(whole, "ask", declined.id) ?? []).filter(
+      (tie) => tie === "answered_by inbound" || tie === "decided_by inbound"
+    ),
+    `the answer tuples of "${declined.question}" into the reader`
+  ).toEqual([]);
 
   // The page lists neither thread and none of the four asks: these are answers of the read for
   // its callers, and the Inbox lists the rows it lists today, which are the rows its own read

@@ -84,6 +84,7 @@ import {
   REFUSED_NOTE,
 } from "../../__tests__/draft-matrix-fixture";
 import { panelOf, pickNamed } from "../../__tests__/list-picks";
+import { messageCorrectionFields } from "../../__tests__/message-fixture";
 import { answerAgentStates } from "../../__tests__/send-answers";
 import { sentRequest, stopSend } from "../../__tests__/stop-late-write";
 import { api } from "../../api/client";
@@ -166,6 +167,7 @@ function message(id: string, body: string, createdAt: string, author: string): M
     broadcast_id: null,
     created_at: createdAt,
     deliveries: [],
+    ...messageCorrectionFields(),
     id,
     in_reply_to: null,
     issue_key: null,

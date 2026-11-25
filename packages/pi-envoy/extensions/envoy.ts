@@ -77,7 +77,7 @@ import {
   dispatchFirstSkillFile,
   readDispatchFirstContext,
 } from "@legion/envoy-client/dispatch-first";
-import { DispatchServiceError } from "@legion/envoy-client/dispatch-http";
+import { DispatchServiceError, DispatchWriteLandedError } from "@legion/envoy-client/dispatch-http";
 import { forgetShownPictures, shownPictures } from "@legion/envoy-client/dispatch-picture-tools";
 import { pictureAddresses } from "@legion/envoy-client/dispatch-pictures";
 import {
@@ -1434,6 +1434,12 @@ export default function envoyExtension(hostApi: PiApi): void {
   // first text Dispatch refuses (`postTypedInputReply`) - since the broker may refuse a token
   // for a session this machine no longer runs and the refusal would otherwise read as a plain
   // reply failure.
+  //
+  // A reply Dispatch made and gave no copy of its answer for (`DispatchWriteLandedError`: `409
+  // KEY_COMMITTED`, or a replay of an answer it kept none of) is posted: the attempt is answered
+  // with it, so it resolves as any posted reply does, and its line says it landed. Every caller
+  // then goes on as after a post - a BTW's side turn is taken, a person's turn is settled - and
+  // none answers the same attempt again with an error, or says the delivery failed.
   const postDispatchReply = async (
     delivery: DispatchDelivery,
     result: { readonly body?: string; readonly error?: string },
@@ -1445,7 +1451,17 @@ export default function envoyExtension(hostApi: PiApi): void {
         open: sessionID,
       });
     }
-    await postDeliveryReply(dispatchConfigFor(replySessionID), replySessionID, delivery, result);
+    try {
+      await postDeliveryReply(dispatchConfigFor(replySessionID), replySessionID, delivery, result);
+    } catch (error) {
+      if (!(error instanceof DispatchWriteLandedError)) throw error;
+      logger.warn("envoy: a reply landed on Dispatch, which gave no copy of its answer", {
+        resource: delivery.resource,
+        id: delivery.id,
+        attempt: delivery.attempt,
+        error: error.message,
+      });
+    }
   };
 
   // A typed input's pictures, until the host's message carrying its Dispatch id starts
@@ -2022,6 +2038,13 @@ export default function envoyExtension(hostApi: PiApi): void {
           );
           return;
         }
+        if (refusal.reason === "landed") {
+          logger.warn(
+            "envoy: Dispatch recorded this session's accept of a direct message and gave no copy of its answer, so no turn follows; it arrives as a card",
+            { ...fields, error: refusal.error.message }
+          );
+          return;
+        }
         logger.warn(
           "envoy: Dispatch did not accept a direct message as this session's turn; it arrives as a card",
           { ...fields, error: messageFor(refusal.error) }
@@ -2103,6 +2126,17 @@ export default function envoyExtension(hostApi: PiApi): void {
     if (identity !== undefined && ledger?.delivered(identity) === true) {
       claim.settle();
       return;
+    }
+    // A payload the card could not lay out is shown as the text its sender sent: said once, for
+    // the frame this session is shown, and never for a repeat the checks above answered.
+    if (rendered.payloadShownAsText !== undefined) {
+      logger.warn(
+        "envoy: a message's payload is shown as its text; the card could not lay it out",
+        {
+          event_id: rendered.envelope?.event_id ?? "unknown",
+          error: rendered.payloadShownAsText,
+        }
+      );
     }
     // A body is bounded block by block, so one event can carry its first part alone, and an
     // event the bus refused carries none of it (`cutItem`). The agent is prompted with the

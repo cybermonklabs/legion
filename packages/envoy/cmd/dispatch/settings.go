@@ -122,6 +122,8 @@ var settings = []setting{
 		Description: "The GitHub App's numeric ID."},
 	{Name: "DISPATCH_REVIEWER_APP_ID", Required: "no",
 		Description: "The review App's numeric ID, the App that posts the `tester` and `architect` verdict check runs, which the CI reconcile pass compares a check run's `app.id` against; unset, the pass records no verdict check run."},
+	{Name: "DISPATCH_VERDICT_APP_ID", Required: "no",
+		Description: "The verdict App's numeric ID, the App that writes the `legion-verdict` check run: the CI reconcile pass leaves that App's check suites out of the record, as the listener does under `ENVOY_VERDICT_APP_ID`, so its completed suite does not publish a settled head a second time. Give it the listener's value; unset, the pass records every App's completed suite."},
 	{Name: "DISPATCH_APP_SLUG", Required: "no",
 		Description: "The GitHub App's slug."},
 	{Name: "DISPATCH_APP_NAME", Required: "no",

@@ -375,10 +375,11 @@ var (
 // writesOf answers each write statement makes, as "<verb> <table>", and false when it holds a
 // write word no table can be read for: such a statement fails the test rather than passing it. It
 // reads past comments where Postgres reads them (pgmigrate.WithoutComments, on the transcription
-// of scan.l: a -- comment ends at a newline or a carriage return, and none starts inside a
-// string, a quoted name or a dollar quote, whatever its tag), reads a merge as a write of its
-// table, and reads the word update as no write only where updateNoWrite places it, so a write it
-// cannot place is a write.
+// of scan.l: a -- comment ends at a newline or a carriage return; none starts inside a string or a
+// quoted name; and a dollar quote's body, a function's or a DO block's, is read as SQL, its own
+// strings and dollar quotes kept whole, so a write inside one it EXECUTEs stays visible), reads a
+// merge as a write of its table, and reads the word update as no write only where updateNoWrite
+// places it, so a write it cannot place is a write.
 func writesOf(statement string) ([]string, bool) {
 	read := pgmigrate.WithoutComments(statement)
 	read = upsertUpdate.ReplaceAllString(read, "do upsert")
@@ -482,6 +483,9 @@ func TestWritesOfReadsAnUpdateByItsSetClause(t *testing.T) {
 		// bytes 0x80-0xff, as Postgres's scan.l reads them.
 		{"select 1 -- c\rupdate projects set name = name", []string{"update projects"}, true},
 		{`select $é$ -- $é$; update projects set name = name`, []string{"update projects"}, true},
+		// A dollar quote inside a DO body is a string, kept whole, so a write in SQL the body
+		// EXECUTEs stays visible, a -- before it included.
+		{`do $$ begin execute $q$select 1 -- note update projects set name = name$q$; end $$`, []string{"update projects"}, true},
 	} {
 		writes, readable := writesOf(tc.statement)
 		if readable != tc.readable || !slices.Equal(writes, tc.writes) {

@@ -1111,16 +1111,17 @@ func (s *Service) reindexScope(ctx context.Context, doc string) error {
 //
 // settle is the forms queue's row the caller drains with this index (drainFormsDocument), nil for
 // the block index's own batch. It is read under the document owner's lock, after every check
-// above, and settled first in the index's write phase, only while it holds the enqueued_at it was
-// listed with (refs.StillOwed, refs.QueueSettleOwed): a row this index did not run for - a
-// document another process indexed first, one whose live text is ahead, one whose latest version
-// moved - is left owed, and so is one a write moved meanwhile, with nothing written for it. The
-// index then settles every queue the document is in again, after its own deletes from block_refs
-// and from refs (refs.BlockIndexing.Queue, then the reconciliation of its references, which
-// settles the forms queue: refs.Replacement.SettlingForms), each of which owes the forms queue
-// the document it rewrites (migrations 20261117025906 and 20261117025907). So a document
-// rebuild-refs left owed is settled by this build's block index of it, which writes its blocks,
-// and not before.
+// above, and the index runs for it only while it holds the enqueued_at it was listed with
+// (refs.StillOwed): a row this index did not run for - a document another process indexed first,
+// one whose live text is ahead, one whose latest version moved - is left owed, and so is one a
+// write moved meanwhile, with nothing written for it. The index then settles every queue the
+// document is in, after its own deletes from block_refs and from refs (refs.BlockIndexing.Queue,
+// then the reconciliation of its references, which settles the forms queue:
+// refs.Replacement.SettlingForms), each of which owes the forms queue the document it rewrites
+// (migrations 20261117025906 and 20261117025907). It settles it only where its block pass won the
+// revision fence (indexRenderedVersion): a pass that lost writes no block, and leaves the row owed
+// for the next pass, as it leaves the block index's own mark. So a document rebuild-refs left
+// owed is settled by this build's block index of it, which writes its blocks, and not before.
 func (s *Service) indexOwedDocument(ctx context.Context, document owedDocument, settle *refs.Owed) (indexed, liveAhead bool, err error) {
 	if document.version == 0 {
 		return false, false, nil
@@ -1197,14 +1198,6 @@ func (s *Service) indexOwedDocument(ctx context.Context, document owedDocument, 
 	eventID, err := versionEventID(queued, tx, owner, document.id, version)
 	if err != nil {
 		return false, false, err
-	}
-	if settle != nil {
-		if err := write(queued, tx, func(b *store.WriteBatch) error {
-			refs.QueueSettleOwed(b, *settle)
-			return nil
-		}); err != nil {
-			return false, false, err
-		}
 	}
 	_, stated, err := s.indexRenderedVersion(queued, tx, document.id, version, versionAt, markdown, blocks, nil, nil)
 	if err != nil {

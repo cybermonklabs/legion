@@ -440,14 +440,14 @@ func (p *Pool) Dedicated(ctx context.Context, applicationName string) (*pgx.Conn
 // through. The document compaction holds only its lease here: each document it compacts reads and
 // writes on the compaction pool (Pool.Compaction).
 //
-// The Legion sampler and the reference forms drain are two of those callers, one connection each,
-// and the keyword fill's hold two more, and that is what they cost the instance: a serving process
-// opened at most 116 (ConnectionsPerProcess), where it opened 112 without them, and the default
-// tier's 500 connections less PostgreSQL's 3 reserved slots still admit four app pods holding
-// connections at once (464 of 497) and still refuse five (580), exactly as they did at 112 (448
-// and 560), so none of them moves a replica boundary. The CI verify loop is one more: 117, four
-// pods 468 of 497 and five refused at 585, so it moves none either. A deployment on another tier
-// reads SHOW max_connections against its own roll, as sharedPoolSize's note says.
+// The Legion sampler is one of those callers and the keyword fill's hold two more, and that is
+// what they cost the instance: a serving process opened at most 115 (ConnectionsPerProcess), where
+// it opened 112 without them, and the default tier's 500 connections less PostgreSQL's 3 reserved
+// slots still admit four app pods holding connections at once (460 of 497) and still refuse five
+// (575), exactly as they did at 112 (448 and 560), so neither moves a replica boundary. The CI
+// verify loop and the reference forms drain are one more each: 117, four pods 468 of 497 and five
+// refused at 585, so they move none either. A deployment on another tier reads SHOW
+// max_connections against its own roll, as sharedPoolSize's note says.
 //
 // Nothing counts the callers by hand. Each of them reserves one of these connections by name
 // before the server starts any of its loops, whether or not this configuration runs that loop
@@ -709,8 +709,9 @@ func (p *Pool) healthPool() (*pgxpool.Pool, error) {
 
 // openSeparateLocked is the pool held at field, opened when there is none, sized at size and
 // copied from the shared pool's configuration. Its connections name themselves applicationName in
-// pg_stat_activity, or keep the shared pool's name when it is empty. Its caller holds mu and has
-// checked the pool is not closed for it.
+// pg_stat_activity, or keep the shared pool's name when it is empty. The copy keeps the shared
+// pool's tracer, so its connections give back a large statement's arguments on release too
+// (argumentReleaser). Its caller holds mu and has checked the pool is not closed for it.
 func (p *Pool) openSeparateLocked(field **pgxpool.Pool, size int32, name, applicationName string) (*pgxpool.Pool, error) {
 	if *field != nil {
 		return *field, nil

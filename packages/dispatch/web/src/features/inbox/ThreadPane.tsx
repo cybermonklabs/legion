@@ -19,25 +19,36 @@ import type { MyReplyRow, MyReplyThreadRow } from "../../api/types";
 import { inlineWarningText, textPrimaryOnCanvas } from "../../theme/classes";
 import { CHANGED_TEXT_SENTENCE } from "../doc/changed-text";
 import type { ProofDocumentProps } from "../doc/ProofDocument";
-import { MarkdownPreview } from "../refs/MarkdownPreview";
+import { PostPreview } from "../refs/PostBody";
+import { EditedMark } from "../refs/PostMarks";
+import { postDeletion } from "../refs/post-marks";
 import { textSourceKind, textSourceOf } from "../refs/text-references";
 import { isDecisionAsk } from "./ask-decision";
 import { DocumentPane, PaneFrame } from "./PaneDocument";
-import { ThreadPaneHead } from "./ReadingPaneHead";
+import { type QuestionDocument, ThreadPaneHead } from "./ReadingPaneHead";
 import { ThreadBody } from "./ThreadBody";
 
 /** The subject line a thread body opens with: what the thread is about, in one line, drawn by
- *  the one renderer so it reads as the thread's root does. */
+ *  the one renderer so it reads as the thread's root does - or the deleted line for a root its
+ *  author deleted, whose subject the delete cleared - with the root's ` · edited` once its
+ *  author edited it, on the line beside the clamped subject. */
 function ThreadSubject({ thread }: { thread: MyReplyRow }): ReactNode {
+  const deleted = postDeletion(thread);
   return (
-    <h2 className={`text-sm font-semibold ${textPrimaryOnCanvas}`} data-inbox-thread-subject="">
-      <MarkdownPreview
+    <h2
+      className={`flex min-w-0 items-baseline gap-1 text-sm font-semibold ${textPrimaryOnCanvas}`}
+      data-inbox-thread-subject=""
+    >
+      <PostPreview
+        className="min-w-0"
+        deleted={deleted}
         lines={1}
         markdown={thread.subject}
         source={textSourceOf(textSourceKind(thread.kind), thread.thread_id, thread.issue?.key)}
         surface="my-reply-subject"
         tree={thread.subject_tree}
       />
+      <EditedMark at={thread.edited_at} className="shrink-0" deleted={deleted} />
     </h2>
   );
 }
@@ -109,6 +120,7 @@ function ThreadDocumentBody({
   body,
   issueKey,
   loadingName,
+  questionDocument,
   thread,
 }: {
   anchoredThread: ProofDocumentProps["anchoredThread"];
@@ -118,6 +130,9 @@ function ThreadDocumentBody({
   issueKey: string | null;
   /** The document the skeleton says it is opening. */
   loadingName: string;
+  /** The issue document of a decision block's ask, which the head's **Open page** opens once
+   *  the column shows it; undefined for every other thread. */
+  questionDocument: QuestionDocument | undefined;
   thread: MyReplyThreadRow;
 }): ReactNode {
   return (
@@ -130,6 +145,7 @@ function ThreadDocumentBody({
       // an issue comment's page is the comment's, whose `#b-` would name a block of its body.
       head={(document) => (
         <ThreadPaneHead
+          questionDocument={document.showsDocument ? questionDocument : undefined}
           sectionBlockId={
             thread.kind === "comment" && thread.document === undefined
               ? undefined
@@ -164,6 +180,11 @@ function AskThreadPane({ thread }: { thread: MyReplyThreadRow }): ReactNode {
         body="ask"
         issueKey={ask.issue_key}
         loadingName={thread.document?.name ?? "the document"}
+        questionDocument={
+          ask.issue_key === null
+            ? undefined
+            : { blockId: ask.block_id, document: ask.block_artifact, issueKey: ask.issue_key }
+        }
         thread={thread}
       />
     );
@@ -211,6 +232,7 @@ export function ThreadPane({ thread }: { thread: MyReplyRow }): ReactNode {
           row.document?.name ??
           (row.issue === undefined ? "the document" : `${row.issue.key}'s document`)
         }
+        questionDocument={undefined}
         thread={row}
       />
     );

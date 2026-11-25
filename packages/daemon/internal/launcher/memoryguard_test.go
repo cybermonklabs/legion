@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"maps"
-	"net"
 	"os"
 	"path/filepath"
 	"slices"
@@ -1533,17 +1532,16 @@ func runControllerLauncher(t *testing.T) *rig {
 // ones every controller launcher of these tests is given.
 func runControllerLauncherOf(t *testing.T, cfg Config) *rig {
 	t.Helper()
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = listener.Close() })
+	token := ownToken("launcher-token")
+	listener := listenForLauncher(t, token)
 	ctx, cancel := context.WithCancel(context.Background())
 	g := &rig{t: t, listener: listener, private: shortTempDir(t), cancel: cancel, result: make(chan error, 1), stderr: &lockedBuffer{}}
-	cfg.Connect, cfg.Token, cfg.Sandbox = "tcp://"+listener.Addr().String(), "launcher-token", "legion-legion-controller"
+	cfg.Connect, cfg.Token, cfg.Sandbox = "tcp://"+listener.Addr().String(), token, "legion-legion-controller"
 	cfg.Role, cfg.PodUID, cfg.PrivateDir, cfg.Stderr = "controller", "pod-1", g.private, g.stderr
 	go func() {
-		g.result <- Run(ctx, cfg)
+		err := Run(ctx, cfg)
+		listener.codeReturned(err)
+		g.result <- err
 	}()
 	t.Cleanup(func() {
 		cancel()
@@ -1560,11 +1558,12 @@ func runControllerLauncherOf(t *testing.T, cfg Config) *rig {
 }
 
 // acceptController takes the controller launcher's next connection, admits its hello with ack,
-// whatever memory guard settings it carries, and reads the launcher's first state on it.
+// whatever memory guard settings it carries, and reads the launcher's first state on it. The
+// daemon end takes only a hello under the rig's own token (listenForLauncher).
 func (g *rig) acceptController(ack shimwire.LauncherHelloAck) *roleConn {
 	g.t.Helper()
 	conn := acceptRole(g.t, g.listener)
-	if conn.hello.Role != "controller" || conn.hello.Token != "launcher-token" {
+	if conn.hello.Role != "controller" {
 		g.t.Fatalf("hello = %#v, want the controller's", conn.hello)
 	}
 	g.roleConn = conn
@@ -3668,14 +3667,11 @@ func TestControllerPodMemoryGuardRunsInTheRolesDirFormAtTheControllerPodsSetting
 	if err := os.MkdirAll(filepath.Join(rolesDir, "controller", RoleLauncherDir), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(rolesDir, "controller", RoleLauncherDir, LauncherTokenFile), []byte(roleToken("controller")+"\n"), 0o400); err != nil {
+	token := ownToken("launcher-token-controller")
+	if err := os.WriteFile(filepath.Join(rolesDir, "controller", RoleLauncherDir, LauncherTokenFile), []byte(token+"\n"), 0o400); err != nil {
 		t.Fatal(err)
 	}
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = listener.Close() })
+	listener := listenForLauncher(t, token)
 	stderr := &lockedBuffer{}
 	cfg := Config{
 		Connect: "tcp://" + listener.Addr().String(), Sandbox: "legion-legion-controller", PodUID: "pod-1",
@@ -3698,7 +3694,7 @@ func TestControllerPodMemoryGuardRunsInTheRolesDirFormAtTheControllerPodsSetting
 	served := make(chan struct{})
 	go func() {
 		defer close(served)
-		_ = m.serve(ctx, listener.Addr().String())
+		listener.codeReturned(m.serve(ctx, listener.Addr().String()))
 	}()
 	t.Cleanup(func() {
 		cancel()
@@ -3712,7 +3708,7 @@ func TestControllerPodMemoryGuardRunsInTheRolesDirFormAtTheControllerPodsSetting
 	})
 	rig.started()
 	conn := acceptRole(t, listener)
-	if conn.hello.Role != "controller" || conn.hello.Token != roleToken("controller") {
+	if conn.hello.Role != "controller" || conn.hello.Token != token {
 		t.Fatalf("hello = %#v, want the controller's from its roles directory", conn.hello)
 	}
 	conn.acknowledgeWith(memoryGuardAck(70, shimwire.MemoryGuardFloorDefault, shimwire.MemoryGuardControllerWaitDefault, shimwire.MemoryGuardIntervalDefault))
@@ -3812,31 +3808,29 @@ func waitingKillReport(t *testing.T, microVM bool, report shimwire.LauncherMemor
 	if err := os.MkdirAll(filepath.Join(rolesDir, "tester", RoleLauncherDir), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(rolesDir, "tester", RoleLauncherDir, LauncherTokenFile), []byte(roleToken("tester")+"\n"), 0o400); err != nil {
+	token := ownToken("launcher-token-tester")
+	if err := os.WriteFile(filepath.Join(rolesDir, "tester", RoleLauncherDir, LauncherTokenFile), []byte(token+"\n"), 0o400); err != nil {
 		t.Fatal(err)
 	}
-	return servedKillReport(t, Config{Sandbox: "legion-legion-legion-208", RolesDir: rolesDir, Roles: []string{"tester"}, MicroVM: microVM}, report)
+	return servedKillReport(t, token, Config{Sandbox: "legion-legion-legion-208", RolesDir: rolesDir, Roles: []string{"tester"}, MicroVM: microVM}, report)
 }
 
 // waitingControllerKillReport is waitingKillReport for the controller pod's one role: the
 // single-role form's manager as Run builds it, whose lines carry no role's prefix.
 func waitingControllerKillReport(t *testing.T, microVM bool, report shimwire.LauncherMemoryKill) (*roleConn, *lockedBuffer) {
 	t.Helper()
-	return servedKillReport(t, Config{
-		Sandbox: "legion-legion-controller", Token: "launcher-token", Role: "controller", PrivateDir: shortTempDir(t), MicroVM: microVM,
+	token := ownToken("launcher-token")
+	return servedKillReport(t, token, Config{
+		Sandbox: "legion-legion-controller", Token: token, Role: "controller", PrivateDir: shortTempDir(t), MicroVM: microVM,
 	}, report)
 }
 
 // servedKillReport is the rest of waitingKillReport and waitingControllerKillReport: it builds
-// cfg's first manager, with the listener, the pod, the log and the stop grace every such test's is
-// given, queues report on it and serves it until the test's end.
-func servedKillReport(t *testing.T, cfg Config, report shimwire.LauncherMemoryKill) (*roleConn, *lockedBuffer) {
+// cfg's first manager, with a daemon end that takes its hello under token, the pod, the log and the
+// stop grace every such test's is given, queues report on it and serves it until the test's end.
+func servedKillReport(t *testing.T, token string, cfg Config, report shimwire.LauncherMemoryKill) (*roleConn, *lockedBuffer) {
 	t.Helper()
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = listener.Close() })
+	listener := listenForLauncher(t, token)
 	stderr := &lockedBuffer{}
 	cfg.Connect, cfg.PodUID, cfg.Stdout, cfg.Stderr, cfg.StopGrace = "tcp://"+listener.Addr().String(), "pod-1", stderr, stderr, 2*time.Second
 	managers, err := newManagers(cfg, &pidGuard{})
@@ -3849,7 +3843,7 @@ func servedKillReport(t *testing.T, cfg Config, report shimwire.LauncherMemoryKi
 	served := make(chan struct{})
 	go func() {
 		defer close(served)
-		_ = m.serveUntil(ctx, listener.Addr().String())
+		listener.codeReturned(m.serveUntil(ctx, listener.Addr().String()))
 	}()
 	t.Cleanup(func() {
 		cancel()

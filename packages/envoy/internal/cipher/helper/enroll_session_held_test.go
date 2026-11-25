@@ -113,12 +113,19 @@ func TestAnEnrollRefusedSessionHeldBacksOffAndEnrolsWhenThePrincipalChanges(t *t
 	}
 	srv.Registry.Add(sess)
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 	done := make(chan struct{})
 	go func() {
 		srv.enrollLoop(ctx, sess)
 		close(done)
 	}()
+	// The loop saves the registry into this test's temporary directory, so the registry is
+	// closed and the loop ended and waited for before that directory is removed: a save still
+	// running then puts a file in the directory as it is removed, and the removal fails.
+	t.Cleanup(func() {
+		srv.Registry.Close()
+		cancel()
+		<-done
+	})
 
 	// It asks again: a loop that read the refusal as the name's final answer would send one
 	// POST and return, and this session would sign nothing ever again.

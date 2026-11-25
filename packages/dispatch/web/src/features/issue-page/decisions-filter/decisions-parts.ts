@@ -113,7 +113,9 @@ interface EntryBase {
   /** The node, as the whole tree holds it at the place it is edited. */
   readonly node: TreeNode;
   /** The node's parent in the conversation as one line on its row (R2), since no row of this
-   *  filter stands under another; absent for a node that hangs under the issue itself. */
+   *  filter stands under another, with its address and a comment's or a message's marks, as a
+   *  filter's parent line holds them (`presets.ts`); absent for a node that hangs under the
+   *  issue itself. */
   readonly parent?: ParentLine;
   /** The address of the node in the conversation, which the entry links to. */
   readonly path?: string;
@@ -122,11 +124,22 @@ interface EntryBase {
   readonly shapes: readonly ShapedStatement[];
 }
 
+/** That a person declined an ask, with the note they wrote where they wrote one. */
+export interface AskDeclined {
+  readonly by: Actor;
+  /** What the person wrote as they declined, as stored; absent where they wrote nothing. */
+  readonly note?: string;
+  /** The record `note` is: the ask, on this issue. */
+  readonly source: TextSource;
+  /** The server's reading of `note`, where the asks read sent one. */
+  readonly tree?: DisplayTree;
+}
+
 /** One ask of the filter: an open question, or a closed one. */
 export interface AskEntry extends EntryBase {
   /** The person who declined the question, with the note they wrote where they wrote one;
    *  absent for every ask that was not declined. */
-  readonly declined?: { readonly by: Actor; readonly note?: string };
+  readonly declined?: AskDeclined;
   readonly kind: "ask";
 }
 
@@ -136,6 +149,10 @@ export interface DecisionChange {
   /** What the person wrote, as stored. */
   readonly body: string;
   readonly by: Actor;
+  /** When the person last edited what they wrote (`Comment.edited_at`), which the row says
+   *  ` · edited` after the words for (`EditedMark`, INFRA-1523, R2); null for a change nobody
+   *  edited. */
+  readonly editedAt: string | null;
   /** The comment's own id, which is its node's in the conversation. */
   readonly id: string;
   /** The comment's address in the conversation. */
@@ -284,11 +301,21 @@ export function decisionsParts({
         continue;
       }
       const note = closing?.reason ?? "";
-      const declined = node.state === "declined" && closing !== undefined;
+      const declined: AskDeclined | undefined =
+        node.state === "declined" && closing !== undefined
+          ? {
+              by: closing.actor,
+              source: { id: askId, issue: issueKey, kind: "ask" },
+              ...(note === "" ? {} : { note }),
+              ...(note === "" || closing.reason_tree === undefined
+                ? {}
+                : { tree: closing.reason_tree }),
+            }
+          : undefined;
       decidedBy(node.answer?.by ?? closing?.actor).push({
         ...base,
         ...timeOf(node.answer?.at ?? closing?.at ?? node.at),
-        ...(declined ? { declined: { by: closing.actor, ...(note === "" ? {} : { note }) } } : {}),
+        ...(declined === undefined ? {} : { declined }),
         kind: "ask",
         shapes,
       });
@@ -323,6 +350,7 @@ export function decisionsParts({
               at: asked.created_at,
               body: asked.body,
               by: asked.author,
+              editedAt: asked.edited_at,
               id: asked.id,
               path: buildIssuePath({ id: asked.id, key: issueKey, kind: "comment" }),
               source: { id: asked.id, issue: issueKey, kind: "comment" },
@@ -375,8 +403,9 @@ interface Placement {
 }
 
 /** Every node of the tree by its id, in reading order, at its first placement, which is where it
- *  is edited (`TreeNode.transcluded`), with the parent it hangs under there. The issue itself is
- *  no parent a row names: the page is the issue. */
+ *  is edited (`TreeNode.transcluded`), with the parent it hangs under there: its one line, its
+ *  address and its author's corrections of it, as the outline's filters give a row's parent
+ *  (`presets.ts`). The issue itself is no parent a row names: the page is the issue. */
 export function placements(root: TreeNode): ReadonlyMap<string, Placement> {
   const placed = new Map<string, Placement>();
   const walk = (node: TreeNode, above: TreeNode | undefined): void => {

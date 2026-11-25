@@ -119,7 +119,8 @@ func ResolvePrefixes(ctx context.Context, q Queryer, who *model.Actor, ids []Sho
 // itemShortIDCandidates reads into found, under each of ids, the asks or the comments that its
 // prefix names, oldest id first, as itemPrefixCandidates reads them for one id: within the issue
 // or the document that its scope names, or among every item of the kind where its scope names
-// neither. An item who may not see is none of them.
+// neither. An item who may not see is none of them. Each carries the marks its row's
+// postMarkColumns read, as itemPrefixCandidates' do.
 func itemShortIDCandidates(ctx context.Context, q Queryer, who *model.Actor, kind string, ids []ShortID, serverURL string, found map[ShortID][]Candidate) error {
 	if len(ids) == 0 {
 		return nil
@@ -134,17 +135,18 @@ func itemShortIDCandidates(ctx context.Context, q Queryer, who *model.Actor, kin
 		documents[index] = id.Scope.Document
 	}
 	args := queryArgs{values: []any{lows, highs, issues, documents}}
-	rows, err := q.Query(ctx, `select p.n, item.id::text, item.issue_key, coalesce(issue.project_key, doc.project_key, ''), coalesce(doc.slug, ''), item.`+column+`
+	rows, err := q.Query(ctx, `select p.n, item.id::text, item.issue_key, coalesce(issue.project_key, doc.project_key, ''), coalesce(doc.slug, ''), item.`+column+`,
+		       item.edited_at, item.deleted_at, item.deleted_by
 		from unnest($1::text[], $2::text[], $3::text[], $4::text[]) with ordinality as p (low, high, issue_key, document, n)
 		cross join lateral (
-			select item.id, item.issue_key, item.artifact_id, item.`+column+`
+			select item.id, item.issue_key, item.artifact_id, item.`+column+`, `+ItemKind(kind).postMarkColumns("item")+`
 			from `+table+` item
 			where item.id >= p.low::uuid and item.id <= p.high::uuid
 			  and (p.issue_key = '' or item.issue_key = p.issue_key)
 			  and (p.document = '' or item.artifact_id = (select id from artifacts where ref_key = p.document))`+
 		args.andVisible(who, kind, `item.id::text`)+`
 			order by item.id limit `+prefixLimit+`
-		) item
+		) item (id, issue_key, artifact_id, `+column+`, edited_at, deleted_at, deleted_by)
 		left join issues issue on issue.key = item.issue_key
 		left join artifacts doc on doc.id = item.artifact_id
 		order by p.n, item.id`, args.values...)
@@ -156,34 +158,40 @@ func itemShortIDCandidates(ctx context.Context, q Queryer, who *model.Actor, kin
 		var ordinal int64
 		var id, project, slug, body string
 		var issueKey *string
-		if err := rows.Scan(&ordinal, &id, &issueKey, &project, &slug, &body); err != nil {
+		var marks postMarks
+		if err := rows.Scan(append([]any{&ordinal, &id, &issueKey, &project, &slug, &body}, marks.targets()...)...); err != nil {
 			return fmt.Errorf("scan the %ss that %d short ids name: %w", kind, len(ids), err)
 		}
+		candidate, err := itemCandidate(kind, id, issueKey, project, slug, body, serverURL, marks)
+		if err != nil {
+			return err
+		}
 		short := ids[ordinal-1]
-		found[short] = append(found[short], itemCandidate(kind, id, issueKey, project, slug, body, serverURL))
+		found[short] = append(found[short], candidate)
 	}
 	return rows.Err()
 }
 
 // messageShortIDCandidates reads into found, under each of ids, the messages of its issue that
 // its prefix names, oldest id first, as messagePrefixCandidates reads them for one id within an
-// issue. Every id names an issue (ResolvePrefixes), so no direct message is read. A message who
-// may not see is none of them.
+// issue, each with its marks. Every id names an issue (ResolvePrefixes), so no direct message is
+// read. A message who may not see is none of them.
 func messageShortIDCandidates(ctx context.Context, q Queryer, who *model.Actor, ids []ShortID, serverURL string, found map[ShortID][]Candidate) error {
 	if len(ids) == 0 {
 		return nil
 	}
 	lows, highs, issues := shortIDRanges(ids)
 	args := queryArgs{values: []any{lows, highs, issues}}
-	rows, err := q.Query(ctx, `select p.n, m.id::text, m.issue_key, coalesce(i.project_key, ''), m.body
+	rows, err := q.Query(ctx, `select p.n, m.id::text, m.issue_key, coalesce(i.project_key, ''), m.body,
+		       m.edited_at, m.deleted_at, m.deleted_by
 		from unnest($1::text[], $2::text[], $3::text[]) with ordinality as p (low, high, issue_key, n)
 		cross join lateral (
-			select m.id, m.issue_key, m.body
+			select m.id, m.issue_key, m.body, `+ItemMessage.postMarkColumns("m")+`
 			from messages m
 			where m.id >= p.low::uuid and m.id <= p.high::uuid and m.issue_key = p.issue_key`+
 		args.andVisible(who, "message", `m.id::text`)+`
 			order by m.id limit `+prefixLimit+`
-		) m
+		) m (id, issue_key, body, edited_at, deleted_at, deleted_by)
 		left join issues i on i.key = m.issue_key
 		order by p.n, m.id`, args.values...)
 	if err != nil {
@@ -194,11 +202,16 @@ func messageShortIDCandidates(ctx context.Context, q Queryer, who *model.Actor, 
 		var ordinal int64
 		var id, project, body string
 		var issueKey *string
-		if err := rows.Scan(&ordinal, &id, &issueKey, &project, &body); err != nil {
+		var marks postMarks
+		if err := rows.Scan(append([]any{&ordinal, &id, &issueKey, &project, &body}, marks.targets()...)...); err != nil {
 			return fmt.Errorf("scan the messages that %d short ids name: %w", len(ids), err)
 		}
+		candidate, err := itemCandidate("message", id, issueKey, project, "", body, serverURL, marks)
+		if err != nil {
+			return err
+		}
 		short := ids[ordinal-1]
-		found[short] = append(found[short], itemCandidate("message", id, issueKey, project, "", body, serverURL))
+		found[short] = append(found[short], candidate)
 	}
 	return rows.Err()
 }

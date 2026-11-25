@@ -262,10 +262,10 @@ const (
 // transaction id before the mark (events.Horizon.WriterFloor): from then every event at or below
 // the newest one the mark saw has committed or rolled back for good, and an event that commits
 // after the run's first read is above it. That is a proven safe horizon of the log. The Horizon's
-// own proof (Safe, Await) is not taken: a fresh Horizon proves nothing from its first
-// observation, and Await waits on every transaction id on the Postgres instance, an operator's
-// open session and any transaction holding a row lock included, where WriterFloor waits only on
-// the writers of the event log, which hold their transactions for one request.
+// own proof (Safe, Await) is not taken: Safe answers no H from a fresh Horizon's first observation
+// while an event writer older than its observer is open, and Await waits for an observation of
+// its own to be proven, where WriterFloor answers from the mark already taken. Both wait on the
+// same writers, the event writes of this database, which hold their transactions for one request.
 //
 // The table holds one row for each marking rule (refs.BlockIndexMarkingRule), and each run
 // replaces the row of its own rule and leaves the row of every other rule as it was. Whatever the

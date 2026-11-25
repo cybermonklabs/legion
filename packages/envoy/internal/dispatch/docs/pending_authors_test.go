@@ -25,6 +25,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // pendingAuthorRows is the document's durable pending authors (doc_pending_authors): every author
@@ -212,6 +213,7 @@ func countVersionAuthor(t *testing.T, database *store.Store, artifactID string, 
 // held edit itself, with alice's credit, before its version (Ledger.flushThrough), so the held
 // append stores nothing when it lands.
 func TestASettlementsListedEditIsNotOwedAgainWhenItsHeldAppendLands(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
@@ -259,6 +261,7 @@ func TestASettlementsListedEditIsNotOwedAgainWhenItsHeldAppendLands(t *testing.T
 // arms a settlement, and the version still owes nothing it listed: the settlement lists the later
 // editor alone.
 func TestABrowserEditBeforeAVersionCommitsLeavesOnlyItsOwnAuthorOwed(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
@@ -309,6 +312,7 @@ const roomSeedEnv = "DISPATCH_TEST_PENDING_AUTHORS_SEED"
 // Every editor is listed on exactly one version, however two processes' edits, versions and
 // settlements interleave on one document.
 func TestTwoProcessesListEveryEditorOnExactlyOneVersion(t *testing.T) {
+	t.Parallel()
 	seed := time.Now().UnixNano()
 	if fixed := os.Getenv(roomSeedEnv); fixed != "" {
 		parsed, err := strconv.ParseInt(fixed, 10, 64)
@@ -334,6 +338,7 @@ var twoProcessRegressionSeeds = []int64{1792831380700443036, 1792844341416325912
 
 // TestTwoProcessesListEveryEditorOnExactlyOneVersion, for each seed of twoProcessRegressionSeeds.
 func TestTwoProcessesListEveryEditorOnExactlyOneVersionForSeedsThatFailed(t *testing.T) {
+	t.Parallel()
 	for _, seed := range twoProcessRegressionSeeds {
 		t.Run(strconv.FormatInt(seed, 10), func(t *testing.T) { playTwoProcesses(t, seed) })
 	}
@@ -422,6 +427,7 @@ func arrangeNoVersionSettlement(t *testing.T, service *Service, artifactID strin
 // An author a settlement that wrote no version did not list stays owed across a restart: the next
 // version lists her beside its own author.
 func TestAnAuthorANoVersionSettlementDidNotListSurvivesARestart(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	alice := model.Actor{Kind: "user", ID: "alice"}
 	bob := model.Actor{Kind: "session", ID: "bob-session"}
@@ -437,6 +443,7 @@ func TestAnAuthorANoVersionSettlementDidNotListSurvivesARestart(t *testing.T) {
 // A room whose settlement wrote no version is released once it idles out, like any other: the
 // state holds nothing the durable record does not (LEGION-513).
 func TestARoomWhoseSettlementWroteNoVersionIsReleasedWhenIdle(t *testing.T) {
+	t.Parallel()
 	service, database := newRoomReleaseService(t)
 	artifactID := createDocument(t, database, "# First")
 	arrangeNoVersionSettlement(t, service, artifactID, model.Actor{Kind: "user", ID: "alice"})
@@ -455,6 +462,7 @@ func TestARoomWhoseSettlementWroteNoVersionIsReleasedWhenIdle(t *testing.T) {
 // next version does not list her again. The cross-task rule is scoped: a task lists and removes
 // only the stored pending authors (doc_pending_authors) of another task, never its room's credits.
 func TestAnAuthorAnotherProcessLandedIsListedOnce(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "# First")
 	taskA, _ := newTestServiceInstance(t, database)
@@ -478,6 +486,7 @@ func TestAnAuthorAnotherProcessLandedIsListedOnce(t *testing.T) {
 // can hold for as long as its transaction runs: a cold socket loads a document that owes a
 // settlement while another transaction holds that lock.
 func TestALoadNeverWaitsForTheDocumentLock(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
@@ -499,7 +508,7 @@ func TestALoadNeverWaitsForTheDocumentLock(t *testing.T) {
 		t.Fatalf("hold the document lock: %v", err)
 	}
 	server := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
-	t.Cleanup(server.Close)
+	testcleanup.Add(t, server.Close)
 	browser := connectPeer(t, server.URL, artifactID, "reader")
 	if err := browser.AskForDocument(); err != nil {
 		t.Fatalf("ask the room for its document: %v", err)
@@ -518,6 +527,7 @@ func TestALoadNeverWaitsForTheDocumentLock(t *testing.T) {
 // alice's, which a browser made once the fork had read the room. The next version lists alice and
 // not bob, and nothing owes bob.
 func TestAnUploadClearsOnlyTheEditsItsForkHeld(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
@@ -581,6 +591,7 @@ func TestAnUploadClearsOnlyTheEditsItsForkHeld(t *testing.T) {
 // the replacement deleted only what the room held, the paragraph survived the merge, and the
 // document kept text no version recorded while bob stayed owed for it.
 func TestAnUploadOnOneProcessClearsTheAuthorItReadFromTheStore(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "# First")
 	taskA, _ := newTestServiceInstance(t, database)
@@ -622,6 +633,10 @@ func TestAnUploadOnOneProcessClearsTheAuthorItReadFromTheStore(t *testing.T) {
 // made on the room it holds. A row another process's append wrote afterwards, at a version this
 // room never took, stays pending through it.
 func TestARoomsHeldUpdatesStayBoundedAcrossManyAppendsAndAnUpload(t *testing.T) {
+	// Not parallel: alone under the race detector it holds 547 MB of live heap after a collection
+	// (build-cluster run legion-race-docssoak-1); with the detector's shadow of it that is about
+	// three times as much, so beside the package's other tests it would take the binary toward
+	// the step's 8 GB RACE_MEM_LIMIT_KB.
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "# First")
 	taskA, _ := newTestServiceInstance(t, database)
@@ -693,6 +708,7 @@ func heldEntries(hold *roomHold) int {
 // so it refuses an author named twice at one writing update itself, naming the pair, and writes
 // nothing; the same author at two updates is two rows and is written.
 func TestUpsertPendingAuthorsRefusesAnAuthorNamedTwiceAtOneUpdate(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	bob := model.Actor{Kind: "user", ID: "bob"}
 	carol := model.Actor{Kind: "user", ID: "carol"}
@@ -732,6 +748,7 @@ func TestUpsertPendingAuthorsRefusesAnAuthorNamedTwiceAtOneUpdate(t *testing.T) 
 // the append that recorded that actor's change, so a room holding the first append and not the
 // second consumes the first author alone.
 func TestAJoinedWritesAuthorsAreRecordedByTheAppendsThatCreditedThem(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
@@ -790,6 +807,7 @@ func (tx refusedCommitTx) Commit(ctx context.Context) error {
 // folded run included, and deletes no pending author: the record moves only with a commit that
 // deleted the rows. A later upload that commits still deletes exactly the rows that record covers.
 func TestAFailedUploadLeavesItsRoomsHeldUpdatesAsTheyWere(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "# First")
 	taskA, _ := newTestServiceInstance(t, database)
@@ -900,6 +918,7 @@ func uploadOn(t *testing.T, service *Service, artifactID, markdown string, uploa
 // room loaded and whose update the compaction folded into the state that load read. A row another
 // task's room writes after that upload is owed to the next version, not to it.
 func TestAnUploadOnARoomLoadedFromACompactedHistoryConsumesExactlyItsRoomsAuthors(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "# First")
 	taskA, _ := newTestServiceInstance(t, database)
@@ -937,6 +956,7 @@ func TestAnUploadOnARoomLoadedFromACompactedHistoryConsumesExactlyItsRoomsAuthor
 // is pending once the transaction commits, though the version listed the same author for the
 // write's earlier change.
 func TestAWriteAfterItsOwnTransactionsVersionStaysPending(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
@@ -972,6 +992,7 @@ func TestAWriteAfterItsOwnTransactionsVersionStaysPending(t *testing.T) {
 // its append owes (every durable update owes one, appendUpdateTxClass) writes no second version,
 // lists the uploader on the upload's version alone, appends no event, and leaves nothing owed.
 func TestAPlainUploadsSettlementAddsNothingVisible(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
@@ -1016,6 +1037,7 @@ func TestAPlainUploadsSettlementAddsNothingVisible(t *testing.T) {
 // before the version read the room and appended after, lands owed and is listed once, on the next
 // committed version.
 func TestADiscardedNamedVersionMarksNothing(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
@@ -1069,6 +1091,7 @@ func TestADiscardedNamedVersionMarksNothing(t *testing.T) {
 // nothing it listed: alice, whose edit was in flight when the version read the room, is listed on
 // that version alone, and nothing owes her once her append lands.
 func TestAnEvictionDuringAVersionsCommitListsItsAuthorOnce(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
@@ -1130,6 +1153,7 @@ func TestAnEvictionDuringAVersionsCommitListsItsAuthorOnce(t *testing.T) {
 // lists him, the second lists nobody new, and his append, landing after both, owes nothing. A
 // second version that read the first's consumed in-flight record would list bob again.
 func TestTwoVersionsBeforeAnAppendAsksForTheLockListItsAuthorOnce(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "# First")
 	entered := make(chan struct{})
@@ -1143,12 +1167,12 @@ func TestTwoVersionsBeforeAnAppendAsksForTheLockListItsAuthorOnce(t *testing.T) 
 		ServerURL:   "https://dispatch.example",
 		Settle:      time.Hour,
 	})
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		if persistence.released.CompareAndSwap(false, true) {
 			close(release)
 		}
 	})
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		if err := service.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}

@@ -277,6 +277,8 @@ export const realStackReasons: Record<string, string> = {
   "popover-escape.e2e.ts":
     "the command bar's own search reads `/api/v1/search`, and the inbox peek lists the asks the server holds for the reader",
   "polish.e2e.ts": "opens the margin ask composer on the live document",
+  "post-corrections.e2e.ts":
+    "each mark is the server's record of an edit or a delete, written through the API and then read back on four pages",
   "prefix-links.e2e.ts": "`sql`-forged id twins and the server's short-id resolution",
   "priorities.e2e.ts":
     "every row reads what the server decides about a priority: the two faults are its own queries over statuses and the `advances` tuples, a priority a child inherits is its walk down the parent chain, each write is read back out of the store after a reload, the margin is the history the server answers, the rail's count falls under an open page with no reload, and another person's write of a priority reaches that open page as the server's event",
@@ -300,7 +302,7 @@ export const realStackReasons: Record<string, string> = {
   "reading-inbox-threads.e2e.ts":
     "each row writes a record through the API and reads it back in the Inbox: the server lists the Reply rows, builds the approval's question around the summary, and answers each reference's title and the session's name as they are now",
   "reading-pages.e2e.ts":
-    "each row reads a text the server stored and resolves - a component's prose that the source sync read from the fake GitHub, and a priority's description and an issue's reason for touching no component written through the API - and the server decides what each bare key, address and party in it reads as, which a recording would freeze at the state it was recorded in",
+    "each row reads a text the server stored and resolves - a component's prose that the source sync read from the fake GitHub, a priority's description and an issue's reason for touching no component written through the API, and the comments a person wrote, which their page lists from the authored_by tuples the server wrote - and the server decides what each bare key, address, `#id` and party in it reads as, which a recording would freeze at the state it was recorded in",
   "reading-references.e2e.ts":
     "each row writes a record through the API and reads it on another record's surface: a card and the hover card read their target as the server stores it, and the palette's hits are the server's ranking and its ts_headline snippet",
   "recipients-claim.e2e.ts": "claims and routes the server computes, with live card updates",

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // These tests are of the rig's judgment of gaps, which the race build does not make, so they are
@@ -53,7 +54,7 @@ func TestXidGapJudgmentNeedsReadableThreadClocks(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			previous := xidThreadClockAvailability
 			xidThreadClockAvailability = test.probe
-			t.Cleanup(func() { xidThreadClockAvailability = previous })
+			testcleanup.Add(t, func() { xidThreadClockAvailability = previous })
 			required := ""
 			if test.required != "" {
 				required = "1"

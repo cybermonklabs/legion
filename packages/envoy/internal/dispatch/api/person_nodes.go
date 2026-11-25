@@ -2,7 +2,6 @@ package api
 
 import (
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -10,12 +9,12 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
-	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 // personNodeFirstLineRunes is how much of a row's text the page shows: its first line, cut here
-// so the answer carries a line and not a whole comment, and cut as every head a reader draws is
-// (text.HeadRefs), so no reference, link or code span is split by the cut.
+// so the answer carries a line and not a whole comment, by refs.FirstLineWithin, which moves the
+// cut back before a reference that crosses it, except where text.HeadRefs says the cut by length
+// stands.
 const personNodeFirstLineRunes = 240
 
 // personNode is one thing on a person's page: a node they are tied to, which of the two ties it
@@ -30,7 +29,8 @@ type personNode struct {
 	// where the person wrote a thing that was delivered back to a session of theirs.
 	Relations []string `json:"relations"`
 	// FirstLine is the first line of the node's text, cut to personNodeFirstLineRunes. It is
-	// named as every cut first line an answer carries is (refs.Candidate's first_line).
+	// named as every cut first line an answer carries is (refs.Candidate's first_line). A post its
+	// author deleted keeps its row with the first line "", the body the delete cleared.
 	FirstLine string `json:"first_line"`
 	// FirstLineTree is FirstLine read as the tree a reader is shown, present only for a caller
 	// that sent `Dispatch-Trees: 1`: the page's preview draws the line through the one renderer
@@ -41,6 +41,14 @@ type personNode struct {
 	CreatedAt time.Time `json:"created_at"`
 	// Href is the dashboard path the row opens, as askItemRefExpression answers one for an ask.
 	Href string `json:"href"`
+	// EditedAt is when the author of a comment or a message last edited it, so the page marks it
+	// as edited; absent on a post nobody edited, and on an ask.
+	EditedAt *time.Time `json:"edited_at,omitempty"`
+	// DeletedAt and DeletedBy mark a comment or a message its author deleted, as every read of the
+	// post carries them (model.DeletedPostMark), so the page draws the deleted line in its place.
+	// Both are absent on a post that stands, and on an ask.
+	DeletedAt *time.Time   `json:"deleted_at,omitempty"`
+	DeletedBy *model.Actor `json:"deleted_by,omitempty"`
 }
 
 // personNodes is one page of a person's nodes, newest first.
@@ -167,8 +175,16 @@ var personPageKinds = refs.VisibilityKinds()
 // of an agent's file shows no comment or ask. No writer states the node of a comment, an ask or a
 // message gone - a document's is the one this store's writers move gone, on its removal or
 // retirement - so a row standing is a node the store holds live.
+//
+// Each comment and message row carries its post's marks, as every read of a post does: edited_at
+// where its author edited it, and deleted_at and deleted_by where its author deleted it. An ask
+// row carries none. A deleted post keeps its row, and its text is the empty body the delete left.
+// An edit or a delete of a comment delivers from the comment's own node (the outbox's
+// deliveredItem), so the delivered_to tuples it writes fold into the comment's one row in
+// related, and no correction is a row of its own.
 var personNodeItems = `, items as (
 		select r.from_kind as kind, c.id::text as id, r.relations, c.body as text, c.created_at,
+		       c.edited_at, c.deleted_at, c.deleted_by,
 		       case
 		         when i.key is not null then '/issues/' || i.key || '/comments/' || c.id::text
 		         else '/projects/' || a.project_key || '/documents/' || a.slug || '?comment=' || c.id::text
@@ -180,7 +196,8 @@ var personNodeItems = `, items as (
 		where (i.key is not null or a.project_key is not null)
 		  and ` + refs.VisibleKind(graphstore.KindComment, "c.id::text", "$2") + `
 		union all
-		select r.from_kind, a.id::text, r.relations, a.question, a.created_at, ` + askItemRefExpression + `
+		select r.from_kind, a.id::text, r.relations, a.question, a.created_at,
+		       null::timestamptz, null::timestamptz, null::jsonb, ` + askItemRefExpression + `
 		from related r
 		join asks a on r.from_kind = '` + graphstore.KindAsk + `' and r.from_id = a.id::text
 		left join issues i on i.key = a.issue_key
@@ -189,6 +206,7 @@ var personNodeItems = `, items as (
 		  and ` + refs.VisibleKind(graphstore.KindAsk, "a.id::text", "$2") + `
 		union all
 		select r.from_kind, m.id::text, r.relations, m.body, m.created_at,
+		       m.edited_at, m.deleted_at, m.deleted_by,
 		       '/issues/' || i.key || '/messages/' || m.id::text
 		from related r
 		join messages m on r.from_kind = '` + graphstore.KindMessage + `' and r.from_id = m.id::text
@@ -199,7 +217,7 @@ var personNodeItems = `, items as (
 // personNodesQuery pages the rows of one person's page (personNodeItems), newest first. $2 is the
 // acting credential the visibility predicate is bound at (refs.VisibilityArg), $3 and $4 the page.
 var personNodesQuery = personNodesTied + personNodeItems + `
-	select count(*) over () as total, kind, id, relations, text, created_at, href
+	select count(*) over () as total, kind, id, relations, text, created_at, href, edited_at, deleted_at, deleted_by
 	from items
 	order by created_at desc, kind, id desc
 	limit $3 offset $4`
@@ -281,13 +299,23 @@ func (s *server) listPersonNodes(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var row personNode
 		var body string
-		if err := rows.Scan(&response.Total, &row.Kind, &row.ID, &row.Relations, &body, &row.CreatedAt, &row.Href); err != nil {
+		var editedAt, deletedAt *time.Time
+		var deletedBy []byte
+		if err := rows.Scan(&response.Total, &row.Kind, &row.ID, &row.Relations, &body, &row.CreatedAt, &row.Href,
+			&editedAt, &deletedAt, &deletedBy); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
-		first, _, _ := strings.Cut(body, "\n")
-		row.FirstLine = text.HeadRefs(first, personNodeFirstLineRunes, "", s.deps.ServerURL)
+		row.FirstLine = refs.FirstLineWithin(body, s.deps.ServerURL, personNodeFirstLineRunes)
 		row.CreatedAt = row.CreatedAt.UTC()
+		if editedAt != nil {
+			edited := editedAt.UTC()
+			row.EditedAt = &edited
+		}
+		if row.DeletedAt, row.DeletedBy, err = model.DeletedPostMark(deletedAt, deletedBy); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
 		response.Rows = append(response.Rows, row)
 	}
 	if err := rows.Err(); err != nil {

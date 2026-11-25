@@ -642,29 +642,24 @@ func threeBadRequests(t *testing.T) {
 	// the ones listed in routesNoSeedAnswers, each of which needs something no seed of this test
 	// holds, and each of which must then answer no row.
 	//
-	// Each route is sent the traversal words it does not declare. No route but two refuses an
-	// undeclared query parameter, and the base build answered each of the others as it answers
-	// the plain read, so the walked read must answer exactly that: a refusal is an answer
-	// production never gave, and fails as any other. One of the two is a route whose shape declares
-	// RefusesUndeclared, GET /api/v1/me/inbox: the plan's decision 7 has it
-	// refuse every key it does not declare with 400 INVALID_QUERY naming the key (c-routes-gone
-	// requires that refusal), so its walked read is held to exactly that answer
-	// (requireTheUndeclaredKeyRefused), which reads no row and so adds no reach and changes no
-	// shape. The other is GET /api/v1/agents/known, which refuses every key but its `id` and the
-	// `session` every route takes (listKnownSessions). Its shape cannot declare RefusesUndeclared,
-	// which would give the OpenAPI document no `session` for it, so routesRefusingUndeclared names
-	// it, and its walked read is held to the same refusal. A read that requires its query
-	// (routesRefusingTheBareRead) is sent the bare read too, which must be refused naming the
-	// parameter it lacks, so the query the probe adds is what lets it answer a row.
+	// Each route is sent the traversal words it does not declare. GET /api/v1/me/inbox declares
+	// RefusesUndeclared: decision 7 has it refuse every key it does not declare with 400
+	// INVALID_QUERY naming the key (requireTheUndeclaredKeyRefused). The other routes must answer
+	// as they answered the plain read. A read that requires its query (routesRefusingTheBareRead)
+	// is sent the bare read too, which must be refused naming the parameter it lacks.
 	//
 	// A word a route does declare - `kind` on GET /api/v1/me/replies - is that route's
 	// own parameter, which it answers by its own rule, and is no traversal the caller handed
 	// it. A read whose rows can grow between the two reads (growingReads) is walked under a
 	// parameter it declares that holds it to the rows its plain read answered, so the two
 	// answers differ only where the walk did.
-	//
-	// The event log answers only the events at or below the server's safe horizon, which a
-	// transaction open anywhere on the Postgres instance holds back (events.Horizon): under
+
+	// Give each history probe a row to read: a post nobody edited has no history.
+	editThreadComment(t, handler, owned.comment, "The edited comment of this project.", "alice")
+	editIssueMessage(t, handler, owned.message, "The edited message of this project.", "alice")
+
+	// The event log answers only the events at or below the server's safe horizon, which an
+	// event write of the server's database holds back while it is open (events.Horizon): under
 	// load its first read can answer none of the seeded events and its next read every one of
 	// them. Awaiting a horizon proven after the seed puts every seeded event at or below it
 	// before the log is read, and the horizon never falls, so its plain read answers them all
@@ -721,7 +716,7 @@ func threeBadRequests(t *testing.T) {
 		} else {
 			answered++
 		}
-		if _, listed := routesRefusingUndeclared[name]; listed || routeShapes[name].RefusesUndeclared {
+		if routeShapes[name].RefusesUndeclared {
 			requireTheUndeclaredKeyRefused(t, name, walk, walked)
 			continue
 		}
@@ -743,9 +738,7 @@ func threeBadRequests(t *testing.T) {
 
 // requireTheUndeclaredKeyRefused fails unless walked, the read of a route that refuses every key
 // it does not declare (RefusesUndeclared, the plan's decision 7), answers 400
-// INVALID_QUERY naming the first of walk's keys it does not declare, the one its handler reads
-// first (me_inbox.go and agents_known.go each read the keys sorted), and nothing else. A route
-// routesRefusingUndeclared lists refuses the same way, the `session` every route takes aside.
+// INVALID_QUERY naming the first of walk's keys it does not declare, and nothing else.
 func requireTheUndeclaredKeyRefused(t *testing.T, name, walk string, walked *httptest.ResponseRecorder) {
 	t.Helper()
 	query, err := url.ParseQuery(walk)
@@ -897,15 +890,6 @@ func holdsSomething(value any) bool {
 	}
 }
 
-// routesRefusingUndeclared are the reads beside GET /api/v1/me/inbox that refuse every query key
-// they do not declare by name, each with the rule that refuses it. Each takes the `session` every
-// route takes too, so its shape cannot declare RefusesUndeclared, which would give the OpenAPI
-// document no `session` for the route; its walked read is held to the refusal all the same
-// (requireTheUndeclaredKeyRefused), which reads no row.
-var routesRefusingUndeclared = map[string]string{
-	"GET /api/v1/agents/known": "listKnownSessions refuses every key but id and session with 400 INVALID_QUERY naming it",
-}
-
 // routesRefusingTheBareRead are the reads routeProbeQueries sends a query that refuse the read
 // without it, each with the parameter the refusal names. The probe sends each the bare read too,
 // which must answer 400 INVALID_QUERY naming that parameter (requireTheBareReadRefused): the
@@ -957,10 +941,10 @@ func routeProbeQueries(owned crossProject) map[string]string {
 // hold it to. All three read the event log. The server's own background work appends to it after
 // the request that caused the work has been answered (a document's settlement, a keyed write
 // whose client left), and the whole log is read only up to the safe horizon, which moves on
-// whenever a transaction open on the Postgres instance ends. Every other read the probe walks
-// either lists rows that only a write request adds - the inbox's open asks, an issue's comments,
-// messages and asks, the broadcasts - and the probe sends only reads, or answers an object,
-// whose shape is its keys (answerShape), which a row added beneath it leaves as they were:
+// whenever an event write of the server's database that held it ends. Every other read the probe
+// walks either lists rows that only a write request adds - the inbox's open asks, an issue's
+// comments, messages and asks, the broadcasts - and the probe sends only reads, or answers an
+// object, whose shape is its keys (answerShape), which a row added beneath it leaves as they were:
 // search, the replies, the answers, a person's nodes, the related checks.
 var growingReads = map[string]func(answered []byte) (string, bool){
 	"GET /api/v1/events/log":            eventLogBound,
@@ -1499,6 +1483,11 @@ var readRelations = map[string][]string{
 // is, so a field the answer drops fails naming its path however deep it sits, where a check of
 // the top level alone, or of the fields the document requires, passes a nested field and one Go
 // leaves out where it is empty (`omitempty`).
+//
+// Four paths are not the fork point's, and each is named where it stands: deleted_at and
+// deleted_by of the comment and of its replies, which pull request #3512 (INFRA-1523) adds to
+// every comment by its R3 and not this child. Every other path is the fork point's, so a field
+// the store adds to either read still fails here as one the read did not answer.
 var readAnswerPaths = map[string][]string{
 	"GET /api/v1/comments/{id}": {
 		"comment",
@@ -1512,6 +1501,11 @@ var readAnswerPaths = map[string][]string{
 		"comment.answers", "comment.artifact_id", "comment.ask_id",
 		"comment.author", "comment.author.id", "comment.author.kind", "comment.author.proven",
 		"comment.body", "comment.created_at",
+		// INFRA-1523's R3, not #3178: the delete mark every read of a comment carries
+		// (model.Comment's DeletedAt and DeletedBy, no omitempty). A comment that stands, as this
+		// seed's does, answers each as null, and answerWalk.object counts a field it carries as
+		// null.
+		"comment.deleted_at", "comment.deleted_by",
 		"comment.deliveries", "comment.deliveries[].attempt", "comment.deliveries[].comment_id",
 		"comment.deliveries[].created_at", "comment.deliveries[].delivery", "comment.deliveries[].duplicate",
 		"comment.deliveries[].envelope_id", "comment.deliveries[].error", "comment.deliveries[].reply_id",
@@ -1527,6 +1521,9 @@ var readAnswerPaths = map[string][]string{
 		"replies[].anchor", "replies[].answers", "replies[].artifact_id", "replies[].ask_id",
 		"replies[].author", "replies[].author.id", "replies[].author.kind", "replies[].author.proven",
 		"replies[].body", "replies[].created_at", "replies[].deliveries", "replies[].edited_at", "replies[].id",
+		// INFRA-1523's R3, not #3178: the reply's delete mark, null on this seed's reply, as
+		// comment.deleted_at and comment.deleted_by above.
+		"replies[].deleted_at", "replies[].deleted_by",
 		"replies[].issue_key", "replies[].mentions", "replies[].reply_block", "replies[].reply_to",
 		"replies[].resolved", "replies[].resolved_at", "replies[].resolved_by", "replies[].suggestion",
 		"replies[].turn",

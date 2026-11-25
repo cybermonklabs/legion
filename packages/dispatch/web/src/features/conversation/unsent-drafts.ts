@@ -114,6 +114,9 @@ export interface UnsentDrafts {
   /** Whether a draft is kept under `name`, re-rendering whenever that changes: a thread card
    *  whose reply composer is off the page says it keeps the reply's draft. */
   useKept(name: string): boolean;
+  /** The draft kept under `name`, re-rendering whenever it changes and read once each time it
+   *  does: a host that draws a kept reply itself draws its words (`KeptReplyToDeleted`). */
+  useUnsent(name: string): SentDraft | undefined;
   /** Who is signed in now: another person's sign-in forgets every draft in both stores, the
    *  drafts kept by address with them, in the page and in the tab, since each is the person's who
    *  typed it (`DraftStore.signedIn`); the first sign-in takes up the drafts the tab kept for that
@@ -197,9 +200,12 @@ export function unsentDraftsOf(client: QueryClient): UnsentDrafts {
   if (unsent === undefined) {
     const store = createDraftStore("unsent");
     const awayStore = createDraftStore("away");
-    function useKept(name: string): boolean {
+    function useUnsent(name: string): SentDraft | undefined {
       const [kept] = store.useDraft(name);
-      return useMemo(() => parseSent(kept) !== undefined, [kept]);
+      return useMemo(() => parseSent(kept), [kept]);
+    }
+    function useKept(name: string): boolean {
+      return useUnsent(name) !== undefined;
     }
     function useAway(name: string): readonly AwayDraft[] {
       const [kept] = awayStore.useDraft(name);
@@ -234,6 +240,7 @@ export function unsentDraftsOf(client: QueryClient): UnsentDrafts {
       },
       useAway,
       useKept,
+      useUnsent,
       write: (name, draft) => store.set(name, draft === undefined ? "" : JSON.stringify(draft)),
     };
     drafts.set(client, unsent);

@@ -24,12 +24,20 @@ beforeAll(async () => {
 const refusal = new ApiError(503, { code: "UNAVAILABLE", error: "the server is down" });
 const verdict = new ApiError(422, { code: "KEY_REUSED", error: "the key names another write" });
 
+/** What a surface does once its write settles, where a test counts it: its rollback (`onError`)
+ *  and its landing (`onSuccess`). */
+interface AnswerWriteSettled {
+  readonly onError?: () => void;
+  readonly onSuccess?: (data: unknown) => void;
+}
+
 /** A surface's write of an answer, as `AskCard`'s form makes it, over one app's queue. */
-function renderAnswerWrite() {
+function renderAnswerWrite(settled: AnswerWriteSettled = {}) {
   return renderOnQueue(() =>
     useKeyedWrite({
       inline: true,
       label: () => "Answer to “Ship?”",
+      ...settled,
       method: "POST",
       write: (input: { selected: string[] }, bounds) =>
         api.answerAsk("ask-1", { expected_edited_at: null, ...input }, bounds),
@@ -441,19 +449,12 @@ test("a write answered KEY_COMMITTED succeeds with null: no error and no rollbac
   );
   let rolledBack = 0;
   const succeeded: unknown[] = [];
-  const { client, hook } = renderOnQueue(() =>
-    useKeyedWrite({
-      inline: true,
-      label: () => "Answer to “Ship?”",
-      onError: () => {
-        rolledBack += 1;
-      },
-      onSuccess: (data) => succeeded.push(data),
-      method: "POST",
-      write: (input: { selected: string[] }, bounds) =>
-        api.answerAsk("ask-1", { expected_edited_at: null, ...input }, bounds),
-    })
-  );
+  const { client, hook } = renderAnswerWrite({
+    onError: () => {
+      rolledBack += 1;
+    },
+    onSuccess: (data) => succeeded.push(data),
+  });
 
   try {
     let resolved: unknown = "unset";
@@ -470,6 +471,53 @@ test("a write answered KEY_COMMITTED succeeds with null: no error and no rollbac
   } finally {
     hook.unmount();
     answerAsk.mockRestore();
+    tab.close();
+  }
+});
+
+// W27 again, for the other answer a landed write can get: a repeat under the key that Dispatch
+// answers with the first answer's own 2xx, replayed (`Idempotency-Replayed: ?1`), and a body that
+// reads ANSWER_NOT_KEPT, since it keeps no copy of that answer. The write was made, so it too
+// succeeds with `null`: nothing is rolled back, nothing shows as failed, and it is not sent again.
+test("a write whose replayed answer Dispatch kept no copy of succeeds with null: no error and no rollback", async () => {
+  const tab = keptTab();
+  const answerPath = "/api/v1/asks/ask-1/answer";
+  const fetched = spyOn(globalThis, "fetch").mockImplementation((async (
+    input: RequestInfo | URL
+  ) =>
+    String(input) === answerPath
+      ? Response.json(
+          { code: "ANSWER_NOT_KEPT", error: "Dispatch kept no copy of this answer" },
+          { headers: { "Idempotency-Replayed": "?1" }, status: 200 }
+        )
+      : Response.json(
+          { code: "NOT_FOUND", error: "no such route" },
+          { status: 404 }
+        )) as typeof fetch);
+  let rolledBack = 0;
+  const succeeded: unknown[] = [];
+  const { client, hook } = renderAnswerWrite({
+    onError: () => {
+      rolledBack += 1;
+    },
+    onSuccess: (data) => succeeded.push(data),
+  });
+
+  try {
+    let resolved: unknown = "unset";
+    await act(async () => {
+      resolved = await hook.result.current.mutateAsync({ selected: ["Ship"] });
+    });
+    expect(resolved).toBeNull();
+    expect(fetched.mock.calls.map(([input]) => String(input))).toEqual([answerPath]);
+    expect(hook.result.current.isSuccess).toBe(true);
+    expect(hook.result.current.data).toBeNull();
+    expect(rolledBack).toBe(0);
+    expect(succeeded).toEqual([null]);
+    expect(writesOf(client).rows()).toEqual([]);
+  } finally {
+    hook.unmount();
+    fetched.mockRestore();
     tab.close();
   }
 });

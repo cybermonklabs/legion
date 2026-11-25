@@ -1,9 +1,9 @@
 import { describe, expect, test } from "bun:test"
 import { chmodSync, existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
-import { agentStreamControlSubject } from "@legion/contracts"
+import { agentStreamControlSubject, IDEMPOTENCY_KEY_COMMITTED } from "@legion/contracts"
 import type { DispatchDelivery, RenderInboundResult } from "@legion/envoy-client/delivery"
-import type { DispatchClient } from "@legion/envoy-client/dispatch-http"
+import { type DispatchClient, DispatchWriteLandedError } from "@legion/envoy-client/dispatch-http"
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories"
 import type { Subprocess } from "bun"
 import { sessionAdmission } from "../src/channel-connection"
@@ -11,7 +11,7 @@ import type { ChannelConnection, ChannelTopicSubscription } from "../src/channel
 import { startCodexAgentStream } from "../src/codex/codex-agent-stream"
 import { codexProcessEnv, fitArgument, queueMessage } from "../src/codex/codex-cli"
 import type { CodexInboxItem } from "../src/codex/codex-inbox"
-import { callingThread } from "../src/codex/codex-server"
+import { callingThread, dispatchToolDefinition } from "../src/codex/codex-server"
 import {
   codexHome,
   codexPluginDataDirectory,
@@ -501,12 +501,24 @@ describe("the Codex live view", () => {
   }, 15_000)
 })
 
+/** The Dispatch message every frame of these rows delivers. */
+const MESSAGE = "33333333-3333-4333-8333-333333333333"
+
+/** A reply to MESSAGE Dispatch made and gave no copy of its answer for: what every reply of a
+ *  harness built with `repliesLand` throws, and whose message the line about it carries. */
+const REPLY_LANDED = new DispatchWriteLandedError(
+  IDEMPOTENCY_KEY_COMMITTED,
+  409,
+  "POST",
+  `https://dispatch.test/api/v1/messages/${MESSAGE}/reply`,
+)
+
 function frame(mode: "steer" | "btw", body: string): RenderInboundResult {
   const delivery = {
     attempt: 1,
     body,
     broadcastId: undefined,
-    id: "33333333-3333-4333-8333-333333333333",
+    id: MESSAGE,
     issueKey: null,
     mode,
     resource: "message",
@@ -520,12 +532,24 @@ function frame(mode: "steer" | "btw", body: string): RenderInboundResult {
 }
 
 describe("the Codex router of a person's messages", () => {
-  async function harness(body: string) {
+  async function harness(
+    body: string,
+    options: {
+      /** Every reply is one Dispatch made and gave no copy of its answer for: it is recorded,
+       *  then thrown (`REPLY_LANDED`). */
+      readonly repliesLand?: boolean
+      /** What the accept throws instead of answering with `body`. */
+      readonly acceptThrows?: Error
+    } = {},
+  ) {
     const stateFile = userTurnStateFile(directory, `router-${Math.random()}`)
     const delivered: CodexInboxItem[] = []
     const replies: { body?: string; error?: string }[] = []
     const expected: string[] = []
     const asked: string[] = []
+    const warnings: string[] = []
+    /** Settles at the first warning: the last thing a BTW or a `/` reply that failed does. */
+    const warned = Promise.withResolvers<void>()
     const router = createCodexUserTurnRouter({
       ask: async (question) => {
         asked.push(question)
@@ -536,21 +560,24 @@ describe("the Codex router of a person's messages", () => {
       },
       dispatch: () =>
         ({
-          acceptMessageDelivery: async (id: string) => ({
-            body,
-            delivery: "steer",
-            message_id: id,
-          }),
+          acceptMessageDelivery: async (id: string) => {
+            if (options.acceptThrows !== undefined) throw options.acceptThrows
+            return { body, delivery: "steer", message_id: id }
+          },
         }) as unknown as DispatchClient,
       expect: (text, id) => expected.push(`${id}:${text}`),
       reply: async (_delivery, result) => {
         replies.push(result)
+        if (options.repliesLand) throw REPLY_LANDED
       },
       sessionId: () => "s1",
       state: userTurnState(stateFile, await readUserTurnState(stateFile)),
-      warn: () => undefined,
+      warn: (text) => {
+        warnings.push(text)
+        warned.resolve()
+      },
     })
-    return { asked, delivered, expected, replies, router }
+    return { asked, delivered, expected, replies, router, warned: warned.promise, warnings }
   }
 
   test("a Send puts the body Dispatch stored into the session as the person's message", async () => {
@@ -581,6 +608,53 @@ describe("the Codex router of a person's messages", () => {
     await Bun.sleep(10)
     expect(replies).toEqual([{ body: `/model was not run: ${CODEX_COMMAND_REFUSAL}` }])
     expect(delivered).toEqual([])
+  })
+
+  // A reply Dispatch made and gave no copy of its answer for answered the attempt: an error reply
+  // after it would answer the person a second time with the error of a write that was made, and
+  // the line says it landed, never that it did not reach Dispatch.
+  test("a BTW answer that landed with no answer back is followed by no error reply", async () => {
+    const { replies, router, warned, warnings } = await harness("unused", { repliesLand: true })
+    expect(await router.route(frame("btw", "which file?"))).toBe(true)
+    await warned
+    expect(replies).toEqual([{ body: "answer to which file?" }])
+    expect(warnings).toEqual([
+      `a BTW answer to message ${MESSAGE} landed on Dispatch, which gave no copy of its answer — ${REPLY_LANDED.message}`,
+    ])
+  })
+
+  test("a reply to a / message that landed with no answer back is not said to have missed Dispatch", async () => {
+    const { replies, router, warned, warnings } = await harness("/model gpt-y", {
+      repliesLand: true,
+    })
+    expect(await router.route(frame("steer", "/model gpt-y"))).toBe(true)
+    await warned
+    expect(replies).toEqual([{ body: `/model was not run: ${CODEX_COMMAND_REFUSAL}` }])
+    expect(warnings).toEqual([
+      `a reply to message ${MESSAGE} landed on Dispatch, which gave no copy of its answer — ${REPLY_LANDED.message}`,
+    ])
+  })
+
+  // An accept Dispatch recorded and gave no copy of its answer for spent the attempt as this
+  // session's, and the stored body a turn is made of is not in hand: the frame keeps its card, and
+  // the line says the accept was recorded and why no turn follows, never that Dispatch did not
+  // accept it.
+  test("an accept that landed with no answer back keeps the card, saying the accept was recorded", async () => {
+    const landed = new DispatchWriteLandedError(
+      IDEMPOTENCY_KEY_COMMITTED,
+      409,
+      "POST",
+      `https://dispatch.test/api/v1/messages/${MESSAGE}/deliveries/1/accept`,
+    )
+    const { delivered, replies, router, warnings } = await harness("unused", {
+      acceptThrows: landed,
+    })
+    expect(await router.route(frame("steer", "ship it"))).toBe(false)
+    expect(delivered).toEqual([])
+    expect(replies).toEqual([])
+    expect(warnings).toEqual([
+      `Dispatch recorded this session's accept of message ${MESSAGE} and gave no copy of its answer (${landed.message}), so no turn follows; it arrives as a card`,
+    ])
   })
 })
 
@@ -644,5 +718,18 @@ describe("the Codex thread a tool call comes from", () => {
     expect(callingThread({ progressToken: 1 })).toBeUndefined()
     expect(callingThread(undefined)).toBeUndefined()
     expect(callingThread({ threadId: "" })).toBeUndefined()
+  })
+})
+
+// The `dispatch` command exits 2 for a usage error and 1 for every other failure, a Dispatch it
+// cannot reach as much as a refusal (runDispatchCli in packages/envoy-client/src/dispatch-cli.ts),
+// so the Codex tool that runs it says so and no longer reads exit 1 as a refusal alone.
+describe("the Codex dispatch tool's description", () => {
+  test("says exit 1 is any failure but a usage error", () => {
+    const { description } = dispatchToolDefinition()
+    expect(description).toContain(
+      "0 written or read, 2 a usage error, 1 any other failure: Dispatch's refusal, a Dispatch the command cannot reach, or `ANSWER_NOT_KEPT` for a call that wrote nothing, which you run again.",
+    )
+    expect(description).not.toContain("1 refused by Dispatch")
   })
 })

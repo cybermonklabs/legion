@@ -101,7 +101,12 @@ type bootConfig struct {
 	// ReviewerAppID is DISPATCH_REVIEWER_APP_ID, the id of the App whose `tester` and `architect`
 	// check runs are Legion's verdicts, as the text of the number GitHub's own objects carry it
 	// as. Empty means the CI reconcile pass records no verdict check at all.
-	ReviewerAppID  string
+	ReviewerAppID string
+	// VerdictAppID is DISPATCH_VERDICT_APP_ID, the id of the App that writes `legion-verdict`, as
+	// the text of the number GitHub's own objects carry it as. The CI reconcile pass leaves that
+	// App's check suites out of the record, as the listener does (ENVOY_VERDICT_APP_ID). Empty
+	// means the pass records every App's completed suite.
+	VerdictAppID   string
 	IdentityHeader string
 	// IAPAudience is DISPATCH_IAP_AUDIENCE under DISPATCH_IDENTITY=iap: the audience
 	// Identity-Aware Proxy signs each request's assertion for, which the assertion's aud must
@@ -1109,7 +1114,7 @@ func main() {
 	// ciInstance is filled in once this process is registered, below, and each pass records its
 	// counts in ci_reconcile_passes under the id it then holds.
 	ciInstance := &registeredInstance{}
-	reconciler, err := ciReconciler(natsClient, database, appCfg, boot.GitHubAPIBase, boot.ReviewerAppID, ciReconcileInterval, ciInstance, renames)
+	reconciler, err := ciReconciler(natsClient, database, appCfg, boot.GitHubAPIBase, boot.ReviewerAppID, boot.VerdictAppID, ciReconcileInterval, ciInstance, renames)
 	if err != nil {
 		slog.Error("dispatch: open the CI reconcile pass", "error", err)
 		os.Exit(1)
@@ -1118,6 +1123,9 @@ func main() {
 		slog.Info("dispatch: reconciling the CI records GitHub's webhook never delivered", "client_id", appCfg.ClientID, "interval", ciReconcileInterval)
 		if boot.ReviewerAppID == "" {
 			slog.Info("dispatch: the CI reconcile pass records no tester or architect check run: DISPATCH_REVIEWER_APP_ID is unset, so no App's verdict checks are trusted")
+		}
+		if boot.VerdictAppID == "" {
+			slog.Info("dispatch: the CI reconcile pass leaves no App's check suites out: DISPATCH_VERDICT_APP_ID is unset; give it the listener's ENVOY_VERDICT_APP_ID")
 		}
 		reconciler.GitHubReads = recordGitHubRead
 		// The period argument is what makes one process serve each period (duty_passes): the
@@ -1580,6 +1588,9 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		}
 	}
 	if boot.ReviewerAppID, err = reviewerAppID(env); err != nil {
+		return bootConfig{}, err
+	}
+	if boot.VerdictAppID, err = verdictAppID(env); err != nil {
 		return bootConfig{}, err
 	}
 	for _, setting := range []struct {

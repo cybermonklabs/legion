@@ -3,13 +3,15 @@ import {
   createIssue,
   createProject,
   getArtifact,
+  getAsk,
   getIssue,
   listOpenAsks,
   patchIssue,
   resolveAsk,
 } from "./api";
+import { documentEditor } from "./editor";
 import { listTrigger, pickFromList } from "./filters";
-import { inboxList, inboxPane, selectedRow } from "./inbox-pane";
+import { inboxList, inboxPane, selectedRow, selectRow } from "./inbox-pane";
 import {
   ADDED_WORD,
   ANCHORED_QUESTION,
@@ -20,11 +22,18 @@ import {
   expectTwoColumns,
   INBOX,
   inboxAt,
+  OPEN_BEFORE_HEADING,
+  OPEN_PROJECT,
+  OPEN_RUNBOOK_HEADING,
+  OPEN_SPEC_HEADING,
+  OPEN_TALK_DECISION,
+  OPEN_TALK_HEADING,
   paneOffsets,
   REMOVED_WORD,
   RETIRED_BLOCK,
   SCOPE_ANCHOR,
   seedInbox,
+  seedOpenPage,
   session,
   WINDOW_ANCHOR,
 } from "./inbox-reading-pane";
@@ -422,6 +431,177 @@ test("picker keeps a pick on screen: the priority on an Inbox row, over a read t
     ]);
     expect(await getIssue(issue.key)).toMatchObject({ priority: 1 });
     await expect(picker).toHaveAccessibleName(`Priority of ${issue.key} P1`);
+  } finally {
+    await alice.close();
+  }
+});
+
+// The head's Open page opens the document a question is about, at the section the column is
+// opened at: a decision block's document at the heading above the block, or at the block where no
+// heading stands above it; an approval request's document at its top; the quoted document at the
+// quote's block; the issue for a question in no document; a project document's question opens that
+// document at its section.
+// The Reply thread of a decision block opens its document at the section once the column shows
+// that document, and `o` follows it there.
+// SLOW(>=2s): three documents and eight questions seeded, then four pages opened from the column
+// and walked back.
+test("Open page opens the document of the question, at its section, for each kind of question and for the Reply thread of a decision block", async ({
+  browser,
+}) => {
+  // The eight `href` reads are soft, so on a tree without this change each one that fails there
+  // waits out the whole expect timeout (15 s, `e2e/expect-timeout.ts`) and the row still reaches
+  // item 8: six of them outlast a row's default limit.
+  test.setTimeout(180_000);
+  const seed = await seedOpenPage();
+
+  // 1. What decides the row's scope, before the Inbox opens. Question 1 has the shape the server
+  // sends for a decision block in an issue's second document, and its Inbox row names no project
+  // document; items 1 to 7 each wait on alice, question 6 because it was handed to her. The seed
+  // waits until item 8 is her Reply thread.
+  const first = (await getAsk(seed.talkDecision)).ask;
+  expect(
+    {
+      anchor: first.anchor,
+      artifact_id: first.artifact_id,
+      block_artifact: {
+        primary: first.block_artifact?.primary,
+        slug: first.block_artifact?.slug,
+      },
+      block_id: first.block_id,
+      kind: first.kind,
+    },
+    "question 1 is a decision block in the issue's second document"
+  ).toEqual({
+    anchor: null,
+    artifact_id: null,
+    block_artifact: { primary: false, slug: "talk-md" },
+    block_id: OPEN_TALK_DECISION,
+    kind: "question",
+  });
+  const questions = [
+    seed.talkDecision,
+    seed.specDecision,
+    seed.approval,
+    seed.quoted,
+    seed.plain,
+    seed.runbookDecision,
+    seed.beforeHeading,
+  ];
+  const inbox = await listOpenAsks();
+  expect(
+    inbox.find((row) => row.id === seed.talkDecision),
+    "question 1's Inbox row names no project document"
+  ).not.toHaveProperty("document");
+  expect(
+    questions.map((id) => {
+      const row = inbox.find((listed) => listed.id === id);
+      return { id, waiting_on: row?.waiting_on, waiting_on_person: row?.waiting_on_person };
+    }),
+    "items 1 to 7 each wait on alice"
+  ).toEqual(questions.map((id) => ({ id, waiting_on: "human", waiting_on_person: "alice" })));
+  expect((await getAsk(seed.runbookDecision)).ask.asked_of, "question 6 is handed to alice").toBe(
+    "alice"
+  );
+
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    await page.setViewportSize({ height: 900, width: 1440 });
+    const pane = inboxPane(page);
+    const openPage = pane.getByRole("link", { name: "Open page" });
+    const showsTalk = () => expect(pane).toContainText(OPEN_TALK_HEADING);
+    const issue = `/issues/${seed.issueKey}`;
+    const talk = `${issue}/artifacts/${seed.talkSlug}`;
+    const talkSection = `#b-${seed.headings.talk}`;
+    const talkDecision = { fragment: talkSection, path: talk, row: seed.talkDecision };
+    const specDecision = {
+      fragment: `#b-${seed.headings.spec}`,
+      path: `${issue}/spec`,
+      row: seed.specDecision,
+    };
+    const approval = { fragment: "", path: talk, row: seed.approval };
+    const thread = { fragment: talkSection, path: talk, row: seed.answeredThread };
+    const items = [
+      { ...talkDecision, shows: showsTalk },
+      { ...specDecision, shows: () => expect(pane).toContainText(OPEN_SPEC_HEADING) },
+      {
+        ...approval,
+        shows: () =>
+          expect(
+            pane.getByRole("region", { name: `Document version ${seed.approvalVersion}` })
+          ).toContainText(OPEN_TALK_HEADING),
+      },
+      {
+        fragment: `#b-${seed.quotedBlockId}`,
+        path: talk,
+        row: seed.quoted,
+        shows: () => expect(pane.getByTestId(`ask-${seed.quoted}`)).toBeVisible(),
+      },
+      {
+        fragment: "",
+        path: issue,
+        row: seed.plain,
+        shows: () => expect(pane.getByTestId(`ask-${seed.plain}`)).toBeVisible(),
+      },
+      {
+        fragment: `#b-${seed.headings.runbook}`,
+        path: `/projects/${OPEN_PROJECT}/documents/${seed.runbookSlug}`,
+        row: seed.runbookDecision,
+        shows: () => expect(pane).toContainText(OPEN_RUNBOOK_HEADING),
+      },
+      // No heading stands above this block, so the page opens at the block itself.
+      // `blockFragment` leaves letters, digits and `-` bare, so its id is its own fragment.
+      {
+        fragment: `#b-${OPEN_BEFORE_HEADING}`,
+        path: talk,
+        row: seed.beforeHeading,
+        shows: showsTalk,
+      },
+      { ...thread, shows: showsTalk },
+    ];
+
+    // 2. Each item as the column draws it: the row selected, the column showing the question's
+    // document or card, and Open page at that document's section. The read retries until the
+    // editor has drawn the block and the address moves from the block to its heading.
+    for (const [index, item] of items.entries()) {
+      if (index === 0) {
+        await page.goto(inboxAt(item.row));
+      } else {
+        await navigateInApp(page, inboxAt(item.row));
+      }
+      await expect(selectedRow(page)).toHaveAttribute("data-inbox-row", item.row);
+      await item.shows();
+      await expect
+        .soft(openPage, `item ${index + 1}'s Open page`)
+        .toHaveAttribute("href", `${item.path}${item.fragment}`);
+    }
+
+    // 3. Four of them opened from the column: the link lands on that address, and the page there
+    // is the question's document.
+    for (const [item, holds, lacks] of [
+      [talkDecision, OPEN_TALK_HEADING, OPEN_SPEC_HEADING],
+      [specDecision, OPEN_SPEC_HEADING, OPEN_TALK_HEADING],
+      [approval, OPEN_TALK_HEADING, OPEN_SPEC_HEADING],
+      [thread, OPEN_TALK_HEADING, OPEN_SPEC_HEADING],
+    ] as const) {
+      const address = `${item.path}${item.fragment}`;
+      await navigateInApp(page, inboxAt(item.row));
+      await expect(selectedRow(page)).toHaveAttribute("data-inbox-row", item.row);
+      await expect(openPage).toHaveAttribute("href", address);
+      await openPage.click();
+      await expect(page).toHaveURL(address);
+      await expect(documentEditor(page)).toContainText(holds);
+      await expect(documentEditor(page)).not.toContainText(lacks);
+      await page.goBack();
+      await expect(selectedRow(page)).toHaveAttribute("data-inbox-row", item.row);
+    }
+
+    // 4. `o` follows a thread row's Open page, so on item 8 it opens the same address.
+    await selectRow(page, thread.row);
+    await expect(openPage).toHaveAttribute("href", `${thread.path}${thread.fragment}`);
+    await page.locator("body").focus();
+    await page.keyboard.press("o");
+    await expect(page).toHaveURL(`${thread.path}${thread.fragment}`);
   } finally {
     await alice.close();
   }

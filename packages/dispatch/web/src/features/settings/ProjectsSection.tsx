@@ -391,12 +391,12 @@ interface ProjectSettingWrite<TValue> {
  *  once none is pending it shows the stored value. The row's error is read from the cache too:
  *  when the project's newest save was refused, the row says so with its reason, even on a row
  *  mounted after it failed, until a newer pick or Retry starts another save. Each answer lands in
- *  `read`, the read that holds the setting, so the control does not flash back to the old value,
- *  and `read` is refetched after each save that reached the server settles. */
+ *  `queryKey`, the read that holds the setting, so the control does not flash back to the old
+ *  value, and that read is refetched after each save that reached the server settles. */
 function useProjectSettingWrite<TAnswer extends object, TValue, TRows>({
   label,
   project,
-  read,
+  queryKey,
   save,
   setting,
   store,
@@ -405,11 +405,11 @@ function useProjectSettingWrite<TAnswer extends object, TValue, TRows>({
   /** What the shell's pending-writes indicator names a pick. */
   label: (value: TValue) => string;
   project: string;
-  read: QueryKey;
+  queryKey: QueryKey;
   save: (value: TValue, bounds: WriteBounds) => Promise<TAnswer>;
   /** The setting's name in the mutation key and scope, such as `default-assignee`. */
   setting: string;
-  /** The rows of `read` with a save's answer in them. */
+  /** The rows of the `queryKey` read with a save's answer in them. */
   store: (rows: TRows | undefined, saved: TAnswer) => TRows | undefined;
   /** The setting in the row's refusal, such as `the default assignee`. */
   what: string;
@@ -446,13 +446,13 @@ function useProjectSettingWrite<TAnswer extends object, TValue, TRows>({
     // after the press can be out still when the answer lands - the save may wait its turn behind
     // another in the scope - so the answer is put over the reads out then as well
     // (`replaceQueryData`).
-    onMutate: () => queryClient.cancelQueries({ queryKey: read }),
+    onMutate: () => queryClient.cancelQueries({ queryKey }),
     onSuccess: (saved) => {
       // Saved with no answer to give: the store reads every query again.
       if (saved === null || "superseded" in saved) {
         return;
       }
-      replaceQueryData<TRows>(queryClient, read, (rows) => store(rows, saved));
+      replaceQueryData<TRows>(queryClient, queryKey, (rows) => store(rows, saved));
     },
     onSettled: (saved) => {
       // With gcTime Infinity nothing else clears this project's saves. A save settles in pick
@@ -468,7 +468,7 @@ function useProjectSettingWrite<TAnswer extends object, TValue, TRows>({
       // A superseded save changed nothing on the server. Not awaited: the next pick in the scope
       // need not wait for this refetch.
       if (saved == null || !("superseded" in saved)) {
-        void queryClient.invalidateQueries({ queryKey: read });
+        void queryClient.invalidateQueries({ queryKey });
       }
     },
   });
@@ -533,7 +533,7 @@ function useDefaultAssigneeWrite(project: string): ProjectSettingWrite<string> {
   return useProjectSettingWrite<ProjectDefaultAssignee, string, ProjectDefaultAssignee[]>({
     label: (assignee) => `${project}'s default assignee ${assignee}`,
     project,
-    read: projectDefaultAssigneesQuery().queryKey,
+    queryKey: projectDefaultAssigneesQuery().queryKey,
     save: (assignee, bounds) => api.putProjectDefaultAssignee(project, { assignee }, bounds),
     setting: "default-assignee",
     store: (rows, saved) => {
@@ -737,7 +737,7 @@ function useDefaultRepositoryWrite(project: string): ProjectSettingWrite<string 
         ? `${project}'s default repository cleared`
         : `${project}'s default repository ${repo}`,
     project,
-    read: projectsQuery().queryKey,
+    queryKey: projectsQuery().queryKey,
     save: (repo, bounds) => api.putProjectDefaultRepository(project, { repo }, bounds),
     setting: "default-repository",
     store: (rows, saved) =>

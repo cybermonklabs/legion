@@ -95,6 +95,7 @@ import {
   stubLists,
   tab,
 } from "../../__tests__/draft-matrix-fixture";
+import { messageCorrectionFields } from "../../__tests__/message-fixture";
 import { sentRequest, stopSend } from "../../__tests__/stop-late-write";
 import { api } from "../../api/client";
 import type { Actor, Message } from "../../api/types";
@@ -135,6 +136,7 @@ function message(id: string, body: string, createdAt: string, author: Actor): Me
     broadcast_id: null,
     created_at: createdAt,
     deliveries: [],
+    ...messageCorrectionFields(),
     id,
     in_reply_to: null,
     issue_key: "CORE-1",

@@ -1762,6 +1762,7 @@ packages/daemon/internal/prompts/go/planner.md	no
 packages/daemon/internal/prompts/go/reviewer.md	no
 packages/daemon/internal/prompts/go/tester.md	no
 packages/daemon/internal/prompts/go/worker-common.md	no
+packages/daemon/internal/prompts/handoff_rules_test.go	no
 packages/daemon/internal/prompts/part_rules_test.go	no
 packages/daemon/internal/prompts/prompts.go	no
 packages/daemon/internal/prompts/prompts_test.go	no
@@ -1830,6 +1831,7 @@ skills/legion-architect/references/decomposition.md	no
 skills/legion-architect/references/design-gate.md	no
 skills/legion-architect/references/plan-changes.md	no
 skills/legion-architect/references/plan.md	no
+skills/legion-architect/references/surface-round.md	no
 skills/legion-architect/references/wake-routing.md	no
 skills/legion-controller/SKILL.md	no
 skills/legion-controller/references/admission.md	no
@@ -1852,9 +1854,7 @@ skills/legion-retro/references/pr-body-content.md	no
 skills/legion-worker/SKILL.md	no
 skills/legion-worker/references/ci-checks.md	no
 skills/legion-worker/references/conflicts-and-rewrites.md	no
-skills/legion-worker/references/default-branch-check.md	no
 skills/legion-worker/references/findings.md	no
-skills/legion-worker/references/foreign-path.md	no
 skills/legion-worker/references/gvisor.md	no
 skills/legion-worker/references/merge-gate.md	no
 skills/legion-worker/references/plan-tests.md	no

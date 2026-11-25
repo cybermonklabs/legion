@@ -538,37 +538,62 @@ func runOutboxFor(t *testing.T, deps Deps, publisher outbox.Publisher, d time.Du
 	}).Run(ctx)
 }
 
+// meInboxClaimantAndRoute holds that a claimed or a routed issue sends a person's comment to the
+// claimant and to the route, rather than to the writers of the issue's primary document: a claim
+// stands those writers down on its own, and so does a route, so each is driven alone, on an issue of
+// its own, beside an issue claimed and routed at once. Each issue's primary document credits the
+// session s-doc, which hears alice's comment on an issue nobody holds.
 func meInboxClaimantAndRoute(t *testing.T) {
 	handler, database, deps := newTestServer(t, testServerOptions{})
-	issue := createInteractionIssue(t, handler, "ROUTE", "A routed issue", "before")
-	if _, err := database.Pool.Exec(context.Background(), `
-		update artifacts set created_by = '{"kind":"session","id":"s-doc"}'::jsonb where id = $1
-	`, issue.PrimaryArtifactID); err != nil {
-		t.Fatalf("credit s-doc with the issue's primary document: %v", err)
-	}
-	comment := func(body string) string {
+	// reachedOn opens an issue of project, credits s-doc with its primary document, gives it
+	// claimant and route where they are not empty, and answers what alice's comment on it reached
+	// once the outbox has published it.
+	reachedOn := func(t *testing.T, project, claimant, route string) []string {
 		t.Helper()
-		id := createThreadComment(t, handler, issue.Key, map[string]any{"body": body}, "alice").ID
-		runOutboxUntilSettled(t, deps, &recordingOutboxPublisher{}, issue.Key, id)
-		return id
-	}
-	unclaimed := comment("Before anybody holds the issue.")
-	if reached := meInboxDeliveredTo(t, database, graphstore.KindComment, unclaimed); !slices.Contains(reached, graphstore.KindSession+":s-doc") {
-		t.Fatalf("a comment on an issue nobody holds reached %v, want the primary document's writer s-doc among them", reached)
-	}
-	claimIssueFor(t, database, issue.Key, "s-claim")
-	if patched := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+issue.Key, map[string]any{"route": "session:s-route"}, "alice"); patched.Code != http.StatusOK {
-		t.Fatalf("route the issue: status=%d body=%s", patched.Code, patched.Body.String())
-	}
-	held := comment("Now that the issue is claimed and routed.")
-	reached := meInboxDeliveredTo(t, database, graphstore.KindComment, held)
-	for _, want := range []string{graphstore.KindSession + ":s-claim", graphstore.KindSession + ":s-route"} {
-		if !slices.Contains(reached, want) {
-			t.Errorf("the comment on the claimed, routed issue reached %v, want %s among them", reached, want)
+		issue := createInteractionIssue(t, handler, project, "An issue of "+project, "before")
+		if _, err := database.Pool.Exec(context.Background(), `
+			update artifacts set created_by = '{"kind":"session","id":"s-doc"}'::jsonb where id = $1
+		`, issue.PrimaryArtifactID); err != nil {
+			t.Fatalf("credit s-doc with the primary document of %s: %v", issue.Key, err)
 		}
+		if claimant != "" {
+			claimIssueFor(t, database, issue.Key, claimant)
+		}
+		if route != "" {
+			if patched := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+issue.Key, map[string]any{"route": route}, "alice"); patched.Code != http.StatusOK {
+				t.Fatalf("route %s to %s: status=%d body=%s", issue.Key, route, patched.Code, patched.Body.String())
+			}
+		}
+		id := createThreadComment(t, handler, issue.Key, map[string]any{"body": "Who hears this?"}, "alice").ID
+		runOutboxUntilSettled(t, deps, &recordingOutboxPublisher{}, issue.Key, id)
+		return meInboxDeliveredTo(t, database, graphstore.KindComment, id)
 	}
-	if slices.Contains(reached, graphstore.KindSession+":s-doc") {
-		t.Errorf("the comment on the claimed, routed issue reached %v: the primary document's writer stands down there", reached)
+	writer := graphstore.KindSession + ":s-doc"
+	t.Run("nobody holds the issue", func(t *testing.T) {
+		if reached := reachedOn(t, "FREE", "", ""); !slices.Contains(reached, writer) {
+			t.Fatalf("a comment on an issue nobody holds reached %v, want the primary document's writer s-doc among them", reached)
+		}
+	})
+	for _, held := range []struct {
+		name, project, claimant, route string
+		// hears is each session that holds the issue, which the comment reaches.
+		hears []string
+	}{
+		{"claimed alone", "CLAIM", "s-claim", "", []string{graphstore.KindSession + ":s-claim"}},
+		{"routed alone", "ROUTE", "", "session:s-route", []string{graphstore.KindSession + ":s-route"}},
+		{"claimed and routed", "BOTH", "s-claim", "session:s-route", []string{graphstore.KindSession + ":s-claim", graphstore.KindSession + ":s-route"}},
+	} {
+		t.Run(held.name, func(t *testing.T) {
+			reached := reachedOn(t, held.project, held.claimant, held.route)
+			for _, want := range held.hears {
+				if !slices.Contains(reached, want) {
+					t.Errorf("the comment on the issue %s reached %v, want %s among them", held.name, reached, want)
+				}
+			}
+			if slices.Contains(reached, writer) {
+				t.Errorf("the comment on the issue %s reached %v: the primary document's writer s-doc stands down there", held.name, reached)
+			}
+		})
 	}
 }
 

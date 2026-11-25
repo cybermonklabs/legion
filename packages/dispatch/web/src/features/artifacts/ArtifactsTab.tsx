@@ -25,7 +25,9 @@ import {
 import { ApprovalChip } from "../doc/ApprovalChip";
 import { AgentName } from "../refs/AgentName";
 import { CopyRefButton } from "../refs/CopyRefButton";
+import { DeletedBody, EditedMark } from "../refs/PostMarks";
 import { PlainText } from "../refs/plain-text";
+import { postDeletion } from "../refs/post-marks";
 import {
   buildIssuePath,
   buildProjectPath,
@@ -162,7 +164,7 @@ function nameSource(node: ReferenceLink["node"]): TextSource | undefined {
 }
 
 /** A references row's name, as the link to its node, or as words where the node opens no page. */
-function NodeName({ href, name }: { href: string | undefined; name: string }): ReactNode {
+function NodeName({ href, name }: { href: string | undefined; name: ReactNode }): ReactNode {
   return href === undefined ? (
     <span className="font-medium">{name}</span>
   ) : (
@@ -176,7 +178,10 @@ function NodeName({ href, name }: { href: string | undefined; name: string }): R
  *  named by the words the read gives for it, then the node's kind and the kind of the issue's node
  *  at the near end, which a row of `links` links from (`via`) and a row of `linked_from` links to
  *  (`to`). A document's row names its owner first, as a member's row does. A node with no
- *  reference (a session) has no page to open, so its row names it without a link.
+ *  reference (a session) has no page to open, so its row names it without a link. A comment or a
+ *  message, or a block of one, carries its post's marks: a deleted one is named by the deleted line
+ *  (`DeletedBody`) and never by the words the read gave, and an edited one says ` · edited` after
+ *  its name (`EditedMark`).
  *
  *  A name that is the head of a record's text - a comment's, an ask's or a message's
  *  (`nameSource`) - is drawn as its plain-text projection, the reading list's
@@ -203,10 +208,20 @@ function ReferenceLinkRow({
   // no reference, and a person, whom no page shows, open none.
   const href = route === undefined ? undefined : referenceHref(route);
   const source = nameSource(node);
+  const deleted = postDeletion(node);
+  const marked = (words: string): ReactNode =>
+    deleted === null ? (
+      <>
+        {words}
+        <EditedMark at={node.edited_at} className={`font-normal ${textMutedOnSurface}`} />
+      </>
+    ) : (
+      <DeletedBody deleted={deleted} />
+    );
   return (
     <li className={`rounded-lg border p-3 text-sm ${borderDefault}`}>
-      {source === undefined ? (
-        <NodeName href={href} name={row.name} />
+      {source === undefined || deleted !== null ? (
+        <NodeName href={href} name={marked(row.name)} />
       ) : (
         <PlainText
           markdown={row.name}
@@ -214,7 +229,7 @@ function ReferenceLinkRow({
           surface="artifacts-reference-name"
           tree={row.name_tree}
         >
-          {(name) => <NodeName href={href} name={name ?? ""} />}
+          {(name) => <NodeName href={href} name={name === undefined ? "" : marked(name)} />}
         </PlainText>
       )}
       <p className={textMutedOnSurface}>

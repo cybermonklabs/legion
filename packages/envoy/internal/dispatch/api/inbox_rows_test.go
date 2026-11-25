@@ -188,6 +188,7 @@ func TestInboxRowsListOneOffAgentThreadsAndNotAnAcceptedSend(t *testing.T) {
 // as a Reply row's are (refs.FirstLine): a key or an address the 160-rune bound falls inside is
 // left out whole, rather than shown as `CORE-12`, a working link to another issue.
 func TestInboxAgentRowCutsNoReferenceInHalf(t *testing.T) {
+	t.Parallel()
 	handler, _, _, _, _ := directConversationFrom(t, "alice")
 	// 152 runes, so a reference after it starts before the cut at 159 and ends after it.
 	lead := strings.Repeat("x", 151) + " "

@@ -3,8 +3,8 @@ import { type ReactNode, type RefCallback, useEffect, useId, useRef, useState } 
 import { Link } from "react-router-dom";
 
 import { api, apiErrorMessage } from "../../api/client";
-import { referenceTargetsQuery, whoAmIQuery } from "../../api/queries";
-import type { Artifact, IssueDetails, ReferenceTargets, UserState } from "../../api/types";
+import { type ReferenceTargetsAnswer, referenceTargetsQuery, whoAmIQuery } from "../../api/queries";
+import type { Artifact, IssueDetails, UserState } from "../../api/types";
 import {
   pageAvatar,
   pageFailedText,
@@ -107,7 +107,7 @@ export const TITLES_READ_FAILED = "Could not read the titles of these issues.";
  *  (`keptUntilFailed`: the last answer that held data, of an earlier set), and any other is
  *  undefined; undefined too where the read failed holding no answer, and where it names nothing
  *  at the issue's address. */
-function issueTitleIn(read: ReferenceTargets | undefined, key: string): string | undefined {
+function issueTitleIn(read: ReferenceTargetsAnswer | undefined, key: string): string | undefined {
   const reference = buildDispatchReference({ key, kind: "issue" });
   return read?.targets?.find((target) => target.ref === reference)?.name;
 }

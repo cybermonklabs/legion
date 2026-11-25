@@ -141,17 +141,12 @@ func TestTheFormsDrainIndexesTextAnOlderBuildStored(t *testing.T) {
 }
 
 // A document's row is settled only by this drain's own index of it. The drain owes the document a
-// block index and indexes it in the same pass, and another build's block-index pass may take a
-// document owed one in between: here another process takes it under its owner row and records it
-// indexed at its version with no edge of the tab address, which that build's grammar does not
-// read. What the drain then does depends on what that index leaves owed, since a document is owed
-// a block index while either of the debt's two marks stands (indexOwedDocument): the null version,
-// which every release reads and clears, and store_owed_at, this build's own (migration
-// 20261116221539), which only a build that writes the store reads and clears. Here the other
-// process clears both, as a build that writes the store but predates these forms leaves them: the
-// drain finds the document no longer owed and leaves its row owed, with the enqueued_at it listed,
-// and the next pass indexes it and settles the row. An older build clears the null version alone
-// (TestTheFormsDrainIndexesADocumentAnOlderBuildIndexedFirst).
+// block index and indexes it in the same pass, and any build's block-index pass may take a
+// document owed one in between: here another process of this build's protocol takes it under its
+// owner row and records it indexed at its version, clearing the mark the drain's debt wrote (as
+// refs.RevisionFenceStatement does for a pass that wins), with no edge of the tab address. The
+// drain then finds the document no longer owed and leaves its row owed, with the enqueued_at it
+// listed; the next pass indexes it and settles the row.
 func TestTheFormsDrainLeavesADocumentAnotherProcessIndexedFirstOwed(t *testing.T) {
 	database, service := blockIndexService(t)
 	notes := createIndexedNotes(t, database, service, "The plan: dispatch://CORE-2/plan.\n")
@@ -160,7 +155,9 @@ func TestTheFormsDrainLeavesADocumentAnotherProcessIndexedFirstOwed(t *testing.T
 		t.Fatalf("the forms queue holds %v, want the notes alone", listed)
 	}
 
-	tick := drainAfterAnotherProcessIndexes(t, database, service, notes,
+	// The other process speaks this build's protocol: its index clears the mark beside the
+	// version, as the fence's own statement does.
+	tick := raceAnotherBlockIndex(t, database, service, notes,
 		`update document_block_versions set version = 1, store_owed_at = null where artifact_id = $1`)
 
 	if tick.Documents != 0 || tick.Unindexed != 1 || tick.OwedTexts != 1 {
@@ -182,63 +179,56 @@ func TestTheFormsDrainLeavesADocumentAnotherProcessIndexedFirstOwed(t *testing.T
 	assertRef(t, database, "artifact", notes, "issue", "CORE-2", refsGrammarWritten)
 }
 
-// An older build's block-index pass that takes the document between the drain's debt and its
-// index clears only the null version, the one mark that build reads, and leaves this build's own
-// (store_owed_at), which the drain set beside it (oweDocumentIndex). The document is still owed a
-// block index when the drain's index reads it under the owner row, so this build indexes it in the
-// drain's own pass, with the tab address's edge, and settles its row there: the older build's
-// index, which read the text without these forms, settles nothing, and this build's index of the
-// whole text is what does. The two cases differ only in that mark: where the other process clears
-// it too (TestTheFormsDrainLeavesADocumentAnotherProcessIndexedFirstOwed), nothing is owed and
-// this drain's index does not run.
+// An older build's index cannot settle the debt the drain owes a document. The other process here
+// predates the block index's mark (#3178): under the owner row it records the document indexed at
+// its version and leaves the mark the drain's debt wrote, store_owed_at at this build's rule, with
+// no edge of the tab address, which that build's grammar does not read. The row still reads owed
+// at this build's rule (refs.OwedMarkListed, refs/block_stand.go), so the drain indexes the
+// document itself, which the revision fence admits at that version for the mark, writes the edge
+// and settles the forms row with its own index.
 func TestTheFormsDrainIndexesADocumentAnOlderBuildIndexedFirst(t *testing.T) {
 	database, service := blockIndexService(t)
-	ctx := context.Background()
 	notes := createIndexedNotes(t, database, service, "The plan: dispatch://CORE-2/plan.\n")
 	if listed := formsOwedRows(t, database); len(listed) != 1 {
 		t.Fatalf("the forms queue holds %v, want the notes alone", listed)
 	}
 
-	tick := drainAfterAnotherProcessIndexes(t, database, service, notes,
+	// The other process speaks an older build's protocol: its index writes the version alone.
+	tick := raceAnotherBlockIndex(t, database, service, notes,
 		`update document_block_versions set version = 1 where artifact_id = $1`)
 
 	if tick.Documents != 1 || tick.Unindexed != 0 || tick.OwedTexts != 0 {
-		t.Fatalf("pass = %#v, want the notes indexed by this drain and settled in its pass", tick)
+		t.Fatalf("pass = %#v, want the notes indexed and settled by this drain", tick)
 	}
 	if owed := formsOwedRows(t, database); len(owed) != 0 {
-		t.Fatalf("the forms queue holds %v after this drain indexed the notes, want it empty", owed)
+		t.Fatalf("the forms queue holds %v after this drain indexed the notes, want none", owed)
 	}
 	assertRef(t, database, "artifact", notes, "issue", "CORE-2", refsGrammarWritten)
-	var marked bool
-	if err := database.Pool.QueryRow(ctx,
-		`select store_owed_at is not null from document_block_versions where artifact_id = $1`, notes).Scan(&marked); err != nil {
-		t.Fatalf("read the notes' debt: %v", err)
-	}
-	if marked {
-		t.Fatalf("the notes still carry this build's mark after its drain indexed them")
-	}
 }
 
-// drainAfterAnotherProcessIndexes runs one forms drain pass while another process indexes notes
-// first, and answers the pass. The other process holds the document's owner row, the issue's, for
-// the length of its index, as a build before the owner lock protocol serialises on it. While a
-// process of such a build is in the fleet, this build takes that row too, beside its advisory lock
-// (store.LockOwner), so the drain's index waits on it and the other process's index lands first.
-// The fleet holds one here: a server_processes row with no owner_lock_protocol, as
-// registerEarlierBuildProcess writes one. Once the drain has owed the notes a block index and
-// waits on that row, the other process records its index by record, a statement over
-// document_block_versions that takes the notes' id, and commits.
-func drainAfterAnotherProcessIndexes(t *testing.T, database *store.Store, service *Service, notes, record string) RefsFormsTick {
+// raceAnotherBlockIndex runs a forms drain pass while another process indexes document first. A
+// build before the owner lock protocol serialises on the owner's row, so it holds the document's
+// owner row, the issue's, for the length of its index. While a process of such a build is in the
+// fleet, this build takes that row too, beside its advisory lock (store.LockOwner), so the drain's
+// index waits on it. The fleet holds one here: a server_processes row with no
+// owner_lock_protocol, as api.registerEarlierBuildProcess writes one. Once the drain has owed the
+// document its block index and waits on that row, the other process records its index with
+// record ($1 the document) and commits, and the drain's pass goes on. It answers the drain's tick.
+func raceAnotherBlockIndex(t *testing.T, database *store.Store, service *Service, document, record string) RefsFormsTick {
 	t.Helper()
 	ctx := context.Background()
-	registerEarlierBuildProcess(t, database)
+	if _, err := database.Pool.Exec(ctx, `
+		insert into server_processes (instance, commit, signing_keys)
+		values (gen_random_uuid(), 'earlier0build', '{fingerprint}')`); err != nil {
+		t.Fatalf("register a process of an earlier build: %v", err)
+	}
 	other, err := database.Pool.Begin(ctx)
 	if err != nil {
 		t.Fatalf("begin the other process's index: %v", err)
 	}
 	defer other.Rollback(ctx)
 	if _, err := other.Exec(ctx, `select 1 from issues where key = 'CORE-1' for no key update`); err != nil {
-		t.Fatalf("take the notes' owner row as an older build's block index does: %v", err)
+		t.Fatalf("take the document's owner row as the other process's block index does: %v", err)
 	}
 	passed := make(chan RefsFormsTick, 1)
 	failed := make(chan error, 1)
@@ -257,19 +247,19 @@ func drainAfterAnotherProcessIndexes(t *testing.T, database *store.Store, servic
 		if err := database.Pool.QueryRow(ctx, `
 			select (select version is null from document_block_versions where artifact_id = $1),
 			       (select count(*) from pg_stat_activity where datname = current_database() and wait_event_type = 'Lock')
-		`, notes).Scan(&owedIndex, &waiting); err != nil {
+		`, document).Scan(&owedIndex, &waiting); err != nil {
 			t.Fatalf("read the drain's progress: %v", err)
 		}
 		if owedIndex && waiting > 0 {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("the drain never owed the notes a block index and waited on their owner row (owed %v, waiting %d)", owedIndex, waiting)
+			t.Fatalf("the drain never owed the document a block index and waited on its owner row (owed %v, waiting %d)", owedIndex, waiting)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if _, err := other.Exec(ctx, record, notes); err != nil {
-		t.Fatalf("record the notes indexed as the other process does: %v", err)
+	if _, err := other.Exec(ctx, record, document); err != nil {
+		t.Fatalf("record the document indexed as the other process does: %v", err)
 	}
 	if err := other.Commit(ctx); err != nil {
 		t.Fatalf("commit the other process's index: %v", err)
@@ -485,5 +475,80 @@ func TestTheFormsDrainDoesNotRereadALiveAheadDocumentUntilItMoves(t *testing.T) 
 	}
 	if len(liveAhead.documents) != 0 || len(liveAhead.rows) != 0 {
 		t.Fatalf("the drain still remembers %v, want nothing", liveAhead.documents)
+	}
+}
+
+// A version's index whose block pass loses the revision fence writes no block of the version
+// (refs.BlockIndexing.Queue queues nothing for it), so its reconciliation settles nothing of the
+// forms queue either: the document's row stays owed for the next pass, as the block index's own
+// mark stays. The pass here runs at version 1, the version the document's blocks already stand
+// at with no mark, which the fence refuses. The control is the same index one version above the
+// stored one: it wins, writes its blocks and settles the row, so what kept the row owed was the
+// fence and not an index that settles nothing.
+func TestABlockPassThatLosesTheFenceLeavesTheFormsRowOwed(t *testing.T) {
+	ctx := context.Background()
+	database, service := blockIndexService(t)
+	const markdown = "# Fenced\n\nThe plan is dispatch://CORE-1/plan.\n"
+	document := createOwedDocument(t, database, service, "CORE-1", "", "fenced", markdown, "")
+	settle(t, database, document)
+	if tick := reconcileBlockIndex(t, service, ""); tick.Documents != 1 {
+		t.Fatalf("the first tick indexed %d documents, want the fixture's one", tick.Documents)
+	}
+	if stands := blockIndexAt(t, database, document); stands == nil || *stands != 1 {
+		t.Fatalf("the document's blocks stand at %s, want version 1", standsText(stands))
+	}
+	row := "artifact " + document
+	oweForms := func() {
+		t.Helper()
+		if _, err := database.Pool.Exec(ctx, `
+			insert into refs_forms_owed (kind, id) values ('artifact', $1::uuid)
+			on conflict (kind, id) do update set enqueued_at = now()
+		`, document); err != nil {
+			t.Fatalf("owe the document to the forms queue: %v", err)
+		}
+	}
+	index := func(version int) {
+		t.Helper()
+		live, blocks, err := service.TextWithBlocks(ctx, document)
+		if err != nil {
+			t.Fatalf("read the document: %v", err)
+		}
+		var versionAt time.Time
+		if err := database.Pool.QueryRow(ctx, `
+			select created_at from artifact_versions where artifact_id = $1 and number = $2
+		`, document, version).Scan(&versionAt); err != nil {
+			t.Fatalf("read version %d: %v", version, err)
+		}
+		tx, err := database.Pool.Begin(ctx)
+		if err != nil {
+			t.Fatalf("begin the index of version %d: %v", version, err)
+		}
+		defer tx.Rollback(ctx)
+		_, _, err = service.indexRenderedVersion(ctx, tx, document, version, versionAt, live, blocks, nil, nil)
+		if err != nil {
+			t.Fatalf("index version %d: %v", version, err)
+		}
+		if err := tx.Commit(ctx); err != nil {
+			t.Fatalf("commit the index of version %d: %v", version, err)
+		}
+	}
+
+	oweForms()
+	index(1)
+	if _, owed := formsOwedRows(t, database)[row]; !owed {
+		t.Errorf("a block pass that lost the revision fence settled the document's forms row: it wrote no block of the version, so its index is not current")
+	}
+	if stands := blockIndexAt(t, database, document); stands == nil || *stands != 1 {
+		t.Errorf("the losing pass moved the document's blocks to %s, want them at version 1", standsText(stands))
+	}
+
+	second := nextVersionRow(t, database, document, markdown)
+	oweForms()
+	index(second)
+	if stands := blockIndexAt(t, database, document); stands == nil || *stands != second {
+		t.Fatalf("the control pass at version %d, above the stored version 1, moved the blocks to %s, not to %d", second, standsText(stands), second)
+	}
+	if _, owed := formsOwedRows(t, database)[row]; owed {
+		t.Errorf("the control pass at version %d won the fence and left the forms row owed, so the losing pass proves nothing", second)
 	}
 }

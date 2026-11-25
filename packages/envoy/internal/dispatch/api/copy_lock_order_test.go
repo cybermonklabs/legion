@@ -6,6 +6,8 @@
 
 package api
 
+//ci:builds packages/envoy ./cmd/dispatch buildCopyLockGraph go list -deps -export ./cmd/dispatch in packages/envoy
+
 import (
 	"bytes"
 	"encoding/json"

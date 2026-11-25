@@ -40,6 +40,7 @@
       "dueAt": "2026-09-22T09:18:03Z"
     }
   },
+  "priority": null,
   "workers": {
     "implementer": {
       "claim": {

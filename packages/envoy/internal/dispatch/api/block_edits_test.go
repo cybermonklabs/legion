@@ -669,6 +669,43 @@ func TestAcceptingASuggestionIsJudgedByTheDocumentItStores(t *testing.T) {
 	}
 }
 
+// A suggestion's replacement is markdown, and blocks in it take the quoted text's place. Over a
+// heading's whole text they stand where the heading stood, in the order written, so a section
+// suggested above another is its heading and paragraph followed by the other's heading, each
+// heading written with its #s. A line the replacement writes without #s is a paragraph: the
+// heading it replaced does not stay a heading. The section's blocks are then emptied where they
+// stood, each by a suggestion of its own text replaced with nothing: the heading stays as its #s
+// alone, and the paragraph stays as an empty paragraph. These are the steps dispatch_suggest's
+// replace_with describes for moving a section.
+func TestASuggestionsBlocksOverAHeadingsTextStandInItsPlace(t *testing.T) {
+	t.Parallel()
+	var documentService *docs.Service
+	handler, _ := newInteractionHandler(t, func(database *store.Store) docs.API {
+		documentService = docs.New(docs.Deps{Store: database, Settle: time.Hour, MarkWait: 50 * time.Millisecond})
+		t.Cleanup(func() { _ = documentService.Shutdown(context.Background()) })
+		return documentService
+	})
+	const (
+		spec     = "# Back-links in issue specs\n\n## Summary\n\nEach spec shows a link back.\n\n## Back-link\n\nPart of DEMO-3. Parent: none.\n"
+		backLink = "## Back-link\n\nPart of DEMO-3. Parent: none.\n\n"
+		rest     = "\n\nEach spec shows a link back.\n\n## Back-link\n\nPart of DEMO-3. Parent: none.\n"
+	)
+	for index, test := range []acceptCase{
+		{name: "a section above a heading, each heading written with its #s", spec: spec, quote: "Summary", with: backLink + "## Summary",
+			want: "# Back-links in issue specs\n\n" + backLink + "## Summary" + rest},
+		{name: "the heading's text written without its #s, as a paragraph", spec: spec, quote: "Summary", with: backLink + "Summary",
+			want: "# Back-links in issue specs\n\n" + backLink + "Summary" + rest},
+		{name: "the moved heading emptied where it stood, which stays as its #s alone", spec: spec, quote: "## Back-link", with: "",
+			want: "# Back-links in issue specs\n\n## Summary\n\nEach spec shows a link back.\n\n## \n\nPart of DEMO-3. Parent: none.\n"},
+		{name: "the moved paragraph emptied where it stood", spec: spec, quote: "Part of DEMO-3. Parent: none.", with: "",
+			want: "# Back-links in issue specs\n\n## Summary\n\nEach spec shows a link back.\n\n## Back-link\n\n\n"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			checkAccept(t, handler, documentService, "M"+string(rune('A'+index)), test)
+		})
+	}
+}
+
 // An empty accept inside a typed block stores the block holding the one empty paragraph it reads
 // back holding, in a list item written as its fence pair alone, and is refused for an ask, whose
 // question paragraph+ bullet_list? cannot be empty.

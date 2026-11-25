@@ -445,7 +445,7 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 	// recreated. So the launch ends here, answering runtime.ErrSessionLookupUnavailable, which the
 	// supervisor follows in the same try with a Resume that has the agent resolve the id. It ends
 	// before anything is done in the pod: no earlier generation is stopped, no address is recorded,
-	// no leak check or saved workspace is sent, and no start, so there is no issued child to stop
+	// no leak check is sent, and no start, so there is no issued child to stop
 	// (stopIssuedChild). A spec with ResumeByAgent is held to nothing here: it names no
 	// session to the launcher (launcherCommand), so any launcher the pod has can start it.
 	if spec.ResumeSession != "" && !spec.ResumeByAgent && !r.launchers.resumesBySession(spec.Claim, loc.Sandbox.PodUID) {

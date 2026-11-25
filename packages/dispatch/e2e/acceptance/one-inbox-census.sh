@@ -722,25 +722,90 @@ else
 fi
 
 # ───── one writer ──────────────────────────────────────────────────────────
-writers="$(psql_db -At -c "
-  select string_agg(p.proname, ',' order by p.proname) from pg_proc p
-  join pg_namespace n on n.oid = p.pronamespace
-  where n.nspname = current_schema()
-    and p.prolang <> (select l.oid from pg_language l where l.lanname = 'internal')
-    and p.prosrc ~* '(insert into|update|delete from)[[:space:]]+(user_threads|user_agent_thread_dismissed)'")"
-if [[ "$writers" == "user_agent_thread_dismissed_clear,user_threads_record" ]]; then
-  pass "pg_proc holds two functions that write user_threads or user_agent_thread_dismissed, the one exemption: $writers"
+# pg_proc is read for every function of this schema whose code writes one of the nine projected
+# tables, and for every function whose code calls user_threads_record, the one writer of
+# user_threads; pg_trigger for the triggers that run them. A function's code is its body less its
+# comments, so a comment that names a table writes nothing and one that names a marker tests
+# nothing. A write is an insert, an update, a delete or a merge of one of the nine, named bare,
+# with a schema or in quotes.
+projected_write="\\m(insert[[:space:]]+into|update|delete[[:space:]]+from|merge[[:space:]]+into)[[:space:]]+(only[[:space:]]+)?(\"?[[:alnum:]_]+\"?[[:space:]]*\\.[[:space:]]*)?\"?($(IFS='|' && printf '%s' "${capture_tables[*]}"))\"?([^[:alnum:]_\"]|\$)"
+# The marker test of R9: an `if` on the marker a write this release recorded in Go leaves on its
+# row - a comment's tuples_stored, a message's node pair, an ask's tuples_stored_at, or
+# threads_recorded - that returns before the function writes.
+marker_test='\mif\M[^;]*(tuples_stored|node_kind[[:space:]]+is[[:space:]]+not[[:space:]]+null|threads_recorded)[^;]*\mthen[[:space:]]+return\M'
+# one_writer_code: the functions of this schema as `parts`, each with its code, its first write of a
+# projected table (first_write), and its code before that write (before_write) and before its first
+# call of user_threads_record (before_call), each null where it has none.
+one_writer_code="$(
+  cat <<'SQL'
+with code as (
+  select p.oid, p.proname,
+         regexp_replace(regexp_replace(p.prosrc, '/\*.*?\*/', '', 'g'), '--[^\n]*', '', 'g') as body
+  from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+  join pg_language l on l.oid = p.prolang
+  where n.nspname = current_schema() and l.lanname not in ('internal', 'c')
+), parts as (
+  select oid, proname,
+         btrim(regexp_replace((regexp_match(body, '(' || :'write_re' || ')', 'i'))[1], '[[:space:]]+', ' ', 'g')) as first_write,
+         substring(body from '(?i)^(.*?)' || :'write_re') as before_write,
+         substring(body from '(?i)^(.*?)\muser_threads_record[[:space:]]*\(') as before_call
+  from code
+)
+SQL
+)"
+# one_writer_read QUERY: QUERY over one_writer_code's `parts`, one row a line, its fields split by |.
+one_writer_read() {
+  printf '%s\n%s;\n' "$one_writer_code" "$1" |
+    psql_db -At -v ON_ERROR_STOP=1 -v write_re="$projected_write" -v marker_re="$marker_test" 2>"$work/psql"
+}
+want_writers="user_agent_thread_dismissed_clear,user_threads_record"
+if ! written="$(one_writer_read "select proname, first_write from parts where first_write is not null order by proname")"; then
+  fail "read pg_proc for the functions that write a projected table: $(<"$work/psql")"
 else
-  fail "pg_proc holds the functions $writers writing user_threads or user_agent_thread_dismissed, want user_agent_thread_dismissed_clear,user_threads_record alone"
+  writers="$(cut -d'|' -f1 <<<"$written" | paste -sd, -)"
+  if [[ "$writers" == "$want_writers" ]]; then
+    pass "pg_proc holds two functions whose code writes one of the nine projected tables, the one writer of user_threads and the one exemption: $writers"
+  else
+    fail "pg_proc holds the functions ${writers:-none} whose code writes one of the nine projected tables, want $want_writers alone: $(sed -E 's/\|/ (/; s/$/)/' <<<"$written" | paste -sd ';' -)"
+  fi
 fi
-marker_tests="$(psql_db -At -c "
-  select count(*) from pg_proc p join pg_namespace n on n.oid = p.pronamespace
-  where n.nspname = current_schema() and p.proname in ('user_threads_comment','user_threads_message','user_threads_ask','user_agent_thread_dismissed_clear')
-    and p.prosrc ~ 'tuples_stored|node_kind is not null'")"
-if [[ "$marker_tests" == "4" ]]; then
-  pass "each of the four trigger functions writes only under its marker test (tuples_stored, the node pair, tuples_stored_at)"
+# Each function that calls user_threads_record, and each other writer of a projected table, holds the
+# marker test before its first call and before its first write, and a trigger runs it.
+if ! guarded="$(one_writer_read "
+  select g.proname,
+         concat_ws(' and ', case when g.before_call is not null then 'calls user_threads_record' end,
+                   case when g.before_write is not null then 'writes ' || g.first_write end),
+         coalesce(g.before_call ~* :'marker_re', true) and coalesce(g.before_write ~* :'marker_re', true),
+         coalesce(string_agg(c.relname || '.' || t.tgname, ',' order by c.relname, t.tgname), '')
+  from parts g
+  left join pg_trigger t on t.tgfoid = g.oid and not t.tgisinternal
+  left join pg_class c on c.oid = t.tgrelid
+  where g.proname <> 'user_threads_record' and (g.before_call is not null or g.before_write is not null)
+  group by g.proname, g.before_call, g.before_write, g.first_write
+  order by g.proname")"; then
+  fail "read pg_proc for the functions that call user_threads_record: $(<"$work/psql")"
 else
-  fail "$marker_tests of the four trigger functions carry a marker test, want four"
+  unguarded=0 callers=0 names=() fired_by=()
+  while IFS='|' read -r name does marked fired; do
+    [[ -n "$name" ]] || continue
+    names+=("$name")
+    [[ "$does" == *"calls user_threads_record"* ]] && callers=$((callers + 1))
+    if [[ "$marked" != t ]]; then
+      fail "$name $does with no marker test of R9 before it, an if on tuples_stored, the node pair, tuples_stored_at or threads_recorded that returns"
+      unguarded=$((unguarded + 1))
+    fi
+    if [[ -z "$fired" ]]; then
+      fail "pg_trigger runs no trigger of $name, which $does, so its marker test stands in front of nothing"
+      unguarded=$((unguarded + 1))
+    else
+      fired_by+=("$fired→$name")
+    fi
+  done <<<"$guarded"
+  if ((callers == 0)); then
+    fail "pg_proc holds no function that calls user_threads_record, the one writer of user_threads"
+  elif ((unguarded == 0)); then
+    pass "each of the ${#names[@]} functions that call user_threads_record or write a projected table beside it writes only under its marker test of R9, and pg_trigger runs each: ${fired_by[*]}"
+  fi
 fi
 ask_skip="$(psql_db -At -c "
   select count(*) from pg_proc p join pg_namespace n on n.oid = p.pronamespace
@@ -750,17 +815,6 @@ if [[ "$ask_skip" == "1" ]]; then
   pass "user_threads_ask skips an answer only where new.tuples_stored_at = (new.answer->>'at')::timestamptz"
 else
   fail "user_threads_ask does not skip an answer by the marker R9 names"
-fi
-triggers="$(psql_db -At -c "
-  select count(distinct p.proname) || '|' || coalesce(string_agg(c.relname || '.' || t.tgname, ',' order by c.relname || '.' || t.tgname), '')
-  from pg_trigger t join pg_class c on c.oid = t.tgrelid
-  join pg_namespace n on n.oid = c.relnamespace join pg_proc p on p.oid = t.tgfoid
-  where not t.tgisinternal and n.nspname = current_schema()
-    and p.proname in ('user_threads_comment','user_threads_message','user_threads_ask','user_agent_thread_dismissed_clear')")"
-if [[ "${triggers%%|*}" == 4 ]]; then
-  pass "pg_trigger runs each of the four functions: ${triggers#*|}"
-else
-  fail "pg_trigger runs ${triggers%%|*} of the four functions, want all four, so the marker tests of the others stand in front of nothing: ${triggers#*|}"
 fi
 
 # A reconcile is a writer that reads a marked row. The backfill reads only the rows its marker

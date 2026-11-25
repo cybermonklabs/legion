@@ -149,8 +149,11 @@ interface ReadingConstruct {
 }
 
 const READING_CONSTRUCTS: readonly ReadingConstruct[] = [
+  // `PostBody` and `PostPreview` are a post's body and its preview, each the renderer or the
+  // deleted line in its place (`refs/PostBody.tsx`): each hands its `surface` on to the renderer
+  // it is made of, and takes the renderer's `markdown`, `tree` and `source`.
   {
-    elements: ["MarkdownBody", "MarkdownPreview"],
+    elements: ["MarkdownBody", "MarkdownPreview", "PostBody", "PostPreview"],
     hooks: [],
     name: "a mount of the body or the preview renderer",
   },
@@ -193,6 +196,8 @@ const SOURCE_TAKERS: ReadonlySet<string> = new Set([
   "MarkdownBody",
   "MarkdownPreview",
   "PlainText",
+  "PostBody",
+  "PostPreview",
   "Unfurl",
   "usePlainHeadline",
 ]);
@@ -275,7 +280,7 @@ const HAND_NAMED_TEXTS: readonly HandNamedText[] = [
   },
   {
     field: "heading",
-    what: "A decision's heading: the words its writer put above the passage. The server sends no tree beside it; its tree is the first heading of the decision's `text_tree` (`decisionHeadingTree`).",
+    what: "A decision's heading: the words its writer put above the passage. The server sends no tree beside it; its tree is the first block of the decision's `text_tree` that holds words, the block the decision is named by (`decisionHeadingTree`).",
     tree: {
       file: "packages/dispatch/web/src/features/issue/DecisionsPanel.tsx",
       written: "headingTree",
@@ -2244,6 +2249,12 @@ const NOT_STORED_TEXTS: readonly { file: string; written: string; holds: string 
     written: "sessionCountSentence(model.summary)",
   },
   {
+    file: `${FEATURES}/plan/PlanTab.tsx`,
+    holds:
+      "a block's name as every link to a reference words it (`useReferenceLabel`): the projection's line of the block's words, cut as a title",
+    written: "text",
+  },
+  {
     file: `${FEATURES}/project/IssuesTable.tsx`,
     holds: "the table's own notice of what a table action did",
     written: "notice?.text",
@@ -2253,6 +2264,12 @@ const NOT_STORED_TEXTS: readonly { file: string; written: string; holds: string 
     holds:
       "the table's own notice of what a table action did, said before its line for a list read that has not settled",
     written: "notice.text",
+  },
+  {
+    file: `${FEATURES}/refs/RefLink.tsx`,
+    holds:
+      "the name a reference reads as once its target answers, the label every link to a reference words it with (`useReferenceLabel`): the target's title - a post's the projection's line of its body - with an edited post's ` · edited`, or the deleted line in its place",
+    written: "named",
   },
   {
     file: `${FEATURES}/refs/RefPickerList.tsx`,
@@ -2312,6 +2329,8 @@ const TREE_TAKERS: ReadonlySet<string> = new Set([
   "MarkdownBody",
   "MarkdownPreview",
   "PlainText",
+  "PostBody",
+  "PostPreview",
   "usePlainHeadline",
 ]);
 
@@ -2796,41 +2815,96 @@ function handsWithTree(tree: ts.SourceFile, field: string, written: string): boo
   return found;
 }
 
-/** The workflow whose `changes` job decides which jobs a pull request runs. */
-const CI_WORKFLOW = ".github/workflows/ci.yaml";
+/** The file of `.github/ci-gates` that keeps the `dispatch_references` filter by hand. */
+const REFERENCE_GATE = ".github/ci-gates/dispatch-references.py";
+
+/** One token of a gate file's Python as `excludedPatterns` reads it: a string literal, by its
+ *  value, or a bracket, a comma or a run of any other characters, as written. */
+type PythonToken = { readonly literal: string } | { readonly written: string };
+
+/** `source`'s tokens, its whitespace and its comments dropped; undefined where it holds a
+ *  string literal with a backslash or a line break in it, whose value this reading does not
+ *  decode. */
+function pythonTokens(source: string): PythonToken[] | undefined {
+  const token = /\s+|#[^\n]*|'([^'\\\n]*)'|"([^"\\\n]*)"|([()[\],]|[^\s#'"()[\],]+)/y;
+  const tokens: PythonToken[] = [];
+  while (token.lastIndex < source.length) {
+    const match = token.exec(source);
+    if (match === null) {
+      return undefined;
+    }
+    const literal = match[1] ?? match[2];
+    if (literal !== undefined) {
+      tokens.push({ literal });
+    } else if (match[3] !== undefined) {
+      tokens.push({ written: match[3] });
+    }
+  }
+  return tokens;
+}
 
 /**
- * The globs of `dispatch_references`, the paths filter of `CI_WORKFLOW`'s `changes` job that
- * starts the reference rows on a pull request. The job's dorny/paths-filter step names the file
- * that holds its filters (`.github/ci-filters.yaml`), so the file the input names is read from
- * the repository. An input that is no file's path - filters written inline, which the action
- * also takes - is read as no filters at all, so the guard row below that reads the filter fails
- * rather than this reading YAML the job does not. The filter is read from whichever step
- * declares it, and a reading that finds it in none or in more than one finds no filter. A
- * filter may name a group of others through its anchor, so the list is flattened, as
- * dorny/paths-filter flattens it. The step reads its patterns with the `some-with-excludes`
- * quantifier, so a `!` pattern is an exclusion: a file is in the filter when a pattern without
- * `!` matches it and no `!` pattern does.
+ * The patterns `tokens` hand `excluded(filter, why, patterns)`, the call a gate file declares an
+ * EXCLUDED filter with (`.github/scripts/ci_filter_sources.py`): its third argument, a list of
+ * string literals. Undefined where the tokens hold no such call or more than one, or where that
+ * argument is anything but a list of string literals.
+ */
+function excludedPatterns(tokens: readonly PythonToken[], filter: string): string[] | undefined {
+  const written = (at: number): string | undefined => {
+    const token = tokens[at];
+    return token !== undefined && "written" in token ? token.written : undefined;
+  };
+  const literal = (at: number): string | undefined => {
+    const token = tokens[at];
+    return token !== undefined && "literal" in token ? token.literal : undefined;
+  };
+  const lists: (string[] | undefined)[] = [];
+  tokens.forEach((_, at) => {
+    if (
+      written(at) !== "excluded" ||
+      written(at + 1) !== "(" ||
+      literal(at + 2) !== filter ||
+      written(at + 3) !== ","
+    ) {
+      return;
+    }
+    // The why, read past up to the comma that ends it at the call's own depth.
+    let next = at + 4;
+    for (let depth = 0; next < tokens.length && (depth > 0 || written(next) !== ","); next += 1) {
+      const bracket = written(next);
+      depth += bracket === "(" || bracket === "[" ? 1 : bracket === ")" || bracket === "]" ? -1 : 0;
+    }
+    // The list: string literals, each one followed by a comma or by the bracket that closes it.
+    const patterns: string[] = [];
+    let item = next + 2;
+    for (let pattern = literal(item); pattern !== undefined; pattern = literal(item)) {
+      patterns.push(pattern);
+      item += 1;
+      if (written(item) !== ",") break;
+      item += 1;
+    }
+    lists.push(written(next + 1) === "[" && written(item) === "]" ? patterns : undefined);
+  });
+  return lists.length === 1 ? lists[0] : undefined;
+}
+
+/**
+ * The globs of `dispatch_references`, the paths filter of ci.yaml's `changes` job that starts the
+ * reference rows on a pull request. The job computes its filters when it runs
+ * (`.github/scripts/check-ci-filters.sh generate`), and writes an EXCLUDED filter's patterns as
+ * its gate file writes them (`.github/scripts/ci_filter_coverage.py`'s `Computed`), so the filter
+ * is the list `REFERENCE_GATE` keeps by hand, the third argument of its
+ * `excluded('dispatch_references', why, [...])`. A file that holds no such call, more than one, or
+ * a list of anything but string literals is read as no filter at all (`excludedPatterns`), so the
+ * guard row below that reads the filter fails rather than this reading patterns the job does not
+ * compute. The job's paths-filter step reads them with the `some-with-excludes` quantifier, so a
+ * `!` pattern is an exclusion: a file is in the filter when a pattern without `!` matches it and
+ * no `!` pattern does.
  */
 function referenceFilter(): { include: Bun.Glob[]; exclude: Bun.Glob[] } {
-  const workflow = Bun.YAML.parse(readFileSync(join(REPO_ROOT, CI_WORKFLOW), "utf8")) as {
-    jobs?: { changes?: { steps?: { with?: { filters?: string } }[] } };
-  };
-  const declaring = (workflow.jobs?.changes?.steps ?? [])
-    .map((step) => step.with?.filters?.trim())
-    .filter((input): input is string => input !== undefined)
-    .map((input) =>
-      /^[\w./-]+\.ya?ml$/u.test(input)
-        ? (Bun.YAML.parse(readFileSync(join(REPO_ROOT, input), "utf8")) as Record<
-            string,
-            unknown
-          > | null)
-        : null
-    )
-    .filter((groups) => groups?.dispatch_references !== undefined);
-  const patterns = (declaring.length === 1 ? [declaring[0]?.dispatch_references] : [])
-    .flat(Number.POSITIVE_INFINITY)
-    .filter((pattern): pattern is string => typeof pattern === "string");
+  const tokens = pythonTokens(readFileSync(join(REPO_ROOT, REFERENCE_GATE), "utf8"));
+  const patterns =
+    (tokens === undefined ? undefined : excludedPatterns(tokens, "dispatch_references")) ?? [];
   return {
     include: patterns.filter((pattern) => !pattern.startsWith("!")).map((p) => new Bun.Glob(p)),
     exclude: patterns
@@ -2943,8 +3017,8 @@ describe("the walk reads the dashboard's source", () => {
     expect(READER_MODULES.filter((file) => !SCANNED_FILES.includes(file))).toEqual([]);
   });
 
-  test("reads the reference rows' filter in ci.yaml", () => {
-    // A guard on the reading of the workflow: were it to find no filter, no covered row's file
+  test(`reads the reference rows' filter in ${REFERENCE_GATE}`, () => {
+    // A guard on the reading of the gate file: were it to find no filter, no covered row's file
     // would be in it, and every covered row below would fail for a reason none of them has.
     expect(REFERENCE_FILTER.include.length).toBeGreaterThan(20);
   });
@@ -4165,14 +4239,15 @@ describe("every row of the writing list is a box the dashboard still draws", () 
       expect(
         picked ? label : `no mount in a file of ${label} picks its row: ${row.files.join(", ")}`
       ).toBe(label);
-      // A pull request runs the reference rows only where it changes a path ci.yaml's
-      // `dispatch_references` filter names, so a covered box's file the filter misses is one a
-      // pull request can take the picker out of with none of those rows run.
+      // A pull request runs the reference rows only where it changes a path the
+      // `dispatch_references` filter names, which `REFERENCE_GATE` keeps, so a covered box's file
+      // the filter misses is one a pull request can take the picker out of with none of those
+      // rows run.
       for (const file of row.files) {
         expect(
           inReferenceFilter(file)
             ? file
-            : `${file} (named by ${label}) is not in the dispatch_references filter ${CI_WORKFLOW}'s changes job reads`
+            : `${file} (named by ${label}) is not in the dispatch_references filter ${REFERENCE_GATE} keeps`
         ).toBe(file);
       }
     }

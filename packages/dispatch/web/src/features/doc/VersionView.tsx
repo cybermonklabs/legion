@@ -44,10 +44,10 @@ export interface VersionViewProps {
   /** The project document shown, for block asks with no issue to be referenced under. */
   owner: { project: string; slug: string } | undefined;
   /** The server's read of the ask the block `blockId` shows (`ServedAsk`), which a block of a
-   *  version that does not record its answer (`recordsAnswerState`: no state, or an answered state
-   *  without the options or the words, as this build writes it) is read from, as the live card
-   *  reads it: the document page's, the owner's asks and then the live text, so a copy finds its
-   *  source on another document. Without it such a block reads its own attributes. */
+   *  version whose own attributes do not record its answer (`recordsAnswerState`: no state, or an
+   *  answered state without the options or the words, as this build writes it) is read from, as
+   *  the live card reads it: the document page's, the owner's asks and then the live text, so a
+   *  copy finds its source on another document. Without it such a block reads its own attributes. */
   servedAsk?: (blockId: string) => ServedAsk | undefined;
   version: number;
 }
@@ -278,11 +278,7 @@ export function VersionView({
               owner={owner}
               readOnly
               rowResolution={false}
-              served={
-                markdown !== undefined && recordsAnswerState(markdown, blockId)
-                  ? undefined
-                  : servedAsk?.(blockId)
-              }
+              served={recordsAnswerState(host.node.attrs) ? undefined : servedAsk?.(blockId)}
             />
           );
         })}

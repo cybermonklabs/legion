@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"io"
-	"net"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -41,7 +40,7 @@ func TestLauncherPIDOneHelper(t *testing.T) {
 	}
 	err = Run(ctx, Config{
 		Connect: os.Getenv("LEGION_LAUNCHER_TEST_ADDRESS"), PrivateDir: os.Getenv("LEGION_LAUNCHER_TEST_PRIVATE"),
-		Token: "launcher-token", Sandbox: "legion-legion-legion-208", Role: "tester", PodUID: "pod-1", Stderr: os.Stderr,
+		Token: os.Getenv("LEGION_LAUNCHER_TEST_TOKEN"), Sandbox: "legion-legion-legion-208", Role: "tester", PodUID: "pod-1", Stderr: os.Stderr,
 		StopGrace: grace,
 	})
 	if err != nil && ctx.Err() == nil {
@@ -82,16 +81,16 @@ func pidNamespace(t *testing.T) []string {
 const pidOneHelperEnv = "LEGION_LAUNCHER_PID_ONE_HELPER"
 
 // runAsPIDOne runs the test binary's helper test as PID 1 of a PID namespace of its own
-// (pidNamespace), with only the test's own PATH, where its jj and git are, pidOneHelperEnv and
-// env (NAME=value each) in its environment, fails t unless the helper ran and passed, and answers
-// what it printed. The helper's own deadline is this test's less helperDeadlineGap, so a helper
-// whose wait gives up near its deadline (reaperBound) prints why and ends, and this test then
-// still has that gap for its own cleanups before its alarm. When what ran before it left the
-// helper less than helperLeastTime (it is past helperStartBy), t fails by name and no helper
-// starts: one would reach its own alarm before its bounds could give up. The wait for the helper
-// ends 30 s before this test's deadline at the latest, 30 s after the helper's own alarm: sudo is
-// then sent SIGTERM, and 10 s later the wait returns whatever sudo does (WaitDelay).
-func runAsPIDOne(t *testing.T, helper string, env ...string) string {
+// (pidNamespace), with only the test's own PATH, where its jj and git are, and pidOneHelperEnv in
+// its environment, fails t unless the helper ran and passed, and answers what it printed. The
+// helper's own deadline is this test's less helperDeadlineGap, so a helper whose wait gives up
+// near its deadline (reaperBound) prints why and ends, and this test then still has that gap for
+// its own cleanups before its alarm. When what ran before it left the helper less than
+// helperLeastTime, t fails by name and no helper starts: one would reach its own alarm before its
+// bounds could give up. The wait for the helper ends 30 s before this test's deadline at the
+// latest, 30 s after the helper's own alarm: sudo is then sent SIGTERM, and 10 s later the wait
+// returns whatever sudo does (WaitDelay).
+func runAsPIDOne(t *testing.T, helper string) string {
 	t.Helper()
 	prefix := pidNamespace(t)
 	self, err := os.Executable()
@@ -99,7 +98,6 @@ func runAsPIDOne(t *testing.T, helper string, env ...string) string {
 		t.Fatal(err)
 	}
 	args := append(append([]string{}, prefix...), "/usr/bin/env", "-i", "PATH="+os.Getenv("PATH"), pidOneHelperEnv+"=1")
-	args = append(args, env...)
 	// The helper's -test.timeout ends helperDeadlineGap before this test's deadline, not reentry's
 	// reentryMargin: this test's own cleanups after a helper that gave up need that gap. The
 	// arguments are reentryUntil's, as every re-entry's are.
@@ -126,46 +124,31 @@ func runAsPIDOne(t *testing.T, helper string, env ...string) string {
 	return string(output)
 }
 
-// helperStartBy is the last moment a helper of runAsPIDOne can start, the test binary's deadline
-// less helperDeadlineGap and helperLeastTime, and whether the binary has a deadline at all: a test
-// bounds what it runs before its helper by it.
-func helperStartBy(t *testing.T) (time.Time, bool) {
-	deadline, ok := t.Deadline()
-	return deadline.Add(-helperDeadlineGap - helperLeastTime), ok
-}
-
 // helperDeadlineGap is how much sooner than its test a helper of runAsPIDOne reaches its own
-// deadline: the time the test has, once a helper that gave up has ended, for its own cleanups,
-// among them the removal of the tree TestPutBacksUnderThePodsReaperKeepTheirExitStatus built for
-// its helper. On this dev box that removal took 17.3 s at a one-minute load of about 1,100 on 288
-// CPUs (2026-11-22), and more than 15 s in a helper's cleanup at a load of about 760 the day
-// before; a minute is more than twice the most seen.
+// deadline: the time the test has, once a helper that gave up has ended, for its own cleanups. On
+// this dev box the removal of a tree of ten workspaces of real git and jj, built for a helper, took
+// 17.3 s at a one-minute load of about 1,100 on 288 CPUs (2026-11-22), and more than 15 s in a
+// helper's cleanup at a load of about 760 the day before; a minute is more than twice the most
+// seen.
 const helperDeadlineGap = time.Minute
 
 // helperLeastTime is the least a helper of runAsPIDOne starts with before its own deadline: its
-// waits on the reaper give up 30 s before that deadline (reaperBound), and a wait for a put-back or
-// an install 15 s before it, so a helper with less would reach its own alarm before either could
-// say why.
+// waits on the reaper give up 30 s before that deadline (reaperBound), and a wait for an install
+// 15 s before it, so a helper with less would reach its own alarm before either could say why.
 const helperLeastTime = 45 * time.Second
 
 func namespaceRig(t *testing.T, grace time.Duration) *rig {
 	t.Helper()
 	prefix := pidNamespace(t)
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = listener.Close() })
-	if err := listener.(*net.TCPListener).SetDeadline(time.Now().Add(beforeDeadline(t))); err != nil {
-		t.Fatal(err)
-	}
+	token := ownToken("launcher-token")
+	listener := listenForLauncher(t, token)
 	g := &rig{t: t, listener: listener, private: t.TempDir(), result: make(chan error, 1)}
 	self, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
 	}
 	args := append(append([]string{}, prefix...), "/usr/bin/env", "-i", "PATH=/usr/bin:/bin", "GOMAXPROCS=1",
-		namespaceHelperEnv+"=1", "LEGION_LAUNCHER_TEST_ADDRESS=tcp://"+listener.Addr().String(),
+		namespaceHelperEnv+"=1", "LEGION_LAUNCHER_TEST_ADDRESS=tcp://"+listener.Addr().String(), "LEGION_LAUNCHER_TEST_TOKEN="+token,
 		"LEGION_LAUNCHER_TEST_PRIVATE="+g.private, "LEGION_LAUNCHER_TEST_GRACE="+grace.String(), self)
 	args = append(args, reentry(t, "TestLauncherPIDOneHelper")...)
 	command := exec.Command("sudo", args...)
@@ -180,7 +163,9 @@ func namespaceRig(t *testing.T, grace time.Duration) *rig {
 	}
 	g.cancel = func() { _ = stdin.Close() }
 	go func() {
-		g.result <- command.Wait()
+		err := command.Wait()
+		listener.codeReturned(err)
+		g.result <- err
 		close(g.result)
 	}()
 	t.Cleanup(func() {

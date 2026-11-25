@@ -61,7 +61,6 @@ import { PriorityControl } from "../issue/PriorityControl";
 import { AgentName, useAgentText } from "../refs/AgentName";
 import { COPY_REF_SELECTOR, CopyRefButton } from "../refs/CopyRefButton";
 import { MarkdownPreview } from "../refs/MarkdownPreview";
-import { PlainText } from "../refs/plain-text";
 import {
   ANSWERS_PATH,
   buildReferencePath,
@@ -77,7 +76,7 @@ import {
   NO_FILTER_VALUE,
 } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
-import { textSourceKind, textSourceOf } from "../refs/text-references";
+import { textSourceOf } from "../refs/text-references";
 import { type KeyBinding, type KeymapScope, useKeymap, useKeymapScope } from "../shell/keymap";
 import { closestMatching, focusedMatching, roveFocus, roveIndex } from "../shell/roving";
 import { READING_PANE_QUERY, useMediaQuery } from "../shell/useDialog";
@@ -162,7 +161,7 @@ import {
 } from "./sections";
 import { isSnoozed } from "./snooze";
 import { ThreadRowCard } from "./ThreadRowCard";
-import { ThreadTitle } from "./ThreadTitle";
+import { ThreadLine, ThreadTitle } from "./ThreadTitle";
 import { answerFailure, clarificationRefusal } from "./useAskAnswerForm";
 import { AskHandOnWritesContext, useAskHandOnWrites } from "./useAskHandOn";
 import { AskSnoozeContext, AskSnoozeWritesProvider, useAskSnooze } from "./useAskSnooze";
@@ -359,9 +358,9 @@ function MarkCheckbox({
 }
 
 /** A thread row's own checkbox, named after the thread it marks. The name is an `aria-label`,
- *  which can hold no markup: it is the one plain-text projection of the subject, the same
- *  reader the row's own line is drawn by, with the record that line names (`ThreadTitle`), never
- *  a second stripper. */
+ *  which can hold no markup: it is the row's one plain-text line (`ThreadLine`) - the
+ *  projection of the subject by the same reader the row's own line is drawn by, with the record
+ *  that line names (`ThreadTitle`), never a second stripper, or a deleted root's deleted line. */
 function ThreadMarkCheckbox({
   marked,
   onMark,
@@ -374,16 +373,9 @@ function ThreadMarkCheckbox({
   thread: MyReplyRow;
 }): ReactNode {
   return (
-    <PlainText
-      markdown={thread.subject}
-      source={textSourceOf(textSourceKind(thread.kind), thread.thread_id, thread.issue?.key)}
-      surface="inbox-thread-title"
-      tree={thread.subject_tree}
-    >
-      {(subject) => (
-        <MarkCheckbox id={rowId(row)} marked={marked} name={subject ?? ""} onMark={onMark} />
-      )}
-    </PlainText>
+    <ThreadLine thread={thread}>
+      {(line) => <MarkCheckbox id={rowId(row)} marked={marked} name={line ?? ""} onMark={onMark} />}
+    </ThreadLine>
   );
 }
 

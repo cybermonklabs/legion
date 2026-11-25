@@ -113,6 +113,7 @@ func TestMyRepliesListsACommentThreadASessionRepliedIn(t *testing.T) {
 // the cut (refs.FirstLine): a key or a link the bound falls inside is left out whole, rather than
 // shown as `CORE-12`, a working link to another issue, or as a link's opening drawn raw.
 func TestMyRepliesCutsNoReferenceInHalf(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Long lines", "A spec")
 	// 152 runes, so a reference after it starts before the cut at 159 and ends after it.

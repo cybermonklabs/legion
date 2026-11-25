@@ -29,6 +29,7 @@ import (
 // every read is explained both ways: as the fixture's writes leave the table, with no statistics,
 // and analyzed.
 func TestCopiedAskQueriesAvoidSequentialScans(t *testing.T) {
+	t.Parallel()
 	service, _ := newTestService(t)
 	ctx := context.Background()
 	tx, err := service.store.Pool.Begin(ctx)

@@ -222,6 +222,46 @@ test("before the engine answers, the card is named after its heading as written"
   expect(html).toContain(">Store notices in a table.</a>");
 });
 
+// The conversion of a decisions document moves a decision's `Unsure:` paragraph into its node's
+// `uncertainty` and `uncertainty_reason`, so its words hold that paragraph no more. The preview
+// runs the doubt on after the words, with the paragraph's words, as it ran the paragraph.
+test("a converted decision's preview ends with the doubt its node holds", async () => {
+  const view = renderCard({
+    text: ':::decision{#d-1 uncertainty="high" uncertainty_reason="the index may be slow."}\nStore notices in a table.\n\nA table keeps them through a restart.\n:::\n',
+    uncertainty: "high",
+    uncertainty_reason: "the index may be slow.",
+  });
+  try {
+    const card = screen.getByRole("article", { name: "Decision: Store notices in a table." });
+    await waitFor(() =>
+      expect(card.querySelector("[data-markdown-preview]")?.textContent).toBe(
+        "Store notices in a table. A table keeps them through a restart. Unsure: the index may be slow."
+      )
+    );
+  } finally {
+    view.unmount();
+  }
+});
+
+// A decision whose words still hold their `Unsure:` paragraph previews that paragraph, and the
+// doubt its node holds is not run on after it a second time.
+test("an unconverted decision's preview holds its Unsure: paragraph once", async () => {
+  const view = renderCard({
+    text: ':::decision{#d-1 uncertainty="high"}\nStore notices in a table.\n\nUnsure: the index may be slow.\n:::\n',
+    uncertainty: "high",
+  });
+  try {
+    const card = screen.getByRole("article", { name: "Decision: Store notices in a table." });
+    await waitFor(() =>
+      expect(card.querySelector("[data-markdown-preview]")?.textContent).toBe(
+        "Store notices in a table. Unsure: the index may be slow."
+      )
+    );
+  } finally {
+    view.unmount();
+  }
+});
+
 test("selecting a decision card selects its margin item", async () => {
   const user = userEvent.setup();
   const selected: string[] = [];

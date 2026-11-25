@@ -40,6 +40,11 @@ import {
   removeLeftLocks,
   removeUntouched,
 } from "./device-login-lock";
+
+/** Whether a process holds the device login's lock, read as cipher-client reads it; for a caller
+ *  that must leave such a process to finish its trade (claude-envoy's open-asks hook). */
+export { loginLockHeldBy } from "./device-login-lock";
+
 import { messageOf, readErrorCode } from "./error-text";
 import { DEVICE_LOGIN_COMMAND } from "./token-errors";
 

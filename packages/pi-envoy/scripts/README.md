@@ -373,24 +373,33 @@ SKILL_SCENARIOS_SOURCE=<directory under sources/> ./rig.sh batch spec-writing 1 
 
 The scenarios and every input are in the script's header (`./rig.sh` with no arguments prints it),
 and each scenario's scoring rule is on the `score.ts` function that scores it. It needs a model
-route (the gateway, an Anthropic key file, or a provider block of the operator's own models.yml)
-and Docker; every container a batch or a judge starts has CPU and memory limits.
+route (the gateway, an Anthropic key file, or a provider block of the operator's own models.yml).
+A batch also needs Docker, unless both `SKILL_SCENARIOS_POSTGRES_URL` and
+`SKILL_SCENARIOS_NATS_URL` are set: the batch then uses those two servers, starts no container,
+and needs `psql` and `python3` instead, to read the Postgres URL with libpq and to reach the
+server. `SKILL_SCENARIOS_POSTGRES_URL` must be a `postgres://` or `postgresql://` URL of the
+Postgres on this machine.
+A judge always runs in a Docker container. Every container a batch or a judge starts has CPU and
+memory limits.
 `SKILL_SCENARIOS_WORK` must have no `.omp` in it or above it, so not under your home directory: Oh
 My Pi would load that directory's plugins and not the label's. Its bounded waits, port picks and
 process stops are
 [`scripts/e2e/lib/rig.sh`](../../../scripts/e2e/README.md#librigsh)'s. Nothing a batch runs reaches
 production Dispatch, GitHub, Envoy or NATS: it starts nothing with the caller's `DISPATCH_*`,
 `ENVOY_*` or `NATS_*` variables, and `seed.ts` refuses to run while `PLAYWRIGHT_BASE_URL` or
-`E2E_AGENT_TOKEN` is set. That is the environment only: an agent reads the whole filesystem, the
-other label's checkout included, so `score.ts` does not score a run that read outside its own
-label. A judge is held tighter: `rig.sh judge-omp` runs each one in a Docker container that sees
-only its own directory, read-only but for its one answer file and its transcript, so a judge
-cannot read the run's transcript or another judge's input. On the key-file route the container
-reads the key file itself. On the gateway route the gateway's key command runs on the host, once
-for each judge, because it needs the operator's home and session bus. The container gets only the
-token, from an owner-only file that is removed when the judge ends. On the provider route the
-profile's models.yml is the block as the operator wrote it, `!cat` command included, so no key is
-copied anywhere: the container mounts the directory of the file that command reads, read-only.
+`E2E_AGENT_TOKEN` is set. For NATS this holds only when the batch starts its own NATS, or when
+`SKILL_SCENARIOS_NATS_URL` names a scratch server of the batch's own: the listener and every
+tester-proof run's agent get that URL. That is the environment only: an agent reads the whole
+filesystem, the other label's checkout included, so `score.ts` does not score a run that read
+outside its own label. A judge is held tighter: `rig.sh judge-omp` runs each one in a Docker
+container that sees only its own directory, read-only but for its one answer file and its
+transcript, so a judge cannot read the run's transcript or another judge's input. On the key-file
+route the container reads the key file itself. On the gateway route the gateway's key command runs
+on the host, once for each judge, because it needs the operator's home and session bus. The
+container gets only the token, from an owner-only file that is removed when the judge ends. On the
+provider route the profile's models.yml is the block as the operator wrote it, `!cat` command
+included, so no key is copied anywhere: the container mounts the directory of the file that
+command reads, read-only.
 
 Two tools read production Dispatch, with GET requests only, as the calling session does (its
 envoy.json, or `DISPATCH_URL` with a token): `fetch-spec-sources.ts`, which writes a source's input

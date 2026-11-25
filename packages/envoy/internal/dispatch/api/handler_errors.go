@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // How a handler's error becomes a response: one function, writeHandlerError, that every route's
@@ -94,8 +95,16 @@ type editPreconditionError struct {
 // names the number it read beside its write and adds the sentence saying where a current token
 // is printed (writeUploadDocumentError).
 func editPreconditionBody(failed *docs.ErrPreconditionFailed) editPreconditionError {
+	return preconditionBody(failed.CurrentDocument, failed.Mismatches, failed.Error())
+}
+
+// preconditionBody is that body from its parts: the token that stands, the mismatches that named
+// what the caller expected, and the sentence saying so. A block mismatch's current token is
+// listed in current.blocks. A file's upload, whose refusal no document write raises, builds its
+// body here (fileUploadPreconditionBody).
+func preconditionBody(currentDocument string, mismatches []model.EditPreconditionMismatch, message string) editPreconditionError {
 	currentBlocks := make([]model.EditBlockPrecondition, 0)
-	for _, mismatch := range failed.Mismatches {
+	for _, mismatch := range mismatches {
 		if mismatch.Scope == "block" && mismatch.Current != nil {
 			currentBlocks = append(currentBlocks, model.EditBlockPrecondition{
 				ID: mismatch.BlockID, Token: *mismatch.Current,
@@ -104,9 +113,9 @@ func editPreconditionBody(failed *docs.ErrPreconditionFailed) editPreconditionEr
 	}
 	return editPreconditionError{
 		Code:       "PRECONDITION_FAILED",
-		Current:    editPreconditionCurrent{Blocks: currentBlocks, Document: failed.CurrentDocument},
-		Error:      failed.Error(),
-		Mismatches: failed.Mismatches,
+		Current:    editPreconditionCurrent{Blocks: currentBlocks, Document: currentDocument},
+		Error:      message,
+		Mismatches: mismatches,
 	}
 }
 
@@ -121,6 +130,16 @@ type editLostError struct {
 	LostOps      *[]int        `json:"lost_ops,omitempty"`
 	Participants []model.Actor `json:"participants"`
 	Suggestion   *string       `json:"suggestion,omitempty"`
+}
+
+// deletedPostError is the 409 every write that would put text on a post its author withdrew
+// answers, and the one place that names that refusal's code and its words: a reply under the
+// post, an edit or a delete of it, an accept or a reject of its suggestion, a send or a reply
+// of a delivery of it. kind names the post in the message, as the route's caller met it ("this
+// comment is deleted"). A deleted post keeps its row and its place, so a write that moves no
+// text - a resolve, a reopen - takes it and meets this refusal nowhere.
+func deletedPostError(kind refs.ItemKind) *apiError {
+	return errorf(http.StatusConflict, "POST_DELETED", "this %s is deleted", kind)
 }
 
 func (s *server) writeHandlerError(w http.ResponseWriter, err error) {

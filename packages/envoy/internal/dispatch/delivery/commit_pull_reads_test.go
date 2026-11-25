@@ -11,6 +11,7 @@ import (
 // granted. Another commit of the same repository, and the same commit of another, are their own
 // pairs.
 func TestACommitPullReadIsClaimedOncePerSpan(t *testing.T) {
+	t.Parallel()
 	var reads CommitPullReads
 	start := time.Date(2026, 11, 5, 7, 15, 8, 0, time.UTC)
 	if !reads.Claim("acme/widgets", "abc", start) {
@@ -32,6 +33,7 @@ func TestACommitPullReadIsClaimedOncePerSpan(t *testing.T) {
 // the last CommitPullReadStaleAfter and not every commit it ever asked about. The entries inside
 // the span stay, bound and all.
 func TestAClaimSweepsTheEntriesNoBoundCanRefuse(t *testing.T) {
+	t.Parallel()
 	var reads CommitPullReads
 	start := time.Date(2026, 11, 5, 7, 15, 8, 0, time.UTC)
 	for number := range commitPullReadSweepAt {
@@ -59,6 +61,7 @@ func TestAClaimSweepsTheEntriesNoBoundCanRefuse(t *testing.T) {
 // passed the pair is a pair like any other — a pull request opened later can have its head at
 // that commit — so the claim is granted and the sweep drops what is left.
 func TestASettledCommitIsRefusedUntilItsSpanEndsAndTheSweepKeepsItUntilThen(t *testing.T) {
+	t.Parallel()
 	var reads CommitPullReads
 	start := time.Date(2026, 11, 5, 7, 15, 8, 0, time.UTC)
 	if !reads.Claim("acme/widgets", "abc", start) || !reads.Claim("acme/widgets", "def", start) {

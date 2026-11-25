@@ -15,13 +15,15 @@ use: string, boolean, number and null literals; the contexts `github.event_name`
 equals the item. Anything else, an unknown function or a context it does not model, is refused by
 name with exit 2, never read as false.
 
-Usage: ci_router_outputs.py <workflow> --event <name> [--label <name>]... [--verdict <filter>=<value>]...
-  [--verdicts <true|false>]
+Usage: ci_router_outputs.py <workflow> --filters <file> --event <name> [--label <name>]...
+  [--verdict <filter>=<value>]... [--verdicts <true|false>]
        ci_router_outputs.py <workflow> --label-readers
-Prints `<output>=<value>` for each output of the `changes` job, in the file's order. --verdicts
-sets every filter's verdict (default true); --verdict overrides one. --label-readers prints, one
-per line, each output whose expression reads the pull request's labels, found in the text
-rather than by evaluating it, so a broken term cannot drop an output from that list.
+Prints `<output>=<value>` for each output of the `changes` job, in the file's order. --filters is
+the changes job's filters, which it computes when it runs (.github/scripts/ci-filters-generate.sh)
+and no file of the repository holds; the filter names are its keys. --verdicts sets every filter's
+verdict (default true); --verdict overrides one. --label-readers prints, one per line, each output
+whose expression reads the pull request's labels, found in the text rather than by evaluating it,
+so a broken term cannot drop an output from that list.
 Run from anywhere; ci.yaml's test job runs its harness."""
 import argparse
 import json
@@ -183,6 +185,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("workflow")
     parser.add_argument("--event")
+    parser.add_argument("--filters")
     parser.add_argument("--label-readers", action="store_true")
     parser.add_argument("--label", action="append", default=[])
     parser.add_argument("--verdict", action="append", default=[])
@@ -195,14 +198,14 @@ def main():
             if "github.event.pull_request.labels" in str(expression):
                 print(name)
         return 0
-    if not args.event:
-        parser.error("--event is required unless --label-readers is given")
-    filters = yaml.safe_load(Path(args.workflow).parent.parent.joinpath("ci-filters.yaml").read_text())
+    if not args.event or not args.filters:
+        parser.error("--event and --filters are required unless --label-readers is given")
+    filters = yaml.safe_load(Path(args.filters).read_text())
     verdicts = {name: args.verdicts for name in filters}
     for pair in args.verdict:
         name, _, value = pair.partition("=")
         if name not in verdicts:
-            print(f"ci_router_outputs: --verdict {pair} names no filter of ci-filters.yaml", file=sys.stderr)
+            print(f"ci_router_outputs: --verdict {pair} names no filter of {args.filters}", file=sys.stderr)
             return 2
         verdicts[name] = value
     context = {

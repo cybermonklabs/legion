@@ -53,6 +53,33 @@ type commentInput struct {
 	Actor *model.Actor `json:"actor"`
 }
 
+// storedSuggestion is a suggestion as the create writes it into the row's suggestion column: the
+// suggestion itself, and the kind its mark recorded when the comment was made (docs.SuggestionKind:
+// "insert", "replace" or "delete"; the mark a quote anchor writes is a replace). An insert's mark
+// wraps the words the suggestion itself put in the document, so its anchor's quote is a copy of
+// the comment's own text until an accept makes those words document text, and the delete reads
+// the kind (loadStoredSuggestion) to empty that quote once the mark is gone and answers no kind:
+// an orphaned suggestion's, and a rejected one's, whose reject took the words out
+// (deleteComment). An accept or a reject merges what it decides into the column, which keeps the
+// kind (commentAction), so a decided suggestion keeps it. Only the delete reads the kind; every
+// other read decodes the column into model.Suggestion, which has no kind and drops it, so no
+// answer and no event carries it. A suggestion with no anchor has no mark and stores no kind.
+type storedSuggestion struct {
+	model.Suggestion
+	Kind string `json:"kind,omitempty"`
+}
+
+// loadStoredSuggestion is the kind comment id's suggestion column holds (storedSuggestion), read
+// in tx: "" for a row with no suggestion, for one with no anchor, and for one made before the
+// create stored the kind.
+func loadStoredSuggestion(ctx context.Context, tx pgx.Tx, id string) (string, error) {
+	var kind string
+	err := tx.QueryRow(ctx, `
+		select coalesce(suggestion->>'kind', '') from comments where id = $1
+	`, id).Scan(&kind)
+	return kind, err
+}
+
 // askReplyTurn is who holds the turn once an ask reply by actor is posted: a human's
 // reply always hands it to the agent; a session's reply hands it to the human unless
 // the request marks it a progress note (turn "agent").
@@ -339,7 +366,7 @@ func (s *server) replayComment(w http.ResponseWriter, r *http.Request, point com
 		s.writeHandlerError(w, err)
 		return
 	}
-	s.writeRefreshed(w, stored, hydrated[0])
+	s.writeRefreshed(w, http.StatusCreated, stored, hydrated[0])
 }
 
 // owedCommentMentions is each mention of the comment whose one attempt is pending with no live
@@ -401,6 +428,15 @@ func (s *server) normalizeCommentThreadTarget(
 		parent, err := s.loadOwnedComment(ctx, tx, owner, *input.ReplyTo)
 		if err != nil {
 			return commentThreadTarget{}, err
+		}
+		// A reply adds text under the post it answers, and a deleted post takes none: the
+		// thread reply is refused as the delivery callback's reply is (comment_delivery.go's
+		// replyComment), on the parent this walk has already locked, so the refusal costs no
+		// read of its own. Only the comment the request named is judged: a reply under a live
+		// comment stands whatever became of the root above it, and a reply written before the
+		// delete keeps its text and its place.
+		if parent.DeletedAt != nil {
+			return commentThreadTarget{}, deletedPostError(refs.ItemComment)
 		}
 		target, err := s.threadHeadOf(ctx, tx, owner, parent)
 		if err != nil || input.ReplyToBlock == nil {
@@ -971,7 +1007,7 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 	var suggestionJSON any
 	if input.Suggestion != nil {
 		suggestion = &model.Suggestion{ReplaceWith: input.Suggestion.ReplaceWith}
-		suggestionJSON, err = encodeJSON(suggestion)
+		suggestionJSON, err = encodeJSON(storedSuggestion{Suggestion: *suggestion, Kind: projectionKind})
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return

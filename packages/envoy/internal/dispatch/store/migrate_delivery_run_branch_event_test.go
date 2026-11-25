@@ -14,6 +14,7 @@ const deliveryRunBranchEventVersion = 86
 // reads the run back with both new columns null, the started-at index in place and the progress
 // table's began_at column added.
 func TestMigrationAddsBranchAndEventColumns(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := openMigratedTestStore(t, deliveryRunBranchEventVersion-1)
 	if _, err := store.Pool.Exec(ctx, `

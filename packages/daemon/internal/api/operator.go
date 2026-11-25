@@ -706,7 +706,7 @@ func (s *server) retryClaim(w http.ResponseWriter, r *http.Request) {
 // it before calling here (freshSession), which is also what reaches a claim this start refuses.
 func (s *server) retryStart(w http.ResponseWriter, r *http.Request, m *supervise.Machine, token claim.Token, fresh bool) (int, bool) {
 	c := m.Claim()
-	if failedOrRetired(c.State) {
+	if supervise.FailedOrRetired(c.State) {
 		if status, refusal, restarted := s.restartWorkedPhase(r, token, c, fresh); restarted {
 			if refusal != "" {
 				s.refuse(w, r, status, refusal)
@@ -797,12 +797,6 @@ func (s *server) machineRetry(w http.ResponseWriter, r *http.Request, m *supervi
 		return http.StatusAccepted, true
 	}
 	return http.StatusOK, true
-}
-
-// failedOrRetired is whether a claim's state is one the operator's retry acts on through its
-// issue's phase: the claim failed or retired, whatever retired it, so its process is gone.
-func failedOrRetired(state supervise.ClaimState) bool {
-	return state == supervise.StateFailed || state == supervise.StateRetired
 }
 
 // forgetRecordedSession has the claim drop the session it recorded, for a caller that is

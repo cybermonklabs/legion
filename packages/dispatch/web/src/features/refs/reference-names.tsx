@@ -13,6 +13,7 @@ import {
 
 import type { DisplayTree } from "../../api/types";
 import { type ReferenceNaming, useMarkdownHeadline } from "./markdown-engine";
+import type { PostDeletion } from "./post-marks";
 import { linkTitleMax } from "./reference-target";
 import { type DispatchReferenceRoute, parseNodeReference } from "./routes";
 import { referenceTargetKind } from "./target-id";
@@ -56,6 +57,14 @@ import { firstWordedBlock } from "./tree-fragment";
  * still mounted read. Each part readers are handed changes only where what it holds does, so a
  * publisher that publishes the same references again, in sets made anew, draws no surface
  * again.
+ *
+ * A page publishes beside its readings the marks of a post its author corrected, read from the
+ * same answer (INFRA-1523, R2 and R3): the references among them whose post its author edited
+ * (`PublishedReferences.edited`), and those whose comment or message its author deleted, by the
+ * delete (`PublishedReferences.deleted`). Where two publishers name one reference, its marks are
+ * those of the one whose reading of it stands, so a name and its marks always come from one
+ * read: a newer answer that names a post by its deleted line is never marked by an older one
+ * that read it edited.
  */
 
 /** How a page names one target it read, which the store projects into the name readers see: the
@@ -79,6 +88,17 @@ export interface PublishedReferences {
   /** Every reference the page asks the read for, answered or not yet: a surface waits on the
    *  page's answer for one of these rather than reading it itself. */
   readonly asked: ReadonlySet<string>;
+  /** The references among `readings` whose comment or message its author deleted, by the
+   *  delete (`postDeletion`), each named by its deleted line (`deletedLineText`). A surface that
+   *  draws one draws that line in the deleted line's italic, as a link to the post does
+   *  (`RefLink`). Absent where the page read no deleted post. */
+  readonly deleted?: ReadonlyMap<string, PostDeletion>;
+  /** The references among `readings` whose post its author edited - a comment, a message or a
+   *  block of either - which a surface marks ` · edited` after the name it draws, cut to its own
+   *  length first, so no cut takes the mark (`editedName`, `EditedMark`). None of them is in
+   *  `deleted`: a deleted post's line already says what became of its text. Absent where the
+   *  page read no edited post. */
+  readonly edited?: ReadonlySet<string>;
   /** The references the read answered that nothing answers to now, or that the reader may not
    *  see: a surface draws each as its author wrote it and reads it no more (R8). */
   readonly gone: ReadonlySet<string>;
@@ -97,6 +117,10 @@ export interface PublishedReferences {
 export interface KnownReferences {
   readonly ambiguous: ReadonlySet<string>;
   readonly asked: ReadonlySet<string>;
+  /** `PublishedReferences.deleted`, empty where no page published any. */
+  readonly deleted: ReadonlyMap<string, PostDeletion>;
+  /** `PublishedReferences.edited`, empty where no page published any. */
+  readonly edited: ReadonlySet<string>;
   readonly gone: ReadonlySet<string>;
   /** The line a chip names a target by where it names it otherwise than a link does, by its
    *  reference (`chipLineReading`): a block by the first block of its words that holds any,
@@ -116,12 +140,15 @@ export interface KnownReferences {
 const NO_REFERENCES: ReadonlySet<string> = new Set();
 const NO_READINGS: ReadonlyMap<string, ReferenceNameReading> = new Map();
 const NO_NAMES: ReadonlyMap<string, string> = new Map();
+const NO_DELETED: ReadonlyMap<string, PostDeletion> = new Map();
 
 /** What the store holds while no page publishes, and what a surface that publishes nothing hands
  *  what it draws: no reference at all. */
 export const NOTHING_PUBLISHED: PublishedReferences = {
   ambiguous: NO_REFERENCES,
   asked: NO_REFERENCES,
+  deleted: NO_DELETED,
+  edited: NO_REFERENCES,
   gone: NO_REFERENCES,
   readings: NO_READINGS,
   unnamed: NO_REFERENCES,
@@ -131,6 +158,8 @@ export const NOTHING_PUBLISHED: PublishedReferences = {
 const NOTHING_KNOWN: KnownReferences = {
   ambiguous: NO_REFERENCES,
   asked: NO_REFERENCES,
+  deleted: NO_DELETED,
+  edited: NO_REFERENCES,
   gone: NO_REFERENCES,
   lines: NO_NAMES,
   names: NO_NAMES,
@@ -205,6 +234,55 @@ function readingsOf(
   return same ? kept : joined;
 }
 
+/** The references of every value still published whose post its author edited, each as the
+ *  publisher whose reading of it stands answers it (`readingsOf`), so a name and its mark always
+ *  come from one read. `kept` where it holds the same references. */
+function editedOf(
+  published: readonly PublishedReferences[],
+  kept: ReadonlySet<string>
+): ReadonlySet<string> {
+  const naming = published.filter((value) => value.readings.size > 0);
+  let edited = naming[0]?.edited ?? NO_REFERENCES;
+  if (naming.length > 1) {
+    const marked = new Set<string>();
+    for (const { edited: own = NO_REFERENCES, readings } of naming) {
+      for (const reference of readings.keys()) {
+        if (own.has(reference)) marked.add(reference);
+        else marked.delete(reference);
+      }
+    }
+    edited = marked;
+  }
+  return edited.size === kept.size && holdsEvery(kept, edited) ? kept : edited;
+}
+
+/** The deletes of every value still published, each reference's as the publisher whose reading
+ *  of it stands answers it (`readingsOf`), so a name and its mark always come from one read.
+ *  `kept` where it holds the same deletes. */
+function deletedOf(
+  published: readonly PublishedReferences[],
+  kept: ReadonlyMap<string, PostDeletion>
+): ReadonlyMap<string, PostDeletion> {
+  const naming = published.filter((value) => value.readings.size > 0);
+  let deleted = naming[0]?.deleted ?? NO_DELETED;
+  if (naming.length > 1) {
+    const marked = new Map<string, PostDeletion>();
+    for (const { deleted: own = NO_DELETED, readings } of naming) {
+      for (const reference of readings.keys()) {
+        const deletion = own.get(reference);
+        if (deletion === undefined) marked.delete(reference);
+        else marked.set(reference, deletion);
+      }
+    }
+    deleted = marked;
+  }
+  const same =
+    deleted === kept ||
+    (deleted.size === kept.size &&
+      [...deleted].every(([reference, deletion]) => kept.get(reference) === deletion));
+  return same ? kept : deleted;
+}
+
 /** Every value still published as the one value readers see, each part the one `previous`
  *  holds where it holds the same, so a part readers are handed changes only where what it holds
  *  does (`ReferenceNamesProvider`). */
@@ -223,6 +301,8 @@ function merged(
       published.map((value) => value.asked),
       previous.asked
     ),
+    deleted: deletedOf(published, previous.deleted ?? NO_DELETED),
+    edited: editedOf(published, previous.edited ?? NO_REFERENCES),
     gone: union(
       published.map((value) => value.gone),
       previous.gone
@@ -392,17 +472,19 @@ export function ReferenceNamesProvider({ children }: { children: ReactNode }): R
       names: names.size === 0 ? NO_NAMES : names,
     };
   }, [version]);
-  const { ambiguous, asked, gone, unnamed } = value;
+  const { ambiguous, asked, deleted = NO_DELETED, edited = NO_REFERENCES, gone, unnamed } = value;
   const known = useMemo<KnownReferences>(
     () => ({
       ambiguous,
       asked,
+      deleted,
+      edited,
       gone,
       lines: projected.lines,
       names: projected.names,
       unnamed: including(unnamed, projected.blank),
     }),
-    [ambiguous, asked, gone, projected, unnamed]
+    [ambiguous, asked, deleted, edited, gone, projected, unnamed]
   );
   // Drawn again only where the readings do, so a publisher that publishes the same readings
   // again projects none of them again.
@@ -453,10 +535,11 @@ export function usePublishReferenceNames(published: PublishedReferences | undefi
  * reference the page is asking for before the page's answer reached it. So a row drawn with the
  * page's read waits on that read for every reference the page asks it for, from its first
  * render, and mounts no read of its own for one (`plain-text.tsx`). A name is the store's alone,
- * since only its projection names one. What the subtree reads changes only where a part of it
- * does, so a page that publishes the same references again, in sets made anew, draws no row
- * again: the one value this hands on is the store's own wherever the store already holds every
- * reference the page's holds.
+ * since only its projection names one, and so are its marks (`KnownReferences.edited`,
+ * `deleted`), which mark nothing until it is named. What the subtree reads changes only where a
+ * part of it does, so a page that publishes the same references again, in sets made anew, draws
+ * no row again: the one value this hands on is the store's own wherever the store already holds
+ * every reference the page's holds.
  */
 export function PublishedReferenceNames({
   children,
@@ -471,6 +554,8 @@ export function PublishedReferenceNames({
     const value = {
       ambiguous: including(known.ambiguous, ambiguous),
       asked: including(known.asked, asked),
+      deleted: known.deleted,
+      edited: known.edited,
       gone: including(known.gone, gone),
       lines: known.lines,
       names: known.names,

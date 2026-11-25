@@ -456,12 +456,12 @@ func configureProber(opts Options) (*Runtime, error) {
 	if r.log == nil {
 		r.log = slog.Default()
 	}
-	// The launchers carry the shared public leak check and one pod's saved workspace bundle to it
-	// before any of its roles start, take its memory guard's kill reports, an issue pod's and the
-	// controller pod's, and its cache trimmer's sweep reports, and log what they could not carry or
-	// record, so they are built once the runtime's log is settled.
-	r.launchers = newLaunchers(opts.LeakCheckSetting, opts.LeakCheck, opts.SavedWorkspaceBundle, opts.WorkspaceBundleRestored, opts.HeldWorkspaceBundle,
-		opts.MemoryGuardKilled, opts.ControllerMemoryGuardKilled, opts.VolumeReported, r.log)
+	// The launchers carry the shared public leak check to a pod before any of its roles start,
+	// take its memory guard's kill reports, an issue pod's and the controller pod's, and its cache
+	// trimmer's sweep reports, and log what they could not carry or record, so they are built once
+	// the runtime's log is settled.
+	r.launchers = newLaunchers(opts.LeakCheckSetting, opts.LeakCheck, opts.MemoryGuardKilled, opts.ControllerMemoryGuardKilled,
+		opts.VolumeReported, r.log)
 	// Last, after the logger a failed encoding is reported through: every input is settled above
 	// and none is written again, so each kind's shape in each sandbox is encoded here and only
 	// read afterwards.
@@ -1076,47 +1076,15 @@ func (r *Runtime) AdoptWorkingCopy(ctx context.Context, loc runtime.Locator, id 
 	return nil
 }
 
-var _ runtime.WorkspaceBundler = (*Runtime)(nil)
-
-// BundleWorkspace has role's shim bundle the unpushed work of the issue workspace every role of
-// the issue shares, over that claim's connection, for a release about to take the pod and its
-// disk away. The role named must be one whose process runs in the issue's own running pod
-// (runningRoleConn): its shim builds the bundle in the workspace it already works in, so a claim
-// with no locator, one whose pod is not the recorded one, and one with no connection are each a
-// refusal rather than an empty bundle.
-//
-// It is the role's shim that answers, never its launcher, so a release has to ask before it stops
-// the role's process: the idle release's save is a row of its own ahead of its role stops
-// (record.IssueBundle, the daemon's idleReleaseRows), and asking after them refuses with "holds
-// no role process to bundle it".
-func (r *Runtime) BundleWorkspace(ctx context.Context, issue string, role claim.Role) (runtime.WorkspaceBundle, error) {
-	conn, token, loc, err := r.runningRoleConn(ctx, issue, role, "bundle")
-	if err != nil {
-		return runtime.WorkspaceBundle{}, err
-	}
-	bundle, err := conn.BundleWorkspace(ctx, issue, runtime.WorkspaceBundleTimeout)
-	if err != nil {
-		return runtime.WorkspaceBundle{}, fmt.Errorf("bundle %s's workspace over %s: %w", issue, token, err)
-	}
-	// The shim knows nothing of the pod it runs in, and the row the save writes has to: the pod
-	// this work came off is the one pod the restore refuses by name, so that a role relaunched
-	// in it before the teardown is answered nothing and leaves the bundle's one attempt for the
-	// pod that replaces it (store.TakeWorkspaceBundleForRestore). It is the pod runningRoleConn
-	// checked, the running pod the claim's locator records.
-	bundle.PodUID = loc.Sandbox.PodUID
-	return bundle, nil
-}
-
 var _ runtime.WorkspaceWorkReader = (*Runtime)(nil)
 
 // WorkspaceWork has role's shim read whether the issue workspace every role of the issue shares
-// holds work that no branch or tag on origin holds, over that claim's connection. It makes
-// BundleWorkspace's checks (runningRoleConn): the role named must be one whose process runs in
-// the issue's own running pod, since its shim reads the workspace it already works in, so a claim
-// with no locator, one whose pod is not the recorded one, and one with no connection are each a
-// refusal rather than an answer of no work.
+// holds work that no branch or tag on origin holds, over that claim's connection. The role named
+// must be one whose process runs in the issue's own running pod (runningRoleConn), since its shim
+// reads the workspace it already works in, so a claim with no locator, one whose pod is not the
+// recorded one, and one with no connection are each a refusal rather than an answer of no work.
 func (r *Runtime) WorkspaceWork(ctx context.Context, issue string, role claim.Role) (runtime.WorkspaceWork, error) {
-	conn, token, _, err := r.runningRoleConn(ctx, issue, role, "read")
+	conn, token, err := r.runningRoleConn(ctx, issue, role)
 	if err != nil {
 		return runtime.WorkspaceWork{}, err
 	}
@@ -1127,36 +1095,33 @@ func (r *Runtime) WorkspaceWork(ctx context.Context, issue string, role claim.Ro
 	return work, nil
 }
 
-// runningRoleConn finds role's process for a request its shim answers in the issue's workspace
-// (BundleWorkspace, WorkspaceWork), and makes the one rule for such a request
-// (runningProcessConn) of it. It answers the connection to that role's shim, the role's claim and
-// the locator of its process, read from the store. A claim with no locator is a refusal, and so
-// is each refusal of the rule. verb is what the caller does to the workspace ("bundle", "read"),
-// and every refusal opens with it: "<verb> <issue>'s workspace: ", and a claim with no locator
-// holds "no role process to <verb> it".
-func (r *Runtime) runningRoleConn(ctx context.Context, issue string, role claim.Role, verb string) (runtime.Conn, claim.Token, runtime.Locator, error) {
+// runningRoleConn finds role's process for the workspace read its shim answers in the issue's
+// workspace (WorkspaceWork), and makes the one rule for such a request (runningProcessConn) of it.
+// It answers the connection to that role's shim and the role's claim, read from the store. A claim
+// with no locator is a refusal, and so is each refusal of the rule. Every refusal opens with
+// "read <issue>'s workspace: ", and a claim with no locator holds "no role process to read it".
+func (r *Runtime) runningRoleConn(ctx context.Context, issue string, role claim.Role) (runtime.Conn, claim.Token, error) {
 	token, err := claim.NewToken(r.project, issue, role)
 	if err != nil {
-		return nil, "", runtime.Locator{}, fmt.Errorf("%s %s's workspace: %w", verb, issue, err)
+		return nil, "", fmt.Errorf("read %s's workspace: %w", issue, err)
 	}
 	claims, err := r.store.Claims(ctx)
 	if err != nil {
-		return nil, "", runtime.Locator{}, fmt.Errorf("%s %s's workspace: %w", verb, issue, err)
+		return nil, "", fmt.Errorf("read %s's workspace: %w", issue, err)
 	}
 	index := slices.IndexFunc(claims, func(c supervise.Claim) bool { return c.Token == token })
 	if index < 0 || claims[index].Locator == nil {
-		return nil, "", runtime.Locator{}, fmt.Errorf("%s %s's workspace: %s holds no role process to %s it", verb, issue, token, verb)
+		return nil, "", fmt.Errorf("read %s's workspace: %s holds no role process to read it", issue, token)
 	}
-	loc := *claims[index].Locator
-	conn, err := r.runningProcessConn(loc)
+	conn, err := r.runningProcessConn(*claims[index].Locator)
 	if err != nil {
-		return nil, "", runtime.Locator{}, fmt.Errorf("%s %s's workspace: %w", verb, issue, err)
+		return nil, "", fmt.Errorf("read %s's workspace: %w", issue, err)
 	}
-	return conn, token, loc, nil
+	return conn, token, nil
 }
 
 // runningProcessConn is the one rule for a request a role's shim answers in the issue's workspace
-// (AdoptWorkingCopy, and BundleWorkspace and WorkspaceWork through runningRoleConn): the process
+// (AdoptWorkingCopy, and WorkspaceWork through runningRoleConn): the process
 // loc records must run in the issue's own running pod, since the shim of loc's claim works in that
 // workspace. It answers the connection to that claim's shim. A locator this runtime did not mint,
 // a pod that is not the recorded one or not running, and a claim with no connection are each a

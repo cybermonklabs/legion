@@ -246,12 +246,9 @@ func TestSearchFindsAMeaningOnlyMatch(t *testing.T) {
 	issue := createInteractionIssue(t, handler, "MEAN", title, spec)
 	processAllPending(t, database, embedder)
 
-	// Sanity: keyword search for this query matches nothing at all (the term appears nowhere),
-	// so any hit below can only have come from the meaning leg.
-	keywordOnly := searchResponse(t, newTestHandler(t), "q=wibbleflorp")
-	if len(keywordOnly.Results) != 0 {
-		t.Fatalf("keyword-only baseline found %d results for a term absent from the corpus, want 0", len(keywordOnly.Results))
-	}
+	// Sanity: the keyword leg alone finds nothing for this query in this test's own corpus, so
+	// any hit below can only have come from the meaning leg.
+	requireNoKeywordHit(t, handler, "q=wibbleflorp")
 
 	response := searchResponse(t, handler, "q=wibbleflorp")
 	if response.Degraded != "" {
@@ -847,12 +844,14 @@ func searchHit(t *testing.T, response model.SearchResponse, kind, id string) mod
 	return model.SearchResult{}
 }
 
-// requireNoKeywordHit fails unless a Dispatch with no embedder finds nothing for the query, so
-// a hit the test then asserts can only have come from the meaning leg.
-func requireNoKeywordHit(t *testing.T, query string) {
+// requireNoKeywordHit fails unless the keyword leg alone (?keywords_only=true) finds nothing for
+// the query in the corpus handler serves, so a hit the test then asserts on that same handler can
+// only have come from the meaning leg.
+func requireNoKeywordHit(t *testing.T, handler http.Handler, query string) {
 	t.Helper()
-	if keywordOnly := searchResponse(t, newTestHandler(t), query); len(keywordOnly.Results) != 0 {
-		t.Fatalf("keyword-only baseline found %d results for %s, want none", len(keywordOnly.Results), query)
+	if keywordOnly := searchResponse(t, handler, query+"&keywords_only=true"); len(keywordOnly.Results) != 0 {
+		t.Fatalf("the keyword leg alone found %d results for %s, want none: %+v",
+			len(keywordOnly.Results), query, keywordOnly.Results)
 	}
 }
 
@@ -931,7 +930,7 @@ func TestALongBlocksTailIsFoundByMeaning(t *testing.T) {
 	block := strings.Split(piece, "/p")[0]
 	processAllPending(t, database, embedder)
 
-	requireNoKeywordHit(t, "q=wibbleflorp")
+	requireNoKeywordHit(t, handler, "q=wibbleflorp")
 	response := searchResponse(t, handler, "q=wibbleflorp")
 	if response.Degraded != "" {
 		t.Fatalf("Degraded = %q, want empty", response.Degraded)
@@ -1031,7 +1030,7 @@ func TestMeaningSearchFindsOtherItemsPastOneLongDocumentsWindows(t *testing.T) {
 	embedWindowsAs(t, database, embedder, "comment_block", "comment/"+comment.ID, angledVector(0.5, 4))
 	processAllPending(t, database, embedder)
 
-	requireNoKeywordHit(t, "q=wibbleflorp")
+	requireNoKeywordHit(t, handler, "q=wibbleflorp")
 	response := searchResponse(t, handler, "q=wibbleflorp")
 	if response.Degraded != "" {
 		t.Fatalf("Degraded = %q, want empty", response.Degraded)
@@ -1070,7 +1069,7 @@ func TestProjectScopedSearchFindsItsCommentPastOtherProjectsNearerComments(t *te
 	embedWindowsAs(t, database, embedder, "comment_block", "comment/"+own.ID, angledVector(0.5, 2))
 	processAllPending(t, database, embedder)
 
-	requireNoKeywordHit(t, "q=wibbleflorp&project=MINE")
+	requireNoKeywordHit(t, handler, "q=wibbleflorp&project=MINE")
 	response := searchResponse(t, handler, "q=wibbleflorp&project=MINE")
 	if response.Degraded != "" {
 		t.Fatalf("Degraded = %q, want empty", response.Degraded)
@@ -1144,7 +1143,7 @@ func TestProjectScopedSearchFindsItsCommentsPastMoreNearerWindowsThanTheArmTakes
 	processAllPending(t, database, embedder)
 	recordEmbeddingProjectKeyFill(t, database, true)
 
-	requireNoKeywordHit(t, "q=wibbleflorp&project=MINE")
+	requireNoKeywordHit(t, handler, "q=wibbleflorp&project=MINE")
 	response := searchResponse(t, handler, "q=wibbleflorp&project=MINE")
 	if response.Degraded != "" {
 		t.Fatalf("Degraded = %q, want empty", response.Degraded)
@@ -1206,7 +1205,7 @@ func TestProjectScopedSearchFindsItsCommentsPastThatCrowdWhileTheFillIsStillLabe
 		t.Fatal("the progress row reads done, so this fixture is not the fill window it is written for")
 	}
 
-	requireNoKeywordHit(t, "q=wibbleflorp&project=MINE")
+	requireNoKeywordHit(t, handler, "q=wibbleflorp&project=MINE")
 	response := searchResponse(t, handler, "q=wibbleflorp&project=MINE")
 	if response.Degraded != "" {
 		t.Fatalf("Degraded = %q, want empty", response.Degraded)
@@ -1282,7 +1281,7 @@ func TestAFilteredMeaningSearchFindsTheCommentItsFiltersKeep(t *testing.T) {
 
 	// One baseline for the three queries: the word is in no row of the corpus, so every hit
 	// below came from the meaning leg, and each filter only narrows that further.
-	requireNoKeywordHit(t, "q=wibbleflorp")
+	requireNoKeywordHit(t, handler, "q=wibbleflorp")
 	// Each case's name is the parameter's own name, which is what the query binds it under.
 	for _, filter := range []struct{ name, value string }{
 		{"author", "alice"},
@@ -1427,7 +1426,7 @@ func TestAProjectScopedSearchAnswersWhileTheFillIsStillLabelling(t *testing.T) {
 		t.Fatal("the fill's row reads done, so this test stands after the pass rather than during it")
 	}
 
-	requireNoKeywordHit(t, "q=wibbleflorp&project="+project)
+	requireNoKeywordHit(t, handler, "q=wibbleflorp&project="+project)
 	scoped := searchResponse(t, handler, "q=wibbleflorp&project="+project)
 	if scoped.Degraded != "" {
 		t.Fatalf("Degraded = %q, want empty: the embedder is configured and did not fail", scoped.Degraded)
@@ -1505,7 +1504,7 @@ func TestAProjectScopedSearchAnswersWhenTheFillsProgressTableIsMissing(t *testin
 		t.Fatalf("drop the fill's progress table: %v", err)
 	}
 
-	requireNoKeywordHit(t, "q=wibbleflorp&project="+project)
+	requireNoKeywordHit(t, handler, "q=wibbleflorp&project="+project)
 	response := searchResponse(t, handler, "q=wibbleflorp&project="+project)
 	if response.Degraded != "" {
 		t.Fatalf("Degraded = %q, want empty: the embedder is configured and did not fail", response.Degraded)
@@ -1524,7 +1523,7 @@ func TestAProjectScopedSearchAnswersWhenTheFillsProgressTableIsMissing(t *testin
 func TestAProjectScopedSearchAnswersWhenTheFillsProgressRowCannotBeScanned(t *testing.T) {
 	t.Parallel()
 	const project = "BADV"
-	_, database, deps, issueKey, commentID := unlabelledFillWindow(t, project)
+	handler, database, deps, issueKey, commentID := unlabelledFillWindow(t, project)
 	// The search runs on a store of one connection, so the connection that holds the cached
 	// plan is the connection it searches on (storetest.SingleConnection, as the issue read's
 	// own prepared-statement test uses it). Preparing the read on every connection of the
@@ -1542,7 +1541,9 @@ func TestAProjectScopedSearchAnswersWhenTheFillsProgressRowCannotBeScanned(t *te
 		}
 	}
 
-	requireNoKeywordHit(t, "q=wibbleflorp&project="+project)
+	// The keyword check goes through the fixture's handler, whose store is the shared pool and
+	// not the one connection above, so the search below is still the first on that connection.
+	requireNoKeywordHit(t, handler, "q=wibbleflorp&project="+project)
 	response, err := served.runSearch(context.Background(),
 		searchParameters{text: "wibbleflorp", project: project, limit: searchDefaultLimit})
 	if err != nil {
@@ -1586,7 +1587,7 @@ func TestAProjectScopedSearchDoesNotWaitOutTheStatementBoundForALockedProgressRo
 		t.Fatalf("lock the fill's progress row: %v", err)
 	}
 
-	requireNoKeywordHit(t, "q=wibbleflorp&project="+project)
+	requireNoKeywordHit(t, handler, "q=wibbleflorp&project="+project)
 	started := time.Now()
 	response := searchResponse(t, handler, "q=wibbleflorp&project="+project)
 	waited := time.Since(started)

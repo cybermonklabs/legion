@@ -16,6 +16,8 @@ import { compiledBlockSchema } from "../doc/schema";
 import { blockFragment, isBlockItemKind } from "./block-reference";
 import { MarkdownBody } from "./MarkdownBody";
 import { MarkdownPreview } from "./MarkdownPreview";
+import { DeletedBody, EditedMark } from "./PostMarks";
+import { postDeletion } from "./post-marks";
 import { referenceTriggerProps } from "./RefPreview";
 import { referencesQuery, standsFailed, useNewIssuePageFreshness } from "./reference-target";
 import type { DispatchReferenceRoute } from "./routes";
@@ -432,6 +434,9 @@ export function ReferencedBy({
                   // On a document's read, the block of the document the edge meets: one source
                   // citing two of its blocks is two rows, each naming and keyed by its block.
                   const cited = referencePath(edge.block?.ref);
+                  // A citing comment or message, or a block of one, carries its post's marks: a
+                  // deleted one has no excerpt left, and the deleted line takes its place.
+                  const deleted = postDeletion(edge.node);
                   return (
                     <li
                       key={`${edge.node.kind}:${edge.node.id}:${edge.kind}:${edge.direction}:${edge.block?.id ?? ""}`}
@@ -456,6 +461,7 @@ export function ReferencedBy({
                             <Timestamp at={edge.created_at} />
                           </Link>
                         )}
+                        <EditedMark at={edge.node.edited_at} deleted={deleted} />
                         {cited === undefined ? null : (
                           <>
                             <span aria-hidden="true">·</span>
@@ -472,7 +478,9 @@ export function ReferencedBy({
                       {/* A block whose text opens with a reference longer than the server's cut
                           has an empty excerpt that still names the block it links to: the row
                           then draws no excerpt rather than an empty paragraph. */}
-                      {edge.excerpt === undefined || edge.excerpt.text === "" ? null : (
+                      {deleted !== null ? (
+                        <DeletedBody className="mt-1 block text-sm" deleted={deleted} />
+                      ) : edge.excerpt === undefined || edge.excerpt.text === "" ? null : (
                         <Excerpt
                           rendered={excerptIsBody(edge)}
                           source={excerptSource(edge.node)}

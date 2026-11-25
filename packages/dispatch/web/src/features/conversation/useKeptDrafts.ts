@@ -26,6 +26,7 @@ import {
   type ComposerKind,
   type DraftIntake,
   hasUnsavedInput,
+  type ReplyListing,
   type ReplyTarget,
 } from "./composer-model";
 import type { HeldSend, HeldSends } from "./held-sends";
@@ -117,18 +118,21 @@ export function giveWay(
  *  gives it and no Reply the reader presses (`standing`): an Inbox agent thread's box replies to
  *  the thread's newest message, so one that has come since the refusal moved the box, and no
  *  press brings it back. Nor does one where the host no longer lists the comment or message the
- *  refusal answers (`listsReply`): its Reply is gone with it, so Discard is the way out, and the
- *  draft stays in the field until the reader takes it. */
+ *  refusal answers, or lists it deleted, which takes no reply (`listingOf`): its Reply goes
+ *  nowhere, so Discard is the way out, and the draft stays in the field until the reader takes
+ *  it. */
 function writtenElsewhere(
   held: SentRequest,
   standing: boolean,
-  listsReply: (reply: ReplyTarget) => boolean
+  listingOf: (reply: ReplyTarget) => ReplyListing
 ): string {
   if (held.replyTo !== null) {
-    if (!listsReply(held.replyTo)) {
+    const listing = listingOf(held.replyTo);
+    if (listing !== "standing") {
       return (
-        `This message was written as a reply to a ${held.replyTo.parentKind} that is no longer ` +
-        "listed. Discard it to write here."
+        `This message was written as a reply to a ${held.replyTo.parentKind} that ` +
+        `${listing === "deleted" ? "was deleted, which takes no reply" : "is no longer listed"}. ` +
+        "Discard it to write here."
       );
     }
     return standing
@@ -299,9 +303,12 @@ export function keptForOtherWords(
     .at(-1);
 }
 
-/** A draft the composer keeps for a reply whose comment or message its host no longer lists
- *  (`ListedReplies`). */
-export type GoneReplyDraft = AwayDraft & { readonly replyTo: ReplyTarget };
+/** A draft the composer keeps for a reply whose comment or message its host no longer lists, or
+ *  lists deleted (`ListedReplies`), with which of the two it is (`listing`). */
+export type GoneReplyDraft = AwayDraft & {
+  readonly listing: Exclude<ReplyListing, "standing">;
+  readonly replyTo: ReplyTarget;
+};
 
 /** What the composer keeps of a draft the field does not send, the edit it offers beside a newer
  *  body, the draft a margin compose offers beside a compose at other words, and the presses for a
@@ -338,9 +345,10 @@ export interface KeptDrafts {
   /** Forgets the unsent copy under the send name: from Send on the held send keeps the draft. */
   readonly forgetUnsent: () => void;
   /** The drafts kept for other replies than the one the composer shows whose comment or message
-   *  its host no longer lists (`ListedReplies`): the Reply a kept line would name is gone with
-   *  it, so the composer draws each itself beside its field (`KeptDraftOffers`), with Discard my
-   *  draft (`dropAway`) and, where `awayTakes` says so, Use it here (`takeAway`). */
+   *  its host no longer lists, or lists deleted (`ListedReplies`): the Reply a kept line would
+   *  name goes nowhere, so the composer draws each itself beside its field (`KeptDraftOffers`),
+   *  with Discard my draft (`dropAway`) and, where `awayTakes` says so, Use it here
+   *  (`takeAway`). */
   readonly goneAway: readonly GoneReplyDraft[];
   /** Writes what the field holds back to the held refusal now, as the debounced write does: the
    *  margin asks for it before it sends a refused compose again itself (`ComposerBridge`). */
@@ -395,8 +403,8 @@ const KEEP_DRAFT_MS = 300;
  * (`intake`); offers an edit written over a body the comment no longer holds beside the newer body
  * (`changed`); offers a margin compose's draft kept for other words of the document beside the
  * compose at these (`offered`); and splits the drafts kept for other replies into those it names
- * with the way back (`keptAway`) and those whose comment or message its host no longer lists
- * (`goneAway`), which it drops, or takes into the field (`dropAway`, `takeAway`).
+ * with the way back (`keptAway`) and those whose comment or message its host no longer lists, or
+ * lists deleted (`goneAway`), which it drops, or takes into the field (`dropAway`, `takeAway`).
  *
  * The composer's own state is handed in as it stands at this render: the field (`field`), the
  * files pasted into it (`homes`), how many times the reader has moved its address with its own
@@ -404,7 +412,7 @@ const KEEP_DRAFT_MS = 300;
  * the field took a draft the reply prefill must not replace, which an arrival at an address that
  * keeps one sets again. `replaceDraft` and `replaceAsk` put a draft, and an ask's options and
  * settings, in the fields that edit them, `discard` holds the composer's own Discard, and
- * `listsReply` says which replies the host lists.
+ * `listingOf` says how the host lists each reply.
  */
 export function useKeptDrafts({
   anchor,
@@ -417,7 +425,7 @@ export function useKeptDrafts({
   inline,
   intake,
   kind,
-  listsReply,
+  listingOf,
   mountedHeld,
   moves,
   outgoing,
@@ -445,10 +453,11 @@ export function useKeptDrafts({
     readonly initial: MountDraft;
     readonly intake: Ref<DraftIntake> | undefined;
     readonly kind: ComposerKind;
-    /** Whether the host lists `reply` (`ListedReplies`): a draft kept for a reply it no longer
-     *  lists is drawn itself (`goneAway`), and a refusal held for a reply the composer has left
-     *  goes back to it by its Reply only while it is listed (`writtenElsewhere`). */
-    readonly listsReply: (reply: ReplyTarget) => boolean;
+    /** How the host lists the comment or message `reply` answers (`ListedReplies`): a draft kept
+     *  for a reply it no longer lists, or lists deleted, is drawn itself (`goneAway`), and a
+     *  refusal held for a reply the composer has left goes back to it by its Reply only while it
+     *  stands (`writtenElsewhere`). */
+    readonly listingOf: (reply: ReplyTarget) => ReplyListing;
     readonly mountedHeld: RefObject<boolean>;
     readonly moves: number;
     readonly outgoing: ComposerSend;
@@ -463,13 +472,21 @@ export function useKeptDrafts({
   const { askOptions, body, multiple, replacement, urgency } = field;
   const { awayName, unsentName } = keptNames({ composerName, inline, standing });
   const keptByAddress = unsent.useAway(awayName ?? "");
-  // A draft kept for a reply the host no longer lists has lost the Reply its line names, so it
-  // is drawn itself beside the field (`KeptDraftOffers`), and every other one with its line.
-  const unlisted = (away: AwayDraft): away is GoneReplyDraft =>
-    away.replyTo !== null && !listsReply(away.replyTo);
-  const keptElsewhere = keptByAddress.filter((away) => !sameReply(away.replyTo, replyTo));
-  const goneAway = keptElsewhere.filter(unlisted);
-  const keptAway = keptElsewhere.filter((away) => !unlisted(away));
+  // A draft kept for a reply the host no longer lists, or lists deleted - which takes no reply -
+  // has lost the Reply its line names, so it is drawn itself beside the field (`KeptDraftOffers`),
+  // saying which, and every other one with its line.
+  const goneAway: GoneReplyDraft[] = [];
+  const keptAway: AwayDraft[] = [];
+  for (const away of keptByAddress) {
+    if (sameReply(away.replyTo, replyTo)) continue;
+    if (away.replyTo === null) {
+      keptAway.push(away);
+      continue;
+    }
+    const listing = listingOf(away.replyTo);
+    if (listing === "standing") keptAway.push(away);
+    else goneAway.push({ ...away, listing, replyTo: away.replyTo });
+  }
   // Only a composer with an anchor keeps drafts by it, so only a margin compose offers one: the
   // send the reader stopped, set aside for it, first, then the newest draft kept for other words.
   // A kept draft's two presses both forget it where it is kept, since Use my draft has put it in
@@ -692,7 +709,7 @@ export function useKeptDrafts({
   // it. The store refuses such a press too (`HeldSends.send`), whichever render made it.
   const elsewhere =
     heldRefusal !== undefined && refusedElsewhere
-      ? writtenElsewhere(heldRefusal.request, standing, listsReply)
+      ? writtenElsewhere(heldRefusal.request, standing, listingOf)
       : undefined;
   // The reader's own moves of the composer's address - Cancel reply, and a control its host
   // draws for it (`ownMoves`) - take the draft with them, and what it holds: its refusal

@@ -305,10 +305,11 @@ func (s *Service) indexUnrenderedVersion(ctx context.Context, tx pgx.Tx, artifac
 // shows the block holding it as its excerpt, so a target whose kept edge now stores another block
 // is counted beside the ones whose edges the version inserted or deleted (refs.ExcerptsMoved,
 // worked out here, before the reconciliation and the excerpts are written, in that order, by one
-// write). blocksIndexed says the caller queued the version's block index in tx first, which is
-// what lets the reconciliation, queued after it, settle the document's row of the forms queue in
-// the statement that settles the whole grammar's (refs.Replacement.SettlingForms); whether
-// excerpts is nil decides only whether the excerpts are stored or marked owed.
+// write). blocksIndexed says the caller queued the version's block index in tx first and that
+// index won the revision fence, which is what lets the reconciliation, queued after it, settle
+// the document's row of the forms queue in the statement that settles the whole grammar's
+// (refs.Replacement.SettlingForms); whether excerpts is nil decides only whether the excerpts are
+// stored or marked owed.
 func replaceVersionRefs(ctx context.Context, tx pgx.Tx, artifactID string, version int, versionAt time.Time, located []text.Located, moved []refs.Target, excerpts map[refs.Target]model.GraphExcerpt, blocksIndexed bool) (model.ReferenceChanges, error) {
 	replacement, err := planReplacement(ctx, tx, "artifact", artifactID, text.Refs(located), &versionAt, nil)
 	if err != nil {

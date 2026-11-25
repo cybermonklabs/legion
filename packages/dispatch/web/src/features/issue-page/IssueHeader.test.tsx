@@ -413,6 +413,8 @@ test("the header counts a Change under the decision whose block of the spec hold
     author: { id: "alice", kind: "user" },
     body: "Say which pages this covers.",
     created_at: "2026-11-11T09:00:00Z",
+    deleted_at: null,
+    deleted_by: null,
     deliveries: [],
     edited_at: null,
     id: "change-1",

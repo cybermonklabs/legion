@@ -1,0 +1,14 @@
+kind: Fixed
+body: |-
+    `legion gh api` places a release-asset upload URL, `https://uploads.github.com/repos/<owner>/<repo>/releases/<id>/assets?name=<file>`,
+    on its repository as it places an `api.github.com` URL. It refused that host before (`names another
+    host than api.github.com`), so a script that uploads release assets through `gh api` could not run
+    under it. A whole URL is now placed only over https and on one of those two hosts, spelled in
+    ASCII: an http URL, which it placed before and over which gh would send the token unencrypted, is
+    refused (`is no https URL`), and so is every other host (`names another host than api.github.com or
+    uploads.github.com`). A host holding a letter beyond ASCII is now refused wherever `legion gh` reads
+    one (a `gh api` URL, `-R`, a URL argument, `--hostname`, a git remote): it read `gİthub.com` in
+    `-R`, a URL argument or a remote as github.com before, as Unicode lowering does.
+time: 2026-11-24T00:43:58Z
+custom:
+    Issue: gh-uploads-host

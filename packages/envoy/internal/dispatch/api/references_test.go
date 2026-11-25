@@ -287,6 +287,7 @@ func TestArtifactReferencesListOutgoingAndReferencedBy(t *testing.T) {
 // read through GET /api/v1/artifacts/{id}/references as through GET /api/v1/references, and not
 // with the URL cut in half, as a read that knew no deployment would cut it.
 func TestArtifactReferencesCutAnExcerptAroundADashboardURL(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	createReferenceAPIProject(t, handler, "CORE")
 	issue := createReferenceAPIIssue(t, handler, "CORE")
@@ -324,6 +325,7 @@ func TestArtifactReferencesCutAnExcerptAroundADashboardURL(t *testing.T) {
 // (graphEdgeRead), so it is also held to declare model.GraphEdge's own fields, in the edge's
 // order, which is what a field added to the edge and not to the shape would break.
 func TestAReferencesAnswerWithoutTheTreesHeaderIsTheBytesBefore(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	createReferenceAPIProject(t, handler, "LEGION")
 	createReferenceAPIProject(t, handler, "ACME")
@@ -987,6 +989,7 @@ func issueReferencesNameFixture(t *testing.T) (http.Handler, string, issueRefere
 // is a comment's body holding a bare issue address, which the tree reads as a reference: the
 // Artifacts tab draws the row's name from it, the address read as its target's name.
 func TestIssueReferencesRowsCarryTheTreeOfTheirNamesUnderTheHeader(t *testing.T) {
+	t.Parallel()
 	handler, issueKey, want := issueReferencesNameFixture(t)
 	target := "/api/v1/issues/" + issueKey + "/references"
 	response := treesRequest(t, handler, target, true)
@@ -1035,6 +1038,7 @@ func TestIssueReferencesRowsCarryTheTreeOfTheirNamesUnderTheHeader(t *testing.T)
 // model's own fields in its order, a row's tree after them, which is what a field added to the
 // model and not to a shape would break.
 func TestIssueReferencesAnswerWithoutTheTreesHeaderIsTheBytesBefore(t *testing.T) {
+	t.Parallel()
 	handler, issueKey, _ := issueReferencesNameFixture(t)
 	target := "/api/v1/issues/" + issueKey + "/references"
 	response := treesRequest(t, handler, target, false)
@@ -1073,6 +1077,7 @@ func TestIssueReferencesAnswerWithoutTheTreesHeaderIsTheBytesBefore(t *testing.T
 // validator of an issue's references: the reading is hashed into the ETag (referencesETag), so
 // neither can be answered 304 against the other's.
 func TestIssueReferencesTreesRequestAndOneWithoutNeverShareAnETag(t *testing.T) {
+	t.Parallel()
 	handler, issueKey, _ := issueReferencesNameFixture(t)
 	target := "/api/v1/issues/" + issueKey + "/references"
 	with := listETagOf(t, listRead(t, handler, target, listReadOptions{trees: true}), "GET "+target+" with trees")
@@ -1090,6 +1095,7 @@ func TestIssueReferencesTreesRequestAndOneWithoutNeverShareAnETag(t *testing.T) 
 // answer itself comes out: the display parser version is hashed into it, so no ETag the build
 // before it gave is matched by this one.
 func TestADeployOfANewDisplayParserVersionChangesTheIssueReferencesETag(t *testing.T) {
+	// Not parallel: it moves the process's display parser version (pmdoc.SetDisplayTreeVersionForTest).
 	handler, issueKey, _ := issueReferencesNameFixture(t)
 	target := "/api/v1/issues/" + issueKey + "/references"
 	before := listETagOf(t, listRead(t, handler, target, listReadOptions{trees: true}), "GET "+target)
@@ -1219,8 +1225,8 @@ func TestReferencesReadBacklinksAcrossProjectsWithProvenance(t *testing.T) {
 	// The read waits for an observation taken after it to be proven safe, so it answers the
 	// message committed before it. A read that answered inside referencesSinceWait had that
 	// proof, so its answer is final and a wrong one fails the test at once; awaitSinceRead reads
-	// again only a read held past that wait, which an open transaction elsewhere on the shared
-	// test cluster can cause.
+	// again only a read held past that wait, which an event write of the server's database held
+	// open that long can cause, as a loaded machine can keep one.
 	since := awaitSinceRead(t, database, "since the event before the message, ?to= "+askRef+", wanting the message's backlink",
 		func() model.GraphReferences {
 			return graphEdges(t, handler, url.Values{"to": {askRef}, "since": {strconv.FormatInt(messageEventID-1, 10)}})
@@ -1254,6 +1260,7 @@ func TestReferencesReadBacklinksAcrossProjectsWithProvenance(t *testing.T) {
 // and of the document block an incoming edge comes from (refs.BlockExcerpt). A key either bound
 // falls inside is left out whole, rather than shown as `CORE-12`, a working link to another issue.
 func TestReferencesExcerptsCutNoReferenceInHalf(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	createReferenceAPIProject(t, handler, "LEGION")
 	createReferenceAPIProject(t, handler, "ACME")
@@ -1306,6 +1313,7 @@ func TestReferencesExcerptsCutNoReferenceInHalf(t *testing.T) {
 // a URL of anywhere else names nothing Dispatch holds, so the cut does not move back over it, and
 // a cut never empties the head, so the backlink is never drawn with an empty paragraph.
 func TestReferencesKeepTheExcerptOfATextOpeningWithALongURL(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	createReferenceAPIProject(t, handler, "LEGION")
 	createReferenceAPIProject(t, handler, "ACME")
@@ -1355,10 +1363,10 @@ func awaitSinceRead(
 }
 
 // awaitHorizonRead reads again until holds accepts the answer, for a route that answers only what
-// stands at or below the event log's safe horizon (sinceHorizon): any transaction holding a
-// transaction id on the Postgres instance holds that horizon back - in this package, storetest's
-// own "create database … template …" and "drop database … with (force)" transactions
-// (storetest.Open and storetest's dropDatabase), and on CI's one Postgres every other package's.
+// stands at or below the event log's safe horizon (sinceHorizon): an event write of the server's
+// database holds that horizon back for as long as it stays open - the test's own fixtures, the
+// server's own request writes - and a transaction in another database, or one that writes no
+// event, holds nothing (events.Horizon).
 // Such a read waits out referencesSinceWait and then answers at the horizon it was left with,
 // which may be short of what committed before it, so it is read again for as long as the horizon
 // says it is held back (horizontest.Watch), however long that is; database is the one the server
@@ -1598,6 +1606,7 @@ func TestReferencesIncludeStructuralEdgesAndDocumentBlockExcerpts(t *testing.T) 
 // which it draws as the characters they are and whose tree it never reads: one rule for every
 // excerpt keeps the answer's promise that a text with a `_tree` beside it has one.
 func TestReferencesExcerptsCarryTheirTreesOnlyUnderTheHeader(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	createReferenceAPIProject(t, handler, "CORE")
 	createReferenceAPIProject(t, handler, "OPS")

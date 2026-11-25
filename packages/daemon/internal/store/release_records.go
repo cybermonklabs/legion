@@ -10,10 +10,9 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// PodRelease is one release of an issue pod: which roles were in it, when their claims were
-// suspended as released, and how large the workspace bundle it saved was. It is the row every
-// resume of that pod hangs from, so a reader can pair a release with what woke it and how long
-// the agent waited.
+// PodRelease is one release of an issue pod: which roles were in it and when their claims were
+// suspended as released. It is the row every resume of that pod hangs from, so a reader can pair
+// a release with what woke it and how long the agent waited.
 type PodRelease struct {
 	// ID is the row's own id, which the store fills.
 	ID int64
@@ -26,8 +25,10 @@ type PodRelease struct {
 	Roles []string
 	// At is when the release completed.
 	At time.Time
-	// BundleBytes is the size of the bundle the release saved; zero when it saved none because
-	// the workspace held nothing unpushed.
+	// BundleBytes is the size of the git bundle of unpushed work an earlier release saved, which
+	// pod_releases.bundle_bytes keeps for the rows those releases wrote. No release saves one
+	// now, so every release this daemon records writes zero; the column stays because the release
+	// before still writes it, and a rollback runs that release over this table.
 	BundleBytes int
 }
 
@@ -319,6 +320,39 @@ func openPodHold(ctx context.Context, tx pgx.Tx, project, issue string) (bool, e
 		return false, fmt.Errorf("read whether a hold streak of %s is running: %w", issue, err)
 	}
 	return holding, nil
+}
+
+// StandingPodHoldsTx is the standing hold of each pod of project, keyed by its issue, read
+// through the caller's transaction: the hold streak of that pod that no pass, release or other
+// reason has ended. The state route reads it in its own snapshot, so the holds it shows and every
+// other fact of that state come from one moment, and it is one statement for the whole project
+// rather than one read per issue.
+//
+// A pod holds one running streak at most, because RecordPodHold ends every other reason's
+// streak in the transaction that records a reason. The rows that were running when
+// 20261102154500_pod_hold_streaks gave a streak its end were all left running, one per reason a
+// pod was ever held for, so a pod may still carry more than one; the read answers the streak of
+// the newest pass, which is the reason the rule read last. A row's detail is answered whole:
+// what of it a reader is shown is that reader's to cut.
+func (s *Store) StandingPodHoldsTx(ctx context.Context, tx pgx.Tx, project string) (map[string]PodHold, error) {
+	rows, err := tx.Query(ctx, `select distinct on (issue) id, project, issue, reason, detail, first_at, at, passes
+		from pod_holds where project = $1 and not ended order by issue, at desc, id desc`, project)
+	if err != nil {
+		return nil, fmt.Errorf("read the standing pod holds of %s: %w", project, err)
+	}
+	defer rows.Close()
+	holds := map[string]PodHold{}
+	for rows.Next() {
+		var h PodHold
+		if err := rows.Scan(&h.ID, &h.Project, &h.Issue, &h.Reason, &h.Detail, &h.FirstAt, &h.At, &h.Passes); err != nil {
+			return nil, fmt.Errorf("read the standing pod holds of %s: %w", project, err)
+		}
+		holds[h.Issue] = h
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read the standing pod holds of %s: %w", project, err)
+	}
+	return holds, nil
 }
 
 // endPodHoldStreaks marks the running streaks of the pod ended through the caller's transaction.

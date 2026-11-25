@@ -9,6 +9,7 @@ import {
   markPendingAskThreadsOnIssue,
 } from "../features/inbox/ask-thread-freshness";
 
+import { markCorrectedPost } from "./corrected-post";
 import { askThreadsIssue, eventRefreshTargets } from "./event-refresh";
 import { liveSocketFor } from "./live-socket";
 import { hearLiveEvent } from "./query-client";
@@ -276,6 +277,9 @@ export function useEventFeed({
           // A write's own event ends its hold on its queries' reads, so the refresh this event asks
           // for, and every read after it, is asked past the hold (`hearLiveEvent`).
           hearLiveEvent(queryClient, event, viewer);
+          // Written now, ahead of the batch's refresh, whose stale mark a write would clear: a
+          // read of the post whose refetch fails keeps the answer this marks.
+          markCorrectedPost(queryClient, event);
           const targets = eventRefreshTargets(event, viewer);
           markAskThreadsSeededByAnInFlightInbox(queryClient, targets, askThreadsIssue(event));
           queueRefresh(targets);

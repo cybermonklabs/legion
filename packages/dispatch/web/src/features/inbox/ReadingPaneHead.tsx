@@ -2,8 +2,9 @@ import type { ApprovalGateLine } from "@legion/contracts";
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 
-import type { Artifact, MyReplyRow, OpenAskRow } from "../../api/types";
+import type { Artifact, AskBlockArtifact, MyReplyRow, OpenAskRow } from "../../api/types";
 import { approvalPillClassName } from "../../components/Pill";
+import { issueProject } from "../../lib/issue-key";
 import {
   linkHoverText,
   linkText,
@@ -15,7 +16,7 @@ import { issuePriority } from "../issue/issue-priority";
 import { PriorityControl } from "../issue/PriorityControl";
 import { blockFragment } from "../refs/block-reference";
 import { CopyRefButton } from "../refs/CopyRefButton";
-import { buildIssuePath, buildProjectPath, itemRoute } from "../refs/routes";
+import { buildIssuePath, buildReferencePath, documentRoute, itemRoute } from "../refs/routes";
 import { InboxOwnerLink, ThreadOwnerLine } from "./AskOwnerLink";
 import { AssignToMe, useAskAssign } from "./AssignToMe";
 import { askIssueKey } from "./ask-name";
@@ -85,27 +86,85 @@ function ApprovalLines({
   );
 }
 
-/** The page "Open page" opens: the question's issue, or — for a project document, which has no
- *  issue page — the document itself at the section the column is scrolled to. The section is the
- *  heading the pane found; before the document has drawn, the question's own block, and for an
- *  anchored question the block its quote sits in. */
+/** What names an issue document in an address: its slug, and whether it is the issue's primary
+ *  document, which opens as its spec. Each document field of an ask row carries both. */
+type IssueDocument = Pick<AskBlockArtifact, "primary" | "slug">;
+
+/** The issue document a Reply thread's decision block sits in: the issue, the document, and the
+ *  block the question was written as. */
+export interface QuestionDocument {
+  blockId: string;
+  document: IssueDocument;
+  issueKey: string;
+}
+
+/** The page of an issue's document: its spec for the primary document, else the artifact.
+ *  `documentRoute` reads `kind` only for a primary document, which is always a `doc` (the
+ *  database's `artifacts_primary_is_doc`), and reads no project for an issue document, so
+ *  neither filled value changes the address. */
+function issueDocumentPath(issueKey: string, document: IssueDocument): string {
+  return buildReferencePath(
+    documentRoute({
+      issue_key: issueKey,
+      kind: "doc",
+      primary: document.primary,
+      project: issueProject(issueKey),
+      session_id: null,
+      slug: document.slug,
+    })
+  );
+}
+
+/** `path` opened at the block `blockId`, or at its top where there is no block. */
+function atBlock(path: string, blockId: string | null | undefined): string {
+  return blockId === undefined || blockId === null ? path : `${path}${blockFragment(blockId)}`;
+}
+
+/** The issue document a question is about, picked by its kind in the order the column picks what
+ *  it shows (`subjectOf` in `ReadingPane.tsx`): an approval request's document, a decision
+ *  block's, the one a quote was taken from. Undefined for a question in no document, and for a
+ *  row that does not name the document of its kind: another field's document is not this
+ *  question's. */
+function issueDocumentOf(ask: OpenAskRow): IssueDocument | undefined {
+  if (ask.kind === "approval" && ask.approval !== undefined) {
+    return ask.approval_artifact;
+  }
+  if (ask.block_id !== undefined && ask.block_id !== null) {
+    return ask.block_artifact;
+  }
+  if (ask.anchor !== null) {
+    return ask.anchor_artifact;
+  }
+  return undefined;
+}
+
+/** The page "Open page" opens: the document the question is about (`issueDocumentOf`) at the
+ *  section the column is scrolled to, or the issue page where the row names no document. A
+ *  question in a project document, which has no issue page, opens that document at the section.
+ *  The section is the heading the pane found; before the document has drawn, the question's own
+ *  block, and for an anchored question the block its quote sits in. An approval request has
+ *  neither, so it opens its document at the top. */
 function openPagePath(ask: OpenAskRow, sectionBlockId: string | undefined): string | undefined {
   const issueKey = askIssueKey(ask);
+  const blockId = sectionBlockId ?? ask.block_id ?? ask.anchor?.block_id;
   if (issueKey !== null) {
-    return buildIssuePath({ key: issueKey, kind: "issue" });
+    const document = issueDocumentOf(ask);
+    return document === undefined
+      ? buildIssuePath({ key: issueKey, kind: "issue" })
+      : atBlock(issueDocumentPath(issueKey, document), blockId);
   }
   if (ask.document === undefined) {
     return undefined;
   }
-  const document = buildProjectPath({
-    kind: "document",
+  const route = documentRoute({
+    issue_key: null,
+    kind: "doc",
+    primary: false,
     project: ask.document.project,
+    session_id: null,
     slug: ask.document.slug,
   });
-  const blockId = sectionBlockId ?? ask.block_id ?? ask.anchor?.block_id;
-  return blockId === undefined || blockId === null
-    ? document
-    : `${document}${blockFragment(blockId)}`;
+  return atBlock(buildReferencePath(route), blockId);
 }
 
 export interface ReadingPaneHeadProps {
@@ -130,8 +189,8 @@ export interface ReadingPaneHeadProps {
  * An issue question carries the issue key and title, "Open page", the issue's priority, "Assign
  * to me" while nobody holds the issue, Snooze, Copy ref and the issue's approval gate
  * (`ApprovalLines`). A question in a project document carries the project key and the document
- * name, "Open page" at the section, Snooze and Copy ref — a project document has no assignee, no
- * priority and no gate, so none of the three applies to it.
+ * name, "Open page", Snooze and Copy ref — a project document has no assignee, no priority and
+ * no gate, so none of the three applies to it. "Open page" opens the page `openPagePath` names.
  *
  * With the column on, `h`, `o` and `y` look inside the column rather than inside the selected
  * row (`hand()` returns the column in `Inbox.tsx`), and the selected short row beside it draws no
@@ -229,10 +288,15 @@ export function ReadingPaneHead({
  * **Move to Inbox** (`DismissControl`), and the approval gate of the thread's issue
  * (`ApprovalLines`).
  *
- * **Open page** is what `o` follows here (`data-inbox-owner`), as the card's **Open** is below
- * this column's width: the key opens the thread, never the issue it happens to sit on, and it
- * opens an Agent row's live view, which has no owner link to fall back to. The owner beside it
- * is a link a reader can still follow by hand.
+ * The Reply thread of a decision block in an issue document is the one exception, once the
+ * column shows that document: its `ref` is the ask's page, which sends the reader to the
+ * document at the block and drops the section, so **Open page** is that document at the
+ * section the column is opened at (`questionDocument`), as a question's own head opens it.
+ *
+ * **Open page** is what `o` follows here (`data-inbox-owner`), whichever page it is, as the
+ * card's **Open** is below this column's width: the key opens the thread, never the issue it
+ * happens to sit on, and it opens an Agent row's live view, which has no owner link to fall back
+ * to. The owner beside it is a link a reader can still follow by hand.
  *
  * An Agent row has no **Copy ref**: Dispatch's reference grammar has no form for an issue-less
  * message (`dispatch://KEY/message/<id>` needs an issue key, and `dispatch://agent/` covers only
@@ -240,9 +304,13 @@ export function ReadingPaneHead({
  * **Snooze** are a question's controls and show for no thread row at all.
  */
 export function ThreadPaneHead({
+  questionDocument,
   sectionBlockId,
   thread,
 }: {
+  /** The issue document of a decision block's Reply thread, given only while the column shows
+   *  that document: **Open page** opens it rather than the row's `ref`. */
+  questionDocument?: QuestionDocument | undefined;
   /** The heading of the section the column is opened at, where the column shows a document:
    *  the page opens there rather than at the document's top. */
   sectionBlockId?: string | undefined;
@@ -251,7 +319,12 @@ export function ThreadPaneHead({
   const reference = threadReferenceRoute(thread);
   const gate = approvalGateOf(thread);
   const page =
-    sectionBlockId === undefined ? thread.ref : `${thread.ref}${blockFragment(sectionBlockId)}`;
+    questionDocument === undefined
+      ? atBlock(thread.ref, sectionBlockId)
+      : atBlock(
+          issueDocumentPath(questionDocument.issueKey, questionDocument.document),
+          sectionBlockId ?? questionDocument.blockId
+        );
   return (
     <header className="flex flex-wrap items-center gap-x-2 gap-y-1">
       <ThreadOwnerLine

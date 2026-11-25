@@ -1232,12 +1232,38 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			_, url := testnats.Start(t)
 			_, pemText := githubapptest.Key(t)
 			reconciler, err := ciReconciler(startDispatchStream(t, []string{url}, nil), &store.Store{},
-				&auth.AppConfig{ClientID: "Iv1.reviewer", PEM: pemText}, "", boot.ReviewerAppID, cireconcile.Interval, &registeredInstance{}, refs.Renames{})
+				&auth.AppConfig{ClientID: "Iv1.reviewer", PEM: pemText}, "", boot.ReviewerAppID, "", cireconcile.Interval, &registeredInstance{}, refs.Renames{})
 			if err != nil || reconciler == nil {
 				t.Fatalf("build the CI reconcile pass: %+v, %v", reconciler, err)
 			}
 			if reconciler.ReviewerAppID != "5341243" {
 				t.Errorf("the pass's ReviewerAppID = %q, want %q", reconciler.ReviewerAppID, "5341243")
+			}
+		},
+		"DISPATCH_VERDICT_APP_ID": func(t *testing.T) {
+			if boot := resolveWith(t, nil); boot.VerdictAppID != "" {
+				t.Errorf("unset: VerdictAppID = %q, want empty, which leaves no App's suites out", boot.VerdictAppID)
+			}
+			if boot := resolveWith(t, map[string]string{"DISPATCH_VERDICT_APP_ID": "  "}); boot.VerdictAppID != "" {
+				t.Errorf("blank: VerdictAppID = %q, want empty", boot.VerdictAppID)
+			}
+			boot := resolveWith(t, map[string]string{"DISPATCH_VERDICT_APP_ID": " 5341240 "})
+			if boot.VerdictAppID != "5341240" {
+				t.Errorf("VerdictAppID = %q, want %q", boot.VerdictAppID, "5341240")
+			}
+			for _, value := range []string{"x", "0", "-1", "5341240x", "5 341 240"} {
+				refusedWith(t, map[string]string{"DISPATCH_VERDICT_APP_ID": value}, "DISPATCH_VERDICT_APP_ID")
+			}
+			// Its reader: the pass main starts, which leaves that App's suites out of the record.
+			_, url := testnats.Start(t)
+			_, pemText := githubapptest.Key(t)
+			reconciler, err := ciReconciler(startDispatchStream(t, []string{url}, nil), &store.Store{},
+				&auth.AppConfig{ClientID: "Iv1.verdict", PEM: pemText}, "", "", boot.VerdictAppID, cireconcile.Interval, &registeredInstance{}, refs.Renames{})
+			if err != nil || reconciler == nil {
+				t.Fatalf("build the CI reconcile pass: %+v, %v", reconciler, err)
+			}
+			if reconciler.VerdictAppID != "5341240" {
+				t.Errorf("the pass's VerdictAppID = %q, want %q", reconciler.VerdictAppID, "5341240")
 			}
 		},
 		"DISPATCH_APP_SLUG": func(t *testing.T) {

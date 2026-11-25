@@ -590,6 +590,20 @@ var runtimeTableSites = map[string]runtimeTableSite{
 		tables: []string{"comment_block_refs", "message_block_refs", "ask_block_refs"},
 	},
 	"packages/envoy/internal/dispatch/refs/item_blocks.go#refs.markItemBlocksOwed: update tables.state": {},
+	// The tombstone of a deleted comment or message (refs.TombstoneItem): each block's stored
+	// excerpt, over the item's blocks table, which is projected (projectedTables) but by no column
+	// the tombstone sets, and each text a revision recorded, over its block texts table, which is
+	// projected by no node.
+	"packages/envoy/internal/dispatch/refs/item_blocks.go#refs.TombstoneItem: update tables.blocks": {
+		tables: []string{"comment_blocks", "message_blocks"}, sets: []string{"excerpt"},
+	},
+	"packages/envoy/internal/dispatch/refs/item_blocks.go#refs.TombstoneItem: update tables.texts": {},
+	// A delete's settle of its post's pending send attempts (queueDeletedPostSettlement):
+	// comment_deliveries or message_deliveries, projected by their node pair, which the settle does
+	// not set; what the settled row then holds is stated under each receipt (graphstore.QueueAttempted).
+	"packages/envoy/internal/dispatch/api/post_history.go#api.queueDeletedPostSettlement: update read.table": {
+		tables: []string{"comment_deliveries", "message_deliveries"}, sets: []string{"state", "error", "claimed_at"},
+	},
 	// The stamp of an item's block links (refs.Stamp): comment_block_refs, message_block_refs or
 	// ask_block_refs, never block_refs, whose stamp is a statement of its own beside it.
 	"packages/envoy/internal/dispatch/refs/refs.go#refs.queueStamp: update tables.refs": {

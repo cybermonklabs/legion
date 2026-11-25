@@ -1221,9 +1221,10 @@ func TestTheRestoreLeavesAReturningAskWhoseBlockItsSpecHoldsAgain(t *testing.T) 
 
 // An answered ask the restore moves out of the decisions document moves from the address the
 // finder read, whether or not the document still holds the block
-// once the issue is locked: a person who took the block out of the document since leaves the
-// ask's row naming it, and the restore writes the ask into the spec, its row, one moved_to from
-// the old address to the new one, and its node's relations, which name the spec.
+// once the issue is locked: the release before's agent, which took the block out of the document
+// since and recorded no removal, leaves the ask's row naming it, and the restore writes the ask
+// into the spec, its row, one moved_to from the old address to the new one, and its node's
+// relations, which name the spec. A person's deletion of the block is no such drop: the next test.
 func TestTheRestoreMovesAnAskWhoseBlockLeftTheDecisionsDocumentSinceItWasRead(t *testing.T) {
 	issue := newRestoreIssue(t, "# Spec\n\n:::requirement{#r1}\nThe corpus is written once.\n:::\n")
 	decisions := issue.document("decisions-md", "decisions.md", false, "decisions",
@@ -1233,9 +1234,12 @@ func TestTheRestoreMovesAnAskWhoseBlockLeftTheDecisionsDocumentSinceItWasRead(t 
 	if err != nil || len(work) != 1 || work[0].Shape != graphcensus.RestoreMoves || work[0].Ask != moved {
 		t.Fatalf("the finder reads %+v (%v), want the moving ask %s", work, err, moved)
 	}
-	issue.replaceAsPerson(decisions, "# Decisions\n\n## Which line names a moved block\n\nThe census names each move.\n")
+	issue.replace(decisions, "# Decisions\n\n## Which line names a moved block\n\nThe census names each move.\n")
 	if blockID, document := issue.askRow(moved); blockID != "q-doc" || document != decisions {
-		t.Fatalf("after the person took the block out the ask's row names %s of %s, want q-doc of the decisions document", blockID, document)
+		t.Fatalf("after the agent took the block out the ask's row names %s of %s, want q-doc of the decisions document", blockID, document)
+	}
+	if removals := heldRemovalsOf(t, issue, moved); len(removals) != 0 {
+		t.Fatalf("after the agent took the block out the ask holds the removals %+v, want none: no person removed it", removals)
 	}
 
 	result := issue.restoreWith(work, false)
@@ -1254,6 +1258,92 @@ func TestTheRestoreMovesAnAskWhoseBlockLeftTheDecisionsDocumentSinceItWasRead(t 
 	}
 	if spec := issue.latest(issue.spec); !strings.Contains(spec, "#q-doc urgency=") {
 		t.Errorf("the restored spec holds no block of the ask:\n%s", spec)
+	}
+}
+
+// A person who deletes an answered ask's block from the decisions document while the step runs
+// does not find it written into the spec. Alice's browser deletes the block after the finder read
+// the ask as work of the second shape, and the settlement records her removal on the ask's node,
+// under the event of the version of the document it writes. The restore over the finder's earlier
+// read passes the ask over and declines it as it declines a return a person removed: it writes no
+// block of it and no version of the spec, leaves its row naming the block it left, states no move
+// of it, reports alice and that version, and leaves the one removal her settlement stated.
+func TestTheRestoreDeclinesAnAnsweredAskAPersonDeletedFromTheDecisionsDocumentSinceItWasRead(t *testing.T) {
+	issue := newRestoreIssue(t, "# Spec\n\n:::requirement{#r1}\nThe corpus is written once.\n:::\n")
+	decisions := issue.document("decisions-md", "decisions.md", false, "decisions",
+		"# Decisions\n\n## Which line names a moved block\n\n:::ask{#q-doc urgency=\"low\" multiple=\"false\"}\nWhich line names a block that moved?\n:::\n")
+	deleted := issue.answer(decisions, "q-doc", "The census names each move.")
+	work, err := graphcensus.ReadRestoreWork(context.Background(), issue.database.Pool)
+	if err != nil || len(work) != 1 || work[0].Shape != graphcensus.RestoreMoves || work[0].Ask != deleted {
+		t.Fatalf("the finder reads %+v (%v), want the moving ask %s", work, err, deleted)
+	}
+	browserReplaceText(t, issue.service, decisions, "# Decisions\n\n## Which line names a moved block\n\nThe census names each move.\n",
+		model.Actor{Kind: "user", ID: "alice"})
+	settleCurrentGeneration(t, issue.service, decisions)
+	version := latestVersionNumber(t, issue.service, decisions)
+	removals := heldRemovalsOf(t, issue, deleted)
+	if len(removals) != 1 || !removals[0].Asserted || removals[0].ToID != "alice" || removals[0].SourceEvent == graphstore.NoEvent {
+		t.Fatalf("after alice's browser deleted its block the ask %s holds the removals %+v, want one asserted to alice under an event", deleted, removals)
+	}
+	if blockID, document := issue.askRow(deleted); blockID != "q-doc" || document != decisions {
+		t.Fatalf("after alice's browser deleted its block the ask's row names %s of %s, want q-doc of the decisions document", blockID, document)
+	}
+
+	result := issue.restoreWith(work, false)
+	if len(result.Restored) != 0 || result.SpecVersion != 0 ||
+		len(result.Declined) != 1 || result.Declined[0] != (DeclinedAsk{Ask: deleted, Person: "alice", Version: version}) {
+		t.Fatalf("the restore wrote %+v at spec version %d and declined %+v, want the ask %s (q-doc), which alice deleted from the decisions document since the finder read it, written nowhere and declined to alice at version %d of that document",
+			result.Restored, result.SpecVersion, result.Declined, deleted, version)
+	}
+	if spec := issue.latest(issue.spec); strings.Contains(spec, "#q-doc ") {
+		t.Errorf("the spec holds a block of the ask %s, which alice deleted:\n%s", deleted, spec)
+	}
+	if held := heldRemovalsOf(t, issue, deleted); len(held) != 1 || held[0].Seq != removals[0].Seq {
+		t.Errorf("after the restore the ask %s holds the removals %+v, want the one alice's settlement stated, %+v", deleted, held, removals[0])
+	}
+	if blockID, document := issue.askRow(deleted); blockID != "q-doc" || document != decisions {
+		t.Errorf("after the restore the ask's row names %s of %s, want q-doc of the decisions document %s", blockID, document, decisions)
+	}
+	from := issue.refKey(decisions) + "#q-doc"
+	if to, moved := issue.movedTo(decisions)[from]; moved {
+		t.Errorf("the restore stated a move of the ask's block from %s to %s, want none", from, to)
+	}
+}
+
+// A person's browser deletion of an answered ask's block from the decisions document is that
+// person's removal whether or not its settlement has run when the decisions step reads the
+// document. On a fleet of this build, alice's browser deletes q-doc from the standing
+// decisions.md and the room's settlement has not run yet (the settle delay runs from her last
+// update), so no version of the document records her removal; the step's pass then reads the
+// finder's work, which takes q-doc for an ask of the second shape, and restores. The pass writes
+// no block of q-doc into the spec and writes the ask nowhere, as it does once that settlement has
+// run (TestTheRestoreDeclinesAnAnsweredAskAPersonDeletedFromTheDecisionsDocumentSinceItWasRead):
+// the room the pass could read holds no block of q-doc, and the step retires the document, so
+// her deletion would reach no store at all.
+func TestTheRestoreWritesBackNoAnsweredAskAPersonsBrowserDeletedFromTheDecisionsDocumentBeforeItSettled(t *testing.T) {
+	issue := newRestoreIssue(t, "# Spec\n\n:::requirement{#r1}\nThe corpus is written once.\n:::\n")
+	decisions := issue.document("decisions-md", "decisions.md", false, "decisions",
+		"# Decisions\n\n## Which line names a moved block\n\n:::ask{#q-doc urgency=\"low\" multiple=\"false\"}\nWhich line names a block that moved?\n:::\n")
+	deleted := issue.answer(decisions, "q-doc", "The census names each move.")
+	before := latestVersionNumber(t, issue.service, decisions)
+	browserReplaceText(t, issue.service, decisions, "# Decisions\n\n## Which line names a moved block\n\nThe census names each move.\n",
+		model.Actor{Kind: "user", ID: "alice"})
+	if version := latestVersionNumber(t, issue.service, decisions); version != before {
+		t.Fatalf("the decisions document stands at version %d after alice's browser deletion, want %d: its settlement has not run", version, before)
+	}
+	work, err := graphcensus.ReadRestoreWork(context.Background(), issue.database.Pool)
+	if err != nil {
+		t.Fatalf("read the restore's work: %v", err)
+	}
+
+	result := issue.restoreWith(work, false)
+	for _, restored := range result.Restored {
+		if restored.Ask == deleted {
+			t.Errorf("the restore wrote %+v, the ask %s (q-doc), which alice's browser deleted from the decisions document before its settlement ran, want it written nowhere", restored, deleted)
+		}
+	}
+	if spec := issue.latest(issue.spec); strings.Contains(spec, "#q-doc ") {
+		t.Errorf("the spec holds a block of the ask %s, which alice's browser deleted from the decisions document:\n%s", deleted, spec)
 	}
 }
 
@@ -1443,6 +1533,48 @@ func TestAnAskBlockMovedOutOfTheDecisionsDocumentKeepsItsShapedTies(t *testing.T
 	if len(held) != 2 || !held[refs.BlockAddress(spec, "r1")] || !held[refs.BlockAddress(spec, "q-b")] {
 		t.Fatalf("after the restore q-a's node holds the shaped ties %+v, want one to %s and one to %s", ties,
 			refs.BlockAddress(spec, "r1"), refs.BlockAddress(spec, "q-b"))
+	}
+}
+
+// An ask block of the decisions document that no row names and is a copy of an ask another
+// document of the issue holds moves into the spec, on a fleet of one build, holding the form a
+// version keeps of the ask it copies (keptAskState), as a version of the spec stores a copy
+// (storableVersionTree): alice answers the ask of notes.md, whose copy the decisions document's
+// settlement shows answered and names as copied, and the step's version of the spec opens the
+// moved copy with that state, answerer and time and its copied_from and copied_from_document, so
+// the release before's CLI reads it decided, and holds none of the answer's words.
+func TestAnAskBlockNoRowNamesThatIsACopyMovesIntoTheSpecKeepingWhatAVersionKeepsOfItsSource(t *testing.T) {
+	const shelf = ":::ask{#q-shelf urgency=\"low\" multiple=\"false\"}\nWhich shelf holds the printed corpus?\n:::\n"
+	issue := newRestoreIssue(t, "# Spec\n\n:::requirement{#r1}\nThe store holds the corpus.\n:::\n")
+	notes := issue.document("notes-md", "notes.md", false, "", "# Notes\n\n"+shelf)
+	source := issue.answer(notes, "q-shelf", "The top shelf.")
+	decisions := issue.document("decisions-md", "decisions.md", false, "decisions",
+		"# Decisions\n\n## Which shelf holds the printed corpus\n\n"+shelf+"\nWe lean towards the top shelf until someone rules.\n")
+	kept := []string{`state="answered"`, `answered_by="alice"`, `answered_at="`, `copied_from="` + source + `"`,
+		`copied_from_document="` + documentAddress(t, issue.service, notes) + `"`}
+	copied := openerOf(residentRoomMarkdown(t, issue.service, decisions), "q-shelf")
+	for _, want := range kept {
+		if !strings.Contains(copied, want) {
+			t.Fatalf("the decisions document's copy of q-shelf opens %q, want it holding %s", copied, want)
+		}
+	}
+
+	result := issue.run(true)
+	from, to := issue.refKey(decisions)+"#q-shelf", issue.refKey(issue.spec)+"#q-shelf"
+	if len(result.Restored) != 1 || result.Restored[0].Ask != "" || result.Restored[0].From != from || result.Restored[0].To != to ||
+		result.SpecVersion == 0 || latestVersionNumber(t, issue.service, issue.spec) != result.SpecVersion {
+		t.Fatalf("the step did %+v, want the block no row names moved from %s to %s in the spec's newest version", result, from, to)
+	}
+	opener := openerOf(issue.latest(issue.spec), "q-shelf")
+	for _, want := range kept {
+		if !strings.Contains(opener, want) {
+			t.Errorf("the step's version %d of the spec opens the moved copy %q, want it holding %s", result.SpecVersion, opener, want)
+		}
+	}
+	for _, name := range answerWords {
+		if strings.Contains(opener, " "+name+"=") {
+			t.Errorf("the step's version %d of the spec opens the moved copy %q, want none of the answer's words, %s among them", result.SpecVersion, opener, name)
+		}
 	}
 }
 

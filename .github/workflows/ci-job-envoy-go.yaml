@@ -131,10 +131,12 @@ jobs:
       # reason the API package's own run did: run beside the other package binaries,
       # its Postgres-backed tests and the room-memory measurements queue their per-test database
       # cleanup on the service's one checkpointer, and the API's live-feed and delivery-hub tests
-      # wait for the event log's safe horizon, which any open transaction on this job's Postgres
-      # delays. The five -run lists are derived in .github/scripts/ci_job_reads.py from the race
-      # lane's own packages and those files' //go:build !race and raceEnabled, so a test added to
-      # either and missing here fails the ci-filters job naming this step. The restart storm took
+      # wait for the event log's safe horizon, which before cybermonklabs/legion#4913 any open
+      # transaction on this job's Postgres delayed and since then only an event write of each
+      # test's own database does. The five -run lists are derived in
+      # .github/scripts/ci_job_reads.py from the race lane's own packages and those files'
+      # //go:build !race and raceEnabled, so a test added to either and missing here fails the
+      # ci-filters job naming this step. The restart storm took
       # 17 s on a dev box. Measured over three
       # runs on a two-vCPU pod: the bus under a tenth of a second and the documents package 92 to
       # 127 s; with the xid window tests in, one run on a two-vCPU pod took the API 134.082 s and

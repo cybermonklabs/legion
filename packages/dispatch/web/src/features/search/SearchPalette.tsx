@@ -43,6 +43,8 @@ import {
 import { issueStatuses, statusText } from "../project/board-model";
 import { RefKindIcon } from "../refs/kind-icons";
 import { MarkdownPreview } from "../refs/MarkdownPreview";
+import { DeletedBody, EditedMark } from "../refs/PostMarks";
+import { postDeletion } from "../refs/post-marks";
 import { referenceTriggerProps } from "../refs/RefPreview";
 import { ReferenceHostIs } from "../refs/reference-host";
 import {
@@ -198,6 +200,11 @@ function ResultOption({
     result.id,
     result.owner.kind === "issue" ? result.owner.key : undefined
   );
+  // A delete takes the post's windows with its body, so a deleted post is no hit once the
+  // delete commits. The mark is the backstop for a hit of one all the same, whose snippet is
+  // empty: the deleted line stands where the snippet would, as it does in the referenced-by
+  // list.
+  const deleted = postDeletion(result);
 
   return (
     <PaletteOption
@@ -218,16 +225,22 @@ function ResultOption({
         {result.artifact === undefined ? null : (
           <span className="truncate">{result.artifact.name}</span>
         )}
+        {/* A comment or a message its author edited says so, as its byline does. */}
+        <EditedMark at={result.edited_at} className="shrink-0" deleted={deleted} />
       </div>
-      <MarkdownPreview
-        className={`mt-1 text-sm ${muted ? textMutedOnSelectedCard : textPrimaryOnSurface}`}
-        highlightClassName={`rounded px-0.5 ${searchHitBg} ${searchHitText}`}
-        lines={2}
-        markdown={source}
-        source={record}
-        surface="search-result"
-        tree={result.snippet_tree}
-      />
+      {deleted === null ? (
+        <MarkdownPreview
+          className={`mt-1 text-sm ${muted ? textMutedOnSelectedCard : textPrimaryOnSurface}`}
+          highlightClassName={`rounded px-0.5 ${searchHitBg} ${searchHitText}`}
+          lines={2}
+          markdown={source}
+          source={record}
+          surface="search-result"
+          tree={result.snippet_tree}
+        />
+      ) : (
+        <DeletedBody className="mt-1 block text-sm" deleted={deleted} />
+      )}
       {result.ask === undefined ? null : (
         <AskHitStatus ask={result.ask} muted={muted} source={record} />
       )}

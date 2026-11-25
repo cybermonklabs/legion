@@ -2,7 +2,6 @@ package api
 
 import (
 	"fmt"
-	"maps"
 	"net/http"
 	"slices"
 
@@ -94,24 +93,17 @@ const knownSessionIDMax = text.MaxTargetBytes
 // every route, the session the request acts for, and a credential that proved a session is
 // refused one naming another (403 ACTOR_SESSION_MISMATCH).
 //
-// Every other parameter is held to its rule before anything is read, each refusal 400
-// INVALID_QUERY naming the parameter, as the search routes refuse theirs: a parameter other than
-// `id` and `session`, no `id` at all, more than contracts.KnownSessionsMax of them (counted as
-// sent, duplicates included), a value that is no session id by text.IsSessionID, the rule every
-// route that takes a session id applies, and one longer than knownSessionIDMax.
+// `id` is held to its rule before anything is read, each refusal 400 INVALID_QUERY naming it: no
+// `id` at all, more than contracts.KnownSessionsMax of them (counted as sent, duplicates
+// included), a value that is no session id by text.IsSessionID, the rule every route that takes a
+// session id applies, and one longer than knownSessionIDMax. A parameter the route does not take
+// is read by nothing, so it changes no answer (no_reach_test.go,
+// TestTheStoreAddsNoReachAndNoReadChangesShape).
 func (s *server) listKnownSessions(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.actingPerson(w, r); !ok {
 		return
 	}
-	query := r.URL.Query()
-	for _, key := range slices.Sorted(maps.Keys(query)) {
-		if key != "id" && key != "session" {
-			writeError(w, "INVALID_QUERY", http.StatusBadRequest, fmt.Sprintf(
-				"%s is not a query parameter of GET /api/v1/agents/known, which takes id and session alone", key))
-			return
-		}
-	}
-	asked := query["id"]
+	asked := r.URL.Query()["id"]
 	switch {
 	case len(asked) == 0:
 		writeError(w, "INVALID_QUERY", http.StatusBadRequest, fmt.Sprintf(

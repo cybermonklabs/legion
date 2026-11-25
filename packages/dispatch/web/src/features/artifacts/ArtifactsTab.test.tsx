@@ -19,6 +19,7 @@ import type {
   DisplayTree,
   IssueReferences,
   IssueReferencesAnswer,
+  ReferenceLink,
 } from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { buildIssuePath } from "../refs/routes";
@@ -1083,6 +1084,139 @@ test("a references row named by a document's name draws it as the characters it 
   });
   try {
     expect(await screen.findByRole("link", { hidden: true, name: documentName })).toBeDefined();
+  } finally {
+    view.unmount();
+    listArtifacts.mockRestore();
+    getIssueReferences.mockRestore();
+  }
+});
+
+/** Renders the tab over a references answer whose list `list` holds `row` alone, with `drawnRow`,
+ *  which answers that row's item once its disclosure is drawn. */
+function renderReferenceRow(list: "links" | "linked_from", row: ReferenceLink) {
+  const rendered = renderTab([artifact], {
+    ...noReferences,
+    linked_from: list === "linked_from" ? [row] : [],
+    links: list === "links" ? [row] : [],
+  });
+  const label = list === "links" ? "References" : "Referenced by";
+  const drawnRow = async () => {
+    await screen.findByText(`${label} (1)`);
+    const section = within(rendered.view.container).getByRole("region", {
+      hidden: true,
+      name: label,
+    });
+    return within(section).getByRole("listitem", { hidden: true });
+  };
+  return { ...rendered, drawnRow };
+}
+
+// INFRA-1523: a comment its author deleted keeps its row, and the row says what became of it.
+// The read names a comment by the head of its body, which the delete cleared, so the deleted
+// line (`DeletedBody`: who deleted it, and when) names the row in place of the read's words, and
+// the row still opens the post's page. The fixture's `name` holds the post's former words, so a
+// row that fell back to them would show them; the post was edited before it was deleted, so
+// ` · edited` could be drawn, and only the row's reading of the delete keeps it off.
+test("a References row for a comment its author deleted draws the deleted line and none of its words, and still links to the comment", async () => {
+  const comment = "aaaaaaaa-0000-4000-8000-000000000011";
+  const deletedAt = "2026-10-20T11:00:00Z";
+  const { drawnRow, getIssueReferences, listArtifacts, view } = renderReferenceRow("links", {
+    kinds: ["mentions"],
+    name: "The parser lands on Friday.",
+    node: graphNode({
+      deleted_at: deletedAt,
+      deleted_by: { id: "alice", kind: "user" },
+      edited_at: "2026-10-20T10:00:00Z",
+      id: comment,
+      issue_key: "CORE-9",
+      kind: "comment",
+      project: "CORE",
+      ref: `dispatch://CORE-9/comment/${comment}`,
+    }),
+    via: { id: "comment-1", kind: "comment" },
+  });
+
+  try {
+    const row = await drawnRow();
+    const link = within(row).getByRole("link", { hidden: true });
+    expect(link).toHaveAttribute("href", `/issues/CORE-9/comments/${comment}`);
+    const line = link.querySelector("[data-post-deleted]");
+    expect(line?.textContent).toMatch(/^Deleted by alice · /);
+    expect(line?.querySelector("time")).toHaveAttribute("datetime", deletedAt);
+    expect(row).not.toHaveTextContent("The parser lands on Friday.");
+    expect(row).not.toHaveTextContent("edited");
+    expect(row).toHaveTextContent("comment · via comment");
+  } finally {
+    view.unmount();
+    listArtifacts.mockRestore();
+    getIssueReferences.mockRestore();
+  }
+});
+
+// INFRA-1523: a message its author edited is named by the words the read gives for it, then
+// ` · edited`, as its byline says it (`EditedMark`), inside the link that opens it.
+test("a Referenced by row for a message its author edited names it, then says · edited", async () => {
+  const message = "eeeeeeee-0000-4000-8000-000000000012";
+  const { drawnRow, getIssueReferences, listArtifacts, view } = renderReferenceRow("linked_from", {
+    kinds: ["mentions"],
+    name: "See the diagram",
+    node: graphNode({
+      edited_at: "2026-10-20T10:30:00Z",
+      id: message,
+      issue_key: "CORE-7",
+      kind: "message",
+      project: "CORE",
+      ref: `dispatch://CORE-7/message/${message}`,
+    }),
+    via: { id: "CORE-1", kind: "issue" },
+  });
+
+  try {
+    const row = await drawnRow();
+    const link = within(row).getByRole("link", { hidden: true });
+    expect(link.textContent).toBe("See the diagram · edited");
+    expect(link).toHaveAttribute("href", `/issues/CORE-7/messages/${message}`);
+    expect(row.querySelector("[data-post-deleted]")).toBeNull();
+    expect(row).toHaveTextContent("message · to issue");
+  } finally {
+    view.unmount();
+    listArtifacts.mockRestore();
+    getIssueReferences.mockRestore();
+  }
+});
+
+// INFRA-1523: a block of a comment carries its comment's delete mark (`refs/item_block_nodes.go`,
+// `itemBlockNodes`), so a row for a block of a deleted comment draws the deleted line too, and
+// never the block's words the read gave.
+test("a References row for a block of a deleted comment draws the deleted line and none of its words", async () => {
+  const comment = "bbbbbbbb-0000-4000-8000-000000000013";
+  const deletedAt = "2026-10-21T09:00:00Z";
+  const { drawnRow, getIssueReferences, listArtifacts, view } = renderReferenceRow("links", {
+    kinds: ["mentions"],
+    name: "Ship it once the parser lands.",
+    node: graphNode({
+      block_id: "b1",
+      deleted_at: deletedAt,
+      deleted_by: { id: "alice", kind: "user" },
+      id: `comment/${comment}#b1`,
+      issue_key: "CORE-9",
+      kind: "block",
+      parent: { id: comment, kind: "comment", ref: `dispatch://CORE-9/comment/${comment}` },
+      project: "CORE",
+      ref: `dispatch://CORE-9/comment/${comment}#b-b1`,
+    }),
+    via: { id: "comment-1", kind: "comment" },
+  });
+
+  try {
+    const row = await drawnRow();
+    const link = within(row).getByRole("link", { hidden: true });
+    expect(link).toHaveAttribute("href", `/issues/CORE-9/comments/${comment}#b-b1`);
+    const line = link.querySelector("[data-post-deleted]");
+    expect(line?.textContent).toMatch(/^Deleted by alice · /);
+    expect(line?.querySelector("time")).toHaveAttribute("datetime", deletedAt);
+    expect(row).not.toHaveTextContent("Ship it once the parser lands.");
+    expect(row).toHaveTextContent("block · via comment");
   } finally {
     view.unmount();
     listArtifacts.mockRestore();

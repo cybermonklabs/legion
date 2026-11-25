@@ -170,8 +170,9 @@ func documentRetired(ctx context.Context, q Queryer, room string) (bool, error) 
 // Every writer that walks an issue's documents reads it before it writes into one, and skips a
 // document it reads retired: it writes nothing into it, refuses nothing, and goes on with the
 // issue's other documents (WriteIssueAskStates, FollowClosedIssueVersions, KeepAskBlockInStep). A
-// comment thread's margin record skips a retired document as they do (ProjectMark). A
-// list that leaves retired documents out is read before this lock is, or under a lock its caller
+// comment thread's margin record skips a retired document as they do (ProjectMark), and so does
+// the reject of a deleted comment's pending suggestion (RejectDeletedCommentSuggestion). A list
+// that leaves retired documents out is read before this lock is, or under a lock its caller
 // took, so it is never the read that decides.
 func retiredUnderOwnerLock(ctx context.Context, tx pgx.Tx, artifactID string) (bool, error) {
 	owner, _, err := lockArtifactOwner(ctx, tx, artifactID)
@@ -179,6 +180,22 @@ func retiredUnderOwnerLock(ctx context.Context, tx pgx.Tx, artifactID string) (b
 		return false, err
 	}
 	return owner.Retired, nil
+}
+
+// retiredOutsideLiveWrite is whether the document artifactID is retired, for a write that holds no
+// live write to it yet: read under its owner's lock (retiredUnderOwnerLock), and false without a
+// read where the transaction holds its write to the document already, which read the document
+// standing under that lock (joinLiveWrite) and so no retirement passes before the transaction
+// ends. ProjectMark and RejectDeletedCommentSuggestion write nothing into a retired document by it.
+func retiredOutsideLiveWrite(ctx context.Context, artifactID string) (bool, error) {
+	tx, joined := txFromContext(ctx)
+	if !joined {
+		return false, errUnjoined
+	}
+	if joinedLiveWrite(ctx, artifactID) != nil {
+		return false, nil
+	}
+	return retiredUnderOwnerLock(ctx, tx, artifactID)
 }
 
 // writeRetiredNode writes the retired document's artifact node gone, held for the event that

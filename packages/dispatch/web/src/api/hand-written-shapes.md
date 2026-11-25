@@ -119,7 +119,13 @@ Each is in `packages/contracts/src/dispatch-api.ts`:
   `first_line_tree` is the display tree of `first_line`, which the server sends beside it under
   `Dispatch-Trees: 1` as it does for every other stored text the dashboard draws, so the list
   of candidates draws each line from the server's tree rather than the page's own parse; a
-  document candidate, whose first line is its file's name, has none.
+  document candidate, whose first line is its file's name, has none. Since the type is written
+  by hand, a field the Go candidate (`refs.Candidate`, `refs/prefix.go`) gains is added to it by
+  hand too: `edited_at`, and `deleted_at` with `deleted_by`, are the marks of a candidate comment
+  or message its author edited or deleted, which the match list (`ItemMatchList.tsx`) prints as
+  every other surface prints them, the deleted line in place of the `first_line` the delete
+  cleared. Each is absent on a post that stands unedited, on every other kind, and from a
+  Dispatch older than the fields.
 
 ## What is not generated, and is not an exception either
 

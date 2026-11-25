@@ -421,7 +421,7 @@ func TestPodUpdateRoundKeepsThePodForEachRoleThePauseStillOwesALaunch(t *testing
 	t.Parallel()
 	const first, second = claim.RoleReviewer, pauseStoppedRole
 	// letsOutAtOnce is a wake pacing that lets every paced launch out at the moment it reserves it.
-	letsOutAtOnce := supervise.WakePace{Rate: 1, Burst: 1, Reserve: func(now time.Time) time.Time { return now }}
+	letsOutAtOnce := supervise.WakePace{Rate: 1, Burst: 1, Interval: time.Minute, Reserve: func(now time.Time) time.Time { return now }}
 	waitsFor := fmt.Sprintf("the held launch of the %s", second)
 	// firstRanSecondWaits is a rig of its own, taken to the moment where first's held launch has
 	// run and first has answered and has been suspended, and second's held start has not run.

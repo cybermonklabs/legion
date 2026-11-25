@@ -1,5 +1,5 @@
 import type { DispatchDelivery, RenderInboundResult } from "@legion/envoy-client/delivery";
-import type { DispatchClient } from "@legion/envoy-client/dispatch-http";
+import { type DispatchClient, DispatchWriteLandedError } from "@legion/envoy-client/dispatch-http";
 import { z } from "zod";
 import { type AcceptedUserTurn, handledAttemptKey } from "./dispatch-user-turn";
 
@@ -39,6 +39,17 @@ export type UserTurnRefusal =
   | { readonly reason: "handled"; readonly delivery: DispatchDelivery }
   /** Dispatch accepted the attempt and answered without the stored body to inject. */
   | { readonly reason: "no-body"; readonly delivery: DispatchDelivery }
+  /** Dispatch recorded the accept and gave no copy of its answer (`DispatchWriteLandedError`):
+   *  the accept landed and its answer was lost on the way back (`409 KEY_COMMITTED`), or the
+   *  answer was too large for Dispatch to keep (`ANSWER_NOT_KEPT`; an issue-less message, the one
+   *  kind accepted, is never edited or deleted, so no withdrawn text is why). The attempt is spent
+   *  as this session's, and the stored body the turn is made of is not in hand, so no turn
+   *  follows and the frame keeps its card. The error's message says what was made. */
+  | {
+      readonly reason: "landed";
+      readonly delivery: DispatchDelivery;
+      readonly error: DispatchWriteLandedError;
+    }
   /** The accept call failed, timed out, or Dispatch refused it. */
   | { readonly reason: "failed"; readonly delivery: DispatchDelivery; readonly error: unknown };
 
@@ -143,7 +154,11 @@ export async function acceptUserTurn(
     }
     return { delivery, turn };
   } catch (error) {
-    options.warn({ delivery, error, reason: "failed" });
+    options.warn(
+      error instanceof DispatchWriteLandedError
+        ? { delivery, error, reason: "landed" }
+        : { delivery, error, reason: "failed" }
+    );
     return undefined;
   }
 }

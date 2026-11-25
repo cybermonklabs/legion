@@ -277,5 +277,23 @@ func stepRef(key string, step record.DesignStep) string {
 	return "dispatch://" + key + "/spec"
 }
 
+// ChangesSuperseded says whether notice, a design-changes-requested notice on issue, is no longer
+// the changes request the gate of its document records as told, issue's gates being gates: the
+// gate records another (record.DesignGate.ToldChangesVersion and ToldChangesReason). The gate
+// records every changes request it applies as told (applyArtifact), and tells one a newer review
+// already replaced without recording it, as the person's words, when no approval followed it; so a
+// notice the gate's record does not match is of a request the person has since replaced. The
+// outbox's parkDecision relays no such notice to the controller: kept, it would take the place of
+// the newer decision kept under the same document's ref, and of the claim a start holds on it. A
+// gate that records no request, or no gate of the notice's document, says nothing against it.
+func ChangesSuperseded(gates map[record.DesignStep]record.DesignGate, issue string, notice record.Notice) bool {
+	for step, gate := range gates {
+		if stepRef(issue, step) == notice.Ref {
+			return gate.ToldChangesVersion != nil && (*gate.ToldChangesVersion != notice.Version || gate.ToldChangesReason != notice.Reason)
+		}
+	}
+	return false
+}
+
 // itemRef is the Dispatch reference of an ask or comment of an issue.
 func itemRef(key, kind, id string) string { return "dispatch://" + key + "/" + kind + "/" + id }

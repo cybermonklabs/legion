@@ -53,6 +53,7 @@ import (
 // that drain, and this build's reconciliation must then state every parent, as its part_of tuple
 // and as the parent_block_id the seed's own indexing computed.
 func TestABackfillWhoseMarkThePreviousReleaseDrainedStillReachesEveryParent(t *testing.T) {
+	t.Parallel()
 	database, service := blockIndexService(t)
 	ctx := context.Background()
 
@@ -173,6 +174,7 @@ func TestABackfillWhoseMarkThePreviousReleaseDrainedStillReachesEveryParent(t *t
 // pass lists the document no more. Where the stand is at the version, the lower rule has nothing
 // to do, and a pass that listed the document would lose the fence and list it again every tick.
 func TestALowerRulesDrainLeavesAHigherRulesMark(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database, lower := blockIndexService(t)
 	higher := markingRuleBuild(t, database, nextBuildCommit, lower.markingRule+1)
@@ -221,6 +223,7 @@ func TestALowerRulesDrainLeavesAHigherRulesMark(t *testing.T) {
 // version, indexes it at that version and clears the mark: the mark is of a rule its pass owes
 // everything of (R13).
 func TestAHigherRulesPassListsAndClearsALowerRulesMark(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database, lower := blockIndexService(t)
 	higher := markingRuleBuild(t, database, nextBuildCommit, lower.markingRule+1)
@@ -254,6 +257,7 @@ func TestAHigherRulesPassListsAndClearsALowerRulesMark(t *testing.T) {
 // stands. Each statement is read as its writer runs it, and run over a document it marks: one
 // whose store stands below its version.
 func TestEveryMarkingStatementKeepsOrRaisesTheRuleAsR13States(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	lowerRule := refs.BlockIndexMarkingRule
 	higherRule := lowerRule + 1
@@ -439,6 +443,7 @@ var markingStatementDigests = map[int]string{
 // beside a build of the old ones, during a roll or after a rollback, would otherwise read each
 // other's cursors, horizons and marks as their own.
 func TestTheMarkingRuleNamesTheStatementsItMarksWith(t *testing.T) {
+	t.Parallel()
 	digest := sha256.New()
 	for _, statement := range markingStatements(t) {
 		fmt.Fprintf(digest, "%s\x00%s\x00", statement.name, strings.Join(strings.Fields(statement.sql), " "))

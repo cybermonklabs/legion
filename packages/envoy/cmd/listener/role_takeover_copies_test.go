@@ -416,9 +416,12 @@ func (rig *relayRig) awaitHandoverReceived(t *testing.T, role, holder string, he
 
 // returnAndReceive registers sessionID again under a new epoch, as its process coming back does,
 // with a stand-in that answers each frame received, and returns what its consumer hands it: each
-// of want, or what arrived within copiesWatchBound.
+// of want, or what arrived within copiesWatchBound. The new epoch restarts the relay at the ack
+// floor, which deletes the consumer holding the frames the session did not acknowledge and creates
+// it again, so it first waits for the consumer's stored state (awaitSessionConsumerStored).
 func (rig *copiesRig) returnAndReceive(t *testing.T, sessionID string, want ...string) copiesReceived {
 	t.Helper()
+	awaitSessionConsumerStored(t, rig.harness.client.Conn, sessionID)
 	standIn := startCopiesStandIn(t, rig.url, sessionID, func(relayedFrame) []string { return []string{relayReplyReceived} })
 	rig.register(t, sessionID, map[string]any{"delivery": map[string]any{"consumer": true, "epoch": "epoch-returned-" + sessionID}})
 	received := copiesReceived{}

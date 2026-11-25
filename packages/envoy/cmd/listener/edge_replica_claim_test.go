@@ -75,6 +75,7 @@ func TestARoleClaimOnAnotherEdgeReplicaKeepsDelivery(t *testing.T) {
 	answer.Projects = []string{edgeProject}
 	broker.Says(token, answer)
 	standIn := startSessionStandIn(t, uri, sessionID, answerDone)
+	consumers := observeConsumers(t, uri)
 	publisher := connectPublisher(t, uri)
 	agentSubject := contracts.LegacyAgentSubject(sessionID)
 
@@ -83,7 +84,18 @@ func TestARoleClaimOnAnotherEdgeReplicaKeepsDelivery(t *testing.T) {
 	}
 	before := newEnvelope("agent", agentSubject, "before the claim")
 	publish(t, publisher, before)
-	requireFrames(t, standIn.collect(t, 1, 20*time.Second), before)
+	frames := standIn.collect(t, 1, 20*time.Second)
+	requireFrames(t, frames, before)
+	// The claim below moves the relay to B, which restarts the session's consumer at its ack
+	// floor. Until the server has taken A's ack of this frame, the move can send it again: A gives
+	// back the frames it holds unacknowledged, and B's restart, finding the frame still awaiting
+	// its ack, deletes the consumer and creates it again at the floor. A delete that soon after
+	// the delivery can also meet the consumer's state write still under way, which fails the
+	// create (awaitSessionConsumerStored). So the row waits for the server to take A's ack, and
+	// then for the consumer's stored state: A then holds nothing, and B's restart keeps the
+	// consumer and starts past this frame.
+	awaitAcked(t, consumers, sessionID, frames[0].seq)
+	awaitSessionConsumerStored(t, publisher.Conn, sessionID)
 
 	refused := fmt.Sprintf(`{"session_id":%q,"role":"INFRA.replica-reviewer"}`, sessionID)
 	if status, body := edgeProcessCall(t, caller, b, token, http.MethodPost, "/v1/roles/set", refused); status != http.StatusForbidden || !strings.Contains(body, edgeRoleNotInProject) {
@@ -99,17 +111,15 @@ func TestARoleClaimOnAnotherEdgeReplicaKeepsDelivery(t *testing.T) {
 
 	after := newEnvelope("agent", agentSubject, "after the claim")
 	publish(t, publisher, after)
-	// The claim moved the relay from A to B. When A drops the session (session_not_ours) it gives
-	// the server back the frames it still held unacked, so B may deliver the pre-claim "before"
-	// frame once more: an at-least-once redelivery across the relay handoff, which the client
-	// dedupes, not a lost or cross-project frame. The meaning here is that the "after" frame reaches
-	// the session; a redelivered "before" is allowed, nothing else is.
-	requireEventuallyDelivered(t, standIn, after, 20*time.Second, before)
+	// The claim moved the relay from A to B, and B's restart kept the consumer past the "before"
+	// frame the session acknowledged, so the "after" frame is the next one to reach the session:
+	// no frame is lost across the relay handoff, and none the session already wrote comes again.
+	requireEventuallyDelivered(t, standIn, after, 20*time.Second)
 
 	const summary = "to the role claimed through B"
 	roleMessage := newEnvelope("agent", contracts.RoleTopicPrefix+role, summary)
 	publish(t, publisher, roleMessage)
-	forwarded := requireEventuallyDelivered(t, standIn, roleMessage, 20*time.Second, before, after).item
+	forwarded := requireEventuallyDelivered(t, standIn, roleMessage, 20*time.Second, after).item
 	if forwarded.PayloadSummary != summary || forwarded.Topic != contracts.RoleTopicPrefix+role {
 		t.Fatalf("the session was relayed %q on %s, want %q on %s", forwarded.PayloadSummary, forwarded.Topic, summary, contracts.RoleTopicPrefix+role)
 	}

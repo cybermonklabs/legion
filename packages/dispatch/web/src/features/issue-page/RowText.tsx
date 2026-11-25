@@ -10,11 +10,13 @@ import {
 import { useLocation, useNavigate } from "react-router-dom";
 
 import type { DisplayTree } from "../../api/types";
+import { useAgentText } from "../refs/AgentName";
 import { MarkdownBody } from "../refs/MarkdownBody";
 import { TextAskCard } from "../refs/markdown-cards";
 import { useLoadedEngine } from "../refs/parsed-references";
 import { isPlainClick } from "../refs/picture-lightbox";
 import { useReferenceNames } from "../refs/plain-text";
+import { deletedLineText, type PostDeletion } from "../refs/post-marks";
 import { useKnownReferences } from "../refs/reference-names";
 import { parseNodeReference } from "../refs/routes";
 import type { TextSource } from "../refs/text-references";
@@ -58,6 +60,13 @@ import { titleReading } from "./tree-drafts";
  * one - keeps its link and reads as the words its author wrote (R8, INFRA-1196 decision 350).
  * The row asks the server nothing for a reference the page reads (R21), so the body's own link
  * pass, which reads one target for each reference, is given nothing to link.
+ *
+ * A reference to a post its author corrected reads as the page published it (INFRA-1523, R2 and
+ * R3): a post its author edited by its words, cut, then ` · edited` (`rowReferenceWords`,
+ * `KnownReferences.edited`); one its author deleted by the deleted line without its time, in
+ * the deleted line's italic as a link to it is (`RefLink`), its actor named as the page names an
+ * author (`AgentText.author`), as the row's own deleted line names it (`NodeRow.tsx`), by
+ * INFRA-1196's decision 342, and not as the published name holds it (`KnownReferences.deleted`).
  *
  * The words are a reading of the text: an `ask` block in a document is a node of the tree of its
  * own, where a reader answers it, so the text draws its question and options rather than a
@@ -156,9 +165,15 @@ function ParsedText({
 /** What a row draws the references of its words by (`useRowNames`). */
 interface RowNames {
   readonly ambiguous: ReadonlySet<string>;
+  /** The references whose comment or message its author deleted, which a row draws in the
+   *  deleted line's italic (`KnownReferences.deleted`). */
+  readonly deleted: ReadonlyMap<string, PostDeletion>;
   /** The words each reference is drawn in, as one key, which changes only where one of them
    *  does. */
   readonly drawn: string;
+  /** The references whose post its author edited, which a row marks ` · edited` after the name
+   *  it cut (`KnownReferences.edited`, `rowReferenceWords`). */
+  readonly edited: ReadonlySet<string>;
   /** The keys the page's batched read named an issue for: a row links one where it stands bare. */
   readonly issues: readonly string[];
   /** The name each reference is drawn by, an issue's title apart from its key, and a block's
@@ -180,10 +195,14 @@ interface RowNames {
  * document by the page's word for it alone, since a chip never draws a document's name, which a
  * link and every plain line read it by (decision 39). Until the store has that line, a document
  * is drawn by the word the store's rule gives it by its address and `issue`
- * (`rowReferenceWords`).
+ * (`rowReferenceWords`). A post the page named that its author deleted
+ * (`KnownReferences.deleted`) is named by its deleted line with the actor named by
+ * `AgentText.author`, the page's rule for an author, in place of the published line, which
+ * names the actor as no registry knows it.
  */
 function useRowNames(words: string, issue: string | undefined): RowNames {
-  const { ambiguous, lines, names: known } = useKnownReferences();
+  const { ambiguous, deleted, edited, lines, names: known } = useKnownReferences();
+  const { author } = useAgentText();
   const issues = useMemo(() => knownIssueKeys(known), [known]);
   const found = useMemo(() => rowReferences(words, issues, ambiguous), [ambiguous, issues, words]);
   // A document's own read would answer only the name its chip never draws.
@@ -201,24 +220,29 @@ function useRowNames(words: string, issue: string | undefined): RowNames {
   const names = useMemo(() => {
     const byReference = new Map<string, string>();
     for (const one of found) {
+      const deletion = known.has(one.reference) ? deleted.get(one.reference) : undefined;
       const name =
-        lines.get(one.reference) ??
-        (documentWord(one.route, issue) === undefined ? named.get(one.reference)?.name : undefined);
+        deletion !== undefined
+          ? deletedLineText(deletion, { label: author })
+          : (lines.get(one.reference) ??
+            (documentWord(one.route, issue) === undefined
+              ? named.get(one.reference)?.name
+              : undefined));
       if (name !== undefined) byReference.set(one.reference, name);
     }
     return byReference;
-  }, [found, issue, lines, named]);
+  }, [author, deleted, found, issue, known, lines, named]);
   const drawn = useMemo(
     () =>
       found
         .map((one) => {
-          const { key, words: name } = rowReferenceWords(one, names, issue);
+          const { key, words: name } = rowReferenceWords(one, names, issue, edited);
           return `${key ?? ""} ${name}`;
         })
         .join("\n"),
-    [found, issue, names]
+    [edited, found, issue, names]
   );
-  return { ambiguous, drawn, issues, names, reads };
+  return { ambiguous, deleted, drawn, edited, issues, names, reads };
 }
 
 /** Calls `onRedrawn` after each commit, past the first, in which `drawn`, the words a row's
@@ -241,6 +265,9 @@ function useRedrawn(drawn: string, onRedrawn: (() => void) | undefined): void {
 
 /** The mark a reference in a node's words carries where it is drawn as a chip (`styles.css`). */
 const ROW_CHIP = "data-row-chip";
+
+/** The mark the deleted line carries wherever it is drawn (`DeletedBody`, `RefLink`). */
+const POST_DELETED = "data-post-deleted";
 
 /** A typed block's source line in a node's words: its opening `:::requirement{#r1}`, or its
  *  closing `:::`. It is markup and no word of the node (part G's R4, the tester's F20): a
@@ -471,7 +498,8 @@ export function useOutOfTabOrder(
 
 /** A text drawn from its reading, with every control it holds taken out of the tab order unless
  *  `tabStops` holds: the ones it is drawn with, and the ones the reading puts in after - a
- *  reference's link once its target answers, a picture once it loads - as they arrive. */
+ *  reference's link once its target answers, a picture once it loads - as they arrive. A
+ *  reference to a corrected post carries its mark (`RowText`). */
 function DrawnText({
   focused,
   markdown,
@@ -492,7 +520,7 @@ function DrawnText({
   // excerpt, or plain words with its references left out (`TreeNode.text`).
   const words = useMemo(() => wordsOf(tree), [tree]);
   const issue = source?.issue;
-  const { ambiguous, drawn, issues, names, reads } = useRowNames(words, issue);
+  const { ambiguous, deleted, drawn, edited, issues, names, reads } = useRowNames(words, issue);
   // After every paint of the reading, and again when the references take their names. The
   // row's pass takes its links out of the tab order as it makes them; a view with tab stops
   // puts them back.
@@ -500,13 +528,23 @@ function DrawnText({
     const element = box.current;
     if (element === null) return;
     dropDirectiveLines(element);
-    linkRowReferences(element, names, issues, issue, ambiguous);
+    linkRowReferences(element, names, issues, issue, ambiguous, edited);
     for (const anchor of element.querySelectorAll<HTMLAnchorElement>("a[data-row-reference]")) {
-      const route = parseNodeReference(anchor.getAttribute("data-row-reference") ?? "");
+      const reference = anchor.getAttribute("data-row-reference") ?? "";
+      const route = parseNodeReference(reference);
       if (route !== undefined && route.kind !== "issue") anchor.setAttribute(ROW_CHIP, "");
+      // A deleted post's line is in the deleted line's italic, as a link to it draws it
+      // (`RefLink`).
+      if (deleted.has(reference)) {
+        anchor.classList.add("italic");
+        anchor.setAttribute(POST_DELETED, "");
+      } else if (anchor.hasAttribute(POST_DELETED)) {
+        anchor.classList.remove("italic");
+        anchor.removeAttribute(POST_DELETED);
+      }
       if (tabStops) anchor.removeAttribute("tabindex");
     }
-  }, [ambiguous, issue, issues, names, tabStops]);
+  }, [ambiguous, deleted, edited, issue, issues, names, tabStops]);
   useLayoutEffect(link, [link]);
   useRedrawn(drawn, onRedrawn);
   useOutOfTabOrder(box, !tabStops, { keepScrollers: focused });

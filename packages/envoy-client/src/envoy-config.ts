@@ -34,8 +34,9 @@ export type EnvoyConfigEnvironment = {
   readonly DISPATCH_URL?: string | undefined;
 } & Readonly<Record<string, string | undefined>>;
 
-/** How long a `!` command may run before its field is an error. */
-const COMMAND_TIMEOUT_MS = 10_000;
+/** How long a `!` command may run before its field is an error. Exported for the hooks whose
+ *  Claude Code timeout must outlast it (claude-envoy's open-asks hook). */
+export const COMMAND_TIMEOUT_MS = 10_000;
 
 /** Tests only: the variable that sets that bound, for a test that holds a command on its own gate
  * while it waits on other processes, which a loaded host can stretch past 10 s (claude-envoy's

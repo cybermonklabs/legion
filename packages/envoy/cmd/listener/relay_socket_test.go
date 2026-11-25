@@ -896,6 +896,12 @@ func TestARelaySocketOfAPromptClientTakesABacklogPastItsPendingLimits(t *testing
 	}
 	client, _ := rig.open(t, session)
 	client.subscribeOwn(session)
+	// The relay sent the first relayEdgeInFlight frames to no socket, and the registration below
+	// restarts it at the floor, which deletes the consumer holding them and creates it again, so
+	// the row waits for that many in flight and then for the consumer's stored state
+	// (awaitSessionConsumerStored).
+	awaitAckState(t, rig.owner.consumers, session, relayEdgeInFlight, 0)
+	awaitSessionConsumerStored(t, rig.owner.harness.client.Conn, session)
 	rig.owner.subscribe(t, consumerRegistration(session, "epoch-2"))
 	seen := map[string]bool{}
 	deadline := time.After(60 * time.Second)

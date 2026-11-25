@@ -20,6 +20,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unicode"
 
 	"github.com/spf13/cobra"
 
@@ -35,6 +36,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/registry"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
 const (
@@ -559,7 +561,7 @@ func stopLegion(configPath string, stdout, stderr io.Writer) int {
 func newStateCommand(stdout, stderr io.Writer) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "state",
-		Short: "print the daemon's state: admission, the project's pause, issues, pending Dispatch status writes, claims nothing will wake, the live records' repositories GitHub did not read or a GitHub App is missing from, the durable consumers' lag (--json for all of it)",
+		Short: "print the daemon's state: admission, the project's pause, issues, pending Dispatch status writes, claims nothing will wake, the live records' repositories GitHub did not read or a GitHub App is missing from, the durable consumers' lag, the intake's open give-ups (--json for all of it)",
 		Args:  configOnly,
 	}
 	c := newOperatorCall(cmd, "file holding the operator bearer the daemon's operator_token_file names; with it the claims nothing will wake name who suspended each", stdout, stderr)
@@ -636,6 +638,9 @@ func runState(ctx context.Context, c *operatorCall, asJSON bool, stdout, stderr 
 		fmt.Fprintln(stdout, line)
 	}
 	for _, line := range consumerLines(state.Consumers, state.Daemon.StartedAt, time.Now()) {
+		fmt.Fprintln(stdout, line)
+	}
+	for _, line := range intakeGiveUpLines(state.IntakeGiveUps) {
 		fmt.Fprintln(stdout, line)
 	}
 	// In a pane, the issue record is what a relaunched worker re-reads.
@@ -901,7 +906,7 @@ func experimentLine(name string, counts map[armDraw]int) string {
 // what act it was answered.
 //
 // The second count reads the published line rather than judging the wait a second time. An
-// answered root stands in that line, among the issues whose work came back, oldest first
+// answered root stands in that line, within its priority, among the issues whose work came back, oldest first
 // (record.Waiting carries every answered root there, whatever its design gate
 // says), until the pass that resumes it. Two answered roots are in no line this summary reads:
 // one of another Dispatch project, whose line this daemon does not build, and every one of them
@@ -1179,17 +1184,19 @@ type claimCall struct {
 	step  api.StepView
 }
 
-// openCalls is every claim of the state whose agent is in a tool call the daemon has seen the
-// start of and no end of, by issue and then role. A call open is what claims.go's openCallWord
-// prints a word for and nothing else is, so that is the test here too: openCallsSummary names
-// each of these rows with that word. That is the shape a stalled turn leaves behind: the daemon
-// reads the same record to decide a turn has stopped moving, and this is where an operator reads
-// it. A controller's claim is in none of these — internal/projection puts it on no issue — and is
-// read with `legion claims list` instead.
+// openCalls is every working claim of the state whose agent is in a tool call the daemon has seen
+// the start of and no end of, by issue and then role: a working claim whose openCallWord is
+// non-empty. openCallsSummary names each of these rows with that word. That is the shape a stalled
+// turn leaves behind: the daemon reads the same record to decide a turn has stopped moving, and
+// this is where an operator reads it. Only a claim in state `working` has a turn in flight
+// (supervise.StateWorking): a retired or suspended claim keeps the step it was last in on its
+// record, on purpose, so a call open there is no agent in a call. A controller's claim is in none
+// of these — internal/projection puts it on no issue — and is read with `legion claims list`
+// instead.
 func openCalls(issues map[string]api.Issue) []claimCall {
 	var calls []claimCall
 	open := func(issue, role string, view api.ClaimView) {
-		if openCallWord(view.Step) == "" {
+		if view.State != string(supervise.StateWorking) || openCallWord(view.Step) == "" {
 			return
 		}
 		calls = append(calls, claimCall{issue: issue, role: role, step: *view.Step})
@@ -1501,6 +1508,61 @@ func consumerLines(consumers []api.ConsumerLagView, startedAt, now time.Time) []
 		lines[i] = line
 	}
 	return lines
+}
+
+// plainStateGiveUps is how many of the open give-ups the state lists `legion state` prints a line
+// for: the newest, which say what is failing now, while the counts above them say how many there
+// are and `legion state --json` lists every one the state carries. Ten lines fit beside the rest
+// of the plain output on one screen, and a burst of one cause reads the same in ten as in fifty.
+const plainStateGiveUps = 10
+
+// intakeGiveUpLines are the lines an operator reads for the intake's open give-ups
+// (api.IntakeGiveUpsView): one per consumer with any, `intake give-ups <consumer>: <n> open,
+// newest seq <seq>`, the newest sequence being what `legion intake replay` and `legion intake
+// discard` take as --through-seq to reach all of them; then the newest at most plainStateGiveUps,
+// `intake give-up <id> <consumer> <subject> seq <n> gave up <time> after <d> deliveries
+// (<reason>): <first line of the error>`, each id what --give-up takes. The subject and the error
+// are terminalText: the publisher wrote the subject, and the error can quote it. With none open
+// the one line says so.
+func intakeGiveUpLines(giveUps api.IntakeGiveUpsView) []string {
+	if len(giveUps.Consumers) == 0 {
+		return []string{"intake give-ups: none"}
+	}
+	listed := giveUps.Newest[:min(len(giveUps.Newest), plainStateGiveUps)]
+	lines := make([]string, 0, len(giveUps.Consumers)+len(listed))
+	for _, consumer := range giveUps.Consumers {
+		lines = append(lines, fmt.Sprintf("intake give-ups %s: %d open, newest seq %d", consumer.Name, consumer.Open, consumer.NewestSeq))
+	}
+	for _, giveUp := range listed {
+		firstLine, _, _ := strings.Cut(giveUp.LastError, "\n")
+		lines = append(lines, fmt.Sprintf("intake give-up %d %s %s seq %d gave up %s after %d deliveries (%s): %s",
+			giveUp.ID, giveUp.Consumer, terminalText(giveUp.Subject), giveUp.StreamSeq, giveUp.GaveUpAt.UTC().Format(time.RFC3339),
+			giveUp.Deliveries, giveUp.Reason, terminalText(firstLine)))
+	}
+	return lines
+}
+
+// terminalText is text another party wrote, as a line of the operator's terminal shows it: each
+// character that does not print is written as its Go escape (`\x1b`, `\a`, `\u202e`), so an ESC
+// or a BEL in it cannot clear the screen, set the window title or reorder the line. Text that
+// prints is left as it is, so the line keeps the form the guides show. The state's text holds no
+// NUL and no byte that is not UTF-8 (storetext.Text), but it can still hold these characters.
+func terminalText(text string) string {
+	first := strings.IndexFunc(text, func(r rune) bool { return !unicode.IsPrint(r) })
+	if first < 0 {
+		return text
+	}
+	var shown strings.Builder
+	shown.WriteString(text[:first])
+	for _, r := range text[first:] {
+		if unicode.IsPrint(r) {
+			shown.WriteRune(r)
+			continue
+		}
+		quoted := strconv.QuoteRune(r)
+		shown.WriteString(quoted[1 : len(quoted)-1])
+	}
+	return shown.String()
 }
 
 // stateAddress is where a daemon answers: the configured bind and port, with --port overriding

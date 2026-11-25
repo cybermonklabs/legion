@@ -91,11 +91,14 @@ var itemRowWriters = map[string]map[string]string{
 	},
 	"internal/dispatch/api/broadcasts.go": {
 		"queueBroadcastCopy": "none, and none to take: each copy is a direct message, whose " +
-			"conversation is no owner (store.OwnerOf), and nothing rewrites a message's body",
+			"conversation is no owner (store.OwnerOf), and nothing rewrites a direct message's " +
+			"body: only an issue message is edited or deleted",
 	},
 	"internal/dispatch/api/comment_actions.go": {
 		"commentAction": "the comment's owner lock (lockedComment, lockOwnerOfComment)",
-		"editComment":   "the comment's owner lock (lockedComment, lockOwnerOfComment)",
+		"editComment":   "the comment's owner lock (lockedCommentForCorrection, lockOwnerOfComment)",
+		"recordOrphanedCommentAnchor": "the comment's owner lock, which both its callers hold " +
+			"(commentAction's lockedComment, deleteComment's lockedCommentForCorrection)",
 		"reopenComment": "the comment's owner lock (lockedComment, lockOwnerOfComment)",
 	},
 	"internal/dispatch/api/comment_create.go": {
@@ -103,7 +106,11 @@ var itemRowWriters = map[string]map[string]string{
 			"(lockCommentOwner)",
 	},
 	"internal/dispatch/api/comment_delivery.go": {
-		"replyComment": "the comment's owner lock (lockedCommentForDelivery, lockOwnerOfComment)",
+		"replyComment": "the comment's owner lock (lockedCommentAllowingClosed, lockOwnerOfComment)",
+	},
+	"internal/dispatch/api/message_corrections.go": {
+		"editMessage": "the issue's owner lock (lockedMessageForCorrection's lockIssue); a " +
+			"direct message is refused before anything is written",
 	},
 	"internal/dispatch/api/message_delivery.go": {
 		"insertSessionReply": "the issue's owner lock where the conversation names an issue " +
@@ -112,6 +119,13 @@ var itemRowWriters = map[string]map[string]string{
 	"internal/dispatch/api/messages.go": {
 		"createStoredMessage": "the issue's owner lock where the message names an issue " +
 			"(lockIssue); a direct message has no owner and needs none",
+	},
+	"internal/dispatch/api/post_history.go": {
+		"clearDeletedPostBody": "the post's owner lock, which both deletes hold before they plan " +
+			"it (deleteComment's lockedCommentForCorrection, deleteMessage's " +
+			"lockedMessageForCorrection)",
+		"queueDeletedPostSettlement": "the post's owner lock, which both deletes hold; its tables " +
+			"are comment_deliveries and message_deliveries, no item row",
 	},
 	"internal/dispatch/api/reviews.go": {
 		"handBackApprovalAsk": "the document's owner lock (requireOpenOwner)",
@@ -187,8 +201,9 @@ var itemRowWriters = map[string]map[string]string{
 			"(docs' readEventsAfterCursor)",
 	},
 	"internal/dispatch/refs/item_blocks.go": {
-		"clearItemWindowsOwed": "the item's owner lock, which the window arm takes (LockItemOwner)",
-		"markItemBlocksOwed":   "the item's owner lock, which the window arm takes (LockItemOwner)",
+		"clearItemWindowsOwed": "the item's owner lock, which the window arm takes (LockItemOwner) " +
+			"and the post delete that queues TombstoneItem holds (api's clearDeletedPostBody)",
+		"markItemBlocksOwed": "the item's owner lock, which the window arm takes (LockItemOwner)",
 		"queueBlockRefs": "the item's owner lock, which the caller holds (LockItemOwner, " +
 			"readSourceUnderOwner, or the writing route's own); its tables are the item's block " +
 			"and block-ref tables, no item row",
@@ -199,6 +214,9 @@ var itemRowWriters = map[string]map[string]string{
 			"readSourceUnderOwner, or the writing route's own)",
 		"queueStateLock": "the item's owner lock, which the caller holds (LockItemOwner, " +
 			"readSourceUnderOwner, or the writing route's own)",
+		"TombstoneItem": "the post's owner lock, which the delete that queues it holds " +
+			"(api's clearDeletedPostBody); its tables are the item's block and block-text " +
+			"tables, no item row, and the state row it stamps is clearItemWindowsOwed's",
 	},
 	"internal/dispatch/refs/rebuild.go": {
 		"RebuildAll": "none, which is rebuild-refs' exception: it raises the owed markers " +
@@ -410,6 +428,8 @@ const inboxPassLockSteps = "a boot pass of graphcensus.Backfill, no request's; i
 // it needs - and either way nobody has to read the table to find out which writers it left out.
 var itemRowLockNoRow = map[string]map[string]string{
 	// Writers whose statements run in a transaction some other writer opened and locked.
+	"internal/dispatch/api/comment_actions.go": {"recordOrphanedCommentAnchor": itemRowCallersTransaction},
+	"internal/dispatch/api/post_history.go":    {"queueDeletedPostSettlement": itemRowCallersTransaction},
 	"internal/dispatch/docs/anchor_refresh.go": {"refreshAnchors": itemRowCallersTransaction},
 	"internal/dispatch/docs/approval_ask.go":   {"rewriteApprovalAsk": itemRowCallersTransaction},
 	"internal/dispatch/docs/ask_blocks.go": {
@@ -445,6 +465,7 @@ var itemRowLockNoRow = map[string]map[string]string{
 		"queueBlocks":          itemRowCallersTransaction,
 		"queueRecordIndexed":   itemRowCallersTransaction,
 		"queueStateLock":       itemRowCallersTransaction,
+		"TombstoneItem":        itemRowCallersTransaction,
 	},
 	"internal/dispatch/refs/refs.go": {"queueStamp": itemRowCallersTransaction},
 

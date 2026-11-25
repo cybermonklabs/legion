@@ -494,14 +494,18 @@ export function createPhaseReminder(deps: PhaseReminderDeps): PhaseReminder {
         // The provider refused this turn, so the worker read nothing and said nothing: the state
         // stands, and this settle returns no continuation, because the host would turn it into
         // one more turn at once and the provider would refuse that one too. One timer is armed
-        // all the same: the task the refused turn carried ended with it, the daemon counts the
-        // turn rather than failing the claim while the run is short of `launch_failure_limit`,
-        // and nothing else would wake this worker, so a single transient refusal would leave its
-        // issue idle. By the time the timer fires the daemon has had every refusal of the run
-        // reported (`POST /legion/v1/claims/turn-outcome`): at the limit it has failed the claim,
-        // and the record check the timer runs drops the reminder, which is what stops the
-        // reminding of a session the provider refuses for ever — the whole of
-        // dispatch://INFRA-264.
+        // all the same: the task the refused turn carried ended with it, and nothing else would
+        // wake this worker, so a single transient refusal would leave its issue idle. What ends
+        // the reminders is the daemon failing the claim, which the record check the timer runs
+        // reads: the daemon judges a reminder's own turn, which no prompt of its ran, from its
+        // turn-outcome report, as it judges a prompt's turn from that prompt's result
+        // (dispatch://INFRA-4508), so a refusal whose status cannot clear (a 4xx other than 401,
+        // 403, 408 and 429) fails the claim at once and holds the issue for its architect, and
+        // the next reminder is dropped. A refusal that can clear, or whose status cannot be read,
+        // fails nothing, so the reminders keep this pace for as long as the provider refuses —
+        // the whole of dispatch://INFRA-264 — and the project's controller is told once when the
+        // worker's turns that ended in a provider error, reminders' and prompts' alike, reach six
+        // in a row.
         advance(turn);
         continued = false;
         armReminder(reminderText(""), deps.limits.reminderMs);

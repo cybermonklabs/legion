@@ -54,8 +54,8 @@ export function dispatchDocumentRef(owner: string, slug: string): string {
 
 /** The kinds of item whose blocks are its own rather than a document's: an ask, whose parts are
  *  its question, its options and its answer; a comment, whose blocks its own revisions number;
- *  and an issue message, which is never edited, so its blocks carry no revision at all. They are
- *  the parents a block node naming no document has. */
+ *  and an issue message, which its author edits without its blocks carrying any revision, since
+ *  a message numbers none. They are the parents a block node naming no document has. */
 export const ITEM_KINDS = ["ask", "comment", "message"] as const;
 
 /** One of those kinds. */
@@ -82,6 +82,7 @@ export interface ParsedDispatchRef {
     | "spec"
     | "log"
     | "children"
+    | "comments"
     | "artifact"
     | "block"
     | "ask"
@@ -111,7 +112,7 @@ export interface ParsedDispatchRef {
  * document, or a project's document, at no version, pinned to a version of the document; on an
  * ask, an issue's or a project document's, pinned to a revision of the ask's parts; on a comment,
  * an issue's or a project document's, pinned to a revision of the comment; or on an issue's
- * message, which never changes, so a pinned message block is no reference.
+ * message, which records no revisions, so a pinned message block is no reference.
  */
 function parseBlockRef(holder: string, fragment: string): ParsedDispatchRef | null {
   // A raw `@` is only ever a pin: no key, slug or id a block's holder names holds one.
@@ -195,15 +196,17 @@ export function parseDispatchRef(ref: string): ParsedDispatchRef | null {
   // both read the issue's events; it is no kind of its own. `decisions`, the issue's Decisions
   // page, names the issue, as the server reads it.
   const issueReference = ref.match(
-    /^dispatch:\/\/([A-Z][A-Z0-9]{1,9}-[1-9][0-9]*)(?:\/(spec)|\/(log|activity)|\/(children)|\/decisions|\/artifact\/([^/@]+)(?:@v(\d+))?|\/ask\/([^/]+)|\/comment\/([^/]+)|\/message\/([^/]+))?$/
+    /^dispatch:\/\/([A-Z][A-Z0-9]{1,9}-[1-9][0-9]*)(?:\/(spec)|\/(log|activity)|\/(children)|\/(comments)|\/decisions|\/artifact\/([^/@]+)(?:@v(\d+))?|\/ask\/([^/]+)|\/comment\/([^/]+)|\/message\/([^/]+))?$/
   );
   if (!issueReference) return null;
-  const [, issue, spec, log, children, artifact, version, ask, comment, message] = issueReference;
+  const [, issue, spec, log, children, comments, artifact, version, ask, comment, message] =
+    issueReference;
   if (!issue || (version !== undefined && Number(version) < 1)) return null;
   const owner: Owner = { kind: "issue", issue };
   if (spec) return { owner, kind: "spec", id: spec };
   if (log) return { owner, kind: "log", id: log };
   if (children) return { owner, kind: "children", id: children };
+  if (comments) return { owner, kind: "comments", id: comments };
   if (artifact) {
     return {
       owner,

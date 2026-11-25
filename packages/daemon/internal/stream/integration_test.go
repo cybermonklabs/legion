@@ -1,5 +1,7 @@
 package stream_test
 
+//ci:builds packages/daemon ./cmd/legion buildLegion go build .../daemon/cmd/legion
+
 // The shim–listener integration test: the real `legion worker-shim` binary, built from
 // cmd/legion by this test, dials the real Listener — over a unix socket and over TCP — and
 // bridges a fake Oh My Pi, which is this test binary re-executed. Neither end is a stand-in: the

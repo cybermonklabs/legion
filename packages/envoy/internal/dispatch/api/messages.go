@@ -160,11 +160,9 @@ func (s *server) recoveredMessage(ctx context.Context, who model.Actor, point me
 			return model.Message{}, err
 		}
 	}
-	deliveries, err := s.loadMessageDeliveries(ctx, s.deps.Store.Pool, []string{message.ID})
-	if err != nil {
+	if err := s.hydrateWrittenMessage(ctx, s.deps.Store.Pool, &message); err != nil {
 		return model.Message{}, err
 	}
-	message.Deliveries = deliveries[message.ID]
 	return message, nil
 }
 
@@ -197,7 +195,57 @@ func (s *server) replayIssueMessage(w http.ResponseWriter, r *http.Request, poin
 		s.writeHandlerError(w, err)
 		return
 	}
-	s.writeRefreshed(w, stored, message)
+	s.writeRefreshed(w, http.StatusCreated, stored, message)
+}
+
+// freshMessage is one message as a write of it answers it: the row with the block it replies to,
+// read for who, the caller the answer goes to, and its delivery attempts (hydrateWrittenMessage),
+// read now from the pool.
+func (s *server) freshMessage(ctx context.Context, who model.Actor, id string) (model.Message, error) {
+	pool := s.deps.Store.Pool
+	message, err := s.loadMessage(ctx, pool, "", id)
+	if err != nil {
+		return model.Message{}, err
+	}
+	if err := hydrateMessageReplyBlocks(ctx, pool, who, &message); err != nil {
+		return model.Message{}, err
+	}
+	if err := s.hydrateWrittenMessage(ctx, pool, &message); err != nil {
+		return model.Message{}, err
+	}
+	return message, nil
+}
+
+// rereadMessage is the keyedReread of PATCH /api/v1/messages/{id}: the message as it stands now,
+// read for the caller the repeat answers (freshMessage), unshaped, as editMessage answers it.
+func (s *server) rereadMessage(w http.ResponseWriter, r *http.Request, id string, status int, stored []byte) {
+	who, ok := s.actingReader(w, r)
+	if !ok {
+		return
+	}
+	message, err := s.freshMessage(r.Context(), who, id)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	s.writeRefreshed(w, status, stored, message)
+}
+
+// rereadMessageReply is the keyedReread of POST /api/v1/messages/{id}/reply, whose answer is the
+// reply, not the message the path names: the reply as it stands now, read for the caller the
+// repeat answers (freshMessage), shaped as replyMessage answers it (replyRead), its duplicate mark
+// kept from the first answer.
+func (s *server) rereadMessageReply(w http.ResponseWriter, r *http.Request, id string, status int, stored []byte) {
+	who, ok := s.actingReader(w, r)
+	if !ok {
+		return
+	}
+	reply, err := s.freshMessage(r.Context(), who, id)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	s.writeRefreshed(w, status, stored, newShapedMessage(reply, wantsDisplayTrees(r)))
 }
 
 // sendHeldMessageOn makes sure a keyed send's message is on its way before its repeat is answered,
@@ -453,6 +501,13 @@ func (s *server) createStoredMessage(
 	if err != nil {
 		return model.Message{}, nil, err
 	}
+	// A reply adds text under the message it answers, and a deleted post takes none: the
+	// thread reply is refused as the delivery callback's reply is (message_delivery.go's
+	// replyMessage), on the parent row this read already holds. Only the message in_reply_to
+	// named is judged, and a reply written before the delete keeps its text and its place.
+	if parent.Deleted {
+		return model.Message{}, nil, deletedPostError(refs.ItemMessage)
+	}
 	// A block the reply names is read here, with the index its parent owes planned beside it: the
 	// parent's lock and that index are queued with this message's own writes, in that order
 	// (below), so neither holds a transaction id while the reply is read (INFRA-636).
@@ -626,13 +681,15 @@ func (s *server) createStoredMessage(
 		}
 		payload := thread.payload(message, referenceChanges)
 		payload.ThreadLogins = directLogins
-		if err := s.deps.Events.QueueAppendWithLogins(b, messageEvent(message, eventType, actor, payload), logins, func(appended model.Event) {
+		// Only an issue message's references are stamped: a direct message writes none.
+		stamped := ""
+		if issueKey != nil {
+			stamped = "message"
+		}
+		if err := s.queueLoggedEventOn(b, messageEvent(message, eventType, actor, payload), logins, stamped, message.ID, func(appended model.Event) {
 			event = appended
 		}); err != nil {
 			return err
-		}
-		if issueKey != nil {
-			refs.QueueStamp(b, graphstore.KindMessage, message.ID)
 		}
 		graphstore.QueueCaused(b, stored.written, graphstore.LatestEvent)
 		// What the message's body is in the store, under the same event (planPendingItem).
@@ -701,11 +758,9 @@ func (s *server) createStoredMessage(
 		attempt, err := s.deliverMessageResuming(sending, message, delivery, actor, &thread, 1)
 		switch {
 		case errors.Is(err, errAttemptNotPending):
-			deliveries, err := s.loadMessageDeliveries(sending, s.deps.Store.Pool, []string{message.ID})
-			if err != nil {
+			if err := s.hydrateWrittenMessage(sending, s.deps.Store.Pool, &message); err != nil {
 				return model.Message{}, nil, err
 			}
-			message.Deliveries = deliveries[message.ID]
 		case err != nil:
 			return model.Message{}, nil, err
 		default:
@@ -827,6 +882,9 @@ type messageReplyParent struct {
 	ReplyBody string
 	Target    *string
 	InReplyTo *string
+	// Deleted says the parent's author withdrew it. It is read with the parent's own row, so
+	// the refusal a reply takes from it costs no read of its own.
+	Deleted bool
 }
 
 // messageReplyPreview is how much of a parent's body a reply's event and delivery frame carry.
@@ -851,6 +909,7 @@ func messageReplyParentOf(message model.Message) messageReplyParent {
 		ReplyBody: messageReplyPreview(message.Body),
 		Target:    message.Target,
 		InReplyTo: message.InReplyTo,
+		Deleted:   message.DeletedAt != nil,
 	}
 }
 
@@ -879,27 +938,28 @@ func loadMessageReplyParent(
 	var err error
 	if issueKey != nil {
 		err = tx.QueryRow(ctx, `
-			select body, target, in_reply_to::text from messages where id = $1 and issue_key = $2
-		`, *inReplyTo, *issueKey).Scan(&parentBody, &parent.Target, &parent.InReplyTo)
+			select body, target, in_reply_to::text, deleted_at is not null from messages where id = $1 and issue_key = $2
+		`, *inReplyTo, *issueKey).Scan(&parentBody, &parent.Target, &parent.InReplyTo, &parent.Deleted)
 	} else {
 		if target == nil {
 			return messageReplyParent{}, invalid
 		}
 		err = tx.QueryRow(ctx, `
 			with recursive thread as (
-				select id, body, issue_key, target, in_reply_to, 0 as depth from messages where id = $1
+				select id, body, issue_key, target, in_reply_to, deleted_at, 0 as depth from messages where id = $1
 				union all
-				select m.id, m.body, m.issue_key, m.target, m.in_reply_to, t.depth + 1
+				select m.id, m.body, m.issue_key, m.target, m.in_reply_to, m.deleted_at, t.depth + 1
 				from messages m join thread t on m.id = t.in_reply_to
 			)
 			select
 				(select body from thread where depth = 0),
 				(select target from thread where depth = 0),
-				(select in_reply_to::text from thread where depth = 0)
+				(select in_reply_to::text from thread where depth = 0),
+				(select deleted_at is not null from thread where depth = 0)
 			from thread
 			where in_reply_to is null and issue_key is null and target = $2
 			  and not exists (select 1 from thread where issue_key is not null)
-		`, *inReplyTo, *target).Scan(&parentBody, &parent.Target, &parent.InReplyTo)
+		`, *inReplyTo, *target).Scan(&parentBody, &parent.Target, &parent.InReplyTo, &parent.Deleted)
 	}
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -1260,11 +1320,11 @@ func (s *server) answerAgentConversation(w http.ResponseWriter, r *http.Request)
 		-- names (message_deliveries_session). An OR spanning messages and message_deliveries can
 		-- use neither index, and Postgres reads every root there is.
 		candidates as (
-			select m.id, m.issue_key, m.author, m.body, m.target, m.in_reply_to, m.broadcast_id, m.created_at, m.replies_to_block
+			select m.id, m.issue_key, m.author, m.body, m.target, m.in_reply_to, m.broadcast_id, m.created_at, m.replies_to_block, m.edited_at, m.deleted_at, m.deleted_by
 			from messages m
 			where m.in_reply_to is null and m.target = 'session:' || $3::text
 			union
-			select m.id, m.issue_key, m.author, m.body, m.target, m.in_reply_to, m.broadcast_id, m.created_at, m.replies_to_block
+			select m.id, m.issue_key, m.author, m.body, m.target, m.in_reply_to, m.broadcast_id, m.created_at, m.replies_to_block, m.edited_at, m.deleted_at, m.deleted_by
 			from messages m
 			join message_deliveries d on d.message_id = m.id
 			where m.in_reply_to is null and d.session_id = $3::text
@@ -1286,6 +1346,7 @@ func (s *server) answerAgentConversation(w http.ResponseWriter, r *http.Request)
 		roots as (
 			select c.id::text as id, c.issue_key, c.author, c.body, c.target,
 			       c.in_reply_to::text as in_reply_to, c.broadcast_id, c.created_at, c.replies_to_block,
+			       c.edited_at, c.deleted_at, c.deleted_by,
 			       greatest(c.created_at, activity.latest) as moved,
 			       unread.root_id is not null as unread
 			from candidates c
@@ -1371,20 +1432,26 @@ func insertedMessage(id string, issueKey *string, author []byte, input createMes
 }
 
 // messageColumns is the messages select list scanMessage reads, in scan order.
-const messageColumns = `id::text, issue_key, author, body, target, in_reply_to::text, broadcast_id::text, created_at, replies_to_block`
+const messageColumns = `id::text, issue_key, author, body, target, in_reply_to::text, broadcast_id::text, created_at, replies_to_block, edited_at, deleted_at, deleted_by`
 
 // scanMessage decodes one messageColumns row; extra receives any columns selected after them.
 func scanMessage(row pgx.Row, extra ...any) (model.Message, error) {
 	var message model.Message
-	var author []byte
+	var author, deletedBy []byte
+	var deletedAt *time.Time
 	dest := append([]any{
 		&message.ID, &message.IssueKey, &author, &message.Body, &message.Target, &message.InReplyTo, &message.BroadcastID, &message.CreatedAt, &message.RepliesToBlock,
+		&message.EditedAt, &deletedAt, &deletedBy,
 	}, extra...)
 	if err := row.Scan(dest...); err != nil {
 		return model.Message{}, err
 	}
 	if err := json.Unmarshal(author, &message.Author); err != nil {
 		return model.Message{}, fmt.Errorf("decode message author: %w", err)
+	}
+	var err error
+	if message.DeletedAt, message.DeletedBy, err = model.DeletedPostMark(deletedAt, deletedBy); err != nil {
+		return model.Message{}, err
 	}
 	message.Deliveries = []model.MessageDelivery{}
 	return message, nil
@@ -1395,10 +1462,10 @@ func scanMessage(row pgx.Row, extra ...any) (model.Message, error) {
 // GET /api/v1/me/inbox splices it into its one statement over the roots of its page.
 const messageReplyChainsQuery = `
 		with recursive replies as (
-			select id, issue_key, author, body, target, in_reply_to, broadcast_id, created_at, replies_to_block, in_reply_to as seed_id
+			select id, issue_key, author, body, target, in_reply_to, broadcast_id, created_at, replies_to_block, edited_at, deleted_at, deleted_by, in_reply_to as seed_id
 			from messages where in_reply_to = any($1::uuid[])
 			union all
-			select m.id, m.issue_key, m.author, m.body, m.target, m.in_reply_to, m.broadcast_id, m.created_at, m.replies_to_block, r.seed_id
+			select m.id, m.issue_key, m.author, m.body, m.target, m.in_reply_to, m.broadcast_id, m.created_at, m.replies_to_block, m.edited_at, m.deleted_at, m.deleted_by, r.seed_id
 			from messages m join replies r on m.in_reply_to = r.id
 		)
 		select ` + messageColumns + `, seed_id::text

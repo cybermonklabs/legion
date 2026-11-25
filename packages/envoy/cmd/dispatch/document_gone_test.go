@@ -2,6 +2,10 @@
 
 package main
 
+// c-document-gone's test reads this tree's href table through `..`; it is a basebuild test,
+// which no job of ci.yaml compiles today, so the rule binds the run that first does.
+//ci:reads packages/envoy/internal/dispatch/text/testdata/dispatch-href-references.json TestNoReadReachesTheDecisionsDocument os.ReadFile of ../../internal/dispatch/text/testdata/dispatch-href-references.json
+
 import (
 	"context"
 	"encoding/json"

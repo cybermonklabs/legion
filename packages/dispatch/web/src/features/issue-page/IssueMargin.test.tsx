@@ -1,6 +1,11 @@
 import { expect, jest, type Mock, spyOn, test } from "bun:test";
 import { MAX_ISSUE_ADVANCES, MAX_ISSUE_BLOCKERS } from "@legion/contracts";
-import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
+import {
+  type InfiniteData,
+  QueryClient,
+  QueryClientProvider,
+  useQuery,
+} from "@tanstack/react-query";
 import {
   act,
   // biome-ignore lint/style/noRestrictedImports: this file keeps fireEvent for an Escape that ends an IME composition, which user-event has no form for
@@ -22,6 +27,7 @@ import { nextFrame } from "../../__tests__/frames";
 import { graphNode } from "../../__tests__/graph-fixture";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { panelOf, pickNamed } from "../../__tests__/list-picks";
+import { messageCorrectionFields } from "../../__tests__/message-fixture";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
@@ -31,6 +37,7 @@ import { primarySpec } from "../../api/issue-cache";
 import { issueQuery, referenceTargetsQuery, userStateQuery } from "../../api/queries";
 import { refreshQueries } from "../../api/query-refresh";
 import type {
+  Actor,
   ArchitectureSource,
   CommentWithTrees,
   DispatchEvent,
@@ -39,6 +46,7 @@ import type {
   GraphReferences,
   Issue,
   IssueDetails,
+  MessageWithTrees,
   Priorities,
   ReferenceTargets,
   UserState,
@@ -47,7 +55,7 @@ import { linkText, pageFailedText, pageHeaderControl, pageInkText } from "../../
 import { assigneeControlName } from "../issue/AssigneeControl";
 import { componentsControlName } from "../issue/IssueComponentsLine";
 import { labelsControlName } from "../issue/IssueLabels";
-import { conversationItemId, pinnedItemMarker, stateForIssue } from "../issue/pins";
+import { conversationItemId, eventItemId, pinnedItemMarker, stateForIssue } from "../issue/pins";
 import { repoControlName, repoTextControlName } from "../issue/RepoControl";
 import { type DocumentBridge, MarginProvider, useMargin } from "../margin/margin-context";
 import { issue as marginIssue, specArtifact } from "../margin/margin-fixture";
@@ -55,7 +63,7 @@ import { addPriorityControlName, IssuePriorityLine } from "../priorities/IssuePr
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { ReferencedBy } from "../refs/ReferencedBy";
 import { ReferenceNamesProvider } from "../refs/reference-names";
-import { buildDispatchReference } from "../refs/routes";
+import { buildDispatchReference, buildIssuePath } from "../refs/routes";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { appKeymap, useKeymapScope } from "../shell/keymap";
 import { userPreferenceStorageKey } from "../shell/userPreference";
@@ -6988,6 +6996,29 @@ function commentOf(id: string, body: string, tree?: DisplayTree): CommentWithTre
   };
 }
 
+/** A root message of CORE-1 as the messages read answers it, with what `more` sets over it: its
+ *  author's corrections of it, where they made one. */
+function messageOf(
+  id: string,
+  body: string,
+  more: Partial<MessageWithTrees> = {}
+): MessageWithTrees {
+  return {
+    author: { id: "alice", kind: "user" },
+    body,
+    broadcast_id: null,
+    created_at: "2026-09-09T00:00:00Z",
+    deliveries: [],
+    ...messageCorrectionFields(),
+    id,
+    in_reply_to: null,
+    issue_key: "CORE-1",
+    reply_block: null,
+    target: null,
+    ...more,
+  };
+}
+
 // Until the read that holds a pin's words answers, the pin is drawn by the page's word for its
 // kind, never by the id it was pinned under; once it answers, by its first line.
 test("a pin whose words are not read yet is drawn by its kind's word, never its id", async () => {
@@ -7106,6 +7137,216 @@ test("a pin's line reads a reference as its target's name", async () => {
       ).toBe("Wait on CORE-2 Ship the release first.")
     );
     expect(within(pins).getByRole("link").textContent).not.toContain("dispatch://");
+  } finally {
+    unmount();
+    restore();
+  }
+});
+
+/** When the pinned posts below were edited, and when deleted. */
+const PIN_EDITED_AT = "2026-09-09T01:00:00Z";
+const PIN_DELETED_AT = "2026-09-09T02:00:00Z";
+
+/** A session nobody named, which the page calls by its word for an agent and never by its id. */
+const UNNAMED_SESSION: Actor = { id: "0f8e2c4a-1111-4222-8333-444455556666", kind: "session" };
+
+/** Pinned's row of the pin `id` (`conversationItemId`'s `<kind>:<id>`, or `eventItemId`'s). */
+function pinRow(id: string): HTMLElement {
+  const row = document.querySelector(`[data-pin="${id}"]`);
+  if (!(row instanceof HTMLElement)) throw new Error(`Pinned draws no row for ${id}`);
+  return row;
+}
+
+/** The link of Pinned's row of the pinned conversation `id`, to what it pins. */
+function pinLink(id: string): HTMLElement {
+  return within(pinRow(id)).getByRole("link");
+}
+
+// R2 of dispatch://INFRA-1523: a pinned comment or message its author edited is drawn by its first
+// line, then ` · edited`, inside its link, as a parent line in the outline says it
+// (`node-line.tsx`'s `ParentLink`). The mark is the page's own word, marked as its chrome.
+test("a pinned comment and a pinned message their authors edited say edited after their lines", async () => {
+  const comment = "6a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d";
+  const message = "7b2c3d4e-5f6a-4b7c-9d8e-0f1a2b3c4d5e";
+  const { getMyState, pinReads, restore } = stubIssueApi();
+  getMyState.mockResolvedValue(
+    pinnedState(conversationItemId("comment", comment), conversationItemId("message", message))
+  );
+  pinReads.comments.mockResolvedValue([
+    {
+      ...commentOf(comment, "Ship the fix tonight. Then watch the board."),
+      edited_at: PIN_EDITED_AT,
+    },
+  ]);
+  pinReads.messages.mockResolvedValue([
+    {
+      message: messageOf(message, "Hold the deploy. Until Friday.", { edited_at: PIN_EDITED_AT }),
+      replies: [],
+    },
+  ]);
+  const { unmount } = renderDetails();
+
+  try {
+    await screen.findByRole("region", { name: CONTROL_LABELS.pinned });
+    const mark = ` · ${CONTROL_LABELS.post_edited}`;
+    for (const [kind, id, line] of [
+      ["comment", comment, "Ship the fix tonight."],
+      ["message", message, "Hold the deploy."],
+    ] as const) {
+      const pin = conversationItemId(kind, id);
+      await waitFor(() =>
+        expect(
+          pinLink(pin).textContent,
+          `the pinned ${kind} its author edited is not drawn by its line, then the edited mark`
+        ).toBe(`${line}${mark}`)
+      );
+      expect(
+        pinLink(pin).querySelector("[data-page-chrome]")?.textContent,
+        `the pinned ${kind}'s edited mark is not the page's own word`
+      ).toBe(mark);
+    }
+  } finally {
+    unmount();
+    restore();
+  }
+});
+
+// R3 of dispatch://INFRA-1523, and INFRA-1196's decision 342: a pinned comment or message its
+// author deleted is drawn as the deleted line, from the delete and never from its words, as its
+// row in the outline draws it (`DeletedLine`), and stays a link to the post. Its actor is named as
+// the page names an author: a session nobody named reads as the page's word for an agent, never
+// by its id. The read and the cache both hold a deleted post's body empty; the words are kept
+// here so the line is shown to come from the delete and never from them.
+test("a pinned comment and a pinned message their authors deleted are drawn as the deleted line", async () => {
+  const comment = "8c3d4e5f-6a7b-4c8d-ae9f-1a2b3c4d5e6f";
+  const message = "9d4e5f6a-7b8c-4d9e-bf0a-2b3c4d5e6f7a";
+  const deletion = { deleted_at: PIN_DELETED_AT, deleted_by: UNNAMED_SESSION };
+  const { getMyState, pinReads, restore } = stubIssueApi();
+  getMyState.mockResolvedValue(
+    pinnedState(conversationItemId("comment", comment), conversationItemId("message", message))
+  );
+  pinReads.comments.mockResolvedValue([
+    { ...commentOf(comment, "Ship the fix tonight."), ...deletion },
+  ]);
+  pinReads.messages.mockResolvedValue([
+    { message: messageOf(message, "Hold the deploy.", deletion), replies: [] },
+  ]);
+  const { unmount } = renderDetails();
+
+  try {
+    await screen.findByRole("region", { name: CONTROL_LABELS.pinned });
+    const opening = `${CONTROL_LABELS.post_deleted_by} ${CONTROL_LABELS.unnamed_author} · `;
+    for (const [kind, id, words] of [
+      ["comment", comment, "Ship the fix tonight."],
+      ["message", message, "Hold the deploy."],
+    ] as const) {
+      const pin = conversationItemId(kind, id);
+      await waitFor(() =>
+        expect(
+          pinLink(pin).querySelector("[data-post-deleted]")?.textContent?.slice(0, opening.length),
+          `the pinned ${kind} its author deleted is not drawn as the deleted line, its actor named as the page names an author`
+        ).toBe(opening)
+      );
+      const link = pinLink(pin);
+      expect(
+        link.textContent,
+        `the pinned ${kind} its author deleted draws its words`
+      ).not.toContain(words);
+      expect(
+        link.textContent,
+        `the pinned ${kind}'s deleted line names its actor by its id`
+      ).not.toContain(UNNAMED_SESSION.id.slice(0, 8));
+      expect(link, `the pinned ${kind} its author deleted is no link to it`).toHaveAttribute(
+        "href",
+        buildIssuePath({ id, key: "CORE-1", kind })
+      );
+    }
+  } finally {
+    unmount();
+    restore();
+  }
+});
+
+/** CORE-1's `comment.created` event `id`, of a comment its author edited at `editedAt` (null for
+ *  one nobody edited), as the history's read answers it: the read stamps the post's own marks on
+ *  the event (`attachPostMarks` in `api/events.go`). */
+function commentCreated(
+  id: number,
+  body: string,
+  editedAt: string | null
+): Extract<DispatchEvent, { type: "comment.created" }> {
+  // A person, typed as the event's actor union reads one (its kind a literal).
+  const alice = { id: "alice", kind: "user" } as const;
+  return {
+    actor: alice,
+    created_at: "2026-09-09T00:00:00Z",
+    id,
+    issue_key: "CORE-1",
+    notify: false,
+    payload: {
+      anchor: null,
+      answers: null,
+      artifact_id: null,
+      artifact_name: "",
+      ask_id: null,
+      author: alice,
+      body,
+      created_at: "2026-09-09T00:00:00Z",
+      deleted_at: null,
+      deleted_by: null,
+      deliveries: [],
+      edited_at: editedAt,
+      id: `comment-${id}`,
+      issue_key: "CORE-1",
+      mentions: [],
+      reply_block: null,
+      reply_to: null,
+      resolved: false,
+      resolved_at: null,
+      resolved_by: null,
+      suggestion: null,
+      turn: null,
+    },
+    seq: id,
+    type: "comment.created",
+  };
+}
+
+// R2 of dispatch://INFRA-1523: a pinned line of the history whose post its author edited since
+// says ` · edited` after the line, as the margin's Pinned tab says it (`EventEditedMark`). The
+// mark is the page's own word, marked as its chrome. A line whose post nobody edited says nothing
+// of an edit.
+test("a pinned history line of an edited post's event says edited after the line", async () => {
+  const edited = commentCreated(21, "Hold the deploy.", PIN_EDITED_AT);
+  const standing = commentCreated(22, "Ship on Friday.", null);
+  const { getMyState, restore } = stubIssueApi();
+  getMyState.mockResolvedValue(pinnedState(eventItemId(edited), eventItemId(standing)));
+  const client = detailsQueryClient();
+  // The history's log, which Pinned draws a pinned line from and never reads (`IssuePins.tsx`).
+  client.setQueryData<InfiniteData<DispatchEvent[]>>(["events", "CORE-1"], {
+    pageParams: [undefined],
+    pages: [[edited, standing]],
+  });
+  const { unmount } = renderDetails(undefined, undefined, client);
+
+  try {
+    await screen.findByRole("region", { name: CONTROL_LABELS.pinned });
+    const mark = ` · ${CONTROL_LABELS.post_edited}`;
+    await waitFor(() =>
+      expect(
+        pinRow(eventItemId(edited)).textContent,
+        "the pinned line of an edited post's event does not say edited after the line"
+      ).toContain(`Hold the deploy.${mark}`)
+    );
+    expect(
+      [...pinRow(eventItemId(edited)).querySelectorAll("[data-page-chrome]")].map(
+        (chrome) => chrome.textContent
+      ),
+      "the pinned line's edited mark is not the page's own word"
+    ).toContain(mark);
+    const line = pinRow(eventItemId(standing)).textContent;
+    expect(line).toContain("Ship on Friday.");
+    expect(line, "the pinned line of a post nobody edited says edited").not.toContain(mark);
   } finally {
     unmount();
     restore();

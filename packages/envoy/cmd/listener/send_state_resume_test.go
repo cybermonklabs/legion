@@ -5,7 +5,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/session"
 )
 
@@ -17,12 +16,13 @@ import (
 // answers, recording where the consumer stopped, and the registration that follows makes the
 // consumer again from that resume point (sessionDelivery.deleteAfterAnswer).
 //
-// The "exactly once" is watched for longer than the session consumer's ack wait
-// (bus.SessionConsumerAckWait), which is how long the server waits for a pulled message's
-// acknowledgement before it delivers that message again: a relay that handed the frame over
-// without acknowledging it would show up as a second copy inside that window and nowhere else.
-// The whole test therefore takes a little over 70 seconds, nearly all of it that watch; it needs
-// a -timeout past that.
+// The "exactly once" is read from the server rather than waited out: a relay that handed the frame
+// over without acknowledging it would leave the message pending on the consumer, and the server
+// would deliver it again once the consumer's ack wait (bus.SessionConsumerAckWait, a minute) ran
+// out. So the test waits for the consumer to hold nothing pending with the resumed message acked,
+// and for its count of messages delivered again to read zero; the server delivers again only a
+// message it holds pending, so an acknowledged one never comes back. A copy sent twice at once,
+// which needs no ack wait to arrive, is watched for over a short window first.
 func TestASessionThatStopsAndResumesTakesItsMessageExactlyOnce(t *testing.T) {
 	rig := newRelayRig(t)
 	clock := time.Now()
@@ -89,9 +89,17 @@ func TestASessionThatStopsAndResumesTakesItsMessageExactlyOnce(t *testing.T) {
 			resumed[0].item.EventID, stopped.EventID)
 	}
 
-	// Longer than the ack wait, so a frame the relay never acknowledged would be redelivered
-	// inside this window.
-	second.none(t, bus.SessionConsumerAckWait+10*time.Second)
-	t.Logf("the stop-and-resume test took %s, of which %s was the watch for a second copy",
-		time.Since(started).Round(time.Second), bus.SessionConsumerAckWait+10*time.Second)
+	// A second copy sent at once arrives inside this window.
+	second.none(t, 2*time.Second)
+	// A copy the server would send again after its ack wait is one it still holds pending; this one
+	// is acknowledged, and nothing was delivered twice.
+	awaitAcked(t, rig.consumers, sessionID, resumed[0].seq)
+	info, err := rig.consumers.Info(t.Context(), sessionID)
+	if err != nil {
+		t.Fatalf("read the consumer of %s after the resume: %v", sessionID, err)
+	}
+	if info.NumRedelivered != 0 {
+		t.Fatalf("the consumer of %s delivered %d messages again after the resume, want none: the resumed message reached the session more than once", sessionID, info.NumRedelivered)
+	}
+	t.Logf("the stop-and-resume test took %s", time.Since(started).Round(time.Second))
 }

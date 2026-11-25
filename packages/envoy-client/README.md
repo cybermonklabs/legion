@@ -34,6 +34,15 @@ block with recognized routing and delivery fields. The renderer includes `to` on
 message to the reader, formats sender identity and reply metadata, renders structured payloads
 once as `message`, and marks unknown sources or fields with `unrecognised`.
 
+A payload the TOON encoder cannot lay out is shown as the text its sender sent, under `message`
+(or `dispatch`): one nested deeper than the encoder's recursion reaches, and one whose layout
+passes the card's bound, as an array chain 1,400 levels deep does from a 3 KB frame. The bound is
+`INBOUND_CARD_MAX_BYTES` (1 MiB, the hub's largest frame), or twice the text the card lays out
+(its frame and a body read whole) when that is more, so a comment Dispatch's API gives whole
+still lays out whole. The result's `payloadShownAsText` says which. Each host logs that once,
+with the message id, and takes the frame: a throw out of the renderer would fail every delivery
+of it. A payload that is text already is never held to the bound; its frame bounds it.
+
 Malformed input is safe: a non-JSON frame becomes a TOON block naming its topic and an
 `unrecognised` parse failure. The renderer never emits raw frame bytes. Dispatch envelopes
 (`source: "dispatch"`) render through the same TOON path as every other source, nesting the
@@ -733,13 +742,14 @@ them, covers the issue; with Envoy off or no answer from the listener it names n
 `dispatch-first.ts` reads the `dispatch-first` skill from a plugin's staged `skills/` and wraps it in
 `DISPATCH_FIRST_MARKER`, the text pi-envoy and claude-envoy inject into a session with Dispatch.
 
-Every write `DispatchClient` makes carries one key. Each JSON and multipart call mints a
+Every `POST` and `PATCH` of `DispatchClient` carries one key. Each JSON and multipart call mints a
 `crypto.randomUUID()` `Idempotency-Key` per `POST` and `PATCH` call, once (`#writeCall`), and sends
 it on every attempt: the write's own attempts, the re-send after `401 BROKER_TOKEN_NOT_ACTIVE`,
 and each retry after an old build's answer of no route. So Dispatch runs the write once however
-many attempts reach it and answers a repeat with the first answer
-(`packages/envoy/cmd/dispatch/README.md`, "Keyed writes"); a `GET`, `PUT` or `DELETE` carries none
-and is sent once. No Dispatch request follows a redirect (`redirect: "manual"`): Dispatch's API
+many attempts reach it and answers a repeat from that run without running it again
+(`packages/envoy/cmd/dispatch/README.md`, "Keyed writes", says with what); a `GET`, `PUT` or
+`DELETE` carries none and is sent once, the `DELETE` of `deleteComment` and `deleteMessage`
+included. No Dispatch request follows a redirect (`redirect: "manual"`): Dispatch's API
 answers none, and followed, a 301, 302 or 303 turns a write's `POST` into a `GET` whose 2xx would
 read as the write's answer, while a 307 or 308 sends it again to another origin without its
 credential. The body is encoded once
@@ -751,12 +761,20 @@ pace: at most five attempts, 1, 2, 4 and 8 s apart, a longer `Retry-After` waite
 attempt started more than 30 s after the first. An attempt that goes 20 s without progress before
 its answer begins (`silenceMs`) is cut off and asked again the same way, so a write Dispatch is
 slow to finish is answered `409 KEY_IN_FLIGHT` and then replayed rather than waited on for the
-whole deadline. Progress is the connection taking the body: a body of a megabyte or more goes out
-as a stream read 64 KiB at a time, with its `Content-Length`, and each read restarts the bound, so
-an upload on a slow line is never cut off while it is still going out; a smaller body leaves in
-one write. Once an attempt was cut off for silence or answered `409 KEY_IN_FLIGHT`, Dispatch may
-still be running the write, and its keyed layer finishes that run whatever the client does, so the
-write keeps asking every 3 s at most (`inFlightPauseMs`; a longer `Retry-After` is still waited),
+whole deadline. Progress is a read of the body: a body of a megabyte or more goes out as a stream
+read 64 KiB at a time, with its `Content-Length`, and each read restarts the bound; a smaller body
+leaves in one write. The bound counts those reads, not the bytes that leave. Bun's fetch reads the
+next 64 KiB only once the connection's buffers have room for it, and they hold megabytes, so on a
+slow line the reads come seconds apart and the last read comes while megabytes are still to go.
+An attempt is cut off when its next read takes longer than `silenceMs`, or when the rest of its
+bytes and Dispatch's answer after its last read take longer together, and either can happen while
+the upload is still going out. Measured in build pods
+against a stand-in Dispatch that reads at a fixed rate, with the 20 s bound: at 128 KiB/s an
+upload was cut off 20 s after its last read, 0.88 MiB of its 12 MiB short of the stand-in, and at
+64 KiB/s 20 s after a read part way through, 9.88 MiB short. Once an attempt was cut off for
+silence or answered `409 KEY_IN_FLIGHT`, Dispatch may still be running the write, and its keyed
+layer finishes that run whatever the client does, so the write keeps asking every 3 s at most
+(`inFlightPauseMs`; a longer `Retry-After` is still waited),
 with no attempt started more than 55 s after the first (`inFlightWithinMs`), until the run's stored
 answer comes back: a write that takes Dispatch 50 s, or two silent attempts in a row, still ends in
 its answer. An upload (a body of a megabyte or more) keeps the five-attempt schedule, since each
@@ -784,7 +802,7 @@ refusal settles the write. A final refusal is one of these:
   pattern, its path values, the query, the content type less its boundary, and the body
   (`writeRequestFields`), so a key held under another digest was claimed by no attempt of this
   call. That needs the client never to send one key for two different writes: `#writeCall`
-  (`src/dispatch-http.ts:2080`) mints one per call, `dispatch-keyed-writes.test.ts` ("send one
+  (`src/dispatch-http.ts:2176`) mints one per call, `dispatch-keyed-writes.test.ts` ("send one
   Idempotency-Key per write call") shows five writes going under five keys, and
   `dispatch-write-outcomes.test.ts` fails any run whose attempts carried two keys. A caller that
   names its own key (`projectArtifact`, `docEdit`) names one intent with it: AskGate's decision
@@ -897,16 +915,26 @@ deadline ended it"). A write Dispatch
 made whose answer is gone is a `DispatchWriteLandedError` (`code`, an `IdempotencyLandedCode`, and
 `status`): `409 KEY_COMMITTED`, a write that landed before its answer was lost, which Dispatch will
 not run again, or a replayed 2xx (`Idempotency-Replayed: ?1`) reading `ANSWER_NOT_KEPT`, a first
-answer larger than Dispatch keeps (`answerNotKept`, shared with the page). It is no refusal and no
-`DispatchServiceError`, and it is never asked again. Its message is the one line the session
-reads: the method and URL were made, why the answer is gone, and to read what it made back with
-`dispatch read` or the matching list. The `dispatch` command exits 0 on one and records
-`landed_without_answer: <code>` in its ledger entry. A step before the
+answer Dispatch gives no copy of: one larger than the 1 MiB a key keeps, or a success that holds a
+comment or a message that was deleted, or a document version name a delete replaced
+(`answerNotKept`, shared with the page; `IDEMPOTENCY_ANSWER_NOT_KEPT` in `@legion/contracts`). It
+is no refusal and no `DispatchServiceError`, and it is never asked again. Its message is the one
+line the session reads: the method and URL were made, why the answer is gone, and to read what it
+made back with `dispatch read` or the matching list. The `dispatch` command exits 0 on one and
+records `landed_without_answer: <code>` in its ledger entry. A step before the
 command's own write that lands this way fails the command (exit 1) with that line and what it
 means: a picture upload (nothing else was written: run the call again, which uploads it as its
 next version), or the closing reason of `issue-update --status done` (the close was not sent: read
 the issue's messages for the reason, then close with one that points at it). The close's own
-`PATCH` landing this way is the command's write, and exits 0.
+`PATCH` landing this way is the command's write, and exits 0. A `POST` that writes nothing
+(`markdownRoundTrip`, `related`, `dryRunResult`) made nothing either, so that replayed 2xx is no
+landing: the client asks the call once more under a new key, which runs it afresh, and a second
+such answer is a `DispatchAnswerNotKeptError` (`code` `ANSWER_NOT_KEPT`, `status`), no
+`DispatchServiceError`. Its message says the call wrote nothing, that Dispatch kept no copy of its
+answer, and to run the command again, which asks under a new key: `dispatch related` and a
+`dispatch result --dry-run` exit 1 on one, and `dispatch artifact` refuses the upload its
+stored-text check could not run, saying to send it again. A replayed refusal is the refusal
+Dispatch first gave, thrown as any other.
 
 Successful write responses may include `advice`. The executor preserves that object as
 `details.advice` and appends short pointers after the subscription/follow suffix: a primary spec
@@ -1272,13 +1300,15 @@ prints its URL, for proving what a command shows when a gateway, not Dispatch, a
 
 ## Command specs
 
-`@legion/contracts` `src/dispatch-tools.ts` is the single source for the thirty-seven
+`@legion/contracts` `src/dispatch-tools.ts` is the single source for the
 Dispatch specs behind the `dispatch` command: each one's name, description, field schemas
 and example. `dispatch-command.ts` derives the command and its flags from them, and no host
 adds aliases or descriptions of its own.
 `dispatch issue-update` reads the issue first and sends `PATCH /api/v1/issues/{key}` as the
-session actor: `status` (a Legion lifecycle status), `title`, `labels` (replacing the set),
-`priority` (`0` for P0 down to `3` for P3, or `null` to clear it), `route`,
+session actor: `status` (a Legion lifecycle status), `title`, `labels` (`--label`, replacing the
+set), `labels_add` (`--labels-add`, repeated, adding to the labels the issue holds inside
+Dispatch's write and keeping the others; never beside `labels`, which is refused before any
+request), `priority` (`0` for P0 down to `3` for P3, or `null` to clear it), `route`,
 and `external_links`: a non-empty list merges into the issue's existing links by URL rather than
 replacing them, and an explicit empty list (`--clear-external-links`) clears every link instead;
 `before` and `after` (`--before <KEY>` / `--after <KEY>`) move the issue on its project's board —

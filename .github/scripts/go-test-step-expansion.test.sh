@@ -256,30 +256,31 @@ check "a line the reader cannot read is refused, by step and line" \
 # refuses a step whose script's text has moved on. The script runs by hand, so nothing else tells
 # the pull request that edits an audited script: #2856 changed database-skips.sh's
 # EXPECTED_SKIPS, the pin went stale, and the next by-hand run ended at exit 2 with no verdict.
-# ci.yaml's go_test_step_expansion_test filter names each audited script, so this case runs on
-# that pull request. It also holds each audited script, and each workflow the step reader reads,
-# to the reads ci_job_reads.py declares for this harness's gate, which ci-filters holds to that
-# filter, so a new AUDITED_SCRIPTS entry or called workflow fails here until its file selects this
-# harness. Both lists are read into variables first: a failed read then stops the harness under
-# `set -e`, where a process substitution's failure would leave the loop with nothing to check.
+# The go_test_step_expansion_test filter, which the changes job computes from this harness's gate
+# (.github/ci-gates/test.go_test_step_expansion_test.py), names each audited script, so this case
+# runs on that pull request. It also holds each audited script, and each workflow the step reader
+# reads, to the reads that gate declares, so a new AUDITED_SCRIPTS entry or called workflow fails
+# here until its file selects this harness. Both lists are read into variables first: a failed
+# read then stops the harness under `set -e`, where a process substitution's failure would leave
+# the loop with nothing to check.
 echo "case: each script AUDITED_SCRIPTS reads still has the text its entry was read from"
 pins=$(py 'for path, audited in ex.AUDITED_SCRIPTS.items(): print(path + "\t" + audited.sha256)')
 check "AUDITED_SCRIPTS names at least one script" "$(is "$([ -n "$pins" ] && echo yes || echo no)" yes)"
 declared=$(cd "$repo" && py 'import ci_job_reads
-print("\n".join(read.glob for gate in ci_job_reads.SCRIPT_TEST_GATES
+print("\n".join(read.glob for gate in ci_job_reads.GATES
                 if gate.filter == "go_test_step_expansion_test" for read in gate.reads))')
 while IFS=$'\t' read -r path pinned; do
   actual=$(sha256sum "$repo/$path" | cut -d' ' -f1)
   check "$path has its entry's SHA-256 (read the script again, then update its AuditedScript entry in go-test-step-expansion.py)" \
     "$(is "$actual" "$pinned")"
-  check "$path is among the reads ci_job_reads.py declares for the go_test_step_expansion_test gate (add it there and to that ci.yaml filter)" \
+  check "$path is among the reads the go_test_step_expansion_test gate declares (add it to .github/ci-gates/test.go_test_step_expansion_test.py)" \
     "$(is "$(grep -Fxq -- "$path" <<<"$declared" && echo yes || echo no)" yes)"
 done <<<"$pins"
 unread=$(py 'import workflow_paths
 globs = sys.argv[1].splitlines()
 print(" ".join(path for path in ex.documents()
                if not any(workflow_paths.glob_regex(glob).fullmatch(path) for glob in globs)))' "$declared")
-check "each workflow the step reader reads is among those reads${unread:+ (add it there and to that ci.yaml filter): $unread}" \
+check "each workflow the step reader reads is among those reads${unread:+ (add it to .github/ci-gates/test.go_test_step_expansion_test.py): $unread}" \
   "$(is "$unread" "")"
 
 summary "go-test-step-expansion.py reads a go command behind the variables and wrapper a step writes"

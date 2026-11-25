@@ -3,8 +3,11 @@ import { Link } from "react-router-dom";
 
 import type { DisplayTree } from "../../api/types";
 import { pageQuietText } from "../../theme/classes";
+import { useAgentText } from "../refs/AgentName";
+import { DeletedBody, EditedMark } from "../refs/PostMarks";
 import { useLoadedEngine } from "../refs/parsed-references";
 import { usePlainHeadline } from "../refs/plain-text";
+import { type PostDeletion, postDeletion } from "../refs/post-marks";
 import { parseNodeReference, referenceHref } from "../refs/routes";
 import { drawnLine, firstLineOf, lineReading, type ParentLine, type TreeNode } from "./issue-tree";
 import { authorText, pageChrome } from "./page-structure";
@@ -94,15 +97,49 @@ export function FirstLine({ node }: { node: TreeNode }): ReactNode {
   );
 }
 
+/**
+ * A deleted post's line where its row draws its words, whole or as its one line, and where the
+ * page draws its one line apart from its row - a filter's parent line (`ParentLink`), a crumb
+ * above a zoom (`IssueTree.tsx`'s `CrumbName`), a pin in Details (`IssuePins.tsx`'s `PinLine`)
+ * (INFRA-1523, R3): the line every surface draws in a deleted post's place (`DeletedBody`), in
+ * its italic, with who deleted it and when. The actor is named as the page names an author
+ * (`AgentText.author`), the rule the row's own author and "Kept by" are named by, by
+ * INFRA-1196's decision 342: a session nothing names reads as the page's word for an agent, and
+ * never as its short id. The node's text is the same line as the model writes it
+ * (`tree-drafts.ts`'s `deletedPostLine`), with the actor named as no registry knows it and the
+ * time as stored, so the row draws the line from the delete and never from that text. The
+ * line's words are the page's own, marked as its chrome and declared in `page-words.ts`
+ * (`CONTROL_LABELS.post_deleted_by`), and the actor's name and the time are not (INFRA-1523,
+ * R3). It lives with the page's other one-line draws, which the row imports, so the parent line
+ * draws it with no import of the row.
+ */
+export function DeletedLine({ deleted }: { deleted: PostDeletion }): ReactNode {
+  const agentText = useAgentText();
+  return (
+    <DeletedBody
+      {...(deleted.by === null ? {} : { actorName: agentText.author(deleted.by) })}
+      deleted={deleted}
+      marks={{ own: pageChrome, theirs: authorText }}
+    />
+  );
+}
+
 /** Under a filter, the one line a row draws for its node's parent where the filter draws that
  *  parent as no row (R2, R1's first-line rule): the page's word for the parent's kind, then its
- *  one line (`ParentLink`). The outline's row draws it (`NodeRow.tsx`) and so do the
- *  Verification view's statement and other rows, `spaced` from the words above them. */
+ *  one line (`ParentLink`). The outline's row draws it (`NodeRow.tsx`), and so do the
+ *  Verification view's statement and other rows, `spaced` from the words above them, and the
+ *  Decisions view's rows (`DecisionsRow.tsx`), which name a parent whose words hold none by its
+ *  kind's word once (`kindOnce`), with no link, the line G gives it, and never by its id (R7):
+ *  ` · edited` follows that word where its author edited it (INFRA-1523, R2). */
 export function NodeParentLine({
+  kindOnce = false,
   line,
   spaced = false,
   tabStops,
 }: {
+  /** Whether a parent whose words hold none is named by its kind's word alone, rather than by
+   *  that word and then its line, which is that word again (`lineOrKindWord`). */
+  kindOnce?: boolean;
   line: ParentLine;
   /** Whether the line stands 2 px under the words above it, as the Verification view's rows draw
    *  it. */
@@ -110,6 +147,9 @@ export function NodeParentLine({
   /** Whether the parent's link is a tab stop (`ParentLink`). */
   tabStops: boolean;
 }): ReactNode {
+  const deleted = postDeletion({ deleted_at: line.deletedAt, deleted_by: line.deletedBy });
+  const { line: drawn, reads } = useNodeLine(line, { surface: "node-row-parent-line" });
+  const once = kindOnce && deleted === null && drawn === "";
   return (
     <p
       className={`${spaced ? "mt-0.5 " : ""}flex min-w-0 items-baseline gap-1 text-xs leading-5 ${pageQuietText}`}
@@ -119,27 +159,49 @@ export function NodeParentLine({
     >
       <span className="shrink-0" {...pageChrome}>
         {NODE_TYPE_NAMES[line.type]}
+        {once ? <EditedMark at={line.editedAt} /> : null}
       </span>
-      <ParentLink line={line} tabStops={tabStops} />
+      {reads}
+      {once ? null : <ParentLink deleted={deleted} drawn={drawn} line={line} tabStops={tabStops} />}
     </p>
   );
 }
 
-/** The parent's own first line, as every one line of a node is drawn (`useNodeLine`), and the
- *  page's word for its kind where its words hold none (R22): as the link a reader follows to
- *  that node where the model gives it an address (R18, and R26: a step's row reaches the
- *  statement it serves), and as words with no link where that address names a person, whom no
- *  page shows (R5). Out of the tab order, as every other control inside a row is, unless
- *  `tabStops` holds: `f` steps to it and Enter follows it. */
-function ParentLink({ line, tabStops }: { line: ParentLine; tabStops: boolean }): ReactNode {
+/** The parent's own first line, as every one line of a node is drawn (`useNodeLine`, read by
+ *  `NodeParentLine` as `drawn`), and the page's word for its kind where its words hold none
+ *  (R22): as the link a reader follows to that node where the model gives it an address (R18,
+ *  and R26: a step's row reaches the statement it serves), and as words with no link where that
+ *  address names a person, whom no page shows (R5). Out of the tab order, as every other control
+ *  inside a row is, unless `tabStops` holds: `f` steps to it and Enter follows it. A parent its
+ *  author deleted is drawn as the deleted line, as its own row draws it (`DeletedLine`), and one
+ *  its author edited says ` · edited` after its line (`EditedMark`), so the line holds both
+ *  marks wherever the parent's own row is not drawn (INFRA-1523, R2 and R3). */
+function ParentLink({
+  deleted,
+  drawn,
+  line,
+  tabStops,
+}: {
+  deleted: PostDeletion | null;
+  drawn: string | undefined;
+  line: ParentLine;
+  tabStops: boolean;
+}): ReactNode {
   const parent = line.reference === undefined ? undefined : parseNodeReference(line.reference);
   const href = parent === undefined ? undefined : referenceHref(parent);
-  const { line: drawn, reads } = useNodeLine(line, { surface: "node-row-parent-line" });
-  // Nothing until the projection answers, one pre-paint commit on a page whose engine is loaded.
-  const words = lineOrKindWord(drawn, line.type);
+  // Nothing until the projection answers, one pre-paint commit on a page whose engine is loaded,
+  // and no mark either until there is a line for it to follow.
+  const words =
+    deleted === null ? (
+      <>
+        {lineOrKindWord(drawn, line.type)}
+        {drawn === undefined ? null : <EditedMark at={line.editedAt} marks={pageChrome} />}
+      </>
+    ) : (
+      <DeletedLine deleted={deleted} />
+    );
   return href === undefined ? (
     <span className="min-w-0 break-words" {...authorText}>
-      {reads}
       {words}
     </span>
   ) : (
@@ -149,7 +211,6 @@ function ParentLink({ line, tabStops }: { line: ParentLine; tabStops: boolean })
       to={href}
       {...authorText}
     >
-      {reads}
       {words}
     </Link>
   );

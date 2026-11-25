@@ -955,6 +955,31 @@ type blockState struct {
 // what lets the planner prove embeddings_window_owner's partial predicate and read the owner's
 // rows through that index.
 func writeWindows(ctx context.Context, tx pgx.Tx, kind, ownerKey string, windows []itemblocks.Window, state blockState) error {
+	statement, args, err := windowsStatement(kind, ownerKey, windows, state)
+	if err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, statement, args...); err != nil {
+		return fmt.Errorf("write the windows of %s %s: %w", kind, ownerKey, err)
+	}
+	return nil
+}
+
+// queueWindows is writeWindows' one statement queued on a write phase's batch, for a writer that
+// decides the windows before it writes anything and sends its writes as one batch: the delete of
+// a post, whose item is left with no block and so with no window (TombstoneItem).
+func queueWindows(b *store.WriteBatch, kind, ownerKey string, windows []itemblocks.Window, state blockState) error {
+	statement, args, err := windowsStatement(kind, ownerKey, windows, state)
+	if err != nil {
+		return err
+	}
+	b.Queue(fmt.Sprintf("write the windows of %s %s", kind, ownerKey), statement, args...)
+	return nil
+}
+
+// windowsStatement is the one statement writeWindows sends and queueWindows queues, with its
+// arguments.
+func windowsStatement(kind, ownerKey string, windows []itemblocks.Window, state blockState) (string, []any, error) {
 	type row struct {
 		Suffix string   `json:"suffix"`
 		Text   string   `json:"text"`
@@ -968,11 +993,11 @@ func writeWindows(ctx context.Context, tx pgx.Tx, kind, ownerKey string, windows
 	}
 	payload, err := json.Marshal(rows)
 	if err != nil {
-		return fmt.Errorf("encode the windows of %s %s: %w", kind, ownerKey, err)
+		return "", nil, fmt.Errorf("encode the windows of %s %s: %w", kind, ownerKey, err)
 	}
-	if _, err := tx.Exec(ctx, `
+	return `
 		with state as (
-			`+state.query+`
+			` + state.query + `
 		),
 		stamped as (
 			insert into embedding_window_states (kind, owner_key, block_state, written_at)
@@ -982,15 +1007,12 @@ func writeWindows(ctx context.Context, tx pgx.Tx, kind, ownerKey string, windows
 		),
 		dropped as (
 			delete from embeddings
-			where kind = $1 and kind in `+windowKinds+`
+			where kind = $1 and kind in ` + windowKinds + `
 			  and split_part(id, '#', 1) = $2 and id <> all($4::text[])
 		)
 		select embeddings_enqueue_window($1, $2 || '#' || w.suffix, w.text, w.covers)
 		from jsonb_to_recordset($3::jsonb) as w (suffix text, text text, covers text[])
-	`, append([]any{kind, ownerKey, payload, ids}, state.args...)...); err != nil {
-		return fmt.Errorf("write the windows of %s %s: %w", kind, ownerKey, err)
-	}
-	return nil
+	`, append([]any{kind, ownerKey, payload, ids}, state.args...), nil
 }
 
 // documentBlockState is the state of a document's blocks that its windows are stamped with

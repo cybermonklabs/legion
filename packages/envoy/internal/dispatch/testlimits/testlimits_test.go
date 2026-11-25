@@ -1,5 +1,7 @@
 package testlimits
 
+//ci:reads packages/daemon/docker/legion-testpg TestLegionTestPGAllowsServerConnections os.ReadFile (legionTestPG, ../../../../daemon/docker/legion-testpg): its max_connections literal must equal testlimits.ServerConnections plus Postgres's default superuser reserve
+
 import (
 	"os"
 	"regexp"

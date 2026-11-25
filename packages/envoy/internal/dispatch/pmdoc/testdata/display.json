@@ -680,6 +680,70 @@
     }
   },
   {
+    "name": "person-addresses-beside-an-email",
+    "markdown": "Ask dispatch://person/john.doe@example.com or dispatch://person/person-2@example.com, or mail john.doe@example.com.\n",
+    "latest": {
+      "type": "doc",
+      "content": [
+        {
+          "type": "paragraph",
+          "content": [
+            {
+              "type": "text",
+              "text": "Ask dispatch://person/john.doe@example.com or dispatch://person/person-2@example.com, or mail "
+            },
+            {
+              "type": "text",
+              "text": "john.doe@example.com",
+              "marks": [
+                {
+                  "type": "link",
+                  "attrs": {
+                    "href": "mailto:john.doe@example.com"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "text",
+              "text": "."
+            }
+          ]
+        }
+      ]
+    },
+    "version": {
+      "type": "doc",
+      "content": [
+        {
+          "type": "paragraph",
+          "content": [
+            {
+              "type": "text",
+              "text": "Ask dispatch://person/john.doe@example.com or dispatch://person/person-2@example.com, or mail "
+            },
+            {
+              "type": "text",
+              "text": "john.doe@example.com",
+              "marks": [
+                {
+                  "type": "link",
+                  "attrs": {
+                    "href": "mailto:john.doe@example.com"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "text",
+              "text": "."
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
     "name": "typed-block-the-schema-refuses",
     "markdown": ":::callout{#k9 kind=\"bogus\" title=\"T\"}\nA kind the schema does not declare.\n\n- and a list under it\n:::\n\n:::ask{#q9 urgency=\"high\" state=\"open\"}\n# A heading an ask's content rule refuses\n:::\n",
     "latest": {

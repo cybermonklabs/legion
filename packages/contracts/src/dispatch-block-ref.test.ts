@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 
 import {
+  askOpenerLines,
   blockPointerValueProblem,
   DISPATCH_BLOCK_ID_ENCODINGS,
   DISPATCH_BLOCK_POINTER_VALUES,
@@ -148,4 +149,131 @@ test("the Go renderer's table of typed block id spellings is the same table", as
     import.meta.url
   );
   expect(JSON.parse(await Bun.file(path).text())).toEqual([...DISPATCH_TYPED_BLOCK_ID_SPELLINGS]);
+});
+
+/** A line that opens the ask block `id`, with the attributes the release before wrote on it. */
+const opener = (id: string) => `:::ask{#${id} state="answered" answer="Ship it."}`;
+
+test.each([
+  {
+    name: "a line opens the block past its indentation and its containers' markers",
+    lines: [
+      opener("a"),
+      `   ${opener("b")}`,
+      `> ${opener("c")}`,
+      `>>${opener("d")}`,
+      `- ${opener("e")}`,
+      `*\t${opener("f")}`,
+      `+ ${opener("g")}`,
+      `1. ${opener("h")}`,
+      `12) ${opener("i")}`,
+      `[^note]: ${opener("j")}`,
+      `> - [^x]:  ${opener("k")}`,
+      `::::${opener("l").slice(3)}`,
+    ],
+    want: [
+      opener("a"),
+      opener("b"),
+      opener("c"),
+      opener("d"),
+      opener("e"),
+      opener("f"),
+      opener("g"),
+      opener("h"),
+      opener("i"),
+      opener("j"),
+      opener("k"),
+      `::::${opener("l").slice(3)}`,
+    ],
+  },
+  {
+    // A list marker with no space or tab after it, a blank footnote label, text before the
+    // directive, two colons and another block type open no ask block.
+    name: "a line opens no ask block past what is not a container marker",
+    lines: [
+      `-${opener("a")}`,
+      `1.${opener("b")}`,
+      `[^ ]: ${opener("c")}`,
+      `Quoted: ${opener("d")}`,
+      `::${opener("e").slice(3)}`,
+      ":::callout{#f}",
+    ],
+    want: [],
+  },
+  {
+    // A fence of backticks or tildes, three or more, is closed only by a fence of the same
+    // character at least as long with nothing after it but blanks.
+    name: "no line of fenced code opens a block",
+    lines: [
+      "```",
+      opener("a"),
+      "```",
+      "~~~",
+      opener("b"),
+      "~~~  ",
+      "````markdown",
+      opener("c"),
+      "```",
+      opener("d"),
+      "`````",
+      "~~~",
+      opener("e"),
+      "```",
+      opener("f"),
+      "~~~~",
+      "```",
+      opener("g"),
+      "``` text",
+      opener("h"),
+      "```",
+      opener("i"),
+    ],
+    want: [opener("i")],
+  },
+  {
+    // A backtick fence's info string holds no backtick, so a line that starts with a code span
+    // opens no fence; nor do two backticks.
+    name: "a line that only starts like a fence opens none",
+    lines: ["``` a ` b", opener("a"), "``", opener("b")],
+    want: [opener("a"), opener("b")],
+  },
+  {
+    name: "a fence opened past a container's marker is code like any other",
+    lines: [
+      "> ```",
+      `> ${opener("a")}`,
+      "> ```",
+      "[^x]: ```",
+      `    ${opener("b")}`,
+      "    ```",
+      "- ~~~",
+      `  ${opener("c")}`,
+      "  ~~~",
+      opener("d"),
+    ],
+    want: [opener("d")],
+  },
+  {
+    name: "no line of the front matter a document opens with opens a block",
+    lines: ["---  ", opener("a"), "title: Plan", "---\t", opener("b")],
+    want: [opener("b")],
+  },
+  {
+    // A rule after text is no front matter.
+    name: "front matter opens only on the first line",
+    lines: ["Intro", "---", opener("a"), "---"],
+    want: [opener("a")],
+  },
+  {
+    name: "an opening `---` nothing closes is no front matter",
+    lines: ["---", opener("a")],
+    want: [opener("a")],
+  },
+])("askOpenerLines: $name", ({ lines, want }) => {
+  expect(askOpenerLines(lines.join("\n"))).toEqual([...want]);
+});
+
+test("askOpenerLines reads lines that end in a carriage return and a line feed", () => {
+  const lines = ["```", opener("a"), "```", opener("b"), ""];
+  expect(askOpenerLines(lines.join("\r\n"))).toEqual([opener("b")]);
 });

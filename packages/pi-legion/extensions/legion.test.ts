@@ -230,7 +230,6 @@ const environmentKeys = [
   "LEGION_CONTROLLER_SECRET_FILE",
   "DISPATCH_TOKEN_FILE",
   "LEGION_WORKSPACE_RECREATED",
-  "LEGION_WORKSPACE_RESTORED",
   "DISPATCH_STATE_DIR",
   "ENVOY_CONFIG_FILE",
   "OMP_PROFILE",
@@ -1974,6 +1973,10 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       refuses: (message: string) => hook(handlers, "session_stop")(refusedBy(message), context),
       /** The run's end, which is what reports the turn's outcome to the daemon. */
       ends: (event: unknown) => hook(handlers, "agent_end")(event, context),
+      /** The daemon's prompt arriving over RPC, as Oh My Pi hands it to `input`. */
+      prompted: (text: string) => hook(handlers, "input")({ text, source: "rpc" }, context),
+      /** A run starting, whatever started it. */
+      starts: () => hook(handlers, "agent_start")({}, context),
     });
     /** jj's root commit: `@-` of a workspace fresh from `jj git init`, which is what a phase that
      * writes no handoff (retro, here) reports as the commit it stands on. */
@@ -2226,12 +2229,13 @@ describe.skipIf(skip)("Legion OMP extension", () => {
     // dispatch://INFRA-264: every turn of that implementer was refused by its provider, and every
     // reminder it earned bought another refused turn. The worker read nothing and said nothing, so
     // the turn earns no continuation and the record stands as the last real turn left it. One
-    // timer is armed all the same: the task the refused turn carried ended with it, and below
-    // `launch_failure_limit` the daemon counts the turn rather than failing the claim, so without
-    // it a single transient refusal would leave the issue idle with nothing to wake it. By the
-    // time the timer fires the daemon has had every refusal of the run reported, and at the limit
-    // the claim it reads is failed and the reminder is dropped — which is what ends the reminding
-    // of a session the provider refuses for ever.
+    // timer is armed all the same: the task the refused turn carried ended with it, and nothing
+    // else would wake this worker, so without it a single transient refusal would leave the issue
+    // idle. What ends the reminders is the daemon failing the claim, which the timer's record
+    // check reads: it does at once for a refusal whose status cannot clear, of the task's prompt or
+    // of a reminder's own turn, which no prompt ran and which the daemon judges from its
+    // turn-outcome report (dispatch://INFRA-4508). A refusal that can clear fails nothing, so the
+    // reminders keep their pace, and the controller is told once at six such turns in a row.
     test("a turn the provider refused earns no continuation and no record, and is woken by one timer", async () => {
       const worker = await bootStalling({});
       await worker.arrives(assignment);
@@ -2253,8 +2257,10 @@ describe.skipIf(skip)("Legion OMP extension", () => {
     });
 
     // The daemon's own counter: every turn's end is reported, under a sequence this plugin counts
-    // itself within the claim's launch generation, so the daemon can fail a claim whose provider
-    // refuses turn after turn.
+    // itself within the claim's launch generation, from which the daemon derives the claim's run of
+    // refused turns. A turn the daemon's prompt ran is judged by that prompt's result; a turn no
+    // prompt ran, a reminder's, is marked unprompted and carries the status the provider refused it
+    // with, which is what the daemon judges it by.
     test("every turn's end reports its outcome to the daemon, in sequence", async () => {
       const worker = await bootStalling({});
       const outcomes = () =>
@@ -2262,10 +2268,18 @@ describe.skipIf(skip)("Legion OMP extension", () => {
           .filter((request) => request.path === "/legion/v1/claims/turn-outcome")
           .map((request) => request.body);
 
+      await worker.prompted("Continue the task.");
+      await worker.starts();
       await worker.ends({ messages: [{ role: "assistant", stopReason: "stop" }] });
+      await worker.starts();
       await worker.ends({
         messages: [
-          { role: "assistant", stopReason: "error", errorMessage: "Overloaded: the model is busy" },
+          {
+            role: "assistant",
+            stopReason: "error",
+            errorMessage: "Overloaded: the model is busy",
+            errorStatus: 529,
+          },
         ],
       });
 
@@ -2286,8 +2300,50 @@ describe.skipIf(skip)("Legion OMP extension", () => {
           sequence: 2,
           outcome: "refused",
           message: "Overloaded: the model is busy",
+          httpStatus: 529,
+          unprompted: true,
         },
       ]);
+    });
+
+    // A prompt's run that settles with a message waiting — an Envoy steer the host runs next —
+    // is still the run the prompt's result reports: the pinned host gives a prompt the outcome of
+    // its first settled end whatever is queued (`rpc-prompt-results.ts:164-169`). So the run the
+    // waiting message starts is no prompt's, and its report says so, for the daemon to judge: a
+    // 400 there fails the claim. The entry reads nothing of `ctx.hasPendingMessages()` for this.
+    test("a run a waiting message starts after a prompt's settled end is reported unprompted", async () => {
+      const worker = await bootStalling({});
+      const outcomes = () =>
+        daemonRequests(worker.requests)
+          .filter((request) => request.path === "/legion/v1/claims/turn-outcome")
+          .map((request) => request.body);
+
+      await worker.prompted("Continue the task.");
+      await worker.starts();
+      await hook(worker.handlers, "agent_end")(
+        { messages: [{ role: "assistant", stopReason: "stop" }] },
+        { ...worker.context, hasPendingMessages: () => true }
+      );
+      await worker.starts();
+      await worker.ends({
+        messages: [
+          {
+            role: "assistant",
+            stopReason: "error",
+            errorMessage: "400 invalid_request_error",
+            errorStatus: 400,
+          },
+        ],
+      });
+
+      expect(outcomes()[0]).toMatchObject({ sequence: 1, outcome: "clean" });
+      expect(outcomes()[0]).not.toHaveProperty("unprompted");
+      expect(outcomes()[1]).toMatchObject({
+        sequence: 2,
+        outcome: "refused",
+        httpStatus: 400,
+        unprompted: true,
+      });
     });
 
     test("a turn that ends on a tool call written as text is told the call did not run", async () => {
@@ -7220,7 +7276,7 @@ describe.skipIf(skip)("the recreated-workspace notice", () => {
     expect(await beforeAgentStart({ prompt: "task" }, context)).toEqual({
       message: {
         customType: "legion-workspace-recreated",
-        content: expect.stringContaining("it holds what was pushed to legion/REPO-43"),
+        content: expect.stringContaining("from what was pushed to legion/REPO-43"),
         display: true,
         details: { id },
       },

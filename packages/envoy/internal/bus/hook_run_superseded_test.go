@@ -124,6 +124,7 @@ type hookCall struct {
 // hook that returns the cancel, which ends the run there, and for one that swallows it and returns
 // nil, after which the hooks behind it run on the ended context; the run is superseded either way.
 func TestASupersededRunLeavesEveryHookDue(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		swallow bool
