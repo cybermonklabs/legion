@@ -445,6 +445,14 @@ func TestAForkReadAnswerPrintsNoTokenItEchoes(t *testing.T) {
 		{"upstream-names", "neither repository it comes from routes to a directory of the bundle", func(t *testing.T) string {
 			return echoForkRead(t, "fork-of-a-served-repository.http", `"full_name": "acme/sample-project"`, `"full_name": "`+echoProbe+`"`)
 		}},
+		// A full name GitHub's grammar takes, `owner/<token>` (a repository's name may hold "_"),
+		// prints nowhere either: ghrepo.Parse alone takes it.
+		{"full-name-owner", "GitHub answered the read of " + slug, func(t *testing.T) string {
+			return echoForkRead(t, "fork-of-a-served-repository.http", `"full_name": "`+slug+`"`, `"full_name": "outside-author/`+echoProbe+`"`)
+		}},
+		{"upstream-names-owner", "neither repository it comes from routes to a directory of the bundle", func(t *testing.T) string {
+			return echoForkRead(t, "fork-of-a-served-repository.http", `"full_name": "acme/sample-project"`, `"full_name": "other-owner/`+echoProbe+`"`)
+		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			github := newFakeGitHub(t, echoProbe, printsAnswer(tc.answer(t), 0))

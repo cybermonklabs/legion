@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sjawhar/envoy/oauth2call"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
@@ -101,11 +102,25 @@ func readForkUpstream(ctx context.Context, ownersDir string, repo ghrepo.Reposit
 	if err != nil {
 		return "", "", fmt.Errorf("the helper could not read %s from GitHub: %w", repo, err)
 	}
-	answer, err := readForkAnswer(response, repo)
+	answer, err := readForkAnswer(response, repo, token)
 	if err != nil {
 		return "", "", err
 	}
-	return answer.dir(ownersDir, repo)
+	return answer.dir(ownersDir, repo, token)
+}
+
+// shownName is the repository a full name of GitHub's answer names, where it is `owner/name` as
+// GitHub names one (ghrepo.Parse) and prints: it holds no GitHub token form (githubrest.HoldsToken)
+// and no run of token, the token the read carried (oauth2call.Tokens), which whatever answers in
+// GitHub's place can echo into a name ghrepo.Parse takes (`owner/ghs_...`, since a repository's
+// name may hold "_"). A full name that is neither is false: it is named by what it is, never
+// printed or routed through.
+func shownName(fullName, token string) (ghrepo.Repository, bool) {
+	named, err := ghrepo.Parse("GitHub's full_name", fullName)
+	if err != nil || githubrest.HoldsToken(named.String()) || oauth2call.Tokens(named.String(), -1, token) != named.String() {
+		return ghrepo.Repository{}, false
+	}
+	return named, true
 }
 
 // forkReadToken is the token the fork read of repo carries: the github.com token of
@@ -149,21 +164,21 @@ type forkUpstream struct {
 	FullName string `json:"full_name"`
 }
 
-// readForkAnswer is GitHub's answer to the fork read of repo, where it is a 200 that says repo is
-// a fork, and an error naming the answer otherwise. In order: a curl that got no answer
-// (CurlResponse.Unreached) or that failed after it heard one, quoting what curl said as the rule
-// reads it (CurlResponse.Said), a rate limit, with its reset or its wait (CurlResponse.RateLimit),
-// any status but 200, with GitHub's message and, for a redirect, where it points, since curl
-// follows none; and, of a 200, a body that is not JSON, an answer for another repository than
-// repo (a full_name that differs from it beyond case), and an answer with no "fork" field or a
-// false one.
+// readForkAnswer is GitHub's answer to the fork read of repo, sent with token, where it is a 200
+// that says repo is a fork, and an error naming the answer otherwise. In order: a curl that got no
+// answer (CurlResponse.Unreached) or that failed after it heard one, quoting what curl said as the
+// rule reads it (CurlResponse.Said), a rate limit, with its reset or its wait
+// (CurlResponse.RateLimit), any status but 200, with GitHub's message and, for a redirect, where
+// it points, since curl follows none; and, of a 200, a body that is not JSON, an answer for
+// another repository than repo (a full_name that differs from it beyond case), and an answer with
+// no "fork" field or a false one.
 //
 // Each value of GitHub's answer an error names is GitHub's word, read with no record of the
 // token the read carried, so it prints only in a shape that holds no credential: a message of
 // plain words (githubrest.PlainMessage), a redirect to a repository by its id
-// (githubrest.RepositoryRedirect), a full name that is `owner/name` as GitHub names one
-// (ghrepo.Parse). A value of any other shape is named by what it is and not printed.
-func readForkAnswer(response leakguard.CurlResponse, repo ghrepo.Repository) (forkAnswer, error) {
+// (githubrest.RepositoryRedirect), a full name that is `owner/name` as GitHub names one and holds
+// no token (shownName). A value of any other shape is named by what it is and not printed.
+func readForkAnswer(response leakguard.CurlResponse, repo ghrepo.Repository, token string) (forkAnswer, error) {
 	if response.Exit != 0 {
 		if unreached := response.Unreached(); unreached != nil {
 			return forkAnswer{}, fmt.Errorf("the read of %s failed: %w", repo, unreached)
@@ -199,7 +214,7 @@ func readForkAnswer(response leakguard.CurlResponse, repo ghrepo.Repository) (fo
 	case decodeErr != nil:
 		return forkAnswer{}, fmt.Errorf("GitHub's answer for %s is not JSON of one repository: %v", repo, decodeErr)
 	case !strings.EqualFold(answer.FullName, repo.String()):
-		if another, err := ghrepo.Parse("GitHub's full_name", answer.FullName); err == nil {
+		if another, shown := shownName(answer.FullName, token); shown {
 			return forkAnswer{}, fmt.Errorf("GitHub answered the read of %s with another repository, %q", repo, another.String())
 		}
 		return forkAnswer{}, fmt.Errorf("GitHub answered the read of %s with a full_name that names no repository GitHub could hold", repo)
@@ -226,9 +241,10 @@ func readForkAnswer(response leakguard.CurlResponse, repo ghrepo.Repository) (fo
 // parent <full name>`, or `its source`. Where the parent routes nowhere, the error names repo and
 // the parent, why the parent did not route, and that the source was not tried; otherwise it names
 // repo, the parent and the source, and why each did not answer. A full name that is not
-// `owner/name` as GitHub names one (ghrepo.Parse) routes nowhere and is named as no repository,
-// never printed: it is GitHub's word, and only a name of that shape prints.
-func (a forkAnswer) dir(ownersDir string, repo ghrepo.Repository) (dir, route string, err error) {
+// `owner/name` as GitHub names one, or that holds a token form or a run of token, the token the
+// read carried (shownName), routes nowhere and is named as no repository, never printed: it is
+// GitHub's word, and only a name of that shape prints.
+func (a forkAnswer) dir(ownersDir string, repo ghrepo.Repository, token string) (dir, route string, err error) {
 	tried := make([]string, 0, 2)
 	for _, upstream := range []struct {
 		role     string
@@ -238,8 +254,8 @@ func (a forkAnswer) dir(ownersDir string, repo ghrepo.Repository) (dir, route st
 			tried = append(tried, "GitHub names no "+upstream.role)
 			continue
 		}
-		named, unnamed := ghrepo.Parse("GitHub's full_name", upstream.fullName)
-		if unnamed != nil {
+		named, shown := shownName(upstream.fullName, token)
+		if !shown {
 			tried = append(tried, fmt.Sprintf("the %s, whose full_name names no repository GitHub could hold", upstream.role))
 			continue
 		}
