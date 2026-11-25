@@ -17,7 +17,8 @@ import { type FormEvent, type ReactNode, useRef, useState } from "react";
 
 import { apiErrorMessage, legionDaemonRemovalRequest, legionDaemonRequest } from "../../api/client";
 import { legionDaemonQuery } from "../../api/queries";
-import { replaceQueryData } from "../../api/query-client";
+import { invalidateWaitingForPaused, replaceQueryData } from "../../api/query-client";
+import { useReadBound } from "../../api/read-bound";
 import type { LegionSetting } from "../../api/types";
 import { ARM_ON_PRESS, useFocusPlace } from "../../components/focus-place";
 import { heldField, heldPress } from "../../components/held-press";
@@ -63,6 +64,10 @@ type FailedAction = { readonly kind: "save" | "remove" | "input"; readonly messa
 /** What a project's entry held before a write changed it: its daemon, `null` for none, or
  *  `undefined` where the entry was never read. */
 type PreviousDaemon = { previous: LegionSetting | null | undefined };
+
+/** What the section says when its daemons failed to load, and before why a project's read after
+ *  a landed write has not settled (`useReadBound`). */
+const LEGION_DAEMONS_NOT_LOADED = "Couldn't load the Legion daemons.";
 
 /** The daemon base URL a setting may hold, trimmed, or the refusal that names what is wrong with
  *  it - the server's rule and the server's own words, so the field refuses what it would refuse
@@ -121,6 +126,7 @@ export function LegionDaemonsSection(): ReactNode {
     () => list.current,
     () => null
   );
+  const [unsettled, holdThrough] = useReadBound();
   const daemonKey = (named: string) => legionDaemonQuery(named).queryKey;
   // The line both writes of a daemon go on (`target`), in press order.
   const daemonTarget = (named: string) => `legion-daemon:${named}`;
@@ -153,6 +159,10 @@ export function LegionDaemonsSection(): ReactNode {
               })
             : apiErrorMessage(error, `Couldn't save ${variables.project}'s Legion daemon.`),
       });
+      // The row is put back above; the project is read again to settle on the server's state, and
+      // the form is not held through that read: after a stop made offline it is paused until the
+      // network returns, and a stopped write is no longer late (`KeyedWriteResult.late`).
+      void queryClient.invalidateQueries({ queryKey: daemonKey(variables.project) });
     },
     onMutate: (variables) => {
       const key = daemonKey(variables.project);
@@ -168,20 +178,19 @@ export function LegionDaemonsSection(): ReactNode {
       queryClient.setQueryData(key, optimistic);
       return { previous };
     },
-    // A landing with no answer keeps the optimistic row; `onSettled` reads the project again. An
-    // answer goes over any read of the project still out, asked before it (`replaceQueryData`).
-    onSuccess: (setting) => {
+    // A landing with no answer keeps the optimistic row; reading the project again leaves the page
+    // on the server's state, bounded by `useReadBound` so a paused offline read does not hold the
+    // form forever. An answer goes over any read of the project still out, asked before it
+    // (`replaceQueryData`).
+    onSuccess: (setting, variables) => {
       if (setting !== null) {
         replaceQueryData(queryClient, daemonKey(setting.project), setting);
       }
       setFailedAction(undefined);
       setProject("");
       setStateUrl("");
+      return holdThrough(invalidateWaitingForPaused(queryClient, daemonKey(variables.project)));
     },
-    // The answer is the row as the server saved it when it answered; reading the project again
-    // once the write settles leaves the page on the server's state.
-    onSettled: (_setting, _error, variables) =>
-      queryClient.invalidateQueries({ queryKey: daemonKey(variables.project) }),
   });
   const removeDaemon = useKeyedWrite<void, string, PreviousDaemon>({
     target: daemonTarget,
@@ -203,6 +212,8 @@ export function LegionDaemonsSection(): ReactNode {
               })
             : apiErrorMessage(error, `Couldn't remove ${named}'s Legion daemon.`),
       });
+      // As for a save: read again, with no hold on the form (see `saveDaemon`'s `onError`).
+      void queryClient.invalidateQueries({ queryKey: daemonKey(named) });
     },
     onMutate: (named) => {
       const key = daemonKey(named);
@@ -211,9 +222,10 @@ export function LegionDaemonsSection(): ReactNode {
       queryClient.setQueryData(key, null);
       return { previous };
     },
-    onSuccess: () => setFailedAction(undefined),
-    onSettled: (_answer, _error, named) =>
-      queryClient.invalidateQueries({ queryKey: daemonKey(named) }),
+    onSuccess: (_answer, named) => {
+      setFailedAction(undefined);
+      return holdThrough(invalidateWaitingForPaused(queryClient, daemonKey(named)));
+    },
   });
 
   // The refusal on screen is the newest press of its write: a later press of either write that
@@ -280,7 +292,7 @@ export function LegionDaemonsSection(): ReactNode {
       {legion.isError ? (
         <div className="mt-6">
           <QueryError
-            message="Couldn't load the Legion daemons."
+            message={LEGION_DAEMONS_NOT_LOADED}
             onRetry={legion.retry}
             retrying={legion.isFetching}
           />
@@ -333,6 +345,11 @@ export function LegionDaemonsSection(): ReactNode {
               )}
             </TableBody>
           </TableShell>
+          {unsettled === undefined ? null : (
+            <div className="mt-4">
+              <QueryError message={`${LEGION_DAEMONS_NOT_LOADED} ${unsettled}.`} />
+            </div>
+          )}
 
           {human ? (
             <form

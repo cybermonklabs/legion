@@ -11,7 +11,13 @@ import { listOf, pickFromLabelled, textBoxes } from "../../__tests__/list-picks"
 import { answerRoute } from "../../__tests__/send-answers";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
-import { ApiError, api, NetworkError, type WriteBounds } from "../../api/client";
+import {
+  ApiError,
+  api,
+  NetworkError,
+  REQUEST_DEADLINE_MS,
+  type WriteBounds,
+} from "../../api/client";
 import { legionDaemonQuery } from "../../api/queries";
 import { DispatchQueryClient } from "../../api/query-client";
 import type { AuthenticatedUser, LegionSetting } from "../../api/types";
@@ -313,6 +319,153 @@ test.each([
     expect(pressed).toHaveFocus();
   } finally {
     // The section and its reads go before the network returns, so no read goes on after the row.
+    cleanup();
+    queryClient.clear();
+    onlineManager.setOnline(online);
+    stopFocusFixup();
+    realClock();
+  }
+});
+
+// A write that lands as the browser goes offline has the read of its project paused by the
+// network, with no deadline of its own running: the app's client holds a read of an idle query
+// until its paused fetch answers (`DispatchQueryClient`). The section holds Save and every
+// Remove through that read only up to the request deadline (`REQUEST_DEADLINE_MS`), lets them go
+// there with the focus on the control pressed, and says why the daemons are not read yet. Once
+// the network returns the project is read, and the note goes.
+test.each([
+  { label: "Save Legion daemon", start: undefined },
+  { label: "Remove the Legion daemon of CORE", start: "Remove the Legion daemon of ACME" },
+] as const)("offline, $label whose write landed is let go at the request deadline, and the section says why", async ({
+  label,
+  start,
+}) => {
+  const saved = Promise.withResolvers<LegionSetting>();
+  const removed = Promise.withResolvers<void>();
+  const writes = [
+    answerDaemonSaves().mockImplementation(() => saved.promise),
+    answerDaemonRemovals().mockImplementation(() => removed.promise),
+  ];
+  const queryClient = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  const section = await renderSection(
+    legionServer([setting, { ...setting, project: "CORE", state_url: "https://daemon.example" }]),
+    true,
+    queryClient
+  );
+  await section.findByRole("cell", { name: "CORE" });
+  // The form is filled on the real clock, so every read the section makes has answered before
+  // the clock is held for the write.
+  if (start === undefined) await fillDaemonForm("http://127.0.0.1:9731");
+  const pressed = section.getByRole("button", { name: label }) as HTMLButtonElement;
+  const online = onlineManager.isOnline();
+  jest.useFakeTimers();
+  const stopFocusFixup = emulateChromiumFocusFixup();
+  try {
+    await pressHeld(userOnFakeClock(), pressed, {
+      name: label,
+      sent: () => writes.reduce((count, write) => count + write.mock.calls.length, 0),
+      start: start === undefined ? undefined : section.getByRole("button", { name: start }),
+    });
+
+    // The write lands as the network goes: the project's read is asked, and paused.
+    onlineManager.setOnline(false);
+    await act(async () => {
+      saved.resolve({ ...setting, state_url: "http://127.0.0.1:9731" });
+      removed.resolve();
+    });
+    await tick(0);
+    expect(queryClient.getQueryState(legionDaemonQuery("ACME").queryKey)?.fetchStatus).toBe(
+      "paused"
+    );
+
+    // The write landed in the step before, which is when the hold's timer started: a second
+    // short of the request deadline the control is still held.
+    await tick(REQUEST_DEADLINE_MS - 2_000);
+    expect(heldNotDisabled(pressed, label)).toBe(true);
+    expect(pressed).toHaveFocus();
+
+    // At it the section lets the control go, with the focus on it, and says why.
+    await tick(2_000);
+    expect(heldNotDisabled(pressed, label)).toBe(false);
+    expect(pressed).toHaveFocus();
+    expect(section.getByRole("alert").textContent).toBe(
+      "Couldn't load the Legion daemons. Dispatch could not be reached."
+    );
+
+    // The network returns, the project is read, and the note goes.
+    act(() => onlineManager.setOnline(true));
+    await waitFor(() => expect(section.queryByRole("alert")).toBeNull());
+  } finally {
+    // The section and its reads go before the network returns, so no read paused offline goes on.
+    cleanup();
+    queryClient.clear();
+    onlineManager.setOnline(online);
+    stopFocusFixup();
+    realClock();
+  }
+});
+
+// A write the reader stops while the browser is offline settles at once, and the read of its
+// project that settling asks for is paused by the network. A stopped write is no longer late, so
+// a section that held its controls through that read would hold them again, with nothing to end
+// it until the network returns. The section lets them go with the stop instead, says the write
+// was stopped, and the project is still read once the network returns.
+test.each([
+  { label: "Save Legion daemon", start: undefined },
+  { label: "Remove the Legion daemon of CORE", start: "Remove the Legion daemon of ACME" },
+] as const)("offline, $label is let go when its late write is stopped, though the project's read is paused", async ({
+  label,
+  start,
+}) => {
+  const failsAtTheNetwork = () =>
+    Promise.reject(
+      new NetworkError("/api/v1/projects/ACME/legion/daemon", new TypeError("Failed to fetch"))
+    );
+  const writes = [
+    answerDaemonSaves().mockImplementation(failsAtTheNetwork),
+    answerDaemonRemovals().mockImplementation(failsAtTheNetwork),
+  ];
+  const queryClient = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  const section = await renderSection(
+    legionServer([setting, { ...setting, project: "CORE", state_url: "https://daemon.example" }]),
+    true,
+    queryClient
+  );
+  await section.findByRole("cell", { name: "CORE" });
+  if (start === undefined) await fillDaemonForm("http://127.0.0.1:9731");
+  const pressed = section.getByRole("button", { name: label }) as HTMLButtonElement;
+  const online = onlineManager.isOnline();
+  jest.useFakeTimers();
+  const stopFocusFixup = emulateChromiumFocusFixup();
+  try {
+    onlineManager.setOnline(false);
+    await pressHeld(userOnFakeClock(), pressed, {
+      name: label,
+      sent: () => writes.reduce((count, write) => count + write.mock.calls.length, 0),
+      start: start === undefined ? undefined : section.getByRole("button", { name: start }),
+    });
+    await stopTheLateWrite(queryClient);
+
+    expect(queryClient.getQueryState(legionDaemonQuery("ACME").queryKey)?.fetchStatus).toBe(
+      "paused"
+    );
+    expect(heldNotDisabled(pressed, label)).toBe(false);
+    expect(pressed).toHaveFocus();
+    // The alert's paragraph, without its Retry button's name: it is the only alert, so no
+    // "not read yet" line stands beside the stop's.
+    expect(section.getByRole("alert").querySelector("p")?.textContent).toBe(
+      start === undefined
+        ? stoppedWriteNote("the Legion daemon of ACME", "saved", {
+            method: "PUT",
+            stopped: new SendStoppedError(),
+          })
+        : stoppedWriteNote("the removal of ACME's Legion daemon", "made", {
+            method: "DELETE",
+            stopped: new SendStoppedError(),
+          })
+    );
+  } finally {
+    // The section and its reads go before the network returns, so no read paused offline goes on.
     cleanup();
     queryClient.clear();
     onlineManager.setOnline(online);

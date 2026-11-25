@@ -1,10 +1,14 @@
 import { beforeEach, expect, jest, spyOn, test } from "bun:test";
-import { act, screen, waitFor, within } from "@testing-library/react";
+import type { ArtifactRebuildReport } from "@legion/contracts";
+import { onlineManager, type QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { MemoryRouter } from "react-router-dom";
 
 import manifest from "../../../../../envoy/internal/dispatch/pmdoc/schema/blocks.json";
 import { fakeDocumentRuntime } from "../../__tests__/document-runtime";
 import { realClock, tick } from "../../__tests__/fake-clock";
+import { heldNotDisabled, pressHeld } from "../../__tests__/held-press";
 import { heldUntilLate, pressesOf } from "../../__tests__/held-until-late";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerRequests } from "../../__tests__/network";
@@ -18,10 +22,16 @@ import {
 } from "../../__tests__/proof-document";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
-import { ApiError, api, NetworkError } from "../../api/client";
+import { ApiError, api, NetworkError, REQUEST_DEADLINE_MS } from "../../api/client";
+import { DispatchQueryClient } from "../../api/query-client";
 import type { ArtifactText } from "../../api/types";
+import { emulateChromiumFocusFixup } from "../issue-page/chromium-focus-fixup";
+import { NoTooltips } from "../issue-page/NoTooltips";
+import { MarginProvider } from "../margin/margin-context";
 import { stoppedWriteNote } from "../writes/keyed-write";
+import { ProofDocument } from "./ProofDocument";
 import { deletePendingEdits, openPendingEdits } from "./pending-edits";
+import { DocumentRuntime } from "./runtime";
 import { compiledSchemaCreatable } from "./schema";
 
 // Whether the live editor may connect, and what the page shows when it may not or cannot: the
@@ -459,6 +469,169 @@ test("Rebuild lets go at the document write deadline and sends again", async () 
     confirm.mockRestore();
     rebuild.mockRestore();
     getArtifactText.mockRestore();
+  }
+});
+
+/** What Dispatch answers a rebuild that restored the document's latest saved version. */
+const REBUILT_REPORT: ArtifactRebuildReport = {
+  head: 1,
+  removed_checkpoints: 0,
+  removed_snapshots: 0,
+  removed_updates: 3,
+  source_version: 1,
+  validation_error: "decode live document: unexpected end of input",
+};
+
+/** The document's page drawn inside `NoTooltips`, as the issue page draws it, over `queryClient`:
+ *  there the rebuild stays pending through the reads its landing makes stale. */
+function renderInsideNoTooltips(queryClient: QueryClient) {
+  const fake = fakeDocumentRuntime({ text: "The live document" });
+  const view = render(
+    <MemoryRouter>
+      <QueryClientProvider client={queryClient}>
+        <NoTooltips>
+          <DocumentRuntime.Provider value={fake.runtime}>
+            <MarginProvider>
+              <ProofDocument
+                artifact={artifact}
+                highlight={undefined}
+                isClosed={false}
+                onVersionChange={() => undefined}
+                owner={{ key: "CORE-1", kind: "issue" }}
+                showDiff={false}
+                user={{ event_head: "0", kind: "user", login: "alice" }}
+              />
+            </MarginProvider>
+          </DocumentRuntime.Provider>
+        </NoTooltips>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  return { connections: fake.connections, view };
+}
+
+// A rebuild that lands as the browser goes offline has the reads it made stale paused by the
+// network, with no deadline of their own running: the app's client holds a read of an idle query
+// until its paused fetch answers (`DispatchQueryClient`). Inside `NoTooltips` Rebuild is held
+// through them, so it holds them only up to the request deadline (`REQUEST_DEADLINE_MS`), and
+// lets go there with the focus on it. Once the network returns the text reads, and the offer goes.
+test("offline, inside NoTooltips, Rebuild is held through the reads its landed rebuild made only until the request deadline", async () => {
+  const getArtifact = spyOn(api, "getArtifact").mockResolvedValue(artifact);
+  const getArtifactBlocks = spyOn(api, "getArtifactBlocks").mockResolvedValue([]);
+  const getArtifactText = spyOn(api, "getArtifactText").mockRejectedValue(
+    new ApiError(409, { code: "DOCUMENT_UNLOADABLE", error: UNLOADABLE_REFUSAL })
+  );
+  const rebuilt = Promise.withResolvers<ArtifactRebuildReport>();
+  const rebuildArtifact = spyOn(api, "rebuildArtifact").mockImplementation(() => rebuilt.promise);
+  const confirm = spyOn(window, "confirm").mockReturnValue(true);
+  // The app's own query client, with reads fresh until a write invalidates them, as the other
+  // rows of this file give the page theirs.
+  const queryClient = new DispatchQueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  });
+  const { view } = renderInsideNoTooltips(queryClient);
+  const online = onlineManager.isOnline();
+  const stopFocusFixup = emulateChromiumFocusFixup();
+  try {
+    const name = "Rebuild from the latest version";
+    const button = await screen.findByRole<HTMLButtonElement>("button", { name });
+    jest.useFakeTimers();
+    await pressHeld(userOnFakeClock(), button, {
+      name,
+      sent: () => rebuildArtifact.mock.calls.length,
+    });
+
+    getArtifactText.mockResolvedValue({
+      markdown: "The live document",
+      token: "sha256:live-document",
+      version: 1,
+    });
+    onlineManager.setOnline(false);
+    await act(async () => rebuilt.resolve(REBUILT_REPORT));
+    await tick(0);
+    expect(queryClient.getQueryState(["artifact", artifact.id, "text"])?.fetchStatus).toBe(
+      "paused"
+    );
+
+    // The rebuild landed in the step before, which is when the hold's timer started: a second
+    // short of the request deadline the reads are still paused, and Rebuild held.
+    await tick(REQUEST_DEADLINE_MS - 2_000);
+    expect(heldNotDisabled(button, name)).toBe(true);
+    expect(button).toHaveFocus();
+
+    // At it Rebuild lets go, with the focus on it, and the rebuild is not sent again.
+    await tick(2_000);
+    expect(heldNotDisabled(button, name)).toBe(false);
+    expect(button).toHaveFocus();
+    expect(rebuildArtifact).toHaveBeenCalledTimes(1);
+
+    // The network returns, the text reads, and the offer leaves the page.
+    act(() => onlineManager.setOnline(true));
+    await waitFor(() => expect(screen.queryByRole("button", { name })).not.toBeInTheDocument());
+  } finally {
+    // The page and its reads go before the network returns, so no read paused offline goes on.
+    view.unmount();
+    queryClient.clear();
+    onlineManager.setOnline(online);
+    stopFocusFixup();
+    realClock();
+    confirm.mockRestore();
+    rebuildArtifact.mockRestore();
+    getArtifactText.mockRestore();
+    getArtifactBlocks.mockRestore();
+    getArtifact.mockRestore();
+  }
+});
+
+// The same hold where the network answers: Rebuild stays held, with the focus, through the read
+// of the rebuilt document's text for as long as that read takes, so a press then sends no second
+// rebuild; once it answers, the offer leaves the page and the editor connects.
+test("inside NoTooltips, Rebuild stays held through the read after its rebuild until that read answers", async () => {
+  const getArtifact = spyOn(api, "getArtifact").mockResolvedValue(artifact);
+  const getArtifactBlocks = spyOn(api, "getArtifactBlocks").mockResolvedValue([]);
+  const getArtifactText = spyOn(api, "getArtifactText").mockRejectedValue(
+    new ApiError(409, { code: "DOCUMENT_UNLOADABLE", error: UNLOADABLE_REFUSAL })
+  );
+  const rebuilt = Promise.withResolvers<ArtifactRebuildReport>();
+  const rebuildArtifact = spyOn(api, "rebuildArtifact").mockImplementation(() => rebuilt.promise);
+  const confirm = spyOn(window, "confirm").mockReturnValue(true);
+  const reread = Promise.withResolvers<ArtifactText>();
+  const queryClient = new DispatchQueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  });
+  const { connections, view } = renderInsideNoTooltips(queryClient);
+  const stopFocusFixup = emulateChromiumFocusFixup();
+  try {
+    const name = "Rebuild from the latest version";
+    const button = await screen.findByRole<HTMLButtonElement>("button", { name });
+    await pressHeld(userEvent.setup(), button, {
+      name,
+      sent: () => rebuildArtifact.mock.calls.length,
+    });
+
+    const readsBefore = getArtifactText.mock.calls.length;
+    getArtifactText.mockImplementation(() => reread.promise);
+    await act(async () => rebuilt.resolve(REBUILT_REPORT));
+    await waitFor(() => expect(getArtifactText.mock.calls.length).toBeGreaterThan(readsBefore));
+    expect(heldNotDisabled(button, name)).toBe(true);
+    expect(button).toHaveFocus();
+    expect(rebuildArtifact).toHaveBeenCalledTimes(1);
+
+    await act(async () =>
+      reread.resolve({ markdown: "The live document", token: "sha256:live-document", version: 1 })
+    );
+    await waitFor(() => expect(connections).toHaveLength(1));
+    expect(screen.queryByRole("button", { name })).not.toBeInTheDocument();
+    expect(rebuildArtifact).toHaveBeenCalledTimes(1);
+  } finally {
+    view.unmount();
+    queryClient.clear();
+    stopFocusFixup();
+    confirm.mockRestore();
+    rebuildArtifact.mockRestore();
+    getArtifactText.mockRestore();
+    getArtifactBlocks.mockRestore();
+    getArtifact.mockRestore();
   }
 });
 

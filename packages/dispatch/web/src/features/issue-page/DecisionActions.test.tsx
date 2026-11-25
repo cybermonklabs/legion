@@ -1,14 +1,15 @@
 import { beforeAll, expect, jest, type Mock, spyOn, test } from "bun:test";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { onlineManager, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 
 import { displayTree } from "../../__tests__/display-trees";
-import { realClock, tick } from "../../__tests__/fake-clock";
+import { realClock, settle, tick } from "../../__tests__/fake-clock";
+import { heldNotDisabled } from "../../__tests__/held-press";
 import { heldUntilLate, pressesOf } from "../../__tests__/held-until-late";
 import { userOnFakeClock } from "../../__tests__/user";
-import { ApiError, api, NetworkError } from "../../api/client";
+import { ApiError, api, NetworkError, REQUEST_DEADLINE_MS } from "../../api/client";
 import type { Artifact, ArtifactText, Decision, IssueDecisions } from "../../api/types";
 import {
   borderDefault,
@@ -21,6 +22,7 @@ import {
   textSecondaryOnCanvas,
 } from "../../theme/classes";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
+import { SEND_DEADLINE_MS } from "../writes/keyed-write";
 import { emulateChromiumFocusFixup } from "./chromium-focus-fixup";
 import { ChangeDraftsProvider, DecisionActions } from "./DecisionActions";
 import { NoTooltips } from "./NoTooltips";
@@ -724,4 +726,100 @@ test("the quote of a first block with a hard break holds one space between its l
 test("a decision whose answer carried no reading quotes its first paragraph's markdown", async () => {
   const text = "## Keep a log\n\nA log is enough.\n\nUnsure: the index may be slow.";
   expect(await quoteOf({ text, text_tree: undefined })).toBe("A log is enough.");
+});
+
+// Offline, TanStack pauses a fetch the browser starts until the network returns, so a send that
+// waited on one for the document's text would post no comment and let go of nothing. The send
+// reads the text straight through the API client instead (`captureUploadBase`'s way), which
+// reaches the network, or fails there, whatever TanStack's pause says: the comment goes out and
+// Send change lets go at that comment's deadline, as it does online, and a press then posts no
+// second one.
+test("offline, Send change reads the document outside TanStack's pause, posts one change and lets go at its deadline", async () => {
+  const online = onlineManager.isOnline();
+  onlineManager.setOnline(false);
+  try {
+    const page = await changeUntilLate(() => false);
+    try {
+      expect(
+        api.getArtifactText,
+        "the send read the document's text other than once"
+      ).toHaveBeenCalledTimes(1);
+      expect(api.getArtifactText).toHaveBeenCalledWith(document_.id);
+      await page.user.keyboard("{Enter}");
+      await tick(1_000);
+      expect(page.presses(), "a press past the deadline posted a second change").toBe(1);
+    } finally {
+      page.restore();
+    }
+  } finally {
+    onlineManager.setOnline(online);
+  }
+});
+
+// A document read that never answers is the client's to end at `REQUEST_DEADLINE_MS`, and the
+// comment goes out then with no reading of the document (the plain quote). That read and the
+// comment are one press with one deadline, `SEND_DEADLINE_MS`: Send lets go there, not a second
+// deadline after the read's, and a press after it posts no second change. The read answering
+// after that posts nothing either.
+test("a document read that never answers does not double Send change's deadline, and its late answer posts no second change", async () => {
+  const answer = Promise.withResolvers<ArtifactText>();
+  const createComment = spyOn(api, "createComment").mockImplementation(failsAtTheNetwork);
+  const { text, unmount } = renderActions();
+  text.mockReturnValue(answer.promise);
+  const stopFocusFixup = emulateChromiumFocusFixup();
+  try {
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: CONTROL_LABELS.change_decision }));
+    await user.type(screen.getByLabelText(CONTROL_LABELS.your_change), "Keep one preset.");
+    const send = screen.getByRole<HTMLButtonElement>("button", {
+      name: CONTROL_LABELS.send_change,
+    });
+    jest.useFakeTimers();
+    const onFakeClock = userOnFakeClock();
+    act(() => send.focus());
+    await onFakeClock.keyboard("{Enter}");
+    await tick(0);
+
+    // A second short of the request deadline the read is still out: Send is held with the
+    // focus, no comment has gone, and a press reads nothing more.
+    await tick(REQUEST_DEADLINE_MS - 1_000);
+    expect(heldNotDisabled(send, CONTROL_LABELS.send_change)).toBe(true);
+    expect(send).toHaveFocus();
+    expect(createComment).not.toHaveBeenCalled();
+    await onFakeClock.keyboard("{Enter}");
+    await settle();
+    expect(text).toHaveBeenCalledTimes(1);
+
+    // At it the comment goes out once, with the plain quote, and Send lets go with the focus on
+    // it: the press has spent its deadline, and the comment's own is not waited out after it.
+    await tick(1_000);
+    await waitFor(() => expect(pressesOf([createComment])).toBe(1));
+    const anchor = createComment.mock.calls[0]?.[1]?.anchor;
+    expect(anchor?.artifact).toBe(document_.id);
+    expect(anchor?.quote).toBe(decision.heading);
+    expect(anchor?.occurrence, "a send with no reading named a place").toBeUndefined();
+    expect(heldNotDisabled(send, CONTROL_LABELS.send_change)).toBe(false);
+    expect(send).toHaveFocus();
+    await onFakeClock.keyboard("{Enter}");
+    await tick(1_000);
+    expect(pressesOf([createComment]), "a press past the deadline posted a second change").toBe(1);
+    expect(screen.getByRole("status").textContent).toBe(ANSWER_LINES.change_still_sending);
+
+    // The read answers late, and the press posts nothing for it.
+    await act(async () =>
+      answer.resolve({
+        markdown: DOCUMENT_TEXT,
+        markdown_tree: displayTree(DOCUMENT_TEXT),
+        token: "token",
+        version: 1,
+      })
+    );
+    await tick(SEND_DEADLINE_MS);
+    expect(pressesOf([createComment]), "the late read posted a second change").toBe(1);
+  } finally {
+    stopFocusFixup();
+    realClock();
+    unmount();
+    createComment.mockRestore();
+  }
 });

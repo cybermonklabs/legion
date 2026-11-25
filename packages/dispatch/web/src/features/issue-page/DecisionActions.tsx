@@ -1,8 +1,18 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { createContext, type ReactNode, useContext, useId, useMemo, useRef, useState } from "react";
+import {
+  createContext,
+  type ReactNode,
+  useContext,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 
 import { api } from "../../api/client";
-import type { Artifact, Decision, IssueDecisions } from "../../api/types";
+import { readWithinBound } from "../../api/read-bound";
+import type { Artifact, Decision, DisplayTree, IssueDecisions } from "../../api/types";
 import { heldPress } from "../../components/held-press";
 import { useTooltips } from "../../components/tooltips";
 import {
@@ -18,6 +28,7 @@ import {
 } from "../../theme/classes";
 import { issueDecisionsQuery } from "../doc/spec-marks";
 import { EVENT_FRESH } from "../refs/reference-target";
+import { SEND_DEADLINE_MS } from "../writes/keyed-write";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { useOneCreateOut } from "../writes/useOneCreateOut";
 import { anchorQuote, type ChangeAnchor, changeAnchor } from "./decision-review";
@@ -288,6 +299,17 @@ function ChangeComposer({
   const queryClient = useQueryClient();
   const tones = TONES[useTooltips() ? "main" : "page"];
   const fieldId = useId();
+  // Whether the send is reading the decisions document's text, which it does before the comment
+  // goes out: Send is held while it does, as it is while the comment is out within its deadline.
+  // `readingRef` is the same fact for a press that lands before the render shows it.
+  const [reading, setReading] = useState(false);
+  const readingRef = useRef(false);
+  // Whether this press has spent `SEND_DEADLINE_MS` across its document read and its comment
+  // together: a read that runs to its own deadline followed by an offline comment must not hold
+  // Send for a second one. The timer is the press's, and goes once the write settles.
+  const [pressLate, setPressLate] = useState(false);
+  const pressDeadline = useRef<(() => void) | undefined>(undefined);
+  useEffect(() => () => pressDeadline.current?.(), []);
   const send = useKeyedWrite({
     inline: true,
     label: () => `${CONTROL_LABELS.change_decision} ${decision.heading}`,
@@ -325,14 +347,16 @@ function ChangeComposer({
     onError: (_error, input) => {
       drafts?.set(decision.ref, input.body);
     },
+    onSettled: () => {
+      pressDeadline.current?.();
+      pressDeadline.current = undefined;
+      setPressLate(false);
+    },
   });
-  // Whether the send is reading the decisions document's text, which it does before the comment
-  // goes out: Send is held while it does, as it is while the comment is out within its deadline.
-  const [reading, setReading] = useState(false);
-  // A comment past its deadline (`KeyedWriteResult.late`) holds Send no longer. A press then would
-  // post the change twice, so it sends nothing while that comment is out, and the form says so
-  // (`oneChange`).
-  const sendHeld = reading || (send.isPending && !send.late);
+  // A press past its deadline (`pressLate`, or `KeyedWriteResult.late` for a comment sent at
+  // once) holds Send no longer. A press then would post the change twice, so it sends nothing
+  // while that comment is out, and the form says so (`oneChange`).
+  const sendHeld = !pressLate && (reading || (send.isPending && !send.late));
   const oneChange = useOneCreateOut(send);
   // The one place inside a row that takes the tab order, and only while it is open: this is a
   // form a reader is typing in, so Tab walks its field, Send change and Cancel as it does in
@@ -349,7 +373,7 @@ function ChangeComposer({
       className="flex min-w-0 flex-col gap-1"
       onSubmit={(event) => {
         event.preventDefault();
-        if (body.trim() === "" || sendHeld || oneChange.refuse()) return;
+        if (body.trim() === "" || sendHeld || readingRef.current || oneChange.refuse()) return;
         // Send is held while the send reads the document and while the comment is out, and this
         // sends nothing then; the form goes once the comment lands. The draft goes while the send
         // is out: a body that closes then comes back with Change closed, and the shell's
@@ -359,32 +383,39 @@ function ChangeComposer({
         keepFocusOnRow(event.currentTarget);
         drafts?.delete(decision.ref);
         // Which of the quote's places in the decisions document is this decision's own, counted
-        // here, at the send, over the document's own reading, which the send reads once now:
-        // `changeAnchor` walks every decision above this one, which no render of a row pays for
-        // (decision 92). With no reading - the read failed - the anchor names no place: Dispatch
+        // here, at the send, over the document's own reading, which the send reads once now
+        // directly through the API client (`api.getArtifactText`, as `captureUploadBase` does):
+        // a direct GET bypasses TanStack's offline pause and carries the client's exchange
+        // deadline, and `readWithinBound` ensures the press proceeds once even if the read does
+        // not settle in time, so a late read can never post a second comment. `changeAnchor`
+        // walks every decision above this one, which no render of a row pays for (decision 92).
+        // With no reading - the read failed or timed out - the anchor names no place: Dispatch
         // takes it where the quote stands once, and refuses it where the quote stands more than
         // once, which the form says in the page's words with the draft kept.
+        readingRef.current = true;
         setReading(true);
-        void queryClient
-          .fetchQuery({
-            queryFn: () => api.getArtifactText(documentId),
-            queryKey: ["artifact", documentId, "text"],
-            staleTime: 0,
-          })
-          .then(
-            (text) => text.markdown_tree,
-            () => undefined
-          )
-          .then((tree) => {
-            setReading(false);
-            const anchor = changeAnchor(
-              decision,
-              queryClient.getQueryData<IssueDecisions>(issueDecisionsQuery(issueKey, true).queryKey)
-                ?.decisions,
-              tree
-            );
-            send.mutate({ anchor: anchor ?? { quote }, body });
-          });
+        setPressLate(false);
+        pressDeadline.current?.();
+        const deadline = setTimeout(() => setPressLate(true), SEND_DEADLINE_MS);
+        pressDeadline.current = () => clearTimeout(deadline);
+        let tree: DisplayTree | undefined;
+        const read = api.getArtifactText(documentId).then(
+          (text) => {
+            tree = text.markdown_tree;
+          },
+          () => undefined
+        );
+        void readWithinBound(read).then(() => {
+          readingRef.current = false;
+          setReading(false);
+          const anchor = changeAnchor(
+            decision,
+            queryClient.getQueryData<IssueDecisions>(issueDecisionsQuery(issueKey, true).queryKey)
+              ?.decisions,
+            tree
+          );
+          send.mutate({ anchor: anchor ?? { quote }, body });
+        });
       }}
     >
       <blockquote

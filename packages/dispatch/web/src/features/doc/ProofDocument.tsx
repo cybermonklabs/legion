@@ -19,7 +19,8 @@ import {
   isDocumentUnloadable,
 } from "../../api/client";
 import { artifactBlocksQuery } from "../../api/queries";
-import { replaceQueryData } from "../../api/query-client";
+import { invalidateWaitingForPaused, replaceQueryData } from "../../api/query-client";
+import { readWithinBound } from "../../api/read-bound";
 import type { Artifact, AuthenticatedUser, Version } from "../../api/types";
 import { heldPress } from "../../components/held-press";
 import { TruncatedText } from "../../components/TruncatedText";
@@ -480,13 +481,17 @@ export function ProofDocument({
     inline: true,
     label: () => `Rebuild of ${artifact.name}`,
     onSuccess: () => {
-      const reread = queryClient.invalidateQueries({ queryKey: ["artifact", artifact.id] });
       // Outside `NoTooltips` the rebuild stops pending as it lands and the document's reads go on
       // after it, as on `main`. Inside, `onSuccess` returns them, which TanStack Query awaits
       // before the rebuild stops pending: Rebuild stays refused, and keeps the focus, until the
-      // rebuilt document is read, and a text read that succeeds then takes the offer off the page.
-      if (tooltips) return;
-      return reread;
+      // rebuilt document is read, or until the request deadline where that read has not settled -
+      // one the network paused while the browser is offline (`readWithinBound`) - so no read
+      // holds Rebuild for good, and a text read that succeeds then takes the offer off the page.
+      if (tooltips) {
+        void queryClient.invalidateQueries({ queryKey: ["artifact", artifact.id] });
+        return;
+      }
+      return readWithinBound(invalidateWaitingForPaused(queryClient, ["artifact", artifact.id]));
     },
     method: "POST",
     readsLate: true,
