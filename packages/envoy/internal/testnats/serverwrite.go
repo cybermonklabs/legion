@@ -54,7 +54,11 @@ func ServerCopiesKey(t testing.TB, conn *natsgo.Conn, dstBucket, dstKey, srcBuck
 // that the stream must refuse (an expected last subject sequence it cannot hold) is answered only
 // once the stream has worked every message queued before it, the copy among them, and stores
 // nothing. A wait of 2 s (before) could pass with a wrongly stored copy still on its way on a loaded
-// machine, where ServerWritesKey's own copies take longer.
+// machine, where ServerWritesKey's own copies take longer. That order holds on a stream of one copy,
+// whose server works its subject's messages one at a time and refuses the marker with the wrong last
+// sequence (10071) only after the copy; the leader of a stream of more copies can answer 10164 while
+// the copy is still being stored. So the helper requires dstBucket's stream to hold one copy, and the
+// marker's refusal to be 10071.
 func ServerCopyRefused(t testing.TB, conn *natsgo.Conn, dstBucket, dstKey, srcBucket, srcKey string) uint64 {
 	t.Helper()
 	before := LastSequence(t, conn, dstBucket, dstKey)
@@ -80,25 +84,23 @@ func ServerCopyRefused(t testing.TB, conn *natsgo.Conn, dstBucket, dstKey, srcBu
 	if err != nil {
 		t.Fatalf("JetStream: %v", err)
 	}
+	if info, err := js.StreamInfo("KV_" + dstBucket); err != nil {
+		t.Fatalf("read the stream of %s: %v", dstBucket, err)
+	} else if info.Config.Replicas > 1 {
+		t.Fatalf("ServerCopyRefused proves its order on a stream of one copy; KV_%s has %d", dstBucket, info.Config.Replicas)
+	}
 	marker := natsgo.ExpectLastSequencePerSubject(before + 1<<40)
+	var api *natsgo.APIError
 	if _, err := js.Publish(KVSubject(dstBucket, dstKey), nil, marker); err == nil {
 		t.Fatalf("the stream stored a marker on %s that expects a sequence it cannot hold", KVSubject(dstBucket, dstKey))
-	} else if !isWrongLastSequence(err) {
-		t.Fatalf("the marker on %s after the copy: %v, want the stream's wrong-last-sequence refusal", KVSubject(dstBucket, dstKey), err)
+	} else if !errors.As(err, &api) || api.ErrorCode != natsgo.JSErrCodeStreamWrongLastSequence {
+		t.Fatalf("the marker on %s after the copy: %v, want the stream's wrong-last-sequence refusal (10071)", KVSubject(dstBucket, dstKey), err)
 	}
 	if stored := LastSequence(t, conn, dstBucket, dstKey); stored != before {
 		t.Fatalf("the server stored a copy of %s under %s at sequence %d, want it refused and %s left at %d",
 			KVSubject(srcBucket, srcKey), KVSubject(dstBucket, dstKey), stored, KVSubject(dstBucket, dstKey), before)
 	}
 	return before
-}
-
-// isWrongLastSequence reports whether err is the stream's refusal of a publish whose expected last
-// subject sequence the subject does not hold: 10071, or 10164 from the leader of a stream of more
-// than one copy (wrongLastSequenceReplicated), which nats.go names the same refusal.
-func isWrongLastSequence(err error) bool {
-	var api *natsgo.APIError
-	return errors.As(err, &api) && (api.ErrorCode == natsgo.JSErrCodeStreamWrongLastSequence || api.ErrorCode == natsgo.JSErrCodeStreamWrongLastSequenceConstant)
 }
 
 // StreamInfo is the request for stream's info, answered with a JSON document.
@@ -139,16 +141,23 @@ func ServerWritesKey(t testing.TB, conn *natsgo.Conn, bucket, key, request strin
 	if err := conn.Flush(); err != nil {
 		t.Fatalf("flush %s: %v", request, err)
 	}
-	// The wait ends on the stored answer, short of the test's deadline (boundOf): the server stores
-	// its own answer a moment after it sends it, and a loaded machine stretches that moment, so a
-	// fixed span (10 s, before) failed rows whose store came late.
+	return newerSequence(t, conn, bucket, key, before, "the server's answer to "+request)
+}
+
+// newerSequence waits until bucket's stream holds a message on key's subject newer than before,
+// read from the stream's leader (LastSequence), and returns its stream sequence. The wait ends on
+// the stored message, short of the test's deadline (boundOf): the server stores it a moment after it
+// is sent, and a loaded machine stretches that moment, so a fixed span (10 s, before) failed rows
+// whose store came late. When none has by then it fails t, naming what as what was not stored.
+func newerSequence(t testing.TB, conn *natsgo.Conn, bucket, key string, before uint64, what string) uint64 {
+	t.Helper()
 	bound := boundOf(t)
 	for {
 		if stored := LastSequence(t, conn, bucket, key); stored > before {
 			return stored
 		}
 		if bound.over() {
-			t.Fatalf("the server's answer to %s was not stored under %s by %s, short of the test's deadline (newest sequence %d)", request, KVSubject(bucket, key), bound, before)
+			t.Fatalf("%s was not stored under %s by %s, short of the test's deadline (newest sequence %d)", what, KVSubject(bucket, key), bound, before)
 		}
 		time.Sleep(bound.step(10 * time.Millisecond))
 	}
@@ -177,17 +186,7 @@ func RepublishesKey(t testing.TB, conn *natsgo.Conn, bucket, key string, body []
 	if _, err := js.Publish(subject, body); err != nil {
 		t.Fatalf("publish the body to %s: %v", subject, err)
 	}
-	// The wait ends on the stored copy, short of the test's deadline (boundOf), as ServerWritesKey's.
-	bound := boundOf(t)
-	for {
-		if stored := LastSequence(t, conn, bucket, key); stored > before {
-			return stored
-		}
-		if bound.over() {
-			t.Fatalf("%s's RePublish was not stored under %s by %s, short of the test's deadline (newest sequence %d)", stream, KVSubject(bucket, key), bound, before)
-		}
-		time.Sleep(bound.step(10 * time.Millisecond))
-	}
+	return newerSequence(t, conn, bucket, key, before, stream+"'s RePublish")
 }
 
 // LastSequence is the stream sequence of the newest message bucket's stream holds for key, read

@@ -476,7 +476,7 @@ func settled(cluster *natsgo.ClusterInfo, n int) bool {
 // copies a write left reads them from the info it returns.
 func AwaitSettledStream(t testing.TB, js natsgo.JetStreamContext, stream string) *natsgo.StreamInfo {
 	t.Helper()
-	return awaitInfo(t, connectTimeout, fmt.Sprintf("stream %s did not settle", stream),
+	return awaitInfo(t, fmt.Sprintf("stream %s did not settle", stream),
 		func() (*natsgo.StreamInfo, error) { return js.StreamInfo(stream) },
 		func(info *natsgo.StreamInfo) bool { return settled(info.Cluster, info.Config.Replicas) },
 		describeStream)
@@ -486,7 +486,7 @@ func AwaitSettledStream(t testing.TB, js natsgo.JetStreamContext, stream string)
 // copies and holds n settled ones (settled), and returns its info.
 func AwaitStreamCopies(t testing.TB, js natsgo.JetStreamContext, stream string, n int) *natsgo.StreamInfo {
 	t.Helper()
-	return awaitInfo(t, connectTimeout, fmt.Sprintf("stream %s did not hold %d settled copies", stream, n),
+	return awaitInfo(t, fmt.Sprintf("stream %s did not hold %d settled copies", stream, n),
 		func() (*natsgo.StreamInfo, error) { return js.StreamInfo(stream) },
 		func(info *natsgo.StreamInfo) bool { return info.Config.Replicas == n && settled(info.Cluster, n) },
 		describeStream)
@@ -497,7 +497,7 @@ func AwaitStreamCopies(t testing.TB, js natsgo.JetStreamContext, stream string, 
 // followed its stream to n, and returns its info.
 func AwaitConsumerCopies(t testing.TB, js natsgo.JetStreamContext, stream, consumer string, n int) *natsgo.ConsumerInfo {
 	t.Helper()
-	return awaitInfo(t, connectTimeout, fmt.Sprintf("consumer %s of %s did not hold %d settled copies", consumer, stream, n),
+	return awaitInfo(t, fmt.Sprintf("consumer %s of %s did not hold %d settled copies", consumer, stream, n),
 		func() (*natsgo.ConsumerInfo, error) { return js.ConsumerInfo(stream, consumer) },
 		func(info *natsgo.ConsumerInfo) bool { return settled(info.Cluster, n) },
 		describeConsumer)
@@ -507,7 +507,7 @@ func AwaitConsumerCopies(t testing.TB, js natsgo.JetStreamContext, stream, consu
 // than not, the server_name of a member the test stopped or "" for any, and returns its info.
 func AwaitStreamLeader(t testing.TB, js natsgo.JetStreamContext, stream, not string) *natsgo.StreamInfo {
 	t.Helper()
-	return awaitInfo(t, connectTimeout, fmt.Sprintf("stream %s had no leader other than %q", stream, not),
+	return awaitInfo(t, fmt.Sprintf("stream %s had no leader other than %q", stream, not),
 		func() (*natsgo.StreamInfo, error) { return js.StreamInfo(stream) },
 		func(info *natsgo.StreamInfo) bool {
 			return info.Cluster != nil && info.Cluster.Leader != "" && info.Cluster.Leader != not
@@ -566,9 +566,8 @@ func describeCluster(cluster *natsgo.ClusterInfo) string {
 // returns that info; when none has by the test's deadline (testDeadline), it fails the test with
 // failure, what describe says of the info it read last, and the last error. The wait ends on done,
 // bounded only by that deadline: every caller waits for a cluster to settle, which a loaded machine
-// delays without anything being wrong, so the span each caller passes, the second argument, no
-// longer ends it.
-func awaitInfo[T any](t testing.TB, _ time.Duration, failure string, read func() (*T, error), done func(*T) bool, describe func(*T) string) *T {
+// delays without anything being wrong.
+func awaitInfo[T any](t testing.TB, failure string, read func() (*T, error), done func(*T) bool, describe func(*T) string) *T {
 	t.Helper()
 	bound := boundOf(t)
 	for {

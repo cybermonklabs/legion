@@ -396,9 +396,6 @@ func (h *Hooks) Events(point Point, match ...Match) []Event {
 // reported by then.
 func (h *Hooks) Await(t testing.TB, point Point, match ...Match) Event {
 	t.Helper()
-	bound := boundOf(t)
-	deadline, cancel := bound.stepContext(noDeadline)
-	defer cancel()
 	for {
 		h.mu.Lock()
 		changed := h.changed
@@ -409,9 +406,7 @@ func (h *Hooks) Await(t testing.TB, point Point, match ...Match) Event {
 			}
 		}
 		h.mu.Unlock()
-		select {
-		case <-changed:
-		case <-deadline.Done():
+		if bound, ok := awaitSignal(t, changed); !ok {
 			t.Fatalf("the hooked server reported no event at %s by %s, short of the test's deadline", describe(point, match), bound)
 		}
 	}
@@ -463,16 +458,10 @@ func (hold *Hold) String() string { return describe(hold.point, hold.match) }
 // point and the matches, when none did.
 func (hold *Hold) Reached(t testing.TB) Event {
 	t.Helper()
-	bound := boundOf(t)
-	deadline, cancel := bound.stepContext(noDeadline)
-	defer cancel()
-	select {
-	case <-hold.reached:
-		return hold.event
-	case <-deadline.Done():
+	if bound, ok := awaitSignal(t, hold.reached); !ok {
 		t.Fatalf("the hold at %s was not reached by %s, short of the test's deadline", hold, bound)
-		return Event{}
 	}
+	return hold.event
 }
 
 func (hold *Hold) wasReached() bool {

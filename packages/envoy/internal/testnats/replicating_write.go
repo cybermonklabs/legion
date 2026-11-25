@@ -38,7 +38,7 @@ func (c *Cluster) MoveStreamLeader(t testing.TB, stream string, i int) {
 	if err != nil {
 		t.Fatalf("encode the step-down request: %v", err)
 	}
-	awaitInfo(t, connectTimeout, fmt.Sprintf("stream %s was not led by %s", stream, want),
+	awaitInfo(t, fmt.Sprintf("stream %s was not led by %s", stream, want),
 		func() (*natsgo.StreamInfo, error) {
 			info, err := js.StreamInfo(stream)
 			if err != nil || info.Cluster == nil || info.Cluster.Leader == want || info.Cluster.Leader == "" {

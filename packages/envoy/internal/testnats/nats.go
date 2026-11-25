@@ -744,6 +744,21 @@ func (b waitEnd) pause() { time.Sleep(b.step(retryInterval)) }
 // String is the end, as a wait's failure names it.
 func (b waitEnd) String() string { return b.end.Format(time.RFC3339Nano) }
 
+// awaitSignal waits for a receive from signal, which its close also gives, until the end of t's
+// wait (boundOf), and reports that end, with false when the end came first: the caller fails t
+// naming what it waited for. With no deadline (bounded false) the wait lasts a day (noDeadline).
+func awaitSignal(t testing.TB, signal <-chan struct{}) (waitEnd, bool) {
+	bound := boundOf(t)
+	deadline, cancel := bound.stepContext(noDeadline)
+	defer cancel()
+	select {
+	case <-signal:
+		return bound, true
+	case <-deadline.Done():
+		return bound, false
+	}
+}
+
 // dial is the options of one connect of the wait, and what its caller runs once the connect has
 // returned a connection (retire). Each server's handshake is bounded by dialTimeout cut to what
 // is left (step), and, when the wait has an end, every server's dial and handshake end by it:
