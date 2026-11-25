@@ -83,9 +83,9 @@ import {
   filterCount,
   flagCount,
   focusedNodeFacts,
-  foldedCounts,
   graphGate,
   graphName,
+  type HeldRow,
   heldUnder,
   NOBODY_WROTE,
   type NodeStateSeed,
@@ -712,10 +712,12 @@ async function expectDetails(page: Page, { seeded }: ProposedPage): Promise<void
   }
 }
 
-/** Every folded row's count is what the tree read holds under it that the page draws, an
- *  overtaken node and what stands under it counted as every node is. A question indexed from a
- *  block stands for the ask it was indexed into as well, and a criterion is counted only where
- *  the page draws one (`criteria`). */
+/** Every branch the page draws open, folded one at a time (`foldEachBranch`), counts what the
+ *  tree read holds under it that Conversation draws, an overtaken node and what stands under it
+ *  counted as every node is, and opens again. A question indexed from a block stands for the ask
+ *  it was indexed into as well, and a criterion is counted only where the page draws one
+ *  (`criteria`). The page draws every branch open on load (part T's R11), so no row draws a count
+ *  until a fold draws it. */
 async function expectFoldedCounts(
   page: Page,
   { answer, key, seeded }: ProposedPage,
@@ -727,23 +729,10 @@ async function expectFoldedCounts(
     [seeded.ids.proposedQuestion, [seeded.proposedAskId]],
   ]);
   const undrawn = noteOwed(criteria) ? undefined : UNDRAWN_KINDS;
-  await expect
-    .poll(
-      async () =>
-        (await foldedCounts(page)).flatMap((row) => {
-          if (row.readId === null) return [];
-          const held = heldUnder(answer, key, row.readId, {
-            alike: asks.get(row.readId),
-            undrawn,
-          });
-          return row.count === held ? [] : [`${row.id} draws ${row.count}, its read holds ${held}`];
-        }),
-      {
-        message:
-          "a folded branch's count is not what its read holds under it, an overtaken node and what stands under it included",
-      }
-    )
-    .toEqual([]);
+  await foldEachBranch(page, answer, key, READER, {
+    held: (readId) => ({ alike: asks.get(readId), undrawn }),
+    including: "an overtaken node and what stands under it included",
+  });
 }
 
 /**
@@ -1921,23 +1910,36 @@ interface ReaderReading {
   readonly texts: readonly { readonly text: string; readonly where: string }[];
 }
 
+/** What `foldEachBranch` reads each branch's count against besides the reader's read. */
+interface BranchCounts {
+  /** What the count of the row drawn for `readId` reads besides that node (`HeldRow`); nothing
+   *  besides it where this is not given. */
+  readonly held?: (readId: string) => HeldRow;
+  /** What a failure names the count as including, after what the reader's read holds under the
+   *  branch; nothing more where this is not given. */
+  readonly including?: string;
+}
+
 /**
  * Folds each branch the page draws open, one at a time, reads the count its row draws once it is
- * folded beside what `answer` holds under it, and opens it again: each branch's count, as the
- * reader's own read makes it.
+ * folded beside what `answer` holds under it (`heldUnder`, with `held`'s `HeldRow` for its read
+ * id), and opens it again: each branch's count, as the reader's own read makes it.
  */
 async function foldEachBranch(
   page: Page,
   answer: IssueTreeRead,
   key: string,
-  who: string
+  who: string,
+  { held = () => ({}), including }: BranchCounts = {}
 ): Promise<FoldedCount[]> {
   // The page opens with every node drawn, so one read of its rows holds every branch.
   const branches = (await treeItemsDrawn(page)).filter(
     (item) => item.expanded === "true" && item.readId !== null
   );
+  const besides = including === undefined ? "" : `, ${including}`;
   const counts: FoldedCount[] = [];
   for (const branch of branches) {
+    const readId = branch.readId ?? "";
     const row = nodeRow(page, branch.id).first();
     await row.getByRole("button", { exact: true, name: CONTROL_LABELS.fold }).click();
     await expect(row, `${who}'s fold of ${branch.id} does not fold it`).toHaveAttribute(
@@ -1947,8 +1949,8 @@ async function foldEachBranch(
     const count = Number(await row.getAttribute("data-folded-count"));
     expect(
       count,
-      `${who}'s fold of ${branch.id} does not count what ${who}'s tree read holds under it`
-    ).toBe(heldUnder(answer, key, branch.readId ?? ""));
+      `${who}'s fold of ${branch.id} does not count what ${who}'s tree read holds under it${besides}`
+    ).toBe(heldUnder(answer, key, readId, held(readId)));
     counts.push({ count, id: branch.id, readId: branch.readId });
     await row.getByRole("button", { exact: true, name: CONTROL_LABELS.unfold }).click();
     await expect(row, `${who}'s fold of ${branch.id} does not open again`).toHaveAttribute(

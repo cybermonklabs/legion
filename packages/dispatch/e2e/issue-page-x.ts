@@ -228,6 +228,13 @@ const ITEM_BLOCKS: Readonly<Record<string, true>> = {
  *  (`HeldRow.undrawn`) until a gate finds the page drawing the kind. */
 export const UNDRAWN_KINDS: Readonly<Record<string, true>> = { criterion: true };
 
+/** The kinds Conversation draws a row of only where a row stands under one (root R9), as
+ *  `presets.ts`' `NO_CONVERSATION_ROW` and `conversationView`'s prune keep them: a plan task and a
+ *  result. Every count reading of part X's rows is made on Conversation, at an address that names
+ *  no such node, so a count counts one only where a node it counts stands under it, and walks on
+ *  through it to what stands under it either way. */
+const NO_CONVERSATION_ROW: Readonly<Record<string, true>> = { plan_task: true, result: true };
+
 /** What a count of the nodes under a row reads besides the row's own node. */
 export interface HeldRow {
   /** The ids of the other nodes of the read the page draws in this row's place. A question the
@@ -240,10 +247,11 @@ export interface HeldRow {
 }
 
 /** Every node of issue `key` in `answer` under the node `readId`, and under each of `alike`, at
- *  any depth, by the read's `parent`, that the page draws as a row: the tree each count walks.
+ *  any depth, by the read's `parent`, that Conversation draws as a row: the tree each count walks.
  *  The walk passes through a node the page draws no row for - a block of an ask, a comment or a
  *  message, which the page draws inside its item's row, or a node of an `undrawn` kind - to what
- *  stands under it. */
+ *  stands under it, and through a plan task or a result (`NO_CONVERSATION_ROW`), which it counts
+ *  only where a node it counts stands under it. */
 function underIn(
   answer: IssueTreeRead,
   key: string,
@@ -251,23 +259,29 @@ function underIn(
   { alike = [], undrawn }: HeldRow = {}
 ): IssueTreeNode[] {
   const children = childrenIn(answer);
-  const found: IssueTreeNode[] = [];
   const seen = new Set<string>([readId, ...alike]);
-  const walk = (id: string): void => {
+  const walk = (id: string): IssueTreeNode[] => {
+    const found: IssueTreeNode[] = [];
     for (const child of children.get(id) ?? []) {
       if (!ownOf(child, key) || seen.has(child.id)) continue;
       seen.add(child.id);
-      if (ITEM_BLOCKS[child.supertag] !== true && undrawn?.[child.supertag] !== true) {
+      const under = walk(child.id);
+      if (
+        ITEM_BLOCKS[child.supertag] !== true &&
+        undrawn?.[child.supertag] !== true &&
+        (NO_CONVERSATION_ROW[child.supertag] !== true || under.length > 0)
+      ) {
         found.push(child);
       }
-      walk(child.id);
+      found.push(...under);
     }
+    return found;
   };
-  for (const id of [readId, ...alike]) walk(id);
-  return found;
+  return [readId, ...alike].flatMap((id) => walk(id));
 }
 
-/** How many nodes the branch of `readId` holds in `answer`: what its row's folded count counts. */
+/** How many nodes the branch of `readId` holds in `answer` that Conversation draws: what its row's
+ *  folded count counts there. */
 export function heldUnder(
   answer: IssueTreeRead,
   key: string,
@@ -1070,19 +1084,6 @@ export interface FoldedCount {
   readonly count: number;
   readonly id: string;
   readonly readId: string | null;
-}
-
-/** Every folded row's count, in drawing order. */
-export function foldedCounts(page: Page): Promise<FoldedCount[]> {
-  return issuePage(page)
-    .locator("[data-node-row][data-folded-count]")
-    .evaluateAll((rows) =>
-      rows.map((row) => ({
-        count: Number(row.getAttribute("data-folded-count")),
-        id: row.getAttribute("data-node-id") ?? "",
-        readId: row.getAttribute("data-node-read-id"),
-      }))
-    );
 }
 
 /** The count the control of `preset` draws, or NaN where it draws none at this width. Every
