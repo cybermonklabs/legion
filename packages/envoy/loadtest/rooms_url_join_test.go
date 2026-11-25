@@ -56,20 +56,31 @@ func TestTheRoomsReadsGoToTheirRoutesJoinedOntoTheEndpointURLs(t *testing.T) {
 // refuses (an invalid escape in its path), with redacttest's credentials in its user information
 // and its query, gives the window's reading a reason in fixed words, with none of the URL
 // (<read>-unparsed), where the reason held http.NewRequest's error, which quotes it whole (twin).
-// Captures loadtest.rooms-url/<read>-unparsed.
+// An endpoint URL that parses, whose joined URL, as url.URL.String writes it, url.Parse refuses
+// (an IPv6 zone escape), gives a reason in fixed words too (<read>-reparsed), where getOK answered
+// http.NewRequest's error for the joined URL, which its twin shows holds the credentials. Captures
+// loadtest.rooms-url/<read>-<case>.
 func TestARoomsEndpointURLThatDoesNotJoinPrintsNoneOfIt(t *testing.T) {
-	unparsed, _ := joinRefusedURLs("/endpoint")
-	joinRequireTwins(t, unparsed, "", "/stats")
-	r := readWindow(context.Background(), endpoints{proxyStats: unparsed, pprof: unparsed, pg: joinRoomsPG})
-	for _, c := range []struct{ name, said, want string }{
-		{"proxy", r.proxyErr, "the proxy serves no wire counts: GET /stats: the URL it is joined onto is not an absolute URL with a host (it is not printed)"},
-		{"pprof", r.roomsErr, notServed + " (GET /debug/vars: the URL it is joined onto is not an absolute URL with a host (it is not printed))"},
+	unparsed, reparsed := joinRefusedURLs("/endpoint")
+	joinRequireTwins(t, unparsed, reparsed, "/stats")
+	const notParsed = "the endpoint's URL joined with the route does not parse (it is not printed)"
+	for _, c := range []struct{ name, url, proxy, pprof string }{
+		{"unparsed", unparsed,
+			"the proxy serves no wire counts: GET /stats: the URL it is joined onto is not an absolute URL with a host (it is not printed)",
+			notServed + " (GET /debug/vars: the URL it is joined onto is not an absolute URL with a host (it is not printed))"},
+		{"reparsed", reparsed, "the proxy serves no wire counts: " + notParsed, notServed + " (" + notParsed + ")"},
 	} {
-		t.Run(c.name+"-unparsed", func(t *testing.T) {
-			redacttest.RequireNoPiece(t, "loadtest.rooms-url/"+c.name+"-unparsed", c.said)
-			if c.said != c.want {
-				t.Errorf("readWindow's reason = %q; want %q", c.said, c.want)
-			}
-		})
+		r := readWindow(context.Background(), endpoints{proxyStats: c.url, pprof: c.url, pg: joinRoomsPG})
+		for _, read := range []struct{ name, said, want string }{
+			{"proxy", r.proxyErr, c.proxy},
+			{"pprof", r.roomsErr, c.pprof},
+		} {
+			t.Run(read.name+"-"+c.name, func(t *testing.T) {
+				redacttest.RequireNoPiece(t, "loadtest.rooms-url/"+read.name+"-"+c.name, read.said)
+				if read.said != read.want {
+					t.Errorf("readWindow's reason = %q; want %q", read.said, read.want)
+				}
+			})
+		}
 	}
 }

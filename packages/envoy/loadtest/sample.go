@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -575,11 +576,14 @@ var shortClient = &http.Client{Timeout: 10 * time.Second}
 
 // getOK GETs url with client, until ctx ends; an answer other than 200 is an error, its words
 // printed as the rule reads them. A 200's body is data the caller samples (redact.StreamAnswer),
-// which closing the stream closes.
+// which closing the stream closes. url is a route joined onto an endpoint's URL; one that does not
+// parse (url.URL.String can write text url.Parse refuses, such as an IPv6 zone escape) is refused
+// in fixed words: url.Parse's error, which http.NewRequest's carries, quotes the URL whole, user
+// information and query included.
 func getOK(ctx context.Context, client *http.Client, url string) (io.ReadCloser, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return nil, err
+		return nil, errors.New("the endpoint's URL joined with the route does not parse (it is not printed)")
 	}
 	resp, err := client.Do(req)
 	if err != nil {
