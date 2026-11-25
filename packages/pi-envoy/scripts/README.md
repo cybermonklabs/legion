@@ -395,9 +395,10 @@ SKILL_SCENARIOS_SOURCE=<directory under sources/> ./rig.sh batch spec-writing 1 
 The scenarios and every input are in the script's header (`./rig.sh` with no arguments prints it),
 and each scenario's scoring rule is on the `score.ts` function that scores it. It needs a model
 route (the gateway, an Anthropic key file, or a provider block of the operator's own models.yml).
-A batch also needs Docker, unless both `SKILL_SCENARIOS_POSTGRES_URL` and
-`SKILL_SCENARIOS_NATS_URL` are set: the batch then uses those two servers, starts no container,
-and needs `psql` and `python3` instead, to read the Postgres URL with libpq and to reach the
+A batch needs Docker only where it starts the Postgres and NATS containers. Where both
+`SKILL_SCENARIOS_POSTGRES_URL` and `SKILL_SCENARIOS_NATS_URL` are set, as in a Legion pod, which
+has no Docker, the batch uses those two servers, starts no container, and needs `psql` and
+`python3` instead, to read the Postgres URL with libpq and to reach the
 server. `SKILL_SCENARIOS_POSTGRES_URL` must be a `postgres://` or `postgresql://` URL of the
 Postgres on this machine. Each run's Dispatch gets the connection string libpq reads of it, for
 the run's own database (`run_database_url`), and the two readers that open that database with

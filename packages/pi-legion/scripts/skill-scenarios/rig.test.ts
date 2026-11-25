@@ -1800,9 +1800,10 @@ describe("cmd_run and its label's services", () => {
   });
 });
 
-// Every run's agent starts in a detached tmux session (rig.sh's launch). A worker pod's image
-// carries no tmux, and a tmux binary put there alone cannot load libevent_core-2.1.so.7, and a
-// batch met either only mid-run, once its databases and services were up. So a batch and a run
+// Every run's agent starts in a detached tmux session (rig.sh's launch). A pod on an older image
+// carried no tmux, and a tmux binary put there alone could not load libevent_core-2.1.so.7; the
+// current worker image carries tmux (3.5a, read 2026-11-25). A batch met either only mid-run, once
+// its databases and services were up. So a batch and a run
 // check their tmux before they make anything (tmux_ready): `tmux -V`, then one detached session
 // started and killed on a socket of the check's own. Each row puts a `tmux` stand-in of its own
 // first on PATH, or gives a PATH with no tmux on it at all, and holds a refused command's work
