@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -91,6 +92,29 @@ func (e *fixEnd) planAndGate(first phase.Phase, steps ...string) {
 	artifact := r.givePlan(steps...)
 	r.fact("plan-registered", "%s's plan.md %s takes steps %q", e.key, artifact, strings.Join(steps, " "))
 	r.openGate(first)
+}
+
+// testerAloneAndGate is the plan of one task whose one step is the tester's, and the person
+// approving the spec, after which the task stands in testing. The registration route refuses a
+// task with no implementer step in this release (plan.Supported), so the owner's plan.md is put in
+// Dispatch and its rows are written into the daemon's store as the route's fact writes an owner's
+// plan (the engine's writeVersion): they stand for a stored plan the route cannot write.
+func (e *fixEnd) testerAloneAndGate() {
+	r := e.at()
+	r.t.Helper()
+	artifact := r.document("plan.md", planOf("tester"))
+	if err := store.Transact(context.Background(), r.st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+		version := record.PlanVersion{Issue: e.key, Generation: 1, Version: 1, ArtifactID: artifact, Source: record.PlanSourceOwner,
+			GivenBy: string(r.token(claim.RoleArchitect)), GivenAt: time.Now().UTC()}
+		task := record.PlanTask{Issue: e.key, Generation: 1, Task: "a", PlanVersion: 1, BlockText: "Make the change the issue asks for.",
+			State: record.TaskWaiting}
+		steps := []record.PlanStep{{Issue: e.key, Generation: 1, Task: "a", Position: 1, Role: "tester", Type: "testing"}}
+		return r.records.PutPlan(ctx, tx, version, []record.PlanTask{task}, steps)
+	}); err != nil {
+		r.t.Fatalf("write the plan rows of %s's tester alone: %v", e.key, err)
+	}
+	r.fact("plan-seeded", "%s's plan.md %s takes the step tester alone, its rows written into the daemon's store", e.key, artifact)
+	r.openGate(phase.Testing)
 }
 
 // opensAtX is the pull request opening at X with unit running there, as CI starts on the push that
@@ -627,7 +651,7 @@ func TestVFixEnd(t *testing.T) {
 	})
 
 	t.Run("C, a tester alone, starts no fix, and its owner is told once", func(t *testing.T) {
-		c.planAndGate(phase.Testing, "tester")
+		c.testerAloneAndGate()
 		c.opensAtX()
 		c.testerRecordsK1()
 		c.testerCompletes()
