@@ -2646,7 +2646,11 @@ live_answer() {
         live_read "Dispatch, a stub" "$scratch/out" sh -c 'printf "%s\n" "$1"; exit 1' sh "$1"
     ) >/dev/null 2>&1
 }
-for answer in 'not found' 'NOT_FOUND: not found' 'No block nosuchblock in dispatch://INFRA-3134/artifact/plan-md.' 'document "no-such-document" not found by slug; this issue'"'"'s 11 documents and files include: plan-md (plan.md)'; do
+# Dispatch printed "not found" with a detail after "; " for an ask, a comment or a message it
+# does not hold on 2026-11-25, which ended case 114's record, an ask Dispatch does not hold, as
+# a run that could not run, in the fresh --self-test of 0e78f7e1; that wording is an answer too,
+# and "not founded" is no such wording.
+for answer in 'not found' 'NOT_FOUND: not found' 'NOT_FOUND: not found; INFRA-1484 holds no ask 00000000-0000-0000-0000-000000000000' 'No block nosuchblock in dispatch://INFRA-3134/artifact/plan-md.' 'document "no-such-document" not found by slug; this issue'"'"'s 11 documents and files include: plan-md (plan.md)'; do
     live_answer "$answer"
     status=$?
     if [ "$status" = 1 ]; then
@@ -2655,7 +2659,7 @@ for answer in 'not found' 'NOT_FOUND: not found' 'No block nosuchblock in dispat
         case_failed "live_read reads Dispatch's '$answer' as an answer that it holds no such node" "live_read ended $status"
     fi
 done
-for answer in 'Dispatch at http://127.0.0.1:1 is unreachable' 'UNAUTHORIZED: the token is not valid' 'NOT_FOUND: no route POST /api/v1/x'; do
+for answer in 'Dispatch at http://127.0.0.1:1 is unreachable' 'UNAUTHORIZED: the token is not valid' 'NOT_FOUND: no route POST /api/v1/x' 'NOT_FOUND: not founded'; do
     live_answer "$answer"
     status=$?
     if [ "$status" = 2 ]; then

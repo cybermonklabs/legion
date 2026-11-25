@@ -658,9 +658,10 @@ ioc_env_check_frozen() {
 # rather than a record. A refusal is printed on stdout, so its text is read as well as
 # the status: "not found", a missing block, a missing document, an unreachable server, each
 # with or without the refusal's code before it ("NOT_FOUND: not found"), as the CLI of the
-# worker image prints it from 2026-11-17.
+# worker image prints it from 2026-11-17, and "not found" with a detail after "; ", as
+# Dispatch prints it for an ask, a comment or a message it does not hold from 2026-11-25.
 ioc_env_is_refusal() {
-    head -1 "$1" | grep -qE '^(NOT_FOUND: )?(not found$|No block |document "[^"]*" not found|Dispatch at .* is unreachable|dispatch [a-z-]+ was not called)'
+    head -1 "$1" | grep -qE '^(NOT_FOUND: )?(not found(; |$)|No block |document "[^"]*" not found|Dispatch at .* is unreachable|dispatch [a-z-]+ was not called)'
 }
 
 # ioc_env_record_command <ref>; the dispatch command that reads a record, an artifact by

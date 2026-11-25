@@ -2048,9 +2048,11 @@ PY
 # found", "No block", "no version N of", "document ... not found", or its refusal to read a
 # reference it does not take ("dispatch read was not called"), each measured against
 # Dispatch on 2026-11-15, each with or without the refusal's code before it ("NOT_FOUND: not
-# found"), which the CLI of the worker image printed from 2026-11-17. A command that failed
-# for the run's own machine and not for the source writes as the first line of its stderr
-# "check.sh stop environment: " and what happened, as count_run does for a count.py the
+# found"), which the CLI of the worker image printed from 2026-11-17, and "not found" with a
+# detail after "; ", as "NOT_FOUND: not found; INFRA-1484 holds no ask <id>", which Dispatch
+# printed for an ask, a comment or a message it does not hold on 2026-11-25. A command that
+# failed for the run's own machine and not for the source writes as the first line of its
+# stderr "check.sh stop environment: " and what happened, as count_run does for a count.py the
 # machine ended by a signal: the mode cannot run, of the kind environment, its last line
 # that line's rest, and the source is not named as one that did not answer. Anything else
 # that fails, a Dispatch that is unreachable, a curl or git transport error, a count.py that
@@ -2059,7 +2061,7 @@ PY
 # precedence of the header. The command reads /dev/null as its input, so a reader that reads
 # its input, as a dispatch or a git can, never takes the lines a loop around live_read has
 # not reached (case 241).
-LIVE_ANSWER_NO='^(NOT_FOUND: )?(not found$|No block |no version [0-9]+ of |document "[^"]*" not found|dispatch [a-z-]+ was not called)'
+LIVE_ANSWER_NO='^(NOT_FOUND: )?(not found(; |$)|No block |no version [0-9]+ of |document "[^"]*" not found|dispatch [a-z-]+ was not called)'
 LIVE_STOP_ENVIRONMENT='check.sh stop environment: '
 live_read() {
     local source="$1" file="$2" stop
