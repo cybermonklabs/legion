@@ -1,7 +1,7 @@
 kind: Added
 body: |-
   `LegionPodUpdateRequest` and `LegionPodUpdateResponse`, the body and the answer of the daemon's
-  `POST /legion/v1/issues/pod-update` at daemon API contract 270: the controller's grant and an
+  `POST /legion/v1/issues/pod-update` at daemon API contract 292: the controller's grant and an
   issue, answered with the update round over that issue's pod (`round`), the `reasons` it records
   and whether the request `opened` it. Every field of the answer is optional, since no plugin code
   reads one, and the daemon's table of answers (`answers.json`) names it `pod-update`.

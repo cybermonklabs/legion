@@ -190,7 +190,7 @@
       "POST /legion/v1/agents/suspend",
       "POST /legion/v1/agents/resume"
     ],
-    "since": 270,
+    "since": 292,
     "noBody": false
   },
   {
@@ -198,7 +198,7 @@
     "routes": [
       "POST /legion/v1/issues/pod-update"
     ],
-    "since": 270,
+    "since": 292,
     "noBody": false
   }
 ]

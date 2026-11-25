@@ -155,6 +155,13 @@ type podUpdateRig struct {
 	// asked is every update-ask row the sweep has written, by id, kept once read: the lane
 	// deletes each row it finishes, as the outbox does, and asks reads every row ever written.
 	asked map[int64]record.UpdateAsk
+	// keptSince is when the API server made the issue's Sandbox, where that Sandbox owns the
+	// issue's kept volume, as a pod's launcher session reads it (sandbox's keptVolumeSince), and
+	// the zero time while the issue's pods have volumes of their own. While it is set, the start of
+	// a role into a pod through startInPod, displacedInto, startsFreshInto, retriesInto or wakesInto
+	// asks the store what that pod's launcher asks (launcherStarts); intoPod,
+	// relaunchedUnregistered and runParkedLaunch ask nothing.
+	keptSince time.Time
 }
 
 func newPodUpdateRig(t *testing.T, roles ...podUpdateRole) *podUpdateRig {
@@ -174,9 +181,15 @@ func newPodUpdateRig(t *testing.T, roles ...podUpdateRole) *podUpdateRig {
 // openSupervision hands the daemon's one limiter to its machines. A machine takes its deps when the
 // boot restores it, so the pacing is set before that, as beforeDecision is. The zero pace is the
 // pacing off: every launch runs where it is raised.
+//
+// paused is the project's pause flag every machine reads (supervise.Deps.Paused), as
+// openSupervision hands the daemon's pause service to its machines: the open pause's id, or
+// false while the project runs. It is set before the boot restores the first machine, as the
+// pacing is. nil is a project that is never paused.
 type podUpdateRigOptions struct {
 	beforeDecision func(claim.Token, supervise.Event)
 	wakePace       supervise.WakePace
+	paused         func() (int64, bool)
 }
 
 // newPodUpdateRigWith is newPodUpdateRig with the machines built with opts.
@@ -277,6 +290,7 @@ func newPodUpdateRigWith(t *testing.T, opts podUpdateRigOptions, roles ...podUpd
 		NoPluginInstall:    func(c supervise.Claim) bool { return noPluginInstall(s.cfg, c) },
 		RefreshGate:        supervise.NewRefreshGate(0),
 		WakePace:           opts.wakePace,
+		Paused:             opts.paused,
 		// A firing timer and a prompt's send take a hold mark of their own, as openSupervision
 		// sets for the daemon, so the guard sees the machines as it does in production.
 		Worker: store.ForConcurrentWorker,
@@ -611,8 +625,23 @@ func (r *podUpdateRig) startInPod(role claim.Role, pod string) {
 		}
 	}
 	r.rt.ScriptSpawn(fake.SpawnResult{Locator: *podUpdateLocator(token, podUpdateIssue, pod)})
+	r.launcherStarts(pod)
 	r.handle(role, supervise.RequestSpawn{Claim: token})
 	r.registerInto(role, pod)
+}
+
+// launcherStarts is what the launcher of pod asks of the store at a role's start there, before the
+// role runs, where the issue's Sandbox owns a kept volume (keptSince): the record of a role's start
+// in a pod of a kept volume, which records pod with its volume (sandbox's launchers.recordKeptPod,
+// store.StartKeptPod). It asks nothing where the issue's pods have volumes of their own.
+func (r *podUpdateRig) launcherStarts(pod string) {
+	r.t.Helper()
+	if r.keptSince.IsZero() {
+		return
+	}
+	if err := r.st.StartKeptPod(r.ctx, podUpdateProject, podUpdateIssue, pod, r.keptSince); err != nil {
+		r.t.Fatalf("the launcher of pod %s asked the store to record its start in a pod of the kept volume: %v", pod, err)
+	}
 }
 
 // displacedInto is the role's process ending with the pod it ran in and the daemon starting the
@@ -632,6 +661,7 @@ func (r *podUpdateRig) displacedInto(role claim.Role, pod string) {
 	r.conns.Register(token, conn)
 	r.workers[role] = conn
 	r.rt.ScriptResume(fake.SpawnResult{Locator: *podUpdateLocator(token, podUpdateIssue, pod)})
+	r.launcherStarts(pod)
 	r.handle(role, supervise.RuntimeObservation{Observation: runtime.Observation{
 		Locator: *ended, Kind: runtime.Gone, At: r.clock.Now(), Displaced: true,
 	}})
@@ -1278,9 +1308,9 @@ func TestAPodGoneFromAKeptVolumeSaysTheWorkStays(t *testing.T) {
 	const opened = "The pod that ran this issue's roles is gone. The daemon opened an update round over that pod (" + podUpdateRound + "). " +
 		"The reasons were: " + podUpdateDrift + ". The pod went before the round was over.\n\n"
 	const restarted = "\n\nThe daemon starts each role again, in the same session, on a new pod. Each role must read its issue branch at origin to see the work that it pushed."
-	const lost = opened + "These roles did not answer the update ask before the pod went: implementer (ready). " +
+	const lost = opened + "These roles did not answer the update round before the pod went: implementer (ready). " +
 		"The pod's disk went with the pod. Work that these roles did not push is lost." + restarted
-	const stays = opened + "These roles did not answer the update ask before the pod went: implementer (ready). " +
+	const stays = opened + "These roles did not answer the update round before the pod went: implementer (ready). " +
 		"The pod's disk is a kept volume, and the volume is still there. Work that these roles did not push is on that volume. " +
 		"The next pod of this issue mounts the volume." + restarted
 	for _, tc := range []struct {
@@ -1812,7 +1842,7 @@ func (r *podUpdateRig) restart() *podUpdateRig {
 	}
 	next := &podUpdateRig{t: r.t, ctx: r.ctx, sup: sup, rt: rt, pool: r.pool, records: r.records, clock: r.clock,
 		conns: conns, workers: workers, tokens: r.tokens, st: st, logs: r.logs, log: r.log,
-		listener: r.listener, asked: r.asked}
+		listener: r.listener, asked: r.asked, keptSince: r.keptSince}
 	next.lane = &outbox{project: podUpdateProject, notices: next.listener, supervisor: sup, log: r.log}
 	next.s = s
 	return next

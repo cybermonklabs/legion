@@ -7,8 +7,8 @@
     "startedAt": "2026-09-22T09:15:02Z"
   },
   "contract": {
-    "daemon": 270,
-    "caller": 270
+    "daemon": 292,
+    "caller": 292
   },
   "admission": {
     "cap": 5,
@@ -750,6 +750,12 @@
   },
   "agentSecretsLogin": {
     "state": "issued"
+  },
+  "dispatchCredential": {
+    "session": "legion-daemon:LEGION",
+    "transitionLaunches": 2,
+    "lastTransitionLaunchAt": "2026-09-22T09:17:03Z",
+    "liveLaunchesWithDispatchToken": 3
   },
   "capabilities": [
     {

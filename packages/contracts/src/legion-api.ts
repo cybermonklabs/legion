@@ -1126,6 +1126,22 @@ const legionAgentSecretsLoginView = z.object({
   state: z.string().optional(),
 });
 
+/** `api.DispatchCredentialView` — the daemon's Dispatch credential under `dispatch_token_broker`
+ * (contract 275): `session`, the session its own Dispatch calls run under
+ * (`legion-daemon:<PROJECT>`); `transitionLaunches`, the launches since the daemon's boot that
+ * carried the transition token of `dispatch_token_transition_file`, and `lastTransitionLaunchAt`,
+ * when the latest of them was sent, null before the first; and `liveLaunchesWithDispatchToken`,
+ * the live launches whose start carried a Dispatch token, whichever daemon started them. A
+ * deployment removes `dispatch_token_transition_file` once the last is 0. Never a token. No plugin
+ * code reads a field of it (`LEGION_ANSWER_READS` names none), so each is optional, and a value
+ * that is present is still held to its type. */
+const legionDispatchCredentialView = z.object({
+  session: nonEmptyString.optional(),
+  transitionLaunches: z.number().int().nonnegative().optional(),
+  lastTransitionLaunchAt: timestamp.nullable().optional(),
+  liveLaunchesWithDispatchToken: z.number().int().nonnegative().optional(),
+});
+
 /** `api.CapabilityState` — one row of the deployment's capability report
  * (`capabilities.Deployment.Report`), in the table's order: `present`, `unchecked` (no probe has
  * checked an image row, or no session has reported a live row), `withheld` (the issue that withholds it, cited in
@@ -1447,7 +1463,11 @@ const legionPaused = z.object({
  * listed (contract 228). The daemon writes it on every body, its two lists empty while nothing is
  * open, and it is optional for the reason `wakesWaiting` is: the route strips it for a caller
  * below 228, read the same way (`api.stateFor`, `withoutIntakeGiveUps`), since a reader before
- * 228 refuses the key whether its lists are empty or not. */
+ * 228 refuses the key whether its lists are empty or not.
+ * `dispatchCredential` is the daemon's Dispatch credential and the two counts of the Dispatch
+ * tokens its launches hand out, written only under `dispatch_token_broker` (contract 275); the
+ * route strips it for a caller below 275, read the same way (`api.stateFor`,
+ * `withoutDispatchCredential`). */
 export const LegionStateResponse = z.object({
   daemon: daemonInfo.optional(),
   contract: legionContract.optional(),
@@ -1462,6 +1482,7 @@ export const LegionStateResponse = z.object({
   lastPause: legionEndedPause.optional(),
   controllerLocator: legionControllerLocator.optional(),
   agentSecretsLogin: legionAgentSecretsLoginView.optional(),
+  dispatchCredential: legionDispatchCredentialView.optional(),
   capabilities: z.array(legionCapabilityState).optional(),
   repositories: legionRepositories.optional(),
   settings: legionSettings.optional(),
@@ -1843,7 +1864,7 @@ const legionDeliveryView = z.object({
  * before migration 0038; `released` is one whose idle issue pod the daemon released, which keeps
  * the claim's phase and its pending task until the next wake for its role; an `operator` and a
  * `controller` one hold against the daemon's rules, ranked in that order: the controller's
- * `resume_agent` lifts its own and never the operator's (contract 270). */
+ * `resume_agent` lifts its own and never the operator's (contract 292). */
 const legionSuspendedBy = z.enum([
   "unknown",
   "operator",
@@ -1857,7 +1878,7 @@ const legionSuspendedBy = z.enum([
  * suspend, resume_agent, compact and fresh session of one agent, named by its issue and role)
  * answer: stop, retry, suspend and resume
  * (`POST /legion/v1/agents/stop|retry|suspend|resume`, each taking `LegionClaimRequest`, contract
- * 270): the claim's `state` after the request — `retired` after a stop; `suspended` after a
+ * 292): the claim's `state` after the request — `retired` after a stop; `suspended` after a
  * suspension that landed, and still `working` or `launching` with
  * `suspensionHeld` after one held for the agent's turn or its ready; `launching` after a resume or
  * a retry the claim's machine ran; and still `failed` or `retired` after a retry of a phase worker
@@ -1866,11 +1887,11 @@ const legionSuspendedBy = z.enum([
  * controller's own, which its `resume_agent` and the operator's resume lift; and `operator` for
  * the operator's, which only the operator lifts. These
  * routes are the one session-facing surface that names a suspender, since no plugin below
- * contract 270 calls them; the state does not ("no session-facing response carries suspendedBy"
+ * contract 292 calls them; the state does not ("no session-facing response carries suspendedBy"
  * in legion-api.test.ts). The `legion` tool hands the answer to its agent whole, which is no
  * read, so the reader takes every field as optional (`LEGION_ANSWER_READS`), `state` among them,
  * though the daemon always writes it. The three enumerations are the daemon's table's
- * (`enumerated-fields.json`, the `agent-action` rows), each whole at contract 270. */
+ * (`enumerated-fields.json`, the `agent-action` rows), each whole at contract 292. */
 export const LegionAgentActionResponse = z.object({
   state: z.enum(LEGION_CLAIM_STATES).optional(),
   suspendedBy: legionSuspendedBy.optional(),
@@ -1879,7 +1900,7 @@ export const LegionAgentActionResponse = z.object({
 });
 
 /** `api.PodUpdateRequest`, the project's controller asking the daemon to replace the pod one issue
- * of its project runs in (`POST /legion/v1/issues/pod-update`, contract 270): its grant and the
+ * of its project runs in (`POST /legion/v1/issues/pod-update`, contract 292): its grant and the
  * issue. The daemon opens its update round over that pod as a drift opens one: each role of the
  * pod is asked to push its work and answer `ready_for_update`, and the pod is replaced once each
  * has answered, no turn runs and each role's report since its last turn names no running

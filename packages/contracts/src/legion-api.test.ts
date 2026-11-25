@@ -170,13 +170,13 @@ const schemas: Record<string, z.ZodType> = {
   "issue-status.json": LegionEmptyResponse,
   "fresh-session.json": LegionFreshSessionResponse,
   "compact.json": LegionCompactResponse,
-  // Four of the controller's six agent actions, stop, retry, suspend and resume (contract 270):
+  // Four of the controller's six agent actions, stop, retry, suspend and resume (contract 292):
   // the claim's state after each, and who holds a suspension over the agent.
   "agent-stop.json": LegionAgentActionResponse,
   "agent-retry.json": LegionAgentActionResponse,
   "agent-suspend.json": LegionAgentActionResponse,
   "agent-resume.json": LegionAgentActionResponse,
-  // The controller's request for the replacement of one issue's pod (contract 270): the update
+  // The controller's request for the replacement of one issue's pod (contract 292): the update
   // round over it, its reasons, and whether the request opened it.
   "issue-pod-update.json": LegionPodUpdateResponse,
   "gate-register.json": LegionEmptyResponse,
@@ -464,7 +464,7 @@ const ANSWER_SCHEMAS: Record<string, z.ZodType> = {
   "issue-record": LegionIssueRecordResponse,
   register: LegionRegisterResponse,
   "intake-replay": LegionIntakeReplayResponse,
-  // Four of the controller's six agent actions, stop, retry, suspend and resume (contract 270):
+  // Four of the controller's six agent actions, stop, retry, suspend and resume (contract 292):
   // the claim's `state`, and who holds a suspension over it.
   "agent-action": LegionAgentActionResponse,
 };
@@ -2819,15 +2819,16 @@ test("a reader at contract 152 parses the repositories block served below 202", 
   // contract below the 201 the caller states (`recordedContractAtOrBelow`), INFRA-4605's, which
   // moved no answer's shape, and the lowest plugin contract reports the claims of the snapshot the
   // route projected the body from, a pod at 201, which `state.json`'s own fixture does not hold.
-  // Six bands stand above 199: the repositories block's at 202; contract 220's, which takes
+  // Seven bands stand above 199: the repositories block's at 202; contract 220's, which takes
   // `plan` off each assignment; the intake's give-ups' at 228, so the narrowing leaves
   // `intakeGiveUps` off; the pod hold's at 246, which leaves `podHold` off every issue
   // (`withoutPodHold`); contract 250's, which takes `priority` off each issue and off its
-  // `waitingLine`; and contract 256's, which takes `lastDeathAt` and `lastStartFailureAt` off each
-  // claim view; so the golden's issues, rows and claim views are compared without them. One value
-  // strip stands above 199 as well: `caches`, the source of the repository-cache-room row, arrived
-  // at contract 213, so that row is served here without its `source`, every other field of it and
-  // every other row as the state golden holds them.
+  // `waitingLine`; contract 256's, which takes `lastDeathAt` and `lastStartFailureAt` off each
+  // claim view; and contract 275's, which takes `dispatchCredential` off the state; so the
+  // golden's issues, rows and claim views are compared without them. One value strip stands above
+  // 199 as well: `caches`, the source of the repository-cache-room row, arrived at contract 213,
+  // so that row is served here without its `source`, every other field of it and every other row
+  // as the state golden holds them.
   const { daemonApiVersion } = z
     .object({ daemonApiVersion: z.number() })
     .parse(fixture("version.json"));
@@ -2848,6 +2849,7 @@ test("a reader at contract 152 parses the repositories block served below 202", 
     repositories: _block,
     contract: _mark,
     lowestPluginContract: _lowest,
+    dispatchCredential: _credential,
     intakeGiveUps: _giveUps,
     ...rest
   } = fixtureBody("state.json");
@@ -2921,7 +2923,7 @@ const operatorSchemas: Record<string, true> = {
 /** The one session-facing exception: four of the controller's six agent actions
  * (`POST /legion/v1/agents/stop|retry|suspend|resume`) answer who holds a suspension,
  * because those routes are where the caller reads whether its own resume_agent lifts it. The
- * reason the guard exists does not reach them: they arrived with contract 270, so only a plugin at
+ * reason the guard exists does not reach them: they arrived with contract 292, so only a plugin at
  * that contract or later calls them, and no reader of these bodies predates the key. The schema
  * and the four fixtures it pins are named here, and nothing else; a new session-facing body that
  * names a suspender still fails the walk below. */
@@ -2973,7 +2975,7 @@ function schemaKeys(
 // session reads whatever this daemon serves with the schema of its own contract, so a key no
 // older contract knows refuses the whole body at a plugin whose answer side predates INFRA-1048,
 // and is dropped at every plugin after it, which loses the field rather than the body.
-// `suspendedBy` is served to the operator's bearer and, from contract 270, to the controller's four
+// `suspendedBy` is served to the operator's bearer and, from contract 292, to the controller's four
 // agent actions (agentActionSchemas), and nowhere else; this holds that for every schema the
 // module exports, present and future.
 test("no session-facing response carries suspendedBy", () => {
@@ -3181,6 +3183,46 @@ test("the state golden counts the claims the stale-plugin lane has left, and the
   for (const refused of [-1, 1.5, "4", null]) {
     expect(
       LegionStateResponse.safeParse({ ...state, claimsToRefresh: refused }).success
+    ).toBeFalse();
+  }
+});
+
+// The daemon's Dispatch credential under `dispatch_token_broker` (contract 275): the golden names
+// the daemon's session and the two counts a deployment reads before it removes
+// `dispatch_token_transition_file`, and the time of the last transition launch is null before the
+// first. The key is not required: a daemon without the setting writes none, and a daemon at this
+// contract leaves it off the state it serves a caller older than 275, whether the caller states
+// its contract or is read from its pod (`api.stateFor`, `withoutDispatchCredential`). No plugin
+// reads a field of it, so each field is optional; what is refused is a count that is not a whole
+// number of launches, or an empty session.
+test("the state golden names the daemon's Dispatch credential, and the key may be absent", () => {
+  const state = fixture("state.json") as Record<string, unknown>;
+  expect(LegionStateResponse.parse(state).dispatchCredential).toEqual({
+    session: "legion-daemon:LEGION",
+    transitionLaunches: 2,
+    lastTransitionLaunchAt: "2026-09-22T09:17:03Z",
+    liveLaunchesWithDispatchToken: 3,
+  });
+  const credential = state.dispatchCredential as Record<string, unknown>;
+  expect(
+    LegionStateResponse.parse({
+      ...state,
+      dispatchCredential: { ...credential, transitionLaunches: 0, lastTransitionLaunchAt: null },
+    }).dispatchCredential?.lastTransitionLaunchAt
+  ).toBeNull();
+
+  const { dispatchCredential: _withoutTheCredential, ...stripped } = state;
+  const served = LegionStateResponse.safeParse(stripped);
+  expect(served.success).toBeTrue();
+  expect(served.data?.dispatchCredential).toBeUndefined();
+
+  for (const refused of [
+    { ...credential, liveLaunchesWithDispatchToken: -1 },
+    { ...credential, transitionLaunches: 1.5 },
+    { ...credential, session: "" },
+  ]) {
+    expect(
+      LegionStateResponse.safeParse({ ...state, dispatchCredential: refused }).success
     ).toBeFalse();
   }
 });

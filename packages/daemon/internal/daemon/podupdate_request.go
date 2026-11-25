@@ -57,8 +57,8 @@ const requestedPodUpdateReasons = "the project's controller asked for the replac
 //     Opened over the pod in its place, the round would write over the record of the round before
 //     it that the sweep reads to say what that pod took with it (podWentWithoutItsRound).
 //   - no claim records a pod: refused (api.PodUpdateNoPod).
-//   - no claim whose machine would record the round (noticeClaims) — none has a session, or every
-//     one that has has failed: refused (api.PodUpdateNoPod).
+//   - no claim whose machine would record the round (noticeClaims) — none has a session or waits
+//     on that pod for its launch, or every one that does has failed: refused (api.PodUpdateNoPod).
 //   - a project's pause holds the issue's pod (store's project_pause_pod_holds, read as the
 //     sweep reads it, podPauseHolds): refused (api.PodUpdatePauseHeld). No round opens over
 //     such a pod whoever asks for it, so the opening step the sweep and this request share
@@ -151,7 +151,7 @@ func (s *supervision) postRequestedPodUpdate(ctx context.Context, issue string) 
 	if err != nil {
 		return api.PodUpdateResponse{}, nil, fmt.Errorf("read the claims of %s: %w", issue, err)
 	}
-	_, byIssue := podUpdateGroups(claims)
+	_, byIssue := s.podUpdateGroups(claims)
 	group := byIssue[issue]
 	if len(group) == 0 {
 		return refusePodUpdate(api.PodUpdateNoClaim,
@@ -183,16 +183,16 @@ func (s *supervision) postRequestedPodUpdate(ctx context.Context, issue string) 
 			"no claim of %s records a process in a pod: each one is suspended or between launches, or runs in no pod at all. Nothing was opened; ask again once a claim of the issue runs in its pod", issue)
 	}
 	told := s.noticeGroup(group)
-	asked := noticeClaims(told)
+	round := supervise.PodRound(pod)
+	asked := noticeClaims(told, round)
 	if len(asked) == 0 {
 		return refusePodUpdate(api.PodUpdateNoPod,
-			"no claim of %s runs a worker in its pod %s that an update round could ask: none has a session, or each one that has has failed. Nothing was opened; retry an agent that failed, or ask again once an agent of the issue has registered", issue, pod)
+			"no claim of %s runs a worker in its pod %s that an update round could ask: none has a session or waits on that pod for its launch, or each one that does has failed. Nothing was opened; retry an agent that failed, or ask again once an agent of the issue has registered", issue, pod)
 	}
 	tokens := make([]claim.Token, len(asked))
 	for i, c := range asked {
 		tokens[i] = c.Token
 	}
-	round := supervise.PodRound(pod)
 	holds, err := s.podPauseHolds(ctx, group, now)
 	if err != nil {
 		return api.PodUpdateResponse{}, nil, fmt.Errorf("read whether a project's pause holds the pod of %s: %w", issue, err)

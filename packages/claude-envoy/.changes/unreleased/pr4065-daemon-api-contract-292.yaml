@@ -1,6 +1,6 @@
 kind: Changed
 body: |-
-  The plugin speaks daemon API contract 270, the contract of the actions on an agent (stop,
+  The plugin speaks daemon API contract 292, the contract of the actions on an agent (stop,
   retry, suspend, resume_agent, compact and fresh session of one agent, named by its issue and
   role) that the controller holds.
 time: 2026-11-20T16:00:00.000000000Z

@@ -79,6 +79,7 @@ var settingsEmitted = map[string]string{
 	"Config.EnvoyURL":                                "envoy_url",
 	"Config.NatsURLs":                                "nats_urls",
 	"Config.DispatchURL":                             "dispatch_url",
+	"Config.DispatchTokenBroker":                     "dispatch_token_broker (absent while false)",
 	"Config.Projects":                                "projects",
 	"Config.Gates":                                   "gates",
 	"Config.GitHubApps":                              "github_apps",
@@ -218,6 +219,7 @@ var settingsExcluded = map[string]string{
 	"Config.NatsNkeySeedFile":            "the path of a file holding a credential",
 	"Config.NatsDaemonNkeySeedFile":      "the path of a file holding a credential",
 	"Config.DispatchTokenFile":           "the path of a file holding a credential",
+	"Config.DispatchTokenTransitionFile": "the path of a file holding a credential: the shared Dispatch token a launch into a pod built before dispatch_token_broker gets",
 	"AgentSecretsConfig.TokenFile":       "the path of a file holding a credential: the daemon's own broker login token",
 	"Kubernetes.Kubeconfig":              "the daemon's cluster credential file",
 	"Kubernetes.Context":                 "the context inside the daemon's cluster credential file",
@@ -1001,6 +1003,32 @@ func TestSettingsOfNamesTheExchangeAudienceOnlyWhereItIsSet(t *testing.T) {
 			}
 			if string(encoded) != want {
 				t.Fatalf("settings.runtime.kubernetes.agent_secrets = %s, want %s", encoded, want)
+			}
+		})
+	}
+}
+
+// dispatch_token_broker reaches the settings as `true` where the file turns it on, a word about how
+// the daemon and its roles reach Dispatch and no credential, and is absent where it is off, so a
+// deployment that never set it reads byte for byte as before the key existed.
+func TestSettingsOfNamesTheDispatchTokenBrokerOnlyWhereItIsOn(t *testing.T) {
+	for name, tc := range map[string]struct {
+		on   bool
+		want string
+	}{
+		"on":  {true, "true"},
+		"off": {false, ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := settingsFixtureConfig(t)
+			cfg.DispatchTokenBroker = tc.on
+			encoded, err := json.Marshal(SettingsOf(cfg))
+			if err != nil {
+				t.Fatal(err)
+			}
+			raw, present := keysOf(t, encoded)["dispatch_token_broker"]
+			if got := string(raw); present != (tc.want != "") || got != tc.want {
+				t.Fatalf("settings.dispatch_token_broker = %q (present %t), want %q", got, present, tc.want)
 			}
 		})
 	}
