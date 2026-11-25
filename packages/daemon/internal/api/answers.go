@@ -47,19 +47,19 @@ const ServingFloor = 46
 // TestSupportedContractsAreTheNumberedEntriesFromTheFloorUp (`version_test.go`) reads the entry
 // headers out of version.go and holds this list to them in both directions.
 //
-// 193, 202, 205, 213, 219, 220, 228, 246, 250, 256, 275 and 286 are constants rather than their
+// 193, 202, 205, 213, 219, 220, 228, 246, 250, 256 and 275 are constants rather than their
 // numbers, because the entries that added them name them (shapedAnswersContract, the shaped
 // answers' entry; repositoriesLiveContract, dispatch://INFRA-4401's; childRouteRemovedContract,
 // dispatch://INFRA-3178's; cachesSourceContract, dispatch://INFRA-4036's; OwnerPlanContract, the
 // owner's plan's; assignmentPlanContract, the experiment group's; priorityContract, the waiting
 // line's priority's; intakeGiveUpsContract, dispatch://INFRA-1575's; podHoldContract, the pod
-// hold's; causeTimesContract, the claim views' cause times, #5349's; dispatchCredentialContract,
-// the Dispatch credential's; and questionsForControllerContract, this change's entry): a renumber
-// of any of those entries moves its constant and this list with it, and moving one alone would
-// describe a shape at a contract no entry declares. The other entries above 193 follow them as
+// hold's; causeTimesContract, the claim views' cause times, #5349's; and
+// dispatchCredentialContract, the Dispatch credential's): a renumber of any of those entries
+// moves its constant and this list with it, and moving one alone would describe a shape at a
+// contract no entry declares. The other entries above 193 follow them as
 // numbers: 199 is version.go's entry for INFRA-4605, 217 its entry for dispatch://INFRA-3531 and
 // dispatch://INFRA-4567, and 232 its entry for dispatch://INFRA-4508.
-var SupportedContracts = []int{46, 48, 49, 51, 52, 53, 54, 55, 56, 57, 58, 59, 62, 64, 68, 73, 75, 85, 86, 87, 94, 98, 104, 111, 123, 132, 133, 137, 141, 144, 146, 151, 152, 160, 168, 178, 188, 189, shapedAnswersContract, 199, repositoriesLiveContract, childRouteRemovedContract, cachesSourceContract, 217, OwnerPlanContract, assignmentPlanContract, intakeGiveUpsContract, 232, podHoldContract, priorityContract, causeTimesContract, dispatchCredentialContract, questionsForControllerContract}
+var SupportedContracts = []int{46, 48, 49, 51, 52, 53, 54, 55, 56, 57, 58, 59, 62, 64, 68, 73, 75, 85, 86, 87, 94, 98, 104, 111, 123, 132, 133, 137, 141, 144, 146, 151, 152, 160, 168, 178, 188, 189, shapedAnswersContract, 199, repositoriesLiveContract, childRouteRemovedContract, cachesSourceContract, 217, OwnerPlanContract, assignmentPlanContract, intakeGiveUpsContract, 232, podHoldContract, priorityContract, causeTimesContract, dispatchCredentialContract}
 
 // AnswerID names one answer a plugin parses. It is stable: every write of this package goes
 // through `shapeAnswer(id, …)`, so the id outlives the route that happens to carry the answer
@@ -385,12 +385,6 @@ var stateEnumeratedFields = []EnumeratedField{
 	// contract whole (shaping.go's withoutPause). The pause's `by.kind` and `endedBy.kind` are no
 	// rows: each is the discriminator of a discriminated union, read with a `z.literal`.
 	{Answer: AnswerState, KeyPath: "paused.waitsOn.*.role", Values: pauseStopRoles},
-	// `role` of one question the answer loop passed to the controller
-	// (api.QuestionForController.Role). It arrived with `questionsForController`, which is served
-	// down below that contract whole (shaping.go's withoutQuestionsForController). The question's
-	// `reason` beside it is no row: the schema reads it as a string, so a reason a later loop
-	// names is read rather than refused.
-	{Answer: AnswerState, KeyPath: "questionsForController.*.role", Values: questionRoles},
 	// `runtime` of the registered controller's locator, the runtime this daemon runs under
 	// (api.ControllerLocator.Runtime).
 	{Answer: AnswerState, KeyPath: "controllerLocator.runtime", Values: controllerRuntimes},
@@ -631,12 +625,6 @@ var wakeRoles = valuesFrom(wakesWaitingContract, floorRoles...)
 // each claim the open pause waits on takes (api.PauseStopView.Role): no `paused` is served below
 // that contract at all (shaping.go's withoutPause).
 var pauseStopRoles = valuesFrom(pauseContract, floorRoles...)
-
-// questionRoles is the same list of roles at the contract `questionsForController` arrived at,
-// which the role of the stopped agent each question was asked of takes
-// (api.QuestionForController.Role): no `questionsForController` is served below that contract at
-// all (shaping.go's withoutQuestionsForController).
-var questionRoles = valuesFrom(questionsForControllerContract, floorRoles...)
 
 // updateStates is every value of a claim view's `updateState`, recorded at
 // shapedAnswersContract, the contract that added the key. The words are the four the package

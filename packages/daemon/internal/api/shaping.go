@@ -581,7 +581,6 @@ var stateNarrowings = []stateNarrowing{
 	{contract: priorityContract, issue: withoutPriority, dropped: "the issues' priority and their waitingLine's priority"},
 	{contract: causeTimesContract, issue: withoutCauseTimes, dropped: "the claim views' lastDeathAt and lastStartFailureAt"},
 	{contract: dispatchCredentialContract, state: withoutDispatchCredential, dropped: "dispatchCredential"},
-	{contract: questionsForControllerContract, state: withoutQuestionsForController, dropped: "questionsForController"},
 }
 
 // valueStrip is one strip of a value from the state: what it takes off the state's own values,
@@ -1135,24 +1134,6 @@ func withoutPriority(issue Issue) (Issue, bool) {
 // change's own number, and answers.go's SupportedContracts names the constant rather than its
 // number for that reason.
 const causeTimesContract = 256
-
-// questionsForControllerContract is the daemon contract that added `questionsForController` to
-// the state (version.go's 286): every question to a stopped agent that the daemon's answer loop
-// passed to the controller in the last QuestionsForControllerWindow. A plugin before it is served
-// the state without the key (withoutQuestionsForController, its row of stateNarrowings): one built
-// before sjawhar/legion#2788 reads the state with a strict schema and would refuse the whole body
-// for a key it does not name, empty as surely as naming a question, and one built after strips the
-// key instead, so the band keeps the body its own contract's record describes.
-// dispatchCredentialContract stands immediately below it, so a caller from 275 to 285 is served
-// `dispatchCredential` (under its setting) but not the questions. The one enumerated field it
-// added is `questionsForController.*.role` (answers.go's questionRoles), whose values arrived with
-// the key and ride its band.
-//
-// It is a literal of its own and never DaemonAPIVersion: the number a later contract takes moves
-// that constant, and the contract the key arrived at stays where it is. It moves only with this
-// change's own number, which is why answers.go's SupportedContracts names it rather than its
-// number.
-const questionsForControllerContract = 286
 
 // withoutGatedSteps is the issue with no `gatedSteps`, the field gatedStepsContract added to the
 // state; nothing else of that contract is on the route. The field is `omitempty`, and a root of a
