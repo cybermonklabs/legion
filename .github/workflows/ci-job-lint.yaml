@@ -82,7 +82,18 @@ jobs:
       - name: Check the gitleaks the release lane fetches is the one the daemon links
         run: .github/scripts/check-gitleaks-version.sh
 
+      # The filters ci.yaml's changes job computed and selected this run's jobs by, which no file
+      # of the repository holds: the two checks below hold them to the image builds and to the tsc
+      # programs, so they read the very file the paths-filter step read.
+      - name: Fetch the filters the changes job selected this run's jobs by
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ci-filters
+          path: ${{ runner.temp }}/ci-filters
+
       - name: Check image triggers cover every image input
+        env:
+          CI_FILTERS_FILE: ${{ runner.temp }}/ci-filters/ci-filters.computed.yaml
         run: .github/scripts/check-image-trigger-paths.sh
 
       - name: Check every image a CI job fetches is a row of .github/ci-images.yaml
@@ -188,11 +199,14 @@ jobs:
 
       # After the install, which is what gives it node_modules: it lists each Bun gate's tsc
       # program with `bunx tsc --listFilesOnly`, and the modules each entry a gate's job runs
-      # loads with `bun build --metafile`, and holds every such file to that gate's filter,
-      # so the TypeScript half of what those filters must select is derived rather than
-      # hand-kept. In this job because the ci-filters job has neither Bun nor node_modules, and
-      # because this one is gated by no `changes` output, so a change anywhere can start it.
+      # loads with `bun build --metafile`, and holds every such file to that gate's filter in the
+      # filters this run's changes job computed, so the TypeScript half of what those filters must
+      # select is derived rather than hand-kept. In this job because the ci-filters job has neither
+      # Bun nor node_modules, and because this one is gated by no `changes` output, so a change
+      # anywhere can start it.
       - name: Check every Bun gate's filter selects the files its typecheck compiles
+        env:
+          CI_FILTERS_FILE: ${{ runner.temp }}/ci-filters/ci-filters.computed.yaml
         run: .github/scripts/check-ts-filters.sh
 
       # The notices step below builds go-licenses and loads every release binary's modules. It

@@ -17,7 +17,8 @@ import { countEngineParses, displayTree } from "../../../__tests__/display-trees
 import { installIntersectionObserver } from "../../../__tests__/intersection-observer";
 import { api } from "../../../api/client";
 import { issueCoverageQuery, issueResultsQuery } from "../../../api/queries";
-import type { CheckBlock, IssueCheckResults, IssueCoverage } from "../../../api/types";
+import type { Actor, CheckBlock, IssueCheckResults, IssueCoverage } from "../../../api/types";
+import { actorLabelText } from "../../refs/AgentName";
 import { warmMarkdownRenderer } from "../../refs/markdown-engine";
 import { type PublishedReferences, ReferenceNamesProvider } from "../../refs/reference-names";
 import { KeymapProvider } from "../../shell/KeymapProvider";
@@ -878,6 +879,80 @@ test("a statement's parent line links the node it came from where that node has 
   }
 });
 
+/** A session nobody named, which the page calls by its word for an agent. */
+const UNTITLED: Actor = { id: "0f8e2c4a-1111-4222-8333-444455556666", kind: "session" };
+
+/** When the posts below were deleted, and when edited. */
+const DELETED_AT = "2026-11-05T12:00:00Z";
+const EDITED_AT = "2026-11-05T13:00:00Z";
+
+/** A comment a session nobody named deleted, as the model holds it (`tree-drafts.ts`'s
+ *  `addTurns`): its delete, and the deleted line as its text, the actor named as no registry
+ *  knows it and the time as stored, with no reading. */
+function deletedComment(id: string, children: readonly TreeNode[] = []): TreeNode {
+  return node({
+    children,
+    deletedAt: DELETED_AT,
+    deletedBy: UNTITLED,
+    id,
+    reference: `dispatch://${ISSUE_KEY}/comment/${id}`,
+    text: `${CONTROL_LABELS.post_deleted_by} ${actorLabelText(UNTITLED)} · ${DELETED_AT}`,
+    type: "comment",
+  });
+}
+
+// R2 and R3 of dispatch://INFRA-1523: a statement's parent line is the outline's own
+// (`node-line.tsx`'s `ParentLink`), so it carries a corrected post's marks. A comment its author
+// deleted is drawn as its deleted line, its actor named as the page names an author and never as
+// the model's line holds it, with the time as stored; one its author edited says ` · edited`
+// after its line. Either stays the link to the comment, and a tab stop.
+test("a statement's parent line draws a deleted comment as its deleted line, and an edited one with its mark", () => {
+  const served = passing("c-one");
+  const other = passing("c-two");
+  const fromDeleted = statementNode("r1", "The reader reaches the comment this came from.", [
+    checkNode(served),
+  ]);
+  const fromEdited = statementNode("r2", "The reader reads what the comment says now.", [
+    checkNode(other),
+  ]);
+  const edited = node({
+    children: [fromEdited],
+    editedAt: EDITED_AT,
+    id: "comment-2",
+    reference: `dispatch://${ISSUE_KEY}/comment/comment-2`,
+    text: "Where do I see what proves this?",
+    type: "comment",
+  });
+  const view = drawBody([deletedComment("comment-1", [fromDeleted]), edited], [served, other]);
+  try {
+    const lineOf = (statement: TreeNode) =>
+      view.container.querySelector(
+        `[data-verification-card][data-node-id="${statement.id}"] [data-node-parent-line]`
+      );
+    const linksOf = (line: Element | null) =>
+      [...(line?.querySelectorAll<HTMLAnchorElement>("a") ?? [])].map((link) => [
+        link.getAttribute("href"),
+        link.tabIndex,
+      ]);
+
+    const gone = lineOf(fromDeleted);
+    const opening = `${CONTROL_LABELS.post_deleted_by} ${CONTROL_LABELS.unnamed_author} · `;
+    const deletedLine = gone?.querySelector("a [data-post-deleted]");
+    expect(deletedLine?.textContent?.slice(0, opening.length)).toBe(opening);
+    expect(gone?.textContent).not.toContain(actorLabelText(UNTITLED));
+    expect(gone?.textContent).not.toContain(DELETED_AT);
+    expect(linksOf(gone)).toEqual([[`/issues/${ISSUE_KEY}/comments/comment-1`, 0]]);
+
+    const marked = lineOf(fromEdited);
+    expect(marked?.querySelector("a")?.textContent).toBe(
+      `${edited.text} · ${CONTROL_LABELS.post_edited}`
+    );
+    expect(linksOf(marked)).toEqual([[`/issues/${ISSUE_KEY}/comments/comment-2`, 0]]);
+  } finally {
+    view.unmount();
+  }
+});
+
 // The body draws the newest result of each check, as the approved picture does; its earlier
 // results are one line with their count, which opens them in place, and the result the check's
 // state stands on is marked wherever it is drawn.
@@ -1370,6 +1445,52 @@ test("a check that serves no statement, and a node an address named, are drawn",
         drawn.querySelector("[data-node-words]")?.textContent,
       ])
     ).toEqual([["comment", named.text]]);
+  } finally {
+    view.unmount();
+  }
+});
+
+// R2 and R3 of dispatch://INFRA-1523: a comment an address named is drawn with the marks the
+// outline's row draws it with once its author corrected it. One its author deleted draws the
+// deleted line in place of its words, its actor named as the page names an author and never as
+// the model's text holds it, with the time as stored; one its author edited draws its words and
+// says ` · edited` after its kind, outside its words, in the page's own words; one nobody edited
+// says nothing of an edit.
+test("a deleted comment an address named draws its deleted line, and an edited one its words and its mark", () => {
+  const gone = deletedComment("comment-1");
+  const edited = node({
+    editedAt: EDITED_AT,
+    id: "comment-2",
+    reference: `dispatch://${ISSUE_KEY}/comment/comment-2`,
+    text: "A comment its author edited.",
+    type: "comment",
+  });
+  const unedited = node({ id: "comment-3", text: "A comment nobody edited.", type: "comment" });
+  const view = drawBody(
+    [statementNode("r1", "The page draws it.", []), gone, edited, unedited],
+    [],
+    { named: [gone.id, edited.id, unedited.id] }
+  );
+  try {
+    const rowOf = (other: TreeNode) =>
+      view.container.querySelector(`[data-verification-other][data-node-id="${other.id}"]`);
+
+    const deletedRow = rowOf(gone);
+    const opening = `${CONTROL_LABELS.post_deleted_by} ${CONTROL_LABELS.unnamed_author} · `;
+    const deletedLine = deletedRow?.querySelector("[data-node-words] [data-post-deleted]");
+    expect(deletedLine?.textContent?.slice(0, opening.length)).toBe(opening);
+    expect(deletedRow?.textContent).not.toContain(actorLabelText(UNTITLED));
+    expect(deletedRow?.textContent).not.toContain(DELETED_AT);
+
+    const editedRow = rowOf(edited);
+    expect(editedRow?.querySelector("[data-node-words]")?.textContent).toBe(edited.text);
+    const mark = editedRow?.querySelector("[data-node-edited]");
+    expect([mark?.textContent, mark?.hasAttribute("data-page-chrome")]).toEqual([
+      ` · ${CONTROL_LABELS.post_edited}`,
+      true,
+    ]);
+    expect(mark?.closest("[data-node-words]")).toBeNull();
+    expect(rowOf(unedited)?.querySelector("[data-node-edited]")).toBeNull();
   } finally {
     view.unmount();
   }

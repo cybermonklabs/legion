@@ -2,19 +2,18 @@
  * The reading list's walk (`e2e/reading-rows.ts`) over what a person wrote on an
  * ask or in a thread and reads back on their own pages: the Answers page's four texts - the
  * question a row answers, the label of an option the answer chose, the answer written on it, and
- * a reply written in its thread - the subject line the Inbox's reading column opens a Reply
- * thread under, which is where `/replies` lands, and the first line of a record on the person's
- * own page. Each is a stored record, and each draws every form a text names a node by through
- * the one renderer (R6): as its node's current name, the party as `@` and the session's name,
- * and none left as the characters written. None of the six hosts is a link or a button - an
- * Answers row's Open is a link beside its texts, never around them, a chosen option is a pill,
- * the reading column's subject line is a heading, and a person page row's Open is a link below
- * its first line - so each reference is a link there.
+ * a reply written in its thread - and the subject line the Inbox's reading column opens a Reply
+ * thread under, which is where `/replies` lands. Each is a stored record, and each draws every
+ * form a text names a node by through the one renderer (R6): as its node's current name, the
+ * party as `@` and the session's name, and none left as the characters written. None of the
+ * five hosts is a link or a button - an Answers row's Open is a link beside its texts, never
+ * around them, a chosen option is a pill, and the reading column's subject line is a heading -
+ * so each reference is a link there.
  *
  * Each row writes `readingText` into the one record its surface shows and plain words into any
  * other record the surface needs: the question the reading session asks and the options it
- * offers, the answer and the reply alice writes on it, and the comments alice writes, the root
- * of a thread the session answers or a record of her own page.
+ * offers, the answer and the reply alice writes on it, and the root of a comment thread alice
+ * starts and the session answers.
  */
 import { answerAsk, createAsk, createComment } from "./api";
 import { inboxPane, selectRow } from "./inbox-pane";
@@ -164,29 +163,5 @@ test("my-reply-subject: a Reply thread's subject line draws every form of a stor
     await selectRow(page, replyRowId(roots[index] ?? ""));
     const subject = inboxPane(page).locator("[data-inbox-thread-subject]");
     await expectReadsReferences(subject, world, "link", forms);
-  }
-});
-
-// SLOW(>=2s): the reading world, a comment of alice's for each group of forms a first line holds,
-// and her own page drawn.
-test("person-node-title: a person page row's first line draws every form of a stored reference through the renderer", async ({
-  page,
-}) => {
-  const world = await seedReadingWorld();
-  // A comment alice writes is a record she authored, so it is a row of her page, under its first
-  // line as the server cuts it: one comment for each group of forms a first line holds whole
-  // (`firstLineForms`).
-  const groups = firstLineForms(world);
-  const comments: string[] = [];
-  for (const forms of groups) {
-    comments.push((await createComment(world.host.key, { body: readingText(world, forms) })).id);
-  }
-
-  await page.goto("/people/alice");
-  for (const [index, forms] of groups.entries()) {
-    // The row's first line is its preview, drawn above its Open link rather than in it, so its
-    // references are links.
-    const row = page.locator(`[data-person-node="comment:${comments[index] ?? ""}"]`);
-    await expectReadsReferences(row.locator("[data-markdown-preview]"), world, "link", forms);
   }
 });

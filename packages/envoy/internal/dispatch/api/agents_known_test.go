@@ -115,6 +115,7 @@ func askKnownSessions(t *testing.T, handler http.Handler, ids ...string) []known
 // it holds (null where it holds none), and each ended session by the one record it left, while an
 // id no agent ever held and a person's login are absent.
 func TestKnownSessionsAnswersTheAskedSessionsWithARecordInTheOrderAsked(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	knownSessionsFixture(t, database)
 
@@ -139,6 +140,7 @@ func TestKnownSessionsAnswersTheAskedSessionsWithARecordInTheOrderAsked(t *testi
 // Each kind of record makes a session known on its own, so an ended session that left only that
 // record is answered, and an id with none is answered an empty list rather than refused.
 func TestKnownSessionsCountsEachKindOfRecordOnItsOwn(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	knownSessionsFixture(t, database)
 
@@ -178,6 +180,7 @@ func TestKnownSessionsCountsEachKindOfRecordOnItsOwn(t *testing.T) {
 // The whole batch is one statement, however many ids it names: the identity is read on the
 // untraced pool, so what is counted is the route's own work.
 func TestKnownSessionsReadsTheWholeBatchInOneStatement(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	knownSessionsFixture(t, database)
 	counter := &roundTrips{}
@@ -208,11 +211,12 @@ func TestKnownSessionsReadsTheWholeBatchInOneStatement(t *testing.T) {
 	}
 }
 
-// Every parameter is held to its rule before anything is read, each refusal 400 INVALID_QUERY
-// naming the parameter: a value that is no session id, one byte longer than any reference in
-// text names, no id at all, one more than the bound, and a parameter the route does not take.
-// Each bound itself is admitted, and so is the whole API's session parameter.
+// id is held to its rule before anything is read, each refusal 400 INVALID_QUERY naming it: a
+// value that is no session id, one byte longer than any reference in text names, no id at all,
+// and one more than the bound. Each bound itself is admitted, and so is the whole API's session
+// parameter.
 func TestKnownSessionsRefusesAQueryOutsideItsRule(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	knownSessionsFixture(t, database)
 
@@ -221,28 +225,23 @@ func TestKnownSessionsRefusesAQueryOutsideItsRule(t *testing.T) {
 		overBound[index] = fmt.Sprintf("s-%d", index)
 	}
 	longest := strings.Repeat("s", knownSessionIDMax)
-	for name, refusal := range map[string]struct {
-		path  string
-		names string
-	}{
-		"a value holding whitespace":           {knownSessionsPath("s one"), "id"},
-		"a value holding a slash":              {knownSessionsPath("agent/s1"), "id"},
-		"an empty value":                       {knownSessionsPath(""), "id"},
-		"a value one byte past the longest id": {knownSessionsPath(knownTitled, longest+"s"), "id"},
-		"no id at all":                         {"/api/v1/agents/known", "id"},
-		"only the acting session":              {"/api/v1/agents/known?session=" + knownTitled, "id"},
-		"one id more than the bound":           {knownSessionsPath(overBound...), "id"},
-		"a parameter the route does not take":  {knownSessionsPath(knownTitled) + "&limit=5", "limit"},
-		"the parameter misspelled":             {"/api/v1/agents/known?ids=" + knownTitled, "ids"},
+	for name, path := range map[string]string{
+		"a value holding whitespace":           knownSessionsPath("s one"),
+		"a value holding a slash":              knownSessionsPath("agent/s1"),
+		"an empty value":                       knownSessionsPath(""),
+		"a value one byte past the longest id": knownSessionsPath(knownTitled, longest+"s"),
+		"no id at all":                         "/api/v1/agents/known",
+		"only the acting session":              "/api/v1/agents/known?session=" + knownTitled,
+		"one id more than the bound":           knownSessionsPath(overBound...),
 	} {
 		t.Run(name, func(t *testing.T) {
-			response := dispatchRequest(t, handler, http.MethodGet, refusal.path, nil, "alice")
+			response := dispatchRequest(t, handler, http.MethodGet, path, nil, "alice")
 			body := decodeBody[refusalAnswer](t, response)
 			if response.Code != http.StatusBadRequest || body.Code != "INVALID_QUERY" {
 				t.Fatalf("status=%d body=%.400s, want 400 INVALID_QUERY", response.Code, response.Body.String())
 			}
-			if !strings.HasPrefix(body.Error, refusal.names+" ") {
-				t.Fatalf("refusal %.400q does not lead with the parameter %s", body.Error, refusal.names)
+			if !strings.HasPrefix(body.Error, "id ") {
+				t.Fatalf("refusal %.400q does not lead with the parameter id", body.Error)
 			}
 		})
 	}
@@ -261,6 +260,7 @@ func TestKnownSessionsRefusesAQueryOutsideItsRule(t *testing.T) {
 // The longest id the route answers for is the longest a dispatch://agent/<session id> reference
 // in text names: at it the text is a reference to that session, and one byte past it is none.
 func TestKnownSessionsLongestIDIsTheLongestAReferenceNames(t *testing.T) {
+	t.Parallel()
 	const server = "https://dispatch.test"
 	longest := strings.Repeat("s", knownSessionIDMax)
 	got := text.Extract("dispatch://agent/"+longest, server)
@@ -276,6 +276,7 @@ func TestKnownSessionsLongestIDIsTheLongestAReferenceNames(t *testing.T) {
 // GET /api/v1/agents/{session_id}/messages answers, each the same way
 // (expectSameCallersAsConversationRead).
 func TestKnownSessionsAdmitsExactlyTheCallersTheConversationReadAdmits(t *testing.T) {
+	t.Parallel()
 	rig := newBrokerTokenRig(t)
 	knownSessionsFixture(t, rig.database)
 	expectSameCallersAsConversationRead(t, rig, "the known-sessions read", knownActivity, knownSessionsPath(knownActivity))

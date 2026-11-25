@@ -11,7 +11,7 @@ import { type ReactNode, useContext, useLayoutEffect, useState } from "react";
 
 import { borderDefault } from "../../theme/classes";
 import { isPartyRoute } from "./party-references";
-import { useReferenceHref, useReferenceTarget } from "./reference-target";
+import { useReferenceHref, useReferenceLabel, useReferenceTarget } from "./reference-target";
 import {
   buildDispatchReference,
   type DispatchReferenceRoute,
@@ -73,7 +73,9 @@ export interface ReferenceLinking {
  *
  * One rule says what it reads as, the same rule in a document, a comment, an ask, a message and
  * every other record (`reads`): an address standing on its own, and a link whose words are that
- * same address, read as the target's current name once `useReferenceTarget` has it; a party's
+ * same address, read as the target's current name once `useReferenceTarget` has it - its label
+ * (`useReferenceLabel`: the title, ` · edited` after an edited post's, the deleted line for a
+ * deleted post); a party's
  * mention reads as the mention sign and that name, so a session renamed since the mention was
  * written reads as it is called now (R4), and as the sign and the session's short form where
  * Dispatch holds a record of the session with no title, so the words its writer chose never
@@ -82,7 +84,9 @@ export interface ReferenceLinking {
  * there to say. A reference the reader may not see is the same case as the words themselves:
  * the words the writer wrote, with no title drawn over them. A reference whose target Dispatch
  * answered does not exist is its words with no link at all (R8), as the document editor draws
- * it: the element it renders into stops being a link (`unlinkMissingReference`).
+ * it: the element it renders into stops being a link (`unlinkMissingReference`). A post its
+ * author deleted is no such target: a reference to it, or to a block that went with it, stays a
+ * link, and its hover card says the post is deleted (`ReferenceData.missing`).
  *
  * A search hit's marks follow the same rule (`marked`). Wherever the words are drawn, the server's
  * marks stay on them exactly as it sent them; only a title drawn in their place is marked, whole,
@@ -113,7 +117,9 @@ export function RefLink({
    *  author wrote it, or a Markdown link's own text. */
   text: string;
 }): ReactNode {
-  const { known, missing, picture, title } = useReferenceTarget(route, { text: false });
+  const target = useReferenceTarget(route, { text: false });
+  const { known, missing, picture } = target;
+  const label = useReferenceLabel(route, target);
   // A reference opening no page of this dashboard - a person, whom nothing shows (R5), and any
   // path the gate refuses - gets no href: its element stays no link.
   const href = useReferenceHref(route);
@@ -137,10 +143,10 @@ export function RefLink({
     reads === "words" || missing
       ? undefined
       : reads === "mention"
-        ? mentionDrawn({ known, title }, shortForm(route))
-        : title === undefined
+        ? mentionDrawn({ known, title: label.text }, shortForm(route))
+        : label.text === undefined
           ? undefined
-          : drawnName(route, title);
+          : drawnName(route, label.text, label.deleted);
   return (
     <>
       {picture === undefined || picture === failedPicture ? null : (
@@ -165,17 +171,22 @@ export function RefLink({
   );
 }
 
-/** The name a reference standing as its own words draws in place of them once its title
+/** The name a reference standing as its own words draws in place of them once its label
  *  resolved: an issue as its key then its title, as the project's issues table writes a key
  *  beside one (`project/IssuesTable.tsx`), so the link's accessible name is `CORE-12 Fix the
- *  thing`; anything else as its title. */
-function drawnName(route: DispatchReferenceRoute, title: string): ReactNode {
-  return route.kind === "issue" ? (
+ *  thing`; a deleted post's line in the deleted line's italic (`DeletedBody`), inside the
+ *  anchor, so the link stays visible, hoverable and clickable; anything else as its label. */
+function drawnName(route: DispatchReferenceRoute, label: string, deleted: boolean): ReactNode {
+  return deleted ? (
+    <span className="italic" data-post-deleted="">
+      {label}
+    </span>
+  ) : route.kind === "issue" ? (
     <>
-      <span className="font-semibold whitespace-nowrap">{route.key}</span> {title}
+      <span className="font-semibold whitespace-nowrap">{route.key}</span> {label}
     </>
   ) : (
-    title
+    label
   );
 }
 

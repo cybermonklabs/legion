@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
@@ -54,10 +55,10 @@ func (s *server) queueAskParts(
 }
 
 // referencesSinceWait bounds how long a since read waits for the safe horizon to pass every event
-// committed before the read (events.Horizon.Await). Only a transaction held open on the Postgres
-// instance keeps the horizon back that long, and a poller would rather have the mentions at or
-// below the horizon now, and the rest on its next read, than an answer that waits on someone
-// else's transaction for as long as it stays open.
+// committed before the read (events.Horizon.Await). Only an event write of Dispatch's own database
+// held open that long keeps the horizon back that long: the horizon waits on no other
+// transaction. A poller would rather have the mentions at or below the horizon now, and the rest
+// on its next read, than an answer that waits on another event write for as long as it stays open.
 const referencesSinceWait = time.Second
 
 // getReferences reads one node's edges in the reference graph: ?to= lists every edge pointing
@@ -321,10 +322,10 @@ func (s *server) getReferenceQuestions(w http.ResponseWriter, r *http.Request) {
 // alone would not do: an observation is proven only by a later one, so on a process where
 // nothing else observes (no event stream has started the relay, no Delivery page the hub) the
 // first read after boot or a Reset would answer H = 0, and each later read stop at the previous
-// read's observation, however old. Await takes longer than an observation or two only while a
-// transaction that holds a transaction id on the instance holds the horizon back; past
-// referencesSinceWait, with the request still live, the read takes the horizon as an observation
-// started after that finds it (Horizon.Safe), and a mention above it waits for a later read. A
+// read's observation, however old. Await takes longer than an observation or two only while an
+// event write of this database holds the horizon back; past referencesSinceWait, with the request
+// still live, the read takes the horizon as an observation started after that finds it
+// (Horizon.Safe), and a mention above it waits for a later read. A
 // request that ends first answers Await's error.
 func (s *server) sinceHorizon(ctx context.Context) (int64, error) {
 	wait, cancel := context.WithTimeout(ctx, referencesSinceWait)
@@ -482,8 +483,16 @@ func (s *server) documentAtAddress(ctx context.Context, who model.Actor, refKey 
 // current text with N's, or "removed" with the revision that removed it (RemovedVersion), as a
 // node with no text or changed revision whose facts are a removed block's
 // (refs.RemovedItemBlockNode). A pin past the item's current revision, or to one that did not
-// hold the block, answers 404, each saying which. A message never changes, so no reference pins
-// a message's block (parseReferencesQuery refuses one).
+// hold the block, answers 404, each saying which. A message records no revisions, not even for an
+// edit of its body, so there is no revision to pin a message's block to and no reference pins one
+// (parseReferencesQuery refuses one).
+//
+// A block of a post its author deleted is gone with the body: the delete indexes the empty body,
+// which takes every block out of the post (planEditedItem, in clearDeletedPostBody), and clears
+// the text each revision recorded (refs.TombstoneItem). So each 404 a read of it can reach - no
+// current block, no recorded text at the pin, and a pin past the current revision - names the
+// deletion as well (itemBlockNotFound): every read of a deleted post says that it is deleted and
+// gives no part of what it said.
 func (s *server) itemBlockReferenceNode(ctx context.Context, who model.Actor, query refs.Query, ref text.Ref) (model.GraphNode, error) {
 	pool := s.deps.Store.Pool
 	kind := refs.ItemKind(ref.Item)
@@ -506,7 +515,8 @@ func (s *server) itemBlockReferenceNode(ctx context.Context, who model.Actor, qu
 	}
 	if ref.Pin == 0 {
 		if !current {
-			return model.GraphNode{}, errorf(http.StatusNotFound, "NOT_FOUND", "no %s %q in %s %s", noun, ref.Block, ref.Item, item.ID)
+			return model.GraphNode{}, s.itemBlockNotFound(ctx, kind, item.ID,
+				fmt.Sprintf("no %s %q in %s %s", noun, ref.Block, ref.Item, item.ID))
 		}
 		return node, nil
 	}
@@ -516,9 +526,11 @@ func (s *server) itemBlockReferenceNode(ctx context.Context, who model.Actor, qu
 	}
 	switch {
 	case ref.Pin > at.Current:
-		return model.GraphNode{}, errorf(http.StatusNotFound, "NOT_FOUND", "no revision %d of %s %s; its current revision is %d", ref.Pin, ref.Item, item.ID, at.Current)
+		return model.GraphNode{}, s.itemBlockNotFound(ctx, kind, item.ID,
+			fmt.Sprintf("no revision %d of %s %s; its current revision is %d", ref.Pin, ref.Item, item.ID, at.Current))
 	case at.Text == nil:
-		return model.GraphNode{}, errorf(http.StatusNotFound, "NOT_FOUND", "no %s %q in %s %s at revision %d", noun, ref.Block, ref.Item, item.ID, ref.Pin)
+		return model.GraphNode{}, s.itemBlockNotFound(ctx, kind, item.ID,
+			fmt.Sprintf("no %s %q in %s %s at revision %d", noun, ref.Block, ref.Item, item.ID, ref.Pin))
 	}
 	pin := &model.BlockPin{Version: ref.Pin, Ref: refs.BlockRef(item.Ref, ref.Block) + "@v" + strconv.Itoa(ref.Pin), Text: *at.Text}
 	if !current {
@@ -550,11 +562,59 @@ func itemBlockNoun(kind string) string {
 	return "block"
 }
 
+// itemBlockNotFound is the 404 a block reference answers when the item holds no such block:
+// `missing`, the words the read's own case wrote, and after them the deletion when the item is
+// a post its author withdrew. The delete clears the body, takes every block out of the post by
+// indexing the empty body (planEditedItem, in clearDeletedPostBody) and clears the text each
+// revision recorded (refs.TombstoneItem), so a read of a deleted post's block would otherwise
+// say that the block is missing and leave the deletion unsaid, where every read of the post
+// says that it is deleted. The status stays 404: the reference names a node no read can give,
+// which is what NOT_FOUND says here, and the words match deletedPostError's
+// (handler_errors.go), written again here under that 404. The mark is read on this path alone, so a reference to a
+// block that is there costs no query for it.
+func (s *server) itemBlockNotFound(ctx context.Context, kind refs.ItemKind, itemID, missing string) error {
+	deleted, err := s.postIsDeleted(ctx, kind, itemID)
+	if err != nil {
+		return err
+	}
+	if deleted {
+		return errorf(http.StatusNotFound, "NOT_FOUND", "%s: this %s is deleted", missing, kind)
+	}
+	return errorf(http.StatusNotFound, "NOT_FOUND", "%s", missing)
+}
+
+// postIsDeleted reports whether comment or message itemID carries a delete mark (deleted_at).
+// A comment and a message are the only posts a delete marks - the columns are theirs alone
+// (20261110224508_post_corrections.up.sql) - so an ask, the third item kind, answers false and
+// reads nothing. The table of a kind is refs', which owns the map of an item kind to its
+// storage (refs.ItemKind.ItemTable), as postHistoryOwner reads it. A row deleted outright
+// between the caller's read and this one answers false, and the caller's own refusal then
+// stands as it wrote it.
+func (s *server) postIsDeleted(ctx context.Context, kind refs.ItemKind, itemID string) (bool, error) {
+	if kind != refs.ItemComment && kind != refs.ItemMessage {
+		return false, nil
+	}
+	items, _, err := kind.ItemTable()
+	if err != nil {
+		return false, err
+	}
+	var deleted bool
+	if err := s.deps.Store.Pool.QueryRow(ctx, `
+		select deleted_at is not null from `+items+` where id = $1
+	`, itemID).Scan(&deleted); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return false, nil
+		}
+		return false, fmt.Errorf("read the delete mark of %s %s: %w", kind, itemID, err)
+	}
+	return deleted, nil
+}
+
 // blockPin is a trailing `@v<N>` pin, as a block reference writes one.
 var blockPin = regexp.MustCompile(`@v[0-9]+$`)
 
 // pinsAMessageBlock reports whether raw, a reference text.ParseRef refused, is a block of a
-// message pinned to a revision: the grammar reads none, since a message never changes.
+// message pinned to a revision: the grammar reads none, since a message records no revisions.
 func pinsAMessageBlock(raw, serverURL string) bool {
 	unpinned := blockPin.ReplaceAllString(raw, "")
 	if unpinned == raw {
@@ -741,25 +801,27 @@ func (s *server) getIssueReferences(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	trees := wantsDisplayTrees(r)
-	etag, err := s.referencesETag(issue.LastSeq, members, closure.Links, closure.LinkedFrom, latestOnly, trees)
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	w.Header().Set("ETag", etag)
-	if r.Header.Get("If-None-Match") == etag {
-		w.WriteHeader(http.StatusNotModified)
-		return
-	}
-	// Each row's name reaches a caller that sent Dispatch-Trees: 1 with its tree, read where it
-	// stands (newIssueReferencesRead). The ETag above names that reading and the parser that read
-	// the trees (referencesETag), so a validator given for one reading never answers the other.
-	WriteJSON(w, http.StatusOK, newIssueReferencesRead(model.IssueReferences{
+	// The answer is encoded once, exactly as WriteJSON writes it, trailing newline and all, so
+	// the token hashes the bytes it validates and those are the bytes written. Each row's name
+	// reaches a caller that sent Dispatch-Trees: 1 with its tree, read where it stands
+	// (newIssueReferencesRead), and the token names that reading and the parser that read the
+	// trees (referencesETag), so a validator given for one reading never answers the other.
+	var answer bytes.Buffer
+	if err := json.NewEncoder(&answer).Encode(newIssueReferencesRead(model.IssueReferences{
 		Members:    members,
 		Truncated:  false,
 		Links:      closure.Links,
 		LinkedFrom: closure.LinkedFrom,
-	}, trees))
+	}, trees)); err != nil {
+		s.writeHandlerError(w, fmt.Errorf("encode the issue's references: %w", err))
+		return
+	}
+	if answerNotModified(w, r, s.referencesETag(answer.Bytes(), latestOnly, trees)) {
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(answer.Bytes())
 }
 
 // referencesClosureBound is the budget every statement of one GET of an issue's references shares
@@ -891,45 +953,33 @@ func (s *server) getArtifactReferences(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, model.ArtifactReferences{Outgoing: outgoing, ReferencedBy: referencedBy})
 }
 
-// referencesAnswerForm is the line referencesETag hashes to name the form of the answer this build
-// writes, with links and linked_from beside members and truncated: an issue with no row answers a
-// body of its own on this build and on the build before, which writes neither list, so the two
-// must not share an ETag, and the issue's last_seq alone would give them one.
-const referencesAnswerForm = "form=members,truncated,links,linked_from"
-
-// referencesETag hashes what an issue's references answer depends on: the issue's last_seq,
-// referencesAnswerForm, each member's document at its latest version, and every row of links and
-// of linked_from whole, as its JSON encoding. A row carries its node's name, last change and
-// parent, and another node's new link to the issue adds a row: none of that moves the issue's own
-// last_seq, so the rows are hashed whole for such a change to give a new ETag. The trimmed answer
-// (latestOnly) hashes one more line naming its variant, so the full and trimmed answers of one
-// issue never share an ETag; the full answer hashes no such line. The hash is closed as the
-// lists' are (listETag), with whether the caller asked for the rows' name trees, the display
-// parser version and the build commit, for the reasons listETag gives.
-func (s *server) referencesETag(lastSeq int, members []model.ReferenceMember, links, linkedFrom []model.ReferenceLink, latestOnly, trees bool) (string, error) {
+// referencesETag is an issue references answer's validator: a hash of the answer's own bytes.
+// The trimmed answer (latestOnly) hashes one more line naming its variant ahead of them, so the
+// full and trimmed answers of one issue never share an ETag, even where every member has one
+// version and the two answers are the same bytes; the full answer hashes no such line, and no
+// answer's bytes begin with it, as each begins with `{`. The hash is closed as the lists' are
+// (listETag), with whether the caller asked for the rows' name trees, the display parser version
+// and the build commit, for the reasons listETag gives.
+//
+// It hashes the answer rather than what the answer is made of because a member moves without
+// anything this issue holds moving with it. A member is a document of another owner (no member
+// is one of this issue's own documents, refs.Closure), and that owner's writes append their
+// events there: a rename of the document (artifact.renamed, renameArtifact) changes the
+// member's artifact.name, and the delete of a comment whose accepted suggestion named a version
+// after the comment's body renames that version (renameAcceptedVersion), while this issue's
+// event sequence, the closure and each member's latest version stand still. A row of links or
+// linked_from carries its node's name, last change and parent, and another node's new link to
+// the issue adds a row, none of which moves the issue's own sequence either. A token over those
+// would answer a reader holding it 304 over the old words; a token over the answer moves with
+// every byte a reader is shown, and the build before, which writes neither list, writes other
+// bytes for the same issue, so the two builds never share an ETag.
+func (s *server) referencesETag(answer []byte, latestOnly, trees bool) string {
 	hash := sha256.New()
-	_, _ = fmt.Fprintf(hash, "%d\n%s\n", lastSeq, referencesAnswerForm)
 	if latestOnly {
 		_, _ = io.WriteString(hash, "versions=latest\n")
 	}
-	for _, member := range members {
-		_, _ = fmt.Fprintf(hash, "%s@%d\n", member.Artifact.ID, member.Artifact.Versions[len(member.Artifact.Versions)-1].Number)
-	}
-	// Each list is named with its count of rows, so a row that moves from one list to the other
-	// moves the hash too; the encoder ends each row with a newline.
-	encoder := json.NewEncoder(hash)
-	for _, list := range []struct {
-		name string
-		rows []model.ReferenceLink
-	}{{"links", links}, {"linked_from", linkedFrom}} {
-		_, _ = fmt.Fprintf(hash, "%s %d\n", list.name, len(list.rows))
-		for _, row := range list.rows {
-			if err := encoder.Encode(row); err != nil {
-				return "", fmt.Errorf("hash the %s row of %s %s: %w", list.name, row.Node.Kind, row.Node.ID, err)
-			}
-		}
-	}
-	return s.listETag(hash, trees), nil
+	_, _ = hash.Write(answer)
+	return s.listETag(hash, trees)
 }
 
 // loadArtifactsByRefKey reads the documents refKeys name, each with every version in number
@@ -1010,6 +1060,9 @@ func (s *server) loadArtifactsByRefKey(ctx context.Context, q queryer, refKeys [
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
+	}
+	for _, artifact := range artifacts {
+		model.StateFileTokens(artifact.Kind, artifact.Versions)
 	}
 	return artifacts, nil
 }

@@ -11,9 +11,9 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
-// decodeEvent decodes one Dispatch event of LEGION-7, built from its fields, as the consumer
-// would: the fact, and the fields the decoder could not read.
-func decodeEvent(t *testing.T, eventType string, actor, payload map[string]any) decodedMessage {
+// dispatchEventJSON is one Dispatch event of LEGION-7, built from its fields, as Dispatch writes
+// it.
+func dispatchEventJSON(t *testing.T, eventType string, actor, payload map[string]any) []byte {
 	t.Helper()
 	event, err := json.Marshal(map[string]any{
 		"id": 40, "issue_key": "LEGION-7", "seq": 12, "type": eventType, "notify": true,
@@ -22,6 +22,14 @@ func decodeEvent(t *testing.T, eventType string, actor, payload map[string]any) 
 	if err != nil {
 		t.Fatalf("encode the event: %v", err)
 	}
+	return event
+}
+
+// decodeEvent decodes one Dispatch event of LEGION-7, built from its fields (dispatchEventJSON),
+// as the consumer would: the fact, and the fields the decoder could not read.
+func decodeEvent(t *testing.T, eventType string, actor, payload map[string]any) decodedMessage {
+	t.Helper()
+	event := dispatchEventJSON(t, eventType, actor, payload)
 	decoded, err := decodeMessage("notifications.dispatch.issue.LEGION-7."+eventType, "LEGION", nil, envelopeJSON(t, "dispatch-40", "dispatch", string(event)))
 	if err != nil {
 		t.Fatalf("decode %s: %v, want no poison", eventType, err)
@@ -49,6 +57,63 @@ func TestACallbackReplyDecodesAsTheReplyItIs(t *testing.T) {
 		}
 		if plain := decodeEvent(t, eventType, architect, map[string]any{"id": "comment-2"}); plain.Fact != nil {
 			t.Fatalf("%s on no ask decoded to %#v, want no fact", eventType, plain.Fact)
+		}
+	}
+}
+
+// decodeLoggedEvent decodes one Dispatch event of LEGION-7, built from its fields
+// (dispatchEventJSON), as the boot catch-up does: as Dispatch's issue event log serves it
+// (DecodeDispatchEvent), which is where a deleted post's events are read masked.
+func decodeLoggedEvent(t *testing.T, eventType string, actor, payload map[string]any) decodedMessage {
+	t.Helper()
+	fact, unread, err := DecodeDispatchEvent("LEGION", "LEGION-7", dispatchEventJSON(t, eventType, actor, payload))
+	if err != nil {
+		t.Fatalf("decode %s from the event log: %v, want no refusal", eventType, err)
+	}
+	return decodedMessage{Fact: fact, Unread: unread}
+}
+
+// A reply its author deleted is read from Dispatch's event log masked: its comment.created
+// carries deleted_at and deleted_by in place of its body (Dispatch's attachPostMarks). A deleted
+// reply still decides the ask's turn on Dispatch, so it decodes to the reply the live event was,
+// on the live stream and from the log alike. The corrections an author makes - comment.edited and
+// comment.deleted, which carry the reply's ask_id, and message.edited and message.deleted - move
+// no turn: each decodes to no fact, and none is poison.
+func TestADeletedReplyDecodesAsItsReplyAndACorrectionAsNoFact(t *testing.T) {
+	person := map[string]any{"kind": "user", "id": "alice"}
+	deletedAt, deletedBy := "2026-10-25T12:05:00Z", map[string]any{"kind": "user", "id": "alice"}
+	decoders := map[string]func(*testing.T, string, map[string]any, map[string]any) decodedMessage{
+		"the live stream": decodeEvent, "the event log": decodeLoggedEvent,
+	}
+	for from, decode := range decoders {
+		masked := decode(t, "comment.created", person, map[string]any{
+			"id": "comment-1", "ask_id": "ask-approval", "ask_state": "open", "ask_waiting_on": "agent",
+			"thread_root_id": "comment-root", "deleted_at": deletedAt, "deleted_by": deletedBy,
+		})
+		want := DispatchAskReply{Key: "LEGION-7", Ask: "ask-approval", WaitingOn: "agent",
+			Actor: dispatch.Actor{Kind: "user", ID: "alice"}, Mark: askEventMark, Comment: "comment-1"}
+		if !reflect.DeepEqual(masked.Fact, want) || len(masked.Unread) != 0 {
+			t.Fatalf("a deleted reply's comment.created from %s decoded to %#v, unread %q; want %#v",
+				from, masked.Fact, masked.Unread, want)
+		}
+		for _, correction := range []struct {
+			eventType string
+			payload   map[string]any
+		}{
+			{"comment.edited", map[string]any{"id": "comment-1", "ask_id": "ask-approval", "body": "Approve it after the rollback note.",
+				"edited_at": deletedAt, "thread_root_id": "comment-root"}},
+			{"comment.deleted", map[string]any{"id": "comment-1", "ask_id": "ask-approval", "body": "",
+				"deleted_at": deletedAt, "deleted_by": deletedBy, "thread_root_id": "comment-root"}},
+			{"message.edited", map[string]any{"id": "message-1", "body": "The staging run is green again.", "edited_at": deletedAt}},
+			{"message.deleted", map[string]any{"id": "message-1", "body": "", "deleted_at": deletedAt, "deleted_by": deletedBy}},
+			// A deleted message's message.created, as every read of the log serves it: its marks and
+			// no body. The intake reads no message's body, so it is no fact and no failure, and never
+			// a message the intake gives up on (main's #4590).
+			{"message.created", map[string]any{"id": "message-1", "deleted_at": deletedAt, "deleted_by": deletedBy}},
+		} {
+			if decoded := decode(t, correction.eventType, person, correction.payload); decoded.Fact != nil || len(decoded.Unread) != 0 {
+				t.Fatalf("%s from %s decoded to %#v, unread %q; want no fact", correction.eventType, from, decoded.Fact, decoded.Unread)
+			}
 		}
 	}
 }

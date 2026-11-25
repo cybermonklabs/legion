@@ -41,6 +41,8 @@ import { PendingSendTurn } from "../conversation/PendingSendTurn";
 import type { SessionSends } from "../conversation/useSessionSends";
 import { AgentName } from "../refs/AgentName";
 import { MarkdownBody } from "../refs/MarkdownBody";
+import { DeletedBody, EditedMark } from "../refs/PostMarks";
+import type { PostDeletion } from "../refs/post-marks";
 import { ErrorBoundary } from "../shell/ErrorBoundary";
 import { readDispatchMarks, turnKey } from "./dispatch-marks";
 import type { LivePlace } from "./live-views";
@@ -137,6 +139,30 @@ function useTurnKey(): string {
   return useAuiState((state) => turnKey(state.message.metadata.custom, state.message.id));
 }
 
+/**
+ * The marks the turn's stored Dispatch message carries once its author corrected it. Three
+ * selectors, each returning a string or the stored row's own actor, for the `Object.is` reason
+ * `AssistantMessage` gives: a rebuild of the transcript writes a new mark object, and reading
+ * the mark itself would re-render every turn on every store update.
+ */
+function useCorrection(): { deleted: PostDeletion | null; edited: string | undefined } {
+  const at = useAuiState((state) => readDispatchMarks(state.message.metadata.custom).deleted?.at);
+  const by = useAuiState((state) => readDispatchMarks(state.message.metadata.custom).deleted?.by);
+  const edited = useAuiState((state) => readDispatchMarks(state.message.metadata.custom).edited);
+  return { deleted: at === undefined ? null : { at, by: by ?? null }, edited };
+}
+
+/** A turn's own text, or the deleted line in its place once its author withdrew the Dispatch
+ *  message behind it: what `PostBody` is for a surface that renders a body itself, for the three
+ *  turns here whose text assistant-ui's own parts render. */
+function CorrectedParts({ deleted }: { deleted: PostDeletion | null }): ReactNode {
+  return deleted === null ? (
+    <MessagePrimitive.Parts components={{ Text: MarkdownText }} />
+  ) : (
+    <DeletedBody deleted={deleted} />
+  );
+}
+
 function UserMessage(): ReactNode {
   // A message someone other than the viewer sent the session, stored or taken as its own turn
   // (AgentRuntimeThread names them): it sits on the session's side of the thread with its author,
@@ -151,6 +177,7 @@ function UserMessage(): ReactNode {
   const issue = useAuiState(
     (state) => readDispatchMarks(state.message.metadata.custom).author?.issue
   );
+  const { deleted, edited } = useCorrection();
   const turn = useTurnKey();
   if (actor !== undefined) {
     return (
@@ -162,8 +189,9 @@ function UserMessage(): ReactNode {
         <p className={`mb-1 text-xs font-semibold ${textSecondaryOnCanvas}`}>
           <AgentName actor={actor} inline />
           {issue === undefined ? null : ` · ${issue}`}
+          <EditedMark at={edited} deleted={deleted} />
         </p>
-        <MessagePrimitive.Parts components={{ Text: MarkdownText }} />
+        <CorrectedParts deleted={deleted} />
       </div>
     );
   }
@@ -172,7 +200,7 @@ function UserMessage(): ReactNode {
       <div
         className={`max-w-[80%] rounded-xl px-3 py-2 text-sm ${surfaceMutedBg} ${textPrimaryOnCanvas}`}
       >
-        <MessagePrimitive.Parts components={{ Text: MarkdownText }} />
+        <CorrectedParts deleted={deleted} />
       </div>
     </div>
   );
@@ -196,6 +224,7 @@ function AssistantMessage(): ReactNode {
   // that calls a tool shows the tool card's own `running…`; this is the mark every other turn
   // has, including one that writes nothing but prose.
   const running = useAuiState((state) => state.message.status?.type === "running");
+  const { deleted, edited } = useCorrection();
   const turn = useTurnKey();
   if (fromDispatch) {
     return (
@@ -204,8 +233,11 @@ function AssistantMessage(): ReactNode {
         data-message-id={turn}
         data-testid="agent-dispatch-reply"
       >
-        <p className={`mb-1 text-xs font-semibold ${textSecondaryOnCanvas}`}>Reply via Dispatch</p>
-        <MessagePrimitive.Parts components={{ Text: MarkdownText }} />
+        <p className={`mb-1 text-xs font-semibold ${textSecondaryOnCanvas}`}>
+          Reply via Dispatch
+          <EditedMark at={edited} deleted={deleted} />
+        </p>
+        <CorrectedParts deleted={deleted} />
       </div>
     );
   }

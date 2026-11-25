@@ -14,6 +14,8 @@ import { whoAmIQuery } from "../../api/queries";
 import type { Artifact } from "../../api/types";
 import { textMutedOnCanvas } from "../../theme/classes";
 import { isViewer } from "../refs/actor";
+import { EditedMark } from "../refs/PostMarks";
+import { postDeletion } from "../refs/post-marks";
 import { PublishedReferenceNames, type PublishedReferences } from "../refs/reference-names";
 import { EVENT_FRESH } from "../refs/reference-target";
 import { buildIssuePath } from "../refs/routes";
@@ -25,7 +27,7 @@ import { bringOnScreen, FOOT_HEIGHT_PROPERTY, IDENTITY_HEIGHT_PROPERTY } from ".
 import { pathToTarget } from "./issue-address";
 import type { TreeNode } from "./issue-tree";
 import { DETAILS_ATTRIBUTE } from "./margin-slot";
-import { lineOrKindWord, useNodeLine } from "./node-line";
+import { DeletedLine, lineOrKindWord, useNodeLine } from "./node-line";
 import { type FailedRead, NO_FAILED_READS } from "./outline-reads";
 import { useFocusBranch, useTakeOutlineRequest } from "./outline-request";
 import { threadMarks } from "./outline-thread-read";
@@ -1289,13 +1291,21 @@ function withoutIds(ids: ReadonlySet<string>, drop: readonly string[]): Readonly
 /** What a crumb above a zoom says of a node other than the issue, which is named by its key:
  *  its one line, as every place that names a node by one draws it (`useNodeLine`) - each
  *  reference in it read as its target's current name (R8) - and its kind's word where its words
- *  hold none (`lineOrKindWord`). */
+ *  hold none (`lineOrKindWord`), with the marks of a post its author corrected, since a crumb
+ *  draws a node's one line where its own row is not drawn, as a filter's parent line does
+ *  (`node-line.tsx`'s `ParentLink`, INFRA-1523 R2 and R3). A deleted comment or message is drawn
+ *  as its deleted line, from the delete (`DeletedLine`) and never from the node's text, which
+ *  names the actor as no registry knows it and the time as stored; an edited one says
+ *  ` · edited` after its line (`EditedMark`). */
 function CrumbName({ node }: { node: TreeNode }): ReactNode {
   const { line, reads } = useNodeLine(node, { surface: "outline-crumb" });
+  const deleted = postDeletion({ deleted_at: node.deletedAt, deleted_by: node.deletedBy });
+  if (deleted !== null) return <DeletedLine deleted={deleted} />;
   return (
     <>
       {reads}
       {lineOrKindWord(line, node.type)}
+      {line === undefined ? null : <EditedMark at={node.editedAt} marks={pageChrome} />}
     </>
   );
 }

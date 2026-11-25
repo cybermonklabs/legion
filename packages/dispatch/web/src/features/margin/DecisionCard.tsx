@@ -13,7 +13,14 @@ import {
   textMutedOnSelectedCard,
   textPrimaryOnSurface,
 } from "../../theme/classes";
-import { decisionName, ownTree, wordsOf } from "../issue/decision-text";
+import {
+  decisionName,
+  holdsUnsureParagraph,
+  ownTree,
+  plainParagraph,
+  unsureWords,
+  wordsOf,
+} from "../issue/decision-text";
 import { MarkdownBody } from "../refs/MarkdownBody";
 import { MarkdownPreview } from "../refs/MarkdownPreview";
 import { usePlainHeadline } from "../refs/plain-text";
@@ -39,6 +46,30 @@ function entryHeadingTree(decision: DecisionEntry): DisplayTree | undefined {
   if (tree === undefined || !Array.isArray(content)) return undefined;
   const named = (content as DisplayTree[]).find((node) => wordsOf(node).trim() !== "");
   return named === undefined ? undefined : { ...tree, content: [named] };
+}
+
+/** What a card previews of a decision after its words: the doubt its node holds
+ *  (`unsureWords`) where those words hold no `Unsure:` paragraph, as the paragraph it was moved
+ *  from ran on in the preview, and the reading of the words with that paragraph after them. The
+ *  mount writes the words and the doubt into the preview's `markdown` itself, so the stored text
+ *  is handed to the renderer where the reading list's walk sees it (`surface-lists.test.ts`). */
+function previewOf(decision: DecisionEntry): {
+  doubt: string | undefined;
+  tree: DisplayTree | undefined;
+} {
+  const { text, text_tree: tree } = decision;
+  const doubt = unsureWords(decision);
+  if (doubt === undefined || holdsUnsureParagraph(tree, text)) {
+    return { doubt: undefined, tree };
+  }
+  const content = tree?.content;
+  return {
+    doubt,
+    tree:
+      tree === undefined || !Array.isArray(content)
+        ? tree
+        : { ...tree, content: [...(content as DisplayTree[]), plainParagraph(doubt)] },
+  };
 }
 
 /** One decision beside a spec block it shaped: whose decision it is, whether its maker was
@@ -80,6 +111,8 @@ export function DecisionCard({
   // Until the engine has answered, the heading as written, which the reading list's
   // `decision-heading-words` says is a load state: a card is never left with no name.
   const heading = text?.text ?? name;
+  // Read once per decision, so a repaint of the card repaints no preview it already drew.
+  const preview = useMemo(() => previewOf(decision), [decision]);
   return (
     <article
       aria-current={selected ? "true" : undefined}
@@ -129,10 +162,12 @@ export function DecisionCard({
       <MarkdownPreview
         className={`mt-1 ${textPrimaryOnSurface}`}
         lines={3}
-        markdown={decision.text}
+        markdown={
+          preview.doubt === undefined ? decision.text : `${decision.text}\n\n${preview.doubt}`
+        }
         source={source}
         surface="margin-decision-passage"
-        tree={decision.text_tree}
+        tree={preview.tree}
       />
     </article>
   );

@@ -1,4 +1,4 @@
-import type { DispatchReadingSurface } from "@legion/contracts";
+import { type DispatchReadingSurface, referenceSpans, trimReference } from "@legion/contracts";
 import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useMemo } from "react";
 
@@ -8,12 +8,12 @@ import {
   cardHoverBorder,
   linkText,
   surfaceMutedBg,
+  textMutedOnSurfaceMuted,
   textSecondaryOnSurface,
 } from "../../theme/classes";
-
 import { MarkdownPreview } from "./MarkdownPreview";
+import { DeletedBody, EditedMark } from "./PostMarks";
 import { ReferenceHostIs } from "./reference-host";
-import { referenceSpans, trimReference } from "./reference-spans";
 import { useReferenceHref, useReferenceTarget } from "./reference-target";
 import { buildDispatchReference, type DispatchReferenceRoute, referenceHref } from "./routes";
 import {
@@ -83,8 +83,14 @@ interface ReferenceCards {
   readonly github: readonly GitHubReference[];
 }
 
+/** A Dispatch reference's card: its title, and under it what the target says. A post its author
+ *  edited carries ` · edited` after its title, as its byline does. A post its author deleted
+ *  has neither title nor text left, so the deleted line is the card's title and nothing is drawn
+ *  under it; it never falls back to the words the body wrote, which would read as the post's. */
 function DispatchUnfurl({ card }: { card: DispatchCard }): ReactNode {
-  const { title, description, descriptionTree } = useReferenceTarget(card.route, { text: true });
+  const { title, deleted, description, descriptionTree, edited } = useReferenceTarget(card.route, {
+    text: true,
+  });
   const href = useReferenceHref(card.route);
 
   // The card is the one link: everything drawn inside it reads as a link and is none.
@@ -94,19 +100,26 @@ function DispatchUnfurl({ card }: { card: DispatchCard }): ReactNode {
         className={`block rounded-lg border px-3 py-2 text-sm ${surfaceMutedBg} ${borderDefault} ${cardHoverBorder}`}
         href={href}
       >
-        <span className={`block font-medium ${linkText}`}>
-          {/* The reading list's `reference-card-words`. */}
-          {title ?? card.text}
-        </span>
-        {description === undefined ? null : (
-          <MarkdownPreview
-            className={CARD_BODY_CLASS}
-            lines={2}
-            markdown={description}
-            source={cardRecord(card.route)}
-            surface="dispatch-reference-card"
-            tree={descriptionTree}
-          />
+        {deleted === null ? (
+          <>
+            <span className={`block font-medium ${linkText}`}>
+              {/* The reading list's `reference-card-words`. */}
+              {title ?? card.text}
+              <EditedMark at={edited} className={`font-normal ${textMutedOnSurfaceMuted}`} />
+            </span>
+            {description === undefined ? null : (
+              <MarkdownPreview
+                className={CARD_BODY_CLASS}
+                lines={2}
+                markdown={description}
+                source={cardRecord(card.route)}
+                surface="dispatch-reference-card"
+                tree={descriptionTree}
+              />
+            )}
+          </>
+        ) : (
+          <DeletedBody className="block font-medium" deleted={deleted} />
         )}
       </a>
     </ReferenceHostIs>

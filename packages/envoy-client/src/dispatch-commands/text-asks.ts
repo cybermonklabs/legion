@@ -1,5 +1,5 @@
 import type { TextAsk } from "@legion/contracts";
-import { CONTAINER_MARKER_PATTERN } from "@legion/contracts";
+import { askOpenerLines } from "@legion/contracts";
 
 /**
  * A document's live text as `GET /api/v1/artifacts/{id}/text` answers it. A Dispatch of this
@@ -13,104 +13,26 @@ export type LiveText = { readonly markdown: string; readonly asks?: readonly Tex
 /**
  * The asks of `text`, one per ask block in document order: its `asks` member, or, where it sends
  * none, the attributes that carried them on each line that opens an ask block, as a Dispatch of the
- * release before writes them (askOpenerLines). Only a real opener counts: a line that, past its
- * containers' quote, list and footnote markers, opens the directive, outside fenced code and
- * outside the front matter a document opens with. A line that quotes an opener in code - a fence,
- * one opened on a footnote's label line too, or an inline span, which never starts the line -
- * opens no block, and nor does a line of front matter, which is no markdown, so a document's
- * writer cannot make it read as an answer Dispatch recorded. A document of this release with no
- * ask block opens none, and reads no ask.
+ * release before writes them (`askOpenerLines` in packages/contracts, which the web reads them by
+ * too). Only a real opener counts: a line that, past its containers' quote, list and footnote
+ * markers, opens the directive, outside fenced code and outside the front matter a document opens
+ * with. A line that quotes an opener in code - a fence, one opened on a footnote's label line too,
+ * or an inline span, which never starts the line - opens no block, and nor does a line of front
+ * matter, which is no markdown, so a document's writer cannot make it read as an answer Dispatch
+ * recorded. A document of this release with no ask block opens none, and reads no ask.
  */
 export function liveTextAsks(text: LiveText): readonly TextAsk[] {
   if (text.asks !== undefined && text.asks !== null) return text.asks;
-  return askOpenerLines(text.markdown).flatMap((line) => {
+  return openerAsks(askOpenerLines(text.markdown));
+}
+
+/** The asks that `lines`, opening lines of ask blocks as `askOpenerLines` gives them, carry on
+ *  them, as the release before writes them: one per line that names a block id. */
+export function openerAsks(lines: readonly string[]): readonly TextAsk[] {
+  return lines.flatMap((line) => {
     const opener = openerOf(line);
     return opener === undefined ? [] : [opener];
   });
-}
-
-/** A fenced code block's fence: its character, a backtick or a tilde, and its length. */
-type CodeFence = { readonly char: string; readonly run: number };
-
-/** A line that opens or closes a document's front matter. */
-const FRONT_MATTER_FENCE = /^---[ \t]*$/;
-
-/** One container marker at the start of a line (`CONTAINER_MARKER_PATTERN`). */
-const CONTAINER_MARKER = new RegExp(`^${CONTAINER_MARKER_PATTERN}`);
-
-/**
- * Each line of `markdown` that opens an ask block, past its containers' markers, outside fenced
- * code and front matter, as CommonMark and pmdoc's parser read the canonical rendering a text
- * route serves, which writes every code block fenced. The server's refs.questionBlocks makes the
- * same scan past the same markers (trimContainerMarkers), but reads the lines of front matter
- * too, and takes only spaces and tabs after a closing fence, where this scan takes any blank.
- */
-function askOpenerLines(markdown: string): string[] {
-  const openers: string[] = [];
-  let fence: CodeFence | undefined;
-  const lines = markdown.split("\n").map((line) => line.replace(/\r$/, ""));
-  for (const line of lines.slice(frontMatterEnd(lines))) {
-    const rest = withoutContainerMarkers(line);
-    if (fence !== undefined) {
-      const closer = fenceRun(rest);
-      if (
-        closer?.char === fence.char &&
-        closer.run >= fence.run &&
-        rest.slice(closer.run).trim() === ""
-      ) {
-        fence = undefined;
-      }
-      continue;
-    }
-    const opened = fenceRun(rest);
-    if (
-      opened !== undefined &&
-      opened.run >= 3 &&
-      !(opened.char === "`" && rest.slice(opened.run).includes("`"))
-    ) {
-      fence = opened;
-      continue;
-    }
-    if (/^:{3,}ask\{/.test(rest)) openers.push(rest);
-  }
-  return openers;
-}
-
-/**
- * Where `lines` go on past the front matter a document opens with, as pmdoc's
- * parseFrontmatterBlock reads it: a first line of `---` and any spaces or tabs opens it, and the
- * first later line that is the same closes it. pmdoc keeps it word for word, so no line of it opens
- * a block. 0 where the document opens with none, or with an opener nothing closes, which the
- * renderer never writes: a rule opening a document is written `***`.
- */
-function frontMatterEnd(lines: readonly string[]): number {
-  if (!FRONT_MATTER_FENCE.test(lines[0] ?? "")) return 0;
-  const close = lines.findIndex((line, index) => index > 0 && FRONT_MATTER_FENCE.test(line));
-  return close < 0 ? 0 : close + 1;
-}
-
-/** The run of backticks or tildes `text` opens with, if any. */
-function fenceRun(text: string): CodeFence | undefined {
-  const char = text[0];
-  if (char !== "`" && char !== "~") return undefined;
-  let run = 1;
-  while (text[run] === char) run++;
-  return { char, run };
-}
-
-/** `line` without the indentation and the container markers (`CONTAINER_MARKER_PATTERN`: quote
- *  markers, list markers followed by a space or a tab, and footnote labels, as askgate-new-asks.ts
- *  reads pmdoc's footnote definition), each with every space and tab after it, that a block nested
- *  in a quote, a list item or a footnote is written after. The lines are split at each line break
- *  first, so no label holds one. */
-function withoutContainerMarkers(line: string): string {
-  let rest = line;
-  for (;;) {
-    rest = rest.replace(/^[ \t]+/, "");
-    const marker = CONTAINER_MARKER.exec(rest);
-    if (marker === null) return rest;
-    rest = rest.slice(marker[0].length);
-  }
 }
 
 /** The ask block `line`, a line past its containers' markers that opens the directive, opens, its

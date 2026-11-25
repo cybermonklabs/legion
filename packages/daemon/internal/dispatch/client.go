@@ -66,6 +66,7 @@ func (c *HTTPClient) ListIssues(ctx context.Context, project string, statuses []
 			Status:       issue.Status,
 			Parent:       issue.Parent,
 			Rank:         issue.Rank,
+			Priority:     issue.Priority,
 			HandedOver:   CarriesLegionLabel(issue.Labels),
 			Labels:       issue.Labels,
 			LastSeq:      issue.LastSeq,
@@ -331,7 +332,8 @@ func (c *HTTPClient) UploadArtifact(ctx context.Context, key, name, content stri
 // EventsAfter reads the issue's Dispatch event log after sequence after, oldest first, through GET
 // /api/v1/issues/{key}/events?after=…, every page of it: each event as Dispatch serves it, which is
 // the shape its durable stream carries, so the boot catch-up applies each through the live
-// decoder, with its own sequence.
+// decoder, with its own sequence. A page that holds an event that does not decode, or whose seq is
+// not above the sequence read before it, fails the read with an *EventLogError naming that event.
 func (c *HTTPClient) EventsAfter(ctx context.Context, key string, after int64) ([]json.RawMessage, error) {
 	events := []json.RawMessage{}
 	for {
@@ -347,10 +349,11 @@ func (c *HTTPClient) EventsAfter(ctx context.Context, key string, after int64) (
 				Seq int64 `json:"seq"`
 			}
 			if err := json.Unmarshal(raw, &event); err != nil {
-				return nil, fmt.Errorf("page issue events for %s: %w", key, err)
+				return nil, &EventLogError{Event: len(events) + 1, Err: fmt.Errorf("page issue events for %s: %w", key, err)}
 			}
 			if event.Seq <= after {
-				return nil, fmt.Errorf("page issue events for %s: non-ascending sequence %d after %d", key, event.Seq, after)
+				return nil, &EventLogError{Event: len(events) + 1, Seq: event.Seq,
+					Err: fmt.Errorf("page issue events for %s: non-ascending sequence %d after %d", key, event.Seq, after)}
 			}
 			after = event.Seq
 			events = append(events, raw)
@@ -361,13 +364,31 @@ func (c *HTTPClient) EventsAfter(ctx context.Context, key string, after int64) (
 	}
 }
 
+// EventLogError is the error for an event of an issue's Dispatch event log that the daemon cannot
+// read. EventsAfter gives it for an event of a page that it cannot read: an event that does not
+// decode, or whose seq is not above the sequence read before it. The intake's walk of the log
+// (walkIssueEvents in internal/intake) gives it for an event that it cannot decode. Event is the
+// event's place in the log read, counted from 1. Seq is the event's sequence where the event
+// decoded, and 0 where it did not. Err names the cause and, from EventsAfter, the issue; Error
+// returns its text.
+type EventLogError struct {
+	Event int
+	Seq   int64
+	Err   error
+}
+
+func (e *EventLogError) Error() string { return e.Err.Error() }
+func (e *EventLogError) Unwrap() error { return e.Err }
+
 const eventPageLimit = 200
 
 // MessageBodiesSince reads newest-first issue events until the bounded outbox recovery window.
 // Message bodies are carried by message.created events, which hold at most the first part of a
 // long body (contracts.DispatchEventBodyMax) and say so with body_truncated; the whole of such a
 // body is read from GET /api/v1/issues/{key}/messages/{id}, since the outbox's marker closes a
-// body and the cut would drop it.
+// body and the cut would drop it. A message its author deleted keeps its message.created event,
+// whose every read carries deleted_at and no body: it is no notice the outbox posted, so the read
+// passes over it, and any other event with no body is still refused.
 func (c *HTTPClient) MessageBodiesSince(ctx context.Context, key string, since time.Time) ([]string, error) {
 	before := int64(0)
 	bodies := []string{}
@@ -394,12 +415,16 @@ func (c *HTTPClient) MessageBodiesSince(ctx context.Context, key string, since t
 				continue
 			}
 			var message struct {
-				ID            string `json:"id"`
-				Body          string `json:"body"`
-				BodyTruncated bool   `json:"body_truncated"`
+				ID            string          `json:"id"`
+				Body          string          `json:"body"`
+				BodyTruncated bool            `json:"body_truncated"`
+				DeletedAt     json.RawMessage `json:"deleted_at"`
 			}
 			if err := json.Unmarshal(event.Payload, &message); err != nil {
 				return nil, fmt.Errorf("decode message.created event %d for %s: %w", event.Seq, key, err)
+			}
+			if len(message.DeletedAt) > 0 && string(message.DeletedAt) != "null" {
+				continue
 			}
 			if message.Body == "" {
 				return nil, fmt.Errorf("decode message.created event %d for %s: payload body is required", event.Seq, key)
@@ -723,6 +748,7 @@ type issueSummaryResponse struct {
 	Status       string         `json:"status"`
 	Parent       *string        `json:"parent"`
 	Rank         string         `json:"rank"`
+	Priority     *int           `json:"priority"`
 	Labels       []string       `json:"labels"`
 	LastSeq      int64          `json:"last_seq"`
 	ResolvedRepo *string        `json:"resolved_repo"`
@@ -737,6 +763,7 @@ type issueResponse struct {
 	Status            string         `json:"status"`
 	Parent            *string        `json:"parent"`
 	Rank              string         `json:"rank"`
+	Priority          *int           `json:"priority"`
 	Labels            []string       `json:"labels"`
 	PrimaryArtifactID string         `json:"primary_artifact_id"`
 	LastSeq           int64          `json:"last_seq"`
@@ -754,6 +781,7 @@ func (r issueResponse) issue() Issue {
 		Status:            r.Status,
 		Parent:            r.Parent,
 		Rank:              r.Rank,
+		Priority:          r.Priority,
 		Labels:            r.Labels,
 		HandedOver:        CarriesLegionLabel(r.Labels),
 		PrimaryArtifactID: r.PrimaryArtifactID,

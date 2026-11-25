@@ -274,6 +274,7 @@ func TestEveryReadCarriesItsDisplayTreesOnlyUnderTheHeader(t *testing.T) {
 // parses. The live frame reads the payload the write built rather than the one the database
 // stored, and answers the same key.
 func TestACommentEventCarriesTheTreeOfTheQuestionItReplies(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	const (
 		question = "Ship the **release** on [Friday](https://example.com/friday)?"
@@ -347,6 +348,7 @@ func TestACommentEventCarriesTheTreeOfTheQuestionItReplies(t *testing.T) {
 // stands under the root's pointer "". Both routes that answer a body answer the trees, and the
 // document declares them.
 func TestAHandoffReadCarriesTheTreeOfEachTextItsCardDraws(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "TREE", "Handoff trees", "A spec")
 	const (

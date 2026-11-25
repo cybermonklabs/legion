@@ -27,7 +27,13 @@ const BlockExcerptRunes = 480
 // deployment whose dashboard URLs are references (text.HeadRefs). It is an Inbox row's subject
 // and its reply's first line, and an id prefix candidate's first line.
 func FirstLine(body, serverURL string) string {
-	return text.HeadRefs(contracts.FirstNonEmptyLine(body), firstLineRunes, "…", serverURL)
+	return FirstLineWithin(body, serverURL, firstLineRunes)
+}
+
+// FirstLineWithin is FirstLine cut to runes runes in place of firstLineRunes, for a surface whose
+// own design gives its first line more room: a person's page shows 240 (api/person_nodes.go).
+func FirstLineWithin(body, serverURL string, runes int) string {
+	return text.HeadRefs(contracts.FirstNonEmptyLine(body), runes, "…", serverURL)
 }
 
 // itemExcerpt is the head of an item's text shown beside an edge (Edges): its first excerptRunes

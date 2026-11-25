@@ -198,7 +198,7 @@ var topLevelKeys = func() []keyDescriptor {
 		},
 		{
 			Name: "operator_token_file", Default: "none: the boot refuses a daemon that names no operator token", RequiredBy: "yes",
-			Description: "The file holding the operator's bearer token, which `legion controller start`, `legion claims` and `legion issue status` present and the daemon's operator routes authenticate against; make it one long random string readable by its owner alone.",
+			Description: "The file holding the operator's bearer token, which `legion controller start`, `legion claims`, `legion project`, `legion intake` and `legion issue status` present and the daemon's operator routes authenticate against; make it one long random string readable by its owner alone.",
 			Read:        reads(readNonEmptyString, func(f *fileConfig, v *string) { f.OperatorTokenFile = v }),
 		},
 		{
@@ -356,6 +356,11 @@ var topLevelKeys = func() []keyDescriptor {
 			Name: "review_round_cap", Default: "`3`", RequiredBy: "no",
 			Description: "How many review rounds one pull request may take; it is the one cap left that blocks a pull request.",
 			Read:        reads(roundCap, func(f *fileConfig, v *int) { f.ReviewRoundCap = v }),
+		},
+		{
+			Name: "github_graphql_share", Default: "`0.5`: each query is followed by a pause as long as it took", RequiredBy: "no",
+			Description: "The share of the time this daemon's merge-state queries of one GitHub App installation may keep GitHub's GraphQL API at work: after each query the next waits (1 - share) / share of the time it took, at most 15 minutes. GitHub allows an installation 60 seconds of query processing time in 60 seconds, and every daemon that reads with the same installation spends that one allowance, so a deployment sets it near 1 divided by the number of daemons sharing the installation; a value below `0.01` (one daemon in a hundred) or above 1 is refused, and so is a value that is not a finite number.",
+			Read:        reads(readShare, func(f *fileConfig, v *float64) { f.GitHubGraphQLShare = v }),
 		},
 		{
 			Name: "controller_wake_interval_seconds", RequiredBy: "no",
@@ -805,7 +810,7 @@ var nestedKeys = []memberGroup{
 			Description: "The absolute path the daemon's own projected ServiceAccount token for the broker's audience is mounted at; the daemon logs in with it at every start and keeps logging in, and the broker's `BROKER_SERVICE_LOGINS` names that account."},
 		{Name: "operator", Default: "", RequiredBy: "no",
 			Description: "Removed: the daemon logs in with its own ServiceAccount token, which no person approves, so the block names no approver; the loader refuses a file that still sets it."},
-		{Name: "audience", Default: "`agent-secrets`", RequiredBy: "no",
+		{Name: "audience", Default: "`" + DefaultAgentSecretsAudience + "`", RequiredBy: "no",
 			Description: "The audience of the projected token the daemon presents to the broker."},
 		{Name: "token_expiry_seconds", Default: "`3600`", RequiredBy: "no",
 			Description: "How long a worker's broker token lives, between 600 and 3600 seconds, the API server issuing none under 600."},

@@ -6,6 +6,7 @@ import (
 	"math"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -46,6 +47,13 @@ var prefixLimit = strconv.Itoa(prefixCandidateLimit)
 // it for a caller that sends `Dispatch-Trees: 1`, beside the first line of every candidate but a
 // document's, whose first line is its file's name (api.writeAmbiguousID). It is absent wherever
 // FirstLine is.
+//
+// EditedAt, DeletedAt and DeletedBy are a comment's or a message's marks, as the reads of the post
+// itself carry them (model.Comment, model.Message): the time its author last edited it, and the
+// mark of a delete, whose cleared body leaves FirstLine empty, so a list of candidates says the
+// post is deleted rather than showing an empty line. Each is nil on a post that stands unedited
+// and on a candidate of any other kind; a block candidate is a block of a document
+// (blockPrefixCandidates), which no correction marks.
 type Candidate struct {
 	Kind          string            `json:"kind"`
 	ID            string            `json:"id"`
@@ -54,6 +62,9 @@ type Candidate struct {
 	Document      string            `json:"document,omitempty"`
 	FirstLine     string            `json:"first_line,omitempty"`
 	FirstLineTree model.DisplayTree `json:"first_line_tree,omitempty"`
+	EditedAt      *time.Time        `json:"edited_at,omitempty"`
+	DeletedAt     *time.Time        `json:"deleted_at,omitempty"`
+	DeletedBy     *model.Actor      `json:"deleted_by,omitempty"`
 }
 
 // ErrPrefixAmbiguous is the refusal of an id prefix two items or more carry, with the matches for
@@ -217,7 +228,8 @@ func itemPrefixCandidates(ctx context.Context, q Queryer, who *model.Actor, kind
 		table, column = "comments", "body"
 	}
 	var args queryArgs
-	query := `select item.id::text, item.issue_key, coalesce(issue.project_key, doc.project_key, ''), coalesce(doc.slug, ''), item.` + column + `
+	query := `select item.id::text, item.issue_key, coalesce(issue.project_key, doc.project_key, ''), coalesce(doc.slug, ''), item.` + column + `,
+		       ` + ItemKind(kind).postMarkColumns("item") + `
 		from ` + table + ` item
 		left join issues issue on issue.key = item.issue_key
 		left join artifacts doc on doc.id = item.artifact_id
@@ -238,10 +250,15 @@ func itemPrefixCandidates(ctx context.Context, q Queryer, who *model.Actor, kind
 	for rows.Next() {
 		var id, project, slug, body string
 		var issueKey *string
-		if err := rows.Scan(&id, &issueKey, &project, &slug, &body); err != nil {
+		var marks postMarks
+		if err := rows.Scan(append([]any{&id, &issueKey, &project, &slug, &body}, marks.targets()...)...); err != nil {
 			return nil, fmt.Errorf("scan the %ss %q names: %w", kind, prefix, err)
 		}
-		found = append(found, itemCandidate(kind, id, issueKey, project, slug, body, serverURL))
+		candidate, err := itemCandidate(kind, id, issueKey, project, slug, body, serverURL, marks)
+		if err != nil {
+			return nil, err
+		}
+		found = append(found, candidate)
 	}
 	return found, rows.Err()
 }
@@ -261,7 +278,7 @@ func messagePrefixCandidates(ctx context.Context, q Queryer, who *model.Actor, s
 		return nil, nil
 	}
 	var args queryArgs
-	candidates := `select m.id, m.issue_key, m.body
+	candidates := `select m.id, m.issue_key, m.body, ` + ItemMessage.postMarkColumns("m") + `
 			from messages m
 			where m.id >= ` + args.param(lower) + `::uuid and m.id <= ` + args.param(upper) + `::uuid`
 	if scope.IssueKey != "" {
@@ -292,7 +309,7 @@ func messagePrefixCandidates(ctx context.Context, q Queryer, who *model.Actor, s
 		       )`
 	}
 	rows, err := q.Query(ctx, `with recursive candidates as (`+candidates+`)`+threads+`
-		select c.id::text, c.issue_key, coalesce(i.project_key, ''), c.body, `+inConversation+`
+		select c.id::text, c.issue_key, coalesce(i.project_key, ''), c.body, c.edited_at, c.deleted_at, c.deleted_by, `+inConversation+`
 		from candidates c
 		left join issues i on i.key = c.issue_key
 		order by c.id`, args.values...)
@@ -304,11 +321,15 @@ func messagePrefixCandidates(ctx context.Context, q Queryer, who *model.Actor, s
 	for rows.Next() {
 		var id, project, body string
 		var issueKey *string
+		var marks postMarks
 		var inThread bool
-		if err := rows.Scan(&id, &issueKey, &project, &body, &inThread); err != nil {
+		if err := rows.Scan(append(append([]any{&id, &issueKey, &project, &body}, marks.targets()...), &inThread)...); err != nil {
 			return nil, fmt.Errorf("scan the messages %q names: %w", prefix, err)
 		}
-		candidate := itemCandidate("message", id, issueKey, project, "", body, viewer.ServerURL)
+		candidate, err := itemCandidate("message", id, issueKey, project, "", body, viewer.ServerURL, marks)
+		if err != nil {
+			return nil, err
+		}
 		if issueKey == nil && !viewer.Human && !inThread {
 			candidate.FirstLine, candidate.FirstLineTree = "", nil
 		}
@@ -318,13 +339,19 @@ func messagePrefixCandidates(ctx context.Context, q Queryer, who *model.Actor, s
 }
 
 // itemCandidate is one ask, comment or message row as a candidate, addressed as the graph
-// addresses it (itemRef) and owned by its issue, or by the project document it is written on.
-func itemCandidate(kind, id string, issueKey *string, project, slug, body, serverURL string) Candidate {
+// addresses it (itemRef), owned by its issue, or by the project document it is written on, and
+// carrying the marks its row's postMarkColumns read.
+func itemCandidate(kind, id string, issueKey *string, project, slug, body, serverURL string, marks postMarks) (Candidate, error) {
 	candidate := Candidate{
 		Kind:      kind,
 		ID:        id,
 		Ref:       itemRef(kind, issueKey, project, slug, id),
 		FirstLine: FirstLine(body, serverURL),
+		EditedAt:  marks.editedAt,
+	}
+	var err error
+	if candidate.DeletedAt, candidate.DeletedBy, err = marks.deleted(); err != nil {
+		return Candidate{}, fmt.Errorf("%s candidate %s: %w", kind, id, err)
 	}
 	switch {
 	case issueKey != nil:
@@ -332,7 +359,7 @@ func itemCandidate(kind, id string, issueKey *string, project, slug, body, serve
 	case project != "" && slug != "":
 		candidate.Document = ArtifactRef(nil, project, nil, slug, "", false)
 	}
-	return candidate
+	return candidate, nil
 }
 
 // artifactPrefixCandidates is the documents and files prefix names, oldest id first. A document

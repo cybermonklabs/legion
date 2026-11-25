@@ -3473,6 +3473,144 @@
     }
   },
   {
+    "name": "bare-addresses-the-tokenizer-reads-inside-an-address",
+    "markdown": "Answer dispatch://CORE-1/ask/a1?x=foo@bar.com today.\n\nSee dispatch://CORE-1/a_www.example.com/x first.\n\nSee dispatch://CORE-1/x;https://example.com/y first.\n",
+    "pm_json": {
+      "type": "doc",
+      "content": [
+        {
+          "type": "paragraph",
+          "attrs": {
+            "blockId": "b-000001"
+          },
+          "content": [
+            {
+              "type": "text",
+              "text": "Answer dispatch://CORE-1/ask/a1?x=foo@bar.com today."
+            }
+          ]
+        },
+        {
+          "type": "paragraph",
+          "attrs": {
+            "blockId": "b-000002"
+          },
+          "content": [
+            {
+              "type": "text",
+              "text": "See dispatch://CORE-1/a_www.example.com/x first."
+            }
+          ]
+        },
+        {
+          "type": "paragraph",
+          "attrs": {
+            "blockId": "b-000003"
+          },
+          "content": [
+            {
+              "type": "text",
+              "text": "See dispatch://CORE-1/x;https://example.com/y first."
+            }
+          ]
+        }
+      ]
+    },
+    "yjs_update_v1_b64": "AQwBAAcBC3Byb3NlbWlycm9yAwlwYXJhZ3JhcGgHAAEABgQAAQE0QW5zd2VyIGRpc3BhdGNoOi8vQ09SRS0xL2Fzay9hMT94PWZvb0BiYXIuY29tIHRvZGF5LigAAQAHYmxvY2tJZAF3CGItMDAwMDAxhwEAAwlwYXJhZ3JhcGgHAAE3BgQAATgwU2VlIGRpc3BhdGNoOi8vQ09SRS0xL2Ffd3d3LmV4YW1wbGUuY29tL3ggZmlyc3QuKAABNwdibG9ja0lkAXcIYi0wMDAwMDKHATcDCXBhcmFncmFwaAcAAWoGBAABazRTZWUgZGlzcGF0Y2g6Ly9DT1JFLTEveDtodHRwczovL2V4YW1wbGUuY29tL3kgZmlyc3QuKAABagdibG9ja0lkAXcIYi0wMDAwMDMA",
+    "rendered_by_milkdown": "Answer dispatch://CORE-1/ask/a1?x=foo\\@bar.com today.\n\nSee dispatch://CORE-1/a\\_www\\.example.com/x first.\n\nSee dispatch://CORE-1/x;https\\://example.com/y first.\n",
+    "reading": {
+      "tables": [],
+      "paragraphs": [
+        {
+          "emphasized": [],
+          "strong": [],
+          "struck": [],
+          "text": "Answer dispatch://CORE-1/ask/a1?x=foo@bar.com today."
+        },
+        {
+          "emphasized": [],
+          "strong": [],
+          "struck": [],
+          "text": "See dispatch://CORE-1/a_www.example.com/x first."
+        },
+        {
+          "emphasized": [],
+          "strong": [],
+          "struck": [],
+          "text": "See dispatch://CORE-1/x;https://example.com/y first."
+        }
+      ]
+    }
+  },
+  {
+    "name": "bare-person-address-holding-a-dot",
+    "markdown": "Ask dispatch://person/john.doe@example.com now.\n",
+    "pm_json": {
+      "type": "doc",
+      "content": [
+        {
+          "type": "paragraph",
+          "attrs": {
+            "blockId": "b-000001"
+          },
+          "content": [
+            {
+              "type": "text",
+              "text": "Ask dispatch://person/john.doe@example.com now."
+            }
+          ]
+        }
+      ]
+    },
+    "yjs_update_v1_b64": "AQQBAAcBC3Byb3NlbWlycm9yAwlwYXJhZ3JhcGgHAAEABgQAAQEvQXNrIGRpc3BhdGNoOi8vcGVyc29uL2pvaG4uZG9lQGV4YW1wbGUuY29tIG5vdy4oAAEAB2Jsb2NrSWQBdwhiLTAwMDAwMQA=",
+    "rendered_by_milkdown": "Ask dispatch://person/john.doe\\@example.com now.\n",
+    "reading": {
+      "tables": [],
+      "paragraphs": [
+        {
+          "emphasized": [],
+          "strong": [],
+          "struck": [],
+          "text": "Ask dispatch://person/john.doe@example.com now."
+        }
+      ]
+    }
+  },
+  {
+    "name": "bare-person-address-holding-a-hyphen",
+    "markdown": "Ask dispatch://person/person-2@example.com now.\n",
+    "pm_json": {
+      "type": "doc",
+      "content": [
+        {
+          "type": "paragraph",
+          "attrs": {
+            "blockId": "b-000001"
+          },
+          "content": [
+            {
+              "type": "text",
+              "text": "Ask dispatch://person/person-2@example.com now."
+            }
+          ]
+        }
+      ]
+    },
+    "yjs_update_v1_b64": "AQQBAAcBC3Byb3NlbWlycm9yAwlwYXJhZ3JhcGgHAAEABgQAAQEvQXNrIGRpc3BhdGNoOi8vcGVyc29uL3BlcnNvbi0yQGV4YW1wbGUuY29tIG5vdy4oAAEAB2Jsb2NrSWQBdwhiLTAwMDAwMQA=",
+    "rendered_by_milkdown": "Ask dispatch://person/person-2\\@example.com now.\n",
+    "reading": {
+      "tables": [],
+      "paragraphs": [
+        {
+          "emphasized": [],
+          "strong": [],
+          "struck": [],
+          "text": "Ask dispatch://person/person-2@example.com now."
+        }
+      ]
+    }
+  },
+  {
     "name": "bare-url-trailing-punctuation",
     "markdown": "\"HTTP 401: Bad credentials (https://api.github.com/graphql)\" while CI ran\n\nSee https://x.test/a, https://x.test/b. and https://x.test/c; then https://x.test/d: or https://x.test/e!\n\nQuoted \"https://x.test/f\" and 'https://x.test/g' and (https://x.test/h(i)) and https://x.test/j_ and https://x.test/k*.\n\nA trail before more text continues the URL: https://x.test/l.m and https://x.test/n;o and https://x.test/p\"q.\n\nReferences and brackets: https://x.test/r&amp; and https://x.test/s] and https://x.test/t](u) and https://x.test/v]w.\n\nBackslashes, asterisks and letters outside ASCII are the URL's: https://x.test/a\\b https://x.test/a*b https://x.test/café\n\nAny case: HTTPS://X.TEST/Y and Www.x.test/z; no ftp://x.test/w\n\n| cell | text |\n| --- | --- |\n| x | \"HTTP 401: Bad credentials (https://api.github.com/graphql)\" while |\n| y | see \"https://x.test/a\"; and 'https://x.test/b'! |\n",
     "pm_json": {
@@ -40020,6 +40158,92 @@
           "strong": [],
           "struck": [],
           "text": "paren"
+        }
+      ]
+    }
+  },
+  {
+    "name": "links-after-an-address-written-in-full",
+    "markdown": "See dispatch://CORE-1/x;<https://a.test> now.\n\nSee dispatch://CORE-1/a_[www.a.test](http://www.a.test) now.\n",
+    "pm_json": {
+      "type": "doc",
+      "content": [
+        {
+          "type": "paragraph",
+          "attrs": {
+            "blockId": "b-000001"
+          },
+          "content": [
+            {
+              "type": "text",
+              "text": "See dispatch://CORE-1/x;"
+            },
+            {
+              "type": "text",
+              "marks": [
+                {
+                  "type": "link",
+                  "attrs": {
+                    "href": "https://a.test",
+                    "title": null
+                  }
+                }
+              ],
+              "text": "https://a.test"
+            },
+            {
+              "type": "text",
+              "text": " now."
+            }
+          ]
+        },
+        {
+          "type": "paragraph",
+          "attrs": {
+            "blockId": "b-000002"
+          },
+          "content": [
+            {
+              "type": "text",
+              "text": "See dispatch://CORE-1/a_"
+            },
+            {
+              "type": "text",
+              "marks": [
+                {
+                  "type": "link",
+                  "attrs": {
+                    "href": "http://www.a.test",
+                    "title": null
+                  }
+                }
+              ],
+              "text": "www.a.test"
+            },
+            {
+              "type": "text",
+              "text": " now."
+            }
+          ]
+        }
+      ]
+    },
+    "yjs_update_v1_b64": "ARABAAcBC3Byb3NlbWlycm9yAwlwYXJhZ3JhcGgHAAEABgQAAQEYU2VlIGRpc3BhdGNoOi8vQ09SRS0xL3g7hgEZBGxpbmsmeyJocmVmIjoiaHR0cHM6Ly9hLnRlc3QiLCJ0aXRsZSI6bnVsbH2EARoOaHR0cHM6Ly9hLnRlc3SGASgEbGluawRudWxshAEpBSBub3cuKAABAAdibG9ja0lkAXcIYi0wMDAwMDGHAQADCXBhcmFncmFwaAcAATAGBAABMRhTZWUgZGlzcGF0Y2g6Ly9DT1JFLTEvYV+GAUkEbGluayl7ImhyZWYiOiJodHRwOi8vd3d3LmEudGVzdCIsInRpdGxlIjpudWxsfYQBSgp3d3cuYS50ZXN0hgFUBGxpbmsEbnVsbIQBVQUgbm93LigAATAHYmxvY2tJZAF3CGItMDAwMDAyAA==",
+    "rendered_by_milkdown": "See dispatch://CORE-1/x;<https://a.test> now.\n\nSee dispatch://CORE-1/a\\_[www.a.test](http://www.a.test) now.\n",
+    "reading": {
+      "tables": [],
+      "paragraphs": [
+        {
+          "emphasized": [],
+          "strong": [],
+          "struck": [],
+          "text": "See dispatch://CORE-1/x;https://a.test now."
+        },
+        {
+          "emphasized": [],
+          "strong": [],
+          "struck": [],
+          "text": "See dispatch://CORE-1/a_www.a.test now."
         }
       ]
     }

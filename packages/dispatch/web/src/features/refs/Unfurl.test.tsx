@@ -710,3 +710,112 @@ test("a card for a target with no title shows the reference as written and parse
     listAgents.mockRestore();
   }
 });
+
+test("Unfurl says a referenced comment was deleted and gives no part of its body", async () => {
+  const commentRead: CommentRead = {
+    comment: {
+      id: "comment-1",
+      issue_key: "CORE-1",
+      author: { id: "alice", kind: "user" },
+      body: "",
+      anchor: null,
+      reply_to: null,
+      ask_id: null,
+      turn: null,
+      resolved: false,
+      resolved_by: null,
+      resolved_at: null,
+      edited_at: null,
+      suggestion: null,
+      created_at: "2026-09-09T00:00:00Z",
+      ...commentDeliveryFields(),
+      deleted_at: "2026-09-09T01:00:00Z",
+      deleted_by: { id: "alice", kind: "user" },
+    },
+    replies: [],
+  };
+  const getComment = spyOn(api, "getComment").mockResolvedValue(commentRead);
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+  const view = render(
+    <QueryClientProvider client={queryClient}>
+      <Unfurl body="dispatch://CORE-1/comment/comment-1" />
+    </QueryClientProvider>
+  );
+
+  try {
+    await within(view.container).findByText(/Deleted by/);
+  } finally {
+    getComment.mockRestore();
+    view.unmount();
+  }
+});
+
+// A card for a post prints the post, so an edited one carries ` · edited` after its title, as
+// its byline does, and one nobody edited carries none. A deleted one has no title left: the
+// deleted line is its title, and the card never falls back to the reference the body wrote.
+test("Unfurl marks an edited comment, and a deleted one's title is the deleted line, not the body's words", async () => {
+  const read = (overrides: Partial<CommentRead["comment"]>): CommentRead => ({
+    comment: {
+      id: "comment-1",
+      issue_key: "CORE-1",
+      author: { id: "alice", kind: "user" },
+      body: "Looks good.",
+      anchor: null,
+      reply_to: null,
+      ask_id: null,
+      turn: null,
+      resolved: false,
+      resolved_by: null,
+      resolved_at: null,
+      edited_at: null,
+      suggestion: null,
+      created_at: "2026-09-09T00:00:00Z",
+      ...commentDeliveryFields(),
+      ...overrides,
+    },
+    replies: [],
+  });
+  const card = async (answer: CommentRead, settled: string) => {
+    const getComment = spyOn(api, "getComment").mockResolvedValue(answer);
+    const view = renderUnfurl("dispatch://CORE-1/comment/comment-1");
+    try {
+      const link = await waitFor(() => {
+        const found = view.container.querySelector("a");
+        if (found?.textContent?.includes(settled) !== true) throw new Error("not read yet");
+        return found;
+      });
+      return link.textContent;
+    } finally {
+      view.unmount();
+      getComment.mockRestore();
+    }
+  };
+  /** The read with no `body` key: the one answer whose card has no title, so it falls back to
+   *  the reference the body wrote. */
+  const bodiless = (overrides: Partial<CommentRead["comment"]>): CommentRead => {
+    const { body: _body, ...comment } = read(overrides).comment;
+    return { comment, replies: [] } as unknown as CommentRead;
+  };
+
+  expect(await card(read({ edited_at: "2026-09-09T01:00:00Z" }), "Looks good.")).toBe(
+    "Looks good. · edited"
+  );
+  expect(await card(read({}), "Looks good.")).toBe("Looks good.");
+  // The positive control of the last two lines: that answer of a comment that stands, with no
+  // body and an edit, settles on the reference the body wrote and ` · edited`.
+  const edit = { edited_at: "2026-09-09T01:00:00Z" };
+  expect(await card(bodiless(edit), "· edited")).toBe(
+    "dispatch://CORE-1/comment/comment-1 · edited"
+  );
+  const deleted = await card(
+    bodiless({
+      ...edit,
+      deleted_at: "2026-09-09T02:00:00Z",
+      deleted_by: { id: "alice", kind: "user" },
+    }),
+    "Deleted by alice"
+  );
+  expect(deleted).not.toContain("dispatch://");
+  expect(deleted).not.toContain("edited");
+});

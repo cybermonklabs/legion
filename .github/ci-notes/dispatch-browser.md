@@ -89,7 +89,7 @@ reference framework's Verification document names and the nine of the reading li
 with main's parse-count walk beside them, on the four shard machines and the merge job alone,
 so a pull request that changes the reference framework gets those rows from CI at its head
 rather than from a run by hand. It gates nothing:
-.github/ci-notes/ci.md#the-reference-rows-preview-job-what-it-runs-and-why-it-gates-nothing
+.github/ci-notes/ci.md#the-reference-rows-preview-job
 says why. The lane's spec files are written in one place, the `references)` arm of
 .github/scripts/dispatch-browser-shard-suite.sh, the script the shard job's browser step runs.
 

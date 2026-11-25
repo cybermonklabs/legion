@@ -17,6 +17,7 @@ import (
 // exactly that text, and the emitted document declares it where the answer carries it - so the
 // dashboard draws each of them from the server's reading and parses none of them in the page.
 func TestAReasonAndADescriptionCarryTheirTreesOnlyUnderTheHeader(t *testing.T) {
+	t.Parallel()
 	handler, _ := newComponentTreeServer(t)
 	const (
 		reason      = "Hiring, **not** code: see dispatch://CORE-1."
@@ -53,6 +54,7 @@ func TestAReasonAndADescriptionCarryTheirTreesOnlyUnderTheHeader(t *testing.T) {
 // the shape that already carried its components' prose trees, which writes the components last
 // (architectureTreeBefore). A shadow written in another order would move its key in every answer.
 func TestTheShapedListingsAnswerTheirModelsBytesWithoutTheHeader(t *testing.T) {
+	t.Parallel()
 	handler, _ := newComponentTreeServer(t)
 	createComponentIssue(t, handler, "Process work", nil, map[string]any{"mode": "none", "reason": "Hiring, **not** code."})
 	created := dispatchRequest(t, handler, http.MethodPost, "/api/v1/priorities", map[string]any{

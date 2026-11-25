@@ -42,9 +42,12 @@ func emailHref(address string) string {
 
 // linkTextAddresses links what mdast-util-gfm-autolink-literal's transform links in parent's
 // text: each run of goldmark's text nodes between other nodes, outside a link, an image, a code
-// span or an autolink, is one of the engine's text nodes (linkRuns). A block inside parent is left
-// to its own CloseBlock, which goldmark calls on every block after its children's: the engine
-// searches each text once, and a second search would read the text beside a link it made alone.
+// span or an autolink, is one of the engine's text nodes (textRuns, linkRun). Then it puts back as
+// text each literal autolink either reader started inside a `dispatch://` address
+// (keepAddressesWhole), over each run of those texts and the literal autolinks between them. A
+// block inside parent is left to its own CloseBlock, which goldmark calls on every block after its
+// children's: the engine searches each text once, and a second search would read the text beside
+// a link it made alone.
 func linkTextAddresses(parent ast.Node, source []byte) {
 	var run []ast.Node
 	for node := parent; node != nil; {
@@ -54,7 +57,8 @@ func linkTextAddresses(parent ast.Node, source []byte) {
 			opaque = true
 		}
 		if !opaque && node.FirstChild() != nil {
-			run = linkRuns(node, source, run)
+			run = textRuns(node, source, false, run, linkRun)
+			run = textRuns(node, source, true, run, keepAddressesWhole)
 			node = node.FirstChild()
 			continue
 		}
@@ -68,17 +72,17 @@ func linkTextAddresses(parent ast.Node, source []byte) {
 	}
 }
 
-// linkRuns links the addresses in each run of container's text and string children, which a hard
-// break ends, as the engine's break node ends its text; run is scratch space, returned for reuse.
-func linkRuns(container ast.Node, source []byte, run []ast.Node) []ast.Node {
+// textRuns calls each with each run of container's children that stand in a run of text
+// (inTextRun): its texts and strings, which are one of the engine's text nodes, and with links the
+// literal autolinks between them too. A hard break ends a run, as the engine's break node ends its
+// text. each may change the run's nodes, never the node after it; run is scratch space, returned
+// for reuse.
+func textRuns(container ast.Node, source []byte, links bool, run []ast.Node, each func(run []ast.Node, source []byte)) []ast.Node {
 	for child := container.FirstChild(); child != nil; {
 		run = run[:0]
-		for child != nil {
-			text, isText := child.(*ast.Text)
-			if _, isString := child.(*ast.String); !isText && !isString {
-				break
-			}
+		for child != nil && inTextRun(child, source, links) {
 			run = append(run, child)
+			text, isText := child.(*ast.Text)
 			child = child.NextSibling()
 			if isText && readsAsHardBreak(text, source) {
 				break
@@ -88,9 +92,21 @@ func linkRuns(container ast.Node, source []byte, run []ast.Node) []ast.Node {
 			child = child.NextSibling()
 			continue
 		}
-		linkRun(run, source)
+		each(run, source)
 	}
 	return run
+}
+
+// inTextRun reports whether node stands in a run of text: a text or a string, and with links a
+// literal autolink (literalAutolink), never an angle autolink.
+func inTextRun(node ast.Node, source []byte, links bool) bool {
+	switch node := node.(type) {
+	case *ast.Text, *ast.String:
+		return true
+	case *ast.AutoLink:
+		return links && literalAutolink(node, source)
+	}
+	return false
 }
 
 // readsAsHardBreak reports whether text ends in a line break the engine reads as hard: a backslash,
@@ -103,9 +119,9 @@ func readsAsHardBreak(text *ast.Text, source []byte) bool {
 	return backslash || len(run) >= 2 && !strings.Contains(run, "\t")
 }
 
-// textPiece is one node of a run, its decoded text starting at start in the run's; a text's
-// offsets map each offset of value, and its end, to the offset in the text's raw value (rawValue)
-// it begins at (decodeMarkdown).
+// textPiece is one node of a run, the text it shows (runText) starting at start in the run's; a
+// text's offsets, where runText was asked for them, map each offset of value, and its end, to the
+// offset in the text's raw value (rawValue) it begins at (decodeMarkdown).
 type textPiece struct {
 	node    ast.Node
 	start   int
@@ -132,23 +148,7 @@ func linkRun(run []ast.Node, source []byte) {
 	if !holds {
 		return
 	}
-	pieces := make([]textPiece, len(run))
-	var decoded strings.Builder
-	for index, node := range run {
-		piece := textPiece{node: node, start: decoded.Len()}
-		text, isText := node.(*ast.Text)
-		if isText {
-			piece.value, piece.offsets = decodeMarkdown(rawValue(node, source), true)
-		} else {
-			piece.value = decodeMarkdownText(rawValue(node, source))
-		}
-		pieces[index] = piece
-		decoded.WriteString(piece.value)
-		if isText && (text.SoftLineBreak() || text.HardLineBreak()) {
-			decoded.WriteByte('\n')
-		}
-	}
-	value := decoded.String()
+	value, pieces := runText(run, source, true)
 	var found []foundLink
 	from := 0
 	for _, url := range findURLs(value) {
@@ -161,6 +161,34 @@ func linkRun(run []ast.Node, source []byte) {
 	if len(found) != 0 {
 		linkFound(pieces, found, value)
 	}
+}
+
+// runText is the text run shows, as the engine's text node or run of text nodes and literal links
+// shows it, and each node's piece of it: a text decoded, with a line feed after one a line break
+// ends, a string decoded, and an autolink's label (autolinkText). A text's piece maps its offsets
+// to its raw value's where withOffsets asks for them.
+func runText(run []ast.Node, source []byte, withOffsets bool) (string, []textPiece) {
+	pieces := make([]textPiece, len(run))
+	var value strings.Builder
+	for index, node := range run {
+		piece := textPiece{node: node, start: value.Len()}
+		lineEnds := false
+		switch node := node.(type) {
+		case *ast.Text:
+			piece.value, piece.offsets = decodeMarkdown(rawValue(node, source), withOffsets)
+			lineEnds = node.SoftLineBreak() || node.HardLineBreak()
+		case *ast.AutoLink:
+			piece.value, _ = autolinkText(node, source)
+		default:
+			piece.value = decodeMarkdownText(rawValue(node, source))
+		}
+		pieces[index] = piece
+		value.WriteString(piece.value)
+		if lineEnds {
+			value.WriteByte('\n')
+		}
+	}
+	return value.String(), pieces
 }
 
 // rawValue is node's text as the source spells it: a text's segment, its padding included, or a
@@ -446,7 +474,6 @@ func linkFound(pieces []textPiece, found []foundLink, value string) {
 		}
 		autolink := bareAutolink(link.kind, link.www, link.start, link.end)
 		autolink.SetAttributeString(decodedLabelAttr, link.label)
-		autolink.SetPos(link.start)
 		parent.InsertBefore(parent, link.first, autolink)
 		for node := ast.Node(link.first); node != link.last; {
 			next := node.NextSibling()

@@ -655,13 +655,15 @@ type questionBlock struct {
 
 // questionBlocks is every question block markdown declares, in document order, the first of each
 // id: each line that, past its containers' quote, list and footnote markers, opens a typed block
-// named ask holding an id, outside fenced code. A fenced example of a directive is code to pmdoc,
-// so a `copied_from` it carries names no question of this document.
+// named ask holding an id, outside fenced code and outside the front matter the document opens
+// with (frontMatterEnd). A fenced example of a directive is code to pmdoc, and a line of front
+// matter is no markdown to it, so a `copied_from` either carries names no question of this
+// document.
 func questionBlocks(markdown string) []questionBlock {
 	blocks := []questionBlock{}
 	seen := map[string]struct{}{}
 	var fence codeFence
-	for line := range strings.Lines(markdown) {
+	for line := range strings.Lines(markdown[frontMatterEnd(markdown):]) {
 		rest := trimContainerMarkers(line)
 		if fence.run > 0 {
 			if fence.closedBy(rest) {
@@ -683,6 +685,28 @@ func questionBlocks(markdown string) []questionBlock {
 		blocks = append(blocks, block)
 	}
 	return blocks
+}
+
+// frontMatterEnd is where markdown goes on past the front matter it opens with, as pmdoc reads it
+// (parseFrontmatterBlock): a first line that is `---` and any spaces or tabs opens it, and the
+// first later line that is the same closes it. pmdoc keeps it as one node, word for word, so no
+// line of it opens a block. It is 0 where the document opens with none, or with an opener no line
+// closes, which pmdoc's reader answers no front matter for and the renderer never writes: a rule
+// opening a document is written `***`.
+func frontMatterEnd(markdown string) int {
+	end := 0
+	for line := range strings.Lines(markdown) {
+		fence := strings.TrimRight(strings.TrimSuffix(line, "\n"), " \t") == "---"
+		opener := end == 0
+		end += len(line)
+		switch {
+		case opener && !fence:
+			return 0
+		case !opener && fence:
+			return end
+		}
+	}
+	return 0
 }
 
 // codeFence is the fence a fenced code block opened with: its character, a backtick or a tilde,
@@ -732,7 +756,7 @@ func fenceRun(text string) codeFence {
 // (pmdoc.ParseTypedDirectiveOpen), never by a grammar of its own, so this reads a line exactly
 // as the document's own parse reads it: an id written either way (`#id` and `id="…"`,
 // pmdoc.TypedBlockIDAttribute), and no block at all on a line that parser refuses. What stays
-// here is the line and fence scan alone (questionBlocks): refs parses no document.
+// here is the line, fence and front-matter scan alone (questionBlocks): refs parses no document.
 func askBlock(line string) (questionBlock, bool) {
 	name, attrs, ok := pmdoc.ParseTypedDirectiveOpen(strings.TrimRight(line, "\r\n"))
 	if !ok || name != "ask" {

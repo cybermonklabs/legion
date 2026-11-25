@@ -370,6 +370,7 @@ func TestAVersionsDisplayTreeIsStoredOnItsFirstRead(t *testing.T) {
 // the reads answer both trees under the header and write no text_trees row, where the request's
 // reader would have asked the table for each and stored one row for every distinct cut.
 func TestACutAReadAnswersCarriesItsTreeAndStoresNone(t *testing.T) {
+	t.Parallel()
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{})
 	issue := createInteractionIssue(t, handler, "CUTS", "A cut stores no tree", "A spec")
 	question := strings.Repeat("Should the *cut* be stored? ", 12)

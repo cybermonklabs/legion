@@ -34,6 +34,9 @@ type writeReading struct {
 	// catalog-only one that only adds plain columns to the table or only references it by its
 	// primary key (Census keeps it).
 	changedBy map[string]string
+	// reviewed are the enabled triggers a table may be admitted beside
+	// (CensusOptions.reviewedTriggers).
+	reviewed []reviewedTrigger
 }
 
 // boundedVerdict is what boundedWrites answers for one table: where it admits the table, the
@@ -173,7 +176,7 @@ func (w *writeReading) boundedWrites(ctx context.Context, table string, oid uint
 	case facts.rowSecurity:
 		return boundedVerdict{why: table + " has row-level security, whose policies can read any table for each row a write meets"}, nil
 	}
-	if why := unreviewedTriggers(table, facts.triggers); why != "" {
+	if why := unreviewedTriggers(table, facts.triggers, w.reviewed); why != "" {
 		return boundedVerdict{why: why}, nil
 	}
 	return boundedVerdict{statements: len(touching), triggers: facts.triggers}, nil
@@ -221,12 +224,13 @@ func ReviewedTriggerNames(table string) []string {
 }
 
 // unreviewedTriggers says why table, whose enabled triggers are triggers, is refused for the
-// triggers that are not on reviewedTriggers, in words that follow "and"; "" where every one is.
-func unreviewedTriggers(table string, triggers []string) string {
+// triggers that are not on reviewed, the census's list (CensusOptions.reviewedTriggers), in words
+// that follow "and"; "" where every one is.
+func unreviewedTriggers(table string, triggers []string, reviewed []reviewedTrigger) string {
 	var unreviewed []string
 	for _, trigger := range triggers {
-		if !slices.ContainsFunc(reviewedTriggers, func(reviewed reviewedTrigger) bool {
-			return reviewed.table == table && reviewed.trigger == trigger
+		if !slices.ContainsFunc(reviewed, func(entry reviewedTrigger) bool {
+			return entry.table == table && entry.trigger == trigger
 		}) {
 			unreviewed = append(unreviewed, trigger)
 		}

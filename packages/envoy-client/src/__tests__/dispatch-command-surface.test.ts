@@ -272,6 +272,9 @@ function answerFor(method: string, pathname: string, body?: unknown): Response {
   if (segments[2] === "comments" && segments.length >= 4) {
     if (rest === "" || rest === "resolve") return response(commentBody());
   }
+  if (segments[2] === "messages" && segments.length >= 4) {
+    if (rest === "") return response(messageBody());
+  }
   if (segments[2] === "projects" && segments.length >= 4) {
     if (rest === "related") {
       return response({ outcome: "none", search: "meaning_and_keywords", related: [] });

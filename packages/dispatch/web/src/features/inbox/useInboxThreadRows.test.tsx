@@ -16,12 +16,16 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, render, waitFor } from "@testing-library/react";
 import { type ReactNode, useRef } from "react";
 
-import { meInboxDismissedQuery, whoAmIQuery } from "../../api/queries";
+import { correction, correctionFeed, DELETION } from "../../__tests__/correction-feed";
+import { useEventFeed } from "../../api/event-feed";
+import { meInboxDismissedQuery, meInboxQuery, whoAmIQuery } from "../../api/queries";
 import type { MyReplyRow } from "../../api/types";
 import type { InboxShow } from "../refs/routes";
 import { replyRow } from "../threads/replies-fixture";
 import { answerOneRead, ONE_READ_AS_OF, oneReadDismissedPages } from "./inbox-fixture";
 import { rowId } from "./list-row";
+import { meInboxCachedRows } from "./one-read-rows";
+import { ThreadTitle } from "./ThreadTitle";
 import { useInboxThreadRows } from "./useInboxThreadRows";
 
 /** Every API mock a test installed, restored after it. */
@@ -116,5 +120,113 @@ test("the Inbox's threads and its dismissed ones are the one read's", async () =
     ]);
   } finally {
     view.unmount();
+  }
+});
+
+// R2 and R3 of dispatch://INFRA-1523, and the architect's ruling of 2026-11-20 00:23Z. Neither
+// Inbox read says that a refetch failed: each keeps the rows it held, so a post's correction
+// writes its own facts into the rows the cache holds (`markCorrectedPost`). A row whose root is
+// the post reads as edited, then, once deleted, as the deleted line with no word of its subject;
+// a row whose latest reply is the post keeps no first line of it. The Inbox list holds a comment
+// thread's row and the Dismissed list a message thread's, both from the one read, and every
+// refetch fails.
+
+const COMMENT_ROOT = "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d";
+const MESSAGE_ROOT = "b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e";
+const LAST_REPLY = "c3d4e5f6-a7b8-4c9d-8e1f-2a3b4c5d6e7f";
+
+/** One of the reader's two lists as its rows draw their titles. */
+function ThreadTitles({ show }: { show: InboxShow }): ReactNode {
+  const listRef = useRef<HTMLUListElement>(null);
+  const threads = useInboxThreadRows({ asksOnly: false, listRef, show });
+  return (
+    <ul ref={listRef}>
+      {threads.rows.map((row) =>
+        row.kind === "thread" ? (
+          <li data-inbox-row={rowId(row)} key={rowId(row)}>
+            <ThreadTitle className="" thread={row.thread} />
+          </li>
+        ) : null
+      )}
+    </ul>
+  );
+}
+
+test("a thread row whose refetch fails after its post's edit and delete reads as edited, then deleted", async () => {
+  const commentThread = replyRow(COMMENT_ROOT, {
+    reply: { ...replyRow(COMMENT_ROOT).reply, first_line: "Holding it.", id: LAST_REPLY },
+    subject: "Hold the deploy.",
+  });
+  const messageThread = replyRow(MESSAGE_ROOT, {
+    kind: "message",
+    ref: `/issues/CORE-1/messages/${MESSAGE_ROOT}`,
+    subject: "Ship on Friday.",
+  });
+  let failing = false;
+  restores.push(
+    answerOneRead(() => {
+      if (failing) throw new Error("the Inbox read failed");
+      return { dismissed: [messageThread], threads: [commentThread] };
+    })
+  );
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  });
+  client.setQueryData(whoAmIQuery().queryKey, { event_head: "0", kind: "user", login: "alice" });
+  const feed = correctionFeed(client);
+  function Page(): ReactNode {
+    useEventFeed();
+    return (
+      <>
+        <ThreadTitles show="inbox" />
+        <ThreadTitles show="dismissed" />
+      </>
+    );
+  }
+  const view = render(
+    <QueryClientProvider client={client}>
+      <Page />
+    </QueryClientProvider>
+  );
+  const title = (id: string) =>
+    document.querySelector(`[data-inbox-row="reply:${id}"]`)?.textContent ?? null;
+  const inboxRead = meInboxQuery().queryKey;
+
+  try {
+    await waitFor(() =>
+      expect([title(COMMENT_ROOT), title(MESSAGE_ROOT)]).toEqual([
+        "Hold the deploy.",
+        "Ship on Friday.",
+      ])
+    );
+    feed.start();
+    failing = true;
+
+    await feed.deliver(correction("comment", COMMENT_ROOT, true), [inboxRead]);
+    await feed.deliver(correction("message", MESSAGE_ROOT, true), [inboxRead]);
+    expect([title(COMMENT_ROOT), title(MESSAGE_ROOT)]).toEqual([
+      "Hold the deploy. · edited",
+      "Ship on Friday. · edited",
+    ]);
+
+    await feed.deliver(correction("comment", COMMENT_ROOT, false), [inboxRead]);
+    await feed.deliver(correction("message", MESSAGE_ROOT, false), [inboxRead]);
+    expect([title(COMMENT_ROOT), title(MESSAGE_ROOT)]).toEqual([
+      "Deleted by alice",
+      "Deleted by alice",
+    ]);
+
+    // The delete of the row's latest reply takes its first line, which the row's card prints.
+    await feed.deliver(correction("comment", LAST_REPLY, false), [inboxRead]);
+    const [row] = meInboxCachedRows(client.getQueryData(inboxRead));
+    expect(row?.kind === "thread" ? row.thread.reply : undefined).toEqual({
+      ...commentThread.reply,
+      ...DELETION,
+      first_line: "",
+    });
+  } finally {
+    view.unmount();
+    feed.restore();
+    client.clear();
   }
 });

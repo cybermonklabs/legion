@@ -953,6 +953,99 @@ test("a #id in an open question and in a decision's heading names the question o
   read.mockRestore();
 });
 
+// The conversion of a decisions document moves a decision's `Unsure:` paragraph into its node's
+// `uncertainty` and `uncertainty_reason`, so its words hold that paragraph no more. The tab draws
+// the doubt where the paragraph drew, with the paragraph's words, and once.
+test("a converted decision draws the doubt its node holds as its Unsure: paragraph drew", async () => {
+  const read = spyOn(api, "getIssueDecisions").mockResolvedValue(
+    waitingView({
+      text: ':::decision{#only uncertainty="high" uncertainty_reason="the index may be slow."}\nKeep a log\n\nA log is enough.\n:::\n',
+      uncertainty: "high",
+      uncertainty_reason: "the index may be slow.",
+    })
+  );
+  try {
+    renderPanel();
+    const waiting = await screen.findByRole("region", { name: "Waiting for your review" });
+    await waitFor(() => expect(within(waiting).getByText("A log is enough.")).toBeDefined());
+    await waitFor(() =>
+      expect(
+        within(waiting)
+          .queryAllByTestId("decision-unsure")
+          .map((block) => block.textContent)
+      ).toEqual(["Unsure: the index may be slow."])
+    );
+    // Drawn as a body draws a paragraph, not as the literal text a body falls back to.
+    expect(within(waiting).getByTestId("decision-unsure").querySelector("p")?.textContent).toBe(
+      "Unsure: the index may be slow."
+    );
+  } finally {
+    read.mockRestore();
+  }
+});
+
+// The conversion of a decisions document writes a section's heading as the first paragraph of the
+// decision it becomes, and the server names a decision by that paragraph. The tab names the
+// decision by it, as it named the section by its heading, and draws it once: the body below the
+// name starts with the section's own words. A Change still quotes the decision's first block that
+// is no heading, as the issue page's Change does (`anchorQuote`).
+test("a converted decision is named by its first paragraph, which its body does not repeat", async () => {
+  const user = userEvent.setup();
+  const reason = "a reader who wants a file export would change this.";
+  const read = spyOn(api, "getIssueDecisions").mockResolvedValue(
+    waitingView({
+      text: `:::decision{#only uncertainty="high" uncertainty_reason="${reason}"}\nFiles stay out of the corpus\n\nWe write no file beside the database.\n:::\n`,
+      uncertainty: "high",
+      uncertainty_reason: reason,
+    })
+  );
+  try {
+    renderPanel();
+    const waiting = await screen.findByRole("region", { name: "Waiting for your review" });
+    expect(within(waiting).getByRole("heading", { level: 3 }).textContent).toBe(
+      "Files stay out of the corpus"
+    );
+    await waitFor(() =>
+      expect(within(waiting).getByText("We write no file beside the database.")).toBeDefined()
+    );
+    expect(within(waiting).getAllByText("Files stay out of the corpus")).toHaveLength(1);
+    await user.click(within(waiting).getByRole("button", { name: "Change" }));
+    const composer = within(waiting).getByRole("form", {
+      name: "Change Files stay out of the corpus",
+    });
+    expect(within(composer).getByTestId("decision-quote").textContent).toBe(
+      "Files stay out of the corpus"
+    );
+  } finally {
+    read.mockRestore();
+  }
+});
+
+// An answer with no reading of its text names the decision by the first line of its markdown
+// (`decisionName`). A first paragraph that runs over two lines is more than that name, so the body
+// still draws the whole paragraph: hiding it would lose every line after the first.
+test("a decision with no reading whose first paragraph spans two lines keeps its words", async () => {
+  const read = spyOn(api, "getIssueDecisions").mockResolvedValue(
+    waitingView({
+      text: ":::decision{#only}\nKeep a log for each run\nand rotate it weekly.\n\nA log is enough.\n:::\n",
+      text_tree: undefined,
+    })
+  );
+  try {
+    renderPanel();
+    const waiting = await screen.findByRole("region", { name: "Waiting for your review" });
+    expect(within(waiting).getByRole("heading", { level: 3 }).textContent).toBe(
+      "Keep a log for each run"
+    );
+    await waitFor(() => expect(within(waiting).getByText("A log is enough.")).toBeDefined());
+    expect(
+      within(waiting).getByText(/^Keep a log for each run\s+and rotate it weekly\.$/)
+    ).toBeDefined();
+  } finally {
+    read.mockRestore();
+  }
+});
+
 // Each block of an answer that carried no reading cites what its own markdown holds and nothing
 // the decision's other blocks hold. The browser parsed that block's markdown to draw it, so a
 // `#q2` another block cites is no reference of this one: read from the whole decision, the

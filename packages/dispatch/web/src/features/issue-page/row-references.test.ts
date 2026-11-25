@@ -1,6 +1,7 @@
 import { expect, spyOn, test } from "bun:test";
 
 import * as textReferences from "../refs/text-references";
+import { chipWords } from "./node-row-chip";
 import {
   citedReferences,
   knownIssueKeys,
@@ -231,6 +232,38 @@ test("the pass draws an ambiguous reference as written, and a link it made for o
   linkRowReferences(earlier, NAMES, knownIssueKeys(NAMES), ISSUE, new Set([AMBIGUOUS]));
   expect(linked(earlier)).toEqual(["dispatch://CORE-7"]);
   expect(earlier.textContent).toBe(drawn);
+});
+
+// R2 of dispatch://INFRA-1523: a row names a post its author edited by its words then
+// ` · edited`, as a link to it reads (`useReferenceLabel`). The page publishes the words alone and
+// the edited references beside them, and a row cuts the words as a chip in place cuts them
+// (`chipName`) before it marks what the cut left: a mark written at the end of the name was cut
+// off a name longer than that, and a long edited post read as one nobody edited.
+const EDITED = "dispatch://CORE-1/comment/comment-9";
+const LONG_WORDS = "Hold the deploy until the plan lands and the reviewer has signed off on it";
+
+test("an edited post whose words are longer than the cut keeps ` · edited` after the cut", () => {
+  const head = chipWords(LONG_WORDS);
+  expect(head.length).toBeLessThan(LONG_WORDS.length);
+  const [link] = rowReferences(`see ${EDITED}`, []);
+  if (link === undefined) throw new Error("the text holds one reference");
+  const names = new Map([[EDITED, LONG_WORDS]]);
+  expect(rowReferenceWords(link, names, ISSUE, new Set([EDITED]))).toEqual({
+    key: undefined,
+    words: `${head} · edited`,
+  });
+  // A post nobody edited is cut the same way and takes no mark.
+  expect(rowReferenceWords(link, names, ISSUE)).toEqual({ key: undefined, words: head });
+  // A target the read has not named reads as the words its author wrote, unmarked (R8).
+  expect(rowReferenceWords(link, new Map(), ISSUE, new Set([EDITED]))).toEqual({
+    key: undefined,
+    words: EDITED,
+  });
+  // The pass draws the same words.
+  const root = document.createElement("div");
+  root.innerHTML = `<p>See ${EDITED} today</p>`;
+  linkRowReferences(root, names, [], ISSUE, new Set(), new Set([EDITED]));
+  expect(root.textContent).toBe(`See ${head} · edited today`);
 });
 
 // Each row's words were read again on every draw. A text is read once for each list

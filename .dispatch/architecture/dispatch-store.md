@@ -17,11 +17,23 @@ The store also holds what the related-item check reads and writes: each project'
 It holds the near-copy gate's record too: one `near_copy_checks` row for each answer the gate gives an issue create (`20261115182525_near_copy_checks`), with the outcome, the reason a check was not made, the candidates it read with their scores, the two bars and the build's commit, and the spec of a refused create alone, which no issue holds. A refusal's row is written before its `409`, a create's row after its commit or, for a refusal whose row could not be confirmed, in the create's own transaction, where it replaces a refused row under the same id; table checks keep a refused row free of an issue and every other row free of a spec.
 
 It holds the record of each run of each step of an issue's workflow as a node and its tuples, in `workflow_nodes` and `workflow_tuples` (`20261116235202_workflow_nodes`), the priority's columns, keys and indexes under another name, so the rows copy into the node and tuple store the day it lands. `internal/dispatch/workflowstore` is their one writer: a run is one node of kind `step`, `part_of` its issue, each field an attribute written once, so the start and the end the Legion daemon writes under one id merge in either order and a write that runs again changes nothing; its read answers an issue's runs with each one's attempt, which no write stores. Each node and tuple it writes records its writer as a `model.Actor` (`made_by`), which is why it imports `model`.
+A write of a run that appends a tuple (`PutStep`) sends `pg_notify` on `dispatch_workflow_runs` (`workflowstore.RunsChannel`) with the run's issue key, inside the write's own transaction.
+So Postgres delivers the signal at the commit, to every Dispatch process that listens, and never for a write rolled back.
+A write sent again appends nothing and sends nothing, and a plan's write (`PutPlan`) sends nothing, because a plan is no run.
+A run's write appends no event, so this signal is how the live hub learns of a run (`dispatch-api`).
+`IssueRunsRevision` counts the tuples of an issue's runs, `0` for an issue with no run, through `workflow_tuples_inbound` and the two partial indexes that key a node's tuples by the node, so it reads the issue's own runs' tuples and nothing else.
+No write updates or deletes a tuple, so the count rises with each commit of a write that appends one, stays where it is for a write sent again, and never falls.
+It is a count and not the newest `seq`, because two writes of one issue's runs do not wait for each other, and the write that drew the earlier `seq` can commit after the other.
 
 It holds the keyword table of each past version of the searchable text, in two tables with no foreign key (`20261120021308_search_text_versions`).
-`search_text_versions` holds one row for each version of the text that keyword search reads of an issue, a comment, an issue message or an ask, and a row is never updated but by the keyword fill's first-body repair, which rebuilds a `comment.created` version a fill of the release before kept cut although revision 1 of the comment's blocks proves the comment's own transaction, and reads the comment versions marked cut through the partial index `search_text_versions_cut_comments` (`20261122100004`), which holds those alone.
+`search_text_versions` holds one row for each version of the text that keyword search reads of an issue, a comment, an issue message or an ask; a new version is a new row.
 `search_text_versions_fill` holds the one cursor row of the keyword fill: every event at or below its `event_id` has its rows.
-The keyword fill (`dispatch-textversions`) is the one writer of both tables, its first-body repair among its writes, and no migration writes them.
+The keyword fill (`dispatch-textversions`) is the one writer of both tables, its first-body repair and its re-read among its writes, and no migration writes them.
+Rows are updated in two cases.
+The fill's first-body repair rebuilds a `comment.created` version a fill of the release before kept cut although revision 1 of the comment's blocks proves the comment's own transaction, and reads the comment versions marked cut through the partial index `search_text_versions_cut_comments` (`20261122100004`), which holds those alone.
+The fill's re-read, after a fill of a lower rules version wrote, writes again the rows that version decided otherwise.
+The cursor row's `rules` is the lowest rules version that wrote the rows up to the cursor, which only that re-read raises.
+The relation's `deleted_at` is the post's own delete mark on every version of a deleted comment or message.
 `store.TextVersionsAt` gives `store.TextVersions`, the relation of the version of each item that held at a cut, only for a cut at or before the reach.
 It refuses a later cut with `store.TextVersionsNotReachedError`, which names the reach.
 The reach is the latest time at or before which every event has its rows, an event that a transaction still open will commit included.

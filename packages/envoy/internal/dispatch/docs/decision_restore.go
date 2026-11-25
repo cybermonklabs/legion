@@ -52,8 +52,10 @@ type DecisionIssue struct {
 	// answered ask it returned, and each ask block of the decisions document it moved, whatever its
 	// ask's state, one no row names among them (RestoredAsk.Ask empty).
 	Restored []RestoredAsk
-	// Declined is each answered ask of the main shape the restore did not return, because a
-	// person removed its block from the spec: the version that left it out is theirs.
+	// Declined is each answered ask the restore neither returned nor moved because a person
+	// removed its block: from the spec, for an ask of the main shape, the version that left it out
+	// being theirs (removalOf); or from the decisions document since the finder read it, for an
+	// ask the restore would move, as its node's removed_by holds that removal (nodeRemoval).
 	Declined []DeclinedAsk
 	// Decisions, Readings, Dropped, Removed and Left count the sections of the issue's decisions
 	// document by what became of each: a decision block, a reading under an ask, a section R9's
@@ -100,8 +102,10 @@ const (
 	restoreReadNoAuthors = "no_authors"
 )
 
-// DeclinedAsk is one answered ask the restore declined to return to its spec: its id, the person
-// who removed its block, and the spec's version that left the block out, which is that person's.
+// DeclinedAsk is one answered ask the restore declined to write into its spec: its id, the person
+// who removed its block, and the version that left the block out, which is that person's: a
+// version of the spec for an ask of the main shape, and of the decisions document for one the
+// restore would move, 0 where the event that recorded the removal names no version.
 //
 // kept for one release: decisions-step
 type DeclinedAsk struct {
@@ -193,9 +197,9 @@ type restoredBlock struct {
 	shape    restoredShape
 }
 
-// declinedAsk is one answered ask the restore declines to return (removalOf): the person who
-// removed its block, the spec's version that left it out, that version's time and the event that
-// recorded it, under which the pass states the removal (writeFacts).
+// declinedAsk is one answered ask the restore declines to write into the spec (removalOf,
+// nodeRemoval): the person who removed its block, the version that left it out, the time of the
+// removal and the event that recorded it, under which the pass states the removal (writeFacts).
 //
 // kept for one release: decisions-step
 type declinedAsk struct {
@@ -303,9 +307,9 @@ type issueRestore struct {
 	documents map[string]issueDocument
 	askBlocks map[string]map[string]bool
 	restores  []*restoredBlock
-	// declined is each answered ask of the main shape the pass does not return, a person having
-	// removed its block from the spec (removalOf), and removed every ask of the issue a person
-	// removed: one whose node holds an asserted removed_by, or one the pass declines.
+	// declined is each answered ask the pass neither returns nor moves, a person having removed its
+	// block (removalOf, nodeRemoval), and removed every ask of the issue a person removed: one whose
+	// node holds an asserted removed_by, or one the pass declines.
 	declined []*declinedAsk
 	removed  map[string]bool
 	// present is the shaped pointers and the readings this pass writes into an answered ask block
@@ -589,15 +593,18 @@ func (r *issueRestore) readState(ctx context.Context) error {
 // (planDocumentMoves). A work item whose row moved since the finder read it is left: its block, if
 // the document still holds it, moves as planDocumentMoves reads it under the lock. So is a
 // returning ask whose block the spec holds again, which a person put back: a restore of it would
-// write a second block of that ask and leave the person's with no row. A returning ask a person
-// removed from the spec is never written back: one whose node holds an asserted removed_by since
-// the finder read it is passed over, and one the version that left its block out shows a person
-// removed is declined (removalOf), which writeFacts records on its node. An ask the restore moves
-// out of the decisions document moves from the address the finder read (RestoreWork.Address),
-// which its moved_to and its node's relations name whether or not the document still holds the
-// block (writeFacts). The person test is the main shape's alone: a block of the decisions
-// document moves whoever put it there, since that document retires and the block has nowhere
-// else to stand.
+// write a second block of that ask and leave the person's with no row. An answered ask a person
+// removed is never written into the spec, in either shape. One whose node holds an asserted
+// removed_by since the finder read it is passed over: a returning ask a person took out of the
+// spec, and an ask a person deleted from the decisions document while the step ran, which is
+// declined with the removal its node holds (nodeRemoval), its row left naming the block it left.
+// A returning ask the version that left its block out shows a person removed is declined too
+// (removalOf). writeFacts records each decline on its node, and the result reports it. An ask the
+// restore moves out of the decisions document moves from the address the finder read
+// (RestoreWork.Address), which its moved_to and its node's relations name whether or not the
+// document still holds the block (writeFacts). The read of who wrote the version that left a
+// block out (removalOf) is the main shape's alone: a block the decisions document holds moves
+// whoever put it there, since that document retires and the block has nowhere else to stand.
 //
 // kept for one release: decisions-step
 func (r *issueRestore) planRestores(ctx context.Context, work []graphcensus.RestoreWork) error {
@@ -628,14 +635,20 @@ func (r *issueRestore) planRestores(ctx context.Context, work []graphcensus.Rest
 				return err
 			}
 			if declined != nil {
-				r.declined = append(r.declined, declined)
-				r.removed[item.Ask] = true
-				r.result.Declined = append(r.result.Declined, DeclinedAsk{Ask: item.Ask, Person: declined.person, Version: declined.version})
+				r.decline(declined)
 				continue
 			}
 			restore.read, restore.held = read, held
 		case graphcensus.RestoreMoves:
 			if r.decisions == nil || *row.BlockArtifactID != r.decisions.id {
+				continue
+			}
+			if r.removed[item.Ask] {
+				declined, err := r.nodeRemoval(ctx, item.Ask)
+				if err != nil {
+					return err
+				}
+				r.decline(declined)
 				continue
 			}
 			restore.from = item.Address
@@ -751,6 +764,43 @@ func (r *issueRestore) removalOf(ctx context.Context, ask, blockID string) (*dec
 		return nil, "", nil, err
 	}
 	return &declinedAsk{ask: ask, person: removal.person, version: removal.version, at: removal.at, event: event}, "", nil, nil
+}
+
+// decline records declined, an answered ask the pass does not write into the spec because a
+// person removed its block: writeFacts records the removal on its node, the conversion reads the
+// ask as removed (planSection), and the result, which the step logs, reports it.
+//
+// kept for one release: decisions-step
+func (r *issueRestore) decline(declined *declinedAsk) {
+	r.declined = append(r.declined, declined)
+	r.removed[declined.ask] = true
+	r.result.Declined = append(r.result.Declined, DeclinedAsk{Ask: declined.ask, Person: declined.person, Version: declined.version})
+}
+
+// nodeRemoval is the decline of ask, an ask of the second shape whose node holds an asserted
+// removed_by (readState's removed): a person deleted its block from the decisions document since
+// the finder read it. It is that removal as the node's newest removed_by states it - the person,
+// the time and the event, the artifact.version of the person's version that left the block out -
+// with that version's number, 0 where the event names none. writeFacts states the removal again
+// under that event, which appends nothing: the store's repeat key (graph_tuples_once) holds it
+// already, so the removal stands as the person's write stated it.
+//
+// kept for one release: decisions-step
+func (r *issueRestore) nodeRemoval(ctx context.Context, ask string) (*declinedAsk, error) {
+	declined := &declinedAsk{ask: ask}
+	if err := r.tx.QueryRow(ctx, `
+		select newest.to_id, newest.at, newest.source_event, coalesce((e.payload->'version'->>'number')::int, 0)
+		from (
+			select t.to_id, t.at, t.source_event from graph_tuples t
+			where t.from_kind = $1 and t.from_id = $2 and t.kind = $3 and t.to_kind <> $4
+			order by t.seq desc limit 1
+		) newest
+		left join events e on e.id = newest.source_event and e.type = 'artifact.version'
+	`, graphstore.KindAsk, ask, graphstore.TupleRemovedBy, graphstore.KindValue).Scan(
+		&declined.person, &declined.at, &declined.event, &declined.version); err != nil {
+		return nil, fmt.Errorf("read the removal the node of ask %s holds: %w", ask, err)
+	}
+	return declined, nil
 }
 
 // specRemoval is who took an ask's block out of its spec, as readSpecRemoval reads it: the person
@@ -2037,9 +2087,12 @@ func (r *issueRestore) writePresent(document string, live *pmdoc.Node, edits *pr
 
 // withoutAsklessAskAttributes takes every attribute a version can store off each ask block of tree
 // that withAsk does not name (askBlocksWithAnAsk) - one that has no ask row and is no copy of an
-// ask, which keeps none of the eight (R10) - and reports whether it changed one. The strip is
-// R10's and stays; the blocks withAsk names are passed over only while a version keeps a form of
-// each ask, and that goes with it.
+// ask, which keeps none of the eight (R10) - and reports whether it changed one. Its one caller is
+// the decisions step's write of the decisions document (writeDecisionsDocument), so it goes with
+// the step; the blocks withAsk names are passed over only while a version keeps a form of each
+// ask, and that goes earlier.
+//
+// kept for one release: decisions-step
 func withoutAsklessAskAttributes(tree *pmdoc.Node, withAsk map[string]bool) bool {
 	changed := false
 	pmdoc.Walk(tree, func(node *pmdoc.Node) bool {
@@ -2410,10 +2463,15 @@ func (r *issueRestore) blockPointer(address string) (string, bool) {
 // movedBlockOf is the block the restore writes into the spec for restore, a block of the decisions
 // document no row names: the block as that document's live tree holds it, under the id it takes,
 // its `shaped` pointers each as it reads once the pass is written (movedPointers), read back as
-// the document's own markdown pipeline makes it, and, on a fleet of one build, without the
-// server-owned attributes (withoutStoredAskAttributes): no ask's state stands behind them, and the
-// settlement after the write opens its ask and writes that state. No row holds its question to
-// build it from, and none names it to rebind.
+// the document's own markdown pipeline makes it. On a fleet of one build it holds what a version
+// of the spec stores of it, as storableVersionTree decides that for the spec (keptAskBlocks). A
+// copy of an ask another document of the issue holds keeps the form a version keeps of its
+// source - the state where that is not open, the answerer and time, and copied_from and
+// copied_from_document - and loses the answer's words and selection and an open state
+// (withoutUnkeptAskAttributes). A block that is no copy loses every attribute a version can store
+// (withoutStoredAskAttributes, R10): no ask's state stands behind them, and the settlement after
+// the write opens its ask and writes that state. No row holds its question to build it from, and
+// none names it to rebind.
 //
 // kept for one release: decisions-step
 func (r *issueRestore) movedBlockOf(ctx context.Context, restore *restoredBlock, twoBuilds bool) (*pmdoc.Node, error) {
@@ -2432,13 +2490,24 @@ func (r *issueRestore) movedBlockOf(ctx context.Context, restore *restoredBlock,
 		restore.shape = restoredShape{added: pointers}
 	}
 	// While another build serves, the block keeps the attributes a version can store, which that
-	// build's pages read. The one-build strip is R10's and stays; this branch goes with the roll
-	// window.
+	// build's pages read. The one-build strip of a block that is no copy is R10's and stays; this
+	// branch goes with the roll window, and the lighter strip of a copy goes with the form a
+	// version keeps.
 	// kept for one release: roll-window-attributes
 	if twoBuilds {
 		return movedAskBlock(node, restore)
 	}
-	withoutStoredAskAttributes(node)
+	strip := withoutStoredAskAttributes
+	// kept for one release: stored-ask-state
+	withAsk, err := keptAskBlocks(ctx, r.tx, r.spec.id, &pmdoc.Node{Type: "doc", Children: []*pmdoc.Node{node}})
+	if err != nil {
+		return nil, err
+	}
+	// kept for one release: stored-ask-state
+	if withAsk[restore.id] {
+		strip = withoutUnkeptAskAttributes
+	}
+	strip(node)
 	return movedAskBlock(node, restore)
 }
 
@@ -2528,9 +2597,11 @@ func (r *issueRestore) stepCasesFor(document string) decisionStepCases {
 // section a person kept, the Keep on its node - a kept_by tuple, and a kept_text_sum value where
 // the Keep's sum is the section's as it stands (F3) - with the decision_keeps row that projects
 // it, as Keep writes one. A section a restore alone took out writes its moved_to too. For each
-// answered ask the restore declined to return (removalOf), it appends one removed_by from the
+// answered ask the restore declined (removalOf, nodeRemoval), it appends one removed_by from the
 // ask's node to the person who removed its block, with that person's node, under the event that
-// recorded the person's version and at its time, so the finder leaves the ask out from then on.
+// recorded the person's version and at its time, so the finder leaves a returning ask out from
+// then on; for a move it declined, that is the removal its node holds, which the append restates
+// under its own event and so leaves as it stands.
 //
 // kept for one release: decisions-step
 func (r *issueRestore) writeFacts(ctx context.Context, cause int64) error {

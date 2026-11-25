@@ -1,8 +1,4 @@
-import {
-  CONTAINER_MARKER_PATTERN,
-  parseBlockPointerValue,
-  typedBlockIdAttribute,
-} from "@legion/contracts";
+import { askOpenerLines, askOpeners, parseBlockPointerValue } from "@legion/contracts";
 import type { DOMOutputSpec, Node as ProseMirrorNode } from "prosemirror-model";
 
 import type { Ask, AskOption, AskUrgency, BlockTypeSchema, TextAsk } from "../../api/types";
@@ -358,33 +354,22 @@ const ATTRIBUTE_REFERENCES: Readonly<Record<string, string>> = {
   "&lt;": "<",
 };
 
-/** The start of a markdown line that opens the ask block `blockId`, as a regular expression's
- *  source: indentation and the container markers the block is written after, the directive's
- *  colons, and the block's id as the renderer writes it (`typedBlockIdAttribute`: `#<id>`, or
- *  `id="…"` for an id the shortcut cannot hold), ended by a space or the closing brace. The
- *  markers are `CONTAINER_MARKER_PATTERN`'s, each with the spaces and tabs after it, the ones the
- *  CLI skips (`withoutContainerMarkers` in packages/envoy-client's `text-asks.ts`), so both read
- *  an opener by one rule. */
-function askOpenerSource(blockId: string): string {
-  const id = typedBlockIdAttribute(blockId).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return `^[ \\t]*(?:${CONTAINER_MARKER_PATTERN}[ \\t]*)*:{3,}ask\\{${id}[ }]`;
-}
-
 /**
  * The ask the block `blockId` shows, as `markdown`, a document's live text (`GET
  * /api/v1/artifacts/{id}/text`) from a Dispatch of the release before, renders it on the block's
  * opening line: that server writes there, from the store, the state, answer, answerer and time of
  * the block's own ask, or of the ask on another document of the owner the block is a copy of,
  * with that ask's id and document (`copied_from`, `copied_from_document`). A Dispatch of this
- * release writes none of them into the text and answers them in its `asks` (`liveAskOf`).
- * Undefined where the text renders the block no state, or holds no line opening it, or more than
- * one: a line quoting the opener (in code, say) cannot be told from the block's own.
+ * release writes none of them into the text and answers them in its `asks` (`liveAskOf`). Only a
+ * real opener of the block counts, as the CLI reads one (`askOpenerLines`, `askOpeners`): a line
+ * that quotes the opener in fenced code or in front matter is the document's own text. Undefined
+ * where the text renders the block no state, or holds no real opener of it, or more than one.
  */
 export function renderedAskOf(
   markdown: string | undefined,
   blockId: string
 ): ServedAsk | undefined {
-  const openers = markdown?.match(new RegExp(`${askOpenerSource(blockId)}.*$`, "gm")) ?? [];
+  const openers = markdown === undefined ? [] : askOpeners(askOpenerLines(markdown), blockId);
   if (openers.length !== 1) {
     return undefined;
   }
@@ -462,21 +447,24 @@ export function servedAskOfBlock(
 }
 
 /**
- * Whether `markdown`, a stored version, records on the opening line of its ask block `blockId`
- * all the card draws of the ask's answer: a `state`, and for an answered ask the options chosen or
- * the words (`selected`, `answer`). A version the release before wrote holds them, and is read as
- * it was written. A version this build writes holds the state of an ask that is not open and, for
- * an answered ask, who answered and when, but never the options or the words (the server's
+ * Whether `attrs`, the attributes of an ask block of a stored version as the version's reading
+ * holds them, record all the card draws of the ask's answer: a `state`, and for an answered ask
+ * the options chosen or the words (`selected`, `answer`). They are the parsed block's own, so a
+ * line elsewhere in the version that quotes the block's opener, in fenced code or in front
+ * matter, changes nothing. A version the release before wrote holds them, and is read as it was
+ * written. A version this build writes holds the state of an ask that is not open and, for an
+ * answered ask, who answered and when, but never the options or the words (the server's
  * `keptAskState`); it holds no state for an open ask. The release before wrote an answered block
  * whose document had no room for the answer without them too. So a version that records no state,
  * or an answered state without the answer, is read from the server's read of the ask.
  */
-export function recordsAnswerState(markdown: string, blockId: string): boolean {
-  const openers = markdown.match(new RegExp(`${askOpenerSource(blockId)}.*$`, "gm")) ?? [];
-  return openers.some((opener) => {
-    const state = /\bstate="([^"]*)"/.exec(opener)?.[1];
-    return state !== undefined && (state !== "answered" || /\b(?:selected|answer)="/.test(opener));
-  });
+export function recordsAnswerState(attrs: Readonly<Record<string, unknown>>): boolean {
+  return (
+    typeof attrs.state === "string" &&
+    (attrs.state !== "answered" ||
+      Array.isArray(attrs.selected) ||
+      typeof attrs.answer === "string")
+  );
 }
 
 /** A mounted decision block: the React card portals into its two slots. A new object is issued

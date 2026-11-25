@@ -1,4 +1,5 @@
 import { isPartyRoute } from "../refs/party-references";
+import { editedName } from "../refs/post-marks";
 import { type DispatchReferenceRoute, parseNodeReference, referenceHref } from "../refs/routes";
 import { readTextReferences, type TextReading } from "../refs/text-references";
 import { chipName } from "./issue-tree";
@@ -190,6 +191,9 @@ export function knownIssueKeys(names: ReadonlyMap<string, string>): string[] {
 /** No reference read as ambiguous: what a caller that hands no set of them reads by. */
 const NO_AMBIGUOUS: ReadonlySet<string> = new Set();
 
+/** No reference read as edited: what a caller that hands no set of them reads by. */
+const NO_EDITED: ReadonlySet<string> = new Set();
+
 /** The references of `text` a row draws by name, in the order it holds them: every address that
  *  names something a page shows (`referenceHref`), which is every node, an agent and a role, a
  *  person, whom no page shows and a row names with no link (R5), and each bare key among
@@ -234,22 +238,31 @@ export function rowReferences(
  * `tree-drafts.ts`'s `documentWord`) - or, until it has, the word the same rule gives it by its
  * address and `issue`, the issue the row belongs to (`node-row-chip.ts`'s `documentWord`); an
  * issue by its key, then its title; a party by the name its own read gives it; anything else as
- * a chip in place, by its target's own words cut as a tie's chip cuts them (`chipName`). A
- * reference with no name - its target has not answered yet, or Dispatch answered it has none -
- * reads as the words its author wrote, as a link of any other body reads until its title
- * resolves (R8, INFRA-1196 decision 350, which replaces decision 95's short form).
+ * a chip in place, by its target's own words cut as a tie's chip cuts them (`chipName`), then
+ * ` · edited` where the read answered that the target's post was edited (`edited`,
+ * `KnownReferences.edited`), after the cut as a link's title takes it (`editedName`), so no cut
+ * takes the mark. A reference with no name - its target has not answered yet, or Dispatch
+ * answered it has none - reads as the words its author wrote, as a link of any other body reads
+ * until its title resolves (R8, INFRA-1196 decision 350, which replaces decision 95's short
+ * form).
  */
 export function rowReferenceWords(
   one: Pick<RowReference, "reference" | "route" | "written">,
   names: ReadonlyMap<string, string>,
-  issue: string | undefined
+  issue: string | undefined,
+  edited: ReadonlySet<string> = NO_EDITED
 ): { readonly key: string | undefined; readonly words: string } {
   const name = (names.get(one.reference) ?? "").replace(/\s+/gu, " ").trim();
   const word = documentWord(one.route, issue);
   if (word !== undefined) return { key: undefined, words: name === "" ? word : name };
   if (name === "") return { key: undefined, words: one.written };
   if (one.route.kind === "issue") return { key: one.route.key, words: name };
-  return { key: undefined, words: isPartyRoute(one.route) ? name : chipName(one.route, name) };
+  return {
+    key: undefined,
+    words: isPartyRoute(one.route)
+      ? name
+      : editedName(chipName(one.route, name), edited.has(one.reference)),
+  };
 }
 
 /** The mark a row's own reference carries: the reference it names, by which a later pass gives
@@ -272,9 +285,10 @@ function nameReference(
   element: HTMLElement,
   one: Pick<RowReference, "reference" | "route" | "written">,
   names: ReadonlyMap<string, string>,
-  issue: string | undefined
+  issue: string | undefined,
+  edited: ReadonlySet<string>
 ): void {
-  const { key, words } = rowReferenceWords(one, names, issue);
+  const { key, words } = rowReferenceWords(one, names, issue, edited);
   if (key === undefined) {
     if (element.textContent !== words) element.textContent = words;
     return;
@@ -290,22 +304,23 @@ function nameReference(
 /**
  * The row's own pass over words a reading painted into `root` (`RowText.tsx`): every reference
  * its text holds outside a link and outside code becomes a link to its target - a person, whom
- * no page shows, words with no link (R5) - named from `names` (`rowReferenceWords`), and a
- * reference an earlier pass made takes the name it has come to have since. A bare key is read
- * as one only where it is among `issues`, the keys the page's batched read named an issue for.
- * `issue` is the issue the row belongs to, whose spec a chip in place names as the Spec. A
- * reference in `ambiguous` links nothing (`rowReferences`), and one an earlier pass made for a
- * reference the read has answered ambiguous since is put back as the words it was made over, so
- * it is drawn as written. Out of the tab order, as everything inside a row is (R9). Run again
- * after every paint and whenever `names`, `issues`, `issue` or `ambiguous` changes; it finds
- * nothing to do twice.
+ * no page shows, words with no link (R5) - named from `names` and marked from `edited`
+ * (`rowReferenceWords`), and a reference an earlier pass made takes the name it has come to have
+ * since. A bare key is read as one only where it is among `issues`, the keys the page's batched
+ * read named an issue for. `issue` is the issue the row belongs to, whose spec a chip in place
+ * names as the Spec. A reference in `ambiguous` links nothing (`rowReferences`), and one an
+ * earlier pass made for a reference the read has answered ambiguous since is put back as the
+ * words it was made over, so it is drawn as written. Out of the tab order, as everything inside
+ * a row is (R9). Run again after every paint and whenever `names`, `issues`, `issue`,
+ * `ambiguous` or `edited` changes; it finds nothing to do twice.
  */
 export function linkRowReferences(
   root: HTMLElement,
   names: ReadonlyMap<string, string>,
   issues: readonly string[],
   issue: string | undefined,
-  ambiguous: ReadonlySet<string> = NO_AMBIGUOUS
+  ambiguous: ReadonlySet<string> = NO_AMBIGUOUS,
+  edited: ReadonlySet<string> = NO_EDITED
 ): void {
   for (const element of root.querySelectorAll<HTMLElement>(`[${ROW_REFERENCE}]`)) {
     const reference = element.getAttribute(ROW_REFERENCE) ?? "";
@@ -315,7 +330,9 @@ export function linkRowReferences(
       continue;
     }
     const route = parseNodeReference(reference);
-    if (route !== undefined) nameReference(element, { reference, route, written }, names, issue);
+    if (route !== undefined) {
+      nameReference(element, { reference, route, written }, names, issue, edited);
+    }
   }
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
   const texts: Text[] = [];
@@ -342,7 +359,7 @@ export function linkRowReferences(
       }
       element.setAttribute(ROW_REFERENCE, one.reference);
       element.setAttribute(ROW_WRITTEN, one.written);
-      nameReference(element, one, names, issue);
+      nameReference(element, one, names, issue, edited);
       pieces.push(element);
       at = one.end;
     }

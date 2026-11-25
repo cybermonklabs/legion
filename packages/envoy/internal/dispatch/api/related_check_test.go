@@ -150,7 +150,7 @@ func TestRelatedCheckRanksMoreChosenWordsAboveOneRepeated(t *testing.T) {
 			holder := createSearchIssue(t, handler, "COORD", "Zymurgy ledger quokka", "")
 			refreshTermStats(t, database, "COORD")
 
-			suggestions := directServer(deps).relatedCheck(context.Background(), relatedInput{project: "COORD", text: "Zymurgy ledger quokka marmot"})
+			suggestions := meaningVerdictServer(t, deps).relatedCheck(context.Background(), relatedInput{project: "COORD", text: "Zymurgy ledger quokka marmot"})
 			if suggestions.Search != stage.search {
 				t.Fatalf("suggestions = %+v, want searched by %s", suggestions, stage.search)
 			}
@@ -167,6 +167,50 @@ func meaningServer(t *testing.T, embedder *fakeEmbedder) (http.Handler, *store.S
 	t.Helper()
 	handler, database, deps := newTestServer(t, testServerOptions{embedder: embedder})
 	return handler, database, directServer(deps)
+}
+
+// meaningVerdictBound is the bound a case gives the related-item check when its verdict is what
+// the check's meaning stage found: what the test binary's deadline leaves less
+// binaryDeadlineMargin (testwait.Remaining), in place of production's relatedMeaningAllowance
+// and crossProjectGrace (withRelatedBound). Under production's bounds a loaded machine's meaning
+// stage answered after three seconds, and the check answered by keywords alone and offered
+// nothing of another project, so the case failed on the machine's speed and not on what the stage
+// found. Under this one the stage's own answer decides; a stage that never answers still ends the
+// check, with the keyword stage's answer, which fails the case by name. The bound counts from each
+// check's start: a direct server reads it just before its checks (meaningVerdictServer), a
+// registered one when it is built (testServerOptions.relatedBound), where a check that starts more
+// than binaryDeadlineMargin after the build and never answers outlasts the binary's deadline, and
+// go test's own timeout names the case instead.
+//
+// Production's bounds keep rows of their own:
+// TestRelatedCheckMeaningEmbedderPastThreeSecondsSearchesByKeywordsOnly and the second check of
+// TestCrossProjectRelatedWithoutAnEmbeddingOffersNothing hold the three-second meaning allowance,
+// and TestCrossProjectRelatedQueryOverrunningKeepsTheOneProjectAnswer the grace.
+func meaningVerdictBound(t *testing.T) time.Duration {
+	t.Helper()
+	return testwait.Remaining(t, binaryDeadlineMargin)
+}
+
+// withRelatedBound gives s's related-item check bound for its meaning allowance and its wait for
+// the cross-project leg (meaningBound, crossProjectWait), and bound plus the time production leaves
+// the keyword stage past the meaning allowance for its own allowance (suggestionTimeout). The
+// meaning deadline still comes first, so a meaning stage that never answers ends the check by
+// keywords, saying the meaning search did not answer, as in production; with both at bound the
+// check's own deadline would fall a moment later and race it. Zero leaves s on production's
+// bounds. It answers s.
+func (s *server) withRelatedBound(bound time.Duration) *server {
+	if bound != 0 {
+		s.meaningBound, s.crossProjectWait = bound, bound
+		s.suggestionTimeout = bound + relatedCheckAllowance - relatedMeaningAllowance
+	}
+	return s
+}
+
+// meaningVerdictServer is a direct server on deps whose related-item check runs under
+// meaningVerdictBound, read now.
+func meaningVerdictServer(t *testing.T, deps Deps) *server {
+	t.Helper()
+	return directServer(deps).withRelatedBound(meaningVerdictBound(t))
 }
 
 // binaryDeadlineMargin is what binaryDeadlineGuard leaves of the test binary's deadline for the
@@ -244,7 +288,7 @@ func TestRelatedCheckMeaningListsASameMeaningItemWithNoSharedWord(t *testing.T) 
 	key := createSearchIssue(t, handler, "MEAN", title, spec)
 	processAllPending(t, database, embedder)
 
-	suggestions := srv.relatedCheck(context.Background(), relatedInput{project: "MEAN", text: text})
+	suggestions := srv.withRelatedBound(meaningVerdictBound(t)).relatedCheck(context.Background(), relatedInput{project: "MEAN", text: text})
 	if suggestions.Outcome != "found" || suggestions.Search != "meaning_and_keywords" || suggestions.SearchNote != "" {
 		t.Fatalf("suggestions = %+v, want found by meaning and keywords", suggestions)
 	}
@@ -304,7 +348,7 @@ func TestRelatedCheckMeaningListsASameMeaningItemBehindAFullKeywordPage(t *testi
 		}
 	}
 
-	suggestions := srv.relatedCheck(context.Background(), relatedInput{project: "CROWD", text: text})
+	suggestions := srv.withRelatedBound(meaningVerdictBound(t)).relatedCheck(context.Background(), relatedInput{project: "CROWD", text: text})
 	if suggestions.Outcome != "found" || suggestions.Search != "meaning_and_keywords" || suggestions.SearchNote != "" {
 		t.Fatalf("suggestions = %+v, want found by meaning and keywords", suggestions)
 	}
@@ -338,7 +382,12 @@ func TestRelatedCheckMeaningLeavesExcludedIssuesOutOfItsWindow(t *testing.T) {
 	keeper := createSearchIssue(t, handler, "MWIN", keeperTitle, "")
 	processAllPending(t, database, embedder)
 
+	srv.withRelatedBound(meaningVerdictBound(t))
 	crowded := srv.relatedCheck(context.Background(), relatedInput{project: "MWIN", text: text})
+	if crowded.Outcome != relatedFound || crowded.Search != relatedMeaningAndKeywords ||
+		crowded.SearchNote != "" || len(crowded.Related) != suggestionRelatedCount {
+		t.Fatalf("the check with nothing excluded = %+v, want %d nearer issues found by meaning and keywords: an empty keyword fallback would prove nothing about the meaning window", crowded, suggestionRelatedCount)
+	}
 	if owners := relatedOwnerKeys(crowded.Related); slices.Contains(owners, keeper) {
 		t.Fatalf("related owners with nothing excluded = %v, want %s behind the %d nearer issues", owners, keeper, len(excluded))
 	}
@@ -359,7 +408,7 @@ func TestRelatedCheckMeaningEmbedderFailingSearchesByKeywordsOnly(t *testing.T) 
 	createSuggestionProject(t, handler, "MFAIL")
 	key := createSearchIssue(t, handler, "MFAIL", "Nightly backups overrun their window", "")
 
-	suggestions := srv.relatedCheck(context.Background(), relatedInput{project: "MFAIL", text: "Nightly snapshots finish late"})
+	suggestions := srv.withRelatedBound(meaningVerdictBound(t)).relatedCheck(context.Background(), relatedInput{project: "MFAIL", text: "Nightly snapshots finish late"})
 	if suggestions.Outcome != "found" || suggestions.Search != "keywords_only" ||
 		suggestions.SearchNote != "the text could not be embedded for meaning search" {
 		t.Fatalf("suggestions = %+v, want found by keywords only, the embedding having failed", suggestions)
@@ -459,7 +508,7 @@ func TestRelatedCheckMeaningFindsAProjectsItemBeyondOtherProjectsNearerVectors(t
 	indexDeps := deps
 	indexDeps.Store = indexStore
 
-	suggestions := directServer(indexDeps).relatedCheck(context.Background(), relatedInput{project: "MINE", text: text})
+	suggestions := meaningVerdictServer(t, indexDeps).relatedCheck(context.Background(), relatedInput{project: "MINE", text: text})
 	if suggestions.Search != "meaning_and_keywords" {
 		t.Fatalf("suggestions = %+v, want the meaning search to have answered", suggestions)
 	}

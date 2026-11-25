@@ -45,11 +45,12 @@ func TestExpiryFor_ZeroTTLNeverExpires(t *testing.T) {
 
 // followingRegistry opens a registry on the test's own session bucket and waits for its first read
 // to complete, so the copy follows the bucket and its rows expire at their deadlines (expireDue).
-// The bucket is empty, so a test puts rows in the cache itself.
-func followingRegistry(t *testing.T) *SessionRegistry {
+// The bucket is empty, so a test puts rows in the cache itself. options are added to the
+// registry's own (a test's clock, WithSessionClock).
+func followingRegistry(t *testing.T, options ...SessionRegistryOption) *SessionRegistry {
 	t.Helper()
 	client := setupNATS(t)
-	r, err := OpenSessionRegistry(t.Context(), client.Conn, WithSessionReplicas(1), WithSessionTTL(5*time.Minute))
+	r, err := OpenSessionRegistry(t.Context(), client.Conn, append([]SessionRegistryOption{WithSessionReplicas(1), WithSessionTTL(5 * time.Minute)}, options...)...)
 	if err != nil {
 		t.Fatalf("open session registry: %v", err)
 	}
@@ -165,11 +166,16 @@ func TestGet_ExpiredEntryReadsAbsentAndLeavesAtItsDeadline(t *testing.T) {
 	}
 }
 
+// The registry reads a clock the test holds (heldClock), so the row the test puts in its cache is
+// before its deadline however long the machine takes to open the registry and complete its first
+// read. On the machine's clock a row due a minute after the test began was past due by the Get
+// when those took longer than a minute: "Get failed: nats: key not found" after 65.48 s, in a
+// -race run at a load of 1,100 to 2,100.
 func TestGet_ValidReturnsEntry(t *testing.T) {
-	now := time.Now()
-	r := followingRegistry(t)
+	clock := &heldClock{now: time.Now()}
+	r := followingRegistry(t, WithSessionClock(clock.Now))
 	hold(t, r, map[string]cachedSession{
-		"ses_ok": {entry: SessionEntry{Port: 99, MachineID: "m1"}, expiresAt: now.Add(time.Minute)},
+		"ses_ok": {entry: SessionEntry{Port: 99, MachineID: "m1"}, expiresAt: clock.Now().Add(time.Minute)},
 	})
 	got, err := r.Get("ses_ok")
 	if err != nil {

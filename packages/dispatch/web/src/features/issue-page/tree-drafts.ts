@@ -1,4 +1,4 @@
-import { parseBlockPointerValue } from "@legion/contracts";
+import { parseBlockPointerValue, referenceSpans } from "@legion/contracts";
 
 import { artifactAtAddress, primarySpec, roleDocument } from "../../api/issue-cache";
 import type {
@@ -17,8 +17,9 @@ import type {
 } from "../../api/types";
 import { compareTimestamps, isTimestamp } from "../../lib/timestamps";
 import { isDecisionEntry } from "../issue/decision-entries";
+import { type AgentText, actorLabelText } from "../refs/AgentName";
+import { deletedLineText, type PostDeletion, postDeletion } from "../refs/post-marks";
 import type { ReferenceNameReading } from "../refs/reference-names";
-import { referenceSpans } from "../refs/reference-spans";
 import { buildDispatchReference, issueOrDocumentTitle, parseNodeReference } from "../refs/routes";
 import { type TextSource, textSourceOf } from "../refs/text-references";
 import { firstWordedBlock } from "../refs/tree-fragment";
@@ -100,6 +101,12 @@ export interface Draft {
   /** What the coverage read counts for a requirement it holds (`addRequirements`); absent on
    *  every other draft, a statement of the spec drawn before that read answers among them. */
   counts?: NodeCounts;
+  /** When its author deleted this comment or message (`TreeNode.deletedAt`). */
+  deletedAt?: string;
+  /** Who deleted it, where the read names them (`TreeNode.deletedBy`). */
+  deletedBy?: Actor;
+  /** When its author last replaced this comment's or message's body (`TreeNode.editedAt`). */
+  editedAt?: string;
   /** What the node's body draws under its text (`check-facts.ts`). */
   facts: NodeFact[];
   gaps: GapKind[];
@@ -299,8 +306,20 @@ export function coverageStatements(
  *   and the read sends no reading of it, so it is named from the reading of its stored text in
  *   the shape of the server's (`storedReading`), whose words are the server's for every text that
  *   holds none of three things (`STORED_TEXT_PARSE`): an HTML comment an agent's comment ends
- *   with is no word of it. A component's name is a title, which is no markdown, and is drawn as
- *   the read gives it.
+ *   with is no word of it. A comment or a message the read marks deleted
+ *   (`ReferenceTarget.deleted_at`) is named by the deleted line's words (`deletedLineText`), as
+ *   words no writer wrote, never by the emptied body, which is no words at all, as a link to it
+ *   is (`reference-target.ts`'s `useReferenceLabel`); the model reads no agent registry, so the
+ *   line names the actor as `AgentName` does before the registry answers (`actorLabelText`),
+ *   where a link names a listed session by its registry title. A component's name is a title,
+ *   which is no markdown, and is drawn as the read gives it.
+ *
+ * A chip carries the marks the read answers for a post (`NodeChip.deletedAt`, `deletedBy`,
+ * `editedAt`), and its reading is of the words alone: a place that draws the name of an edited
+ * one, a comment, a message or a block of either, cuts the words to its own length and marks
+ * what the cut left, so no cut takes the mark. The row's chip draws the mark as an element of
+ * its own (`NodeRow.tsx`'s `Chip`, with `EditedMark`), and a place that names the post in one
+ * string writes it with `editedName`.
  */
 export function treeContext(reads: IssueTreeReads): TreeContext {
   const key = reads.issue.key;
@@ -346,7 +365,8 @@ export function treeContext(reads: IssueTreeReads): TreeContext {
   };
   const readingOf = (
     reference: string,
-    target: ReferenceTarget | undefined
+    target: ReferenceTarget | undefined,
+    deleted: PostDeletion | null
   ): ReferenceNameReading | undefined => {
     const route = parseNodeReference(reference);
     const block = route !== undefined && "block" in route ? route.block : undefined;
@@ -378,7 +398,9 @@ export function treeContext(reads: IssueTreeReads): TreeContext {
     }
     if (target === undefined) return undefined;
     if (target.kind === "ask" || target.kind === "comment" || target.kind === "message") {
-      return { tree: storedReading(target.name, target) };
+      return deleted === null
+        ? { tree: storedReading(target.name, target) }
+        : { words: deletedLineText(deleted, ACTOR) };
     }
     if (target.kind === "issue") {
       return { tree: titleReading(titles.get(reference) ?? target.name) };
@@ -397,10 +419,17 @@ export function treeContext(reads: IssueTreeReads): TreeContext {
       if (held !== undefined) return held;
       const target = names.get(reference);
       const gone = target?.gone ?? false;
-      const reading = gone ? undefined : readingOf(reference, target);
+      const deleted = postDeletion(target);
+      // A deleted post's deleted line already says what became of its text, so it carries no
+      // edit mark.
+      const edited = deleted === null ? target?.edited_at : undefined;
+      const reading = gone ? undefined : readingOf(reference, target, deleted);
       const chip: NodeChip = {
         ...(target?.ambiguous === true ? { ambiguous: true } : {}),
         answered: target !== undefined,
+        ...(deleted === null ? {} : { deletedAt: deleted.at }),
+        ...(deleted === null || deleted.by === null ? {} : { deletedBy: deleted.by }),
+        ...(edited === undefined ? {} : { editedAt: edited }),
         gone,
         ...(reading === undefined ? {} : { reading }),
         ref: reference,
@@ -855,7 +884,7 @@ function answerOf(answer: NonNullable<TreeAsk["answer"]>): NodeAnswer {
  * `AskResolution.kind`), and a token the page declares no word for is drawn as no state rather
  * than as the server's own token (R21).
  */
-function askState(ask: Ask): AskState | undefined {
+export function askState(ask: Ask): AskState | undefined {
   const words: Readonly<Record<string, string | undefined>> = NODE_STATE_WORDS.ask;
   const token =
     ask.state === "resolved" && ask.resolution !== undefined ? ask.resolution.kind : ask.state;
@@ -871,10 +900,33 @@ interface Turn {
   readonly body: string;
   /** The server's reading of `body`. */
   readonly bodyTree?: DisplayTree;
+  /** Its author's delete of it (`postDeletion`), null for a turn nobody deleted. */
+  readonly deleted: PostDeletion | null;
+  /** When its author last replaced its body, null for a turn nobody edited. */
+  readonly editedAt: string | null;
   readonly id: string;
   readonly kind: "comment" | "message";
   /** The node it answers, `null` for a root turn under the issue. */
   readonly replyTo: string | null;
+}
+
+/** How the model names the actor of a delete: as `AgentName` names one before the agent
+ *  registry answers (`actorLabelText`), since the model is pure and reads no registry. */
+const ACTOR: Pick<AgentText, "label"> = { label: actorLabelText };
+
+/**
+ * The line a deleted comment's or message's node holds in place of its body: the words
+ * `DeletedBody` (`refs/PostMarks.tsx`) prints where the body was, `Deleted by <who> · <when>`, or
+ * `Deleted · <when>` for a delete whose read names nobody (`deletedLineText`). The model is pure
+ * and reads no agent registry and no clock, so `<who>` is the actor as `AgentName` names one
+ * before the registry answers (`actorLabelText`: a person's login, a session's stamped title
+ * else its short id), and `<when>` is the time the read stores (`deleted_at`) as it stores it,
+ * never an age; a view that draws the line itself names the actor from `deletedBy` and draws
+ * the time from `deletedAt`. It is made from the delete alone, so it holds no part of the body
+ * even where a read still carries one.
+ */
+function deletedPostLine(deleted: PostDeletion): string {
+  return `${deletedLineText(deleted, ACTOR)} · ${deleted.at}`;
 }
 
 /**
@@ -907,6 +959,13 @@ interface Turn {
  *
  * An address naming a comment or a message of the outline (`/comments/<id>`, `/messages/<id>`,
  * `?comment=`) is therefore an address of a row of this tree.
+ *
+ * A turn its author corrected keeps its place (INFRA-1523, R2 and R3). An edited one keeps its
+ * words and carries when it was last edited (`editedAt`). A deleted one carries when and by whom
+ * (`deletedAt`, `deletedBy`), and holds the deleted line as its text (`deletedPostLine`) and no
+ * reading, so no line, body, filter or citation read from the node reads any part of its body.
+ * It carries no `editedAt`: the deleted line already says what became of the text, as the
+ * byline's ` · edited` says nothing of a deleted post (`EditedMark`).
  */
 function addTurns(
   drafts: Map<string, Draft>,
@@ -927,6 +986,8 @@ function addTurns(
       author: comment.author,
       body: comment.body,
       bodyTree: comment.body_tree,
+      deleted: postDeletion(comment),
+      editedAt: comment.edited_at,
       id: comment.id,
       kind: "comment" as const,
       replyTo:
@@ -943,6 +1004,8 @@ function addTurns(
         author: message.author,
         body: message.body,
         bodyTree: message.body_tree,
+        deleted: postDeletion(message),
+        editedAt: message.edited_at,
         id: message.id,
         kind: "message" as const,
         replyTo: message.in_reply_to,
@@ -955,8 +1018,15 @@ function addTurns(
     draft.parents = turn.replyTo === null ? [] : [turn.replyTo];
     draft.reference = buildDispatchReference({ id: turn.id, key: context.key, kind: turn.kind });
     draft.source = textSourceOf(turn.kind, turn.id, context.key);
-    draft.text = turn.body;
-    draft.tree = turn.bodyTree;
+    if (turn.deleted === null) {
+      draft.text = turn.body;
+      draft.tree = turn.bodyTree;
+      if (turn.editedAt !== null) draft.editedAt = turn.editedAt;
+    } else {
+      draft.deletedAt = turn.deleted.at;
+      if (turn.deleted.by !== null) draft.deletedBy = turn.deleted.by;
+      draft.text = deletedPostLine(turn.deleted);
+    }
   }
 }
 

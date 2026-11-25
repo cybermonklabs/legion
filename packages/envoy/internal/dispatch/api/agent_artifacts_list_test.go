@@ -43,6 +43,7 @@ func seedListedFile(t *testing.T, database *store.Store) {
 // conversation holding none is answered an empty list, and a session id no reference could carry
 // is refused as the conversation's other artifact routes refuse it.
 func TestAnAgentsConversationListsItsFilesNewestFirst(t *testing.T) {
+	t.Parallel()
 	handler, _, _ := newTestServer(t, testServerOptions{files: filestest.NewMemory()})
 	const other = "01a1058e-f14f-7684-87eb-3dc885955552"
 	upload := func(session, name, contentType string, content []byte) {
@@ -113,6 +114,7 @@ func TestAnAgentsConversationListsItsFilesNewestFirst(t *testing.T) {
 // past the cap leaves the oldest out of the answer, and the rest come newest first. The files
 // are written straight to the table one second apart, so the newest is the one written last.
 func TestAnAgentsConversationListsOnlyItsNewestFiles(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	const session = "s-many-files"
 	held := agentArtifactsListMax + 1
@@ -143,6 +145,7 @@ func TestAnAgentsConversationListsOnlyItsNewestFiles(t *testing.T) {
 // GET /api/v1/agents/{session_id}/messages answers, each the same way
 // (expectSameCallersAsConversationRead).
 func TestAgentFileListAdmitsExactlyTheCallersTheConversationReadAdmits(t *testing.T) {
+	t.Parallel()
 	rig := newBrokerTokenRig(t)
 	seedListedFile(t, rig.database)
 	expectSameCallersAsConversationRead(t, rig, "the file list", listedSession, listedFilesPath(listedSession))
@@ -153,6 +156,7 @@ func TestAgentFileListAdmitsExactlyTheCallersTheConversationReadAdmits(t *testin
 // scope they lack, 403 OAUTH_SCOPE_REQUIRED, and the refusal names no file, while the person's
 // browser is answered the file.
 func TestAgentFileListRefusesACallerTheConversationReadRefuses(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	seedListedFile(t, database)
 

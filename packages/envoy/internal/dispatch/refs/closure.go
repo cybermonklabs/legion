@@ -123,8 +123,8 @@ func targetNode(document string) string {
 // not hash an array an InitPlan reads, so it compared each link with every row of own in turn. On
 // a copy of a dispatch:local database seeded at production's size, for an issue with 2,041 own
 // targets, the in statement read 5,000 links in 3.44-3.48 s, past the route's 2 s budget, and its
-// plan spent 2.58 s of 2.67 s in that test; with the anti-join, which Postgres plans as a Merge
-// Anti Join, it read them in 0.27-0.36 s.
+// plan spent 2.58 s of 2.67 s in that test; with an anti-join, hashed or merged, it read them in
+// 0.27-0.36 s.
 func oneRowPerNode(own string) string {
 	return `
 		select f.node_kind, f.node_id, array_agg(distinct f.kind order by f.kind),

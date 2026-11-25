@@ -5,6 +5,8 @@
 // extracted so this test can drive it without exiting the test process.
 package main
 
+//ci:reads packages/envoy/docker/rds-global-bundle.pem TestMainMintsTokensBeforeOpeningTheDatabase names it as sslrootcert=../../docker/rds-global-bundle.pem, which the broker it starts opens
+
 import (
 	"bytes"
 	"crypto/ecdsa"

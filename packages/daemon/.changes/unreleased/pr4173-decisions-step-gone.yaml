@@ -1,6 +1,6 @@
 kind: Removed
 body: |-
-    The `decisions` design step is gone: decisions are nodes of the spec, so gate `spec` to have a person approve them. A `legion.yaml` whose `gates.design` names `decisions` is refused at load with a message that says so. A stored design-gate row, a kept approval or a queued publication of that step from the release before is left out by every read; this release adds no delete of them. The daemon API contract is 233; a plugin's reader of the gated-step view still parses `decisions`, which every contract's record since 55 admits.
+    The `decisions` design step is gone: decisions are nodes of the spec, so gate `spec` to have a person approve them. A `legion.yaml` whose `gates.design` names `decisions` is refused at load with a message that says so. A stored design-gate row, a kept approval or a queued publication of that step from the release before is left out by every read; this release adds no delete of them. The daemon API contract is 271; a plugin's reader of the gated-step view still parses `decisions`, which every contract's record since 55 admits.
 time: 2026-11-17T17:20:07.000000000Z
 custom:
     Issue: pr4173

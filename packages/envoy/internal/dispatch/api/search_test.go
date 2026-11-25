@@ -144,6 +144,61 @@ func TestSearchFindsEveryKindWithSnippetsAndHrefs(t *testing.T) {
 	}
 }
 
+// A comment's, a message's and an ask's hit names who wrote it, so a reader of the hit alone can
+// say who said it, where before the hit named nobody and the reader had to read the item too. An
+// issue's hit and a document's carry no author.
+func TestSearchNamesWhoWroteACommentAMessageAndAnAsk(t *testing.T) {
+	t.Parallel()
+	handler := newTestHandler(t)
+	issue := createInteractionIssue(t, handler, "SRCH", "Navigation instruments", "# Instruments\n\nThe astrolabe measures altitude.\n")
+	written := func(path string, body map[string]any) string {
+		t.Helper()
+		response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+path, body, "bob")
+		if response.Code != http.StatusCreated {
+			t.Fatalf("POST %s: status=%d body=%s", path, response.Code, response.Body.String())
+		}
+		return decodeBody[struct {
+			ID string `json:"id"`
+		}](t, response).ID
+	}
+	comment := written("/comments", map[string]any{"body": "Replace the sextant diagram."})
+	message := written("/messages", map[string]any{"body": "Compass calibration done."})
+	ask := written("/asks", map[string]any{"question": "Keep the quadrant?", "options": []map[string]string{{"label": "Yes"}}})
+	for _, row := range []struct{ query, kind, id, author string }{
+		{"sextant", "comment", comment, "bob"},
+		{"compass", "message", message, "bob"},
+		{"quadrant", "ask", ask, "bob"},
+		{"instruments", "issue", issue.Key, ""},
+		{"astrolabe", "document", issue.PrimaryArtifactID, ""},
+	} {
+		response := searchRequest(t, handler, "q="+row.query)
+		if response.Code != http.StatusOK {
+			t.Fatalf("search %q: status=%d body=%s", row.query, response.Code, response.Body.String())
+		}
+		type authoredHit struct {
+			Kind   string       `json:"kind"`
+			ID     string       `json:"id"`
+			Author *model.Actor `json:"author"`
+		}
+		var hit *authoredHit
+		for _, result := range decodeBody[struct {
+			Results []authoredHit `json:"results"`
+		}](t, response).Results {
+			if result.Kind == row.kind && result.ID == row.id {
+				hit = &result
+			}
+		}
+		switch {
+		case hit == nil:
+			t.Errorf("search %q answered no %s %s: %s", row.query, row.kind, row.id, response.Body.String())
+		case row.author == "" && hit.Author != nil:
+			t.Errorf("the %s hit names the author %+v, want none", row.kind, *hit.Author)
+		case row.author != "" && (hit.Author == nil || hit.Author.ID != row.author):
+			t.Errorf("the %s hit names the author %+v, want %s, who wrote it", row.kind, hit.Author, row.author)
+		}
+	}
+}
+
 func TestSearchLinksAnchoredIssueItemsToTheirDocument(t *testing.T) {
 	t.Parallel()
 	handler := newTestHandler(t)

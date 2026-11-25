@@ -288,6 +288,7 @@ func TestAnIDPrefixNamesOneItemOnEveryOwnerFreeRoute(t *testing.T) {
 // each kind of first line a candidate carries: a comment's body, a document's name and a block's
 // text.
 func TestAnAmbiguousPrefixCutsNoCandidateReferenceInHalf(t *testing.T) {
+	t.Parallel()
 	fixture := newIDPrefixFixture(t)
 	// 152 runes, so a key after it starts before the cut at 159 and ends after it.
 	lead := strings.Repeat("x", 151) + " "
@@ -376,6 +377,7 @@ func requireFirstLineTree(t *testing.T, candidate refs.Candidate) {
 // none is given no tree. A document's first line is its file's name, drawn as the characters it
 // is, and carries no tree under the header either.
 func TestAnAmbiguousPrefixListsEachFirstLineTreeOnlyUnderTheHeader(t *testing.T) {
+	t.Parallel()
 	fixture := newIDPrefixFixture(t)
 	for nth := 1; nth <= 2; nth++ {
 		seedExec(t, fixture.database, "an indexed block", `
@@ -641,6 +643,7 @@ func TestADirectMessagePrefixKeepsTheConversationGuard(t *testing.T) {
 // line, though the caller asked for the trees; a person, who reads any conversation, is given
 // both.
 func TestAGuardedDirectMessageCandidateCarriesNeitherItsLineNorItsTree(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	for nth := 1; nth <= 2; nth++ {
 		seedExec(t, database, "a direct message", `
@@ -1005,6 +1008,7 @@ var unknownIDRouteProbes = map[string]unknownIDRouteProbe{
 	"PATCH /api/v1/comments/{id}":                            {body: map[string]any{"body": "A remark."}},
 	"POST /api/v1/comments/{id}/deliveries":                  {body: map[string]any{"actor": sessionActor(), "delivery": "btw"}},
 	"POST /api/v1/comments/{id}/reply":                       {body: map[string]any{"actor": sessionActor(), "attempt": 1, "body": "A reply."}, bearer: true},
+	"PATCH /api/v1/messages/{id}":                            {body: map[string]any{"body": "A corrected message."}},
 	"POST /api/v1/messages/{id}/deliveries":                  {body: map[string]any{"actor": sessionActor(), "delivery": "btw"}},
 	"POST /api/v1/messages/{id}/deliveries/{attempt}/accept": {bearer: true},
 	"POST /api/v1/messages/{id}/reply":                       {body: map[string]any{"actor": sessionActor(), "attempt": 1, "body": "A reply."}, bearer: true},

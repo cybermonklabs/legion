@@ -133,7 +133,16 @@ which the daemon's `holdsRole` decides, the child's notices come to you
 | A child that looks independent of the tree, capacity, or a cross-tree conflict | Message the controller with `envoy_publish` to the controller topic your `Legion addressing` line names. The controller asks a person before it re-files a child as a root. |
 | A problem outside this tree | Never file an issue for it. A clear defect in code this tree touches or depends on is fixed in this tree's own pull request. Send any other clear defect to the controller with its evidence, and it goes to the tree that owns that code. Send a problem that needs a decision to the architect above you. The root architect opens the `dispatch ask` for it, as `skill://legion-worker/references/findings.md` says. |
 | Product, scope, or design decision, yours or a worker's | Answer from tree context, or send it up. It asks a decision only a person can make about its child's work itself, on its child, as skill://dispatch says: an ask block in the child's spec for a design question the spec records, else `dispatch ask` on the child. A decision that asks to change what the root's approved spec states goes to the architect above it, and the root's architect writes it as a decision block in the root spec. The root architect writes the root spec's, knowing the new version closes the design gate for the whole tree. The human's answer writes one version, which changes only the block's server-owned attributes (`state`, `answered_by` and `answered_at`), and Dispatch carries the approval across it. After an answer that changes the spec's text outside the block, it rewrites that text and requests approval again with a one-sentence `--summary` naming what changed since the earlier approval. A to-do only a human can do goes up the same way, and the root architect opens a `dispatch ask` for it. |
-| Worker question or failure | Handle it or message the worker with `envoy_publish` to its role token. |
+| Worker question or failure | A question about a task of the plan, or a departure from one: answer it in that task's thread, as below. Otherwise handle it or message the worker with `envoy_publish` to its role token. |
+
+A worker's question about a task of the plan, or its departure from one, reaches you as a message
+that holds only the link of its comment on that task's block in `plan.md`, or on the issue where no
+block fits. Answer with a reply in that thread
+(`dispatch comment --issue <issue> --reply-to <comment id> --body '<the answer>'`), then send the
+worker, with `envoy_publish` to its role topic, a message that holds only your reply's link.
+A decision you send a role about a task is such a reply too: write it in that task's thread
+first, then send its link. A role acts on no decision that has no Dispatch record, so a decision
+you send by message alone comes back to you as a request to write it there.
 
 Where this child's task holds your step `acceptance:owner`, the pass of the step before it moves
 the child to `accepting` (in the default steps, the reviewer's approval), where no worker holds the phase and

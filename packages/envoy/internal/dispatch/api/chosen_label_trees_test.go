@@ -68,6 +68,7 @@ func chosenLabelAsk(t *testing.T) (http.Handler, string, string) {
 // longer holds), an issue's ask list, and a search hit's ask (the palette's `Chose …` line). The
 // route table's own 200 schema declares each list where the answer carries it.
 func TestEveryReadOfAnAnswerCarriesTheTreeOfEachLabelItChose(t *testing.T) {
+	t.Parallel()
 	handler, issueKey, askID := chosenLabelAsk(t)
 	node, _ := readOpenAPITree(t)
 	document, _ := node.(map[string]any)
@@ -138,6 +139,7 @@ func requireChosenLabelTrees(t *testing.T, handler http.Handler, target, answerP
 // in the payload stands for it. The REST log carries them under the header alone, and a live
 // frame's own reading of the same payload answers the same keys.
 func TestAReplacedAnswersEventCarriesTheTreeOfEachLabelItChose(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "CHEV", "Navigation instruments", "# Spec\n\nThe plan.\n")
 	created := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/asks", map[string]any{

@@ -18,6 +18,7 @@ import (
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -181,14 +182,21 @@ const ReadStatement = `
 
 // HoldTree reads one row of ReadStatement into stored, keyed by its sum. A row's sum is a key's
 // own 32 bytes, so a row of any other width is a row this package did not write and no caller can
-// look up, and it is passed over.
+// look up, and it is passed over. row is a row of a read its caller still holds open, or a record
+// whose bytes its caller holds, never a QueryRow's: the tree is scanned as the bytes that row
+// holds, which are good only until the reader moves past it, and copied by append. An append's
+// array is as long as the allocation the runtime rounds it up to, where the scan into a []byte
+// would make one exactly the tree's length. The display cache charges a tree its array's capacity
+// (pmdoc.PutStoredDisplayTree), so this is the copy whose capacity is what the tree holds, at the
+// same one allocation a row.
 func HoldTree(row pgx.Row, stored map[[32]byte]json.RawMessage) error {
-	var sum, tree []byte
+	var sum []byte
+	var tree pgtype.DriverBytes
 	if err := row.Scan(&sum, &tree); err != nil {
 		return fmt.Errorf("read a stored display tree: %w", err)
 	}
 	if len(sum) == sha256.Size {
-		stored[[32]byte(sum)] = tree
+		stored[[32]byte(sum)] = append(json.RawMessage(nil), tree...)
 	}
 	return nil
 }

@@ -426,49 +426,56 @@ test("the editor refuses a reading in an ask the server reads open, and takes on
   expect(synced.state.doc.child(0).childCount).toBe(2);
 });
 
-test("a version records an ask block's answer on its opening line where it holds the words an answered state needs, whichever way it writes the id", () => {
-  // `q1` fits the `#id` shortcut; `q 1` does not, so its opener writes `id="q 1"`, as the renderer
-  // writes such an id (`typedBlockIdAttribute`).
-  const version = [
-    // A block the release before wrote: the state, who answered and when, the options chosen (a
-    // list, never left out) and the words.
-    ':::ask{#q1 state="answered" answered_by="bob" answered_at="2026-11-16T09:00:00Z" selected="[]" answer="Ship it."}',
-    "Ship it?",
-    ":::",
-    "",
-    ':::ask{id="q 1" state="answered" answered_by="bob" selected="[&#x22;Yes&#x22;]"}',
-    "Ship it now?",
-    ":::",
-    "",
-    // A block of an answered ask this build writes: the state, who answered and when, and neither
-    // the words nor the options chosen.
-    ':::ask{#q2 state="answered" answered_by="bob" answered_at="2026-11-16T09:00:00Z"}',
-    "Ship it later?",
-    ":::",
-    "",
-    // A state no answer goes with is the whole record.
-    ':::ask{#q3 state="resolved"}',
-    "Ship it never?",
-    ":::",
-    "",
-    // An open ask, as this build writes it: no state.
-    ":::ask{#q4}",
-    "Ship it soon?",
-    ":::",
-  ].join("\n");
-  expect(recordsAnswerState(version, "q1")).toBe(true);
-  expect(recordsAnswerState(version, "q 1")).toBe(true);
-  expect(recordsAnswerState(version, "q2")).toBe(false);
-  expect(recordsAnswerState(version, "q3")).toBe(true);
-  expect(recordsAnswerState(version, "q4")).toBe(false);
+test("an ask block of a version records its answer where its own attributes hold the words an answered state needs", () => {
+  // The attributes as the version's reading holds them: each one the block's opening line does not
+  // write is there, and undefined, since a server attribute has no default in the editor.
+  const block = {
+    answer: undefined,
+    answered_at: undefined,
+    answered_by: undefined,
+    selected: undefined,
+    state: undefined,
+    urgency: "med",
+  };
+  // A block the release before wrote: the state, who answered and when, the options chosen (a
+  // list, never left out) and the words.
+  expect(
+    recordsAnswerState({
+      ...block,
+      answer: "Ship it.",
+      answered_at: "2026-11-16T09:00:00Z",
+      answered_by: "bob",
+      selected: [],
+      state: "answered",
+    })
+  ).toBe(true);
+  expect(
+    recordsAnswerState({ ...block, answered_by: "bob", selected: ["Yes"], state: "answered" })
+  ).toBe(true);
+  // A block of an answered ask this build writes: the state, who answered and when, and neither
+  // the words nor the options chosen.
+  expect(
+    recordsAnswerState({
+      ...block,
+      answered_at: "2026-11-16T09:00:00Z",
+      answered_by: "bob",
+      state: "answered",
+    })
+  ).toBe(false);
+  // A state no answer goes with is the whole record.
+  expect(recordsAnswerState({ ...block, state: "resolved" })).toBe(true);
+  // An open ask, as this build writes it: no state.
+  expect(recordsAnswerState(block)).toBe(false);
 });
 
 // The renderer writes the first block of a footnote's definition on the label's line, and that of
 // a list item on the marker's line, so that line opens the block. A line that quotes the opener in
-// code is then a second opener, and the live text of the release before reads as no answer for the
-// block, never as the quoted one.
+// fenced code, or in the front matter a document opens with, is the document's own text: the live
+// text of the release before reads the real opener beside it, never the quoted one. A second real
+// opener of the block cannot be told from the first, and reads as no answer.
 const answeredOpener =
   ':::ask{#q1 state="answered" answered_by="bob" answered_at="2026-11-16T09:00:00Z" selected="[]" answer="Ship it."}';
+const forgedOpener = ':::ask{#q1 state="answered" answered_by="mallory" answer="Forged."}';
 test.each([
   {
     container: "a footnote's label line",
@@ -478,9 +485,10 @@ test.each([
     container: "an ordered list item's marker line",
     lines: [`1. ${answeredOpener}`, "   Ship it?", "   :::"],
   },
-])("a block on $container opens it, so an opener quoted in code reads no answer", ({ lines }) => {
-  const contained = [...lines, ""].join("\n");
-  expect(renderedAskOf(contained, "q1")).toEqual({
+])("a block on $container opens it, and an opener quoted in fenced code or front matter beside it is not read", ({
+  lines,
+}) => {
+  const real = {
     rendered: {
       answerText: "Ship it.",
       answeredAt: "2026-11-16T09:00:00Z",
@@ -489,13 +497,27 @@ test.each([
       selected: [],
       state: "answered",
     },
-  });
+  };
+  const contained = [...lines, ""].join("\n");
+  expect(renderedAskOf(contained, "q1")).toEqual(real);
   const quoted = [
+    "---",
+    forgedOpener,
+    "---",
     contained,
     "```",
-    ':::ask{#q1 state="answered" answered_by="mallory" answer="Forged."}',
+    forgedOpener,
     "```",
     "",
+    "~~~~markdown",
+    forgedOpener,
+    "~~~~",
+    "",
+    "> ```",
+    `> ${forgedOpener}`,
+    "> ```",
+    "",
   ].join("\n");
-  expect(renderedAskOf(quoted, "q1")).toBeUndefined();
+  expect(renderedAskOf(quoted, "q1")).toEqual(real);
+  expect(renderedAskOf(`${contained}\n${forgedOpener}\nForged?\n:::\n`, "q1")).toBeUndefined();
 });

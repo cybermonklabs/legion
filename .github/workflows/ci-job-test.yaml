@@ -276,6 +276,12 @@ on:
         description: "ci.yaml's needs.changes.outputs.disk_watch_test: disk_watch.test.sh and what it tests."
         type: string
         required: false
+      go_cache_working_set_test:
+        description: >-
+          ci.yaml's needs.changes.outputs.go_cache_working_set_test:
+          go-cache-working-set.test.sh and what it tests.
+        type: string
+        required: false
       priorities_seed_check_test:
         description: >-
           ci.yaml's needs.changes.outputs.priorities_seed_check_test:
@@ -475,12 +481,6 @@ jobs:
         if: inputs.changes-result != 'success' || inputs.go_tagged_tests_test == 'true'
         run: .github/scripts/go-tagged-tests.test.sh
 
-      # The label terms of ci.yaml's changes outputs, evaluated from ci.yaml itself: full-ci, the
-      # lane labels and a label that names nothing.
-      - name: Test the router outputs' label terms
-        if: inputs.changes-result != 'success' || inputs.ci_router_outputs_test == 'true'
-        run: .github/scripts/ci-router-outputs.test.sh
-
       - name: Test ci-ok's verdict
         if: inputs.changes-result != 'success' || inputs.ci_ok_test == 'true'
         run: .github/scripts/ci-ok.test.sh
@@ -594,9 +594,10 @@ jobs:
       # Go, but no Actions cache: the go-daemon entry holds what compiling packages/daemon
       # leaves behind, and it went to .github/workflows/ci-job-daemon-go.yaml with the steps
       # that compiled it. What runs go here is the held-port build of the envoy listener below,
-      # the CI-filter check's go list over a scratch module and the build-tag lister, none of
-      # which that entry is filled for. The daemon's go.mod is still the one Go pin of this
-      # repository's three modules that a job without one of its own reads.
+      # the CI-filter check's go list over a scratch module, the build-cache prune's builds of a
+      # scratch module and the build-tag lister, none of which that entry is filled for. The
+      # daemon's go.mod is still the one Go pin of this repository's three modules that a job
+      # without one of its own reads.
       - id: setup-go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
@@ -609,10 +610,29 @@ jobs:
       - name: Test the live proofs' libraries (the GitHub ingress bridge, the proof human's check, the model gateway key command, the design-gate verdict, the held-port helper)
         run: bun test scripts/e2e/lib
 
+      # The filters this run's changes job computed, which no file of the repository holds: one
+      # case of the check below holds them to what this repository's Bun jobs compile and read, and
+      # the router outputs' harness reads the filter names from them, both reading the run's own
+      # file rather than computing them a second time.
+      - name: Fetch the filters the changes job selected this run's jobs by
+        if: inputs.changes-result != 'success' || inputs.check_ci_filters_test == 'true' || inputs.ci_router_outputs_test == 'true'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ci-filters
+          path: ${{ runner.temp }}/ci-filters
+
       # After setup-go: its fixtures run go list over a scratch module.
       - name: Test the CI filter check
         if: inputs.changes-result != 'success' || inputs.check_ci_filters_test == 'true'
+        env:
+          CI_FILTERS_FILE: ${{ runner.temp }}/ci-filters/ci-filters.computed.yaml
         run: .github/scripts/check-ci-filters.test.sh
+
+      # After setup-go: its first cases build a scratch module with the real go, the one that
+      # marks the cache entries a build uses, which the script under test reads.
+      - name: Test the build cache prune of the cache fills
+        if: inputs.changes-result != 'success' || inputs.go_cache_working_set_test == 'true'
+        run: .github/scripts/go-cache-working-set.test.sh
 
       # Beside the check above, and needing no Go and no Bun of its own: its fixtures list each
       # program with a stand-in bunx.
@@ -628,6 +648,15 @@ jobs:
       - name: Test the go test step expansion
         if: inputs.changes-result != 'success' || inputs.go_test_step_expansion_test == 'true'
         run: .github/scripts/go-test-step-expansion.test.sh
+
+      # The label terms of ci.yaml's changes outputs, evaluated from ci.yaml itself: full-ci, the
+      # lane labels and a label that names nothing. After the fetch above: the filter names are the
+      # computed filters'.
+      - name: Test the router outputs' label terms
+        if: inputs.changes-result != 'success' || inputs.ci_router_outputs_test == 'true'
+        env:
+          CI_FILTERS_FILE: ${{ runner.temp }}/ci-filters/ci-filters.computed.yaml
+        run: .github/scripts/ci-router-outputs.test.sh
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()

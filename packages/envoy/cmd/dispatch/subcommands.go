@@ -428,11 +428,11 @@ func runDecisionsStep(ctx context.Context, name string, convert bool, args []str
 
 // writeDecisionIssue prints the one line of what the decisions step did to issue: how many
 // answered asks it restored, how many of them it moved out of the decisions document and how many
-// took a new block id; how many it declined to restore because a person removed their block from
-// the spec, each as ask@person@v<version>; what became of the document's sections; whether it
-// retired the document; the versions it wrote; what became of the spec's approval; and each
-// approval it superseded, with the asks, as their nodes and their blocks, whose restore superseded
-// it.
+// took a new block id; how many it declined because a person removed their block, from the spec
+// or, for an ask it would move, from the decisions document while the step ran, each as
+// ask@person@v<version>; what became of the document's sections; whether it retired the
+// document; the versions it wrote; what became of the spec's approval; and each approval it
+// superseded, with the asks, as their nodes and their blocks, whose restore superseded it.
 func writeDecisionIssue(w io.Writer, name string, issue docs.DecisionIssue, dryRun bool) {
 	moved, renamed := 0, 0
 	for _, ask := range issue.Restored {

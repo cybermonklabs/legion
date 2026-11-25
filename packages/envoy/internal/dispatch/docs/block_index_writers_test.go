@@ -193,6 +193,7 @@ func waitingStatement(t *testing.T, holder pgx.Tx) string {
 // of the store for an item the store does not hold. The rebuild writes refs and marks work owed
 // and writes no row of document_blocks, block_refs or comments.
 func TestTheIndexPassesAreStoreWritersAndNoRepairExists(t *testing.T) {
+	t.Parallel()
 	requireEveryPassReadsItsSource(t)
 	if t.Failed() {
 		// The source tree holds a pass nobody has said the input of, so whatever the
@@ -592,6 +593,20 @@ var indexPasses = map[string]string{
 	"api/comment_actions.go#reopenComment":   "the reopen request",
 	"api/comment_create.go#createCommentFor": "the create request's own body",
 	"api/comment_delivery.go#replyComment":   "the reply a delivery recorded",
+	// The orphaning of a comment's anchor, which the accept and the reject arms of commentAction
+	// and deleteComment queue when their document write finds the anchor's mark gone
+	// (docs.ErrAnchorOrphaned). It sets the orphaned key of the anchor the comment's own row
+	// holds and keeps every other key, the artifact_id its anchored_to tuple names among them, so
+	// it sets no column the store projects (censustest.ProjectedColumns' anchor) and reads no
+	// side of a projection to write the other.
+	"api/comment_actions.go#recordOrphanedCommentAnchor": "the comment its caller locked and the document write that found its anchor's mark gone",
+	// The clear a delete of a comment or a message makes: one update of the post's own row, with
+	// an empty body, no suggestion and the delete's mark - the transaction's now() its caller
+	// read and the caller the delete is recorded under - and, where an insert suggestion's quote
+	// is the comment's own words, that quote key emptied in the anchor the row holds, its other
+	// keys kept. No column it sets is one the store projects (censustest.ProjectedColumns), and
+	// it reads no side of a projection to write the other.
+	"api/post_history.go#clearDeletedPostBody": "the delete request and the post it deletes, which its caller locked",
 	// A delivery attempt's settle states the session it reached (graphstore.QueueReached).
 	"api/comment_delivery.go#completeCommentDelivery": "the delivery attempt the sender settles",
 	"api/message_delivery.go#completeMessageDelivery": "the delivery attempt the sender settles",

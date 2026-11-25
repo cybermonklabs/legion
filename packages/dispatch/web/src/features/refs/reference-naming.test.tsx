@@ -20,6 +20,7 @@ import { useMarkdownHeadline, warmMarkdownRenderer } from "./markdown-engine";
 import { PlainText } from "./plain-text";
 import { partyLink } from "./ref-picker";
 import { ReferenceHostIs } from "./reference-host";
+import { commentQuery } from "./reference-target";
 import { shortForm } from "./routes";
 import type { TextSource } from "./text-references";
 
@@ -236,6 +237,32 @@ test("a known person reads as their login with no link, an unknown one as writte
     const links = within(view.container).getAllByRole("link");
     expect(links).toHaveLength(1);
     expect(links[0] === role).toBe(true);
+  } finally {
+    view.unmount();
+  }
+});
+
+// R5 and R8 for a login GFM would cut: a person's login is an email address, and GFM's transform
+// starts an email after a dot or a hyphen in its local part, which drew `dispatch://person/john.`
+// and a link to `mailto:doe@example.com`. The engine keeps the address whole
+// (`@legion/proof-editor`'s `whole-addresses.ts`), so it names the person and reads as their login,
+// with no link and no mail address anywhere in the line.
+test("a known person whose login holds a dot or a hyphen reads as their login with no link", async () => {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  client.setQueryData(
+    ["users"],
+    [{ login: "john.doe@example.com" }, { login: "person-2@example.com" }]
+  );
+  const view = draw(
+    <MarkdownBody markdown="Ask dispatch://person/john.doe@example.com and dispatch://person/person-2@example.com now." />,
+    client
+  );
+  try {
+    await waitFor(() =>
+      expect(words(view.container)).toBe("Ask john.doe@example.com and person-2@example.com now.")
+    );
+    expect(view.container.querySelectorAll("a")).toHaveLength(0);
+    expect(view.container.innerHTML).not.toContain("mailto:");
   } finally {
     view.unmount();
   }
@@ -768,6 +795,83 @@ test("an address whose target does not exist projects as the words written", asy
     );
     expect(words(view.getByTestId("painted"))).toBe(written);
     await waitFor(() => expect(view.getByTestId("line").textContent).toBe(written));
+  } finally {
+    view.unmount();
+  }
+});
+
+/** A comment of CORE-1 and a block of it, for the two rows below: the block's read answers that
+ *  the block is gone, which is how Dispatch answers every block a delete took with its post, and
+ *  the post's own read says whether there is a post at all. */
+const GONE_COMMENT_ID = "11111111-1111-4111-8111-111111111111";
+const GONE_BLOCK = `dispatch://CORE-1/comment/${GONE_COMMENT_ID}#b-b1`;
+
+// A block reference to a post its author deleted names a post that exists: its block went with
+// the delete, and the post's own read answers its deletion. The reference stays a link, in the
+// words its author wrote, whose hover card says the post is deleted (INFRA-1523); R8's plain words
+// are for a target Dispatch answers does not exist, which this one is not.
+test("a block reference to a post its author deleted stays a link, in the words its author wrote", async () => {
+  spies.push(
+    spyOn(api, "getReferences").mockRejectedValue(
+      new ApiError(404, { code: "NOT_FOUND", error: "block gone" })
+    ),
+    spyOn(api, "getComment").mockResolvedValue({
+      comment: {
+        author: { id: "alice", kind: "user" },
+        body: "",
+        deleted_at: "2026-11-13T12:00:00Z",
+        deleted_by: { id: "alice", kind: "user" },
+        edited_at: null,
+        id: GONE_COMMENT_ID,
+        issue_key: "CORE-1",
+      },
+      replies: [],
+    } as never)
+  );
+  const client = clientWithIssue();
+  const view = draw(
+    <div data-testid="painted">
+      <MarkdownBody markdown={`See ${GONE_BLOCK} here.`} />
+    </div>,
+    client
+  );
+  try {
+    await waitFor(() =>
+      expect(client.getQueryState(commentQuery(GONE_COMMENT_ID).queryKey)?.status).toBe("success")
+    );
+    await waitFor(() =>
+      expect(view.container.querySelector(`a[data-dispatch-ref="${GONE_BLOCK}"]`)).not.toBeNull()
+    );
+    expect(view.container.querySelector("[data-dispatch-missing]")).toBeNull();
+    expect(words(view.getByTestId("painted"))).toBe(`See ${GONE_BLOCK} here.`);
+  } finally {
+    view.unmount();
+  }
+});
+
+// The same block of a post that never existed: the post's own read answers 404 too, so Dispatch
+// has answered that the target does not exist, and the reference is the words its writer wrote,
+// with no link (R8).
+test("a block reference to a post that never existed reads as the words written, with no link", async () => {
+  spies.push(
+    spyOn(api, "getReferences").mockRejectedValue(
+      new ApiError(404, { code: "NOT_FOUND", error: "block gone" })
+    ),
+    spyOn(api, "getComment").mockRejectedValue(
+      new ApiError(404, { code: "NOT_FOUND", error: "no comment" })
+    )
+  );
+  const view = draw(
+    <div data-testid="painted">
+      <MarkdownBody markdown={`See ${GONE_BLOCK} here.`} />
+    </div>
+  );
+  try {
+    await waitFor(() =>
+      expect(view.container.querySelectorAll("[data-dispatch-missing]")).toHaveLength(1)
+    );
+    expect(view.container.querySelector(`a[data-dispatch-ref="${GONE_BLOCK}"]`)).toBeNull();
+    expect(words(view.getByTestId("painted"))).toBe(`See ${GONE_BLOCK} here.`);
   } finally {
     view.unmount();
   }

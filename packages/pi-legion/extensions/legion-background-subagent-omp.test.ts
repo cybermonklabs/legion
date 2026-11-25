@@ -7,6 +7,7 @@ import {
   type Block,
   type Cleanup,
   call,
+  deleteRelayCapturingStreams,
   deliveryFor,
   isSelfCheck,
   messageStream,
@@ -282,11 +283,13 @@ async function natsRelay(
     request(
       subject: string,
       payload: Uint8Array,
-      options: { readonly timeout: number; readonly headers: FrameHeaders }
+      options: { readonly timeout: number; readonly headers?: FrameHeaders }
     ): Promise<{ readonly data: Uint8Array }> {
       requests += 1;
       const reply = `${inbox}.${requests}`;
-      const headers = options.headers.block();
+      // A request with no header set, as `deleteRelayCapturingStreams` sends to the JetStream
+      // API, goes out with an empty header block.
+      const headers = (options.headers ?? newHeaders()).block();
       const headerBytes = Buffer.byteLength(headers);
       const total = headerBytes + payload.byteLength;
       const answered = Promise.withResolvers<{ readonly data: Uint8Array }>();
@@ -299,7 +302,9 @@ async function natsRelay(
       waiting.set(reply, ({ word, noResponders }) => {
         clearTimeout(timer);
         if (noResponders) {
-          answered.reject(new Error(`no responder on ${subject}`));
+          // The code nats.js gives the same answer, which `deleteRelayCapturingStreams` reads as a
+          // server with no JetStream.
+          answered.reject(Object.assign(new Error(`no responder on ${subject}`), { code: "503" }));
           return;
         }
         answered.resolve({ data: new TextEncoder().encode(word) });
@@ -311,6 +316,9 @@ async function natsRelay(
       return answered.promise;
     },
   });
+  // No stream another suite left on this server may answer the frames
+  // (`deleteRelayCapturingStreams`).
+  await deleteRelayCapturingStreams(connectionStamping(() => {}));
   return async (sessionID, payload, seq) => {
     // The moment of the send the session answered: the helper resends until one is answered, and
     // each request of this send writes its own moment here as it goes out. The sends end at the

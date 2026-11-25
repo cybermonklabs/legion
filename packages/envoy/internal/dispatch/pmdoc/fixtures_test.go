@@ -101,7 +101,9 @@ func TestFixturesAreWithinSchema(t *testing.T) {
 	fixtures := loadFixtures(t)
 	wantNames := []string{
 		"adjacent-lists", "ask-answer-holding-a-backslash-escape", "ask-answered", "ask-opening-with-a-list", "ask",
-		"bare-address-after-punctuation", "bare-addresses-each-with-its-own-host", "bare-url-trailing-punctuation",
+		"bare-address-after-punctuation", "bare-addresses-each-with-its-own-host",
+		"bare-addresses-the-tokenizer-reads-inside-an-address", "bare-person-address-holding-a-dot",
+		"bare-person-address-holding-a-hyphen", "bare-url-trailing-punctuation",
 		"bare-url", "blockquote", "browser-list-spacing", "callout-blocks", "callout-nested", "callout",
 		"code-directive-example", "code-fence", "code-span-line-ends", "code-span-tag-line-in-containers", "code",
 		"definition-callout-holding-an-unclosed-fence",
@@ -143,7 +145,8 @@ func TestFixturesAreWithinSchema(t *testing.T) {
 		"item-opening-with-an-empty-definition-line", "item-unclosed-callout-code-ending-in-a-short-whitespace-line",
 		"item-unclosed-callout-paragraph-ending-in-a-blank-line", "items-spaced-around-callouts-holding-an-unclosed-fence",
 		"lazy-lines-holding-only-an-html-tag", "leaf-marks-in-one-document", "link-delimiters",
-		"links-holding-an-autolink", "links", "list-item-code-blank-lines", "list-item-with-lazy-lines-and-brackets",
+		"links-after-an-address-written-in-full", "links-holding-an-autolink", "links", "list-item-code-blank-lines",
+		"list-item-with-lazy-lines-and-brackets",
 		"list-items-chained-50-deep", "list-nested-33-deep", "list-nested-49-deep-with-blank-lines",
 		"list-spacing-in-containers", "lists-after-code-after-a-list", "lists-after-code-after-a-quote",
 		"lists-opening-in-a-container-after-code", "lists-spaced-by-indented-code-whitespace-lines", "lists", "long",

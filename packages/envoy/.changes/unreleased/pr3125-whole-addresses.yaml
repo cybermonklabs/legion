@@ -1,0 +1,5 @@
+kind: Fixed
+body: 'A bare `dispatch://` address is read whole: no email or web address autolink starts inside it. A person''s address whose login holds a dot or a hyphen, such as `dispatch://person/john.doe@example.com`, was read as the text `dispatch://person/john.` and a link to `mailto:doe@example.com`; it is now one text, stored as written, in the server and in the browser editor alike. A document stored before the deploy keeps the cut address, a text and a `mailto:` link, until it is rewritten, because a stored document''s tree is not parsed again. Display tree version 4 reads every stored display tree again, and renderer version 2 renders every stored rendering again.'
+time: 2026-11-23T22:05:20.481221021Z
+custom:
+    Issue: pr3125
