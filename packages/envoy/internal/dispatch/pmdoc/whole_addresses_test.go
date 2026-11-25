@@ -32,8 +32,10 @@ func TestABarePersonAddressIsStoredAsWritten(t *testing.T) {
 // paragraph, under emphasis or in a table cell. A link the tokenizer read comes back as its source
 // as written, as it showed linked; one the transform read comes back decoded. An autolink outside
 // an address is made as before: an angle autolink right after one, an email after the address has
-// ended at a space or a line's end, and a URL whose own text holds `dispatch://`. Go's reading of
-// each row is the browser editor's engine's.
+// ended at a space or a line's end, an email right after a link's `)` or right after the `)` of a
+// `](dispatch://` address that no link holds (text.DispatchSpans ends a span written after `](` at
+// its first `)` no `(` in it opened), and a URL whose own text holds `dispatch://`. Go's reading
+// of each row is the browser editor's engine's.
 func TestNoAutolinkStartsInsideAnAddress(t *testing.T) {
 	rows := []struct {
 		markdown string
@@ -57,6 +59,10 @@ func TestNoAutolinkStartsInsideAnAddress(t *testing.T) {
 		{"See dispatch://CORE-1. Mail a@b.cc now.\n", `text "See dispatch://CORE-1. Mail " | text "a@b.cc" link mailto:a@b.cc | text " now."`},
 		// The address ends at its line's end, so the email that opens the next line is outside it.
 		{"Ask dispatch://CORE-1  \na@b.cc\n", `text "Ask dispatch://CORE-1" | hardbreak "" | text "a@b.cc" link mailto:a@b.cc`},
+		// An email typed straight after a link's `)` is a run of its own; after an escaped bracket,
+		// which opens no link, the address the `](` starts still ends at that `)`.
+		{"Mail [w](dispatch://ACME-1)me@example.com now.\n", `text "Mail " | text "w" link dispatch://ACME-1 | text "me@example.com" link mailto:me@example.com | text " now."`},
+		{"Mail \\[w](dispatch://ACME-1)me@example.com now.\n", `text "Mail [w](dispatch://ACME-1)" | text "me@example.com" link mailto:me@example.com | text " now."`},
 		{
 			"https://a.test/dispatch://person/john.doe@example.com\n",
 			`text "https://a.test/dispatch://person/john.doe@example.com" link https://a.test/dispatch://person/john.doe@example.com`,

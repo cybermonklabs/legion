@@ -336,11 +336,10 @@ type cutReference struct {
 
 // cutReferences is every reference body writes that Dispatch holds, in the reader's own terms:
 // each reference span Extract reads as a `dispatch://` address or a page of the dashboard at
-// serverURL (locateSpan), a URL of anywhere else left out, and each bare key and `#id` Mentions
-// would ask about (bareCandidates), whether or not it names anything, since a cut that splits one
-// changes what the text says. Each is widened over the inline link that holds it (linkRanges),
-// and a span that is a link's address is that address, as the link reads it, rather than the
-// span, which would run on over the `)` into whatever follows it.
+// serverURL (spanReference, locateSpan), a URL of anywhere else left out, and each bare key and
+// `#id` Mentions would ask about (bareCandidates), whether or not it names anything, since a cut
+// that splits one changes what the text says. Each is widened over the inline link that holds it
+// (linkRanges), and a span that is a link's address is that address, as the link reads it.
 func cutReferences(body, serverURL string) []cutReference {
 	spans := referencePattern.FindAllStringIndex(body, -1)
 	links := linkRanges(body)
@@ -364,7 +363,7 @@ func cutReferences(body, serverURL string) []cutReference {
 		found = append(found, cutReference{start: start, end: end, ref: ref})
 	}
 	for _, span := range spans {
-		start, raw := span[0], trimReference(body[span[0]:span[1]])
+		start, raw := span[0], spanReference(body, span[0], span[1])
 		for _, link := range links {
 			if link.open < start && start < link.close && link.destination != "" &&
 				strings.HasPrefix(body[start:], link.destination) {

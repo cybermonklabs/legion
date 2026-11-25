@@ -36,6 +36,19 @@ test("a paste into the live editor keeps a person's address whose login holds a 
   });
 });
 
+// An address written after `](` ends at its first `)` that no `(` in it opened, the link's own, as
+// `referenceSpans` reads it, so an email typed straight after that `)` starts outside the address
+// and stays the link remark-gfm made, as Go's reader reads it. An escaped bracket opens no link,
+// and the address still ends there.
+test("the headless engine links an email typed straight after a link address's parenthesis", async () => {
+  const { parseMarkdown } = await createHeadlessProof();
+  expect(texts(parseMarkdown("Mail \\[w](dispatch://ACME-1)me@example.com now.\n"))).toEqual([
+    { marks: [], text: "Mail [w](dispatch://ACME-1)" },
+    { marks: ["link"], text: "me@example.com" },
+    { marks: [], text: " now." },
+  ]);
+});
+
 // An empty document's file holds no markdown (a VFile made of "" carries no value), and its tree
 // holds nothing for the step to read, so the step lets it through: the engine reads the empty
 // document, which holds no text, rather than throwing.

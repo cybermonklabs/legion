@@ -40120,6 +40120,92 @@
     }
   },
   {
+    "name": "link-addresses-after-a-bracket-no-link-opens",
+    "markdown": "Mail \\[w](dispatch://ACME-1)me@example.com now.\n\nMail \\[w](dispatch://ACME-1)<me@example.com> now.\n",
+    "pm_json": {
+      "type": "doc",
+      "content": [
+        {
+          "type": "paragraph",
+          "attrs": {
+            "blockId": "b-000001"
+          },
+          "content": [
+            {
+              "type": "text",
+              "text": "Mail [w](dispatch://ACME-1)"
+            },
+            {
+              "type": "text",
+              "marks": [
+                {
+                  "type": "link",
+                  "attrs": {
+                    "href": "mailto:me@example.com",
+                    "title": null
+                  }
+                }
+              ],
+              "text": "me@example.com"
+            },
+            {
+              "type": "text",
+              "text": " now."
+            }
+          ]
+        },
+        {
+          "type": "paragraph",
+          "attrs": {
+            "blockId": "b-000002"
+          },
+          "content": [
+            {
+              "type": "text",
+              "text": "Mail [w](dispatch://ACME-1)"
+            },
+            {
+              "type": "text",
+              "marks": [
+                {
+                  "type": "link",
+                  "attrs": {
+                    "href": "mailto:me@example.com",
+                    "title": null
+                  }
+                }
+              ],
+              "text": "me@example.com"
+            },
+            {
+              "type": "text",
+              "text": " now."
+            }
+          ]
+        }
+      ]
+    },
+    "yjs_update_v1_b64": "ARABAAcBC3Byb3NlbWlycm9yAwlwYXJhZ3JhcGgHAAEABgQAAQEbTWFpbCBbd10oZGlzcGF0Y2g6Ly9BQ01FLTEphgEcBGxpbmsteyJocmVmIjoibWFpbHRvOm1lQGV4YW1wbGUuY29tIiwidGl0bGUiOm51bGx9hAEdDm1lQGV4YW1wbGUuY29thgErBGxpbmsEbnVsbIQBLAUgbm93LigAAQAHYmxvY2tJZAF3CGItMDAwMDAxhwEAAwlwYXJhZ3JhcGgHAAEzBgQAATQbTWFpbCBbd10oZGlzcGF0Y2g6Ly9BQ01FLTEphgFPBGxpbmsteyJocmVmIjoibWFpbHRvOm1lQGV4YW1wbGUuY29tIiwidGl0bGUiOm51bGx9hAFQDm1lQGV4YW1wbGUuY29thgFeBGxpbmsEbnVsbIQBXwUgbm93LigAATMHYmxvY2tJZAF3CGItMDAwMDAyAA==",
+    "rendered_by_milkdown": "Mail \\[w]\\(dispatch://ACME-1)<me@example.com> now.\n\nMail \\[w]\\(dispatch://ACME-1)<me@example.com> now.\n",
+    "reading": {
+      "tables": [],
+      "paragraphs": [
+        {
+          "emphasized": [],
+          "strong": [],
+          "struck": [],
+          "text": "Mail [w](dispatch://ACME-1)me@example.com now."
+        },
+        {
+          "emphasized": [],
+          "strong": [],
+          "struck": [],
+          "text": "Mail [w](dispatch://ACME-1)me@example.com now."
+        }
+      ]
+    }
+  },
+  {
     "name": "link-delimiters",
     "markdown": "[paren](<https://example.com/a(b)> \"say \\\"hi\\\"\")\n",
     "pm_json": {
@@ -40244,6 +40330,122 @@
           "strong": [],
           "struck": [],
           "text": "See dispatch://CORE-1/a_www.a.test now."
+        }
+      ]
+    }
+  },
+  {
+    "name": "links-followed-by-a-word-or-an-email",
+    "markdown": "Ask [@Bob](dispatch://agent/abc)hello, then [w](dispatch://ACME-1)word.\n\nMail [w](dispatch://ACME-1)me@example.com now.\n",
+    "pm_json": {
+      "type": "doc",
+      "content": [
+        {
+          "type": "paragraph",
+          "attrs": {
+            "blockId": "b-000001"
+          },
+          "content": [
+            {
+              "type": "text",
+              "text": "Ask "
+            },
+            {
+              "type": "text",
+              "marks": [
+                {
+                  "type": "link",
+                  "attrs": {
+                    "href": "dispatch://agent/abc",
+                    "title": null
+                  }
+                }
+              ],
+              "text": "@Bob"
+            },
+            {
+              "type": "text",
+              "text": "hello, then "
+            },
+            {
+              "type": "text",
+              "marks": [
+                {
+                  "type": "link",
+                  "attrs": {
+                    "href": "dispatch://ACME-1",
+                    "title": null
+                  }
+                }
+              ],
+              "text": "w"
+            },
+            {
+              "type": "text",
+              "text": "word."
+            }
+          ]
+        },
+        {
+          "type": "paragraph",
+          "attrs": {
+            "blockId": "b-000002"
+          },
+          "content": [
+            {
+              "type": "text",
+              "text": "Mail "
+            },
+            {
+              "type": "text",
+              "marks": [
+                {
+                  "type": "link",
+                  "attrs": {
+                    "href": "dispatch://ACME-1",
+                    "title": null
+                  }
+                }
+              ],
+              "text": "w"
+            },
+            {
+              "type": "text",
+              "marks": [
+                {
+                  "type": "link",
+                  "attrs": {
+                    "href": "mailto:me@example.com",
+                    "title": null
+                  }
+                }
+              ],
+              "text": "me@example.com"
+            },
+            {
+              "type": "text",
+              "text": " now."
+            }
+          ]
+        }
+      ]
+    },
+    "yjs_update_v1_b64": "ARcBAAcBC3Byb3NlbWlycm9yAwlwYXJhZ3JhcGgHAAEABgQAAQEEQXNrIIYBBQRsaW5rLHsiaHJlZiI6ImRpc3BhdGNoOi8vYWdlbnQvYWJjIiwidGl0bGUiOm51bGx9hAEGBEBCb2KGAQoEbGluawRudWxshAELDGhlbGxvLCB0aGVuIIYBFwRsaW5rKXsiaHJlZiI6ImRpc3BhdGNoOi8vQUNNRS0xIiwidGl0bGUiOm51bGx9hAEYAXeGARkEbGluawRudWxshAEaBXdvcmQuKAABAAdibG9ja0lkAXcIYi0wMDAwMDGHAQADCXBhcmFncmFwaAcAASEGBAABIgVNYWlsIIYBJwRsaW5rKXsiaHJlZiI6ImRpc3BhdGNoOi8vQUNNRS0xIiwidGl0bGUiOm51bGx9hAEoAXeGASkEbGluawRudWxshgEqBGxpbmsteyJocmVmIjoibWFpbHRvOm1lQGV4YW1wbGUuY29tIiwidGl0bGUiOm51bGx9hAErDm1lQGV4YW1wbGUuY29thgE5BGxpbmsEbnVsbIQBOgUgbm93LigAASEHYmxvY2tJZAF3CGItMDAwMDAyAA==",
+    "rendered_by_milkdown": "Ask [@Bob](dispatch://agent/abc)hello, then [w](dispatch://ACME-1)word.\n\nMail [w](dispatch://ACME-1)<me@example.com> now.\n",
+    "reading": {
+      "tables": [],
+      "paragraphs": [
+        {
+          "emphasized": [],
+          "strong": [],
+          "struck": [],
+          "text": "Ask @Bobhello, then wword."
+        },
+        {
+          "emphasized": [],
+          "strong": [],
+          "struck": [],
+          "text": "Mail wme@example.com now."
         }
       ]
     }

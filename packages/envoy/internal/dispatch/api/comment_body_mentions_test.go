@@ -53,30 +53,42 @@ func partyListener(t *testing.T) (*httptest.Server, func() []map[string]any) {
 }
 
 // The body names the party, and the comment is delivered to it in the mode the request asks for:
-// nothing but the text said who it was for. The send is the mention sender's, behind the create's
+// nothing but the text said who it was for. A word typed straight after a mention's `)` is the
+// link's next word, as every renderer draws it, so that mention names s1 all the same: text reads
+// a link's address to the link's own `)`. The send is the mention sender's, behind the create's
 // own answer, so the attempt is read once it has settled (settledCommentDeliveries) rather than
 // off the 201, which carries it pending.
 func TestCommentBodyMentionDelivers(t *testing.T) {
 	t.Parallel()
-	listener, sends := partyListener(t)
-	defer listener.Close()
-	handler, database := newTargetedMessageHandler(t, listener.URL)
-	issue := createInteractionIssue(t, handler, "TEST", "Body mention", "before")
+	for _, tc := range []struct {
+		name string
+		body string
+	}{
+		{"a mention and its sentence", "[planner](dispatch://agent/s1) please look."},
+		{"a word typed straight after a mention's address", "[@Bob](dispatch://agent/s1)hello"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			listener, sends := partyListener(t)
+			defer listener.Close()
+			handler, database := newTargetedMessageHandler(t, listener.URL)
+			issue := createInteractionIssue(t, handler, "TEST", "Body mention", "before")
 
-	created := decodeMentionedComment(t, postMentionedComment(t, handler, issue.Key, map[string]any{
-		"body": "[planner](dispatch://agent/s1) please look.", "delivery": "btw",
-	}))
-	if len(created.Mentions) != 1 || created.Mentions[0].Target != "session:s1" ||
-		created.Mentions[0].Delivery != "btw" {
-		t.Fatalf("body mention = %#v, want one btw mention of session:s1", created.Mentions)
-	}
-	attempts := settledCommentDeliveries(t, database, created.ID)
-	if len(attempts) != 1 || attempts[0].Target != "session:s1" || attempts[0].State != "sent" ||
-		attempts[0].Delivery != "btw" {
-		t.Fatalf("body delivery = %#v, want one sent btw attempt of session:s1", attempts)
-	}
-	if len(sends()) != 1 {
-		t.Fatalf("sends = %#v, want one", sends())
+			created := decodeMentionedComment(t, postMentionedComment(t, handler, issue.Key, map[string]any{
+				"body": tc.body, "delivery": "btw",
+			}))
+			if len(created.Mentions) != 1 || created.Mentions[0].Target != "session:s1" ||
+				created.Mentions[0].Delivery != "btw" {
+				t.Fatalf("%s: body mention = %#v, want one btw mention of session:s1", tc.name, created.Mentions)
+			}
+			attempts := settledCommentDeliveries(t, database, created.ID)
+			if len(attempts) != 1 || attempts[0].Target != "session:s1" || attempts[0].State != "sent" ||
+				attempts[0].Delivery != "btw" {
+				t.Fatalf("%s: body delivery = %#v, want one sent btw attempt of session:s1", tc.name, attempts)
+			}
+			if len(sends()) != 1 {
+				t.Fatalf("%s: sends = %#v, want one", tc.name, sends())
+			}
+		})
 	}
 }
 
@@ -268,9 +280,7 @@ func TestCommentPartySetRefusals(t *testing.T) {
 // shows, `.` among them, where a session route is `session:[A-Za-z0-9_-]+` - so
 // `dispatch://agent/a.b` in a body is the writer's words (R8): the comment is stored with its
 // body as written, the party names somebody, so a delivery mode beside it is taken, and nothing
-// is resolved, delivered or sent for it. A word typed straight after a mention's `)` is read as
-// more of its address (`s1)hello`), which is no route either, so that comment is stored the same
-// way and s1 is told nothing. In a code context the address names nobody at all.
+// is resolved, delivered or sent for it. In a code context the address names nobody at all.
 func TestCommentBodyTargetOfNoRouteFormIsStoredAndDeliveredToNobody(t *testing.T) {
 	t.Parallel()
 	listener, sends := partyListener(t)
@@ -291,11 +301,6 @@ func TestCommentBodyTargetOfNoRouteFormIsStoredAndDeliveredToNobody(t *testing.T
 		t.Fatalf("the refused array left %d comments, want none", rows)
 	}
 
-	const runOn = "[@Bob](dispatch://agent/s1)hello"
-	read := text.ExtractAt(runOn, "")
-	if len(read) != 1 || read[0].Kind != "session" || read[0].ID != "s1)hello" {
-		t.Fatalf("the reader reads %q as %#v, where this row stands on one session s1)hello", runOn, read)
-	}
 	for _, tc := range []struct {
 		name  string
 		input map[string]any
@@ -304,7 +309,6 @@ func TestCommentBodyTargetOfNoRouteFormIsStoredAndDeliveredToNobody(t *testing.T
 		{"the same address beside a delivery mode", map[string]any{
 			"body": "[x](dispatch://agent/a.b) please look.", "delivery": "btw",
 		}},
-		{"a word typed straight after a mention's address", map[string]any{"body": runOn}},
 		{"the address in a code span", map[string]any{
 			"body": "The address is `dispatch://agent/a.b`, which names nobody.",
 		}},

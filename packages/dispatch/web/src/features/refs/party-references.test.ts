@@ -148,9 +148,9 @@ test("a party's mention is written as the mention sign and its name", () => {
 
 // What the composer writes in front of the reader - a channel's seed into an empty draft, and a
 // new reply's prefill - ends in one space after its last mention (`composer-draft.ts`), so a word
-// the reader types at once is a word of its own rather than more of that mention's address, which
-// would name another party. A seed that mentions nobody writes nothing, and the reader's own words
-// under a seed are kept as they stand.
+// the reader types at once is a word of its own after the mention, as a renderer draws it, rather
+// than joined to the link's words; the mention still names its party alone. A seed that mentions
+// nobody writes nothing, and the reader's own words under a seed are kept as they stand.
 test("a seed and a reply's prefill end in one space, so a word typed at once names no other party", () => {
   const owner = { issueKey: "CORE-1", kind: "issue" } as const;
   const reviewer = { target: "role:reviewer", title: "reviewer" };
