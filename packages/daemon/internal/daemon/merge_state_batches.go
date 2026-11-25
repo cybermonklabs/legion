@@ -505,7 +505,7 @@ func (w *workflowRuntime) readBase(ctx context.Context, key string) {
 		part := queries[0]
 		outcome := w.readChunk(ctx, key, repo, base, part)
 		if outcome.unminted || outcome.after > 0 {
-			w.readStopped(key, queries, outcome.after)
+			w.readStopped(ctx, key, queries, outcome.after)
 			return
 		}
 		queries = queries[1:]
@@ -519,23 +519,32 @@ func (w *workflowRuntime) readBase(ctx context.Context, key string) {
 			queries = append(singles, queries...)
 		default:
 			for _, r := range part {
-				w.missed(key, r.issue, r.owed, 0, len(part) == 1)
+				w.sendBack(ctx, key, r, 0, len(part) == 1)
 			}
 		}
 	}
 }
 
-// readStopped has each pull request of queries that key's batch still holds go on along its
-// ladder after the read stopped before a query answered it - a rate limit, due no sooner than
-// after on, or a token the implement App could not mint, after zero.
-func (w *workflowRuntime) readStopped(key string, queries [][]baseReading, after time.Duration) {
+// readStopped sends back each pull request of queries that key's batch still holds (sendBack)
+// after the read stopped before a query answered it: a rate limit, due no sooner than after on,
+// or a token the implement App could not mint, after zero.
+func (w *workflowRuntime) readStopped(ctx context.Context, key string, queries [][]baseReading, after time.Duration) {
 	for _, part := range queries {
 		for _, r := range part {
 			if w.owns(key, r.issue) {
-				w.missed(key, r.issue, r.owed, after, r.owed.alone)
+				w.sendBack(ctx, key, r, after, r.owed.alone)
 			}
 		}
 	}
+}
+
+// sendBack is the one way a base's read sends back a pull request it read no answer for: it goes
+// on along its ladder, due no sooner than after on, read alone or in a batch as alone says
+// (missed), and its round is asked again (readFailed), once, so a run of null `mergeable` reads is
+// told at the time bound though no read answers and a failure that repeats asks no round twice.
+func (w *workflowRuntime) sendBack(ctx context.Context, key string, r baseReading, after time.Duration, alone bool) {
+	w.readFailed(ctx, r.pr)
+	w.missed(key, r.issue, r.owed, after, alone)
 }
 
 // chunkOutcome is what one query of a batch came to when it answered nothing: failed, it failed;
@@ -596,12 +605,13 @@ func (w *workflowRuntime) readChunk(ctx context.Context, key string, repo ghrepo
 		if !ok {
 			w.log.Warn("github: GitHub answered nothing for a pull request owed a merge-state read; it is read again",
 				"issue", r.issue, "repo", repo.String(), "pullRequest", r.pr.Number, "error", got.unanswered[r.pr.Number])
-			w.missed(key, r.issue, r.owed, 0, r.owed.alone)
+			w.sendBack(ctx, key, r, 0, r.owed.alone)
 			continue
 		}
 		answer := node.githubPullRequest()
-		state := answer.mergeState()
-		if err := w.applyMergeability(ctx, got.github, r.pr, answer, got.readAt, w.mergeabilityEventID(r.pr, got.readAt)); err != nil {
+		fact, err := w.applyMergeability(ctx, got.github, r.pr, answer, got.readAt, w.mergeabilityEventID(r.pr, got.readAt))
+		state := fact.MergeState
+		if err != nil {
 			if ctx.Err() == nil {
 				w.log.Warn("github: the record did not take GitHub's merge state for a pull request owed a merge-state read; it is read again",
 					"issue", r.issue, "head", r.pr.HeadSHA, "repo", repo.String(), "pullRequest", r.pr.Number, "answered", string(state), "error", err)
@@ -616,7 +626,9 @@ func (w *workflowRuntime) readChunk(ctx context.Context, key string, repo ghrepo
 				"answered", string(state))
 		}
 		switch {
-		case answer.State != "open" || state != record.MergeStateUnknown:
+		// An answer the round can decide on ends the pull request's reads; `unknown`, and a
+		// `blocked` answer missing part of what the round decides it on, keep them (answerIncomplete).
+		case answer.State != "open" || !answerIncomplete(fact):
 			w.leaveBase(key, r.issue, r.owed.asked)
 		case answer.Base.Ref != "" && answer.Base.Ref != base:
 			w.log.Info("github: GitHub holds a pull request owed a merge-state read on another base; its reads go on there",

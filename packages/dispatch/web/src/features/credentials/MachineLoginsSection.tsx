@@ -91,6 +91,7 @@ export function MachineLoginsSection(): ReactNode {
     <RevocableList
       className="pt-4"
       columns={columns}
+      // A login's subject is the Kubernetes identity its token names, not a writer's text.
       confirm={(login) =>
         `Revoke the machine login for ${machineName(login)}? ${revokeOutcome(login)}`
       }

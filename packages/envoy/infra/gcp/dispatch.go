@@ -108,7 +108,7 @@ const (
 // counted pools and its permanent listeners. The listener's and the front door's pods open none.
 // TestDispatchConnectionsPerPodIsTheServers fails when a counted pool's size changes and this
 // does not.
-const dispatchConnectionsPerPod = 119
+const dispatchConnectionsPerPod = 120
 
 // Autopilot's bounds for the app pod's total request, the general-purpose compute class's for a pod
 // with pod anti-affinity, which every Dispatch pod carries, or with the safe-to-evict annotation,
@@ -256,6 +256,14 @@ type DispatchArgs struct {
 	// is scaled to zero first. Unset renders nothing, so a deployment that leaves it unset renders
 	// what it always rendered.
 	ParentStatusRule bool `pulumi:"parentStatusRule,optional"`
+	// LegionStatusScope renders DISPATCH_LEGION_STATUS_SCOPE=on, which turns on Dispatch's refusal
+	// of three writes of a Legion issue from a credential that holds neither the person scope nor
+	// legion-status: a write of its status, the removal of its legion label, and a move that leaves
+	// it under no labelled issue, but for the status write of the architect of an issue above. Set
+	// it only once the four conditions of the setting's row hold
+	// (packages/envoy/cmd/dispatch/settings.go). Unset renders nothing, so a deployment that
+	// leaves it unset renders what it always rendered.
+	LegionStatusScope bool `pulumi:"legionStatusScope,optional"`
 	// PublicOrigin is the https origin Dispatch is served at when it has no front door: the
 	// address a reader is sent back to, DISPATCH_SERVER_URL and the url output, served by an
 	// entrance the deployment builds itself, such as a load balancer, which forwards to the app's
@@ -785,6 +793,7 @@ type dispatchSettings struct {
 	signInOutside, signInPasskey                bool
 	signInWorkspaceDomains                      []string
 	parentStatusRule                            bool
+	legionStatusScope                           bool
 	databaseVersion, databaseTier               string
 	databaseAvailabilityType                    string
 	agentSecretsURL, agentSecretsAudience       string
@@ -1126,6 +1135,7 @@ func dispatchClusterOnlyRefusals(args *DispatchArgs) []dispatchInput {
 		{"signInPasskey", args.SignInPasskey},
 		{"signInWorkspaceDomains", len(args.SignInWorkspaceDomains) > 0},
 		{"parentStatusRule", args.ParentStatusRule},
+		{"legionStatusScope", args.LegionStatusScope},
 		{"publicOrigin", args.PublicOrigin != ""},
 		{"iapAudience", args.IapAudience != nil},
 		{"loadBalancerSourceRanges", len(args.LoadBalancerSourceRanges) > 0},
@@ -1912,6 +1922,7 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 	s.signIn.domain = strings.TrimSpace(args.SignInDomain)
 	s.signInOutside = args.SignInOutside
 	s.parentStatusRule = args.ParentStatusRule
+	s.legionStatusScope = args.LegionStatusScope
 	s.outsideOrigin = outsideOrigin
 	s.signInPasskey = args.SignInPasskey
 	if len(args.SignInWorkspaceDomains) > 0 {

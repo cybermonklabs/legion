@@ -93,7 +93,7 @@ body: |-
   `server_processes.legion_state_intake` tells a process of this build from one of an earlier
   build (migration `20261118212431_legion_events`).
   Dispatch's NATS grant names the new durable, and on a VM hub the changed grant replaces the
-  hub's instance. The lease pool holds 28 connections, not 26, and a server process opens at most
-  119 connections to Postgres, not 117.
+  hub's instance. The lease pool holds 29 connections, not 27, and a server process opens at most
+  120 connections to Postgres, not 118.
 custom:
   Issue: pr4432

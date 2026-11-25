@@ -569,6 +569,24 @@ adds far more memory than the others: a few hundred megabytes or more of live he
 collection, about three times that under the race detector. Beside the package's other tests
 such a test would take the binary toward the step's limit.
 
+## A test in `packages/daemon/internal/daemon` runs beside the others
+
+Every top-level test of `packages/daemon/internal/daemon` in the default build calls `t.Parallel()`
+as its first statement, and the package's `TestMain` runs 4 at once (`daemonTestParallelism`).
+The live drivers behind `//go:build e2e`, which no unit run compiles, are not held to this. Each
+test already has a database of its own (a clone of the package's template, `testDSN` and
+`isolatedOutboxPool`), its own ports and state directory, and a NATS server of the package's pool
+(`internal/testnats`). go test starts no parallel test until every serial one has run, so a serial
+test runs alone while the runner's other cores wait.
+
+A test that cannot run beside the others says why in a `// Not parallel:` comment on its first
+line: it calls `t.Setenv` or `t.Chdir`; it writes a package variable (`readinessRetry`, through
+`fastReadiness`, or `record.StatusRowKinds`); it changes the process's signal disposition; it is a
+helper process that exits the test binary (`TestIdleRigRoleProcess`); or it holds a wall-clock
+bound that the parallel tests' load could make it miss, which the comment names (`podStopBound`'s
+one second in `TestAPodStartsItsRolesOneLoadAtATime`). A new test with neither the call nor the
+comment runs alone for no reason, as 46 tests did by 2026-11-25.
+
 ## Go's package deadline
 
 `go test` panics a package that runs longer than ten minutes (`panic: test timed out after 10m0s`),
@@ -585,7 +603,7 @@ A Legion issue pod does not run that whole package: `skills/legion-worker/refere
 
 CI runs that package under `-race` in `envoy-go-race-api`, the job that runs it by itself, which
 gives it 70 minutes (`.github/workflows/ci-job-envoy-go-race-api.yaml`, which holds that job's
-steps); `envoy-go` leaves it out of its unit step, and `text-checks` runs its fifteen source-guard
+steps); `envoy-go` leaves it out of its unit step, and `text-checks` runs its nineteen source-guard
 tests by name. `docs` runs under `-race` in `envoy-go-race-docs`, which gives it 60.
 A command that runs one of its tests by name (`-run`) needs no deadline of its own. Run it alone
 rather than beside the module's other Postgres-backed packages: together they share one database
