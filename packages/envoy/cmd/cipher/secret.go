@@ -12,6 +12,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -847,33 +848,23 @@ func openSession(ctx context.Context, stderr io.Writer, form string) (*secretSes
 	return s, nil
 }
 
-// openSecretBackend builds the backend settings.Store names: AWS Secrets Manager, pinned to the
-// key ARN's own account and region (checkSettingsKeyARN), for "" or aws.Name - a
+// openSecretBackend opens the writer of the store settings.Store names, from the store registry:
+// AWS Secrets Manager, pinned to the key ARN's own account and region, for "" or aws.Name - a
 // broker that predates `store` names neither - or GCP Secret Manager, pinned to the project
-// secrets_prefix and kms_key_name's own shape agree on (checkSettingsKMSKeyName), for
-// gcp.Name. The store credential comes from the environment, not a flag. Any other store
-// is refused before any cloud call.
+// secrets_prefix and kms_key_name's own shape agree on, for gcp.Name. Each store's OpenWriter
+// checks the settings before any cloud call, and signs in from the environment, not a flag;
+// every child it starts runs through runChild. Any other store is refused before any cloud call.
 func openSecretBackend(ctx context.Context, settings Settings) (secretstore.Writer, error) {
 	switch settings.Store {
-	case "", aws.Name:
-		backend, err := backends.Lookup(aws.Name)
+	case "", aws.Name, gcp.Name:
+		backend, err := backends.Lookup(cmp.Or(settings.Store, aws.Name))
 		if err != nil {
 			return nil, err
 		}
-		return backend.(writerBackend).OpenWriter(ctx, settings.store(), secretstore.WriterOptions{Run: runChild})
-	case gcp.Name:
-		if err := checkSettingsKMSKeyName(settings); err != nil {
-			return nil, err
-		}
-		return newGCPBackend(ctx, settings)
+		return backend.OpenWriter(ctx, settings.store(), secretstore.WriterOptions{Run: runChild})
 	default:
 		return nil, fmt.Errorf("the broker's settings name an unknown secret store %s", settings.words(strconv.Quote(settings.Store)))
 	}
-}
-
-// writerBackend is a registry entry that opens the CLI's writer of its store.
-type writerBackend interface {
-	OpenWriter(ctx context.Context, s secretstore.Settings, opts secretstore.WriterOptions) (secretstore.Writer, error)
 }
 
 // rereadAfter asks the broker to reread name after a form's write that leaves no type to check,

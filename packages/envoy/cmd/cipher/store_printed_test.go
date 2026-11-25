@@ -28,6 +28,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/gcp/gcptest"
 )
 
 // echoingList is a Secrets Manager whose ListSecrets refuses with code and message, which
@@ -108,7 +109,7 @@ func TestAStoresRefusalPrintsItsCodeNeverItsMessage(t *testing.T) {
 			"Secret Manager ListSecrets answered PermissionDenied (its message is not printed)"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			fake := newFakeSecretManager()
+			fake := gcptest.NewFakeSecretManager()
 			lis, err := net.Listen("tcp", "127.0.0.1:0")
 			if err != nil {
 				t.Fatal(err)
@@ -119,10 +120,10 @@ func TestAStoresRefusalPrintsItsCodeNeverItsMessage(t *testing.T) {
 			secretmanagerpb.RegisterSecretManagerServiceServer(server, fake)
 			go func() { _ = server.Serve(lis) }()
 			t.Cleanup(server.Stop)
-			useGCPDialTo(t, lis.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
-			useNoADC(t)
-			useNoGcloud(t)
-			useLentGCPAccessToken(t, "lent-store-token", "ada@example.com")
+			gcptest.UseDialTo(t, lis.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+			gcptest.UseNoADC(t)
+			gcptest.UseNoGcloud(t)
+			gcptest.UseLentAccessToken(t, "lent-store-token", "ada@example.com")
 			startSecretBrokerWith(t, gcpTestSettings(), gcpServedBy(fake, gcpTestSettings()))
 			_, stderr, code := runSecret("list")
 			if code != 1 {
@@ -138,7 +139,7 @@ func TestAStoresRefusalPrintsItsCodeNeverItsMessage(t *testing.T) {
 		refused := func(context.Context, string, any, any, *grpc.ClientConn, ...grpc.CallOption) error {
 			return status.Error(codes.PermissionDenied, "Permission 'secretmanager.secrets.delete' denied on resource 'projects/100000000001/secrets/x'; echo: "+planted)
 		}
-		err := (&gcpBackend{}).storeInterceptor(context.Background(), "/google.cloud.secretmanager.v1.SecretManagerService/DeleteSecret", nil, nil, nil, refused)
+		err := gcpInterceptor(t)(context.Background(), "/google.cloud.secretmanager.v1.SecretManagerService/DeleteSecret", nil, nil, nil, refused)
 		if err == nil {
 			t.Fatal("control: the refused DeleteSecret returned no error, so the row is blind")
 		}

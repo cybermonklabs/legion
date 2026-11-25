@@ -21,7 +21,8 @@ import (
 // control).
 func TestClientErrorsAnswerTheClientsFailure(t *testing.T) {
 	ctx := context.Background()
-	fake := &gcptest.FakeSecretManager{Secrets: map[string]*gcptest.FakeSecret{}, FailList: status.Error(codes.PermissionDenied, "the fake refuses ListSecrets")}
+	fake := gcptest.NewFake(nil)
+	fake.FailList = status.Error(codes.PermissionDenied, "the fake refuses ListSecrets")
 	client := gcptest.Start(t, fake)
 	worded := gcp.New(client, fakeKey).WithClientErrors()
 	broker := gcp.New(client, fakeKey)
@@ -57,11 +58,12 @@ func TestClientErrorsReadAsTheCLIReads(t *testing.T) {
 	ctx := context.Background()
 	held, deleted, binary := fakePrefix+"held-key", fakePrefix+"deleted-key", fakePrefix+"binary-key"
 	enabled := secretmanagerpb.SecretVersion_ENABLED
-	fake := &gcptest.FakeSecretManager{Secrets: map[string]*gcptest.FakeSecret{
+	fake := gcptest.NewFake(map[string]gcptest.Stored{
 		held:    {DenyVersion: true, State: enabled, Value: []byte("v1")},
 		deleted: {Expires: time.Now().Add(time.Hour), State: enabled, Value: []byte("v1")},
 		binary:  {State: enabled, Value: []byte{0xff, 0xfe}},
-	}}
+	})
+
 	client := gcptest.Start(t, fake)
 	worded := gcp.New(client, fakeKey).WithClientErrors()
 	broker := gcp.New(client, fakeKey)

@@ -15,6 +15,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/gcp/gcptest"
 )
 
 // binaryValue is a awstest.Local whose every GetSecretValue answers a value held as SecretBinary,
@@ -28,11 +29,11 @@ func (b binaryValue) GetSecretValue(context.Context, *secretsmanager.GetSecretVa
 func TestStoreReadFailuresKeepMainsWords(t *testing.T) {
 	const gcpUsing = "the well-known credentials file (application_default_credentials.json in the directory CLOUDSDK_CONFIG names): principal unknown"
 	tags := map[string]string{policy.TagOwner: "ada@example.com", policy.TagTier: policy.TierAgent}
-	startGCP := func(t *testing.T) *fakeSecretManager {
+	startGCP := func(t *testing.T) *gcptest.FakeSecretManager {
 		t.Helper()
-		fake := newFakeSecretManager()
-		startFakeSecretManager(t, fake)
-		useGCPIdentity(t, "authorized_user", "ada@example.com")
+		fake := gcptest.NewFakeSecretManager()
+		gcptest.UseFake(t, fake)
+		gcptest.UseIdentity(t, "authorized_user", "ada@example.com")
 		settings := gcpTestSettings()
 		startSecretBrokerWith(t, settings, gcpServedBy(fake, settings))
 		return fake
@@ -47,9 +48,9 @@ func TestStoreReadFailuresKeepMainsWords(t *testing.T) {
 			run: func(t *testing.T) (string, int) {
 				fake := startGCP(t)
 				gcpTypeStore{fake}.put(t, "HELD_KEY", tags, "v1")
-				fake.mu.Lock()
-				fake.refuseMethods = map[string]codes.Code{"GetSecretVersion": codes.PermissionDenied}
-				fake.mu.Unlock()
+				fake.Mu.Lock()
+				fake.RefuseMethods = map[string]codes.Code{"GetSecretVersion": codes.PermissionDenied}
+				fake.Mu.Unlock()
 				_, stderr, code := runSecret("list")
 				return stderr, code
 			},

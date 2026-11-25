@@ -1,11 +1,9 @@
-// packages/envoy/cmd/cipher/gcp_source.go
-//
-// The sources a store command on Google Cloud takes its credential from, in the order it tries
-// them (newGCPBackend): a token or a credentials file the environment names, then a gcloud
-// configuration or login it chooses, then a file the person set up, then the active gcloud login,
-// then the machine's own identity. A source that is absent is skipped; one that is present but
-// fails stops the command.
-package main
+// The sources the GCP writer takes its credential from, in the order it tries them (newWriter): a
+// token or a credentials file the environment names, then a gcloud configuration or login it
+// chooses, then a file the person set up, then the active gcloud login, then the machine's own
+// identity. A source that is absent is skipped; one that is present but fails stops the command.
+
+package gcp
 
 import (
 	"fmt"
@@ -77,10 +75,10 @@ func gcloudConfigDir() string {
 	return ""
 }
 
-// wellKnownCredentialsFile is the Application Default Credentials file
+// WellKnownCredentialsFile is the Application Default Credentials file
 // `gcloud auth application-default login` writes, in gcloudConfigDir; "" where there is no such
 // directory.
-func wellKnownCredentialsFile() string {
+func WellKnownCredentialsFile() string {
 	dir := gcloudConfigDir()
 	if dir == "" {
 		return ""

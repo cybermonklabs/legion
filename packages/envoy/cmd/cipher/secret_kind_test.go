@@ -26,6 +26,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
 	awsstore "github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/gcp/gcptest"
 )
 
 // TestSecretTypeAndMaxGrantOnAWS retags one secret through the types. Each retag to a type reads
@@ -107,9 +108,9 @@ func TestSecretTypeAndMaxGrantOnAWS(t *testing.T) {
 // the retag that decodes it, as TestSecretTypeAndMaxGrantOnAWS does.
 func TestSecretTypeAndMaxGrantOnGCP(t *testing.T) {
 	// Not parallel: it sets environment variables of the whole process (main.startSecretBrokerWith, t.Setenv at secret_test.go:293); it signals the test process or changes its signal handling (main.useGCPIdentity, main.userinfoOf, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.useGCPIdentity, gcpCredentialsFile set at secret_gcp_test.go:473).
-	fake := newFakeSecretManager()
-	startFakeSecretManager(t, fake)
-	useGCPIdentity(t, "authorized_user", "ada@example.com")
+	fake := gcptest.NewFakeSecretManager()
+	gcptest.UseFake(t, fake)
+	gcptest.UseIdentity(t, "authorized_user", "ada@example.com")
 	settings := gcpTestSettings()
 	startSecretBrokerWith(t, settings, gcpServedBy(fake, settings))
 	useStdin(t, policytest.TypeValue(policy.TypeGoogleLogin))
@@ -119,9 +120,9 @@ func TestSecretTypeAndMaxGrantOnGCP(t *testing.T) {
 		t.Fatalf("create: exit %d, stderr %q", code, stderr)
 	}
 	id := testGCPPrefix + "login-key"
-	fake.mu.Lock()
-	annotations := fake.secrets[id].secret.GetAnnotations()
-	fake.mu.Unlock()
+	fake.Mu.Lock()
+	annotations := fake.Secrets[id].Secret.GetAnnotations()
+	fake.Mu.Unlock()
 	if annotations[policy.TagType] != policy.TypeGoogleLogin || annotations[policy.TagMaxGrant] != "30m" || annotations[policy.TagRollbackGuard] != policy.RollbackGuardValue {
 		t.Fatalf("create annotations = %v, want type, max-grant and the rollback guard", annotations)
 	}
@@ -161,24 +162,24 @@ func TestSecretTypeAndMaxGrantOnGCP(t *testing.T) {
 		if _, stderr, code = runSecret(args...); code != 0 {
 			t.Fatalf("retag %s: exit %d, stderr %q", secretType, code, stderr)
 		}
-		fake.mu.Lock()
-		annotations = fake.secrets[id].secret.GetAnnotations()
-		fake.mu.Unlock()
+		fake.Mu.Lock()
+		annotations = fake.Secrets[id].Secret.GetAnnotations()
+		fake.Mu.Unlock()
 		if annotations[policy.TagType] != secretType || annotations[policy.TagMaxGrant] != "30m" || annotations[policy.TagOwner] != "ada@example.com" || annotations[policy.TagTier] != wantTier {
 			t.Fatalf("retag %s annotations = %v, want new type and retained annotations", secretType, annotations)
 		}
 	}
-	fake.mu.Lock()
-	if got := fake.secrets[id].secret.GetAnnotations()[policy.TagGitHubOwners]; got != "acme-org ada" {
+	fake.Mu.Lock()
+	if got := fake.Secrets[id].Secret.GetAnnotations()[policy.TagGitHubOwners]; got != "acme-org ada" {
 		t.Errorf("github-owners after the round trip = %q, want the canonical space-separated list: acme-org ada", got)
 	}
-	fake.mu.Unlock()
+	fake.Mu.Unlock()
 	if _, stderr, code = runSecret("retag", "LOGIN_KEY", "--type", "none"); code != 0 {
 		t.Fatalf("retag none: exit %d, stderr %q", code, stderr)
 	}
-	fake.mu.Lock()
-	annotations = fake.secrets[id].secret.GetAnnotations()
-	fake.mu.Unlock()
+	fake.Mu.Lock()
+	annotations = fake.Secrets[id].Secret.GetAnnotations()
+	fake.Mu.Unlock()
 	if _, ok := annotations[policy.TagType]; ok || annotations[policy.TagMaxGrant] != "30m" {
 		t.Fatalf("retag none annotations = %v, want removed type and retained max-grant", annotations)
 	}
@@ -386,9 +387,9 @@ func TestARetagThatLeavesAGitHubAppSecretWithoutOwnersWritesNothing(t *testing.T
 		}
 	})
 	t.Run("gcp", func(t *testing.T) {
-		fake := newFakeSecretManager()
-		startFakeSecretManager(t, fake)
-		useGCPIdentity(t, "authorized_user", "ada@example.com")
+		fake := gcptest.NewFakeSecretManager()
+		gcptest.UseFake(t, fake)
+		gcptest.UseIdentity(t, "authorized_user", "ada@example.com")
 		settings := gcpTestSettings()
 		startSecretBrokerWith(t, settings, gcpServedBy(fake, settings))
 		for _, create := range []struct {
@@ -404,11 +405,11 @@ func TestARetagThatLeavesAGitHubAppSecretWithoutOwnersWritesNothing(t *testing.T
 			}
 		}
 		annotations := func() map[string]map[string]string {
-			fake.mu.Lock()
-			defer fake.mu.Unlock()
+			fake.Mu.Lock()
+			defer fake.Mu.Unlock()
 			held := map[string]map[string]string{}
-			for id, secret := range fake.secrets {
-				held[id] = maps.Clone(secret.secret.GetAnnotations())
+			for id, secret := range fake.Secrets {
+				held[id] = maps.Clone(secret.Secret.GetAnnotations())
 			}
 			return held
 		}
@@ -650,9 +651,9 @@ func TestACreateThatNamesNoneAsItsGitHubOwnersWritesNothing(t *testing.T) {
 		}
 	})
 	t.Run("gcp", func(t *testing.T) {
-		fake := newFakeSecretManager()
-		startFakeSecretManager(t, fake)
-		useGCPIdentity(t, "authorized_user", "ada@example.com")
+		fake := gcptest.NewFakeSecretManager()
+		gcptest.UseFake(t, fake)
+		gcptest.UseIdentity(t, "authorized_user", "ada@example.com")
 		settings := gcpTestSettings()
 		startSecretBrokerWith(t, settings, gcpServedBy(fake, settings))
 		for _, owner := range owners {
@@ -661,9 +662,9 @@ func TestACreateThatNamesNoneAsItsGitHubOwnersWritesNothing(t *testing.T) {
 			if code != exitUsageError {
 				t.Fatalf("create --github-owners %q: exit %d stderr %q; want a usage error", owner, code, stderr)
 			}
-			fake.mu.Lock()
-			_, written := fake.secrets[testGCPPrefix+"new-key"]
-			fake.mu.Unlock()
+			fake.Mu.Lock()
+			_, written := fake.Secrets[testGCPPrefix+"new-key"]
+			fake.Mu.Unlock()
 			if written {
 				t.Fatalf("create --github-owners %q wrote NEW_KEY", owner)
 			}
@@ -808,9 +809,9 @@ func TestSecretRetagSetsAndRemovesMaxGrant(t *testing.T) {
 		}
 	})
 	t.Run("gcp", func(t *testing.T) {
-		fake := newFakeSecretManager()
-		startFakeSecretManager(t, fake)
-		useGCPIdentity(t, "authorized_user", "ada@example.com")
+		fake := gcptest.NewFakeSecretManager()
+		gcptest.UseFake(t, fake)
+		gcptest.UseIdentity(t, "authorized_user", "ada@example.com")
 		settings := gcpTestSettings()
 		startSecretBrokerWith(t, settings, gcpServedBy(fake, settings))
 		useStdin(t, policytest.TypeValue(policy.TypeGoogleLogin))
@@ -819,9 +820,9 @@ func TestSecretRetagSetsAndRemovesMaxGrant(t *testing.T) {
 		}
 		id := testGCPPrefix + "login-key"
 		annotations := func() map[string]string {
-			fake.mu.Lock()
-			defer fake.mu.Unlock()
-			return fake.secrets[id].secret.GetAnnotations()
+			fake.Mu.Lock()
+			defer fake.Mu.Unlock()
+			return fake.Secrets[id].Secret.GetAnnotations()
 		}
 		if _, stderr, code := runSecret("retag", "LOGIN_KEY", "--max-grant", "45m"); code != 0 {
 			t.Fatalf("retag --max-grant 45m: exit %d, stderr %q", code, stderr)
@@ -1048,9 +1049,9 @@ func onEachStore(t *testing.T, test func(t *testing.T, store typeStore, broker *
 		test(t, awsTypeStore{reads}, broker)
 	})
 	t.Run("gcp", func(t *testing.T) {
-		fake := newFakeSecretManager()
-		startFakeSecretManager(t, fake)
-		useGCPIdentity(t, "authorized_user", "ada@example.com")
+		fake := gcptest.NewFakeSecretManager()
+		gcptest.UseFake(t, fake)
+		gcptest.UseIdentity(t, "authorized_user", "ada@example.com")
 		settings := gcpTestSettings()
 		broker := startSecretBrokerWith(t, settings, gcpServedBy(fake, settings))
 		test(t, gcpTypeStore{fake}, broker)
@@ -1164,7 +1165,7 @@ func (s awsTypeStore) refuseTagReads() {
 func (s awsTypeStore) tagReadPermission() string { return "secretsmanager:DescribeSecret" }
 
 // gcpTypeStore is Secret Manager as typeStore: a fakeSecretManager.
-type gcpTypeStore struct{ fake *fakeSecretManager }
+type gcpTypeStore struct{ fake *gcptest.FakeSecretManager }
 
 // id is the resource name of the secret a session asks for as name.
 func (s gcpTypeStore) id(t *testing.T, name string) string {
@@ -1178,72 +1179,72 @@ func (s gcpTypeStore) id(t *testing.T, name string) string {
 
 func (s gcpTypeStore) put(t *testing.T, name string, tags map[string]string, value string) {
 	id := s.id(t, name)
-	s.fake.mu.Lock()
-	defer s.fake.mu.Unlock()
-	s.fake.secrets[id] = &fakeSecret{
-		secret:      &secretmanagerpb.Secret{Name: id, Annotations: maps.Clone(tags), Etag: "1"},
-		versions:    []*secretmanagerpb.SecretVersion{{Name: id + "/versions/1", State: secretmanagerpb.SecretVersion_ENABLED}},
-		payloads:    [][]byte{[]byte(value)},
-		etagCounter: 1,
+	s.fake.Mu.Lock()
+	defer s.fake.Mu.Unlock()
+	s.fake.Secrets[id] = &gcptest.FakeSecret{
+		Secret:      &secretmanagerpb.Secret{Name: id, Annotations: maps.Clone(tags), Etag: "1"},
+		Versions:    []*secretmanagerpb.SecretVersion{{Name: id + "/versions/1", State: secretmanagerpb.SecretVersion_ENABLED}},
+		Payloads:    [][]byte{[]byte(value)},
+		EtagCounter: 1,
 	}
 }
 
 func (s gcpTypeStore) has(t *testing.T, name string) bool {
 	id := s.id(t, name)
-	s.fake.mu.Lock()
-	defer s.fake.mu.Unlock()
-	_, ok := s.fake.secrets[id]
+	s.fake.Mu.Lock()
+	defer s.fake.Mu.Unlock()
+	_, ok := s.fake.Secrets[id]
 	return ok
 }
 
 func (s gcpTypeStore) value(t *testing.T, name string) string {
 	id := s.id(t, name)
-	s.fake.mu.Lock()
-	defer s.fake.mu.Unlock()
-	entry, ok := s.fake.secrets[id]
-	if !ok || len(entry.payloads) == 0 {
+	s.fake.Mu.Lock()
+	defer s.fake.Mu.Unlock()
+	entry, ok := s.fake.Secrets[id]
+	if !ok || len(entry.Payloads) == 0 {
 		t.Fatalf("Secret Manager holds no value of %s", id)
 	}
-	return string(entry.payloads[len(entry.payloads)-1])
+	return string(entry.Payloads[len(entry.Payloads)-1])
 }
 
 func (s gcpTypeStore) tags(t *testing.T, name string) map[string]string {
 	id := s.id(t, name)
-	s.fake.mu.Lock()
-	defer s.fake.mu.Unlock()
-	entry, ok := s.fake.secrets[id]
+	s.fake.Mu.Lock()
+	defer s.fake.Mu.Unlock()
+	entry, ok := s.fake.Secrets[id]
 	if !ok {
 		t.Fatalf("Secret Manager holds no %s", id)
 	}
-	return maps.Clone(entry.secret.GetAnnotations())
+	return maps.Clone(entry.Secret.GetAnnotations())
 }
 
 func (s gcpTypeStore) refuseValueReads(denied bool) {
-	s.fake.mu.Lock()
-	defer s.fake.mu.Unlock()
-	s.fake.refuseAccess = codes.FailedPrecondition
+	s.fake.Mu.Lock()
+	defer s.fake.Mu.Unlock()
+	s.fake.RefuseAccess = codes.FailedPrecondition
 	if denied {
-		s.fake.refuseAccess = codes.PermissionDenied
+		s.fake.RefuseAccess = codes.PermissionDenied
 	}
 }
 
 func (s gcpTypeStore) valueReads() int {
-	s.fake.mu.Lock()
-	defer s.fake.mu.Unlock()
-	return s.fake.accesses
+	s.fake.Mu.Lock()
+	defer s.fake.Mu.Unlock()
+	return s.fake.Accesses
 }
 
 func (s gcpTypeStore) calls() int {
-	_, calls := s.fake.calledUnder()
+	_, calls := s.fake.CalledUnder()
 	return calls
 }
 
 func (s gcpTypeStore) readPermissions() []string { return []string{"secretmanager.versions.access"} }
 
 func (s gcpTypeStore) refuseTagReads() {
-	s.fake.mu.Lock()
-	defer s.fake.mu.Unlock()
-	s.fake.refuseMethods = map[string]codes.Code{"GetSecret": codes.PermissionDenied}
+	s.fake.Mu.Lock()
+	defer s.fake.Mu.Unlock()
+	s.fake.RefuseMethods = map[string]codes.Code{"GetSecret": codes.PermissionDenied}
 }
 
 func (s gcpTypeStore) tagReadPermission() string { return "secretmanager.secrets.get" }

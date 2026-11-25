@@ -28,6 +28,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/secretstore"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/gcp/gcptest"
 )
 
 // TestCreateSignalHelper is the process the tests below signal. It creates on GCP's fake Secret
@@ -90,33 +91,33 @@ func TestCreateSignalHelper(t *testing.T) {
 		})
 		awstest.Use(t, announcedCreate{Local: local, held: held == "CreateSecret", hold: hold}, testAccount, adaSignIn)
 	} else {
-		fake := newFakeSecretManager()
+		fake := gcptest.NewFakeSecretManager()
 		switch os.Getenv("AGENT_SECRETS_CREATE_ADD") {
 		case "unavailable":
-			fake.refuseMethods = map[string]codes.Code{"AddSecretVersion": codes.Unavailable}
+			fake.RefuseMethods = map[string]codes.Code{"AddSecretVersion": codes.Unavailable}
 		case "lost":
-			fake.answerAfter = map[string]codes.Code{"AddSecretVersion": codes.Unavailable}
+			fake.AnswerAfter = map[string]codes.Code{"AddSecretVersion": codes.Unavailable}
 		}
 		if os.Getenv("AGENT_SECRETS_CREATE_LOST_INITIAL_ANSWER") != "" {
-			if fake.answerAfter == nil {
-				fake.answerAfter = map[string]codes.Code{}
+			if fake.AnswerAfter == nil {
+				fake.AnswerAfter = map[string]codes.Code{}
 			}
-			fake.answerAfter["CreateSecret"] = codes.Unavailable
+			fake.AnswerAfter["CreateSecret"] = codes.Unavailable
 		}
-		fake.beforeCall = func(method string) {
+		fake.BeforeCall = func(method string) {
 			fmt.Println("CALL", method)
 			if method == held && method != "CreateSecret" {
 				hold()
 			}
 		}
-		fake.afterCall = func(method string) {
+		fake.AfterCall = func(method string) {
 			if method == "CreateSecret" && method == held {
 				fmt.Println("CREATED")
 				hold()
 			}
 		}
-		startFakeSecretManager(t, fake)
-		useGCPIdentity(t, "authorized_user", "ada@example.com")
+		gcptest.UseFake(t, fake)
+		gcptest.UseIdentity(t, "authorized_user", "ada@example.com")
 		served := gcpServedBy(fake, gcpTestSettings())
 		startSecretBrokerWith(t, gcpTestSettings(), func(name string) Reread {
 			fmt.Println("REREAD", name)

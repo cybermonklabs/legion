@@ -1,9 +1,8 @@
-// packages/envoy/cmd/cipher/permission_calls_test.go
-//
-// Each GCP call the secret forms make, and the permission each needs: a refusal of that call that
-// names its permission prints it, so a person knows which one to ask for. The table is the one the
-// pull request and operate.md give. The AWS calls are the AWS store's own tests'.
-package main
+// Each Secret Manager call the GCP writer makes, and the permission each needs: a refusal of that
+// call that names its permission prints it, so a person knows which one to ask for. The table is
+// the one operate.md gives. The AWS calls are the AWS store's own tests'.
+
+package gcp_test
 
 import (
 	"context"
@@ -18,6 +17,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/sjawhar/envoy/internal/cipher/secretstore"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/gcp"
 )
 
 // permissionRow is one permission some call the forms make needs, with one such call: store is
@@ -48,7 +48,7 @@ func refusedWords(t *testing.T, row permissionRow, planted string) string {
 	refused := func(context.Context, string, any, any, *grpc.ClientConn, ...grpc.CallOption) error {
 		return status.Error(codes.PermissionDenied, "Permission '"+row.permission+"' denied on resource 'projects/100000000001/secrets/x'; echo: "+planted)
 	}
-	err := (&gcpBackend{}).storeInterceptor(context.Background(), "/google.cloud.secretmanager.v1.SecretManagerService/"+row.call, nil, nil, nil, refused)
+	err := gcp.InterceptForTest(context.Background(), "/google.cloud.secretmanager.v1.SecretManagerService/"+row.call, nil, nil, nil, refused)
 	if err == nil {
 		t.Fatal("control: the refused call returned no error, so the row is blind")
 	}
@@ -104,7 +104,7 @@ func TestEveryCallTheFormsMakeHasItsPermissions(t *testing.T) {
 		for _, m := range called.FindAllSubmatch(src, -1) {
 			if name := string(m[1]); name != "Close" {
 				gcpCalls++
-				if _, ok := gcpCallPermissions[name]; !ok {
+				if _, ok := gcp.CallPermissions[name]; !ok {
 					t.Errorf("%s calls the Secret Manager client's %s, which has no entry in gcpCallPermissions", file, name)
 				}
 			}
@@ -122,7 +122,7 @@ func TestEveryCallTheFormsMakeHasItsPermissions(t *testing.T) {
 		listed[stored{row.store, row.permission}] = true
 	}
 	inCode := map[stored]bool{}
-	for permission := range gcpPermissions {
+	for permission := range gcp.Permissions {
 		inCode[stored{"gcp", permission}] = true
 	}
 	for row := range inCode {

@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	awsstore "github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/gcp/gcptest"
 )
 
 // racingTagWrites is a awstest.Local whose first tag write lets another writer's write (race) land
@@ -102,32 +103,32 @@ func TestAConcurrentRetagIsReportedAndOverwritesNothing(t *testing.T) {
 		}
 	})
 	t.Run("gcp", func(t *testing.T) {
-		fake := newFakeSecretManager()
-		startFakeSecretManager(t, fake)
-		useGCPIdentity(t, "authorized_user", "ada@example.com")
+		fake := gcptest.NewFakeSecretManager()
+		gcptest.UseFake(t, fake)
+		gcptest.UseIdentity(t, "authorized_user", "ada@example.com")
 		settings := gcpTestSettings()
 		broker := startSecretBrokerWith(t, settings, gcpServedBy(fake, settings))
 		id := testGCPPrefix + "app-key"
-		fake.secrets[id] = &fakeSecret{
-			secret:      &secretmanagerpb.Secret{Name: id, Annotations: loginWithOwnersLeft("APP_KEY"), Etag: "1"},
-			versions:    []*secretmanagerpb.SecretVersion{{Name: id + "/versions/1", State: secretmanagerpb.SecretVersion_ENABLED}},
-			payloads:    [][]byte{[]byte(policytest.TypeValue(policy.TypeGoogleLogin))},
-			etagCounter: 1,
+		fake.Secrets[id] = &gcptest.FakeSecret{
+			Secret:      &secretmanagerpb.Secret{Name: id, Annotations: loginWithOwnersLeft("APP_KEY"), Etag: "1"},
+			Versions:    []*secretmanagerpb.SecretVersion{{Name: id + "/versions/1", State: secretmanagerpb.SecretVersion_ENABLED}},
+			Payloads:    [][]byte{[]byte(policytest.TypeValue(policy.TypeGoogleLogin))},
+			EtagCounter: 1,
 		}
-		fake.race = func(entry *fakeSecret) {
-			annotations := maps.Clone(entry.secret.Annotations)
+		fake.Race = func(entry *gcptest.FakeSecret) {
+			annotations := maps.Clone(entry.Secret.Annotations)
 			annotations[policy.TagType] = policy.TypeGitHubApp
-			entry.secret.Annotations = annotations
-			entry.etagCounter++
-			entry.secret.Etag = "2"
+			entry.Secret.Annotations = annotations
+			entry.EtagCounter++
+			entry.Secret.Etag = "2"
 		}
 		_, stderr, code := runSecret("retag", "APP_KEY", "--github-owners", "none")
 		if code != 1 || !strings.Contains(stderr, "another write changed the secret after this retag read it") {
 			t.Fatalf("racing retag: exit %d stderr %q; want 1 naming the change", code, stderr)
 		}
-		fake.mu.Lock()
-		annotations, gets := fake.secrets[id].secret.GetAnnotations(), fake.gets
-		fake.mu.Unlock()
+		fake.Mu.Lock()
+		annotations, gets := fake.Secrets[id].Secret.GetAnnotations(), fake.Gets
+		fake.Mu.Unlock()
 		if annotations[policy.TagType] != policy.TypeGitHubApp || annotations[policy.TagGitHubOwners] != "ada" {
 			t.Fatalf("annotations after the race = %v; want the other writer's github-app with its owners", annotations)
 		}

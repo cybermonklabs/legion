@@ -19,7 +19,7 @@ import (
 // label and holds no version, and one scheduled for deletion has an expire_time.
 func TestGCPRunsTheStoreContract(t *testing.T) {
 	secretstoretest.StoreContract(t, "gcp", func(t *testing.T) secretstoretest.StoreRig {
-		f := &gcptest.FakeSecretManager{Secrets: map[string]*gcptest.FakeSecret{}}
+		f := gcptest.NewFake(map[string]gcptest.Stored{})
 		store := gcp.New(gcptest.Start(t, f), fakeKey)
 		numbers := map[string]int{}
 		return secretstoretest.StoreRig{
@@ -29,7 +29,7 @@ func TestGCPRunsTheStoreContract(t *testing.T) {
 				if fixture.Outside {
 					name = fakeProject + "/secrets/x" + fakePrefix[len(fakeProject+"/secrets/"):] + fixture.Slug
 				}
-				s := &gcptest.FakeSecret{
+				s := gcptest.Stored{
 					Annotations: maps.Clone(fixture.Tags), ReplicationKey: fakeKey, VersionKey: fakeKey,
 					State: secretmanagerpb.SecretVersion_ENABLED, Value: []byte(fixture.Value),
 					NoVersion: fixture.Value == "",
@@ -45,11 +45,11 @@ func TestGCPRunsTheStoreContract(t *testing.T) {
 				}
 				f.Mu.Lock()
 				defer f.Mu.Unlock()
-				if held, ok := f.Secrets[name]; !ok || string(held.Value) != fixture.Value {
+				if held, ok := f.Secrets[name]; !ok || string(held.Value()) != fixture.Value {
 					numbers[name]++
 				}
 				s.Number = strconv.Itoa(numbers[name])
-				f.Secrets[name] = s
+				f.Secrets[name] = s.Secret(name)
 			},
 			Remove: func(_ *testing.T, slug string) {
 				f.Mu.Lock()

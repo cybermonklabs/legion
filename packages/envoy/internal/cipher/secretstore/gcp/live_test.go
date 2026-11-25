@@ -7,14 +7,24 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"log/slog"
+	"maps"
 	"os"
+	"os/exec"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	secretmanager "cloud.google.com/go/secretmanager/apiv1"
 	"cloud.google.com/go/secretmanager/apiv1/secretmanagerpb"
+	"golang.org/x/oauth2/google"
+	"google.golang.org/api/iterator"
+	"google.golang.org/api/option"
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/sjawhar/envoy/internal/cipher/secretstore"
@@ -262,6 +272,130 @@ func TestGCPLiveRunsTheStoreContract(t *testing.T) {
 					t.Fatalf("delete %s: %v", name, err)
 				}
 				delete(held, name)
+			},
+		}
+	})
+}
+
+// liveRun runs a gcloud the live writer's sign-in starts, its wait for output bounded to a second
+// once gcloud has exited. The CLI's own tracker (runChild) and its tests cover the process group.
+func liveRun(cmd *exec.Cmd) error {
+	cmd.WaitDelay = time.Second
+	return cmd.Run()
+}
+
+// liveArm is the one-shot failure a live writer contract case arms on the next Secret Manager call
+// of one method (liveArms): lose, the call applies and its answer is lost, as a connection that
+// drops after the store acted; else denied, the call is refused PERMISSION_DENIED with message as
+// the service's own text, before it reaches the service.
+type liveArm struct {
+	lose    bool
+	message string
+}
+
+// liveArms are the failures armed, by the method's short name, which the call they fire on clears.
+type liveArms struct {
+	mu   sync.Mutex
+	arms map[string]liveArm
+}
+
+func (a *liveArms) set(method string, arm liveArm) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.arms[method] = arm
+}
+
+// intercept runs between the writer's own interceptor, which words what it answers, and the wire,
+// so an armed failure reads to the writer as the service's own would.
+func (a *liveArms) intercept(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
+	short := method[strings.LastIndex(method, "/")+1:]
+	a.mu.Lock()
+	arm, armed := a.arms[short]
+	delete(a.arms, short)
+	a.mu.Unlock()
+	switch {
+	case !armed:
+		return invoker(ctx, method, req, reply, cc, opts...)
+	case arm.lose:
+		if err := invoker(ctx, method, req, reply, cc, opts...); err != nil {
+			return err
+		}
+		return status.Error(codes.Unavailable, "the live test lost this call's answer")
+	default:
+		return status.Error(codes.PermissionDenied, "Permission denied"+arm.message)
+	}
+}
+
+// TestGCPLiveRunsTheWriterContract runs the writer contract on the GCP writer OpenWriter opens
+// against the live Secret Manager of the project BROKER_GCP_LIVE_PROJECT names, signed in from
+// this machine's environment as agent-secrets signs in: each case writes under a random
+// broker-live-<hex>- prefix of its own, and every secret under it is deleted when the case ends. A
+// lost answer and a refusal are armed between the writer's interceptor and the wire (liveArms), so
+// each reaches the writer as the service's own would; another writer's retag is an UpdateSecret of
+// the test's own client. With either variable unset each case skips, which
+// scripts/store-live-check.sh counts as a failed run.
+func TestGCPLiveRunsTheWriterContract(t *testing.T) {
+	secretstoretest.WriterContract(t, "gcp", func(t *testing.T) secretstoretest.WriterRig {
+		project, key := envOrSkip(t, "BROKER_GCP_LIVE_PROJECT"), envOrSkip(t, "BROKER_GCP_LIVE_KMS_KEY")
+		ctx := context.Background()
+		client, err := NewClient(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = client.Close() })
+		parent, idPrefix, prefix := livePrefix(t, project)
+		t.Cleanup(func() {
+			it := client.ListSecrets(context.Background(), &secretmanagerpb.ListSecretsRequest{Parent: parent, Filter: "name:" + idPrefix})
+			for {
+				secret, err := it.Next()
+				if errors.Is(err, iterator.Done) {
+					return
+				}
+				if err != nil {
+					t.Errorf("list the secrets under %s to delete them: %v (delete them by hand)", prefix, err)
+					return
+				}
+				if !strings.HasPrefix(secret.GetName(), prefix) {
+					continue
+				}
+				if err := client.DeleteSecret(context.Background(), &secretmanagerpb.DeleteSecretRequest{Name: secret.GetName()}); err != nil && status.Code(err) != codes.NotFound {
+					t.Errorf("delete %s: %v (delete it by hand)", secret.GetName(), err)
+				}
+			}
+		})
+		arms := &liveArms{arms: map[string]liveArm{}}
+		t.Cleanup(SwapHooks(Hooks{ClientDial: func(ctx context.Context, creds *google.Credentials, interceptor grpc.UnaryClientInterceptor) (*secretmanager.Client, error) {
+			return secretmanager.NewClient(ctx, option.WithCredentials(creds), option.WithLogger(slog.New(slog.DiscardHandler)),
+				option.WithGRPCDialOption(grpc.WithChainUnaryInterceptor(interceptor, arms.intercept)))
+		}}))
+		settings := secretstore.Settings{Store: Name, Prefix: prefix, Fields: map[string]string{"gcp_project": project, "kms_key_name": key}}
+		w, err := Backend{}.OpenWriter(ctx, settings, secretstore.WriterOptions{Run: liveRun})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = w.Close() })
+		methods := map[string]string{"create": "CreateSecret", "set": "AddSecretVersion", "tags": "UpdateSecret", "delete": "UpdateSecret", "restore": "UpdateSecret"}
+		return secretstoretest.WriterRig{
+			Writer: w, Prefix: prefix,
+			LoseNextAnswer: func(call string) { arms.set(methods[call], liveArm{lose: true}) },
+			DenyNext:       func(call, message string) { arms.set(methods[call], liveArm{message: ": " + message}) },
+			Retag: func(t *testing.T, id string, tags map[string]string) {
+				t.Helper()
+				secret, err := client.GetSecret(ctx, &secretmanagerpb.GetSecretRequest{Name: id})
+				if err != nil {
+					t.Fatalf("read %s to retag it: %v", id, err)
+				}
+				annotations := maps.Clone(secret.GetAnnotations())
+				if annotations == nil {
+					annotations = map[string]string{}
+				}
+				maps.Copy(annotations, tags)
+				if _, err := client.UpdateSecret(ctx, &secretmanagerpb.UpdateSecretRequest{
+					Secret:     &secretmanagerpb.Secret{Name: id, Annotations: annotations, Etag: secret.GetEtag()},
+					UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"annotations"}},
+				}); err != nil {
+					t.Fatalf("retag %s: %v", id, err)
+				}
 			},
 		}
 	})

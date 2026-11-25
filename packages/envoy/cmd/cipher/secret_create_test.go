@@ -29,6 +29,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/secretstore"
 	awsstore "github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/gcp/gcptest"
 )
 
 // useStoreCallDeadline makes d the deadline on each store call of a create, for the rest of t.
@@ -72,20 +73,20 @@ func TestSecretCreateEndsAStoreCallThatNeverAnswersAtItsDeadline(t *testing.T) {
 			release := make(chan struct{})
 			releaseOnce := sync.OnceFunc(func() { close(release) })
 			t.Cleanup(releaseOnce)
-			var fake *fakeSecretManager
+			var fake *gcptest.FakeSecretManager
 			var broker *secretBroker
 			var local *awstest.Local
 			want := []string{}
 			switch store {
 			case "gcp":
-				fake = newFakeSecretManager()
-				fake.beforeCall = func(method string) {
+				fake = gcptest.NewFakeSecretManager()
+				fake.BeforeCall = func(method string) {
 					if method == "AddSecretVersion" {
 						<-release
 					}
 				}
-				startFakeSecretManager(t, fake)
-				useGCPIdentity(t, "authorized_user", "ada@example.com")
+				gcptest.UseFake(t, fake)
+				gcptest.UseIdentity(t, "authorized_user", "ada@example.com")
 				broker = startSecretBrokerWith(t, gcpTestSettings(), gcpServedBy(fake, gcpTestSettings()))
 				want = append(want, "DeadlineExceeded", "a late add may still land", "`agent-secrets secret show NEW_TEST`")
 			case "aws":
@@ -120,9 +121,9 @@ func TestSecretCreateEndsAStoreCallThatNeverAnswersAtItsDeadline(t *testing.T) {
 			}
 			switch store {
 			case "gcp":
-				calls := fake.called()
-				if added, listed := slices.Index(calls, "AddSecretVersion"), slices.Index(calls, "ListSecretVersions"); added < 0 || listed < added || slices.Contains(calls, "DeleteSecret") || fake.written() != 1 {
-					t.Fatalf("Secret Manager calls %v, %d secrets held; want the add, then its versions listed, and the secret kept", calls, fake.written())
+				calls := fake.Called()
+				if added, listed := slices.Index(calls, "AddSecretVersion"), slices.Index(calls, "ListSecretVersions"); added < 0 || listed < added || slices.Contains(calls, "DeleteSecret") || fake.Written() != 1 {
+					t.Fatalf("Secret Manager calls %v, %d secrets held; want the add, then its versions listed, and the secret kept", calls, fake.Written())
 				}
 				if rereads, _ := broker.recorded(); !slices.Equal(rereads, []string{"NEW_TEST"}) {
 					t.Fatalf("rereads %v; want NEW_TEST once", rereads)

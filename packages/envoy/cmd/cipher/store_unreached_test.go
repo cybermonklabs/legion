@@ -21,6 +21,7 @@ import (
 
 	secretmanager "cloud.google.com/go/secretmanager/apiv1"
 	"cloud.google.com/go/secretmanager/apiv1/secretmanagerpb"
+	"golang.org/x/oauth2/google"
 	"google.golang.org/api/option"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/balancer"
@@ -32,6 +33,7 @@ import (
 	"google.golang.org/grpc/resolver/manual"
 	"google.golang.org/grpc/status"
 
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/gcp/gcptest"
 	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/internal/testport"
 )
@@ -39,6 +41,31 @@ import (
 // unknownAuthority is crypto/x509's words for a certificate no root this machine trusts signed,
 // which gax reads to stop retrying a call.
 const unknownAuthority = "x509: certificate signed by unknown authority"
+
+// gcpInterceptor is the interceptor a GCP writer's Secret Manager client calls every call through,
+// which words each failure, as OpenWriter builds it under a lent token: the client dial hook it
+// hands it to keeps it and dials nothing a call reaches.
+func gcpInterceptor(t *testing.T) grpc.UnaryClientInterceptor {
+	t.Helper()
+	gcptest.UseNoADC(t)
+	gcptest.UseNoGcloud(t)
+	gcptest.UseLentAccessToken(t, "lent-interceptor-token", "ada@example.com")
+	var interceptor grpc.UnaryClientInterceptor
+	gcptest.UseDial(t, func(ctx context.Context, _ *google.Credentials, i grpc.UnaryClientInterceptor) (*secretmanager.Client, error) {
+		interceptor = i
+		conn, err := grpc.NewClient("127.0.0.1:1", grpc.WithTransportCredentials(insecure.NewCredentials()))
+		if err != nil {
+			return nil, err
+		}
+		return secretmanager.NewClient(ctx, option.WithGRPCConn(conn))
+	})
+	w, err := openSecretBackend(context.Background(), gcpTestSettings())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = w.Close() })
+	return interceptor
+}
 
 // unreachedTarget is a Secret Manager address no call reaches, with the dial options that make it
 // so, and the texts of it no line may print.
@@ -167,7 +194,7 @@ func TestASecretManagerCallThatDidNotReachItSaysSo(t *testing.T) {
 			"Secret Manager ListSecrets answered Unavailable (its message is not printed)"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			fake := newFakeSecretManager()
+			fake := gcptest.NewFakeSecretManager()
 			var to unreachedTarget
 			if row.to != nil {
 				to = row.to(t)
@@ -184,10 +211,10 @@ func TestASecretManagerCallThatDidNotReachItSaysSo(t *testing.T) {
 				t.Cleanup(server.Stop)
 				to = unreachedTarget{lis.Addr().String(), []grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())}, []string{"10.0.0.1", "did not reach"}}
 			}
-			useGCPDialTo(t, to.target, to.opts...)
-			useNoADC(t)
-			useNoGcloud(t)
-			useLentGCPAccessToken(t, "lent-store-token", "ada@example.com")
+			gcptest.UseDialTo(t, to.target, to.opts...)
+			gcptest.UseNoADC(t)
+			gcptest.UseNoGcloud(t)
+			gcptest.UseLentAccessToken(t, "lent-store-token", "ada@example.com")
 			startSecretBrokerWith(t, gcpTestSettings(), gcpServedBy(fake, gcpTestSettings()))
 			_, stderr, code := runSecret("list")
 			if code != 1 {
@@ -219,7 +246,7 @@ func TestGaxStillStopsRetryingACertificateNoRootHereTrusts(t *testing.T) {
 			}
 			return err
 		}
-		conn, err := grpc.NewClient(to.target, append(to.opts, grpc.WithChainUnaryInterceptor(count, (&gcpBackend{}).storeInterceptor))...)
+		conn, err := grpc.NewClient(to.target, append(to.opts, grpc.WithChainUnaryInterceptor(count, gcpInterceptor(t)))...)
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -32,6 +32,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules/proxyrulestest"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/gcp/gcptest"
 )
 
 // The one grant of this file: a Google login whose access token the proxy holds and whose
@@ -101,7 +102,7 @@ func TestGCPSecretListReachesSecretManagerThroughTheAirlockOverGRPC(t *testing.T
 	binary := buildAgentSecrets(t)
 
 	// Secret Manager: the fake, behind TLS with a certificate for its real name.
-	fake := newFakeSecretManager()
+	fake := gcptest.NewFakeSecretManager()
 	held, err := fake.CreateSecret(context.Background(), &secretmanagerpb.CreateSecretRequest{
 		Parent: "projects/" + testGCPProject, SecretId: "agent-secrets-demo-deploy-token",
 		Secret: &secretmanagerpb.Secret{Annotations: map[string]string{policy.TagOwner: "shared", policy.TagTier: "agent"}},
@@ -124,7 +125,7 @@ func TestGCPSecretListReachesSecretManagerThroughTheAirlockOverGRPC(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	service := grpc.NewServer(grpc.Creds(credentials.NewServerTLSFromCert(serviceCertificate)), grpc.UnaryInterceptor(fake.recordAuthorization))
+	service := grpc.NewServer(grpc.Creds(credentials.NewServerTLSFromCert(serviceCertificate)), grpc.UnaryInterceptor(fake.Intercept))
 	secretmanagerpb.RegisterSecretManagerServiceServer(service, fake)
 	go func() { _ = service.Serve(serviceListener) }()
 	t.Cleanup(service.Stop)
@@ -196,9 +197,9 @@ func TestGCPSecretListReachesSecretManagerThroughTheAirlockOverGRPC(t *testing.T
 			t.Fatalf("secret list printed a credential:\n%s", out)
 		}
 	}
-	authorization, calls := fake.calledUnder()
+	authorization, calls := fake.CalledUnder()
 	if calls == 0 || authorization != "Bearer "+gcpAirlockToken {
 		t.Fatalf("Secret Manager was called %d times under %q; want every call under the grant's real token, which the proxy swapped in", calls, authorization)
 	}
-	t.Logf("secret list made %d Secret Manager calls (%v) through the airlock, each under the grant's real token", calls, fake.called())
+	t.Logf("secret list made %d Secret Manager calls (%v) through the airlock, each under the grant's real token", calls, fake.Called())
 }

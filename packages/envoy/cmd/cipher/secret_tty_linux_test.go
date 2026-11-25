@@ -27,6 +27,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/sjawhar/envoy/internal/cipher/secretstore"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/gcp/gcptest"
 )
 
 // openPTY opens a pseudo-terminal: the controller, the side a terminal emulator writes what a
@@ -436,9 +437,9 @@ func TestGCPSecretCreateStoresNoValueThatEndsPastItsWindow(t *testing.T) {
 	restoreWindow := valueReadWindow
 	valueReadWindow = window
 	t.Cleanup(func() { valueReadWindow = restoreWindow })
-	fake := newFakeSecretManager()
-	startFakeSecretManager(t, fake)
-	useGCPIdentity(t, "authorized_user", "ada@example.com")
+	fake := gcptest.NewFakeSecretManager()
+	gcptest.UseFake(t, fake)
+	gcptest.UseIdentity(t, "authorized_user", "ada@example.com")
 	broker := startSecretBrokerWith(t, gcpTestSettings(), gcpServedBy(fake, gcpTestSettings()))
 	useTerminal(t)
 	stdinTerminal = func(io.Reader) (int, bool) { return terminal, true }
@@ -496,7 +497,7 @@ func TestGCPSecretCreateStoresNoValueThatEndsPastItsWindow(t *testing.T) {
 	if !regexp.MustCompile(`Enter the value by \d\d:\d\d:\d\d \S+, 2s after the create, or nothing is stored\.\nValue for NEW_TEST: `).MatchString(got.stderr) {
 		t.Fatalf("stderr %q; want the prompt to name the time its value must come by, then its label", got.stderr)
 	}
-	if calls := fake.called(); slices.Contains(calls, "AddSecretVersion") {
+	if calls := fake.Called(); slices.Contains(calls, "AddSecretVersion") {
 		t.Fatalf("Secret Manager calls %v; want no AddSecretVersion for a value that ended past its window", calls)
 	}
 	requireNothingLeft(t, fake, broker, "NEW_TEST")
