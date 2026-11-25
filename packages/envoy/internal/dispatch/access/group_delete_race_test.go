@@ -3,7 +3,6 @@ package access
 import (
 	"context"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -11,15 +10,16 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-// awaitGroupLockWaiter waits up to ten seconds for a backend of database to wait on a group's
-// name lock (LockGroupName's statement), and fails the test if the call under test answers on
-// answered first: that call never waited for the lock the test holds.
+// awaitGroupLockWaiter waits for a backend of database to wait on a group's name lock
+// (LockGroupName's statement), and fails the test if the call under test answers on answered
+// first: that call never waited for the lock the test holds. It waits through the shared wait,
+// which has no bound of its own and whose give-up names how many waiters its last read counted.
 func awaitGroupLockWaiter(t *testing.T, database *store.Store, what string, answered <-chan error) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
+	testwait.Until(t, what+" to wait on its group's name lock (the waiters last counted)", func() (int, bool) {
 		select {
 		case err := <-answered:
 			t.Fatalf("%s finished (%v) while a write naming its group held the group's name lock; want it to wait", what, err)
@@ -29,14 +29,8 @@ func awaitGroupLockWaiter(t *testing.T, database *store.Store, what string, answ
 		if err != nil {
 			t.Fatalf("count the waiters on a group's name lock: %v", err)
 		}
-		if waiting > 0 {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("%s never waited on its group's name lock within 10s", what)
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+		return waiting, waiting > 0
+	})
 }
 
 // listWrite is one write of a project's list as the routes run it: LockForAccessWrite, then the
@@ -84,13 +78,8 @@ func raceAgainstDelete(t *testing.T, project string, write listWrite) {
 	if err := open.Commit(ctx); err != nil {
 		t.Fatalf("commit the list write: %v", err)
 	}
-	select {
-	case err := <-deleted:
-		if err != nil {
-			t.Fatalf("delete crew after the list write committed: %v", err)
-		}
-	case <-time.After(30 * time.Second):
-		t.Fatal("the delete of crew never finished after the list write committed")
+	if err := testwait.Receive(t, "the delete of crew to finish after the list write committed", deleted); err != nil {
+		t.Fatalf("delete crew after the list write committed: %v", err)
 	}
 
 	var rows int
@@ -169,12 +158,7 @@ func TestAGroupsDeleteReadsEachProjectAfterItsLock(t *testing.T) {
 	if err := open.Commit(ctx); err != nil {
 		t.Fatalf("commit the list write: %v", err)
 	}
-	var got result
-	select {
-	case got = <-deleted:
-	case <-time.After(30 * time.Second):
-		t.Fatal("the delete of crew never finished after the list write committed")
-	}
+	got := testwait.Receive(t, "the delete of crew to finish after the list write committed", deleted)
 	if got.err != nil {
 		t.Fatalf("delete crew after the list write committed: %v", got.err)
 	}

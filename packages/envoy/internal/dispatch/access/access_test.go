@@ -18,7 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
-func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
+func TestMain(m *testing.M) { os.Exit(storetest.Main(m.Run)) }
 
 // The people and projects of verification v15's seed, plus the group case R2 adds. PUB is public
 // and PRIV private; OTHER is private and lists only the group crew, whose members are dave, a
