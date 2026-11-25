@@ -14,6 +14,7 @@ import (
 
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/shapetest"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
@@ -103,54 +104,56 @@ func TestReduceFilterSubjects(t *testing.T) {
 // registration production had seen, the reduction spent that budget: it went back to the first
 // pair after every subject it dropped, so the renewal's claim read ran out of time on every
 // heartbeat and the holder's claim was never renewed. The reduction now goes on from a drop
-// (reduceFilterPairs), so it weighs no pair twice.
+// (reduceFilterPairs), so between merges it weighs no pair twice. A merge does start the scan
+// again, by design: the merged subject is new and must be weighed against every other.
 //
-// This case holds that by the pairs the reduction weighs (reduceFilterSubjects), which are the
-// same on every machine, and not by a clock. cmd/listener's
-// TestReducingTheLargestShapeInProductionAllocatesPerSubjectNotPerPair counts the same
-// reduction's allocations. Those see a split of both subjects of every pair weighed, the other half
-// of INFRA-1555, and not a scan started again on tokens already split, which allocates nothing:
-// this count sees that scan. The topics are cmd/listener's largestProductionShape
-// (largestRegistrationInProduction), in every form a registration reduces them in: the per-kind
-// topics of one issue that sorts among the others are contained by its `<KEY>.>` and dropped
-// mid-scan, where a scan that went back to the first pair would weigh every pair before them again.
+// This case holds that by the pairs the reduction weighs (reduceFilters), which are the same on
+// every machine, and not by a clock. cmd/listener's
+// TestReducingTheLargestShapeInProductionAllocatesPerSubjectNotPerPair counts the allocations of a
+// registration's reductions. Those see a split of both subjects of every pair weighed, the other
+// half of INFRA-1555, and not a scan started again on tokens already split, which allocates
+// nothing: this count sees that scan.
+//
+// The bound, n(n-1)/2 for n subjects, is the pairs there are, and it holds only for a reduction
+// that merges nothing. So the case fails as UNKNOWN when a filter is no form of the topics, which
+// only a merge makes, as it does when nothing was dropped, where a restarted scan weighs no pair
+// twice either.
+//
+// The list is shapetest.Planned, the topics a registration of the largest shape plans, in the
+// forms SessionConsumerFilters gives them: 1,610 topics in 1,612 forms, which reduce to 1,604
+// filters. A registration leaves its role lane out before it reduces (cmd/listener's
+// sessionFilter), so the list it reduces is 1,609 topics in 1,610 forms, which reduce to the
+// 1,602 filters that cmd/listener's TestARegistrationOfTheLargestShapeInProductionStillRenewsItsClaim
+// counts on the server. The two forms more here are the role lane's. They sort last and overlap
+// nothing, so they add pairs that are each weighed once and change neither the bound's meaning
+// nor a drop.
 func TestReducingTheLargestRegistrationInProductionWeighsEachPairOnce(t *testing.T) {
 	t.Parallel()
-	topics := largestRegistrationInProduction()
+	topics := shapetest.Planned("legion-controller", "ses_largest_holder")
 	forms, _ := sessionConsumerForms(topics, false)
-	filters, weighed := reduceFilterSubjects(forms)
+	reduced, weighed := reduceFilters(forms, nil)
+	filters := make([]string, len(reduced))
+	for index, filter := range reduced {
+		filters[index] = filter.subject
+	}
 	if want := SessionConsumerFilters(topics); !slices.Equal(filters, want) {
-		t.Fatalf("the forms reduced here give %d filters and a registration's (SessionConsumerFilters) %d: this case is not weighing the list a registration reduces", len(filters), len(want))
+		t.Fatalf("the forms reduced here give %d filters and SessionConsumerFilters %d: this case is not weighing the list SessionConsumerFilters reduces", len(filters), len(want))
+	}
+	for _, filter := range filters {
+		if !slices.Contains(forms, filter) {
+			t.Fatalf("UNKNOWN: the filter %s is no form of the %d topics, so the reduction merged; a merge starts the scan again by design, and the bound of the pairs there are holds only between merges", filter, len(topics))
+		}
 	}
 	subjects := len(slices.Compact(slices.Sorted(slices.Values(forms))))
 	if subjects == len(filters) {
 		t.Fatalf("UNKNOWN: the %d subjects reduced to as many filters, so nothing was dropped, and a scan that went back to the first pair at a drop would weigh no pair twice: this case cannot tell the two apart", subjects)
 	}
 	pairs := subjects * (subjects - 1) / 2
-	t.Logf("%d topics, %d subjects in all their forms, %d pairs; the reduction dropped %d subjects and weighed %d pairs", len(topics), subjects, pairs, subjects-len(filters), weighed)
+	t.Logf("%d topics, %d subjects in all their forms, %d pairs; the reduction merged nothing, dropped %d subjects and weighed %d pairs", len(topics), subjects, pairs, subjects-len(filters), weighed)
 	if weighed > pairs {
-		t.Fatalf("the reduction of %d subjects weighed %d pairs, %.1f times the %d pairs there are: it weighed some pair again, as a scan that goes back to the first pair after a drop does (INFRA-1555)",
+		t.Fatalf("the reduction of %d subjects merged nothing and weighed %d pairs, %.1f times the %d pairs there are: between merges it weighed some pair again, as a scan that goes back to the first pair after a drop does (INFRA-1555)",
 			subjects, weighed, float64(weighed)/float64(pairs), pairs)
 	}
-}
-
-// largestRegistrationInProduction is cmd/listener's largestProductionShape with the agent subject
-// the registration adds to it: about twice the largest registration production has seen (802
-// topics, 2026-11-16), a holder following 800 Dispatch issues, each as `<KEY>` and `<KEY>.>`, with
-// the per-kind topics of one issue that sorts among the others and that its `<KEY>.>` already
-// holds, and the lane of the role it holds.
-func largestRegistrationInProduction() []string {
-	const issues = 800
-	topics := make([]string, 0, 2*issues+10)
-	for issue := range issues {
-		topic := fmt.Sprintf("notifications.dispatch.issue.K-%d", issue)
-		topics = append(topics, topic, topic+".>")
-	}
-	for _, kind := range []string{"message", "issue", "comment", "ask"} {
-		topic := "notifications.dispatch.issue.K-400." + kind
-		topics = append(topics, topic, topic+".>")
-	}
-	return append(topics, contracts.RoleTopicPrefix+"legion-controller", contracts.LegacyAgentSubject("ses_largest_holder"))
 }
 
 func TestSessionConsumerName(t *testing.T) {
