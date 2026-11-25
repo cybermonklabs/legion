@@ -1,4 +1,4 @@
--- 20261122071000_pull_request_heads_base_sha.up.sql
+-- 20261124085218_pull_request_heads_base_sha.up.sql
 --
 -- The commit a pull request's base branch was at when the pull request was last read
 -- (pull_request_heads.base_sha): GitHub's pull_request.base.sha, which each read of the pull
@@ -19,7 +19,7 @@
 -- ceil(n / delivery.PullRequestHeadBatch) passes that try their whole batch, each stamp
 -- acknowledged, whatever their reads answer, a row never tried first, and a pass a rate limit
 -- stops leaves the rows it did not try in their places, so the next pass takes them first
--- (migration 20261123124956, delivery.ListStalePullRequestHeads); a try whose stamp's call times
+-- (migration 20261124085219, delivery.ListStalePullRequestHeads); a try whose stamp's call times
 -- out or loses its connection may still commit the stamp with no read, at a moment the reconcile
 -- never learns, so the bound counts no pass with such a stamp and holds again only once the stamp
 -- has settled, with no bound while such stamps recur, and the stamp stores no revision.

@@ -1,7 +1,7 @@
--- 20261121000335_check_states_backfill.up.sql
+-- 20261124085214_check_states_backfill.up.sql
 -- Marks owed every issue with an open attributed pull request head, so the settler's first pass
 -- publishes the check states that exist before anything reads them. It runs after the triggers
--- (20261121000328 to 20261121000333), so a write that lands while it runs is marked by its own
+-- (20261124085207 to 20261124085212), so a write that lands while it runs is marked by its own
 -- trigger. Reads pull_request_heads (ACCESS SHARE), which no write waits behind, and writes only
 -- check_states_owed; the notification each mark sends is delivered at this migration's commit.
 select check_states_owe(issue_key)

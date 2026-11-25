@@ -1,4 +1,4 @@
--- 20261122070959_pull_request_heads_lifecycle.up.sql
+-- 20261124085217_pull_request_heads_lifecycle.up.sql
 --
 -- Every write that opens or closes a row of pull_request_heads, on the database's own clock, kept
 -- until the former heads install has read it (pull_request_heads_lifecycle): one row for each

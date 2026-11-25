@@ -39,7 +39,7 @@ import (
 //
 // A write that can change a state does not publish anything itself: a row trigger on each table a
 // state is computed from marks the issue owed, in the writer's own transaction
-// (check_states_owe, migration 20261121000327, and the triggers after it), and notifies
+// (check_states_owe, migration 20261124085206, and the triggers after it), and notifies
 // CheckStatesOwedChannel, which Postgres delivers at the writer's commit and never for a rollback.
 // So no writer runs code of this file or takes a lock it did not take before: the triggers of the
 // former heads only read, append and mark too, and the settler alone rewrites what they append, so
