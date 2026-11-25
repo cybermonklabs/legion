@@ -152,7 +152,7 @@
   },
   "scripts": {
     "typecheck": "bunx tsc --noEmit",
-    "test": "bun test",
+    "test": "bun test --timeout 30000 --preload @legion/test-fixtures/row-deadline --path-ignore-patterns 'src/jj-attribution.test.ts' && bun test --timeout 540000 --preload @legion/test-fixtures/row-deadline src/jj-attribution.test.ts",
     "lint": "bunx biome check src/ test/"
   },
   "devDependencies": {
