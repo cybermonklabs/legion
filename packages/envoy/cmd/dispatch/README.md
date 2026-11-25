@@ -4563,9 +4563,11 @@ Each opens its database with `jit` off, as Cloud SQL runs: with `jit` on, compil
 On a copy of 843,238 events in a gVisor pod, the listing of every issue at a cut took 3.9 s at 2026-11-10T00:00Z and 8.5 s at the copy's newest event, where the present listing took 1.6 s in the same pod.
 The listing names `issues` in about 11 places, and each reads the state of every issue through the shadow.
 A search at a cut ranks the matches of each kind of post on their rank first, and reads the post and its issue at the cut only for the rows that can enter the kind's first 100 (`searchAsOfBoundedPosts`); a filter of status, author or time, a query of excluded words alone, and a query whose plain words are all stop words read every match.
-On a copy of 1,127,985 events in the pod, a keyword search for the commonest word at the copy's newest event took 5.5 to 6.3 s on its first run after a restart of PostgreSQL and 3.7 to 4.3 s warm, against 11.8 s and 5.5 s when each match read its post and its issue; a common word took 2.5 to 2.9 s and 1.8 to 2.2 s.
-A query of excluded words alone at that event, which matches nearly every post, took 19 s warm.
-On the synthetic corpus, on 16 vCPUs, a search with meaning at a cut took 0.85 to 1.6 s warm and at most 3.7 s on a first run after a restart, against 1.9 s at the present.
+On a copy of 1,127,985 events in the pod, with PostgreSQL restarted before each query and the copy in the pod's page cache, a keyword search for the commonest word at the copy's newest event took 6.3 s on its first run and 5.7 s warm, a common word 2.9 s and 2.6 s, and no past-time first run took more than 6.3 s.
+With the copy out of the page cache, each first run read its pages from the pod's disk and took up to 15.1 s, as the present search for the commonest word took 16.6 s there, against 4.8 s with the copy in the page cache.
+A query of excluded words alone at the copy's newest event, which matches nearly every post, took 19 s warm.
+On the synthetic corpus, on 16 vCPUs, vacuumed and analyzed as production's tables are, a search with meaning at a cut took at most 4.2 s on its first run after a restart of PostgreSQL and at most 1.6 s warm, against at most 6.6 s and 3.9 s at the present.
+On its first run right after the build, while the checkpoint of the index build still wrote, it took up to 7.2 s, up to 5.8 s of it reading pages, and the present search's first run ended at the 15 s bound.
 Random vectors spread the HNSW graph unlike production's embeddings, so that is no measure of production's meaning arms, and the copy of the events holds no document text, so the document leg was timed on empty text.
 
 ## Routes
