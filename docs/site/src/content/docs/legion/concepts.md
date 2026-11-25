@@ -161,6 +161,9 @@ pass.
 The daemon starts each phase's worker itself, one phase at a time, and runs only the phases of the
 steps the issue's [plan](#the-plan-of-an-issue) names, in the order the plan names them, a phase
 once for each step of its role: `implementer:a reviewer implementer:a` runs `implementing` twice.
+A return to an earlier step runs the steps from there again (below): where the review of that
+plan requests changes once, `implementing` runs three times, step 1 twice and then step 3 after
+the second review.
 The table below lists them in the order of the default steps. An agent keeps its session between its
 assignments, across the roles of its steps, while its issue runs and after it leaves the
 workflow, so its next task reaches the same session. Under the Kubernetes runtime the pod is
