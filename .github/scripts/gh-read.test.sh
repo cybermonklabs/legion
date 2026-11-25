@@ -73,9 +73,13 @@ fi
 #                REST answer when the lookup finds no draft, so the REST answer closes second,
 #                after both requests opened.
 #   rate-limit-delay  seconds the rate_limit route holds its answer, read when it was asked.
+#   route-delay  seconds every other route holds its answer, read when it was asked.
 #   raw          present: GET /repos/o/r/raw answers this file's bytes as text/plain, a body gh's
 #                request trace prints as it came, line for line.
-# and appends `<epoch> <method> <path>` to `log` for every request it answers.
+#   redirect     present: GET /repos/o/r/moved answers a 301 to /repos/o/r/pulls/1, which gh
+#                follows, before any refusal, with the text of redirect-body as its body.
+# and appends `<epoch> <method> <path>` to `log` for every request it answers, and each request's
+# body (gh sends one read from stdin chunked), a line of its own, to `bodies`.
 #
 # Its clock is the real one plus clock-offset, in whole seconds (0 while the file is absent). A
 # case driven on the stand-in clock (drive_on_clock below) runs the helper with a `sleep` that waits
@@ -185,9 +189,20 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def handle_any(self):
-        length = int(self.headers.get("Content-Length") or 0)
-        if length:
-            self.rfile.read(length)
+        if self.headers.get("Transfer-Encoding", "").lower() == "chunked":
+            data = b""
+            while True:
+                size = int(self.rfile.readline().split(b";")[0].strip() or b"0", 16)
+                if size == 0:
+                    self.rfile.readline()
+                    break
+                data += self.rfile.read(size)
+                self.rfile.readline()
+        else:
+            length = int(self.headers.get("Content-Length") or 0)
+            data = self.rfile.read(length) if length else b""
+        if data:
+            write("bodies", data.decode(errors="replace") + "\n", "a")
         path = urllib.parse.urlsplit(self.path).path
         now = clock()
         with open(os.path.join(state, "log"), "a") as log:
@@ -224,6 +239,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 write("secondary-done", "1")
                 write("refused", f"{path}\n", "a")
         spent = now < spent_until or os.path.exists(os.path.join(state, "always-spent"))
+        if path != "/rate_limit":
+            time.sleep(float(read("route-delay", "0")))
         if path == "/rate_limit":
             bucket = {"limit": 15000, "used": 15000 if spent else 0,
                       "remaining": 0 if spent else 15000,
@@ -231,6 +248,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
             time.sleep(float(read("rate-limit-delay", "0")))
             self.answer(200, {"resources": {"core": bucket, "graphql": dict(bucket, limit=5000)},
                               "rate": bucket})
+        elif os.path.exists(os.path.join(state, "redirect")) and path == "/repos/o/r/moved":
+            data = read("redirect-body").encode()
+            self.send_response(301)
+            self.send_header("Location", "http://api.github.localhost/repos/o/r/pulls/1")
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
         elif read("reply"):
             status, message = read("reply").split(" ", 1)
             self.answer(int(status), {"message": message, "documentation_url": "https://docs.github.com/rest",
@@ -560,6 +585,16 @@ check "prints gh's stdout" "$(is "$out" '{"title":"t"}')"
 check "and no stderr" "$(is "$err" '')"
 check "reads no rate limit" "$(is "$(calls /rate_limit)" 0)"
 
+echo "case: the caller's stdin reaches gh, as with a bare gh (gh api --input -)"
+github never
+drive JOB_TIMEOUT_MINUTES=5 -- 'printf "%s" "{\"title\":\"from stdin\"}" | gh_wait_reset gh api --method PATCH repos/o/r/pulls/1 --input -'
+check "exits 0" "$(is "$status" 0)"
+check "the stand-in got the body from stdin" "$(contains "$(cat "$work/state/bodies" 2> /dev/null)" '"title":"from stdin"')"
+github never
+drive JOB_TIMEOUT_MINUTES=5 -- 'gh_wait_reset gh api repos/o/r/pulls/1 <&-'
+check "and a caller that closed stdin still gets its answer, and no word on stderr" \
+  "$(is "$status|$out|$(calls /repos/o/r/pulls/1)|$err" '0|{"title":"t"}|1|')"
+
 echo "case: a step that names no limit does not wait"
 github 60
 drive_recording_sleep -- 'gh_wait_reset gh api repos/o/r/pulls/1'
@@ -811,6 +846,41 @@ check "exits 0 with the answer of the call after the wait" "$(is "$status|$out" 
 check "calls GraphQL twice, the second no sooner than the reset" \
   "$(is "$(calls /graphql)|$(at_least "$(nth_at /graphql 2)" "$(spent_until)")" '2|true')"
 
+echo "case: a REST 200 that spent the last of the budget, with gh failing on its own filter, is gh's own failure"
+# Only GraphQL answers its refusal with a 200; a REST 200 is an answer, whatever gh then does.
+github never
+reply 200 "ok"
+printf 'x-ratelimit-remaining: 0\nx-ratelimit-reset: %s\n' "$(($(date +%s) + 3600))" > "$work/state/reply-headers"
+drive_recording_sleep JOB_TIMEOUT_MINUTES=5 -- 'gh_wait_reset gh api repos/o/r/pulls/1 --jq "error(\"filter failed\")"'
+check "exits as gh does, with no sleep" "$(is "$status|$(slept)" '1|')"
+check "reads no rate limit" "$(is "$(calls /rate_limit)" 0)"
+check "gh's words reach stderr" "$(contains "$err" 'filter failed')"
+check "and the helper logs nothing of its own" "$(is "$(warnings)|$(errors)" '0|0')"
+github never
+reply 200 "ok"
+printf 'x-ratelimit-remaining: 0\nx-ratelimit-reset: %s\n' "$(($(date +%s) + 3600))" > "$work/state/reply-headers"
+drive_recording_sleep JOB_TIMEOUT_MINUTES=5 -- 'gh_wait_reset gh api repos/o/graphql --jq "error(\"filter failed\")"'
+check "the same for the REST route of a repository named graphql" \
+  "$(is "$status|$(slept)|$(calls /rate_limit)|$(warnings)|$(errors)" '1||0|0|0')"
+
+echo "case: a redirect gh follows leaves no answer read; the rate_limit route decides"
+# The next request's log comes after the redirect's body, so no line of it is surely gh's.
+github 3
+touch "$work/state/redirect"
+drive JOB_TIMEOUT_MINUTES=5 -- 'gh_wait_reset gh api repos/o/r/moved'
+check "exits 0 with the answer of the call after the wait" "$(is "$status|$out" '0|{"title":"t"}')"
+check "read the spent budget off the rate_limit route, once" "$(is "$(calls /rate_limit)" 1)"
+check "followed the redirect each time, and called again no sooner than the reset" \
+  "$(is "$(calls /repos/o/r/moved)|$(calls /repos/o/r/pulls/1)|$(at_least "$(nth_at /repos/o/r/pulls/1 2)" "$(spent_until)")" '2|2|true')"
+github never
+touch "$work/state/redirect"
+printf '%s\n' '* Request at 2026-11-23 00:00:00 +0000 UTC' '* Request to http://api.github.localhost/repos/o/r/pulls/1' \
+  '< HTTP/1.1 403 Forbidden' '< X-Ratelimit-Remaining: 0' '< Retry-After: 5' 'the body' > "$work/state/redirect-body"
+reply 504 "Gateway Timeout"
+drive_recording_sleep JOB_TIMEOUT_MINUTES=5 -- 'gh_wait_reset gh api repos/o/r/moved'
+check "a redirect whose body reads like gh's log of a refusal, to a 504: gh's own failure, no sleep" \
+  "$(is "$status|$(slept)|$(warnings)|$(errors)" '1||0|0')"
+
 echo "case: a command whose answer the helper does not read decides by the rate_limit route"
 # A paginated read (several requests) and gh's other commands run untraced (gh-read.sh's header),
 # so there is no answer of theirs to read; GitHub's rate_limit route, free of the budget, says
@@ -831,6 +901,71 @@ github 3
 drive_recording_sleep JOB_TIMEOUT_MINUTES=5 -- 'gh_wait_reset bash -c "gh api --paginate repos/o/r/pulls/1; exit 124"'
 check "a command its timeout ended (124) is answered nothing: no rate_limit read, no sleep" \
   "$(is "$status|$(calls /rate_limit)|$(slept)|$(calls /repos/o/r/pulls/1)" '124|0||1')"
+
+# left_of <token>: the processes still running whose command line carries the token.
+left_of() {
+  local proc cmdline left=''
+  for proc in /proc/[0-9]*/cmdline; do
+    cmdline=$(tr '\0' ' ' < "$proc" 2> /dev/null) || continue
+    [[ $cmdline != *"$1"* ]] || left+="${proc#/proc/} "
+  done
+  echo "$left"
+}
+
+echo "case: a TERM or an INT sent to the helper's gh alone (timeout --foreground) reaches the real gh"
+# The helper's gh runs the real one as a child for `gh api`, so it passes the signal on and waits.
+# The route holds its answer 30 s; the case names its request with a header no other process
+# carries, and looks for it among the processes left once the helper has returned.
+github never
+echo 30 > "$work/state/route-delay"
+token="case-$(date +%s%N)"
+drive JOB_TIMEOUT_MINUTES=5 -- "gh_wait_reset timeout --foreground 1 gh api repos/o/r/pulls/1 -H 'X-Case: $token'"
+check "a TERM: exits 124, timeout's status, and no process of the call is left" \
+  "$(is "$status|$(left_of "$token")" '124|')"
+github never
+echo 30 > "$work/state/route-delay"
+token="case-$(date +%s%N)"
+drive JOB_TIMEOUT_MINUTES=5 -- "gh_wait_reset timeout --foreground -s INT -k 5 1 gh api repos/o/r/pulls/1 -H 'X-Case: $token'"
+check "an INT: exits 124, not the KILL's 137, and no process of the call is left" \
+  "$(is "$status|$(left_of "$token")" '124|')"
+
+echo "case: the real gh starts with INT and QUIT at their default, not ignored"
+# A background job starts with both ignored, and gh keeps an ignored INT until it installs a
+# handler of its own, so an INT that comes first would be lost. The case reads the real gh's
+# ignored-signal mask from /proc while the route holds its answer, then the timeout ends it.
+github never
+echo 30 > "$work/state/route-delay"
+token="case-$(date +%s%N)"
+real_gh=$(command -v gh)
+cat > "$work/mask.sh" <<SH
+for _ in \$(seq 100); do
+  for proc in /proc/[0-9]*; do
+    cmdline=\$( { tr '\\0' ' ' < "\$proc/cmdline"; } 2> /dev/null) || continue
+    case \$cmdline in "$real_gh api "*"$token"*)
+      awk '/^SigIgn:/ { print \$2 }' "\$proc/status" > "$work/sigign"
+      exit 0 ;;
+    esac
+  done
+  sleep 0.1
+done
+SH
+drive JOB_TIMEOUT_MINUTES=5 -- "bash '$work/mask.sh' & gh_wait_reset timeout 5 gh api repos/o/r/pulls/1 -H 'X-Case: $token'; wait"
+sigign=$(cat "$work/sigign" 2> /dev/null)
+check "the mask was read" "$([[ $sigign =~ ^[0-9a-f]+$ ]] && echo true || echo false)"
+check "with neither INT (bit 2) nor QUIT (bit 3) ignored" \
+  "$([[ $sigign =~ ^[0-9a-f]+$ ]] && (( (16#$sigign & 0x6) == 0 )) && echo true || echo false)"
+rm -f "$work/mask.sh" "$work/sigign"
+
+echo "case: a KILL that ends the command leaves nothing of the helper's in TMPDIR"
+# The helper's work directory holds the request's log, and it removes that directory itself.
+github never
+echo 30 > "$work/state/route-delay"
+rm -rf "$work/tmpcase"
+mkdir "$work/tmpcase"
+drive JOB_TIMEOUT_MINUTES=5 TMPDIR="$work/tmpcase" -- 'gh_wait_reset timeout -s KILL 1 gh api repos/o/r/pulls/1'
+check "exits 137, timeout's status for a KILL" "$(is "$status" 137)"
+check "and TMPDIR is empty" "$(is "$(ls -A "$work/tmpcase")" '')"
+rm -rf "$work/tmpcase"
 
 # gh release view, edit and upload send a GraphQL lookup and a REST request together, so both are
 # open at once. The helper reads gh's request trace (GH_DEBUG=api) for `gh api` alone, which has
