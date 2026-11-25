@@ -24,11 +24,11 @@ import (
 	"go/types"
 	"os"
 	"path/filepath"
-	"runtime"
 	"sort"
 	"strings"
 
 	"golang.org/x/tools/go/packages"
+	"wholeuse/load"
 )
 
 const (
@@ -54,7 +54,7 @@ func main() {
 	dir := flag.String("dir", ".", "the module directory to load from")
 	flag.BoolVar(&trustNewRetrieveError, "trust-new-retrieve-error", true,
 		"pass a value redact.NewRetrieveError made, which holds the rule's reading of the words; false lists it as the whole use it is where NewRetrieveError holds the words as they came")
-	targets := flag.String("targets", runtime.GOOS+"/"+runtime.GOARCH, "comma-separated GOOS/GOARCH pairs the module is loaded for")
+	targets := flag.String("targets", load.Host, "comma-separated GOOS/GOARCH pairs the module is loaded for")
 	tagSets := flag.String("tags", "", "semicolon-separated build tag lists the module is loaded with, each with every target; an empty list is no tags")
 	flag.Parse()
 	patterns := flag.Args()
@@ -63,38 +63,7 @@ func main() {
 	}
 	// The module is loaded once for each target and tag set, as the boundary census loads it, so a
 	// file a build constraint keeps from one of them is read under another.
-	var pkgs []*packages.Package
-	for _, target := range strings.Split(*targets, ",") {
-		goos, goarch, ok := strings.Cut(target, "/")
-		if !ok {
-			fmt.Fprintf(os.Stderr, "wholeuse: the target %q is no GOOS/GOARCH\n", target)
-			os.Exit(2)
-		}
-		for _, tagList := range strings.Split(*tagSets, ";") {
-			cfg := &packages.Config{
-				Mode: packages.NeedName | packages.NeedFiles | packages.NeedSyntax | packages.NeedTypes | packages.NeedTypesInfo,
-				Dir:  *dir,
-				Env:  append(os.Environ(), "GOOS="+goos, "GOARCH="+goarch),
-			}
-			if goos != runtime.GOOS || goarch != runtime.GOARCH {
-				// cgo does not cross-compile here; a cgo file is read under the host's own target.
-				cfg.Env = append(cfg.Env, "CGO_ENABLED=0")
-			}
-			if tagList != "" {
-				cfg.BuildFlags = []string{"-tags=" + tagList}
-			}
-			loaded, err := packages.Load(cfg, patterns...)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "wholeuse: %s, tags %q: %v\n", target, tagList, err)
-				os.Exit(2)
-			}
-			if packages.PrintErrors(loaded) > 0 {
-				fmt.Fprintf(os.Stderr, "wholeuse: %s, tags %q: the packages do not load cleanly; nothing is listed\n", target, tagList)
-				os.Exit(2)
-			}
-			pkgs = append(pkgs, loaded...)
-		}
-	}
+	pkgs := load.Modules("wholeuse", *dir, *targets, *tagSets, packages.NeedName|packages.NeedFiles|packages.NeedSyntax|packages.NeedTypes|packages.NeedTypesInfo, patterns...).Packages
 	if len(pkgs) == 0 {
 		fmt.Fprintln(os.Stderr, "wholeuse: UNKNOWN: the patterns matched no package")
 		os.Exit(2)

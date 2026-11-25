@@ -35,12 +35,11 @@ import (
 	"go/types"
 	"os"
 	"path/filepath"
-	"runtime"
-	"slices"
 	"sort"
 	"strings"
 
 	"golang.org/x/tools/go/packages"
+	"wholeuse/load"
 )
 
 const (
@@ -88,7 +87,7 @@ func dispatchLibrary(path string) bool {
 func main() {
 	dir := flag.String("dir", ".", "the module directory to load from")
 	listAPI := flag.Bool("api", false, "print each library function the census holds calls of to the boundary")
-	targets := flag.String("targets", runtime.GOOS+"/"+runtime.GOARCH, "comma-separated GOOS/GOARCH pairs the module is loaded for")
+	targets := flag.String("targets", load.Host, "comma-separated GOOS/GOARCH pairs the module is loaded for")
 	tagSets := flag.String("tags", "", "semicolon-separated build tag lists the module is loaded with, each with every target; an empty list is no tags")
 	flag.Parse()
 	patterns := flag.Args()
@@ -98,46 +97,8 @@ func main() {
 	// The module is loaded once for each target and tag set, so a file a build constraint keeps
 	// from one of them (a darwin-only file on a Linux gate, an e2e file) is read under another.
 	// Each load's target is kept, so the summary names, for each target, what its builds read.
-	var pkgs []*packages.Package
-	targetOf := map[*packages.Package]string{}
-	var targetOrder []string
-	for _, target := range strings.Split(*targets, ",") {
-		goos, goarch, ok := strings.Cut(target, "/")
-		if !ok {
-			fmt.Fprintf(os.Stderr, "boundary: the target %q is no GOOS/GOARCH\n", target)
-			os.Exit(2)
-		}
-		for _, tagList := range strings.Split(*tagSets, ";") {
-			cfg := &packages.Config{
-				Mode: packages.NeedName | packages.NeedFiles | packages.NeedSyntax | packages.NeedTypes | packages.NeedTypesInfo | packages.NeedImports,
-				Dir:  *dir,
-				Env:  append(os.Environ(), "GOOS="+goos, "GOARCH="+goarch),
-			}
-			if goos != runtime.GOOS || goarch != runtime.GOARCH {
-				// cgo does not cross-compile here; a cgo file is read under the host's own target.
-				cfg.Env = append(cfg.Env, "CGO_ENABLED=0")
-			}
-			if tagList != "" {
-				cfg.BuildFlags = []string{"-tags=" + tagList}
-			}
-			loaded, err := packages.Load(cfg, patterns...)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "boundary: %s, tags %q: %v\n", target, tagList, err)
-				os.Exit(2)
-			}
-			if packages.PrintErrors(loaded) > 0 {
-				fmt.Fprintf(os.Stderr, "boundary: %s, tags %q: the packages do not load cleanly; nothing is checked\n", target, tagList)
-				os.Exit(2)
-			}
-			pkgs = append(pkgs, loaded...)
-			for _, pkg := range loaded {
-				targetOf[pkg] = target
-			}
-			if !slices.Contains(targetOrder, target) {
-				targetOrder = append(targetOrder, target)
-			}
-		}
-	}
+	loaded := load.Modules("boundary", *dir, *targets, *tagSets, packages.NeedName|packages.NeedFiles|packages.NeedSyntax|packages.NeedTypes|packages.NeedTypesInfo|packages.NeedImports, patterns...)
+	pkgs, targetOf := loaded.Packages, loaded.Target
 
 	// The closed set: each library package any loaded package imports, read from its types, with
 	// the targets whose builds import it.
@@ -284,7 +245,7 @@ func main() {
 	for _, path := range paths {
 		fmt.Printf("API\t%s\t%d functions, methods and function variables with an error result\tfor %s\n", path, perPackage[path], strings.Join(sortedKeys(importedFor[path]), ", "))
 	}
-	for _, target := range targetOrder {
+	for _, target := range loaded.Order {
 		targetFiles, targetRefs := 0, 0
 		for name, built := range builtFor {
 			if built[target] {
