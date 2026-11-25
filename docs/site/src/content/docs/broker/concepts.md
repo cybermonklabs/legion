@@ -96,9 +96,10 @@ So a box dropped from its fleet's settings, and one that stops being able to pro
 lose their sessions within one `BROKER_LEASE_SECONDS`: the renewal is refused
 `ENROLLMENT_NOT_LIVE`, the broker logs `broker: machine session renewal refused: its machine login
 has ended`, and the sweep ends the enrollment at its lease. A copy of such a session's key and
-enrollment id taken off the box renews nothing once that box's login has ended. Only a machine's
-own session is held this way: a pod's renewal proves the pod's own projected token, and a person's
-session on such a box runs until they revoke the sign-in, which ends it at once.
+enrollment id taken off the box renews nothing once that box's login has ended. A person's sign-in
+session on such a box is held the same way, to its sign-in's credential
+([A sign-in's renewal](#a-sign-ins-renewal)). A pod's is not: its renewal proves the pod's own
+projected token.
 
 An enrollment has **ended** once its launcher revokes it (the helper does
 as soon as a registered session's process exits), whoever may revoke its machine login revokes that
@@ -178,23 +179,34 @@ renewer whose broker went away does not retry forever. A refused enrollment is r
 that names a new enrollment, which the running renewer renews from its next renewal on.
 
 The broker renews a sign-in's session only while the launcher credential its sign-in holds on
-that machine is live, and that credential expires with the person's last traded Google identity
-token, about an hour after the trade. So the renewer also trades the person's identity again, as
-the registration does, after its first renewal and each time a third of the credential's
-remaining life has passed; each trade moves the expiry of the same credential, so the same
-enrollment renews on. A trade that fails is tried again once the smaller of a third of the lease
-and a third of the credential's remaining life has passed, and not more often than every ten
-seconds. Where the person can no longer be traded, as when their Google account is suspended or
-deleted, the credential lapses within its hour, the broker refuses the next renewal
-(`ENROLLMENT_NOT_LIVE`, "the sign-in that enrolled this session has lapsed"), and the enrollment
-ends one lease later, or later by the length of any broker outage in that time, which the broker
-gives back to every lease: the machine loses the person's access with nobody revoking anything.
-A machine told of no sign-in client cannot trade at all, and its sign-in enrollment ends an hour
-after the trade that registered it. Revoking the sign-in still ends its sessions at once.
-Sessions `agent-secrets-helper` holds under a sign-in are held to the same credential, which the
-helper keeps live by asking for the sign-in every five minutes and trading it again once the
-token it holds has five minutes or less left; where the person can no longer be traded, those
-sessions end too.
+that machine is live: not revoked, not past its expiry, and the machine's account still listed for
+its service in `BROKER_VM_SERVICES`, as a machine's own session is held to its machine login. The
+credential expires with the person's last traded Google identity token, about an hour after the
+trade. So the renewer also trades the person's identity again, as the registration does, after
+its first renewal and each time a third of the credential's remaining life has passed; each trade
+moves the expiry of the same credential, so the same enrollment renews on. A trade that fails is
+tried again once the smaller of a third of the lease and a third of the credential's remaining
+life has passed, and not more often than every ten seconds. A trade whose answer names no expiry
+of the credential, or one already past, is not tried again, since the broker names one beside
+every credential it answers and would answer the same again; the renewer says so in its log.
+Where the person can no longer be traded, as when their Google account is suspended or deleted,
+the credential lapses within its hour, the broker refuses the next renewal (`ENROLLMENT_NOT_LIVE`,
+"the sign-in that enrolled this session has ended", logging `broker: sign-in session renewal
+refused: its sign-in credential has ended`), and the enrollment ends one lease later, or later by
+the length of any broker outage in that time, which the broker gives back to every lease: the
+machine loses the person's access with nobody revoking anything. A machine told of no sign-in
+client cannot trade at all, and its sign-in enrollment ends an hour after the trade that
+registered it. Revoking the sign-in still ends its sessions at once.
+
+`agent-secrets-helper` keeps the same credential live for the sessions it holds under a sign-in
+and for the boxes it enrolled under one, while one of them may still stand under it. It asks for
+the sign-in every five minutes and trades again once the access token it holds is five minutes
+from its end, or the credential fifteen minutes from its, whichever comes first, so a trade that
+fails is tried twice more before the credential lapses; it logs each such failure at WARN. A
+helper that holds no such enrollment trades nothing, so the sign-in's **Last used** on Dispatch
+says whether the box is in use. Where the person can no longer be traded, the broker refuses
+those sessions' next renewal and the helper enrols each again under the machine's own
+credential: the person's access through them ends, and the sessions go on as the machine's.
 
 A renewer that is killed, with its machine or its process tree, renews nothing until a command
 starts one: the next command of the sign-in, or within a second a use command still waiting for

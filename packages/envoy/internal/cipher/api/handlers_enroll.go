@@ -421,8 +421,9 @@ func wantDelim(d *json.Decoder, delim json.Delim) error {
 //
 // A machine's own session whose launcher credential has ended (enroll.ErrMachineLoginEnded: the
 // machine login was revoked, lapsed, or its account was dropped from BROKER_VM_SERVICES), and a
-// person's sign-in session whose sign-in credential has lapsed (enroll.ErrSignInLapsed: no trade
-// of the person's identity renewed it before its expiry), are answered ENROLLMENT_NOT_LIVE, which
+// person's sign-in session whose sign-in credential has ended (enroll.ErrSignInCredentialEnded:
+// no trade of the person's identity renewed it before its expiry, or its machine's account was
+// dropped from BROKER_VM_SERVICES), are answered ENROLLMENT_NOT_LIVE, which
 // is what the enrollment now is, rather than a code of their own, which would read as a retryable
 // failure to a renewer that has not heard of it. Every renewer treats it as terminal, and what
 // each does then is its own: a session the helper holds is enrolled again by the helper's own
@@ -454,8 +455,8 @@ func (s *server) renewEnrollment(w http.ResponseWriter, r *http.Request, id stri
 		slog.Warn("broker: machine session renewal refused: its machine login has ended", "enrollment", id)
 		writeError(w, http.StatusUnauthorized, "ENROLLMENT_NOT_LIVE", err.Error())
 		return
-	case errors.Is(err, enroll.ErrSignInLapsed):
-		slog.Warn("broker: sign-in session renewal refused: its sign-in credential has lapsed", "enrollment", id)
+	case errors.Is(err, enroll.ErrSignInCredentialEnded):
+		slog.Warn("broker: sign-in session renewal refused: its sign-in credential has ended", "enrollment", id)
 		writeError(w, http.StatusUnauthorized, "ENROLLMENT_NOT_LIVE", err.Error())
 		return
 	case errors.Is(err, enroll.ErrPodTokenExpired):

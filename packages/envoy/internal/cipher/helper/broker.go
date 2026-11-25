@@ -159,7 +159,12 @@ type Broker struct {
 	// this machine proves no identity of its own, so there is no actor token for a person's
 	// trade, or the deployment names no sign-in client to renew a person's identity token with.
 	SignIns SignIns
-	HTTP    *http.Client
+	// SignInBoxesFile is where the helper keeps the enrollments it made under a person's sign-in
+	// for a launcher's key (SignInBoxesPath), so a helper started again keeps that sign-in's
+	// credential live for them too (keepSignIns, signInHolds). Empty keeps them for this
+	// process's life alone.
+	SignInBoxesFile string
+	HTTP            *http.Client
 	// Log records every change of the launcher credential: a machine login or a trade installing
 	// one, a restart resuming one, a refresh moving its expiry, the warning a day before it
 	// lapses, and the helper dropping it, when the broker refuses it or its refresh or it
@@ -213,6 +218,9 @@ type Broker struct {
 	// signInKeepEvery is how often keepSignIns asks SignIns for the sign-in's credential; zero
 	// means defaultSignInKeepEvery. Only tests shorten it.
 	signInKeepEvery time.Duration
+	// signInHolds is every enrollment that may stand under the sign-in's credential, which
+	// keepSignIns keeps live while one does.
+	signInHolds signInHolds
 	// testSave, when set, replaces MachineFile.Save for every save of the machine file, so a test
 	// fails a save the way a full disk does (the unlink still works). No production caller sets it.
 	testSave func(f *MachineFile, path string) error
@@ -690,9 +698,16 @@ func (b *Broker) retireReplaced(old *machineCredential) {
 	b.logger().Info("the helper retired the machine login a new one replaced", "credential_id", old.id)
 }
 
-// Start resumes the machine login kept at MachineFile, if there is one, and starts the refresh
-// loop (refreshLoop) until ctx ends; serve runs it before it listens, holding the machine file's
-// claim. It first removes the temporary files an interrupted save left beside the file
+// Start starts what keeps this helper's launcher credentials live until ctx ends; serve runs it
+// before it listens, holding the machine file's claim.
+//
+// Where a person may be signed in on this box (SignIns), it first reads SignInBoxesFile, the
+// boxes a helper before it enrolled under a sign-in, logging a file it cannot read, and starts
+// keepSignIns, which keeps the sign-in's credential live while something may stand under it.
+//
+// Where this machine proves an identity of its own, the rest is startIdentity's. Otherwise it
+// resumes the machine login kept at MachineFile, if there is one, and starts the refresh loop
+// (refreshLoop). It first removes the temporary files an interrupted save left beside the file
 // (RemoveLeftoverMachineTemps), logging a failure. A kept login is refreshed once before it is
 // installed, within startRefreshBound (5 s), so the socket still listens within `register`'s wait:
 // a refresh the broker answers is saved and installed as an issued login with no code; one it
@@ -703,6 +718,14 @@ func (b *Broker) retireReplaced(old *machineCredential) {
 // loop to retry it on the retrySchedule. A file that is there but is not a machine login, or that
 // others can read, is an error naming it.
 func (b *Broker) Start(ctx context.Context) error {
+	if b.SignIns != nil {
+		if b.SignInBoxesFile != "" {
+			if err := b.signInHolds.load(b.SignInBoxesFile); err != nil {
+				b.logger().Warn("the helper could not read the boxes it enrolled under a person's sign-in; a box enrolled before this start is not kept renewed under it", "error", err)
+			}
+		}
+		go b.keepSignIns(ctx)
+	}
 	if b.Identity != nil {
 		return b.startIdentity(ctx)
 	}
@@ -778,9 +801,6 @@ const identityShutdownLine = "the helper stopped trading this machine's identity
 // the identity itself stops the loop, logged at ERROR: no retry cures it, and the operator's
 // deployment is what has to change.
 func (b *Broker) startIdentity(ctx context.Context) error {
-	if b.SignIns != nil {
-		go b.keepSignIns(ctx)
-	}
 	first := make(chan struct{})
 	var once sync.Once
 	go func() {
@@ -817,43 +837,6 @@ func (b *Broker) startIdentity(ctx context.Context) error {
 	case <-ctx.Done():
 	}
 	return nil
-}
-
-// defaultSignInKeepEvery is how often keepSignIns asks for the sign-in's credential: a third of
-// the broker's access token's 15 minutes, so each ask finds the token with more than the 5
-// minutes before its end at which the client trades again (cipherclient.Client.Token), or trades.
-const defaultSignInKeepEvery = 5 * time.Minute
-
-// keepSignIns keeps the launcher credential of the person signed in on this box live while the
-// helper runs, until ctx ends. The broker renews a session enrolled under a sign-in only while
-// that credential is live (enroll.Service.Renew, ErrSignInLapsed), and it expires with the
-// person's last traded identity token, an hour after the trade; Current trades again whenever
-// the access token it holds has five minutes or less left, so asking it every
-// defaultSignInKeepEvery trades about every ten minutes, and each trade moves the same
-// credential's expiry. Without it, the credential would be traded only at an enrolment, and a
-// helper that enrolled nothing for an hour would have every session under the sign-in refused
-// its renewal. Nobody signed in is nil at once, and a sign-in refused for good — the person
-// revoked it, or the issuer no longer honours their refresh token — is remembered by Current and
-// trades no more, so its credential lapses and its sessions end: that is how a person who can no
-// longer be traded loses this box. A failure a later ask may cure is logged and asked again at
-// the next tick.
-func (b *Broker) keepSignIns(ctx context.Context) {
-	every := b.signInKeepEvery
-	if every <= 0 {
-		every = defaultSignInKeepEvery
-	}
-	tick := time.NewTicker(every)
-	defer tick.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-tick.C:
-		}
-		if _, err := b.SignIns.Current(ctx); err != nil && ctx.Err() == nil {
-			b.logger().Warn("the helper could not trade the sign-in on this box to keep its launcher credential live; it asks again at the next tick", "error", b.URL.Error(err))
-		}
-	}
 }
 
 func (b *Broker) startRefreshBoundOrDefault() time.Duration {
@@ -1495,10 +1478,11 @@ func (b *Broker) EnrollSessionKey(ctx context.Context, runtimeID, thumbprint str
 // helper's own sessions, box for a key a launcher brings. That retry goes once the production
 // broker records the session kind.
 func (b *Broker) enroll(ctx context.Context, runtimeID, thumbprint string, sessionID *string, projects []string, legacyKind string) (string, time.Time, error) {
-	id, lease, err := b.enrollAs(ctx, "session", runtimeID, thumbprint, sessionID, projects)
+	box := legacyKind == "box"
+	id, lease, err := b.enrollAs(ctx, "session", runtimeID, thumbprint, sessionID, projects, box)
 	var be *BrokerError
 	if errors.As(err, &be) && be.Status == http.StatusBadRequest && be.Code == "INVALID_KIND" {
-		return b.enrollAs(ctx, legacyKind, runtimeID, thumbprint, sessionID, projects)
+		return b.enrollAs(ctx, legacyKind, runtimeID, thumbprint, sessionID, projects, box)
 	}
 	return id, lease, err
 }
@@ -1555,32 +1539,42 @@ func (b *Broker) enrolAuthority(ctx context.Context) (*cipherclient.Authority, *
 }
 
 // enrollAs is one POST /v1/enrollments naming kind, signed with the credential enrolAuthority
-// chose.
+// chose, for a launcher's key where box is set and for a session of this helper's otherwise.
 //
 // A person's credential the broker rejects (401 LAUNCHER_INVALID: their sign-in was revoked, or
 // the credential lapsed) is asked about once more rather than failing: the authority is told
 // (SignInAuthority.Refused) and chosen again, which trades afresh and settles on this machine's
 // own credential once the broker refuses the sign-in itself. So one enrolment is one answer,
 // and the session a launcher is waiting on enrols under the authority the box has now.
-func (b *Broker) enrollAs(ctx context.Context, kind, runtimeID, thumbprint string, sessionID *string, projects []string) (string, time.Time, error) {
+//
+// The enrollment made is recorded with the credential that made it (signInHolds.enrolled), so
+// keepSignIns keeps a sign-in's credential live while an enrollment under it may need it. A box's
+// record that cannot be saved is logged: that box counts until this helper stops.
+func (b *Broker) enrollAs(ctx context.Context, kind, runtimeID, thumbprint string, sessionID *string, projects []string, box bool) (string, time.Time, error) {
 	authority, cred, err := b.enrolAuthority(ctx)
 	if err != nil {
 		return "", time.Time{}, err
 	}
 	id, lease, err := b.enrollUnder(ctx, authority, cred, kind, runtimeID, thumbprint, sessionID, projects)
-	if cred != nil || !isLauncherInvalid(err) {
-		return id, lease, err
+	if cred == nil && isLauncherInvalid(err) {
+		b.logger().Warn("the broker refused the sign-in's launcher credential; enrolling under whatever authority this box has now",
+			"operator", authority.Operator, "credential_id", authority.CredentialID)
+		if err := b.SignIns.Refused(ctx, authority.CredentialID); err != nil {
+			return "", time.Time{}, fmt.Errorf("%s, to drop the credential the broker refused (%s): %w",
+				cipherclient.SignInWaitEnded(authority.Operator, err), authority.CredentialID, err)
+		}
+		if authority, cred, err = b.enrolAuthority(ctx); err != nil {
+			return "", time.Time{}, err
+		}
+		id, lease, err = b.enrollUnder(ctx, authority, cred, kind, runtimeID, thumbprint, sessionID, projects)
 	}
-	b.logger().Warn("the broker refused the sign-in's launcher credential; enrolling under whatever authority this box has now",
-		"operator", authority.Operator, "credential_id", authority.CredentialID)
-	if err := b.SignIns.Refused(ctx, authority.CredentialID); err != nil {
-		return "", time.Time{}, fmt.Errorf("%s, to drop the credential the broker refused (%s): %w",
-			cipherclient.SignInWaitEnded(authority.Operator, err), authority.CredentialID, err)
+	if err == nil {
+		if saveErr := b.signInHolds.enrolled(id, lease, box, cred != nil, b.SignInBoxesFile); saveErr != nil {
+			b.logger().Warn("the helper could not record a box it enrolled under a person's sign-in; it keeps the sign-in live for it until the helper stops, and not after a restart",
+				"enrollment_id", id, "file", SignInBoxesNamed, "error", redact.File(saveErr))
+		}
 	}
-	if authority, cred, err = b.enrolAuthority(ctx); err != nil {
-		return "", time.Time{}, err
-	}
-	return b.enrollUnder(ctx, authority, cred, kind, runtimeID, thumbprint, sessionID, projects)
+	return id, lease, err
 }
 
 // enrollUnder is that one request, signed with authority. An operator is stated only where the
@@ -1671,6 +1665,7 @@ func (b *Broker) renewIdentity(ctx context.Context, cur identity) (time.Time, er
 	if err := b.do(req, []int{http.StatusOK}, &out); err != nil {
 		return time.Time{}, err
 	}
+	b.signInHolds.renewed(id, out.LeaseExpiresAt)
 	return out.LeaseExpiresAt, nil
 }
 
@@ -1730,6 +1725,10 @@ func (b *Broker) revokeUnder(ctx context.Context, authority *cipherclient.Author
 			return err
 		}
 		return b.clearOnInvalid(ctx, cred, err)
+	}
+	if err := b.signInHolds.ended(enrollmentID, b.SignInBoxesFile); err != nil {
+		b.logger().Warn("the helper could not record that a box it enrolled under a person's sign-in was unenrolled; a helper started again keeps the sign-in live for it until it is unenrolled again",
+			"file", SignInBoxesNamed, "error", redact.File(err))
 	}
 	return nil
 }

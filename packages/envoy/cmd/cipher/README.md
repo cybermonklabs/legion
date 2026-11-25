@@ -235,7 +235,9 @@ its first renewal and each time a third of the sign-in credential's remaining li
 since the broker renews a sign-in's session only while that credential (an hour from each trade)
 is live; where the person can no longer be traded, as for a suspended Google account, the
 credential lapses, the broker refuses the next renewal, and the enrollment ends one lease later.
-`agent-secrets-helper` keeps the same credential live for the sessions it holds under a sign-in.
+`agent-secrets-helper` keeps the same credential live for the sessions it holds under a sign-in,
+and for the boxes it enrolled under one, while one of them may still need it, and trades nothing
+while none does.
 A command that cannot keep the sign-in renewed says so on stderr, for each enrollment it keeps,
 and goes on. The docs site's concepts page, "A sign-in's renewal", has the whole rule.
 

@@ -430,6 +430,52 @@ func TestARenewersTradeIsTheRegistrationsTrade(t *testing.T) {
 	}
 }
 
+// TestARenewerTradesWithTheFilesItsCommandNamedRelatively: a command run in a directory that
+// names the sign-in client's secret file relative to it starts a renewer that runs in /. The
+// renewer's environment names that file by its absolute path (renewerEnv), so its trade from /
+// reads the file the command read and goes through, as the command's own did. Kept as it came,
+// the path names a file under / that is not there, and every trade of the renewer fails.
+func TestARenewerTradesWithTheFilesItsCommandNamedRelatively(t *testing.T) {
+	const person = "ada@example.com"
+	broker := newLoginBroker(t)
+	issuer := loginIssuer(t, person)
+	t.Setenv("AGENT_SECRETS_KEY_DIR", t.TempDir())
+	t.Setenv(cipherclient.SignInDirVar, filepath.Join(t.TempDir(), "signins"))
+	t.Setenv(cipherclient.BrokerURLVar, broker.server.URL)
+	t.Setenv(cipherclient.SessionVar, "")
+	forceMetadataMachine(t)
+	if err := login(context.Background(), io.Discard, &approvingWriter{t: t, issuer: issuer}); err != nil {
+		t.Fatalf("login: %v", err)
+	}
+	record, err := cipherclient.SignIns(os.Getenv).Choose("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := record.Key()
+	if err != nil {
+		t.Fatal(err)
+	}
+	secret, err := os.ReadFile(os.Getenv(cipherclient.SignInClientSecretFileVar))
+	if err != nil {
+		t.Fatal(err)
+	}
+	work := t.TempDir()
+	if err := os.WriteFile(filepath.Join(work, "client-secret"), secret, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(work)
+	t.Setenv(cipherclient.SignInClientSecretFileVar, "client-secret")
+	for _, variable := range renewerEnv(os.Environ(), person, work) {
+		name, value, _ := strings.Cut(variable, "=")
+		t.Setenv(name, value)
+	}
+	t.Chdir("/")
+	expires, err := tradeForRenewal(cipheraddr.New(broker.server.URL))(context.Background(), record, key)
+	if err != nil || expires.IsZero() {
+		t.Fatalf("the renewer's trade from / = %s, %v; want it to read the secret file its command named relative to %s", expires, err, work)
+	}
+}
+
 // loginIssuer is the device-flow issuer this machine is told to sign people in at, with the
 // client's own secret in a file as the deployment gives it.
 func loginIssuer(t *testing.T, person string) *oidctest.Issuer {
