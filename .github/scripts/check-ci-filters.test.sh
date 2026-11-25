@@ -2023,8 +2023,8 @@ check "names the gate, the called job, its file and its caller" \
 # docs/readme.md, which no other gate of the tree reads.
 lane_gate() {
   called_input_gate "$1"
-  replace "$1/.github/workflows/ci.yaml" "      image: \${{ steps.filter.outputs.image }}" \
-    $'      image: ${{ steps.filter.outputs.image }}\n      lane: ${{ steps.filter.outputs.lane }}'
+  replace "$1/.github/workflows/ci.yaml" "$(every_job_output image)" \
+    "$(every_job_output image)"$'\n'"$(every_job_output lane)"
   replace "$1/.github/workflows/called.yaml" "      ci-ok-changes:" \
     $'      lane:\n        type: string\n        required: false\n        default: ""\n      ci-ok-changes:'
   replace "$1/.github/workflows/called.yaml" "  called:" \
