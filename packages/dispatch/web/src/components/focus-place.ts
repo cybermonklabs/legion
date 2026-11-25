@@ -666,6 +666,16 @@ export function outOfSight(element: Element): boolean {
   return watched?.element === element && !watched.seen;
 }
 
+/** Whether the reader had scrolled the element the armed press last noted the focus on out of
+ *  their sight, as the press last read it (`ArmedPress`'s `sight`), whatever element that is:
+ *  false with nothing armed or nothing noted. The selection bar asks it as it goes once the focus
+ *  has moved from it onto a control outside it that its press holds (`pressHolds`), which can have
+ *  left the page, and the focus with it, before the bar can read its own going (`SelectionBar`). */
+export function focusedOutOfSight(): boolean {
+  const watched = armed?.sight ?? null;
+  return watched !== null && !watched.seen;
+}
+
 /** A control that cannot be pressed now: held while its write is out (`aria-disabled`,
  *  `held-press.ts`), or disabled, itself or through the fieldset around it. */
 const HELD = '[aria-disabled="true"], :disabled';
@@ -1164,6 +1174,16 @@ export function pressMadeIn(place: Element): boolean {
  *  (`ViewportAnchor`'s `pressedRow`). */
 export function pressArmed(): boolean {
   return armed !== null;
+}
+
+/** Whether the armed press (`armHandOff`) holds `element` now, by a hold that began after it
+ *  (`ArmedPress`'s `holds`): false with nothing armed, and for an element that has left the page.
+ *  A press on such a control takes nothing but its hold and leaves the armed press the cause, so a
+ *  focus it moves there is still that press's: the selection bar keeps as its own the focus a
+ *  click on a marked row's Start next takes from it while Take out of epic's writes hold that
+ *  Start next (`SelectionBar`). */
+export function pressHolds(element: Element): boolean {
+  return armed?.holds(element) === true;
 }
 
 /** Whether the armed press (`armHandOff`) was on a row's mark, while that mark is still in the

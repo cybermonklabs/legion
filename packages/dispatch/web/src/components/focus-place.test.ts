@@ -18,7 +18,9 @@ import {
   ARM_ON_PRESS,
   armOnPress,
   causedByReader,
+  focusedOutOfSight,
   holdHandOff,
+  pressHolds,
   useFocusPlace,
 } from "./focus-place";
 
@@ -1412,6 +1414,74 @@ test("a double click on a control the press's write holds, in a root inside the 
   expect(landed).toEqual({
     "a double click on the held Start next": "After",
     "nothing after the press": "After",
+  });
+});
+
+// What the selection bar reads of the armed press once the focus has moved from the bar onto a
+// control outside it (`SelectionBar`): whether the press holds that control (`pressHolds`), and
+// whether the reader had scrolled the control the press last noted the focus on out of their sight
+// (`focusedOutOfSight`), a control that may have left the page by the time the bar asks. Armed by
+// the project List's Take out of epic, whose run holds the row's Start next. The press holds that
+// Start next only while the write holds it and the press is live: not with nothing armed, not
+// before the hold, not once the press has ended, and not where Start next was held before the
+// press, which is the reader's next act; nor a held control out of the page. The Start next the
+// reader clicks is in their sight until they scroll the page past it.
+test("the armed press holds a control its write holds after it, and says whether the reader scrolled the control it last noted the focus on out of sight", async () => {
+  const read: Record<string, boolean> = {};
+  await inMain([], async (main) => {
+    const host = document.createElement("div");
+    main.append(host);
+    const bar = ["Take out of epic"];
+    const view = render(createElement(ArmedSection, { bar, held: true }), { container: host });
+    try {
+      const startNext = () => view.getByRole("button", { name: "Start next" });
+      const takeOut = () => view.getByRole("button", { name: "Take out of epic" });
+      // No press of an earlier case is still armed.
+      disarm();
+      read["a held Start next, with nothing armed"] = pressHolds(startNext());
+      read["out of sight, with nothing armed"] = focusedOutOfSight();
+      view.rerender(createElement(ArmedSection, { bar, held: false }));
+      clickPress(takeOut());
+      read["Start next, not held yet"] = pressHolds(startNext());
+      // The run the press starts holds Start next, and what answers it.
+      view.rerender(createElement(ArmedSection, { bar, held: true }));
+      const answered = holdHandOff();
+      read["Start next, held by the press's write"] = pressHolds(startNext());
+      const loose = document.createElement("button");
+      loose.setAttribute("aria-disabled", "true");
+      read["a held button out of the page"] = pressHolds(loose);
+      // The reader's click on the held Start next, which takes the focus out of the bar.
+      startNext().dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+      clickPress(startNext());
+      read["out of sight, the focused Start next in sight"] = focusedOutOfSight();
+      // The page scrolled past the row: its Start next stands above the window's top edge, which
+      // the press reads at its next frame.
+      placeAt(startNext(), -400);
+      await frameAndTasks();
+      read["out of sight, the focused Start next scrolled above the window"] = focusedOutOfSight();
+      answered();
+      disarm();
+      read["the held Start next, once the press has ended"] = pressHolds(startNext());
+      read["out of sight, once the press has ended"] = focusedOutOfSight();
+      // A press on Take out of epic while Start next is held already.
+      clickPress(takeOut());
+      read["Start next, held before the press"] = pressHolds(startNext());
+    } finally {
+      view.unmount();
+      host.remove();
+    }
+  });
+  expect(read).toEqual({
+    "a held Start next, with nothing armed": false,
+    "out of sight, with nothing armed": false,
+    "Start next, not held yet": false,
+    "Start next, held by the press's write": true,
+    "a held button out of the page": false,
+    "out of sight, the focused Start next in sight": false,
+    "out of sight, the focused Start next scrolled above the window": true,
+    "the held Start next, once the press has ended": false,
+    "out of sight, once the press has ended": false,
+    "Start next, held before the press": false,
   });
 });
 

@@ -1,11 +1,14 @@
 import { expect, test } from "bun:test";
 import { act, render, screen } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
+import userEvent, { type UserEvent } from "@testing-library/user-event";
 import { createRef, type ReactNode, useRef, useState } from "react";
 
+import { disarm } from "../__tests__/armed-press";
 import { SIZE_CSS, sizeUnder } from "../__tests__/control-size";
+import { nextFrame } from "../__tests__/frames";
 import { drawAt, drawOver, layRowsOut, watchMoves } from "../__tests__/laid-out-rows";
 import type { ControlSize } from "./control-names";
+import { ARM_ON_PRESS, holdHandOff } from "./focus-place";
 import { ROW_MARKER } from "./row-marker";
 import { SelectionBar, useLastMarkedPlace } from "./SelectionBar";
 
@@ -458,6 +461,243 @@ test("the bar emptied by the reader's press on the last row's mark hands the foc
   } finally {
     view.unmount();
   }
+});
+
+/** The keys of `EpicList`'s rows, in its order: the reader marks the middle two. */
+const EPIC_KEYS = ["CORE-1", "CORE-2", "CORE-3", "CORE-4"];
+
+/** The project List under its Epic filter, as the bar's hand-off reads it once Take out of epic
+ *  is pressed (`IssuesTable`): its section, which arms the hand-off at a press inside it
+ *  (`ARM_ON_PRESS`), with its toolbar's Filter, then the rows `keys` names, each carrying the row
+ *  marker, its mark and its Start next, then the bar with Take out of epic, drawn while `count` is
+ *  above zero. While `held`, Take out of epic's writes are out, and they hold it and every row's
+ *  Start next (`aria-disabled`), as the List's run of an action does (`perform`). */
+function EpicList({
+  count,
+  held,
+  keys,
+  returnFocus,
+}: {
+  count: number;
+  held: boolean;
+  keys: readonly string[];
+  returnFocus: () => HTMLElement | null;
+}): ReactNode {
+  const hold = held ? "true" : undefined;
+  return (
+    <section {...ARM_ON_PRESS}>
+      <button type="button">Filter</button>
+      {keys.map((key) => (
+        <div data-issue-row={key} key={key} {...ROW_MARKER}>
+          <input aria-label={`Select ${key}`} type="checkbox" />
+          <button aria-disabled={hold} aria-label={`Start next ${key}`} type="button">
+            Start next
+          </button>
+        </div>
+      ))}
+      <SelectionBar count={count} label="Selected issues" returnFocus={returnFocus}>
+        <button aria-disabled={hold} type="button">
+          Take out of epic
+        </button>
+      </SelectionBar>
+    </section>
+  );
+}
+
+/** The Start next of `EpicList`'s row `key`. */
+function startNextOf(key: string): HTMLElement {
+  return screen.getByRole("button", { name: `Start next ${key}` });
+}
+
+/** Where the focus rests: the name of what holds it, else the body. */
+function focusLanding(): string {
+  const focused = document.activeElement;
+  if (focused === null || focused === document.body) return "the body";
+  return focused.getAttribute("aria-label") ?? focused.textContent ?? "";
+}
+
+/** Where the focus rests once the bar has gone (`focusLanding`), and how many times the page was
+ *  asked where it goes. */
+interface Landing {
+  readonly asked: number;
+  readonly landed: string;
+}
+
+/** A case of `takeOutOfEpic`: what the reader does while Take out of epic's writes are out - with
+ *  `redraw`, which draws the bar again where the case asks for a render of it in between - and
+ *  where the focus belongs once the bar has gone. */
+interface HeldCase {
+  readonly whileHeld: (user: UserEvent, redraw: () => void) => Promise<void>;
+  readonly belongs: Landing;
+}
+
+/**
+ * Takes CORE-2 and CORE-3, the two rows marked, out of the epic as the project List's bar does,
+ * with the writes held. The reader presses Take out of epic, which arms the bar's hand-off at the
+ * List's section and at the bar (`armOnPress`): a click that focuses it first, as Chromium's and
+ * Firefox's do, or with `focusing` false one that leaves the focus where it was, as WebKit's does.
+ * The run holds Take out of epic, every row's Start next and what answers it (`holdHandOff`), and
+ * `whileHeld` runs then, the bar drawn again where `redrawn` says so. Then the writes land: the
+ * commit that draws their answer takes the two rows and the bar away together, the rows first, as
+ * the List draws its table before its bar, while the rows it keeps still draw their Start next
+ * held, which the commit after it lets go. Answers where the focus rests then: the page names
+ * CORE-4's mark, the row now at the place of CORE-2, the row marked last.
+ */
+async function takeOutOfEpic(
+  whileHeld: HeldCase["whileHeld"],
+  redrawn: boolean,
+  focusing: boolean
+): Promise<Landing> {
+  const user = userEvent.setup();
+  let asked = 0;
+  const returnFocus = () => {
+    asked += 1;
+    return rowBox("CORE-4");
+  };
+  const list = (count: number, held: boolean, keys: readonly string[] = EPIC_KEYS) => (
+    <EpicList count={count} held={held} keys={keys} returnFocus={returnFocus} />
+  );
+  const view = render(list(2, false));
+  try {
+    if (focusing) pressInBar("Take out of epic");
+    else act(() => screen.getByRole("button", { name: "Take out of epic" }).click());
+    view.rerender(list(2, true));
+    const answered = holdHandOff();
+    await whileHeld(user, () => {
+      if (redrawn) view.rerender(list(2, true));
+    });
+    const kept = without(EPIC_KEYS, "CORE-2", "CORE-3");
+    view.rerender(list(0, true, kept));
+    answered();
+    view.rerender(list(0, false, kept));
+    return { asked, landed: focusLanding() };
+  } finally {
+    view.unmount();
+    disarm();
+  }
+}
+
+/** Each of `cases` taken through `takeOutOfEpic` twice, with no render of the bar between what
+ *  the reader does and the bar's going and with one: where the focus rests then (`got`) and where
+ *  it belongs (`want`), by the case's name and the render. */
+async function eachTakenOut(
+  cases: Readonly<Record<string, HeldCase>>,
+  focusing = true
+): Promise<{ got: Record<string, Landing>; want: Record<string, Landing> }> {
+  const got: Record<string, Landing> = {};
+  const want: Record<string, Landing> = {};
+  for (const [named, { belongs, whileHeld }] of Object.entries(cases)) {
+    for (const redrawn of [false, true]) {
+      const where = `${named}, ${redrawn ? "the bar drawn again" : "no render of the bar"} before it goes`;
+      got[where] = await takeOutOfEpic(whileHeld, redrawn, focusing);
+      want[where] = belongs;
+    }
+  }
+  return { got, want };
+}
+
+// INFRA-3135, round 27 (the tester's 7d2a23eb): with Take out of epic's writes out, a click or a
+// double click on the held Start next of a marked row takes nothing but its hold, so the bar's
+// press stays the cause (`armHandOff`), and it moves the focus out of the bar onto that Start next.
+// The writes land, and their answer takes the row, and the Start next with it, away in the commit
+// that takes the bar away, the row first. The focus goes where Take out of epic alone puts it, to
+// what the page names - the mark of CORE-4, the row now at the place of the row marked last - and
+// not to the body, from which a keyboard reader would start again at the page's first link. So it
+// does whether or not a render of the bar came between the click and the bar's going.
+test("a click or a double click on a marked row's held Start next while Take out of epic's writes are out hands the focus to what returnFocus names once the bar goes with that row", async () => {
+  const handedOn = { asked: 1, landed: "Select CORE-4" };
+  const { got, want } = await eachTakenOut({
+    "nothing after the press": { belongs: handedOn, whileHeld: async (_user, redraw) => redraw() },
+    "a click on the marked row's held Start next": {
+      belongs: handedOn,
+      whileHeld: async (user, redraw) => {
+        await user.click(startNextOf("CORE-2"));
+        redraw();
+      },
+    },
+    "a double click on the marked row's held Start next": {
+      belongs: handedOn,
+      whileHeld: async (user, redraw) => {
+        await user.dblClick(startNextOf("CORE-2"));
+        redraw();
+      },
+    },
+  });
+  expect(got).toEqual(want);
+});
+
+// The same press and writes, where the bar's going hands on no focus. A click on the held Start
+// next of CORE-1, a row the writes keep, leaves the focus on that Start next as the bar goes beside
+// it. A click on the toolbar's Filter, which nothing holds, or on a blank spot of the page, after
+// the click on the marked row's held Start next, is the reader's next act: it ends Take out of
+// epic's press (`armHandOff`), and the focus stays where the reader put it, though the marked row
+// goes with the bar. And where the press left the focus off the bar, as WebKit's click does, the
+// bar never held the focus the click on the held Start next took, so its going moves nothing
+// either. The page is never asked where the focus goes.
+test("the bar going after the focus moved onto a held Start next of a row it keeps, after a later click on an unheld control or a blank spot, or after a press that never focused the bar, leaves the focus where the reader put it", async () => {
+  const focused = await eachTakenOut({
+    "a click on the held Start next of a row the writes keep": {
+      belongs: { asked: 0, landed: "Start next CORE-1" },
+      whileHeld: async (user, redraw) => {
+        await user.click(startNextOf("CORE-1"));
+        redraw();
+      },
+    },
+    "a click on the marked row's held Start next, then on the unheld Filter": {
+      belongs: { asked: 0, landed: "Filter" },
+      whileHeld: async (user, redraw) => {
+        await user.click(startNextOf("CORE-2"));
+        redraw();
+        await user.click(screen.getByRole("button", { name: "Filter" }));
+        redraw();
+      },
+    },
+    "a click on the marked row's held Start next, then on a blank spot of the page": {
+      belongs: { asked: 0, landed: "the body" },
+      whileHeld: async (user, redraw) => {
+        await user.click(startNextOf("CORE-2"));
+        redraw();
+        await user.click(document.body);
+        redraw();
+      },
+    },
+  });
+  expect(focused.got).toEqual(focused.want);
+  const unfocused = await eachTakenOut(
+    {
+      "a click on the marked row's held Start next after a press that left the focus off the bar": {
+        belongs: { asked: 0, landed: "the body" },
+        whileHeld: async (user, redraw) => {
+          await user.click(startNextOf("CORE-2"));
+          redraw();
+        },
+      },
+    },
+    false
+  );
+  expect(unfocused.got).toEqual(unfocused.want);
+});
+
+// The same press and writes, with the reader's click on the marked row's held Start next, which
+// they then scroll out of their sight before the writes land. The bar going with that row hands
+// the focus to nothing, as it does for a control of its own the reader scrolled out of sight
+// (`outOfSight`): the list is not scrolled back to a row the reader scrolled away from.
+test("a marked row's held Start next the reader clicked and then scrolled out of sight hands the focus to nothing as the bar goes with its row", async () => {
+  const { got, want } = await eachTakenOut({
+    "a click on the marked row's held Start next, then a scroll past it": {
+      belongs: { asked: 0, landed: "the body" },
+      whileHeld: async (user, redraw) => {
+        const start = startNextOf("CORE-2");
+        await user.click(start);
+        // The page scrolled down past the row: its Start next stands above the window's top edge.
+        start.getBoundingClientRect = () => new DOMRect(0, -400, 120, 32);
+        // The armed press reads what the reader can see of the focused control at each frame.
+        await act(nextFrame);
+        redraw();
+      },
+    },
+  });
+  expect(got).toEqual(want);
 });
 
 /** The keys of `PlacedList`'s twenty rows, in its order. */
