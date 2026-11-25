@@ -71,6 +71,27 @@
       }
     ]
   },
+  "asks/ask-5": {
+    "id": "ask-5",
+    "author": { "id": "session-architect", "kind": "agent" },
+    "replies": [
+      {
+        "id": "reply-a1",
+        "author": { "id": "user:smoke", "kind": "user" },
+        "body": "Which cache strategy did you decide on? (question architect-decision of run 4242)"
+      },
+      {
+        "id": "answer-a1",
+        "author": { "id": "session-architect", "kind": "agent" },
+        "body": "Write-through, under COBALT-HERON-41, with a 7-minute TTL. <!-- legion-answer:a5a5a5a5b6b6b6b6 -->"
+      },
+      {
+        "id": "resumed-post",
+        "author": { "id": "session-architect", "kind": "agent" },
+        "body": "Decided: write-through cache, 7-minute TTL, codename COBALT-HERON-41."
+      }
+    ]
+  },
   "issues/ALX-22/comments": [
     {
       "id": "comment-220",

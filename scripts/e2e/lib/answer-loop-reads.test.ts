@@ -2164,6 +2164,17 @@ describe("Dispatch", () => {
     expect(read("ask_reply_after ask-1 '' session-architect").code).not.toBe(0);
   });
 
+  // A7's control reads row A1's thread at the end of the run, after the controls resumed the
+  // architect, which may post on its own ask thread. The reply to the person's reply is the loop's
+  // answer, the one that carries its mark, not a later post of the same session: proof run
+  // 45542053007 at 423b8bf3 read the resumed architect's own post of 05:37:05Z there, found no
+  // mark, and failed A7's control under files.
+  test("ask_reply_after prints the agent's answer to a person's reply, not a later post of the same agent", () => {
+    const answer = read("ask_reply_after ask-5 reply-a1 session-architect");
+    expect(answer.code).toBe(0);
+    expect(answer.text).toContain("<!-- legion-answer:a5a5a5a5b6b6b6b6 -->");
+  });
+
   test("comment_reply_by prints the agent's reply to a comment on the issue's thread", () => {
     expect(read("comment_reply_by ALX-3 comment-77 session-tester").text).toContain(
       "The 20-run rerun"
