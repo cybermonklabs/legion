@@ -31,9 +31,10 @@ import type {
 } from "../../api/types";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
 import {
-  approvalRefusalKey,
   type FormRefusalPress,
   pressOn,
+  requestRefusalKey,
+  requestVersions,
   setFormRefusal,
   takeFormRefusalFocus,
   takeFormRefusalReason,
@@ -105,13 +106,15 @@ function changesAnswer({ input }: AnswerPress): boolean {
   return input.expected_answer_at !== undefined;
 }
 
-/** The key a refusal of the form of an answer to `ask` is kept under (`doc/form-refusals.ts`):
- *  its document's approval request when it is one, which the document's header and each card of
- *  the request share, and the ask itself otherwise. */
-function formRefusalKeyOf(ask: Ask): string {
+/** The versions a press of an answer to `ask` judges: each document the request names, at the
+ *  version the request names (`requestVersions`). */
+function formRefusalVersionsOf(ask: Ask): string | undefined {
   return ask.approval === undefined
-    ? `ask:${ask.id}`
-    : approvalRefusalKey(ask.approval.artifact_id);
+    ? undefined
+    : requestVersions(ask.approval.documents, {
+        artifact_id: ask.approval.artifact_id,
+        version: ask.approval.version,
+      });
 }
 
 /** One press of a question back: the ask it is of (`AskPress`) and the text it posts. */
@@ -222,9 +225,10 @@ export function useAskAnswerForm({
   // A refusal of Approve for the form of The Spec belongs to the request, not to this card
   // (`doc/form-refusals.ts`): its document's header and each card of the request read it under one
   // key, and a host that draws the card again while the answer is out reads it back. It holds the
-  // press it answers, with this card and the version, which each press carries (`AnswerPress.at`),
-  // so the focus goes back to this card and to no other place of the request.
-  const formRefusalKey = formRefusalKeyOf(ask);
+  // press it answers, with this card and the versions, which each press carries (`AnswerPress.at`),
+  // so the focus goes back to this card and to no other place of the request. The key is the
+  // request's own, which the header of each document the request names reads too.
+  const formRefusalKey = requestRefusalKey(ask.id);
   const refusalSurface = useRefusalSurface();
   const takeRefusalFocus = useCallback(
     (root: Element | null) => takeFormRefusalFocus(formRefusalKey, refusalSurface, root),
@@ -340,14 +344,14 @@ export function useAskAnswerForm({
         // owes.
         const reason = error.changesReason ?? "";
         setAnswerTextOf(press.ask.id, (note) => withRefusalReason(reason, note));
-        setFormRefusal(formRefusalKeyOf(press.ask), { error, press: press.at });
+        setFormRefusal(requestRefusalKey(press.ask.id), { error, press: press.at });
       }
     },
     onSettled: () => {
       submitGuard.release();
     },
     onSuccess: (updatedAsk, press) => {
-      setFormRefusal(formRefusalKeyOf(press.ask), undefined);
+      setFormRefusal(requestRefusalKey(press.ask.id), undefined);
       const changed = changesAnswer(press);
       if (drawnFor(press)) {
         replacing.current = undefined;
@@ -416,7 +420,7 @@ export function useAskAnswerForm({
   const threadAsk = threadQuery.data?.ask;
   const displayedAsk =
     threadAsk !== undefined && (askChanged || threadAsk.state !== "open") ? threadAsk : ask;
-  const formRefusal = useFormRefusal(formRefusalKey, displayedAsk.approval?.version);
+  const formRefusal = useFormRefusal(formRefusalKey, formRefusalVersionsOf(displayedAsk));
   // The kept refusal picks Request changes, in this card and in a card drawn after it: React's
   // pattern for state derived from a change, so the option is never unpicked for a frame.
   const [pickedFor, setPickedFor] = useState<ApiError | undefined>(undefined);
@@ -512,7 +516,7 @@ export function useAskAnswerForm({
       const answerSelection = isApproval || hasOptions ? selected : [];
       mutation.mutate({
         ask,
-        at: pressOn(refusalSurface, displayedAsk.approval?.version),
+        at: pressOn(refusalSurface, formRefusalVersionsOf(displayedAsk)),
         input: answerAskInput(displayedAsk, answerSelection, text, replacing.current),
       });
     });

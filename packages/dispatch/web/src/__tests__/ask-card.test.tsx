@@ -1417,7 +1417,7 @@ test("a card of the request that the person did not press shows Dispatch's form 
     act(() =>
       setFormRefusal("ask:ask-1", {
         error: specFormRefusal(),
-        press: { at: Number.MAX_SAFE_INTEGER, surface: 0, version: undefined },
+        press: { at: Number.MAX_SAFE_INTEGER, surface: 0, versions: undefined },
       })
     );
 
@@ -1456,7 +1456,7 @@ for (const pressed of ["header", "card"] as const) {
       options: [{ label: "Approve" }, { label: "Request changes" }],
     });
     const document: Artifact = {
-      approval: { latest_version: 12, state: "awaiting" } as ArtifactApproval,
+      approval: { ask_id: "ask-1", latest_version: 12, state: "awaiting" } as ArtifactApproval,
       created_at: "2026-09-09T00:00:00Z",
       created_by: { id: "alice", kind: "user" },
       id: "artifact-1",
@@ -1518,6 +1518,177 @@ for (const pressed of ["header", "card"] as const) {
     }
   });
 }
+
+/** A request of two documents, the spec at version 12 and the Verification document at
+ *  `verification`, as Legion's architect requests them (`--include-verification`), and the
+ *  Verification document's page that reads that request. */
+function twoDocumentRequest(verification: number): { input: OwnedAsk; document: Artifact } {
+  const documents = [
+    { artifact_id: "artifact-1", name: "spec.md", requested_version: 12, version: 12 },
+    {
+      artifact_id: "artifact-2",
+      name: "verification.md",
+      requested_version: 4,
+      version: verification,
+    },
+  ];
+  return {
+    input: ask({
+      approval: {
+        artifact_id: "artifact-1",
+        documents,
+        name: "spec.md",
+        requested_version: 12,
+        version: 12,
+      },
+      kind: "approval",
+      options: [{ label: "Approve" }, { label: "Request changes" }],
+    }),
+    document: {
+      approval: {
+        ask_id: "ask-1",
+        documents,
+        latest_version: verification,
+        state: "awaiting",
+      } as ArtifactApproval,
+      created_at: "2026-09-09T00:00:00Z",
+      created_by: { id: "alice", kind: "user" },
+      id: "artifact-2",
+      issue_key: "CORE-1",
+      kind: "doc",
+      name: "verification.md",
+      primary: false,
+      project: "CORE",
+      ref_key: "CORE-1/verification-md",
+      session_id: null,
+      slug: "verification-md",
+      versions: [],
+    },
+  };
+}
+
+// The gate judges every document a request names, so a refusal belongs to the request: a refused
+// Approve on the card of a request of the spec and the Verification document shows in the
+// Verification document's header too.
+test("a form refusal of a request of two documents shows in the header of its second document", async () => {
+  const user = userEvent.setup();
+  const { input, document } = twoDocumentRequest(4);
+  const { view } = renderCard(
+    <>
+      <div data-testid="header">
+        <ApprovalChip artifact={document} variant="header" />
+      </div>
+      <AskCard
+        answerAsk={async () => {
+          throw specFormRefusal();
+        }}
+        ask={input}
+        getAskThread={emptyThread(input)}
+        variant="compact"
+      />
+    </>
+  );
+
+  try {
+    const card = view.getByTestId("ask-ask-1");
+    await user.click(await within(card).findByRole("radio", { name: "Approve" }));
+    await user.click(within(card).getByRole("button", { name: "Answer" }));
+
+    expect((await within(card).findByRole("alert")).textContent).toBe(cardRefusal);
+    expect((await within(view.getByTestId("header")).findByRole("alert")).textContent).toBe(
+      specFormRefusalBody.error
+    );
+  } finally {
+    view.unmount();
+  }
+});
+
+// The findings are of the texts the request's versions hold, so a new version of any document of
+// the request hides its refusal, the second document's as much as the first's.
+test("a new version of the second document of a request hides the request's form refusal", async () => {
+  const user = userEvent.setup();
+  const before = twoDocumentRequest(4);
+  const { queryClient, view } = renderCard(
+    <AskCard
+      answerAsk={async () => {
+        throw specFormRefusal();
+      }}
+      ask={before.input}
+      getAskThread={emptyThread(before.input)}
+      variant="compact"
+    />
+  );
+
+  try {
+    const card = view.getByTestId("ask-ask-1");
+    await user.click(await within(card).findByRole("radio", { name: "Approve" }));
+    await user.click(within(card).getByRole("button", { name: "Answer" }));
+    expect((await within(card).findByRole("alert")).textContent).toBe(cardRefusal);
+
+    const after = twoDocumentRequest(5);
+    view.rerender(
+      <MemoryRouter>
+        <QueryClientProvider client={queryClient}>
+          <AskCard ask={after.input} getAskThread={emptyThread(after.input)} variant="compact" />
+        </QueryClientProvider>
+      </MemoryRouter>
+    );
+    await waitFor(() => expect(within(card).queryByRole("alert")).toBeNull());
+  } finally {
+    view.unmount();
+  }
+});
+
+// Another request of the same document at the same version, here an earlier one that is answered,
+// is not the request that Dispatch refused, so its card shows no refusal.
+test("a card of another request of the same document and version shows no form refusal", async () => {
+  const user = userEvent.setup();
+  const approval = {
+    artifact_id: "artifact-1",
+    documents: null,
+    name: "spec.md",
+    requested_version: 12,
+    version: 12,
+  };
+  const open = ask({
+    approval,
+    kind: "approval",
+    options: [{ label: "Approve" }, { label: "Request changes" }],
+  });
+  const earlier = answered(
+    ask({
+      approval,
+      id: "ask-0",
+      kind: "approval",
+      options: [{ label: "Approve" }, { label: "Request changes" }],
+    }),
+    ["Request changes"],
+    "Fix the first statement."
+  );
+  const { view } = renderCard(
+    <>
+      <AskCard
+        answerAsk={async () => {
+          throw specFormRefusal();
+        }}
+        ask={open}
+        getAskThread={emptyThread(open)}
+        variant="compact"
+      />
+      <AskCard ask={earlier} getAskThread={emptyThread(earlier)} variant="full" />
+    </>
+  );
+
+  try {
+    const card = view.getByTestId("ask-ask-1");
+    await user.click(await within(card).findByRole("radio", { name: "Approve" }));
+    await user.click(within(card).getByRole("button", { name: "Answer" }));
+    expect((await within(card).findByRole("alert")).textContent).toBe(cardRefusal);
+    expect(within(view.getByTestId("ask-ask-0")).queryByRole("alert")).toBeNull();
+  } finally {
+    view.unmount();
+  }
+});
 
 // Nothing that the person typed is lost (plan decision 14): after a refused Approve the field holds
 // Dispatch's reason, then one empty line, then the person's note as it was. The draft belongs to

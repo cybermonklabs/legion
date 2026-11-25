@@ -54,6 +54,7 @@ import {
   type FormRefusalPress,
   focusIsFreeFor,
   pressOn,
+  requestVersions,
   setFormRefusal,
   takeFormRefusalFocus,
   useFormRefusal,
@@ -132,6 +133,16 @@ function approvalScope(approval: ArtifactApproval): string {
   }
   const named = documents.map((document) => `${document.name} v${document.version}`);
   return ` of ${named.slice(0, -1).join(", ")} and ${named[named.length - 1]}`;
+}
+
+/** The versions an Approve of `artifact` judges: each document of its open request at the version
+ *  the request names, or the document's latest version when the request names it alone
+ *  (`requestVersions`), as each card of the request writes them. */
+function approvalVersionsOf(artifact: Artifact): string | undefined {
+  return requestVersions(artifact.approval?.documents, {
+    artifact_id: artifact.id,
+    version: artifact.approval?.latest_version,
+  });
 }
 
 function ReviewsDialog({
@@ -425,12 +436,13 @@ export function ApprovalChip({
   const [requestChangesOpen, setRequestChangesOpen] = useState(false);
   // Dispatch's refusal of the reader's last Approve for the form of The Spec: its words show under
   // the actions, and the reason it wrote for the author is what Request changes opens with. It is
-  // kept for the request of this document (`form-refusals.ts`), which each card of the request
-  // reads too, so a refusal in the header shows in those cards and theirs shows here, for the
-  // version that Approve approved. It holds the press (`DocumentReview.at`), so the focus goes back
-  // to the place where the person pressed.
-  const formRefusalKey = approvalRefusalKey(artifact.id);
-  const formRefusal = useFormRefusal(formRefusalKey, approval?.latest_version);
+  // kept for the document's open request (`form-refusals.ts`, by the request's ask), which each
+  // card of the request and the header of each document it names read too, so a refusal in the
+  // header shows in those places and theirs shows here, for the versions of the request's
+  // documents that Approve judged. It holds the press (`DocumentReview.at`), so the focus goes
+  // back to the place where the person pressed.
+  const formRefusalKey = approvalRefusalKey(approval?.ask_id, artifact.id);
+  const formRefusal = useFormRefusal(formRefusalKey, approvalVersionsOf(artifact));
   const refusalSurface = useRefusalSurface();
   const chipRef = useRef<HTMLDivElement>(null);
   const queryClient = useQueryClient();
@@ -454,11 +466,14 @@ export function ApprovalChip({
       api.createArtifactReview(reviewed.id, input, bounds),
     onError: (error, { artifact: reviewed, at, input }) => {
       if (input.state === "approved" && isSpecFormRefusal(error) && at !== undefined) {
-        setFormRefusal(approvalRefusalKey(reviewed.id), { error, press: at });
+        setFormRefusal(approvalRefusalKey(reviewed.approval?.ask_id, reviewed.id), {
+          error,
+          press: at,
+        });
       }
     },
     onSuccess: (_result, { artifact: reviewed }) => {
-      setFormRefusal(approvalRefusalKey(reviewed.id), undefined);
+      setFormRefusal(approvalRefusalKey(reviewed.approval?.ask_id, reviewed.id), undefined);
       // Outside `NoTooltips` the dialog closes as the write lands and the reads the write makes
       // stale go on after it, as on `main`. Inside, `onSuccess` returns those reads, which
       // TanStack Query awaits before the write stops pending: Approve, Request changes and the
@@ -599,7 +614,7 @@ export function ApprovalChip({
                   if (page !== null) setSentReview("approved");
                   review.mutate({
                     artifact,
-                    at: pressOn(refusalSurface, approval.latest_version),
+                    at: pressOn(refusalSurface, approvalVersionsOf(artifact)),
                     input: { state: "approved" },
                   });
                 });
