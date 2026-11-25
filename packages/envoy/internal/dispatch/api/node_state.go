@@ -58,7 +58,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
-	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 // Codes of the two routes' own refusals, and of a write on a gone node.
@@ -133,57 +132,51 @@ type stateTarget struct {
 	end           storedEnd
 }
 
-// askOfBlockQuery answers the ID of the ask that holds the question's state for the `:::ask`
-// block at stored kind $1 and address $2. It looks up document_blocks by
-// document_blocks_node_address (migration 20261111043000) and joins the block's own ask by
-// document and block ID, matching the block ID keys for asks_block_id_unique (migration 0127).
-// If the block has no ask of its own, it reads the source ask from the block's current asserted
-// copied_from tuple (graphstore.CurrentTupleRead). It answers null for an ask block with
-// neither and no row for any other node.
-var askOfBlockQuery = `
-	select coalesce(k.id::text, copied.to_id)
-	from document_blocks b
-	left join asks k on k.block_artifact_id = b.artifact_id
-		and block_id_key(k.block_id) = block_id_key(b.block_id) and k.block_id = b.block_id
-	left join lateral (
-		select c.to_id
-		from (` + graphstore.CurrentTupleRead(`t.to_kind, t.to_id`, `t.to_id, t.asserted, t.seq`,
-	`t.from_kind = b.node_kind and t.from_id = b.node_address and t.kind = '`+graphstore.TupleCopiedFrom+`'
-			and t.to_kind = '`+graphstore.KindAsk+`'`) + `) c
-		where k.id is null and c.asserted
-		order by c.seq desc limit 1
-	) copied on true
-	where b.node_kind = $1 and b.node_address = $2 and b.type = 'ask'`
+// askBlockQuery answers the document and the block id of the `:::ask` block whose block node the
+// store keys by kind $1 and address $2: its row of type ask in the document's block index, which
+// document_blocks_node_address (migration 20261111043000) finds. Any other node has no such row.
+const askBlockQuery = `
+	select artifact_id::text, block_id from document_blocks
+	where node_kind = $1 and node_address = $2 and type = 'ask'`
 
 // askHoldsState refuses a write on the block node of an `:::ask` block with 409 ASK_HOLDS_STATE
-// and returns nil for other nodes. It reads in the write's transaction (q) only for nodes the
-// graph addresses as blocks (graphstore.AddressKind), not lens findings, which are also stored
-// as blocks. The refusal names the block and the ask that holds the question's state: the
-// block's own ask, or the source ask for a copy (askOfBlockQuery). Both are under the route's
-// issue key: findWrittenNode checks the block's issue and settlement takes copy sources from
-// the same owner's documents (docs' copiedAskSourcesQuery). If there is no ask yet, the refusal
-// says so. In either case the write stores nothing.
-func askHoldsState(ctx context.Context, q refs.Queryer, key string, target stateTarget) error {
+// and returns nil for other nodes. It reads in the write's transaction (q), and only for nodes the
+// graph addresses as blocks (graphstore.AddressKind), not lens findings, which are also stored as
+// blocks; a block its document's block index holds no ask row of (askBlockQuery) is no `:::ask`
+// block. The refusal names the block and the ask that holds the question's state: the ask the
+// block's id names in its document's question map for who, the reader the route found the node
+// for (refs.QuestionMap), the one rule every read of a question takes. That ask is the block's own
+// ask; else, for a copy, the ask its block node's copied_from tuple names; else, for a copy no
+// settlement of this build has claimed yet, the ask its opening line names as copied_from. An ask
+// who may not see, or a copied ask on a document who may not see, is none of these. The refusal
+// names the ask by its own address (refs.AskRef), under the ask's own issue or project document.
+// A block the rule gives no ask, one not settled yet, is refused saying no ask holds the question
+// yet. In either case the write stores nothing.
+func askHoldsState(ctx context.Context, q refs.Queryer, who model.Actor, target stateTarget) error {
 	if graphstore.AddressKind(target.end.kind, target.end.id) != refs.BlockNodeKind {
 		return nil
 	}
-	var askID *string
-	err := q.QueryRow(ctx, askOfBlockQuery, target.end.kind, target.end.id).Scan(&askID)
+	var document, blockID string
+	err := q.QueryRow(ctx, askBlockQuery, target.end.kind, target.end.id).Scan(&document, &blockID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil
 	}
 	if err != nil {
+		return fmt.Errorf("read the ask block %s %s: %w", target.end.kind, target.end.id, err)
+	}
+	questions, err := refs.QuestionMap(ctx, q, who, document)
+	if err != nil {
 		return fmt.Errorf("read the ask of the block %s %s: %w", target.end.kind, target.end.id, err)
 	}
-	if askID == nil {
+	ask, held := questions[blockID]
+	if !held {
 		return errorf(http.StatusConflict, codeAskHoldsState,
 			"the %s %s is an :::ask block, and an ask holds the question's state, not the block: no ask holds this question yet, so nothing was written",
 			target.kind, target.address)
 	}
-	ask := refs.AskRef(text.Ref{IssueKey: key, ID: *askID})
 	return errorf(http.StatusConflict, codeAskHoldsState,
 		"the %s %s is an :::ask block: the ask %s holds the question's state. Write the state on the ask. Nothing was written.",
-		target.kind, target.address, ask)
+		target.kind, target.address, refs.AskRef(ask))
 }
 
 // goneNodeUnderIssueQuery is whether the store holds the node whose stored kind and id are $1 and
@@ -314,7 +307,7 @@ func (s *server) writeNodeStateAs(w http.ResponseWriter, r *http.Request, suppli
 		return
 	}
 	target := stateTarget{kind: found.Kind, address: cmp.Or(found.Ref, id), end: end.stored()}
-	if err := askHoldsState(ctx, tx, key, target); err != nil {
+	if err := askHoldsState(ctx, tx, proving.Recorded(), target); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}

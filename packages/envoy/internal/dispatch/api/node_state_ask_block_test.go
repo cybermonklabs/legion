@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -118,6 +119,74 @@ func TestTheStateRouteRefusesACopiedAskBlockNamingItsSourceAsk(t *testing.T) {
 	askBefore := readAskBlockNodeState(t, database, ask)
 
 	requireRefused(t, "proposed on the copied ask block", writeStateAs(t, handler, issue.Key, block, graphstore.StateProposed, "alice"),
+		http.StatusConflict, codeAskHoldsState, block, ask)
+	if after := readAskBlockNodeState(t, database, block); after != blockBefore {
+		t.Fatalf("the refused write moved the copied block %s from %+v to %+v", block, blockBefore, after)
+	}
+	if after := readAskBlockNodeState(t, database, ask); after != askBefore {
+		t.Fatalf("the refused write moved the source ask %s from %+v to %+v", ask, askBefore, after)
+	}
+}
+
+// TestTheStateRouteRefusesAnUnclaimedCopyNamingTheAskItsOpeningLineNames holds the state route to
+// the question map's third case (refs.QuestionMap): a copy no settlement of this build has claimed,
+// whose block has no ask of its own and whose node holds no copied_from tuple, and whose latest
+// version's opening line names the ask it copies as copied_from. The spec's text is uploaded as a
+// second document of the same issue; once settlement has written the copy's provenance into its
+// latest version and owes the copy nothing more, the test takes the copied_from tuples off the
+// copy's block node, so the store holds the copy as the release before left one, its source named
+// in its opening line alone. The question map then gives the block the source ask, and the copy's
+// proposed write is 409 ASK_HOLDS_STATE naming that same ask. The refusal leaves both nodes'
+// states and state tuple counts as they were.
+func TestTheStateRouteRefusesAnUnclaimedCopyNamingTheAskItsOpeningLineNames(t *testing.T) {
+	t.Parallel()
+	handler, database := blockAskHandler(t)
+	const question = "Ship the cache this week?"
+	issue, askID := seedBlockAsk(t, handler, "An unclaimed copy of a question", "q1",
+		":::ask{#q1 urgency=\"med\" multiple=\"false\"}\n"+question+"\n\n- Ship: Now.\n- Hold: Later.\n:::\n", question)
+	record, _ := documentTexts(t, handler, issue.PrimaryArtifactID)
+	uploaded := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]any{
+		"actor": sessionActor(), "name": "spec-record.md", "content": record,
+	})
+	if uploaded.Code != http.StatusCreated {
+		t.Fatalf("upload the record copy: status=%d body=%s", uploaded.Code, uploaded.Body.String())
+	}
+	copied := decodeBody[struct {
+		Artifact model.Artifact `json:"artifact"`
+	}](t, uploaded).Artifact
+	copyID := refs.BlockAddress(copied.RefKey, "q1")
+	opener := `copied_from="` + askID + `"`
+	testwait.UntilPolling(t, 20*time.Millisecond, "the copy's latest version to name its source ask in the opening line of q1", func() (string, bool) {
+		_, version := documentTexts(t, handler, copied.ID)
+		return version, strings.Contains(version, opener)
+	})
+	// A settlement is what states the claim: once the copy owes none, no later pass runs over it
+	// that could state the claim again after the tuples below are taken off.
+	awaitSettled(t, database, copied.ID)
+	if removed, err := database.Pool.Exec(context.Background(), `delete from graph_tuples where from_kind = $1 and from_id = $2 and kind = $3`,
+		refs.BlockNodeKind, copyID, graphstore.TupleCopiedFrom); err != nil || removed.RowsAffected() == 0 {
+		t.Fatalf("take the copied_from tuples off the copy's block %s: %d rows, %v", copyID, removed.RowsAffected(), err)
+	}
+	if ties := currentTies(t, database, copyID, graphstore.TupleCopiedFrom); len(ties) != 0 {
+		t.Fatalf("the copy's block %s still holds the copied_from %+v, want none", copyID, ties)
+	}
+	if owned := countRows(t, database, `select count(*) from asks where block_artifact_id = $1::uuid`, copied.ID); owned != 0 {
+		t.Fatalf("the copy opened %d asks of its own, want none", owned)
+	}
+	ask := "dispatch://" + issue.Key + "/ask/" + askID
+	read := dispatchRequest(t, handler, http.MethodGet, "/api/v1/references/questions?kind=artifact&id="+copied.ID, nil, "alice")
+	if read.Code != http.StatusOK {
+		t.Fatalf("read the copy's question map: status=%d body=%s", read.Code, read.Body.String())
+	}
+	if questions := decodeBody[referenceQuestions](t, read).Questions; len(questions) != 1 || questions[0].BlockID != "q1" ||
+		questions[0].Ask != askID || questions[0].Reference != ask {
+		t.Fatalf("the copy's question map is %+v, want q1 naming the ask its opening line names, %s at %s", questions, askID, ask)
+	}
+	block := refs.BlockRef("dispatch://"+issue.Key+"/artifact/"+copied.Slug, "q1")
+	blockBefore := readAskBlockNodeState(t, database, block)
+	askBefore := readAskBlockNodeState(t, database, ask)
+
+	requireRefused(t, "proposed on the unclaimed copy's ask block", writeStateAs(t, handler, issue.Key, block, graphstore.StateProposed, "alice"),
 		http.StatusConflict, codeAskHoldsState, block, ask)
 	if after := readAskBlockNodeState(t, database, block); after != blockBefore {
 		t.Fatalf("the refused write moved the copied block %s from %+v to %+v", block, blockBefore, after)
