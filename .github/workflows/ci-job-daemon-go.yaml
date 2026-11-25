@@ -135,6 +135,7 @@ jobs:
           cache: false
 
       # go-daemon, shared with typecheck and pi-legion.
+      # why: .github/ci-notes/ci.md#a-cache-restore-comes-before-every-step-that-can-write-a-path-it-names
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
@@ -167,13 +168,21 @@ jobs:
 
       # The NATS tests of the plain step's packages (internal/admit, internal/natsauth,
       # internal/workflow and the testnats package itself) start testnats.Image, the hub's 2.15.1,
-      # pulled first for the reason the action gives. The two other images the module's tests
-      # start are the race packages' (daemon-go-race below).
-      - name: Pull the NATS test container images
+      # and internal/ompsessions' TestEveryPoolPinsItsSearchPath starts PoolImage, PgBouncer
+      # 1.25.2, with docker; each is pulled first for the reason the action gives. The two other
+      # NATS images the module's tests start are the race packages' (daemon-go-race below).
+      - name: Pull the NATS and PgBouncer test container images
         uses: ./.github/actions/pull-test-images
         with:
           consts: |
             packages/daemon/internal/testnats/nats.go Image
+            packages/daemon/internal/ompsessions/searchpath_test.go PoolImage
+
+      # No commit, checkpoint or database copy here waits for the runner's disk: why every
+      # Postgres service runs so is .github/scripts/pg-crash-safety-off.sh's header.
+      - name: Turn crash safety off on the service
+        timeout-minutes: 2
+        run: .github/scripts/pg-crash-safety-off.sh "${{ job.services.postgres.id }}"
 
       # The step runs every package of the module except the five daemon-go-race's race step tests
       # and internal/textcheck, whose tests are the text-check job's: so each of the five runs once
@@ -296,6 +305,7 @@ jobs:
           cache: false
 
       # go-daemon, which holds the race build of these five packages too (ci-caches.yaml).
+      # why: .github/ci-notes/ci.md#a-cache-restore-comes-before-every-step-that-can-write-a-path-it-names
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
@@ -315,6 +325,12 @@ jobs:
       # so that it reads the restored module cache.
       - name: Size the service for this lane's Dispatch processes
         run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
+
+      # No commit, checkpoint or database copy here waits for the runner's disk: why every
+      # Postgres service runs so is .github/scripts/pg-crash-safety-off.sh's header.
+      - name: Turn crash safety off on the service
+        timeout-minutes: 2
+        run: .github/scripts/pg-crash-safety-off.sh "${{ job.services.postgres.id }}"
 
       # internal/daemon's tests boot the daemon on the tmux runtime, which resolves tmux.
       - name: Install tmux

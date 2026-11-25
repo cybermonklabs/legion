@@ -14,8 +14,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/legion/daemon/internal/claudelaunch"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 	"github.com/sjawhar/legion/daemon/internal/rolefile"
@@ -84,7 +82,7 @@ func (d sessionDial) url() (string, error) {
 }
 
 // connect opens one connection to the database.
-func (d sessionDial) connect(ctx context.Context) (*pgx.Conn, error) {
+func (d sessionDial) connect(ctx context.Context) (*ompsessions.Conn, error) {
 	dsn, err := d.url()
 	if err != nil {
 		return nil, err
@@ -97,7 +95,7 @@ func (d sessionDial) connect(ctx context.Context) (*pgx.Conn, error) {
 // resumeLookupTimeout, as a database that is briefly unreachable must not fail the launch; a URL
 // file that is missing or empty is refused at once. parent's end (the container's stop) ends the
 // wait as the timeout does.
-func (d sessionDial) dial(parent context.Context, ready func(context.Context, *pgx.Conn) error) (*pgx.Conn, error) {
+func (d sessionDial) dial(parent context.Context, ready func(context.Context, *ompsessions.Conn) error) (*ompsessions.Conn, error) {
 	ctx, cancel := context.WithTimeout(parent, resumeLookupTimeout)
 	defer cancel()
 	for attempt := 0; ; attempt++ {
@@ -122,7 +120,7 @@ func (d sessionDial) dial(parent context.Context, ready func(context.Context, *p
 
 // closeSessions closes conn, a session database connection if any, bounded by the proxy's own
 // drain.
-func closeSessions(conn *pgx.Conn) {
+func closeSessions(conn *ompsessions.Conn) {
 	if conn != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), sessionDrain)
 		_ = conn.Close(ctx)
@@ -144,7 +142,7 @@ type claudeKeeper struct {
 	sessions  sessionDial
 	configDir string
 	session   string
-	conn      *pgx.Conn
+	conn      *ompsessions.Conn
 	// transcript and record are the two kept files: the transcript and the phase-reminder record.
 	transcript, record *keptFile
 	// appendRow and replaceRow write a kept file's row: ompsessions.Append and Replace, which a
@@ -159,7 +157,7 @@ type claudeKeeper struct {
 
 // rowWrite is ompsessions.Append's and Replace's shape: a compare-and-set write of content at path
 // over the byte_len its writer last saved.
-type rowWrite func(ctx context.Context, conn *pgx.Conn, path string, saved int64, content []byte, mtime time.Time) error
+type rowWrite func(ctx context.Context, conn *ompsessions.Conn, path string, saved int64, content []byte, mtime time.Time) error
 
 // keptFile is one kept file as its writer last saved it.
 type keptFile struct {
@@ -257,7 +255,7 @@ func newClaudeKeeper(env []string, resume, clientURL string, log io.Writer) (*cl
 // the child starts on the session the table holds, and the transcript's marker is written: the
 // table already holds what the claim records. parent's end (the container's stop) ends the wait as
 // the timeout does. A nil keeper, a generation that keeps nothing, closes conn.
-func (k *claudeKeeper) open(parent context.Context, conn *pgx.Conn) error {
+func (k *claudeKeeper) open(parent context.Context, conn *ompsessions.Conn) error {
 	if k == nil {
 		closeSessions(conn)
 		return nil

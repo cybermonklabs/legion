@@ -105,6 +105,7 @@ fixture() {
     "$root/.github/actions/pull-test-images" \
     "$root/packages/envoy/docker" "$root/packages/envoy/infra/host/heldportwrapper" \
     "$root/packages/daemon/docker" "$root/packages/daemon/internal/testnats" \
+    "$root/packages/daemon/internal/ompsessions" \
     "$root/packages/envoy/internal/testnats" "$root/packages/envoy/internal/testpg" \
     "$root/packages/envoy/internal/tests3" "$root/packages/envoy-client/test" \
     "$root/scripts/e2e/lib" "$root/packages/dispatch/e2e" \
@@ -201,6 +202,7 @@ RUN bun install
 YAML
   local go_file
   for go_file in packages/daemon/internal/testnats/nats.go \
+    packages/daemon/internal/ompsessions/searchpath_test.go \
     packages/envoy/internal/testnats/nats.go packages/envoy/internal/testpg/testpg.go \
     packages/envoy/internal/tests3/seaweedfs.go; do
     cat > "$root/$go_file" <<YAML
