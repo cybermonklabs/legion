@@ -31,6 +31,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -65,7 +66,7 @@ func testServiceDeps(database *store.Store) Deps {
 func newTestServiceOn(t *testing.T, database *store.Store) *Service {
 	t.Helper()
 	service := New(testServiceDeps(database))
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		if err := service.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}
@@ -81,6 +82,7 @@ func newTestService(t *testing.T) (*Service, string) {
 }
 
 func TestRepairingAnUnreadableAskBlockCountsTheAskItOpens(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, ":::ask{#ttl urgency=\"med\" multiple=\"false\" state=\"open\"}\nWhich cache TTL?\n\n- Short: 60 seconds\n- Long: one hour\n:::\n")
@@ -113,6 +115,7 @@ func TestRepairingAnUnreadableAskBlockCountsTheAskItOpens(t *testing.T) {
 // An edit names the ask blocks it added in document order, each with its question, whatever
 // their ids' order; a block already in the document is not among them.
 func TestEditNamesTheAddedAskBlocksInDocumentOrder(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, ":::ask{#held urgency=\"med\"}\nWhich region?\n:::\n")
@@ -129,6 +132,7 @@ func TestEditNamesTheAddedAskBlocksInDocumentOrder(t *testing.T) {
 	}
 }
 func TestEditingBesideAnUnreadableAskBlockAddsNoAsk(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, ":::ask{#ttl urgency=\"med\" multiple=\"false\" state=\"open\"}\nWhich cache TTL?\n\n- Short: 60 seconds\n- Long: one hour\n:::\n")
@@ -155,6 +159,7 @@ func TestEditingBesideAnUnreadableAskBlockAddsNoAsk(t *testing.T) {
 }
 
 func TestSettlementIndexesRetractsAndRestoresTypedAskBlocks(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	const askMarkdown = ":::ask{#ask-block multiple=\"false\" state=\"open\" urgency=\"high\"}\nWhich transport should we expose?\n\n- REST: Matches the existing platform\n- gRPC: Adds streaming\n:::\n"
@@ -216,6 +221,7 @@ func TestSettlementIndexesRetractsAndRestoresTypedAskBlocks(t *testing.T) {
 // and its row reads back as written, whether or not a reader takes the address for a link
 // (INFRA-531).
 func TestAnAskWhoseTextHoldsWebAddressesSettlesAsWritten(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, ":::ask{#hosts urgency=\"med\" multiple=\"false\" state=\"open\"}\nWhich host?\n\n- A: First\n:::\n")
@@ -262,6 +268,7 @@ func TestAnAskWhoseTextHoldsWebAddressesSettlesAsWritten(t *testing.T) {
 // approval to such a version instead, which is a version and an artifact.approved event nothing in
 // the log explains, so settlement still writes none.
 func TestSettlementIndexingAnAskBlockTheEditVersionedWritesNoVersion(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	agent := model.Actor{Kind: "session", ID: "session-0123456789abcdef"}
@@ -333,11 +340,12 @@ func agentEditVersion(t *testing.T, service *Service, artifactID string, actor m
 // rendered markdown did not - a paragraph's block id is not in it - so a version for the repair
 // repeats the version before it on a document nobody edited (LEGION-229 requirement 2).
 func TestSettlementStampingBlockIDsWritesNoVersion(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before")
 	seedUnidentifiedProofDocument(t, database, artifactID, "before")
 	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Hour})
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		if err := service.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}
@@ -366,11 +374,12 @@ func TestSettlementStampingBlockIDsWritesNoVersion(t *testing.T) {
 // the document schedules one - would version a document nobody had touched, credited to nobody,
 // staling its approval all over again.
 func TestSettlementRepairThatRendersTheSameMarkdownRecordsNoContentChange(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "snake_case here")
 	seedUnidentifiedProofDocument(t, database, artifactID, "snake_case here")
 	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Hour})
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		if err := service.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}
@@ -513,6 +522,7 @@ func TestSettlementWritesNoVersionForAnotherRendererVersionsSpellingOfTheSameTre
 // events that name one - here `block.invalid`, whose `invalid` attribute no rendering carries -
 // have to say that number rather than the one the settlement would have written.
 func TestSettlementWritingNoVersionNamesTheOneItLeavesTheDocumentAt(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, ":::ask{#ask-block urgency=\"med\" multiple=\"false\" state=\"open\"}\nShould we ship?\n\n- Ship: Release it\n- Hold: Wait for review\n:::\n")
@@ -550,6 +560,7 @@ func TestSettlementWritingNoVersionNamesTheOneItLeavesTheDocumentAt(t *testing.T
 }
 
 func TestSettlementRepairsServerOwnedAskAttributesOncePerVersion(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, ":::ask{#ask-block urgency=\"med\" multiple=\"false\" state=\"open\"}\nShip it?\n:::\n")
@@ -595,6 +606,7 @@ func TestSettlementRepairsServerOwnedAskAttributesOncePerVersion(t *testing.T) {
 }
 
 func TestSettlementRecordsMalformedAskAndRepairsIt(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = 10 * time.Millisecond
 	seedServiceText(t, service, artifactID, ":::ask{#ask-block urgency=\"med\" multiple=\"false\" state=\"open\"}\nShould we ship?\n\n- Ship: Release it\n- Hold: Wait for review\n:::\n")
@@ -725,6 +737,7 @@ func TestSettlementRecordsMalformedAskAndRepairsIt(t *testing.T) {
 // A browser edit can put a block an ask's body does not allow into it; settlement keeps the block
 // and flags it instead of indexing it.
 func TestSettlementMarksUnsupportedAskBodyInvalid(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	// The edit lands before any settlement: one that ran first would index the seeded ask while its
 	// body still allows it.
@@ -753,6 +766,7 @@ func TestSettlementMarksUnsupportedAskBodyInvalid(t *testing.T) {
 // and draws its options from the last list alone. Settlement marks it invalid and leaves its row
 // open and as it was, until an edit joins the lists.
 func TestSettlementMarksAnAskWithASecondBulletListInvalid(t *testing.T) {
+	t.Parallel()
 	const reason = `ask block "ask-lists", asking "Should we ship?", holds a second bullet list where its content rule, paragraph+ bullet_list?, allows one or more paragraphs and then at most one bullet list, last`
 	service, artifactID := seedIndexedShipAsk(t, "ask-lists")
 	editLiveTree(t, service, artifactID, appendToAsk(parsedBlock(t, "- Defer: Wait a week\n")))
@@ -779,6 +793,7 @@ func TestSettlementMarksAnAskWithASecondBulletListInvalid(t *testing.T) {
 // the refusal quotes every block of the decision, its id with it, so a caller deleting one with a
 // document edit sees every word it removes.
 func TestSetAskBlockTextRefusesEveryEditOfAnAskBreakingItsContentRule(t *testing.T) {
+	t.Parallel()
 	ship := model.AskOption{Label: "Ship", Description: "Release it"}
 	hold := model.AskOption{Label: "Hold", Description: "Wait for review"}
 	defer_ := model.AskOption{Label: "Defer", Description: "Wait a week"}
@@ -819,6 +834,7 @@ func TestSetAskBlockTextRefusesEveryEditOfAnAskBreakingItsContentRule(t *testing
 // The refusal of a two-list decision, word for word: the content rule it breaks, the one path out,
 // and every block quoted in full by its id.
 func TestSetAskBlockTextRefusalOfATwoListAskQuotesEveryBlock(t *testing.T) {
+	t.Parallel()
 	service, artifactID := seedIndexedShipAsk(t, "ask-lists")
 	editLiveTree(t, service, artifactID, appendToAsk(parsedBlock(t, "- Defer: Wait a week\n  - only if finance agrees\n")))
 	settleCurrentGeneration(t, service, artifactID)
@@ -949,6 +965,7 @@ func followRefusal(t *testing.T, service *Service, artifactID string, edit AskBl
 // refusal, deletes them with one document edit, and edits the ask, sending back the deleted list's
 // option with the words the refusal quoted.
 func TestSetAskBlockTextRefusalOfABrokenAskNamesAPathThatApplies(t *testing.T) {
+	t.Parallel()
 	ship := model.AskOption{Label: "Ship", Description: "Release it"}
 	hold := model.AskOption{Label: "Hold", Description: "Wait for review"}
 	service, artifactID := seedIndexedShipAsk(t, "ask-lists")
@@ -961,6 +978,7 @@ func TestSetAskBlockTextRefusalOfABrokenAskNamesAPathThatApplies(t *testing.T) {
 // With two extra lists, a document edit deleting one is refused (it leaves the decision broken),
 // so the refusal names both, to delete in one document edit, which applies.
 func TestSetAskBlockTextRefusalOfAThreeListAskNamesEveryDeleteInOneEdit(t *testing.T) {
+	t.Parallel()
 	ship := model.AskOption{Label: "Ship", Description: "Release it"}
 	hold := model.AskOption{Label: "Hold", Description: "Wait for review"}
 	service, artifactID := seedIndexedShipAsk(t, "ask-lists")
@@ -976,6 +994,7 @@ func TestSetAskBlockTextRefusalOfAThreeListAskNamesEveryDeleteInOneEdit(t *testi
 // whose deletion leaves the question's paragraphs and the first list after them, and a document
 // edit deleting exactly those applies.
 func TestSetAskBlockTextRefusalNamesADeleteThatAppliesWhateverTheShape(t *testing.T) {
+	t.Parallel()
 	ship := model.AskOption{Label: "Ship", Description: "Release it"}
 	hold := model.AskOption{Label: "Hold", Description: "Wait for review"}
 	emptyParagraph := func(id string) *pmdoc.Node {
@@ -1042,6 +1061,7 @@ func TestSetAskBlockTextRefusalNamesADeleteThatAppliesWhateverTheShape(t *testin
 // the same way, every list of it kept as it is, since the content rule it breaks is weighed
 // after its question: no delete repairs a decision while it asks nothing.
 func TestEditAskRepairsAnEmptyQuestion(t *testing.T) {
+	t.Parallel()
 	t.Run("the decision keeps its content rule", func(t *testing.T) {
 		service, artifactID := seedIndexedShipAsk(t, "ask-lists")
 		editLiveTree(t, service, artifactID, func(tree *pmdoc.Node) *pmdoc.Node {
@@ -1156,6 +1176,7 @@ func TestEditAskRepairsAnEmptyQuestion(t *testing.T) {
 // decision it changes unreadable, and one asking nothing is unreadable, so the deletes the
 // content rule would name are a step no caller can take yet.
 func TestEditAskOfAnEmptyQuestionNamesTheStep(t *testing.T) {
+	t.Parallel()
 	t.Run("the decision keeps its content rule", func(t *testing.T) {
 		service, artifactID := seedIndexedShipAsk(t, "ask-lists")
 		editLiveTree(t, service, artifactID, func(tree *pmdoc.Node) *pmdoc.Node {
@@ -1236,6 +1257,7 @@ func TestEditAskOfAnEmptyQuestionNamesTheStep(t *testing.T) {
 // it applies. The decision ends reading as one, and every word no refusal named for deletion -
 // the words under an option among them - is still in the document.
 func TestEditAskRefusalOfAnEmptyQuestionNamesAPathThatApplies(t *testing.T) {
+	t.Parallel()
 	service, artifactID := seedIndexedRichAsk(t)
 	editLiveTree(t, service, artifactID, func(tree *pmdoc.Node) *pmdoc.Node {
 		ask := firstAsk(tree)
@@ -1333,6 +1355,7 @@ func TestEditAskRefusalOfAnEmptyQuestionNamesAPathThatApplies(t *testing.T) {
 // leniently: a merge across the lists would move a person's words from one into another. The
 // question alone applies, and once the decision reads as one the same options edit applies too.
 func TestEditAskOptionsOfADecisionHoldingTwoListsWaitForTheQuestion(t *testing.T) {
+	t.Parallel()
 	service, artifactID := seedIndexedShipAsk(t, "ask-lists")
 	editLiveTree(t, service, artifactID, func(tree *pmdoc.Node) *pmdoc.Node {
 		ask := firstAsk(tree)
@@ -1398,6 +1421,7 @@ func askRowCount(t *testing.T, service *Service, artifactID, blockID string) int
 // it; or the refusal names no delete and says why. No body is skipped for resembling another, and
 // each block's words are its own, so a lost word names its block.
 func TestSetAskBlockTextRefusalOfEveryBrokenBodyLeadsToAValidDecision(t *testing.T) {
+	t.Parallel()
 	service, _ := newTestService(t)
 	service.settle = time.Hour
 	bodies := askBodies([]string{"P", "E", "L", "N"}, 5)
@@ -1410,7 +1434,7 @@ func TestSetAskBlockTextRefusalOfEveryBrokenBodyLeadsToAValidDecision(t *testing
 		noDelete                  = map[string]int{}
 		noDeleteShape             = map[string]string{}
 	)
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		t.Logf("%d bodies enumerated, %d breaking the content rule: %d followed to a valid decision, %d naming no delete and saying why, %d failing",
 			len(bodies), broken, followed, unnamed, broken-followed-unnamed)
 		for reason, count := range noDelete {
@@ -1602,6 +1626,7 @@ func noDeleteExplanation(ask *pmdoc.Node, reason string) string {
 // the refusal names the nested decision's own extra block, by its id, as the one edit that
 // repairs both - which applies, and the ask edit after it.
 func TestSetAskBlockTextRefusalOfAnAskHoldingABrokenDecisionNamesTheNestedDelete(t *testing.T) {
+	t.Parallel()
 	service, artifactID := seedIndexedShipAsk(t, "ask-lists")
 	nested := parsedBlock(t, ":::ask{#ask-nested urgency=\"med\" multiple=\"false\" state=\"open\"}\nWhich day?\n\n- Monday\n:::\n")
 	nested.Children = append(nested.Children, parsedBlock(t, "- Tuesday\n"))
@@ -1657,6 +1682,7 @@ func TestSetAskBlockTextRefusalOfAnAskHoldingABrokenDecisionNamesTheNestedDelete
 // quoted in it; or it names no delete and says why, naming no decision that already reads as one,
 // so a caller is never sent to one, nor from the decision to the one holding it and back.
 func TestSetAskBlockTextRefusalOfEveryBrokenBodyHoldingADecisionLeadsToAValidDecision(t *testing.T) {
+	t.Parallel()
 	service, _ := newTestService(t)
 	service.settle = time.Hour
 	nested := askBodies([]string{"P", "E", "L", "N"}, 3)
@@ -1670,7 +1696,7 @@ func TestSetAskBlockTextRefusalOfEveryBrokenBodyHoldingADecisionLeadsToAValidDec
 		noDelete                         = map[string]int{}
 		noDeleteShape                    = map[string]string{}
 	)
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		t.Logf("%d bodies enumerated, %d breaking the content rule: %d refusals followed to a valid decision, "+
 			"%d naming no delete and saying why; %d of the %d bodies end with the decision reading as one",
 			len(bodies), broken, followed, unnamed, valid, broken)
@@ -1779,6 +1805,7 @@ func TestSetAskBlockTextRefusalOfEveryBrokenBodyHoldingADecisionLeadsToAValidDec
 // edited one would have to change - it has no question of its own, or it is decided and broken
 // too - where the refusal names no delete and no decision to edit.
 func TestSetAskBlockTextRefusalOfNestedDecisionsNamesOnlyWhatBreaksTheRule(t *testing.T) {
+	t.Parallel()
 	t.Run("the decision and the one it holds both broken", func(t *testing.T) {
 		service, artifactID := seedIndexedShipAsk(t, "ask-lists")
 		editLiveTree(t, service, artifactID, func(tree *pmdoc.Node) *pmdoc.Node {
@@ -2576,6 +2603,7 @@ func askHeldBodyBlock(t *testing.T, kind string, position, index int) *pmdoc.Nod
 // settles, still quoting every block. Once it settles, the retried edit names the delete, which
 // applies.
 func TestSetAskBlockTextRefusalBeforeBlockIDsSettleNamesNoDelete(t *testing.T) {
+	t.Parallel()
 	for name, edit := range map[string]func(t *testing.T) func(*pmdoc.Node) *pmdoc.Node{
 		"list with no id": func(t *testing.T) func(*pmdoc.Node) *pmdoc.Node {
 			list := parsedBlock(t, "- Defer: Wait a week\n")
@@ -2624,6 +2652,7 @@ func TestSetAskBlockTextRefusalBeforeBlockIDsSettleNamesNoDelete(t *testing.T) {
 // command substitution. The refusal gives it only as Go-quoted data and names no command; %q does
 // not escape $, backtick or ' for a shell, so the reason must hold no command text to paste.
 func TestSetAskBlockTextRefusalGivesABlockIDOnlyAsQuotedData(t *testing.T) {
+	t.Parallel()
 	const id = `x'; $(touch pwned); echo "`
 	service, artifactID := seedIndexedShipAsk(t, "ask-lists")
 	editLiveTree(t, service, artifactID, func(tree *pmdoc.Node) *pmdoc.Node {
@@ -2704,6 +2733,7 @@ func askOptionItemMarkdown(t *testing.T, list, item *pmdoc.Node) string {
 // the very node the document holds, so the sub-list, the second paragraph, the bold run and the
 // link's address under it survive with their own block ids and marks.
 func TestAskOptionsEditKeepsWhatItDoesNotWrite(t *testing.T) {
+	t.Parallel()
 	service, artifactID := seedIndexedRichAsk(t)
 	list := askOptionList(t, service, artifactID)
 	before := list.Children[1]
@@ -2731,6 +2761,7 @@ func TestAskOptionsEditKeepsWhatItDoesNotWrite(t *testing.T) {
 // An option whose description the edit changes is rewritten where it stands: its first paragraph
 // carries the new line, and every other node the item holds is the one that was there.
 func TestAskOptionsEditRewritesAnOptionAndKeepsTheRest(t *testing.T) {
+	t.Parallel()
 	service, artifactID := seedIndexedRichAsk(t)
 	list := askOptionList(t, service, artifactID)
 	before := list.Children[1]
@@ -2769,6 +2800,7 @@ func TestAskOptionsEditRewritesAnOptionAndKeepsTheRest(t *testing.T) {
 // sub-list, the second paragraph and the link under another option's words, which is a wrong
 // record rather than a deletion anyone can see.
 func TestAskOptionsEditPairsAnOptionByItsLabelNotItsPosition(t *testing.T) {
+	t.Parallel()
 	service, artifactID := seedIndexedRichAsk(t)
 	list := askOptionList(t, service, artifactID)
 	hold := list.Children[1]
@@ -2806,6 +2838,7 @@ func TestAskOptionsEditPairsAnOptionByItsLabelNotItsPosition(t *testing.T) {
 // person wrote is not, and the whole edit is refused, quoting the item so the caller can restore
 // every word of it.
 func TestAskOptionsEditRefusesDroppingAnItemHoldingContent(t *testing.T) {
+	t.Parallel()
 	ship := model.AskOption{Label: "Ship", Description: "Release it"}
 	hold := model.AskOption{Label: "Hold", Description: "Wait for review"}
 	for _, test := range []struct {
@@ -2883,6 +2916,7 @@ func markAsTyped(node *pmdoc.Node, id string) {
 // it, and no markdown writes that mark: the item holds nothing a rebuilt item would not write
 // again, so the edit that drops it is applied rather than refused for a mark no reader can see.
 func TestAskOptionsEditDropsAnItemTheEditorMarked(t *testing.T) {
+	t.Parallel()
 	service, artifactID := seedIndexedShipAsk(t, "ask-lists")
 	editLiveTree(t, service, artifactID, func(tree *pmdoc.Node) *pmdoc.Node {
 		markAsTyped(firstAsk(tree).Children[1], "typed")
@@ -2913,6 +2947,7 @@ func TestAskOptionsEditDropsAnItemTheEditorMarked(t *testing.T) {
 // ask row reads the same words either way, so an edit dropping such an option and one rewording
 // it are both applied rather than refused for markup the line does not hold.
 func TestAskOptionsEditOfALineHoldingTypedWhitespace(t *testing.T) {
+	t.Parallel()
 	ship := model.AskOption{Label: "Ship", Description: "Release it"}
 	for _, line := range []string{"Hold: Wait for review ", "Hold : Wait for review"} {
 		t.Run("the drop of "+strconv.Quote(line), func(t *testing.T) {
@@ -2979,6 +3014,7 @@ func seedTypedOptionLine(t *testing.T, line string) (*Service, string) {
 // either way, so an edit dropping such an option and one rewording it are both applied, as they
 // are for the whitespace a person typed.
 func TestAskOptionsEditOfALineHoldingATypedBreak(t *testing.T) {
+	t.Parallel()
 	ship := model.AskOption{Label: "Ship", Description: "Release it"}
 	for _, test := range []struct {
 		name   string
@@ -3062,6 +3098,7 @@ func seedOptionLineHolding(t *testing.T, inline []*pmdoc.Node, text string) (*Se
 // written over the paragraph deletes no word, and the ask edit carrying one repairs the decision
 // rather than being refused for a mark no reader can see.
 func TestEditAskRepairsAnEmptyQuestionOfTypedWhitespace(t *testing.T) {
+	t.Parallel()
 	service, artifactID := seedIndexedShipAsk(t, "ask-lists")
 	editLiveTree(t, service, artifactID, func(tree *pmdoc.Node) *pmdoc.Node {
 		question := firstAsk(tree).Children[0]
@@ -3093,6 +3130,7 @@ func TestEditAskRepairsAnEmptyQuestionOfTypedWhitespace(t *testing.T) {
 // prevent. The whole edit is refused instead, quoting the line's markdown so every word of it
 // can be restored and naming both ways out.
 func TestAskOptionsEditRefusesRewritingALineHoldingMarkup(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name, line, markdown, description string
 	}{
@@ -3152,6 +3190,7 @@ func TestAskOptionsEditRefusesRewritingALineHoldingMarkup(t *testing.T) {
 // which the plain line a rebuilt list writes would delete, and the row shows the sender none of
 // it. Weighing the item by its text alone would read the item as plain and drop it.
 func TestAskOptionsEditRefusesDroppingALineHoldingMarkup(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, ":::ask{#ask-lists urgency=\"med\" multiple=\"false\" state=\"open\"}\n"+
@@ -3199,6 +3238,7 @@ func TestAskOptionsEditRefusesDroppingALineHoldingMarkup(t *testing.T) {
 // against one carrying `checked: false` rather than against one carrying no box at all would
 // drop it unseen.
 func TestAskOptionsEditRefusesDroppingATaskOption(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name, box string
 		checked   bool
@@ -3263,6 +3303,7 @@ func TestAskOptionsEditRefusesDroppingATaskOption(t *testing.T) {
 // rewriting that item's line and dropping the item holding the sub-list, which is no edit's to
 // delete.
 func TestAskOptionsEditPairsOnTheWholeOptionBeforeTheLabel(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, ":::ask{#ask-lists urgency=\"med\" multiple=\"false\" state=\"open\"}\n"+
@@ -3297,6 +3338,7 @@ func TestAskOptionsEditPairsOnTheWholeOptionBeforeTheLabel(t *testing.T) {
 // A comment anchored inside what a person wrote under an option is anchored to the same words
 // after an options edit: the nodes it points into are the document's own, not a rebuilt copy.
 func TestAskOptionsEditKeepsACommentAnchoredUnderAnOption(t *testing.T) {
+	t.Parallel()
 	service, artifactID := seedIndexedRichAsk(t)
 	if _, err := joinedMarkQuote(service, artifactID, MarkSpec{
 		Kind: MarkComment, ID: "c1", By: model.Actor{Kind: "user", ID: "alice"},
@@ -3322,6 +3364,7 @@ func TestAskOptionsEditKeepsACommentAnchoredUnderAnOption(t *testing.T) {
 // the decision. That restore goes through the same options write, so the sub-list a person wrote
 // under an option it does not reword stays where they wrote it.
 func TestAskOptionsEditRestoringADecidedWordingKeepsASubList(t *testing.T) {
+	t.Parallel()
 	service, artifactID := seedIndexedRichAsk(t)
 	answerIndexedAsk(t, service, artifactID, "ask-lists")
 	settleCurrentGeneration(t, service, artifactID)
@@ -3355,6 +3398,7 @@ func TestAskOptionsEditRestoringADecidedWordingKeepsASubList(t *testing.T) {
 // dropped as it was before an options edit kept an option's content, so the block and its row
 // agree again rather than disagreeing for good.
 func TestRestoringADecidedWordingDropsAnOptionTheDecisionNeverHeld(t *testing.T) {
+	t.Parallel()
 	service, artifactID := seedIndexedRichAsk(t)
 	answerIndexedAsk(t, service, artifactID, "ask-lists")
 	settleCurrentGeneration(t, service, artifactID)
@@ -3385,6 +3429,7 @@ func TestRestoringADecidedWordingDropsAnOptionTheDecisionNeverHeld(t *testing.T)
 // list's own budget, so an edit of one option's line is taken beside a preserved sub-list of
 // thousands of items whatever the question sent with it took of the write's.
 func TestAskOptionsEditChargesTheItemsItSendsToTheWritesBudget(t *testing.T) {
+	t.Parallel()
 	// A paragraph weighs 3 elements and the line of text in it 1; a list item weighs that
 	// paragraph, its own 3 and the item's text. So this question makes half of what one write may
 	// make (pmdoc.MaxDocumentElements), and leaves the other half for the options beside it.
@@ -3494,6 +3539,7 @@ func answerIndexedAsk(t *testing.T, service *Service, artifactID, blockID string
 // A decided ask given a second list is marked invalid and keeps its decided row; once the second
 // list is gone, settlement clears invalid and the block carries its decided wording again.
 func TestSettlementMarksADecidedAskWithASecondBulletListInvalid(t *testing.T) {
+	t.Parallel()
 	service, artifactID := seedIndexedShipAsk(t, "ask-lists")
 	answerIndexedAsk(t, service, artifactID, "ask-lists")
 	settleCurrentGeneration(t, service, artifactID)
@@ -3551,6 +3597,7 @@ func TestSettlementMarksADecidedAskWithASecondBulletListInvalid(t *testing.T) {
 // browser keeps and takes no part of its question from. Settlement marks it invalid and leaves its
 // row open and as it was, until an edit moves the paragraph into the question.
 func TestSettlementMarksAnAskWithAParagraphAfterItsOptionsInvalid(t *testing.T) {
+	t.Parallel()
 	const reason = `ask block "ask-paragraph", asking "Should we ship?", holds a paragraph after its options where its content rule, paragraph+ bullet_list?, allows one or more paragraphs and then at most one bullet list, last`
 	service, artifactID := seedIndexedShipAsk(t, "ask-paragraph")
 	editLiveTree(t, service, artifactID, appendToAsk(parsedBlock(t, "Decide by Friday.\n")))
@@ -3576,6 +3623,7 @@ func TestSettlementMarksAnAskWithAParagraphAfterItsOptionsInvalid(t *testing.T) 
 // would take no PATCH at all - an urgency-only edit included - because every ask route holds
 // the merged ask to the same bound. Shortening the question by one unit repairs it.
 func TestSettlementMarksADecisionOverTheWordingBoundInvalid(t *testing.T) {
+	t.Parallel()
 	const blockID = "ask-wording"
 	options := []model.AskOption{{Label: "Ship", Description: "Release it"}, {Label: "Hold", Description: "Wait for review"}}
 	// The options the seed wrote spend their own units of the bound; the question fills the
@@ -3752,6 +3800,7 @@ func codeBlockNode(text string) *pmdoc.Node {
 // taken whatever the live ask holds besides: a comment's anchor mark in its text, the id a
 // reader's browser derives for a heading in it, or the answer or resolution the ask was given.
 func TestReplaceCarriesAnUnreadableAskWithWhatNoRenderingWrites(t *testing.T) {
+	t.Parallel()
 	const ask = "Intro.\n\n:::ask{#a1 urgency=\"med\" multiple=\"false\" state=\"open\"}\nShould we ship this week?\n:::\n"
 	actor := model.Actor{Kind: "user", ID: "alice"}
 	for _, test := range []struct {
@@ -3796,6 +3845,7 @@ func TestReplaceCarriesAnUnreadableAskWithWhatNoRenderingWrites(t *testing.T) {
 // room counts toward the live-room limit, so a room made for a document that was never written
 // would hold a slot for good.
 func TestARefusedSeedLeavesNoRoom(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct{ name, markdown string }{
 		{"an ask breaking its content rule", "Intro.\n\n:::ask{#a1 urgency=\"med\" multiple=\"false\" state=\"open\"}\nWhich?\n\n```\ncode\n```\n:::\n"},
 		{"markdown outside the schema", "<div>\nblock html\n</div>\n"},
@@ -3823,6 +3873,7 @@ func TestARefusedSeedLeavesNoRoom(t *testing.T) {
 // enters a document, as the browser editor's parser refuses to build the block; a replace of the
 // document refuses it the same way and leaves the document as it was.
 func TestSeedAndReplaceRefuseAnAskBodyTheSchemaDoesNotAllow(t *testing.T) {
+	t.Parallel()
 	const withCode = "Intro.\n\n:::ask{#a1 urgency=\"med\" multiple=\"false\" state=\"open\"}\nWhich?\n\n```\ncode\n```\n:::\n"
 	service, artifactID := newTestService(t)
 	tx, err := service.store.Pool.Begin(context.Background())
@@ -3850,6 +3901,7 @@ func TestSeedAndReplaceRefuseAnAskBodyTheSchemaDoesNotAllow(t *testing.T) {
 // A new version that carries an ask a browser edit left unreadable through unchanged is taken, as
 // an edit beside it is; one that writes into it, or writes another ask breaking the rule, is not.
 func TestReplaceCarriesAnAskTheBrowserLeftUnreadable(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "Intro.\n\n:::ask{#a1 urgency=\"med\" multiple=\"false\" state=\"open\"}\nShould we ship?\n:::\n")
@@ -3917,6 +3969,7 @@ func TestAnUploadOfTheDocumentsOwnMarkdownKeepsAsksOverSpannedTables(t *testing.
 // document is accepted beside it, while an edit that writes into it, or writes another unreadable
 // ask, is refused.
 func TestEditsBesideAnAskTheBrowserLeftUnreadableAreAccepted(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "Intro.\n\n:::ask{#a1 urgency=\"med\" multiple=\"false\" state=\"open\"}\nShould we ship?\n:::\n\nAfter.\n")
@@ -3943,6 +3996,7 @@ func TestEditsBesideAnAskTheBrowserLeftUnreadableAreAccepted(t *testing.T) {
 }
 
 func TestSettleRendersTreeAndWritesVersion(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	seedServiceText(t, service, artifactID, "before")
 	alignLatestVersionWithUpdates(t, service, artifactID)
@@ -3965,6 +4019,7 @@ func TestSettleRendersTreeAndWritesVersion(t *testing.T) {
 // version records: it credits no connected reader and settles without a version, which would
 // otherwise be a version and, over an approved document, a carried approval no change explains.
 func TestAttributesTheEditorDerivesSettleWithoutAVersion(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name     string
 		markdown string
@@ -3999,6 +4054,7 @@ func TestAttributesTheEditorDerivesSettleWithoutAVersion(t *testing.T) {
 // a transaction that then snapshots the document, as an anchored comment's handler does. Either
 // way the document keeps its one version, and the marker is credited with nothing.
 func TestAMarkInsideAWordWritesNoVersion(t *testing.T) {
+	t.Parallel()
 	alice := model.Actor{Kind: "user", ID: "alice"}
 	// snapshot marks the quote when mark is set, then versions the document, in one transaction,
 	// as an anchored comment's handler does.
@@ -4063,6 +4119,7 @@ func TestAMarkInsideAWordWritesNoVersion(t *testing.T) {
 // Renaming a heading changes its text, and the editor re-derives its id with it: that is a real
 // edit, versioned and credited to the reader connected when it happened.
 func TestRenamingAHeadingIsVersionedAndCredited(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "## Database\n\nUse SQLite")
@@ -4089,6 +4146,7 @@ func TestRenamingAHeadingIsVersionedAndCredited(t *testing.T) {
 // version written for it names only the agent, whether the edit reaches the room directly or
 // through a committed transaction, and whether the reader left before it or is still connected.
 func TestAReaderIsNoAuthorOfAnAgentsVersion(t *testing.T) {
+	t.Parallel()
 	agent := model.Actor{Kind: "session", ID: "session-0123456789abcdef"}
 	edit := []model.EditOp{{Op: "replace", Find: "before", With: "after"}}
 	for _, test := range []struct {
@@ -4197,11 +4255,12 @@ func labelOrderedListItems(node *pmdoc.Node) *pmdoc.Node {
 }
 
 func TestSettleStampsPersistedLegacyProofDocument(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before")
 	seedUnidentifiedProofDocument(t, database, artifactID, "before")
 	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Hour})
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		if err := service.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}
@@ -4226,6 +4285,7 @@ func TestSettleStampsPersistedLegacyProofDocument(t *testing.T) {
 	}
 }
 func TestSettleCapturesOnlyItsOwnIdentityUpdate(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before")
 	seedUnidentifiedProofDocument(t, database, artifactID, "before")
@@ -4240,7 +4300,7 @@ func TestSettleCapturesOnlyItsOwnIdentityUpdate(t *testing.T) {
 		Events:      events.NewBroker(),
 		Settle:      time.Hour,
 	})
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		if err := service.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}
@@ -4271,7 +4331,7 @@ func TestSettleCapturesOnlyItsOwnIdentityUpdate(t *testing.T) {
 	if err != nil && !errors.Is(err, ygws.ErrNoChanges) {
 		t.Fatalf("warm document for settlement: %v", err)
 	}
-	t.Cleanup(unsubscribe)
+	testcleanup.Add(t, unsubscribe)
 
 	// The load armed the settlement the seeded update owes, which moved the generation.
 	state := service.room(artifactID)
@@ -4317,11 +4377,12 @@ func TestSettleCapturesOnlyItsOwnIdentityUpdate(t *testing.T) {
 }
 
 func TestSettleStampsLegacyChangeInExactlyOneVersion(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before")
 	seedUnidentifiedProofDocument(t, database, artifactID, "before")
 	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Hour})
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		if err := service.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}
@@ -4351,11 +4412,12 @@ func TestSettleStampsLegacyChangeInExactlyOneVersion(t *testing.T) {
 }
 
 func TestSettleDiscardsIdentityUpdateWhenVersionTransactionFails(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before")
 	seedUnidentifiedProofDocument(t, database, artifactID, "before")
 	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Hour})
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		if err := service.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}
@@ -4379,7 +4441,7 @@ func TestSettleDiscardsIdentityUpdateWhenVersionTransactionFails(t *testing.T) {
 	`); err != nil {
 		t.Fatalf("create identity settlement failure trigger: %v", err)
 	}
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		_, _ = database.Pool.Exec(context.Background(), `drop trigger if exists dispatch_test_reject_identity_settlement on artifact_versions`)
 		_, _ = database.Pool.Exec(context.Background(), `drop function if exists dispatch_test_reject_identity_settlement()`)
 	})
@@ -4423,6 +4485,7 @@ func TestSettleDiscardsIdentityUpdateWhenVersionTransactionFails(t *testing.T) {
 }
 
 func TestFailedSettlementDoesNotDiscardSuccessorRoomUpdate(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before")
 	seedUnidentifiedProofDocument(t, database, artifactID, "before")
@@ -4439,12 +4502,12 @@ func TestFailedSettlementDoesNotDiscardSuccessorRoomUpdate(t *testing.T) {
 		Events:      events.NewBroker(),
 		Settle:      time.Hour,
 	})
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		if persistence.released.CompareAndSwap(false, true) {
 			close(release)
 		}
 	})
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		if err := service.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}
@@ -4468,7 +4531,7 @@ func TestFailedSettlementDoesNotDiscardSuccessorRoomUpdate(t *testing.T) {
 	`); err != nil {
 		t.Fatalf("create successor settlement failure trigger: %v", err)
 	}
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		_, _ = database.Pool.Exec(context.Background(), `drop trigger if exists dispatch_test_reject_successor_settlement on artifact_versions`)
 		_, _ = database.Pool.Exec(context.Background(), `drop function if exists dispatch_test_reject_successor_settlement()`)
 	})
@@ -4493,11 +4556,12 @@ func TestFailedSettlementDoesNotDiscardSuccessorRoomUpdate(t *testing.T) {
 }
 
 func TestBackfillStampsClosedIssueDocument(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before")
 	seedUnidentifiedProofDocument(t, database, artifactID, "before")
 	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Hour})
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		if err := service.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}
@@ -4526,10 +4590,11 @@ func TestBackfillStampsClosedIssueDocument(t *testing.T) {
 // (readDocument), rather than asking the room, whose inject gate refuses a closed issue, and
 // failing the room over that refusal.
 func TestAClosedIssuesDocumentReadsItsBlocksWithoutFailingItsRoom(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before")
 	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Hour})
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		if err := service.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}
@@ -4554,11 +4619,12 @@ func TestAClosedIssuesDocumentReadsItsBlocksWithoutFailingItsRoom(t *testing.T) 
 }
 
 func TestBackfillDoesNotBypassClosedIssueForConcurrentApplyOps(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before")
 	seedUnidentifiedProofDocument(t, database, artifactID, "before")
 	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Hour})
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		if err := service.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}
@@ -4572,7 +4638,7 @@ func TestBackfillDoesNotBypassClosedIssueForConcurrentApplyOps(t *testing.T) {
 	release := make(chan struct{})
 	var blocked atomic.Bool
 	var released atomic.Bool
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		if released.CompareAndSwap(false, true) {
 			close(release)
 		}
@@ -4612,10 +4678,11 @@ func TestBackfillDoesNotBypassClosedIssueForConcurrentApplyOps(t *testing.T) {
 }
 
 func TestBackfillReportsStoppingDocumentAsSkipped(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before")
 	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Hour})
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		if err := service.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}
@@ -4638,6 +4705,7 @@ func TestBackfillReportsStoppingDocumentAsSkipped(t *testing.T) {
 }
 
 func TestBackfillReportsDocumentPersistenceFailure(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before")
 	seedUnidentifiedProofDocument(t, database, artifactID, "before")
@@ -4650,7 +4718,7 @@ func TestBackfillReportsDocumentPersistenceFailure(t *testing.T) {
 		Events: events.NewBroker(),
 		Settle: time.Hour,
 	})
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		if err := service.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}
@@ -4672,11 +4740,12 @@ func TestBackfillReportsDocumentPersistenceFailure(t *testing.T) {
 }
 
 func TestSettleWritesArtifactOwnedEventForUnlinkedDocument(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createProjectDocument(t, database, "before")
 	broker := events.NewBroker()
 	service := New(Deps{Store: database, Events: broker, Settle: 20 * time.Millisecond})
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		if err := service.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}
@@ -4701,10 +4770,11 @@ func TestSettleWritesArtifactOwnedEventForUnlinkedDocument(t *testing.T) {
 }
 
 func TestUnlinkedDocumentIsAlwaysOpen(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createProjectDocument(t, database, "before")
 	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Hour})
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		if err := service.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}
@@ -4728,6 +4798,7 @@ func TestUnlinkedDocumentIsAlwaysOpen(t *testing.T) {
 }
 
 func TestSettleSkipsVersionWhenTreeLeavesTheSchema(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = 20 * time.Millisecond
 	seedServiceText(t, service, artifactID, "before")
@@ -4755,6 +4826,7 @@ func TestSettleSkipsVersionWhenTreeLeavesTheSchema(t *testing.T) {
 // A joined write reaches the room only when its transaction commits: the room never holds a
 // write that rolls back, and no settlement can version one.
 func TestRolledBackWriteNeverReachesTheRoom(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	const settleInterval = 50 * time.Millisecond
 	service.settle = settleInterval
@@ -4797,6 +4869,7 @@ func TestRolledBackWriteNeverReachesTheRoom(t *testing.T) {
 }
 
 func TestSettlePersistsPendingAuthorAfterDisconnect(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	seedServiceText(t, service, artifactID, "before")
 	alignLatestVersionWithUpdates(t, service, artifactID)
@@ -4814,6 +4887,7 @@ func TestSettlePersistsPendingAuthorAfterDisconnect(t *testing.T) {
 }
 
 func TestSettleWritesDirtyVersionWithoutPendingAuthors(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	seedServiceText(t, service, artifactID, "before")
 
@@ -4826,6 +4900,7 @@ func TestSettleWritesDirtyVersionWithoutPendingAuthors(t *testing.T) {
 }
 
 func TestConnectedActorIsPendingAfterEachDocumentUpdate(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	seedServiceText(t, service, artifactID, "before")
 	alignLatestVersionWithUpdates(t, service, artifactID)
@@ -4849,6 +4924,7 @@ func TestConnectedActorIsPendingAfterEachDocumentUpdate(t *testing.T) {
 // the document), the settlement's fallback must be that peer, or a human's block ask is
 // attributed to whichever agent last wrote through the API.
 func TestSettleAttributesBrowserWrittenAskBlockToTheConnectedPeer(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "before")
@@ -4874,6 +4950,7 @@ func TestSettleAttributesBrowserWrittenAskBlockToTheConnectedPeer(t *testing.T) 
 // the document open in a browser, and even after an anchored comment consumed the room's
 // pending authors before settlement.
 func TestSettleAttributesServiceWrittenAskBlockToTheAPIActorWhilePeerConnected(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "before")
@@ -4901,6 +4978,7 @@ func TestSettleAttributesServiceWrittenAskBlockToTheAPIActorWhilePeerConnected(t
 // before settlement. The service knows which write introduced the block; the browser's later
 // content is not its author (LEGION-503).
 func TestSettleAttributesAServiceWrittenAskBlockToItsWriterAfterBrowserEdits(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "before")
@@ -4942,6 +5020,7 @@ func TestSettleAttributesAServiceWrittenAskBlockToItsWriterAfterBrowserEdits(t *
 // An upload's ask block belongs to its uploader even when a browser edits elsewhere before
 // settlement. The upload is a service write that introduced the block (LEGION-503).
 func TestSettleAttributesAnUploadedAskBlockToItsUploaderAfterBrowserEdits(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "before")
@@ -4968,6 +5047,7 @@ func TestSettleAttributesAnUploadedAskBlockToItsUploaderAfterBrowserEdits(t *tes
 // came to nothing - typed and undone - stays pending past the settlement that found nothing to
 // version (LEGION-503), and sorts ahead of the ask's writer here.
 func TestSettleAttributesAnAskBlockToItsLatestEditorOverAnEarlierPendingAuthor(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "before")
@@ -5172,6 +5252,7 @@ func blockAskFollows(t *testing.T, service *Service, artifactID, blockID, sessio
 }
 
 func TestSupersededSettleGenerationDoesNotWrite(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "before")
@@ -5199,6 +5280,7 @@ func TestSupersededSettleGenerationDoesNotWrite(t *testing.T) {
 }
 
 func TestSettleRetriesTransientVersionWriteFailure(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = 10 * time.Millisecond
 	seedServiceText(t, service, artifactID, "before")
@@ -5224,7 +5306,7 @@ func TestSettleRetriesTransientVersionWriteFailure(t *testing.T) {
 	`); err != nil {
 		t.Fatalf("create settlement failure trigger: %v", err)
 	}
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		_, _ = service.store.Pool.Exec(context.Background(), `drop trigger if exists dispatch_test_fail_first_settlement on artifact_versions`)
 		_, _ = service.store.Pool.Exec(context.Background(), `drop function if exists dispatch_test_fail_first_settlement()`)
 		_, _ = service.store.Pool.Exec(context.Background(), `drop sequence if exists dispatch_test_settle_failure`)
@@ -5237,6 +5319,7 @@ func TestSettleRetriesTransientVersionWriteFailure(t *testing.T) {
 }
 
 func TestSettleFailsRoomAfterPersistentVersionWriteFailure(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = 10 * time.Millisecond
 	seedServiceText(t, service, artifactID, "before")
@@ -5259,7 +5342,7 @@ func TestSettleFailsRoomAfterPersistentVersionWriteFailure(t *testing.T) {
 	`); err != nil {
 		t.Fatalf("create persistent settlement failure trigger: %v", err)
 	}
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		_, _ = service.store.Pool.Exec(context.Background(), `drop trigger if exists dispatch_test_fail_every_settlement on artifact_versions`)
 		_, _ = service.store.Pool.Exec(context.Background(), `drop function if exists dispatch_test_fail_every_settlement()`)
 	})
@@ -5270,6 +5353,7 @@ func TestSettleFailsRoomAfterPersistentVersionWriteFailure(t *testing.T) {
 }
 
 func TestShutdownDrainsPendingUpdateBeforeSettling(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "before")
@@ -5290,6 +5374,7 @@ func TestShutdownDrainsPendingUpdateBeforeSettling(t *testing.T) {
 }
 
 func TestShutdownSkipsColdDocumentSettlement(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	seedServiceText(t, service, artifactID, "before")
 	ctx, cancel := context.WithTimeout(context.Background(), 400*time.Millisecond)
@@ -5306,6 +5391,7 @@ func TestShutdownSkipsColdDocumentSettlement(t *testing.T) {
 }
 
 func TestShutdownStopsTimerForEvictedRoom(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "before")
@@ -5321,6 +5407,7 @@ func TestShutdownStopsTimerForEvictedRoom(t *testing.T) {
 }
 
 func TestImmediateSettlementTimerUnregistersAfterFiring(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = 0
 	seedServiceText(t, service, artifactID, "before")
@@ -5362,6 +5449,7 @@ func (s *shutdownCompactStore) compactRoom(ctx context.Context, room string, rul
 // before the store closes: a document whose rows are all older than the tail is one row once
 // Shutdown returns, and no compaction runs after.
 func TestShutdownCompletesCompactionBeforeTestStoreCloses(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "# First")
 	persistence := &shutdownCompactStore{
@@ -5370,7 +5458,7 @@ func TestShutdownCompletesCompactionBeforeTestStoreCloses(t *testing.T) {
 	}
 	service := New(Deps{Store: database, Persistence: persistence, Events: events.NewBroker(), Settle: time.Hour})
 	service.settle = 0
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	testcleanup.Add(t, func() { _ = service.Shutdown(context.Background()) })
 
 	seedServiceText(t, service, artifactID, "before")
 	editLiveTree(t, service, artifactID, replaceRun("before", "after"))
@@ -5400,6 +5488,7 @@ func TestShutdownCompletesCompactionBeforeTestStoreCloses(t *testing.T) {
 }
 
 func TestShutdownBoundsAdvisoryLockedAppendAndPreservesUpdate(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "before")
@@ -5434,6 +5523,7 @@ func TestShutdownBoundsAdvisoryLockedAppendAndPreservesUpdate(t *testing.T) {
 	}
 }
 func TestAdversarialSettlementDoesNotMissAppendAfterClassConsume(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before")
 	entered := make(chan struct{})
@@ -5444,7 +5534,7 @@ func TestAdversarialSettlementDoesNotMissAppendAfterClassConsume(t *testing.T) {
 		release:        release,
 	}
 	service := New(Deps{Store: database, Persistence: persistence, Events: events.NewBroker(), Settle: time.Hour})
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		if persistence.released.CompareAndSwap(false, true) {
 			close(release)
 		}
@@ -5471,6 +5561,7 @@ func TestAdversarialSettlementDoesNotMissAppendAfterClassConsume(t *testing.T) {
 }
 
 func TestShutdownContextDoesNotWaitForBlockedSettlement(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = 5 * time.Millisecond
 	seedServiceText(t, service, artifactID, "before")
@@ -5524,6 +5615,7 @@ func TestShutdownContextDoesNotWaitForBlockedSettlement(t *testing.T) {
 // stayed out of the open asks, and an edit's version unwritten, until someone edited it again. The
 // settlement a shutdown leaves runs on the document's next load instead, and Shutdown names it.
 func TestShutdownThatCutsASettlementShortLeavesItToTheNextLoad(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID,
@@ -5557,7 +5649,7 @@ func TestShutdownThatCutsASettlementShortLeavesItToTheNextLoad(t *testing.T) {
 	}
 
 	restarted := New(Deps{Store: service.store, Events: events.NewBroker(), Settle: 10 * time.Millisecond})
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		if err := restarted.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown restarted document service: %v", err)
 		}
@@ -5582,6 +5674,7 @@ func TestShutdownThatCutsASettlementShortLeavesItToTheNextLoad(t *testing.T) {
 // load, is what reaches the settlement the old one's shutdown cut short. A row younger than the
 // resumption's age belongs to a settlement its writer is about to run, and is left to it.
 func TestResumptionSettlesAnOwedDocumentNobodyOpens(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	seedServiceText(t, service, artifactID,
 		":::ask{#ask-block urgency=\"high\" multiple=\"false\" state=\"open\"}\nWhich transport?\n:::\n")
@@ -5606,6 +5699,7 @@ func TestResumptionSettlesAnOwedDocumentNobodyOpens(t *testing.T) {
 }
 
 func TestIssueReopenRestoresLiveWrites(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	if got := service.events.SubscriberCount(); got != 0 {
 		t.Fatalf("document service registered %d event subscriptions, want none", got)
@@ -5633,6 +5727,7 @@ func TestIssueReopenRestoresLiveWrites(t *testing.T) {
 }
 
 func TestCancelledTextLoadDoesNotQuarantineRoom(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before")
 	service := New(Deps{
@@ -5640,7 +5735,7 @@ func TestCancelledTextLoadDoesNotQuarantineRoom(t *testing.T) {
 		Persistence: failingVersionedStore{VersionedStore: NewPgVersioned(database), respectContext: true},
 		Events:      events.NewBroker(),
 	})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	testcleanup.Add(t, func() { _ = service.Shutdown(context.Background()) })
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	if _, err := service.Text(ctx, artifactID); !errors.Is(err, context.Canceled) {
@@ -5652,6 +5747,7 @@ func TestCancelledTextLoadDoesNotQuarantineRoom(t *testing.T) {
 }
 
 func TestSettleCapturesAuthorsAtSnapshotTime(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "before")
@@ -6341,6 +6437,7 @@ func loadDocumentVersion(ctx context.Context, database *store.Store, artifactID 
 }
 
 func TestTreeOfRefusesAnUnloadedDocument(t *testing.T) {
+	t.Parallel()
 	if _, err := treeOf(nil); !errors.Is(err, errDocUnloaded) {
 		t.Fatalf("treeOf(nil) error = %v, want errDocUnloaded", err)
 	}
@@ -6352,6 +6449,7 @@ func TestTreeOfRefusesAnUnloadedDocument(t *testing.T) {
 // eviction moved the room's generation its retry arms nothing: the next write to the room settles
 // on its own.
 func TestSettleSurvivesEvictionBetweenWarmAndTreeRead(t *testing.T) {
+	t.Parallel()
 	service, artifactID := evictMidSettle(t)
 	// The next write settles on its own. The eviction left the document owing the settlement it
 	// cut short, and this write's reload of the room arms that owed settlement (onLoadDocument), so
@@ -6372,6 +6470,7 @@ func TestSettleSurvivesEvictionBetweenWarmAndTreeRead(t *testing.T) {
 // settlement's version holds the evicted room's edit, "after", and the next version, the write's
 // own settlement's, holds the write, "later".
 func TestAnEvictionsOwedSettlementBeforeTheNextWritesCommitLosesNoEdit(t *testing.T) {
+	t.Parallel()
 	service, artifactID := evictMidSettle(t)
 	var owed int
 	err := service.srv.Apply(context.Background(), artifactID, func(doc *crdt.Doc, transact func(func(*crdt.Transaction))) {
@@ -6452,6 +6551,7 @@ func evictMidSettle(t *testing.T) (*Service, string) {
 // moves the generation, so its settlement is not retried and the document is left to the reload
 // (TestSettleSurvivesEvictionBetweenWarmAndTreeRead).
 func TestASettlementWhoseRoomACloseRetiredBeforeItsReadIsArmedAgain(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "before")
@@ -6494,6 +6594,7 @@ func TestASettlementWhoseRoomACloseRetiredBeforeItsReadIsArmedAgain(t *testing.T
 // - the last peer leaving, a settlement's forced eviction - does not leave them a room that is no
 // longer there, which they answered `warm live document did not retain room`, a 500.
 func TestAWarmedReadSurvivesItsRoomsEviction(t *testing.T) {
+	t.Parallel()
 	alice := model.Actor{Kind: "user", ID: "alice"}
 	for _, test := range []struct {
 		name string
@@ -6554,6 +6655,7 @@ func TestAWarmedReadSurvivesItsRoomsEviction(t *testing.T) {
 }
 
 func TestEditedLegacyTableCellPipeDocumentSettlesOnce(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "| header |\n| :--- |\n| `one\\|two` |\n")
@@ -6579,6 +6681,7 @@ func TestEditedLegacyTableCellPipeDocumentSettlesOnce(t *testing.T) {
 }
 
 func TestDurableContentEditSurvivesEvictionThenSettles(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "before")
@@ -6597,6 +6700,7 @@ func TestDurableContentEditSurvivesEvictionThenSettles(t *testing.T) {
 }
 
 func TestOpeningLegacyTableCellPipeDocumentDoesNotSettle(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "| header |\n| :--- |\n| `one\\|two` |\n")
@@ -6618,6 +6722,7 @@ func TestOpeningLegacyTableCellPipeDocumentDoesNotSettle(t *testing.T) {
 }
 
 func TestProjectMarkSettlesLegacyTableWithoutCanonicalizing(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "| header |\n| :--- |\n| `one\\|two` |\n")
@@ -6637,6 +6742,7 @@ func TestProjectMarkSettlesLegacyTableWithoutCanonicalizing(t *testing.T) {
 }
 
 func TestQuoteMarkSettlesLegacyTableWithoutCanonicalizing(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	service.unrecordedMarkTTL = 10 * time.Millisecond
@@ -6684,6 +6790,7 @@ func assertTableCellPipeVersionAndEventCounts(t *testing.T, database *store.Stor
 // closes goes with the settlement it cancels, unless a browser that joined while it ran still
 // holds it (evictRoom).
 func TestQuiesceFlushesEveryLiveDocumentAndLeavesTheServiceUsable(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "before")
