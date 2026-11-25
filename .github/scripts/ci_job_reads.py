@@ -1036,10 +1036,13 @@ if DAEMON_LEGS.get(go_legs.ELSEWHERE) != {TEXT_CHECK_PACKAGE: "text-checks"}:
 
 def daemon_legs_script(job, flags):
     """The whole run: of a legs job's go test step: its leg's packages, piped from go_legs.py into
-    one go test with the step's flags. `set -o pipefail` is what fails the step when go_legs.py
-    refuses the file or go list fails, rather than test what xargs got."""
+    one go test with the step's flags. go_legs.py takes the leg's number and how many legs the
+    matrix runs, and refuses a file whose legs are not those or a leg with no package. `set -o
+    pipefail` is what fails the step when go_legs.py refuses the file or go list fails, rather
+    than test what xargs got."""
     return ("set -o pipefail\n"
-            f"python3 ../../{GO_LEGS_SCRIPT} {DAEMON} {job} ${{{{ matrix.leg }}}} | xargs go test {flags}")
+            f"python3 ../../{GO_LEGS_SCRIPT} {DAEMON} {job} ${{{{ matrix.leg }}}} ${{{{ strategy.job-total }}}} "
+            f"| xargs go test {flags}")
 
 # The three tests of this module the plugin-pack job runs: the plugin pack test and the two tests
 # of agentmodels_omp_test.go (a fourth that loads a plugin on the real Oh My Pi,

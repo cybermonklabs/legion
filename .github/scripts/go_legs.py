@@ -2,23 +2,27 @@
 """The packages one leg of a Go job runs, read from .github/go-legs.yaml, after a check that the
 file runs every package of the module exactly once.
 
-    go_legs.py <module> <job> <leg>
+    go_legs.py <module> <job> <leg> <legs>
 
-prints on its standard output, one per line and nothing else, the packages .github/go-legs.yaml lists for leg <leg> of job <job> under
-<module> (a directory of the repository, `packages/daemon`), each as `./<directory>/`, in the
-file's order, which is the order go test starts them in. A leg's go test step pipes them to xargs:
+prints on its standard output, one per line and nothing else, the packages .github/go-legs.yaml
+lists for leg <leg> of job <job> under <module> (a directory of the repository,
+`packages/daemon`), each as `./<directory>/`, in the file's order, which is the order go test
+starts them in. <legs> is how many legs the job's matrix runs, `${{ strategy.job-total }}`. A
+leg's go test step pipes the packages to xargs:
 
-    python3 ../../.github/scripts/go_legs.py packages/daemon daemon-go 1 | xargs go test …
+    python3 ../../.github/scripts/go_legs.py packages/daemon daemon-go ${{ matrix.leg }} ${{ strategy.job-total }} | xargs go test …
 
 Before it prints anything it runs `go list ./...` in <module> and compares what that prints with
 the whole of the module's entry, every leg of every job and `elsewhere`, the packages a job runs
 outside the legs. It exits 1, naming each, when a package go list prints is in no place of the
-file, when a package is in more than one place, and when a place names a directory go list does
-not print as a package. So a leg never runs while a package of its module runs in no job or in
-two, whichever leg it is: a new package fails every leg until the file names it. It exits 2 on a
-usage error, and when the file has no such module, job or leg. Everything but the packages goes to
-standard error, the problems as GitHub error annotations on the file, so nothing else reaches the
-go test the packages are piped to.
+file, when a package is in more than one place, when a place names a directory go list does not
+print as a package, when a leg lists no package (xargs would then run go test on the module's
+root), and when the job's legs in the file are not exactly legs 1 to <legs>, the legs its matrix
+runs (a leg the file has and the matrix does not would run in no job). So a leg never runs while
+a package of its module runs in no job or in two, whichever leg it is: a new package fails every
+leg until the file names it. It exits 2 on a usage error, and when the file has no such module,
+job or leg. Everything but the packages goes to standard error, the problems as GitHub error
+annotations on the file, so nothing else reaches the go test the packages are piped to.
 
 `go list ./...` decides what a package is, as it decides what `go test ./...` would run: a
 directory whose every .go file a build constraint excludes is none, and one with only _test.go
@@ -106,11 +110,30 @@ def go_packages(module: str) -> list:
     return found
 
 
+def leg_problems(job: str, legs: dict, launched: int, legs_path: str = LEGS) -> list:
+    """What keeps a job's legs in the file from being the legs its matrix runs, 1 to `launched`,
+    each listing at least one package."""
+    found = []
+    # The file's leg numbers in number order (a digit string's length first, then its text).
+    numbers = sorted((str(number) for number in legs), key=lambda n: (len(n), n))
+    if numbers != [str(number) for number in range(1, launched + 1)]:
+        found.append(f"{legs_path} gives job {job} legs {', '.join(numbers)}, and its matrix runs legs 1 to "
+                     f"{launched}: a leg the file has and the matrix does not runs in no job, so make the two "
+                     f"the same")
+    for number, packages in legs.items():
+        if not packages:
+            found.append(f"{legs_path} gives leg {number} of job {job} no package, and xargs would hand go test "
+                         f"none, which tests the module's root: give the leg a package, or take it out of the file "
+                         f"and the matrix")
+    return found
+
+
 def main(argv: list) -> int:
-    if len(argv) != 3:
-        print("go_legs.py: usage: go_legs.py <module> <job> <leg>", file=sys.stderr)
+    if len(argv) != 4 or not argv[3].isdigit() or int(argv[3]) < 1:
+        print("go_legs.py: usage: go_legs.py <module> <job> <leg> <legs>, <legs> a number above 0",
+              file=sys.stderr)
         return 2
-    module, job, leg = argv
+    module, job, leg, launched = argv[0], argv[1], argv[2], int(argv[3])
     path = ROOT / LEGS
     try:
         entry = module_entry(module, path)
@@ -127,12 +150,12 @@ def main(argv: list) -> int:
     except RuntimeError as failed:
         print(f"go_legs.py: {failed}", file=sys.stderr)
         return 1
-    found = problems(module, entry, packages)
+    found = leg_problems(job, legs, launched) + problems(module, entry, packages)
     if found:
         for problem in found:
             print(f"::error file={LEGS}::{problem}", file=sys.stderr)
         print(f"go_legs.py: {len(found)} problem(s) above; leg {leg} of {job} runs nothing until the file runs "
-              f"every package of {module} once", file=sys.stderr)
+              f"every package of {module} once, in the legs the job's matrix runs", file=sys.stderr)
         return 1
     print(f"go_legs.py: leg {leg} of {job} runs {len(mine)} of the {len(packages)} packages of {module}",
           file=sys.stderr)

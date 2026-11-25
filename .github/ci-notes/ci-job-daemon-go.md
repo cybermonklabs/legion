@@ -52,9 +52,12 @@ The rules the legs keep:
 
 - **Each package runs once, in one leg.** `.github/scripts/go_legs.py`, which each leg's go test
   step runs for its packages, compares the file with `go list ./...` first and fails the step,
-  naming each, when a package is in no place, in two, or when a place names no package. So a new
-  package fails every leg until the file names it; `.github/scripts/go-legs.test.sh`, in the test
-  job, holds those failures.
+  naming each, when a package is in no place, in two, or when a place names no package. It also
+  takes how many legs the job's matrix runs (`strategy.job-total`) and fails when the file's legs
+  are not exactly those, since a leg the file has and the matrix does not launch runs in no job,
+  and when a leg lists no package, since xargs would then run go test on the module's root. So a
+  new package fails every leg until the file names it; `.github/scripts/go-legs.test.sh`, in the
+  test job, holds those failures.
 - **Each leg runs in its step's mode.** A kind's legs are one matrix job with one step text, so
   -race, -skip and -timeout are the step's and no leg's own.
 - **The old check-run names stay.** The jobs daemon-go and daemon-go-race wait for their kind's
@@ -62,7 +65,11 @@ The rules the legs keep:
   `daemon-go / daemon-go-race` mean what they meant, and ci-ok, which reads the result of
   `.github/workflows/ci.yaml#daemon-go`, judges every leg through it. Each leg also ends with the
   ci-ok report, so a failing leg posts a merge group's failing ci-ok without waiting for the
-  others.
+  others. The two jobs' error says they restate their legs' result, in the words
+  `.github/scripts/runner-shutdown.sh#RUNNER_SHUTDOWN_RESTATED` holds, and that script passes over
+  a check run carrying them: otherwise their own `exit code 1` would read every leg's runner
+  shutdown as a failure of the change, and post an early failing ci-ok for it. ci-ok.test.sh holds
+  both the reading and the two steps' words.
 - **Rebalance from the legs' own times.** Each leg's log prints `ok <package> <seconds>s`. When
   a package's time moves, move packages between legs so no leg is longer than it has to be, and
   keep each leg's longest first.

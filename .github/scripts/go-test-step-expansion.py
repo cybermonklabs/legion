@@ -108,8 +108,9 @@ How it reads a step:
     tuple does not name are refused rather than guessed at;
   * a step of a matrix job that writes `${{ matrix.<key> }}` in its run: is one step per row of
     the job's matrix, each with the row's value written in, since each row is a job of its own:
-    a legs job's go test step (`go_legs.py … ${{ matrix.leg }} | xargs go test …`) runs each
-    leg's packages in that leg alone. A matrix of lists is read, and nothing else: an
+    a legs job's go test step (`go_legs.py … ${{ matrix.leg }} ${{ strategy.job-total }} |
+    xargs go test …`) runs each leg's packages in that leg alone, and `${{ strategy.job-total }}`
+    is the number of rows. A matrix of lists is read, and nothing else: an
     `include`, an `exclude` or a matrix an expression computes is refused, as is a key no row
     has;
   * a step whose run: is the path of a script AUDITED_SCRIPTS names
@@ -338,6 +339,8 @@ ASSIGNMENT = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=\$\((.+)\)$")
 XARGS = re.compile(r"^(?P<lister>.+?)\s*\|\s*xargs\s+(?P<test>go\s+test\b.*)$")
 # A matrix value as a run: writes it, which GitHub replaces before the shell reads the line.
 MATRIX_VALUE = re.compile(r"\$\{\{\s*matrix\.([A-Za-z_][A-Za-z0-9_-]*)\s*\}\}")
+# How many jobs the matrix makes, as a run: writes it (a legs step hands it to go_legs.py).
+JOB_TOTAL = re.compile(r"\$\{\{\s*strategy\.job-total\s*\}\}")
 TAGGED_TESTS = ".github/scripts/go-tagged-tests.sh"
 
 
@@ -573,7 +576,8 @@ def steps_of(found: dict) -> list[Step]:
                 if not MATRIX_VALUE.search(script):
                     steps.append(Step(workflow=path, job=job, name=name, workdir=workdir, script=script))
                     continue
-                for row in matrix_rows(f"{path}'s {job} / {name}", body):
+                rows = matrix_rows(f"{path}'s {job} / {name}", body)
+                for row in rows:
                     def value(match: re.Match[str], row: dict = row) -> str:
                         if match.group(1) not in row:
                             raise Refused(f"{path}'s {job} / {name}: its run: writes matrix.{match.group(1)}, "
@@ -581,7 +585,7 @@ def steps_of(found: dict) -> list[Step]:
                         return str(row[match.group(1)])
                     label = ", ".join(f"{key} {row[key]}" for key in row)
                     steps.append(Step(workflow=path, job=job, name=f"{name} ({label})", workdir=workdir,
-                                      script=MATRIX_VALUE.sub(value, script)))
+                                      script=JOB_TOTAL.sub(str(len(rows)), MATRIX_VALUE.sub(value, script))))
     return steps
 
 

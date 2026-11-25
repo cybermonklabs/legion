@@ -211,7 +211,7 @@ jobs:
       - name: Test the Go daemon
         run: |
           set -o pipefail
-          python3 ../../.github/scripts/go_legs.py packages/daemon daemon-go ${{ matrix.leg }} | xargs go test -count=1 -timeout 15m -skip '^(TestNoTwoEventTypesShareAKind|TestTheTableHasARowOrANamedIgnoreForEveryEventInEveryState)$'
+          python3 ../../.github/scripts/go_legs.py packages/daemon daemon-go ${{ matrix.leg }} ${{ strategy.job-total }} | xargs go test -count=1 -timeout 15m -skip '^(TestNoTwoEventTypesShareAKind|TestTheTableHasARowOrANamedIgnoreForEveryEventInEveryState)$'
         working-directory: packages/daemon
 
       # What the race step's packages hold that the race build cannot run, run plain by name, one
@@ -279,11 +279,17 @@ jobs:
           persist-credentials: false
 
       # The result is written into the run: rather than set in an env:, which check-ci-filters.sh
-      # reads as able to move what the legs' go commands compile.
+      # reads as able to move what the legs' go commands compile. The error says this job restates
+      # its legs' result, in the words `.github/scripts/runner-shutdown.sh#RUNNER_SHUTDOWN_RESTATED`
+      # holds, so a leg the platform killed still reads as a runner shutdown: this job's failure
+      # only follows the leg's, and read as its own it would hide the leg's.
       - name: Pass only when every leg passed
         run: |
-          echo "daemon-go's legs ended: ${{ needs.daemon-go-legs.result }}"
-          [ "${{ needs.daemon-go-legs.result }}" = success ]
+          if [ "${{ needs.daemon-go-legs.result }}" != success ]; then
+            echo "::error::daemon-go's legs ended ${{ needs.daemon-go-legs.result }}, and this job restates its legs' result: each leg's own check run says why it did not pass"
+            exit 1
+          fi
+          echo "daemon-go's legs ended success"
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
@@ -463,7 +469,7 @@ jobs:
       - name: Test the concurrent packages under the race detector
         run: |
           set -o pipefail
-          python3 ../../.github/scripts/go_legs.py packages/daemon daemon-go-race ${{ matrix.leg }} | xargs go test -count=1 -race -timeout 30m -skip '^(TestTheAgentModelCheckOnTheRealOhMyPi|TestTheImageProbeResolvesTheAgentsTheDaemonsPromptsName|TestTheRealPluginsOnTheRealOhMyPi)$'
+          python3 ../../.github/scripts/go_legs.py packages/daemon daemon-go-race ${{ matrix.leg }} ${{ strategy.job-total }} | xargs go test -count=1 -race -timeout 30m -skip '^(TestTheAgentModelCheckOnTheRealOhMyPi|TestTheImageProbeResolvesTheAgentsTheDaemonsPromptsName|TestTheRealPluginsOnTheRealOhMyPi)$'
         working-directory: packages/daemon
 
       - name: Report the service's peak connections
@@ -504,11 +510,17 @@ jobs:
           persist-credentials: false
 
       # The result is written into the run: rather than set in an env:, which check-ci-filters.sh
-      # reads as able to move what the legs' go commands compile.
+      # reads as able to move what the legs' go commands compile. The error says this job restates
+      # its legs' result, in the words `.github/scripts/runner-shutdown.sh#RUNNER_SHUTDOWN_RESTATED`
+      # holds, so a leg the platform killed still reads as a runner shutdown: this job's failure
+      # only follows the leg's, and read as its own it would hide the leg's.
       - name: Pass only when every leg passed
         run: |
-          echo "daemon-go-race's legs ended: ${{ needs.daemon-go-race-legs.result }}"
-          [ "${{ needs.daemon-go-race-legs.result }}" = success ]
+          if [ "${{ needs.daemon-go-race-legs.result }}" != success ]; then
+            echo "::error::daemon-go-race's legs ended ${{ needs.daemon-go-race-legs.result }}, and this job restates its legs' result: each leg's own check run says why it did not pass"
+            exit 1
+          fi
+          echo "daemon-go-race's legs ended success"
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()

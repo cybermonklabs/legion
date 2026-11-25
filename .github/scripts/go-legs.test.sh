@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Tests for go_legs.py: the packages it prints for a leg, and each way a legs file fails to run
-# every package of its module exactly once, which stops the leg before its go test runs.
+# every package of its module exactly once in the legs the job's matrix launches (a package in no
+# leg or in two, a leg naming no package, a leg the matrix does not run, a leg with no package),
+# which stops the leg before its go test runs.
 #
 # Each case builds a small repository: a copy of go_legs.py (which reads the repository it sits
 # in), a .github/go-legs.yaml, and a Go module `mod` with no requirement, so `go list ./...` runs
@@ -21,7 +23,7 @@ trap 'rm -rf "$work"' EXIT
 source "$script_dir/test-lib.sh"
 
 # The go command reads none of the caller's workspace, flags or proxy: the fixture is all it sees.
-export GOWORK=off GOFLAGS= GOPROXY=off GOTOOLCHAIN=local
+export GOWORK=off GOFLAGS='' GOPROXY=off GOTOOLCHAIN=local
 
 # tree <name> <legs file text>: a repository under $work/<name> holding that legs file. Echoes its root.
 tree() {
@@ -38,12 +40,13 @@ tree() {
   echo "$root"
 }
 
-# legs <root> <job> <leg>: go_legs.py's standard output for that leg, then `exit=<status>`. Its
-# standard error goes to $work/stderr, which `err` prints: a case reads it after the call, since
-# the call runs in the subshell of a command substitution.
+# legs <root> <job> <leg> [<legs>]: go_legs.py's standard output for that leg of a matrix of
+# <legs> legs (2 when not given), then `exit=<status>`. Its standard error goes to $work/stderr,
+# which `err` prints: a case reads it after the call, since the call runs in the subshell of a
+# command substitution.
 legs() {
   local out status=0
-  out=$(cd "$1/mod" && python3 "$1/.github/scripts/go_legs.py" mod "$2" "$3" 2>"$work/stderr") || status=$?
+  out=$(cd "$1/mod" && python3 "$1/.github/scripts/go_legs.py" mod "$2" "$3" "${4:-2}" 2>"$work/stderr") || status=$?
   printf '%s\nexit=%s\n' "$out" "$status"
 }
 err() { cat "$work/stderr"; }
@@ -128,6 +131,55 @@ out=$(legs "$root" job 1)
 check "fails" "$(contains "$out" '^exit=1$')"
 check "names the directory and where the file names it" "$(contains "$(err)" '.github/go-legs.yaml names mod/tagged (job leg 1), which `go list ./...` does not print as a package')"
 
+echo "case: a leg the file has and the job's matrix does not run"
+# The file and the matrix each say how many legs there are, so a package moved into a new leg 3
+# that the matrix does not launch would run in no job while every package is still in the file
+# once.
+root=$(tree unlaunched 'mod:
+  job:
+    1:
+      - b
+      - a
+    2:
+      - testonly
+    3:
+      - b/c
+  elsewhere: {}')
+out=$(legs "$root" job 1 2)
+check "fails" "$(contains "$out" '^exit=1$')"
+check "prints nothing for the leg's go test" "$(is "$out" "
+exit=1")"
+check "names the file's legs and the matrix's" "$(contains "$(err)" 'gives job job legs 1, 2, 3, and its matrix runs legs 1 to 2: a leg the file has and the matrix does not runs in no job')"
+check "the same file passes where the matrix runs all three" "$(contains "$(legs "$root" job 3 3)" '^exit=0$')"
+root=$(tree unlisted "$whole")
+check "and a matrix leg the file does not have fails every leg" "$(contains "$(legs "$root" job 1 3)" '^exit=1$')"
+check "naming both" "$(contains "$(err)" 'gives job job legs 1, 2, and its matrix runs legs 1 to 3')"
+
+echo "case: a leg that lists no package"
+# xargs hands go test no package, and go test with none tests the module's root.
+root=$(tree empty 'mod:
+  job:
+    1:
+      - b
+      - a
+      - b/c
+    2: []
+  elsewhere:
+    testonly: another-job')
+out=$(legs "$root" job 1)
+check "fails" "$(contains "$out" '^exit=1$')"
+check "names the leg" "$(contains "$(err)" 'gives leg 2 of job job no package, and xargs would hand go test none, which tests the module.s root')"
+check "and the empty leg itself fails rather than print nothing" "$(contains "$(legs "$root" job 2)" '^exit=1$')"
+
+echo "case: the leg count is required"
+root=$(tree usage "$whole")
+status=0
+(cd "$root/mod" && python3 ../.github/scripts/go_legs.py mod job 1 >/dev/null 2>&1) || status=$?
+check "three arguments are a usage error" "$(is "$status" 2)"
+status=0
+(cd "$root/mod" && python3 ../.github/scripts/go_legs.py mod job 1 0 >/dev/null 2>&1) || status=$?
+check "and so is a matrix of no legs" "$(is "$status" 2)"
+
 echo "case: a leg or a job the file does not have"
 root=$(tree whole2 "$whole")
 check "a leg past the last is a usage error" "$(contains "$(legs "$root" job 3)" '^exit=2$')"
@@ -152,7 +204,7 @@ root=$(tree step 'mod:
   elsewhere:
     testonly: another-job')
 status=0
-ran=$(cd "$root/mod" && set -o pipefail && python3 ../.github/scripts/go_legs.py mod job 1 2>/dev/null | xargs echo ran) || status=$?
+ran=$(cd "$root/mod" && set -o pipefail && python3 ../.github/scripts/go_legs.py mod job 1 2 2>/dev/null | xargs echo ran) || status=$?
 check "the pipeline fails" "$(is "$status" 1)"
 check "and xargs hands its command no package" "$(is "$ran" "ran")"
 
