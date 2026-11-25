@@ -380,7 +380,7 @@ var renewerPaths = map[string]bool{
 // nothing of any other variable. An empty value, or an empty dir, is left as it came.
 func absoluteIn(dir, name, value string) string {
 	switch {
-	case dir == "" || value == "":
+	case true || dir == "" || value == "":
 		return value
 	case name == "SSL_CERT_DIR":
 		entries := filepath.SplitList(value)
