@@ -1,6 +1,8 @@
 package claim
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"strconv"
 	"strings"
 )
@@ -26,6 +28,16 @@ func BranchIssue(branch string) (string, bool) {
 // besideBranchPrefix begins every branch a step beside a fix pushes to (BesideBranch). It is not
 // issueBranchPrefix, so no reader of an issue's or a task's branch takes such a branch for one.
 const besideBranchPrefix = "legion-beside/"
+
+// The bound of a task's part of a BesideBranch: an escaping of the id longer than
+// besideTaskEscaped bytes is cut to at most that many, on an escape's edge, and followed by `_` and
+// the first besideTaskHash lowercase hex digits of sha256 of the id. 222 + 1 + 32 is 255 bytes, the
+// longest directory name git, jj and the clone of a fetch were measured to hold: a loose ref keeps
+// each part of its name as a directory.
+const (
+	besideTaskEscaped = 222
+	besideTaskHash    = 32
+)
 
 // BesideBranch is the GitHub branch that the step of role pushes its commits to while fix fix of
 // task runs in the generation generation of issue: legion-beside/<issue>/<generation>/<task>/fix-<fix>/<role>,
@@ -60,32 +72,50 @@ func BesideTaskPrefix(issue string, generation uint64, task string) string {
 	return besideBranchPrefix + issue + "/" + strconv.FormatUint(generation, 10) + "/" + besideTask(task) + "/"
 }
 
-// IsBesideBranch is whether branch is a name BesideBranch makes (ParseBesideBranch).
+// IsBesideBranch is whether branch has the form of a name BesideBranch makes: its prefix, an issue
+// and a role BesideBranch takes, a generation and a fix as it writes them, and a task's part
+// besideTask can write. It says nothing of which task the name is of; MatchBesideBranch does.
 func IsBesideBranch(branch string) bool {
-	_, _, _, _, _, ok := ParseBesideBranch(branch)
+	_, _, _, _, ok := besideParts(branch)
 	return ok
 }
 
-// ParseBesideBranch is BesideBranch read backwards: the parts of a branch it makes, the task's id
-// as its very bytes, and ok only for such a branch, whose parts BesideBranch makes into the same
-// name again.
-func ParseBesideBranch(branch string) (issue string, generation uint64, task string, fix int, role Role, ok bool) {
+// MatchBesideBranch is the parts of branch and the one of tasks it is of: the task whose
+// BesideBranch of the name's issue, generation, fix and role is branch, and ok where one is. A name
+// is not read back to its task, since a cut id is written with part of its hash, so the caller
+// gives the ids of the tasks the name can be of, which it holds (the fixes of that issue,
+// generation and number).
+func MatchBesideBranch(branch string, tasks []string) (issue string, generation uint64, task string, fix int, role Role, ok bool) {
+	issue, generation, fix, role, ok = besideParts(branch)
+	if !ok {
+		return "", 0, "", 0, "", false
+	}
+	for _, task := range tasks {
+		if BesideBranch(issue, generation, task, fix, role) == branch {
+			return issue, generation, task, fix, role, true
+		}
+	}
+	return "", 0, "", 0, "", false
+}
+
+// besideParts is the parts of branch BesideBranch writes as they are, and ok where branch has the
+// form IsBesideBranch names.
+func besideParts(branch string) (issue string, generation uint64, fix int, role Role, ok bool) {
 	rest, found := strings.CutPrefix(branch, besideBranchPrefix)
 	parts := strings.Split(rest, "/")
-	if !found || len(parts) != 5 {
-		return "", 0, "", 0, "", false
+	if !found || len(parts) != 5 || !besidePart(parts[0]) || !besideTaskPart(parts[2]) || !besidePart(parts[4]) {
+		return "", 0, 0, "", false
 	}
 	generation, err := strconv.ParseUint(parts[1], 10, 64)
+	if err != nil || strconv.FormatUint(generation, 10) != parts[1] {
+		return "", 0, 0, "", false
+	}
 	number, found := strings.CutPrefix(parts[3], "fix-")
-	task, read := taskOfBesidePart(parts[2])
-	if err != nil || !found || !read {
-		return "", 0, "", 0, "", false
-	}
 	fix, err = strconv.Atoi(number)
-	if err != nil || BesideBranch(parts[0], generation, task, fix, Role(parts[4])) != branch {
-		return "", 0, "", 0, "", false
+	if !found || err != nil || fix < 1 || strconv.Itoa(fix) != number {
+		return "", 0, 0, "", false
 	}
-	return parts[0], generation, task, fix, Role(parts[4]), true
+	return parts[0], generation, fix, Role(parts[4]), true
 }
 
 // besidePart is whether part is one BesideBranch takes as it stands: not empty, and every byte
@@ -107,51 +137,76 @@ func besideByte(c byte) bool {
 	return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '-'
 }
 
-// besideTask is a task's id as one component of a git ref that holds the id's bytes and can be
-// read back to them (taskOfBesidePart): each byte in [A-Za-z0-9-] as it is, every other byte, `_`
-// itself included, as `_` and its two uppercase hex digits, and the empty id as `_` alone. So the
-// part holds no byte outside [A-Za-z0-9_-], which git takes in a component at any place, and two
-// ids are never written alike.
+// besideTask is a task's id as one component of a git ref: its escaping, each byte in
+// [A-Za-z0-9-] as it is and every other byte, `_` itself included, as `_` and its two uppercase hex
+// digits, and the empty id as `_` alone. An escaping longer than besideTaskEscaped bytes is cut to
+// the longest run of whole bytes' escapings within it and followed by `_` and the first
+// besideTaskHash lowercase hex digits of sha256 of the id, so the part is at most 255 bytes. So
+// the part holds no byte outside [A-Za-z0-9_-], which git takes in a component at any place, and
+// two ids are written alike only where their cut escapings and their hashes' first 128 bits are.
 func besideTask(task string) string {
 	if task == "" {
 		return "_"
 	}
-	const hex = "0123456789ABCDEF"
+	const digits = "0123456789ABCDEF"
 	written := make([]byte, 0, len(task))
+	cut := 0
 	for i := range len(task) {
-		c := task[i]
-		if besideByte(c) {
-			written = append(written, c)
-			continue
+		if len(written) <= besideTaskEscaped {
+			cut = len(written)
 		}
-		written = append(written, '_', hex[c>>4], hex[c&0x0f])
+		if c := task[i]; besideByte(c) {
+			written = append(written, c)
+		} else {
+			written = append(written, '_', digits[c>>4], digits[c&0x0f])
+		}
 	}
-	return string(written)
+	if len(written) <= besideTaskEscaped {
+		return string(written)
+	}
+	sum := sha256.Sum256([]byte(task))
+	return string(written[:cut]) + "_" + hex.EncodeToString(sum[:])[:besideTaskHash]
 }
 
-// taskOfBesidePart reads a part besideTask could have written back to the id's bytes, and ok
-// where every `_` is followed by two hex digits or stands alone as the whole part. It does not ask
-// whether besideTask writes the id so: ParseBesideBranch writes it again and compares.
-func taskOfBesidePart(part string) (string, bool) {
-	if part == "_" {
-		return "", true
+// besideTaskPart is whether part is one besideTask can write: `_` alone, an escaping of at most
+// besideTaskEscaped bytes, or an escaping cut to within the last three bytes of that bound followed
+// by `_` and besideTaskHash lowercase hex digits.
+func besideTaskPart(part string) bool {
+	switch head := len(part) - besideTaskHash - 1; {
+	case part == "_":
+		return true
+	case len(part) <= besideTaskEscaped:
+		return part != "" && besideEscaping(part)
+	case head < besideTaskEscaped-2 || head > besideTaskEscaped || part[head] != '_':
+		return false
+	default:
+		for i := head + 1; i < len(part); i++ {
+			if c := part[i]; !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
+				return false
+			}
+		}
+		return besideEscaping(part[:head])
 	}
-	task := make([]byte, 0, len(part))
-	for i := 0; i < len(part); {
-		if part[i] != '_' {
-			task = append(task, part[i])
+}
+
+// besideEscaping is whether s is an escaping besideTask writes: bytes in [A-Za-z0-9-] as they are,
+// and `_` followed by two uppercase hex digits that name a byte outside that set.
+func besideEscaping(s string) bool {
+	for i := 0; i < len(s); {
+		if besideByte(s[i]) {
 			i++
 			continue
 		}
-		if i+3 > len(part) {
-			return "", false
+		if s[i] != '_' || i+3 > len(s) || !upperHex(s[i+1]) || !upperHex(s[i+2]) {
+			return false
 		}
-		value, err := strconv.ParseUint(part[i+1:i+3], 16, 8)
-		if err != nil {
-			return "", false
+		if value, _ := strconv.ParseUint(s[i+1:i+3], 16, 8); besideByte(byte(value)) {
+			return false
 		}
-		task = append(task, byte(value))
 		i += 3
 	}
-	return string(task), true
+	return true
 }
+
+// upperHex is whether c is a hex digit as besideTask writes one: [0-9A-F].
+func upperHex(c byte) bool { return c >= '0' && c <= '9' || c >= 'A' && c <= 'F' }
