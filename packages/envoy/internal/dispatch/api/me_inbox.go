@@ -1226,14 +1226,26 @@ func meInboxTextOf(shape meInboxShape) *meInboxText {
 // of 200. In the dismissed scale test the dismissals and Mark all read runs it times append some
 // 35,000 such tuples to the person, before the page 50,000 deep is timed and after page 1 is: the
 // walk then read 11,830 tuples for each of three kinds, and the deep page read a p50 of 44 ms
-// against 24 ms for page 1 over the same plan. Each of these reads is keyed from the page's node:
-// a relation out of the person by graph_tuples_current on its whole key, one index descent, and a
-// relation into the person by graph_tuples_as_of_out from the node, whose own tuples of a kind are
-// few. The read into the person leaves out the `to_kind <> 'value'` test, which every person node
-// passes, so graph_tuples_as_of_in - keyed by the person, the index that made each probe of the
-// scale check above read all the person's tuples of a kind - is no index its plan can take. A
-// page's nodes are at most offset + limit + 1, where the states the page does not cut (inbox and
-// unread) answer every row, so they keep the one pass over the person's tuples.
+// against 24 ms for page 1 over the same plan. Each of these reads is keyed from the page's node,
+// whose own tuples of a kind are few. A relation into the person is read by graph_tuples_as_of_out
+// from the node: the read leaves out the `to_kind <> 'value'` test, which every person node passes,
+// so graph_tuples_as_of_in - keyed by the person, the index that made each probe of the scale check
+// above read all the person's tuples of a kind - and graph_tuples_current, whose predicates need
+// that test, are no index its plan can take. A relation out of the person is read by
+// graph_tuples_as_of_in into the node: the read tests the person's end as an expression, each
+// column concatenated with the empty string, so graph_tuples_current and graph_tuples_as_of_out,
+// the two indexes led by that end, are no index its plan can take either. Tested on the columns,
+// that end let the plan probe graph_tuples_as_of_out, which no predicate keeps out: led by the person
+// and the kind, it holds every dismissed and every read_through tuple the person ever wrote, and the
+// generic plan estimates its probe at one row, as it does the probe of graph_tuples_current's whole
+// key, so which of the two a connection took turned on the statistics it planned under. With 5,000
+// threads dismissed in one Dismiss, a plan that took graph_tuples_as_of_out read the person's 5,000
+// tuples of a kind in each of 402 probes, two kinds for each of the page's 201 nodes: 1,244 ms for a
+// page the other plan read in 50 ms, in a pod; in the server's log of CI's chromium-alone runner, six
+// of eleven loads of c-dismissed-window read the page in 439 to 477 ms at 50f167fa
+// (TestTheDismissedPageWalksFromThePagesOwnNodes). A page's nodes are at most offset + limit + 1,
+// where the states the page does not cut (inbox and unread) answer every row, so they keep the one
+// pass over the person's tuples.
 func meInboxBuild(shape meInboxShape) (string, []any, error) {
 	slots := shape.slots()
 	args := &meInboxArgs{values: make([]any, slots.first)}
@@ -1270,8 +1282,10 @@ func meInboxBuild(shape meInboxShape) (string, []any, error) {
 		cross join page_nodes p`
 		inbound = `t.from_kind = p.node_kind and t.from_id = p.node_id and t.kind = k.kind
 				and t.to_kind = k.node_kind and t.to_id = k.node_id and ` + atHorizon
-		outbound = `t.from_kind = k.node_kind and t.from_id = k.node_id and t.kind = k.kind
-				and t.to_kind = p.node_kind and t.to_id = p.node_id
+		// The person's end is tested off every index (meInboxBuild's comment), so this read takes
+		// graph_tuples_as_of_in from the page's node and never an index led by the person.
+		outbound = `t.to_kind = p.node_kind and t.to_id = p.node_id and t.kind = k.kind
+				and t.from_kind || '' = k.node_kind and t.from_id || '' = k.node_id
 				and t.to_kind <> '` + graphstore.KindValue + `' and ` + meInboxOutOfPerson + ` and ` + atHorizon
 	}
 

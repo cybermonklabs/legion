@@ -10,9 +10,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/explaintest"
@@ -131,6 +133,92 @@ func TestTheDismissedPageReadsOnePageUnderTheGenericPlan(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// The pile TestTheDismissedPageWalksFromThePagesOwnNodes dismisses in one Dismiss, the most rows of
+// graph_tuples its first page may read, and the index condition every probe the walk makes for each
+// of the page's nodes leads with.
+const (
+	dismissedWalkPile = 1_000
+	// dismissedWalkTuples bounds the rows the page's statement reads of graph_tuples, each scan's
+	// answer and what its filter removed: a few relations of each of the page's offset + limit + 1
+	// nodes. A probe led by the person reads the person's whole history of its kind instead, 1,000
+	// dismissed tuples or 1,000 read_through ones, for each of the 201 nodes.
+	dismissedWalkTuples = 20 * (dismissedScalePage + 1)
+)
+
+// dismissedWalkKeyed is how the index condition of a probe keyed by a node of the page starts: its
+// index's leading end, the near end or the far end, bound to page_nodes p (meInboxBuild's walk).
+var dismissedWalkKeyed = regexp.MustCompile(`^\(\((from|to)_kind = p(_[0-9]+)?\.node_kind\)`)
+
+// The Dismissed page's walk reads each relation between the person and a node of the page from that
+// node, whose own tuples of a kind are few (meInboxBuild): over the first page of 1,000 threads
+// dismissed in one Dismiss - each with a dismissed and a read_through tuple out of the person, as
+// POST /api/v1/me/inbox/dismiss writes them - every scan of graph_tuples the plan runs once for each
+// of the page's nodes leads its index condition with that node, and the page reads at most a few
+// tuples of each node. A probe led by the person - graph_tuples_current on the whole key, or
+// graph_tuples_as_of_out on the person and the kind - is estimated at one row either way, so a
+// generic plan that took the person's end on the index took one or the other by the statistics it
+// planned under, and graph_tuples_as_of_out reads the person's whole history of a kind for each
+// node: in the server's log of CI's chromium-alone runner, six of eleven loads of c-dismissed-window
+// read the page in 439 to 477 ms and the other five in 49 to 99 (run 45518823268 at 50f167fa).
+func TestTheDismissedPageWalksFromThePagesOwnNodes(t *testing.T) {
+	t.Parallel()
+	handler, database, _ := newTestServer(t, testServerOptions{})
+	issue := createInteractionIssue(t, handler, "SCALE", "A pile of dismissed threads", "A spec")
+	shape := &dismissedScaleShape{
+		name: fmt.Sprintf("%d dismissed in one Dismiss", dismissedWalkPile), handler: handler, database: database,
+		issue: issue.Key, dismissedReplies: dismissedWalkPile,
+	}
+	dismissedScaleCommentPairs(t, shape, dismissedScalePileLabel, dismissedWalkPile, dismissedScalePileAge)
+	response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/me/inbox/dismiss", map[string]string{
+		"dismiss_through": time.Now().UTC().Format(time.RFC3339Nano), "issue": issue.Key,
+	}, dismissedScaleLogin)
+	if response.Code != http.StatusOK {
+		t.Fatalf("dismiss the pile: status %d, body %s", response.Code, response.Body.String())
+	}
+	if dismissed := decodeBody[struct {
+		Dismissed int `json:"dismissed"`
+	}](t, response).Dismissed; dismissed != dismissedWalkPile {
+		t.Fatalf("the Dismiss took %d threads, want the pile's %d", dismissed, dismissedWalkPile)
+	}
+	plan := explainDismissedPage(t, shape, "the first page",
+		url.Values{"state": {myRepliesStateDismissed}, "limit": {fmt.Sprint(dismissedScalePage)}})
+	if plan.threads != dismissedScalePage {
+		t.Fatalf("the first page answers %d Reply rows, want %d", plan.threads, dismissedScalePage)
+	}
+	var read float64
+	var scans, unkeyed []string
+	probes := 0
+	for _, node := range explaintest.Nodes(t, plan.plan) {
+		if node.Relation != "graph_tuples" {
+			continue
+		}
+		rows := (node.Rows + node.RowsRemovedByFilter) * node.Loops
+		read += rows
+		described := fmt.Sprintf("  %.0f rows over %.0f loops: %s, %s", rows, node.Loops, node, node.IndexCond)
+		scans = append(scans, described)
+		if node.Loops < dismissedScalePage+1 {
+			continue
+		}
+		probes++
+		if !dismissedWalkKeyed.MatchString(node.IndexCond) {
+			unkeyed = append(unkeyed, described)
+		}
+	}
+	t.Logf("the first page reads %.0f rows of graph_tuples:\n%s", read, strings.Join(scans, "\n"))
+	if probes == 0 {
+		t.Fatalf("no scan of graph_tuples runs once for each of the page's %d nodes, so the walk this test holds is not in the plan\n%s",
+			dismissedScalePage+1, plan.text)
+	}
+	if len(unkeyed) > 0 {
+		t.Errorf("%d of the walk's %d probes for each of the page's nodes are not keyed by that node, want none:\n%s",
+			len(unkeyed), probes, strings.Join(unkeyed, "\n"))
+	}
+	if read > dismissedWalkTuples {
+		t.Errorf("the first page reads %.0f rows of graph_tuples, want at most %d: its walk reads the person's tuples of a kind for each of the page's nodes\n%s",
+			read, dismissedWalkTuples, plan.text)
 	}
 }
 
