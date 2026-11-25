@@ -78,6 +78,7 @@ exec "$WINIT_REAL_GIT" "$@"
 // created, and no one-shot credential is left in its TMPDIR. A refusal of its input exits 3, a
 // cause outside the issue's volume, and a usage error exits 2.
 func TestWorkspaceInitFetchRefusesBeforeFetching(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it runs `legion workspace-init` in this process, which points the process's standard logger at the test's own stderr (podLogs).
 	for _, tc := range []struct {
 		name string
 		args func(v *issueVolume) []string
@@ -228,6 +229,7 @@ func TestWorkspaceInitFetchRefusesBeforeFetching(t *testing.T) {
 // handed as a one-shot credential on the container's own filesystem (its TMPDIR) and which is gone
 // once it returns; the feed never holds it.
 func TestWorkspaceInitFetchFillsTheFeed(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it runs `legion workspace-init` in this process, which points the process's standard logger at the test's own stderr (podLogs).
 	v := newIssueVolume(t).withRemote(t, "main")
 	v.setenv(t)
 	t.Setenv("LEGION_PROVISION_TOKEN_FILE", v.token)
@@ -354,6 +356,7 @@ func useInstantClock(t *testing.T) *instantClock {
 // clone fails; this git leaves a partial clone there anyway, so the test holds the fetch to removing
 // whatever a failed attempt left before it clones again.
 func TestWorkspaceInitFetchRetriesATransientCloneFailure(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it sets the package variable fetchClock (useInstantClock); it runs `legion workspace-init` in this process, which points the process's standard logger at the test's own stderr (podLogs).
 	v := newIssueVolume(t).withRemote(t, "main")
 	attempts := v.failClones(t, curl92Failure, http408Failure)
 	clock := useInstantClock(t)
@@ -395,6 +398,7 @@ func TestWorkspaceInitFetchRetriesATransientCloneFailure(t *testing.T) {
 // fifth failure fails the fetch: the four retries on stdout, the failure and the limit on stderr.
 // GitHub's failure is outside the issue's volume, so the fetch exits 3.
 func TestWorkspaceInitFetchGivesUpAfterItsLastRetry(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it sets the package variable fetchClock (useInstantClock); it runs `legion workspace-init` in this process, which points the process's standard logger at the test's own stderr (podLogs).
 	v := newIssueVolume(t).withRemote(t, "main")
 	attempts := v.failClones(t, http408Failure, http408Failure, http408Failure, http408Failure, http408Failure, http408Failure)
 	clock := useInstantClock(t)
@@ -421,6 +425,7 @@ func TestWorkspaceInitFetchGivesUpAfterItsLastRetry(t *testing.T) {
 // outside the issue's volume. Which failures are permanent is workspace.Fetch's to tell; this is
 // what the command does with one.
 func TestWorkspaceInitFetchFailsAPermanentCloneFailureAtOnce(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it sets the package variable fetchClock (useInstantClock); it runs `legion workspace-init` in this process, which points the process's standard logger at the test's own stderr (podLogs).
 	v := newIssueVolume(t).withRemote(t, "main")
 	notFound := "remote: Repository not found.\nfatal: repository 'https://github.com/acme/widgets/' not found\n"
 	attempts := v.failClones(t, notFound, notFound)
@@ -447,6 +452,7 @@ func TestWorkspaceInitFetchFailsAPermanentCloneFailureAtOnce(t *testing.T) {
 // where git echoes it: in a URL the userinfo that carries it is removed whole (the URL rule,
 // redact.Writer), and anywhere else the token says *** in its place.
 func TestWorkspaceInitFetchLogsNoToken(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it sets the package variable fetchClock (useInstantClock); it runs `legion workspace-init` in this process, which points the process's standard logger at the test's own stderr (podLogs).
 	v := newIssueVolume(t).withRemote(t, "main")
 	v.failClones(t,
 		"fatal: unable to access 'https://x-access-token:@TOKEN@@github.com/acme/widgets/': Failed to connect to github.com port 443 after 127010 ms: Couldn't connect to server\n",
@@ -664,6 +670,7 @@ func (v *issueVolume) linkToDevFull(entry string) error {
 // says both, with each source's bytes. A relaunch, whose feed on the issue volume holds the
 // repository already, fetches the delta alone and says so.
 func TestWorkspaceInitFetchStreamsTheRepositoryCache(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it runs `legion workspace-init` in this process, which points the process's standard logger at the test's own stderr (podLogs).
 	v := newIssueVolume(t).withRemote(t, "main")
 	cache, length := v.cacheTarServer(t, cacheFault{})
 	head := v.advanceRemote(t)
@@ -709,6 +716,7 @@ func TestWorkspaceInitFetchStreamsTheRepositoryCache(t *testing.T) {
 // A cache that never becomes ready fails the fetch, exit 3, naming the cache and its last answer,
 // after one waiting line per change of that answer: nothing is cloned from GitHub instead.
 func TestWorkspaceInitFetchFailsWhenTheCacheIsNeverReady(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it sets the package variable fetchClock (useInstantClock); it runs `legion workspace-init` in this process, which points the process's standard logger at the test's own stderr (podLogs).
 	v := newIssueVolume(t).withRemote(t, "main")
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set(workspace.CacheRepositoryHeader, "acme/widgets")
@@ -747,6 +755,7 @@ func TestWorkspaceInitFetchFailsWhenTheCacheIsNeverReady(t *testing.T) {
 // volume fails inside the copy, or whose pack fails its checksum, exits 1. A bad flag exits
 // workspace.InitExitUsage, the usage exit of every legion command.
 func TestWorkspaceInitFetchExitsThreeForAFailureFromGitHub(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it sets the package variable fetchBound; it runs `legion workspace-init` in this process, which points the process's standard logger at the test's own stderr (podLogs).
 	const access = "fatal: unable to access 'https://github.com/acme/widgets/': "
 	// failing is a fetch into a feed that holds the repository, whose every fetch from GitHub
 	// fails with stderr and status.

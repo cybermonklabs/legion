@@ -92,6 +92,7 @@ var legionHidden = [][]string{
 // completion left to clitest: a command added to the tree and to neither list fails here, so no
 // command passes clitest by being left out of its case.
 func TestConformanceCaseIsTheTree(t *testing.T) {
+	t.Parallel()
 	var visible, hidden [][]string
 	var walk func(cmd *cobra.Command, words []string)
 	walk = func(cmd *cobra.Command, words []string) {
@@ -143,6 +144,7 @@ func commandSet(commands [][]string) map[string]bool {
 // only a program runs is offered nowhere: neither its group's help nor its group's completion
 // lists it, which clitest reads for visible groups alone.
 func TestLegionConformance(t *testing.T) {
+	t.Parallel()
 	legion := buildLegion(t)
 	recorder := clitest.NewRecorder(t)
 	env := []string{"LEGION_DAEMON_URL=" + recorder.URL()}
@@ -195,6 +197,7 @@ func TestLegionConformance(t *testing.T) {
 // with an Args of its own resolves any word to itself). A word after a shell is a usage error
 // too, where cobra's NoArgs would exit 1. The forms they serve still exit 0.
 func TestCobraBuiltinsRefuseAWordTheyDoNotKnow(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		args   []string
 		code   int
@@ -225,6 +228,7 @@ func TestCobraBuiltinsRefuseAWordTheyDoNotKnow(t *testing.T) {
 // case runs the built legion as its runtime's wrapper runs it and reads what the stand-in for the
 // real program received.
 func TestPassThroughCommandsParseNoFlags(t *testing.T) {
+	t.Parallel()
 	legion := buildLegion(t)
 	t.Run("git", func(t *testing.T) {
 		// A tmux pane's git (trailerWrapperDir's shape, around the built binary) runs the next git
@@ -311,6 +315,7 @@ func TestPassThroughCommandsParseNoFlags(t *testing.T) {
 // it passes only where the built binary took the linked deadline, and a built binary with the
 // product bound refuses the call, the read killed at 30 s.
 func TestTheBuiltLegionTakesItsBoundsFromTheTestBinarysDeadline(t *testing.T) {
+	t.Parallel()
 	if _, ok := os.LookupEnv(testDeadlineEnv); !ok {
 		t.Skip("this test binary runs with -timeout 0, so the built legion links no deadline")
 	}

@@ -18,6 +18,7 @@ import (
 // claim is a phase worker's because the daemon refuses the operator's stop of the tree's root
 // claim.
 func TestClaimsRetryFreshSessionStartsAStoppedClaimInANewSession(t *testing.T) {
+	t.Parallel()
 	d := newOperatorDaemon(t)
 	d.succeed(d.spawnArgs()...)
 	d.ready(architectClaim)
@@ -71,6 +72,7 @@ func TestClaimsRetryFreshSessionStartsAStoppedClaimInANewSession(t *testing.T) {
 // The claim is a phase worker's, since that is the only claim the daemon writes this answer for:
 // an architect is never started through a phase at all (api's freshSession).
 func TestARetryWhosePhaseRestartWasRefusedPrintsTheRefusalUnderTheClaim(t *testing.T) {
+	t.Parallel()
 	const implementerClaim = legionclaim.Token("legion-legion-legion-209-implementer")
 	retried := api.OperatorClaim{Token: implementerClaim, Tree: "LEGION-208", Issue: "LEGION-209",
 		Role: "implementer", Generation: 3, State: "launching", PluginContract: api.DaemonAPIVersion}

@@ -29,6 +29,7 @@ const slowStateAnswer = 6 * time.Second
 // serves, and the handler waits slowStateAnswer before it answers, which is less than a live
 // INFRA read takes and more than the command allowed when this test was written.
 func TestStateReadsADaemonSlowerThanTheOldBudget(t *testing.T) {
+	t.Parallel()
 	body, err := os.ReadFile(filepath.Join("..", "..", "..", "contracts", "fixtures", "daemon-api", "state.json"))
 	if err != nil {
 		t.Fatalf("read the state fixture: %v", err)
@@ -45,11 +46,14 @@ func TestStateReadsADaemonSlowerThanTheOldBudget(t *testing.T) {
 		}
 	}))
 	defer daemon.Close()
-	t.Setenv("LEGION_DAEMON_URL", daemon.URL)
 
+	// A process of its own, which the daemon's address reaches through its own environment, so
+	// the six-second wait runs beside the package's other tests.
+	cmd := legionCommand(t, t.TempDir(), map[string]string{"LEGION_DAEMON_URL": daemon.URL}, "state")
 	var stdout, stderr bytes.Buffer
-	if code := run(t.Context(), []string{"legion", "state"}, &stdout, &stderr); code != 0 {
-		t.Fatalf("legion state = %d, want 0; stderr %s", code, strings.TrimSpace(stderr.String()))
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("legion state: %v, want exit 0; stderr %s", err, strings.TrimSpace(stderr.String()))
 	}
 	printed := stdout.String()
 	for _, want := range []string{"admission: ", "waiting line: "} {

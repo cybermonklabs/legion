@@ -179,6 +179,7 @@ func trailerWrapperDir(t *testing.T, legion string) string {
 // commit carries both lines. With no LEGION_* variable in the environment, a `git status` and a
 // `git commit` still reach the script, and the commit carries the session line alone.
 func TestGitWrapperAfterRunsTheNextGitOnPathAScriptIncluded(t *testing.T) {
+	t.Parallel()
 	git := fixturegit.CompiledGit(t)
 	legion := trailerLegion(t)
 	bin := trailerWrapperDir(t, legion)
@@ -281,6 +282,7 @@ const realGit = `real_git() {
 // Each case runs `sh -c 'git …'` with the case's PATH in the command's environment, since
 // exec.Command("git") would look git up on the test process's own PATH.
 func TestGitWrapperAfterEndsAHostWrapperLoop(t *testing.T) {
+	t.Parallel()
 	git := fixturegit.CompiledGit(t)
 	legion := trailerLegion(t)
 	bash, err := exec.LookPath("bash")
@@ -507,6 +509,7 @@ func copyExecutable(t *testing.T, from, to string) {
 // git alone: a git that git itself starts never reaches the pane's git, so the value in a real
 // git's environment changes nothing.
 func TestGitWrapperAfterClearsAMarkerItDoesNotNeed(t *testing.T) {
+	t.Parallel()
 	git := fixturegit.CompiledGit(t)
 	legion := trailerLegion(t)
 	sh, err := exec.LookPath("sh")
@@ -542,6 +545,7 @@ func TestGitWrapperAfterClearsAMarkerItDoesNotNeed(t *testing.T) {
 // that ran legion as its own, and that process's parent as its parent. So a host's wrapper that
 // reads its parent (dotfiles' from_jj) sees jj when jj ran git.
 func TestGitWrapperAfterExecsTheNextGit(t *testing.T) {
+	t.Parallel()
 	legion := trailerLegion(t)
 	bin, host := t.TempDir(), t.TempDir()
 	writeTrailerScript(t, filepath.Join(host, "git"), "echo $$\nreadlink /proc/$PPID/exe\n")
@@ -570,6 +574,7 @@ func TestGitWrapperAfterExecsTheNextGit(t *testing.T) {
 // it, with the trailers among its arguments, and the commit carries both lines. A command in an
 // environment that holds no LEGION_* variable still runs through it.
 func TestGitWrapperInstallsAPanesTrailers(t *testing.T) {
+	t.Parallel()
 	git := fixturegit.CompiledGit(t)
 	legion := trailerLegion(t)
 	host := t.TempDir()
@@ -617,6 +622,7 @@ func TestGitWrapperInstallsAPanesTrailers(t *testing.T) {
 // test reads too (fixturegit.Subcommands), so legion git and packages/daemon/docker/git agree on
 // which command is a commit.
 func TestGitWrapperFindsTheSubcommandThePodsWrapperFinds(t *testing.T) {
+	t.Parallel()
 	for _, tc := range fixturegit.Subcommands() {
 		if got := gitSubcommand(tc.Args); got != tc.Sub {
 			t.Errorf("gitSubcommand(%q) = %d, want %d", tc.Args, got, tc.Sub)
@@ -630,6 +636,7 @@ func TestGitWrapperFindsTheSubcommandThePodsWrapperFinds(t *testing.T) {
 // came, under either form. Under --real the git it runs also answers its reads, and that git runs
 // once, so legion git read nothing first.
 func TestGitWrapperLeavesGitsHelpAndPathWordsAlone(t *testing.T) {
+	t.Parallel()
 	legion := trailerLegion(t)
 	for _, tc := range fixturegit.Subcommands() {
 		if tc.Sub >= 0 {
@@ -660,6 +667,7 @@ func TestGitWrapperLeavesGitsHelpAndPathWordsAlone(t *testing.T) {
 // arguments (passThrough), so a help request is its own to answer. The usage starts
 // `usage: legion git --`.
 func TestGitWrapperHelpPrintsUsage(t *testing.T) {
+	t.Parallel()
 	for _, help := range []string{"-h", "-help", "--help"} {
 		var out, errb bytes.Buffer
 		code := run(context.Background(), []string{"legion", "git", help}, &out, &errb)
@@ -673,6 +681,7 @@ func TestGitWrapperHelpPrintsUsage(t *testing.T) {
 // form without its value or its `--`. A help request after `--` is git's
 // (TestGitWrapperLeavesGitsHelpAndPathWordsAlone).
 func TestGitWrapperRefusesAnyOtherForm(t *testing.T) {
+	t.Parallel()
 	for _, args := range [][]string{
 		{},
 		{"commit", "-m", "x"},
@@ -708,6 +717,7 @@ func TestGitWrapperRefusesAnyOtherForm(t *testing.T) {
 // git read the substitution before the host ran, so it commits `msg` with both lines: each git
 // commit gets the two lines (R2).
 func TestGitWrapperAfterHandsStandardInputThroughAHostThatClosesDescriptors(t *testing.T) {
+	t.Parallel()
 	git := fixturegit.CompiledGit(t)
 	legion := trailerLegion(t)
 	bash, err := exec.LookPath("bash")
@@ -818,6 +828,7 @@ func TestGitWrapperAfterHandsStandardInputThroughAHostThatClosesDescriptors(t *t
 // commits (R2). A copy that the pane's git hands git as /dev/fd/<n>, n above 2, is a descriptor such
 // a host closes, and git then refuses with `could not read log file`.
 func TestGitWrapperAfterGivesAFifoMessageThroughAHostThatClosesDescriptors(t *testing.T) {
+	t.Parallel()
 	git := fixturegit.CompiledGit(t)
 	legion := trailerLegion(t)
 	bash, err := exec.LookPath("bash")
@@ -884,6 +895,7 @@ func main() {
 // shell and execvp run it, with /bin/sh. It counts as a script, not the real git: the helper is the
 // real git after it, and a commit through it carries both lines.
 func TestGitWrapperAfterRunsAHostScriptWithNoInterpreterLine(t *testing.T) {
+	t.Parallel()
 	git := fixturegit.CompiledGit(t)
 	legion := trailerLegion(t)
 	host := t.TempDir()
@@ -914,6 +926,7 @@ func TestGitWrapperAfterRunsAHostScriptWithNoInterpreterLine(t *testing.T) {
 // that still runs after the signal, fails the row by name, with the test binary's deadline as the
 // only bound on either wait.
 func TestGitWrapperEndsOnSIGTERMWhileItReads(t *testing.T) {
+	t.Parallel()
 	git := fixturegit.CompiledGit(t)
 	legion := trailerLegion(t)
 	repo := trailerRepo(t, git)

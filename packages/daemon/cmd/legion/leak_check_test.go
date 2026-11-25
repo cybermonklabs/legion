@@ -129,6 +129,7 @@ func says(t *testing.T, printed string, wants []string) {
 // shared check (no leakguard.CheckerVar) a push with no check is not refused for its absence, and
 // this repository's own rules still read it.
 func TestLeakCheckPrePushRunsTheGuardOverGitsUpdateLines(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it changes the whole process's working directory; it sets the package variable leakCheckStdin (leakCheck).
 	for _, tc := range []struct {
 		name    string
 		message string
@@ -225,6 +226,7 @@ func legionLeakCheckPrePush(t *testing.T, dir string, env map[string]string, lin
 // be refused as a real gh leading back to `legion gh`, and the push with it, leaving the
 // repository gh created empty.
 func TestLeakCheckPrePushUnderTheRealGhsVariableReadsTheVisibility(t *testing.T) {
+	t.Parallel()
 	root, defaultDir := gitCredentialBundle(t)
 	help, err := filepath.Abs(ghHelpDir)
 	if err != nil {
@@ -267,6 +269,7 @@ func TestLeakCheckPrePushUnderTheRealGhsVariableReadsTheVisibility(t *testing.T)
 // handed its shape another context leaves each SIGINT row's command running until the row gives up
 // on it, by name, before the test binary's deadline (signalWhileHeld).
 func TestASignalToLeakChecksGroupStopsTheSharedCheck(t *testing.T) {
+	t.Parallel()
 	if _, err := os.ReadFile("/proc/self/cmdline"); err != nil {
 		t.Fatalf("/proc does not answer (%v): this row reads from it whether the stand-in is still running", err)
 	}
@@ -316,6 +319,7 @@ func TestASignalToLeakChecksGroupStopsTheSharedCheck(t *testing.T) {
 // leakguard.CheckerVar) a text with no check is not refused for its absence, and this
 // repository's own rules still read it.
 func TestLeakCheckTextRunsTheGuardOverWhatItIsPiped(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it sets the package variable leakCheckStdin (leakCheck).
 	const kind = "the pull request body"
 	for _, tc := range []struct {
 		name, text string
@@ -383,6 +387,7 @@ func TestLeakCheckTextRunsTheGuardOverWhatItIsPiped(t *testing.T) {
 // or a script that called it wrongly has cleared nothing. A help request is the one call that
 // prints the usage, on standard output, and exits 0.
 func TestLeakCheckRefusesACallItCannotRead(t *testing.T) {
+	// Not parallel: it sets the package variable leakCheckStdin (leakCheck).
 	for _, tc := range []struct {
 		name string
 		args []string
@@ -420,6 +425,7 @@ func TestLeakCheckRefusesACallItCannotRead(t *testing.T) {
 // (newRoot), and these rows hold the two together; leakguard's
 // TestNoAnswerPrintsACredentialThePushsNameCarries holds the first alone.
 func TestLeakCheckPrePushPrintsNoCredentialItsRemoteCarries(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it changes the whole process's working directory; it sets the package variable leakCheckStdin (leakCheck).
 	const token = "FAKEtok3nZQ9x"
 	remote := "https://" + token + "@github.com/" + noSuchRepo + ".git"
 	shown := "the push to https://github.com/" + noSuchRepo + ".git"
@@ -501,6 +507,7 @@ func TestLeakCheckPrePushPrintsNoCredentialItsRemoteCarries(t *testing.T) {
 // failure naming both reads, exit 2. A push to a repository of an owner the bundle holds is read
 // by the real gh, as before, and git never runs.
 func TestLeakCheckPrePushReadsAnUnservedOwnersVisibilityWithNoCredential(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it changes the whole process's working directory; it sets the package variable leakCheckStdin (leakCheck).
 	root, defaultDir := gitCredentialBundle(t)
 	help, err := filepath.Abs(ghHelpDir)
 	if err != nil {

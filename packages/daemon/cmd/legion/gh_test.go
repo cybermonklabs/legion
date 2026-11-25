@@ -90,6 +90,7 @@ var (
 // each of a kind the tables know or none. It refuses a help it cannot read whole, and the help a gh
 // alias prints, its command's, which lists no such alias.
 func TestParseGhHelpReadsRealGhHelp(t *testing.T) {
+	t.Parallel()
 	read := func(path ...string) ghCommand {
 		t.Helper()
 		text, err := savedGhHelp(path)
@@ -234,6 +235,7 @@ func TestParseGhHelpReadsRealGhHelp(t *testing.T) {
 // one or more arguments even with no `...`, and every slot taking more than one fits one argument
 // more than the usage has slots, wherever the slot stands.
 func TestEveryArgumentGhsReferenceNamesIsOfAKnownKind(t *testing.T) {
+	t.Parallel()
 	refused := map[string]bool{"args": true, "command": true, "flags": true, "...": true, "public": true, "private": true, "org": true, "endpoint": true}
 	for name := range refused {
 		if _, known := ghSlotKinds[name]; known {
@@ -278,6 +280,7 @@ func TestEveryArgumentGhsReferenceNamesIsOfAKnownKind(t *testing.T) {
 // that names one is refused rather than read as naming nothing. No entry names nothing while its
 // placeholder is a repository's, an owner's or an organization's.
 func TestEveryOptionGhsReferenceNamesARepositoryWithIsInTheTable(t *testing.T) {
+	t.Parallel()
 	options, mentioning := 0, 0
 	for _, usage := range ghReferenceUsages(t) {
 		for _, line := range usage.flags {
@@ -352,6 +355,7 @@ func ghReferenceUsages(t *testing.T) []ghReferenceUsage {
 // repository for it, runs with GH_CONFIG_DIR's directory (R4 of dispatch://INFRA-3399); every
 // other call naming such an owner is routed and refused as with no R4.
 func TestGhTargetOfFailsClosed(t *testing.T) {
+	t.Parallel()
 	acme := map[string]string{"GH_REPO": "acme/widgets"}
 	// A pane of the issue owner acme, whose GH_CONFIG_DIR is acme's directory of the bundle.
 	pane := map[string]string{"GH_CONFIG_DIR": "/owners/acme", "LEGION_GH_OWNERS_DIR": "/owners"}
@@ -820,6 +824,7 @@ func TestGhTargetOfFailsClosed(t *testing.T) {
 // Every refusal names the argument it could not place and how to name the repository instead:
 // -R, or, for gh api, which has none, the endpoint; for a gh alias, the command it stands for.
 func TestGhTargetOfRefusalsSayHowToNameTheRepository(t *testing.T) {
+	t.Parallel()
 	for argv, want := range map[string]string{
 		"pr view 1 --bogus":              "pass -R <owner>/<repo>",
 		"api repositories/12345":         "name it in the endpoint, repos/<owner>/<repo>/…",
@@ -848,6 +853,7 @@ func TestGhTargetOfRefusalsSayHowToNameTheRepository(t *testing.T) {
 // owner:/org:/user: qualifier, a team, an owner option — name none, and the command runs as the
 // owner.
 func TestGhTargetOfNamesTheOneRepositoryEverySelectorNames(t *testing.T) {
+	t.Parallel()
 	remotes := func(listed ...ghRemote) func() ([]ghRemote, error) {
 		return func() ([]ghRemote, error) { return listed, nil }
 	}
@@ -934,6 +940,7 @@ func TestGhTargetOfNamesTheOneRepositoryEverySelectorNames(t *testing.T) {
 // (gh api's help: "adding request parameters will automatically switch the request method to
 // `POST`").
 func TestGhTargetOfRoutesEverySelectorKindOfARead(t *testing.T) {
+	t.Parallel()
 	// The pane of the issue owner acme, whose bundle under /owners serves acme and sjawhar and
 	// holds no directory for octocat, which dirFor answers as ghConfigDirFor answers an owner it
 	// holds none for: a bare OwnerNotServedError, wrapping nothing.
@@ -1145,6 +1152,7 @@ func ownersOwnDirectories(owner, _ string) (string, error) {
 // `(fetch) [blob:none]`), and every remote's gh-resolved setting; a directory that is no git
 // repository has none.
 func TestReadGitRemotesReadsWhatGhReads(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it changes the whole process's working directory.
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("no git on this machine")
 	}
@@ -1195,6 +1203,7 @@ func TestReadGitRemotesReadsWhatGhReads(t *testing.T) {
 // git's order, with git's own key and value and whether git printed one: a key given two values,
 // a marker on a dotted remote name, an empty value and a key set with none.
 func TestReadGitRemotesReadsEveryMarkerLineGitPrints(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it changes the whole process's working directory.
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("no git on this machine")
 	}
@@ -1247,6 +1256,7 @@ func TestReadGitRemotesReadsEveryMarkerLineGitPrints(t *testing.T) {
 // on. The three shapes the gates probed, each gh acting on evilown's repository: a filter holding a
 // second `<url> (fetch)`, the same after a GitHub URL, and a URL holding a second URL.
 func TestReadGitRemotesRefusesALineGhReadsOtherwise(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it changes the whole process's working directory.
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("no git on this machine")
 	}
@@ -1376,6 +1386,7 @@ func legionGhIn(t *testing.T, dir string, env map[string]string, stdin string, a
 // required, and an unset one is named with exit 2; --help with no real gh to hand it to is
 // legion's usage.
 func TestLegionGhExecsTheRealGhWithTheOwnersDirectory(t *testing.T) {
+	t.Parallel()
 	root, defaultDir := gitCredentialBundle(t)
 	help, err := filepath.Abs(ghHelpDir)
 	if err != nil {
@@ -1550,6 +1561,7 @@ func TestLegionGhExecsTheRealGhWithTheOwnersDirectory(t *testing.T) {
 // the wrapper, and the one that read's shim leads back to, which refuses. A refusal that let the
 // guard's reads through under the variable loops under the token until the cap stops it.
 func TestLegionGhRefusesARealGhThatRunsLegionGhAgain(t *testing.T) {
+	t.Parallel()
 	root, defaultDir := gitCredentialBundle(t)
 	starts := filepath.Join(t.TempDir(), "starts")
 	legion := filepath.Join(t.TempDir(), "legion")
@@ -1706,6 +1718,7 @@ func TestLegionGhRefusesARealGhThatRunsLegionGhAgain(t *testing.T) {
 // tmux pane's launcher directory holds (workerbin), is one `legion gh` accepts as its wrapper
 // (ghWrapperScript), so the git gh runs names it as its helper; a machine's own wrapper is not.
 func TestTheRuntimesGhWrappersAreOnesLegionGhAccepts(t *testing.T) {
+	t.Parallel()
 	image, err := os.ReadFile(filepath.Join("..", "..", "docker", "gh"))
 	if err != nil {
 		t.Fatal(err)
@@ -1775,6 +1788,7 @@ func TestTheRuntimesGhWrappersAreOnesLegionGhAccepts(t *testing.T) {
 // the environment already holds and in place of a stale entry at the next index; a count that is
 // no number is refused.
 func TestWithGitHubUseHTTPPathAddsToGitsConfiguration(t *testing.T) {
+	t.Parallel()
 	got, err := withGitHubUseHTTPPath([]string{"A=1", "GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=core.x", "GIT_CONFIG_VALUE_0=y", "GIT_CONFIG_KEY_1=stale", "GIT_CONFIG_VALUE_1=stale"})
 	want := []string{"A=1", "GIT_CONFIG_KEY_0=core.x", "GIT_CONFIG_VALUE_0=y", "GIT_CONFIG_KEY_1=credential.https://github.com.useHttpPath", "GIT_CONFIG_VALUE_1=true", "GIT_CONFIG_COUNT=2"}
 	if err != nil || !slices.Equal(got, want) {
@@ -1889,6 +1903,7 @@ func readRecord(t *testing.T, path string) string {
 // another read under the variable, the guard's read under no variable, and the guard's read of
 // another repository than the variable names are each refused.
 func TestLegionGhChecksTheCallWithTheLeakGuard(t *testing.T) {
+	t.Parallel()
 	root, defaultDir := gitCredentialBundle(t)
 	help, err := filepath.Abs(ghHelpDir)
 	if err != nil {
@@ -2152,6 +2167,7 @@ const inventedMutation = "mutation($owner: String!, $name: String!) { createIssu
 // read, and neither takes the GraphQL read of another repository, another query, a mutation, the
 // read with a field added, the read with no variable, or a variable naming no repository.
 func TestGhVisibilityReadLetsThroughOnlyTheExactReads(t *testing.T) {
+	t.Parallel()
 	const slug = "sjawhar/legion"
 	env := map[string]string{leakguard.VisibilityReadVar: slug}
 	graphql := leakguard.VisibilityGraphQLArgs(slug)
@@ -2222,6 +2238,7 @@ func TestGhVisibilityReadLetsThroughOnlyTheExactReads(t *testing.T) {
 // nothing, for octo/elsewhere, whose owner the bundle holds no directory for, as much as for a
 // repository it does hold one for (#4219).
 func TestLegionGhRunsTheGuardsVisibilityReadsWithTheRepositorysOrTheCallersToken(t *testing.T) {
+	t.Parallel()
 	root := pairRoutedBundle(t)
 	defaultDir := ghconfig.Dir(root, "cybermonklabs")
 	help, err := filepath.Abs(ghHelpDir)
@@ -2288,6 +2305,7 @@ func TestLegionGhRunsTheGuardsVisibilityReadsWithTheRepositorysOrTheCallersToken
 // the read's own repository. ghTargetOf never reads these reads, which read no gh help
 // (TestLegionGhReadsNoHelpForTheGuardsVisibilityReads).
 func TestLegionGhRefusesTheGuardsVisibilityReadForAnUnheldOwnerWithoutACallerToken(t *testing.T) {
+	t.Parallel()
 	root := pairRoutedBundle(t)
 	defaultDir := ghconfig.Dir(root, "cybermonklabs")
 	help, err := filepath.Abs(ghHelpDir)
@@ -2339,6 +2357,7 @@ func TestLegionGhRefusesTheGuardsVisibilityReadForAnUnheldOwnerWithoutACallerTok
 // repository of an owner the bundle holds no directory for, `legion gh` refuses the guard's REST
 // read before any gh runs, and ls-remote alone answers: public, or nothing.
 func TestLegionGhAnswersTheSharedChecksVisibilityRead(t *testing.T) {
+	t.Parallel()
 	root, defaultDir := gitCredentialBundle(t)
 	help, err := filepath.Abs(ghHelpDir)
 	if err != nil {
@@ -2514,6 +2533,7 @@ func TestLegionGhAnswersTheSharedChecksVisibilityRead(t *testing.T) {
 // Two wrapped calls to one repository reuse its public visibility answer, and their audit entries
 // identify the call without preserving the text that the command would send.
 func TestLegionGhKeepsVisibilityAndLogsCalls(t *testing.T) {
+	t.Parallel()
 	root, defaultDir := gitCredentialBundle(t)
 	help, err := filepath.Abs(ghHelpDir)
 	if err != nil {
@@ -2580,6 +2600,7 @@ func TestLegionGhKeepsVisibilityAndLogsCalls(t *testing.T) {
 // appends one line, which one P does as well as many. Every copy is waited for before the test
 // reports, so a failure leaves none running into the next test.
 func TestAppendGhCallLogKeepsConcurrentLinesThatFit(t *testing.T) {
+	t.Parallel()
 	if repository := os.Getenv("LEGION_TEST_GH_CALL_LOG_REPOSITORY"); repository != "" {
 		appendGhCallLog(map[string]string{"XDG_STATE_HOME": os.Getenv("LEGION_TEST_GH_CALL_LOG_STATE")}, repository, "api", "", 0)
 		return
@@ -2634,6 +2655,7 @@ func TestAppendGhCallLogKeepsConcurrentLinesThatFit(t *testing.T) {
 // read fails, as it does in an hour whose REST limit is spent, the GET still reaches gh. A write
 // to the same repository still reads its visibility, and is refused when that read fails.
 func TestLegionGhLetsOnlyTheRateLimitReadBypassTheGuard(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("no git on this machine")
 	}
@@ -2704,6 +2726,7 @@ func TestLegionGhLetsOnlyTheRateLimitReadBypassTheGuard(t *testing.T) {
 // The stand-in gh records the signal it caught and exits with a status of its own, so what this
 // reads is both halves: gh ended on the signal, and its status came back through `legion gh`.
 func TestLegionGhForwardsATerminatingSignalToGh(t *testing.T) {
+	t.Parallel()
 	root, defaultDir := gitCredentialBundle(t)
 	help, err := filepath.Abs(ghHelpDir)
 	if err != nil {
@@ -2803,6 +2826,7 @@ func TestLegionGhForwardsATerminatingSignalToGh(t *testing.T) {
 // started ignoring the signal cannot set, so a gh that records catching the hangup is one whose
 // hangup the arming un-ignored.
 func TestLegionGhLeavesAnIgnoredHangupIgnoredForGh(t *testing.T) {
+	t.Parallel()
 	root, defaultDir := gitCredentialBundle(t)
 	help, err := filepath.Abs(ghHelpDir)
 	if err != nil {
@@ -3047,6 +3071,7 @@ func statusSignalMask(t *testing.T, status []byte, name string) (uint64, bool) {
 // context fails the SIGINT and the SIGTERM rows: they answer the visibility, exit 0, with gh run
 // for the read.
 func TestLegionGhStartsNoGhForASignalThatCameBeforeTheForwarding(t *testing.T) {
+	t.Parallel()
 	root, defaultDir := gitCredentialBundle(t)
 	help, err := filepath.Abs(ghHelpDir)
 	if err != nil {
@@ -3134,6 +3159,7 @@ func TestLegionGhStartsNoGhForASignalThatCameBeforeTheForwarding(t *testing.T) {
 // <path>`), and an attached value may carry an `=` of its own (`-F=<path>`). A value of `-`, an
 // `@-`, a field given a literal and a raw field name no file to open.
 func TestGhTargetOfReadsTheFilesTheCallWouldSend(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		argv []string
@@ -3211,6 +3237,7 @@ func TestGhTargetOfReadsTheFilesTheCallWouldSend(t *testing.T) {
 // create that names a file by argument, which it also uploads, is refused for an argument this
 // does not know.
 func TestGhTargetOfRefusesAnUploadTheGuardDoesNotRead(t *testing.T) {
+	t.Parallel()
 	latest := savedGhHelpOf(t, "2.104.0")
 	rows := 0
 	for _, argv := range [][]string{
@@ -3269,6 +3296,7 @@ func TestGhTargetOfRefusesAnUploadTheGuardDoesNotRead(t *testing.T) {
 // never expands), a routing key's name as a value, and a directory holding neither file pass; one
 // that does not parse is refused.
 func TestGhConfigShapeRefusesADirectoryThatSendsElsewhere(t *testing.T) {
+	t.Parallel()
 	hosts := ghconfig.Hosts("ghs_acme_write")
 	fifo := func(dir, name string) error { return syscall.Mkfifo(filepath.Join(dir, name), 0o600) }
 	link := func(text string) func(dir, name string) error {
@@ -3378,6 +3406,7 @@ func TestGhConfigShapeRefusesADirectoryThatSendsElsewhere(t *testing.T) {
 // environment keeps both of its caller's: without the checker, that guard would run a check whose
 // program hashes otherwise, which the role's own guard refuses.
 func TestGhsChildEnvironmentKeepsTheLeakCheckAndItsChecker(t *testing.T) {
+	t.Parallel()
 	checker := strings.Repeat("5e", 32)
 	caller := []string{"PATH=" + os.Getenv("PATH"), "HOME=" + t.TempDir(),
 		leakguard.CheckVar + "=/opt/check/public-leak-check.sh", leakguard.CheckerVar + "=" + checker}

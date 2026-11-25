@@ -63,6 +63,7 @@ func answerOf(t *testing.T, what string, args []string) claimsAnswer {
 // Each subcommand takes a --wait that bounds the whole call, and a call that reaches it is
 // refused with a reason naming the bound rather than hanging.
 func TestEveryClaimsSubcommandAnswersWithinItsWait(t *testing.T) {
+	t.Parallel()
 	port := slowDaemon(t)
 	for name, args := range map[string][]string{
 		"suspend": {"suspend", "--claim", string(architectClaim)},
@@ -97,6 +98,7 @@ func TestEveryClaimsSubcommandAnswersWithinItsWait(t *testing.T) {
 // call's own read lies between the two, and a call that took any other value, a fixed minute
 // among them, falls outside. No wall-clock span is read.
 func TestClaimsWaitDefaultsToOneMinute(t *testing.T) {
+	// Not parallel: it holds code to an upper bound on a measured time, which the load of tests running beside it could push past.
 	cmd := &cobra.Command{Use: "suspend"}
 	c := newClaimsCall(cmd, &bytes.Buffer{}, &bytes.Buffer{})
 	if err := cmd.ParseFlags([]string{"--operator-token-file", operatorTokenFile(t)}); err != nil {
@@ -122,6 +124,7 @@ func TestClaimsWaitDefaultsToOneMinute(t *testing.T) {
 // and the two at its ends, and a slow machine makes fewer, never more; a call held to a later
 // bound, such as the one-minute default, makes more.
 func TestTheWaitBoundsTheWholeSuspendCall(t *testing.T) {
+	t.Parallel()
 	port, lists := heldSuspendDaemon(t, heldWorking)
 
 	answer := answerOf(t, "legion claims suspend with --wait 400ms while its suspension stays held", []string{"legion", "claims", "suspend",

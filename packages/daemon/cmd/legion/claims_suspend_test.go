@@ -85,6 +85,7 @@ func suspendAgainst(t *testing.T, port, wait string, extra ...string) (int, stri
 // A suspend the daemon holds for the agent's turn (202) is waited out: the command polls the
 // claims until the claim is suspended and prints it so, exiting 0.
 func TestClaimsSuspendWaitsForASuspensionHeldForTheTurn(t *testing.T) {
+	t.Parallel()
 	port, lists := heldSuspendDaemon(t, heldWorking, heldWorking, suspended)
 
 	code, out, errb := suspendAgainst(t, port, "10s")
@@ -103,6 +104,7 @@ func TestClaimsSuspendWaitsForASuspensionHeldForTheTurn(t *testing.T) {
 // Under --json the claim a held suspension ended with prints as one JSON line, as every other
 // --json answer does.
 func TestClaimsSuspendJSONPrintsTheSuspendedClaimAsOneLine(t *testing.T) {
+	t.Parallel()
 	port, _ := heldSuspendDaemon(t, heldWorking, suspended)
 
 	code, out, errb := suspendAgainst(t, port, "10s", "--json")
@@ -120,6 +122,7 @@ func TestClaimsSuspendJSONPrintsTheSuspendedClaimAsOneLine(t *testing.T) {
 // retired, or the daemon holds its suspension no longer — a start dropped it — rather than waiting
 // out --wait.
 func TestClaimsSuspendStopsAtEveryOtherEnd(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		seen seenClaim
 		want string
@@ -149,6 +152,7 @@ func TestClaimsSuspendStopsAtEveryOtherEnd(t *testing.T) {
 // A suspension still held when --wait runs out fails the command, naming the claim's state and why
 // a held suspension can outlast the stop timeout.
 func TestClaimsSuspendFailsWhenTheHeldSuspensionOutlastsTheWait(t *testing.T) {
+	t.Parallel()
 	port, _ := heldSuspendDaemon(t, heldWorking)
 
 	code, out, errb := suspendAgainst(t, port, "1s")

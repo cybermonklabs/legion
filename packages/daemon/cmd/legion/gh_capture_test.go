@@ -25,16 +25,15 @@ import (
 // realGHForCapture is the real gh a test that drives one runs: LEGION_GH_PATH when the test runs
 // in a Legion pane or pod, whose `gh` on PATH is the wrapper, else the gh on PATH; a machine with
 // neither skips, as the other gh-backed tests do. A gh on PATH that is a script skips too: it is
-// a wrapper of the machine's own (a gh shim that hands each call to the next gh on PATH, which is
-// the `legion gh` this test puts there), as boot refuses one for the real gh (daemon.RefuseScriptGH).
+// a wrapper of the machine's own (a gh shim that hands each call to the next gh on PATH), as boot
+// refuses one for the real gh (daemon.RefuseScriptGH).
 //
-// It also puts this test binary's own `legion gh` first on the test's PATH
-// (ghWrapperFirstOnPath), because a test that runs `gh` by name must reach the wrapper it is
-// testing: Go resolves a command's name against the PATH of the process making the call and
-// never against the one the test sets on the child's environment (os/exec LookPath, read when
-// exec.Command is built), so on a machine that has a `gh` of its own — a Legion pod's
-// /opt/legion/bin/gh, which runs the image's legion and not this build, among them — that gh
-// would answer the call and the test would measure it. Every caller runs `gh` that way.
+// Its callers start every command by an absolute path (this binary as `legion`, a wrapper they
+// wrote, the gh this answers, the git exec.LookPath found) with an environment of the command's
+// own: Go resolves a bare name against the PATH of the process making the call and never against
+// the one a child's Env holds (os/exec LookPath, read when exec.Command is built), so a bare `gh`
+// would reach whatever gh this machine has. Nothing here changes this process's PATH, so the
+// tests that drive a real gh run beside the package's other tests.
 func realGHForCapture(t *testing.T) string {
 	t.Helper()
 	path := os.Getenv("LEGION_GH_PATH")
@@ -48,23 +47,7 @@ func realGHForCapture(t *testing.T) string {
 		}
 		path = found
 	}
-	ghWrapperFirstOnPath(t)
 	return path
-}
-
-// ghWrapperFirstOnPath puts a `gh` that runs this test binary's `legion gh` first on the test's
-// PATH for the rest of the test, as a pane's and a pod's PATH carries the wrapper the runtimes
-// install. The wrapper runs the binary under test, so a call a test makes by the name `gh`
-// reaches the code of this package; t.Setenv puts the PATH back when the test ends, and the
-// directory goes with the test's own temporary one.
-func ghWrapperFirstOnPath(t *testing.T) {
-	t.Helper()
-	dir := t.TempDir()
-	wrapper := "#!/bin/sh\n" + testMainEnv + "=1 exec '" + os.Args[0] + "' gh \"$@\"\n"
-	if err := os.WriteFile(filepath.Join(dir, "gh"), []byte(wrapper), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 
 // Through the real gh and the real git, against a capture proxy standing in for GitHub: every
@@ -92,6 +75,7 @@ func ghWrapperFirstOnPath(t *testing.T) {
 // (R4 of dispatch://INFRA-3399); no alias or extension runs, none is installed, and gh's own help
 // and version answer.
 func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
+	t.Parallel()
 	gh := realGHForCapture(t)
 	git, err := exec.LookPath("git")
 	if err != nil {

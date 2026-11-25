@@ -36,6 +36,7 @@ import (
 // wait has the test binary's deadline as its only bound, and each stand-in sleeps about a day, so a
 // stop that never comes fails the row by name and no sleep ends by itself before it.
 func TestAHelpReadThatTimesOutStopsWhatGhStarted(t *testing.T) {
+	// Not parallel: it sets the package variable ghHelpTimeout.
 	if _, err := os.ReadFile("/proc/self/cmdline"); err != nil {
 		t.Fatalf("/proc does not answer (%v): this row reads from it whether gh's helper is still running", err)
 	}
@@ -184,6 +185,7 @@ func (d *passedDeadline) Err() error {
 // (TestAHelpReadThatTimesOutStopsWhatGhStarted), would put the help read in that last case too
 // without the handling these rows read.
 func TestASignalToLegionGhsGroupStopsWhatItStartedBeforeGh(t *testing.T) {
+	t.Parallel()
 	if _, err := os.ReadFile("/proc/self/cmdline"); err != nil {
 		t.Fatalf("/proc does not answer (%v): this row reads from it whether the stand-in is still running", err)
 	}

@@ -136,6 +136,7 @@ func saysWhatWasRead(t *testing.T, tc visibilityReadCase, printed, what string) 
 // and the not-found words; a 500 each way refuses the GET, exit 2, with the setup error. The real
 // gh ran the guard's REST read and nothing else: not the call, and no GraphQL read.
 func TestGhTellsAVisibilityRead404AsNotFound(t *testing.T) {
+	t.Parallel()
 	root, defaultDir := gitCredentialBundle(t)
 	get := []string{"api", "-i", "repos/" + noSuchRepo}
 	patch := []string{"api", "-X", "PATCH", "repos/" + noSuchRepo + "/pulls/1", "-f", "title=x"}
@@ -181,6 +182,7 @@ func TestGhTellsAVisibilityRead404AsNotFound(t *testing.T) {
 // 2, with the setup error. The real gh ran the guard's REST read and nothing else, and git never
 // ran: no ls-remote reads a repository GitHub answered 404 for.
 func TestLeakCheckPrePushTellsAVisibilityRead404AsNotFound(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (pushVisibilityReadEnv); it changes the whole process's working directory (pushVisibilityReadEnv); it sets the package variable leakCheckStdin (leakCheck).
 	root, defaultDir := gitCredentialBundle(t)
 	for _, read := range visibilityReadCases("the push to origin") {
 		t.Run(read.name, func(t *testing.T) {

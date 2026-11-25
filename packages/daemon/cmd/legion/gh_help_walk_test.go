@@ -32,6 +32,7 @@ var captureGhHelpWalk = flag.Bool("capture-gh-help-walk", false, "save the help 
 //
 //	LEGION_GH_PATH=/path/to/gh go test -run '^TestCaptureGhHelpWalk$' ./cmd/legion/ -args -capture-gh-help-walk
 func TestCaptureGhHelpWalk(t *testing.T) {
+	t.Parallel()
 	if !*captureGhHelpWalk {
 		t.Skip("pass -capture-gh-help-walk, with LEGION_GH_PATH naming a gh, to save that release's help")
 	}
@@ -156,6 +157,7 @@ func ghHelpSection(text, name string) []string {
 // saved, so the walk left nothing out. The counts are asserted, so a directory that held nothing
 // fails rather than passing on an empty set.
 func TestParseGhHelpReadsEveryCommandOfEachSavedGh(t *testing.T) {
+	t.Parallel()
 	versions, err := os.ReadDir(ghHelpWalkDir)
 	if err != nil {
 		t.Fatal(err)
