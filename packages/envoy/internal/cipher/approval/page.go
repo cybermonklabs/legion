@@ -17,8 +17,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
-	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
 )
@@ -132,14 +132,13 @@ type profileView struct {
 	ProxyHosts                                  string
 }
 
-// profileViewOf is p as the page prints it, from the live profiles file and the record's own
-// target (requests.RecordProfile), and the hosts rules, the live policy's proxy rules, send its
-// credential to (proxyHostsOf). A GitHub profile that names no repository reaches every one its
-// installations on its accounts reach, and a record that names no target asks for the whole
-// profile; the page says both rather than print nothing, since each is part of what an approval
-// grants.
-func profileViewOf(p requests.RecordProfile, rules proxyrules.Rules) profileView {
-	v := profileView{Name: p.Name, Source: p.Profile.Source, ProxyHosts: proxyHostsOf(rules, p.Name)}
+// profileViewOf is p as the page prints it, from the live profiles file, the record's own target
+// and the hosts its credential may go to (requests.RecordProfile, hostsWords). A GitHub profile
+// that names no repository reaches every one its installations on its accounts reach, and a record
+// that names no target asks for the whole profile; the page says both rather than print nothing,
+// since each is part of what an approval grants.
+func profileViewOf(p requests.RecordProfile) profileView {
+	v := profileView{Name: p.Name, Source: p.Profile.Source, ProxyHosts: hostsWords(p)}
 	if block := p.Profile.GitHub; block != nil {
 		v.Accounts = strings.Join(block.Accounts, ", ")
 		v.Repositories = "every repository the App's installations on these accounts reach"
@@ -168,58 +167,39 @@ type proxiedView struct {
 }
 
 // proxiedViewOf is p, a stored secret behind a kind with no profile (requests.RecordProfile with
-// no Profile), as the page prints it, from rules, the live policy's proxy rules: the kind's hosts
-// (proxyHostsOf) and its allow (allowText).
-func proxiedViewOf(p requests.RecordProfile, rules proxyrules.Rules) proxiedView {
-	v := proxiedView{Name: p.Name, Kind: p.Kind, ProxyHosts: proxyHostsOf(rules, p.Name)}
-	if kind := rules.KindOf(rules.Lookup(p.Name)); kind != nil {
-		v.Allow = allowText(kind.Allow)
+// no Profile), as the page prints it: its kind, the hosts its credential may go to (hostsWords) and
+// the kind's allow rows, each as policy.RowWords words a row. A kind with no allow allows any
+// request on its hosts, and one with an empty allow none, and the page says each rather than print
+// no rows, which would read as the other.
+func proxiedViewOf(p requests.RecordProfile) proxiedView {
+	v := proxiedView{Name: p.Name, Kind: p.Kind, ProxyHosts: hostsWords(p)}
+	switch {
+	case p.Allow == nil:
+		v.Allow = "any method on any path of these hosts"
+	case len(p.Allow) == 0:
+		v.Allow = "none: the kind allows no request"
+	default:
+		rows := make([]string, len(p.Allow))
+		for i, row := range p.Allow {
+			rows[i] = policy.RowWords(row)
+		}
+		v.Allow = strings.Join(rows, ", ")
 	}
 	return v
 }
 
-// allowText is a kind's allow as the page prints it: each row's method and path prefix, in the
-// file's order; for no allow, every method and path, which the page says rather than print no
-// line, since an absent line would read as nothing allowed; and for a present empty allow, none.
-func allowText(rows []proxyrules.Allow) string {
+// hostsWords is the hosts p's credential may go to (requests.RecordProfile.Hosts) as the page
+// prints them: none for a name behind no kind, whose credential the release hands to the command,
+// and for a profile whose own allow holds no row, which no kind's hosts can be, a line that says
+// so rather than no line, which would read as a name behind no proxy.
+func hostsWords(p requests.RecordProfile) string {
 	switch {
-	case rows == nil:
-		return "any method on any path of these hosts"
-	case len(rows) == 0:
-		return "none: the kind allows no request"
-	}
-	words := make([]string, len(rows))
-	for i, row := range rows {
-		words[i] = row.Method + " " + row.PathPrefix
-	}
-	return strings.Join(words, ", ")
-}
-
-// proxyHostsOf is the hosts rules let the credential of name go to, as the page prints them, and
-// "" for a name rules bind to no kind, whose credential the release hands to the command: its
-// kind's hosts; or, where the name's profile has an allow of its own and every row of it names a
-// host, those hosts alone, since a request to any other host of the kind matches no row of it
-// (proxyrules' allowOK). An allow of no row allows no request on any host, and the page says so
-// rather than print no line, which would read as a name behind no proxy.
-func proxyHostsOf(rules proxyrules.Rules, name string) string {
-	binding := rules.Lookup(name)
-	kind := rules.KindOf(binding)
-	if kind == nil {
+	case p.Kind == "":
 		return ""
-	}
-	if binding.Allow == nil || slices.ContainsFunc(binding.Allow, func(row proxyrules.Allow) bool { return row.Host == "" }) {
-		return strings.Join(kind.Hosts, ", ")
-	}
-	var hosts []string
-	for _, row := range binding.Allow {
-		if !slices.Contains(hosts, row.Host) {
-			hosts = append(hosts, row.Host)
-		}
-	}
-	if len(hosts) == 0 {
+	case len(p.Hosts) == 0:
 		return "none: the profile's allow names no request"
 	}
-	return strings.Join(hosts, ", ")
+	return strings.Join(p.Hosts, ", ")
 }
 
 // tokenFields are the hidden fields every decision form carries: the records the page printed with
@@ -484,13 +464,12 @@ func (p *Page) recordView(d requests.RecordDetail, login string, now time.Time) 
 	}
 	v.JudgeDeciding = v.Pending && d.JudgeDeciding
 	v.Buttons = v.Pending && !v.MachineLogin && v.MayDecide && !v.JudgeDeciding
-	rules := p.cfg.Machine.AirlockRules()
 	for _, profile := range d.Profiles {
 		if profile.Profile == nil {
-			v.Proxied = append(v.Proxied, proxiedViewOf(profile, rules))
+			v.Proxied = append(v.Proxied, proxiedViewOf(profile))
 			continue
 		}
-		v.Profiles = append(v.Profiles, profileViewOf(profile, rules))
+		v.Profiles = append(v.Profiles, profileViewOf(profile))
 	}
 	v.SessionProjects = d.SessionProjects
 	for _, sp := range d.SecretProjects {

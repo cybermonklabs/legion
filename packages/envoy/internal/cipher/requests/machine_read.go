@@ -22,6 +22,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/answer"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
+	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
 )
@@ -2236,21 +2237,31 @@ type RecordDetail struct {
 // RecordProfile is one name a record asks for whose scope an approval binds: a profile, or a
 // stored secret served by its own name behind a kind (its proxy tag names one). It holds its name,
 // its entry of the profiles file as the live policy serves it (nil for such a stored secret, which
-// has none), the kind it is behind (policy.Secret.Proxy, "" for none), its fingerprint
+// has none), the kind it is behind (policy.Secret.Proxy, "" for none), the hosts and the allow
+// rows of that kind as the same policy holds them (kindScope), its fingerprint
 // (policy.Secret.ProfileDigest, which for such a stored secret holds its kind), and the target the
 // record's signed request narrows it to (record.AuthorizationDetail.Target), as a refusal of a
-// target words one (record.Target.String), "" for a record that names none. The scope is the live
-// one, not one frozen with the record: an approval binds its grant to the fingerprint live when it
-// is given (decidedUnder), however it was when the request was made, and a change of it after the
-// approval ends that grant (checkRelease). So what an approval can release is what the live policy
-// says, and the approval page binds a person's approval to the scope it printed by carrying Digest
-// back in its decision form, refusing the approval when the live fingerprint is another.
+// target words one (record.Target.String), "" for a record that names none. Every field is read
+// from one policy set, so a page that prints a record prints one reading of each name. The scope
+// is the live one, not one frozen with the record: an approval binds its grant to the fingerprint
+// live when it is given (decidedUnder), however it was when the request was made, and a change of
+// it after the approval ends that grant (checkRelease). So what an approval can release is what
+// the live policy says, and the approval page binds a person's approval to the scope it printed by
+// carrying Digest back in its decision form, refusing the approval when the live fingerprint is
+// another.
 type RecordProfile struct {
 	Name    string
 	Profile *policy.Profile
 	Kind    string
-	Digest  string
-	Target  string
+	// Hosts is where the name's credential may go behind its kind (kindScope): nil for a name
+	// behind no kind, empty for a profile whose own allow holds no row and so allows no request,
+	// and one host or more for every other name behind a kind.
+	Hosts []string
+	// Allow is the allow rows of the name's kind: nil for a kind with no allow, which allows any
+	// request on its hosts, and empty for one that allows none.
+	Allow  []proxyrules.Allow
+	Digest string
+	Target string
 }
 
 // ReadRecord reads a credential-request record's full detail by id, for the broker's approval page
@@ -2402,21 +2413,49 @@ func (m *Machine) RecordProfiles(ctx context.Context, recordID string) (kind str
 }
 
 // recordProfiles is each name of an agent_secret record's details that set, the live policy read
-// once, serves as a profile or behind a kind, in the details' order, with the target its detail
-// narrows it to (RecordProfile): the scope an approval grants, which ReadRecord prints and
-// RecordProfiles answers alike, so what the approval page printed and what its approval is checked
-// against are one reading of the record. A stored secret its proxy tag puts behind a kind has a
-// fingerprint of its own, which holds that kind, as a profile's holds its entry, so a retag between
-// the page and the approval moves it as an edit of a profile moves a profile's; one behind no kind
-// has none, and is left out.
+// once, serves as a profile or behind a kind, in the details' order, with its kind's hosts and allow
+// rows from the same set's rules and the target its detail narrows it to (RecordProfile): the
+// scope an approval grants, which ReadRecord prints and RecordProfiles answers alike, so what the
+// approval page printed and what its approval is checked against are one reading of the record. A
+// stored secret its proxy tag puts behind a kind has a fingerprint of its own, which holds that
+// kind, as a profile's holds its entry, so a retag between the page and the approval moves it as an
+// edit of a profile moves a profile's; one behind no kind has none, and is left out.
 func recordProfiles(set *policy.Set, details []record.AuthorizationDetail) []RecordProfile {
 	var profiles []RecordProfile
+	rules := set.ProxyRules()
 	for _, d := range details {
 		if served := set.Secrets[d.Identifier]; served.Profile != nil || served.Proxy != "" {
-			profiles = append(profiles, RecordProfile{Name: d.Identifier, Profile: served.Profile, Kind: served.Proxy, Digest: served.ProfileDigest, Target: d.Target().String()})
+			hosts, allow := kindScope(rules, d.Identifier)
+			profiles = append(profiles, RecordProfile{Name: d.Identifier, Profile: served.Profile, Kind: served.Proxy,
+				Hosts: hosts, Allow: allow, Digest: served.ProfileDigest, Target: d.Target().String()})
 		}
 	}
 	return profiles
+}
+
+// kindScope is where rules let the credential of name go behind its kind, and the kind's allow
+// rows: the kind's hosts; or, where the name's binding holds an allow of its own (a profile's) and
+// every row of it names a host, those hosts alone, in the order its rows first name them, since a
+// request to any other host of the kind matches no row of it (proxyrules' allowOK); and no host at
+// all for such an allow of no row, which allows no request anywhere. A kind binds at least one host
+// (proxyrules.Validate), so no host answers that case alone. It answers nil and nil for a name
+// rules bind to no kind.
+func kindScope(rules proxyrules.Rules, name string) (hosts []string, allow []proxyrules.Allow) {
+	binding := rules.Lookup(name)
+	kind := rules.KindOf(binding)
+	if kind == nil {
+		return nil, nil
+	}
+	if binding.Allow == nil || slices.ContainsFunc(binding.Allow, func(row proxyrules.Allow) bool { return row.Host == "" }) {
+		return kind.Hosts, kind.Allow
+	}
+	hosts = []string{}
+	for _, row := range binding.Allow {
+		if !slices.Contains(hosts, row.Host) {
+			hosts = append(hosts, row.Host)
+		}
+	}
+	return hosts, kind.Allow
 }
 
 // ApproverGrant is one live grant a person may revoke, for GET /v1/grants?approver=<login>.
