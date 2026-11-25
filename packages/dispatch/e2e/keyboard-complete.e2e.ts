@@ -10038,3 +10038,66 @@ test("k-default-keys: on today's issue page an Enter held down on the header's f
     step("the issue is pinned once the held Enter is let go")
   ).toBeVisible();
 });
+
+// The tester's red row of round 17 (the class of 62b47002's "a held key acts once", which the
+// architect ruled on 2026-11-25T04:12Z): Enter held down on the issue header's Close issue opens
+// the parent-status question once, and its repeats press nothing. At 1e21af01 each repeat that no
+// binding takes presses the focused button: the first presses the question's Keep as it is, which
+// closes it, the next Close issue again, which asks again, and so on, so the question ends open or
+// closed by the count of repeats (3 repeats: closed; measured in infra-2160-t-close-ffrbs).
+/** A parent in work with two open children, one in todo and one in the backlog: the parent's key
+ *  and title. */
+async function seedParentWithOpenChildren(): Promise<{ key: string; title: string }> {
+  await createProject({ key: "CORE", name: "Core" });
+  const title = "Ledger parent";
+  const parent = await createIssue({ project: "CORE", title });
+  const working = await createIssue({ parent: parent.key, project: "CORE", title: "Ledger todo" });
+  const waiting = await createIssue({ parent: parent.key, project: "CORE", title: "Ledger later" });
+  await patchIssue(parent.key, { status: "in_progress" });
+  await patchIssue(working.key, { status: "todo" });
+  await patchIssue(waiting.key, { status: "backlog" });
+  return { key: parent.key, title };
+}
+
+// SLOW(>=2s): a parent with two children, and Enter held on its Close issue for three repeats.
+// @firefox: the repeats the engine sends for a held key, and where they land once the press has
+// moved the focus (playwright.config.ts names the clause).
+test("k-default-keys: on today's issue page an Enter held down on Close issue opens the parent-status question once, and its repeats press nothing @firefox", async ({
+  page,
+}) => {
+  const step = (text: string) => `k-default-keys: a held Enter on Close issue: ${text}`;
+  const seed = await seedParentWithOpenChildren();
+  const posts = watchWrites(page, "POST", `/api/v1/issues/${seed.key}/status-change`);
+  await page.setViewportSize(WIDE);
+  await openIssue(page, seed.key, seed.title);
+  await page.getByRole("button", { exact: true, name: "Close issue" }).focus();
+  // Every click on a button while the key is held, by the button's words.
+  await page.evaluate(() => {
+    const pressed: string[] = [];
+    Object.assign(window, { heldPresses: pressed });
+    document.addEventListener(
+      "click",
+      (event) => {
+        const button = event.target instanceof Element ? event.target.closest("button") : null;
+        if (button !== null) pressed.push((button.textContent ?? "").trim());
+      },
+      true
+    );
+  });
+  await holdKey(page, "Enter", 3);
+  const dialog = page.getByRole("dialog", { name: `Move ${seed.key} to Done?` });
+  // The question's dry runs and its first draw are over within this second and a half.
+  await page.waitForTimeout(1_500);
+  const presses = await page.evaluate(() =>
+    "heldPresses" in window ? (window.heldPresses as string[]) : []
+  );
+  expect(
+    presses.length,
+    step(`the held Enter presses one button once (${JSON.stringify(presses)})`)
+  ).toBe(1);
+  await expect(dialog, step("the question stays open")).toBeVisible();
+  expect(
+    posts.filter((write) => (write.input as { dry_run?: boolean } | null)?.dry_run !== true).length,
+    step("the held Enter writes no status")
+  ).toBe(0);
+});

@@ -482,7 +482,8 @@ const parallelProjects = [
   // focus: `keyboard-complete`'s two `k-snooze-menu` rows of a key "held down", and its rows of a
   // key "held down" that puts the caret in a field (`k-other-key`, `k-answer-box`,
   // `k-approval-keys`, `k-default-keys`), of an Escape held in the Filter panel's open list
-  // (`k-filter-keys`) and of an Enter held on the issue header's Pin issue (`k-default-keys`).
+  // (`k-filter-keys`) and of an Enter held on the issue header's Pin issue and Close issue
+  // (`k-default-keys`).
   // When the engine delivers a key the page sends as a page is first drawn, against the layout
   // effects of the first commit that draws the shell, in which `KeymapProvider` attaches the
   // keymap's window listener: `keyboard-palette`'s row that a Ctrl+K (Cmd+K on a Mac) sent as the Inbox heading
