@@ -45,11 +45,13 @@ type rowDrive struct {
 	// stored, for a GET that writes, counts the rows its write stores: none before the drive and
 	// one after it. Its $names are filled as the target's are.
 	stored string
-	// sendLast, for a GET that writes, is a drive whose read reaches the state the other drives
-	// of its registry write for, so it is sent after them (TestEveryGETThatWritesMakesItsWrite):
-	// sent first, it would make their writes before their own reads. The order is stated here,
-	// not read from where the routes are declared, which is by pattern and says nothing of this.
-	sendLast bool
+	// sendAfter, for a GET that writes, names the drives of its registry that must be sent before
+	// it: each whose run this drive's read reaches, so that sent first this read would make that
+	// drive's write itself (firstToWarn writes each run's warning once) and leave the drive
+	// nothing to write. TestEveryGETThatWritesMakesItsWrite sends every drive after each one it
+	// names (sendOrder), whatever order the routes are declared in. The order is stated here
+	// because where the routes are declared, by pattern, says nothing of what a read reaches.
+	sendAfter []string
 }
 
 // statementOf is a statement a drive must see: pattern matched case-insensitively across lines.
@@ -187,8 +189,10 @@ var readRowDrives = map[string]rowDrive{
 	"GET /api/v1/near-copy-checks/{id}":                {target: "/api/v1/near-copy-checks/$nearCopy", statement: statementOf(`\bfrom\s+near_copy_checks\b`)},
 	"GET /api/v1/going/capability":                     {target: "/api/v1/going/capability", fromMemory: "it answers whether the deployment configured a model"},
 	"GET /api/v1/agents":                               {target: "/api/v1/agents", statement: statementOf(`\ba\.author->>'kind'\s*=\s*'session'`)},
+	"GET /api/v1/agents/known":                         {target: "/api/v1/agents/known?id=$session", statement: statementOf(`\bfrom\s+unnest\(\$1::text\[\]\)\s+with\s+ordinality\s+as\s+asked\b`)},
 	"GET /api/v1/agents/{session_id}/answers":          {target: "/api/v1/agents/$session/answers?since=$answersSince", statement: statementOf(`\bwith\s+reached\s+as\b`)},
 	"GET /api/v1/agents/{session_id}/messages":         {target: "/api/v1/agents/$session/messages", statement: statementOf(`\bwith\s+recursive\s+direct_roots\s+as\b`)},
+	"GET /api/v1/agents/{session_id}/artifacts":        {target: "/api/v1/agents/$session/artifacts", statement: statementOf(`\bfrom\s+artifacts\s+where\s+session_id\s*=\s*\$1\b`)},
 	"GET /api/v1/agents/{session_id}/artifacts/{slug}": {target: "/api/v1/agents/$session/artifacts/$fileSlug", statement: statementOf(`\bfrom\s+artifacts\s+where\s+ref_key\s*=\s*\$1\b`)},
 	"GET /api/v1/agents/{session_id}/artifacts/{slug}/versions/{number}": {target: "/api/v1/agents/$session/artifacts/$fileSlug/versions/1",
 		statement: statementOf(`\bselect\s+content,\s*mime,\s*sha256,\s*size\s+from\s+artifact_versions\b`)},
@@ -257,11 +261,13 @@ var readRowDrives = map[string]rowDrive{
 // getWriteDrives is the drive of every GET row of the table that writes (readWritesState), keyed
 // as readRowDrives is: the request that makes the write the row's WriteNote names, on the seeded
 // store. Each delivery read is sent at a window holding a deploy run with no production job of
-// its own, the newest run the timeline's and the oldest the pipeline's, and the pipeline is sent
-// last (sendLast): the timeline and the measures each read only the window around their own run,
-// and the pipeline reads seven days, which hold all three, and firstToWarn writes once per
-// process for each run (delivery.go), so a pipeline read sent first would warn of the other two
-// rows' runs before their own reads.
+// its own, the newest run the timeline's and the oldest the pipeline's, and firstToWarn writes
+// once per process for each run (delivery.go). The timeline reads only the window around its own
+// run; the measures' read reaches the timeline's run too, ten hours after its own, and the
+// pipeline reads seven days, which hold all three. So each is sent after the drives whose runs
+// it reaches (sendAfter): timeline, then measures, then pipeline. Sent in the order the routes
+// are declared, by pattern, the measures went first and its read wrote the timeline's warning
+// (envoy-go-race-api job 139500583275).
 var getWriteDrives = map[string]rowDrive{
 	"GET /api/v1/delivery/timeline": {
 		target:    "/api/v1/delivery/timeline?from=$timelineFrom&to=$timelineTo",
@@ -272,12 +278,13 @@ var getWriteDrives = map[string]rowDrive{
 		target:    "/api/v1/delivery/measures?from=$measuresFrom&to=$measuresTo",
 		statement: statementOf(`\binsert\s+into\s+delivery_run_warnings\b`),
 		stored:    "select count(*) from delivery_run_warnings where run_id = $measuresRun",
+		sendAfter: []string{"GET /api/v1/delivery/timeline"},
 	},
 	"GET /api/v1/delivery/pipeline": {
 		target:    "/api/v1/delivery/pipeline?at=$pipelineAt",
 		statement: statementOf(`\binsert\s+into\s+delivery_run_warnings\b`),
 		stored:    "select count(*) from delivery_run_warnings where run_id = $pipelineRun",
-		sendLast:  true,
+		sendAfter: []string{"GET /api/v1/delivery/timeline", "GET /api/v1/delivery/measures"},
 	},
 	"GET /api/v1/going/requests/{id}/stream": {
 		target:    "/api/v1/going/requests/$going/stream",
@@ -712,20 +719,12 @@ func statementList(statements []drivenStatement) string {
 // deploy run with no production job that is its own. It runs on the drive rig (newDriveRig) with
 // only the state those writes read (driveWorld.seedWrites), not the whole seeded store. Each is
 // sent in a window as the reads are, which must hold that write, and the store must hold none of
-// the row's rows before it and one after. The rows run in the table's order but for the drives
-// marked sendLast, which run after the others, the order getWriteDrives's runs need.
+// the row's rows before it and one after. Each row runs after the rows its drive's sendAfter
+// names, the order getWriteDrives's runs need (sendOrder), and otherwise in the table's order.
 func TestEveryGETThatWritesMakesItsWrite(t *testing.T) {
 	t.Parallel()
 	rows, drives := drivenRows(t, readWritesState)
-	slices.SortStableFunc(rows, func(a, b string) int {
-		switch {
-		case drives[a].sendLast == drives[b].sendLast:
-			return 0
-		case drives[a].sendLast:
-			return 1
-		}
-		return -1
-	})
+	rows = sendOrder(t, rows, drives)
 	world := newDriveRig(t)
 	world.seedWrites(t)
 	writer := world.brokerSend("the writing token", world.writer)
@@ -760,4 +759,36 @@ func TestEveryGETThatWritesMakesItsWrite(t *testing.T) {
 			t.Logf("GET %s made its write %s, the window's writes %v", target, drive.statement, writesIn(statements))
 		})
 	}
+}
+
+// sendOrder is rows with each sent after every row its drive's sendAfter names, and otherwise in
+// the order rows gives. It fails for a name that is no row of the class, and for names that order
+// no row first.
+func sendOrder(t *testing.T, rows []string, drives map[string]rowDrive) []string {
+	t.Helper()
+	sent := map[string]bool{}
+	order := make([]string, 0, len(rows))
+	for len(order) < len(rows) {
+		placed := false
+		for _, name := range rows {
+			if sent[name] {
+				continue
+			}
+			ready := true
+			for _, before := range drives[name].sendAfter {
+				if _, row := drives[before]; !row {
+					t.Fatalf("%s is to be sent after %s, which is no row of its class", name, before)
+				}
+				ready = ready && sent[before]
+			}
+			if ready {
+				sent[name], placed = true, true
+				order = append(order, name)
+			}
+		}
+		if !placed {
+			t.Fatalf("the drives' sendAfter orders none of %v first", rows)
+		}
+	}
+	return order
 }

@@ -2,8 +2,6 @@ package api
 
 import (
 	"net/http"
-
-	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
 var _ = declareRoute(routeDecl{
@@ -14,5 +12,5 @@ var _ = declareRoute(routeDecl{
 	Handler:     (*server).getHandoff,
 	ID:          &idRoute{Reason: "a handoff id: one phase's record on an issue"},
 	Read:        readEntry{Writes: readWritesNothing},
-	Shape:       routeShape{Status: http.StatusOK, Response: model.Handoff{}},
+	Shape:       routeShape{Status: http.StatusOK, Response: handoffRead{}},
 })

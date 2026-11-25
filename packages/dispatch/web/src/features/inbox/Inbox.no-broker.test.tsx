@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, type Mock, spyOn, test } from "bun:test";
+import { afterEach, beforeAll, beforeEach, expect, type Mock, spyOn, test } from "bun:test";
 import { focusManager, type QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
@@ -11,7 +11,14 @@ import { liveSocketFor } from "../../api/live-socket";
 import { DispatchQueryClient, queryRetryDelay } from "../../api/query-client";
 import { refreshQueries } from "../../api/query-refresh";
 import type { CredentialPendingResponse } from "../../api/types";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { Inbox } from "./Inbox";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 // A Dispatch with no secrets broker answers the credential-request list with `null`, an answer that
 // holds until the page reloads or the event feed has a gap (the server reads its broker setting at

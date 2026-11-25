@@ -23,8 +23,10 @@ import (
 // The write belongs to the deployment's daemon and to no person, which is why the route declares
 // no personal scope — its declaration states no OAuthScopes: the daemon presents the
 // credential the deployment configured, as it does on PUT /api/v1/projects/{key}/gated-steps,
-// and such a credential holds no scope at all. Nothing is lost by letting a machine write it,
-// because the record is what that deployment's gate did, not a choice a person makes here.
+// and such a credential holds no person scope. The shared token holds no scope at all, and the
+// daemon's own broker token holds legion-status alone (brokerTokenActor), which no route's
+// scope list names. Nothing is lost by letting a machine write it, because the record is what
+// that deployment's gate did, not a choice a person makes here.
 //
 // The write appends no issue event and publishes nothing, whether the set changed or not. The
 // record is the daemon's own fact about its own gate, so an event would feed the daemon's intake

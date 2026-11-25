@@ -2,8 +2,6 @@ package api
 
 import (
 	"net/http"
-
-	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
 var _ = declareRoute(routeDecl{
@@ -13,5 +11,7 @@ var _ = declareRoute(routeDecl{
 	Description: "The newest handoff of one phase of an issue with its body, the exact text written; 404 HANDOFF_NOT_FOUND when the phase has none. A closed issue's read too.",
 	Handler:     (*server).getLatestHandoff,
 	Read:        readEntry{Writes: readWritesNothing},
-	Shape:       routeShape{Status: http.StatusOK, Response: model.Handoff{}},
+	// The two reads of one handoff with its body answer handoffRead, whose field_trees carries
+	// the tree of each text the body's card draws.
+	Shape: routeShape{Status: http.StatusOK, Response: handoffRead{}},
 })

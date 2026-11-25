@@ -12,7 +12,8 @@ var _ = declareRoute(routeDecl{
 	Handler:     (*server).getArchitectureTree,
 	Read:        readEntry{Writes: readWritesNothing},
 	// The architecture read answers architectureTreeRead, whose components carry the prose's
-	// tree, so the row names that read: the document describes the body the handler sends, and
-	// a client generated from it holds the field a reader draws.
+	// tree and whose Not architectural rows carry their reasons', so the row names that read: the
+	// document describes the body the handler sends, and a client generated from it holds the
+	// field a reader draws.
 	Shape: routeShape{Status: http.StatusOK, Response: architectureTreeRead{}},
 })

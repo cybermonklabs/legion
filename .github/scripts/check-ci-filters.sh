@@ -56,7 +56,7 @@
 #      shape - an output inside a larger expression, a value built from one - is
 #      refused naming the input, the calling job and both files, since the resolution may never
 #      be guessed. A value naming the changes job nowhere carries no filter and is read as no
-#      gate: `.github/workflows/dispatch-browser.yaml#lane`, which each of ci.yaml's two callers of it passes as
+#      gate: `.github/workflows/dispatch-browser.yaml#lane`, which each of ci.yaml's three callers of it passes as
 #      a literal, chooses which projects the browser suite runs, never whether it runs,
 #      and where such a value stands in for a gate the table declares, this rule's own first
 #      half refuses that gate. A `with:` value no condition reads gates nothing and is left alone.
@@ -364,6 +364,16 @@
 #      (`case '${{ inputs.matched-filters }}' in *apx*)`) is gated on a filter no rule reads. Rules
 #      2 and 3 read the filter out of each `contains`
 #      (.github/ci-notes/ci.md#one-list-for-the-test-jobs-step-gates).
+#  24. a spec file the `references` lane of .github/workflows/dispatch-browser.yaml runs - an entry
+#      of the `lane_files="..."` that .github/scripts/dispatch-browser-shard-suite.sh, the script
+#      its shard job's browser step runs, sets in its `references)` arm, read as a path from the
+#      working directory of the step that runs the script - that the dispatch_references filter,
+#      whose patterns .github/ci-gates/dispatch-references.py keeps by hand, does not match, naming
+#      the entry and the path: that filter starts the job calling the lane, so a spec file it
+#      misses is a change to the lane's own rows that starts no run of them. A script with no such
+#      arm, with two, or with one that lists no file, a dispatch-browser.yaml that runs the script
+#      from no step or from two directories, and no file of .github/ci-gates that declares that
+#      filter, fail too, rather than holding the filter to nothing.
 #
 # A branch made before the gates and the //ci: lines moved out of ci_job_reads.py keeps its old
 # RULES and GATES there, and .github/ci-filters.yaml, when it merges main: the table refuses to
@@ -485,10 +495,19 @@
 #
 # EXCLUDED leaves worker_image and browser_image to check-image-trigger-paths.sh, which proves
 # each covers every file its image build reads; each is a file of .github/ci-gates holding its
-# patterns. envoy_smoke is a gate whose image inputs are that check's: this one holds it to the
-# job's go commands and other step reads. The //ci: lines and the static reads are kept by hand:
-# the filters are computed from them, and nothing proves them complete, so a change that makes a
-# test read a new file through `..` or start a new go command adds the line to that test file.
+# patterns. It holds dispatch_references, a file of .github/ci-gates too, to no job's reads (rule
+# 24 holds it to the references lane's spec files alone): that filter gates ci.yaml's
+# dispatch-references job, a pull-request preview of the reference rows that ci-ok does not need
+# (CI_OK_EXEMPT), and it names less than the job reads on purpose, since the dispatch_browser
+# gate's job runs those rows on the merge queue's full lane and that filter is computed from every
+# read. EXCLUDED also skips the go-command claims of a job its filters alone gate, and those of
+# the jobs of a workflow that job calls, read as its own; dispatch-browser.yaml's jobs, which the
+# dispatch-references call reaches too, are read under the gates of its other two callers,
+# dispatch_browser and dispatch_browser_pr. envoy_smoke is a gate whose image inputs are that
+# check's: this one holds it to the job's go commands and other step reads. The //ci: lines and
+# the static reads are kept by hand: the filters are computed from them, and nothing proves them
+# complete, so a change that makes a test read a new file through `..` or start a new go command
+# adds the line to that test file.
 #
 # THE THREE MODES. This check takes an optional mode argument. `check`, the default a bare call
 # takes, is every refusal above. `write` is the same run with rule 8's refusal replaced by its

@@ -10,7 +10,7 @@ var _ = declareRoute(routeDecl{
 	Method:      http.MethodGet,
 	Pattern:     "/api/v1/search/results",
 	Auth:        authAny,
-	Description: searchDescription(searchDeclaresNine),
+	Description: searchDescription(searchDeclaresTen),
 	Handler:     (*server).search,
 	Read:        readEntry{Writes: readWritesNothing},
 	Shape: routeShape{
