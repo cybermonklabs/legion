@@ -124,28 +124,40 @@ func requireRenewedThroughTheSlowestWait(t *testing.T, deps Deps, late time.Dura
 	}
 }
 
-// A wait whose renewal takes longer than renewClaimInterval still ends by itself. The claim is due
-// again the moment such a renewal returns, so a slice cut to the claim's next due time was 0: the
-// wait never shrank, and the loop renewed again and again until the caller's context ended. Here
-// each renewal takes renewClaimInterval and a second on a synctest fake clock, and the wait of two
-// intervals runs under a context with an hour to live.
-func TestAWaitWhoseRenewalOutlastsTheIntervalStillEnds(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		ctx, cancel := context.WithTimeout(context.Background(), time.Hour)
-		defer cancel()
-		started := time.Now()
-		renewal := newClaimRenewal(Deps{}, []pendingRow{{kind: "issue", id: "slow", text: "slow"}}, started.Add(-renewClaimInterval))
-		renewals := 0
-		renewal.extend = func(context.Context, []pendingRow) error {
-			renewals++
-			time.Sleep(renewClaimInterval + time.Second)
-			return nil
-		}
-		waitOutDebt(ctx, 2*renewClaimInterval, renewal)
-		if err := ctx.Err(); err != nil {
-			t.Errorf("the wait ended only with its context (%v), after %v and %d renewals; want it to end by itself", err, time.Since(started), renewals)
-		}
-	})
+// A wait whose renewals are slow still ends by itself, and renews the claim each time it falls
+// due. Cut into slices at the claim's next due time and counting only the slices, a wait whose
+// renewal took renewClaimInterval or longer got slices of 0 and never shrank, and one just short of
+// the interval shrank a second a minute here: each ran until the caller's context ended. Each
+// renewal here takes renewClaimInterval and a second, or less a second, on a synctest fake clock,
+// and the wait of three intervals runs under a context with an hour to live. Each renewal must
+// begin once the one before it has ended or renewClaimInterval after that one began, whichever is
+// later: a renewal held back longer lets the claim run out between them.
+func TestAWaitWhoseRenewalsAreSlowStillEnds(t *testing.T) {
+	for _, took := range []time.Duration{renewClaimInterval + time.Second, renewClaimInterval - time.Second} {
+		t.Run(fmt.Sprintf("each renewal takes %v", took), func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				ctx, cancel := context.WithTimeout(context.Background(), time.Hour)
+				defer cancel()
+				started := time.Now()
+				renewal := newClaimRenewal(Deps{}, []pendingRow{{kind: "issue", id: "slow", text: "slow"}}, started.Add(-renewClaimInterval))
+				var renewed []time.Time
+				renewal.extend = func(context.Context, []pendingRow) error {
+					renewed = append(renewed, time.Now())
+					time.Sleep(took)
+					return nil
+				}
+				waitOutDebt(ctx, 3*renewClaimInterval, renewal)
+				if err := ctx.Err(); err != nil {
+					t.Fatalf("the wait ended only with its context (%v), after %v and %d renewals; want it to end by itself", err, time.Since(started), len(renewed))
+				}
+				for i := 1; i < len(renewed); i++ {
+					if gap := renewed[i].Sub(renewed[i-1]); gap > max(took, renewClaimInterval) {
+						t.Errorf("a renewal began %v after the one before it, want at most %v; renewals at %v", gap, max(took, renewClaimInterval), offsets(renewed, started))
+					}
+				}
+			})
+		})
+	}
 }
 
 // passThrough wraps an embedder as a metrics or tracing wrapper would, counting the calls that

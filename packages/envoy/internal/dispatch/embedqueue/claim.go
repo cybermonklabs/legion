@@ -1,7 +1,6 @@
 package embedqueue
 
 import (
-	"cmp"
 	"context"
 	"fmt"
 	"log/slog"
@@ -234,18 +233,18 @@ func reserveTokens(ctx context.Context, deps Deps, tokens, ceilingPerMinute int,
 // need of its own: renewClaimInterval after its last renewal however long before the wait that
 // one was), and the renewal is made there (renew), and once more when the wait ends if it is due
 // then. So through a wait each renewal comes renewClaimInterval, half claimWindow, after the one
-// before it, late only by the timer's own lateness, and the claim never runs out mid-wait. A claim
-// due again as soon as it is renewed, after a renewal that itself took renewClaimInterval, gets a
-// slice of renewClaimInterval, so every slice shortens the wait. A nil renewal (a call that holds
-// no claim) sleeps the wait out whole.
+// before it, late only by the timer's own lateness, and the claim never runs out mid-wait. The
+// wait ends wait after it began, the renewals' own time counted, however slow they are: a renewal
+// that itself took renewClaimInterval leaves the claim due at once, and the next is made at once,
+// as the rule asks, while the clock moves the wait to its end. A nil renewal (a call that holds no
+// claim) sleeps the wait out whole.
 func waitOutDebt(ctx context.Context, wait time.Duration, renewal *claimRenewal) {
-	for wait > 0 && ctx.Err() == nil {
+	end := time.Now().Add(wait)
+	for time.Until(end) > 0 && ctx.Err() == nil {
 		renewal.renew(ctx, 0)
-		s := min(wait, cmp.Or(renewal.due(0), renewClaimInterval))
-		if !pauseFor(ctx, s) {
+		if !pauseFor(ctx, min(time.Until(end), renewal.due(0))) {
 			return
 		}
-		wait -= s
 	}
 	renewal.renew(ctx, 0)
 }
