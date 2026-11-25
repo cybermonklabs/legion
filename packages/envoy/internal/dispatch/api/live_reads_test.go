@@ -27,16 +27,17 @@ const liveReadsQuiet = 300 * time.Millisecond
 // TestEveryLiveViewKeepsTheRuleOfItsHTTPRead: every view kind /ws/live serves (deliveryLiveKinds
 // and the server's liveKinds) names the GET row whose rule it keeps (liveViewReads), and answers
 // each caller of verification v16 as that row answers the caller: refused with the row's own code
-// where the row refuses, and served where it serves. A Legion board view is of PRIV's board, so a
-// caller that may not see PRIV is refused the view as the board's GET answers it, as a project
-// nobody holds. An agent view keeps its row's session rule (access.SessionClause, which GET
-// /api/v1/agents lists sessions by) and is narrower still, since it relays the session's whole
-// transcript (access.SessionContentClause): of a session the caller's roster does not list, it
-// answers exactly what a session nobody answers for answers and never tells the session a viewer
-// is attached; of a listed one it relays the session only where the content rule passes, and
-// otherwise answers the same as for one nobody answers for. Both sessions here are carol's (she
-// proved them) and no listener lists their projects, so only carol and carol's token that lists
-// PRIV, open viewers that see every private project carol sees, are relayed them.
+// where the row refuses, and served where it serves. A Legion board view is of PRIV's board, and a
+// Legion issue view of PRIV's issue, so a caller that may not see PRIV is refused each view as its
+// GET answers it, as a project or an issue nobody holds. An agent view keeps its row's session
+// rule (access.SessionClause, which GET /api/v1/agents lists sessions by) and is narrower still,
+// since it relays the session's whole transcript (access.SessionContentClause): of a session the
+// caller's roster does not list, it answers exactly what a session nobody answers for answers and
+// never tells the session a viewer is attached; of a listed one it relays the session only where
+// the content rule passes, and otherwise answers the same as for one nobody answers for. Both
+// sessions here are carol's (she proved them) and no listener lists their projects, so only carol
+// and carol's token that lists PRIV, open viewers that see every private project carol sees, are
+// relayed them.
 //
 // Control: today's views (no read rule on the live socket). bob's timeline is served where its
 // GET row refuses him, and alice's agent view relays PRIV's session, and the test fails naming each.
@@ -88,13 +89,19 @@ func TestEveryLiveViewKeepsTheRuleOfItsHTTPRead(t *testing.T) {
 			return agentView(session)
 		case legionBoardView:
 			return LiveView{DeliveryLiveView: legionView(seedPrivate)}
+		case legionIssueView:
+			return LiveView{DeliveryLiveView: legionIssueSubscription(seed.issue[seedPrivate])}
 		}
 		return eventsView()
 	}
 	target := func(kind, session string) string {
 		route := strings.TrimPrefix(liveViewReads[kind], http.MethodGet+" ")
 		route = strings.ReplaceAll(route, "{session_id}", session)
-		route = strings.ReplaceAll(route, "{key}", seedPrivate)
+		key := seedPrivate
+		if kind == legionIssueView {
+			key = seed.issue[seedPrivate]
+		}
+		route = strings.ReplaceAll(route, "{key}", key)
 		if kind == deliveryLiveTimeline || kind == deliveryLiveMeasures {
 			route += "?from=" + from + "&to=" + to
 		}

@@ -1305,17 +1305,16 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 	// The target is read as the writer reads it in every read of the message
 	// (leaveOutHiddenMessageSessions): a credential that does not see the session it names, or
 	// the private project of the role it names, answers for no attempt of it, and is answered as
-	// for a message with no target, which no attempt has. That read is made whatever the message
-	// targets, so a hidden target costs what none costs; a reader that sees every object reads
-	// nothing more (R9).
+	// for a message with no target that no attempt reached, after the same reads below. That read
+	// is made whatever the message targets, so a hidden target costs what none costs; a reader
+	// that sees every object reads nothing more (R9). A message stored with no target is answered
+	// for its attempts as before.
+	targeted := message.Target != nil
 	if err := leaveOutHiddenMessageSessions(r.Context(), tx, who, []*model.Message{&message}); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	if message.Target == nil {
-		writeError(w, "MESSAGE_NOT_FOUND", http.StatusNotFound, "message delivery not found")
-		return
-	}
+	hiddenTarget := targeted && message.Target == nil
 	// The attempt is a number message_deliveries keeps in an integer column, so one past that
 	// column (fitsIntegerColumn) is a delivery no message has, answered as the read below answers
 	// one, before any query is made with it.
@@ -1339,7 +1338,7 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, hiddenErr)
 		return
 	}
-	if err != nil || hidden {
+	if err != nil || hidden || hiddenTarget {
 		writeError(w, "MESSAGE_NOT_FOUND", http.StatusNotFound, "message delivery not found")
 		return
 	}
