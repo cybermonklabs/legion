@@ -198,7 +198,7 @@ const schemas: Record<string, z.ZodType> = {
   "project-pause-refused.json": LegionPauseFailureResponse,
   "project-paused.json": LegionPauseFailureResponse,
   "project-resume-refused.json": LegionPauseFailureResponse,
-  // The P0 bound the controller's set and clear left in force (contract 282), each written from
+  // The P0 bound the controller's set and clear left in force (the P0 start's contract entry), each written from
   // what the route itself answers (internal/api's TestP0BoundRouteGoldens): a set of 2 over
   // legion.yaml's 3, and the clear after it.
   "p0-bound.json": LegionP0BoundResponse,
@@ -480,6 +480,7 @@ const RECORD_SCHEMAS: Record<string, readonly z.ZodType[]> = {
   "project-resume": [LegionProjectResumeResponse],
   "plan-register": [LegionPlanRegisterResponse],
   "intake-discard": [LegionIntakeDiscardResponse],
+  "p0-bound": [LegionP0BoundResponse],
 };
 
 /** The reason the refusal's `reasons` is named by no schema of this module. */
@@ -2994,7 +2995,15 @@ test("a reader at contract 152 parses the repositories block served below 202", 
   };
   const issues = Object.fromEntries(
     Object.entries(rest.issues as Record<string, Record<string, unknown>>).map(([key, issue]) => {
-      const { podHold: _podHold, priority: _priority, ...kept } = issue;
+      // A caller below the P0 start's contract entry is served each issue without the two keys it
+      // added (the daemon's `withoutResolvedPriority`).
+      const {
+        podHold: _podHold,
+        priority: _priority,
+        resolvedPriority: _resolvedPriority,
+        priorityFrom: _priorityFrom,
+        ...kept
+      } = issue;
       const narrowed: Record<string, unknown> = { ...kept };
       const line = kept.waitingLine;
       if (isJsonObject(line)) {
@@ -3031,8 +3040,8 @@ test("a reader at contract 152 parses the repositories block served below 202", 
     const { source: _source, ...kept } = row;
     return kept;
   });
-  // A caller below 282 is served the admission without the two keys 282 added (the daemon's
-  // `withoutP0Start`), and a caller below 202 is below 282.
+  // A caller below the P0 start's contract entry is served the admission without the two keys it
+  // added (the daemon's `withoutP0Start`), and a caller below 202 is below the entry.
   const {
     p0Holders: _p0Holders,
     p0Bound: _p0Bound,

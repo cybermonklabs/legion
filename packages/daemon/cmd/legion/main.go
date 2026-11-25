@@ -641,7 +641,7 @@ func runState(ctx context.Context, c *operatorCall, asJSON bool, stdout, stderr 
 		len(state.Admission.Active), state.Admission.Cap, len(state.Admission.Waiting),
 		len(state.Admission.Trees), len(state.Issues))
 	// The P0 issues, which hold their slots outside the cap, and the bound they hold them under
-	// (contract 282); a state served below that contract carries neither, and says nothing of them.
+	// (the P0 start's contract entry); a state served below that entry carries neither, and says nothing of them.
 	if line := p0AdmissionLine(state.Admission); line != "" {
 		fmt.Fprintln(stdout, line)
 	}

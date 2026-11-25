@@ -725,7 +725,7 @@ func answerFixtures(t *testing.T) map[AnswerID]answerFixture {
 		AnswerProjectResume: {roots: typesOf(ProjectResumeResponse{}), bodies: []any{ProjectResumeResponse{
 			Pause: ended, Released: 3,
 		}}},
-		// A set of the P0 bound by the controller (contract 282): the bound in force, legion.yaml's
+		// A set of the P0 bound by the controller (the P0 start's entry): the bound in force, legion.yaml's
 		// and the live value with who set it, when and why, every key the answer can carry. A clear
 		// answers no live value, and a set of none a null bound.
 		AnswerP0Bound: {roots: typesOf(P0BoundView{}), bodies: []any{P0BoundView{Bound: new(2), Configured: new(4),
@@ -1614,21 +1614,22 @@ func TestTheCensusHoldsAnEntryThatRevertsAnEarlierOne(t *testing.T) {
 		return contract.Records[at], true
 	}
 	t.Run("an entry takes out a value an earlier one added and retires a route", func(t *testing.T) {
-		installContractRegistry(t, testRegistry(t, stampOf(censusAddTestContract, censusRemoveTestContract),
+		built, dir, at := withBuildEntries(t,
 			contractEntry{id: censusAddTestContract, slug: "census-value-add"},
-			contractEntry{id: censusRemoveTestContract, slug: "census-value-remove", removedRoutes: map[string]int{censusRetiredRoute: censusRemoveTestContract}}))
-		composed := buildRecords(t, pairEntryFixtures)
+			contractEntry{id: censusRemoveTestContract, slug: "census-value-remove", removedRoutes: map[string]int{censusRetiredRoute: censusRemoveTestContract}})
+		installContractRegistry(t, built)
+		composed := buildRecords(t, dir)
 		for i, holds := range []bool{true, false} {
-			record, _ := recordOf(t, composed[i], AnswerIssueRecord)
+			record, _ := recordOf(t, composed[at+i], AnswerIssueRecord)
 			if got := slices.Contains(record.Domains["phase"], "censusRevert"); got != holds {
-				t.Fatalf("the issue record's domain of `phase` at contract %d admits `censusRevert`: %t, want %t", composed[i].Contract, got, holds)
+				t.Fatalf("the issue record's domain of `phase` at contract %d admits `censusRevert`: %t, want %t", composed[at+i].Contract, got, holds)
 			}
-			routed := slices.ContainsFunc(composed[i].Requests, func(request requestShape) bool { return request.Route == censusRetiredRoute })
+			routed := slices.ContainsFunc(composed[at+i].Requests, func(request requestShape) bool { return request.Route == censusRetiredRoute })
 			if routed != holds {
-				t.Fatalf("the record of contract %d holds %s: %t, want %t", composed[i].Contract, censusRetiredRoute, routed, holds)
+				t.Fatalf("the record of contract %d holds %s: %t, want %t", composed[at+i].Contract, censusRetiredRoute, routed, holds)
 			}
 		}
-		for _, problem := range slices.Concat(recordSetProblems(t, pairEntryFixtures), recordedRequestProblems(t, pairEntryFixtures)) {
+		for _, problem := range slices.Concat(recordSetProblems(t, dir), recordedRequestProblems(t, dir)) {
 			t.Error(problem)
 		}
 		if _, wanted := pluginRequests()[censusRetiredRoute]; wanted {
@@ -1636,22 +1637,57 @@ func TestTheCensusHoldsAnEntryThatRevertsAnEarlierOne(t *testing.T) {
 		}
 	})
 	t.Run("an entry removes an answer an earlier one added and changes an answer's noBody back", func(t *testing.T) {
-		installContractRegistry(t, testRegistry(t, stampOf(censusAnswerAddTestContract, censusAnswerRemoveTestContract),
+		built, dir, at := withBuildEntries(t,
 			contractEntry{id: censusAnswerAddTestContract, slug: "census-answer-add"},
-			contractEntry{id: censusAnswerRemoveTestContract, slug: "census-answer-remove"}))
-		composed := buildRecords(t, pairEntryFixtures)
+			contractEntry{id: censusAnswerRemoveTestContract, slug: "census-answer-remove"})
+		installContractRegistry(t, built)
+		composed := buildRecords(t, dir)
 		for i, holds := range []bool{true, false} {
-			if _, got := recordOf(t, composed[i], censusAnswer); got != holds {
-				t.Fatalf("the records of contract %d hold the %s answer: %t, want %t", composed[i].Contract, censusAnswer, got, holds)
+			if _, got := recordOf(t, composed[at+i], censusAnswer); got != holds {
+				t.Fatalf("the records of contract %d hold the %s answer: %t, want %t", composed[at+i].Contract, censusAnswer, got, holds)
 			}
-			if record, _ := recordOf(t, composed[i], AnswerNoContent); record.NoBody == holds {
-				t.Fatalf("the %s answer's record at contract %d has noBody %t, want %t", AnswerNoContent, composed[i].Contract, record.NoBody, !holds)
+			if record, _ := recordOf(t, composed[at+i], AnswerNoContent); record.NoBody == holds {
+				t.Fatalf("the %s answer's record at contract %d has noBody %t, want %t", AnswerNoContent, composed[at+i].Contract, record.NoBody, !holds)
 			}
 		}
-		for _, problem := range slices.Concat(recordSetProblems(t, pairEntryFixtures), recordedRequestProblems(t, pairEntryFixtures)) {
+		for _, problem := range slices.Concat(recordSetProblems(t, dir), recordedRequestProblems(t, dir)) {
 			t.Error(problem)
 		}
 	})
+}
+
+// withBuildEntries is a test registry of this build's own entries, ranked by id as an unstamped
+// build ranks them, and then test, in the order given; a directory that holds the fixtures of both,
+// the build's from packageEntryFixtures and the test entries' from pairEntryFixtures; and the place
+// of the first test entry among the records a composition of the registry gives. A test registry of
+// the test entries alone would compose no record of the routes and keys the build's own entries
+// add, which the build's server still serves, so every check of the server against the records
+// would read them as missing.
+func withBuildEntries(t *testing.T, test ...contractEntry) (*contractRegistry, string, int) {
+	t.Helper()
+	own := slices.SortedFunc(slices.Values(registeredEntries), func(a, b contractEntry) int { return a.id - b.id })
+	entries := slices.Concat(own, test)
+	ids := make([]int, len(entries))
+	for i, entry := range entries {
+		ids[i] = entry.id
+	}
+	dir := t.TempDir()
+	for _, from := range []string{packageEntryFixtures, pairEntryFixtures} {
+		files, err := os.ReadDir(from)
+		if err != nil {
+			t.Fatalf("read the entry fixtures of %s: %v", from, err)
+		}
+		for _, file := range files {
+			body, err := os.ReadFile(from + "/" + file.Name())
+			if err != nil {
+				t.Fatalf("read %s: %v", file.Name(), err)
+			}
+			if err := os.WriteFile(dir+"/"+file.Name(), body, 0o600); err != nil {
+				t.Fatalf("copy %s: %v", file.Name(), err)
+			}
+		}
+	}
+	return testRegistry(t, stampOf(ids...), entries...), dir, len(own)
 }
 
 // recordSetProblems is every problem of the record set of this build, its entry fixtures read from

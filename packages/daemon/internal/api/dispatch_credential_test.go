@@ -97,8 +97,12 @@ func TestTheDispatchCredentialIsStrippedBelowItsContract(t *testing.T) {
 	if _, carried := dispatchCredentialServed(t, at); !carried {
 		t.Errorf("a caller stating %d is served no dispatchCredential: %s", dispatchCredentialContract, at)
 	}
-	if len(narrowings) != 0 {
-		t.Errorf("a caller stating %d is narrowed: %+v", dispatchCredentialContract, narrowings)
+	// The entries above the last numbered contract narrow a caller at it too, each by its own band;
+	// none of those lines may be the Dispatch credential's.
+	for _, line := range narrowings {
+		if line.Dropped == "dispatchCredential" {
+			t.Errorf("a caller stating %d is served a line saying it dropped dispatchCredential: %+v", dispatchCredentialContract, narrowings)
+		}
 	}
 
 	operator, _ := stateNarrowed(t, state, "192.0.2.1:4100", podClaims(memoryContract-1))

@@ -355,14 +355,21 @@ func isIssueEvent(typ string) bool {
 func decodeDispatchEvent(event dispatchEvent, unread *[]string) (Fact, error) {
 	if isIssueEvent(event.Type) {
 		var issue struct {
-			Key          string          `json:"key"`
-			Status       string          `json:"status"`
-			Title        string          `json:"title"`
-			Parent       *string         `json:"parent"`
-			Rank         string          `json:"rank"`
-			Priority     json.RawMessage `json:"priority"`
-			Labels       []string        `json:"labels"`
-			ResolvedRepo json.RawMessage `json:"resolved_repo"`
+			Key      string          `json:"key"`
+			Status   string          `json:"status"`
+			Title    string          `json:"title"`
+			Parent   *string         `json:"parent"`
+			Rank     string          `json:"rank"`
+			Priority json.RawMessage `json:"priority"`
+			// ResolvedPriority and PriorityFrom are the priority Dispatch resolves the issue to and
+			// the issue it comes from (J1 of dispatch://INFRA-5793); an event of a Dispatch release
+			// before it carries neither, and its resolved priority reads as unknown
+			// (issueEventResolved). Changed is the event's list of the fields it changed.
+			ResolvedPriority json.RawMessage `json:"resolved_priority"`
+			PriorityFrom     *string         `json:"priority_from"`
+			Changed          []string        `json:"changed"`
+			Labels           []string        `json:"labels"`
+			ResolvedRepo     json.RawMessage `json:"resolved_repo"`
 			// An event retained from a Dispatch that did not yet send blocked_by decodes to no
 			// blockers, as an issue waiting on nothing does: unlike a missing repository, which the
 			// consumer fills, nothing reads an absence here.
@@ -402,7 +409,8 @@ func decodeDispatchEvent(event dispatchEvent, unread *[]string) (Fact, error) {
 		}
 		claimedBy, claimKnown := issueEventClaim(issue.Claim, unread)
 		return DispatchIssue{Key: event.IssueKey, Seq: event.Seq, Type: event.Type, Status: issue.Status, Title: issue.Title, Parent: parent, Rank: issue.Rank,
-			Priority: issueEventPriority(issue.Priority, unread), HandedOver: dispatch.CarriesLegionLabel(issue.Labels), Labels: issue.Labels,
+			Priority: issueEventPriority(issue.Priority, unread), Resolved: issueEventResolved(issue.ResolvedPriority, issue.PriorityFrom, unread),
+			ResolvedOnly: resolvedOnly(issue.Changed), HandedOver: dispatch.CarriesLegionLabel(issue.Labels), Labels: issue.Labels,
 			ActorSession: actorSession, DaemonActor: daemonActor, ResolvedRepo: deref(resolved),
 			ResolvedRepoMissing: missing, Blockers: issue.BlockedBy, ClaimedBy: claimedBy, ClaimKnown: claimKnown}, nil
 	}
@@ -620,6 +628,32 @@ func issueEventPriority(raw json.RawMessage, unread *[]string) record.Priority {
 		*unread = append(*unread, fmt.Sprintf("priority %s is no level Dispatch writes", raw))
 	}
 	return priority
+}
+
+// issueEventResolved reads an issue event's resolved priority and the issue it comes from, as the
+// record keeps them (record.Resolved): unknown where the event carries no `resolved_priority`, as an
+// event of a Dispatch release before dispatch://INFRA-5793 does, and else read as the issue's own
+// priority is (issueEventPriority), a present null being no priority.
+func issueEventResolved(raw json.RawMessage, from *string, unread *[]string) record.Resolved {
+	if raw == nil {
+		return record.Resolved{}
+	}
+	return record.Resolved{Priority: issueEventPriority(raw, unread), From: deref(from), Known: true}
+}
+
+// resolvedOnly says an issue event's `changed` names the resolved priority and nothing else: the
+// event Dispatch appends on an issue whose ancestor's priority or parent changed (J3 of
+// dispatch://INFRA-5793). An event that names no field changed nothing it says, and is not one.
+func resolvedOnly(changed []string) bool {
+	if len(changed) == 0 {
+		return false
+	}
+	for _, field := range changed {
+		if field != "resolved_priority" && field != "priority_from" {
+			return false
+		}
+	}
+	return true
 }
 
 // askPayload is what the daemon reads of an ask.* event's payload, which is the ask itself

@@ -293,14 +293,12 @@ func TestAnOlderContractIsServedNoCauseTimes(t *testing.T) {
 	// A caller below causeTimesContract is below dispatchCredentialContract too, the one row above
 	// it, so it is told of both rows, in the table's order.
 	_, narrowings := stateNarrowedStating(t, populatedState(t), statePodAddr+":41000", podClaims(0), causeTimesContract-1)
-	// p0BoundContract's band stands above this one, so the caller is told of it too, on the line
-	// after this band's (stateNarrowings' order).
 	const dropped = "the claim views' lastDeathAt and lastStartFailureAt"
-	// The bands above this one, the Dispatch credential's and the P0 start's, stand above it, so the
-	// caller is told of them too, after this band's line (stateNarrowings' order).
-	const p0Start = "admission.p0Holders and admission.p0Bound"
-	if len(narrowings) != 3 || narrowings[0].Dropped != dropped || narrowings[1].Dropped != "dispatchCredential" || narrowings[2].Dropped != p0Start {
-		t.Errorf("the daemon wrote the narrowing lines %+v for a caller stating %d, want ones that dropped %q, %q and %q",
-			narrowings, causeTimesContract-1, dropped, "dispatchCredential", p0Start)
+	// The Dispatch credential's frozen row stands above this one, so the caller is told of it next
+	// (stateNarrowings' order); an entry's band, above every frozen row, follows them, and this test
+	// holds no number of them.
+	if len(narrowings) < 2 || narrowings[0].Dropped != dropped || narrowings[1].Dropped != "dispatchCredential" {
+		t.Errorf("the daemon wrote the narrowing lines %+v for a caller stating %d, want ones that dropped %q and %q first",
+			narrowings, causeTimesContract-1, dropped, "dispatchCredential")
 	}
 }

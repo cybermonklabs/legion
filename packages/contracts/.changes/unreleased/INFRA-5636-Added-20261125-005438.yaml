@@ -1,11 +1,14 @@
 kind: Added
 body: |-
-  The daemon API schemas describe contract 282: the state's `admission` carries `p0Holders`, how
-  many slot holders are P0 and hold their slot outside the cap, and `p0Bound`, the P0 bound in
-  force (`bound`, null for none), `legion.yaml`'s (`configured`) and the value set while the daemon
-  runs (`live`, with who set it, when and why). New schemas: the controller's and the operator's
-  set and clear of the P0 bound (`LegionProjectP0BoundRequest`, `LegionProjectP0BoundClearRequest`
-  and the operator's two) and their answer, `LegionP0BoundResponse`.
+  The daemon API schemas describe the contract entry 20261125181047_p-0-bound: the state's
+  `admission` carries `p0Holders`, how many slot holders are P0 and hold their slot outside the cap,
+  and `p0Bound`, the P0 bound in force (`bound`, null for none), `legion.yaml`'s (`configured`) and
+  the value set while the daemon runs (`live`, with who set it, when and why); each issue carries
+  `resolvedPriority`, the priority Dispatch resolves it to (a number, or null for none), and
+  `priorityFrom`, the issue that priority comes from. New schemas: the controller's and the
+  operator's set and clear of the P0 bound (`LegionProjectP0BoundRequest`,
+  `LegionProjectP0BoundClearRequest` and the operator's two) and their answer,
+  `LegionP0BoundResponse`.
 time: 2026-11-25T00:54:38Z
 custom:
     Issue: INFRA-5636

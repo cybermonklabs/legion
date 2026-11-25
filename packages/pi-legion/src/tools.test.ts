@@ -2241,7 +2241,7 @@ test("the controller sets and clears the P0 bound, each request the contract's a
 });
 
 // read_state's summary gives the P0 holders, the bound in force and the live value that stands,
-// on one line after the admission cap's, and no such line for a body served below contract 282.
+// on one line after the admission cap's, and no such line for a body served below the P0 start's contract entry.
 test("the read_state summary gives the P0 holders and the P0 bound in force", async () => {
   const base = daemonFixture("state.json") as LegionState;
   const { daemon } = recordingDaemon({ state: base });

@@ -1,6 +1,13 @@
 {
   "answers": [
     {
+      "answer": "issue-record",
+      "addKeyPaths": [
+        "priorityFrom",
+        "resolvedPriority"
+      ]
+    },
+    {
       "answer": "p0-bound",
       "change": "add",
       "noBody": false,
@@ -29,7 +36,9 @@
         "admission.p0Bound.live.setBy",
         "admission.p0Bound.live.setBy.kind",
         "admission.p0Bound.live.setBy.session",
-        "admission.p0Holders"
+        "admission.p0Holders",
+        "issues.*.priorityFrom",
+        "issues.*.resolvedPriority"
       ]
     }
   ],

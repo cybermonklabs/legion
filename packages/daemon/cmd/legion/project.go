@@ -185,7 +185,7 @@ func boundCount(bound *int) string {
 // p0AdmissionLine is `legion state`'s line for the P0 issues (C4 and C3 of dispatch://INFRA-5636):
 // how many P0 issues hold a slot, outside the cap, beside the slots in use and the cap, and the P0
 // bound in force, legion.yaml's and who set the live one and when. It is empty for a state that
-// carries neither key, one a daemon below contract 282 served, and the caller then prints nothing.
+// carries neither key, one a daemon below the P0 start's contract entry served, and the caller then prints nothing.
 func p0AdmissionLine(admission api.Admission) string {
 	if admission.P0Holders == nil && admission.P0Bound == nil {
 		return ""

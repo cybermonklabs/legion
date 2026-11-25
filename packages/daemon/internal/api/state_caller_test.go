@@ -1165,9 +1165,17 @@ func withoutLowestContract(t *testing.T, body []byte) string {
 // ServingFloor, which is below fixAttemptsContract as every number this is called with is.
 func servedShape(want map[string]any, contract int) {
 	settings := want["settings"].(map[string]any)
-	if admission, carries := want["admission"].(map[string]any); carries && contract < entryNumber(p0BoundContract) {
-		delete(admission, "p0Holders")
-		delete(admission, "p0Bound")
+	if contract < entryNumber(p0BoundContract) {
+		if admission, carries := want["admission"].(map[string]any); carries {
+			delete(admission, "p0Holders")
+			delete(admission, "p0Bound")
+		}
+		if issues, carries := want["issues"].(map[string]any); carries {
+			for _, issue := range issues {
+				delete(issue.(map[string]any), "resolvedPriority")
+				delete(issue.(map[string]any), "priorityFrom")
+			}
+		}
 	}
 	if contract < fixAttemptsContract {
 		settings["max_fix_attempts"] = float64(3)

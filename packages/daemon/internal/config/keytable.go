@@ -173,7 +173,7 @@ var topLevelKeys = func() []keyDescriptor {
 		},
 		{
 			Name: "admission_p0_bound", Default: "no bound", RequiredBy: "no",
-			Description: "How many P0 issues may hold a slot at once; a P0 issue, one whose own Dispatch priority is P0, starts outside `admission_cap` and counts against this bound alone, and with no bound every P0 issue that waits only for a slot starts. A person sets another bound, or none, while the daemon runs, with `legion project set-p0-bound` or through the controller (`set_p0_bound`) on the person's cited word; it takes effect at the next admission pass with no restart and stands until it is cleared.",
+			Description: "How many P0 issues may hold a slot at once; a P0 issue, one Dispatch resolves to P0 (its own priority, else the nearest issue's above it that has one), starts outside `admission_cap` and counts against this bound alone, and with no bound every P0 issue that waits only for a slot starts. A person sets another bound, or none, while the daemon runs, with `legion project set-p0-bound` or through the controller (`set_p0_bound`) on the person's cited word; it takes effect at the next admission pass with no restart and stands until it is cleared.",
 			Read:        reads(readInt, func(f *fileConfig, v *int) { f.AdmissionP0Bound = v }),
 		},
 		{

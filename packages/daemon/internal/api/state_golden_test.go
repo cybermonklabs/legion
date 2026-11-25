@@ -321,7 +321,7 @@ func populatedState(t *testing.T) State {
 			Cap:    5,
 			Active: []string{"LEGION-208", "LEGION-210", "LEGION-212", "LEGION-218", "LEGION-219"},
 			// LEGION-212 is the one P0 issue among them, by its own priority, and holds its slot
-			// outside the cap (contract 282); the P0 bound stands at 3, set live over legion.yaml's
+			// outside the cap (the P0 start's entry); the P0 bound stands at 3, set live over legion.yaml's
 			// 4 by the controller, so every key of the bound's view is in the record.
 			P0Holders: new(1),
 			P0Bound: &P0BoundView{Bound: new(3), Configured: new(4), Live: &P0BoundLiveView{Bound: new(3),
@@ -1163,6 +1163,20 @@ func populatedState(t *testing.T) State {
 			continue
 		}
 		issue.Priority = &noPriority
+		state.Issues[key] = issue
+	}
+	// The priority Dispatch resolves each issue to (the P0 start's entry): LEGION-211's is its own
+	// P1, and LEGION-207, which has no priority of its own, takes P2 from OTHER-5, an ancestor in
+	// another project, which `priorityFrom` names. Every other issue stands as a Dispatch release
+	// before dispatch://INFRA-5793 left it, with no resolved priority at all, so the fixture holds
+	// all three readings of the field.
+	resolvedP1, resolvedP2 := PriorityView(record.P1), PriorityView(record.P2)
+	for key, resolved := range map[string]struct {
+		priority *PriorityView
+		from     string
+	}{"LEGION-211": {&resolvedP1, ""}, "LEGION-207": {&resolvedP2, "OTHER-5"}} {
+		issue := state.Issues[key]
+		issue.ResolvedPriority, issue.PriorityFrom = resolved.priority, resolved.from
 		state.Issues[key] = issue
 	}
 	for key, issue := range state.Issues {

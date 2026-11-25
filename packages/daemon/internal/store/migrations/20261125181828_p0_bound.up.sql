@@ -1,4 +1,5 @@
--- 20261125181828_p0_bound.up.sql — the P0 bound set while the daemon runs (dispatch://INFRA-5636).
+-- 20261125181828_p0_bound.up.sql — the P0 start and the P0 bound set while the daemon runs
+-- (dispatch://INFRA-5636).
 --
 -- A P0 issue starts outside the admission cap, and the P0 bound limits how many P0 issues may hold
 -- a slot at once. legion.yaml's admission_p0_bound gives the bound the daemon boots with, none when
@@ -16,11 +17,25 @@
 -- P0BoundTx and EffectiveP0Bound), so a change is in force from the pass of its own fact on, with no
 -- restart, and a change made before a restart holds after it. The index serves that read.
 --
+-- The three columns of issues hold the priority Dispatch resolves each issue to, the one admission
+-- reads (record.Resolved, J1 of dispatch://INFRA-5793). resolved_known says Dispatch sent
+-- `resolved_priority` at all; false on every row this migration finds, and on every row a Dispatch
+-- release before INFRA-5793 wrote, which admission then reads by the issue's own priority alone.
+-- resolved_priority is Dispatch's level, 0 for P0 to 3 for P3, null for none, as the priority
+-- column holds the issue's own, and null wherever resolved_known is false. priority_from is
+-- `priority_from`, the key of the issue the resolved priority comes from, empty where it is the
+-- issue's own or none. The first boot listing after Dispatch resolves priorities replaces each row
+-- the listing shows, at the row's own sequence too (admit's applyListed), so an inherited P0 that
+-- Dispatch's upgrade made takes effect with no edit of the issue.
+--
 -- No outbox kind is added, so outbox_kind_check stays as the last migration that wrote it left it.
 --
 -- Migrations here are forward-only and this one has no down file. A daemon of an earlier release on
--- the same database reads no row of the table, so a rollback needs no statement: the table stays,
--- and a roll forward reads it again. That release refuses `admission_p0_bound` in legion.yaml as a
+-- the same database reads no row of the table and names none of the three columns: its insert
+-- leaves them at their defaults and its update leaves them as they stand. So a rollback needs no
+-- statement: the table and the columns stay, and a roll forward reads each row's resolved priority
+-- as this release last wrote it, until the issue's next event or the boot listing, which replaces
+-- it where Dispatch shows another. That release refuses `admission_p0_bound` in legion.yaml as a
 -- key it does not know, so a rollback takes the key out of the file first.
 create table project_p0_bound_changes (
   id bigserial primary key,
@@ -35,3 +50,8 @@ create table project_p0_bound_changes (
   constraint project_p0_bound_changes_by_session check ((by_kind = 'controller') = (by_session <> ''))
 );
 create index project_p0_bound_changes_newest on project_p0_bound_changes (project, id desc);
+alter table issues
+  add column resolved_known boolean not null default false,
+  add column resolved_priority smallint check (resolved_priority between 0 and 3),
+  add column priority_from text not null default '',
+  add constraint issues_resolved_priority_known check (resolved_known or resolved_priority is null);

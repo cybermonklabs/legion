@@ -225,7 +225,16 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 			// hold on it is the ancestry hold, and nothing else on this wire names the chain.
 			Ancestry: issue.Ancestry,
 			Priority: &priority,
-			Workers:  map[claim.Role]api.PhaseView{},
+			// The issue Dispatch resolves the priority from, empty where it is the issue's own
+			// or none (api.Issue.PriorityFrom).
+			PriorityFrom: issue.Resolved.From,
+			Workers:      map[claim.Role]api.PhaseView{},
+		}
+		// The priority Dispatch resolves the issue to, absent where Dispatch sent none
+		// (api.Issue.ResolvedPriority).
+		if issue.Resolved.Known {
+			resolved := api.PriorityView(issue.Resolved.Priority)
+			view.ResolvedPriority = &resolved
 		}
 		// Every experiment answer the issue runs under, a done issue's included: it is what its
 		// roles ran with, and nothing redraws it. The three memory fields are the answer of the

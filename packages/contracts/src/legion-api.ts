@@ -826,6 +826,16 @@ const legionIssue = z.object({
    * `unrecorded`, an operator's claim), and from every issue of the body the route serves a
    * caller below 250. */
   priority: dispatchPriority,
+  /** The priority Dispatch resolves the issue to, 0 for P0 to 3 for P3, or null for none (the P0
+   * start's contract entry, dispatch://INFRA-5636): its own priority, else the nearest issue's above
+   * it on its Dispatch parent chain that has one. It is the priority admission reads, and `priority`
+   * keeps its meaning. Absent where Dispatch sent no resolved priority, as a Dispatch release before
+   * dispatch://INFRA-5793 sends none, and from every issue of the body the route serves a caller
+   * below the entry. */
+  resolvedPriority: dispatchPriority,
+  /** The key of the issue `resolvedPriority` comes from (Dispatch's `priority_from`), absent where it
+   * is the issue's own or none. */
+  priorityFrom: issueKey.optional(),
   workers: z.partialRecord(z.string(), legionPhaseView).optional(),
   pullRequest: legionPullRequestView.optional(),
   designGate: legionGateView.optional(),
@@ -1051,7 +1061,7 @@ const legionHeldIssue = z.object({
 });
 
 /** `api.PauseActorView` — who paused the project or ended its pause (contract 178), and who set the
- * P0 bound while the daemon runs (contract 282): the controller, with the session it acted from,
+ * P0 bound while the daemon runs (the P0 start's contract entry): the controller, with the session it acted from,
  * or the operator, who acts from none. The daemon's store holds these two shapes and no other
  * (`project_pauses_by_session` and `project_pauses_ended_by_session` in its migration
  * `20261115194357_project_pause`, `project_p0_bound_changes_by_session` in
@@ -1063,7 +1073,7 @@ const legionPauseActor = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("operator") }),
 ]);
 
-/** `api.P0BoundView` — the P0 bound (contract 282, dispatch://INFRA-5636): how many P0 issues may
+/** `api.P0BoundView` — the P0 bound (the P0 start's contract entry, dispatch://INFRA-5636): how many P0 issues may
  * hold an admission slot at once, outside the cap. `bound` is the bound in force, null for none;
  * `configured` is legion.yaml's `admission_p0_bound`, null where the file gives none; and `live` is
  * the value the controller or the operator set while the daemon runs and that stands — its `bound`,
@@ -1130,8 +1140,8 @@ const legionP0Bound = z.object({
  * finds it absent has been served that stripped body and learns nothing about what is held.
  * `p0Holders` is how many of the issues holding a slot are P0 by their own Dispatch priority, which
  * start and hold their slot outside the cap, so the cap counts the other holders of `active` alone;
- * `p0Bound` is the P0 bound in force (`legionP0Bound`). A daemon at contract 282 writes both on every
- * state, and both are optional here because the route strips them for a caller below 282
+ * `p0Bound` is the P0 bound in force (`legionP0Bound`). A daemon at the P0 start's contract entry writes both on
+ * every state, and both are optional here because the route strips them for a caller below the entry
  * (`api.stateFor`, `withoutP0Start`). */
 const legionAdmission = z.object({
   cap: z.number().int().nonnegative().optional(),
@@ -2097,7 +2107,7 @@ export const LegionProjectResumeResponse = z.object({
   released: z.number().int().nonnegative().optional(),
 });
 
-/** `api.P0BoundView`, the answer to the controller's set or clear of the P0 bound (contract 282),
+/** `api.P0BoundView`, the answer to the controller's set or clear of the P0 bound (the P0 start's contract entry),
  * `POST /legion/v1/project/p0-bound` and its `/clear`, and to the operator's two routes alike: the
  * bound in force, legion.yaml's and the live value that stands (`legionP0Bound`). The controller's
  * `set_p0_bound` and `clear_p0_bound` hand the answer to the agent whole (`pi-legion/src/tools.ts`). */
@@ -2306,7 +2316,7 @@ export const LegionProjectResumeRequest = z.strictObject({
   grantId: nonEmptyString,
 });
 
-/** `api.ProjectP0BoundRequest`, the controller's set of the P0 bound (contract 282): its grant,
+/** `api.ProjectP0BoundRequest`, the controller's set of the P0 bound (the P0 start's contract entry): its grant,
  * and exactly one of `bound`, a whole number of at least 1, and `unbounded: true`, no bound whatever
  * legion.yaml says, and `reason`, why. It names no project: the daemon changes its own. The daemon
  * refuses a grant that is not a controller's (`CONTROLLER_REQUIRED`), a set that names neither,
@@ -2321,7 +2331,7 @@ export const LegionProjectP0BoundRequest = z.union([
   z.strictObject({ grantId: nonEmptyString, unbounded: z.literal(true), reason: nonEmptyString }),
 ]);
 
-/** `api.ProjectP0BoundClearRequest`, the controller's clear of the P0 bound (contract 282), which
+/** `api.ProjectP0BoundClearRequest`, the controller's clear of the P0 bound (the P0 start's contract entry), which
  * returns the daemon to legion.yaml's `admission_p0_bound`: its grant and why. */
 export const LegionProjectP0BoundClearRequest = z.strictObject({
   grantId: nonEmptyString,
@@ -2372,7 +2382,7 @@ export const LegionOperatorProjectPauseRequest = z.strictObject({
 
 /** `api.OperatorP0BoundRequest` and `api.OperatorP0BoundClearRequest`, the operator's set and
  * clear of the P0 bound (`legion project set-p0-bound` and `clear-p0-bound`, under the operator's
- * bearer, contract 282). The CLI sends both; the plugin never does. */
+ * bearer, the P0 start's contract entry). The CLI sends both; the plugin never does. */
 export const LegionOperatorProjectP0BoundRequest = z.union([
   z.strictObject({ bound: z.number().int().positive(), reason: nonEmptyString }),
   z.strictObject({ unbounded: z.literal(true), reason: nonEmptyString }),
@@ -2605,7 +2615,7 @@ export const LEGION_ANSWER_READS: Readonly<Record<string, readonly string[]>> = 
     "admission.held[].reason",
     "admission.held[].heldBy",
     // The summary's `P0` line names the P0 holders, the bound in force and the live value with who
-    // set it, when and why (contract 282). The summary reads `admission.p0Holders` and
+    // set it, when and why (the P0 start's contract entry). The summary reads `admission.p0Holders` and
     // `admission.p0Bound` through the `admission` it destructures, which the census cannot follow,
     // as it cannot the block's older fields, so neither is named; the bound's own fields are, read
     // through the `p0Bound` the summary binds.

@@ -839,6 +839,15 @@ type Issue struct {
 	// claim, Unrecorded) and from every issue of the body served a caller below priorityContract
 	// (shaping.go's withoutPriority).
 	Priority *PriorityView `json:"priority,omitempty"`
+	// ResolvedPriority is the priority Dispatch resolves the issue to (record.Issue.Resolved, J1 of
+	// dispatch://INFRA-5793), the one admission reads: its number, 0 for P0 to 3 for P3, or null
+	// for none. It is absent where Dispatch sent no `resolved_priority`, as a release before
+	// INFRA-5793 sends none, and then admission reads the issue's own priority alone. PriorityFrom
+	// is the key of the issue it comes from (`priority_from`), absent where it is the issue's own or
+	// none. A body served a caller below the P0 start's entry (p0BoundContract) carries neither
+	// (withoutResolvedPriority).
+	ResolvedPriority *PriorityView `json:"resolvedPriority,omitempty"`
+	PriorityFrom     string        `json:"priorityFrom,omitempty"`
 	// Workers is keyed by the role that holds the claim; the vocabulary of a claim belongs to
 	// `internal/claim`, which the runtime, the worker stream, and the supervisor all speak
 	// without importing this package.

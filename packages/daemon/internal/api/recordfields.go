@@ -205,6 +205,8 @@ var IssueRecordFields = []RecordFieldDecision{
 	{Field: "DispatchStatus", Column: ColumnWithheld, Reason: BookkeepingReason},
 	{Field: "Priority", Column: ColumnAgents, Keys: []string{"priority"},
 		Reason: "the issue's own Dispatch priority, null for none, which places it in the waiting line"},
+	{Field: "Resolved", Column: ColumnAgents, Keys: []string{"resolvedPriority", "priorityFrom"},
+		Reason: "the priority Dispatch resolves the issue to and the issue it comes from, which admission reads for the P0 start and the line's bands"},
 	{Field: "Repo", Column: ColumnAgents, Keys: []string{"repo"},
 		Reason: "the repository the issue's work is done in, which every role's own commands address"},
 	{Field: "DefaultBranch", Column: ColumnAgents, Keys: []string{"defaultBranch"},

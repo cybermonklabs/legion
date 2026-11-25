@@ -82,24 +82,55 @@ func (p Priority) band() uint8 {
 	return uint8(p)
 }
 
-// PriorityOf is the priority issue takes: its
-// own, else its tree root's, else NoPriority. root is the record of issue's tree root, the issue
-// itself for a root, and the zero Issue where the root has no record. The root's priority is read
-// from the root's record each time, never copied onto its members, so a person's change of a
-// root's priority reaches every member that has none of its own at the daemon's next read of the
-// root, with no event of theirs.
+// Resolved is the priority Dispatch resolves an issue to (`resolved_priority`, J1 of
+// dispatch://INFRA-5793): the issue's own where it has one, else that of the nearest issue above it
+// on its Dispatch parent chain that has one, in any project. It is the priority admission reads (C1
+// and C2 of dispatch://INFRA-5636). Known says Dispatch sent `resolved_priority` at all: a Dispatch
+// release before INFRA-5793 sends none, and the zero Resolved, a record stored before the daemon read
+// it, is that too. Priority is what Dispatch sent, NoPriority for a present null, which is no
+// priority and replaces any resolved priority before it. From is `priority_from`, the key of the
+// issue the priority comes from, empty where the priority is the issue's own or none.
+//
+// Every path that carries the issue's own priority carries this beside it: an issue event, the
+// boot listing, a detail read and the issue an accepted status write answers, and every fact the
+// daemon builds from its own record, which keeps both as they stand.
+type Resolved struct {
+	Priority Priority
+	From     string
+	Known    bool
+}
+
+// AdmissionPriority is the priority admission reads for issue: the one Dispatch resolves it to
+// where Dispatch sent one (Resolved.Known), else its own. So with a Dispatch release that resolves
+// no priority only an issue's own P0 makes it P0, and no Legion tree fallback ever does: the
+// daemon never walks a parent chain of its own to find one.
+func (i Issue) AdmissionPriority() Priority {
+	if i.Resolved.Known {
+		return i.Resolved.Priority
+	}
+	return i.Priority
+}
+
+// PriorityOf is the priority that places issue in the waiting line: the one Dispatch resolves it
+// to where Dispatch sent one (Issue.AdmissionPriority), else, for a Dispatch release that resolves
+// none, its own, else its tree root's, else NoPriority. root is the record of issue's tree root,
+// the issue itself for a root, and the zero Issue where the root has no record. The root's
+// priority is read from the root's record each time, never copied onto its members, so a person's
+// change of a root's priority reaches every member that has none of its own at the daemon's next
+// read of the root, with no event of theirs. The tree root's stands for an older Dispatch's order
+// of the line alone: it never makes an issue P0 for a start (Issue.StartsNow).
 func PriorityOf(issue, root Issue) Priority {
-	if issue.Priority != NoPriority {
-		return issue.Priority
+	if issue.Resolved.Known || issue.Priority != NoPriority {
+		return issue.AdmissionPriority()
 	}
 	return root.Priority
 }
 
-// StartsNow says whether issue starts outside the admission cap (R10 of dispatch://INFRA-3199):
-// whether its own Dispatch priority is P0. It reads the issue's own priority and never PriorityOf's,
-// which gives an issue with none its tree root's for the order of the line: a P0 root makes none of
-// its children P0.
-func (i Issue) StartsNow() bool { return i.Priority == P0 }
+// StartsNow says whether issue starts outside the admission cap (R10 of dispatch://INFRA-3199, C2
+// of dispatch://INFRA-5636): whether admission reads it as P0 (Issue.AdmissionPriority), directly
+// or by Dispatch's inheritance. It never reads PriorityOf's tree root: a P0 Legion tree root makes
+// none of its children P0.
+func (i Issue) StartsNow() bool { return i.AdmissionPriority() == P0 }
 
 // SlotHolders is a project's holders of an admission slot as the cap and the P0 bound count them:
 // P0, the holders whose own priority is P0 (Issue.StartsNow), which the cap does not count and the

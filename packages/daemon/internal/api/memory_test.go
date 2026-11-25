@@ -495,11 +495,18 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 			}
 			delete(want, "contract")
 			// A pod below p0BoundContract is served the admission without `p0Holders` and
-			// `p0Bound`, the two keys that contract added (api's withoutP0Start).
+			// `p0Bound`, and every issue without `resolvedPriority` and `priorityFrom`, the keys
+			// that entry added (api's withoutP0Start and withoutResolvedPriority).
 			if tc.contract < entryNumber(p0BoundContract) {
 				admission := want["admission"].(map[string]any)
 				delete(admission, "p0Holders")
 				delete(admission, "p0Bound")
+				if issues, carries := want["issues"].(map[string]any); carries {
+					for _, issue := range issues {
+						delete(issue.(map[string]any), "resolvedPriority")
+						delete(issue.(map[string]any), "priorityFrom")
+					}
+				}
 			}
 			// A pod below pauseContract is served no `paused`, the key that contract added beside
 			// `lastPause` (api's withoutPause), which is every pod of every band below it.

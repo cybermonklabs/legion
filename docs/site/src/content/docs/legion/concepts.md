@@ -248,7 +248,8 @@ in the daemon's configuration, four by default; an issue that finds no free slot
 a labelled `todo` root takes its place in that line by its Dispatch priority and then in the
 project board's order.
 
-A P0 issue, one whose own Dispatch priority is P0, needs no free slot: it starts at the next
+A P0 issue, one Dispatch resolves to P0 (its own priority, else the priority of the nearest issue
+above it on its Dispatch parent chain that has one), needs no free slot: it starts at the next
 admission pass outside the cap, and the cap counts only the issues holding a slot that are not P0.
 Every other hold on a start still holds it. `admission_p0_bound` can limit how many P0 issues hold a
 slot at once; it has no value unless the configuration gives one, and a person can set or clear it

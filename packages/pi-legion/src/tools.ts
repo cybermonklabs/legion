@@ -194,7 +194,7 @@ function pauseSummary(state: LegionState): string | undefined {
  * The summary's `p0` line (C3 and C4 of dispatch://INFRA-5636): how many of the issues holding a
  * slot are P0 by their own priority, which hold it outside the cap, the P0 bound in force (`none`
  * for no bound), and the live value that stands with who set it, when and why. A body served below
- * contract 282 carries neither key, and the summary then has no such line.
+ * the P0 start's contract entry carries neither key, and the summary then has no such line.
  */
 function p0Summary({ admission }: LegionState): string | undefined {
   if (admission?.p0Holders === undefined && admission?.p0Bound === undefined) return undefined;
@@ -758,7 +758,7 @@ export function createLegionTool(deps: {
         "daemon refuses a resume of a project that is not paused (PROJECT_NOT_PAUSED, naming its last pause when it has one). While " +
         "the project is paused it refuses fresh_session and compact (PROJECT_PAUSED, naming the pause that stands), " +
         "since each would start a turn. " +
-        "A P0 issue, one whose own Dispatch priority is P0, starts outside the admission cap; set_p0_bound (bound or " +
+        "A P0 issue, one Dispatch resolves to P0 (its own priority, else the nearest issue's above it), starts outside the admission cap; set_p0_bound (bound or " +
         "unbounded, reason) sets how many P0 issues may hold a slot at once, or no bound with unbounded true, whatever " +
         "legion.yaml's admission_p0_bound says, and clear_p0_bound (reason) returns to legion.yaml's; neither takes an " +
         "issue. Change the bound only on a person's word, and cite it in reason. " +

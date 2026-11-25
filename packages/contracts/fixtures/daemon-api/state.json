@@ -82,6 +82,8 @@
       "defaultBranch": "main",
       "lingerUntil": "2026-09-22T10:10:12Z",
       "priority": null,
+      "resolvedPriority": 2,
+      "priorityFrom": "OTHER-5",
       "workers": {
         "implementer": {
           "claim": {
@@ -430,6 +432,7 @@
         "LEGION-208"
       ],
       "priority": 1,
+      "resolvedPriority": 1,
       "workers": {
         "implementer": {
           "claim": {

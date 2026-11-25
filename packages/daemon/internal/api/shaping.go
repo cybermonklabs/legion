@@ -1943,6 +1943,16 @@ func withoutP0Start(state State) (State, bool) {
 	return state, moved
 }
 
+// withoutResolvedPriority is the issue with no `resolvedPriority` or `priorityFrom`, the two keys
+// p0BoundContract added to each issue; `priority` stays, the issue's own as it always was. The
+// first is a pointer with `omitempty` and the second an `omitempty` string, so the zero value takes
+// each key off. Issue is a value, so the state the source answered is left as it was.
+func withoutResolvedPriority(issue Issue) (Issue, bool) {
+	moved := issue.ResolvedPriority != nil || issue.PriorityFrom != ""
+	issue.ResolvedPriority, issue.PriorityFrom = nil, ""
+	return issue, moved
+}
+
 // withoutResumePauses is records with no resume carrying `pause`, the one key pauseContract added
 // to the release records. The key is `omitempty` and absent from a wake no pause held, so records
 // whose resumes carry none are returned as they are, with no copy made. Otherwise the resumes are
