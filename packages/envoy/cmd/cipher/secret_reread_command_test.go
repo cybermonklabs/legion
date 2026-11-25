@@ -2,6 +2,7 @@ package main
 
 import (
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -88,6 +89,51 @@ func TestTheRereadAnOpenOutcomeNamesReachesTheBroker(t *testing.T) {
 			}
 			if err == nil || !strings.Contains(string(out), c.wantSaid) || len(rereads) != 0 {
 				t.Fatalf("the printed command: err %v, output %q, rereads %v; want it to fail saying %q and record no reread", err, out, rereads, c.wantSaid)
+			}
+		})
+	}
+}
+
+// TestTheRereadCommandJoinsTheRouteOntoTheAddress: the printed reread (rereadCommand), run in bash
+// with AGENT_SECRETS_URL carrying a path and a query, posts to the address's path with the route
+// joined onto it and the address's query kept after the route
+// (/broker/v1/secrets/API_KEY/reread?sig=...), where the route appended to the address's text sat
+// inside the query (/broker?sig=.../v1/...: the broker was asked /broker and curl failed on its 404)
+// (query, query-trailing-slashes); an address's fragment, which no request sends, is dropped
+// (fragment). An address with neither is posted where it was (no-query). A stand-in records the
+// path and the query each reread reaches it with.
+func TestTheRereadCommandJoinsTheRouteOntoTheAddress(t *testing.T) {
+	type reached struct{ path, query string }
+	asked := make(chan reached, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		asked <- reached{r.URL.Path, r.URL.RawQuery}
+		if r.Method == http.MethodPost && r.URL.Path == "/broker/v1/secrets/API_KEY/reread" {
+			w.WriteHeader(http.StatusAccepted)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+	for _, c := range []struct{ name, suffix, query string }{
+		{"query", "/broker?sig=k3y-7Qz4k", "sig=k3y-7Qz4k"},
+		{"query-trailing-slashes", "/broker//?sig=k3y-7Qz4k", "sig=k3y-7Qz4k"},
+		{"fragment", "/broker#pane", ""},
+		{"no-query", "/broker", ""},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			cmd := exec.Command("bash", "--noprofile", "--norc", "-c", rereadCommand("API_KEY"))
+			cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + t.TempDir(), brokerURLVar + "=" + srv.URL + c.suffix}
+			out, err := cmd.CombinedOutput()
+			select {
+			case got := <-asked:
+				if want := (reached{"/broker/v1/secrets/API_KEY/reread", c.query}); got != want {
+					t.Errorf("an address ending %q was posted at %+v; want %+v", c.suffix, got, want)
+				}
+			default:
+				t.Fatalf("no reread reached the broker: err %v, output %q", err, out)
+			}
+			if err != nil {
+				t.Errorf("the printed command at an address ending %q: err %v, output %q; want exit 0", c.suffix, err, out)
 			}
 		})
 	}
