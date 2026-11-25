@@ -171,11 +171,12 @@ func itemID(value, kind string) string {
 	return ref[at+len(kind)+2:]
 }
 
-// namesID says whether value names id, an item's id as Dispatch writes it: the same uuid in any
-// spelling the CLI and Dispatch read (github.com/google/uuid's Parse: either case, braced, an
-// urn:uuid: or 32 hex digits), or, where prefixes holds, as the CLI reads an ask's id, a prefix of
-// it (idPrefix), which the CLI resolves against the issue's open asks. An id that is no uuid is
-// named only by itself. No id is named by "" or names anything when it is "".
+// namesID says whether value names id, an item's id as Dispatch writes it: the same uuid in every
+// spelling the CLI reads (envoy-client's normalizeUUID: either case, its 32 hex digits with its
+// four hyphens or without them, braced where it has them, and either of those two after
+// `urn:uuid:` in any case), or, where prefixes holds, as the CLI reads an ask's id, a prefix of it
+// (idPrefix), which the CLI resolves against the issue's open asks. An id that is no uuid is named
+// only by itself. No id is named by "" or names anything when it is "".
 func namesID(value, id string, prefixes bool) bool {
 	if value == "" || id == "" {
 		return false
@@ -184,7 +185,13 @@ func namesID(value, id string, prefixes bool) bool {
 	if err != nil {
 		return value == id
 	}
-	if got, err := uuid.Parse(value); err == nil {
+	// github.com/google/uuid's Parse, which Dispatch reads an id by, reads every spelling
+	// normalizeUUID does but `urn:uuid:` before the 32 hex digits without hyphens.
+	whole := value
+	if len(value) == 41 && strings.EqualFold(value[:9], "urn:uuid:") {
+		whole = value[9:]
+	}
+	if got, err := uuid.Parse(whole); err == nil {
 		return got == want
 	}
 	return prefixes && idPrefix.MatchString(value) && strings.HasPrefix(want.String(), strings.ToLower(value))

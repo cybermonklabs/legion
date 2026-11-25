@@ -107,9 +107,11 @@ func TestAnAnswerThatCallsDispatchPostsItsReply(t *testing.T) {
 // (dispatchtool.Place), so the tool refuses a write the model aims there: for a reply in a comment
 // thread, a person's reply on the agent's ask, their answer to the ask and a mention, the ask and
 // the comments the hand-off names, and every comment the thread held when the answer started,
-// read once, the agent's own earlier comment among them; for a message, the message; and for an
-// Envoy message, the session that sent it. A thread read that fails costs the answer nothing: the
-// tool is handed the hand-off's comments, and one warning names the question and the error.
+// read once, the agent's own earlier comment among them: a mention under an ask is handed that ask
+// and its replies, and a mention that is a thread's root the thread read by its own id; for a
+// message, the message; and for an Envoy message, the session that sent it. A thread read that
+// fails costs the answer nothing: the tool is handed the hand-off's comments, and one warning names
+// the question and the error.
 func TestTheDispatchToolIsHandedWhereTheAnswerIsPosted(t *testing.T) {
 	const unreadRoot = "c0000000-0000-4000-8000-000000000006"
 	r := newRig(t)
@@ -122,27 +124,39 @@ func TestTheDispatchToolIsHandedWhereTheAnswerIsPosted(t *testing.T) {
 	agent, someone := map[string]any{"kind": "session", "id": "ses_tester"}, map[string]any{"kind": "user", "id": person.ID}
 	r.thread["replies"] = []any{map[string]any{"id": "c-own", "author": agent, "body": "Tested B too."}, map[string]any{"id": "c-3", "author": someone, "body": "Why B?"}}
 	r.ask["replies"] = []any{map[string]any{"id": "c-ask-own", "author": agent, "body": "A failed first."}, map[string]any{"id": "c-2", "author": someone, "body": "Why A?"}}
-	r.unreadable = map[string]bool{"/api/v1/comments/" + unreadRoot: true}
-	mention := func(id, root string) intake.Handoff {
-		return dispatchHandoff("ses_tester", frame("comment.created", person, new("LEGION-9"),
-			map[string]any{"id": id, "issue_key": "LEGION-9", "body": "@tester why?", "reply_to": root},
+	// Dispatch holds no comment at an empty id: a thread read naming none reads nothing.
+	r.unreadable = map[string]bool{"/api/v1/comments/" + unreadRoot: true, "/api/v1/comments/": true}
+	// mention is a comment mentioning the agent: a reply in root's thread, a reply under ask, or,
+	// with neither, a thread's root.
+	mention := func(id, root, ask string) intake.Handoff {
+		payload := map[string]any{"id": id, "issue_key": "LEGION-9", "body": "@tester why?"}
+		if root != "" {
+			payload["reply_to"] = root
+		}
+		if ask != "" {
+			payload["ask_id"] = ask
+		}
+		return dispatchHandoff("ses_tester", frame("comment.created", person, new("LEGION-9"), payload,
 			map[string]any{"attempt": 2, "mode": "btw", "comment_id": id, "target": "role:" + string(testerToken)}))
 	}
 	askReply := dispatchHandoff("ses_tester", bare("comment.created", person, new("LEGION-9"),
 		map[string]any{"id": "c-2", "issue_key": "LEGION-9", "body": "Why A?", "ask_id": askID}))
 	askAnswer := dispatchHandoff("ses_tester", answeredEvent(34, person, askID, "question", []string{"B"}, new("Use B. Why A?")))
-	for _, h := range []intake.Handoff{threadReplyHandoff("ses_tester", "c-3", "Why B?"), askReply, askAnswer, mention("c-1", threadRoot),
-		mention("c-6", unreadRoot), messageHandoff("ses_tester", "m-1", 1, "Why?"),
+	for _, h := range []intake.Handoff{threadReplyHandoff("ses_tester", "c-3", "Why B?"), askReply, askAnswer, mention("c-1", threadRoot, ""),
+		mention("c-6", unreadRoot, ""), mention("c-7", "", askID), mention("c-8", "", ""), messageHandoff("ses_tester", "m-1", 1, "Why?"),
 		envoyHandoff("notifications.agent.ses_tester", "ses_tester", "evt-9", "agent.ses_tester.k9", "Which?")} {
 		r.receive(h)
 	}
 	r.drain()
+	// The rig answers every thread read with its one thread, threadRoot's, the root mention c-8's too.
 	want := map[string]dispatchtool.Place{
 		"dispatch:c-3":        {Comments: []string{"c-3", threadRoot, "c-own"}},
 		"dispatch:c-2":        {Ask: askID, Comments: []string{"c-2", "c-ask-own"}},
 		"dispatch:34":         {Ask: askID, Comments: []string{"c-ask-own", "c-2"}},
 		"dispatch:c-1":        {Comments: []string{"c-1", threadRoot, "c-own", "c-3"}},
 		"dispatch:c-6":        {Comments: []string{"c-6", unreadRoot}},
+		"dispatch:c-7":        {Ask: askID, Comments: []string{"c-7", "c-ask-own", "c-2"}},
+		"dispatch:c-8":        {Comments: []string{"c-8", threadRoot, "c-own", "c-3"}},
 		"dispatch:m-1":        {Message: "m-1"},
 		"agent.ses_tester.k9": {Session: "ses_asker"},
 	}

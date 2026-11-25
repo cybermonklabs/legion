@@ -555,6 +555,7 @@ func TestAWriteWhereTheLoopPostsTheAnswerIsRefused(t *testing.T) {
 	}
 	at := func(argv ...string) aimed { return aimed{argv: argv} }
 	onStdin := func(stdin string, argv ...string) aimed { return aimed{stdin: stdin, argv: argv} }
+	compact := func(id string) string { return strings.ReplaceAll(id, "-", "") }
 	for _, c := range []struct {
 		kind      string
 		place     Place
@@ -571,6 +572,8 @@ func TestAWriteWhereTheLoopPostsTheAnswerIsRefused(t *testing.T) {
 				at("comment", "--issue", "ALP-8", "--reply-to-ask", "e10f5bb8", "--turn", "human", "--body", "Plum."),
 				at("comment", "--issue", "ALP-8", "--reply-to-ask", "E10F5BB8000040008000000000000001", "--body", "Plum."),
 				at("comment", "--issue", "ALP-8", "--reply-to-ask", "dispatch://ALP-8/ask/"+theAsk+"#b-b2", "--body", "Plum."),
+				at("comment", "--issue", "ALP-8", "--reply-to-ask", "urn:uuid:"+compact(theAsk), "--body", "Plum."),
+				at("comment", "--issue", "ALP-8", "--reply-to-ask", "dispatch://ALP-8/ask/URN:Uuid:"+strings.ToUpper(compact(theAsk))+"#b-b2", "--body", "Plum."),
 				onStdin(theAsk, "comment", "--issue", "ALP-8", "--reply-to-ask-file", "-", "--body", "Plum."),
 				onStdin(theAsk, "comment", "--issue", "ALP-8", "--reply-to-ask-file=-", "--body", "Plum."),
 				at("comment", "--issue", "ALP-8", "--reply-to", theAskReply, "--body", "Plum."),
@@ -578,6 +581,7 @@ func TestAWriteWhereTheLoopPostsTheAnswerIsRefused(t *testing.T) {
 			},
 			elsewhere: []aimed{
 				at("comment", "--issue", "ALP-8", "--reply-to-ask", anotherAsk, "--body", "Plum."),
+				at("comment", "--issue", "ALP-8", "--reply-to-ask", "urn:uuid:"+compact(anotherAsk), "--body", "Plum."),
 				at("comment", "--issue", "ALP-8", "--reply-to-ask", "e10f5bb9", "--body", "Plum."),
 				at("comment", "--issue", "ALP-8", "--reply-to", anotherComment, "--body", "Plum."),
 				at("comment", "--issue", "ALP-8", "--body", "Plum."),
@@ -592,6 +596,7 @@ func TestAWriteWhereTheLoopPostsTheAnswerIsRefused(t *testing.T) {
 			refused: []aimed{
 				at("comment", "--issue", "ALP-8", "--reply-to-ask", theAsk, "--body", "Plum."),
 				at("comment", "--issue", "ALP-8", "--reply-to-ask=e10f5bb8-0000", "--body", "Plum."),
+				at("comment", "--issue", "ALP-8", "--reply-to-ask=Urn:UUID:"+compact(theAsk), "--body", "Plum."),
 			},
 			elsewhere: []aimed{
 				at("comment", "--issue", "ALP-8", "--reply-to-ask", anotherAsk, "--body", "Plum."),
@@ -649,12 +654,16 @@ func TestAWriteWhereTheLoopPostsTheAnswerIsRefused(t *testing.T) {
 				at("message", "--in-reply-to="+theMessage, "--body", "Plum."),
 				at("message", "--in-reply-to", "dispatch://ALP-8/message/"+theMessage, "--body", "Plum."),
 				at("message", "--in-reply-to", "dispatch://ALP-8/message/"+theMessage+"#b-b1", "--body", "Plum."),
+				at("message", "--issue", "ALP-8", "--in-reply-to", "urn:uuid:"+compact(theMessage), "--body", "Plum."),
+				at("message", "--in-reply-to=dispatch://ALP-8/message/uRn:uUiD:"+compact(theMessage), "--body", "Plum."),
+				at("message", "--in-reply-to", "dispatch://ALP-8/message/URN:UUID:"+strings.ToUpper(compact(theMessage))+"#b-b1", "--body", "Plum."),
 				onStdin(theMessage, "message", "--in-reply-to-file", "-", "--body", "Plum."),
 				at("send-to-agent", "--session", session, "--in-reply-to", theMessage, "--body", "Plum.", "--delivery", "btw"),
 			},
 			elsewhere: []aimed{
 				at("message", "--issue", "ALP-8", "--body", "Plum."),
 				at("message", "--issue", "ALP-8", "--in-reply-to", anotherMessage, "--body", "Plum."),
+				at("message", "--issue", "ALP-8", "--in-reply-to", "urn:uuid:"+compact(anotherMessage), "--body", "Plum."),
 				at("comment", "--issue", "ALP-8", "--reply-to", theMessage, "--body", "Plum."),
 				at("message", "--issue", "ALP-8", "--in-reply-to", theMessage, "--body", "Plum.", "--dry-run"),
 			},
