@@ -1817,7 +1817,10 @@ func applyOperation(tree *batchTree, op model.EditOp, budget *pmdoc.WriteBudget)
 		if errors.Is(err, pmdoc.ErrSchema) {
 			return nil, &ErrInvalidOp{Field: "block", Reason: err.Error()}
 		}
-		return out, err
+		if err != nil {
+			return out, err
+		}
+		return out, refuseOptionMovedOutOfOpenAsk(tree.node, out, op.Block)
 	case "retype":
 		if op.Block == "" {
 			return nil, invalidOp("block")
@@ -1841,6 +1844,66 @@ func applyOperation(tree *batchTree, op model.EditOp, budget *pmdoc.WriteBudget)
 	default:
 		return nil, invalidOp("op")
 	}
+}
+
+// refuseOptionMovedOutOfOpenAsk refuses a move of the block carrying id out of the options of the
+// open ask that holds it in before, naming the ask: such a move took the option from the list a
+// person answers from, and the ask record stopped listing it, with no refusal (INFRA-4345 R4, from
+// dispatch://INFRA-2374/comment/4a18cde4-4982-4477-bec4-23ed8bdaf332, item 2). A move within the
+// ask's options stands, as does a move of a block no open ask holds.
+func refuseOptionMovedOutOfOpenAsk(before, after *pmdoc.Node, id string) error {
+	ask := openAskHolding(before, id)
+	if ask == nil {
+		return nil
+	}
+	askID := blockID(ask)
+	if held := blockWithID(after, askID, "ask"); held != nil && holdsBlockID(held, id) {
+		return nil
+	}
+	return &ErrInvalidOp{Field: "block", Reason: fmt.Sprintf(
+		"block %q is an option of the open ask %q, and moving it out of the ask would take it from the options a person answers from; move it within the ask's options, or edit the ask's options with dispatch edit-ask",
+		id, askID,
+	)}
+}
+
+// openAskHolding is the open ask block of tree holding a block carrying id among its options, or
+// nil where none does.
+func openAskHolding(tree *pmdoc.Node, id string) *pmdoc.Node {
+	var found *pmdoc.Node
+	var walk func(node, ask *pmdoc.Node)
+	walk = func(node, ask *pmdoc.Node) {
+		if found != nil {
+			return
+		}
+		if node.Type == "ask" {
+			ask = nil
+			if state, _ := node.Attrs["state"].(string); state == "" || state == "open" {
+				ask = node
+			}
+		}
+		if ask != nil && node.Type == "bullet_list" && holdsBlockID(node, id) {
+			found = ask
+			return
+		}
+		for _, child := range node.Children {
+			walk(child, ask)
+		}
+	}
+	walk(tree, nil)
+	return found
+}
+
+// holdsBlockID reports whether node or a block under it carries id.
+func holdsBlockID(node *pmdoc.Node, id string) bool {
+	if blockID(node) == id {
+		return true
+	}
+	for _, child := range node.Children {
+		if holdsBlockID(child, id) {
+			return true
+		}
+	}
+	return false
 }
 
 // anchorOf returns the one insert or move anchor an operation names.

@@ -127,11 +127,13 @@ func (s *Service) SetAskBlockText(
 			want.Urgency = *edit.Urgency
 			attributes["urgency"] = *edit.Urgency
 		}
+		// The row reads a question and its options back as the block's text, in which a code
+		// span the edit writes is code without its backticks (inlineWithCode, codeText).
 		if edit.Question != nil {
-			want.Question = normalizeAskQuestion(*edit.Question)
+			want.Question = normalizeAskQuestion(codeText(*edit.Question))
 		}
 		if edit.Options != nil {
-			want.Options = normalizeAskOptions(*edit.Options)
+			want.Options = normalizeAskOptions(codeTextOptions(*edit.Options))
 		}
 
 		wroteBody := askBlockBodyChanges(block, edit)
@@ -525,14 +527,112 @@ func askOptionsDifference(got, want []model.AskOption) string {
 }
 
 // questionParagraphs renders a question as the paragraphs parseAskBlock reads back: one per
-// blank-line-separated part, with a hard break for a single newline inside one.
+// blank-line-separated part, with a hard break for a single newline inside one, and a code span
+// in a line as inline code (inlineWithCode).
 func questionParagraphs(question string) []*pmdoc.Node {
 	parts := strings.Split(question, "\n\n")
 	paragraphs := make([]*pmdoc.Node, 0, len(parts))
 	for _, part := range parts {
-		paragraphs = append(paragraphs, &pmdoc.Node{Type: "paragraph", Children: inlineWithHardBreaks(part)})
+		paragraphs = append(paragraphs, &pmdoc.Node{Type: "paragraph", Children: inlineWithCode(part)})
 	}
 	return paragraphs
+}
+
+// inlineWithCode is text as an ask edit writes a question's paragraph or an option's line: a hard
+// break for each single newline (inlineWithHardBreaks), and each code span in a line as inline
+// code (codeSpansOf), so `coqc` reads as code and not as literal backticks (INFRA-4345 R4, from
+// dispatch://INFRA-2374, where each backtick was stored escaped). Every other character is text.
+func inlineWithCode(text string) []*pmdoc.Node {
+	inline := inlineWithHardBreaks(text)
+	withCode := make([]*pmdoc.Node, 0, len(inline))
+	for _, node := range inline {
+		if node.Type != "text" {
+			withCode = append(withCode, node)
+			continue
+		}
+		withCode = append(withCode, codeSpansOf(node.Text)...)
+	}
+	return withCode
+}
+
+// codeText is what parseAskBlock reads back of text an ask edit writes (inlineWithCode): each
+// code span's code without its backticks, line by line.
+func codeText(text string) string {
+	lines := strings.Split(text, "\n")
+	for index, line := range lines {
+		var read strings.Builder
+		for _, node := range codeSpansOf(line) {
+			read.WriteString(node.Text)
+		}
+		lines[index] = read.String()
+	}
+	return strings.Join(lines, "\n")
+}
+
+// codeTextOptions is options as parseAskBlock reads them back from the lines an ask edit writes
+// (codeText of each label and description).
+func codeTextOptions(options []model.AskOption) []model.AskOption {
+	read := make([]model.AskOption, len(options))
+	for index, option := range options {
+		read[index] = model.AskOption{Label: codeText(option.Label), Description: codeText(option.Description)}
+	}
+	return read
+}
+
+// codeSpansOf is line as text nodes, each code span in it a text node under the inlineCode mark,
+// read as CommonMark reads a code span: a backtick run opens one closed by the next run of the
+// same length, and the code drops one space at each end where it holds both and more than spaces.
+// A run no run of its length follows is text.
+func codeSpansOf(line string) []*pmdoc.Node {
+	var nodes []*pmdoc.Node
+	text := func(value string) {
+		if value != "" {
+			nodes = append(nodes, &pmdoc.Node{Type: "text", Text: value})
+		}
+	}
+	start := 0
+	for at := 0; at < len(line); {
+		if line[at] != '`' {
+			at++
+			continue
+		}
+		end := at
+		for end < len(line) && line[end] == '`' {
+			end++
+		}
+		closer := -1
+		for next := end; next < len(line); {
+			if line[next] != '`' {
+				next++
+				continue
+			}
+			run := next
+			for run < len(line) && line[run] == '`' {
+				run++
+			}
+			if run-next == end-at {
+				closer = next
+				break
+			}
+			next = run
+		}
+		if closer < 0 {
+			at = end
+			continue
+		}
+		code := line[end:closer]
+		if len(code) >= 2 && code[0] == ' ' && code[len(code)-1] == ' ' && strings.Trim(code, " ") != "" {
+			code = code[1 : len(code)-1]
+		}
+		text(line[start:at])
+		if code != "" {
+			nodes = append(nodes, &pmdoc.Node{Type: "text", Text: code, Marks: []pmdoc.Mark{{Type: "inlineCode"}}})
+		}
+		at = closer + end - at
+		start = at
+	}
+	text(line[start:])
+	return nodes
 }
 
 // writesNothingButItsText reports whether node writes no more than the text in it: it renders to
