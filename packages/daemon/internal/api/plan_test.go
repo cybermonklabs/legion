@@ -220,7 +220,7 @@ func TestRegisterPlanWritesEveryTasksStepsAsAList(t *testing.T) {
 	}
 }
 
-// register_plan's answer names the act each running task stands at (contract 262), as a list of
+// register_plan's answer names the act each running task stands at (contract 296), as a list of
 // one entry (record.StoredPlan.Running gives one for each running task): step 2 of task a, the
 // reviewer. A task that does not run, b, carries no `running` key at all, rather than an empty or
 // a null list.

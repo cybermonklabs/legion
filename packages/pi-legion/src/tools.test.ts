@@ -893,7 +893,7 @@ test("register_gate takes the document reference the Dispatch tools take, and re
 
 // The owner's plan (contract 219): register_plan names its document as register_gate does, for any
 // issue of the architect's tree, and answers the plan Legion took, a running task with the act it
-// stands at (contract 262); each refusal of the call itself comes before any lookup, grant
+// stands at (contract 296); each refusal of the call itself comes before any lookup, grant
 // or request, and the daemon's refusal reaches the agent with its code. stop_task names the task to
 // stop by its block's id.
 test("register_plan takes the document reference the Dispatch tools take and answers the plan Legion took", async () => {
