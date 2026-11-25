@@ -241,6 +241,8 @@ type testServerOptions struct {
 	// metrics is the registry the server adds its held-send gauges to (Deps.Metrics); nil is
 	// none, as every test that reads no gauge leaves it.
 	metrics *metrics.Registry
+	// parentStatusRule turns DISPATCH_PARENT_STATUS_RULE on for the server (Deps.ParentStatusRule).
+	parentStatusRule bool
 	// listenerRosterUncached is Deps.ListenerRosterUncached: every read of the listener's session
 	// list asks the listener and stores no copy, as the browser suite's server runs
 	// (DISPATCH_TEST_ROSTER_UNCACHED=1, e2e/run-server.sh). False is the deployment's stored copy.
@@ -409,6 +411,7 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		BuildCommit:            options.buildCommit,
 		OutboxPublishes:        options.outboxPublishes,
 		Metrics:                options.metrics,
+		ParentStatusRule:       ParentStatusRule{on: options.parentStatusRule},
 		ListenerRosterUncached: options.listenerRosterUncached,
 	})
 	if err != nil {
@@ -2386,4 +2389,49 @@ func TestUnauthenticatedLargeIssueBodyIsRejectedBeforeDecoding(t *testing.T) {
 	if response.Code != http.StatusUnauthorized {
 		t.Fatalf("unauthenticated large body status = %d body=%s, want %d", response.Code, response.Body.String(), http.StatusUnauthorized)
 	}
+}
+
+// The two waits below live here, in a file every build compiles, because tests built with and
+// without -race both call them: the xid-window tests (built without -race only), and the
+// read-only results and drive tests (built with it too).
+
+// awaitSettledDocuments waits until no document owes a settlement and no backend has held an xid
+// for a quiet spell, so a test that needed settlement to run first measures its request alone.
+func awaitSettledDocuments(t *testing.T, database *store.Store) {
+	t.Helper()
+	awaitQuietDatabase(t, database, true)
+}
+
+// awaitQuietDatabase waits until no backend has held an xid for a quiet spell and, where settled
+// asks it, no document owes a settlement either. A document of a closed issue owes its settlement
+// until the issue reopens - a closed issue settles nothing, and the reopen arms what it owes
+// (docs' settlement) - so a request made on a closed issue waits for the quiet alone.
+func awaitQuietDatabase(t *testing.T, database *store.Store, settled bool) {
+	t.Helper()
+	const quiet = 300 * time.Millisecond
+	deadline := time.Now().Add(30 * time.Second)
+	var calm time.Time
+	for time.Now().Before(deadline) {
+		var busy bool
+		if err := database.Pool.QueryRow(context.Background(), `
+			select ($1::boolean and exists (select 1 from doc_settlements_pending))
+			    or exists (select 1 from pg_stat_activity
+			               where datname = current_database() and backend_xid is not null and pid <> pg_backend_pid())
+		`, settled).Scan(&busy); err != nil {
+			t.Fatalf("read settlement state: %v", err)
+		}
+		switch {
+		case busy:
+			calm = time.Time{}
+		case calm.IsZero():
+			calm = time.Now()
+		case time.Since(calm) >= quiet:
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if settled {
+		t.Fatal("documents never finished settling")
+	}
+	t.Fatal("the database never fell quiet")
 }

@@ -20,7 +20,7 @@ import (
 // in the order they are due, on a goroutine of its own that lives only while the issue has such
 // rows. A lane is woken by the write that commits one
 // of its rows (projectRecords, through store.OnCommit), by the timer it arms for its next row due
-// later, and by the sweep, which every outboxLease lists the lanes with a row still in the outbox
+// later, and by the sweep, which every sweepInterval lists the lanes with a row still in the outbox
 // (record.Store.UnfinishedLanes) and wakes each: a row whose run ended without its finish or retry
 // recorded — a lost database connection, a daemon that died mid-row — keeps its lease until it
 // lapses, and the sweep after the lapse wakes its lane, which lists it due again and runs it. The
@@ -55,7 +55,7 @@ func nudge(wake chan struct{}) {
 
 // Run runs the lanes until ctx ends. It opens the registry, sweeps at once — a restart recovers
 // every unfinished row, and the rows written while the outbox was not yet attached, without waiting
-// for a wake — and then sweeps every outboxLease on the clock. A sweep whose read fails (a Postgres
+// for a wake — and then sweeps every sweepInterval on the clock. A sweep whose read fails (a Postgres
 // restart drops the pool's connections) is logged and tried again at the next tick, so the runner
 // outlives the failure instead of ending with it. Once ctx ends it closes the registry, so no wake
 // starts a lane, and waits for every lane to return: a row mid-run ends and settles first
@@ -74,7 +74,7 @@ func (r *outbox) Run(ctx context.Context) {
 	poke := make(chan struct{}, 1)
 	for {
 		r.sweep(ctx)
-		tick := clock.AfterFunc(outboxLease, func() { nudge(poke) })
+		tick := clock.AfterFunc(r.sweepInterval(), func() { nudge(poke) })
 		select {
 		case <-ctx.Done():
 			tick.Stop()
@@ -86,6 +86,17 @@ func (r *outbox) Run(ctx context.Context) {
 		case <-poke:
 		}
 	}
+}
+
+// sweepInterval is how often Run sweeps: the outbox's own sweepEvery, or outboxLease where it sets
+// none, which is every daemon's. An interval at most outboxLease finds a lapsed lease within one
+// interval of its lapse. A shorter one never finds a live row lapsed: a running row renews its
+// lease every third of outboxLease, whatever the sweep's interval.
+func (r *outbox) sweepInterval() time.Duration {
+	if r.sweepEvery > 0 {
+		return r.sweepEvery
+	}
+	return outboxLease
 }
 
 // sweep reads the project's pause into the daemon's flag (refreshPause, decision 18 of
@@ -158,7 +169,7 @@ func (r *outbox) wakeLane(key record.LaneKey) {
 // wait for a wake. It exits once nothing is due, nothing is due later and no wake is pending — a
 // lane whose only rows another runner holds exits too, and the sweep starts it again once that
 // lease lapses. A lane whose list failed, or that left a due row behind on a failed claim, does not
-// exit: it waits for a wake or the sweep, which comes within outboxLease.
+// exit: it waits for a wake or the sweep, which comes within sweepInterval.
 func (r *outbox) runLane(ctx context.Context, lane *outboxLane) {
 	defer r.wg.Done()
 	// Lanes run beside each other and beside the sweep, each opening transactions of its own, so

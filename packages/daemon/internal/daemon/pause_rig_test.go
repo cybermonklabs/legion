@@ -55,11 +55,17 @@ import (
 // the one the checks advance the clock past; the backstop is longer than any test advances its
 // clock, so the only backstop that comes due is one a test arms itself (k1's F). The tick is how
 // often the daemon's idle and wake passes run on the wall clock, each reading the test clock.
+//
+// The outbox sweep is how often the daemon's outbox sweeps its lanes on the wall clock
+// (overrides.outboxSweep): the checks let a lease they put on a row lapse, or make a held row due,
+// behind the daemon, and the row runs at the next sweep, which at the daemon's own outboxLease is
+// up to 30 s of each such check; a second keeps a check to its own work.
 const (
 	pauseRigIdleMinutes     = 10
 	pauseRigBackstopMinutes = 120
 	pauseRigTick            = 100 * time.Millisecond
 	pauseRigPodUpdateGrace  = 15 * time.Minute
+	pauseRigOutboxSweep     = time.Second
 )
 
 // The three lines of a pause the checks read (decision 23 of the plan): the pause service's line
@@ -204,26 +210,36 @@ func (r *pauseRuntime) IssueSandbox(issue string) (string, bool) {
 	return "sandbox-" + strings.ToLower(issue), r.sandboxes[issue]
 }
 
-func (r *pauseRuntime) ReleaseIssue(ctx context.Context, issue, _ string, authorize func(context.Context) (bool, error)) error {
-	return r.teardown(ctx, issue, authorize)
+func (r *pauseRuntime) ReleaseIssue(ctx context.Context, issue, _ string, authorize func(context.Context) (bool, error),
+	writing func(context.Context) error) (bool, error) {
+	return r.teardown(ctx, issue, authorize, writing)
 }
 
 func (r *pauseRuntime) SuspendIssue(ctx context.Context, issue, _ string, authorize func(context.Context) (bool, error)) error {
-	return r.teardown(ctx, issue, authorize)
+	_, err := r.teardown(ctx, issue, authorize, nil)
+	return err
 }
 
 // teardown is both teardowns: once the store authorizes it, the issue's pod is deleted and its
-// Sandbox is gone.
-func (r *pauseRuntime) teardown(ctx context.Context, issue string, authorize func(context.Context) (bool, error)) error {
+// Sandbox is gone. It answers that it released a Sandbox whenever the store authorizes it: a
+// launch of this rig stands its pod up again without marking it (holdPod is the seed's), so an
+// authorized teardown always has a pod to take, and calls writing before it takes it.
+func (r *pauseRuntime) teardown(ctx context.Context, issue string, authorize func(context.Context) (bool, error),
+	writing func(context.Context) error) (bool, error) {
 	act, err := authorize(ctx)
 	if err != nil || !act {
-		return err
+		return false, err
+	}
+	if writing != nil {
+		if err := writing(ctx); err != nil {
+			return false, err
+		}
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.deleted = append(r.deleted, issue)
 	r.sandboxes[issue] = false
-	return nil
+	return true, nil
 }
 
 // podReads is what the runtime was asked to do to the pods: the issues whose pod a teardown
@@ -423,6 +439,7 @@ func newPauseDaemonRig(t *testing.T, tune func(*config.Config)) *pauseDaemonRig 
 	r.o.clock = clock
 	r.o.idleTick = pauseRigTick
 	r.o.orphanSweep = time.Hour
+	r.o.outboxSweep = pauseRigOutboxSweep
 	r.o.controllerFirstWake = time.Second
 	r.o.workflowTokens = idleRigAppTokens{workflowTokenRecorder: &workflowTokenRecorder{}}
 	// GitHub answers each repository at main and an issue branch's create (startedAgainGitHub): the
@@ -732,6 +749,19 @@ func (r *pauseDaemonRig) awaitPasses() {
 		return false
 	})
 	time.Sleep(2 * pauseRigTick)
+}
+
+// awaitFullSweep waits until one whole pass of the daemon's sweep has run since the call
+// (supervision.reconcileOrphans, which decides the update rounds): two more passes have begun,
+// each with its runtime's ReconcileOrphans, and passes run one after another, so the first of them
+// read the clock after the call and has ended. A check that the sweep replaced
+// nothing reads what that pass did not do.
+func (r *pauseDaemonRig) awaitFullSweep() {
+	r.t.Helper()
+	before := len(r.rt.CallsOf("ReconcileOrphans"))
+	testwait.Eventually(r.t, "a whole pass of the daemon's sweep after this moment", func() bool {
+		return len(r.rt.CallsOf("ReconcileOrphans")) >= before+2
+	})
 }
 
 // lines is every line of the daemon's log whose message is msg, decoded.
