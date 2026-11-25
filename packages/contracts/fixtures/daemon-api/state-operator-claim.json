@@ -1,7 +1,7 @@
 {
   "daemon": {
     "project": "AC91849371",
-    "schemaVersion": 20261124143026,
+    "schemaVersion": 0,
     "boots": 1,
     "firstBootAt": "2026-09-25T05:50:00Z",
     "startedAt": "2026-09-25T05:50:00Z"

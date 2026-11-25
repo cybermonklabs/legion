@@ -1,7 +1,7 @@
 {
   "daemon": {
     "project": "LEGION",
-    "schemaVersion": 20261124143026,
+    "schemaVersion": 0,
     "boots": 5,
     "firstBootAt": "2126-09-18T14:03:27Z",
     "startedAt": "2126-09-22T17:30:00Z"
