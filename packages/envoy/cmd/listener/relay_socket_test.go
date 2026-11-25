@@ -927,7 +927,7 @@ func TestARelaySocketOfAPromptClientTakesABacklogPastItsPendingLimits(t *testing
 		case err := <-client.closed:
 			t.Fatalf("the socket of a prompt client closed after %d of %d frames: %v\n%s", len(seen), backlog, err, rig.logs.String())
 		case <-deadline:
-			t.Fatalf("the socket of a prompt client was sent %d of %d frames before the test binary's deadline", len(seen), backlog)
+			t.Fatalf("the socket of a prompt client was sent %d of %d frames within the time this package gives a wait", len(seen), backlog)
 		}
 	}
 	client.stillOpen(time.Second, "after the backlog")
@@ -999,7 +999,7 @@ func TestARelaySocketClosesOnAFrameItCannotRead(t *testing.T) {
 	case err := <-client.closed:
 		t.Fatalf("a well-formed sub closed the socket: %v", err)
 	case <-time.After(listenerWaitBound(t)):
-		t.Fatal("no pong before the test binary's deadline of a well-formed sub")
+		t.Fatal("no pong within the time this package gives a wait, after a well-formed sub")
 	}
 }
 
@@ -1075,7 +1075,7 @@ func TestAPingAfterASubIsAnsweredAfterTheSubscribe(t *testing.T) {
 	select {
 	case <-client.pongs:
 	case <-time.After(listenerWaitBound(t)):
-		t.Fatal("no pong before the test binary's deadline of the ping")
+		t.Fatal("no pong within the time this package gives a wait, after the ping")
 	}
 	sent := publishRelayFrame(t, rig.owner.url, session, natsgo.Header{})
 	select {

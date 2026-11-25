@@ -126,7 +126,7 @@ func (r *scopeRig) openSocket(t *testing.T, session, token string) *relaySocketC
 	select {
 	case <-client.pongs:
 	case <-time.After(listenerWaitBound(t)):
-		t.Fatal("no pong before the test binary's deadline of the socket's sub")
+		t.Fatal("no pong within the time this package gives a wait, after the socket's sub")
 	}
 	return client
 }

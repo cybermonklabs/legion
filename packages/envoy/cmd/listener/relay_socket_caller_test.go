@@ -182,7 +182,7 @@ func TestARelaySocketGivesItsPlaceBackOnlyAfterItsPumpsLastFrame(t *testing.T) {
 	t.Cleanup(unlock)
 	publishRelayFrame(t, rig.owner.url, session, natsgo.Header{})
 	if !testwait.Holds(listenerWaitBound(t), 10*time.Millisecond, func() bool { frames, _ := socket.held(); return frames == 1 }) {
-		t.Fatal("the socket took no frame before the test binary's deadline")
+		t.Fatal("the socket took no frame within the time this package gives a wait")
 	}
 	_ = client.conn.Close()
 	// The pump cannot let its frame go while the row holds the write lock, so with the fix no
