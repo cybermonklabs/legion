@@ -12,7 +12,6 @@ import (
 	"go/token"
 	"regexp"
 	"slices"
-	"strings"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/store/migrations"
