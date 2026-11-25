@@ -93,6 +93,12 @@ An outbox copy waits on the role's kept lane for one hour from the time the stre
 
 Residual: a keep's key is its role topic, since the batch knew no holder when it planned its chains, so an event of the same owner that the same batch sends to that session on a key of its own - an author or follower route among them - races the handover, as two keys of one owner always do (Order, above). Before the handover that copy waited for the role's next claim or the sweep and lost to every such event.
 
+## Session sight
+
+The outbox sends no copy of an event of a project to a session that does not see that project. Every copy bound for a session's own subject is judged before it is added (`destinations.withheld`), and so are a role forward's holder (`withholdUnseenHolders`), the holder a kept copy's handover reaches (`holderSeesTheCopy`) and the session of a `comment_fallback_copies` row the fallback pass publishes (`fallbackSight`). Each asks the one rule `access.SessionSeesProjectClause`, read through `access.SessionsSeeProjects`, and none keeps a copy of it. A withheld copy is sent nothing and recorded nowhere a reader sees, and it is logged at Info as `dispatch outbox: a destination is withheld`, with the event and the session. A sight that could not be read withholds the copy too and backs the event off, so a session the outbox cannot judge is sent nothing rather than everything. An event that names no project is judged by nothing here.
+
+The rule reads a session's listener list only from a stored listener record that has not expired (`route_roster`, 5 s after the listener's answer). Where a verdict can depend on a list (an event of a private project, or a session tied to a restricted member) and the record has expired or has the API's content margin or less left, the read first runs the API's own refresh of the record and reads the record again (`readSight`, `Deps.ListenerRefresh`, which `cmd/dispatch` binds to `api.Background`'s `RefreshListenerRecord` once the API is registered). A record still expired after it, as when the listener does not answer, is a sight not read. Where no verdict depends on a list, as in a deployment with no private project and no restricted member, the outbox does not ask the listener.
+
 ## Failure classes
 
 Once every answer of a batch is in:
