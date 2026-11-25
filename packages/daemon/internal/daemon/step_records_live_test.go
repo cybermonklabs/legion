@@ -62,7 +62,8 @@ type stepRecordsLive struct {
 // one issue that walks planning to done with one failed review. The handoff of planning,
 // implementing and testing is read from Dispatch at each completion, so Dispatch is stopped only
 // once the issue is in reviewing for the second time: the second review, the acceptance, the retro
-// and the merge then walk it to done with Dispatch stopped.
+// and the merge then walk it to verifying with Dispatch stopped, and the read of its checks once
+// Dispatch is back closes it.
 func TestStepRecordsLive(t *testing.T) {
 	l := newStepRecordsLive(t, "scripts/e2e/step-records.sh", 1, "steps-reader")
 	l.note("Dispatch %s (database of its own, NATS off), project %s with default repository %s, issue %s on pull request %d; daemon at dispatch_url %s; the reader is the person's personal token",
@@ -118,12 +119,15 @@ func (l *stepRecordsLive) walkToTheSecondReview() {
 	l.note("implementing and testing completed again: %s in reviewing for the second time", l.key)
 }
 
-// outage stops Dispatch and walks the issue to done: the second review approves, the architect
-// signs off, the retro completes and GitHub merges the pull request, with no Dispatch to write the
-// records of those steps to. Dispatch then starts again on the same database, and the records of
-// the steps that ran while it was stopped reach it, each ended. The control holds the outage real:
-// once the walk is done and Dispatch still stopped, `dispatch steps` fails naming the server it
-// could not reach, and the daemon's outbox holds the issue's step records unfinished.
+// outage stops Dispatch and walks the issue to verifying: the second review approves, the
+// architect signs off, the retro completes and GitHub merges the pull request, with no Dispatch to
+// write the records of those steps to. The merge closes nothing by itself, and the close reads the
+// issue's checks from Dispatch, so with Dispatch stopped the issue stands in verifying. Dispatch
+// then starts again on the same database, the records of the steps that ran while it was stopped
+// reach it, each ended, and the read of the issue's checks closes it: the project runs no
+// production check and the issue has no check to wait for. The control holds the outage real: once
+// the walk reached verifying and Dispatch is still stopped, `dispatch steps` fails naming the
+// server it could not reach, and the daemon's outbox holds the issue's step records unfinished.
 func (l *stepRecordsLive) outage() {
 	t := l.t
 	l.dispatch.stop()
@@ -131,8 +135,11 @@ func (l *stepRecordsLive) outage() {
 	l.review("APPROVED", phase.Accepting)
 	l.accept()
 	l.retro()
-	l.merge()
-	l.note("the review, the acceptance, the retro and the merge walked %s to done with Dispatch stopped", l.key)
+	l.awaitLaunch(l.token(claim.RoleMerger))
+	l.github.merged(l.number)
+	l.publishMergeOf(l.number, l.key, stepRecordsHead, "main")
+	l.waitPhase(phase.Verifying)
+	l.note("the review, the acceptance, the retro and the merge walked %s to verifying with Dispatch stopped, where the close waits for the read of its checks", l.key)
 
 	out, code := l.steps()
 	if code == 0 || !strings.Contains(out, "is unreachable") {
@@ -175,6 +182,16 @@ func (l *stepRecordsLive) outage() {
 	for _, w := range want {
 		l.note("  %s", findLine(lines, w).text)
 	}
+	// The read of the issue's checks failed while Dispatch was stopped and waits out the same
+	// backoff. Once Dispatch answers it, the issue has no check to wait for and the project runs no
+	// production check, so that read closes the issue.
+	if !testwait.Holds(within, time.Second, func() bool {
+		got, ok := l.d.state().Issues[l.key]
+		return ok && got.Phase == phase.Done
+	}) {
+		t.Fatalf("within %s of the records' arrival %s stands in %q, want done: the read of its checks closes an issue with none to wait for", within, l.key, l.d.state().Issues[l.key].Phase)
+	}
+	l.note("the read of %s's checks once Dispatch was back closed it: done", l.key)
 }
 
 // readByIssue is the read of an issue's steps: `dispatch steps` run as a person of the project

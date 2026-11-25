@@ -2754,6 +2754,115 @@ Rolling forward does not undo that: such an issue's row still reads `default`, s
 That lasts until the issue's next run, whose first step passes the plan over, or until the issue leaves the workflow, which ends the run.
 Rolling forward again also costs the window the other way: an issue the earlier release drew while it ran reads the empty word afterwards and runs as an issue with no experiment does.
 
+#### Rolling back the release that closes an issue when its checks pass
+
+This release's migration `20261125004932_done_by_checks.up.sql` adds the phase `verifying` to `issues_phase_check`: the phase of an issue whose pull request merged and whose close waits for the checks of its goal ([The close](site/src/content/docs/legion/concepts.md#the-close)).
+It adds the merge snapshot and the close wait's columns to `issues` (`merge_number`, `merge_head`, `merge_sha`, `merge_base`, `merge_repo`, `merged_at`, `merge_history`, `close_wait_since`, `close_wait`, `closed_on_checks_at`, `next_change`, `next_changes`, `merger_completion_owed`, `standing_told_at` and `tree_generation`), `production_checks.relook_seq` and `production_checks.generation`, `pending_task_deliveries.start_at`, the tables `defects` and `close_reads`, and the outbox kinds `close_read` and `close_wait_publish`.
+It writes `design_news_current` again with four arguments, writes the two functions that call it and `step_run_witness` again, and these read the tree's run from `issues.tree_generation`.
+An earlier release knows no phase `verifying`, calls the three-argument `design_news_current`, and decodes an outbox row strictly, so it fails a row of a kind, a notice kind or a field it does not know at every attempt (`DisallowUnknownFields` in `record/outbox.go`).
+
+At the rollback, with every project's daemon on that database stopped and before the earlier image is pinned, run the way back below with `psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1`.
+It is two transactions.
+Block A, from its `-- Block A` line to its `commit;`, runs once for each project, with `<PROJECT>` the project's key, in any order.
+Block B, from its `-- Block B` line to the end, runs once, after block A ran for every project.
+Block B refuses, and changes nothing, while an issue of any project stands in `verifying`.
+
+Block A first prints the list that a person keeps, as two `NOTICE`s: the issues of the project that stand in `verifying`, each with since when its close waits and its merge, and the open defects of the project, each with its issue, id, kind and text.
+psql writes a notice to its standard error, not to its output, so keep that stream: save block A as `block-a-<PROJECT>.sql` and run `psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 -f block-a-<PROJECT>.sql 2>&1 | tee list-<PROJECT>.txt` in a shell with `set -o pipefail`, so that a failure still exits non-zero.
+Block A then moves each issue of the project that stands in `verifying` to `merging`, with the status `retro`.
+The earlier release's boot sweep closes each of them at its merged pull request (`sweepMerged` in `workflow/resume.go`), which is the close at the merge that this release ends.
+So after the roll forward to this release, a person reads the kept list and sets each listed issue whose checks still do not pass to `todo`, which runs it again.
+`dispatch results --issue <KEY>` shows the state of each check of an issue.
+The open defects go with the table `defects`: the kept list, and the last version of each issue's `close-wait.md` in Dispatch, are where they are read after the way back.
+Block A deletes the rows of the project that the earlier release cannot decode: the `close_read` and `close_wait_publish` rows, the notices and controller notices of the eleven kinds this release adds, the `issue_branch` rows whose payload holds `from`, and the `supervise` rows whose payload holds `startAt`.
+It gives each `issue_bundle`, `issue_release` and `issue_suspend` row of the project the tree generation the earlier release reads, its root's generation.
+Each of its statements that names a table or a column this migration adds runs only where that table or column still exists, so block A run again, or after block B, prints nothing it cannot read and deletes that project's rows.
+
+Before it drops a column, block B puts back the four SQL functions as the earlier release reads them, since PostgreSQL records no dependency of a `language sql` body on a column, and a body left reading `tree_generation` would fail at run time after the drop.
+It then drops the four-argument `design_news_current`, the two tables and the new columns, puts back `outbox_kind_check` and `issues_phase_check` without the new values, and deletes the migration's version row, so the roll forward's `Migrate` applies the file again (`versionRecorded` in `internal/store/store.go`).
+The tables and the columns are the database's, so every project's daemon on it rolls back too.
+
+```sql
+-- Block A: once for each project, with <PROJECT> its key, in any order.
+begin;
+do $$ begin
+  if exists (select 1 from information_schema.columns where table_schema = current_schema() and table_name = 'issues' and column_name = 'close_wait_since') then
+    raise notice 'issues of <PROJECT> in verifying: %', (select coalesce(json_agg(listed), '[]') from (select key, close_wait_since, merge_number, merge_sha from issues where phase = 'verifying' and split_part(key, '-', 1) = '<PROJECT>' order by key) listed);
+  end if;
+  if to_regclass('defects') is not null then
+    raise notice 'open defects of <PROJECT>: %', (select coalesce(json_agg(listed), '[]') from (select issue, id, kind, text from defects where merged_at is null and withdrawn_at is null and split_part(issue, '-', 1) = '<PROJECT>' order by issue, id) listed);
+  end if;
+end $$;
+update issues set phase = 'merging', status = 'retro' where phase = 'verifying' and split_part(key, '-', 1) = '<PROJECT>';
+delete from outbox where kind in ('close_read', 'close_wait_publish') and split_part(issue, '-', 1) = '<PROJECT>';
+delete from outbox where kind in ('notice', 'controller_notice') and payload->>'kind' in ('close-waits', 'check-failed', 'check-unknown', 'defect-reported', 'next-change', 'close-wait-no-result', 'close-wait-standing', 'checks-unapproved', 'next-change-count', 'next-change-workspace', 'closed-check-failed') and split_part(issue, '-', 1) = '<PROJECT>';
+delete from outbox where kind = 'issue_branch' and payload ? 'from' and split_part(issue, '-', 1) = '<PROJECT>';
+delete from outbox where kind = 'supervise' and payload ? 'startAt' and split_part(issue, '-', 1) = '<PROJECT>';
+update outbox o set payload = jsonb_set(o.payload, '{treeGeneration}', to_jsonb(root.generation)) from issues i join issues root on root.key = i.tree where i.key = o.issue and o.kind in ('issue_bundle', 'issue_release', 'issue_suspend') and split_part(o.issue, '-', 1) = '<PROJECT>';
+commit;
+-- Block B: once, after block A ran for every project.
+begin;
+do $$ begin if exists (select 1 from issues where phase = 'verifying') then raise exception 'an issue still stands in verifying: run block A for its project first'; end if; end $$;
+create or replace function design_news_current(told_issue text, told_generation bigint, told_tree_generation bigint)
+  returns boolean language sql stable as $$
+  select exists (select 1 from issues owner join issues root on root.key = owner.tree
+    where owner.key = told_issue and owner.generation = told_generation and root.generation = told_tree_generation)
+$$;
+create or replace function design_news_credits(carried jsonb)
+  returns table (issue text, audience text, link jsonb) language sql stable as $$
+  select item.issue, item.audience, jsonb_build_object('step', item.step, 'from', item."from", 'to', item."to")
+  from jsonb_to_recordset(coalesce(carried -> 'items', '[]'::jsonb))
+    as item (issue text, audience text, step text, "from" int, "to" int, generation bigint, tree_generation bigint)
+  where design_news_current(item.issue, item.generation, item.tree_generation)
+$$;
+create or replace function design_news_openings(carried jsonb)
+  returns table (issue text, audience text, seq integer) language sql stable as $$
+  select opened.issue, opened.audience, opened.seq
+  from jsonb_to_recordset(coalesce(carried -> 'openings', '[]'::jsonb))
+    as opened (issue text, audience text, seq int, closed boolean, generation bigint, tree_generation bigint)
+  where not coalesce(opened.closed, false) and design_news_current(opened.issue, opened.generation, opened.tree_generation)
+$$;
+create or replace function step_run_witness(issue_key text, tree_key text) returns jsonb language sql stable as $$
+  select jsonb_build_object(
+    'at', coalesce(case when i.phase = 'held' then i.held_from end, i.phase),
+    'generation', i.generation,
+    'pass', (select p.pass from phases p where p.issue = i.key and p.role = 'implementer'),
+    'entries', (select jsonb_object_agg(p.role, p.entry) from phases p where p.issue = i.key),
+    'root_generation', root.generation,
+    'lingers', root.linger_until is not null)
+  from issues i left join issues root on root.key = tree_key
+  where i.key = issue_key
+$$;
+drop function if exists design_news_current(text, text, bigint, bigint);
+drop table if exists close_reads;
+drop table if exists defects;
+alter table issues drop column if exists merge_number, drop column if exists merge_head, drop column if exists merge_sha, drop column if exists merge_base, drop column if exists merge_repo, drop column if exists merged_at, drop column if exists merge_history, drop column if exists close_wait_since, drop column if exists close_wait, drop column if exists closed_on_checks_at, drop column if exists next_change, drop column if exists next_changes, drop column if exists merger_completion_owed, drop column if exists standing_told_at, drop column if exists tree_generation;
+alter table production_checks drop column if exists relook_seq, drop column if exists generation;
+alter table pending_task_deliveries drop column if exists start_at;
+alter table outbox drop constraint if exists outbox_kind_check;
+alter table outbox add constraint outbox_kind_check check (kind in ('dispatch_status', 'dispatch_message', 'notice', 'controller_notice', 'supervise', 'gate_seed', 'linger_close', 'workspace_remove', 'issue_branch', 'issue_suspend', 'check_wake', 'check_look', 'check_bound', 'role_message', 'phase_ended', 'issue_bundle', 'issue_release', 'gated_steps_publish', 'claim_release', 'hook_prompt', 'design_gates_publish', 'update_ask', 'merge_queue_read', 'merge_queue_removal', 'role_holders_publish', 'step_record', 'plan_record', 'conflict_confirm', 'merge_forward', 'design_changes'));
+alter table issues drop constraint if exists issues_phase_check;
+alter table issues add constraint issues_phase_check check (phase in ('admitted', 'awaiting_person', 'planning', 'implementing', 'testing', 'reviewing', 'accepting', 'retro', 'merging', 'done', 'held'));
+delete from schema_version where version = 20261125004932;
+commit;
+```
+
+The header of `20261125004932_done_by_checks.up.sql` carries this same block.
+
+What the way back costs is the close of each issue that waited in `verifying`: under the earlier release it closes at its merge, before its checks pass, until a person sets it to `todo` after the roll forward.
+A deleted notice is a telling that its architect, or the controller, never gets.
+A deleted `issue_branch` row that holds `from` is a next change's move of its branch to the head of its base that does not happen, and a deleted `supervise` row that holds `startAt` is a first start of a next change at the branch's new head that does not happen.
+An issue on a next change is an ordinary generation to the earlier release, which runs it to its merge and closes it there.
+A member of a tree whose root ran a next change can be told one item of design news again, since its credits name the old tree generation.
+An issue's `close-wait.md` stays in Dispatch as its last version left it.
+
+**A check that reads production.**
+A check whose `subject` is `production` or `graph` is decided by the current deploy of the program it reads, which Dispatch holds only where the deployment records that program's deploys there (`deploy.recorded`).
+So mark a check `production` or `graph` only for a program whose deploys the deployment records in Dispatch.
+A deployment whose delivery settings read `null` (`GET /api/v1/settings/delivery`) has set no deploy repository in Dispatch.
+A check marked for a program whose deploys nobody records reads `unknown` with the reason `no_deploy`, so the close waits for it, and the owning architect is told once a day.
+A check with no `subject` reads as `code`: a pass recorded at a commit of the merge's branch that holds the merge decides it, and no deploy does.
+
 #### Rolling back the release that lets the owning architect's status stand
 
 This release takes the owning architect's `done`, `backlog`, `icebox` or `triage` on a child as it takes a person's move.
@@ -3485,9 +3594,9 @@ Neither `architect_stalled_notices` nor the wake stood, the claims table held no
 Running `Migrate` again applied five migrations, 20261111225552, 20261113181500, 20261113182000, 20261114020537 and 20261114061900, and the store reported 20261114061900 with 147 versions recorded, the architect's row and claim at entry 1 again and the row unmarked, its two marks again at the root's generation, and its claim with no handshake.
 The counts are those of the 147 migrations the tree of that run carried.
 A migration added after it that neither block touches adds one to every count from the step that applies it, and the store reports it after the two blocks only where its version is above 20261114031356.
-cybermonklabs/legion#4228's 20261116165926_role_holders_publish, cybermonklabs/legion#4337's 20261117200337_update_ask_marks_at_delivery (dispatch://INFRA-4109), cybermonklabs/legion#4220's 20261116144907_claim_sessions, cybermonklabs/legion#4488's 20261117023932_outbox_kinds_with_the_plan_record, cybermonklabs/legion#4464's 20261119003157_conflict_reads_and_merge_forward, cybermonklabs/legion#4115's 20261115194357_project_pause (dispatch://INFRA-3759), cybermonklabs/legion#3995's 20261119203047_design_news, cybermonklabs/legion#4573's 20261120012547_set_back_observed_seq (dispatch://INFRA-3178), cybermonklabs/legion#4581's 20261120042902_claim_agent_resume_generation (dispatch://INFRA-4108), cybermonklabs/legion#4598's 20261120055717_dispatch_issue_value_sequences (dispatch://INFRA-4729), cybermonklabs/legion#4590's 20261120144241_intake_failures (dispatch://INFRA-1575), cybermonklabs/legion#4903's 20261121170714_dispatch_issue_applied_seq, cybermonklabs/legion#4930's 20261123165139_experiment_assignment_plan, cybermonklabs/legion#5278's 20261123212127_claim_start_failure_after_ready (dispatch://INFRA-5463), cybermonklabs/legion#5303's 20261123224717_members_owed (dispatch://INFRA-5471), cybermonklabs/legion#5365's 20261124060500_issue_priority, cybermonklabs/legion#5349's 20261124073512_claim_cause_times and cybermonklabs/legion#5372's 20261124143026_issue_release_teardown (dispatch://INFRA-3149) are such migrations: the two blocks leave each standing, every count from the step that applies each is one higher, and the store reports the highest of them that it records after the two blocks.
+cybermonklabs/legion#4228's 20261116165926_role_holders_publish, cybermonklabs/legion#4337's 20261117200337_update_ask_marks_at_delivery (dispatch://INFRA-4109), cybermonklabs/legion#4220's 20261116144907_claim_sessions, cybermonklabs/legion#4488's 20261117023932_outbox_kinds_with_the_plan_record, cybermonklabs/legion#4464's 20261119003157_conflict_reads_and_merge_forward, cybermonklabs/legion#4115's 20261115194357_project_pause (dispatch://INFRA-3759), cybermonklabs/legion#3995's 20261119203047_design_news, cybermonklabs/legion#4573's 20261120012547_set_back_observed_seq (dispatch://INFRA-3178), cybermonklabs/legion#4581's 20261120042902_claim_agent_resume_generation (dispatch://INFRA-4108), cybermonklabs/legion#4598's 20261120055717_dispatch_issue_value_sequences (dispatch://INFRA-4729), cybermonklabs/legion#4590's 20261120144241_intake_failures (dispatch://INFRA-1575), cybermonklabs/legion#4903's 20261121170714_dispatch_issue_applied_seq, cybermonklabs/legion#4930's 20261123165139_experiment_assignment_plan, cybermonklabs/legion#5278's 20261123212127_claim_start_failure_after_ready (dispatch://INFRA-5463), cybermonklabs/legion#5303's 20261123224717_members_owed (dispatch://INFRA-5471), cybermonklabs/legion#5365's 20261124060500_issue_priority, cybermonklabs/legion#5349's 20261124073512_claim_cause_times, cybermonklabs/legion#5372's 20261124143026_issue_release_teardown (dispatch://INFRA-3149) and 20261125004932_done_by_checks, of the release that closes an issue when its checks pass, are such migrations: the two blocks leave each standing, every count from the step that applies each is one higher, and the store reports the highest of them that it records after the two blocks.
 That is 20261116165926 on a store #4228's release migrated, 20261117200337 on one that #4337's release or a later one before #4464 migrated, 20261119003157 on one that #4464's release or a later one before #4598 migrated, 20261120055717 on one that #4598's release or a later one before #4930 migrated, #4581's, #4573's and #3995's among them, 20261123165139 on one that #4930's release or a later one before #5278 migrated, 20261123212127 on one that #5278's release or a later one before #5365 migrated, #4590's among them, 20261124060500 on one that #5365's release or a later one before #5349 migrated, 20261124073512 on one that #5349's release or a later one before #5372 migrated, and 20261124143026 on one that #5372's release or a later one migrated: #4220 and #4488 merged onto a main that already carried #4337, so every release that carries 20261116144907 or 20261117023932 carries 20261117200337 too, which stands above both, #4115 merged onto a main that already carried #4464, so every release that carries 20261115194357 carries 20261119003157 too, which stands above it, #4581 and #4573 merged onto a main that already carried #4598, so every release that carries 20261120042902 or 20261120012547 carries 20261120055717 too, which stands above both, #3995 is built on a main that carries #4464, #4598, #4581 and #4573, so every release that carries 20261119203047 carries 20261119003157 too, which it stands above, and 20261120012547, 20261120042902 and 20261120055717, which stand above it, #4590 is built on a main that carries #4598, #4903, #4930 and #5278, so every release that carries 20261120144241 carries 20261123212127 too, which stands above it, and #5372 is built on a main that carries #5278, #5303, #5365 and #5349, so every release that carries 20261124143026 carries 20261123212127, 20261123224717, 20261124060500 and 20261124073512 too, which stand below it.
-`internal/admit`'s `TestTheArchitectUpgradeRunsAgainAfterTheWayBackAndARollForward` holds the store to it: after the two blocks the store records every migration this tree embeds but the five the blocks delete (`leftStanding`, against the five versions the test writes in `wayBackVersions`), and reports the highest of them, which on this tree is 20261124143026.
+`internal/admit`'s `TestTheArchitectUpgradeRunsAgainAfterTheWayBackAndARollForward` holds the store to it: after the two blocks the store records every migration this tree embeds but the five the blocks delete (`leftStanding`, against the five versions the test writes in `wayBackVersions`), and reports the highest of them, which on this tree is 20261125004932.
 The test runs no way back but the two blocks.
 A rollback of a store that #4903's release migrated runs the way back in the header of `20261121170714_dispatch_issue_applied_seq.up.sql` first, which deletes that version's row, so that store reports 20261120055717 after the two blocks, as one that #4598's release migrated does.
 A store that #5278's release migrated reports 20261123212127 after them: `20261123212127_claim_start_failure_after_ready.up.sql` carries no way back, since an earlier release reads the start failures it emptied as none recorded.
@@ -3496,6 +3605,7 @@ A store that #5349's release migrated reports 20261124073512 after them: `202611
 What that rollback costs is the two times: the earlier release rewrites a claim's cause and leaves standing the time and the digest of the cause before it, and #5349's release serves a time only while its digest is the digest of the cause the claim holds, and a start failure's time before the claim's `lastReady` as none (the migration's header).
 So after the roll-forward a cause the earlier release wrote with other text is served with no time, and so is a start failure it wrote after a ready; a cause it wrote with the same text, a death or a start failure with no ready between, is served with the older cause's time until that release records the next cause of that kind, and no read can tell.
 A store that #5372's release migrated reports 20261124143026 after them: `20261124143026_issue_release_teardown.up.sql` carries no way back, since an earlier release names its columns in every read and write of `issue_releases` and `pod_releases` and its inserts leave the new columns to their defaults, which the new index of `pod_releases` does not hold.
+A rollback of a store that the release that closes an issue when its checks pass migrated runs the two blocks of [Rolling back the release that closes an issue when its checks pass](#rolling-back-the-release-that-closes-an-issue-when-its-checks-pass) first, which delete that version's row, so that store reports 20261124143026 after the two blocks, as one that #5372's release migrated does.
 A rollback of a store that #4590's release or a later one migrated runs #4903's way back and the steps of [Rolling back the release that gives up on intake messages](#rolling-back-the-release-that-gives-up-on-intake-messages) first, and those steps delete rows alone and keep the version row of `20261120144241_intake_failures`, which stands below 20261123212127, so that store reports 20261123212127 after the two blocks, as one that #5278's release migrated does, 20261124060500 where #5365's release or a later one before #5349 migrated it, 20261124073512 where #5349's release or a later one before #5372 migrated it, or 20261124143026 where #5372's release or a later one migrated it.
 A rollback of a store that #5303's release or a later one migrated runs the way back in the header of `20261123224717_members_owed.up.sql` first, which deletes that version's row, so that store reports 20261123212127 after the two blocks, as one that #5278's release migrated does, 20261124060500 where #5365's release or a later one before #5349 migrated it, 20261124073512 where #5349's release or a later one before #5372 migrated it, or 20261124143026 where #5372's release or a later one migrated it.
 
@@ -3504,6 +3614,7 @@ On a store that a release at contract 146 migrated, run the contract 146 block a
 On a store that cybermonklabs/legion#4598 migrated, run that release's one statement ([Rolling back the release that fences each value of the copy of Dispatch's issues](#rolling-back-the-release-that-fences-each-value-of-the-copy-of-dispatchs-issues)) before every one of these, on one that cybermonklabs/legion#4581 migrated, the way back in the header of its `20261120042902_claim_agent_resume_generation.up.sql` before every one of these too, and on one that cybermonklabs/legion#4573 migrated, the statement of [Rolling back the release that lets the owning architect's status stand](#rolling-back-the-release-that-lets-the-owning-architects-status-stand) before every one of these too, each with the daemon stopped and before the earlier image is pinned.
 Those three touch no row in common, so any of them runs first.
 Every store that cybermonklabs/legion#3995's release migrated is such a store on all three counts, since that release carries #4598, #4581 and #4573.
+On a store that the release that closes an issue when its checks pass migrated, run the two blocks of [Rolling back the release that closes an issue when its checks pass](#rolling-back-the-release-that-closes-an-issue-when-its-checks-pass) before every one of these, those three included, with every project's daemon stopped.
 The eleven statements, after that block where it runs, leave the store at the earlier release's schema, but for what the later migrations that the list after the block leaves standing added, and the store then reports its highest recorded row (`schemaVersion` in `internal/store/store.go`), since neither block deletes a version row but its own:
 20261112180548, the earlier release's own version, on a store the release at contract 94 migrated, which records it above this migration's own 20261111225552;
 20261114031356, the highest row neither block deletes, on a store #3711's release at contract 146 migrated;
@@ -3594,6 +3705,7 @@ The migrations recorded above this one are these.
 20261124060500_issue_priority adds `issues.priority`, null on every row it finds, and touches none of the six, so the block holds over it and leaves the column standing, which the earlier release names in no statement; it carries no way back, since an earlier release reads none of it, a row that release updates keeps the priority it held, and only a row it inserts gets null.
 20261124073512_claim_cause_times adds `claims.last_death_at`, `claims.last_start_failure_at`, `claims.last_death_digest` and `claims.last_start_failure_digest`, null on every row it finds, and touches none of the six, so the block holds over it and leaves the four columns standing, which the earlier release names in no statement; it carries no way back.
 20261124143026_issue_release_teardown, of dispatch://INFRA-3149, adds `issue_releases.teardown` at its default, `reached`, on every mark it finds, adds `pod_releases.issue_release_id`, null on every row it finds, with a unique index of the rows that name a mark, and touches none of the six, so the block holds over it; it carries no way back, since an earlier release names its columns in every read and write of `issue_releases` and `pod_releases` and its inserts leave both columns to their defaults.
+20261125004932_done_by_checks adds the phase `verifying`, the merge snapshot and the close wait's columns of `issues`, two columns of `production_checks`, one of `pending_task_deliveries`, the tables `defects` and `close_reads` and two outbox kinds, and writes `step_run_witness` again, which reads `phases.entry`, and it writes none of the six, so the block holds over it; a rollback past it runs the two blocks of its own section first, [Rolling back the release that closes an issue when its checks pass](#rolling-back-the-release-that-closes-an-issue-when-its-checks-pass), which put the function back as 20261117004117_step_starts wrote it, drop what the migration adds and delete its version row, while `phases.entry` stands.
 The `20261111225552` is the identifier of `20261111225552_phase_entry.up.sql`, whose header carries this same block;
 where that file carries another identifier in the release you roll back from, use that one.
 The SQL was run on 2026-11-13 at 04:00Z against PostgreSQL 18.6, on a scratch database that `internal/store`'s own `Migrate` took to the head of the branch the run was made on, as that head stood at that time, applying 133 migrations and leaving 133 versions recorded, the highest 20261112180548, and that held four outbox rows:

@@ -191,8 +191,10 @@ the next of them:
   last.
 
 - **A close or a merge.** A pull request recorded open that GitHub shows closed has its close
-  applied, or its merge with its merge commit: the merge closes an issue waiting on it in
-  `merging` and otherwise tells the architect `pr-merged`, and a close without merging tells
+  applied, or its merge with its merge commit: the merge moves an issue waiting on it in
+  `merging` to `verifying`, where its close waits for its checks
+  ([the close](/legion/legion/concepts/#the-close)), and otherwise tells the architect
+  `pr-merged`, and a close without merging tells
   the architect `pr-closed-unmerged`.
 - **A head that moved.** When GitHub shows the pull request open at a head the record does not
   hold, the read applies the synchronize its webhook would have carried, under GitHub's
@@ -452,9 +454,10 @@ What each part is for:
   the mentions arrive and where the controller's reply token is stored). A channel belongs to one
   project: the loader refuses one named twice. A daemon restarted with a changed list relaunches the
   controller, which resumes its session hearing the new list.
-- **`projects.<KEY>.production_check`** (optional) decides whether a merge that closes one of the
-  project's issues opens a
-  [production check](/legion/legion/concepts/#the-production-check), and which role works it. It
+- **`projects.<KEY>.production_check`** (optional) decides whether the close of one of the
+  project's issues waits for a
+  [production check](/legion/legion/concepts/#the-production-check) after its merge, and which
+  role works it. It
   takes `off` or `tester`, and a project that names no key gets `tester`:
 
   ```yaml
@@ -463,12 +466,12 @@ What each part is for:
       production_check: tester
   ```
 
-  With `tester`, the merge hands the tester the check's first look in its session, a fresh one
-  where the task had no tester step. A child's
-  other five claims are retired. A root's are suspended with the rest of its tree for the linger,
-  and retired when the linger ends. With `off`, no check opens at all: a child's close retires
-  every claim of the child and releases its pod, and a root's close suspends every claim of its
-  tree for the linger. The loader refuses any other value,
+  With `tester`, the first read of the issue's checks after its merge hands the tester the check's
+  first look in its session, a fresh one where the task had no tester step. The move to
+  `verifying` at the merge suspends no claim of the issue. At the close, a child's claims are
+  retired, and a root's are suspended with the rest of its tree for the linger and retired when
+  the linger ends. With `off`, no check opens at all, and the close waits for none. The loader
+  refuses any other value,
   naming the key and the value it read. The check's record carries the role, written when the
   check opened, so moving the key leaves an open check with the role it started under and a check
   opened before this release keeps the implementer.

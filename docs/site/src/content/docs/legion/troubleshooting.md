@@ -1142,8 +1142,8 @@ The rule measures silence from the claim's last recorded step alone.
 A daemon that was itself down for longer than the bound comes back and reads every live worker as silent.
 Each of those gets one prompt and one notice, nothing is stopped, and the floor under `worker_silence_minutes` is what keeps an ordinary restart out of it.
 
-A merged root's merger is never named silent.
-The merge ends the merger's work, but the root stands in `merging` until the rest of its tree leaves the workflow, which can take days, so the daemon reads the issue's pull request and leaves alone a merger whose pull request the record holds as merged, as its own resume paths do.
+A merged issue's merger is never named silent.
+The merge ends the merger's work, and the issue then stands in `verifying`, which no role works, until its checks pass, which can take days, so the daemon reads the issue's pull request and leaves alone a merger whose pull request the record holds as merged, as its own resume paths do.
 
 A worker whose own session — the process the claim runs now — reports background work of its own running, an async job, a subagent or a background task, is left alone, however long it has been quiet.
 No bound can tell a forty-minute job from a worker that stopped, so the daemon prompts no such worker at all.
