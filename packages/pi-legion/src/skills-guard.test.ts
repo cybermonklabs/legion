@@ -989,6 +989,16 @@ test("each duty a role skill routes to a reference stands in that reference", ()
   ]).toEqual([]);
 });
 
+// The architect reads the reviewer's verdict where the reviewer sends it: its completion of
+// reviewing, and, once its step has passed, its `review_verdict` on each new head; never a review
+// on GitHub, which decides nothing.
+test("the architect skill names the reviewer's verdict past review as its review_verdict", () => {
+  const architect = collapsed(path.join(staged, "legion-architect", "SKILL.md"));
+  expect(architect).toContain(
+    "The reviewer's verdict is its completion's, and past review its `review_verdict`'s, never a review on GitHub."
+  );
+});
+
 // Each sentence that held only in the default steps holds for every order the plan validator
 // allows: a task may leave out the reviewer and the owner's acceptance, a parent whose last step
 // is not the acceptance is held before its retro, retro's `Handoff:` line names the report of the

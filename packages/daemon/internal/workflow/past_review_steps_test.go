@@ -15,11 +15,12 @@ import (
 // A task whose reviewer step comes before its tester (implementer reviewer tester) reaches
 // legion-verdict success when a merge forward lands in testing after the review passed: the landing
 // asks the reviewer for its verdict at the new head (past review is a review step that has passed,
-// by the walk, pastReview), the reviewer's approve there is taken in testing, the tester's checks
-// read yes at that head, and the writer writes legion-verdict success on it, so the merger merges
-// it. Under a past-review rule of phases alone (accepting, retro or merging) nothing would ask the
-// reviewer in testing and its verdict would be refused there (VERDICT_NOT_PAST_REVIEW), so the new
-// head would never get its review step's verdict and the merger would wait for good.
+// by the walk, reviewStep.passed), the reviewer's approve there is taken in testing, since its own
+// step has passed, the tester's checks read yes at that head, and the writer writes legion-verdict
+// success on it, so the merger merges it. Under a past-review rule of phases alone (accepting,
+// retro or merging) nothing would ask the reviewer in testing and its verdict would be refused
+// there (VERDICT_NOT_PAST_REVIEW), so the new head would never get its review step's verdict and
+// the merger would wait for good.
 func TestAMergeForwardLandingInTestingAfterTheReviewReachesLegionVerdictSuccess(t *testing.T) {
 	pool := plannedConflictIssue(t, phase.Testing, settledGreen("lint"), "implementer", "reviewer", "tester")
 	confirmsConflict(t, pool, &record.BaseRules{Required: []string{"ci"}})
