@@ -220,7 +220,7 @@ test("the ci-check-fail worlds: k1 passes from both roles, and k2's job fails at
   // The ports the hook above sets, which restoreEnvironment puts back after each test.
   process.env.DISPATCH_E2E_PORT = "18777";
   process.env.FAKE_GITHUB_PORT = "18778";
-  process.env.DISPATCH_E2E_NATS_URL = "nats://127.0.0.1:1";
+  process.env.DISPATCH_E2E_NATS_URLS = "nats://127.0.0.1:1";
   const failed = (head: string) => ({
     [head]: [{ name: "usage-test", status: "completed", conclusion: "failure" }],
   });
