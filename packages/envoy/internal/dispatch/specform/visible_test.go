@@ -46,7 +46,7 @@ func requireJudged(t *testing.T, rows []judgedRow) {
 				t.Errorf("%s: stored %q gives the %s %s the bodies %q, want %q", row.name, stored, row.kind, row.node, bodies, row.body)
 			}
 		}
-		got := findingNames(Check(planted("ada.lovelace@example.com"), Input{Texts: extracted.Texts, Proposed: extracted.Terms}))
+		got := findingNames(check(planted("ada.lovelace@example.com"), Input{Texts: extracted.Texts, Proposed: extracted.Terms}))
 		if !slices.Equal(got, row.want) {
 			t.Errorf("%s: stored %q gives the findings %q, want %q", row.name, stored, got, row.want)
 		}
@@ -263,7 +263,7 @@ func TestOneLinkGivesOneFinding(t *testing.T) {
 			t.Fatalf("%s: %v", test.name, err)
 		}
 		var got []string
-		for _, finding := range Check(planted("ada.lovelace@example.com"), Input{Texts: extracted.Texts}) {
+		for _, finding := range check(planted("ada.lovelace@example.com"), Input{Texts: extracted.Texts}) {
 			got = append(got, finding.Detail)
 		}
 		if !slices.Equal(got, []string{test.want}) {
@@ -340,7 +340,7 @@ func TestARelativeLinkToARecordLinksToTheRecord(t *testing.T) {
 	for _, address := range []string{"/projects/ACME/documents/terms-md", "projects/ACME/documents/terms-md"} {
 		text := Text{Node: "planted", Kind: KindStatement, Body: "Dispatch keeps the terms.", Where: where, Held: Held{Addresses: []string{address}}}
 		want := []Finding{finding(text, "dispatch-link", fmt.Sprintf("it links to a record of Dispatch: %q", address))}
-		if got := Check(Context{}, Input{Texts: []Text{text}}); !sameFindings(got, want) {
+		if got := check(Context{}, Input{Texts: []Text{text}}); !sameFindings(got, want) {
 			t.Errorf("%s with no server: Check = %#v, want %#v", address, got, want)
 		}
 	}
@@ -395,7 +395,7 @@ func TestAnAddressIsReadAgainstThePageOfItsDocumentToo(t *testing.T) {
 		context.Pages = test.pages
 		text := Text{Node: "planted", Kind: KindStatement, Body: "Dispatch keeps the record.", Where: where, Held: Held{Addresses: []string{test.address}}}
 		got := []string{}
-		for _, finding := range Check(context, Input{Texts: []Text{text}}) {
+		for _, finding := range check(context, Input{Texts: []Text{text}}) {
 			got = append(got, finding.Detail)
 		}
 		if !slices.Equal(got, test.want) {
@@ -497,7 +497,7 @@ func TestAFootnoteIsJudgedOnceAndGivesEachFindingOnce(t *testing.T) {
 			t.Fatalf("%s: %v", test.name, err)
 		}
 		var got []string
-		for _, finding := range Check(planted("ada.lovelace@example.com"), Input{Texts: extracted.Texts[test.from:], Proposed: extracted.Terms}) {
+		for _, finding := range check(planted("ada.lovelace@example.com"), Input{Texts: extracted.Texts[test.from:], Proposed: extracted.Terms}) {
 			got = append(got, fmt.Sprintf("%s %s %s: %s", finding.Kind, finding.Node, finding.Rule, finding.Detail))
 		}
 		if !slices.Equal(got, test.want) {
@@ -640,7 +640,7 @@ func TestASectionBelongsToItsContainer(t *testing.T) {
 			for _, term := range extracted.Terms {
 				names = append(names, term.Name)
 			}
-			got := findingNames(Check(planted(), Input{Texts: extracted.Texts, Proposed: extracted.Terms}))
+			got := findingNames(check(planted(), Input{Texts: extracted.Texts, Proposed: extracted.Terms}))
 			if !slices.Equal(got, test.want) || !slices.Equal(names, test.terms) ||
 				extracted.Counts[KindName] != test.names || extracted.Counts[KindPurpose] != test.purposes {
 				t.Errorf("%s, in %s: stored %q gives the findings %q, the terms %q, %d names and %d purposes; want %q, %q, %d and %d",
@@ -671,7 +671,7 @@ func TestOtherProseOfADocumentIsNoTextOfTheSpec(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: %v", test.name, err)
 		}
-		got := findingNames(Check(planted("ada.lovelace@example.com"), Input{Texts: extracted.Texts}))
+		got := findingNames(check(planted("ada.lovelace@example.com"), Input{Texts: extracted.Texts}))
 		if !slices.Equal(got, test.want) || !slices.ContainsFunc(extracted.Texts, func(text Text) bool { return text.Node == "control" }) {
 			t.Errorf("%s: the findings %q and the texts %s, want %q and the statement control read", test.name, got, fmt.Sprint(extracted.Texts), test.want)
 		}
@@ -751,7 +751,7 @@ func TestTheAddressOfAPullRequestHasAHostOfItsOwn(t *testing.T) {
 		for _, match := range test.named {
 			want = append(want, finding(text, rulePullRequest, pullRequestNamed(match)))
 		}
-		if got := Check(planted(), Input{Texts: []Text{text}}); !sameFindings(got, want) {
+		if got := check(planted(), Input{Texts: []Text{text}}); !sameFindings(got, want) {
 			t.Errorf("the address %q: got %#v, want %#v", test.address, got, want)
 		}
 	}

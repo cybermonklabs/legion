@@ -21,7 +21,7 @@ var quotedName = regexp.MustCompile(`"(?:[^"\\]|\\.)*"`)
 func referenceNames(t *testing.T, c Context, body string) []string {
 	t.Helper()
 	var names []string
-	for _, finding := range Check(c, Input{Texts: []Text{{Node: "n", Kind: KindName, Body: body, Where: where}}}) {
+	for _, finding := range check(c, Input{Texts: []Text{{Node: "n", Kind: KindName, Body: body, Where: where}}}) {
 		name, err := strconv.Unquote(quotedName.FindString(finding.Detail))
 		if err != nil {
 			t.Fatalf("the detail %q quotes no form: %v", finding.Detail, err)
@@ -355,7 +355,7 @@ func TestABareKeyOrIdNamesARecordAndLinksToNone(t *testing.T) {
 		{"Dispatch keeps dispatch://ACME-4 for each reader.", `it links to a record of Dispatch: "dispatch://ACME-4"`},
 	} {
 		text := statement(test.body)
-		if got, want := Check(planted(), Input{Texts: []Text{text}}), []Finding{finding(text, "dispatch-link", test.detail)}; !sameFindings(got, want) {
+		if got, want := check(planted(), Input{Texts: []Text{text}}), []Finding{finding(text, "dispatch-link", test.detail)}; !sameFindings(got, want) {
 			t.Errorf("Check(%q) = %#v, want %#v", test.body, got, want)
 		}
 	}

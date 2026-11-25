@@ -143,7 +143,7 @@ func TestExtractNamesARepeatedID(t *testing.T) {
 	if len(got.Texts) != 2 || got.Texts[0].Node != "a" || got.Texts[1].Node == "a" || got.Texts[1].Node == "" {
 		t.Fatalf("Texts = %#v, want a, then the id the parser gives the second block", got.Texts)
 	}
-	if findings := Check(Context{}, Input{Texts: got.Texts}); len(findings) != 1 || findings[0].Node != got.Texts[1].Node {
+	if findings := check(Context{}, Input{Texts: got.Texts}); len(findings) != 1 || findings[0].Node != got.Texts[1].Node {
 		t.Fatalf("Check = %#v, want one finding of Node %s", findings, got.Texts[1].Node)
 	}
 	component := "## Records (component `r`)\n\nIt holds each record.\n\n" +
@@ -200,7 +200,7 @@ func TestALineUnderTermsThatIsNoTermLineIsNotDroppedInSilence(t *testing.T) {
 				read = true
 			}
 		}
-		findings := Check(planted(), Input{Texts: extracted.Texts, Proposed: extracted.Terms})
+		findings := check(planted(), Input{Texts: extracted.Texts, Proposed: extracted.Terms})
 		if !read && len(findings) == 0 {
 			t.Errorf("%q under # Terms: the extractor read terms %#v and Check found nothing, so the definition is dropped in silence", line, extracted.Terms)
 		}
@@ -249,7 +249,7 @@ func TestALineUnderTermsThatIsNoTermLineIsAFinding(t *testing.T) {
 	ways := `Move a line that defines no term, such as an example or a note, out from under the heading Terms. ` +
 		`Put a decision block above the heading Terms, and after the answer, write the chosen definition under the heading`
 	want := []Finding{findingWays(prose, "term-line", detail, ways), findingWays(drift, "term-line", detail, ways)}
-	if findings := Check(planted(), Input{Texts: got.Texts, Proposed: got.Terms}); !sameFindings(findings, want) {
+	if findings := check(planted(), Input{Texts: got.Texts, Proposed: got.Terms}); !sameFindings(findings, want) {
 		t.Fatalf("Check =\n%#v\nwant\n%#v", findings, want)
 	}
 }
@@ -277,7 +277,7 @@ func TestADecisionBlockUnderTermsIsAFindingThatNamesTheWayOut(t *testing.T) {
 		if len(got.Terms) != 1 || got.Terms[0].Name != "lease" {
 			t.Errorf("%s: Terms = %#v, want the one term lease", test.name, got.Terms)
 		}
-		findings := Check(planted(), Input{Texts: got.Texts, Proposed: got.Terms})
+		findings := check(planted(), Input{Texts: got.Texts, Proposed: got.Terms})
 		var nodes []string
 		for _, finding := range findings {
 			nodes = append(nodes, finding.Node)

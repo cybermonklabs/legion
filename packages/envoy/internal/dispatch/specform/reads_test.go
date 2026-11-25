@@ -501,7 +501,7 @@ func TestEachRefusedReadingRefusesTheWayOutThatAskedIt(t *testing.T) {
 		if err != nil {
 			return nil, err
 		}
-		return Check(context, Input{Texts: read.Texts, Proposed: read.Terms}), nil
+		return check(context, Input{Texts: read.Texts, Proposed: read.Terms}), nil
 	}
 	defer func() { refuseReading = nil }()
 	passed := map[string]bool{}

@@ -117,7 +117,7 @@ func randomRingCase(random *rand.Rand) ringCase {
 // its detail, with how many times Check gives it.
 func rotationsWithFootnotes(texts []Text) map[findingKey]int {
 	found := map[findingKey]int{}
-	for _, each := range Check(planted(), Input{Texts: texts}) {
+	for _, each := range check(planted(), Input{Texts: texts}) {
 		if each.Rule == "ste100-"+steSynonymRotation && strings.Contains(each.Detail, "with the words of") {
 			found[findingKey{each.Rule, each.Detail}]++
 		}

@@ -150,7 +150,7 @@ func TestAProcedureGivesOneInstructionInEachSentenceOfTwentyWordsAtMost(t *testi
 			[]Finding{finding(procedure("Run the tests against the server with the race detector on and with a timeout of ten minutes for each run here."),
 				ruleSentenceWords, `a sentence has 22 words, and an instruction has at most 20: "Run the tests against the server with the"`)}},
 	} {
-		if got := saidFindings(Check(planted(), Input{Texts: []Text{test.text}})); !sameFindings(got, test.want) {
+		if got := saidFindings(check(planted(), Input{Texts: []Text{test.text}})); !sameFindings(got, test.want) {
 			t.Errorf("%s: Check = %#v, want %#v", test.name, got, test.want)
 		}
 	}
@@ -206,12 +206,12 @@ func TestAProcedureOfOneInstructionIsTakenWhateverWordStandsAfterACommaOrAnd(t *
 		"Compare the size and hash that this build writes.",
 	} {
 		text := Text{Node: "v-run", Kind: KindProcedure, Body: body, Where: where}
-		if got := Check(planted(), Input{Texts: []Text{text}}); len(got) != 0 {
+		if got := check(planted(), Input{Texts: []Text{text}}); len(got) != 0 {
 			t.Errorf("%q gives one instruction: Check = %#v, want no finding", body, got)
 		}
 	}
 	two := Text{Node: "v-run", Kind: KindProcedure, Body: "Read the log and record the date.", Where: where}
-	if got := Check(planted(), Input{Texts: []Text{two}}); !sameFindings(got, []Finding{findingWays(two, ruleInstructions,
+	if got := check(planted(), Input{Texts: []Text{two}}); !sameFindings(got, []Finding{findingWays(two, ruleInstructions,
 		`a sentence gives two instructions, and a sentence of a procedure gives one: "record the date"`,
 		`Write each instruction in a sentence of its own, as in "Read the log. Record the date.", `+
 			`or, if "record" is no verb here, write "that" before the clause after it`)}) {
@@ -237,7 +237,7 @@ func TestADescriptionInAProcedureHasTwentyFiveWordsAndAnInstructionTwenty(t *tes
 	} {
 		text := Text{Node: "v-run", Kind: KindProcedure, Body: test.body, Where: where}
 		var got []string
-		for _, finding := range Check(planted(), Input{Texts: []Text{text}}) {
+		for _, finding := range check(planted(), Input{Texts: []Text{text}}) {
 			got = append(got, finding.Detail)
 		}
 		if !slices.Equal(got, test.want) {

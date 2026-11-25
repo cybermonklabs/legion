@@ -491,7 +491,11 @@ func (j *specFormJudge) judge(ctx context.Context, document *specFormDocument) e
 	if document.root != nil {
 		document.unread = append(document.unread, j.unread[*document.root]...)
 	}
-	for _, finding := range specform.Check(context, specform.Input{Texts: extracted.Texts, Proposed: extracted.Terms}) {
+	found, err := specform.Check(ctx, context, specform.Input{Texts: extracted.Texts, Proposed: extracted.Terms})
+	if err != nil {
+		return err
+	}
+	for _, finding := range found {
 		document.findings = append(document.findings, specFormFinding{
 			Document: document.artifact.Name, ArtifactID: document.artifact.ID, Version: document.version, Finding: finding,
 		})

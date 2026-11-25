@@ -6,6 +6,7 @@
 package specform
 
 import (
+	"context"
 	"strings"
 )
 
@@ -175,8 +176,9 @@ const excerptRunes = 160
 // of Kind term, and its definition, of Kind definition. It judges them by the rules of R49, in the
 // order of the texts. It judges each footnote that the texts refer to once (footnoteJudge), so its
 // work is in proportion to the texts and their footnotes, whatever the count of texts that share
-// one footnote.
-func Check(c Context, in Input) []Finding {
+// one footnote. Once ctx ends it judges no other text and answers ctx's error, so a caller that
+// stops waiting stops the judgment within the work of one text.
+func Check(ctx context.Context, c Context, in Input) ([]Finding, error) {
 	texts := make([]Text, 0, len(in.Texts)+2*len(in.Proposed))
 	texts = append(texts, in.Texts...)
 	for _, term := range in.Proposed {
@@ -188,6 +190,9 @@ func Check(c Context, in Input) []Finding {
 	notes := newFootnoteJudge(c, people, texts)
 	var findings []Finding
 	for _, text := range texts {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		for _, broken := range breaks(c, people, text, notes) {
 			findings = append(findings, Finding{
 				Node: text.Node, Kind: text.Kind, Where: text.Where,
@@ -195,7 +200,7 @@ func Check(c Context, in Input) []Finding {
 			})
 		}
 	}
-	return findings
+	return findings, nil
 }
 
 // oneLine is a text as ste-lint reads one line: its lines trimmed and joined by one space.
