@@ -2,6 +2,7 @@ package testdb
 
 import (
 	"context"
+	"fmt"
 	"maps"
 	"net/url"
 	"strings"
@@ -388,6 +389,66 @@ func TestARewriteThatChangesAnyValuePgxReadsIsRefused(t *testing.T) {
 			}
 			if got := readingOf(to).moved(readingOf(from)); got != tc.moved {
 				t.Fatalf("the fields that moved from %s to %s = %q, want %q", tc.from, tc.to, got, tc.moved)
+			}
+		})
+	}
+}
+
+// prereqRecorder is a testing.TB that keeps what DSNFor's testprereq.Require asked of it instead
+// of ending the test, as packages/envoy/testprereq's own test keeps it, so the test reads the
+// failure or the skip a real test would have been given.
+type prereqRecorder struct {
+	testing.TB
+	failed, skipped string
+}
+
+func (r *prereqRecorder) Helper() {}
+
+func (r *prereqRecorder) Fatalf(format string, args ...any) { r.failed = fmt.Sprintf(format, args...) }
+
+func (r *prereqRecorder) Skipf(format string, args ...any) { r.skipped = fmt.Sprintf(format, args...) }
+
+// Without LEGION_TEST_PG_DSN, DSNFor fails the test on GitHub Actions, naming the variable and the
+// ci.yaml job it was given, and skips it elsewhere with the command that starts a Postgres
+// (skipMessage). With the variable set it does neither, on GitHub Actions or off it, and answers
+// the variable's value.
+//
+// Each variable is set to "" here rather than taken out of the environment. DSNFor reads
+// LEGION_TEST_PG_DSN with os.Getenv and compares it with "", and testprereq.Enforced reads
+// GITHUB_ACTIONS with os.Getenv and compares it with "true", so to both an empty value is an unset
+// one. The module's fixtureenv.Unset would take them out, but it imports other packages of this
+// module, and this package imports none but internal/testwait (its package comment says why).
+func TestDSNForFailsOnGitHubActionsSkipsElsewhereAndAnswersTheServer(t *testing.T) {
+	const job = "the-job-that-runs-it"
+	t.Run("unset, on GitHub Actions", func(t *testing.T) {
+		t.Setenv("GITHUB_ACTIONS", "true")
+		t.Setenv(dsnName, "")
+		got := &prereqRecorder{TB: t}
+		DSNFor(got, job)
+		if !strings.Contains(got.failed, dsnName) || !strings.Contains(got.failed, "ci.yaml's "+job+" job") || got.skipped != "" {
+			t.Errorf("DSNFor with %s unset under GITHUB_ACTIONS=true failed with %q and skipped with %q, want a failure naming %s and the %s job, and no skip",
+				dsnName, got.failed, got.skipped, dsnName, job)
+		}
+	})
+	t.Run("unset, off GitHub Actions", func(t *testing.T) {
+		t.Setenv("GITHUB_ACTIONS", "")
+		t.Setenv(dsnName, "")
+		got := &prereqRecorder{TB: t}
+		DSNFor(got, job)
+		if got.skipped != skipMessage || got.failed != "" {
+			t.Errorf("DSNFor with %s and GITHUB_ACTIONS unset skipped with %q and failed with %q, want the skip that starts a Postgres (skipMessage) and no failure",
+				dsnName, got.skipped, got.failed)
+		}
+	})
+	const server = "postgres://legion_test@127.0.0.1:5433/legion?sslmode=disable"
+	for _, actions := range []string{"true", ""} {
+		t.Run("set, GITHUB_ACTIONS="+actions, func(t *testing.T) {
+			t.Setenv("GITHUB_ACTIONS", actions)
+			t.Setenv(dsnName, server)
+			got := &prereqRecorder{TB: t}
+			if answer := DSNFor(got, job); answer != server || got.failed != "" || got.skipped != "" {
+				t.Errorf("DSNFor with %s set answered %q, failed with %q and skipped with %q, want %q and neither",
+					dsnName, answer, got.failed, got.skipped, server)
 			}
 		})
 	}
