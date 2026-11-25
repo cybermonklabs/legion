@@ -202,7 +202,7 @@ export function IssueHeader({
       void queryClient.invalidateQueries({ queryKey: ["issues"] });
     },
   });
-  // Every status write of the header - the select, Close, Reopen and the palette's rows - goes
+  // Every status write of the header - the Status pick, Close, Reopen and the palette's rows - goes
   // through the rule's question (`useIssueStatusMove`): a dry run first for an issue with a
   // parent or an open child, then the write below, or the question where Dispatch's rule would
   // refuse it.
@@ -280,7 +280,7 @@ export function IssueHeader({
       when: () => !(isClosed || updateIssue.isPending),
     })),
   ]);
-  // The status the select and the closed line show while it is out: the one the rule's question
+  // The status the Status pick and the closed line show while it is out: the one the rule's question
   // is checking or asking about, else the one the write is saving.
   const checkingStatus = statusMove.pending;
   const statusSaving =
@@ -289,8 +289,7 @@ export function IssueHeader({
   const pendingStatus =
     checkingStatus ?? (statusSaving ? updateIssue.variables?.status : undefined);
   const selectableStatuses = isClosed ? issueStatuses : openIssueStatuses;
-  // The status the Status shows: the one the rule's question is checking or asking about, or the
-  // one its write is sending while that write is out, else the issue's.
+  // The status the Status shows: `pendingStatus`, else the issue's.
   const shownStatus = pendingStatus ?? issue.status;
   const [statusOpen, setStatusOpen] = useState(false);
   // A closed issue's Status takes no pick, and while a write of the header's fields is out, or the

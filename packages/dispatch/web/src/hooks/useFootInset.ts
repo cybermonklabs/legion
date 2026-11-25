@@ -205,7 +205,7 @@ import { type RefObject, useLayoutEffect } from "react";
  *   marked, and again after a window resize, once the inline value is removed. The document's
  *   scroller, the element that carries `data-document-scroll`, always takes the room that way, as
  *   padding: a page sized to the window reads main's bottom padding as the room it keeps at the
- *   foot - the issues table's box is the window less that padding (`issues-table-layout.ts`) - so
+ *   foot - the issues table's box is the window less that padding (`components/table-layout.ts`) - so
  *   a spacer there would lengthen the document under the box instead, and each scroll to the end
  *   and the measure after it would grow the box by that scroll. Its box grows with the room, or
  *   the page it holds gives way to it, and either way its foot stays 0.

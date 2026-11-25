@@ -8,7 +8,7 @@ import { drawnSize } from "../../__tests__/control-size";
 import { realClock, tick } from "../../__tests__/fake-clock";
 import { afterFrameAndTasks } from "../../__tests__/frames";
 import { drawOver, layRowsOut, watchMoves } from "../../__tests__/laid-out-rows";
-import { pickNamed } from "../../__tests__/list-picks";
+import { pick, pickNamed } from "../../__tests__/list-picks";
 import { endWindowScroll, installResizeObserver } from "../../__tests__/scroll-box";
 import { answerIssuePatches, answerRoute } from "../../__tests__/send-answers";
 import { userOnFakeClock } from "../../__tests__/user";
@@ -3439,8 +3439,7 @@ const intoWork = { include_parent: true, status: "in_progress" };
  *  which names each epic by its title. */
 async function moveToEpic(user: UserEvent, key: string, epic: string) {
   await user.click(await screen.findByRole("checkbox", { name: `Select ${key}` }));
-  await user.click(screen.getByRole("button", { name: pickNamed("Move to epic") }));
-  await user.click(screen.getByRole("option", { name: epic }));
+  await pick(user, "Move to epic", epic);
   await user.click(screen.getByRole("button", { name: "Move" }));
 }
 
@@ -3458,8 +3457,7 @@ async function mergeInto(user: UserEvent, source: string, target: string) {
   const heading = link.closest("tr");
   if (!heading) throw new Error(`The epic ${source} has no heading row`);
   await user.click(within(heading).getByRole("button", { name: "Epic actions ▾" }));
-  await user.click(screen.getByRole("button", { name: pickNamed("Merge into another epic") }));
-  await user.click(screen.getByRole("option", { name: target }));
+  await pick(user, "Merge into another epic", target);
   await user.click(screen.getByRole("button", { name: "Merge…" }));
 }
 
@@ -3696,13 +3694,12 @@ test.each([
   ];
   const { client } = table(rows, search);
   await user.click(await screen.findByRole("checkbox", { name: "Select CORE-1" }));
-  const pick = screen.getByRole("button", { name: pickNamed("Move to epic") });
-  await user.click(pick);
-  await user.click(screen.getByRole("option", { name: "Platform" }));
+  const trigger = screen.getByRole("button", { name: pickNamed("Move to epic") });
+  await pick(user, "Move to epic", "Platform");
   // The epic closes while it is picked, and the list offers it no more.
   rows[1] = issue("CORE-9", { labels: ["epic"], status: "done", title: "Platform" });
   await act(() => client.invalidateQueries({ queryKey: ["issues"] }));
-  await user.click(pick);
+  await user.click(trigger);
   await waitFor(() => expect(screen.queryByRole("option", { name: "Platform" })).toBeNull());
   await user.keyboard("{Escape}");
   await user.click(screen.getByRole("button", { name: "Move" }));
@@ -3858,8 +3855,7 @@ test("Finish of a merge whose issue's move was refused, its target since out of 
   const heading = (await screen.findByRole("link", { name: "CORE-1 · Source" })).closest("tr");
   if (!heading) throw new Error("The source epic has no heading row");
   await user.click(within(heading).getByRole("button", { name: "Epic actions ▾" }));
-  await user.click(screen.getByRole("button", { name: pickNamed("Merge into another epic") }));
-  await user.click(screen.getByRole("option", { name: "Target" }));
+  await pick(user, "Merge into another epic", "Target");
   await user.click(screen.getByRole("button", { name: "Merge…" }));
   const asked = await screen.findByRole("dialog", { name: "Move CORE-2 into work too?" });
   await user.click(within(asked).getByRole("button", { name: "Move into work too" }));

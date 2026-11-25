@@ -627,7 +627,8 @@ async function walkTheBarCombinations(
           name: "Select all matching",
           control: toolbar.getByRole("button", { name: /^Select all \d+ matching$/ }),
         },
-        { name: "Move to epic", control: toolbar.getByRole("combobox", { name: "Move to epic" }) },
+        // The shared single pick (INFRA-3135's R3), a button and not a select.
+        { name: "Move to epic", control: listTrigger(toolbar, "Move to epic") },
         ...namedButtons(toolbar, [
           "Start next",
           "Move",
@@ -743,7 +744,7 @@ test("no two of the broadcast composer, Pending changes and the update banner me
         },
         {
           name: "Delivery mode",
-          control: broadcast.getByRole("combobox", { name: "Delivery mode" }),
+          control: listTrigger(broadcast, "Delivery mode"),
         },
         ...namedButtons(broadcast, ["Send to 3"]),
         {
@@ -964,8 +965,9 @@ test("with the update banner shown, every control of the selection bar takes a p
     await page.getByRole("checkbox", { name: `Select ${other.key}`, exact: true }).check();
     const bar = page.getByRole("toolbar");
     // Move takes a press only once an epic is picked, and picking one sends nothing.
-    const epics = bar.getByRole("combobox", { name: "Move to epic" });
-    await epics.selectOption(epic.key);
+    // The shared single pick (INFRA-3135's R3), which names each epic by its title.
+    const epics = listTrigger(bar, "Move to epic");
+    await pickFromList(epics, epic.title);
     const controls = [...(await bar.getByRole("button").all()), epics];
     const own = page.viewportSize();
     if (!own) throw new Error("The project gave the page no viewport");
@@ -1581,7 +1583,7 @@ const STEADY_EVERY_MS = 250;
 // looked at, below the table, in place, which held the pager's place on the screen too, so the next
 // measure grew the box again, without end: on the Priorities page at 1600x1000, `scrollHeight`
 // went from 167,444 px to over 2,100,000 px in about 1.5 s. The measure now reads the pager's
-// place in the document (`useTableLayout`, web/src/features/project/issues-table-layout.ts).
+// place in the document (`useTableLayout`, web/src/components/table-layout.ts).
 // The Priorities page draws its list in flight under no priority above a second table, so at
 // 1280x800 the end of the document's scroll lies past the first table's pager. From there the
 // window goes to 1920x1080, to 1600x1000 and back, and then, read every 250 ms for 2 s, the first
