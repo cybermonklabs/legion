@@ -3509,4 +3509,20 @@ package api
 // records keep their shapes without `checks`; checksContract and SupportedContracts name this
 // entry's arrival, not the daemon's next version. Read the base's number and every open pull
 // request's declared number again before pushing a renumber.
-const DaemonAPIVersion = 267
+//
+// 288: a task of a plan may name a sub-owner (`owner` on its `plan_task` block), whose agent writes
+// the task's parts. `POST /legion/v1/plans/register` (register_plan) takes a grant of the claim role
+// `sub-owner` (`claim.RoleSubOwner`) whose agent is the sub-owner of a task of the plan in force,
+// for that agent's own issue alone, and answers `403 SUB_OWNER_OUTSIDE_ISSUE` to a grant for any
+// other issue. A sub-owner's version changes only the parts of its task: a version that adds a
+// part where the task stands at its report, its retro or its merge is answered `409 PLAN_REFUSED`
+// naming the task and where it stands, and a version given for a task that is done or left is
+// answered `409 TASK_DONE`, whose text names the sub-owner's next act. `PLAN_REFUSED` gains the
+// reasons of a plan whose part can never start, of an element that names steps, an owner or
+// merges, and of two sub-owners of one agent name. No request or answer shape changes with it, and
+// no shape of `GET /legion/v1/state` moves: a caller below 288 is served what it was served
+// before, since no plan it gives names an owner.
+// The entry's allocated number is 288, given to this change by the architect that allocates the
+// numbers, above 267, which the change this one is built on holds. Read the base's number and every
+// open pull request's declared number again before pushing a renumber.
+const DaemonAPIVersion = 288
