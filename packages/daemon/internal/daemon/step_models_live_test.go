@@ -49,6 +49,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -101,9 +102,10 @@ const stepModelsCaptureMarker = "STEP-MODELS-CAPTURE"
 // servedResponse is one response a stand-in served, as the run writes it to standin-served.json:
 // the claim whose pane asked, the response's own id, whether it was a subagent's rather than the
 // agent's own conversation, whether it was a side request that is neither, the model the request
-// asked for and the model the answer named, and when the answer ended. A record's counts are held
-// to this list rather than to the transcript, since the transcript is the harness's own account
-// of the same calls, which the comparator reads apart.
+// asked for and the model the answer named, when the answer ended, and what asked for it with the
+// place of its step it answered. A record's counts are held to this list rather than to the
+// transcript, since the transcript is the harness's own account of the same calls, which the
+// comparator reads apart.
 type servedResponse struct {
 	Claim    string `json:"claim"`
 	ID       string `json:"id"`
@@ -114,6 +116,11 @@ type servedResponse struct {
 	Asked   string    `json:"asked"`
 	Model   string    `json:"model"`
 	EndedAt time.Time `json:"endedAt"`
+	// Turn says what asked for this answer (stepModelsTurn.shape), and Step and Place which step
+	// of the script and which of its answers it was: 0 for an answer of no step's turn.
+	Turn  string `json:"turn"`
+	Step  int    `json:"step,omitempty"`
+	Place int    `json:"place,omitempty"`
 }
 
 // main is whether the response is one of the agent's own conversation, which a record counts.
@@ -230,7 +237,7 @@ func (s *stepModelsStandin) ServeHTTP(w http.ResponseWriter, req *http.Request) 
 		return
 	}
 	turn := readStepModelsTurn([]byte(body))
-	served := servedResponse{Claim: string(s.token), Asked: turn.model, Model: s.served}
+	served := servedResponse{Claim: string(s.token), Asked: turn.model, Model: s.served, Turn: turn.shape}
 	served.Subagent = strings.Contains(turn.system, deepWorkerSystemLine)
 	if s.harness == "claude" {
 		served.Subagent = strings.Contains(turn.firstUser, stepModelsSubagentMarker)
@@ -254,6 +261,9 @@ func (s *stepModelsStandin) ServeHTTP(w http.ResponseWriter, req *http.Request) 
 		var script stepModelsStep
 		var place int
 		step, script, place = s.place(turn)
+		if place > 0 {
+			served.Step, served.Place = step+1, place
+		}
 		answer, hold, turnEnded = s.answerAt(turn.tools, script, place)
 	}
 
@@ -399,12 +409,18 @@ func (s *stepModelsStandin) servedList() []servedResponse {
 	return append([]servedResponse(nil), s.list...)
 }
 
-// where says how far this stand-in's script has gone, for a failure that waited on it.
+// where says how far this stand-in's script has gone, and what asked for its last answers, for a
+// failure that waited on it.
 func (s *stepModelsStandin) where() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return fmt.Sprintf("%s started %d of %d steps, served %d responses, last at place %d of step %d (turn open %t)",
-		s.token, s.next, len(s.steps), len(s.list), s.inStep, s.step+1, s.inTurn)
+	var last []string
+	for _, served := range s.list[max(0, len(s.list)-3):] {
+		last = append(last, fmt.Sprintf("{place %d of step %d, subagent %t, side %t, asked %q: %s}",
+			served.Place, served.Step, served.Subagent, served.Side, served.Asked, served.Turn))
+	}
+	return fmt.Sprintf("%s started %d of %d steps, served %d responses, last at place %d of step %d (turn open %t), the last answered %s",
+		s.token, s.next, len(s.steps), len(s.list), s.inStep, s.step+1, s.inTurn, strings.Join(last, " "))
 }
 
 // mainResponsesBetween is how many responses of the agent's own conversation this stand-in served
@@ -422,34 +438,34 @@ func (s *stepModelsStandin) mainResponsesBetween(after, until time.Time) int {
 }
 
 // stepModelsTurn is one Messages request as a chain's stand-in reads it: the model it asks for,
-// its system prompt, the text of its first user message, the tools it offers, the text of its
-// newest message, whether that message carries a tool's result, and whether it is the plugin's
-// own side question (isSideQuestion).
+// its system prompt, the text of its first user message, the tools it offers, the text of what
+// asks for this answer, whether that carries a tool's result, and whether the request is the
+// plugin's own side question (isSideQuestion).
 type stepModelsTurn struct {
 	model, system, firstUser, text string
 	tools                          []string
 	continues, side                bool
+	// shape says what asked for this answer: the roles of the messages after the last assistant
+	// message, the type of each of their blocks, and the start of their text.
+	shape string
 }
 
-// readStepModelsTurn reads a Messages request's body. Its newest message is read past any date or
-// working-directory reminder the host sends after it (isDateCwdReminder), as readStandinRequest
-// reads it. A message whose blocks carry a tool's result goes on with a turn even where the host
-// put text beside the result, as Claude Code puts its own reminders.
+// readStepModelsTurn reads a Messages request's body. What asks for this answer is every message
+// after the request's last assistant message (turnOf), as completionStandin reads a turn: the
+// host and the plugins may put messages of their own beside a task or a tool's result, a
+// reminder or a background job's notice among them. A turn whose blocks carry a tool's result
+// goes on with the turn it belongs to, whatever text the host put beside the result.
 func readStepModelsTurn(body []byte) stepModelsTurn {
 	turn := stepModelsTurn{side: isSideQuestion(string(body))}
-	var request struct {
-		Model    string          `json:"model"`
-		System   json.RawMessage `json:"system"`
-		Tools    []offeredTool   `json:"tools"`
-		Messages []struct {
-			Role    string          `json:"role"`
-			Content json.RawMessage `json:"content"`
-		} `json:"messages"`
+	var asked struct {
+		Model  string          `json:"model"`
+		System json.RawMessage `json:"system"`
 	}
-	if json.Unmarshal(body, &request) != nil || len(request.Messages) == 0 {
+	var request messagesRequest
+	if json.Unmarshal(body, &asked) != nil || json.Unmarshal(body, &request) != nil || len(request.Messages) == 0 {
 		return turn
 	}
-	turn.model, turn.system = request.Model, string(request.System)
+	turn.model, turn.system = asked.Model, string(asked.System)
 	for _, tool := range request.Tools {
 		turn.tools = append(turn.tools, tool.Name)
 	}
@@ -459,15 +475,29 @@ func readStepModelsTurn(body []byte) stepModelsTurn {
 			break
 		}
 	}
-	newest := len(request.Messages) - 1
-	for newest > 0 && isDateCwdReminder(request.Messages[newest].Content) {
-		newest--
-	}
-	last := request.Messages[newest]
-	turn.text, _ = contentText(last.Content)
-	turn.continues = last.Role == "user" && slices.ContainsFunc(contentBlocks(last.Content),
-		func(block requestBlock) bool { return block.Type == "tool_result" })
+	blocks := turnOf(request)
+	turn.text = blocksText(blocks)
+	turn.continues = slices.ContainsFunc(blocks, func(block requestBlock) bool { return block.Type == "tool_result" })
+	turn.shape = stepModelsShape(request, blocks, turn.text)
 	return turn
+}
+
+// stepModelsShape is what asked for an answer, as a failure names it: the roles of every message
+// after the request's last assistant message, each of their blocks' types, and the first 160
+// characters of their text.
+func stepModelsShape(request messagesRequest, blocks []requestBlock, text string) string {
+	var roles []string
+	for i := len(request.Messages) - 1; i >= 0 && request.Messages[i].Role != "assistant"; i-- {
+		roles = append([]string{request.Messages[i].Role}, roles...)
+	}
+	types := make([]string, 0, len(blocks))
+	for _, block := range blocks {
+		types = append(types, block.Type)
+	}
+	if len(text) > 160 {
+		text = text[:160] + "…"
+	}
+	return fmt.Sprintf("%d messages %v after the last answer, blocks %v, text %q", len(roles), roles, types, text)
 }
 
 // stepModelsText is one text block of a stand-in's answer.
@@ -482,16 +512,15 @@ func stepModelsText(text string) anthropicBlock {
 // carries the whole of it, as the plugins' own pane harness writes one.
 func stepModelsToolUse(id, name string, input map[string]any) anthropicBlock {
 	arguments, _ := json.Marshal(input)
-	open, _ := json.Marshal(map[string]any{"type": "tool_use", "id": "toolu_" + id + "_" + randomToolSuffix(), "name": name, "input": map[string]any{}})
+	open, _ := json.Marshal(map[string]any{"type": "tool_use", "id": "toolu_" + id + "_" + strconv.FormatUint(stepModelsToolCalls.Add(1), 10),
+		"name": name, "input": map[string]any{}})
 	delta, _ := json.Marshal(map[string]string{"type": "input_json_delta", "partial_json": string(arguments)})
 	return anthropicBlock{open: string(open), delta: string(delta)}
 }
 
-// randomToolSuffix makes each tool call's id its own across the steps of one pane, as a model's
-// ids are, from the same process counter the response ids rise on.
-func randomToolSuffix() string {
-	return strings.TrimPrefix(standinResponseID(), "msg_standin_")
-}
+// stepModelsToolCalls numbers each tool call a chain's stand-in makes, so each call's id is its
+// own across the steps of one pane, as a model's ids are.
+var stepModelsToolCalls atomic.Uint64
 
 // ---- the reads of a stand-in's own stream --------------------------------------------------------
 
@@ -647,6 +676,11 @@ const stepModelsTask = "a"
 // the second stop: nine steps of about fifteen seconds of answers each, the launches of the four
 // panes, and every tool a turn runs.
 const stepModelsChainBound = 25 * time.Minute
+
+// stepModelsStall is how long the chain's turns may go with no stand-in telling the driver
+// anything: longer than a pane's launch (paneReady) and a step's turn together, so only a chain
+// that stopped moving runs it out.
+const stepModelsStall = 8 * time.Minute
 
 // stepModelsWait bounds each other wait of the run on the daemon or on Dispatch.
 const stepModelsWait = 3 * time.Minute
@@ -1586,14 +1620,26 @@ func (r *stepModelsLive) openGate(issue *stepModelsIssue) {
 // driveTurns answers what the stand-ins tell the driver until each issue's task is stopped: a
 // step its agent ends has its handoff record written as its claim's session just before the call
 // that completes it, and the turn of a step another fact ends is followed by the stop of the
-// issue's task.
+// issue's task. It fails naming where each stand-in stands once the whole chain's bound runs out,
+// or once no stand-in has told it anything for stepModelsStall.
 func (r *stepModelsLive) driveTurns() {
 	deadline := time.NewTimer(stepModelsChainBound)
 	defer deadline.Stop()
+	stall := time.NewTimer(stepModelsStall)
+	defer stall.Stop()
 	stopped := map[string]bool{}
+	ended := func(why string) {
+		var where []string
+		for _, issue := range r.issues {
+			where = append(where, r.panes[issue.implementer].where(), r.panes[issue.tester].where())
+		}
+		r.fails("the chain's turns", "the chain's turns stopped %d of %d issues' tasks: %s; the stand-ins: %s",
+			len(stopped), len(r.issues), why, strings.Join(where, "; "))
+	}
 	for len(stopped) < len(r.issues) {
 		select {
 		case event := <-r.events:
+			stall.Reset(stepModelsStall)
 			issue := r.issueOf(event.token)
 			if event.written != nil {
 				r.writeStepRecord(issue, event)
@@ -1602,13 +1648,10 @@ func (r *stepModelsLive) driveTurns() {
 			}
 			r.stopTask(issue, event)
 			stopped[issue.name] = true
+		case <-stall.C:
+			ended(fmt.Sprintf("no stand-in told the driver anything for %s", stepModelsStall))
 		case <-deadline.C:
-			var where []string
-			for _, issue := range r.issues {
-				where = append(where, r.panes[issue.implementer].where(), r.panes[issue.tester].where())
-			}
-			r.fails("the chain's turns", "the chain's turns stopped %d of %d issues' tasks within %s; the stand-ins: %s",
-				len(stopped), len(r.issues), stepModelsChainBound, strings.Join(where, "; "))
+			ended(fmt.Sprintf("the chain's bound of %s ran out", stepModelsChainBound))
 		}
 	}
 }
@@ -1944,6 +1987,9 @@ type stepModelsCompared struct {
 // (plan_ratings_live_test.go, readScript).
 func (r *stepModelsLive) compare(agents string, extra ...string) stepModelsCompared {
 	r.t.Helper()
+	if !r.chained {
+		r.fails("the chain", "the chain's turns did not reach both stops and each issue's records, so there is nothing to compare")
+	}
 	cli := dispatchCLI(r.root)
 	if strings.Contains(cli, "'") {
 		r.fails("the dispatch command", "the checkout's path %s holds a quotation mark the dispatch wrapper cannot quote", r.root)
@@ -1965,14 +2011,10 @@ func (r *stepModelsLive) compare(agents string, extra ...string) stepModelsCompa
 }
 
 // comparison is the comparator's run over both issues with the run's own agents file, made once
-// and kept as compare.txt. It needs the records the chain left, so a chain that did not reach
-// both stops ends the check.
+// and kept as compare.txt.
 func (r *stepModelsLive) comparison() stepModelsCompared {
 	r.t.Helper()
 	if r.compared == nil {
-		if !r.chained {
-			r.fails("the chain", "the chain's turns did not reach both stops and each issue's records, so there is nothing to compare")
-		}
 		compared := r.compare(r.evidenceFileAt("agents.json"))
 		r.compared = &compared
 		r.writeEvidence("compare.txt", []byte(compared.out))
@@ -2033,9 +2075,6 @@ func (r *stepModelsLive) cRealVerdict() {
 
 // controlLowerOne is check 8: the same command with --lower-one exits 1, with both verdicts FAIL.
 func (r *stepModelsLive) controlLowerOne() {
-	if !r.chained {
-		r.fails("the chain", "the chain's turns did not reach both stops and each issue's records, so there is nothing to compare")
-	}
 	compared := r.compare(r.evidenceFileAt("agents.json"), "--lower-one")
 	r.writeEvidence("compare-lower-one.txt", []byte(compared.out))
 	lines := stepModelsOutputLines(compared.out)
@@ -2049,9 +2088,6 @@ func (r *stepModelsLive) controlLowerOne() {
 // controlWrongSettings is check 9: the same command, over a copy of agents.json whose A's
 // implementer names another setModel, exits 1 and names both models.
 func (r *stepModelsLive) controlWrongSettings() {
-	if !r.chained {
-		r.fails("the chain", "the chain's turns did not reach both stops and each issue's records, so there is nothing to compare")
-	}
 	body, err := os.ReadFile(r.evidenceFileAt("agents.json"))
 	if err != nil {
 		r.fails("the agents file", "read the run's agents file: %v", err)
@@ -2182,6 +2218,10 @@ func (r *stepModelsLive) captureClaude(name, served string) *stepModelsCapture {
 	})
 	r.note("%s: Claude Code exited %d, its stream holds %d lines (result line %t), its stand-in served %d responses, %d transcripts kept under %s",
 		name, code, len(lines), capture.result, len(capture.served), copied, capture.projects)
+	for _, answered := range capture.served {
+		r.note("  %s answered place %d of step %d (subagent %t, side %t, asked %q) for %s",
+			answered.ID, answered.Place, answered.Step, answered.Subagent, answered.Side, answered.Asked, answered.Turn)
+	}
 	return capture
 }
 
