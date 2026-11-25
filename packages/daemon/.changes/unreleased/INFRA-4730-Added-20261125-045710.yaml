@@ -8,6 +8,6 @@ body: |-
   read is the one way it learns of such a blocker's close, and a successful read used to log
   nothing: a root held for hours on a blocker of another project that was done left no line to
   say whether the daemon read the blocker or what it did with the answer.
-time: 2026-11-25T05:05:00Z
+time: 2026-11-25T04:57:10Z
 custom:
   Issue: INFRA-4730

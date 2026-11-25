@@ -164,12 +164,14 @@ func (r *idleRig) podWakes(t *testing.T) []string {
 // workflow is done with keeps its claims for ever and every one of them is stopped, so the claim
 // states alone would answer each of these as a pod no claim owns. They are seeded through the
 // record store and the claim store the rig's own issue is seeded through, because what the
-// candidate answer reads of them is exactly what those two write.
-func (r *idleRig) closedIssuesWithStoppedClaims(t *testing.T, count int) {
+// candidate answer reads of them is exactly what those two write. It answers their keys.
+func (r *idleRig) closedIssuesWithStoppedClaims(t *testing.T, count int) []string {
 	t.Helper()
 	ctx := context.Background()
+	keys := make([]string, 0, count)
 	for i := range count {
 		key := fmt.Sprintf("LEGION-9%03d", i)
+		keys = append(keys, key)
 		putOutboxIssue(t, r.pool, r.issues, record.Issue{Key: key, Repo: "acme/widgets",
 			DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: key,
 			Title: "a finished issue", Phase: phase.Done, Generation: 1, Status: "done",
@@ -182,22 +184,26 @@ func (r *idleRig) closedIssuesWithStoppedClaims(t *testing.T, count int) {
 			t.Fatalf("seed the retired claim of %s: %v", key, err)
 		}
 	}
+	return keys
 }
 
-// countedSandboxReads is the rig's runtime with a counter on the one read the pass makes of it
-// before it decides anything. The pass asks the runtime for the issue's Sandbox once per
+// countedSandboxReads is the rig's runtime with a count, by issue, of the read the pass makes of
+// it before it decides anything. The rule asks the runtime for the issue's Sandbox once per
 // candidate and opens its store.ReleaseIdleIssue transaction only for a candidate whose Sandbox
-// is still there (workflowRuntime.releaseUnownedPod), so this counts the candidates the pass
-// decided. The teardown of a release that suspends no role reads the name once more, for the
-// line it logs (outbox.issueSandboxName); that read belongs to a release already running, and
-// none happens in a pass that releases nothing.
+// is still there (workflowRuntime.releaseUnownedPod), so a candidate's count is the pass deciding
+// it. The pass first closes left pods (workflowRuntime.closeLeftPods), which reads the Sandbox of
+// each issue store.LeftPods answers before it opens any transaction for one; those issues left
+// the workflow and are none of this rule's candidates, so their reads are counted apart from the
+// candidates' by the issue each names. The teardown of a release that suspends no role reads the
+// name once more, for the line it logs (outbox.issueSandboxName); that read belongs to a release
+// already running, and none happens in a pass that releases nothing.
 type countedSandboxReads struct {
 	issuePods
-	reads int
+	reads map[string]int
 }
 
 func (s *countedSandboxReads) IssueSandbox(issue string) (string, bool) {
-	s.reads++
+	s.reads[issue]++
 	return s.issuePods.IssueSandbox(issue)
 }
 
@@ -448,13 +454,21 @@ func TestTheQuietPeriodBeforeAnIssueWithNoLiveClaimIsReleased(t *testing.T) {
 // its own, and a Sandbox the runtime no longer holds ends the pass there: this rule changes no
 // claim, so an issue it has decided stands in the answer for ever, and deciding a gone pod inside
 // a transaction would cost one of them a minute for ever.
+//
+// The pass first closes left pods (workflowRuntime.closeLeftPods), whose candidates are every
+// issue that left the workflow by its own standing with its roles all stopped (store.LeftPods,
+// R20 of dispatch://INFRA-3320): here each of the closed issues, none of which is this rule's.
+// That close asks the runtime for each one's Sandbox before it opens any transaction, and a
+// Sandbox the runtime does not hold ends it there, so a closed issue costs one read and no
+// transaction. Those reads are the close's, not this rule's, and the test counts them apart: the
+// one candidate read once, and each closed issue at most once.
 func TestThePassDecidesOnlyTheIssuesTheRuleCouldRelease(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	rig := newIdleRig(t)
 	rig.stoppedImplementer(t, false)
 	const closed = 200
-	rig.closedIssuesWithStoppedClaims(t, closed)
+	closedIssues := rig.closedIssuesWithStoppedClaims(t, closed)
 
 	candidates, err := rig.st.UnownedPods(ctx, rig.w.dispatchProject, rig.w.projectID, record.OutOfWorkflowStatuses)
 	if err != nil {
@@ -470,15 +484,21 @@ func TestThePassDecidesOnlyTheIssuesTheRuleCouldRelease(t *testing.T) {
 	// the transaction takes the Sandbox read as answered — it is handed `true` rather than asking
 	// the runtime again under the transaction's lock — so a transaction opened here would have
 	// marked the release and queued its teardown. No mark, no row and no record is that
-	// transaction never opening, and the counter below is the pass reaching that candidate at all.
-	reads := &countedSandboxReads{issuePods: rig.rt}
+	// transaction never opening, and the candidate's one read below is the pass reaching it at all.
+	reads := &countedSandboxReads{issuePods: rig.rt, reads: map[string]int{}}
 	rig.w.idleRuntime = reads
 	rig.rt.sandboxGone = true
 
 	queued := rig.queuedBy(t, func() { rig.w.releaseUnownedPods(ctx) })
 
-	if reads.reads != 1 {
-		t.Fatalf("the runtime was asked for %d Sandboxes, want the one candidate's", reads.reads)
+	if got := reads.reads[rig.issue.Key]; got != 1 {
+		t.Fatalf("the runtime was asked for the candidate's Sandbox %d times, want once", got)
+	}
+	for issue, got := range reads.reads {
+		if issue != rig.issue.Key && (!slices.Contains(closedIssues, issue) || got > 1) {
+			t.Fatalf("the runtime was asked for the Sandbox of %s %d times, want no read but the candidate's and at most one of each closed issue by the close of left pods",
+				issue, got)
+		}
 	}
 	if len(queued) != 0 {
 		t.Fatalf("queued rows = %v, want none: no transaction was opened for a pod that is gone", queued)
