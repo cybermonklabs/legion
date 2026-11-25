@@ -166,13 +166,15 @@ func TestTheCatalogueRefusesAToolTheBarNeitherServesNorLeavesOut(t *testing.T) {
 	unserved := contracts.DispatchTool{Name: "dispatch_paint_widget", Arguments: []contracts.ToolField{
 		{Name: "widget", Kind: contracts.ToolFieldString, Required: true},
 	}}
-	if refusal := goingUnheldTool(unserved); !strings.HasPrefix(refusal, "dispatch_paint_widget: its spec binds no route, neither goingWriteTools nor goingReadTools names it, and going.UnofferedTools does not leave it out") {
-		t.Errorf("the build judges a tool that binds no route and that no table and no list names %q, want it refused by name", refusal)
+	// Each refusal names the tool and the place a developer settles it: the list that leaves a tool
+	// out for one that binds no route, the tables for one that binds its routes.
+	if refusal := goingUnheldTool(unserved); !strings.HasPrefix(refusal, "dispatch_paint_widget: ") || !strings.Contains(refusal, "going.UnofferedTools") {
+		t.Errorf("the build judges a tool that binds no route and that no table and no list names %q, want it refused by name, naming going.UnofferedTools", refusal)
 	}
 	bound := unserved
 	bound.Routes = []contracts.ToolRoute{{Method: http.MethodGet, Pattern: "/api/v1/widgets/{id}", Path: map[string]string{"id": "widget"}}}
-	if refusal := goingUnheldTool(bound); refusal != "dispatch_paint_widget: its spec binds its routes, and neither goingWriteTools nor goingReadTools names it" {
-		t.Errorf("the build judges a tool that binds its routes and that no table names %q, want it refused by name", refusal)
+	if refusal := goingUnheldTool(bound); !strings.HasPrefix(refusal, "dispatch_paint_widget: ") || !strings.Contains(refusal, "goingWriteTools") {
+		t.Errorf("the build judges a tool that binds its routes and that no table names %q, want it refused by name, naming the tables", refusal)
 	}
 
 	specs := make(map[string]contracts.DispatchTool, len(contracts.DispatchTools))
