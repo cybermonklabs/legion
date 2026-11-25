@@ -53,6 +53,7 @@ legion replay neutralize	--deny stringArray	--in string	--map string	--out strin
 legion replay rules	--json bool
 legion replay run	--branch string	--keep-db bool	--out string	--pg-dsn string	--rule string	--seed int64	--slowdown float64	--trace-segments bool	--window string
 legion replay scorecard	--json bool	--window string
+legion replay signals	--at stringArray	--idle-after duration	--limit stringArray	--window string
 legion replay validate	--from-runs stringArray	--json bool	--keep-logs bool	--main-only bool	--out string	--parallel int	--pg-dsn string	--rule string	--window string
 legion restart
 legion sessions

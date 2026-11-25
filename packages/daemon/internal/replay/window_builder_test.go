@@ -113,6 +113,8 @@ type builtIssue struct {
 	Priority *int
 	// Claim is who holds the issue's Dispatch claim, since when; nil for nobody.
 	Claim *builtClaim
+	// Assignee is the issue's Dispatch assignee, "" for nobody.
+	Assignee string
 
 	tree       string
 	generation int
@@ -139,6 +141,7 @@ type filing struct {
 	Labels    []string
 	BlockedBy []string
 	Priority  *int
+	Assignee  string
 }
 
 // eventActor is a Dispatch event's actor, and the origin Dispatch records a session with: nil for a
@@ -370,6 +373,11 @@ func (b *windowBuilder) issueEvent(at time.Time, key, kind string, actor eventAc
 	if issue.Status == record.DoneStatus {
 		closed = &at
 	}
+	// The assignee as it stands now: a later change of the issue's must not reach this event.
+	var assignee *string
+	if person := issue.Assignee; person != "" {
+		assignee = &person
+	}
 	// The issue's next sequence is the one this event takes, which the payload's last_seq names.
 	next := issue.seq + 1
 	payload := struct {
@@ -397,6 +405,7 @@ func (b *windowBuilder) issueEvent(at time.Time, key, kind string, actor eventAc
 		Title         string      `json:"title"`
 		UpdatedAt     time.Time   `json:"updated_at"`
 	}{
+		Assignee:  assignee,
 		BlockedBy: append([]string{}, issue.BlockedBy...),
 		Claim:     issue.Claim,
 		ClosedAt:  closed,
@@ -458,7 +467,8 @@ func (b *windowBuilder) filedBy(at time.Time, key string, f filing, actor eventA
 		generation = root.generation
 	}
 	b.issues[key] = &builtIssue{Key: key, Number: number, Title: f.Title, Status: f.Status, Parent: f.Parent, Rank: f.Rank,
-		Labels: slices.Clone(f.Labels), BlockedBy: slices.Clone(f.BlockedBy), Created: at, Priority: f.Priority, tree: tree, generation: generation}
+		Labels: slices.Clone(f.Labels), BlockedBy: slices.Clone(f.BlockedBy), Created: at, Priority: f.Priority, Assignee: f.Assignee, tree: tree,
+		generation: generation}
 	b.issueEvent(at, key, "issue.created", actor)
 }
 

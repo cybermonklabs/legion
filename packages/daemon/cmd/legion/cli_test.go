@@ -71,7 +71,7 @@ var legionCommands = [][]string{
 	{"project"}, {"project", "pause"}, {"project", "resume"},
 	{"sessions"}, {"sessions", "import"},
 	{"replay"}, {"replay", "collect"}, {"replay", "collect-merges"}, {"replay", "collect-queue"}, {"replay", "neutralize"}, {"replay", "run"},
-	{"replay", "scorecard"}, {"replay", "validate"}, {"replay", "forecast"}, {"replay", "compare"}, {"replay", "rules"},
+	{"replay", "scorecard"}, {"replay", "signals"}, {"replay", "validate"}, {"replay", "forecast"}, {"replay", "compare"}, {"replay", "rules"},
 	{"probe-boot"},
 	{"controller"}, {"controller", "start"},
 	{"intake"}, {"intake", "replay"}, {"intake", "discard"},

@@ -28,9 +28,10 @@ import (
 // slot rule (internal/replay), so a rule is judged by the daemon's own decisions over a window it
 // lived through. Its commands collect a window (collect, collect-merges, collect-queue), neutralize
 // one for the repository's test data (neutralize), replay one (run), read the measures of a
-// window's record (scorecard), check the replay against the record (validate) and against a
-// recorded change of the rule (forecast), compare the rules on two windows (compare) and name the
-// rules a replay can run (rules). None of them reaches a daemon.
+// window's record (scorecard), read R11's signals of a window at a moment (signals), check the
+// replay against the record (validate) and against a recorded change of the rule (forecast),
+// compare the rules on two windows (compare) and name the rules a replay can run (rules). None of
+// them reaches a daemon.
 func newReplayCommand(stdout, stderr io.Writer) *cobra.Command {
 	return group(&cobra.Command{Use: "replay", Short: "replay a recorded window of a daemon's project through the daemon's own admission pass under a named slot rule (a developer's tool)"},
 		newReplayCollectCommand(stdout, stderr),
@@ -39,6 +40,7 @@ func newReplayCommand(stdout, stderr io.Writer) *cobra.Command {
 		newReplayNeutralizeCommand(stdout, stderr),
 		newReplayRunCommand(stdout, stderr),
 		newReplayScorecardCommand(stdout, stderr),
+		newReplaySignalsCommand(stdout, stderr),
 		newReplayValidateCommand(stdout, stderr),
 		newReplayForecastCommand(stdout, stderr),
 		newReplayCompareCommand(stdout, stderr),
@@ -503,6 +505,150 @@ func newReplayScorecardCommand(stdout, stderr io.Writer) *cobra.Command {
 		return 0
 	})
 	return cmd
+}
+
+// replaySignalsLong is `legion replay signals --help`'s description.
+const replaySignalsLong = `Print R11's signals of a recorded window at each moment --at names, each read from the
+window's own record, and each one's next crossing of each limit --limit gives.
+
+idle is the share of the slot holders idle for at least --idle-after (d); queue the merge
+queue's wait in hours, the larger of the median wait of the pull requests that left it in the 6
+hours before and the wait so far of the one longest in it; provider the share of the project's
+limit of uncached input tokens the minute before used, with refusals, the refusals of the hour
+before, by the project's own limit and by the provider; kills the memory guard's kills of the
+hour before; approvals the asks open that wait on the project's default assignee. Lower is
+better for each. A signal the window holds no record of at a moment is unrecorded, never zero,
+and binds nothing.
+
+--limit <signal>=<value>, given once for each limit, adds the signal's next crossing of that
+limit: the next moment after --at at which it would start or stop binding, recorded and at or
+above the limit, if no new event came, or none. approvals changes only at events, so it has no
+next crossing.
+
+Where the window holds the launcher's lines, it also prints the memory guard's kills of those
+lines matched with the daemon's lines of the kills, kill by kill, and each kill one of the two
+lacks.`
+
+// replayLimitNames is every signal --limit can name: R11's five and the provider's refusals.
+var replayLimitNames = []string{replay.SignalIdle, replay.SignalQueue, replay.SignalProvider, "refusals", replay.SignalKills, replay.SignalApprovals}
+
+// newReplaySignalsCommand is `legion replay signals` (replay.SignalDefinitions, replay.MatchKills):
+// R11's signals of a recorded window at each moment named, read from its record with no replay.
+func newReplaySignalsCommand(stdout, stderr io.Writer) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "signals --window <dir> --at <time>... [--limit <signal>=<value>...] [--idle-after <duration>]",
+		Short: "print R11's signals of a recorded window at each moment named, with each one's next crossing of each limit given",
+		Long:  replaySignalsLong,
+		Args:  noArguments,
+	}
+	flags := cmd.Flags()
+	windowDir := flags.String("window", "", "the directory of the recorded window (required)")
+	atTexts := flags.StringArray("at", nil, "a moment to read the signals at, in RFC 3339, given once for each (required)")
+	limitTexts := flags.StringArray("limit", nil, "a limit as <signal>=<value>, the signal one of "+strings.Join(replayLimitNames, ", ")+", given once for each")
+	idleAfter := flags.Duration("idle-after", replay.DefaultIdleAfter, "d, how long a slot holder has been idle before the idle signal counts it")
+	cmd.RunE = runs(func(context.Context, []string) int {
+		if missing := missingFlag(cmd, "window", "at"); missing != "" {
+			return refuse(cmd, "--%s is required", missing)
+		}
+		moments := make([]time.Time, 0, len(*atTexts))
+		for _, text := range *atTexts {
+			at, err := time.Parse(time.RFC3339, text)
+			if err != nil {
+				return refuse(cmd, "--at %q is no RFC 3339 time", text)
+			}
+			moments = append(moments, at)
+		}
+		limits := make(map[string][]float64)
+		for _, text := range *limitTexts {
+			name, value, named := strings.Cut(text, "=")
+			limit, err := strconv.ParseFloat(value, 64)
+			switch {
+			case !named || !slices.Contains(replayLimitNames, name):
+				return refuse(cmd, "--limit %q names no signal: give <signal>=<value>, the signal one of %s", text, strings.Join(replayLimitNames, ", "))
+			case err != nil || math.IsNaN(limit) || math.IsInf(limit, 0) || limit < 0:
+				return refuse(cmd, "--limit %q: the value is no number at or above zero", text)
+			}
+			limits[name] = append(limits[name], limit)
+		}
+		if *idleAfter < 0 {
+			return refuse(cmd, "--idle-after %s is below zero", *idleAfter)
+		}
+		window, err := replay.ReadWindow(*windowDir)
+		if err != nil {
+			fmt.Fprintf(stderr, "legion replay signals: %v\n", err)
+			return 1
+		}
+		signals, err := replay.ReadSignalRecord(window, *idleAfter)
+		if err != nil {
+			fmt.Fprintf(stderr, "legion replay signals: %v\n", err)
+			return 1
+		}
+		fmt.Fprintf(stdout, "the signals of %s, idle after %s\n", window.Project, *idleAfter)
+		for _, at := range moments {
+			fmt.Fprintf(stdout, "at %s\n", at.Format(time.RFC3339))
+			for _, def := range replay.SignalDefinitions() {
+				var next func(float64) (time.Time, bool)
+				if def.Next != nil {
+					next = func(limit float64) (time.Time, bool) { return def.Next(signals, at, limit) }
+				}
+				printReplaySignal(stdout, def.Name, replaySignalText(def.At(signals, at)), limits[def.Name], next)
+				if def.Name != replay.SignalProvider {
+					continue
+				}
+				refusals, text := signals.Refusals(at), "unrecorded"
+				if refusals.Recorded {
+					text = fmt.Sprintf("%d (own %d, provider %d)", refusals.Count(), refusals.Own, refusals.Provider)
+				}
+				printReplaySignal(stdout, "refusals", text, limits["refusals"], func(limit float64) (time.Time, bool) { return signals.NextRefusals(at, limit) })
+			}
+		}
+		if window.Launcher == nil {
+			return 0
+		}
+		match, err := replay.MatchKills(window)
+		if err != nil {
+			fmt.Fprintf(stderr, "legion replay signals: %v\n", err)
+			return 1
+		}
+		fmt.Fprintf(stdout, "the memory guard's kills: %d in both the launcher's lines and the daemon's\n", match.Both)
+		for _, side := range []struct {
+			name  string
+			kills []replay.GuardKill
+		}{{"the launcher's lines", match.LauncherOnly}, {"the daemon's lines", match.DaemonOnly}} {
+			for _, kill := range side.kills {
+				fmt.Fprintf(stdout, "  only in %s: %s %s %s pid %d\n", side.name, kill.At.Format(time.RFC3339Nano), kill.Pod, kill.Role, kill.PID)
+			}
+		}
+		return 0
+	})
+	return cmd
+}
+
+// replaySignalText is a signal's value as `legion replay signals` prints it: the number, or
+// unrecorded.
+func replaySignalText(value replay.SignalValue) string {
+	if !value.Recorded {
+		return "unrecorded"
+	}
+	return strconv.FormatFloat(value.Value, 'f', -1, 64)
+}
+
+// printReplaySignal prints one signal at a moment, text its value, and its next crossing of each of
+// limits as next gives it, or, where next is nil, that it changes only at events.
+func printReplaySignal(stdout io.Writer, name, text string, limits []float64, next func(float64) (time.Time, bool)) {
+	fmt.Fprintf(stdout, "  %s %s\n", name, text)
+	for _, limit := range limits {
+		shown := strconv.FormatFloat(limit, 'f', -1, 64)
+		if next == nil {
+			fmt.Fprintf(stdout, "    limit %s: no crossing, it changes only at events\n", shown)
+			continue
+		}
+		if at, due := next(limit); due {
+			fmt.Fprintf(stdout, "    limit %s: crosses at %s\n", shown, at.Format(time.RFC3339))
+		} else {
+			fmt.Fprintf(stdout, "    limit %s: no crossing due\n", shown)
+		}
+	}
 }
 
 // replayValidateLong is `legion replay validate --help`'s description.

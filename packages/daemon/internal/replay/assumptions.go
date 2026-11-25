@@ -8,7 +8,8 @@ package replay
 // window that would test it, so a reader of a result can weigh what it rests on.
 type Assumption struct {
 	// Number is the assumption's number: 1 to 18 are the list of the tool's spec, in its order,
-	// 19 to 25 were added by its plan, and 26 on are the tool's own (Assumptions).
+	// 19 to 25 were added by its plan, 26 to 37 are the tool's own, and 38 on were added to the
+	// plan (Assumptions).
 	Number int `json:"number"`
 	// Text is what the replay assumes.
 	Text string `json:"text"`
@@ -29,8 +30,10 @@ type Assumption struct {
 // conflict past the review (37: conflictFor); then the seven the plan's addition D10 added from a
 // review of the tool's replays of a recorded window (38 to 44: the merge queue, a person's hours,
 // the slowdown factor's fit, work done outside Legion, main's base rules, answer offsets and the
-// noise of a validation's redrawn conflicts). A run names the ones its measures rest on by these
-// numbers.
+// noise of a validation's redrawn conflicts); then the four of R11's signals (45 to 48: the
+// models' one input, the refusals the record keeps as recorded, a signal with no record, and the
+// provider's limit between two observations of it, the architect's D13). A run names the ones its
+// measures rest on by these numbers.
 var Assumptions = []Assumption{
 	{Number: 1,
 		Text:      "A work segment takes its recorded time at any start and at any number in flight.",
@@ -66,8 +69,8 @@ var Assumptions = []Assumption{
 		Text:      "A slot that comes free is given out in the same pass.",
 		Direction: "Sound for the record, where the median was 18 microseconds and the longest 88 seconds: a slower hand-out would lengthen every rule's waits for a slot alike."},
 	{Number: 12,
-		Text:      "A waiting slot costs no pod after the idle release.",
-		Direction: "Sound after 10 minutes: a pod kept longer would cost a rule that holds idle slots more than the replay counts."},
+		Text:      "A waiting issue costs no pod after the idle release.",
+		Direction: "Doubtful: on 2026-11-24, 43 of 110 waiting issues with a pod had had no role turn for more than 10 minutes. The replay counts no pod, so the result names the pods of waiting issues as a cost that it does not measure."},
 	{Number: 13,
 		Text:      "Work after a send-back takes its recorded time, or that time less its wait for a slot.",
 		Direction: "Doubtful: the recorded time holds the recorded rule's own wait for a slot, which favours that rule. The tool runs both as branches."},
@@ -144,8 +147,8 @@ var Assumptions = []Assumption{
 		Text:      "Under main and the candidates built on it, whose conflict path is main's, a conflict past the review is answered as the daemon the replay runs answers it, which leaves it to the merger (cybermonklabs/legion#4979): in accepting or retro the issue keeps its phase, and the merger merges the base forward once the issue moves into merging; in merging the merger merges it forward at once. A rule that names another path answers it by that path, as the release that ran the rule did: legion-v20.42.5 and legion-v19.57.3 move the issue back to implementing from accepting, retro and merging, and legion-v22.14.1 keeps the phase and asks the implementer to merge the base forward at once. A version or a registration of a root's design in the work the issue goes on with keeps its recorded time.",
 		Direction: "The tool's own, and it covers main and the candidates built on it alone: a rule that names another conflict path plays a conflict past the review by that path, so a replay of a window under the rule that recorded it plays that conflict's move back or merge forward as the record does. For main it is the daemon's own answer. For a candidate it is wrong where the candidate would ask the implementer at once, as a daemon before cybermonklabs/legion#4979 did; a merge forward lasts as long whichever role runs it, so the direction is none. Where a conflict in accepting or retro waits for the merger, the work the issue goes on with opens at once, and a version or a registration of the root's design in that work keeps its recorded time, so the tree's design gate opens and closes at the record's times and holds the tree's first starts and its merger as the record did. The tool counts the conflicts it leaves to the merger."},
 	{Number: 38,
-		Text:      "Merging is no queue: a stretch in merging keeps its recorded length and its outcome, however many pull requests wait in the merge queue with it.",
-		Direction: "Doubtful: in the record a pull request that entered merging behind more of them was sent back more often and merged later, so a rule or a cap that brings more work to merging at once is favoured. The tool keeps each stretch in merging as recorded."},
+		Text:      "A stretch in merging keeps its recorded length and outcome. The merge queue's wait under another rule comes from the fitted model, which only a signal rule reads.",
+		Direction: "Doubtful: in the record a pull request that entered merging behind more of them was sent back more often and merged later, so a rule or a cap that brings more work to merging at once is favoured. A signal rule reads the modelled wait for admission, not to change the stretch."},
 	{Number: 39,
 		Text:      "A person answers at any hour of the day, and answers any number of questions at once.",
 		Direction: "Doubtful: in the record no answer came in some hours of each day, a question asked then waited many hours, and a question waited longer where many waited, so a rule that moves questions into those hours or asks more of them at once is favoured. The tool places each answer at its recorded time or offset (assumption 5)."},
@@ -164,6 +167,18 @@ var Assumptions = []Assumption{
 	{Number: 44,
 		Text:      "A validation of the recorded rule draws the record's conflicts again, so the first-slot test of R5 rests on the replay's own noise.",
 		Direction: "Doubtful: two seeds differ in an issue's first slot by about half as much as the replay differs from the record, so the first-slot test can pass or fail on the draws alone. The tool runs the diagnostic branch main+conflicts=recorded beside R5's tests, which keeps the record's conflicts and draws none, and never reads it in place of the main branch."},
+	{Number: 45,
+		Text:      "The three modelled signals depend on the work in flight alone.",
+		Direction: "Doubtful: even at a full cap, one window had 299, 88, 57 and 110 memory kills on successive days. Unmodelled changes can favour or disfavour a signal rule. Compare each model's daily reading with the record at the recorded work in flight."},
+	{Number: 46,
+		Text:      "A refusal by the provider, or one the record does not split, is kept as recorded and counted as R11 says.",
+		Direction: "A provider refusal stays as recorded. An unsplit refusal counts as the project's own and the result says so. This can overstate the project's own refusals if some came from the provider. Check against a record that separates the counts."},
+	{Number: 47,
+		Text:      "A signal with no record in a span does not bind there.",
+		Direction: "If an unrecorded signal would exceed its limit, the replay favours a rule that starts work in that span. Check the decision on a span where that signal is recorded."},
+	{Number: 48,
+		Text:      "The provider's limit holds from one observation to the next.",
+		Direction: "Doubtful: a change between observations is read late, so headroom is misread over that stretch, high after a cut and low after a raise. Use the limit in each 429 line's \"of its N\" and in each recorded change, naming the source of each value. Before the first observation headroom is unrecorded, does not bind and is not fitted. Check any recorded limit change against the next 429's N."},
 }
 
 // assumeSlotFromBeforeTheReach is the assumption the trace's own inference rests on, that an issue

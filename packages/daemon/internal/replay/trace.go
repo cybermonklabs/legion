@@ -527,6 +527,29 @@ type StartFailure struct {
 	Error string
 }
 
+// guardKillToldLine and guardKillUnrecordedLine are the msgs of the daemon's lines of a kill of a
+// process of an issue pod's role that its launcher reported (workflow's memoryGuardKill): the
+// line of the memory guard's kill, whose role is told why, and the line of a kill of any cause
+// that names an issue the daemon does not record, which tells nobody.
+const (
+	guardKillToldLine       = "workflow: the role whose process the memory guard ended is told why"
+	guardKillUnrecordedLine = "workflow: a memory guard kill names an issue the daemon does not record, so no role is told"
+)
+
+// GuardKillLine is one of the daemon's lines of a kill an issue pod's launcher reported
+// (guardKillToldLine, guardKillUnrecordedLine): the issue, the claim of the role whose process
+// was ended, that process's pid, and the kill's cause, "" for the memory guard's own
+// (shimwire.MemoryKillCauseGuard). The launcher's own line of the kill is the kill signal's
+// record, and this line is read beside it by the kill matcher alone (MatchKills): the trace
+// builder reads nothing of it, so a window that holds it is traced as one that does not.
+type GuardKillLine struct {
+	LineHead
+	Issue string
+	Claim ClaimRef
+	PID   int
+	Cause string
+}
+
 // CheckClosed is a `workflow: production check closed` line (workflow's markCheckClosed): the
 // production check of an issue's merge closed. Where the issue stands outside the workflow,
 // closeCheck then has the claim of the role the check is for retired (issue_close), and that
@@ -949,6 +972,8 @@ var lineReaders = map[string]func(LineHead, *lineAttrs) LogLine{
 		return MergedCloseWaits{LineHead: h, Issue: a.str("issue"), Tree: a.str("tree"), PullRequest: a.count("pullRequest"),
 			WaitingFor: strings.Split(a.str("waitingFor"), ", ")}
 	},
+	guardKillToldLine:       readGuardKill,
+	guardKillUnrecordedLine: readGuardKill,
 }
 
 // readProcessStart reads one of the lines a daemon process starts with (ProcessStart), which
@@ -957,6 +982,12 @@ func readProcessStart(h LineHead, _ *lineAttrs) LogLine { return ProcessStart{Li
 
 func readStartFailure(h LineHead, a *lineAttrs) LogLine {
 	return StartFailure{LineHead: h, Claim: a.claim("claim"), Error: a.str("error")}
+}
+
+// readGuardKill reads one of the daemon's lines of a kill a launcher reported (GuardKillLine): its
+// cause is absent from a release that predates the member, as the guard's own.
+func readGuardKill(h LineHead, a *lineAttrs) LogLine {
+	return GuardKillLine{LineHead: h, Issue: a.str("issue"), Claim: a.claim("role"), PID: a.count("pid"), Cause: a.optionalStr("cause")}
 }
 
 // lineReaderOf is the reader of the lines of msg (lineReaders, the process's start lines and the

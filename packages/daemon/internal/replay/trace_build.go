@@ -1211,6 +1211,11 @@ func (b *traceBuilder) onLine(line LogLine) {
 		b.t.claimCauses[token] = append(b.t.claimCauses[token], claimCause{at: at, text: failure.Error, startFailure: true})
 		return
 	}
+	// The daemon's line of a kill a launcher reported is the kill matcher's evidence alone
+	// (MatchKills): it moves nothing of the trace, and no process boundary.
+	if _, ok := line.(GuardKillLine); ok {
+		return
+	}
 	starts := false
 	switch l := line.(type) {
 	case ProcessStart:

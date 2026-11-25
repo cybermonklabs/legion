@@ -906,10 +906,17 @@ func (r *lineReader) unfinished(blockedBy []string, at time.Time) bool {
 }
 
 // holderState is the state of the slots reading x's issue, holding a slot, stands in at at
-// (record.HolderStateOf): its turns, its hold, its root's wait on a person and its wait on another
-// issue, as its trace holds them. Nothing on its way to a worker shows in a trace, so a holder is
-// working only in a turn.
+// (record.HolderStateOf over holderFactsAt).
 func (r *lineReader) holderState(x *issueIndex, at time.Time, tree string, visit *Visit, waiting, held bool) record.HolderState {
+	state, _ := record.HolderStateOf(holderFactsAt(x, at, tree, visit, waiting, held))
+	return state
+}
+
+// holderFactsAt is what x's issue's trace says of it as a slot holder at at, in tree and visit,
+// waiting on another issue or held: its turns, its hold, its root's wait on a person and its wait
+// on another issue (record.HolderFacts), each with no time but its turn's. Nothing on its way to a
+// worker shows in a trace, so a holder is working only in a turn.
+func holderFactsAt(x *issueIndex, at time.Time, tree string, visit *Visit, waiting, held bool) record.HolderFacts {
 	facts := record.HolderFacts{Issue: record.Issue{Key: x.iss.Key, Tree: tree}, WaitsOnIssue: waiting}
 	if visit != nil {
 		facts.Issue.Phase = visit.Phase
@@ -921,6 +928,5 @@ func (r *lineReader) holderState(x *issueIndex, at time.Time, tree string, visit
 		facts.InTurn = []time.Time{at}
 	}
 	facts.Person = tree == x.iss.Key && x.person.at(at) > 0
-	state, _ := record.HolderStateOf(facts)
-	return state
+	return facts
 }

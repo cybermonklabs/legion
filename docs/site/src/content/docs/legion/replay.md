@@ -92,6 +92,8 @@ The tool reads these kinds of daemon line:
 
 - the lines that a daemon process writes as it starts
 
+- the `workflow:` lines of a kill that an issue pod's launcher reported, which only the kill matcher of [Signal `kills`](#signal-kills) reads
+
 From this release, the daemon also writes one `admission: a pass moved slots` line for each admission pass that gives out or takes back a slot.
 That line gives the slots in use and the cap.
 It also gives each slot given out or taken back, with its issue and reason, and each issue of the line that the pass went past, with its reason.
@@ -396,7 +398,7 @@ Each run makes a database of its own there, from `template1` with the daemon's m
 `run --keep-db` keeps the database of its run.
 No run writes to the database that `--pg-dsn` names.
 Use a test server.
-`scorecard` and `rules` need no database.
+`scorecard`, `signals` and `rules` need no database.
 
 A comparison of rules takes these steps:
 
@@ -595,6 +597,29 @@ legion replay scorecard --window windows/acme-2026-10-05
 `scorecard` reads every measure of a window from its record alone, by the code that reads a replay's measures, with no replay and no database.
 It prints one measure on each line as `<name> <value>`, and then each issue's first slot and done.
 `--json` prints the scorecard as JSON.
+
+### `legion replay signals`
+
+```sh
+legion replay signals --window windows/acme-2026-10-05 \
+  --at 2026-10-06T10:00:00Z --at 2026-10-06T16:00:00Z \
+  --limit kills=2 --limit queue=1.5 --idle-after 10m
+```
+
+`signals` reads each signal of [The signals](#the-signals) at each moment that `--at` names, from the window's record alone, with no replay and no database.
+It prints a block for each moment, with a line for each signal: `idle`, `queue`, `provider`, `refusals`, `kills` and `approvals`.
+Each line gives the signal's value, or `unrecorded` where the window holds no record of the signal at that moment.
+`idle` and `provider` are shares, `queue` is in hours, and `refusals`, `kills` and `approvals` are counts, with the refusals of the project's own limit and of the provider beside their count.
+Under a signal, each `--limit <signal>=<value>` that names it adds a line with the next moment at which the signal would cross that limit if no new event came.
+That line says `no crossing due` where none would come, and, for `approvals`, that the signal changes only at events.
+Where the window holds the launcher's lines, `signals` then prints how many of the memory guard's kills both the launcher's lines and the daemon's hold, and each kill that one of the two lacks ([Signal `kills`](#signal-kills)).
+
+| Flag | What it gives |
+| --- | --- |
+| `--window <dir>` | The window (required). |
+| `--at <time>` | A moment, in RFC 3339, given once for each (required). |
+| `--limit <signal>=<value>` | A limit of `idle`, `queue`, `provider`, `refusals`, `kills` or `approvals`, at or above zero, given once for each. |
+| `--idle-after <duration>` | d, how long a holder has been idle before the idle signal counts it (1 hour by default). |
 
 ### `legion replay validate`
 
@@ -1401,6 +1426,115 @@ slots: 4 of 4 in use: 2 working (oldest 2026-10-05T10:12Z), 0 stopped, 1 person 
 A replay measures from the same states, so a reading of production and a replay use one set of words.
 `waitOnlyForSlot` is the line's `wait only for a slot`, `startedWithoutSlot` its `in all`, and `priorityTaken` places holders and waiting issues in the order of its last sentence ([The measures](#the-measures)).
 
+## The signals
+
+The tool's spec names, in its R11, five signals that a rule can admit by: the idle share, the merge queue's wait, the model provider's headroom with its refusals, the memory guard's kills, and the approvals that wait on the project's default assignee.
+Each has one definition in the tool's code (`internal/replay/signals.go`), which reads it at any moment of a collected window from the window's own record.
+Lower is better for each.
+
+A signal binds where the window holds a record of it and its value is at or above its limit, since a rule admits while each signal is under its limit.
+A signal with no record at a moment is unrecorded, never zero, and binds nothing there (assumption 47).
+Each signal but the approvals has a next crossing: the next moment after a moment at which it would start or stop binding if no new event came.
+The end of a signal's record is such a moment for a signal that binds there.
+It is the moment at which a rule that admits by the signals needs its next admission pass when no event comes first (R11), and each event moves it again.
+
+A replay keeps each work segment's recorded length, so it cannot show the load that more work in flight would cause.
+So a replay under another rule takes the merge queue's wait, the provider's headroom and refusals, and the kills from a model fitted on the window, as functions of the work in flight (assumption 45).
+The idle share and the approvals come from the replay itself.
+The definitions below read the record, and [`legion replay signals`](#legion-replay-signals) prints them.
+
+### Signal `idle`
+
+**Definition**: the share of the slot holders whose state is `idle` with its time at least d before the moment.
+d is one hour, and the comparison also reads it at 10 minutes and at 4 hours (`--idle-after`).
+A holder's state is the one of [The states of a slot holder](#the-states-of-a-slot-holder), read by the same rule as `legion state`.
+An idle holder's time is the later of the newest end of a turn of its claims and the moment it took the slot that it holds.
+A moment with no holder has a share of 0.
+
+**Next crossing**: with the holders as they stand at the moment, the moment at which a holder idle since s reaches s + d.
+A holder leaves `idle` only at an event, so the share falls at no moment with no event.
+
+**Inputs**: `log.jsonl`, its `admission:` slot lines and its `supervise:` lines of each turn's start and end.
+Live, the same share comes from each slot's `state` and `since` in `legion state --json`, which a test of the tool holds to the window's reading of the same slot.
+
+**Source**: the replay itself.
+
+### Signal `queue`
+
+**Definition**: the larger of two waits, in hours, the median wait of the project's pull requests that left the merge queue in the 6 hours before the moment, and the wait so far of the project's pull request that has been in the merge queue longest at the moment.
+A wait runs from a pull request's `added_to_merge_queue` to the `merged` or `removed_from_merge_queue` that ends it, so a drop and a re-add are two waits.
+The removal that GitHub records beside a merge ends no wait.
+With no exit in the 6 hours and no pull request in the queue, the wait is 0.
+
+**Next crossing**: with the waits as they stand at the moment, the moment at which the wait of the pull request longest in the queue reaches the limit, or at which an exit leaves the 6 hours.
+
+**Inputs**: `queue/<owner>__<name>.jsonl`, which `collect-queue` writes.
+
+**Source**: the merge queue model fitted on the window (assumption 38).
+
+### Signal `provider`
+
+**Definition**: the share of the project's limit that its uncached input tokens used in the minute before the moment, the tokens of the last whole minute that ended at or before the moment over the limit in force in that minute.
+The tokens are as the record writes them, below zero too.
+The limit holds from one observation to the next, as the record gives it (assumption 48).
+The headroom has no record in a minute before the limit's first observation, in a minute with no limit or a limit of 0, and in a minute whose limit is one model's own (a `limit_scope` other than `Claude`), which is no limit on the project's tokens.
+There it binds nothing.
+
+**Refusals**: part of the provider's signal, the refusals of each minute of the record that ended in the hour before the moment, each by the limit that gave it, the project's own (`own`) or the provider's (`provider`), as the record splits them (assumption 46).
+A limit of the refusals reads their count (`--limit refusals=<n>`).
+The refusals have a record at a moment where the record holds the minute before it, whatever the limit.
+
+**Next crossing**: for the headroom, the first minute boundary at which the record's series starts or stops binding.
+For the refusals, with the refusals as they stand at the moment, the moment at which an old refusal leaves the hour.
+
+**Inputs**: `signals/provider.jsonl`.
+
+**Source**: the tokens model fitted on the window, for the headroom and the refusals by the project's own limit.
+A refusal that the provider gives every project is kept as recorded.
+
+### Signal `kills`
+
+**Definition**: the count of the memory guard's kills of the project's issue pods in the hour before the moment, one for each launcher line whose text starts `launcher: memory guard: ended`, counted from its own moment to an hour later.
+
+**Next crossing**: with the kills as they stand at the moment, the moment at which an old kill leaves the hour.
+
+**Inputs**: `launcher/log.jsonl`, the record of the kills.
+`signals/memory.jsonl` serves only the model.
+
+**Source**: the memory model fitted on the window.
+
+**The daemon's lines of the kills**: the daemon writes a line of each kill that a launcher reports, `workflow: the role whose process the memory guard ended is told why`, or, for an issue that it does not record, `workflow: a memory guard kill names an issue the daemon does not record, so no role is told`.
+The tool reads those lines beside the launcher's and matches the two kill by kill, on the pod, the role, the process's pid, and a time at most a minute apart (`MatchKills` in `internal/replay/kills.go`).
+`legion replay signals` prints how many kills both hold, and each kill that one of them lacks.
+A window that `collect` wrote before it kept the daemon's lines of the kills holds none of them, so collect it again to read both.
+The trace reads nothing else of those lines, so a window that holds them replays as one that does not.
+
+### Signal `approvals`
+
+**Definition**: the count of the asks open at the moment, approval requests among them, that wait on the project's default assignee then.
+An ask waits on its `asked_of` person, else on its issue's assignee, else on the project's default assignee at the moment.
+The default assignee is the one that the newest `settings.project_default_assignee.updated` at or before the moment names, else `window.json`'s `defaultAssignee`.
+An ask counts while it is open and waits on a person, as the daemon reads the turn of an ask (`internal/intake/decode.go`) and as Dispatch's contract gives it (`packages/contracts/src/dispatch-api-events.ts` and `dispatch-api-asks.ts`):
+
+- `ask.opened` opens it waiting on a person, and an ask event whose payload's `state` is `open` opens a closed ask again so.
+  `ask.answered` and `ask.resolved` close it, a decline among them (`resolution.kind` is `declined`).
+
+- An `ask.edited` that moves an approval request, its `requested_version` below its `version`, leaves it waiting on its agent, and any other edit leaves it as it was.
+  Its `ask.handed_back`, the agent handing it back to the person, leaves it waiting on the person.
+
+- A comment on an open ask (`comment.created`, `comment.answered`) leaves it waiting on whom its `ask_waiting_on` names: `agent` after a person's reply, and `human` after an agent's.
+
+- `asked_of`, which the payload of each ask event carries, `ask.opened`, `ask.asked_of` and `ask.edited` among them, names the person that the ask is asked of.
+  An issue's assignee comes from its `issue.created` and `issue.updated` events.
+
+The signal reads the ask events of every issue of the project, which `collect` lists.
+
+**Next crossing**: none, since the approvals change only at events.
+
+**Inputs**: `events/<KEY>.jsonl`, `settings/events.jsonl`, and `window.json`'s `defaultAssignee`.
+
+**Source**: the replay itself.
+
 ## The assumptions
 
 A replay under a rule other than the one that made the record rests on assumptions about what the window would show under that rule.
@@ -1409,6 +1543,7 @@ Numbers 1 to 18 are the assumptions that the review of the first replay, below, 
 Numbers 19 to 22 map the release at 9542c6fb onto today's workflow, 23 is the conflict path of the rule `main`, 24 is a daemon's downtime, and 25 is its reading of outside blockers.
 Numbers 26 to 37 are the tool's own.
 Numbers 38 to 44 come from a later review of the tool's own replays of one deployment's recorded window, which read the replays, the daemon's code and the window's record.
+Numbers 45 to 48 are those of [The signals](#the-signals): what the models of three of them rest on, how the refusals and a signal with no record are read, and how the provider's limit is read between two observations of it.
 Each section below gives the assumption as the tool states it, and its verdict.
 It then gives the evidence in a recorded window, the direction in which the assumption moves each measure if it is wrong, and the reading of a window that would test it.
 
@@ -1428,8 +1563,8 @@ Under the rule that made the record, `validate` measures how far a replay stands
 
 A first replay, a prototype outside this repository, replayed one deployment's record under eight rules.
 A review of it by a model of another family named the faults that the tool fixes.
-For assumptions 1 to 18, sound, doubtful and wrong are that review's verdicts.
-For assumptions 19 to 44, a verdict is the tool's own.
+For assumptions 1 to 18, sound, doubtful and wrong are that review's verdicts, but for assumption 12, whose verdict the tool's spec gives from a later reading of a deployment.
+For assumptions 19 to 48, a verdict is the tool's own.
 Numbers from the prototype's record come from that deployment's daemon log over four days, in which every slot was in use for 99.95% of the time.
 That record is not in this repository.
 
@@ -1826,18 +1961,19 @@ If the daemon gave a free slot out later than the pass that freed it, the replay
 Pair each slot released with the next slot taken while an issue waited, and read the time between them.
 From this release, one `admission: a pass moved slots` line names each slot that one pass gave out and took back.
 
-### Assumption 12: A waiting slot costs no pod after the idle release
+### Assumption 12: A waiting issue costs no pod after the idle release
 
-Sound after 10 minutes.
-A pod kept longer would cost a rule that holds idle slots more than the replay counts.
+Doubtful.
+The review of the first replay judged it sound after 10 minutes, and a later reading of one deployment found waiting issues that kept their pod much longer.
+The replay counts no pod, so the result names the pods of waiting issues as a cost that it does not measure.
 
-**Evidence in a recorded window.** _The daemon's release of idle pods._
+**Evidence in a recorded window.** _The pods of the issues that waited for a slot._
 The daemon releases an issue pod that is idle for 10 minutes.
-In the prototype's record, it released 2,266 idle pods in 25 hours, which gave back 2,247.53 pod-hours.
-The median time from a wake to the role's first turn was 160 seconds.
+In the prototype's record, it released 2,266 idle pods in 25 hours, which gave back 2,247.53 pod-hours, and the median time from a wake to the role's first turn was 160 seconds.
+On 2026-11-24, 43 of the 110 waiting issues with a pod in one deployment's daemons had had no role turn for more than 10 minutes.
 
 **If it is wrong.**
-If an idle slot kept its pod past 10 minutes, the replay moves the measures so.
+If a waiting issue keeps its pod past the idle release, the replay moves the measures so.
 
 - Issues finished: None, because the measures count slots and work, not pods.
 
@@ -1847,12 +1983,12 @@ If an idle slot kept its pod past 10 minutes, the replay moves the measures so.
 
 - Other delays: None, for the same reason.
 
-- Slots: None, because the measures already count an idle slot as slot-hours with no worker in a turn.
-  The cost of a pod kept longer stands outside the measures.
+- Slots: None, because a waiting issue holds no slot, and the measures count an idle slot as slot-hours with no worker in a turn.
+  The cost of the pod of a waiting issue stands outside the measures, and the result names it.
 
-**The reading that would test it.** _The idle pods against the idle slots._
-Read from the daemon's log when it released each idle pod, and read from a scorecard the slot-hours with no worker in a turn.
-An idle slot whose pod stays up for more than 10 minutes shows a cost that the replay does not count.
+**The reading that would test it.** _The waiting issues against their pods._
+At moments of a window, count the issues that wait for a slot and still have their pod, and read from the daemon's log when each of those pods was released.
+A waiting issue whose pod stays up for more than 10 minutes with no role turn is a cost that the replay does not count.
 
 ### Assumption 13: Work after a send-back takes its recorded time, or that time less its wait for a slot
 
@@ -2654,12 +2790,13 @@ Collect a window recorded under a release with cybermonklabs/legion#4979, and re
 A conflict in accepting or retro writes the line `workflow: a confirmed conflict needs no merge yet`, and a merge forward in merging writes the line `workflow: merge forward asked`.
 Compare the time from each conflict to its merge with the same time in a window of release 22.14.1 replayed under `legion-v22.14.1`.
 
-### Assumption 38: Merging is no queue: a stretch in merging keeps its recorded length and its outcome, however many pull requests wait in the merge queue with it
+### Assumption 38: A stretch in merging keeps its recorded length and outcome
 
 Doubtful.
 A replay keeps each stretch in merging as the record shows it, with its length, its drops from the merge queue and its send-backs.
 It does not read how many pull requests of the same repository wait in merging at the same time.
 So a rule or a cap that brings more work to merging at once is favoured.
+The merge queue's wait under another rule comes from the model fitted on the window ([Signal `queue`](#signal-queue)), which only a signal rule reads: it admits by the modelled wait, and the stretch keeps its length.
 
 **Evidence in a recorded window.** _Merging against the depth of the queue._
 In one deployment's recorded window of four days, a pull request that entered merging behind more of its project's pull requests on the same repository was sent back more often, and a merged one took longer to merge.
@@ -2869,3 +3006,109 @@ If the redrawn conflicts move the first slots more than the rule does, the repla
 
 **The reading that would test it.** _The diagnostic branch beside the main branch._
 Compare the first-slot error of `main` with that of `main+conflicts=recorded` in one validation, and the spread of the first-slot error over the seeds of `main`.
+
+### Assumption 45: The three modelled signals depend on the work in flight alone
+
+Doubtful.
+A replay under another rule takes the merge queue's wait, the provider's headroom with the refusals by the project's own limit, and the memory guard's kills from models fitted on the window, each a function of the work in flight alone ([The signals](#the-signals)).
+Load that a rule does not move, such as the size of the work or the hour of the day, moves these signals too, and the models do not read it.
+Under a rule that admits by no signal, the models move nothing.
+
+**Evidence in a recorded window.** _The kills of one window at a full cap._
+Even at a full cap, so at one level of work in flight, one deployment's window had 299, 88, 57 and 110 memory kills on successive days.
+
+**If it is wrong.**
+If a modelled signal moves with more than the work in flight, the replay moves the measures so under a rule that admits by the signals.
+
+- Issues finished: Unknown.
+  A model that reads a signal too high holds back starts that the true signal would let through, and one that reads it too low lets through starts that it would hold back.
+
+- Started work that waits for a slot: Unknown, for the same reason.
+
+- Priority taken by holders: None, because the signals hold back starts below P0, not ranks.
+
+- Other delays: Unknown.
+  More or fewer starts change how many stretches run at once, and so the conflicts that the merges term draws.
+
+- Slots: Unknown, for the same reason as the issues finished.
+
+**The reading that would test it.** _Each model's daily reading against the record._
+Compare each model's reading of each day with the record of that day at the recorded work in flight, on each window.
+A day whose record a model misses at the same work in flight shows load that the model does not read.
+
+### Assumption 46: A refusal by the provider, or one the record does not split, is kept as recorded and counted as R11 says
+
+The record splits the refusals of each minute into those of the project's own limit and those of the provider ([Signal `provider`](#signal-provider)).
+A replay under another rule takes the project's own refusals from the tokens model and keeps the provider's as recorded, since the provider gives them to every project.
+A refusal that the record does not split counts as the project's own, and the result says so.
+
+**Evidence in a recorded window.** _Refusals of both kinds in one minute._
+In one deployment's record of 2026-11-23 from 16:28, the provider refused 70 calls in the first minute while the project's own limit refused none, and in the third minute the project's own limit refused 127 beside the provider's 53.
+
+**If it is wrong.**
+If some of the refusals counted as the project's own came from the provider, the replay moves the measures so under a rule that holds back starts on the project's own refusals.
+
+- Issues finished: Down, because the rule holds back starts for refusals that more work in flight did not cause.
+
+- Started work that waits for a slot: Up, for the same reason.
+
+- Priority taken by holders: None, because the refusals hold back starts below P0, not ranks.
+
+- Other delays: None, because the refusals move no loop and no wait on another issue.
+
+- Slots: Down, because the starts held back hold no slot.
+
+**The reading that would test it.** _A record that separates the counts._
+Check the minutes whose refusals the record does not split against a record of the same minutes that separates the project's own refusals from the provider's.
+
+### Assumption 47: A signal with no record in a span does not bind there
+
+A signal that the window holds no record of at a moment is unrecorded, never zero, and a rule that admits by the signals lets it hold back nothing there.
+The provider's headroom has no record before the first observation of the project's limit and where the project had no limit (assumption 48), the kills none where the deployment gave no launcher's lines, and the approvals none before the project's default assignee is known.
+
+**Evidence in a recorded window.** _A window with no limit of the project's._
+In one deployment's first window, the project's own limit on the provider's tokens was taken away at 2026-11-16T22:07Z, so the headroom has no record from then on.
+
+**If it is wrong.**
+If a signal with no record would have stood at or above its limit, the replay moves the measures so under a rule that admits by the signals, in the span with no record.
+
+- Issues finished: Up, because the rule starts work that the signal would have held back.
+
+- Started work that waits for a slot: Down, for the same reason.
+
+- Priority taken by holders: None, because the signals hold back starts below P0, not ranks.
+
+- Other delays: Unknown.
+  More starts run more stretches at once, and so change the conflicts that the merges term draws.
+
+- Slots: Up, because the starts let through hold slots.
+
+**The reading that would test it.** _The decision where the signal is recorded._
+Check the rule's decisions on a span where that signal is recorded, and compare the starts that it makes there with those that it makes where the signal is unrecorded.
+
+### Assumption 48: The provider's limit holds from one observation to the next
+
+Doubtful.
+The record observes the project's limit where a refusal's line in the deployment's log names it, the "of its N" of a 429, and where a change of it is recorded, each value with its source.
+Between two observations, the tool takes the earlier one to hold, so a change between them is read late, and the headroom is misread over that stretch: high after a cut, and low after a raise.
+Before the first observation, the headroom has no record, does not bind and is not fitted (assumption 47).
+
+**Evidence in a recorded window.** _Few observations of the limit._
+In one deployment's record of nine days, the limit was observed in 290 of 12,150 minutes, and one recorded change took it away at 2026-11-16T22:07Z.
+
+**If it is wrong.**
+If the limit changed between two observations, the replay moves the measures so under a rule that admits by the headroom, over that stretch.
+
+- Issues finished: Unknown.
+  It is up after a cut read late, since the share of the limit in use then reads below its true share, and down after a raise read late.
+
+- Started work that waits for a slot: Unknown: down after a cut read late, and up after a raise.
+
+- Priority taken by holders: None, because the headroom holds back starts below P0, not ranks.
+
+- Other delays: None, because the headroom moves no loop and no wait on another issue.
+
+- Slots: Unknown: up after a cut read late, and down after a raise.
+
+**The reading that would test it.** _Each recorded change against the next 429._
+Check each recorded change of the limit against the N of the next 429 line: an N that differs from the limit that the record holds then is a change that the record read late.
