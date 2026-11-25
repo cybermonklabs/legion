@@ -304,8 +304,8 @@ type takeoverRetry struct {
 // take-over window and on this server's clock.
 func (s *server) newTakeoverRetry() takeoverRetry {
 	return takeoverRetry{
-		clock:   s.clock,
-		first:   s.clock.Now(),
+		clock:   s.clock(),
+		first:   s.clock().Now(),
 		backoff: takeoverFirstBackoff,
 		window:  cmp.Or(s.deps.ListenerTakeoverWindow, listenerTakeoverWindow),
 	}

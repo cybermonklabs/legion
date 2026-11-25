@@ -45,12 +45,12 @@ const bodyDrainLimit = time.Minute
 // at that end in place of bodyDrainLimit from now, and none at all where that end is none;
 // production's zero value keeps bodyDrainLimit.
 func (s *server) readFor(w http.ResponseWriter) (lift func()) {
-	span, bounded := s.drainDeadline.Within(s.clock, bodyDrainLimit)
+	span, bounded := s.drainDeadline.Within(s.clock(), bodyDrainLimit)
 	if !bounded {
 		return func() {}
 	}
 	controller := http.NewResponseController(w)
-	if err := controller.SetReadDeadline(s.clock.Now().Add(span)); err != nil {
+	if err := controller.SetReadDeadline(s.clock().Now().Add(span)); err != nil {
 		return func() {}
 	}
 	return func() { _ = controller.SetReadDeadline(time.Time{}) }

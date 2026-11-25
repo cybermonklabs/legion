@@ -36,7 +36,8 @@
 //
 // Armed is the deadlines pending on the fake, in order: every timer armed and neither fired nor
 // stopped, a Sleep in progress and a deadline context not yet ended among them. AwaitArmed waits for
-// a count of them and AwaitArmedAt for one deadline among them, through testwait, as clockwork's
+// a count of them, AwaitArmedAt for one deadline among them and AwaitArmedCountAt for a count of
+// timers at one deadline, through testwait, as clockwork's
 // BlockUntilContext does, so a test moves the fake past a deadline only once the code has armed it,
 // and a failure names what the test expected, the deadlines it saw and the fake's moment.
 //
@@ -48,8 +49,10 @@
 //
 // # Deadline contexts
 //
-// WithTimeout and WithDeadline give a context that ends once the fake reaches its deadline, with
-// context.DeadlineExceeded as its error and its cause, as a context derived from it does too. Its
+// WithTimeout, WithTimeoutCause and WithDeadline give a context that ends once the fake reaches its
+// deadline with context.DeadlineExceeded as its error, and as its cause or the one WithTimeoutCause
+// names, as a context derived from it does too; a cancel that runs first ends it with
+// context.Canceled as its error and cause, as the context package's own do. Its
 // Deadline reports the parent's and never the fake's own: a fake deadline that reached pgx, nats.go
 // or a net.Dialer would be compared there with the wall clock, and end the call at a moment the test
 // never chose. Code that reads ctx.Deadline() for its own logic takes the deadline from its clock
@@ -404,6 +407,26 @@ func (c *Fake) AwaitArmedAt(t testing.TB, what string, at time.Time) []time.Time
 	return held
 }
 
+// AwaitArmedCountAt waits until at least n timers due at at are pending on the fake, and returns
+// the deadline of every timer pending then, earliest first: the reading that held them. It is for a
+// row that moves the fake to a deadline several timers share, one for each socket the code opened,
+// only once every one of them has armed it, so none is armed after the move and comes due at a
+// moment the row does not drive. what names what the test waits to see armed; a failure prints it
+// with at, n and what the last try read (armedReading).
+func (c *Fake) AwaitArmedCountAt(t testing.TB, what string, at time.Time, n int) []time.Time {
+	t.Helper()
+	var held []time.Time
+	testwait.Until(t, fmt.Sprintf("%s armed %d times for %s", what, n, at.Format(time.RFC3339Nano)), func() (string, bool) {
+		armed, reading := c.armedReading()
+		if count := len(slices.DeleteFunc(slices.Clone(armed), func(deadline time.Time) bool { return !deadline.Equal(at) })); count < n {
+			return reading, false
+		}
+		held = armed
+		return reading, true
+	})
+	return held
+}
+
 // armedReading is one reading of what is armed, for the waits on it: the deadline of every pending
 // timer, earliest first, and what a wait that gives up prints of them, read under one hold of the
 // lock: no timer armed, or how many are and their deadlines, and the fake's moment then.
@@ -445,11 +468,17 @@ func (c *Fake) Sleep(ctx context.Context, d time.Duration) error {
 }
 
 func (c *Fake) WithTimeout(ctx context.Context, d time.Duration) (context.Context, context.CancelFunc) {
-	return c.withDeadline(ctx, func(now time.Time) time.Time { return now.Add(d) })
+	return c.withDeadline(ctx, func(now time.Time) time.Time { return now.Add(d) }, context.DeadlineExceeded)
+}
+
+// WithTimeoutCause is WithTimeout whose end at its deadline carries cause, or
+// context.DeadlineExceeded when cause is nil, as context.WithTimeoutCause's does.
+func (c *Fake) WithTimeoutCause(ctx context.Context, d time.Duration, cause error) (context.Context, context.CancelFunc) {
+	return c.withDeadline(ctx, func(now time.Time) time.Time { return now.Add(d) }, cmp.Or(cause, context.DeadlineExceeded))
 }
 
 func (c *Fake) WithDeadline(ctx context.Context, at time.Time) (context.Context, context.CancelFunc) {
-	return c.withDeadline(ctx, func(time.Time) time.Time { return at })
+	return c.withDeadline(ctx, func(time.Time) time.Time { return at }, context.DeadlineExceeded)
 }
 
 // arm places t at the deadline due gives for the fake's present, read under the same hold of the
@@ -549,10 +578,12 @@ func (t *timer) drainLocked() {
 	}
 }
 
-func (c *Fake) withDeadline(parent context.Context, due func(now time.Time) time.Time) (context.Context, context.CancelFunc) {
+// withDeadline is a deadline context on the fake at the moment due names, which ends there with
+// context.DeadlineExceeded as its error and cause as its cause.
+func (c *Fake) withDeadline(parent context.Context, due func(now time.Time) time.Time, cause error) (context.Context, context.CancelFunc) {
 	inner, cancelInner := context.WithCancelCause(parent)
 	ctx := &deadlineContext{Context: inner, cancelInner: cancelInner, done: make(chan struct{})}
-	ctx.timer = &timer{fake: c, f: func() { ctx.end(context.DeadlineExceeded, context.DeadlineExceeded) }}
+	ctx.timer = &timer{fake: c, f: func() { ctx.end(context.DeadlineExceeded, cause) }}
 	cancel := func() { ctx.end(context.Canceled, context.Canceled) }
 	// A parent already ended ends the context with its own error, before a deadline already
 	// reached could, as context.WithDeadline orders the two.

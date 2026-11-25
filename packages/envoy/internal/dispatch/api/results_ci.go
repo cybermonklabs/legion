@@ -167,7 +167,7 @@ func (s *server) readCIRuns(ctx context.Context, head delivery.NewestHead, names
 	if err != nil {
 		return nil, fmt.Errorf("the pull request row's %w", err)
 	}
-	ctx, cancel := s.clock.WithTimeout(ctx, ciReadDeadline)
+	ctx, cancel := s.clock().WithTimeout(ctx, ciReadDeadline)
 	defer cancel()
 	runs, err := s.readCIRunPages(ctx, owner, repo, head.HeadSHA, names)
 	if err != nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {

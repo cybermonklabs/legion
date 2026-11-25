@@ -315,7 +315,7 @@ func (s *server) getReferenceQuestions(w http.ResponseWriter, r *http.Request) {
 // (Horizon.Safe), and a mention above it waits for a later read. A
 // request that ends first answers Await's error.
 func (s *server) sinceHorizon(ctx context.Context) (int64, error) {
-	wait, cancel := s.clock.WithTimeout(ctx, referencesSinceWait)
+	wait, cancel := s.clock().WithTimeout(ctx, referencesSinceWait)
 	safe, err := s.horizon().Await(wait)
 	cancel()
 	if err == nil || ctx.Err() != nil {
@@ -760,14 +760,14 @@ const referencesClosureBound = 2 * time.Second
 // default BuildContextWatcherHandler, as outbox/lease.go records). The context, a second past the
 // bound, stays as the last guard, for a wait no statement_timeout covers, such as the begin's. The
 // read's start, what is left of the bound, and the context's bound are all read on the server's
-// clock (s.clock), so a test whose server runs on a fake it holds names each statement's budget
+// clock (s.clock()), so a test whose server runs on a fake it holds names each statement's budget
 // exactly and knows that only a statement_timeout can end the walk. The rollback runs on a
 // context of its own, as the near-copy gate's does (duplicates.go): the read's context has expired
 // exactly when the rollback matters, and pgx answers a rollback on an expired context by
 // destroying the connection instead of returning it to the pool.
 func (s *server) boundedClosure(ctx context.Context, who model.Actor, issueKey string) (refs.References, error) {
-	started := s.clock.Now()
-	ctx, cancel := s.clock.WithTimeout(ctx, referencesClosureBound+time.Second)
+	started := s.clock().Now()
+	ctx, cancel := s.clock().WithTimeout(ctx, referencesClosureBound+time.Second)
 	defer cancel()
 	tx, err := s.begin(ctx)
 	if err != nil {
@@ -778,7 +778,7 @@ func (s *server) boundedClosure(ctx context.Context, who model.Actor, issueKey s
 		defer cancelRollback()
 		_ = tx.Rollback(rollback)
 	}()
-	return refs.Closure(ctx, closureBudget{tx: tx, clock: s.clock, started: started}, who, issueKey)
+	return refs.Closure(ctx, closureBudget{tx: tx, clock: s.clock(), started: started}, who, issueKey)
 }
 
 // closureBudget is boundedClosure's transaction tx as refs.Closure reads it (refs.Queryer). Before

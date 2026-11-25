@@ -137,7 +137,8 @@ func TestALiveSocketBehindIAPRotatesWhenItsUpgradesAssertionExpires(t *testing.T
 	// to a whole second (expiring), so that moment lies up to a second beyond lifetime past judged's
 	// present. The row moves judged a second past the moment the assertion itself names.
 	judged.Set(iap.pastExpiry(t, expiring))
-	next := driveHeartbeats(t, fake, opened.Add(heartbeat), 1, heartbeat)
+	// Both sockets, the short and the control, arm the first heartbeat before the clock moves to it.
+	next := driveHeartbeats(t, fake, opened.Add(heartbeat), 1, heartbeat, 2)
 	closed := short.closeError(t)
 	if closed.Code != contracts.LiveSocketMaxAgeClose || closed.Text != liveSocketCredentialExpiredReason {
 		t.Fatalf("the socket whose upgrade's assertion expired closed with %d %q, want %d %q, which a page answers by reopening at once",
@@ -146,7 +147,7 @@ func TestALiveSocketBehindIAPRotatesWhenItsUpgradesAssertionExpires(t *testing.T
 	// Three more heartbeats: the control is re-checked on each and stays open. Each heartbeat the
 	// row sees armed proves the checks two or more heartbeats before it returned with the control
 	// still resolving (driveHeartbeats), and a check that closed the socket would arm no more.
-	driveHeartbeats(t, fake, next, 3, heartbeat)
+	driveHeartbeats(t, fake, next, 3, heartbeat, 1)
 	select {
 	case <-long.ended:
 		t.Fatalf("control: the socket on a nine-minute assertion ended: %v", long.err)
@@ -344,7 +345,8 @@ func TestADocumentSocketBehindIAPReopensWhenItsUpgradesAssertionExpires(t *testi
 	// lifetime past judged's present (TestALiveSocketBehindIAPRotatesWhenItsUpgradesAssertionExpires);
 	// the row moves judged a second past the moment the assertion itself names.
 	judged.Set(rig.iap.pastExpiry(t, expiring))
-	next := driveHeartbeats(t, fake, opened.Add(heartbeat), 1, heartbeat)
+	// Both sockets, the short and the control, arm the first heartbeat before the clock moves to it.
+	next := driveHeartbeats(t, fake, opened.Add(heartbeat), 1, heartbeat, 2)
 	testwait.Receive(t, "the document socket whose upgrade's assertion expired to close", short.connection().Ended)
 	if code := short.connection().CloseCode(); code != contracts.DocumentAdmissionRevokedCloseCode {
 		t.Fatalf("the document socket whose upgrade's assertion expired closed with %d, want %d, on which the provider reconnects",
@@ -352,7 +354,7 @@ func TestADocumentSocketBehindIAPReopensWhenItsUpgradesAssertionExpires(t *testi
 	}
 	// Three more heartbeats, each a check of the control that returned with it still resolving
 	// (driveHeartbeats); the barrier below then shows it still answers.
-	driveHeartbeats(t, fake, next, 3, heartbeat)
+	driveHeartbeats(t, fake, next, 3, heartbeat, 1)
 	select {
 	case <-long.connection().Ended:
 		t.Fatalf("control: the document socket on a nine-minute assertion ended with %d", long.connection().CloseCode())

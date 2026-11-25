@@ -701,7 +701,9 @@ func cookieServer(t *testing.T, on bool) statusChangeServer {
 }
 
 // iapServer is a server behind an identity-aware proxy, whose person no Dispatch cookie names:
-// the proxy's signed assertion alone.
+// the proxy's signed assertion alone. Its verifier judges an assertion's times on the wall clock:
+// each request carries an assertion minted for it that lives nine minutes, and no row here asks
+// when one expires.
 func iapServer(t *testing.T, on bool) statusChangeServer {
 	t.Helper()
 	database := storetest.Open(t)

@@ -653,7 +653,7 @@ func TestDeliveryResolvesAnUnresponsiveHolderAndRefusesAGoneOne(t *testing.T) {
 	// listener's answers decide each route, and no call window (envoy.CallWindow) ends a lookup
 	// the listener answers late.
 	held := clocktest.Held()
-	served := &server{deps: Deps{Envoy: envoy.New(listener.URL, envoy.WithClock(held))}, lifetime: context.Background(), clock: held}
+	served := &server{deps: Deps{Envoy: envoy.New(listener.URL, envoy.WithClock(held)), Clock: held}, lifetime: context.Background()}
 
 	id, title, refusal := served.resolveDeliveryTarget(
 		context.Background(), model.Route{Kind: "role", ID: "reviewer"}, "steer",

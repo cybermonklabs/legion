@@ -939,7 +939,6 @@ func newFailingAdviceHandler(t *testing.T, query string, suggestionTimeout time.
 	s := &server{
 		deps:              deps,
 		lifetime:          t.Context(),
-		clock:             clocktest.Held(),
 		suggestionTimeout: suggestionTimeout,
 		// The creates through this handler run the near-copy gate too, under a bound past any
 		// read of a test project, as every server the rig builds does (newRegisteredTestServer).
@@ -952,6 +951,7 @@ func newFailingAdviceHandler(t *testing.T, query string, suggestionTimeout time.
 			return err
 		},
 	}
+	s.deps.Clock = clocktest.Held()
 	mux := http.NewServeMux()
 	routes := s.routes()
 	s.routeIndex = routeIndexEntries(routes)

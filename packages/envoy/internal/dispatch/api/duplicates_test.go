@@ -152,7 +152,7 @@ func TestASpentGateBoundEndsTheGatesContextBeforeItIsReturned(t *testing.T) {
 		{"a fake nothing moves", clocktest.New(checkStart)},
 	} {
 		t.Run(on.name, func(t *testing.T) {
-			srv := &server{clock: on.clock, duplicateBound: spentGateBound}
+			srv := &server{deps: Deps{Clock: on.clock}, duplicateBound: spentGateBound}
 			gateCtx, cancel, bound := srv.gateBounds(context.Background())
 			defer cancel()
 			if bound != spentGateBound {

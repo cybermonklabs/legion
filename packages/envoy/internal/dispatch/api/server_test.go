@@ -2,7 +2,6 @@ package api
 
 import (
 	"bytes"
-	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -242,6 +241,10 @@ type testServerOptions struct {
 	// buildCommit is the commit the server says it was built from (Deps.BuildCommit), which its
 	// list validators name; empty is a build nothing stamped, as every `go test` binary is.
 	buildCommit string
+	// inboxStatementBound is the mark-all's and the dismissal's statement_timeout
+	// (server.inboxStatementBound); zero keeps production's inboxReadStatementTimeout. A case that
+	// holds a dismissal behind a lock of its own passes stagedAhead (seedHeldInboxRead).
+	inboxStatementBound time.Duration
 	// outboxPublishes is Deps.OutboxPublishes: the server's deployment has an outbox, so a
 	// mention's send waits for the earlier events of its owner the outbox still owes its session.
 	// False is the deployment with no outbox, which every test that runs none is.
@@ -488,6 +491,7 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 	// no check was made spends its bound instead (spentGateBound). The deployment's own bound is
 	// pinned by TestTheDeploymentsNearCopyGateBoundIsTheDocumentedOne.
 	served.duplicateBound = gateBoundPastEveryRead(t)
+	served.inboxStatementBound = options.inboxStatementBound
 	// waitBackground, as production's shutdown calls it: every keyed handler and every delivery a
 	// handler detached from its request, then the sockets, the hub, the relay and the test hooks'
 	// listener. A broadcast's deliveries and a keyed handler outlive the client that started them,
@@ -524,7 +528,7 @@ func registerJoined(t testing.TB, mux RouteMux, deps Deps) {
 // lifetime is context.Background(): a related-item check it runs starts a statistics refresh and
 // may retry its record on that lifetime, which nothing here cancels.
 func directServer(deps Deps) *server {
-	return &server{deps: deps, lifetime: context.Background(), clock: cmp.Or[clock.Clock](deps.Clock, clock.Real())}
+	return &server{deps: deps, lifetime: context.Background()}
 }
 
 // documentSettleReach is how far ahead of a document service's fake clock (docs.Deps.Clock) a

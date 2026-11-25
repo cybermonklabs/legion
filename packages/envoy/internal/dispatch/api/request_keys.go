@@ -480,7 +480,7 @@ func (s *server) keyedWrites(method, pattern string, handler http.HandlerFunc, r
 		}
 		s.detached.start()
 		defer s.detached.done()
-		detached, stop := s.clock.WithTimeout(context.WithoutCancel(r.Context()), keyedHandlerLimit)
+		detached, stop := s.clock().WithTimeout(context.WithoutCancel(r.Context()), keyedHandlerLimit)
 		defer stop()
 		stopRenewing := s.renewRequestKeyLease(detached, claim)
 		answer := &keyedAnswer{w: w}
@@ -555,7 +555,7 @@ func (s *server) renewRequestKeyLease(run context.Context, claim requestKeyClaim
 	stopped, finished := make(chan struct{}), make(chan struct{})
 	go func() {
 		defer close(finished)
-		renewals := clock.NewTicker(s.clock, s.keyLeaseRenewal(), false)
+		renewals := clock.NewTicker(s.clock(), s.keyLeaseRenewal(), false)
 		defer renewals.Stop()
 		for {
 			select {
@@ -584,7 +584,7 @@ func (s *server) renewRequestKeyLease(run context.Context, claim requestKeyClaim
 // that fails is logged and tried again at the next tick: the lease lapses only once renewals have
 // failed for all of it.
 func (s *server) renewRequestKey(claim requestKeyClaim) bool {
-	ctx, cancel := s.clock.WithTimeout(store.WithTransactionTracking(context.Background()), keyedBookkeeping)
+	ctx, cancel := s.clock().WithTimeout(store.WithTransactionTracking(context.Background()), keyedBookkeeping)
 	defer cancel()
 	tag, err := s.deps.Store.Pool.Exec(ctx, `
 		update request_keys set leased_at = now()

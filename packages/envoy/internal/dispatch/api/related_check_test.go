@@ -183,7 +183,7 @@ func meaningServer(t *testing.T, embedder *fakeEmbedder) (http.Handler, *store.S
 // TestCrossProjectRelatedWithoutAnEmbeddingOffersNothing hold the three-second meaning allowance,
 // and TestCrossProjectRelatedQueryOverrunningKeepsTheOneProjectAnswer the grace.
 func onHeldClock(s *server) *server {
-	s.clock = clocktest.Held()
+	s.deps.Clock = clocktest.Held()
 	return s
 }
 
@@ -387,7 +387,7 @@ func TestRelatedCheckMeaningEmbedderPastThreeSecondsSearchesByKeywordsOnly(t *te
 	srv.deps.Embedder = recorded
 
 	clock := clocktest.New(checkStart)
-	srv.clock = clock
+	srv.deps.Clock = clock
 	answered := make(chan *model.Suggestions, 1)
 	go func() {
 		answered <- srv.relatedCheck(context.Background(), relatedInput{project: "MSLOW", text: "Nightly snapshots finish late"})
@@ -528,7 +528,7 @@ func TestRelatedCheckBoundsCompletesBehindAOneSecondLock(t *testing.T) {
 	key := createSearchIssue(t, handler, "SLOW", "Quarterly zymurgy ledger drifts", "")
 	srv := directServer(deps)
 	clock := clocktest.New(checkStart)
-	srv.clock = clock
+	srv.deps.Clock = clock
 
 	lockTx, err := database.Pool.Begin(context.Background())
 	if err != nil {
@@ -569,7 +569,7 @@ func TestRelatedCheckBoundsPastTheAllowanceIsNotMadeAndRecorded(t *testing.T) {
 	srv := directServer(deps)
 	srv.suggestionTimeout = 500 * time.Millisecond
 	clock := clocktest.New(checkStart)
-	srv.clock = clock
+	srv.deps.Clock = clock
 
 	lockTx, err := database.Pool.Begin(context.Background())
 	if err != nil {
@@ -626,7 +626,7 @@ func TestRelatedCheckBoundsARequestThatEndsFirstIsRecordedCancelled(t *testing.T
 	refreshTermStats(t, database, "GONE")
 	srv := directServer(deps)
 	// A clock that never moves: the check's allowance cannot end before its request does.
-	srv.clock = clocktest.New(checkStart)
+	srv.deps.Clock = clocktest.New(checkStart)
 
 	lockTx, err := database.Pool.Begin(context.Background())
 	if err != nil {
@@ -684,7 +684,7 @@ func TestRelatedCheckBoundsDecisionBlocksPastTheAllowanceAreRecordedTimeout(t *t
 	srv := directServer(deps)
 	srv.suggestionTimeout = 500 * time.Millisecond
 	clock := clocktest.New(checkStart)
-	srv.clock = clock
+	srv.deps.Clock = clock
 
 	lockTx, err := database.Pool.Begin(context.Background())
 	if err != nil {
@@ -760,7 +760,7 @@ func TestRelatedCheckRecordBlockedPastItsSecondIsWrittenOnceTheLockIsReleased(t 
 	srv := directServer(deps)
 	srv.suggestionTimeout = 500 * time.Millisecond
 	clock := clocktest.New(checkStart)
-	srv.clock = clock
+	srv.deps.Clock = clock
 	srv.recordClock = clock
 
 	lockTx, err := database.Pool.Begin(context.Background())

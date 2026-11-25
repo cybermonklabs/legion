@@ -128,16 +128,17 @@ func (s *server) relatedAllowance() time.Duration {
 }
 
 // relatedBounds is the context a check's work runs under and the allowance it ends at: ctx
-// bounded by relatedAllowance on the server's clock (boundedByClock), ending with
-// errRelatedAllowanceEnded as its cause so that a check whose context is done can tell its own
-// deadline from the request that ran it going away (runRelatedCheck's callerGone). Every site
-// that bounds a check uses it, so a decision block's per-check context inherits the edit's
-// allowance with that same cause. The caller cancels, and names the allowance in what it answers.
-// An allowance already spent ends the context before this returns, which is boundedByClock's rule
-// and what a case setting suggestionTimeout relies on.
+// bounded by relatedAllowance on the server's clock (clock.Clock's WithTimeoutCause), ending with
+// context.DeadlineExceeded and errRelatedAllowanceEnded as its cause so that a check whose context
+// is done can tell its own deadline from the request that ran it going away (runRelatedCheck's
+// callerGone), on the real clock and a test's fake alike. Every site that bounds a check uses it,
+// so a decision block's per-check context inherits the edit's allowance with that same cause. The
+// caller cancels, and names the allowance in what it answers. An allowance already spent ends the
+// context before this returns, on either clock, which is what a case setting suggestionTimeout
+// relies on.
 func (s *server) relatedBounds(ctx context.Context) (context.Context, context.CancelFunc, time.Duration) {
 	allowance := s.relatedAllowance()
-	bounded, cancel := s.boundedByClock(ctx, allowance, errRelatedAllowanceEnded)
+	bounded, cancel := s.clock().WithTimeoutCause(ctx, allowance, errRelatedAllowanceEnded)
 	return bounded, cancel, allowance
 }
 
@@ -361,9 +362,9 @@ type relatedPick struct {
 // request's header asked for decides it, on this path as on every read of the same answer, and
 // the caller resolves its own reader once this returns.
 func (s *server) relatedCheck(ctx context.Context, input relatedInput) *model.Suggestions {
-	started := s.clock.Now()
+	started := s.clock().Now()
 	suggestions, record := s.runRelatedCheck(ctx, input, started)
-	record.totalMS = int(s.clock.Now().Sub(started).Milliseconds())
+	record.totalMS = int(s.clock().Now().Sub(started).Milliseconds())
 	if input.record {
 		s.recordRelatedChecks(ctx, relatedCheckRecord{source: input.source, suggestions: suggestions, record: record})
 	}
@@ -440,7 +441,7 @@ func (s *server) runRelatedCheck(
 	}
 	exclusion := relatedExclusion{issueKey: cmp.Or(input.source.issueKey, input.excludeIssue), artifactID: input.source.artifactID}
 	excluded := input.excluded()
-	stagesStarted := s.clock.Now()
+	stagesStarted := s.clock().Now()
 	pick := &relatedPick{ready: make(chan struct{})}
 	keyword := make(chan relatedStage, 1)
 	go func() {
@@ -456,7 +457,7 @@ func (s *server) runRelatedCheck(
 		default:
 			stage.response, stage.err = s.relatedSearch(keywordCtx, s.deps.Store.Pool, relatedKeywordStatement, project, pick.terms, excluded)
 		}
-		stage.took = s.clock.Now().Sub(stagesStarted)
+		stage.took = s.clock().Now().Sub(stagesStarted)
 		keyword <- stage
 	}()
 
@@ -475,7 +476,7 @@ func (s *server) runRelatedCheck(
 	case s.deps.Embedder == nil:
 		reason = relatedReasonNoEmbedder
 	default:
-		meaningCtx, endMeaning = s.clock.WithDeadline(bounded, started.Add(meaningAllowance))
+		meaningCtx, endMeaning = s.clock().WithDeadline(bounded, started.Add(meaningAllowance))
 		defer endMeaning()
 		meaningRead, err := store.ForConcurrentRead(meaningCtx)
 		if err != nil {
@@ -515,7 +516,7 @@ func (s *server) runRelatedCheck(
 		meaning = make(chan relatedStage, 1)
 		go func() {
 			stage := s.relatedMeaningStage(meaningRead, crossRead, project, input.text, pick, excluded, input.trees != nil)
-			stage.took = s.clock.Now().Sub(stagesStarted)
+			stage.took = s.clock().Now().Sub(stagesStarted)
 			meaning <- stage
 		}()
 	}
@@ -555,7 +556,7 @@ func (s *server) runRelatedCheck(
 			case stage = <-meaning:
 				got = true
 			default:
-				record.meaningMS = milliseconds(s.clock.Now().Sub(stagesStarted))
+				record.meaningMS = milliseconds(s.clock().Now().Sub(stagesStarted))
 				reason = relatedReasonMeaningTimeout
 			}
 		}
@@ -573,7 +574,7 @@ func (s *server) runRelatedCheck(
 	// meaning stage, that wait with it (D7).
 	if answered && answer.cross != nil {
 		answer.otherProjects = s.awaitCrossProject(meaningCtx, answer.cross)
-		record.meaningMS = milliseconds(s.clock.Now().Sub(stagesStarted))
+		record.meaningMS = milliseconds(s.clock().Now().Sub(stagesStarted))
 	}
 	// The check needs nothing more of the meaning context: what still runs on it is a
 	// cross-project leg the grace left behind, or the leg of a stage that did not answer, which
@@ -714,7 +715,7 @@ func (s *server) relatedMeaningStage(
 // them at random; an answer that is already there when the grace ends is taken, as
 // runRelatedCheck takes the stage's own.
 func (s *server) awaitCrossProject(meaningCtx context.Context, cross <-chan []model.SearchResult) []model.SearchResult {
-	grace, endGrace := s.clock.WithTimeout(meaningCtx, crossProjectGrace)
+	grace, endGrace := s.clock().WithTimeout(meaningCtx, crossProjectGrace)
 	defer endGrace()
 	select {
 	case results := <-cross:

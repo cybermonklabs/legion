@@ -15,7 +15,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
@@ -316,7 +315,7 @@ func TestRepairWithdrawsTheOpenAsksOfAnIssueClosedWithoutWithdrawing(t *testing.
 	// The repair stamps each withdrawal with its own moment (stampedNow), on a fake here that stands
 	// at a moment of the test's own, a minute after the close the withdrawal must not take.
 	repairedAt := closedAt.Add(time.Minute)
-	s := &server{deps: f.deps, clock: clock.Real(), stampClock: clocktest.New(repairedAt)}
+	s := &server{deps: f.deps, stampClock: clocktest.New(repairedAt)}
 	repair, _, _, err := s.repairIssueAsks(context.Background(), nil, nil)
 	if err != nil {
 		t.Fatalf("repair: %v", err)

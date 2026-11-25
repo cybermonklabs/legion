@@ -16,7 +16,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -637,7 +636,7 @@ func TestBroadcastWhoseBudgetEndsBeforeEverySessionIsReadWritesNothingAndLeavesI
 	// between this send and a selection it never read. A budget of a millisecond would race the
 	// stub's answers, and a read cut off in flight is refused on its own error, whether or not
 	// the count is checked.
-	expired := &server{deps: deps, lifetime: t.Context(), clock: clock.Real(), broadcastResolveBudget: time.Nanosecond}
+	expired := &server{deps: deps, lifetime: t.Context(), broadcastResolveBudget: time.Nanosecond}
 	send := func(handler http.Handler) *httptest.ResponseRecorder {
 		t.Helper()
 		return postBroadcastKeyed(t, handler, map[string]any{

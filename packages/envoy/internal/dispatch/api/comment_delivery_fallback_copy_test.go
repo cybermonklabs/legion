@@ -85,6 +85,7 @@ func TestAFailedMentionOfASessionNothingSkippedLeavesTheCommentCreatedEventAlone
 	// The send to s2 is never answered, so what settles its attempt is the window the listener
 	// client gives the call, on this clock, which the wait below moves to each window's end.
 	clock := clocktest.New(time.Now())
+	state.calls.on(clock)
 	handler, database, _ := newTestServer(t, testServerOptions{envoyURL: listener.URL, clock: clock})
 	issue := createInteractionIssue(t, handler, "TEST", "A failed mention", "before")
 	root := decodeMentionedComment(t, postMentionedComment(t, handler, issue.Key, map[string]any{"body": "Where should this go?"}))
@@ -146,6 +147,7 @@ func TestAClaimantWhoseResentMentionFailsStillHearsTheComment(t *testing.T) {
 	// The lookups of s1 below are never answered: their windows end on this clock, which the
 	// wait for the resend moves to each window's end.
 	clock := clocktest.New(time.Now())
+	state.calls.on(clock)
 	handler, database, deps, served := newRegisteredTestServer(t, testServerOptions{
 		envoyURL: listener.URL, lifetime: stopping, clock: clock,
 	})
@@ -351,6 +353,7 @@ func TestAFailedRetryOfAMentionSendsTheCommentToNoNewDestination(t *testing.T) {
 	// Every send to s2 is held unanswered, so what settles its attempt is the window the
 	// listener client gives the call, on this clock, which the waits below move it to.
 	clock := clocktest.New(time.Now())
+	state.calls.on(clock)
 	handler, database, deps := newTestServer(t, testServerOptions{envoyURL: listener.URL, clock: clock})
 	issue := createInteractionIssue(t, handler, "TEST", "A moved route", "before")
 	route := func(to string) {
@@ -531,6 +534,7 @@ func aMentionQueuedBehindAStalledSend(t *testing.T, route string) queuedMention 
 func aMentionQueuedOnClock(t *testing.T, route string, clock *clocktest.Fake) queuedMention {
 	t.Helper()
 	listener, state := newMentionListener(t)
+	state.calls.on(clock)
 	handler, database, deps, served := newRegisteredTestServer(t, testServerOptions{
 		envoyURL: listener.URL, clock: clock,
 	})

@@ -39,6 +39,7 @@ func TestASilentListenerStillLeavesTheSessionOneCopyOfTheComment(t *testing.T) {
 			// which the wait for the attempt moves to the end of each window.
 			_ = state.holdLookups("/v1/registry/s1")
 			clock := clocktest.New(time.Now())
+			state.calls.on(clock)
 			handler, database, deps := newTestServer(t, testServerOptions{envoyURL: listener.URL, clock: clock})
 			issue := createInteractionIssue(t, handler, "TEST", "A silent listener", "before")
 			if tc.route != "" {
@@ -62,12 +63,11 @@ func TestASilentListenerStillLeavesTheSessionOneCopyOfTheComment(t *testing.T) {
 			// the server's clock and armed before the lookup's request leaves. The clock moves to
 			// that bound once the stand-in holds the lookup: moved sooner, it would end a lookup
 			// the listener never saw, which is no silent listener's doing.
-			testwait.Until(t, "the stand-in to hold s1's lookup, bounded at "+bound.Format(time.RFC3339Nano),
-				func() ([]time.Time, bool) {
-					armed := clock.Armed()
-					_, holding := state.calls.counts()
-					return armed, holding == 1 && slices.ContainsFunc(armed, bound.Equal)
-				})
+			testwait.Until(t, "the stand-in to hold s1's lookup (the calls it holds)", func() (int, bool) {
+				_, holding := state.calls.counts()
+				return holding, holding == 1
+			})
+			clock.AwaitArmedAt(t, "s1's lookup's bound", bound)
 			clock.Set(bound)
 			created := decodeMentionedComment(t, testwait.Receive(t, "the comment to answer once its lookup's bound ran out", posted))
 
@@ -266,6 +266,7 @@ func TestAMentionClaimedByAKilledProcessStillReachesItsSessionWhenTheResendFails
 	// The lookups of s1 the resend makes are never answered: each one ends at its window on
 	// this clock, which the wait for the attempt moves to the end of each window.
 	clock := clocktest.New(time.Now())
+	state.calls.on(clock)
 	handler, database, deps, served := newRegisteredTestServer(t, testServerOptions{
 		envoyURL: listener.URL, lifetime: stopping, clock: clock,
 	})

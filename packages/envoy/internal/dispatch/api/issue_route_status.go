@@ -411,7 +411,7 @@ func (s *server) storeRouteRoster(ctx context.Context, sent time.Time, own route
 // clock, and answers its roster, unanswered with the listener client's error when it did not
 // answer.
 func (s *server) listRouteRoster(ctx context.Context) routeRoster {
-	ctx, cancel := s.clock.WithTimeout(ctx, routeRosterTimeout)
+	ctx, cancel := s.clock().WithTimeout(ctx, routeRosterTimeout)
 	defer cancel()
 	sessions, err := s.deps.Envoy.Sessions(ctx)
 	var refilling *envoy.RefillingError

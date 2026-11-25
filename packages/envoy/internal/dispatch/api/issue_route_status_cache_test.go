@@ -266,7 +266,9 @@ func TestAListenerThatFailedIsAskedAgainOnceItsSilenceWindowPasses(t *testing.T)
 // window, and the reads after it read unknown at once without asking again. The bound is armed
 // on the server's clock for routeRosterTimeout from the fetch, and the test moves the clock
 // there: a fetch bounded by the client's window instead would arm a later deadline, and one
-// bounded by nothing would arm none.
+// bounded by nothing would arm none. The error says which ended it: either end says "context
+// deadline exceeded", and a call the window ended also names envoy.ErrCallWindow, which the client
+// adds only when its caller's context had not ended (a read's error carries its cause as text).
 func TestAListenerThatDoesNotAnswerHoldsAReadOnlyForTheFetchBound(t *testing.T) {
 	t.Parallel()
 	served, calls, _, clock := heldRosterServer(t)
@@ -286,11 +288,10 @@ func TestAListenerThatDoesNotAnswerHoldsAReadOnlyForTheFetchBound(t *testing.T) 
 	if roster.answered {
 		t.Fatal("a read answered a roster though the listener never answered")
 	}
-	// The fetch's own deadline ended the call, not the listener client's window: the error of a
-	// call that deadline ended says "context deadline exceeded", and one the window ended says
-	// "Client.Timeout exceeded" (net/http's setRequestCancel).
-	if roster.err == nil || !strings.Contains(roster.err.Error(), context.DeadlineExceeded.Error()) || strings.Contains(roster.err.Error(), "Client.Timeout exceeded") {
-		t.Fatalf("the first read's fetch ended with %v, want its own %s bound's %v, not the listener client's window", roster.err, routeRosterTimeout, context.DeadlineExceeded)
+	// The fetch's own deadline ended the call, not the listener client's window: either end says
+	// "context deadline exceeded", and a call the window ended also names envoy.ErrCallWindow.
+	if roster.err == nil || !strings.Contains(roster.err.Error(), context.DeadlineExceeded.Error()) || strings.Contains(roster.err.Error(), envoy.ErrCallWindow.Error()) {
+		t.Fatalf("the first read's fetch ended with %v, want its own %s bound's %v, not the listener client's window (%v)", roster.err, routeRosterTimeout, context.DeadlineExceeded, envoy.ErrCallWindow)
 	}
 	first := calls.Load()
 	if first != 1 {

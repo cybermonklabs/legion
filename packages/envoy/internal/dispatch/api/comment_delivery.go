@@ -80,7 +80,7 @@ func (s *server) resolveMentionTarget(
 	lookup := ctx
 	if timeout > 0 {
 		var cancel context.CancelFunc
-		lookup, cancel = s.clock.WithTimeout(ctx, timeout)
+		lookup, cancel = s.clock().WithTimeout(ctx, timeout)
 		defer cancel()
 	}
 	sessionID, title, resolveError := s.resolveDeliveryTarget(lookup, route, delivery)
@@ -1053,7 +1053,7 @@ func (s *server) roleHolderMayBe(ctx context.Context, role, sessionID string) bo
 	if s.deps.Envoy == nil {
 		return false
 	}
-	lookup, cancel := s.clock.WithTimeout(ctx, mentionLookupTimeout)
+	lookup, cancel := s.clock().WithTimeout(ctx, mentionLookupTimeout)
 	defer cancel()
 	holder, err := s.deps.Envoy.Role(lookup, role)
 	switch {

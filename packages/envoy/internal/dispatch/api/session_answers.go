@@ -52,7 +52,7 @@ func (s *server) listSessionAnswers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	query := r.URL.Query()
-	since, err := parseSessionAnswersSince(query, s.clock.Now().UTC())
+	since, err := parseSessionAnswersSince(query, s.clock().Now().UTC())
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

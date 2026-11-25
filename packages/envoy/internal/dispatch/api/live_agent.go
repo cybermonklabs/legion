@@ -98,7 +98,7 @@ func (s *server) relayAgentConversation(ctx context.Context, stream liveStreamer
 		queue.push(frame)
 	})
 	if err != nil {
-		endAgentAfterFailure(ctx, s.clock, stream, sub, "subscribe to the session's frames", err)
+		endAgentAfterFailure(ctx, s.clock(), stream, sub, "subscribe to the session's frames", err)
 		return
 	}
 	var stopRelayOnce sync.Once
@@ -108,7 +108,7 @@ func (s *server) relayAgentConversation(ctx context.Context, stream liveStreamer
 	// before the first turn, not after it.
 	if err := source.Watch(sessionID); err != nil {
 		stopRelay()
-		endAgentAfterFailure(ctx, s.clock, stream, sub, "tell the session a viewer is attached", err)
+		endAgentAfterFailure(ctx, s.clock(), stream, sub, "tell the session a viewer is attached", err)
 		return
 	}
 
@@ -161,7 +161,7 @@ func (s *server) relayAgentConversation(ctx context.Context, stream liveStreamer
 	}
 	// The re-arm runs on the server's clock, armed again as each re-arm begins, as a ticker that
 	// drops a tick it was late for re-arms no faster than agentStreamWatchInterval.
-	rearm := s.clock.NewTimer(agentStreamWatchInterval)
+	rearm := s.clock().NewTimer(agentStreamWatchInterval)
 	defer rearm.Stop()
 	for {
 		var frames []agentstream.Frame
@@ -177,7 +177,7 @@ func (s *server) relayAgentConversation(ctx context.Context, stream liveStreamer
 			rearm.Reset(agentStreamWatchInterval)
 			if err := source.Watch(sessionID); err != nil {
 				stopRelay()
-				endAgentAfterFailure(ctx, s.clock, stream, sub, "re-arm the session", err)
+				endAgentAfterFailure(ctx, s.clock(), stream, sub, "re-arm the session", err)
 				return
 			}
 			if responding {

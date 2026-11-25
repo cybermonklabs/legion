@@ -252,17 +252,16 @@ func TestSuggestionsOfferNoAnsweredAskBehindTheTopThree(t *testing.T) {
 }
 
 // suggestionsBehindLock locks table in ACCESS EXCLUSIVE mode, runs the related-item check on a
-// server whose clock the test moves past the check's allowance once the call has queued behind
-// the lock, and answers what it returned. The call
-// runs on a one-connection store of its own, so the backend the wait watches
+// server whose clock the test moves past the check's allowance (relatedCheckAllowance, the
+// deployment's own) once the call has queued behind the lock, and answers what it returned. The
+// call runs on a one-connection store of its own, so the backend the wait watches
 // (storetest.WaitForQueuedBehind) is the call's and no other. Counting every backend queued
 // behind the lock is not enough: the issue create the tests seed schedules the spec's settlement,
 // which queues behind the same locks on the shared pool, so that count passed a call that never
 // waited (sjawhar/legion#2217 review). It fails at once when the call answers before its own
 // backend has queued behind that lock, so a passing caller's answer is one the allowance ended
-// while the query waited there. Nothing here times the call once it has queued: a step run outside
-// the allowance waits behind the lock until go test's -timeout ends the run, naming the test. The
-// check records nothing: its records are not what these tests are about.
+// while the query waited there, however long a loaded machine took to queue it. The check records
+// nothing: its records are not what these tests are about.
 func suggestionsBehindLock(
 	t *testing.T, deps Deps, table, project, text string, source suggestionSource,
 ) *model.Suggestions {
@@ -290,8 +289,8 @@ func suggestionsBehindLock(
 	callDeps := deps
 	callDeps.Store = callStore
 	clock := clocktest.New(checkStart)
+	callDeps.Clock = clock
 	srv := directServer(callDeps)
-	srv.clock = clock
 
 	lockTx, err := deps.Store.Pool.Begin(context.Background())
 	if err != nil {
@@ -309,9 +308,11 @@ func suggestionsBehindLock(
 	go func() {
 		answered <- srv.relatedCheck(context.Background(), relatedInput{project: project, text: text, source: source})
 	}()
-	// The call queues within milliseconds, and it ends once its allowance does, which only the
-	// move below reaches. So only a call that neither queued nor answered, one stuck somewhere
-	// other than this lock, holds the wait until the shared wait gives up.
+	// The wait ends on one of two facts: the call's backend queued behind the lock, which takes
+	// milliseconds, or the call's answer arriving first, which fails the row; the call's allowance
+	// ends only by the move below. It has no bound of its own: a call that does neither, one stuck
+	// somewhere other than this lock, holds it until the test binary's deadline less testwait's
+	// margin, where it fails by name.
 	if s, early := storetest.WaitForQueuedBehind(t, lockTx, callPID, answered); early {
 		t.Fatalf("the related-item check answered %+v before its query waited behind the lock on %s, want its allowance to end while it waits", s, table)
 	}
@@ -495,7 +496,7 @@ func TestASpentAllowanceEndsTheChecksContextBeforeItIsReturned(t *testing.T) {
 		{"a fake nothing moves", clocktest.New(checkStart)},
 	} {
 		t.Run(on.name, func(t *testing.T) {
-			srv := &server{clock: on.clock, suggestionTimeout: spentRelatedAllowance}
+			srv := &server{deps: Deps{Clock: on.clock}, suggestionTimeout: spentRelatedAllowance}
 			bounded, cancel, allowance := srv.relatedBounds(context.Background())
 			defer cancel()
 			if allowance != spentRelatedAllowance {

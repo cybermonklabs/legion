@@ -915,23 +915,40 @@ func TestAWindowWiderThanTheMaximumIsAnErrorFrame(t *testing.T) {
 	client.snapshot(t, "widest")
 }
 
+// The page stops reading, so the server's writer waits in a write on the connection, its queue
+// fills, and the next frame overflows it. The writer is held at the gate of heldWrites, as a page
+// that reads nothing holds it, rather than by TCP backpressure on shrunken buffers
+// (smallSendBuffers, smallReadDialer), whose wall-clock write deadline this row cannot keep: with
+// that deadline dropped instead, one run in about nine stopped with the page's own frames no
+// longer reaching the server, so the queue never overflowed. ss showed it on such a run: the page's
+// side held 1.2 MB unsent and retransmitted with its timer backed off nine times, while the server
+// had received 101 KB and the page knew of 29 KB acknowledged. Two
+// product timers would end the held socket on the wall clock before the page reads again on a
+// loaded machine, neither of which is this row's subject: the pong deadline, two default
+// heartbeats after the open, which runs on a fake no one moves here (liveSocketClock), and the
+// write deadline the writer sets on the connection (liveSocketWriteWait), which heldConn moves on
+// by the time the write waited at the gate.
 func TestASlowReaderIsClosedNotBuffered(t *testing.T) {
 	t.Parallel()
-	rig := newLiveSocketRig(t, testServerOptions{}, func(listener net.Listener) net.Listener { return smallSendBuffers{listener} })
-	client := rig.open(t, smallReadDialer(), asUser("alice"))
+	held := &heldWrites{}
+	rig := newLiveSocketRig(t, testServerOptions{liveSocketClock: clocktest.Held()}, held.listen)
+	client := rig.open(t, gws.DefaultDialer, asUser("alice"))
+	socket := rig.sockets(t, 1)[0]
+	held.hold(t)
 
 	// Every frame is answered with an error frame echoing its 4 KiB sub, and the page reads none of
-	// them: the socket's writer blocks, its queue fills, and the next frame overflows it.
+	// them: the socket's writer waits at the gate with the first, its queue fills, and the next
+	// frame overflows it.
 	const sent = 300
 	sub := strings.Repeat("s", 4096)
 	for n := range sent {
 		client.sendText(t, []byte(`{"type":"resubscribe","sub":"`+sub+strconv.Itoa(n)+`"}`))
 	}
-	socket := rig.sockets(t, 1)[0]
 	testwait.Eventually(t, fmt.Sprintf("the socket's %d-frame queue to overflow", liveSocketQueue), socket.overflowed)
 
-	// Once the page reads again it is sent what the connection already carried, then 1013, and not
-	// the answers queued behind the overflow.
+	// Once the page reads again it is sent what the writer already held, then 1013, and not the
+	// answers queued behind the overflow.
+	held.release()
 	code, messages := client.read().closeCode(t)
 	if code != gws.CloseTryAgainLater {
 		t.Fatalf("the slow page's socket closed with %d, want 1013", code)
@@ -1310,10 +1327,14 @@ func TestAPageThatAnswersNoPingLosesItsSocketWithNoCloseFrame(t *testing.T) {
 	rig.sockets(t, 0)
 }
 
+// The rig's heartbeat is 300 ms, so on the real clock the pong deadline, two heartbeats after the
+// open, would end the socket of a loaded run before its first heartbeat frame. The read deadline
+// runs on a fake no one moves (liveSocketClock), so the socket waits for its first frame however
+// long the machine takes.
 func TestAnIdleDeliverySocketIsSentAHeartbeat(t *testing.T) {
 	t.Parallel()
 	const heartbeat = 300 * time.Millisecond
-	rig := newLiveSocketRig(t, testServerOptions{streamHeartbeat: heartbeat}, nil)
+	rig := newLiveSocketRig(t, testServerOptions{streamHeartbeat: heartbeat, liveSocketClock: clocktest.Held()}, nil)
 	client := rig.dial(t, asUser("alice"))
 	if data := client.take(t, "the heartbeat"); string(data) != `{"type":"heartbeat"}` {
 		t.Fatalf("an idle socket's first frame = %s, want {\"type\":\"heartbeat\"} alone", data)

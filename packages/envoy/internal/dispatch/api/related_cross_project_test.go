@@ -682,7 +682,7 @@ func TestCrossProjectRelatedWithoutAnEmbeddingOffersNothing(t *testing.T) {
 
 	clock := clocktest.New(checkStart)
 	srv := directServer(deps)
-	srv.clock = clock
+	srv.deps.Clock = clock
 	called, release := embedder.hold()
 	defer release()
 	answered := crossProjectCheckOnTheSide(srv, "XQUIET")
@@ -892,7 +892,7 @@ func TestCrossProjectRelatedAnswersWithLessThanTheGraceLeft(t *testing.T) {
 	held := newHeldCrossProjectRead(t)
 	clock := clocktest.New(checkStart)
 	srv := directServer(deps)
-	srv.clock = clock
+	srv.deps.Clock = clock
 	srv.beforeCrossProjectRead = held.read
 	target, _, _, _ := crossProjectAsker(t, handler, database, embedder, "XEDGE")
 	createSuggestionProject(t, handler, "XNEAR")

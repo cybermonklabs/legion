@@ -19,10 +19,13 @@ import (
 // message's, and its claim path resumes only a pending row, so a mention whose send landed and
 // then missed the listener client's window was recorded failed and its retry reached the agent a
 // second time. The key is now scoped to the mention's target and mode, so the stream recognises
-// the repeat and the retry's row records it as a duplicate rather than a fresh delivery. A missed
-// receipt is tried again inside the listener take-over window (takeoverRetry) under the same key,
-// so the attempt is recorded failed only when every try of that window missed; this listener
-// misses every one until the comment's own request has answered.
+// the repeat and the retry's row records it as a duplicate rather than a fresh delivery. The
+// listener client's window, and the take-over's tries, run on the server's clock, a fake the test
+// moves through each held call's window (settledCommentDeliveriesOn), so no answer the stand-in
+// gives in time is cut by a window a loaded machine ran out. A missed receipt is tried again
+// inside the listener take-over window (takeoverRetry) under the same key, so the attempt is
+// recorded failed only when every try of that window missed; this listener misses every one until
+// the comment's own request has answered.
 func TestCommentMentionThatLandedThenMissedTheReceiptIsNotDeliveredTwiceOnRetry(t *testing.T) {
 	t.Parallel()
 	var calls listenerCalls
@@ -75,6 +78,7 @@ func TestCommentMentionThatLandedThenMissedTheReceiptIsNotDeliveredTwiceOnRetry(
 	}))
 	defer listener.Close()
 	clock := clocktest.New(time.Now())
+	calls.on(clock)
 	handler, database := newTargetedMessageHandlerOn(t, listener.URL, clock)
 	issue := createInteractionIssue(t, handler, "TEST", "A mention that landed then timed out", "before")
 	comment := decodeMentionedComment(t, postMentionedComment(t, handler, issue.Key, map[string]any{
@@ -123,7 +127,8 @@ func TestCommentMentionThatLandedThenMissedTheReceiptIsNotDeliveredTwiceOnRetry(
 // LEGION-271, acceptance 7's other half. A timeout resolving the target sent nothing, so its
 // text must not tell a human the message may already have been delivered; only the send half
 // carries that promise. deliveryErrorText is shared between the two, which is why this is its
-// own test rather than a line in the one above.
+// own test rather than a line in the one above. The lookup's window runs on the server's clock,
+// which the test moves to the window's end once the stand-in holds the lookup.
 func TestResolutionTimeoutDoesNotClaimTheMessageMayHaveLanded(t *testing.T) {
 	t.Parallel()
 	held := make(chan struct{})
@@ -148,6 +153,7 @@ func TestResolutionTimeoutDoesNotClaimTheMessageMayHaveLanded(t *testing.T) {
 		listener.Close()
 	}()
 	clock := clocktest.New(time.Now())
+	calls.on(clock)
 	handler, _ := newTargetedMessageHandlerOn(t, listener.URL, clock)
 	issue := createInteractionIssue(t, handler, "TEST", "A resolution that timed out", "before")
 

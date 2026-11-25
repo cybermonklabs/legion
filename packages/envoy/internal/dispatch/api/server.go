@@ -205,7 +205,7 @@ type Deps struct {
 	// LiveSocketClock is what a GET /ws/live socket's read deadlines run on: the pong deadline, two
 	// heartbeats after the page's last pong, the wait for the page's close frame once the socket
 	// sent its own (liveSocketCloseWait), and the drain's wait for the rest of a frame past the read
-	// limit, liveSocketCloseWait too, which takes the pong deadline's place (drainReads). Nil is
+	// limit, liveSocketCloseWait too, which takes the pong deadline's place (endReads). Nil is
 	// clock.Real(), as a deployment leaves it; only a test sets another, a clocktest fake on which
 	// no page's reads end until the test moves it there. It is not Clock, so a test that moves the
 	// server's clock through its heartbeats or to a socket's age ends no read with it.
@@ -248,9 +248,21 @@ type Deps struct {
 	// it empty, which is one identity for every such build and is why a deploy is what it is
 	// for rather than a key anything depends on being unique.
 	BuildCommit string
-	// Clock is the clock every timer of this package that a test asserts runs on: the drain's
-	// deadline, the keyed layer's leases and run bound, the listener lookups' windows. Nil, which
-	// every deployment leaves it, is clock.Real(); a test passes a clocktest.Fake and moves it.
+	// Clock is the clock every timer of this package that a test asserts runs on: among them the
+	// heartbeat on which a socket resolves its caller again (whileCallerResolves) and a live
+	// socket's age, the bound on each listener lookup of a comment's route and mentions
+	// (resolveMentionTarget's mentionLookupTimeout) and of whether a session may hold a role
+	// (roleHolderMayBe), the read of the listener's session list (listRouteRoster's
+	// routeRosterTimeout), the listener client's window, the take-over's tries (takeoverRetry),
+	// the related-item check's allowance (relatedBounds), the near-copy gate's bound (gateBounds),
+	// an agent view's wait for its replay (agentStreamReplayTimeout), the drain's deadline, the
+	// keyed layer's leases and run bound, and the time each access-log line records
+	// (accesslog.HandlerOn), which a test hands AnswersLatency's clock too. One listener lookup
+	// bounds itself on the wall clock instead (context.WithTimeout), and only the listener
+	// client's window of it runs on this clock: a broadcast's resolution of its recipients
+	// (resolveBroadcastSessions, broadcastResolveAllowance). Nil, which every deployment leaves
+	// it, is clock.Real(), for a server Register builds and for one built directly alike
+	// (server.clock); a test passes a clocktest.Fake and moves it.
 	Clock clock.Clock
 	// ParentStatusRule is DISPATCH_PARENT_STATUS_RULE: while it is on, a write that would leave
 	// a parent's status out of line with its children's (R24) is refused 409
@@ -495,20 +507,20 @@ type server struct {
 	// ever end the work it bounds; a test passes its own t.Context(). A server a test builds
 	// directly has none unless the test sets it (directServer sets context.Background()).
 	lifetime context.Context
-	// clock is Deps.Clock, clock.Real() where that is nil (register; directServer).
-	clock clock.Clock
 	// stampClock is what the moments this process stamps itself, not the database, are read off
 	// (stampedNow): an ask's resolution, a priority's acts, and a commit's pull-request read and
 	// its settling (readThroughHead, through resultsNow where resultsClock is nil). nil, which
-	// every server the deployment builds leaves it, is clock.Real(). It is not clock, so a server
-	// whose timers a test holds or moves still stamps the wall clock; only a test that judges one
-	// of those stamps sets a fake here, and reads the moment it must carry off that fake.
+	// every server the deployment builds leaves it, is clock.Real(). It is not the server's clock
+	// (clock), so a server whose timers a test holds or moves still stamps the wall clock; only a
+	// test that judges one of those stamps sets a fake here, and reads the moment it must carry
+	// off that fake.
 	stampClock clock.Clock
 	// recordClock is what the bound of a related check's records runs on (relatedRecordTimeout,
 	// recordRelatedChecks). nil, which every server the deployment builds leaves it, is
-	// clock.Real(). It is not clock, so a server on a fake that a test moves through a check's
-	// allowance still gives its records the wall clock's second; only a test that holds a record
-	// past its bound sets a fake here, and moves it to the bound the record armed.
+	// clock.Real(). It is not the server's clock (clock), so a server on a fake that a test moves
+	// through a check's allowance still gives its records the wall clock's second; only a test
+	// that holds a record past its bound sets a fake here, and moves it to the bound the record
+	// armed.
 	recordClock clock.Clock
 	routeIndex  []routeIndexEntry
 	// going is the action catalogue GET /api/v1/going/catalogue serves: the dispatch tools that
@@ -556,6 +568,14 @@ type server struct {
 	// (gateBoundPastEveryRead in newRegisteredTestServer), since production's 2 s is a bound a
 	// loaded machine can miss.
 	duplicateBound time.Duration
+	// inboxStatementBound overrides the statement_timeout of the mark-all's and the dismissal's
+	// transactions (boundInboxStatements); zero, which every server the deployment builds leaves
+	// it, means inboxReadStatementTimeout. Only a test sets it (testServerOptions'
+	// inboxStatementBound): a case that holds a dismissal behind a lock of its own while it takes
+	// its steps gives the dismissal a bound past any run, so the bound Postgres keeps from the
+	// moment the dismissal queues never ends a correct run however long a loaded machine takes over
+	// those steps (INFRA-3904).
+	inboxStatementBound time.Duration
 	// beforeDuplicateRead runs at the head of the near-copy gate's read, inside its bound, and its
 	// error stands in for the read failing. Only a test sets it: it is how a case holds the read
 	// until the bound ends it, so the bound and nothing else decides that case.
@@ -876,12 +896,9 @@ func register(mux RouteMux, lifetime context.Context, deps Deps) *server {
 	if lifetime == nil {
 		panic("api.Register: the lifetime parameter is required: it is the context that ends the delivery hub, the event stream relay and every live socket (a test passes t.Context())")
 	}
-	s := &server{deps: deps, lifetime: lifetime, clock: deps.Clock, listAnswers: newListAnswerCache(), rosters: rosterCache{
+	s := &server{deps: deps, lifetime: lifetime, listAnswers: newListAnswerCache(), rosters: rosterCache{
 		ttl: cmp.Or(deps.RouteRosterTTL, routeRosterTTL), silenceTTL: routeRosterSilenceTTL,
 	}}
-	if s.clock == nil {
-		s.clock = clock.Real()
-	}
 	s.liveKinds = map[string]liveKind{
 		liveEventsView: {resumes: true, start: s.startEventsView},
 		liveAgentView:  {start: s.startAgentView},
@@ -892,7 +909,7 @@ func register(mux RouteMux, lifetime context.Context, deps Deps) *server {
 	s.registerHeldGauges(deps.Metrics)
 	s.unguardedReplacements = registerUnguardedReplacements(deps.Metrics)
 	s.unguardedFileReplacements = registerUnguardedFileReplacements(deps.Metrics)
-	s.deliveryHub = newDeliveryHub(s, lifetime, s.clock)
+	s.deliveryHub = newDeliveryHub(s, lifetime, s.clock())
 	if deps.TestHooksEnabled && deps.Store != nil {
 		s.testHooks = startTestHookFanout(s, lifetime)
 	}
@@ -946,8 +963,8 @@ func register(mux RouteMux, lifetime context.Context, deps Deps) *server {
 		// The document service admits a socket by its sign-in cookie alone, so its heartbeat
 		// re-checks that cookie and nothing the request carries beside it (signInStillResolves).
 		const pattern = "/ws/doc/{room}"
-		mux.Handle("GET "+pattern, accesslog.Handler(pattern, s.whileCallerResolves(s.signInStillResolves,
-			trackTransactions(s.refuseUnstorableParameters(pattern, websocket.ServeHTTP)))))
+		mux.Handle("GET "+pattern, accesslog.HandlerOn(pattern, s.whileCallerResolves(s.signInStillResolves,
+			trackTransactions(s.refuseUnstorableParameters(pattern, websocket.ServeHTTP))), s.clock()))
 	}
 	mux.Handle("GET "+liveSocketPattern, s.liveSocketHandler(s.serveLiveSocket))
 	return s
@@ -1051,10 +1068,12 @@ func (s *server) routeHandler(route apiRoute, keyed keyedRoute) http.HandlerFunc
 	served := compressAnswers(handler)
 	if route.Method+" "+route.Pattern == sessionAnswersRoute && s.deps.AnswersLatency != nil {
 		// Just inside the access-log line, so the time of an answers read the keyword fill
-		// pauses on is the time the line records for it, every layer of the chain included.
+		// pauses on is the time the line records for it, every layer of the chain included. The
+		// line is timed on the server's clock, which a test hands the Latency too, so the two read
+		// one clock.
 		served = timedAnswersReads(s.deps.AnswersLatency, served)
 	}
-	return accesslog.HandlerFunc(route.Pattern, served)
+	return accesslog.HandlerFuncOn(route.Pattern, served, s.clock())
 }
 
 // liveSocketPattern is the path of the live socket, which register mounts beside the table.
@@ -1072,9 +1091,9 @@ const liveSocketPattern = "/ws/live"
 // a sign-in cookie - so its heartbeat resolves that same credential again
 // (callerStillResolves).
 func (s *server) liveSocketHandler(serve http.HandlerFunc) http.Handler {
-	return accesslog.Handler(liveSocketPattern, s.whileCallerResolves(s.callerStillResolves, s.decideBrokerToken(
+	return accesslog.HandlerOn(liveSocketPattern, s.whileCallerResolves(s.callerStillResolves, s.decideBrokerToken(
 		s.refuseReadOnlyToken(http.MethodGet+" "+liveSocketPattern, readEntry{},
-			trackTransactions(s.refuseUnstorableParameters(liveSocketPattern, serve))))))
+			trackTransactions(s.refuseUnstorableParameters(liveSocketPattern, serve))))), s.clock())
 }
 
 func trackTransactions(handler http.HandlerFunc) http.HandlerFunc {
@@ -1114,7 +1133,7 @@ func (s *server) whileCallerResolves(stillResolves func(*http.Request) error, ha
 		go func() {
 			// The heartbeat runs on the server's clock, so a test that drives a fake decides
 			// when the caller is resolved again rather than shortening the interval.
-			heartbeat := s.clock.NewTimer(s.deps.StreamHeartbeat)
+			heartbeat := s.clock().NewTimer(s.deps.StreamHeartbeat)
 			defer heartbeat.Stop()
 			for {
 				select {
@@ -2107,28 +2126,13 @@ func (s *server) publish(ctx context.Context, events ...model.Event) {
 	s.storeEventDisplayTrees(ctx, events)
 }
 
-// boundedByClock is ctx ended d from now on the server's clock, with cause as the cause its end
-// carries (context.Cause), so the work behind it tells its own bound from the request that ran it
-// going away. The caller cancels it, as it would a context.WithTimeout's. It is the one bound a
-// product timer of this package takes (relatedBounds, gateBounds): a test moves the server's own
-// fake clock to the deadline the code armed, and no real time decides the outcome.
-//
-// A d already spent (zero or less, which only a test sets - suggestionTimeout, duplicateBound)
-// ends the context here, before this returns, so nothing behind it reads at all. A timer of zero
-// or less runs its function on a goroutine of its own, on the real clock as on the fake
-// (clocktest's placeLocked), and work that began before that goroutine ran would be the machine
-// deciding the outcome rather than the case (INFRA-3149).
-func (s *server) boundedByClock(ctx context.Context, d time.Duration, cause error) (context.Context, context.CancelFunc) {
-	bounded, end := context.WithCancelCause(ctx)
-	if d <= 0 {
-		end(cause)
-		return bounded, func() { end(context.Canceled) }
+// clock is the clock the server's timers run on: Deps.Clock, clock.Real() where that is nil, for
+// a server Register builds and for one built directly alike, so no server literal sets a clock.
+func (s *server) clock() clock.Clock {
+	if s.deps.Clock != nil {
+		return s.deps.Clock
 	}
-	timer := s.clock.AfterFunc(d, func() { end(cause) })
-	return bounded, func() {
-		timer.Stop()
-		end(context.Canceled)
-	}
+	return clock.Real()
 }
 
 // stampedNow is the moment the server stamps a write of its own with, read off stampClock, which

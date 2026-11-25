@@ -395,7 +395,7 @@ func (s *server) endEventsAfterFailure(ctx context.Context, stream liveStreamer,
 		return
 	}
 	slog.Warn("dispatch: an events subscription could not "+what+"; it ends, and its page subscribes again", "error", err)
-	if s.clock.Sleep(ctx, eventRelayRetry) != nil {
+	if s.clock().Sleep(ctx, eventRelayRetry) != nil {
 		return
 	}
 	_ = stream.SendWait(ctx, liveEnded(sub, liveEndedBehind))

@@ -140,15 +140,16 @@ func presentedHeaders(presented *http.Request) http.Header {
 }
 
 // driveHeartbeats moves fake through n of the server's heartbeats from first, each one heartbeat
-// after the one before, waiting before each move for it to be armed there, and answers the
-// heartbeat after them once it is armed. The server arms its next heartbeat before it resolves its
-// caller again and receives that heartbeat only once the check has returned, so each heartbeat
-// seen armed proves every check two or more heartbeats before it found the caller still resolving.
-func driveHeartbeats(t *testing.T, fake *clocktest.Fake, first time.Time, n int, every time.Duration) time.Time {
+// after the one before, waiting before each move for every one of the sockets open to have armed
+// it there (AwaitArmedCountAt), and answers the heartbeat after them once one is armed. The server
+// arms its next heartbeat before it resolves its caller again and receives that heartbeat only once
+// the check has returned, so each heartbeat seen armed proves every check two or more heartbeats
+// before it found the caller still resolving.
+func driveHeartbeats(t *testing.T, fake *clocktest.Fake, first time.Time, n int, every time.Duration, sockets int) time.Time {
 	t.Helper()
 	at := first
 	for range n {
-		fake.AwaitArmedAt(t, "the socket's heartbeat", at)
+		fake.AwaitArmedCountAt(t, "the sockets' heartbeat", at, sockets)
 		fake.Set(at)
 		at = at.Add(every)
 	}
@@ -160,8 +161,9 @@ func driveHeartbeats(t *testing.T, fake *clocktest.Fake, first time.Time, n int,
 // so its heartbeat re-checks that cookie and nothing the request carries beside it
 // (signInStillResolves). A token sent beside the cookie admitted nothing, and the broker holding
 // it live must not keep the socket open once the cookie's session has ended: not a read-only
-// token, which the read list lets read no document at all, and not a token that writes, which is
-// its session's credential and still not what opened this socket. The socket stays open while
+// token, which may read a document through the API's reads and never through this socket, and
+// not a token that writes, which is its session's credential and still not what opened this
+// socket. The socket stays open while
 // the cookie resolves, with the token beside it, and closes at the first heartbeat after the
 // session's end, while the broker still holds the token live and has not once been asked about
 // it. The heartbeats are on the server's clock, a fake the row moves one heartbeat at a time, and
@@ -188,7 +190,7 @@ func TestADocumentSocketClosesOnceItsCookieEndsThoughALiveTokenRidesBesideIt(t *
 
 			// While the cookie resolves the socket outlives several heartbeats and still
 			// answers its editor.
-			next := driveHeartbeats(t, fake, opened.Add(heartbeat), 4, heartbeat)
+			next := driveHeartbeats(t, fake, opened.Add(heartbeat), 4, heartbeat, 1)
 			peer.barrier(t)
 
 			if err := rig.sessions.RevokeSessions(context.Background(), documentSocketPerson); err != nil {
@@ -236,7 +238,7 @@ func TestADocumentSocketOutlivesItsHeartbeatsWhileItsCookieResolves(t *testing.T
 			rig := newDocumentSocketTokenRig(t, heartbeat, fake)
 			peer := rig.openDocument(t, beside.headers(t, rig))
 
-			driveHeartbeats(t, fake, opened.Add(heartbeat), 4, heartbeat)
+			driveHeartbeats(t, fake, opened.Add(heartbeat), 4, heartbeat, 1)
 			peer.barrier(t)
 			if asked := rig.tokens.broker.Count(); asked != 0 {
 				t.Fatalf("the document socket's heartbeat asked the broker %d times, want 0", asked)
@@ -265,13 +267,13 @@ func TestALiveSocketOpenedByABrokerTokenResolvesThatTokenOnEveryHeartbeat(t *tes
 	presented := caller.presenting(t, http.MethodGet, "/ws/live", token, nil)
 	client := openLiveSocketAt(t, gws.DefaultDialer, "ws"+strings.TrimPrefix(rig.server.URL, "http")+"/ws/live", presentedHeaders(presented)).read()
 
-	next := driveHeartbeats(t, fake, opened.Add(heartbeat), 3, heartbeat)
+	next := driveHeartbeats(t, fake, opened.Add(heartbeat), 3, heartbeat, 1)
 	client.sentNothing(t, "a live socket whose token the broker holds live")
 
 	rig.tokens.broker.Says(token, ciphertoken.Introspection{Active: false})
 	lapsed := opened.Add(ciphertoken.AffirmativeCacheTTL)
 	for next.Before(lapsed) {
-		next = driveHeartbeats(t, fake, next, 1, heartbeat)
+		next = driveHeartbeats(t, fake, next, 1, heartbeat, 1)
 	}
 	fake.Set(next)
 	if closed := client.closeError(t); closed.Code != gws.ClosePolicyViolation {

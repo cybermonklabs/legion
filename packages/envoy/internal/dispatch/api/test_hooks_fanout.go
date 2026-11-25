@@ -322,7 +322,7 @@ func (f *testHookFanout) call(ctx context.Context, call testHookCall) (int, []by
 	}
 	id := rand.Text()
 	parts := splitTestHookCall(id, string(encoded))
-	ctx, cancel := f.bounded(f.server.clock, ctx)
+	ctx, cancel := f.bounded(f.server.clock(), ctx)
 	defer cancel()
 
 	wait := &testHookWait{acks: map[int32]testHookAck{}, arrived: make(chan struct{}, 1)}
@@ -358,7 +358,7 @@ func (f *testHookFanout) call(ctx context.Context, call testHookCall) (int, []by
 	// The poll of the held locks runs on the server's clock, as the call's timeout does, so a test
 	// that drives a fake decides when each poll runs and sees the next armed once it has returned
 	// (clock.Ticker).
-	poll := clock.NewTicker(f.server.clock, testHookPoll, false)
+	poll := clock.NewTicker(f.server.clock(), testHookPoll, false)
 	defer poll.Stop()
 	for {
 		f.mu.Lock()

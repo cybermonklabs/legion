@@ -86,7 +86,7 @@ func TestSendResolvedDeliveryReportsNoEnvelopeWithAnyFailure(t *testing.T) {
 			// listener that never answers costs the test nothing, and one that answers is never
 			// cut short by a move.
 			clock := clocktest.New(time.Now())
-			s := &server{deps: Deps{Envoy: envoy.New(url, envoy.WithClock(clock))}, clock: clock}
+			s := &server{deps: Deps{Envoy: envoy.New(url, envoy.WithClock(clock)), Clock: clock}}
 			answered := make(chan sendOutcome, 1)
 			go func() {
 				answered <- s.sendResolvedDelivery(
@@ -128,7 +128,7 @@ func TestASendTheListenerCouldNotConfirmStoredIsRecordedAsPossiblyDelivered(t *t
 		// The client's window runs on a fake clock no one moves: the listener answers at once, and a
 		// loaded machine that carries that answer slowly must not turn it into a receipt timeout.
 		clock := clocktest.New(time.Now())
-		s := &server{deps: Deps{Envoy: envoy.New(listener.URL, envoy.WithClock(clock))}, clock: clock}
+		s := &server{deps: Deps{Envoy: envoy.New(listener.URL, envoy.WithClock(clock)), Clock: clock}}
 		return s.sendResolvedDelivery(
 			context.Background(), live, "session:s1", "body", "m1:steer", nil, contracts.ExpectsReplyOptional, []byte(`{}`), false)
 	}

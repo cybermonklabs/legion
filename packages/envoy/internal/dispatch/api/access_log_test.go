@@ -154,7 +154,7 @@ func TestASocketsHeartbeatLeavesTheSessionItWasAdmittedAs(t *testing.T) {
 	socket := accesslog.Handler("/ws/live", served.whileCallerResolves(served.callerStillResolves, func(w http.ResponseWriter, r *http.Request) {
 		accesslog.Note(r.Context(), accesslog.KindSharedToken, "")
 		accesslog.Note(r.Context(), accesslog.KindSession, "session-0123456789abcdef")
-		driveHeartbeats(t, fake, opened.Add(heartbeat), 10, heartbeat)
+		driveHeartbeats(t, fake, opened.Add(heartbeat), 10, heartbeat, 1)
 	}))
 	request := httptest.NewRequest(http.MethodGet, "/ws/live", nil)
 	request.Header.Set("Authorization", "Bearer agent-token")

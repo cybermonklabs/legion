@@ -91,10 +91,10 @@ func (s *server) slowedByTestHook(handler http.HandlerFunc) http.HandlerFunc {
 func (s *server) waitSlowWrite(ctx context.Context, route string, delay time.Duration) bool {
 	held, _ := s.slowWriteRuns.LoadOrStore(route, &slowWriteRecord{})
 	record := held.(*slowWriteRecord)
-	entered := s.clock.Now()
-	waited := s.clock.Sleep(ctx, delay) == nil
+	entered := s.clock().Now()
+	waited := s.clock().Sleep(ctx, delay) == nil
 	record.runs.Add(1)
-	record.waited.Add(int64(s.clock.Now().Sub(entered)))
+	record.waited.Add(int64(s.clock().Now().Sub(entered)))
 	return waited
 }
 

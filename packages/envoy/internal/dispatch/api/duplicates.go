@@ -338,13 +338,14 @@ func duplicateGateText(title, spec string) string {
 var errNearCopyGateBoundEnded = errors.New("the near-copy gate's bound ended")
 
 // gateBounds is the context the gate's read runs under and the bound it ends at: ctx bounded by
-// duplicateGateBound on the server's clock (boundedByClock), ending with
-// errNearCopyGateBoundEnded as its cause, as relatedBounds bounds the related-item check. A case
-// whose outcome is that no check was made gives the gate a bound already spent, which ends the
-// context before this returns, so no read starts under it whatever the machine does.
+// duplicateGateBound on the server's clock (clock.Clock's WithTimeoutCause), ending with
+// context.DeadlineExceeded and errNearCopyGateBoundEnded as its cause, as relatedBounds bounds the
+// related-item check. A case whose outcome is that no check was made gives the gate a bound
+// already spent, which ends the context before this returns, on either clock, so no read starts
+// under it whatever the machine does.
 func (s *server) gateBounds(ctx context.Context) (context.Context, context.CancelFunc, time.Duration) {
 	bound := s.duplicateGateBound()
-	bounded, cancel := s.boundedByClock(ctx, bound, errNearCopyGateBoundEnded)
+	bounded, cancel := s.clock().WithTimeoutCause(ctx, bound, errNearCopyGateBoundEnded)
 	return bounded, cancel, bound
 }
 
@@ -366,11 +367,11 @@ func (s *server) duplicateGate(
 ) duplicateGateResult {
 	// The read's time is read on the server's clock, which the bound runs on (gateBounds), and it
 	// starts before the bound does, so a read the bound ends records at least the bound.
-	start := s.clock.Now()
+	start := s.clock().Now()
 	gateCtx, cancel, bound := s.gateBounds(ctx)
 	defer cancel()
 	candidates, err := s.readDuplicateCandidates(gateCtx, project, title, spec, ancestors, bound, duplicateNudgeScore)
-	readMS, stage := milliseconds(s.clock.Now().Sub(start)), nearCopyReadStage(err)
+	readMS, stage := milliseconds(s.clock().Now().Sub(start)), nearCopyReadStage(err)
 	switch {
 	case err == nil:
 		return duplicateGateResult{Candidates: candidates, ReadMS: readMS, ReadStage: stage}
@@ -532,8 +533,8 @@ func nearCopyScoreTerms(picked relatedTerms, keyLexemes map[string]bool) ([]stri
 // nearCopyBoundHit says whether the gate's read ended at a deadline rather than at a fault of its
 // own: Postgres cancelling the statement its statement_timeout ran out (SQLSTATE 57014), or a
 // deadline the create's own request carried. The gate's own bound ends its context with
-// errNearCopyGateBoundEnded as the cause and context.Canceled as the error (gateBounds), which
-// duplicateGate reads beside this. Either way no check was made, and the read is at no fault.
+// context.DeadlineExceeded as the error and errNearCopyGateBoundEnded as the cause (gateBounds),
+// which duplicateGate logs beside this. Either way no check was made, and the read is at no fault.
 func nearCopyBoundHit(err error) bool {
 	if errors.Is(err, context.DeadlineExceeded) {
 		return true

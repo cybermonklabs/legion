@@ -440,7 +440,8 @@ func TestARetryInAnotherModeThatTimedOutLeavesTheRecipientOneCopy(t *testing.T) 
 	// sleeps between them (takeoverFirstBackoff, doubling): tries start at 0, 5.25 s and 10.75 s,
 	// and a fourth would start at 16.75 s, past the window.
 	const retryTries = 3
-	lane := aMentionQueuedOnClock(t, "", clocktest.New(time.Now()))
+	start := time.Now()
+	lane := aMentionQueuedOnClock(t, "", clocktest.New(start))
 	lane.listener.dropRepeats()
 	// The Retry's frame reaches s1 and its answer is held until the test moves the server's
 	// clock past the window the listener client gives the call, below.
@@ -467,7 +468,9 @@ func TestARetryInAnotherModeThatTimedOutLeavesTheRecipientOneCopy(t *testing.T) 
 	// so that window, armed before the frame that landed went out, ends one envoy.CallWindow on.
 	// The tries after it are held the same way, and the wait moves the clock through their
 	// windows and the backoffs between them.
-	lane.clock.Advance(envoy.CallWindow)
+	window := start.Add(envoy.CallWindow)
+	lane.clock.AwaitArmedAt(t, "the window of the Retry's first call, whose answer the listener holds", window)
+	lane.clock.Set(window)
 	retried := decodeBody[commentDeliveryRead](t, answerWhileCallsAreHeld(t, lane.clock, &lane.listener.calls, answered))
 	if retried.Attempt != 2 || retried.Delivery != "btw" || retried.State != "failed" ||
 		deref(retried.Error) != receiptTimeoutText {

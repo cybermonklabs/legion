@@ -245,7 +245,7 @@ func TestRelatedCheckReportsAMeaningStatementTheServerEndedAsATimeout(t *testing
 	// The server's clock is a fake the case never moves, so no bound of the check's ends its first
 	// check: it searched by meaning on this server before the bound on its statement was
 	// shortened, whatever a loaded machine's meaning stage took.
-	srv.clock = clocktest.New(checkStart)
+	srv.deps.Clock = clocktest.New(checkStart)
 	healthy := srv.relatedCheck(context.Background(), relatedInput{project: "MBOUND", text: text})
 	if healthy.Search != "meaning_and_keywords" || healthy.SearchNote != "" {
 		t.Fatalf("suggestions = %+v before the bound was shortened, want found by meaning and keywords", healthy)

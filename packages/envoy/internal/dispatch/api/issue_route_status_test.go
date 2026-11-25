@@ -430,9 +430,8 @@ func stateRosterServer(t *testing.T, rows []map[string]any) *server {
 	// however late it comes, and no real window does.
 	fake := clocktest.New(rosterTestStart)
 	return &server{
-		deps:     Deps{Envoy: envoy.New(listener.URL, envoy.WithClock(fake))},
+		deps:     Deps{Envoy: envoy.New(listener.URL, envoy.WithClock(fake)), Clock: fake},
 		lifetime: context.Background(),
-		clock:    fake,
 	}
 }
 

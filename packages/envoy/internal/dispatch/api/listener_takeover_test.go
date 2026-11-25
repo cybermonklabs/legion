@@ -190,15 +190,33 @@ func deliveryReceiptsOf(t *testing.T, database *store.Store, receiptType, field,
 	return count
 }
 
-// listenerCalls is how many calls a stand-in listener is serving and how many of those it is
+// listenerCalls is how many calls a stand-in listener is serving and which of those it is
 // holding - a call it will never answer, which nothing but the window on the server's clock ends.
 // A stand-in records both so that a test whose server runs on a fake clock can move that clock
 // through the sender's waits without cutting a call that would have been answered
-// (stepListenerWaits).
+// (stepListenerWaits). With the server's clock set (on), each held call records the deadlines
+// pending on it as the stand-in took the call, its own window among them: the client arms the
+// window before it writes the request.
 type listenerCalls struct {
-	mu   sync.Mutex
-	open int
-	held int
+	mu    sync.Mutex
+	clock *clocktest.Fake
+	open  int
+	held  []*heldCall
+}
+
+// heldCall is one call a stand-in is holding, and the deadlines pending on the server's clock as
+// the stand-in took it (none when no clock was set).
+type heldCall struct {
+	pending []time.Time
+}
+
+// on sets fake, the server's clock, as the clock whose pending deadlines each held call records.
+// A test that moves fake through its stand-in's held calls (stepListenerWaits) calls it before the
+// stand-in takes its first call.
+func (c *listenerCalls) on(fake *clocktest.Fake) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.clock = fake
 }
 
 // took records a call the stand-in has taken and answers the function that records its end.
@@ -213,16 +231,25 @@ func (c *listenerCalls) took() func() {
 	}
 }
 
-// holding records that the call the stand-in is serving is one it will never answer, and answers
-// the function that records its end.
+// holding records that the call the stand-in is serving is one it will never answer, with the
+// deadlines pending on the server's clock as it took the call, and answers the function that
+// records its end. The pending deadlines are read before the lock is taken, so stepListenerWaits,
+// which reads the held calls under the fake's own lock, never waits on a reader of the fake.
 func (c *listenerCalls) holding() func() {
 	c.mu.Lock()
-	c.held++
+	fake := c.clock
+	c.mu.Unlock()
+	call := &heldCall{}
+	if fake != nil {
+		call.pending = fake.Armed()
+	}
+	c.mu.Lock()
+	c.held = append(c.held, call)
 	c.mu.Unlock()
 	return func() {
 		c.mu.Lock()
-		c.held--
-		c.mu.Unlock()
+		defer c.mu.Unlock()
+		c.held = slices.DeleteFunc(c.held, func(held *heldCall) bool { return held == call })
 	}
 }
 
@@ -230,7 +257,15 @@ func (c *listenerCalls) holding() func() {
 func (c *listenerCalls) counts() (open, held int) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.open, c.held
+	return c.open, len(c.held)
+}
+
+// heldUnderLocked reports whether at was pending on the server's clock as the stand-in took one of
+// the calls it still holds. The caller holds c.mu.
+func (c *listenerCalls) heldUnderLocked(at time.Time) bool {
+	return slices.ContainsFunc(c.held, func(held *heldCall) bool {
+		return slices.ContainsFunc(held.pending, at.Equal)
+	})
 }
 
 // stepListenerWaits moves fake, a test server's clock, through the waits its sender is in while a
@@ -241,9 +276,16 @@ func (c *listenerCalls) counts() (open, held int) {
 //
 // It moves the clock only where the move can cut no call that would have been answered:
 //   - while every call in flight is one the stand-in holds, it steps to the earliest deadline
-//     pending on the fake. That is a held call's window, or something due sooner, which the move
+//     pending on the fake, when that deadline was pending already as the stand-in took one of the
+//     calls it still holds. That is a held call's window, or something due sooner, which the move
 //     fires instead; the wait's next pass steps again, so the windows run out without the test
-//     naming any of them.
+//     naming any of them. A held call whose window has fired but whose end the stand-in has not
+//     seen yet, as a loaded machine can leave it, still counts as held; the window of the next
+//     call, armed after it and on its way to the stand-in, is no deadline any held call was taken
+//     under, so the step waits rather than cut that call short. A call armed at the same fake
+//     moment as a held one has the same window, which the step fires with it; no row here has a
+//     held call and a call it would answer in flight from one moment, since its senders try one
+//     call at a time.
 //   - with no call in flight, it fires only a deadline no further off than takeoverMaxBackoff,
 //     which is the take-over's backoff before the next try. A listener call's window (five
 //     seconds) is further off, so a call already on its way to the stand-in, whose window is
@@ -255,18 +297,24 @@ func (c *listenerCalls) counts() (open, held int) {
 // backoff - and arms that bound before the stand-in has taken the call. A caller whose stand-in
 // would answer that lookup moves the clock only once the request's lookups are done, which is
 // once the comment's attempts are committed.
+//
+// The decision and the move are one SetWhen, so no deadline is armed between the reading that
+// decided the move and the move itself. calls must be on fake (listenerCalls.on).
 func stepListenerWaits(fake *clocktest.Fake, calls *listenerCalls) {
-	armed := fake.Armed()
-	if len(armed) == 0 {
-		return
-	}
-	open, held := calls.counts()
-	switch {
-	case held > 0 && open == held:
-		fake.Set(armed[0])
-	case open == 0 && !armed[0].After(fake.Now().Add(takeoverMaxBackoff)):
-		fake.Set(armed[0])
-	}
+	fake.SetWhen(func(now time.Time, armed []time.Time) (time.Time, bool) {
+		if len(armed) == 0 {
+			return time.Time{}, false
+		}
+		calls.mu.Lock()
+		defer calls.mu.Unlock()
+		switch {
+		case len(calls.held) > 0 && calls.open == len(calls.held) && calls.heldUnderLocked(armed[0]):
+			return armed[0], true
+		case calls.open == 0 && !armed[0].After(now.Add(takeoverMaxBackoff)):
+			return armed[0], true
+		}
+		return time.Time{}, false
+	})
 }
 
 // answerWhileCallsAreHeld waits for a request running on a goroutine of its own, whose listener
@@ -299,13 +347,15 @@ func answerWhileCallsAreHeld(
 // holds and its own key, and reaches the session once the listener answers. Anything else the
 // listener says - the session does not take this mode, the send itself is refused - is its
 // answer, and the attempt settles failed on that first try. The server runs the window every
-// deployment runs, on a fake clock: the test moves it through each try's backoff and through the
-// window of the call the late answer holds, so every try a case's take-over takes happens with
-// no wall clock spent on it.
+// deployment runs, and the listener client's own five-second window, on a fake clock: the test
+// moves it through each try's backoff and through the window of the call the late answer holds,
+// so every try a case's take-over takes happens with no wall clock spent on it and no answer a
+// loaded machine sends late runs out of a window.
 func TestAListenerTakeOverIsWaitedOutAndARefusalSettlesAtOnce(t *testing.T) {
 	t.Parallel()
 	listener := startTakeOverListener(t)
 	clock := clocktest.New(time.Now())
+	listener.calls.on(clock)
 	handler, database, _ := newTestServer(t, testServerOptions{envoyURL: listener.server.URL, clock: clock})
 
 	lateAnswer := func(l *takeOverListener, w http.ResponseWriter, r *http.Request, send resumeSend) {
@@ -481,7 +531,7 @@ func countAttemptClaims(t *testing.T, database *store.Store) func() int {
 // tries have found the attempt held and a sweep pass has run, so the try it answers is the fourth
 // and the claim is read at four points across three renewals. The server runs the window every
 // deployment runs, on a fake clock: each try's backoff passes when the test moves that clock, so
-// the tries cost no wall clock and no window is shortened to fit them.
+// the tries cost no wall clock and no try a loaded machine makes late falls outside the window.
 func TestASenderWaitingOutAListenerTakeOverRenewsItsClaimBeforeEachTry(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -511,6 +561,7 @@ func TestASenderWaitingOutAListenerTakeOverRenewsItsClaimBeforeEachTry(t *testin
 		t.Run(tc.name, func(t *testing.T) {
 			listener := startTakeOverListener(t)
 			clock := clocktest.New(time.Now())
+			listener.calls.on(clock)
 			handler, database, deps := newTestServer(t, testServerOptions{
 				envoyURL: listener.server.URL, clock: clock,
 			})

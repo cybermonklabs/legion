@@ -77,7 +77,7 @@ func TestTheEventFeedClosesOnceItsPersonNoLongerResolves(t *testing.T) {
 
 	client := openLiveSocketAt(t, gws.DefaultDialer, "ws"+strings.TrimPrefix(server.URL, "http")+"/ws/live", nil).servedBy(database).read()
 	subscribeEvents(t, client, "events", nil)
-	next := driveHeartbeats(t, fake, opened.Add(heartbeat), 0, heartbeat)
+	next := driveHeartbeats(t, fake, opened.Add(heartbeat), 0, heartbeat, 1)
 
 	person.ended.Store(true)
 	fake.Set(next)
@@ -119,7 +119,7 @@ func TestAgentStreamClosesOnceItsViewerNoLongerResolves(t *testing.T) {
 	if data := client.agentFrame(t, "agent", "responder"); data != `{"v":1,"responding":true}` {
 		t.Fatalf("the agent view's first frame has data %s, want the session responding", data)
 	}
-	next := driveHeartbeats(t, fake, opened.Add(heartbeat), 0, heartbeat)
+	next := driveHeartbeats(t, fake, opened.Add(heartbeat), 0, heartbeat, 1)
 
 	person.ended.Store(true)
 	fake.Set(next)
@@ -169,7 +169,7 @@ func TestDocumentSocketClosesOnceItsPersonNoLongerResolves(t *testing.T) {
 
 			// While they are a member the socket outlives several heartbeats, each resolving them
 			// again, and stays writable: their edit reaches the room.
-			next := driveHeartbeats(t, fake, opened.Add(heartbeat), 4, heartbeat)
+			next := driveHeartbeats(t, fake, opened.Add(heartbeat), 4, heartbeat, 1)
 			peer.appendParagraph(t, "typed while a member")
 			peer.barrier(t)
 			if refreshes := rig.pool.Refreshes(); refreshes != 0 {

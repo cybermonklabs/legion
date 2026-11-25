@@ -207,7 +207,7 @@ func TestAFrameOverTheReadLimitIsDrainedPastThePongDeadline(t *testing.T) {
 }
 
 // A read deadline that the pong deadline set on the connection before the drain began is lifted
-// with the pong deadline itself (drainReads). The pong deadline can pass after the read loop has
+// with the pong deadline itself (endReads). The pong deadline can pass after the read loop has
 // ended on a frame past the read limit, while the handler waits for its writer to end, and a drain
 // that kept the deadline it set would end at its first read.
 //

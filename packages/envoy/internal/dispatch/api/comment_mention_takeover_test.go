@@ -59,6 +59,7 @@ func takeOverServer(t *testing.T) (*takeOverListener, *takeOverTries, http.Handl
 	t.Helper()
 	listener := startTakeOverListener(t)
 	clock := clocktest.New(time.Now())
+	listener.calls.on(clock)
 	handler, database, deps := newTestServer(t, testServerOptions{envoyURL: listener.server.URL, clock: clock})
 	tries := &takeOverTries{clock: clock}
 	listener.mu.Lock()
