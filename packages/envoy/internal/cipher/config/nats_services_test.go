@@ -1,6 +1,7 @@
 package config
 
 import (
+	"strconv"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -168,6 +169,37 @@ func TestParseNATSServicesRefusals(t *testing.T) {
 				require.Contains(t, err.Error(), want)
 			}
 		})
+	}
+}
+
+// The deployment's one operator identity and the writer hold's one probe are entries of their own
+// kinds, each listed once, with no machine id and the whole grant: the hold and the buckets
+// command reach no project's messages, and no project scope can hold a stream create. Each names
+// its issuers as every other entry does, and one that names none takes the first issuer alone. A
+// second entry of either kind, a machine id, the scope -, or an issuer the list does not hold is
+// refused, naming the entry.
+func TestParseNATSServicesReadsTheOperatorKind(t *testing.T) {
+	const operator = "system:serviceaccount:envoy-operator:envoy-operator"
+	const probe = "system:serviceaccount:envoy-operator:envoy-hold-probe"
+	operatorText, probeText := "operator/-/*="+operator+"=second", "probe/-/*="+probe
+	services, err := ParseNATSServices(operatorText+" "+probeText, twoIssuers)
+	require.NoError(t, err)
+	require.Equal(t, []NATSService{
+		{Kind: NATSOperator, Account: operator, Issuers: []string{"second"}, AllProjects: true, Text: operatorText},
+		{Kind: NATSProbe, Account: probe, Issuers: []string{"first"}, AllProjects: true, Text: probeText},
+	}, services)
+	require.Equal(t, "operator/"+operator, services[0].Name())
+	for raw, names := range map[string]string{
+		"operator/m1/*=" + operator:           "operator/m1/*=" + operator,
+		"operator/-/-=" + operator:            "operator/-/-=" + operator,
+		"operator/-/*=" + operator + "=third": "operator/-/*=" + operator + "=third",
+		"operator/-/*=" + operator + " operator/-/*=system:serviceaccount:envoy-operator:second": "operator/-/*=system:serviceaccount:envoy-operator:second",
+		"probe/m1/*=" + probe: "probe/m1/*=" + probe,
+		"probe/-/-=" + probe:  "probe/-/-=" + probe,
+		"probe/-/*=" + probe + " probe/-/*=system:serviceaccount:envoy-operator:second": "probe/-/*=system:serviceaccount:envoy-operator:second",
+	} {
+		_, err := ParseNATSServices(raw, twoIssuers)
+		require.ErrorContains(t, err, strconv.Quote(names), "ParseNATSServices(%q)", raw)
 	}
 }
 

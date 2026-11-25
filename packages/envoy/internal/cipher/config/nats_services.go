@@ -18,18 +18,25 @@ const NATSServicesVariable = "BROKER_NATS_SERVICES"
 // NATSServiceKind is which kind of service a BROKER_NATS_SERVICES entry names.
 type NATSServiceKind string
 
-// The kinds of entry. Dispatch, a listener, a Legion daemon, the measurement job and an edge
-// listener are services the NATS auth service admits by their platform identity, each answered
-// with its kind's grant of natsgrant, an edge listener's built for the projects its entry lists
-// (natsgrant.Edge). An edge listener's entry is also read for those projects
-// (NATSCallout.EdgeListeners), whether or not the broker runs the auth service.
+// The kinds of entry. Dispatch, a listener, a Legion daemon, the measurement job, an edge listener,
+// the deployment's one operator identity (natsgrant.Operator, of the writer hold's phase) and the
+// writer hold's probe (natsgrant.HoldProbe) are services the NATS auth service admits by their
+// platform identity, each answered with its kind's grant of natsgrant, an edge listener's built for
+// the projects its entry lists (natsgrant.Edge). An edge listener's entry is also read for those
+// projects (NATSCallout.EdgeListeners), whether or not the broker runs the auth service.
 const (
 	NATSDispatch     NATSServiceKind = "dispatch"
 	NATSListener     NATSServiceKind = "listener"
 	NATSDaemon       NATSServiceKind = "daemon"
 	NATSMeasure      NATSServiceKind = "measure"
+	NATSOperator     NATSServiceKind = "operator"
+	NATSProbe        NATSServiceKind = "probe"
 	NATSEdgeListener NATSServiceKind = "edge-listener"
 )
+
+// onlyOne reports whether a list may name kind once at most: the deployment has one operator
+// identity and one hold probe.
+func onlyOne(kind NATSServiceKind) bool { return kind == NATSOperator || kind == NATSProbe }
 
 // NATSService is one BROKER_NATS_SERVICES entry, as ParseNATSServices reads it at load. It is the
 // one reading of an entry: the NATS auth service admits services by it, the broker's API reads the
@@ -85,18 +92,22 @@ const (
 // projects it serves, and names its issuers as every other entry does:
 // edge-listener/<machine id>/<KEY>[,<KEY>…]=<account>[=<issuer name>[,<issuer name>…]]. It
 // refuses, naming the entry: an entry of none of these forms or of an unknown kind; a dispatch,
-// listener or edge-listener entry with no machine id, and a daemon or measure entry with one; a
-// machine id that is not one subject token; a measure entry with -, since its grant holds a KV
-// read no project scope can hold and it reads no project's messages; an edge listener's entry
-// with * or -, or whose projects are no list of at most oauthwire.MaxProjects project keys named
-// once each; an account ParseAccount refuses (a namespace's default account, a Google default or
-// service-agent account); an entry ending in "=" with no issuer name after it, and the issuer
-// names AccountIssuers refuses (one the list does not hold, one named twice, one on a google:
-// entry, and any while the list is one bare URL or empty); and an account given twice, since one
-// account connects as one service.
+// listener or edge-listener entry with no machine id, and a daemon, measure, operator or probe
+// entry with one; a machine id that is not one subject token; a measure entry with -, since its
+// grant holds a KV read no project scope can hold and it reads no project's messages; an operator
+// or probe entry with -, since the writer hold and the buckets command reach no project's messages
+// and no project scope can hold a stream create; a second operator or probe entry, since a
+// deployment has one operator identity and one probe; an edge listener's entry with * or -, or
+// whose projects are no list of at most oauthwire.MaxProjects project keys named once each; an
+// account ParseAccount refuses (a namespace's default account, a Google default or service-agent
+// account); an entry ending in "=" with no issuer name after it, and the issuer names
+// AccountIssuers refuses (one the list does not hold, one named twice, one on a google: entry, and
+// any while the list is one bare URL or empty); and an account given twice, since one account
+// connects as one service.
 func ParseNATSServices(raw string, issuers []oidc.NamedIssuer) ([]NATSService, error) {
 	var services []NATSService
 	seen := map[string]string{}
+	kinds := map[NATSServiceKind]string{}
 	for _, text := range strings.Fields(raw) {
 		entry, err := parseNATSService(text, issuers)
 		if err != nil {
@@ -105,7 +116,11 @@ func ParseNATSServices(raw string, issuers []oidc.NamedIssuer) ([]NATSService, e
 		if other, twice := seen[entry.Account]; twice {
 			return nil, fmt.Errorf("%s names the account %s in both %q and %q; one account connects as one service, so name it once", NATSServicesVariable, entry.Account, other, text)
 		}
+		if other, twice := kinds[entry.Kind]; twice && onlyOne(entry.Kind) {
+			return nil, fmt.Errorf("%s lists a second %s entry, %q, beside %q; a deployment has one %s identity, so list one", NATSServicesVariable, entry.Kind, text, other, entry.Kind)
+		}
 		seen[entry.Account] = text
+		kinds[entry.Kind] = text
 		services = append(services, entry)
 	}
 	return services, nil
@@ -113,7 +128,7 @@ func ParseNATSServices(raw string, issuers []oidc.NamedIssuer) ([]NATSService, e
 
 func parseNATSService(text string, issuers []oidc.NamedIssuer) (NATSService, error) {
 	form := func() error {
-		return fmt.Errorf("%s must be <kind>/<machine id or ->/<* or ->=<account>[=<issuer name>[,<issuer name>…]] entries, an edge-listener entry's projects <KEY>[,<KEY>…] in place of * or -, the kind one of dispatch, listener, edge-listener, daemon or measure and the account system:serviceaccount:<namespace>:<name> or google:<service account email>, got %q", NATSServicesVariable, text)
+		return fmt.Errorf("%s must be <kind>/<machine id or ->/<* or ->=<account>[=<issuer name>[,<issuer name>…]] entries, an edge-listener entry's projects <KEY>[,<KEY>…] in place of * or -, the kind one of dispatch, listener, edge-listener, daemon, measure, operator or probe and the account system:serviceaccount:<namespace>:<name> or google:<service account email>, got %q", NATSServicesVariable, text)
 	}
 	withAccount, names, named := CutIssuerNames(text)
 	head, account, ok := strings.Cut(withAccount, "=")
@@ -135,7 +150,7 @@ func parseNATSService(text string, issuers []oidc.NamedIssuer) (NATSService, err
 			return NATSService{}, fmt.Errorf("%s entry %q names a machine id that is not one subject token", NATSServicesVariable, text)
 		}
 		entry.MachineID = machineID
-	case NATSDaemon, NATSMeasure:
+	case NATSDaemon, NATSMeasure, NATSOperator, NATSProbe:
 		if machineID != noMachineID {
 			return NATSService{}, fmt.Errorf("%s entry %q names a machine id, which a %s's grant does not take; write -", NATSServicesVariable, text, entry.Kind)
 		}
@@ -152,8 +167,11 @@ func parseNATSService(text string, issuers []oidc.NamedIssuer) (NATSService, err
 	case scope == allProjectsScope:
 		entry.AllProjects = true
 	case scope == exchangeScope:
-		if entry.Kind == NATSMeasure {
+		switch entry.Kind {
+		case NATSMeasure:
 			return NATSService{}, fmt.Errorf("%s entry %q holds the measurement job to its exchange projects, which its grant cannot be held to: it reads a KV bucket and no project's messages, so write *", NATSServicesVariable, text)
+		case NATSOperator, NATSProbe:
+			return NATSService{}, fmt.Errorf("%s entry %q holds the %s to its exchange projects, which its grant cannot be held to: it reaches no project's messages and no project scope can hold a stream create, so write *", NATSServicesVariable, text, entry.Kind)
 		}
 	default:
 		return NATSService{}, form()
