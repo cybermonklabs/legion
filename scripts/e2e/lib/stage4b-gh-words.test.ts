@@ -613,8 +613,7 @@ describe("commit_conflict, the proof human's conflicting commit on the base", ()
 describe("await_merge_forward, the head the merge forward left", () => {
   const site: Site = {
     entry: ["await_merge_forward"],
-    // pr_base: the base's name, which the note before this change printed.
-    setup: `conflict_head=${head} pr_base=main`,
+    setup: `conflict_head=${head}`,
     body: "await_merge_forward",
   };
   const call = "*pulls/42 --jq .head.sha";
@@ -1598,8 +1597,6 @@ describe("full_agent_role_checks, full_agent_common_asserts and full_agent_summa
     setup: [
       'mkdir -p "$evidence/full-agent-tools"',
       `declare -A fa_nonce=([architect]=${nonce})`,
-      // The loop's variable, which the role's checks read before they were a function of their own.
-      "role=architect",
     ].join("\n"),
     body: "full_agent_role_checks architect",
   };
