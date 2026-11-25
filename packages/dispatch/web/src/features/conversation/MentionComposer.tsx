@@ -303,7 +303,7 @@ export interface OutlineLook {
  *  lay the line out again under the pointer and its click would land on nothing. The keyboard
  *  still reaches each control, and a press inside a dialog a control opens - drawn elsewhere in
  *  the document, whose events React hands to the control's own parents - is the dialog's. */
-function keepFocusOnPress(event: MouseEvent<HTMLElement>): void {
+export function keepFocusOnPress(event: MouseEvent<HTMLElement>): void {
   if (event.target instanceof Node && event.currentTarget.contains(event.target)) {
     event.preventDefault();
   }
@@ -314,7 +314,7 @@ function keepFocusOnPress(event: MouseEvent<HTMLElement>): void {
  *  (`isCompositionKey`). With the reference picker open, an Enter that reaches here is one the
  *  picker left - it takes the keys it acts on on the field's own listener (`MentionField`) - so
  *  it is the field's own newline, as in every box. */
-function sendOnEnter(
+export function sendOnEnter(
   event: KeyboardEvent<HTMLTextAreaElement>,
   pickerOpen: boolean,
   send: () => void

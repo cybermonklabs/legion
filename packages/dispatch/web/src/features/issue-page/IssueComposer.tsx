@@ -1,6 +1,5 @@
 import { dispatchWritingBox } from "@legion/contracts";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import type { KeyboardEvent, MouseEvent } from "react";
 import { type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import type { Actor } from "../../api/types";
@@ -8,14 +7,15 @@ import { RefusableButton } from "../../components/RefusableButton";
 import { pageComposer, pageComposerControl } from "../../theme/classes";
 import { useHeldSend } from "../conversation/held-sends";
 import {
+  keepFocusOnPress,
   MentionComposer,
   type OutlineKind,
   type OutlineLook,
+  sendOnEnter,
 } from "../conversation/MentionComposer";
 import { MentionField } from "../conversation/MentionField";
 import { type StatementAnchor, sameStatement, saveCommentEdit } from "../conversation/send-request";
 import { AgentName } from "../refs/AgentName";
-import { isCompositionKey } from "../refs/ref-picker";
 import { useMediaQuery } from "../shell/useDialog";
 import { FOOT_HEIGHT_PROPERTY, HEADER_SCROLLS_QUERY } from "./identity-block";
 import type { TreeNode } from "./issue-tree";
@@ -673,33 +673,6 @@ function CriterionTargetLine({
       </button>
     </div>
   );
-}
-
-/** A press on a control of the criterion line leaves the focus where it is, as one on the box's
- *  own line does (`MentionComposer`'s rule of the same name, which that file keeps to itself): on
- *  a phone the line takes its form from whether the box holds the focus (`pageComposer`'s
- *  `group-focus-within:`), so a press that moved the focus into the box would lay the line out
- *  again under the pointer and its click would land on nothing. */
-function keepFocusOnPress(event: MouseEvent<HTMLElement>): void {
-  if (event.target instanceof Node && event.currentTarget.contains(event.target)) {
-    event.preventDefault();
-  }
-}
-
-/** Enter on the criterion line sends and Shift+Enter breaks it, as on the box's own line
- *  (`MentionComposer`'s rule of the same name). Enter while an input method composes is the
- *  method's (`isCompositionKey`), and one the open reference picker left is the field's own
- *  newline. */
-function sendOnEnter(
-  event: KeyboardEvent<HTMLTextAreaElement>,
-  pickerOpen: boolean,
-  send: () => void
-): void {
-  if (isCompositionKey(event.nativeEvent)) return;
-  if (event.key !== "Enter" || event.shiftKey) return;
-  if (pickerOpen) return;
-  event.preventDefault();
-  send();
 }
 
 /**
