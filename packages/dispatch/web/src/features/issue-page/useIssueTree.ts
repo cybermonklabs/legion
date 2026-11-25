@@ -487,18 +487,44 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
     () => (named === undefined ? unnamed : builtTree({ ...reads, targets: named })),
     [named, reads, unnamed]
   );
-  // Each view answer held, built into a tree of its own over the same reads, the names among them
-  // once they are in (`TreeViews.trees`): its filter draws a node of the view the outline's tree
-  // holds no node of from it, so a view draws its own read's rows whatever the outline read holds
-  // (R4, R5).
-  const trees = useMemo(() => {
-    const held: Partial<Record<TreeFilter, TreeNode>> = {};
+  // The view supplies its rows and their placement. The outline supplies any context nodes and
+  // ties the view left out, such as the statements a Plan step serves. Keep the view's own
+  // metadata and index its answer first so no outline node displaces a view node (R4, R5).
+  const viewContexts = useMemo(() => {
+    const held: [TreeFilter, TreeAnswer][] = [];
+    const supplement = reads.tree;
     for (const [filter, answer] of [
       ["plan", plan],
       ["spec", spec],
       ["verification", verification],
     ] as const) {
       if (answer === undefined) continue;
+      if (supplement === undefined) {
+        held.push([filter, answer]);
+        continue;
+      }
+      const nodes = new Set(answer.nodes?.map(({ id, kind }) => `${kind}:${id}`));
+      const tupleKey = ({ kind, from, to }: NonNullable<TreeAnswer["tuples"]>[number]) =>
+        JSON.stringify([kind, from.kind, from.id, to.kind, to.id]);
+      const tuples = new Set(answer.tuples?.map(tupleKey));
+      const extraNodes = supplement.nodes?.filter(({ id, kind }) => !nodes.has(`${kind}:${id}`));
+      const extraTuples = supplement.tuples?.filter((tuple) => !tuples.has(tupleKey(tuple)));
+      held.push([
+        filter,
+        extraNodes?.length || extraTuples?.length
+          ? {
+              ...answer,
+              nodes: [...(answer.nodes ?? []), ...(extraNodes ?? [])],
+              tuples: [...(answer.tuples ?? []), ...(extraTuples ?? [])],
+            }
+          : answer,
+      ]);
+    }
+    return held;
+  }, [plan, reads.tree, spec, verification]);
+  const trees = useMemo(() => {
+    const held: Partial<Record<TreeFilter, TreeNode>> = {};
+    for (const [filter, answer] of viewContexts) {
       held[filter] = builtTree({
         ...reads,
         tree: answer,
@@ -506,7 +532,7 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
       });
     }
     return held;
-  }, [named, plan, reads, spec, verification]);
+  }, [named, reads, viewContexts]);
   const root = useMemo(
     () => (views === undefined ? built : { ...built, views: { ...views, trees } }),
     [built, trees, views]

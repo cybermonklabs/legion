@@ -40,7 +40,12 @@ export function ViewPlanSlot({
   // The tree, the line of each read it is built from that stands refused, and whether every one
   // of those reads has settled (`useOutlineReads`), each under the key and with the freshness the
   // tree reads it by, so they cost no request of their own.
-  const { blocksOf, readsSettled, refused: refusedLines, root } = useOutlineReads(issue);
+  const {
+    blocksOf,
+    readsSettled: outlineSettled,
+    refused: refusedLines,
+    root,
+  } = useOutlineReads(issue);
   // The view waits on the reads of the two documents it draws from, and on no other: the plan's
   // blocks, which are its tasks, and the spec's, which are the statements a task serves.
   //
@@ -72,6 +77,11 @@ export function ViewPlanSlot({
   const answered =
     (planId === undefined || planBlocks.data !== undefined) &&
     (specId === undefined || specBlocks.data !== undefined);
+  // The stage acts on the first answer about the address. An outline that has settled cannot
+  // tell whether Plan draws the task while Plan's own answer is still out.
+  const readsSettled =
+    outlineSettled &&
+    (planId === undefined || planBlocks.data !== undefined || standsFailed(planBlocks));
   // The two reads' refusals are one line with one Retry (`retry`): the statements' where
   // the issue names a spec, else the plan's.
   const watched = [
@@ -111,7 +121,7 @@ export function ViewPlanSlot({
         : { state: "waiting" };
   // The address's own node, resolved against the whole tree as the outline resolves it
   // (`useAddressTarget`, `slots/body.tsx`): a step it names takes the focus.
-  const found = useAddressTarget(root, address).reveal;
+  const found = useAddressTarget(root.views?.trees?.plan ?? root, address).reveal;
   // Plan draws no node but a task, so the address's node is kept in the view, and given the
   // focus, only where it is a task. `presetView` keeps a named node of any kind (`presets.ts`'s
   // `filterView`), as `AddressedNode.named` names it: handed every node, `/plan?comment=<id>`

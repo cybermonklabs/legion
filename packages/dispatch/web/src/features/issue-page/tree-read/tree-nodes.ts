@@ -160,6 +160,8 @@ export interface TreeDraftContext extends TreeWords {
   readonly lineOf: (readId: string) => string | undefined;
   /** The node of the answer `readId` names. */
   readonly nodeOf: (readId: string) => TreeAnswerNode | undefined;
+  /** The node of the answer by its drawn id, for a pointer written as a document address. */
+  readonly nodeByTreeId: (id: string) => TreeAnswerNode | undefined;
   /** Where the read places `node`, as the tree draws it: under the nearest node a draft stands
    *  for, walking up from its parent, which is the nearest node before it in the walk that its
    *  `parent` names, since a parent comes before its children; and under the issue, `[]`, where
@@ -246,6 +248,7 @@ export function treeDraftsFrom(
     pushInto(ending, tuple.to.id, tuple);
   }
   const idOfNode = nodeIdsIn(reads);
+  let byTreeId: Map<string, TreeAnswerNode> | undefined;
   const idOf = (readId: string): string => {
     const node = nodes.get(readId);
     return node === undefined ? readId : idOfNode(node);
@@ -264,6 +267,16 @@ export function treeDraftsFrom(
       return draft === undefined ? undefined : context.lineWords(draft);
     },
     nodeOf: (readId) => nodes.get(readId),
+    nodeByTreeId: (id) => {
+      if (byTreeId === undefined) {
+        byTreeId = new Map();
+        for (const node of answer.nodes ?? []) {
+          const drawn = idOfNode(node);
+          if (!byTreeId.has(drawn)) byTreeId.set(drawn, node);
+        }
+      }
+      return byTreeId.get(id);
+    },
     // A node under a kind the page does not draw stands under that node's nearest drawn
     // ancestor, and a chain of parents that runs in a circle ends where it comes round.
     placeOf: (node) => {
@@ -537,6 +550,21 @@ function draftServing(
     const target = tuple.kind === "serves" ? context.nodeOf(tuple.to.id) : undefined;
     return target === undefined || isForeign(target, context.key) ? [] : [target];
   });
+  // The Plan read omits a tuple whose statement is outside its answer. When the outline
+  // supplies that statement as context, read the step's authored pointer to it.
+  if (node.supertag === "plan_task" && node.role === "query") {
+    for (const pointer of pointersOf(node, "serves")) {
+      const id = context.nodeIdOf(pointer);
+      const target = id === undefined ? undefined : context.nodeByTreeId(id);
+      if (
+        target !== undefined &&
+        !isForeign(target, context.key) &&
+        isStatementNode(target, context)
+      ) {
+        served.push(target);
+      }
+    }
+  }
   const requirements = served.flatMap((target) =>
     isStatementNode(target, context) ? [context.treeIdOf(target.id)] : []
   );
