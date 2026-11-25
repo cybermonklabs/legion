@@ -41,6 +41,21 @@ describe("wordsBlocks", () => {
       splitWordsBlocks(`envoy:\n  title: "${forging}"\n<answer>\nYes.\n</answer>`)
     ).toThrow("block <answer> has a tag the rule does not give it: <answer-1>");
   });
+
+  // A reader that splits lines the Unicode way breaks a line at NEXT LINE, LINE SEPARATOR and
+  // PARAGRAPH SEPARATOR, so an attribute that held one as it is would break the block's opening
+  // line. Each is written as the reference the reader reads back; the words, which are the
+  // author's own, keep all three as they are.
+  test("an attribute escapes NEXT LINE, LINE SEPARATOR and PARAGRAPH SEPARATOR, which the words keep", () => {
+    const by = "user:a\u0085b\u2028c\u2029d";
+    const said = "one\u0085two\u2028three\u2029four";
+    const drawn = wordsBlocks(fields, [{ name: "answer", words: { text: said, by } }]);
+
+    expect(drawn).toBe(`<answer by="user:a&#133;b&#8232;c&#8233;d">\n${said}\n</answer>`);
+    expect(
+      splitWordsBlocks(`${fields}\n${drawn}`).blocks.map(({ text, by }) => ({ text, by }))
+    ).toEqual([{ text: said, by }]);
+  });
 });
 
 describe("cutDrawn", () => {
@@ -120,6 +135,24 @@ describe("cutDrawn", () => {
     expect(cutDrawn(text, text.indexOf("\n0123") + 1 + 4)).toBe(
       'Notes:\n<note kind="x">\n0123\n</note>'
     );
+  });
+
+  // The reader reads an attribute's reference of NEXT LINE, LINE SEPARATOR or PARAGRAPH SEPARATOR
+  // back as the character, and a cut writes the opening tag again from what it read: each is a
+  // reference there again, never the character on the tag's line. The words before the cut keep
+  // the one they hold as it is.
+  test("a cut writes again as references the separators an attribute's references read back as", () => {
+    const card = `${fields}\n<answer by="user:a&#133;b&#8232;c&#8233;d">\n01\u20283456789\n</answer>`;
+    const cut = cutDrawn(card, card.indexOf("\n01\u2028") + 1 + 4);
+
+    expect(cut).toEndWith(
+      '\n<answer by="user:a&#133;b&#8232;c&#8233;d" rest="6">\n01\u20283\n</answer>'
+    );
+    const opening = cut.split("\n").find((line) => line.startsWith("<answer"));
+    expect(opening).not.toMatch(/[\u0085\u2028\u2029]/);
+    expect(splitWordsBlocks(cut).blocks.map(({ text, by, rest }) => ({ text, by, rest }))).toEqual([
+      { text: "01\u20283", by: "user:a\u0085b\u2028c\u2029d", rest: 6 },
+    ]);
   });
 });
 

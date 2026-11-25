@@ -2246,6 +2246,7 @@ export default function envoyExtension(hostApi: PiApi): void {
     // after the receipt and after every drop above, so no acknowledgement waits on it and no
     // frame nobody sees costs a read. A switch landing in that read must not have this session
     // read one person's message as another conversation, with that conversation's credential.
+    let deletedSince = false;
     if (rendered.cutItem !== undefined) {
       const dispatch = timedDispatchClient(WHOLE_BODY_TIMEOUT_MS, () => session);
       const body =
@@ -2253,14 +2254,24 @@ export default function envoyExtension(hostApi: PiApi): void {
           ? undefined
           : await wholeCarriedBody(dispatch, rendered.cutItem, session);
       if (body !== undefined) rendered = renderInbound(raw, session, subject, body);
+      deletedSince = body?.deleted_at !== undefined;
     }
+    // A delivery whose post that read, made as the session the frame names, found deleted since
+    // its event. The render still names the delivery the frame names (`renderInbound`), but none
+    // of the post is left to show, the part the event carried included, and no work is left for
+    // the agent. Dispatch failed the delivery's attempt when the post was deleted
+    // (`queueDeletedPostSettlement`, `packages/envoy/internal/dispatch/api/post_history.go`), so
+    // the attempt is neither accepted nor answered here, and the inbox lists no summary of it.
+    // Any other frame of a post deleted since is a card that names the delete (`deleted_at`,
+    // `deleted_by`) with no body.
+    const deletedDelivery = deletedSince ? rendered.delivery : undefined;
     const envelope = rendered.envelope;
     // The Dispatch message a card of this frame delivers to the session, which its `details` name
     // (`handCard`): a targeted message's delivery, which Dispatch stores for the session. A
     // targeted comment is no message the session's message list holds.
     const deliveredMessage =
       rendered.delivery?.resource === "message" ? rendered.delivery.id : undefined;
-    if (envelope !== undefined) noteInbox(envelope);
+    if (envelope !== undefined && deletedDelivery === undefined) noteInbox(envelope);
     // The host wrote the frame, or handled it without writing anything: the ledger records it,
     // so no redelivery shows it again, here or after a restart, and the claim is settled, so
     // nothing waits on it. The record reaches the transcript of the session
@@ -2330,7 +2341,23 @@ export default function envoyExtension(hostApi: PiApi): void {
       });
     };
     try {
-      if (rendered.rejectedDelivery !== undefined) {
+      if (deletedDelivery !== undefined) {
+        // No card and no turn of any mode, in the session the frame names or in one the host
+        // moved to during the read: the frame is settled on the session it names (`taken`), whose
+        // ledger records it while that session is the one open here, and the relay answers `done`,
+        // so the listener does not send it again.
+        logger.warn(
+          "envoy: a delivery's post was deleted before this session read it whole; nothing is shown",
+          {
+            addressed: session,
+            attempt: deletedDelivery.attempt,
+            eventID: envelope?.event_id,
+            id: deletedDelivery.id,
+            resource: deletedDelivery.resource,
+          }
+        );
+        await taken();
+      } else if (rendered.rejectedDelivery !== undefined) {
         scrubbedConsole.warn(
           `[envoy] rejecting malformed Dispatch targeted delivery ${rendered.rejectedDelivery.id}`
         );

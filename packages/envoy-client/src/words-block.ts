@@ -20,11 +20,15 @@
  * `answer-12` too. The opening tag carries the attributes `by`, `at`, `field`, `rest` and `more`,
  * in that order, each only where it is set. Each value escapes `&`, `<`, `>`, `"` and each control
  * character below U+0020 as an XML character reference, so no value ends its attribute or its
- * tag. A new line, the words exactly as given, a new line and the closing tag follow the opening
- * tag, and one new line joins a block to the next.
+ * tag, and NEXT LINE, LINE SEPARATOR and PARAGRAPH SEPARATOR (`UNESCAPED_LINE_BREAKS`) as well,
+ * which a reader that splits lines the Unicode way breaks a line at, so no value breaks its tag's
+ * line. The reader reads each reference back as its character, and a tag written again from what
+ * it read (`cutDrawn`) escapes them again. A new line, the words exactly as given, those three
+ * included, a new line and the closing tag follow the opening tag, and one new line joins a block
+ * to the next.
  */
 
-import { headUnits } from "./line-text";
+import { headUnits, UNESCAPED_LINE_BREAKS } from "./line-text";
 
 /** The words of one block, and what its opening tag says of them. */
 export interface Words {
@@ -465,7 +469,9 @@ function blockTags(
  *  a block could take lies past it, and stopping here keeps every number exact. */
 const SUFFIX_CAP = Number.MAX_SAFE_INTEGER;
 
-/** One attribute of an opening tag, with its value escaped. */
+/** One attribute of an opening tag, with its value escaped: the characters that would end the
+ *  value or the tag, each control character, and each of `UNESCAPED_LINE_BREAKS`, each as the
+ *  character reference `unescaped` reads back. */
 function attribute(key: string, value: string): string {
   let escaped = "";
   for (let index = 0; index < value.length; index++) {
@@ -484,7 +490,10 @@ function attribute(key: string, value: string): string {
         escaped += "&quot;";
         break;
       default:
-        escaped += unit < 0x20 ? `&#${unit};` : value[index];
+        escaped +=
+          unit < 0x20 || value[index]?.search(UNESCAPED_LINE_BREAKS) === 0
+            ? `&#${unit};`
+            : value[index];
     }
   }
   return ` ${key}="${escaped}"`;

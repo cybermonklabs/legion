@@ -43,9 +43,9 @@ import type { StallLimits } from "./stall-limits";
  * `node:` module: `packages/claude-envoy` bundles `packages/pi-shared` with no `node_modules`
  * (`src/envoy-notice.ts`). Its package imports are `@legion/envoy-client/errors`, which imports
  * nothing at all and which `src/phase-reminder.ts` already bundles that way, and
- * `@legion/envoy-client/notice-text`, which imports only `@toon-format/toon`. The `/proc` reader,
- * the process ending, the abort, the owner's notice and the exit counter are implemented in
- * `packages/pi-legion` and passed in.
+ * `@legion/envoy-client/notice-text`, whose one package import is `@toon-format/toon`. The
+ * `/proc` reader, the process ending, the abort, the owner's notice and the exit counter are
+ * implemented in `packages/pi-legion` and passed in.
  *
  * **What was measured, and when.** Each of these cost an hour to establish and decides something
  * here. All were measured on 2026-11-07 against `/opt/omp/bin/omp` (`omp/18.16.0`) in `--mode rpc`

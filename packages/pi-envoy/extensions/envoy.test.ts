@@ -25466,6 +25466,113 @@ describe("consumer delivery", () => {
       expect(card).not.toContain(CARRIED);
       expect(card).not.toContain("first part only");
     });
+
+    // A delivery Dispatch aims at this session - a person's Send, aside or BTW, an issue message,
+    // a comment mention - whose post its author deleted before the session read it whole. Dispatch
+    // failed the delivery's attempt at the delete (`queueDeletedPostSettlement`,
+    // packages/envoy/internal/dispatch/api/post_history.go), so nothing is left to deliver: the
+    // session shows no card of it, the part the event carried included, starts no turn of any
+    // mode, accepts and answers nothing, and settles the frame `done` on the session it names, also
+    // where the host moved to another conversation inside the read. The render keeps the delivery
+    // the frame names (`renderInbound`), so the frame never falls through to the conversation the
+    // host has open as a card of no delivery would.
+    describe("a delivery whose post was deleted before the read", () => {
+      const DELETED_WARNING =
+        "envoy: a delivery's post was deleted before this session read it whole; nothing is shown";
+      const deletion = {
+        body: "",
+        deleted_at: "2026-11-03T00:00:00Z",
+        deleted_by: { kind: "user", id: "alice" },
+      };
+      const ISSUE_MESSAGE_ID = "11111111-1111-4111-8111-111111111111";
+      const COMMENT_ID = "22222222-2222-4222-8222-222222222222";
+      const direct = (mode: "aside" | "btw" | "steer") => ({
+        envelope: (key: string) => directDispatchEnvelope(mode, key, { bodyTruncated: true }),
+        carried: () => DIRECT_MESSAGE_BODY,
+        read: `/api/v1/messages/${DIRECT_MESSAGE_ID}`,
+        deleted: () =>
+          response({ message: { id: DIRECT_MESSAGE_ID, ...deletion }, replies: [] }),
+      });
+      const rows = [
+        { name: "a person's Send", key: "deleted-send", ...direct("steer") },
+        { name: "a person's aside", key: "deleted-aside", ...direct("aside") },
+        { name: "a person's BTW", key: "deleted-btw", ...direct("btw") },
+        {
+          name: "an issue message sent as an aside",
+          key: "deleted-issue-message",
+          envelope: (key: string) =>
+            targetedDispatchEnvelope("aside", key, { bodyTruncated: true }),
+          carried: (key: string) => `Delivery aside ${key}`,
+          read: `/api/v1/issues/CORE-1/messages/${ISSUE_MESSAGE_ID}`,
+          deleted: () => response({ message: { id: ISSUE_MESSAGE_ID, ...deletion }, replies: [] }),
+        },
+        {
+          name: "a comment mention",
+          key: "deleted-comment-mention",
+          envelope: (key: string) => targetedCommentEnvelope("steer", key, { bodyTruncated: true }),
+          carried: (key: string) => `Comment ${key}`,
+          read: `/api/v1/comments/${COMMENT_ID}`,
+          deleted: () => response({ comment: { id: COMMENT_ID, ...deletion }, replies: [] }),
+        },
+      ];
+      for (const row of rows) {
+        for (const moves of [false, true]) {
+          const key = moves ? `${row.key}-moved` : row.key;
+          const where = moves ? "after the host moved inside the read" : "in the session it names";
+          test(`${row.name}: no card, no turn, no accept and a done frame ${where}`, async () => {
+            const warnings: string[] = [];
+            const stopSink = logger.registerLogSink((entry) => {
+              if (entry.level === "warn") warnings.push(entry.message);
+            });
+            /** Every Dispatch route the session asked, in order. */
+            const reads: string[] = [];
+            const sideTurns: string[] = [];
+            let open = "ses_delivery";
+            try {
+              const session = await bootConsumer(key, {
+                hostSessionID: () => open,
+                runEphemeralTurn: async ({ promptText }) => {
+                  sideTurns.push(promptText);
+                  return { replyText: "An answer." };
+                },
+                dispatch: (url) => {
+                  if (!url.pathname.startsWith("/api/v1/")) return undefined;
+                  reads.push(url.pathname);
+                  if (url.pathname !== row.read) return undefined;
+                  if (moves) open = "ses_moved";
+                  return row.deleted();
+                },
+              });
+
+              const inbox = session.relay(1, row.envelope(key));
+              await until(
+                () => session.replies(inbox).some((word) => word === "done" || word === "nak"),
+                "the frame's answer"
+              );
+
+              expect(session.replies(inbox)).toContain("done");
+              expect(session.replies(inbox)).not.toContain("nak");
+              expect(reads.filter((path) => path === row.read)).toHaveLength(1);
+              // Nothing was accepted and nothing was answered: Dispatch failed the attempt.
+              expect(reads.filter((path) => path.endsWith("/accept"))).toEqual([]);
+              expect(session.dispatchReplies).toEqual([]);
+              // No card in either conversation, no turn of any mode, no side turn.
+              expect(session.cards(`dispatch-${key}`)).toEqual([]);
+              expect(
+                session.fixture.deliveries.filter((delivery) =>
+                  String(delivery.content).includes(row.carried(key))
+                )
+              ).toEqual([]);
+              expect(session.fixture.userMessages).toEqual([]);
+              expect(sideTurns).toEqual([]);
+              expect(warnings).toContain(DELETED_WARNING);
+            } finally {
+              stopSink();
+            }
+          });
+        }
+      }
+    });
   });
 });
 

@@ -17,8 +17,9 @@ export const UNESCAPED_LINE_BREAKS = /[\u0085\u2028\u2029]/g;
  * as one of the host's. JavaScript's `\s` holds the white space of Unicode and every line break of
  * ECMAScript, LINE SEPARATOR (U+2028) and PARAGRAPH SEPARATOR (U+2029) among them, but not NEXT
  * LINE (U+0085), which Unicode counts as both white space and a line break, so U+0085 is named on
- * its own. TOON's encoder leaves all three as they are inside a value it writes, so a field of a
- * card that holds one passes them on unless it is made one line first.
+ * its own. A value among a card's or a notice's TOON fields needs none of this to stay on its line:
+ * the one encode of those fields writes a space for each of `UNESCAPED_LINE_BREAKS` in it
+ * (`encodeFields`, `notice-text.ts`), and TOON escapes every other line break.
  */
 export function oneLine(text: string): string {
   return text.replace(/[\s\u0085]+/g, " ");

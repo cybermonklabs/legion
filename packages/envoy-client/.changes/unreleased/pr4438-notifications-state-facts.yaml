@@ -37,8 +37,14 @@ body: |-
   (U+0085), LINE SEPARATOR and PARAGRAPH SEPARATOR included, prints as one space (`oneLine`). Every
   other value among a card's fields, such as a comment's quote, an ask's option labels or an
   issue's new title, stays on its line too: each NEXT LINE, LINE SEPARATOR and PARAGRAPH SEPARATOR
-  in it prints as one space, a new line stays escaped, and the words in a block keep all three. A
-  daemon card whose payload is nested too deep to lay out shows that payload as text, as any other
-  card does, also where the payload holds `words`. A card whose body the plugin reads again from
-  Dispatch states an edit or a delete of that post as fields (`edited_at`, or `deleted_at` and
-  `deleted_by`), and the post's body block holds the author's words alone, none for a deleted post.
+  in it prints as one space, a new line stays escaped, and the words in a block keep all three. So
+  does each field of a plugin notice, such as a message-not-shown notice's summary: a notice and a
+  card's fields are written by one encode (`encodeFields`). A block's attribute writes each of the
+  three as a character reference, which the block's reader reads back, so a cut (`cutDrawn`) never
+  puts one on a tag's line. A daemon card whose payload is nested too deep to lay out shows that
+  payload as text, as any other card does, also where the payload holds `words`. A card whose body
+  the plugin reads again from Dispatch states an edit or a delete of that post as fields
+  (`edited_at`, or `deleted_at` and `deleted_by`), and the post's body block holds the author's
+  words alone, none for a deleted post. A delivery Dispatch aims at the session names the same
+  message or comment, attempt, mode and broadcast after that read, a deleted post's included, with
+  the body read whole (empty for a deleted post).

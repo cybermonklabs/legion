@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { noticeProblems } from "@legion/test-fixtures/notice-fields";
-import { decode } from "@toon-format/toon";
+import { decode, encode } from "@toon-format/toon";
 import {
   GAP_NOTICE,
   gapNoticeText,
@@ -14,6 +14,7 @@ import {
   failureNoticeText,
   MESSAGE_NOT_SHOWN_NOTICE,
 } from "../delivery-ledger";
+import { encodeFields } from "../notice-text";
 import { refusedTopicsNoticeText, TOPICS_REFUSED_NOTICE } from "../relay-registration";
 
 /** A frame given up on, with every fact of its notice its own. */
@@ -147,4 +148,30 @@ test("the topics-refused notice states its topics as a list", () => {
       envoy: { notice: TOPICS_REFUSED_NOTICE.kind, topics: [...topics], reason },
     });
   }
+});
+
+// The one encode of a notice's and a card's fields (`encodeFields`) writes a space for each of NEXT
+// LINE, LINE SEPARATOR and PARAGRAPH SEPARATOR in a string value at any depth, a list's item and a
+// field of an object with no prototype included, and writes to nothing it is given. A copy keeps
+// each field an own field of its object in its order, a `__proto__` key JSON.parse made too, which
+// an assignment would have taken as the copy's prototype.
+test("the fields encode writes a space for each separator at any depth and changes nothing it is given", () => {
+  const frame =
+    '{"envoy":{"first":"a\\u0085b","__proto__":"c\\u2028d","list":["e\\u2029f",1,null,true],"same":{"g":"h"},"last":"i"}}';
+  const given = JSON.parse(frame) as { envoy: Record<string, unknown> };
+  const bare = Object.assign(Object.create(null) as Record<string, unknown>, { name: "j\u2028k" });
+  given.envoy["bare"] = bare;
+  const before = JSON.stringify(given);
+
+  const text = encodeFields(given);
+
+  expect(text).not.toMatch(/[\u0085\u2028\u2029]/);
+  const folded = JSON.parse(frame.replace(/\\u(0085|2028|2029)/g, " ")) as {
+    envoy: Record<string, unknown>;
+  };
+  folded.envoy["bare"] = { name: "j k" };
+  expect(text).toBe(encode(folded));
+  expect(JSON.stringify(given)).toBe(before);
+  expect(Object.getPrototypeOf(bare)).toBeNull();
+  expect(Object.keys(given.envoy)).toEqual(["first", "__proto__", "list", "same", "last", "bare"]);
 });

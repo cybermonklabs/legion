@@ -129,9 +129,8 @@
 //   - more: true, where the event marked its body as cut or reached the daemon as a
 //     payload_omitted stand-in, so the count of the rest is not known.
 //
-// An attribute value escapes the ampersand, the angle brackets, the double quote and each
-// control character as an XML character reference. Then come a new line, the words exactly as
-// given, a new line and the closing tag.
+// An attribute value escapes markup, control characters below U+0020 and the three unescaped
+// line breaks as XML character references. The words after it stay as given, between new lines.
 //
 // The bounds count UTF-16 units, as Dispatch counts a body: OneAct for the words of one act,
 // EachOfSeveral for each act where a text carries several, and Summary for a worker's summary.

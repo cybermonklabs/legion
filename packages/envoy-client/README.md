@@ -201,8 +201,10 @@ a give-up nobody was told of with `nak` rather than acking a message that then e
 notice shown to the session it names is reported even where the host moved before it resolved,
 and only its record waits for a host that is still on that session. `failureNoticeText` writes
 that card through `noticeText` (`@legion/envoy-client/notice-text`), which writes a notice's fields
-under `envoy:` in TOON, so a sender's summary that holds a newline stays inside its own field, and
-a field that holds a list is written as a list (`topics[n]: …`).
+under `envoy:` in TOON by the one encode of a card's fields (`encodeFields`), so a sender's summary
+that holds a newline stays inside its own field, one that holds NEXT LINE, LINE SEPARATOR or
+PARAGRAPH SEPARATOR holds a space for each, and a field that holds a list is written as a list
+(`topics[n]: …`).
 Work started for one session stops, writing nothing, once `sessionID()` names another.
 
 The host policy both plugins share sits in `@legion/envoy-client/stream-topics`, so each host keeps

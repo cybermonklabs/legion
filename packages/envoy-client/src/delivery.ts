@@ -33,7 +33,7 @@ import {
   SubscriptionRemovedEventPayloadSchema as SubscriptionRemovedPayloadSchema,
   topicForms,
 } from "@legion/contracts";
-import { encode, encodeLines, escapeString } from "@toon-format/toon";
+import { escapeString } from "@toon-format/toon";
 import { z } from "zod";
 import { textHead } from "./ask-answer";
 import { commandLine } from "./dispatch-command";
@@ -44,7 +44,8 @@ import { pictureAddresses } from "./dispatch-pictures";
 import { messageFor } from "./errors";
 import { parseFrameJSON } from "./frame-json";
 import { humanEditDiffBlock, humanEditHead } from "./human-edit";
-import { oneLine, UNESCAPED_LINE_BREAKS } from "./line-text";
+import { oneLine } from "./line-text";
+import { defineOwn, encodeFieldLines, encodeFields } from "./notice-text";
 import { sessionAnswerRelationPhrase } from "./session-answer-relations";
 import { type NamedWords, wordsBlocks } from "./words-block";
 
@@ -650,8 +651,9 @@ export async function wholeCarriedBody(
 
 /** Who sent `envelope`, as a card's `from:` names it: the sending session, else its source, with
  *  the session's title after it. The title is the sender's own words, made one line (`oneLine`):
- *  TOON writes U+0085, U+2028 and U+2029 in a value as they are, so a title holding one would break
- *  the card's line where a model reads a break. */
+ *  the label is printed on one line wherever it stands, outside a card's TOON fields too (a host's
+ *  prompt that quotes the card, an `envoy_inbox` row), so each run of white space in the title, a
+ *  new line and U+0085, U+2028 and U+2029 among it, prints as one space. */
 export function senderLabel(envelope: DeliveryEnvelope): string {
   const sender = sendingSession(envelope) ?? envelope.source ?? "unknown";
   const title = envelope.sender?.title;
@@ -1133,7 +1135,9 @@ type DispatchFrame =
       readonly event: DispatchEvent;
       readonly notify: unknown;
       readonly quiet: unknown;
-      readonly delivery: unknown;
+      /** The delivery a targeted frame asks of the session (`targetedDelivery`); undefined for an
+       *  event no delivery wraps. */
+      readonly delivery: DispatchDelivery | undefined;
       /** When the event happened (its `created_at`), which the event schema does not keep. */
       readonly createdAt: string | undefined;
     }
@@ -1168,9 +1172,67 @@ function withWholeBody(event: DispatchEvent, whole: WholeBody | undefined): Disp
   };
 }
 
+/**
+ * The delivery a targeted frame asks of the session, read from the frame as the schema checked it
+ * (`DispatchTargetedFrameSchema`): the message or comment, the attempt and its mode, where the
+ * answer goes, and the broadcast a message is one copy of. None of that is read from the body, so a
+ * render given the body whole (`whole`) names the delivery the frame names, a post deleted since
+ * included, whose payload then holds no body for a schema to require. `body` alone is the body
+ * the server answered (empty for a post deleted since), and `bodyTruncated` is left out once that
+ * body was read. Undefined for a frame whose event and delivery do not match, which the schema
+ * refuses before this is asked.
+ */
+function targetedDelivery(
+  event: DispatchEvent,
+  requested: z.infer<typeof DispatchTargetedDeliverySchema>,
+  whole: WholeBody | undefined
+): DispatchDelivery | undefined {
+  const refreshed = whole !== undefined && bodyWasCut(event.payload) ? whole : undefined;
+  const read = refreshed?.deleted_at === undefined ? refreshed?.body : "";
+  if (event.type === "message.created" && !isCommentTargetedDelivery(requested)) {
+    const message = DispatchTargetedMessagePayloadSchema.safeParse(event.payload);
+    if (!message.success) return undefined;
+    return {
+      resource: "message",
+      id: message.data.id,
+      attempt: requested.attempt,
+      mode: requested.mode,
+      replyPath: dispatchReplyPath("message", message.data.id),
+      replyFields: {},
+      issueKey: event.issue_key,
+      body: read ?? message.data.body,
+      ...(read === undefined && message.data.body_truncated === true
+        ? { bodyTruncated: true }
+        : {}),
+      ...(typeof message.data.broadcast_id === "string"
+        ? { broadcastId: message.data.broadcast_id }
+        : {}),
+    };
+  }
+  if (event.type === "comment.created" && isCommentTargetedDelivery(requested)) {
+    const comment = DispatchTargetedCommentPayloadSchema.safeParse(event.payload);
+    if (!comment.success) return undefined;
+    return {
+      resource: "comment",
+      id: requested.comment_id,
+      attempt: requested.attempt,
+      mode: requested.mode,
+      replyPath: dispatchReplyPath("comment", requested.comment_id),
+      replyFields: { target: requested.target },
+      issueKey: event.issue_key,
+      body: read ?? comment.data.body,
+      ...(read === undefined && comment.data.body_truncated === true
+        ? { bodyTruncated: true }
+        : {}),
+    };
+  }
+  return undefined;
+}
+
 /** The frame one Dispatch envelope's payload carries. `wholeBody` is the item the event named as
  *  cut, read from the server since (`renderInbound`'s `cutItem`); the event then reads as though
- *  it had carried that body whole. */
+ *  it had carried that body whole, and a targeted frame's delivery is read from the frame as it
+ *  was checked, before that body is put in (`targetedDelivery`). */
 function parseDispatchFrame(rawPayload: string, wholeBody?: WholeBody): DispatchFrame {
   let value: unknown;
   try {
@@ -1190,7 +1252,7 @@ function parseDispatchFrame(rawPayload: string, wholeBody?: WholeBody): Dispatch
         event: withWholeBody(targeted.data.event, wholeBody),
         notify: wireFrame.event.notify,
         quiet: wireFrame.event.quiet,
-        delivery: targeted.data.delivery,
+        delivery: targetedDelivery(targeted.data.event, targeted.data.delivery, wholeBody),
         createdAt:
           typeof wireFrame.event.created_at === "string" ? wireFrame.event.created_at : undefined,
       };
@@ -1252,13 +1314,14 @@ type WireEvent = DispatchEvent & {
  */
 export const INBOUND_CARD_MAX_BYTES = 1 << 20;
 
-/** `value` as TOON, or undefined once its lines pass `maxBytes`. The encoder yields one line at a
- *  time, so a layout far larger than its value costs no more than the bound to refuse. */
-function encodeWithin(value: unknown, maxBytes: number): string | undefined {
+/** `card` as TOON (`encodeFieldLines`), or undefined once its lines pass `maxBytes`. The encoder
+ *  yields one line at a time, so a layout far larger than its value costs no more than the bound
+ *  to refuse. */
+function encodeWithin(card: object, maxBytes: number): string | undefined {
   const lines: string[] = [];
   // The newlines that join the lines: one fewer than the lines.
   let bytes = -1;
-  for (const line of encodeLines(value)) {
+  for (const line of encodeFieldLines(card)) {
     bytes += Buffer.byteLength(line) + 1;
     if (bytes > maxBytes) return undefined;
     lines.push(line);
@@ -1520,18 +1583,6 @@ function withoutWords(
   return kept;
 }
 
-/** Sets `key` of `target` to `value` as an own field of it, defined and not assigned: an
- *  assignment of `__proto__` would set the prototype of `target`. A list's items defined in their
- *  order keep its length. */
-function defineOwn(target: object, key: string, value: unknown): void {
-  Object.defineProperty(target, key, {
-    value,
-    enumerable: true,
-    writable: true,
-    configurable: true,
-  });
-}
-
 /** A line that Go's `strings.TrimSpace` leaves empty: Unicode White_Space alone, which U+0085
  *  holds and JavaScript's `trim` does not (and U+FEFF, which `trim` removes, is not). */
 const BLANK_LINE = /^\p{White_Space}*$/u;
@@ -1554,55 +1605,6 @@ function summaryOpens(text: string, summary: string | undefined): boolean {
   const line = end === -1 ? text.slice(start) : text.slice(start, end);
   const first = BLANK_LINE.test(line) ? "" : line;
   return first.replace(/^[ \t\r]+/, "").startsWith(head);
-}
-
-/**
- * `card`, a card's fields, with each string value in it, at any depth, holding one space for each
- * character of `UNESCAPED_LINE_BREAKS` in it, which TOON writes in a value as it is, where it
- * escapes a new line, a carriage return and a tab. Some of those values are another author's words
- * that stay a field: a comment's quote and its document's name, an ask's option labels and the
- * options a person chose, a payload the card shows as it came, such as an issue's new title. One
- * that held such a character would break the card's line, and its words after it would read as a
- * field of the card. A new line stays, which TOON escapes; keys stay as they are, and so do the
- * words of a block, which are no field. A card none of whose strings holds one is itself, copied
- * nowhere (`holdsUnescapedBreak`). The objects and lists still to read or to copy wait on a stack
- * of the walk's own, as in `parseFrameJSON`, so each walk takes time linear in the card's size at
- * any depth, and a payload too deep for the encoder fails in the encoder as before.
- */
-function fieldsOnTheirLines(card: object): object {
-  if (!holdsUnescapedBreak(card)) return card;
-  const copy = {};
-  const pending: [object, object][] = [[card, copy]];
-  for (let next = pending.pop(); next !== undefined; next = pending.pop()) {
-    const [from, to] = next;
-    for (const [key, item] of Object.entries(from)) {
-      let value: unknown = item;
-      if (typeof item === "string") {
-        value = item.replace(UNESCAPED_LINE_BREAKS, " ");
-      } else if (isObject(item)) {
-        const held = Array.isArray(item) ? [] : {};
-        pending.push([item, held]);
-        value = held;
-      }
-      defineOwn(to, key, value);
-    }
-  }
-  return copy;
-}
-
-/** Whether a string value of `card`, at any depth, holds a character of `UNESCAPED_LINE_BREAKS`. */
-function holdsUnescapedBreak(card: object): boolean {
-  const pending: object[] = [card];
-  for (let next = pending.pop(); next !== undefined; next = pending.pop()) {
-    for (const item of Object.values(next)) {
-      if (typeof item === "string") {
-        if (item.search(UNESCAPED_LINE_BREAKS) !== -1) return true;
-      } else if (isObject(item)) {
-        pending.push(item);
-      }
-    }
-  }
-  return false;
 }
 
 /**
@@ -1630,8 +1632,9 @@ function holdsUnescapedBreak(card: object): boolean {
  * at most the hub's 1 MiB. A payload's field that already is text is bounded so already, and a
  * throw the payload is not behind is thrown as before.
  *
- * Each string value the card's fields hold, the payload shown as text too, stays on its line
- * (`fieldsOnTheirLines`), inside the same fallback.
+ * Each string value the card's fields hold, the payload shown as text too, stays on its line: the
+ * card is written by the one encode of a card's and a notice's fields (`encodeFields`), inside the
+ * same fallback.
  */
 function encodeCardFields(
   shown: Readonly<Record<string, unknown>>,
@@ -1650,10 +1653,10 @@ function encodeCardFields(
   try {
     const laid = layPayload?.();
     const fields = laid === undefined ? shown : { ...shown, [payloadKey]: laid.fields };
-    const card = fieldsOnTheirLines({ envoy: { ...fields, ...after } });
+    const card = { envoy: { ...fields, ...after } };
     const value = fields[payloadKey];
     const toon =
-      typeof value === "object" && value !== null ? encodeWithin(card, bound) : encode(card);
+      typeof value === "object" && value !== null ? encodeWithin(card, bound) : encodeFields(card);
     if (toon !== undefined) return { toon, shown: fields, words: laid?.words ?? [] };
     reason = `its layout is larger than the ${bound} bytes a card holds`;
   } catch (error) {
@@ -1663,7 +1666,7 @@ function encodeCardFields(
   // The payload's field keeps its place among the card's fields.
   const asText = { ...shown, [payloadKey]: payload };
   return {
-    toon: encode(fieldsOnTheirLines({ envoy: { ...asText, ...after } })),
+    toon: encodeFields({ envoy: { ...asText, ...after } }),
     shown: asText,
     words: [],
     payloadShownAsText: reason,
@@ -1686,7 +1689,10 @@ function encodeCardFields(
  * the result names that item as `cutItem`: a host that reads it whole (`wholeCarriedBody`) renders
  * again with that read in `wholeBody`, and the card then holds the body the comment or message
  * route answers rather than one that stops mid-thought, with the marks of an edit or a delete
- * since as fields of its own.
+ * since as fields of its own. A targeted frame's `delivery` is the same in both renders, read from
+ * the frame as its schema checked it, with only its `body` the one read whole: so a host still
+ * holds the frame to the session it names, its mode and its attempt where the read finds the post
+ * deleted, and the read's `deleted_at` is what tells it that no body is left to deliver.
  */
 export function renderInbound(
   raw: string,
@@ -1700,11 +1706,9 @@ export function renderInbound(
   } catch {
     return {
       skip: false,
-      content: encode(
-        fieldsOnTheirLines({
-          envoy: { topic: subject ?? "unknown", unrecognised: "payload was not JSON" },
-        })
-      ),
+      content: encodeFields({
+        envoy: { topic: subject ?? "unknown", unrecognised: "payload was not JSON" },
+      }),
     };
   }
 
@@ -1720,7 +1724,7 @@ export function renderInbound(
     if (!tolerant.success) {
       return {
         skip: false,
-        content: encode({ envoy: { unrecognised: parseIssues.join(", ") || "envelope" } }),
+        content: encodeFields({ envoy: { unrecognised: parseIssues.join(", ") || "envelope" } }),
       };
     }
     const data = tolerant.data as Partial<InboundEnvelope>;
@@ -1835,51 +1839,20 @@ export function renderInbound(
           inReplyTo = dispatchReplyRef(frame.event, topic, inReplyTo, commentPayload);
         }
         dispatchReply = dispatchCommentReplyWith(frame.event, topic, commentPayload);
-        if (frame.event.type === "message.created") {
-          const message = DispatchTargetedMessagePayloadSchema.safeParse(frame.event.payload);
-          const requested = DispatchTargetedDeliverySchema.safeParse(frame.delivery);
-          if (message.success && requested.success && !isCommentTargetedDelivery(requested.data)) {
-            delivery = {
-              resource: "message",
-              id: message.data.id,
-              attempt: requested.data.attempt,
-              mode: requested.data.mode,
-              replyPath: dispatchReplyPath("message", message.data.id),
-              replyFields: {},
-              issueKey: frame.event.issue_key,
-              body: message.data.body,
-              ...(message.data.body_truncated === true ? { bodyTruncated: true } : {}),
-              ...(typeof message.data.broadcast_id === "string"
-                ? { broadcastId: message.data.broadcast_id }
-                : {}),
-            };
-            // A human's direct message to this session carries no issue key, and
-            // `dispatch message` answers it with `--in-reply-to` alone; every other targeted
-            // message names the issue the reply posts into.
-            dispatchReply = {
-              command: commandLine("dispatch_message", {
-                ...(frame.event.issue_key === null ? {} : { issue: frame.event.issue_key }),
-                in_reply_to: message.data.id,
-                body: "...",
-              }),
-            };
-          }
-        } else if (frame.event.type === "comment.created") {
-          const comment = DispatchTargetedCommentPayloadSchema.safeParse(frame.event.payload);
-          const requested = DispatchTargetedDeliverySchema.safeParse(frame.delivery);
-          if (comment.success && requested.success && isCommentTargetedDelivery(requested.data)) {
-            delivery = {
-              resource: "comment",
-              id: requested.data.comment_id,
-              attempt: requested.data.attempt,
-              mode: requested.data.mode,
-              replyPath: dispatchReplyPath("comment", requested.data.comment_id),
-              replyFields: { target: requested.data.target },
-              issueKey: frame.event.issue_key,
-              body: comment.data.body,
-              ...(comment.data.body_truncated === true ? { bodyTruncated: true } : {}),
-            };
-          }
+        // The delivery the frame asked for, as the frame was checked: a render given the body
+        // whole names the same one, a post deleted since too (`targetedDelivery`).
+        delivery = frame.delivery;
+        if (delivery?.resource === "message") {
+          // A human's direct message to this session carries no issue key, and
+          // `dispatch message` answers it with `--in-reply-to` alone; every other targeted
+          // message names the issue the reply posts into.
+          dispatchReply = {
+            command: commandLine("dispatch_message", {
+              ...(frame.event.issue_key === null ? {} : { issue: frame.event.issue_key }),
+              in_reply_to: delivery.id,
+              body: "...",
+            }),
+          };
         }
         // A reply in an ask's thread says what it is to this session, in the words the session's
         // answers list gives it, and carries the command that answers the ask only for a session
@@ -2039,7 +2012,7 @@ export function renderInbound(
     ...(dispatchRendered
       ? { dispatch: dispatchEvent }
       : {
-          ...(summaryIsHead ? {} : { summary: oneLine(payloadSummary) }),
+          ...(summaryIsHead ? {} : { summary: payloadSummary }),
           ...(message === undefined ? {} : { message }),
         }),
     ...(bodyNote === undefined ? {} : { body_note: bodyNote }),

@@ -3,7 +3,12 @@ import type { DispatchEvent } from "@legion/contracts";
 import { decode } from "@toon-format/toon";
 
 import { bearerCredential } from "../bearer";
-import { type CarriedItem, renderInbound, wholeCarriedBody } from "../delivery";
+import {
+  type CarriedItem,
+  type DispatchDelivery,
+  renderInbound,
+  wholeCarriedBody,
+} from "../delivery";
 import { DispatchClient } from "../dispatch-http";
 import { eventTextsWhole } from "../dispatch-picture-tools";
 import { pictureAddresses } from "../dispatch-pictures";
@@ -280,6 +285,116 @@ describe("renderInbound and a body an event did not carry whole", () => {
         SESSION
       )
     ).toEqual({ body: "", ...deletion });
+  });
+
+  // A targeted frame names the delivery it asks of the session: the message or the comment, the
+  // attempt and its mode, where the answer goes, and the broadcast a message is one copy of. The
+  // render given the body whole names that same delivery, its `body` the one the read answered.
+  // A post deleted since has no body left in the payload, which the frame's schema requires, so
+  // the delivery is read from the frame as that schema checked it, never from the payload the read
+  // rewrote: a host still holds the frame to the session it names and knows its mode.
+  describe("the delivery a targeted frame names, read again", () => {
+    const MENTION_ID = "44444444-4444-4444-8444-444444444444";
+    const BROADCAST_ID = "55555555-5555-4555-8555-555555555555";
+    const target = `session:${SESSION}`;
+    const deletion = {
+      deleted_at: "2026-09-10T00:00:00Z",
+      deleted_by: { kind: "user", id: "alice" },
+    };
+    const messageItem: CarriedItem = { resource: "message", id: MESSAGE_ID, issueKey: "DSP-1" };
+    const messageFrame = (mode: DispatchDelivery["mode"], payload: object = {}) => ({
+      event: {
+        ...cutEvent,
+        type: "message.created",
+        payload: { ...message, body_truncated: true, target, ...payload },
+      },
+      delivery: { attempt: 3, mode },
+    });
+    /** The delivery a frame names, but for its body, which is what the read changes. */
+    type Named = Omit<DispatchDelivery, "body" | "bodyTruncated">;
+    const messageDelivery = (mode: DispatchDelivery["mode"]): Named => ({
+      resource: "message",
+      id: MESSAGE_ID,
+      attempt: 3,
+      mode,
+      replyPath: `/api/v1/messages/${MESSAGE_ID}/reply`,
+      replyFields: {},
+      issueKey: "DSP-1",
+    });
+    const rows: readonly {
+      readonly name: string;
+      readonly frame: object;
+      readonly item: CarriedItem;
+      readonly delivery: Named;
+    }[] = [
+      ...(["steer", "aside", "btw"] as const).map((mode) => ({
+        name: `a message sent as ${mode}`,
+        frame: messageFrame(mode),
+        item: messageItem,
+        delivery: messageDelivery(mode),
+      })),
+      {
+        name: "one recipient's copy of a broadcast",
+        frame: messageFrame("aside", { broadcast_id: BROADCAST_ID }),
+        item: messageItem,
+        delivery: { ...messageDelivery("aside"), broadcastId: BROADCAST_ID },
+      },
+      {
+        name: "a comment mention",
+        frame: {
+          event: cutEvent,
+          delivery: { attempt: 2, mode: "steer", comment_id: MENTION_ID, target },
+        },
+        item: ITEM,
+        delivery: {
+          resource: "comment",
+          id: MENTION_ID,
+          attempt: 2,
+          mode: "steer",
+          replyPath: `/api/v1/comments/${MENTION_ID}/reply`,
+          replyFields: { target },
+          issueKey: "DSP-1",
+        },
+      },
+    ];
+    /** The frame addressed to the session's own subject, as the outbox publishes a delivery. */
+    const addressed = (frame: object) =>
+      JSON.stringify({
+        event_id: "dispatch-targeted-7",
+        source: "dispatch",
+        source_event_id: "7",
+        topic: `notifications.agent.${SESSION}`,
+        dedupe_key: "dispatch-targeted-7",
+        issued_at: 1_788_756_072_000,
+        payload_summary: "DSP-1 delivery",
+        payload: JSON.stringify(frame),
+        trace_id: "dispatch-targeted-7",
+      });
+
+    for (const row of rows) {
+      test(`${row.name} names the delivery its frame names whether the read finds the post whole or deleted`, async () => {
+        const raw = addressed(row.frame);
+        const cut = renderInbound(raw, SESSION);
+        expect(cut.cutItem).toEqual(row.item);
+        expect(cut.delivery).toEqual({ ...row.delivery, body: CARRIED_BODY, bodyTruncated: true });
+
+        const stored = await wholeCarriedBody(dispatch().client, row.item, SESSION);
+        const whole = renderInbound(raw, SESSION, undefined, stored);
+        expect(whole.delivery).toEqual({ ...row.delivery, body: STORED_BODY });
+
+        const deleted = dispatch(false, { body: "", ...deletion }, { body: "", ...deletion });
+        const gone = await wholeCarriedBody(deleted.client, row.item, SESSION);
+        expect(gone).toEqual({ body: "", ...deletion });
+        const card = renderInbound(raw, SESSION, undefined, gone);
+        expect(card.delivery).toEqual({ ...row.delivery, body: "" });
+        expect(card.cutItem).toBeUndefined();
+        // The card names the delete and holds nothing of the post, the part the event carried
+        // included.
+        expect(cardPayload(card.content)).toMatchObject(deletion);
+        expect(bodyBlocks(card.content)).toEqual([]);
+        expect(card.content).not.toContain(CARRIED_BODY);
+      });
+    }
   });
 
   // A card that re-reads the post holds the words the post holds now, which an edit since the

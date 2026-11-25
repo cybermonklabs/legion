@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 	"unicode/utf16"
+	"unicode/utf8"
 )
 
 // The bounds of carried words, in UTF-16 units, as Dispatch counts a body.
@@ -643,31 +644,39 @@ func (t *tagNames) holdSuffixes(id int, after string) {
 	}
 }
 
-// writeAttribute writes one attribute of an opening tag. The value escapes the ampersand, the
-// angle brackets, the double quote and every control character below U+0020 as XML character
-// references, so no value can end the attribute or the tag.
+// writeAttribute writes one attribute of an opening tag. The value escapes markup, control
+// characters below U+0020 and the three unescaped line breaks as XML character references.
 func writeAttribute(b *strings.Builder, key, value string) {
 	b.WriteString(" ")
 	b.WriteString(key)
 	b.WriteString(`="`)
-	for i := range len(value) {
-		switch c := value[i]; {
-		case c == '&':
+	start := 0
+	for i, r := range value {
+		switch {
+		case r == '&':
+			b.WriteString(value[start:i])
 			b.WriteString("&amp;")
-		case c == '<':
+		case r == '<':
+			b.WriteString(value[start:i])
 			b.WriteString("&lt;")
-		case c == '>':
+		case r == '>':
+			b.WriteString(value[start:i])
 			b.WriteString("&gt;")
-		case c == '"':
+		case r == '"':
+			b.WriteString(value[start:i])
 			b.WriteString("&quot;")
-		case c < 0x20:
+		case r < 0x20 || unescapedBreak(r):
+			b.WriteString(value[start:i])
 			b.WriteString("&#")
-			b.WriteString(strconv.Itoa(int(c)))
+			var digits [8]byte
+			b.Write(strconv.AppendInt(digits[:0], int64(r), 10))
 			b.WriteString(";")
 		default:
-			b.WriteByte(c)
+			continue
 		}
+		start = i + utf8.RuneLen(r)
 	}
+	b.WriteString(value[start:])
 	b.WriteString(`"`)
 }
 

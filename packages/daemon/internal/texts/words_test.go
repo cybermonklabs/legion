@@ -83,6 +83,15 @@ func TestABlockTakesTheFirstNameItsWordsCannotClose(t *testing.T) {
 	}
 }
 
+func TestABlockKeepsAttributeSeparatorsOffItsOpeningLine(t *testing.T) {
+	const words = "a\u0085b\u2028c\u2029d"
+	got := Block("reply", Words{Text: words, By: words})
+	want := "<reply by=\"a&#133;b&#8232;c&#8233;d\">\n" + words + "\n</reply>"
+	if got != want {
+		t.Fatalf("reply = %q, want %q", got, want)
+	}
+}
+
 // R1 has the block of another author's words name its author and be one "which those words cannot
 // close" (dispatch://INFRA-3686/spec). Words that hold an opening tag of the block's own name, with
 // an author of their choosing, open an element inside the block: a reader that pairs tags then pairs
