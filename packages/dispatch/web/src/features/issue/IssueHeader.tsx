@@ -25,6 +25,7 @@ import { projectsQuery, userStateQuery } from "../../api/queries";
 import { replaceQueryData } from "../../api/query-client";
 import type { Artifact, IssueDetails, UserIssueState, UserState } from "../../api/types";
 import { focusOnMount } from "../../components/focus-place";
+import { heldPress } from "../../components/held-press";
 import { type ListMarks, MultiSelect } from "../../components/MultiSelect";
 import { PinButton } from "../../components/PinButton";
 import { QueryError } from "../../components/QueryError";
@@ -260,8 +261,9 @@ export function IssueHeader({
       keys: [],
       label: "Close issue",
       run: () => requestStatus("done"),
-      // `disabled={statusBusy}` on the button, and `isClosed` decides whether it is rendered at
-      // all; a row offered while a status write is in flight would submit a second one.
+      // The button is held (`heldPress`) while a status write or the rule's question is out, and
+      // `isClosed` decides whether it is rendered at all; a row offered while a status write is in
+      // flight would submit a second one.
       when: () => !isClosed && !statusBusy,
     },
     {
@@ -458,8 +460,9 @@ export function IssueHeader({
           <button
             aria-label="Reopen issue"
             className={`min-h-11 rounded-lg px-3 py-2 text-sm font-medium ${secondaryButtonBorder} ${secondaryButtonHoverBorder} ${secondaryButtonDisabledText}`}
-            disabled={statusBusy}
-            onClick={() => requestStatus("backlog")}
+            // Held, not disabled, while a status write or the rule's question is out: the pressed
+            // Reopen keeps the keyboard focus, and a second press sends nothing.
+            {...heldPress(statusBusy, () => requestStatus("backlog"))}
             title="Reopen into Backlog"
             type="button"
           >
@@ -662,8 +665,9 @@ export function IssueHeader({
             <button
               aria-label="Close issue"
               className={`min-h-11 shrink-0 rounded-lg px-2 py-2 text-sm font-medium sm:px-3 md:min-h-8 md:py-1 xl:px-2 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder} ${secondaryButtonDisabledText}`}
-              disabled={statusBusy}
-              onClick={() => requestStatus("done")}
+              // Held, not disabled, while a status write or the rule's question is out: the
+              // pressed Close keeps the keyboard focus, and a second press sends nothing.
+              {...heldPress(statusBusy, () => requestStatus("done"))}
               type="button"
             >
               {pendingStatus === "done" ? (
