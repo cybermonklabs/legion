@@ -149,12 +149,9 @@ func TestTheStateServedToAPodBeforeTheStateSeqContractLeavesTheNextCallersStateW
 	}
 }
 
-// stateSeqContract is an entry this build registers, so this daemon's own contract is never below
-// its number: a caller at this contract is served the sequence. The registry numbers an id it
-// holds no entry for one above this daemon's own contract (entryNumber), which no caller reaches,
-// so the bound fails where the entry's file registers no entry. No test pins the entry's number,
-// which is L plus the entry's rank in the build's order and moves with that order (R4 of
-// dispatch://INFRA-1569).
+// stateSeqContract is an entry this build registers, so entryNumber numbers it at or below this
+// daemon's own contract, and a caller at this contract is served the sequence. The bound fails
+// where the entry's file registers no entry, which entryNumber numbers above that contract.
 func TestTheStateSeqEntryIsNumberedAtOrBelowTheDaemonsOwnContract(t *testing.T) {
 	added := entryNumber(stateSeqContract)
 	if added > DaemonAPIVersion() {

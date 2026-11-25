@@ -401,7 +401,7 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 	// issues' priority, the claim views' cause times and the Dispatch credential, and the log holds
 	// those seven rows' lines, then the line of each entry's band above them. A caller below the give-ups' row is
 	// TestAnOlderPluginContractGetsTheStateWithoutIntakeGiveUps's, and one below the cause times'
-	// row TestAnOlderContractIsServedNoCauseTimes's. This subtest does not catch a strip
+	// row alone TestAnOlderContractIsServedNoCauseTimes's. This subtest does not catch a strip
 	// applied beside the loop, because it reads both its expectation and its answer from
 	// stateNarrowings; the subtests below, which name their lines as literals, are what catch that.
 	t.Run("the seven highest narrowings write their own lines", func(t *testing.T) {
@@ -481,14 +481,10 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 	// The state sequence's narrowing is an entry's band, a row of the table like every other, so
 	// the caller below it is told what it lost: a caller one contract below
 	// entryNumber(stateSeqContract), which states that contract in its header as every plugin from
-	// shapedAnswersContract on does, is served at the recorded contract at or below it
-	// (recordedContractAtOrBelow), which is at or above dispatchCredentialContract, the highest
-	// frozen row. So it stands below no frozen row, and below the state sequence's band and the
-	// band of each entry after it: the body carries none of the three keys, and the log holds the
-	// state sequence's line first, then the line of each entry's band above it. It reads
-	// carriedState and holds no entry to be the newest (R4 of dispatch://INFRA-1569). The state
-	// sequence's line is named here as a literal rather than read from stateNarrowings, so a strip
-	// moved beside the loop, which writes no line, fails here.
+	// shapedAnswersContract on does, is served the daemon block without the three keys. The band's
+	// line is the first of the lines narrowingsExpected counts for that caller, and it is named
+	// here as a literal rather than read from stateNarrowings, so a strip moved beside the loop,
+	// which writes no line, fails here.
 	t.Run("the state sequence narrowing writes its own line", func(t *testing.T) {
 		const dropped = "daemon.stateSeq, daemon.stateId and daemon.stateRun"
 		state := carriedState(t)

@@ -247,10 +247,8 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 		// the keys and every pod below it is not.
 		priority bool
 		// seq is whether the caller is served `daemon.stateSeq`, the sequence of the newest state
-		// event the body's snapshot holds (stateSeqContract's entry, which added it). Every pod
-		// below the entry's number is not served the key. A pod's claims at
-		// shapedAnswersContract or above count in no pod's reckoning (podContracts), so the caller
-		// served it is a caller served this daemon's own body.
+		// event the body's snapshot holds (stateSeqContract's entry, which added it), so a pod
+		// below the entry's number is not served the key.
 		seq bool
 		// caches is whether the caller is served the repository-cache-room row's `source`,
 		// `caches` (cachesSourceContract), the contract that added the word. The word is a value,
@@ -468,6 +466,7 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 			if _, carried := stateSeqServed(t, body); carried != tc.seq {
 				t.Errorf("the state %s carries daemon.stateSeq = %v, want %v; the reader before entryNumber(stateSeqContract) refuses it", body, carried, tc.seq)
 			}
+
 			// Nothing else of the body differs: it is the full state with the stripped keys gone,
 			// `wakesWaiting` among them where the caller is below contract 53, since the reader
 			// before it refuses that key empty as surely as filled (withoutWakesWaiting). The

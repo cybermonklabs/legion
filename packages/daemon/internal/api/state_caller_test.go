@@ -747,10 +747,8 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 		// served the keys and every older one is not.
 		priority bool
 		// seq is whether the caller is served `daemon.stateSeq`, the sequence of the newest state
-		// event the body's snapshot holds (stateSeqContract, the entry that added it). Every
-		// older pod is not served the key; a pod's claims at shapedAnswersContract or above count
-		// in no pod's reckoning (podContracts), so the caller served it is one served this
-		// daemon's own body.
+		// event the body's snapshot holds (stateSeqContract, the entry that added it), so a caller
+		// at the entry's number is served the key and every older one is not.
 		seq bool
 		// caches is whether the caller is served the repository-cache-room row's `source`,
 		// `caches` (cachesSourceContract, the contract that added the word). The word is a value,
@@ -769,8 +767,8 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 	}{
 		{name: "a pod whose plugin is a contract behind", remote: statePodAddr + ":41000", claims: podClaims(supervise.PodUpdateContract - 1)},
 		{name: "the same pod asking over IPv6", remote: "[::ffff:" + statePodAddr + "]:41000", claims: podClaims(supervise.PodUpdateContract - 1)},
-		// The band from recordFieldsContract to below whyAndLineFieldsContract. What the caller
-		// is served is decided by its own recorded claim contract (podContracts) and never by the
+		// The band from recordFieldsContract to below whyAndLineFieldsContract. What the caller is
+		// served is decided by its own recorded claim contract (podContracts) and never by the
 		// declared constant, which is why these rows name the contracts rather than the
 		// declaration. Such a pod stands below whyAndLineFieldsContract, leakCheckCauseContract,
 		// phaseEntriesContract, heldContract, quietTimeContract, mergeWaitContract,

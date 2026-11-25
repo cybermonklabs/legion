@@ -1225,8 +1225,7 @@ func newest(times ...time.Time) time.Time {
 // of state.json with the members Dispatch observes (ObservedIssue), so `legion-api.test.ts` holds
 // the observed schema to the body a deployment with this state serves at `?view=observed`.
 func TestStateGolden(t *testing.T) {
-	state := populatedState(t)
-	encoded, err := json.Marshal(stateFor(state, DaemonAPIVersion(), DaemonAPIVersion(), nil))
+	encoded, err := json.Marshal(stateFor(populatedState(t), DaemonAPIVersion(), DaemonAPIVersion(), nil))
 	if err != nil {
 		t.Fatalf("marshal the state: %v", err)
 	}
@@ -1235,7 +1234,7 @@ func TestStateGolden(t *testing.T) {
 		t.Errorf("the state served at this daemon's own contract is marked %v, want both marks at %d, this daemon's own contract", taken, DaemonAPIVersion())
 	}
 	golden(t, "state.json", body)
-	golden(t, "observed-state.json", observedOf(state))
+	golden(t, "observed-state.json", observedOf(populatedState(t)))
 }
 
 // The state route's body for a caller whose plugin is at the contract before
