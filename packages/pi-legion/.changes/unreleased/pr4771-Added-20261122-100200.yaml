@@ -5,8 +5,8 @@ body: |-
     daemon's `slots:` line right after its admission cap line. The line says what each slot in use
     is spent on (`working`, `stopped`, `person`, `issue` or `idle`, each with its oldest time), how
     much started work waits without a slot, and how many holders rank below the first issue that
-    waits for one. A daemon that serves a caller below that entry sends no such line, and the
-    summary leaves it out.
+    waits for one, in the line's own order, which puts priority first. A daemon that serves a
+    caller below that entry sends no such line, and the summary leaves it out.
 time: 2026-11-22T10:02:00.000000000Z
 custom:
     Issue: pr4771

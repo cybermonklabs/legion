@@ -1485,7 +1485,8 @@ Closing the terminal leaves the project without one, and the daemon logs
   `in all` counts every issue whose work came back and that holds no slot, an issue that still waits on a link among them.
 
   The last sentence names the first issue of the waiting line that waits for a slot and for nothing else.
-  It counts the holders that rank below that issue, by the Dispatch rank of each issue's tree root and then by its own.
+  It counts holders below that issue by priority, then tree root rank, then issue rank.
+  An issue uses its own priority or its tree root's, with no priority after P3.
   It reads `No issue waits for a slot.` when no issue of the line waits for a slot alone.
   `--json` carries the same reading as `admission.slots`, and each holder's state and the moment it entered it on its slot (`state`, `since`).
   The controller's tick notice carries the reading as `slots`, and the `legion` tool's `read_state` summary prints the line.

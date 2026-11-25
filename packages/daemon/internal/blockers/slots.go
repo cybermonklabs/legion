@@ -59,7 +59,8 @@ type SlotsInputs struct {
 	// Cap is the project's admission cap.
 	Cap int
 	// Issues are the records the line was judged from: a holder, a member of the line and a tree
-	// root are each read from here, and a root they leave out from Facts.Roots.
+	// root are each read from here, and a root they leave out from Facts.Roots. A holder's tree
+	// root gives both its rank and the priority that places the holder (SlotHolder.Priority).
 	Issues []record.Issue
 	// Slots are the slots of the line's judgement; a slot whose issue Issues does not hold is no
 	// holder of this project's.
@@ -83,17 +84,20 @@ type SlotsInputs struct {
 // each holder by its key, with the state it is in and the time it entered it: the reading the
 // state serves as `admission.slots` and the tick notice carries as `slots`, and the state and time
 // each holder's `slot` carries. Each holder is read by SlotHolderState, so the two callers read
-// one holder alike.
+// one holder alike, and is placed against the first issue that waits for a slot in the line's own
+// order by the priority that would place it in the line under the rule of in.Facts
+// (record.PlacingPriority, as Waiting places an entry) and by its tree root's rank, both read off
+// the one record of its tree root: the records' own, else the one Facts.Roots carries.
 func SlotsReading(in SlotsInputs) (record.SlotsReading, map[string]record.SlotHolder) {
 	byKey := make(map[string]record.Issue, len(in.Issues))
 	for _, issue := range in.Issues {
 		byKey[issue.Key] = issue
 	}
-	rootRank := func(issue record.Issue) string {
+	rootOf := func(issue record.Issue) record.Issue {
 		if root, recorded := byKey[issue.Tree]; recorded {
-			return root.Rank
+			return root
 		}
-		return in.Facts.Roots[issue.Tree].Rank
+		return in.Facts.Roots[issue.Tree]
 	}
 	stranded := make(map[claim.Token]bool, len(in.Stranded))
 	for _, stopped := range in.Stranded {
@@ -108,13 +112,16 @@ func SlotsReading(in SlotsInputs) (record.SlotsReading, map[string]record.SlotHo
 
 	holders := make([]record.SlotHolder, 0, len(in.Slots))
 	byHolder := make(map[string]record.SlotHolder, len(in.Slots))
+	banded := in.Facts.Rule.OrMain().PriorityFirst
 	for _, slot := range in.Slots {
 		issue, own := byKey[slot.Issue]
 		if !own {
 			continue
 		}
 		state, since := SlotHolderState(issue, slot, claimsOf[issue.Key], stranded, in.Rows, in.Facts)
-		holder := record.SlotHolder{Issue: issue, RootRank: rootRank(issue), State: state, Since: since}
+		root := rootOf(issue)
+		holder := record.SlotHolder{Issue: issue, Priority: record.PlacingPriority(issue, root, banded),
+			RootRank: root.Rank, State: state, Since: since}
 		holders = append(holders, holder)
 		byHolder[issue.Key] = holder
 	}
@@ -129,7 +136,7 @@ func SlotsReading(in SlotsInputs) (record.SlotsReading, map[string]record.SlotHo
 	}
 	members := make([]record.SlotsLineMember, len(in.Line))
 	for i, entry := range in.Line {
-		members[i] = record.SlotsLineMember{Entry: entry, RootRank: rootRank(entry.Issue),
+		members[i] = record.SlotsLineMember{Entry: entry, RootRank: rootOf(entry.Issue).Rank,
 			HeldBack: len(LineWaitsOn(in.Rows, entry)) > 0, Blocked: blocked[entry.Issue.Key], Held: held[entry.Issue.Key]}
 	}
 	return record.SlotsReadingOf(in.Cap, holders, members), byHolder

@@ -239,7 +239,8 @@ const SUMMARY_LEGEND =
   "last pause: once a pause has ended (that pause, then when and by whom it was ended); " +
   "admission cap; slots: the daemon's slots line, what each slot in use is spent on (working, " +
   "stopped, person, issue, idle, each with its oldest time), the started work that waits without " +
-  "a slot, and how many holders rank below the first issue that waits for one; " +
+  "a slot, and how many holders rank below the first issue that waits for one in the line's own " +
+  "order, which puts priority first; " +
   "active/waiting/trees/blocked/held, trees <root>... naming the root of every " +
   "live tree and held <issue> <reason> [by <issue>...] one per issue the workflow holds that is " +
   "neither active nor waiting; wakes waiting <count> [next <earliest due time>], the " +

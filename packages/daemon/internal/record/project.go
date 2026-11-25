@@ -1814,14 +1814,11 @@ func Waiting(issues []Issue, slots []Slot, facts LineFacts) ([]LineEntry, []Held
 	// the line whole (LineArrival), and sorted again by band alone, stably, which keeps that order
 	// within each band; an entry's place within its part counts within its band and part, read off
 	// that final order. Under a rule that does not band the line no priority places an entry, so
-	// each entry carries NoPriority and its place counts within its part alone, and a reader of the
-	// entry's band (projection's parts) reads the one band the line has.
+	// each entry carries NoPriority (PlacingPriority) and its place counts within its part alone,
+	// and a reader of the entry's band (projection's parts) reads the one band the line has.
 	banded := facts.Rule.OrMain().PriorityFirst
 	placedBy := func(issue Issue) Priority {
-		if !banded {
-			return NoPriority
-		}
-		return PriorityOf(issue, byKey[issue.Tree])
+		return PlacingPriority(issue, byKey[issue.Tree], banded)
 	}
 	line := make([]LineEntry, 0, len(returned)+len(starting))
 	for _, waiting := range returned {

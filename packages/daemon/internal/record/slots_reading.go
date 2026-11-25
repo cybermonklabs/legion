@@ -19,8 +19,11 @@ type StateCount struct {
 // and which issue that is. An issue that waits for a slot is a member of the waiting line that
 // holds no slot, that no wait holds back (blockers.LineWaitsOn gives it nothing), and that stands
 // in neither admission.blocked nor admission.held; the first is the first such member in the
-// line's own order (Waiting). A holder ranks below it where it comes after it in RankLess order
-// over its tree root's record and then its own.
+// line's own order (Waiting). A holder ranks below it where it comes after it in that same order,
+// which puts priority first: under a rule that bands the line (SlotRule.PriorityFirst, the
+// daemon's own) by the band of the priority that places each (PlacingPriority, P0 first and an
+// issue with none after P3), and within one band, or under a rule that does not band the line, in
+// RankLess order over its tree root's record and then its own.
 type BelowFirstWaiting struct {
 	Count int `json:"count"`
 	// First is the key of the first issue that waits for a slot, "" where none waits.
@@ -54,10 +57,10 @@ type SlotsReading struct {
 }
 
 // SlotsLineMember is one member of the waiting line as the slots reading needs it: its entry
-// (Waiting's LineEntry, with its part, kind, slot, place and ranks), the Dispatch rank of its
-// tree root, whether a wait holds it back (blockers.LineWaitsOn gives it something), and whether
-// it stands in admission.blocked or in admission.held. The root's rank is carried beside the
-// entry because the entry carries it for a member of the starting part alone
+// (Waiting's LineEntry, with its part, kind, slot, place, ranks and the priority that placed it),
+// the Dispatch rank of its tree root, whether a wait holds it back (blockers.LineWaitsOn gives it
+// something), and whether it stands in admission.blocked or in admission.held. The root's rank is
+// carried beside the entry because the entry carries it for a member of the starting part alone
 // (LineEntry.RootRank), and the first issue that waits for a slot can be a member of either part.
 type SlotsLineMember struct {
 	Entry    LineEntry
@@ -68,10 +71,15 @@ type SlotsLineMember struct {
 }
 
 // SlotHolder is one holder of an admission slot as the slots reading needs it: its record, the
-// Dispatch rank of its tree root, which with its own rank places it against the first issue that
-// waits for a slot, and its state with the time it entered it (HolderStateOf).
+// priority that places it and the Dispatch rank of its tree root, which with its own rank place
+// it against the first issue that waits for a slot in the line's own order, and its state with
+// the time it entered it (HolderStateOf).
 type SlotHolder struct {
-	Issue    Issue
+	Issue Issue
+	// Priority is the priority that would place the holder in the waiting line, as
+	// LineEntry.Priority places an entry (PlacingPriority, over the record of its tree root that
+	// RootRank is read from): NoPriority under a rule that does not band the line.
+	Priority Priority
 	RootRank string
 	State    HolderState
 	Since    *time.Time
@@ -87,6 +95,12 @@ type SlotHolder struct {
 // back (LineEntry.Since). A member released for a wait whose wait has ended keeps the kind
 // waiting_on_issue until its promotion, so reading (a) reads the part, the slot and
 // admission.blocked and never the kind.
+//
+// A holder is counted below the first issue that waits for a slot where it comes after it in the
+// line's own order (rankedIssue.before): first by the band of the priority that places each, the
+// entry's LineEntry.Priority and the holder's SlotHolder.Priority, which are NoPriority on both
+// sides under a rule that does not band the line; then by the Dispatch rank of its tree root and
+// its own.
 func SlotsReadingOf(cap int, holders []SlotHolder, line []SlotsLineMember) SlotsReading {
 	reading := SlotsReading{InUse: len(holders), Cap: cap}
 	counts := map[HolderState]*StateCount{
@@ -116,9 +130,9 @@ func SlotsReadingOf(cap int, holders []SlotHolder, line []SlotsLineMember) Slots
 	}
 	if first != nil {
 		reading.BelowFirstWaiting.First = first.Entry.Issue.Key
-		waiting := rankedIssue{issue: first.Entry.Issue, rootRank: first.RootRank}
+		waiting := rankedIssue{issue: first.Entry.Issue, priority: first.Entry.Priority, rootRank: first.RootRank}
 		for _, holder := range holders {
-			if waiting.before(rankedIssue{issue: holder.Issue, rootRank: holder.RootRank}) {
+			if waiting.before(rankedIssue{issue: holder.Issue, priority: holder.Priority, rootRank: holder.RootRank}) {
 				reading.BelowFirstWaiting.Count++
 			}
 		}
@@ -137,18 +151,25 @@ func (c *StateCount) add(at *time.Time) {
 	}
 }
 
-// rankedIssue is an issue with the Dispatch rank of its tree root, which is how the line orders
-// its starting part (Waiting's byRank) and how a holder is placed against the first issue that
-// waits for a slot.
+// rankedIssue is an issue with the priority that places it in the waiting line and the Dispatch
+// rank of its tree root: what the line orders it by (Waiting's band of the priority, and within
+// one band its starting part's byRank), and so how a holder is placed against the first issue
+// that waits for a slot.
 type rankedIssue struct {
 	issue    Issue
+	priority Priority
 	rootRank string
 }
 
-// before says whether r comes before other in the board's order: by their tree roots (RankLess
-// over each root's rank, and its key, which is the tree's), and within one tree by their own
-// records, as the line's starting part is ordered.
+// before says whether r comes before other in the line's own order: by the band of the priority
+// that places each (Priority.band, P0 first and none after P3), which is one band where the rule
+// does not band the line, since each then carries NoPriority; and within one band in the board's
+// order, by their tree roots (RankLess over each root's rank, and its key, which is the tree's)
+// and within one tree by their own records, as the line's starting part is ordered.
 func (r rankedIssue) before(other rankedIssue) bool {
+	if band, otherBand := r.priority.band(), other.priority.band(); band != otherBand {
+		return band < otherBand
+	}
 	if r.issue.Tree != other.issue.Tree {
 		return RankLess(Issue{Key: r.issue.Tree, Rank: r.rootRank}, Issue{Key: other.issue.Tree, Rank: other.rootRank})
 	}
