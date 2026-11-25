@@ -894,10 +894,6 @@ func (m *Manager) discoverInstallations(ctx context.Context, app config.GitHubAp
 	}
 	installations := map[string]string{}
 	for page := 1; ; page++ {
-		// The page is asked in the read's own query, which the join puts after the base URL's
-		// where the daemon is configured with one (newRequest). Its two values are written in
-		// the order url.Values.Encode wrote them before, so a base with no query of its own is
-		// asked the URL it was asked before, character for character.
 		request, err := m.newRequest(ctx, http.MethodGet, "/app/installations?page="+strconv.Itoa(page)+"&per_page=100", nil)
 		if err != nil {
 			return nil, fmt.Errorf("GitHub App installation discovery: %w", err)
