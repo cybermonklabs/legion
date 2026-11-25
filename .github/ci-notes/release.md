@@ -184,6 +184,14 @@ workflow's one concurrency group keeps one run of main at a time, so no other ru
 tag between this step and the plugins' build jobs. publish's "legion: Check the linked
 plugin pair" refuses to release this legion unless npm then carries exactly this pair.
 
+## Why legion_build reads the contract order before setup-go
+
+The stamp of this commit's contract entries in main's merge order, which the build links in
+(.github/scripts/release-build-legion.sh says why it refuses to build without one). The
+checkout's fetch-depth 0 holds this commit's history and main's: it fetches every branch into
+refs/remotes/origin, so refs/remotes/origin/main is there, the main the script reads. As the
+tags are, it is read before setup-go, so no dependency code has run yet.
+
 ## What the legion build writes and why it is static
 
 CGO_ENABLED=0: a static binary, as the worker image builds it, so a linux archive runs on any
@@ -194,6 +202,23 @@ strips that one directory, leaving the binary. THIRD_PARTY_NOTICES is the licens
 Go module that target's binary compiles in (scripts/go-third-party-notices.sh, run with the
 build's own GOOS, GOARCH and CGO_ENABLED), and fails the build when one cannot be determined.
 publish writes SHA256SUMS over the archives it accepts.
+
+## What legion_build's smoke test holds
+
+`legion version` names the release, the commit and the linked plugin pair. Then `legion
+version --contracts` is held line by line to the stamp the build linked: `contract` L plus
+the stamp's count of ids, L the greatest number of
+packages/contracts/fixtures/daemon-api/released-contracts.json; `order stamped`, for the
+stamp `v1:` of no entry too; and each id of the stamp in its order, the k-th numbered L + k
+and followed by its slug. An archive linked with no stamp prints `order id`, so it fails
+here even where its ids fall in the stamp's order.
+
+## What legion_build's changelog step renders
+
+This release's own changelog entries, as in pi_envoy_build and for the reasons
+.github/ci-notes/release.md#what-the-envoy-plugins-changelog-step-renders gives: the
+fragments under packages/daemon/.changes/unreleased/ that this release's own commits first
+added, and the `notes` line fold-notes prints says whether there were any.
 
 ## What legion_names checks
 
@@ -237,11 +262,36 @@ ones its tag will hold. A release no fragment belongs to renders no file, and th
 line fold-notes prints says which of the two it was, since publish cannot look into the
 artifact before it downloads it.
 
+## Why pi_envoy_build points its manifest at the packed bundle
+
+The committed manifest keeps the source path (extensions/envoy.ts) so repo checkouts (dev
+sessions) load the source without a build. The published tarball ships only the
+self-contained dist bundle, and scripts/pi-plugin-prepack.sh refuses to pack any other
+omp.extensions. Nothing restores the manifest: this job's tree is discarded, and no job commits a
+version, so the committed manifest keeps whatever it last held.
+
+## Why the packed tarball's repository url is checked in the build jobs
+
+Read repository.url back out of the tarball the publish job will hand npm, not out of the
+working tree: npm refuses a publish with provenance whose url is not the publishing
+repository's, and this catches that here rather than in the job holding the credentials.
+pi_legion_build's step of the same name is pi_envoy_build's check, over that package's
+tarball: the packed manifest, which is what npm verifies the provenance against, must name the
+publishing repository. Before that, pi_legion_build rewrites its manifest's repository.url as
+pi_envoy_build does, for the reason .github/scripts/release-pi-envoy-manifest-repository.sh
+gives; this job's tree is discarded, so the committed manifest keeps its repository.
+
 ## Why pi_legion_build reads the tags before setup-bun
 
 First, before setup-bun, as pi_envoy_build's version step is, and releasing again a tag
 an earlier attempt pushed for this commit as that step does, over the paths
 $PI_LEGION_VERSION_ARGS names (the workflow's `env:` says why each is there).
+
+## Why pi_legion_build writes the contract number
+
+The committed manifest declares no contract number: the pack writes the one of this tree
+(scripts/daemon-contract.sh), which the prepack's bundle inlines with the rest of the
+manifest, as it writes the version.
 
 ## What the Legion plugin's changelog step renders
 
@@ -538,36 +588,3 @@ the job unless the tag names exactly the digest the release note and the attesta
 The release's body gets one "## Worker image" section, naming the digest the version tag
 points at now. release-section replaces a section that heading already holds, which is what
 a whole-run rerun of this image needs, and says there why the write is a replace.
-
-## What the smoke test holds legion version to
-
-`legion version` names the release, the commit and the linked plugin pair. Then `legion version
---contracts` is held line by line to the stamp the build linked: `contract` L plus the stamp's count
-of ids, L the greatest number of packages/contracts/fixtures/daemon-api/released-contracts.json;
-`order stamped`, for the stamp `v1:` of no entry too; and each id of the stamp in its order, the
-k-th numbered L + k and followed by its slug. An archive linked with no stamp prints `order id`, so
-it fails here even where its ids fall in the stamp's order.
-
-## Why the packed manifest points at the dist bundle
-
-The committed manifest keeps the source path (extensions/envoy.ts) so repo checkouts (dev sessions)
-load the source without a build. The published tarball ships only the self-contained dist bundle,
-and scripts/pi-plugin-prepack.sh refuses to pack any other omp.extensions. Nothing restores the
-manifest: this job's tree is discarded, and no job commits a version, so the committed manifest
-keeps whatever it last held.
-
-## Why pi_legion_build writes repository.url into the manifest
-
-As in pi_envoy_build, and for the reason .github/scripts/release-pi-envoy-manifest-repository.sh
-gives: npm refuses a publish with provenance whose repository.url is not the publishing
-repository's, case for case, and the publish job packs nothing of its own. The committed manifest
-keeps today's repository; this writes whichever one the job runs in, and this job's tree is
-discarded.
-
-## Where legion_build reads the contract entries' merge order
-
-The stamp of this commit's contract entries in main's merge order, which the build links in
-(.github/scripts/release-build-legion.sh says why it refuses to build without one). The checkout's
-fetch-depth 0 holds this commit's history and main's: it fetches every branch into
-refs/remotes/origin, so refs/remotes/origin/main is there, the main the script reads. As the tags
-are, it is read before setup-go, so no dependency code has run yet.

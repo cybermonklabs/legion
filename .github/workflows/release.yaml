@@ -172,7 +172,7 @@ jobs:
       - name: Resolve plugin versions for the smoke test and worker image
         id: plugin_versions
         run: .github/scripts/release-plugin-versions.sh
-      # why: .github/ci-notes/release.md#where-legion_build-reads-the-contract-entries-merge-order
+      # why: .github/ci-notes/release.md#why-legion_build-reads-the-contract-order-before-setup-go
       - name: Read the contract entries' merge order
         id: contract_order
         if: steps.version.outputs.skip != 'true'
@@ -208,7 +208,7 @@ jobs:
           LEGION_CONTRACT_ORDER: ${{ steps.contract_order.outputs.stamp }}
         run: .github/scripts/release-build-legion.sh
 
-      # why: .github/ci-notes/release.md#what-the-smoke-test-holds-legion-version-to
+      # why: .github/ci-notes/release.md#what-legion_builds-smoke-test-holds
       - name: Smoke test
         if: steps.version.outputs.skip != 'true'
         env:
@@ -239,10 +239,7 @@ jobs:
       - uses: ./.github/actions/install-changie
         if: steps.version.outputs.skip != 'true'
 
-      # This release's own changelog entries, as in pi_envoy_build and for the reasons
-      # .github/ci-notes/release.md#what-the-envoy-plugins-changelog-step-renders gives: the
-      # fragments under packages/daemon/.changes/unreleased/ that this release's own commits first
-      # added, and the `notes` line fold-notes prints says whether there were any.
+      # why: .github/ci-notes/release.md#what-legion_builds-changelog-step-renders
       - name: Render this release's changelog entries
         id: notes
         if: steps.version.outputs.skip != 'true'
@@ -344,7 +341,7 @@ jobs:
       - name: Point extensions at the packed bundle
         if: steps.version.outputs.skip != 'true'
         run: |
-          # why: .github/ci-notes/release.md#why-the-packed-manifest-points-at-the-dist-bundle
+          # why: .github/ci-notes/release.md#why-pi_envoy_build-points-its-manifest-at-the-packed-bundle
           jq '.omp.extensions = ["dist/envoy.js"]' \
             packages/pi-envoy/package.json > tmp.json \
             && mv tmp.json packages/pi-envoy/package.json
@@ -361,11 +358,7 @@ jobs:
       - name: Check the packed tarball names the publishing repository
         if: steps.version.outputs.skip != 'true'
         run: |
-          # Read repository.url back out of the tarball the publish job will hand npm, not out of
-          # the working tree the step above wrote: npm refuses a publish with provenance whose url
-          # is not the publishing repository's, so this is the check that catches a regression at
-          # the moment it would refuse the publish, here in the build job rather than in the job
-          # holding the credentials.
+          # why: .github/ci-notes/release.md#why-the-packed-tarballs-repository-url-is-checked-in-the-build-jobs
           url=$(.github/scripts/repo-paths.sh repository_url)
           tar -xzOf packages/pi-envoy/*.tgz package/package.json \
             | jq -e --arg u "$url" '.repository.url == $u'
@@ -452,9 +445,7 @@ jobs:
         if: steps.version.outputs.skip != 'true'
         run: bun install --frozen-lockfile
 
-      # The committed manifest declares no contract number: the pack writes the one of this tree
-      # (scripts/daemon-contract.sh), which the prepack's bundle inlines with the rest of the
-      # manifest, as it writes the version.
+      # why: .github/ci-notes/release.md#why-pi_legion_build-writes-the-contract-number
       - name: Set release version
         if: steps.version.outputs.skip != 'true'
         env:
@@ -472,7 +463,7 @@ jobs:
       - name: Point the manifest at the publishing repository
         if: steps.version.outputs.skip != 'true'
         run: |
-          # why: .github/ci-notes/release.md#why-pi_legion_build-writes-repositoryurl-into-the-manifest
+          # why: .github/ci-notes/release.md#why-the-packed-tarballs-repository-url-is-checked-in-the-build-jobs
           url=$(.github/scripts/repo-paths.sh repository_url)
           jq --arg u "$url" '.repository.url = $u' \
             packages/pi-legion/package.json > tmp.json \
@@ -486,8 +477,7 @@ jobs:
       - name: Check the packed tarball names the publishing repository
         if: steps.version.outputs.skip != 'true'
         run: |
-          # pi_envoy_build's check, over this package's tarball: the packed manifest, which is
-          # what npm verifies the provenance against, must name the publishing repository.
+          # why: .github/ci-notes/release.md#why-the-packed-tarballs-repository-url-is-checked-in-the-build-jobs
           url=$(.github/scripts/repo-paths.sh repository_url)
           tar -xzOf packages/pi-legion/*.tgz package/package.json \
             | jq -e --arg u "$url" '.repository.url == $u'
