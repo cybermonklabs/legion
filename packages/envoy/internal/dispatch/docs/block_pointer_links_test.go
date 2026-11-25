@@ -455,6 +455,7 @@ func TestARepeatedBlockIDWritesPointersOnlyFromItsNode(t *testing.T) {
 			}
 			requireRows("the version write")
 
+			awaitRoomStored(t, service, checks)
 			if _, err := database.Pool.Exec(context.Background(), `update document_block_versions set version = null where artifact_id = $1`, checks); err != nil {
 				t.Fatalf("mark checks.md owed: %v", err)
 			}
@@ -506,6 +507,7 @@ func TestATypedBlockIDReadsBackFromTheMarkdownAsTheTreeHoldsIt(t *testing.T) {
 				t.Fatalf("the version write: block_refs of checks.md = %q, want %q", stored, want)
 			}
 
+			awaitRoomStored(t, service, checks)
 			if _, err := database.Pool.Exec(context.Background(), `update document_block_versions set version = null where artifact_id = $1`, checks); err != nil {
 				t.Fatalf("mark checks.md owed: %v", err)
 			}
@@ -530,4 +532,15 @@ func TestATypedBlockIDReadsBackFromTheMarkdownAsTheTreeHoldsIt(t *testing.T) {
 			}
 		})
 	}
+}
+
+// awaitRoomStored waits until the room of artifactID counts no update the store has not taken. A
+// live edit's append lands in a transaction of its own after the edit, and until it lands the
+// reconciliation's pass reads the document live ahead and leaves it owed (roomHoldsUnstoredUpdate),
+// so a tick run before then indexes nothing.
+func awaitRoomStored(t *testing.T, service *Service, artifactID string) {
+	t.Helper()
+	waitFor(t, 10*time.Second, "the room of "+artifactID+" to count no update the store has not taken", func() bool {
+		return !service.hasPendingUpdates(artifactID) && !service.hasDurableAppend(artifactID)
+	})
 }
