@@ -20,6 +20,7 @@ import (
 	"github.com/reearth/ygo/persistence"
 	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testcleanup"
@@ -197,7 +198,7 @@ func admittedRequest(t *testing.T, service *Service, request *http.Request) *htt
 	t.Helper()
 	ctx, cancel := context.WithCancelCause(request.Context())
 	testcleanup.Add(t, func() { cancel(nil) })
-	issue, err := service.readIssue(ctx, service.queryFrom(ctx), request.PathValue("room"), serverReader)
+	issue, err := service.readIssue(ctx, service.queryFrom(ctx), request.PathValue("room"), model.ServerReader)
 	if err != nil {
 		t.Fatalf("read the document's issue as the socket's admission does: %v", err)
 	}

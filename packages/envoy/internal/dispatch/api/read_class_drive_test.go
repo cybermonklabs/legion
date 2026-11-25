@@ -78,7 +78,8 @@ const postHistoryStatement = `\bleft\s+join\s+lateral\s*\(\s*select\s+body,\s*ed
 
 // readRowDrives is the drive of every read row of the table (readWritesNothing), keyed
 // "GET <pattern>" as readClasses is: the request that shows the row writes nothing a read may
-// not write and answers a read-only token as it answers that token's writer.
+// not write and answers a read-only token as it answers that token's writer. A row whose handler
+// reads through a project access clause names the statement that clause sits in.
 var readRowDrives = map[string]rowDrive{
 	"GET /api/v1":               {target: "/api/v1", fromMemory: "the route index is built in memory when the table is registered"},
 	"GET /api/v1/schema/blocks": {target: "/api/v1/schema/blocks", fromMemory: "the block schema is a constant of the document package"},
@@ -113,7 +114,7 @@ var readRowDrives = map[string]rowDrive{
 		statement: statementOf(`\bfrom\s+delivery_run_jobs\s+where\s+repo\s*=\s*\$1\s+and\s+run_id\s*=\s*\$2\b`)},
 	"GET /api/v1/ci-reconcile/passes": {target: "/api/v1/ci-reconcile/passes", statement: statementOf(`\bci_reconcile_passes\b`)},
 	"GET /api/v1/me/agent-tokens":     {target: "/api/v1/me/agent-tokens", statement: statementOf(`\bfrom\s+agent_read_tokens\s+where\s+owner\s*=\s*\$1\b`)},
-	"GET /api/v1/users":               {target: "/api/v1/users", statement: statementOf(`\bselect\s+email\s+from\s+people\s+order\s+by\s+email\b`)},
+	"GET /api/v1/users":               {target: "/api/v1/users", statement: statementOf(`\bselect\s+person\.email\s+from\s+people\s+person\s+where\b`)},
 	// P's page lists P's reply (the seed's comments), so the route runs its list, the statement
 	// that runs only once the page is shown. Every credential of the drive acts as P, so a page
 	// shown to nobody would answer P, its own reader, an empty 200, which the list's absence alone
@@ -152,7 +153,7 @@ var readRowDrives = map[string]rowDrive{
 		}},
 	"GET /api/v1/issues/{key}/coverage":      {target: "/api/v1/issues/$issue/coverage", statement: statementOf(`\bt\.type\s*=\s*'requirement'`)},
 	"GET /api/v1/issues/{key}/messages":      {target: "/api/v1/issues/$issue/messages", statement: statementOf(`\bfrom\s+messages\s+where\s+issue_key\s*=\s*\$1\s+and\s+in_reply_to\s+is\s+null\b`)},
-	"GET /api/v1/issues/{key}/messages/{id}": {target: "/api/v1/issues/$issue/messages/$message", statement: statementOf(`\bfrom\s+messages\s+where\s+id\s*=\s*\$1\s+and\s+issue_key\s*=\s*\$2\b`)},
+	"GET /api/v1/issues/{key}/messages/{id}": {target: "/api/v1/issues/$issue/messages/$message", statement: statementOf(`\bfrom\s+messages\s+m\s+where\s+m\.id\s*=\s*\$1\s+and\b`)},
 	"GET /api/v1/issues/{key}/handoffs":      {target: "/api/v1/issues/$issue/handoffs", statement: statementOf(`\bfrom\s+handoffs\s+where\s+issue_key\s*=\s*\$1\s+order\s+by\b`)},
 	"GET /api/v1/issues/{key}/handoffs/{phase}/latest": {target: "/api/v1/issues/$issue/handoffs/$phase/latest",
 		statement: statementOf(`\bfrom\s+handoffs\s+where\s+issue_key\s*=\s*\$1\s+and\s+phase\b`)},
@@ -163,7 +164,7 @@ var readRowDrives = map[string]rowDrive{
 	"GET /api/v1/messages/{id}":             {target: "/api/v1/messages/$message", statement: statementOf(`\bwith\s+recursive\s+thread\s+as\b`)},
 	"GET /api/v1/messages/{id}/blocks":      {target: "/api/v1/messages/$message/blocks", statement: statementOf(`\bfrom\s+messages\s+m\s+left\s+join\s+message_bl`)},
 	"GET /api/v1/messages/{id}/history":     {target: "/api/v1/messages/$correctedMessage/history", statement: statementOf(postHistoryStatement)},
-	"GET /api/v1/inbox":                     {target: "/api/v1/inbox", statement: statementOf(`\bfrom\s+ask_followers\s+where\s+ask_id\s*=\s*any\b`)},
+	"GET /api/v1/inbox":                     {target: "/api/v1/inbox", statement: statementOf(`\bfrom\s+ask_followers\s+f\s+join\s+asks\s+a\s+on\s+a\.id\s*=\s*f\.ask_id\s+where\s+f\.ask_id\s*=\s*any\b`)},
 	"GET /api/v1/me/answers":                {target: "/api/v1/me/answers", statement: statementOf(`\bwith\s+answered\s+as\b`)},
 	"GET /api/v1/me/replies": {target: "/api/v1/me/replies?state=inbox", statement: statementOf(`\bfrom\s+user_threads\s+u\b`),
 		volatile: []volatileMember{{"as_of", readTime}}},
@@ -189,14 +190,14 @@ var readRowDrives = map[string]rowDrive{
 		statement: statementOf(`\bselect\s+content,\s*mime,\s*sha256,\s*size\s+from\s+artifact_versions\b`)},
 	"GET /api/v1/broadcasts":             {target: "/api/v1/broadcasts", statement: statementOf(`\bb\.id::text,\s*b\.author,\s*b\.body\b`)},
 	"GET /api/v1/broadcasts/{id}":        {target: "/api/v1/broadcasts/$broadcast", statement: statementOf(`\bfrom\s+broadcasts\s+where\s+id\s*=\s*\$1\b`)},
-	"GET /api/v1/issues/{key}/asks":      {target: "/api/v1/issues/$issue/asks?thread=1", statement: statementOf(`\bfrom\s+ask_followers\s+where\s+ask_id\s*=\s*any\b`)},
+	"GET /api/v1/issues/{key}/asks":      {target: "/api/v1/issues/$issue/asks?thread=1", statement: statementOf(`\bfrom\s+ask_followers\s+f\s+join\s+asks\s+a\s+on\s+a\.id\s*=\s*f\.ask_id\s+where\s+f\.ask_id\s*=\s*any\b`)},
 	"GET /api/v1/issues/{key}/decisions": {target: "/api/v1/issues/$issue/decisions", statement: statementOf(`\bfrom\s+decision_keeps\b`)},
 	"GET /api/v1/asks/open": {target: "/api/v1/asks/open?project=$project", statement: statementOf(`\bwith\s+mine\s+as\b`),
 		volatile: []volatileMember{{"as_of", readTime}, {"asks.*.age_seconds", "each ask's age, counted to the moment of the read"}}},
-	"GET /api/v1/asks/{id}":             {target: "/api/v1/asks/$ask", statement: statementOf(`\bfrom\s+ask_followers\s+where\s+ask_id\s*=\s*\$1\b`)},
-	"GET /api/v1/asks/{id}/followers":   {target: "/api/v1/asks/$followedAsk/followers", statement: statementOf(`\bselect\s+issue_key,\s*artifact_id::text\s+from\s+asks\s+where\s+id\b`)},
+	"GET /api/v1/asks/{id}":             {target: "/api/v1/asks/$ask", statement: statementOf(`\bfrom\s+ask_followers\s+f\s+join\s+asks\s+a\s+on\s+a\.id\s*=\s*f\.ask_id\s+where\s+f\.ask_id\s*=\s*\$1\b`)},
+	"GET /api/v1/asks/{id}/followers":   {target: "/api/v1/asks/$followedAsk/followers", statement: statementOf(`\bselect\s+a\.issue_key,\s*a\.artifact_id::text\s+from\s+asks\s+a\s+where\s+a\.id\b`)},
 	"GET /api/v1/issues/{key}/comments": {target: "/api/v1/issues/$issue/comments", statement: statementOf(`\bfrom\s+comment_watermarks\b`)},
-	"GET /api/v1/comments/{id}":         {target: "/api/v1/comments/$comment", statement: statementOf(`\bfrom\s+comment_mentions\s+where\s+comment_id\b`)},
+	"GET /api/v1/comments/{id}":         {target: "/api/v1/comments/$comment", statement: statementOf(`\bfrom\s+comment_mentions\s+m\s+join\s+comments\s+c\s+on\s+c\.id\s*=\s*m\.comment_id\s+where\s+m\.comment_id\b`)},
 	"GET /api/v1/comments/{id}/blocks":  {target: "/api/v1/comments/$comment/blocks", statement: statementOf(`\bleft\s+join\s+comment_block_state\b`)},
 	"GET /api/v1/comments/{id}/history": {target: "/api/v1/comments/$correctedComment/history", statement: statementOf(postHistoryStatement)},
 	// A document's own asks, comments and events are an unlinked project document's: the
