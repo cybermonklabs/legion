@@ -663,12 +663,29 @@ const searchAskBlocksMovedStatement = `select k.id::text from asks k
 	  and (select max(n.number) from artifact_versions n where n.artifact_id = k.block_artifact_id)
 	      is distinct from (select max(p.number) from public.artifact_versions p where p.artifact_id = k.block_artifact_id)`
 
-// searchAskLinksAtTheCut leaves out the href of each ask hit of results whose typed block is in a
-// document that changed after the cut (searchAskBlocksMovedStatement), and names it absent (reason
-// G). Such a hit's href links the block only while the block is a node of the reference graph
-// (askBlockNodeSQL), and the graph is the graph now, which no record holds at the cut for that
-// document. Every other ask hit's link is the one the graph gave at the cut. ctx carries the cut.
-func (s *server) searchAskLinksAtTheCut(ctx context.Context, results []model.SearchResult) error {
+// searchAsksAtTheCut names what a search at a cut leaves out of each ask hit of results, from one
+// reading of the hits' asks:
+//   - the href, where the ask's typed block is in a document that changed after the cut
+//     (searchAskBlocksMovedStatement), with reason G. Such a hit's href links the block only while
+//     the block is a node of the reference graph (askBlockNodeSQL), and the graph is the graph
+//     now, which no record holds at the cut for that document. Every other ask hit's link is the
+//     one the graph gave at the cut.
+//   - the snippet, and its tree where the answer carries display trees (trees), where the ask's
+//     wording at the cut no record gives (reason E, asof.AsksChangedAfterStatement). The snippet
+//     is cut from the keyword table's version of the ask at the cut (searchAsOfTexts), which holds
+//     the wording of the ask's newest event at the cut, and a restore changed that wording with
+//     no event at a time no record gives. The keyword arm finds such an ask by that wording. The
+//     meaning arm keeps an ask's window only where the ask's text at the cut is its present text
+//     (searchAsOfWindows("ask_part", ...), v.body = present_ask.question || ' ' ||
+//     ask_search_suffix(...)), so it skips an ask whose present wording is the one a restore gave
+//     back. The snippet is left out whichever arm found the hit.
+//
+// A request at no cut leaves out nothing and sends no statement.
+func (s *server) searchAsksAtTheCut(ctx context.Context, results []model.SearchResult, trees bool) error {
+	cut, atCut := asof.CutFrom(ctx)
+	if !atCut {
+		return nil
+	}
 	var asks []string
 	for _, result := range results {
 		if result.Kind == "ask" {
@@ -686,9 +703,23 @@ func (s *server) searchAskLinksAtTheCut(ctx context.Context, results []model.Sea
 	if err != nil {
 		return fmt.Errorf("read which asks' block documents changed after the cut: %w", err)
 	}
+	_, wordingUnknown, err := s.asksChangedAfterTheCut(ctx, asks, cut)
+	if err != nil {
+		return fmt.Errorf("read which asks of a search have no wording at the cut: %w", err)
+	}
 	for index, result := range results {
-		if result.Kind == "ask" && slices.Contains(moved, result.ID) {
-			leaveOut(ctx, "/results/"+strconv.Itoa(index)+"/href")
+		if result.Kind != "ask" {
+			continue
+		}
+		place := "/results/" + strconv.Itoa(index)
+		if slices.Contains(moved, result.ID) {
+			leaveOut(ctx, place+"/href")
+		}
+		if wordingUnknown[result.ID] {
+			leaveOut(ctx, place+"/snippet")
+			if trees {
+				leaveOut(ctx, place+"/snippet_tree")
+			}
 		}
 	}
 	return nil

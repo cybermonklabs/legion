@@ -1,5 +1,7 @@
 {
-  "GET /api/v1/agents/{session_id}/answers": [],
+  "GET /api/v1/agents/{session_id}/answers": [
+    "/items/*/ask/question"
+  ],
   "GET /api/v1/agents/{session_id}/artifacts/{slug}": [
     "/approval/documents"
   ],
@@ -13,6 +15,7 @@
     "/*/options",
     "/*/options/*/id",
     "/*/question",
+    "/*/question_tree",
     "/*/referenced_by_count",
     "/*/revision",
     "/*/urgency",
@@ -59,6 +62,7 @@
     "/ask/options",
     "/ask/options/*/id",
     "/ask/question",
+    "/ask/question_tree",
     "/ask/referenced_by_count",
     "/ask/revision",
     "/ask/urgency",
@@ -118,6 +122,7 @@
     "/*/options",
     "/*/options/*/id",
     "/*/question",
+    "/*/question_tree",
     "/*/referenced_by_count",
     "/*/revision",
     "/*/snoozed_until",
@@ -164,6 +169,7 @@
     "/open_asks/*/options",
     "/open_asks/*/options/*/id",
     "/open_asks/*/question",
+    "/open_asks/*/question_tree",
     "/open_asks/*/referenced_by_count",
     "/open_asks/*/revision",
     "/open_asks/*/urgency",
@@ -195,6 +201,7 @@
     "/*/options",
     "/*/options/*/id",
     "/*/question",
+    "/*/question_tree",
     "/*/referenced_by_count",
     "/*/revision",
     "/*/thread/replies/*/anchor/orphaned",
@@ -328,10 +335,14 @@
   ],
   "GET /api/v1/search": [
     "/query/broadened",
-    "/results/*/href"
+    "/results/*/href",
+    "/results/*/snippet",
+    "/results/*/snippet_tree"
   ],
   "GET /api/v1/search/results": [
     "/query/broadened",
-    "/results/*/href"
+    "/results/*/href",
+    "/results/*/snippet",
+    "/results/*/snippet_tree"
   ]
 }

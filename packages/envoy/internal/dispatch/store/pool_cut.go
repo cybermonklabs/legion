@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -133,13 +134,23 @@ func (p *Pool) sendBatchAtCut(ctx context.Context, cut asof.Cut, batch *pgx.Batc
 	return &cutBatchResults{ctx: ctx, tx: tx, statements: statements, own: true}
 }
 
+// readRollbackTimeout bounds the rollback that ends a read-only transaction the pool opened of
+// its own under a cut (endRead). The rollback is one round trip; a connection that has not
+// answered it in a second is closed instead.
+const readRollbackTimeout = time.Second
+
 // endRead ends tx, a read-only transaction that the pool opened of its own under a cut, and gives
 // its connection back to the pool. The transaction has nothing to commit, so it rolls back. The
-// rollback's error is not returned: what the statement read stands, and a rollback that fails
-// closes its connection (pgx), so no connection stays inside the transaction. A second end finds
-// the transaction closed and sends nothing.
+// rollback runs on a context that the end of ctx does not end, bounded by readRollbackTimeout:
+// pgx closes the connection of a rollback whose context is cancelled, so a request that ended
+// while its statement ran would otherwise cost the pool that connection. The rollback's error is
+// not returned: what the statement read stands, and a rollback that fails closes its connection
+// (pgx), so no connection stays inside the transaction. A second end finds the transaction closed
+// and sends nothing.
 func endRead(ctx context.Context, tx pgx.Tx) {
-	_ = tx.Rollback(ctx)
+	rollback, cancel := context.WithTimeout(context.WithoutCancel(ctx), readRollbackTimeout)
+	defer cancel()
+	_ = tx.Rollback(rollback)
 }
 
 // cutRow is the row of QueryRow under a cut. Its Scan ends the statement's own transaction once

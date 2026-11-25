@@ -865,7 +865,8 @@ func (s *server) listIssueAsks(w http.ResponseWriter, r *http.Request) {
 	}
 	// One reader for the whole page: the asks' texts, and the replies, rewordings and answers of
 	// every thread the list carries, are one query and one store.
-	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
+	trees := wantsDisplayTrees(r)
+	reader := s.readDisplayTrees(r.Context(), trees)
 	rows := make([]issueAskRow, len(asks))
 	for index := range asks {
 		rows[index].shapedAsk.Ask = asks[index]
@@ -880,7 +881,7 @@ func (s *server) listIssueAsks(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if err := s.issueAsksAtTheCut(r.Context(), asks, rows); err != nil {
+	if err := s.issueAsksAtTheCut(r.Context(), asks, rows, trees); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -1004,7 +1005,8 @@ func (s *server) getAsk(w http.ResponseWriter, r *http.Request) {
 	//
 	// The ask, its replies, the wordings it went through and every answer it was given are one
 	// read of the table: the whole page the dashboard draws from this route in one query.
-	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
+	trees := wantsDisplayTrees(r)
+	reader := s.readDisplayTrees(r.Context(), trees)
 	read := askRead{askThread: askThread{
 		Replies:   shapedComments(replies, reader),
 		Edits:     askEditReads(edits, reader),
@@ -1015,7 +1017,7 @@ func (s *server) getAsk(w http.ResponseWriter, r *http.Request) {
 	read.Ask.Ask = ask
 	read.Ask.shape(reader)
 	reader.resolve()
-	if err := s.askAtTheCut(r.Context(), read); err != nil {
+	if err := s.askAtTheCut(r.Context(), read, trees); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}

@@ -76,16 +76,16 @@ where x.later is not null or x.wording_unknown`
 
 // askWording is the wording of an ask as four SQL expressions: its question, its options (a JSON
 // array), whether it takes several options, and its urgency.
-type askWording [4]string
+type askWording struct{ question, options, multiple, urgency string }
 
 // askWordingOf is the wording that the JSON object payload holds, as the asks shadow gives it:
 // each key that a payload of an older shape lacks reads as the column's default.
 func askWordingOf(payload string) askWording {
 	return askWording{
-		`coalesce(` + payload + `->>'question', '')`,
-		jsonArray(payload + `->'options'`),
-		`coalesce((` + payload + `->>'multiple')::boolean, false)`,
-		`coalesce(` + payload + `->>'urgency', 'med')`,
+		question: `coalesce(` + payload + `->>'question', '')`,
+		options:  jsonArray(payload + `->'options'`),
+		multiple: `coalesce((` + payload + `->>'multiple')::boolean, false)`,
+		urgency:  `coalesce(` + payload + `->>'urgency', 'med')`,
 	}
 }
 
@@ -95,20 +95,20 @@ func askWordingOf(payload string) askWording {
 // wording at the cut's.
 var (
 	askWordingAt            = askWordingOf(`s.payload`)
-	askWordingOfTheRow      = askWording{`r.question`, `r.options`, `r.multiple`, `r.urgency`}
+	askWordingOfTheRow      = askWording{question: `r.question`, options: `r.options`, multiple: `r.multiple`, urgency: `r.urgency`}
 	askWordingBeforeTheEdit = askWording{
-		`(n.payload->'previous'->>'question')`,
-		`(case when jsonb_typeof(n.payload->'previous'->'options') = 'array' then n.payload->'previous'->'options' else ` + askWordingAt[1] + ` end)`,
-		`coalesce((n.payload->'previous'->>'multiple')::boolean, ` + askWordingAt[2] + `)`,
-		`coalesce(n.payload->'previous'->>'urgency', ` + askWordingAt[3] + `)`,
+		question: `(n.payload->'previous'->>'question')`,
+		options:  `(case when jsonb_typeof(n.payload->'previous'->'options') = 'array' then n.payload->'previous'->'options' else ` + askWordingAt.options + ` end)`,
+		multiple: `coalesce((n.payload->'previous'->>'multiple')::boolean, ` + askWordingAt.multiple + `)`,
+		urgency:  `coalesce(n.payload->'previous'->>'urgency', ` + askWordingAt.urgency + `)`,
 	}
 )
 
 // askWordingDiffers is the SQL test that wording a is not wording b, the options of each read
 // with no part id (optionsWithoutIDs).
 func askWordingDiffers(a, b askWording) string {
-	return `((` + a[0] + `, ` + optionsWithoutIDs(a[1]) + `, ` + a[2] + `, ` + a[3] + `) is distinct from (` +
-		b[0] + `, ` + optionsWithoutIDs(b[1]) + `, ` + b[2] + `, ` + b[3] + `))`
+	return `((` + a.question + `, ` + optionsWithoutIDs(a.options) + `, ` + a.multiple + `, ` + a.urgency + `) is distinct from (` +
+		b.question + `, ` + optionsWithoutIDs(b.options) + `, ` + b.multiple + `, ` + b.urgency + `))`
 }
 
 // optionsWithoutIDs is the JSON array of options options with no id in any option, in their
@@ -149,15 +149,15 @@ var (
 //     documents, which migration 20261102110100 filled in the row with no event: the field is
 //     absent at such a cut (reason B).
 func asksShadow(cut string) string {
-	question, options := askWordingAt[0], askWordingAt[1]
+	question, options := askWordingAt.question, askWordingAt.options
 	answer := jsonValue(`s.payload->'answer'`)
 	return `select a.id as id,
 		a.issue_key as issue_key,
 		a.author as author,
 		` + question + ` as question,
 		` + options + ` as options,
-		` + askWordingAt[2] + ` as multiple,
-		` + askWordingAt[3] + ` as urgency,
+		` + askWordingAt.multiple + ` as multiple,
+		` + askWordingAt.urgency + ` as urgency,
 		` + jsonValue(`s.payload->'anchor'`) + ` as anchor,
 		coalesce(s.payload->>'state', 'open') as state,
 		` + answer + ` as answer,

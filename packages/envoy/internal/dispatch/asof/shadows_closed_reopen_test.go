@@ -7,12 +7,15 @@ import (
 )
 
 // A read at a cut answers what the read answered then, whatever is written after the cut. A close
-// stamps the row's closed_at again as its transaction ends (clock_timestamp, api/issue_patch.go),
-// after its issue.closed took the transaction's start; a reopen written straight after the close
-// sets the row's closed_at to null. So the same cut, after the close and before the reopen, is
-// read twice here: once before the reopen is written, where the row still holds the second stamp,
-// and once after it. Both reads are of the same past, so they must answer the same closed_at,
-// whichever value the shadow chooses (or none, with the member named absent through the API).
+// stamps the row's closed_at again as its transaction ends (clock_timestamp, api/issue_patch.go).
+// The issue.closed of a close written before INFRA-4620 holds the first stamp, the transaction's
+// start, and the issue.closed of a later close holds the row's final stamp. The test holds for
+// both: it writes a close of the first kind, whose event and row differ, and a close of the second
+// kind holds one stamp in both. A reopen written straight after the close sets the row's
+// closed_at to null. So the same cut, after the close and before the reopen, is read twice here:
+// once before the reopen is written, where the row still holds the second stamp, and once after
+// it. Both reads are of the same past, so they must answer the same closed_at, whichever value
+// the shadow chooses (or none, with the member named absent through the API).
 func TestTheShadowClosedAtAtACutDoesNotMoveWhenTheIssueIsReopenedLater(t *testing.T) {
 	w := newWorld(t)
 	made := when(t, "2026-11-10T09:00:00Z")

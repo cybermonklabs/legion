@@ -1,18 +1,22 @@
 // as_of_undated_writes_test.go holds the comment and ask routes at a cut to the two writes that
 // change a field with no event that dates the change: the orphaning of a comment's anchor, which
 // an accept or a reject that found the mark gone wrote with no event before its 409 appended one,
-// and the restore of a decided ask's wording. A field such a write changed reads at a cut as
-// unknown, named absent, wherever the records cannot say whether the write came before the cut.
+// and the restore of a decided ask's wording, which an agent's answers and a search give too. A
+// field such a write changed reads at a cut as unknown, named absent, wherever the records cannot
+// say whether the write came before the cut.
 package api
 
 import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/asof"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -210,14 +214,48 @@ func appendAskEventAsAnEarlierRelease(t *testing.T, database *store.Store, issue
 	}
 }
 
+// readTreesAt is readAt for a request that sends Dispatch-Trees: 1, whose answer carries the
+// display tree of each text it gives.
+func (w *asOfThreadWorld) readTreesAt(t *testing.T, target string, cut asof.Cut) (any, []string) {
+	t.Helper()
+	request := httptest.NewRequest(http.MethodGet, withAsOf(t, target, cut), nil)
+	request.Header.Set("X-Dispatch-User", "alice")
+	request.Header.Set(displayTreesHeader, "1")
+	response := httptest.NewRecorder()
+	w.handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("GET %s with trees as of the cut: status=%d body=%s", target, response.Code, response.Body.String())
+	}
+	if named := response.Header().Get(contracts.DispatchAsOfHeader); named != cut.String() {
+		t.Fatalf("GET %s with trees as of the cut: %s is %q, want the cut %s", target, contracts.DispatchAsOfHeader, named, cut)
+	}
+	return decodeAnswer(t, target, response), absentPointers(response.Header().Get(contracts.DispatchAsOfAbsentHeader))
+}
+
+// elementWhere is the index of the first element of the array list whose member key is value,
+// and -1 where none is.
+func elementWhere(list any, value string, key ...string) int {
+	elements, _ := list.([]any)
+	for index, element := range elements {
+		if member, _ := memberOf(element, key...); member == value {
+			return index
+		}
+	}
+	return -1
+}
+
 // The restore of a decided ask's wording (docs.Service.RestoreDecidedWordings) writes the
 // question, the options, multiple and the urgency back with no event, so the newest event at a
 // cut after it holds the wording it undid, and no record dates it. The ask read at such a cut
 // leaves the four out, with the ask's revision and its part ids, which the present tables hold for
-// the restored wording, and names them absent. At a cut before the rewording the edit's previous
-// wording is the wording then, which the read gives. An ask edited after the cut by the edit
-// route, which records the wording it replaced, keeps that wording at the cut and names none of
-// the four absent.
+// the restored wording, and names them absent; with display trees it leaves out the question's
+// tree too, which it names only then. So does each other answer that gives that wording: an
+// agent's answers leave out the question of the ask that the answer is on, and a search for a
+// word only the undone wording holds finds the ask by it and leaves out the hit's snippet, and its
+// tree with display trees. At a cut before the rewording the edit's previous wording is the
+// wording then, which each read gives. An ask edited after the cut by the edit route, which
+// records the wording it replaced, keeps that wording at the cut and names none of the four
+// absent.
 func TestAnAsksWordingARestoreChangedIsNamedAbsentAtTheCut(t *testing.T) {
 	documentService, handler, database, served := browserDocumentServer(t)
 	world := &asOfThreadWorld{handler: handler, served: served}
@@ -233,10 +271,20 @@ func TestAnAsksWordingARestoreChangedIsNamedAbsentAtTheCut(t *testing.T) {
 		map[string]string{"label": "Yes", "description": "Monday."},
 		map[string]string{"label": "No", "description": "Later."})
 	answered := answerPartAsk(t, handler, ask, "alice", []string{"Yes"}, "")
+	// An agent's answers are the ask.answered events whose published_destinations hold its topic,
+	// which the outbox records as it publishes the answer to the ask's followers, the asking
+	// session among them. This server runs no outbox, so the answer is marked delivered as the
+	// outbox marks it.
+	if tag, err := database.Pool.Exec(context.Background(), `
+		update events set published_destinations = array[$2::text] where type = 'ask.answered' and payload->>'id' = $1
+	`, ask.ID, contracts.LegacyAgentSubject(asOfAgentSession)); err != nil || tag.RowsAffected() != 1 {
+		t.Fatalf("mark the answer delivered to the asking session: %s, %v", tag, err)
+	}
 	beforeRewording := takeCut()
 
 	// What a task of the release before LEGION-651 left: the document's rewording in the decided
-	// row, and an ask.edited that carries the reworded ask and the wording it replaced.
+	// row, and an ask.edited that carries the reworded ask and the wording it replaced. Only the
+	// reworded wording holds the word "Tuesday".
 	reworded := answered
 	reworded.Question = "Ship on Tuesday?"
 	reworded.Options = []model.AskOption{{Label: "Tuesday", Description: "Ship it."}, {Label: "No", Description: "Later."}}
@@ -268,6 +316,9 @@ func TestAnAsksWordingARestoreChangedIsNamedAbsentAtTheCut(t *testing.T) {
 			t.Errorf("at a cut after the restore the ask read gives %s = %v, which no record gives", member, value)
 		}
 	}
+	if namedAbsent(absent, "/ask/question_tree") {
+		t.Errorf("at a cut after the restore the ask read with no display trees names %v absent, the question's tree among them, which it does not hold", absent)
+	}
 	if question, _ := memberOf(world.readNow(t, target), "ask", "question"); question != "Ship on Monday?" {
 		t.Errorf("the present ask reads the question %v, want the restored one", question)
 	}
@@ -281,6 +332,72 @@ func TestAnAsksWordingARestoreChangedIsNamedAbsentAtTheCut(t *testing.T) {
 			t.Errorf("at a cut before the rewording the ask read names %s absent, which the edit's previous wording gives", member)
 		}
 	}
+
+	t.Run("the ask read with display trees leaves out the question's tree", func(t *testing.T) {
+		doc, absent := world.readTreesAt(t, target, afterRestore)
+		if !namedAbsent(absent, "/ask/question_tree") {
+			t.Errorf("at a cut after the restore the ask read with trees names %v absent, want /ask/question_tree among them", absent)
+		}
+		if tree, held := memberOf(doc, "ask", "question_tree"); held {
+			t.Errorf("at a cut after the restore the ask read with trees gives the question's tree %v, which no record gives", tree)
+		}
+		doc, absent = world.readTreesAt(t, target, beforeRewording)
+		if _, held := memberOf(doc, "ask", "question_tree"); !held || namedAbsent(absent, "/ask/question_tree") {
+			t.Errorf("at a cut before the rewording the ask read with trees holds the question's tree %t, with %v absent; want it given", held, absent)
+		}
+	})
+
+	t.Run("an agent's answers leave out the question of the answered ask", func(t *testing.T) {
+		answers := "/api/v1/agents/" + asOfAgentSession + "/answers"
+		questionAt := func(t *testing.T, cut asof.Cut) (any, bool, string, []string) {
+			t.Helper()
+			doc, absent := world.readAt(t, answers, cut)
+			items, _ := memberOf(doc, "items")
+			index := elementWhere(items, ask.ID, "ask", "id")
+			if index < 0 {
+				t.Fatalf("at the cut %s the asking session's answers hold no item on the ask: %v", cut, doc)
+			}
+			question, held := memberOf(doc, "items", strconv.Itoa(index), "ask", "question")
+			return question, held, "/items/" + strconv.Itoa(index) + "/ask/question", absent
+		}
+		if question, held, member, absent := questionAt(t, afterRestore); held || !namedAbsent(absent, member) {
+			t.Errorf("at a cut after the restore the session's answers give the ask's question %v (%t), with %v absent; want it left out, and %s named",
+				question, held, absent, member)
+		}
+		if question, _, member, absent := questionAt(t, beforeRewording); question != "Ship on Monday?" || namedAbsent(absent, member) {
+			t.Errorf("at a cut before the rewording the session's answers give the ask's question %v, with %v absent; want the decided one, given", question, absent)
+		}
+	})
+
+	t.Run("a search for a word of the undone wording leaves out the ask hit's snippet", func(t *testing.T) {
+		fillTextVersionsPast(t, database, afterRestore)
+		search := "/api/v1/search/results?" + keywords("tuesday").Encode()
+		for _, trees := range []bool{false, true} {
+			read := world.readAt
+			if trees {
+				read = world.readTreesAt
+			}
+			doc, absent := read(t, search, afterRestore)
+			results, _ := memberOf(doc, "results")
+			index := elementWhere(results, ask.ID, "id")
+			if index < 0 {
+				t.Fatalf("the search at a cut after the restore (trees %t) does not find the ask by the wording of its newest event: %v", trees, doc)
+			}
+			hit := strconv.Itoa(index)
+			if snippet, held := memberOf(doc, "results", hit, "snippet"); held || !namedAbsent(absent, "/results/"+hit+"/snippet") {
+				t.Errorf("the search at a cut after the restore (trees %t) gives the ask hit's snippet %v (%t), with %v absent; want it left out, and named",
+					trees, snippet, held, absent)
+			}
+			tree, held := memberOf(doc, "results", hit, "snippet_tree")
+			switch named := namedAbsent(absent, "/results/"+hit+"/snippet_tree"); {
+			case trees && (held || !named):
+				t.Errorf("the search with trees at a cut after the restore gives the ask hit's snippet tree %v (%t), with %v absent; want it left out, and named",
+					tree, held, absent)
+			case !trees && named:
+				t.Errorf("the search with no trees at a cut after the restore names %v absent, the snippet tree among them, which it does not hold", absent)
+			}
+		}
+	})
 
 	// An open ask edited after the cut by the edit route.
 	open := createPartAsk(t, handler, issue.Key, "Ship on Wednesday?",

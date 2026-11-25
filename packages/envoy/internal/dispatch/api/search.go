@@ -1261,11 +1261,9 @@ func (s *server) search(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	if parameters.versions != nil {
-		if err := s.searchAskLinksAtTheCut(r.Context(), response.Results); err != nil {
-			s.writeHandlerError(w, err)
-			return
-		}
+	if err := s.searchAsksAtTheCut(r.Context(), response.Results, parameters.trees); err != nil {
+		s.writeHandlerError(w, err)
+		return
 	}
 	// What search made of the words, and which filters it narrowed every leg by, for a caller
 	// that shows a person what it did with them; answered on every path, the empty answer of a

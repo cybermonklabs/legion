@@ -47,7 +47,9 @@ func timedAnswersReads(latency *sessionanswers.Latency, handler http.HandlerFunc
 // At a cut the window counts from the cut (decision 12 of INFRA-4620's plan): since defaults to
 // the cut less 72 hours, and a since older than the cut less 7 days is refused. A since later
 // than the cut answers no items, since nothing after the cut exists at it, so an agent host's own
-// poll under a token that carries a cut is answered and not refused.
+// poll under a token that carries a cut is answered and not refused. The answer leaves out the
+// question of each item's ask whose wording at the cut no record gives (sessionAnswersAtTheCut),
+// read for the items the answer gives, once max_chars has cut them.
 func (s *server) listSessionAnswers(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -84,6 +86,10 @@ func (s *server) listSessionAnswers(w http.ResponseWriter, r *http.Request) {
 	response := model.SessionAnswersResponse{SessionID: session, Since: since, Total: len(items), Items: items}
 	if limited {
 		response.Items = sessionAnswersWithin(items, maxChars)
+	}
+	if err := s.sessionAnswersAtTheCut(r.Context(), response.Items); err != nil {
+		s.writeHandlerError(w, err)
+		return
 	}
 	WriteJSON(w, http.StatusOK, response)
 }

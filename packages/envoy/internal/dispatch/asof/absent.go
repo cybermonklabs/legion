@@ -70,15 +70,20 @@ const (
 // cut do not give (decision 5): the delivery mode and the session of a delivery attempt and the
 // text of the block that a reply names (commentFields, messageFields), whether the mark of a
 // comment's anchor was gone (commentFields), the wording of an ask that a restore changed with no
-// event (askFields), the route's status reason of an ask's reach (routeReachFields), each reply of
-// an ask's thread (commentFields), the documents of an approval request in the inbox (askFields),
-// the place of an anchored block, and of the blocks that the text route gives, the anchored counts
-// and the ids of a table's rows and cells, which the block routes leave out too (blockFields). The
-// list's snippet tree of a search result is not here: a past-time search draws each snippet tree
-// from the headline of the text at the cut, so it never leaves one out. A route that the plan
-// lists with no field has an empty list. A past-time answer names a member in the
+// event, in each answer that gives it (an ask's, askWordingFields; the question of the ask of an
+// agent's answer; the snippet of an ask hit, searchFields), the route's status reason of an ask's
+// reach (routeReachFields), each reply of an ask's thread (commentFields), the documents of an
+// approval request in the inbox (askFields), the place of an anchored block, and of the blocks
+// that the text route gives, the anchored counts and the ids of a table's rows and cells, which
+// the block routes leave out too (blockFields). The list's snippet tree of a search result is here
+// for an ask hit alone, whose wording at the cut no record may give (searchFields): a past-time
+// search draws every other snippet tree from the headline of the text at the cut. A route that
+// the plan lists with no field has an empty list. A past-time answer names a member in the
 // Dispatch-As-Of-Absent header only when it leaves that member out, and it names only members
 // this table holds for its route (WriteHeaders, which tests check with ValidAbsent).
+//
+// The comment beside a route whose entry names no member of an ask's wording says why the route
+// gives none that can be unknown at the cut.
 var AbsentFields = map[string][]AbsentField{
 	"GET /api/v1/issues/{key}": slices.Concat([]AbsentField{
 		{"/route_status", reasonLiveness},
@@ -99,14 +104,19 @@ var AbsentFields = map[string][]AbsentField{
 		{"/open_asks/*/approval/documents", reasonMigrationFill},
 		{"/artifacts/*/approval/documents", reasonMigrationFill},
 	}, askWordingFields("/open_asks/*")),
-	// An unpaged listing is an array of issues; a paged one holds them under issues.
+	// An unpaged listing is an array of issues; a paged one holds them under issues. The listing
+	// counts an issue's open asks and resolve answers keys: neither gives an ask's wording.
 	"GET /api/v1/issues":         slices.Concat(issueListingFields("/*"), issueListingFields("/issues/*")),
 	"GET /api/v1/issues/resolve": {},
 
+	// An ask event's payload gives the wording that the event wrote, which is a record.
 	"GET /api/v1/issues/{key}/events":   eventLogFields(),
 	"GET /api/v1/artifacts/{id}/events": eventLogFields(),
 	"GET /api/v1/events/log":            eventLogFields(),
 
+	// A post gives no ask's wording: a comment gives only the id of the ask whose thread holds it.
+	// The text of a reply's block, which can be an ask's, is left out where its ask changed after
+	// the cut, which an ask whose wording is unknown did (ItemsChangedAfterStatement).
 	"GET /api/v1/issues/{key}/comments":   commentFields("/*"),
 	"GET /api/v1/artifacts/{id}/comments": commentFields("/*"),
 	"GET /api/v1/comments/{id}": slices.Concat(commentFields("/comment"), commentFields("/replies/*"), []AbsentField{
@@ -124,14 +134,21 @@ var AbsentFields = map[string][]AbsentField{
 	"GET /api/v1/asks/{id}": slices.Concat(askFields("/ask"), routeReachFields(""), commentFields("/replies/*"), []AbsentField{
 		{"/ask/anchor_block", reasonAnchorBlock},
 	}),
+	// Each ask the route lists is open at the cut, and the record gives an open ask's wording: the
+	// restore writes only an ask whose decision came before the edit it undoes, so it writes an ask
+	// open at the cut after the ask's first state event after the cut, which holds the wording then.
 	"GET /api/v1/asks/open": {
 		{"/asks/*/waiting_on_person", reasonProjectDefault},
 	},
 	"GET /api/v1/inbox": slices.Concat([]AbsentField{
 		{"/*/snoozed_until", reasonNoEvent},
 	}, askFields("/*"), routeReachFields("/*/thread"), commentFields("/*/thread/replies/*")),
-	"GET /api/v1/agents/{session_id}/answers": {},
+	"GET /api/v1/agents/{session_id}/answers": {
+		{"/items/*/ask/question", reasonAskWording},
+	},
 
+	// A document gives the id of an approval request's ask and no wording. A version's markdown,
+	// an ask's block in it too, is a record: the restore's settlement writes a new version.
 	"GET /api/v1/issues/{key}/artifacts":               documentFields("/*"),
 	"GET /api/v1/issues/{key}/artifacts/{slug}":        documentFields(""),
 	"GET /api/v1/projects/{key}/artifacts":             documentFields("/*"),
@@ -146,6 +163,7 @@ var AbsentFields = map[string][]AbsentField{
 	"GET /api/v1/projects/{key}/artifacts/{slug}/blocks": blockFields("/*"),
 	"GET /api/v1/artifacts/{id}/versions/{number}":       {},
 
+	// A check names no ask.
 	"GET /api/v1/issues/{key}/results": {
 		{"/checks/*/compared_with", reasonGitHub},
 		{"/checks/*/compared_nothing", reasonGitHub},
@@ -243,14 +261,17 @@ func askFields(prefix string) []AbsentField {
 }
 
 // askWordingFields are the wording of an ask at prefix, which is unknown at a cut where a write
-// with no event changed it at a time that no record gives (AsksChangedAfterStatement). Not in the
-// plan's list.
+// with no event changed it at a time that no record gives (AsksChangedAfterStatement): the
+// question, the options, multiple and the urgency, and the question's tree, which an answer
+// carries for a request with display trees. The trees of an option's label and description are
+// members of the option, so they go out with the options. Not in the plan's list.
 func askWordingFields(prefix string) []AbsentField {
 	return []AbsentField{
 		{prefix + "/question", reasonAskWording},
 		{prefix + "/options", reasonAskWording},
 		{prefix + "/multiple", reasonAskWording},
 		{prefix + "/urgency", reasonAskWording},
+		{prefix + "/question_tree", reasonAskWording},
 	}
 }
 
@@ -287,11 +308,17 @@ func blockFields(prefix string) []AbsentField {
 
 // searchFields are the fields of a search answer. An ask hit's href links the ask's typed block
 // only while the block is a node of the reference graph, which is the graph now: it is left out
-// where the block's document changed after the cut.
+// where the block's document changed after the cut. An ask hit's snippet, and its tree in an
+// answer with display trees, come from the keyword table's version of the ask at the cut, which
+// holds the wording of the ask's newest event at the cut: they are left out where the ask's
+// wording at the cut no record gives (AsksChangedAfterStatement). The plan's list names the
+// snippet tree, and not the snippet.
 func searchFields() []AbsentField {
 	return []AbsentField{
 		{"/query/broadened", reasonBroadened},
 		{"/results/*/href", reasonGraph},
+		{"/results/*/snippet", reasonAskWording},
+		{"/results/*/snippet_tree", reasonAskWording},
 	}
 }
 

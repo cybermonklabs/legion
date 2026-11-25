@@ -98,10 +98,6 @@ func issueSummaryQuery(pinned, paged, readAdvances, atCut bool) string {
 		parameter++
 	}
 	filterTerms, advancesTerms, componentsTerms := issueAdvancesFilterTerms, issueAdvancesTerms, issueComponentsTerms
-	if atCut {
-		filterTerms = prioritiesLiveAtCutTerm + `, ` + issueAdvancesFilterTermsAtCut
-		advancesTerms, componentsTerms = issueAdvancesTermsAtCut, issueComponentsTermsAtCut
-	}
 	filteredTerms := `matched as (
 		select i.ctid as address
 		from issues i` + pinnedJoin + `
@@ -113,6 +109,8 @@ func issueSummaryQuery(pinned, paged, readAdvances, atCut bool) string {
 		join issues i on i.ctid = m.addresses[place.n]
 	)`
 	if atCut {
+		filterTerms = prioritiesLiveAtCutTerm + `, ` + issueAdvancesFilterTermsAtCut
+		advancesTerms, componentsTerms = issueAdvancesTermsAtCut, issueComponentsTermsAtCut
 		// At a cut `issues` names the issues shadow, a WITH member, which has no ctid to read the
 		// matched issues back by. So the text for a cut filters in one term, as the listing did
 		// before it read the matched issues back by their addresses.
@@ -999,7 +997,8 @@ func (s *server) getIssue(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	read, err := s.readIssue(r.Context(), who, r.PathValue("key"), wantsDisplayTrees(r))
+	trees := wantsDisplayTrees(r)
+	read, err := s.readIssue(r.Context(), who, r.PathValue("key"), trees)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -1008,7 +1007,7 @@ func (s *server) getIssue(w http.ResponseWriter, r *http.Request) {
 	// state the session holding its claim is in. An issue with neither costs no listener call.
 	// At a cut the read reads no roster, which keeps no past state (issueAtTheCut).
 	if _, atCut := asof.CutFrom(r.Context()); atCut {
-		if err := s.issueAtTheCut(r.Context(), &read); err != nil {
+		if err := s.issueAtTheCut(r.Context(), &read, trees); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}

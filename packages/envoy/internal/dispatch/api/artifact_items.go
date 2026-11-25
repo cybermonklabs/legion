@@ -31,11 +31,12 @@ func (s *server) listArtifactAsks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// At a cut each ask leaves out what the records at the cut do not give of it.
-	if err := s.leaveOutPastAskFields(r.Context(), asks, elementsOf("")); err != nil {
+	trees := wantsDisplayTrees(r)
+	if err := s.leaveOutPastAskFields(r.Context(), asks, elementsOf(""), trees); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
+	reader := s.readDisplayTrees(r.Context(), trees)
 	reads := shapedAsks(asks, reader)
 	reader.resolve()
 	WriteJSON(w, http.StatusOK, reads)

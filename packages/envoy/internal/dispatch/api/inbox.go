@@ -188,7 +188,8 @@ func (s *server) listInbox(w http.ResponseWriter, r *http.Request) {
 	}
 	// The Inbox's asks and the threads under them are one read of the stored trees: each row
 	// registers its texts with this reader, and one query answers the page.
-	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
+	trees := wantsDisplayTrees(r)
+	reader := s.readDisplayTrees(r.Context(), trees)
 	threads, err := s.loadAskThreads(r.Context(), caller, askIDs, reader)
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -202,7 +203,7 @@ func (s *server) listInbox(w http.ResponseWriter, r *http.Request) {
 		asks[index].shape(reader)
 	}
 	reader.resolve()
-	if err := s.inboxAtTheCut(r.Context(), asks); err != nil {
+	if err := s.inboxAtTheCut(r.Context(), asks, trees); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}

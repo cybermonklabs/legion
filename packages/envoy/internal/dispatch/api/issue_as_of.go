@@ -49,8 +49,8 @@ func refuseListingFilterAtCut(w http.ResponseWriter, r *http.Request) bool {
 // holds no member). Progress follows decision 9 (tasksAtTheCut). The documents leave out the
 // documents of an approval request whose newest event at the cut holds none (reason B,
 // approvalAtTheCut), and the open asks what the records at the cut do not give of them
-// (leaveOutPastAskFields).
-func (s *server) issueAtTheCut(ctx context.Context, read *issueDetail) error {
+// (leaveOutPastAskFields). trees is whether the read carries display trees.
+func (s *server) issueAtTheCut(ctx context.Context, read *issueDetail, trees bool) error {
 	leaveOut(ctx, "/design_gates", "/"+model.ReferencedByCountKey)
 	leaveOutRouteReach(ctx, read.Route, "")
 	if issueClaimSession(read.Claim) != "" {
@@ -76,7 +76,7 @@ func (s *server) issueAtTheCut(ctx context.Context, read *issueDetail) error {
 			approvalAtTheCut(ctx, &approval.ArtifactApproval, artifact(index))
 		}
 	}
-	return s.leaveOutPastAskFields(ctx, asks, elementsOf("/open_asks"))
+	return s.leaveOutPastAskFields(ctx, asks, elementsOf("/open_asks"), trees)
 }
 
 // issueSummariesAtTheCut completes the listing at the cut ctx carries, each issue at the place
@@ -165,8 +165,9 @@ func (s *server) tasksAtTheCut(ctx context.Context, keys []string) (map[string]*
 //   - referenced_by_count, which the reference graph gives now (reason G);
 //   - revision, each option's id and the answer's id, the ask's parts as the present tables hold
 //     them, for an ask that changed after the cut (reason P, asof.AsksChangedAfterStatement);
-//   - the question, the options, multiple and the urgency, for an ask whose wording at the cut no
-//     record gives: a restore changed it with no event, at a time no record gives (reason E,
+//   - the question, the options, multiple and the urgency, and the question's tree where the
+//     answer carries display trees (trees), for an ask whose wording at the cut no record gives:
+//     a restore changed it with no event, at a time no record gives (reason E,
 //     asof.AsksChangedAfterStatement). Such an ask counts as changed, so its parts are left out
 //     too;
 //   - waiting_on_person where the records at the cut give no person: no one handed the ask on,
@@ -174,7 +175,7 @@ func (s *server) tasksAtTheCut(ctx context.Context, keys []string) (map[string]*
 //     projects shadow gives as null (reason D); the read then gives no person;
 //   - approval.documents of an approval request whose state at the cut names no document, written
 //     before requests held their documents (reason B).
-func (s *server) leaveOutPastAskFields(ctx context.Context, asks []model.Ask, at func(index int) string) error {
+func (s *server) leaveOutPastAskFields(ctx context.Context, asks []model.Ask, at func(index int) string, trees bool) error {
 	cut, atCut := asof.CutFrom(ctx)
 	if !atCut || len(asks) == 0 {
 		return nil
@@ -194,7 +195,7 @@ func (s *server) leaveOutPastAskFields(ctx context.Context, asks []model.Ask, at
 			leaveOutAskParts(ctx, place, len(ask.Options), ask.Answer != nil)
 		}
 		if wordingUnknown[ask.ID] {
-			leaveOutAskWording(ctx, place)
+			leaveOutAskWording(ctx, place, trees)
 		}
 		if ask.WaitingOnPerson == "" {
 			leaveOut(ctx, place+"/waiting_on_person")
