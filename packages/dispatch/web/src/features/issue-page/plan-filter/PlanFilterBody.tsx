@@ -255,6 +255,9 @@ export function PlanFilterBody({
       className="mt-3 mb-[120px] flex w-full min-w-0 flex-col max-[761px]:mt-0"
       data-plan-body=""
     >
+      {/* The chart's steps by the width of Plan's own column, while the column of comments on
+          text is drawn (`CHART_IN_COLUMN`): drawn first, ahead of the chart it reaches. */}
+      <i aria-hidden="true" className={CHART_IN_COLUMN} hidden />
       {/* Each read that failed before it first answered, one line in the page's words with a
           Retry that asks that read alone again, in the order the slot hands them on, over the
           tree (`FailedReadLine`). The stage the view is drawn in keeps the focus in the view when
@@ -444,6 +447,65 @@ function TaskLink({ inChart, task }: { inChart: boolean; task: TreeNode }): Reac
  *  themselves, as the header's `(max-width: 760px)` does (`NodeRow.tsx`'s `NODE_ROW_LAYOUT`). */
 const CHART_COLUMNS =
   "grid min-w-0 grid-cols-[330px_minmax(0,1fr)_320px] max-[1241px]:grid-cols-[260px_minmax(0,1fr)_220px]";
+
+/**
+ * The chart's steps by the width of Plan's own column, while the column of comments on text is
+ * drawn beside the main column (INFRA-5706's R2, decision 472): the wide chart from a column of
+ * 869 px, the narrow grid below it, and below 482 px - the width the narrow grid's fixed tracks
+ * of 260 px and 220 px hold, measured on part W's head - the cards of the phone step, each a
+ * container variant of a window class of this file. With no column the classes apply nothing,
+ * and the chart keeps its window steps: each is read only under the stage's attribute
+ * (`text-comments/TextMargin.tsx`'s `TEXT_MARGIN_ATTRIBUTE`). They stand on an element drawn in
+ * the view's box ahead of the chart, which reaches the chart and its rows as its later sibling,
+ * so no class of the chart's own elements changes; and the first makes the view's box the
+ * container they are measured against, only while it draws the chart.
+ */
+const CHART_IN_COLUMN = [
+  "[*:has(>&~[data-plan-chart])]:in-data-[text-margin]:@container",
+  // The chart's columns: the wide ones from a column of 869 px, the narrow ones below it.
+  "in-data-[text-margin]:[&~[data-plan-chart]_[data-plan-head]]:@min-[869px]:grid-cols-[330px_minmax(0,1fr)_320px]",
+  "in-data-[text-margin]:[&~[data-plan-chart]_[data-plan-head]]:@max-[869px]:grid-cols-[260px_minmax(0,1fr)_220px]",
+  "in-data-[text-margin]:[&~[data-plan-chart]_[data-plan-bar-row]]:@min-[869px]:grid-cols-[330px_minmax(0,1fr)_320px]",
+  "in-data-[text-margin]:[&~[data-plan-chart]_[data-plan-bar-row]]:@max-[869px]:grid-cols-[260px_minmax(0,1fr)_220px]",
+  // Below 482 px, the phone step's cards: no frame, head row, axis or links, and each step a
+  // wrapping card of its words, its bar and the statements it serves.
+  "in-data-[text-margin]:[&~[data-plan-chart]]:@max-[482px]:rounded-none",
+  "in-data-[text-margin]:[&~[data-plan-chart]]:@max-[482px]:border-0",
+  "in-data-[text-margin]:[&~[data-plan-chart]]:@max-[482px]:pb-0",
+  "in-data-[text-margin]:[&~[data-plan-chart]_[data-plan-head]]:@max-[482px]:hidden",
+  "in-data-[text-margin]:[&~[data-plan-chart]_[data-plan-links]]:@max-[482px]:hidden",
+  "in-data-[text-margin]:[&~[data-plan-chart]_[data-plan-axis]]:@max-[482px]:hidden",
+  "in-data-[text-margin]:[&~[data-plan-chart]_[data-plan-cycle-row]]:@max-[482px]:border-0",
+  "in-data-[text-margin]:[&~[data-plan-chart]_[data-plan-cycle-row]]:@max-[482px]:px-0",
+  "in-data-[text-margin]:[&~[data-plan-chart]_[data-plan-bar-row]]:@max-[482px]:my-2",
+  "in-data-[text-margin]:[&~[data-plan-chart]_[data-plan-bar-row]]:@max-[482px]:flex",
+  "in-data-[text-margin]:[&~[data-plan-chart]_[data-plan-bar-row]]:@max-[482px]:flex-wrap",
+  "in-data-[text-margin]:[&~[data-plan-chart]_[data-plan-bar-row]]:@max-[482px]:gap-x-1.5",
+  "in-data-[text-margin]:[&~[data-plan-chart]_[data-plan-bar-row]]:@max-[482px]:gap-y-[5px]",
+  "in-data-[text-margin]:[&~[data-plan-chart]_[data-plan-bar-row]]:@max-[482px]:rounded-lg",
+  "in-data-[text-margin]:[&~[data-plan-chart]_[data-plan-bar-row]]:@max-[482px]:border",
+  "in-data-[text-margin]:[&~[data-plan-chart]_[data-plan-bar-row]]:@max-[482px]:border-l-4",
+  "in-data-[text-margin]:[&~[data-plan-chart]_[data-plan-bar-row]]:@max-[482px]:border-l-page-step",
+  "in-data-[text-margin]:[&~[data-plan-chart]_[data-plan-bar-row]]:@max-[482px]:px-3",
+  "in-data-[text-margin]:[&~[data-plan-chart]_[data-plan-bar-row]]:@max-[482px]:py-2.5",
+  "in-data-[text-margin]:[&~[data-plan-chart]_[data-plan-bar-row]>div:first-child]:@max-[482px]:contents",
+  "in-data-[text-margin]:[&~[data-plan-chart]_[data-plan-bar-row]_[data-node-words]]:@max-[482px]:-order-2",
+  "in-data-[text-margin]:[&~[data-plan-chart]_[data-plan-bar-row]_[data-node-words]]:@max-[482px]:min-w-0",
+  "in-data-[text-margin]:[&~[data-plan-chart]_[data-plan-bar-row]_[data-node-words]]:@max-[482px]:basis-full",
+  "in-data-[text-margin]:[&~[data-plan-chart]_[data-plan-facts]]:@max-[482px]:contents",
+  "in-data-[text-margin]:[&~[data-plan-chart]_[data-plan-bar-row]>:has(>[data-plan-bar])]:@max-[482px]:-order-1",
+  "in-data-[text-margin]:[&~[data-plan-chart]_[data-plan-bar-row]>:has(>[data-plan-bar])]:@max-[482px]:my-[3px]",
+  "in-data-[text-margin]:[&~[data-plan-chart]_[data-plan-bar-row]>:has(>[data-plan-bar])]:@max-[482px]:h-2.5",
+  "in-data-[text-margin]:[&~[data-plan-chart]_[data-plan-bar-row]>:has(>[data-plan-bar])]:@max-[482px]:basis-full",
+  "in-data-[text-margin]:[&~[data-plan-chart]_[data-plan-bar-row]>:has(>[data-plan-bar])]:@max-[482px]:rounded-[5px]",
+  "in-data-[text-margin]:[&~[data-plan-chart]_[data-plan-bar-row]>:has(>[data-plan-bar])]:@max-[482px]:bg-page-mark",
+  "in-data-[text-margin]:[&~[data-plan-chart]_[data-plan-bar]]:@max-[482px]:top-0",
+  "in-data-[text-margin]:[&~[data-plan-chart]_[data-plan-bar]]:@max-[482px]:h-full",
+  "in-data-[text-margin]:[&~[data-plan-chart]_[data-plan-serves]]:@max-[482px]:contents",
+  // The row the reader is on, as a card: a ring of ink outside a gap of paper (`FOCUSED`).
+  "in-data-[text-margin]:[&~[data-plan-chart]_[data-node-row].bg-page-step-tint]:@max-[482px]:bg-page-paper",
+  "in-data-[text-margin]:[&~[data-plan-chart]_[data-node-row].bg-page-step-tint]:@max-[482px]:shadow-[0_0_0_2px_var(--color-page-paper),0_0_0_4px_var(--color-page-ink)]",
+].join(" ");
 
 /** A column heading, in the prototype's `.cap`. */
 const CAP = `text-xs leading-4 font-semibold tracking-[0.08em] uppercase ${pageQuietText}`;

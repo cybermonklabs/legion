@@ -1,17 +1,26 @@
 import { afterEach, expect, test } from "bun:test";
 import { QueryClient } from "@tanstack/react-query";
-import { waitFor } from "@testing-library/react";
+import { act, waitFor } from "@testing-library/react";
+import { http } from "msw";
+
+import { answerRequests } from "../../../__tests__/network";
+import { api } from "../../../api/client";
 import { SPEC_DOCUMENT } from "../decisions-filter/decisions-fixtures";
 import { PRESET_NAMES, PRESET_ORDER, type Preset } from "../page-words";
 import { blockNodeId } from "../tree-drafts";
+import { GATES } from "./gates";
 import {
   answerSeededReads,
   columnOf,
   DECISION,
+  type DrawnPage,
   drawPage,
+  ON_STATEMENT,
   PLAN_DOCUMENT,
   PLAN_TASK,
+  REPLY_ON_STATEMENT,
   rowOf,
+  type SeededReads,
   STATEMENT,
   TEXT_THREADS,
 } from "./margin-fixtures";
@@ -87,3 +96,133 @@ test("every view of R2 mounts the column and no other view does", async () => {
   expect(lacking, "the views whose stage mounts no column with a seeded thread").toEqual([]);
   expect(unexpected, "the views that mount a column and are no view of R2").toEqual([]);
 });
+
+/** A spy of the API client's, whose calls are each a read the page made. */
+function isSpy(value: unknown): value is { readonly mock: { readonly calls: unknown[][] } } {
+  return typeof value === "function" && "mock" in value;
+}
+
+/** The route each spied read of the API client was made by: the method, and for the tree read the
+ *  view it read, in the order of the method names. */
+function spiedRoutes(): string[] {
+  return Object.getOwnPropertyNames(api)
+    .sort()
+    .flatMap((name) => {
+      const spy: unknown = Reflect.get(api, name);
+      if (!isSpy(spy)) return [];
+      return spy.mock.calls.map((args) => {
+        const query = args[1];
+        const view =
+          name === "getIssueTree" && typeof query === "object" && query !== null && "view" in query
+            ? ` view=${String(query.view)}`
+            : "";
+        return `${name}${view}`;
+      });
+    });
+}
+
+/**
+ * Every request one load of Conversation sends, by its route, once the page has settled: the
+ * reads of the API client the case answers (`answerSeededReads`) and the requests that reach the
+ * network under them, which the unit suite's own answers take (`__tests__/network.ts`). The
+ * client keeps a read fresh for 30 s, as the app's does (`main.tsx`), so a part drawn later in
+ * the load reads nothing a part drawn first holds.
+ */
+async function loadRoutes(
+  reads: SeededReads,
+  settled: (view: DrawnPage) => Promise<unknown>
+): Promise<string[]> {
+  stubs = answerSeededReads(reads);
+  const network: string[] = [];
+  answerRequests(
+    http.all("*", ({ request }) => {
+      network.push(`${request.method} ${new URL(request.url).pathname}`);
+    })
+  );
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: 30_000 } },
+  });
+  const view = drawPage(client, "conversation");
+  try {
+    await settled(view);
+    await waitFor(() => expect(network).toContain("GET /api/v1/me/replies"));
+    await act(async () => {});
+    return [...spiedRoutes(), ...network].sort();
+  } finally {
+    view.finish();
+    client.clear();
+    for (const stub of stubs) stub.mockRestore();
+    stubs = [];
+  }
+}
+
+/** The routes of a load of the issue with the seeded thread on the statement, its reply in it,
+ *  and of a load with the same comment and reply as a post with its reply under the issue, all
+ *  alice's: both draw one thread with a reply, as rows or in the column, and each marks it read
+ *  (`/api/v1/me/replies`). */
+async function bothLoads(): Promise<{ readonly with: string[]; readonly without: string[] }> {
+  const withThreads = await loadRoutes({ threads: [ON_STATEMENT] }, async (view) => {
+    const column = await columnOf(view, COLUMN);
+    expect(column, "the load with threads draws no column").not.toBeNull();
+    await waitFor(() =>
+      expect(column?.textContent, "the column draws no reply").toContain(REPLY_ON_STATEMENT.body)
+    );
+  });
+  const withoutThreads = await loadRoutes(
+    { posts: [{ ...ON_STATEMENT.comment, anchor: null }, REPLY_ON_STATEMENT], threads: [] },
+    async (view) => {
+      await waitFor(() =>
+        expect(rowOf(view, REPLY_ON_STATEMENT.id), "the post's reply is no row").not.toBeNull()
+      );
+      expect(await columnOf(view, COLUMN, 300), "a load with no thread draws a column").toBeNull();
+    }
+  );
+  return { with: withThreads, without: withoutThreads };
+}
+
+/** A read of one comment's or one message's own route, which a read for each thread would be. */
+const PER_ITEM =
+  /^getComment$|\/api\/v1\/comments\/[^/]+(\/blocks)?$|\/api\/v1\/messages\/[^/]+\/blocks$/;
+
+/** The read of the agents' list, which the mention picker of a composer reads. */
+const AGENTS = "GET /api/v1/agents";
+
+// R9, c-reads: the column draws its threads from the reads the page sends with no thread, and
+// sends no read for a node or a thread. The one read it adds is the agents' list, once in a load:
+// each card's reply composer is open, since the card is always expanded (R4), and that composer
+// reads the list for its mention picker as it mounts (`MentionComposer`'s `useAgents`), under one
+// key for the whole page. At G5 `ThreadCard` hands its composer the agents the page holds, and
+// the case under this one asks for the loads to be the same.
+test("the margin adds no read for each node or each thread", async () => {
+  const loads = await bothLoads();
+  const only = (routes: readonly string[], others: readonly string[]) =>
+    [...new Set(routes)].filter((route) => !others.includes(route));
+  expect(
+    { with: only(loads.with, loads.without), without: only(loads.without, loads.with) },
+    "the loads differ by a route other than the agents' list"
+  ).toEqual({ with: [AGENTS], without: [] });
+  expect(
+    loads.with.filter((route) => route === AGENTS).length,
+    "the agents' list is read more than once"
+  ).toBeLessThanOrEqual(1);
+  for (const [load, routes] of Object.entries(loads)) {
+    expect(
+      routes.filter((route) => PER_ITEM.test(route)),
+      `the load ${load} threads reads a comment or a message by its id`
+    ).toEqual([]);
+    expect(
+      routes.filter((route) => route === "listComments"),
+      `the load ${load} threads sends no comments read, or more than one`
+    ).toHaveLength(1);
+  }
+});
+
+// R9 whole: owed on G5, where `ThreadCard`'s reply composer takes the page's agents and reads none
+// (t11).
+test.skipIf(!GATES.COMPOSER)(
+  "the load with threads sends exactly the requests of the load without them",
+  async () => {
+    const loads = await bothLoads();
+    expect(loads.with, "the load with threads sends other requests").toEqual(loads.without);
+  }
+);

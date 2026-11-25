@@ -269,19 +269,30 @@ export function answerSeededReads(reads: SeededReads): { mockRestore(): void }[]
         verification: "check",
       };
 
-      return treeOf(
-        nodes.flatMap((node): TreeAnswerNode[] => {
-          if (node.supertag === own[query.view as string]) return [{ ...node, role: "query" }];
-          if (query.view === "verification" && node.supertag === "result") {
-            return [{ ...node, role: "query" }];
-          }
-          if (query.view === "verification" && node.supertag === "requirement") {
-            return [{ ...node, role: "context" }];
-          }
-          return [];
-        }),
-        SERVES
-      );
+      const drawn = nodes.flatMap((node): TreeAnswerNode[] => {
+        if (node.supertag === own[query.view as string]) return [{ ...node, role: "query" }];
+        if (query.view === "verification" && node.supertag === "result") {
+          return [{ ...node, role: "query" }];
+        }
+        if (query.view === "verification" && node.supertag === "requirement") {
+          return [{ ...node, role: "context" }];
+        }
+        return [];
+      });
+      // Each view read answers the comments on the text of each node it returns, as context
+      // after them, as the server answers them on B0 (`fixtures/tree-b0-*.json`).
+      const onDrawn = nodes.flatMap((node): TreeAnswerNode[] => {
+        const anchor = node.anchor;
+        const onText =
+          node.supertag === "comment" &&
+          anchor !== undefined &&
+          drawn.some(
+            (one) =>
+              one.document?.artifact_id === anchor.artifact_id && one.block_id === anchor.block_id
+          );
+        return onText ? [{ ...node, role: "context" }] : [];
+      });
+      return treeOf([...drawn, ...onDrawn], SERVES);
     }),
     spyOn(api, "listComments").mockImplementation(async () => [
       ...reads.threads.map(({ comment }) => comment),
@@ -483,7 +494,7 @@ function FrameRoot({
         <div className="flex min-w-0 flex-1 flex-col" data-testid="issue-column">
           <StageSlot issue={issue} route={route} />
         </div>
-        <TextMargin />
+        <TextMargin issue={issue} route={route} />
       </div>
       {children}
     </ProvidersSlot>

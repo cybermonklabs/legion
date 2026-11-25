@@ -20,6 +20,7 @@ import { freeze } from "./page-structure";
 import * as partJ from "./page-words-j";
 import * as partL from "./page-words-l";
 import * as partM from "./page-words-m";
+import * as partMargin from "./page-words-margin";
 import * as partN from "./page-words-n";
 import * as partS from "./page-words-s";
 import * as partT from "./page-words-t";
@@ -130,6 +131,7 @@ export const WORD_FILES = [
   { file: "page-words-x.ts", module: partX },
   { file: "page-words-y.ts", module: partY },
   { file: "page-words-z.ts", module: partZ },
+  { file: "page-words-margin.ts", module: partMargin },
 ] as const satisfies readonly WordFile[];
 
 /** The type of the words that `File` adds to the table `Name`, or `unknown` if it adds none. */

@@ -445,3 +445,106 @@ test("column, the reader resizes Details: nothing in the column or the main colu
     client.clear();
   }
 });
+
+/** The header's band, the header and the view row: what stands across the page above the row
+ *  that holds the main column and the column of comments on text. */
+function aboveTheRow(view: RenderResult): Record<string, HTMLElement | null> {
+  return {
+    band: view.container.querySelector<HTMLElement>("[data-identity-block]"),
+    header: view.container.querySelector<HTMLElement>("[data-issue-header]"),
+    "view row": view.queryByTestId("issue-presets"),
+  };
+}
+
+test("the header and the view row keep their width when the column is drawn", async () => {
+  const reads: SeededReads = { threads: [] };
+  const { client, view } = await drawn(reads, "conversation");
+  try {
+    const classes = () =>
+      Object.fromEntries(
+        Object.entries(aboveTheRow(view)).map(([name, element]) => [
+          name,
+          `${element?.className ?? ""} | ${element?.parentElement?.className ?? ""}`,
+        ])
+      );
+    const before = classes();
+    reads.threads = [ON_STATEMENT];
+    await readAgain(client);
+    const column = await columnDrawn(view, "no column is drawn once a thread loads");
+    for (const [name, element] of Object.entries(aboveTheRow(view))) {
+      expect(element, `the page draws no ${name}`).not.toBeNull();
+      expect(
+        column.parentElement?.contains(element),
+        `the ${name} stands in the row the column narrows`
+      ).toBe(false);
+    }
+    expect(classes(), "the column changed the width of what stands above it").toEqual(before);
+  } finally {
+    view.finish();
+    client.clear();
+  }
+});
+
+/** The controls inside `within` that Tab stops on, in the document's order. */
+function tabStopsIn(within: Element): HTMLElement[] {
+  return [
+    ...within.querySelectorAll<HTMLElement>("a[href], button, textarea, input, select, [tabindex]"),
+  ].filter(
+    (element) =>
+      element.tabIndex >= 0 &&
+      !element.hasAttribute("disabled") &&
+      element.closest("[inert], [hidden]") === null
+  );
+}
+
+test("the region is named and follows the main column in the tab order", async () => {
+  const user = userEvent.setup();
+  const { client, view } = await drawn({ threads: [ON_STATEMENT] }, "conversation");
+  try {
+    const column = await columnDrawn(view, "no region is named by the margin's words");
+    expect(column.tagName, "the region is no aside").toBe("ASIDE");
+    const main = mainColumn(view);
+    expect(main.contains(column), "the region is inside the main column").toBe(false);
+    const mainStops = tabStopsIn(main);
+    const columnStops = tabStopsIn(column);
+    expect(mainStops.length, "the main column holds no tab stop").toBeGreaterThan(0);
+    expect(columnStops.length, "the region holds no tab stop").toBeGreaterThan(0);
+    expect(
+      tabStopsIn(document.body).filter((element) => element.tabIndex > 0),
+      "a control takes a place of its own in the tab order"
+    ).toEqual([]);
+    // Tab from the main column's last stop reaches the region's first.
+    await act(async () => mainStops.at(-1)?.focus());
+    await user.tab();
+    expect(document.activeElement, "Tab from the main column's last stop").toBe(
+      columnStops[0] ?? null
+    );
+  } finally {
+    view.finish();
+    client.clear();
+  }
+});
+
+test("Escape in a thread focuses its node's row", async () => {
+  const user = userEvent.setup();
+  const { client, view } = await drawn({ threads: [ON_STATEMENT] }, "conversation");
+  try {
+    const column = await columnDrawn(view, "no column is drawn");
+    const card = column.querySelector<HTMLElement>(
+      `[data-margin-item="${CSS.escape(ON_STATEMENT.comment.id)}"]`
+    );
+    const control = [...(card?.querySelectorAll<HTMLElement>("button") ?? [])].find(
+      (button) => button.textContent === "Resolve"
+    );
+    expect(control, "the statement's thread draws no Resolve").not.toBeUndefined();
+    await act(async () => control?.focus());
+    expect(document.activeElement).toBe(control ?? null);
+    await user.keyboard("{Escape}");
+    expect(document.activeElement, "Escape left the focus off the thread's row").toBe(
+      rowOf(view, STATEMENT_NODE)
+    );
+  } finally {
+    view.finish();
+    client.clear();
+  }
+});

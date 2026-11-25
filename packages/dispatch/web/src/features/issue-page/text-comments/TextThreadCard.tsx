@@ -1,0 +1,274 @@
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { type ReactNode, useCallback, useMemo, useState } from "react";
+
+import { api, type WriteBounds } from "../../../api/client";
+import { whoAmIQuery } from "../../../api/queries";
+import type { Anchor, Comment, IssueDetails } from "../../../api/types";
+import { commentWritten } from "../../../api/write-events";
+import type { CarriedBlockIds, SaveCommentEdit } from "../../conversation/send-request";
+import { marginReplySendKey } from "../../margin/margin-context";
+import { ThreadCard } from "../../margin/ThreadCard";
+import {
+  type CommentActionFailure,
+  useCommentActionQueue,
+} from "../../margin/useCommentActionQueue";
+import type { MarginItemAction, MarginOwner, ThreadComment } from "../../margin/useMarginItems";
+import { useAgentText } from "../../refs/AgentName";
+import { EVENT_FRESH } from "../../refs/reference-target";
+import type { TreeNode } from "../issue-tree";
+import { LensChain } from "../lenses/LensChain";
+import { LensLines } from "../lenses/LensLines";
+import { NODE_ROW_LAYOUT, RowMargin, type Tone } from "../NodeRow";
+import { authorText, pageChrome } from "../page-structure";
+import { authorKind, isReader, LENS_WORDS } from "../page-words";
+import { RowText } from "../RowText";
+import { issueCommentsQuery } from "../useIssueTree";
+import type { TextThread } from "./text-threads";
+
+/**
+ * One thread on text as the column draws it beside its node (R4), and each node's sheet below
+ * 1024 px: `main`'s `ThreadCard`, always expanded (`expanded` true and a toggle that does
+ * nothing), with every control it draws on `main` - the reply composer, Resolve or Reopen, Edit
+ * of the reader's own comment, Accept and Reject of a suggestion, the copy reference. Its writes
+ * are the margin's own (`useCommentActionQueue`, `api.editComment`) on the comments read the page
+ * already holds (`["comments", key]`), and they read again what the margin's writes read again:
+ * no read of their own. Under each comment of the thread stand its lenses (R7), each drawn as part
+ * W draws a lens's row - its verdict, its kind's words, author, time and state, its lines and its
+ * chain - with its findings and risks whole under it.
+ */
+
+/** What every card of one column or sheet shares: the issue's writes on its comments, the edit in
+ *  progress and the reader. */
+export interface ThreadCardHost {
+  readonly actionFailure: CommentActionFailure | undefined;
+  /** The slug of the document `anchor` is in, for the orphan notice's link; undefined for an
+   *  anchor on no document of the issue. */
+  readonly artifactSlugOf: (anchor: Anchor | null) => string | undefined;
+  readonly editingCommentId: string | undefined;
+  readonly isClosed: boolean;
+  readonly onAction: (id: string, action: MarginItemAction) => void;
+  readonly onEdit: SaveCommentEdit;
+  readonly onEditingChange: (id: string | undefined) => void;
+  readonly onRetryAction: () => void;
+  readonly owner: MarginOwner;
+  readonly pendingActionIds: ReadonlySet<string>;
+  readonly savingCommentEditId: string | undefined;
+  readonly viewerLogin: string;
+}
+
+/**
+ * The writes and the state the cards of `issue` share, as the margin keeps them for its own cards
+ * (`useMarginItems`, `useMarginSheet`): Resolve, Reopen, Accept and Reject queued one at a time
+ * with their optimistic answer written into the comments read, and an edit's save, each reading
+ * the issue's comments again once Dispatch has taken it.
+ */
+export function useThreadCardHost(issue: IssueDetails): ThreadCardHost {
+  const client = useQueryClient();
+  const key = issue.key;
+  const commentsKey = issueCommentsQuery(key).queryKey;
+  const viewerLogin = useQuery({ ...whoAmIQuery(), ...EVENT_FRESH }).data?.login ?? "";
+  const [editingCommentId, setEditingCommentId] = useState<string>();
+  const [savingCommentEditId, setSavingCommentEditId] = useState<string>();
+  const { actionFailure, mutateItem, pendingActionIds, retryItem } = useCommentActionQueue<{
+    previous: Comment[] | undefined;
+  }>({
+    holds: ({ id, kind }) => ({ endsOn: commentWritten(id, kind), keys: [commentsKey] }),
+    issue: key,
+    onError: (_error, _input, context) => {
+      client.setQueryData(commentsKey, context?.previous);
+      void client.invalidateQueries({ queryKey: commentsKey });
+    },
+    onMutate: async ({ id, kind }) => {
+      await client.cancelQueries({ queryKey: commentsKey });
+      const previous = client.getQueryData<Comment[]>(commentsKey);
+      client.setQueryData<Comment[]>(commentsKey, (current) =>
+        current?.map((comment) => {
+          if (comment.id !== id) return comment;
+          if (kind === "reopen") {
+            return { ...comment, resolved: false, resolved_at: null, resolved_by: null };
+          }
+          if (kind === "resolve") return { ...comment, resolved: true };
+          return comment.suggestion === null
+            ? comment
+            : {
+                ...comment,
+                resolved: true,
+                suggestion: { ...comment.suggestion, accepted: kind === "accept" },
+              };
+        })
+      );
+      return { previous };
+    },
+    onSuccess: () => {
+      void client.invalidateQueries({ queryKey: commentsKey });
+      void client.invalidateQueries({ queryKey: ["issue", key] });
+    },
+  });
+  const onEdit = useCallback(
+    async (id: string, body: string, carried: CarriedBlockIds | undefined, bounds: WriteBounds) => {
+      setSavingCommentEditId(id);
+      try {
+        const saved = await api.editComment(id, { body, ...carried }, bounds);
+        void client.invalidateQueries({ queryKey: commentsKey });
+        return saved;
+      } finally {
+        setSavingCommentEditId(undefined);
+      }
+    },
+    [client, commentsKey]
+  );
+  const artifacts = issue.artifacts;
+  const artifactSlugOf = useCallback(
+    (anchor: Anchor | null) =>
+      anchor === null
+        ? undefined
+        : artifacts?.find((artifact) => artifact.id === anchor.artifact_id)?.slug,
+    [artifacts]
+  );
+  return useMemo(
+    () => ({
+      actionFailure,
+      artifactSlugOf,
+      editingCommentId,
+      isClosed: issue.closed_at !== null,
+      onAction: (id: string, action: MarginItemAction) => mutateItem({ id, kind: action }),
+      onEdit,
+      onEditingChange: setEditingCommentId,
+      onRetryAction: retryItem,
+      owner: { key, kind: "issue" },
+      pendingActionIds,
+      savingCommentEditId,
+      viewerLogin,
+    }),
+    [
+      actionFailure,
+      artifactSlugOf,
+      editingCommentId,
+      issue.closed_at,
+      key,
+      mutateItem,
+      onEdit,
+      pendingActionIds,
+      retryItem,
+      savingCommentEditId,
+      viewerLogin,
+    ]
+  );
+}
+
+/** A toggle that does nothing: the card is always expanded (R4). */
+function keepOpen(): void {}
+
+/**
+ * The card of `thread`, with the item `currentReplyId` names marked as the card marks the reply a
+ * link names (`aria-current`). Its stored text is marked as authors' text by the box the column
+ * and the sheet draw it in, inside `NoTooltips`, as `IssueMarginCards` draws the margin's cards.
+ */
+export function TextThreadCard({
+  currentReplyId,
+  host,
+  thread,
+}: {
+  readonly currentReplyId?: string;
+  readonly host: ThreadCardHost;
+  readonly thread: TextThread;
+}): ReactNode {
+  const card = thread.thread;
+  const root = card.root.comment.id;
+  return (
+    <ThreadCard
+      actionFailure={host.actionFailure?.id === root ? host.actionFailure : undefined}
+      artifactSlug={host.artifactSlugOf(card.anchor)}
+      {...(currentReplyId === undefined ? {} : { currentReplyId })}
+      editingCommentId={host.editingCommentId}
+      expanded
+      hovered={false}
+      isClosed={host.isClosed}
+      onAction={host.onAction}
+      onEdit={host.onEdit}
+      onEditingChange={host.onEditingChange}
+      onRetryAction={host.onRetryAction}
+      onToggle={keepOpen}
+      owner={host.owner}
+      pendingAction={host.pendingActionIds.has(root)}
+      pulseOrphanBlock={false}
+      // Under each comment of the thread, its lenses (R7): the card's one place under each
+      // comment's own body, which the margin fills with deliveries where an owner has them.
+      renderDeliveries={(comment: ThreadComment) => (
+        <ThreadLenses lenses={thread.lenses.get(comment.id)} />
+      )}
+      replyMutationKey={marginReplySendKey(card.key)}
+      savingCommentEditId={host.savingCommentEditId}
+      thread={card}
+      viewerLogin={host.viewerLogin}
+    />
+  );
+}
+
+/** The colour of a node a lens's row holds, as `NodeRow.tsx` gives each kind its own. */
+function toneOf(node: TreeNode): Tone {
+  if (node.type === "constraint") return "statement";
+  return node.type === "lens" || node.type === "finding" || node.type === "risk" ? "lens" : "issue";
+}
+
+/** The lenses on one comment of a thread, each with its findings and risks, or nothing. */
+function ThreadLenses({ lenses }: { readonly lenses: readonly TreeNode[] | undefined }): ReactNode {
+  if (lenses === undefined || lenses.length === 0) return null;
+  return (
+    <ul className="mt-2 flex min-w-0 flex-col gap-1" data-thread-lenses="">
+      {lenses.map((lens) => (
+        <LensRow key={lens.id} node={lens} />
+      ))}
+    </ul>
+  );
+}
+
+/**
+ * One node of a lens's row as part W draws it in the outline (`NodeRow.tsx`): its words - a
+ * lens's verdict, or the page's words where it holds none - its lines (`LensLines`), its chain
+ * (`LensChain`), and beside them its kind's words, author, time and state (`RowMargin`); then each
+ * node under it - a lens's findings and risks - whole, a level in. Its controls keep their place
+ * in the tab order: no tree's keys reach the column.
+ */
+function LensRow({ node }: { readonly node: TreeNode }): ReactNode {
+  const agentText = useAgentText();
+  const reader = useQuery({ ...whoAmIQuery(), ...EVENT_FRESH }).data?.login;
+  return (
+    <li className="min-w-0" data-thread-lens={node.id} data-thread-lens-type={node.type}>
+      <div className={NODE_ROW_LAYOUT.box}>
+        <span aria-hidden="true" className={NODE_ROW_LAYOUT.bullet} />
+        <div className={NODE_ROW_LAYOUT.content}>
+          {node.type === "lens" && node.text === "" ? (
+            <p className="break-words" {...pageChrome}>
+              {LENS_WORDS.no_verdict}
+            </p>
+          ) : (
+            <div className="min-w-0" {...authorText}>
+              <RowText markdown={node.text} source={node.source} tabStops tree={node.tree} />
+            </div>
+          )}
+          <LensLines node={node} tabStops />
+          <LensChain node={node} tabStops />
+        </div>
+        <RowMargin
+          author={{
+            kind: authorKind(node.author),
+            name: agentText.author(node.author),
+            reader: isReader(node.author, reader),
+          }}
+          context={false}
+          node={node}
+          tabStops
+          tone={toneOf(node)}
+        />
+      </div>
+      {node.children.length === 0 ? null : (
+        <ul className="ml-[18px] flex min-w-0 flex-col gap-1">
+          {node.children.map((child) => (
+            <LensRow key={child.id} node={child} />
+          ))}
+        </ul>
+      )}
+    </li>
+  );
+}
