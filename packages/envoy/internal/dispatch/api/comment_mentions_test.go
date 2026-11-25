@@ -10,7 +10,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -73,16 +72,16 @@ func settledCommentDeliveries(t *testing.T, database *store.Store, commentID str
 }
 
 // waitForCommentDeliveries reads the comment's attempts, by target and attempt, until done accepts
-// them; want says what done waits for. Its patience covers a whole take-over window and ten
-// seconds past it, because a send on the mention sender's lanes may wait one out after the
-// comment's response - a mention of an ended session does, under a server running the production
-// window (listenerTakeoverWindow) - before its attempt settles.
+// them; want says what done waits for. A send on the mention sender's lanes may wait a take-over
+// window out after the comment's response - a mention of an ended session does, under a server
+// running the production window (listenerTakeoverWindow) - before its attempt settles, so the wait
+// has no bound of its own: it ends on the attempts, and its one bound is the test binary's deadline
+// (testwait.Until), whose failure prints the attempts it last read.
 func waitForCommentDeliveries(
 	t *testing.T, database *store.Store, commentID, want string, done func([]model.CommentDelivery) bool,
 ) []model.CommentDelivery {
 	t.Helper()
-	deadline := time.Now().Add(listenerTakeoverWindow + 10*time.Second)
-	for {
+	return testwait.Until(t, fmt.Sprintf("comment %s's attempts to be %s", commentID, want), func() ([]model.CommentDelivery, bool) {
 		rows, err := database.Pool.Query(context.Background(), `
 			select `+commentDeliveryColumns+` from comment_deliveries where comment_id = $1 order by target, attempt
 		`, commentID)
@@ -95,14 +94,8 @@ func waitForCommentDeliveries(
 		if err != nil {
 			t.Fatalf("read comment %s attempts: %v", commentID, err)
 		}
-		if done(attempts) {
-			return attempts
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("comment %s attempts = %#v, want %s", commentID, attempts, want)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		return attempts, done(attempts)
+	})
 }
 
 func TestMentionedCommentRecordsFailedOfflineSession(t *testing.T) {
@@ -787,10 +780,10 @@ func TestCommentRouteResolutionIsVerifiedAgainstTheLockedIssue(t *testing.T) {
 	}
 	// queuedBehind returns once the comment's backend waits behind the route change, and fails the
 	// row when the comment answers first: it never read the route under its lock after the move.
+	// Its one bound is the test binary's deadline (storetest.WaitForQueuedBehind).
 	queuedBehind := func(change pgx.Tx, callPID uint32, answered <-chan *httptest.ResponseRecorder, what string) {
 		t.Helper()
-		within := testwait.Bounded(t, 24*time.Hour, 30*time.Second)
-		if response, early := storetest.WaitForQueuedBehind(t, change, callPID, answered, within); early {
+		if response, early := storetest.WaitForQueuedBehind(t, change, callPID, answered); early {
 			t.Fatalf("%s answered %d before its write waited behind the route change: %s", what, response.Code, response.Body.String())
 		}
 	}

@@ -207,6 +207,10 @@ func TestCloseWaitOfEachCase(t *testing.T) {
 	linkedMerge.Repo = cwLinkedRepo
 	stackedMerge := cwMerge()
 	stackedMerge.Base = "release"
+	// live is an after_merge check of production that names no program, where Dispatch holds the
+	// current deploy of more than one program in the issue's repository.
+	live := cwAfterMerge("c-live", cwStands(dispatch.PassStandsUnknown, dispatch.PassStandsReasonProgramNotNamed))
+	live.Subject = dispatch.CheckSubjectProduction
 
 	for _, tc := range []struct {
 		name  string
@@ -345,8 +349,10 @@ func TestCloseWaitOfEachCase(t *testing.T) {
 		{name: "row 23: a Verification document with no approved version",
 			facts: passing(CheckReadAnswer{Results: cwResults(cwAfterMerge("c-after", cwPass)),
 				Approval: &CheckApproval{Current: []dispatch.DocumentBlock{cwBlock("c-after", nil)}}})},
-		// Row 24, a live check that reads unknown for program_not_named, comes with the reasons of a
-		// live check's deploy, which Dispatch's results read does not answer yet.
+		{name: "row 24: a live check that reads unknown for program_not_named waits with no result yet",
+			facts: passing(oneCheck(live)),
+			want: CloseWait{Checks: []CheckWait{{Check: "c-live", State: CheckStateNoResult, Answer: dispatch.PassStandsUnknown,
+				Reason: dispatch.PassStandsReasonProgramNotNamed}}}},
 		{name: "row 25: a check block that only gained subject production",
 			facts: approved(nil, map[string]string{"subject": dispatch.CheckSubjectProduction})},
 		{name: "row 26: a check block that gained subject production and program dispatch",
@@ -384,6 +390,50 @@ func TestCloseWaitOfEachCase(t *testing.T) {
 			}
 			if done := reflect.DeepEqual(tc.want, CloseWait{}); got.Done() != done {
 				t.Fatalf("Done() = %t for %+v, want %t", got.Done(), got, done)
+			}
+		})
+	}
+}
+
+// TestUnapprovedChecksNamesEachRemovedOrRewordedCheck holds the approved-set test to the ids it
+// names, which the stored wait lists: each check block of the approved version that the current
+// version removed or reworded, in the approved version's order. A block that only gained
+// subject, program or both, where the approved block held neither, is the approved check and is
+// not named, and no approval names a check added after it. With no approved version, nothing is
+// named.
+func TestUnapprovedChecksNamesEachRemovedOrRewordedCheck(t *testing.T) {
+	reworded := cwBlock("c-reworded", nil)
+	reworded.Text = "The widget closes when its checks pass and its post is up.\n"
+	marked := map[string]string{"subject": dispatch.CheckSubjectProduction, "program": "dispatch"}
+	for _, tc := range []struct {
+		name     string
+		approval *CheckApproval
+		want     []string
+	}{
+		{name: "no check changed",
+			approval: cwApproval([]dispatch.DocumentBlock{cwBlock("c-kept", nil), cwBlock("c-marked", marked)},
+				[]dispatch.DocumentBlock{cwBlock("c-kept", nil), cwBlock("c-marked", marked), cwBlock("c-added", nil)})},
+		{name: "one check removed",
+			approval: cwApproval([]dispatch.DocumentBlock{cwBlock("c-kept", nil), cwBlock("c-removed", nil)},
+				[]dispatch.DocumentBlock{cwBlock("c-kept", nil)}),
+			want: []string{"c-removed"}},
+		{name: "one check reworded",
+			approval: cwApproval([]dispatch.DocumentBlock{cwBlock("c-reworded", nil), cwBlock("c-kept", nil)},
+				[]dispatch.DocumentBlock{reworded, cwBlock("c-kept", nil)}),
+			want: []string{"c-reworded"}},
+		{name: "one check that only gained subject and program, where the approved block held neither",
+			approval: cwApproval([]dispatch.DocumentBlock{cwBlock("c-live", nil)}, []dispatch.DocumentBlock{cwBlock("c-live", marked)})},
+		{name: "a removed check and a reworded one, in the approved version's order",
+			approval: cwApproval([]dispatch.DocumentBlock{cwBlock("c-removed", nil), cwBlock("c-live", nil), cwBlock("c-reworded", nil)},
+				[]dispatch.DocumentBlock{reworded, cwBlock("c-live", marked)}),
+			want: []string{"c-removed", "c-reworded"}},
+		{name: "no approved version",
+			approval: &CheckApproval{Current: []dispatch.DocumentBlock{reworded}}},
+		{name: "no Verification document"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := UnapprovedChecks(tc.approval); !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("UnapprovedChecks = %q, want %q", got, tc.want)
 			}
 		})
 	}

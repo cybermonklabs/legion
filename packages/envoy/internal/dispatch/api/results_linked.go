@@ -455,74 +455,75 @@ type commitRepository struct {
 // from defaultBranchIn's memo. Every reader of such a repository reads that memo for it next
 // anyway, so the answer costs no GitHub call they would not make.
 func (c *comparisonReader) commitRepositoryOf(ctx context.Context, issueKey string, commitRepo *string) commitRepository {
-	if commitRepo == nil {
-		return commitRepository{}
-	}
-	owner := commitRepository{linked: c.server.deps.Renames.Canonical(*commitRepo)}
-	if own, answered := c.repositoryOf(ctx, issueKey); answered && own != nil && strings.EqualFold(owner.linked, *own) {
-		owner.linked = ""
-	}
+	owner := commitRepository{linked: c.commitRepositoryName(ctx, issueKey, commitRepo)}
 	if owner.linked != "" {
 		_, owner.readable = c.defaultBranchIn(ctx, owner.linked)
 	}
 	return owner
 }
 
-// linkedBranchBases is branchBases for a result whose commit is taken to be of repo, a linked
-// repository (commitRepositoryOf) GitHub said holds the commit when the result was recorded: the
-// branches of repo that result is compared with, chosen by the rule the issue's own repository's
-// are chosen by (measuredBranches), the `after_merge` check's merged branch being the one the
-// issue's linked pull request in repo merged into (baseBranchMergedIn). The walk asks them in
-// this order (onNamedBranch), and the check goes on naming its own repository's branches as its
-// bases: these are one result's, not the check's. Each names repo, so a reader can tell the
-// branch a result stands at from the issue's own repository's branch of the same name.
-//
-// A comparison naming no branch here is always unknown for the result, never another commit,
-// so its reason is one of the two a commit's standing carries. A merge read that failed is
-// model.ReasonReadFailed. No branch at all is a repository no read of this process ever named
-// a default branch for, with no merge of the issue's there for an `after_merge` check to name
-// in its place, and that is the App's failed read of repo, since
-// delivery.Branches.DefaultBranchOf answers no name only with no:
-// model.ReasonRepositoryUnreadable.
+// commitRepositoryName is commitRepositoryOf's linked alone, which reads no GitHub: the linked
+// repository commitRepo names, under its canonical name, and "" where it names none or names the
+// repository the check's issue resolves to now. resultBasisAt reads it to tell the heads of the
+// repository a result's commit is taken to be of from the others.
+func (c *comparisonReader) commitRepositoryName(ctx context.Context, issueKey string, commitRepo *string) string {
+	if commitRepo == nil {
+		return ""
+	}
+	linked := c.server.deps.Renames.Canonical(*commitRepo)
+	if own, answered := c.repositoryOf(ctx, issueKey); answered && own != nil && strings.EqualFold(linked, *own) {
+		return ""
+	}
+	return linked
+}
+
+// linkedBranchBases chooses the branches of one linked repository, each naming its repository
+// and the merge a result there must hold. The memo is per issue, when and repository.
 func (c *comparisonReader) linkedBranchBases(ctx context.Context, check model.CheckBlock, repo string) comparison {
-	defaultBranch, _ := c.defaultBranchIn(ctx, repo)
-	branches, chosen := c.measuredBranches(check, defaultBranch, func() (string, bool) {
-		return c.baseBranchMergedIn(ctx, check.IssueKey, repo)
-	})
-	if !chosen {
+	key := [3]string{check.IssueKey, check.When, strings.ToLower(repo)}
+	if compared, held := c.linkedBases[key]; held {
+		return compared
+	}
+	ownRepo, answered := c.repositoryOf(ctx, check.IssueKey)
+	if !answered || ownRepo == nil {
 		return noBases(model.ReasonReadFailed)
 	}
-	if len(branches) == 0 {
-		return noBases(model.ReasonRepositoryUnreadable)
+	own := c.mergesIn(ctx, check.IssueKey, *ownRepo, false)
+	linked := c.linkedMerged(ctx, check.IssueKey)
+	if !own.read || len(own.pulls) == 0 && !linked.read {
+		return noBases(model.ReasonReadFailed)
 	}
-	compared := branchesNamed(branches)
-	for index := range compared.bases {
-		compared.bases[index].Repo = repo
+	compared := c.branchesIn(ctx, check, repo, true, len(own.pulls) > 0 || len(linked.repos) > 0)
+	if len(compared.bases) == 0 && compared.reason == "" {
+		compared = noBases(model.ReasonRepositoryUnreadable)
 	}
+	c.linkedBases[key] = compared
 	return compared
 }
 
-// baseBranchMergedIn is the branch the newest pull request the check's issue links in repo, a
-// linked repository, merged into (delivery.Attributor.BaseBranchMergedIn), read once per issue and
-// repository per read of the results, and whether the read answered at all. The attribution
-// never gives the issue a pull request of a repository it does not resolve to, so the links are
-// what name its merge there, where baseBranchMergedFor reads the pull requests attributed to it
-// in the repository it resolves to. The key is the issue and the repository: an issue whose work
-// spans two repositories merged once in each. The memo keeps a failed read as
-// baseBranchMergedFor's does, for the same reason. It reads the caller's request's answers as
-// baseBranchMergedFor does: a merged pull request a read-only caller's read-through of a linked
-// repository's commit learned is a row a writer's read-through would have stored, which its read
-// here finds.
-func (c *comparisonReader) baseBranchMergedIn(ctx context.Context, issueKey, repo string) (string, bool) {
-	memo := [2]string{issueKey, repo}
-	if answer, memoized := c.linkedBaseBranches[memo]; memoized {
-		return answer.branch, answer.read
+type linkedMergesAnswer struct {
+	repos []string
+	read  bool
+}
+
+// linkedMerged lists the repositories where this issue links a merged pull request, whether or
+// not a result has named a commit there. A failed read is not the absence of a merge.
+func (c *comparisonReader) linkedMerged(ctx context.Context, issueKey string) linkedMergesAnswer {
+	if answer, held := c.linkedMerges[issueKey]; held {
+		return answer
 	}
-	branch, err := c.server.deps.Attributor.BaseBranchMergedIn(ctx, c.server.deps.Store.Pool, issueKey, repo, c.answers)
+	links, err := c.server.linkedRepositories(ctx, c.server.deps.Store.Pool, issueKey)
+	answer := linkedMergesAnswer{read: err == nil}
 	if err != nil {
-		slog.Warn("dispatch: read the branch a result's issue merged into", "issue", issueKey, "repo", repo, "error", err)
+		slog.Warn("dispatch: read linked repositories for merged work", "issue", issueKey, "error", err)
 	}
-	answer := baseBranchAnswer{branch: branch, read: err == nil}
-	c.linkedBaseBranches[memo] = answer
-	return answer.branch, answer.read
+	for _, link := range links {
+		set := c.mergesIn(ctx, issueKey, link.repo, true)
+		answer.read = answer.read && set.read
+		if len(set.pulls) > 0 {
+			answer.repos = append(answer.repos, link.repo)
+		}
+	}
+	c.linkedMerges[issueKey] = answer
+	return answer
 }

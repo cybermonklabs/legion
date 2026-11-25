@@ -91,6 +91,7 @@ func readListenerPod(t *testing.T, read, path string) listenerPod {
 // t.Parallel() added to one would make the count fail rather than pass wrongly, and the count is
 // of pods actually read.
 func TestListenerPodGracesCoverTheStopBudget(t *testing.T) {
+	t.Parallel()
 	read := 0
 	for _, golden := range listenerPodGoldens {
 		t.Run(golden.container, func(t *testing.T) {

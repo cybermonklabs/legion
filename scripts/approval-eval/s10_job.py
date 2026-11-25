@@ -8,9 +8,9 @@ item, beside one `emptyDir` and point 2's `models.yml` and overlay from the Conf
 `ROUTE_CONFIG_MAP`. No service account token is mounted, no variable comes from a Secret, and no
 service link is set. The program (`s10_sandbox.py`), the bundles and the calls travel in
 environment variables, so the program is no file of the sandbox; the result comes back on the
-pod's log (`result_of`), and `KubeRunner` deletes the Job once it has read it. Before a run's first
-request, `KubeRunner.preflight` runs the same Job with no bundle: every check of the sandbox, and
-no judge.
+pod's log (`result_of`), and `KubeRunner` deletes the Job once it has read it. Before each request
+starts, `KubeRunner.preflight` runs the same Job with no bundle: every check of the sandbox, no
+judge, and the calls of point 2's model it names to the gateway (`s10_sandbox.probe_gateway`).
 
 A failed call of the Kubernetes API is tried again (`RETRY_PAUSES`); one that still fails is no
 fault of the request's, and stops the run (`KubeUnavailable`), which writes nothing more for it.
@@ -56,7 +56,8 @@ ROUTE_ITEMS = ({"key": "models.yml", "path": "models.yml"}, {"key": "overlay.yml
 # The pauses, in seconds, before each new try of a failed Kubernetes API call: a transient failure
 # passes, and one that lasts past them stops the run.
 RETRY_PAUSES = (5, 15, 45, 90)
-# How long the preflight's Job may run, in seconds: its checks, and no judge.
+# How long the preflight's Job may run, in seconds: its checks, no judge, and its calls of point 2's
+# model, whose own timeout bounds each blocking step of a call; this deadline bounds the whole probe.
 PREFLIGHT_DEADLINE = 900
 # How long, in seconds, a Job's pod may wait to be started on a node before the run stops: twenty
 # times the waits measured for this sandbox (about 3 minutes), so only an outage of the cluster's
@@ -242,7 +243,7 @@ def account_refusal(pod, account):
 
 class KubeRunner:
     """Runs one request's sandbox as a Job in this pod's namespace, reads its log, deletes it; and,
-    once a run, the same Job with no bundle (`preflight`). It refuses an image its own pod does not
+    before each request, the same Job with no bundle (`preflight`). It refuses an image its own pod does not
     run and its own pod's account, and holds the gateway key's bytes, which the driver keeps out of
     every file it keeps. Each Kubernetes API call is tried again after each of `pauses`; one that
     still fails raises `KubeUnavailable`, as does a Job none of whose pods the driver has seen
@@ -304,10 +305,11 @@ class KubeRunner:
         return self.run_job("s10-judge-" + sha256_of(f"{ask_id} {time.time()} {os.getpid()}")[:16], files, "request",
                             extra_env)
 
-    def preflight(self):
-        """The sandbox with no bundle and no call, which makes every check and starts no judge."""
+    def preflight(self, model):
+        """The sandbox with no bundle and no judge, which makes every check and then the calls of
+        `model`, point 2's, to the gateway (`SANDBOX.PROBE_MODEL_VARIABLE`)."""
         return self.run_job("s10-judge-preflight-" + sha256_of(f"{time.time()} {os.getpid()}")[:16], {}, "preflight",
-                            deadline=PREFLIGHT_DEADLINE)
+                            {SANDBOX.PROBE_MODEL_VARIABLE: model}, deadline=PREFLIGHT_DEADLINE)
 
     def run_job(self, name, files, mode, extra_env=None, deadline=SANDBOX.OMP_TIMEOUT + 900):
         """One Job in `mode` (`SANDBOX.MODES`): created, waited for, its one pod's log read,

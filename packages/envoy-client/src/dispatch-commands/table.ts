@@ -1,4 +1,5 @@
 import type { dispatchToolSpecs } from "@legion/contracts";
+import { apiCommand } from "./api";
 import {
   askCommand,
   editAskCommand,
@@ -25,6 +26,7 @@ import {
   planApproveCommand,
   requestApprovalCommand,
 } from "./documents";
+import { deployCommand, deploysCommand } from "./deploy";
 import { handoffReadCommand, handoffWriteCommand } from "./handoffs";
 import {
   claimCommand,
@@ -106,6 +108,8 @@ export const dispatchCommands: Record<DispatchToolName, DispatchCommand> = {
   dispatch_review: acting(reviewCommand),
   dispatch_result: acting(resultCommand),
   dispatch_results: acting(resultsCommand),
+  dispatch_deploy: acting(deployCommand),
+  dispatch_deploys: acting(deploysCommand),
   dispatch_artifact: acting(artifactCommand),
   dispatch_handoff_write: acting(handoffWriteCommand),
   dispatch_handoff_read: acting(handoffReadCommand),
@@ -115,5 +119,6 @@ export const dispatchCommands: Record<DispatchToolName, DispatchCommand> = {
   dispatch_answers: onSession(answersCommand),
   dispatch_whoami: onSession(whoamiCommand),
   dispatch_limits: onSession(limitsCommand),
+  dispatch_api: onSession(apiCommand),
   dispatch_inbox: onSession(inboxCommand),
 };

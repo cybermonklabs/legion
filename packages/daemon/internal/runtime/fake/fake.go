@@ -145,6 +145,7 @@ type Runtime struct {
 	// The fake takes one turn for every pod, and never while it holds mu.
 	turn       sync.Mutex
 	holdResume func()
+	holdProbe  func(runtime.Locator)
 	queue      []runtime.Observation
 	minted     int
 }
@@ -296,8 +297,10 @@ func (r *Runtime) ScriptKeptVolume(issue string, created time.Time) {
 }
 
 // ScriptLaunchSession makes every later LaunchSession of token's claim answer session, as the
-// Sandbox runtime answers the session it chose for a Claude Code role's launch. A claim no call
-// named has no session the runtime chose, which is an Oh My Pi role's case; "" clears it.
+// Sandbox runtime answers the session it chose for a Claude Code role's launch, and for an Oh My
+// Pi role's launch whose pod trades an exchange identity. A claim no call named has no session the
+// runtime chose, which is the case of an Oh My Pi launch that named no id (its agent mints one and
+// reports it at its registration); "" clears it.
 func (r *Runtime) ScriptLaunchSession(token claim.Token, session string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -397,6 +400,18 @@ func (r *Runtime) HoldResume(hold func()) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.holdResume = hold
+}
+
+// HoldProbe makes every later Probe run hold before it answers, with the locator it probes: the
+// claim's machine asks Probe inside a decision (supervise's Machine.probe), so the machine is in
+// that decision (Machine.Deciding) for as long as hold runs, and its published view shows the
+// claim as the decision found it. A test holds there to read what another part of the daemon sees
+// of a claim whose machine is deciding, and then lets the call go on. nil clears it; the hook runs
+// with none of the fake's own locks held, so it may drive the fake again.
+func (r *Runtime) HoldProbe(hold func(runtime.Locator)) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.holdProbe = hold
 }
 
 func (r *Runtime) fail(method string, err error) {
@@ -609,7 +624,15 @@ func (r *Runtime) Release(_ context.Context, k runtime.Known) error {
 	return r.failures["Release"]
 }
 
+// Probe runs the hook HoldProbe set, if any, then records its call and answers the next scripted
+// verdict, or Alive once the script runs out.
 func (r *Runtime) Probe(_ context.Context, loc runtime.Locator) (runtime.Observation, error) {
+	r.mu.Lock()
+	hold := r.holdProbe
+	r.mu.Unlock()
+	if hold != nil {
+		hold(loc)
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.calls = append(r.calls, Call{Method: "Probe", Locator: loc})

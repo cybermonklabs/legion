@@ -80,6 +80,13 @@ type Credential struct {
 	// TokenID and TokenName name a personal token, and are empty for every other credential.
 	TokenID   string
 	TokenName string
+	// Projects are the projects the credential may use, sorted. Nothing in this tree sets it, so
+	// it is empty for every credential here: a later slice sets it from a personal token's
+	// agent_tokens.projects and from a broker token's list. Empty is a credential that names none.
+	// What a list decides is access.CredentialCovers': for a full member's credential, and one
+	// that names no person, only which private projects it reaches; for a restricted member's,
+	// every project it reaches.
+	Projects []string
 	// ReadOnly is a credential that may only read. Two credentials set it: a broker-issued token
 	// its verifier decided is read-only (ciphertoken.Caller.ReadOnly), which the secrets broker
 	// minted from a read entry or narrowed to reading because its trade asked for read; and a
@@ -110,6 +117,19 @@ type Credential struct {
 // caller that resolved to no credential at all is refused by the same test.
 func (c *Credential) Holds(scope string) bool {
 	return c != nil && slices.Contains(c.Scopes, scope)
+}
+
+// browserCredential is a person's own cookie: it holds every scope and names no agent that acted
+// for them. Every browser caller shares this one value, on the dashboard's hottest path, so nothing
+// writes it or appends to its Scopes.
+var browserCredential = &Credential{Scopes: Scopes}
+
+// BrowserActor is the caller a person's signed-in browser is: the person, with the cookie's
+// credential, so access.Resolve, which reads the credential, reads it as the browser it is. A later
+// slice builds the caller of every reader of a cookie here: api's optionalActor, the GitHub proxy
+// and the document socket.
+func BrowserActor(login string) Actor {
+	return Actor{Kind: "user", ID: login, Credential: browserCredential}
 }
 
 // Actor identifies the user or agent session that caused a change. Service is
@@ -148,10 +168,14 @@ type Actor struct {
 	// serialised; the scope gate and actingPerson read it, actingPerson copies what it needs
 	// onto Act, and Recorded drops it from the actor a handler writes and compares.
 	Credential *Credential `json:"-"`
+	// Viewer is what the caller may see, as access.Resolve answered it for this request: a
+	// fact of the request, like Credential, so it is never serialised. Recorded drops it and
+	// Reader keeps it.
+	Viewer *Viewer `json:"-"`
 }
 
-// Recorded is the actor as a write records it: the request's credential dropped. A stored actor
-// is decoded from JSON, which carries no credential, so the credential never reaches a row.
+// Recorded is the actor as a write records it: the request's credential and viewer dropped. A
+// stored actor is decoded from JSON, which carries neither, so neither ever reaches a row.
 // Dispatch decides "the same writer" by kind and id (SameAs) and "the same credential" by those
 // and the names a credential carries (SameCredential); the one == left that decides anything is
 // the document rooms' lost-write notice (docs/lostedit.go), so an actor handed to the document
@@ -165,8 +189,55 @@ type Actor struct {
 // optionalActor (callerHoldsScope). Proven is a fact of the record and stays.
 func (a Actor) Recorded() Actor {
 	a.Credential = nil
+	a.Viewer = nil
 	return a
 }
+
+// Reader is the actor as a read binds it: the request's credential dropped, as Recorded drops
+// it, and its viewer kept, because what a read may answer is the viewer's to decide.
+func (a Actor) Reader() Actor {
+	a.Credential = nil
+	return a
+}
+
+// MemberKind is how a person belongs to the deployment: a full member signed in under the
+// sign-in domain, and a restricted member signed in because a project's access list names them.
+// MemberNone is a login no `people` row holds.
+type MemberKind string
+
+const (
+	MemberNone       MemberKind = ""
+	MemberFull       MemberKind = "full"
+	MemberRestricted MemberKind = "restricted"
+)
+
+// Viewer is what one caller may see, resolved once a request (access.Resolve). Sees is every
+// project it sees, sorted. Open is a viewer that is not a restricted member: it reads every row
+// that belongs to no project, as every caller did before projects could be private, whatever its
+// credential lists, since a list decides only which private projects a full member's credential
+// sees. All is ServerViewer alone. AnyPrivate is whether the deployment holds a private project at
+// all. Lists is the credential's own list of projects (Credential.Projects) as its caller is told
+// it - every credential's but a broker token's, whose list is answered only while some project is
+// private or its person is a restricted member, as before projects could be private - and nil
+// otherwise: which projects it would see were its person to see them, which tells a read whether
+// the credential read a project before a change took it away. A later slice's whoami answers it.
+type Viewer struct {
+	Person, Session string
+	Restricted      bool
+	Open            bool
+	All             bool
+	Sees            []string
+	AnyPrivate      bool
+	Lists           []string
+}
+
+// ServerViewer is the server's own read of content that belongs to one owner, which each of its
+// uses gates per viewer where it leaves the server: it sees every project and every party.
+var ServerViewer = &Viewer{Open: true, All: true}
+
+// ServerReader is the server's own reader: an actor that proves no author and carries
+// ServerViewer, for a read the server makes for itself rather than for a caller.
+var ServerReader = Actor{Viewer: ServerViewer}
 
 // SameAs reports whether two actors are the same writer: one session id, or one human login.
 // Dispatch compares actors in this way wherever it has to decide "is this the same session" — a
@@ -366,6 +437,164 @@ type Project struct {
 	DefaultRepo *string   `json:"default_repo,omitempty"`
 	CreatedAt   time.Time `json:"created_at"`
 }
+
+// The two visibilities a project has (projects.visibility). Every full member sees a public
+// project; a private one is seen only by its owner and the people and groups its access list
+// names.
+const (
+	ProjectPublic  = "public"
+	ProjectPrivate = "private"
+)
+
+// ProjectAccess is who may see one project and who changes that: its owner, its visibility, and
+// the people (lowercase emails) and groups its access list names, each list sorted and never
+// null. The access package's writes answer it (access.SetOwner); a later slice adds the route that
+// reads and writes it.
+type ProjectAccess struct {
+	Project    string   `json:"project"`
+	Owner      string   `json:"owner"`
+	Visibility string   `json:"visibility" enum:"public,private"`
+	People     []string `json:"people"`
+	Groups     []string `json:"groups"`
+	// SlackChannels are the Slack channel ids the project's credentials may post to, at most 16,
+	// sorted, always present and [] for none. Its owner names them. The secrets broker reads a
+	// private project's channels to release the Legion Slack bot token to its credentials for those
+	// channels alone (R14).
+	SlackChannels []string `json:"slack_channels"`
+	// SlackChannelsChangedAt is when SlackChannels last changed, always present and null until a
+	// write changes the list. A write of the list it already holds leaves it.
+	SlackChannelsChangedAt *time.Time `json:"slack_channels_changed_at"`
+	// NotSignedIn are the people of People nobody has signed in as yet, sorted and never null: the
+	// rule admits each of them once they sign in.
+	NotSignedIn []string `json:"not_signed_in"`
+	// PrivateBeforeFullSwitch is true while the project is private before its full switch: the
+	// deployment names it in DISPATCH_PRIVATE_BEFORE_FULL_SWITCH and not in
+	// DISPATCH_PRIVATE_PROJECTS, so Dispatch hides it as any private project while its namespace,
+	// stores and bus gate come with its full switch. Absent for every other project, so a
+	// deployment that names no such project answers what it always answered.
+	PrivateBeforeFullSwitch bool `json:"private_before_full_switch,omitempty"`
+}
+
+// AccessGroup is a named list of full members that an access list can name: its one owner, the
+// full member who made it or was given it, and its members, sorted and never null.
+type AccessGroup struct {
+	Name    string   `json:"name"`
+	Owner   string   `json:"owner"`
+	Members []string `json:"members"`
+	// NotSignedIn are the members nobody has signed in as yet, sorted and never null. A group
+	// admits only its full members, so each of them is admitted once they sign in as one.
+	NotSignedIn []string `json:"not_signed_in"`
+}
+
+// MaxGroupsPerOwner is how many groups one owner holds at most: a write that would make, or give
+// them, one more is refused (access.PutGroup).
+const MaxGroupsPerOwner = 100
+
+// AccessGroupPage is one page of the groups (access.ListGroups), which a later slice serves: the
+// groups after the page before it, in name order, and Next, the name the next page starts after,
+// absent on the last page.
+type AccessGroupPage struct {
+	Groups []AccessGroup `json:"groups"`
+	Next   string        `json:"next,omitempty"`
+}
+
+// AccessAnswer is the membership answer the secrets broker is to read, which a later slice
+// serves (access.Answer): one project's owner and visibility, the person's member kind
+// (MemberAnswerFull, MemberAnswerRestricted or MemberAnswerNone), whether the read rule lets that
+// person see the project at a browser, and the project's Slack channels. It names no
+// repositories: GitHub events carry no project, so no reader needs a project's repositories.
+type AccessAnswer struct {
+	Project    string `json:"project"`
+	Visibility string `json:"visibility" enum:"public,private"`
+	Owner      string `json:"owner"`
+	Person     string `json:"person"`
+	MemberKind string `json:"member_kind" enum:"full,restricted,none"`
+	Visible    bool   `json:"visible"`
+	// SlackChannels is the project's own list, as ProjectAccess carries it: [] for none.
+	SlackChannels []string `json:"slack_channels"`
+	// SlackChannelsChangedAt is when that list last changed, as ProjectAccess carries it: null
+	// until a write changes the list.
+	SlackChannelsChangedAt *time.Time `json:"slack_channels_changed_at"`
+	// Holder is to say whether the credential a question describes holds the person's address.
+	// access.Answer leaves it absent; the later slice that records a person's Google account sets
+	// it, and Visible is then false whenever it is false.
+	Holder *bool `json:"holder,omitempty"`
+}
+
+// PrivateProjectChannels is one private project's Slack channels as the secrets broker is to read
+// them, which a later slice serves (access.PrivateProjects): the project's key, its channels,
+// sorted and [] for none, and when that list last changed, null until a write changes the list.
+type PrivateProjectChannels struct {
+	Project                string     `json:"project"`
+	SlackChannels          []string   `json:"slack_channels" nullable:"false"`
+	SlackChannelsChangedAt *time.Time `json:"slack_channels_changed_at"`
+}
+
+// PersonAnswer is one person's member kind as the membership answer spells it, which a later
+// slice serves (access.PersonAnswer), with Holder as AccessAnswer carries it. AsOf is the database
+// time of the read the answer rests on. Held, whether Dispatch holds the person's personal tokens
+// and broker credentials until they sign in again, and NotHeldUntil, when an answer that is not
+// held stops being served under IAP identity, are left absent by access.PersonAnswer: the later
+// slice that holds a person's credentials sets them.
+type PersonAnswer struct {
+	Person       string     `json:"person"`
+	MemberKind   string     `json:"member_kind" enum:"full,restricted,none"`
+	Holder       *bool      `json:"holder,omitempty"`
+	Held         *bool      `json:"held,omitempty"`
+	AsOf         time.Time  `json:"as_of"`
+	NotHeldUntil *time.Time `json:"not_held_until,omitempty"`
+}
+
+// The member kinds the membership answer spells: MemberKind's two, and MemberAnswerNone for a
+// login no `people` row holds, which MemberKind leaves empty.
+const (
+	MemberAnswerFull       = string(MemberFull)
+	MemberAnswerRestricted = string(MemberRestricted)
+	MemberAnswerNone       = "none"
+)
+
+// ProjectAccessEventPayload is `project.access_changed`: one write of a project's owner,
+// visibility, access list or Slack channels committed. It names the project and which change it
+// was, and nothing else: every reader of the project's events reads it - the event log, the live
+// socket's events view and the bus, credentials without the person scope included - so it carries
+// no email, group name or channel id. Who the change named, and the project's owner and visibility
+// as it left them, are the server's own record of the event (project_access_changes), which a
+// later slice's live resume is to read to tell whether the change moved what its caller sees. A
+// reader that needs the list reads it under the read rule of the route a later slice adds, and
+// every reader that resolved a viewer resolves again. It is owned by the project and never
+// notifies.
+type ProjectAccessEventPayload struct {
+	Project string `json:"project"`
+	Change  string `json:"change"`
+}
+
+// The Change of a ProjectAccessEventPayload.
+const (
+	AccessOwnerChanged      = "owner"
+	AccessVisibilityChanged = "visibility"
+	AccessPersonAdded       = "person_added"
+	AccessPersonRemoved     = "person_removed"
+	AccessGroupAdded        = "group_added"
+	AccessGroupRemoved      = "group_removed"
+	// AccessSlackChannelsChanged is a write of the project's Slack channels.
+	AccessSlackChannelsChanged = "slack_channels"
+)
+
+// AccessGroupEventPayload is `access_group.changed`: one group was made, had its members or owner
+// written, or was deleted. A group belongs to no project, so it names no owner: the outbox
+// publishes it nowhere and it never notifies (events.Quiet), as a priority's write.
+type AccessGroupEventPayload struct {
+	Name string `json:"name"`
+	// Change is AccessGroupCreated, AccessGroupUpdated or AccessGroupDeleted.
+	Change string `json:"change"`
+}
+
+// The Change of an AccessGroupEventPayload.
+const (
+	AccessGroupCreated = "created"
+	AccessGroupUpdated = "updated"
+	AccessGroupDeleted = "deleted"
+)
 
 // GatedStepDecisions, GatedStepCriteria and GatedStepSpec are the three design-gate steps
 // Project.GatedSteps names, each one a document of the root issue: the issue's decisions
@@ -1139,7 +1368,14 @@ type RelatedCheckTiming struct {
 // for a refusal. Candidates are the candidates the gate read at or above NudgeScore, at most
 // five, best score first, with each one's title as it then stood; RefuseScore and NudgeScore are
 // the bars the build read them against, and BuildCommit is the legion commit it was built from,
-// null for a build nothing stamped.
+// null for a build nothing stamped. ReadMS is how long the create waited on the gate's read, in
+// milliseconds, from the gate's start until the read returned, its transaction's rollback
+// included, and ReadStage the step the read was in when it answered or ended: connect (taking a
+// pool connection and opening the read transaction), terms (picking the new text's rarest words),
+// keys (reading the lexemes the project's issue keys give) or score (scoring the project's open
+// issues, which every answered read ends in); a row whose reason is bound or failed says by them
+// at which step its read was waiting. Both are null together on a row written before Dispatch
+// recorded them.
 type NearCopyCheck struct {
 	ID          string                   `json:"id"`
 	CreatedAt   time.Time                `json:"created_at"`
@@ -1158,6 +1394,8 @@ type NearCopyCheck struct {
 	RefuseScore float64                  `json:"refuse_score"`
 	NudgeScore  float64                  `json:"nudge_score"`
 	BuildCommit *string                  `json:"build_commit"`
+	ReadMS      *int                     `json:"read_ms"`
+	ReadStage   *string                  `json:"read_stage" enum:"connect,terms,keys,score"`
 }
 
 // NearCopyCheckCandidate is one issue the near-copy gate read for a create, with the score it
@@ -1431,15 +1669,18 @@ const (
 	BasisLearnedUpdatedAt = "updated_at"
 )
 
-// ReasonNoPullRequestOrBranch, ReasonRepositoryUnreadable and ReasonReadFailed are why a check
-// names nothing to compare its results with (CheckBlock.ComparedNothing), and why a result's
-// commit cannot be placed (ResultCommitStands.Reason). The three are kept apart because each
-// is a different thing for a reader to do: there is no pull request and no branch to compare
-// with, the App cannot read the repository, or a read Dispatch makes did not answer.
+// ReasonNoPullRequestOrBranch, ReasonRepositoryUnreadable, ReasonReadFailed and ReasonNotMerged
+// are why a check names nothing to compare its results with (CheckBlock.ComparedNothing), and the
+// middle two why a result's commit cannot be placed (ResultCommitStands.Reason). They are kept
+// apart because each is a different thing for a reader to do: there is no pull request and no
+// branch to compare with, the App cannot read the repository, a read Dispatch makes did not
+// answer, or Dispatch holds no merge of the work of an `after_merge` check's issue anywhere, in
+// its own repository or through a pull request it links, so no commit can hold one yet.
 const (
 	ReasonNoPullRequestOrBranch = "no_pull_request_or_branch"
 	ReasonRepositoryUnreadable  = "repository_unreadable"
 	ReasonReadFailed            = "read_failed"
+	ReasonNotMerged             = "not_merged"
 )
 
 // CommitAtBasis, CommitOtherCommit and CommitUnknown are where one result's commit stands: at
@@ -1469,19 +1710,32 @@ const (
 
 // CheckBasis is one commit or branch a check's results are compared with. Commit is set for a
 // `named` and a `pull_request` basis, Branch for a `branch` one, and PullRequest is the number
-// of the pull request whose head the commit is. Repo is the `owner/repo` of a basis in a linked
+// of the pull request whose head the commit is. Merged is set on a `pull_request` basis whose
+// pull request merged, whose commit is its final head: a reader tells it from an open pull
+// request's head, and counts it apart. Repo is the `owner/repo` of a basis in a linked
 // repository, one the check's issue links a pull request in and does not resolve to: the head
-// of a pull request the issue links there, and a branch of it that a result whose commit is
-// that repository's stands at (CheckResult.CommitRepo). It is empty for every other basis,
-// which is of the repository the check's issue resolves to or is the commit a reader named, so
-// a reader can tell pull request #7 or branch main of the linked repository from those of the
-// issue's own.
+// of a pull request the issue links there, and a branch of it where the issue has a merged
+// linked pull request. It is empty for every other basis, which is of the repository the
+// check's issue resolves to or is the commit a reader named, so a reader can tell pull request
+// #7 or branch main of the linked repository from those of the issue's own.
+//
+// MergeCommit is set on a `branch` basis where Dispatch holds the merge of the issue's work on
+// that branch: the merge commit of the issue's newest merged pull request in that basis's
+// repository on the branch it merged into, and on the default branch, where it merged into
+// another, the merge commit of the pull request that landed that branch there. A result stands
+// at the branch only at a commit whose history holds it. A branch basis names none where no merge
+// is asked of its commits (the default branch of a `default_branch` check of an issue with no
+// merged pull request anywhere), where no commit of it can count (a branch of the issue's own
+// repository where its only merges are linked), and where Dispatch cannot learn or order the
+// merge now.
 type CheckBasis struct {
 	Kind        string          `json:"kind" enum:"named,pull_request,branch"`
 	Repo        string          `json:"repo,omitempty"`
 	Commit      string          `json:"commit,omitempty"`
 	Branch      string          `json:"branch,omitempty"`
+	MergeCommit string          `json:"merge_commit,omitempty"`
 	PullRequest *int            `json:"pull_request,omitempty"`
+	Merged      bool            `json:"merged,omitempty"`
 	LearnedAt   *BasisLearnedAt `json:"learned_at,omitempty"`
 }
 
@@ -1497,10 +1751,72 @@ type BasisLearnedAt struct {
 // of it stands at what it compared its results with, against the check's words now, and from
 // which roles. Roles is empty for every answer but PassStandsYes. A pass whose check's words
 // moved does not stand, and a retracted result counts for nothing.
+//
+// A `before_merge` check compared with heads has subjects, the heads a pass must stand at: each
+// open pull request's head, or where the issue has none, the newest merged one's final head. A
+// pass stands only when one stands at each subject, and Subjects says the state of each. Reason
+// is PassStandsReasonPassAndFail where the answer is unknown because a pass and a fail that count
+// at one commit, from any role, make that commit's state unknown (R4), and
+// PassStandsReasonReadFailed where it is unknown because a read Dispatch makes did not answer:
+// the check runs of a check CI proves that has no subject, or the time each merged pull request of
+// an issue with none open merged, so that Dispatch cannot tell which of them is the newest.
+//
+// An `after_merge` or a `default_branch` check is decided by its newest result that counts
+// (R19): Reason is PassStandsReasonFail where that result is a fail, PassStandsReasonNoResult
+// where no result counts, PassStandsReasonPassAndFail where a pass and a fail count at its
+// commit, PassStandsReasonNotPlaced where the newest result is one Dispatch could not place, and
+// PassStandsReasonReadFailed where the check compares with nothing for a read that did not
+// answer. Results names the results that decide the answer, where the rule that answers names
+// them, and Commit is their commit, absent where Results is empty.
 type CheckPassStands struct {
-	Answer string   `json:"answer" enum:"yes,no,unknown"`
-	Roles  []string `json:"roles,omitempty"`
+	Answer   string              `json:"answer" enum:"yes,no,unknown"`
+	Roles    []string            `json:"roles,omitempty"`
+	Reason   string              `json:"reason,omitempty" enum:"pass_and_fail,fail,no_result,not_placed,read_failed,program_not_named,no_deploy,deploy_not_merged,no_result_from_deploy"`
+	Subjects []PassStandsSubject `json:"subjects,omitempty"`
+	Results  []string            `json:"results,omitempty"`
+	Commit   string              `json:"commit,omitempty"`
+	Deploy   *CheckDeploy        `json:"deploy,omitempty"`
 }
+
+// PassStandsSubject is one head a `before_merge` check's pass must stand at, and its state:
+// PassStandsYes where a pass stands there; PassStandsNo with PassSubjectReasonFail where only a
+// fail stands there, or PassSubjectReasonNoResult where nothing does; PassStandsUnknown with
+// PassStandsReasonPassAndFail where a pass and a fail that count at one commit of a `before_merge`
+// check, from any role, make that commit's state unknown, or with PassSubjectReasonReadFailed
+// where the check is one CI proves and GitHub's check runs at that head could not be read. Roles
+// names each role whose pass counts there, for PassStandsYes alone. Results holds the ids of the
+// results that decide the state: for PassStandsYes the newest pass of each role in Roles, for
+// PassStandsNo with PassSubjectReasonFail the newest fail, for PassStandsReasonPassAndFail the
+// newest pass and the newest fail, and for PassSubjectReasonNoResult and
+// PassSubjectReasonReadFailed none. CI is the read of a check CI proves at that head, in the
+// repository of that head's pull request, and is absent for every other check.
+type PassStandsSubject struct {
+	Basis   CheckBasis `json:"basis"`
+	Answer  string     `json:"answer" enum:"yes,no,unknown"`
+	Reason  string     `json:"reason,omitempty" enum:"fail,no_result,pass_and_fail,read_failed"`
+	Roles   []string   `json:"roles,omitempty"`
+	Results []string   `json:"results,omitempty"`
+	CI      *CheckCI   `json:"ci,omitempty"`
+}
+
+// The reasons a pass_stands answer and its subjects give. PassStandsReasonPassAndFail is a pass
+// and a fail that count at one commit, from any role. PassSubjectReasonReadFailed is a subject
+// alone: the check runs at that head, of a check CI proves, could not be read.
+// PassStandsReasonReadFailed is the check's own: a read that decides it did not answer, with no
+// subject to name it at (CheckPassStands). PassStandsReasonFail, PassStandsReasonNoResult and
+// PassStandsReasonNotPlaced are an `after_merge` or `default_branch` check's own: its newest
+// result that counts is a fail, no result counts, or its newest result is one Dispatch could not
+// place.
+const (
+	PassStandsReasonPassAndFail = "pass_and_fail"
+	PassStandsReasonReadFailed  = "read_failed"
+	PassStandsReasonFail        = "fail"
+	PassStandsReasonNoResult    = "no_result"
+	PassStandsReasonNotPlaced   = "not_placed"
+	PassSubjectReasonFail       = "fail"
+	PassSubjectReasonNoResult   = "no_result"
+	PassSubjectReasonReadFailed = "read_failed"
+)
 
 // ResultCommitStands is where one result's commit stands against what its check compared with:
 // CommitAtBasis with the basis it matched, CommitOtherCommit, or CommitUnknown with the reason
@@ -1556,6 +1872,10 @@ type CheckResult struct {
 	Actor           Actor     `json:"actor"`
 	CreatedAt       time.Time `json:"created_at"`
 	EventSeq        *int64    `json:"event_seq,omitempty"`
+	// NotCounted is why this result counts for nothing, where it does. No surface counts such a
+	// result as evidence, a reader prints it after "It counts for nothing: ", and it is left out of
+	// the JSON on every result that counts.
+	NotCounted string `json:"not_counted,omitempty"`
 	// CommitRepo is the linked repository the record route took CommitSHA to be of
 	// (check_results.commit_repo), one the check's issue links a pull request in and does not
 	// resolve to: one with an open or merged linked pull request that GitHub said holds the
@@ -1568,6 +1888,10 @@ type CheckResult struct {
 	// where it is set, and names it in CommitStands.Repo where it decided an other_commit or
 	// unknown answer. It is no part of the wire shape.
 	CommitRepo *string `json:"-"`
+	// CheckSubject and CheckProgram snapshot the resolved block for deploy event recipients.
+	// They are stored facts, not recorder input or fields on a result's wire shape.
+	CheckSubject string `json:"-"`
+	CheckProgram string `json:"-"`
 	// ObservedTree is the ProseMirror tree Observed is shown as, present only on the results read
 	// for a caller that sent `Dispatch-Trees: 1`.
 	ObservedTree DisplayTree `json:"observed_tree,omitempty"`
@@ -1608,7 +1932,9 @@ type CheckResultRetraction struct {
 // one result is the one derived from that run. Text is the block's words with every link and
 // dispatch:// reference dropped (the pull-request line reads them); TextTree is the block's own
 // content whole, links and references kept, as the reader is shown it, present only for a
-// caller that sent `Dispatch-Trees: 1`.
+// caller that sent `Dispatch-Trees: 1`. Subject is what the check reads, its `subject` as stored:
+// code, production or graph, and "" where the block names none, which reads as code. Program is
+// the deployed program it reads, its `program` as stored, "" where it names none.
 type CheckBlock struct {
 	BlockID         string        `json:"block_id"`
 	Ref             string        `json:"ref"`
@@ -1621,21 +1947,26 @@ type CheckBlock struct {
 	Run             string        `json:"run"`
 	NegativeControl string        `json:"negative_control"`
 	CICheck         string        `json:"ci_check,omitempty"`
+	Subject         string        `json:"subject,omitempty" enum:"code,production,graph"`
+	Program         string        `json:"program,omitempty"`
 	CI              *CheckCI      `json:"ci,omitempty"`
 	Version         int           `json:"version"`
 	SHA256          string        `json:"sha256"`
 	Results         []CheckResult `json:"results"`
 	// ComparedWith is every commit and branch this check's results are compared with, in the
 	// order they are asked about, and ComparedNothing is why there are none where it is empty
-	// (ReasonNoPullRequestOrBranch, ReasonRepositoryUnreadable, ReasonReadFailed).
+	// (ReasonNoPullRequestOrBranch, ReasonRepositoryUnreadable, ReasonReadFailed,
+	// ReasonNotMerged).
 	ComparedWith    []CheckBasis    `json:"compared_with"`
-	ComparedNothing string          `json:"compared_nothing,omitempty" enum:"no_pull_request_or_branch,repository_unreadable,read_failed"`
+	ComparedNothing string          `json:"compared_nothing,omitempty" enum:"no_pull_request_or_branch,repository_unreadable,read_failed,not_merged"`
 	PassStands      CheckPassStands `json:"pass_stands"`
 }
 
 // CIStatePass, CIStateFail, CIStateNoResult and CIStateUnread are what the read of a check CI
 // proves answered (CheckCI.State): the named run passed, it failed, nothing the read found proves
-// the check either way, or GitHub could not be read. Only a pass and a fail carry a result.
+// the check either way, or a read that decides it did not answer: GitHub's, or Dispatch's own read
+// of when each merged pull request of an issue with none open merged, where it cannot tell which
+// of them is the newest (the case read_failed). Only a pass and a fail carry a result.
 const (
 	CIStatePass     = "pass"
 	CIStateFail     = "fail"
@@ -1643,16 +1974,30 @@ const (
 	CIStateUnread   = "unread"
 )
 
-// CheckCI is what Dispatch read of the GitHub check run a check CI proves names, at the newest
-// pull request head of the check's issue: the run's name, the state of the check, the case that
-// decided it (a conclusion GitHub wrote, or one of the cases of no conclusion), one sentence
-// naming that case, and the line the pull-request body carries for the check.
+// CheckCI is what Dispatch read of the GitHub check run a check CI proves names, at one head of
+// the check's issue, in the repository of that head's pull request: the run's name, the state of
+// the check, the case that decided it (a conclusion GitHub wrote, or one of the cases of no
+// conclusion), one sentence naming that case, and the line the pull-request body carries for the
+// check. Dispatch reads it at the head of each open pull request of the issue, or, where none is
+// open, at the final head of the newest merged one. A check's own `ci` is the read of the open
+// pull request of the highest number; each subject of the check carries the read at its head.
+//
+// Commit and Repo name the head the read is of: its commit, and the repository of the pull
+// request whose head it is, where the check runs were read. Two repositories may hold one commit,
+// each with runs of its own there, so a reader tells the reads of one head apart by both. Neither
+// is set where Dispatch read no head (the cases no_head and read_failed). Result is the id of the
+// result the read derived from the run (CheckResult.ID, `ci-run:` and the check run's id), set
+// where the run passed or failed and only there: a reader picks the derived result of a head by
+// this id, never by the words of Line.
 type CheckCI struct {
 	Run    string `json:"run"`
 	State  string `json:"state" enum:"pass,fail,no_result,unread"`
 	Case   string `json:"case"`
 	Detail string `json:"detail"`
 	Line   string `json:"line"`
+	Commit string `json:"commit,omitempty"`
+	Repo   string `json:"repo,omitempty"`
+	Result string `json:"result,omitempty"`
 }
 
 // IssueCoverage is what each requirement of an issue's spec lacks: the requirements the spec

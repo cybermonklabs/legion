@@ -203,9 +203,10 @@ type outbox struct {
 
 // outboxTrees is the store's tree barrier (store.Store) as the outbox runs it: an issue close's
 // suspension, an idle release's own two decisions, the check of its workspace and the decline
-// that check can record, a stop's wait for a stored claim's machine, a workflow tree close's
-// cleanup, a delivery wake and the open resume that refuses one, a project pause's stop of a role
-// and which pause stopped a role, and the end of a pause's hold of a pod a deletion took.
+// that check can record, a finished issue's drop of the record of its pods' disks, a stop's wait
+// for a stored claim's machine, a workflow tree close's cleanup, a delivery wake and the open
+// resume that refuses one, a project pause's stop of a role and which pause stopped a role, and
+// the end of a pause's hold of a pod a deletion took.
 type outboxTrees interface {
 	Pool() *store.Pool
 	IssueSuspension(ctx context.Context, project string, closing store.IssueClose, outOfWorkflow func(status string) bool) (bool, error)
@@ -221,6 +222,7 @@ type outboxTrees interface {
 	DeclineLeftPodClose(ctx context.Context, project, issue string, decline store.IdleReleaseDecline) (bool, error)
 	ReleaseIdleIssue(ctx context.Context, project, issue string, decide store.IdleReleaseDecide) (bool, error)
 	ClearIssueRelease(ctx context.Context, project, issue string) error
+	DeleteIssuePodDisks(ctx context.Context, issue string) error
 	NoteReleaseTeardown(ctx context.Context, project, issue string, release int64, teardown store.ReleaseTeardown) error
 	StoredClaimMayRun(ctx context.Context, token claim.Token, row int64) (bool, error)
 	StoredClaimMayRunIn(ctx context.Context, token claim.Token, tree string) (bool, error)
@@ -2228,7 +2230,11 @@ func (r *outbox) hookPrompt(ctx context.Context, row record.OutboxRow, payload r
 // that lock for minutes, so waiting for it would hold every role message of this issue behind one
 // decision. The row keeps its place, nothing was published, and its next attempt is the first
 // publish. A claim an earlier ask of the round already reached is published nothing, so a second
-// row of one round asks no role twice.
+// row of one round asks no role twice. A claim that holds an answer of the round is published
+// nothing either (supervise.Machine.PublishUpdateAsk answers UpdateAskAnswered), and the row
+// finishes with one line of its own: the sweep read the claim before the row ran, and the role
+// answered in between. A claim the daemon suspended after it answered ends there too, on that
+// line, rather than at UpdateAskSuspended.
 //
 // A topic with no live holder (notify.ErrNoHolder) is logged on one line and ends the row with
 // nothing marked: the ask is lost, not given, and the sweep's next reading of the round asks the
@@ -2281,6 +2287,8 @@ func (r *outbox) updateAsk(ctx context.Context, row record.OutboxRow, payload re
 		r.updateAskLeftRound(row, payload, token, machine.View().UpdateRound)
 	case supervise.UpdateAskSuspended:
 		r.log.Info("outbox update ask finished without a publish: the daemon suspended the claim", fields...)
+	case supervise.UpdateAskAnswered:
+		r.log.Info("outbox update ask finished without a publish: the role has answered its round", fields...)
 	}
 	return nil
 }
