@@ -199,6 +199,7 @@ func markedSurfacesFixture(t *testing.T) string {
 // run and --check answers a stale corpus rather than the clock. The readings go through
 // ReadForDisplay itself rather than DisplayJSON only to keep the kept encoding out of it.
 func TestWebDisplayFixture(t *testing.T) {
+	t.Parallel()
 	texts := webFixtureTexts(t)
 	cases := make([]webFixtureCase, 0, len(texts))
 	for _, text := range texts {
