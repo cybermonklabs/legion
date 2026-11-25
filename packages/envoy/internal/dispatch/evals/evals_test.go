@@ -3,7 +3,9 @@ package evals
 import (
 	"context"
 	"encoding/json"
+	"flag"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -17,7 +19,31 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
-func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
+// evalsTestParallelism is how many of this package's tests run at once when the command line names
+// no -parallel. Every test calls t.Parallel except those that change or read back something the
+// whole process shares, or hold a bound of the wall clock that other tests' load would move, which
+// stay serial and run before the rest: the catalogue a later release changes (withCatalogue), the
+// default logger, whose records the refresher's loop (startLoop) and a rebuild's flip are read
+// from, a loop run in real time against its gaps and latency bounds (startLoop), samples of the
+// change log's lock taken every millisecond (SampleAdvisoryHolds, intakeBlockers), a vacuum waited
+// for under allVisibleBound, which commits in other databases hold back, the fold pool's 200 ms
+// window, and the timings an environment variable asks for. Each parallel test has a database and
+// pools of its own (storetest.Open's clone). go test's default of GOMAXPROCS is four on CI's arm
+// runner, but hundreds on a dev box, where every test's database and pools at once would open more
+// connections than the test server allows (testlimits.ServerConnections); four is CI's default, so
+// the cap changes nothing there.
+//
+// go test parses its flags inside m.Run, so a -parallel on the command line still wins.
+const evalsTestParallelism = 4
+
+// TestMain sets the package's default -parallel and runs the package's tests through the Dispatch
+// harness's Main, which waits for their databases to drop and drops their templates.
+func TestMain(m *testing.M) {
+	if err := flag.Set("test.parallel", strconv.Itoa(evalsTestParallelism)); err != nil {
+		panic("set this package's default -parallel: " + err.Error())
+	}
+	os.Exit(storetest.Main(m))
+}
 
 // testBuild is the build every test's readings write records on its day rows.
 const testBuild = "test-build"

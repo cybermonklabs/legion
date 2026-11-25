@@ -77,6 +77,7 @@ func line(family, project string, day time.Time) string {
 // and a key whose first input the change brings writes its zero rows through today, as one that no
 // input counts for any more deletes every row it held (keyDays).
 func TestEachDeliveryChangeRewritesExactlyItsDays(t *testing.T) {
+	t.Parallel()
 	r := newRefresherRig(t)
 	deliveries, _ := r.seedHistories(t)
 	r.leaveInputsUnread(t)
@@ -601,6 +602,7 @@ func (r *refresherRig) writeIssueEvent(t *testing.T, issue, kind, payload string
 //     that is no P0 rewrites nothing;
 //   - a reading of a logged eval rewrites no day.
 func TestEachLegionChangeRewritesExactlyItsDays(t *testing.T) {
+	t.Parallel()
 	r := newRefresherRig(t)
 	history := r.seedLegionEval(t)
 	r.settle(t)
@@ -701,6 +703,7 @@ func TestEachLegionChangeRewritesExactlyItsDays(t *testing.T) {
 // third day) below EVAL-4 (open, with no filing), a write moving EVAL-4's repository rewrites
 // EVAL-3's close day.
 func TestAMoveOfAnAncestorRewritesTheCloseDaysBelowIt(t *testing.T) {
+	t.Parallel()
 	r := newRefresherRig(t)
 	history := r.seedLegionEval(t)
 	r.exec(t, "put EVAL-3 below EVAL-4", `update issues set parent_key = 'EVAL-4' where key = 'EVAL-3'`)
@@ -722,6 +725,7 @@ func TestAMoveOfAnAncestorRewritesTheCloseDaysBelowIt(t *testing.T) {
 // move before its first walk. Then a write of repo_projects, which no rule reads, logs no change,
 // and the pass after it rewrites no day.
 func TestAPullRequestsIssueMoveMovesItsPRChecksRunsWithinOnePass(t *testing.T) {
+	t.Parallel()
 	r := newRefresherRig(t)
 	deliveries, _ := r.seedHistories(t)
 	r.leaveInputsUnread(t)
@@ -828,6 +832,7 @@ func (r *refresherRig) mergeDayEarlier(t *testing.T, repo string, day time.Time)
 // card: one pass deletes every row of that card, where a whole walk under the new settings holds
 // none.
 func TestARepositoryRowThatLosesItsLastInputIsDeletedAsAWholeWalkHoldsNone(t *testing.T) {
+	t.Parallel()
 	r := newRefresherRig(t)
 	deliveries, _ := r.seedHistories(t)
 	r.leaveInputsUnread(t)
@@ -935,6 +940,7 @@ func TestARepositoryRowThatLosesItsLastInputIsDeletedAsAWholeWalkHoldsNone(t *te
 // 0 deploys a day. A second database whose runs were deleted before its first walk holds the same
 // rows, members and stored figures.
 func TestADayWithNoInputReadsZeroFromItsSeriesFirstInputDayOnAndNoDataBeforeIt(t *testing.T) {
+	t.Parallel()
 	r := newRefresherRig(t)
 	deliveries, _ := r.seedHistories(t)
 	r.leaveInputsUnread(t)
@@ -1083,6 +1089,7 @@ func (r *refresherRig) expectSameLegionAsWalk(t *testing.T, what string, walk *r
 // holds the Legion rows, the members and the stored figures of a second database whose issue
 // closed so before its first walk.
 func TestALegionSeriesWhoseFirstDayMovesLandsInOneCommitAsAWholeWalkHoldsIt(t *testing.T) {
+	t.Parallel()
 	live := newRefresherRig(t)
 	live.batch = 2
 	history := live.seedLegionEval(t)

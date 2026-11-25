@@ -476,6 +476,7 @@ func TestACorrectionCommitsWhileTheChangeLogLockIsHeldElsewhere(t *testing.T) {
 // Before, the write's drain moved batch after batch until the outbox was empty, and the write
 // answered only then.
 func TestAReadingsWriteDrainsOneBatchOfAnotherWritersBacklog(t *testing.T) {
+	t.Parallel()
 	r := newRig(t)
 	ctx := t.Context()
 	minutes := func(key string, day int) json.RawMessage {

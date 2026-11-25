@@ -18,6 +18,7 @@ import (
 // the target alone writes version 2, which holds that target and every field version 1 held; a
 // write that changes nothing writes no version; and the versions read newest first.
 func TestATargetChangeWritesANewVersionAndCopiesEveryOtherFieldForward(t *testing.T) {
+	t.Parallel()
 	r := newRig(t)
 	first, err := r.registry.Register(t.Context(), Registration{
 		Project: r.project, Slug: "review-rounds", Caller: alice,
@@ -73,6 +74,7 @@ func TestATargetChangeWritesANewVersionAndCopiesEveryOtherFieldForward(t *testin
 // connections at once, both succeed, as versions 2 and 3, and version 3 holds both writes'
 // fields. The test holds the eval's lock until both writes wait for it.
 func TestTwoRegisterWritesAtOnceLandAsTheNextTwoVersions(t *testing.T) {
+	t.Parallel()
 	r := newRig(t)
 	first, err := r.registry.Register(t.Context(), Registration{Project: r.project, Slug: "queue-depth", Caller: alice, Name: Set("Queue depth")})
 	if err != nil {
@@ -121,6 +123,7 @@ func TestTwoRegisterWritesAtOnceLandAsTheNextTwoVersions(t *testing.T) {
 // block; a second doc_text replaces the block, whose id the next version names, and the first
 // block and its text are gone, under the one heading of the eval.
 func TestDocTextReplacesTheSectionsMethodAndNamesTheNewBlock(t *testing.T) {
+	t.Parallel()
 	r := newRig(t)
 	firstText := "Counts each pull request's review rounds.\n\n- A round is one review that requests changes."
 	first, err := r.registry.Register(t.Context(), Registration{Project: r.project, Slug: "rework", Caller: alice, DocText: Set(firstText)})
@@ -158,6 +161,7 @@ func TestDocTextReplacesTheSectionsMethodAndNamesTheNewBlock(t *testing.T) {
 // writes no version of the eval, keeps its method block and writes no version of evals-md; a
 // doc_text that differs writes the next version, naming a new block.
 func TestARegisterWriteOfTheMethodTheSectionHoldsWritesNothing(t *testing.T) {
+	t.Parallel()
 	r := newRig(t)
 	method := "Counts the rounds after the first review.\n\n:::callout{title=\"Why\"}\nThe first review always happens.\n:::"
 	register := func(text string) Registered {
@@ -197,6 +201,7 @@ func TestARegisterWriteOfTheMethodTheSectionHoldsWritesNothing(t *testing.T) {
 // it wrote, and logs one eval_versions change of the eval, so a live view of the eval wakes; the
 // same write again stores nothing, answers so, and logs nothing.
 func TestARegisterWriteThatChangesASeriesAloneWritesAVersion(t *testing.T) {
+	t.Parallel()
 	r := newRig(t)
 	minutes := []SeriesChange{{Series: "minutes", Agg: Set(AggQuantile)}}
 	if _, err := r.registry.Register(t.Context(), Registration{Project: r.project, Slug: "review-time", Caller: alice, Name: Set("Review time"), Series: minutes}); err != nil {
@@ -242,6 +247,7 @@ func TestARegisterWriteThatChangesASeriesAloneWritesAVersion(t *testing.T) {
 // issue, links and state, and its method; and the min_n of pr-ci's job series, the one series min_n
 // is taken on (TestAMinNIsTakenOnlyOnTheSeriesAReadRanksBy). A logged eval takes every field.
 func TestARegisterWriteOfAComputedEvalNamingItsComputationIsRefused(t *testing.T) {
+	t.Parallel()
 	r := newRig(t)
 	ctx := t.Context()
 	if _, err := r.registry.Ensure(ctx, r.project); err != nil {
@@ -331,6 +337,7 @@ func TestARegisterWriteOfAComputedEvalNamingItsComputationIsRefused(t *testing.T
 // naming its row and its link, and an eval's and a series', naming the field. A refused write
 // stores nothing; an https URL written in capitals is one, and is stored.
 func TestALinkWhoseHrefIsNoHTTPURLIsRefused(t *testing.T) {
+	t.Parallel()
 	r := newRig(t)
 	ctx := t.Context()
 	stored := func() (int, int) {
@@ -390,6 +397,7 @@ func TestALinkWhoseHrefIsNoHTTPURLIsRefused(t *testing.T) {
 // EVAL_FIELD_INVALID naming that series' min_n, and stores nothing; the one of pr-ci's job series
 // is stored, and the readers of it read it.
 func TestAMinNIsTakenOnlyOnTheSeriesAReadRanksBy(t *testing.T) {
+	t.Parallel()
 	r := newRig(t)
 	ctx := t.Context()
 	if _, err := r.registry.Ensure(ctx, r.project); err != nil {
@@ -441,6 +449,7 @@ func TestAMinNIsTakenOnlyOnTheSeriesAReadRanksBy(t *testing.T) {
 // and stores nothing, so no logged eval is made computed and left reading "no data" for good. A
 // write of source logged is taken.
 func TestARegisterWriteMakesNoEvalComputed(t *testing.T) {
+	t.Parallel()
 	r := newRig(t)
 	ctx := t.Context()
 	r.write(t, "build-minutes", alice, row(t, map[string]any{"series": "minutes", "row_kind": "run", "value": 4, "measured_at": at(4, 9, 0)}))
@@ -475,6 +484,7 @@ func TestARegisterWriteMakesNoEvalComputed(t *testing.T) {
 // holds, the project's and a repository's, in its own transaction, so a window that spans the
 // change folds every day of it, not only those written after; unlisting it again unlists them all.
 func TestAListingChangeOfALoggedSeriesMovesItsStoredDayRows(t *testing.T) {
+	t.Parallel()
 	r := newRig(t)
 	ctx := t.Context()
 	slug := "queue-depth"
@@ -518,6 +528,7 @@ func TestAListingChangeOfALoggedSeriesMovesItsStoredDayRows(t *testing.T) {
 // and of SeriesChange outside the computation, is named by personFields, and setting it alone
 // names it alone. A field added to either and missed there fails here.
 func TestEveryFieldAPersonSetsIsRecordedAsSetByOne(t *testing.T) {
+	t.Parallel()
 	for _, change := range []struct {
 		what     string
 		value    reflect.Value

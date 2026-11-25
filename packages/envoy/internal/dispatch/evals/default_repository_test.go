@@ -81,6 +81,7 @@ func (r *refresherRig) readTallies(t *testing.T, project string, series map[stri
 // deploy. Red under the rule that counts a row with no issue for no project: ALPHA counts X and Z
 // and BETA nothing.
 func TestADeployCountsOnceInEachProjectWhoseIssueOrDefaultRepositoryItReaches(t *testing.T) {
+	t.Parallel()
 	r := newRefresherRig(t)
 	ctx, pool := t.Context(), r.database.Pool
 	day := refresherToday.AddDate(0, 0, -1)
@@ -235,6 +236,7 @@ func seedPierAndQuay(t *testing.T, r *refresherRig) time.Time {
 // delivery_pull_requests.issue_key alone, which the move leaves null: PIER then reads the
 // repository's rows as QUAY does, through the repository.
 func TestADefaultMoveReattributesAPullRequestHeldThroughItWithNoDayRowWritten(t *testing.T) {
+	t.Parallel()
 	r := newRefresherRig(t)
 	ctx, pool := t.Context(), r.database.Pool
 	day := seedPierAndQuay(t, r)
@@ -582,6 +584,7 @@ func moveShapes() []struct {
 // rows hold; and where a read of a stale cut reads the stored figures of an eval its mark names,
 // or of none of its evals.
 func TestADefaultMoveMarksOnlyTheCutsItTouches(t *testing.T) {
+	t.Parallel()
 	r := newRefresherRig(t)
 	ctx, pool := t.Context(), r.database.Pool
 	day := seedPierAndQuay(t, r)
@@ -690,6 +693,7 @@ func TestADefaultMoveMarksOnlyTheCutsItTouches(t *testing.T) {
 // generation stood, clears the mark a pass early, and leaves the stored figures of the cut's first
 // end day folded under the default the second move left.
 func TestAMoveDuringARefoldLeavesTheCutStaleUntilItsGenerationIsFolded(t *testing.T) {
+	t.Parallel()
 	r := newRefresherRig(t)
 	seedPierAndQuay(t, r)
 	r.settle(t)
@@ -802,6 +806,7 @@ func TestAMoveDuringARefoldLeavesTheCutStaleUntilItsGenerationIsFolded(t *testin
 // one folds one batch of each: the pass then leaves every cut the move marked stale, and their
 // stored figures folded under the defaults before it.
 func TestThePassThatPublishesAMoveFoldsItsStaleCutsToTheEnd(t *testing.T) {
+	t.Parallel()
 	r := newRefresherRig(t)
 	ctx, pool := t.Context(), r.database.Pool
 	seedPierAndQuay(t, r)
@@ -846,6 +851,7 @@ func TestThePassThatPublishesAMoveFoldsItsStaleCutsToTheEnd(t *testing.T) {
 // a stale cut states none of its evals from the stored figures, or states a marked one from them,
 // and where the refold deletes the stored rows of the evals it does not fold.
 func TestAMoveOfADefaultRefoldsTheEvalsOfItsDefaultRowsAlone(t *testing.T) {
+	t.Parallel()
 	r := newRefresherRig(t)
 	ctx, pool := t.Context(), r.database.Pool
 	defaultRepo, nextDefault := "acme/legion", "acme/other"
@@ -947,6 +953,7 @@ func TestAMoveOfADefaultRefoldsTheEvalsOfItsDefaultRowsAlone(t *testing.T) {
 // first move moved folded under the defaults before it, or where a null mark takes the second
 // move's.
 func TestAMarkOfAMarkedCutNamesTheEvalsOfBoth(t *testing.T) {
+	t.Parallel()
 	r := newRefresherRig(t)
 	ctx, pool := t.Context(), r.database.Pool
 	mark := func(what string, marks map[staleCut][]string) {
@@ -1002,6 +1009,7 @@ func TestAMarkOfAMarkedCutNamesTheEvalsOfBoth(t *testing.T) {
 // those of the ':default' rows and the owner key's under the project's key. Red where a read takes
 // the project's or the key's every row and keeps those of the repository or the first of each eval.
 func TestTheReadsOfTheEvalsAMoveMovesAreBoundedByIndexes(t *testing.T) {
+	t.Parallel()
 	r := newRefresherRig(t)
 	ctx, pool := t.Context(), r.database.Pool
 	owner := OwnerKey("acme/main", nil, nil)
@@ -1091,6 +1099,7 @@ func TestTheReadsOfTheEvalsAMoveMovesAreBoundedByIndexes(t *testing.T) {
 // day after each slow batch, which on a slow database folds every end day in a transaction of its
 // own.
 func TestARefoldBatchFoldsAtLeastOneEndDayAndAtMostThePassBatch(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		what         string
 		days, most   int
@@ -1119,6 +1128,7 @@ func TestARefoldBatchFoldsAtLeastOneEndDayAndAtMostThePassBatch(t *testing.T) {
 // the published projects over as a nil slice, which the database reads as null: its delete of the
 // defaults no project holds then deletes none, and every page publishes the clear again.
 func TestClearingTheLastDefaultRepositoryIsPublishedOnce(t *testing.T) {
+	t.Parallel()
 	r := newRefresherRig(t)
 	ctx, pool := t.Context(), r.database.Pool
 	r.exec(t, "give EVAL a default repository", `update projects set default_repo = 'acme/web' where key = $1`, r.project)
@@ -1172,6 +1182,7 @@ func TestClearingTheLastDefaultRepositoryIsPublishedOnce(t *testing.T) {
 // picks GAMMA, so a key whose every list does is read by GAMMA alone, one with another list by
 // that list's pick as well, and the plain keys by GAMMA too, through the repository.
 func TestTheReadersOfAnOwnerKeyAreTheProjectsThePublishedDefaultsPick(t *testing.T) {
+	t.Parallel()
 	r := newRefresherRig(t)
 	ctx, pool := t.Context(), r.database.Pool
 	const repo, other = "acme/r", "acme/other"

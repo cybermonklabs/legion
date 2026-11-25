@@ -123,6 +123,7 @@ func allRepositorySeries(rows map[string]DayRow, project string, days ...time.Ti
 // computed neither day, and deleted them, so those series read "no data" until the walk came back.
 // Once the passes settle, EVAL's Legion rows and figures are a whole walk's over the moved close.
 func TestAChangeDuringARestartKeepsTheDaysZeroRows(t *testing.T) {
+	t.Parallel()
 	for _, restart := range restartCases {
 		t.Run(restart.name, func(t *testing.T) {
 			r := newRefresherRig(t)
@@ -174,6 +175,7 @@ func TestAChangeDuringARestartKeepsTheDaysZeroRows(t *testing.T) {
 // rewrote every computed row whose built_by was another build's, and its figures walk folded every
 // figure again in the open.
 func TestARestartOverStoredRowsServesThemUnchangedAndWritesNothing(t *testing.T) {
+	t.Parallel()
 	for _, restart := range restartCases {
 		t.Run(restart.name, func(t *testing.T) {
 			r := newRefresherRig(t)
@@ -341,6 +343,7 @@ func TestARebuildThatMovesValuesLandsInOneCommit(t *testing.T) {
 // eval_days change after the release began, with the rebuild's mark, and no day row moved. Before,
 // the new build's figures walk rewrote them in the open and logged nothing.
 func TestAFoldOnlyMoveMarksTheViews(t *testing.T) {
+	t.Parallel()
 	r := newRefresherRig(t)
 	deliveries, _ := r.seedHistories(t)
 	r.settle(t)
@@ -437,6 +440,7 @@ func (r *refresherRig) stagedMerges(t *testing.T, project string) map[time.Time]
 // history, with the same merge where one moved, whole: the change is not lost, and no stale staged
 // row overwrote it.
 func TestAChangeDuringARebuildIsNeitherLostNorOverwritten(t *testing.T) {
+	t.Parallel()
 	for _, writer := range []string{"the rebuild's own build", "the build before it", "a process that queues nothing"} {
 		t.Run(writer, func(t *testing.T) {
 			r, deliveries := newSettingsRigByIssue(t, 2)
@@ -496,6 +500,7 @@ func TestAChangeDuringARebuildIsNeitherLostNorOverwritten(t *testing.T) {
 // day row writes the rows of one day, the first pass leaves rows on the walk's first two days and
 // none after them, the serving records follow the walks, and no rebuild and no staged row exists.
 func TestAFreshDatabasesFirstWalkCommitsDayByDay(t *testing.T) {
+	t.Parallel()
 	r := newRefresherRig(t)
 	r.batch = 2
 	deliveries, _ := r.seedHistories(t)
@@ -584,6 +589,7 @@ func (r *refresherRig) buildingRebuild(t *testing.T) (int64, map[string]string) 
 // the rows, members and figures a whole walk holds. Red where the failed pass, or one after it,
 // abandons the rebuild and begins another.
 func TestARebuildResumesAfterACrash(t *testing.T) {
+	t.Parallel()
 	r, deliveries := newSettingsRig(t, 2)
 	r.corruptDays(t, deliveries.Project)
 	r.release("release-build")
@@ -706,6 +712,7 @@ func argBytes(args []any) int {
 // writes the live tables from the staging takes no array, and every other statement of the staging
 // sends at most statementBytes.
 func TestTheFlipSendsNoArrayAndTheStagingStaysUnderTheBound(t *testing.T) {
+	t.Parallel()
 	r := newRefresherRig(t)
 	r.batch = 4
 	deliveries, _ := r.seedHistories(t)
@@ -739,6 +746,7 @@ func TestTheFlipSendsNoArrayAndTheStagingStaysUnderTheBound(t *testing.T) {
 // rebuild flipped, the new build's, no rebuild building, and every stored family served by it.
 // Before, each build's passes continued their own walks, and a roll rewrote every row twice.
 func TestTwoBuildsRollingTogetherFlipOnce(t *testing.T) {
+	t.Parallel()
 	r := newRefresherRig(t)
 	r.batch = 2
 	r.seedHistories(t)

@@ -405,6 +405,7 @@ func contiguous(days []time.Time, today time.Time) (time.Time, bool) {
 // (today, and a day before a reading) hold zero rows, n 0. The cursors stand at the feeds' heads,
 // stamped with the pass's moment, which RefresherAgeIn reads.
 func TestTheFirstPassWalksEveryFamilyFromItsFirstInputDayWithZeroRows(t *testing.T) {
+	t.Parallel()
 	r := newRefresherRig(t)
 	deliveries, legion := r.seedHistories(t)
 	r.leaveInputsUnread(t)
@@ -519,6 +520,7 @@ func TestTheFirstPassWalksEveryFamilyFromItsFirstInputDayWithZeroRows(t *testing
 // pruning it, and a loop no change wakes prunes it within five minutes of a change's expiry and no
 // sooner.
 func TestTheTickPrunesChangesOlderThanTheirRetention(t *testing.T) {
+	t.Parallel()
 	r := newRefresherRig(t)
 	r.now = time.Now().UTC()
 	r.pass(t)
@@ -1051,6 +1053,7 @@ func TestTheWalkKeepsItsGapWhileChangesRunAtOnce(t *testing.T) {
 // the same batch builds no day, the batch spent, and says the walk has days left; and a pass with a
 // new batch builds four days again.
 func TestAWalkStopsBetweenDaysWhenAWakeIsOwed(t *testing.T) {
+	t.Parallel()
 	r := newRefresherRig(t)
 	r.seedLegionEval(t)
 	r.batch = 4

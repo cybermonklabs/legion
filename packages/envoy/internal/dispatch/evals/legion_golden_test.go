@@ -135,6 +135,7 @@ const (
 // the window and cut, which the items route answers. Then one day's rows are deleted, and the
 // same comparison must find numbers that moved.
 func TestTheLegionFoldsOfTheStoredDayRowsAnswerTheBaseHeadsReports(t *testing.T) {
+	t.Parallel()
 	r := newRig(t)
 	windows, project, _ := seedGoldenLegionHistory(t, r)
 	spec := windows[0].Spec

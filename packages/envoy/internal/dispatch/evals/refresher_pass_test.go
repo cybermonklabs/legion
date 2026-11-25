@@ -24,6 +24,7 @@ import (
 // a second P0 issue opens, and the pages after it, of the same pass, rewrite both: the day holds
 // both issues' new hours and today's count is 2.
 func TestAChangeLandingBetweenTwoPagesOfAPassIsWritten(t *testing.T) {
+	t.Parallel()
 	r := newRefresherRig(t)
 	history := r.seedLegionEval(t)
 	r.settle(t)
@@ -94,6 +95,7 @@ func TestAChangeLandingBetweenTwoPagesOfAPassIsWritten(t *testing.T) {
 // no pass had committed for longer than the retention: while the refresher stood still the prune
 // may have taken changes after the cursor that no pass read.
 func TestAPrunedCursorChangeIsNoLossAndAVanishedYoungOneIs(t *testing.T) {
+	t.Parallel()
 	r := newRefresherRig(t)
 	r.seedLegionEval(t)
 	r.settle(t)
@@ -158,6 +160,7 @@ func TestAPrunedCursorChangeIsNoLossAndAVanishedYoungOneIs(t *testing.T) {
 // hours on, past the retention since that read. It reads the cursor as lost and begins a rebuild of
 // every family, whose flip writes EVAL-1's close day with its new hours, which no page read.
 func TestARefresherCatchUpThatAPruneCrossesReadsItsCursorAsLost(t *testing.T) {
+	t.Parallel()
 	r := newRefresherRig(t)
 	history := r.seedLegionEval(t)
 	r.settle(t)
@@ -221,6 +224,7 @@ func TestARefresherCatchUpThatAPruneCrossesReadsItsCursorAsLost(t *testing.T) {
 // delivery walk, a project's unowned-p0 row of today is written by the first pass of each UTC day,
 // since the count reads issues alone, and by no later pass of that day.
 func TestTheUnownedP0RowOfEachDayIsWrittenWithNoDeliverySettings(t *testing.T) {
+	t.Parallel()
 	r := newRefresherRig(t)
 	if _, err := delivery.GetSettings(t.Context(), r.database.Pool); !errors.Is(err, delivery.ErrNoSettings) {
 		t.Fatalf("the store holds delivery settings (%v), want none", err)
@@ -344,6 +348,7 @@ func TestAnEventAboveTheSafeHorizonAsksForAPassSoon(t *testing.T) {
 // shipped by a run, are analyzed first, and sequential scans are off, so the plan names the index
 // the statement can prove and nothing else.
 func TestTheShippedMembersReadKeepsItsPartialIndexUnderAGenericPlan(t *testing.T) {
+	t.Parallel()
 	r := newRig(t)
 	ctx := t.Context()
 	if _, err := r.database.Pool.Exec(ctx, `
@@ -379,6 +384,7 @@ func TestTheShippedMembersReadKeepsItsPartialIndexUnderAGenericPlan(t *testing.T
 // exists, and none of an eval the fill's ids leave out. A second fill writes nothing, and a fill
 // of every logged eval fills the one left out.
 func TestTheLoggedZeroFillWritesEveryMissingDayAndNoOther(t *testing.T) {
+	t.Parallel()
 	r := newRig(t)
 	ctx := t.Context()
 	// The days are October 2026's, every one in the past, so the readings write takes the reading
@@ -462,6 +468,7 @@ func TestTheLoggedZeroFillWritesEveryMissingDayAndNoOther(t *testing.T) {
 // the pull requests of 2026-09-27: apply rows read from 2026-09-27T08:00:00Z hold no run of a
 // window from 2026-09-27T00:00:00Z".
 func TestAPassOverDeliveryInputWithNoProjectSucceeds(t *testing.T) {
+	t.Parallel()
 	r := newRefresherRig(t)
 	ctx := t.Context()
 	r.exec(t, "remove the rig's one project", `delete from projects`)

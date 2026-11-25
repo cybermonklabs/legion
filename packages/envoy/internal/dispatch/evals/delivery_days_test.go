@@ -300,6 +300,7 @@ func (r rig) refreshDays(t *testing.T, legion []string, days ...time.Time) []str
 // requests, and every row of a deploy or a CI run; its items of the day that it no longer holds
 // are deleted; written again, the moved day rewrites nothing.
 func TestEachDeliveryAndCIRowCountsForTheProjectItIsAttributedTo(t *testing.T) {
+	t.Parallel()
 	r := newRig(t)
 	settings := seedAttribution(t, r)
 	ctx := t.Context()
@@ -479,6 +480,7 @@ func TestEachDeliveryAndCIRowCountsForTheProjectItIsAttributedTo(t *testing.T) {
 // after the repository and the sharers (OwnerKey), sorted and once each, and reads back as it was
 // made (parseOwner); a key whose every list is none is the plain key.
 func TestAPullRequestsCandidatesMakeItsAttributionList(t *testing.T) {
+	t.Parallel()
 	here := func(project string) delivery.ResolvedCandidate {
 		return delivery.ResolvedCandidate{Key: project + "-1", Project: project, Owned: alphaRepo, OwnedHere: true}
 	}
@@ -538,6 +540,7 @@ func TestAPullRequestsCandidatesMakeItsAttributionList(t *testing.T) {
 // and its value zero, those of the evals that read the deploy repository keyed by the repository
 // kept, and WithZeros adds a zero row only where the day holds none of that series.
 func TestTheZeroDayIsTheBuildersDayWithNoRow(t *testing.T) {
+	t.Parallel()
 	day := attributionDay
 	settings := delivery.DeliverySettings{DeployRepo: alphaRepo, ProductionJobNames: []string{"production / apply"}, StagingE2EJobName: new("staging-e2e / run")}
 	zero := ZeroDeliveryDay(settings, "ALPHA", day, []string{alphaRepo})
@@ -579,6 +582,7 @@ func TestTheZeroDayIsTheBuildersDayWithNoRow(t *testing.T) {
 // P0 issues with no claim and no route as the day row's last value, at the write's time; a second
 // write after one more such issue opens moves the value and the time.
 func TestTheUnownedP0RowIsTheCountAtItsLastWrite(t *testing.T) {
+	t.Parallel()
 	r := newRig(t)
 	ctx := t.Context()
 	actor := `{"kind":"system","id":"p0-test"}`
@@ -648,6 +652,7 @@ func TestTheUnownedP0RowIsTheCountAtItsLastWrite(t *testing.T) {
 // as `not exists`, the stale rows' generic plan was a nested-loop anti-join that had not written
 // 80,000 rows after 2 minutes.
 func TestEachFilterOfWhatADayNoLongerHoldsReadsItsListOnce(t *testing.T) {
+	t.Parallel()
 	r := newRig(t)
 	ctx := t.Context()
 	day := attributionDay

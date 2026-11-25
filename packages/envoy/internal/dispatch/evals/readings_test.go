@@ -33,6 +33,7 @@ func good(t *testing.T) json.RawMessage {
 // is refused whole, and the refusal names that row's index and the rule's code, for every code
 // the readings write refuses with.
 func TestEachBadRowIsRefusedByItsIndexAndCode(t *testing.T) {
+	t.Parallel()
 	r := newRig(t)
 	// A reading another correction replaced already, for READING_ALREADY_REPLACED.
 	first := r.write(t, "accuracy", alice, good(t))
@@ -129,6 +130,7 @@ func TestEachBadRowIsRefusedByItsIndexAndCode(t *testing.T) {
 // largest int64 is stored whole, and an n past it is refused READING_INVALID naming n, and stores
 // nothing, rather than reaching the store.
 func TestAReadingsNIsHeldWholeToTheLargestInt64(t *testing.T) {
+	t.Parallel()
 	r := newRig(t)
 	written := r.write(t, "sizes", alice, row(t, map[string]any{
 		"series": "score", "row_kind": "run", "value": 1, "n": int64(math.MaxInt64), "measured_at": at(3, 9, 0),
@@ -160,6 +162,7 @@ func TestAReadingsNIsHeldWholeToTheLargestInt64(t *testing.T) {
 // MEASURED_AT_OUT_OF_RANGE naming its row, and its batch stores nothing. A row at the floor itself
 // and one an hour inside the ceiling are stored.
 func TestAReadingMeasuredOutsideItsRangeIsRefusedNamingItsRow(t *testing.T) {
+	t.Parallel()
 	r := newRig(t)
 	now := time.Now().UTC()
 	measuredAt := func(measured any) json.RawMessage {
@@ -193,6 +196,7 @@ func TestAReadingMeasuredOutsideItsRangeIsRefusedNamingItsRow(t *testing.T) {
 // in one of the reading's keys is refused EVAL_KEY_TOO_LONG naming its row and field, and in a
 // slug or a register write's series naming the field; none of them stores anything.
 func TestAKeyAtItsBoundIsStoredAndOnePastItRefused(t *testing.T) {
+	t.Parallel()
 	r := newRig(t)
 	// Hex of a multiplicative hash, which repeats nothing a compressor could use.
 	var digits strings.Builder
@@ -252,6 +256,7 @@ func TestAKeyAtItsBoundIsStoredAndOnePastItRefused(t *testing.T) {
 // recorder is refused whole: eval_readings holds as many rows after it as before, and the slug
 // it named, which no eval held, is not registered either.
 func TestABatchWithABadLastRowStoresNothing(t *testing.T) {
+	t.Parallel()
 	r := newRig(t)
 	r.write(t, "latency", alice, row(t, map[string]any{"series": "ms", "row_kind": "request", "value": 12, "measured_at": at(2, 8, 0)}))
 
@@ -288,6 +293,7 @@ func TestABatchWithABadLastRowStoresNothing(t *testing.T) {
 // write left holding one. Each stores no reading, registers no eval and moves no day row; the same
 // values spread over days whose sums stay within a float are stored.
 func TestABatchThatWouldOverflowADayRowIsRefusedNamingItsRow(t *testing.T) {
+	t.Parallel()
 	r := newRig(t)
 	huge := func(key string, value float64, n int64, measured time.Time) json.RawMessage {
 		return row(t, map[string]any{"series": "bytes", "row_kind": "run", "row_key": key, "value": value, "n": n, "measured_at": measured})
@@ -337,6 +343,7 @@ func TestABatchThatWouldOverflowADayRowIsRefusedNamingItsRow(t *testing.T) {
 // MaxEvalSeries series; a batch of series it holds is taken, and one naming one more series is
 // refused at that row.
 func TestAReadingsWriteThatWouldPassTheSeriesBoundIsRefusedNamingItsRow(t *testing.T) {
+	t.Parallel()
 	r := newRig(t)
 	const slug = "series-bound"
 	evalID := EvalID(r.project, slug)
@@ -417,6 +424,7 @@ const dayKeyOrder = `
 // every row holds its one reading; and the write logs one eval_days change of the eval, spanning
 // the day, as one statement does (migration 20261117100014).
 func TestAReadingsWritesDayRowsGoInBoundedStatementsInKeyOrder(t *testing.T) {
+	t.Parallel()
 	r := newRig(t)
 	statements := &sentStatements{}
 	r.registry = New(storetest.TracedStore(t, r.database, statements), r.documents, r.registry.events, r.registry.attributor)
@@ -550,6 +558,7 @@ func (r rig) loggedChanges(t *testing.T, kind string, heads [2]int) []dayChange 
 // the batch stores nothing; one with a note of 200,000 bytes is stored, in statements within the
 // bound.
 func TestTheLargestReadingsBodyGoesInBoundedStatements(t *testing.T) {
+	t.Parallel()
 	r := newRig(t)
 	statements := &sentStatements{}
 	r.registry = New(storetest.TracedStore(t, r.database, statements), r.documents, r.registry.events, r.registry.attributor)
@@ -636,6 +645,7 @@ func TestTheLargestReadingsBodyGoesInBoundedStatements(t *testing.T) {
 //     key holds: the keys of the 1,201 day rows the correction folds again grow with it; each
 //     repository's row holds its corrected value.
 func TestTheMostCorrectionsABodyHoldsGoInBoundedStatements(t *testing.T) {
+	t.Parallel()
 	r := newRig(t)
 	statements := &sentStatements{}
 	r.registry = New(storetest.TracedStore(t, r.database, statements), r.documents, r.registry.events, r.registry.attributor)
@@ -714,6 +724,7 @@ func TestTheMostCorrectionsABodyHoldsGoInBoundedStatements(t *testing.T) {
 // a code of codeBytes, an index and a count of 20 digits) encode within that; one more passes it.
 // Every code of the registry takes at most codeBytes.
 func TestARefusalListsAtMostItsBoundOfRowsAndCountsTheRest(t *testing.T) {
+	t.Parallel()
 	encoded := func(value any) []byte {
 		var buffer bytes.Buffer
 		if err := json.NewEncoder(&buffer).Encode(value); err != nil {
@@ -786,6 +797,7 @@ func TestARefusalListsAtMostItsBoundOfRowsAndCountsTheRest(t *testing.T) {
 // value more is then refused at its row 0; a correction of a reading of the full day, which adds no
 // value, is taken, and so is a batch on another day.
 func TestADayRowPastItsSampleBoundIsRefusedNamingItsRow(t *testing.T) {
+	t.Parallel()
 	r := newRig(t)
 	const slug, size, most = "many-samples", 1000, 25000
 	evalID := EvalID(r.project, slug)
@@ -867,6 +879,7 @@ func TestADayRowPastItsSampleBoundIsRefusedNamingItsRow(t *testing.T) {
 // neither write found and one of them created. The test holds the eval's lock until both writes
 // wait for it, so each has read that no version exists before either writes one.
 func TestTwoFirstWritesOfOneSlugRegisterItOnce(t *testing.T) {
+	t.Parallel()
 	r := newRig(t)
 	slug := "first-try-rate"
 	evalID := EvalID(r.project, slug)
@@ -957,6 +970,7 @@ func TestTwoFirstWritesOfOneSlugRegisterItOnce(t *testing.T) {
 // (events.Horizon). Let go, it lands. Before, it locked the reading first (lockReplaced, `for
 // update`), which gave it an id it held for the whole wait.
 func TestACorrectionWaitsForTheEvalsLockHoldingNoTransactionID(t *testing.T) {
+	t.Parallel()
 	r := newRig(t)
 	slug := "correction-wait"
 	stored := r.write(t, slug, alice, row(t, map[string]any{"series": "minutes", "row_kind": "run", "row_key": "a", "value": 4, "measured_at": at(4, 9, 0)}))
@@ -1023,6 +1037,7 @@ func TestACorrectionWaitsForTheEvalsLockHoldingNoTransactionID(t *testing.T) {
 // max and the last value. A second correction measured before the day's other reading makes that
 // reading the day's last again.
 func TestACorrectionSupersedesTheReadingItReplacesAndMovesItsDayRow(t *testing.T) {
+	t.Parallel()
 	r := newRig(t)
 	written := r.write(t, "build-minutes", alice,
 		row(t, map[string]any{"series": "minutes", "row_kind": "run", "row_key": "a", "value": 10, "n": 2, "measured_at": at(5, 10, 0)}),
@@ -1093,6 +1108,7 @@ func TestACorrectionSupersedesTheReadingItReplacesAndMovesItsDayRow(t *testing.T
 // an equal moment, and the refold, which orders the readings by when their writes began, put the
 // other's back: the day's last flipped from 10 to 20.
 func TestTheDaysLastSurvivesARefoldWhenTheLaterStartedOfTwoTiedWritesCommitsFirst(t *testing.T) {
+	t.Parallel()
 	r := newRig(t)
 	ctx := t.Context()
 	slug := "tie-break"
@@ -1176,6 +1192,7 @@ func (p joinPause) Join(ctx context.Context, tx pgx.Tx) (context.Context, *docs.
 // and denominator, the empty sample list, no maximum and no last value) between a day before it
 // and a day after it that the same write adds to, each of which holds its own samples alone.
 func TestAWriteThatEmptiesADayRowWritesItsZeroRowBesideTheRowsItFills(t *testing.T) {
+	t.Parallel()
 	r := newRig(t)
 	minutes := func(key string, value float64, n int, measured time.Time, extra map[string]any) json.RawMessage {
 		fields := map[string]any{"series": "minutes", "row_kind": "run", "row_key": key, "value": value, "n": n, "measured_at": measured}
@@ -1224,6 +1241,7 @@ func sameValue(got, want *float64) bool {
 // eval's slug, the seed's deploy-frequency, is stored and answered by the items read, its series
 // registered unlisted, and no day row of the computed eval moves.
 func TestAReadingUnderAComputedSlugIsStoredAndFoldedIntoNoDayRow(t *testing.T) {
+	t.Parallel()
 	r := newRig(t)
 	if _, err := r.registry.Ensure(t.Context(), r.project); err != nil {
 		t.Fatalf("seed %s: %v", r.project, err)
@@ -1255,6 +1273,7 @@ func TestAReadingUnderAComputedSlugIsStoredAndFoldedIntoNoDayRow(t *testing.T) {
 // unfolded reading adds its own value and takes nothing away, so the day holds the second
 // reading's value and the correction's.
 func TestACorrectionOfAReadingNeverFoldedTakesNothingFromItsDayRow(t *testing.T) {
+	t.Parallel()
 	r := newRig(t)
 	evalID := EvalID(r.project, "review-load")
 	if _, err := r.registry.Register(t.Context(), Registration{
@@ -1305,6 +1324,7 @@ func (r rig) setSource(t *testing.T, evalID, source string) {
 // while the eval was computed, between two logged versions, which no row ever folded; a row no
 // corrected reading counted in is appended to.
 func TestACorrectionBatchOverSeveralDaysFoldsEachDayFromTheReadingsThatStand(t *testing.T) {
+	t.Parallel()
 	r := newRig(t)
 	reading := func(series string, value float64, measured time.Time, repo, replaces string) json.RawMessage {
 		fields := map[string]any{"series": series, "row_kind": "run", "value": value, "measured_at": measured}
@@ -1366,6 +1386,7 @@ func TestACorrectionBatchOverSeveralDaysFoldsEachDayFromTheReadingsThatStand(t *
 // order a tie leaves to chance. Each of 24 days holds such a tie, so an order that chance decides
 // keeps every day's last with a chance of one in 2^24.
 func TestATieOfOneMomentKeepsTheDaysLastAcrossACorrection(t *testing.T) {
+	t.Parallel()
 	r := newRig(t)
 	on := func(day, hour int) time.Time { return time.Date(2026, time.October, day, hour, 0, 0, 0, time.UTC) }
 	reading := func(key string, value float64, measured time.Time, replaces string) json.RawMessage {
@@ -1417,6 +1438,7 @@ func TestATieOfOneMomentKeepsTheDaysLastAcrossACorrection(t *testing.T) {
 // repositories, its two rows folded in the order DayWindowIn answered them and reversed, answers
 // the later write's value, which the project's row of that day holds as its last.
 func TestALastWindowOverRepositoriesTakesTheLaterWriteOfATie(t *testing.T) {
+	t.Parallel()
 	r := newRig(t)
 	reading := func(repo string, value float64, day int) json.RawMessage {
 		return row(t, map[string]any{"series": "depth", "row_kind": "queue", "row_key": fmt.Sprintf("%s-%d", repo, day),

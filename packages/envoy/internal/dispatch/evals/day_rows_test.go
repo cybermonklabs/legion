@@ -118,6 +118,7 @@ func shuffledDays(rows []DayRow) []DayRow {
 // their order. A row larger than the bound alone is sent in a statement of its own, between the
 // statements of the rows around it.
 func TestAStatementOfDayRowsHoldsAtMostItsBoundAsPgxEncodesIt(t *testing.T) {
+	t.Parallel()
 	long := func(index, size int) string { return fmt.Sprintf("%06d", index) + strings.Repeat("é", size/2) }
 	far := time.Date(9999, 12, 31, 0, 0, 0, 0, time.UTC)
 	lastAt := far.Add(24*time.Hour - time.Microsecond)
@@ -236,6 +237,7 @@ func (s *sentExecs) Exec(_ context.Context, _ string, args ...any) (pgconn.Comma
 // cannot affect a row a second time); cut into two statements, the second would rewrite the
 // first.
 func TestTwoDayRowsOfOneKeyAreRefusedByAnUpsertBeforeAnyStatement(t *testing.T) {
+	t.Parallel()
 	day := time.Date(2026, 11, 3, 0, 0, 0, 0, time.UTC)
 	rowOf := func(series, repo string, at time.Time, n int) DayRow {
 		return DayRow{ProjectKey: "EVAL", EvalID: EvalID("EVAL", "lead-time"), DeployRepo: "Acme/deploy", Repo: repo, Listed: true,
@@ -308,6 +310,7 @@ func (c dayChange) String() string {
 // statement holds rows the upsert updates and rows it inserts, does the same and leaves the
 // earlier 20 days as they were.
 func TestAWriteOfDayRowsPastTheBoundIsCutIntoStatementsInKeyOrder(t *testing.T) {
+	t.Parallel()
 	r := newRig(t)
 	ctx := t.Context()
 	inserts := &dayInserts{}
@@ -484,6 +487,7 @@ func TestAWriteOfDayRowsPastTheBoundIsCutIntoStatementsInKeyOrder(t *testing.T) 
 // project's first row and item gone lie in the range of the run before, which ends inside that
 // project, and its last ones in the range of the run after.
 func TestAWriteOfSeveralProjectsDaysDeletesWhatEachNoLongerHoldsAcrossItsRuns(t *testing.T) {
+	t.Parallel()
 	r := newRig(t)
 	ctx := t.Context()
 	day := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)

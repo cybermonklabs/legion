@@ -544,6 +544,7 @@ func (r *refresherRig) expectBuilt(t *testing.T, what string, today time.Time) {
 // figures read as built throughout; and the rebuild of one that meets figures another build folded
 // otherwise rewrites exactly those, in its flip.
 func TestEachChangeRewritesExactlyTheFiguresItsMovedDaysReach(t *testing.T) {
+	t.Parallel()
 	r := newRefresherRig(t)
 	deliveries, _ := r.seedHistories(t)
 	r.leaveInputsUnread(t)
@@ -699,6 +700,7 @@ func TestEachChangeRewritesExactlyTheFiguresItsMovedDaysReach(t *testing.T) {
 // build with the figures reads those changes from the figures' own cursor and folds the figures of
 // the days they moved, and only those.
 func TestADayRowABuildWithNoFiguresWritesIsFoldedByTheNextPass(t *testing.T) {
+	t.Parallel()
 	r := newRefresherRig(t)
 	deliveries, _ := r.seedHistories(t)
 	r.leaveInputsUnread(t)
@@ -742,6 +744,7 @@ func TestADayRowABuildWithNoFiguresWritesIsFoldedByTheNextPass(t *testing.T) {
 // and those of the day between, whose row a build that writes no figures moved before the write,
 // stand as they stood, since no write named that day.
 func TestAWriteFoldsEachReaderOverEverySpanItsKeysWrote(t *testing.T) {
+	t.Parallel()
 	r := newRefresherRig(t)
 	r.seedHistories(t)
 	r.leaveInputsUnread(t)
@@ -1045,6 +1048,7 @@ func (c cutRead) cutValues(t *testing.T, repos []string, window Range, compare *
 // ':default' rows, so the read of the published default the stored figures answer differs from
 // the fold of its day rows.
 func TestARepositoryFilterAnswersTheFoldOfTheDayRowsOfItsCut(t *testing.T) {
+	t.Parallel()
 	r := newRefresherRig(t)
 	ctx, pool := t.Context(), r.database.Pool
 	defaultRepo, nextDefault := "acme/legion", "acme/other"
@@ -1171,6 +1175,7 @@ func (r *refresherRig) seedLegionDefault(t *testing.T, defaultRepo string) strin
 // 703 ms a call; and red without the lateral's `offset 0`, whose generic plan reads
 // eval_days_window by the repository and the days alone, every project's rows of the repository.
 func TestTheReadOfOneCutsDeployRepositoriesReadsItsRowsAlone(t *testing.T) {
+	t.Parallel()
 	r := newRefresherRig(t)
 	ctx, pool := t.Context(), r.database.Pool
 	owner := OwnerKey("acme/main", nil, nil)
@@ -1278,6 +1283,7 @@ func firstDiffering(a, b string) int {
 // rebuild aside (rebuild.go), a pass of the build before it in the roll, the release's flip, and a
 // rollback to the first build all read the figures as built.
 func TestTheMarkerHoldsTheReadOffUntilTheFirstWholeBuild(t *testing.T) {
+	t.Parallel()
 	r := newRefresherRig(t)
 	r.batch = 2
 	r.seedHistories(t)
@@ -1339,6 +1345,7 @@ func TestTheMarkerHoldsTheReadOffUntilTheFirstWholeBuild(t *testing.T) {
 // 1e16 and rounds to the even neighbour) and to 1e16+2 the other way round, and the read answers
 // the day order's bits whichever order its rows come in.
 func TestTheDayRowsAreFoldedInDayOrderWhateverOrderTheReadAnswers(t *testing.T) {
+	t.Parallel()
 	day := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
 	entry := Entry{Definition: Definition{EvalID: "EVAL/spend", ProjectKey: "EVAL", Source: SourceLogged},
 		Series: []Series{{EvalID: "EVAL/spend", Series: "dollars", SeriesComputation: SeriesComputation{Role: RoleHeadline, Listed: true, Agg: AggSum}}}}
@@ -1374,6 +1381,7 @@ func TestTheDayRowsAreFoldedInDayOrderWhateverOrderTheReadAnswers(t *testing.T) 
 // stored figures (newFigureGroup) of the range and of the day, the range's sum the read's bit for
 // bit.
 func TestADaysRowsAreFoldedInOneOrderWhateverOrderTheReadAnswers(t *testing.T) {
+	t.Parallel()
 	day := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
 	entry := Entry{Definition: Definition{EvalID: "EVAL/spend", ProjectKey: "EVAL", Source: SourceLogged},
 		Series: []Series{{EvalID: "EVAL/spend", Series: "dollars", SeriesComputation: SeriesComputation{Role: RoleHeadline, Listed: true, Agg: AggSum}}}}
@@ -1856,6 +1864,7 @@ func firstOutOfOrder(order []int) int {
 // text by a language collation (ICU en-US on legion-testpg, en_US.utf8 in CI), under which many of
 // those pairs order the other way.
 func TestEachWritesGoKeyOrderIsPostgresCollateCOrder(t *testing.T) {
+	t.Parallel()
 	pool := storetest.Open(t).Pool
 	// edges is texts whose byte order is not the order a collation by language gives them.
 	edges := []string{"", "a", "A", "b", "B", "e", "é", "É", "f", "1", "9", "a1", "aa", "a b", "a-b", "a/b", "a_b",
@@ -1943,6 +1952,7 @@ func TestEachWritesGoKeyOrderIsPostgresCollateCOrder(t *testing.T) {
 // length, so only the repository ends the second: a split that compared lengths alone would not
 // close a chunk there.
 func TestARangeChunkClosesAtARepositoryOrLengthOnceItHoldsTheLeast(t *testing.T) {
+	t.Parallel()
 	day := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
 	var ranges []rangeTarget
 	for _, prefix := range []struct {
@@ -2085,6 +2095,7 @@ func TestThePipelinedFoldFoldsOnItsWorkersAndSendsEachChunkOnceItIsFolded(t *tes
 // rows as that estimate lets under the bound, or statementRows, and no fewer. A row larger than
 // the bound alone is sent in a statement of its own, between the statements of the rows around it.
 func TestAStatementOfTheStoredFiguresHoldsAtMostItsBoundAsPgxEncodesIt(t *testing.T) {
+	t.Parallel()
 	long := func(index, size int) string { return fmt.Sprintf("%06d", index) + strings.Repeat("é", size/2) }
 	figures := func(size int) []byte {
 		filled := make([]byte, size)
@@ -2190,6 +2201,7 @@ func TestAStatementOfTheStoredFiguresHoldsAtMostItsBoundAsPgxEncodesIt(t *testin
 // bound statementChunks holds a statement to, passes it (the estimate counts the row's day, n and
 // first at 8 bytes, where pgx encodes each in 4, so that row would still encode within it).
 func TestTheRoutesBoundsAreTheStatementBoundAtTheLargestKeys(t *testing.T) {
+	t.Parallel()
 	largest := func(index int, fill string) string {
 		prefix := fmt.Sprintf("%06d-", index)
 		return prefix + strings.Repeat(fill, maxKeyBytes-len(prefix))
@@ -2301,6 +2313,7 @@ func TestTheRoutesBoundsAreTheStatementBoundAtTheLargestKeys(t *testing.T) {
 // statementBytes is written by a statement of its own, between those of the rows around it, and
 // stored bit for bit, as they are (writeFigures).
 func TestARowPastTheStatementBoundIsWrittenAlone(t *testing.T) {
+	t.Parallel()
 	r := newRig(t)
 	ctx := t.Context()
 	statements := &figureStatements{}
@@ -2364,6 +2377,7 @@ func TestARowPastTheStatementBoundIsWrittenAlone(t *testing.T) {
 // statementChunks estimates them, nor more than that estimate as pgx encodes them; and the stored
 // figures it leaves are the fold of the rows that stand, bit for bit.
 func TestARefoldSendsTheWholeFoldsRowsInKeyOrderOnceEachInBoundedStatements(t *testing.T) {
+	t.Parallel()
 	r := newRefresherRig(t)
 	deliveries := deliverytest.Seed(t, r.database.Pool, deliverytest.Spec{Days: 30})
 	r.settle(t)
@@ -2511,6 +2525,7 @@ func TestARefoldSendsTheWholeFoldsRowsInKeyOrderOnceEachInBoundedStatements(t *t
 // stores nothing: no reading, no day row, no change row, and none of the stored figures the chunks
 // before the failure wrote.
 func TestAFailureInALaterChunkRollsTheWholeWriteBack(t *testing.T) {
+	t.Parallel()
 	r := newRefresherRig(t)
 	r.seedLoggedQuantile(t)
 	r.settle(t)
@@ -2575,6 +2590,7 @@ func TestAFailureInALaterChunkRollsTheWholeWriteBack(t *testing.T) {
 // own rows and in the cut of acme/web, far fewer than rangeChunkLeast, as one chunk, and upserts
 // them in one statement (figurePlan.foldAndWrite), not in one a (repository, length) prefix.
 func TestAWriteOfAFewRangesOfEveryLengthSendsOneRangeUpsert(t *testing.T) {
+	t.Parallel()
 	r := newRefresherRig(t)
 	r.seedLoggedQuantile(t)
 	r.settle(t)
@@ -2613,6 +2629,7 @@ func TestAWriteOfAFewRangesOfEveryLengthSendsOneRangeUpsert(t *testing.T) {
 // than statementBytes of parameters as pgx encodes them as the types the server describes; the
 // stored figures it leaves are the fold of the rows that stand.
 func TestTheLargestEvalTheRoutesAcceptIsWrittenWithinTheStatementBound(t *testing.T) {
+	t.Parallel()
 	r := newRefresherRig(t)
 	r.seedLoggedQuantile(t)
 	r.settle(t)

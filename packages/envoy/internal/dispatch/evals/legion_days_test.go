@@ -72,6 +72,7 @@ func (r rig) legionFacts(t *testing.T, project string, day time.Time) (map[strin
 // rewrites nothing; after one issue's close moves to the next day, both days are written again and
 // the issue's rows and item move with it.
 func TestALegionDayWritesEachEvalInEveryCutAndRepositoryAndRecordsItsIssues(t *testing.T) {
+	t.Parallel()
 	r := newRig(t)
 	ctx := t.Context()
 	pool := r.database.Pool
@@ -284,6 +285,7 @@ func TestALegionDayWritesEachEvalInEveryCutAndRepositoryAndRecordsItsIssues(t *t
 // of no Legion eval; and the Legion write refuses a row of a delivery eval before writing
 // anything.
 func TestTheZeroLegionDayIsTheBuildersDayWithNoInput(t *testing.T) {
+	t.Parallel()
 	day := at(5, 0, 0)
 	zero := ZeroLegionDay("EVAL", day, legionDaySlugs...)
 	series := 0

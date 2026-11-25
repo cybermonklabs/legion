@@ -20,6 +20,7 @@ import (
 // none while the series is folded by its last value (the fold a reading's eval registers it
 // with), every value of its day once a register write folds it as a quantile.
 func TestDayWindowAnswersTheWindowsDaysAndTheCompareRangesDays(t *testing.T) {
+	t.Parallel()
 	r := newRig(t)
 	var rows []json.RawMessage
 	for day := 1; day <= 6; day++ {
@@ -87,6 +88,7 @@ func TestDayWindowAnswersTheWindowsDaysAndTheCompareRangesDays(t *testing.T) {
 // eval's readings of one row kind in the window, newest first, pages them by limit and offset
 // with the total, and leaves a replaced reading out.
 func TestItemsAnswersTheStandingReadingsOfOneRowKindNewestFirst(t *testing.T) {
+	t.Parallel()
 	r := newRig(t)
 	written := r.write(t, "pr-size", alice,
 		row(t, map[string]any{"series": "lines", "row_kind": "pull_request", "row_key": "acme/web#1", "value": 100, "measured_at": at(8, 9, 0)}),
@@ -126,6 +128,7 @@ func TestItemsAnswersTheStandingReadingsOfOneRowKindNewestFirst(t *testing.T) {
 // items route's day rows. Logged, the eval reads the reading's row and its day as its first; read
 // as computed, the computation's two rows, the earlier of them its first day.
 func TestEachEvalReadsTheDayRowsOfItsOwnWriter(t *testing.T) {
+	t.Parallel()
 	r := newRig(t)
 	evalID := r.write(t, "load", alice, row(t, map[string]any{
 		"series": "load", "row_kind": "run", "row_key": "r", "value": 7, "measured_at": at(4, 9, 0),
@@ -199,6 +202,7 @@ func dayLabels(days []WindowRow) []string {
 // the three evals that hold some come back once each, each with its samples, and their first days
 // with them.
 func TestTheListReadsOfAFullPageOfTheLargestEvalsSendBoundedStatements(t *testing.T) {
+	t.Parallel()
 	r := newRig(t)
 	const page = 200
 	day := at(3, 0, 0)

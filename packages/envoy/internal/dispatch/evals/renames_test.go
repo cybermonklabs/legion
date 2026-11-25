@@ -61,6 +61,7 @@ func (r *refresherRig) renamedRows(t *testing.T) []string {
 // deploy repository is kept under, a repository of pull requests alone, and the repository the
 // Legion issues own.
 func TestARenamedRepositorysRowsAreStoredAndReadUnderItsNewName(t *testing.T) {
+	t.Parallel()
 	r := newRefresherRig(t)
 	ctx, pool := t.Context(), r.database.Pool
 	deliveries := deliverytest.Seed(t, pool, deliverytest.Spec{Days: 5})
@@ -147,6 +148,7 @@ func TestARenamedRepositorysRowsAreStoredAndReadUnderItsNewName(t *testing.T) {
 // holds none of the ':default' rows, the old name's those of rows it no longer reads, and the
 // refresher, which nothing wakes for them, leaves both so.
 func TestARenamedPublishedDefaultIsReadUnderItsNewNameFromTheRefoldOfItsCut(t *testing.T) {
+	t.Parallel()
 	r := newRefresherRig(t)
 	ctx, pool := t.Context(), r.database.Pool
 	_, legion := r.seedHistories(t)

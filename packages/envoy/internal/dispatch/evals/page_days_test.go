@@ -98,6 +98,7 @@ func oneApplyADay(deliveries deliverytest.Fixture) []int64 {
 // each day. It commits the days' rows in one transaction, and so logs one eval_days change of each
 // eval it moved, which a view of the rows is sent as one delta.
 func TestAPageOfManyDaysReadsItsDeployRunsAHandfulOfTimesInOneCommit(t *testing.T) {
+	t.Parallel()
 	r := newRefresherRig(t)
 	deliveries := deliverytest.Seed(t, r.database.Pool, deliverytest.Spec{Days: 30})
 	r.settle(t)

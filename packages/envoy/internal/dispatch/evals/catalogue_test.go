@@ -37,6 +37,7 @@ func sourceFunction(t *testing.T, source string) (string, string) {
 // in the server source of the package directory the source names; and the eval's method names
 // that function, so a reader of the section is sent to the code that is the eval's rule.
 func TestEveryCatalogueSourceNamesAnExportedFunctionOfTheServer(t *testing.T) {
+	t.Parallel()
 	files := token.NewFileSet()
 	declared := map[string]map[string]string{}
 	resolved := 0
@@ -89,6 +90,7 @@ func TestEveryCatalogueSourceNamesAnExportedFunctionOfTheServer(t *testing.T) {
 // failure mode with its guard, a kind, a unit and a series; every target judge names one of its
 // series; and no eval has more than one primary series, which is listed and a headline one.
 func TestEveryCatalogueEvalIsComputedAndRestatesNoRule(t *testing.T) {
+	t.Parallel()
 	slugs := map[string]bool{}
 	for _, entry := range catalogue {
 		definition := entry.definition
@@ -151,6 +153,7 @@ func TestEveryCatalogueEvalIsComputedAndRestatesNoRule(t *testing.T) {
 // test is "at least" or "exactly" and strict where it is "under", in the direction the test reads;
 // every other eval's target is off.
 func TestTheSeededTargetsAreMainsDefaultTargets(t *testing.T) {
+	t.Parallel()
 	main := measures.DefaultTargets
 	want := map[string]struct {
 		target    float64
@@ -215,6 +218,7 @@ func seriesNames(entry catalogueEntry) []string {
 // change-fail-rate and failed-deploy-recovery, which get no day rows, are the only evals with no
 // row of the zero day.
 func TestTheCatalogueSeriesAreTheSeriesTheDayBuildersBuild(t *testing.T) {
+	t.Parallel()
 	day := time.Date(2026, 11, 3, 0, 0, 0, 0, time.UTC)
 	built := map[string][]string{}
 	for _, row := range ZeroLegionDay("EVAL", day, legionDaySlugs...).Rows {
@@ -271,6 +275,7 @@ func TestTheCatalogueSeriesAreTheSeriesTheDayBuildersBuild(t *testing.T) {
 // written with no judges, which judges the primary series' headline, judges a figure the read
 // states rather than one no read can give a value.
 func TestEveryCatalogueSeriesIsStatedByItsHeadline(t *testing.T) {
+	t.Parallel()
 	days := Range{From: time.Date(2026, 11, 3, 0, 0, 0, 0, time.UTC), To: time.Date(2026, 11, 10, 0, 0, 0, 0, time.UTC)}
 	checked := 0
 	for _, entry := range catalogue {
@@ -295,6 +300,7 @@ func TestEveryCatalogueSeriesIsStatedByItsHeadline(t *testing.T) {
 // the with_prs rule change and its measured difference; and idle time's says it is not phase
 // time's idle segment and states D3's rule.
 func TestTheRequiredMethodsSayWhatTheSpecRequires(t *testing.T) {
+	t.Parallel()
 	for slug, phrases := range map[string][]string{
 		SlugLegionSlotWait: {
 			"dispatch://INFRA-979/artifact/flow-analysis-md", "status rule, at 39.3 percent of 14,458 hours",

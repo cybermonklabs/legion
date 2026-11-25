@@ -20,6 +20,7 @@ import (
 // read that sends every field of a part: it sends the write that stored the last value
 // (last_recorded_at, last_reading) only where a `last` fold can tie two rows.
 func TestADayRowsPartIsStoredAndReadBackWithNothingLost(t *testing.T) {
+	t.Parallel()
 	r := newRig(t)
 	day := time.Date(2026, 11, 12, 0, 0, 0, 0, time.UTC)
 	lastAt, recordedAt := day.Add(17*time.Hour), day.Add(18*time.Hour)

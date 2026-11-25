@@ -18,6 +18,7 @@ import (
 // ties the two, and holds every delivery eval of the catalogue to one of them, so a direction
 // renamed or added here fails here rather than on a page that judges a day the wrong way.
 func TestTheTargetsDirectionEnumIsTheEvalsDirections(t *testing.T) {
+	t.Parallel()
 	field, _ := reflect.TypeFor[measures.Target]().FieldByName("Direction")
 	directions := []string{DirectionHigherBetter, DirectionLowerBetter}
 	if tag := field.Tag.Get("enum"); tag != strings.Join(directions, ",") {
@@ -43,6 +44,7 @@ func TestTheTargetsDirectionEnumIsTheEvalsDirections(t *testing.T) {
 // (JudgesOf), to the enum, so a judge added or renamed here fails here, and the contract made from
 // the tag fails the page's compile until the page names it.
 func TestTheTargetsJudgesEnumIsEveryDeliveryJudge(t *testing.T) {
+	t.Parallel()
 	field, _ := reflect.TypeFor[measures.Target]().FieldByName("Judges")
 	every := map[string]bool{}
 	for _, judges := range deliveryJudges {
@@ -80,6 +82,7 @@ func TestTheTargetsJudgesEnumIsEveryDeliveryJudge(t *testing.T) {
 // delivery answer could judge it: a judge the eval route judged while a delivery answer left it
 // null would be a target written and then ignored there.
 func TestEveryJudgeADeliveryTargetTakesIsStatedByTheDeliveryAnswers(t *testing.T) {
+	t.Parallel()
 	spread := measures.Spread{MedianMinutes: new(30.0), P90Minutes: new(50.0), MaxMinutes: new(70.0)}
 	result := measures.Result{
 		DeployFrequency: measures.DeployFrequency{SuccessfulDeploys: 14, DeploysWithPRs: 7, PerDay: 2, WithPRsPerDay: 1},

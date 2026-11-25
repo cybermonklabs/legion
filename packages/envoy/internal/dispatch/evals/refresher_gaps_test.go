@@ -56,6 +56,7 @@ func (r *refresherRig) failingPass(t *testing.T) {
 // new first day to today with a row. Before, the new first day was written in a transaction of
 // its own, which moved the walk back, and the walk wrote the zero rows.
 func TestAFirstDayMovedEarlierLeavesNoDayWithoutARowThoughThePassFails(t *testing.T) {
+	t.Parallel()
 	r := newRefresherRig(t)
 	deliveries, _ := r.seedHistories(t)
 	r.leaveInputsUnread(t)
@@ -118,6 +119,7 @@ func TestAFirstDayMovedEarlierLeavesNoDayWithoutARowThoughThePassFails(t *testin
 // after it, reading the same change again, still rewrites the old run's day, which the moving write
 // recorded owed; it leaves no day owed.
 func TestARunAPullRequestLeftIsRewrittenThoughThePassFailsBeforeIt(t *testing.T) {
+	t.Parallel()
 	r := newRefresherRig(t)
 	deliveries, _ := r.seedHistories(t)
 	r.leaveInputsUnread(t)
@@ -171,6 +173,7 @@ func TestARunAPullRequestLeftIsRewrittenThoughThePassFailsBeforeIt(t *testing.T)
 // day. The pass after it, reading the same change again, still rewrites the day EVAL-3 left, which
 // the moving write recorded owed, and that day no longer counts EVAL-3.
 func TestADayAnIssueLeftIsRewrittenThoughThePassFailsBeforeIt(t *testing.T) {
+	t.Parallel()
 	r := newRefresherRig(t)
 	history := r.seedLegionEval(t)
 	r.settle(t)
@@ -238,6 +241,7 @@ func (r *refresherRig) pageAlone(t *testing.T) refreshed {
 // the database holds the delivery and CI rows, the members and the stored figures
 // of a second database that made the same change before its first walk (expectSameAsWalk).
 func TestAChangeBeforeTheFirstWalkWritesNoZeroRowOnADayWithInput(t *testing.T) {
+	t.Parallel()
 	r := newRefresherRig(t)
 	deliveries, _ := r.seedHistories(t)
 	r.leaveInputsUnread(t)
