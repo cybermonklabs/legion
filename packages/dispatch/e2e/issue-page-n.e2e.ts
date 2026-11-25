@@ -33,6 +33,7 @@ import {
   wordsIn,
 } from "../web/src/features/issue-page/page-words";
 import { blockNodeId } from "../web/src/features/issue-page/tree-drafts";
+import { VIEW_LOADING } from "../web/src/features/issue-page/view-loading-line";
 import { type FakeSession, getUnsubscribeCalls } from "./agents";
 import {
   claimIssue,
@@ -134,6 +135,7 @@ import {
   onScreen,
   openEveryDeeperBranch,
   openPreset,
+  outlineRows,
   pickPreset,
   treeActiveDescendant,
 } from "./issue-page-i";
@@ -4904,4 +4906,107 @@ test("the conversation downloads no editor transport; a document loads it on dem
   } finally {
     await alice.close();
   }
+});
+
+// c-view-waiting. Hold the view's real API requests before opening its address. The
+// assertion of the status is the first reading of the view, not a wait for any row.
+test("a view that waits for its reads says what it waits for", async ({ browser }) => {
+  // Eight cold opens of a seeded issue, including four first-read failures with query retries.
+  test.setTimeout(120_000);
+  await phase(browser, seedWholeIssue, async (page, seeded) => {
+    const issue = `/api/v1/issues/${seeded.key}`;
+    const spec = `/api/v1/artifacts/${seeded.specArtifactId}/blocks`;
+    const plan = `/api/v1/artifacts/${seeded.planArtifactId}/blocks`;
+    const verification = `/api/v1/artifacts/${seeded.verificationArtifactId}/blocks`;
+    const coverage = `${issue}/coverage`;
+    const results = `${issue}/results`;
+    const decisions = `${issue}/decisions`;
+    const asks = `${issue}/asks`;
+    const views = [
+      {
+        body: "[data-spec-body]",
+        failed: STATE_LINES.statements_unreadable,
+        loading:
+          "Loading which checks serve each statement, the statements, the results, the verification document, the decisions and the questions…",
+        reads: [coverage, spec, results, verification, decisions, asks],
+        ready: "[data-spec-statement]",
+        view: "spec",
+      },
+      {
+        body: "[data-verification-body]",
+        failed: STATE_LINES.coverage_unreadable,
+        loading: "Loading which checks serve each statement and the checks' results…",
+        reads: [coverage, results, verification],
+        ready: "[data-verification-check]",
+        view: "verification",
+      },
+      {
+        body: "[data-plan-body]",
+        failed: STATE_LINES.plan_unreadable,
+        loading: "Loading the plan and the spec…",
+        reads: [plan, spec],
+        ready: "[data-plan-bar-row]",
+        view: "plan",
+      },
+      {
+        body: "[data-decisions-body]",
+        failed: STATE_LINES.issue_decisions_unreadable,
+        loading: "Loading the decisions and the questions…",
+        reads: [decisions, asks],
+        ready: '[data-decisions-part="open_questions"] [data-node-row]',
+        view: "decisions",
+      },
+    ] as const;
+    for (const { body, failed, loading, reads, ready, view } of views) {
+      await test.step(PRESET_NAMES[view], async () => {
+        const released = Promise.withResolvers<void>();
+        const seen = new Set<string>();
+        const matchReads = ({ pathname }: URL) => reads.some((read) => read === pathname);
+        const hold = async (route: Route) => {
+          seen.add(new URL(route.request().url()).pathname);
+          await released.promise;
+          await route.continue();
+        };
+        const slot = issuePage(page).locator(body);
+        const status = slot.getByRole("status").and(slot.locator(VIEW_LOADING));
+        await page.route(matchReads, hold);
+        try {
+          await openPreset(page, seeded.key, view);
+          await expect(status, "the view was blank while its reads were out").toBeVisible({
+            timeout: 1_000,
+          });
+          await expect(status).toHaveText(loading, { timeout: 1_000 });
+          await expect(outlineRows(page)).toHaveCount(0);
+          await expect
+            .poll(() => reads.every((read) => seen.has(read)), {
+              message: "the page did not ask for every held read",
+            })
+            .toBe(true);
+          released.resolve();
+          await expect(
+            slot.locator(ready).first(),
+            "the view did not draw after its reads answered"
+          ).toBeVisible();
+          await expect(status).toHaveCount(0);
+        } finally {
+          released.resolve();
+          await page.unroute(matchReads, hold);
+        }
+
+        // A new page load has no cached answer, so this failure replaces the loading line.
+        const refusedRead = ({ pathname }: URL) => pathname === reads[0];
+        const refuse = (route: Route) =>
+          route.fulfill({ json: { code: "SERVER_ERROR", error: "unreadable" }, status: 500 });
+        await page.route(refusedRead, refuse);
+        try {
+          await openPreset(page, seeded.key, view);
+          const line = slot.locator("[data-failed-read]").filter({ hasText: failed });
+          await expect(line.getByRole("button", { exact: true, name: "Retry" })).toBeVisible();
+          await expect(status).toHaveCount(0);
+        } finally {
+          await page.unroute(refusedRead, refuse);
+        }
+      });
+    }
+  });
 });

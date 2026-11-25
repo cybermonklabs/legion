@@ -777,6 +777,107 @@ function renderSlot(client: QueryClient, shown: IssueDetails): DrawnSlot {
   return { ...view, redraw: (issue) => view.rerender(draw(issue)) };
 }
 
+const LOADING_PLAN = "Loading the plan and the spec…";
+
+function holdPlanReads() {
+  setViewport(1440);
+  const plan = Promise.withResolvers<ArtifactBlock[]>();
+  const spec = Promise.withResolvers<ArtifactBlock[]>();
+  const blocks = spyOn(api, "getArtifactBlocks").mockImplementation((id) =>
+    id === PLAN_ARTIFACT ? plan.promise : spec.promise
+  );
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  const client = slotClient({ planHeld: false, specHeld: false });
+  const view = renderSlot(client, issueRead());
+  return {
+    blocks,
+    client,
+    plan,
+    spec,
+    view,
+    close: () => {
+      view.unmount();
+      client.clear();
+      blocks.mockRestore();
+      names.mockRestore();
+    },
+  };
+}
+
+test("while its reads are out the view draws the loading line that names what it waits for", () => {
+  const { close, view } = holdPlanReads();
+  try {
+    expect(view.getByRole("status").textContent).toBe(LOADING_PLAN);
+    expect(view.queryByRole("button", { name: PLAN_WORDS.steps })).toBeNull();
+  } finally {
+    close();
+  }
+});
+
+test("the loading line gives way to the view when the reads answer", async () => {
+  const { close, plan, spec, view } = holdPlanReads();
+  try {
+    expect(view.getByRole("status").textContent).toBe(LOADING_PLAN);
+    plan.resolve([taskBlock("t1")]);
+    spec.resolve([]);
+    await view.findByRole("button", { name: PLAN_WORDS.steps });
+    expect(rowIds(view.container)).toEqual([D("t1")]);
+    expect(view.queryByRole("status")).toBeNull();
+  } finally {
+    close();
+  }
+});
+
+test("a failed read draws its line with Retry, not the loading line", async () => {
+  const { blocks, close, plan, view } = holdPlanReads();
+  try {
+    expect(view.getByRole("status").textContent).toBe(LOADING_PLAN);
+    plan.reject(new Error("refused"));
+    await view.findByText(STATE_LINES.plan_unreadable);
+    const retry = view.getByRole("button", { name: "Retry" });
+    const next = Promise.withResolvers<ArtifactBlock[]>();
+    blocks.mockReturnValue(next.promise);
+    await userEvent.click(retry);
+    expect(retry.getAttribute("aria-busy")).toBe("true");
+    expect(document.activeElement).toBe(retry);
+    expect(view.queryByRole("status")).toBeNull();
+  } finally {
+    close();
+  }
+});
+
+test("the line names each read still out", async () => {
+  const { close, plan, view } = holdPlanReads();
+  try {
+    plan.resolve([taskBlock("t1")]);
+    await waitFor(() => expect(view.getByRole("status").textContent).toBe("Loading the spec…"));
+    expect(view.queryByRole("button", { name: PLAN_WORDS.steps })).toBeNull();
+  } finally {
+    close();
+  }
+});
+
+test("a refetch of a drawn view draws no loading line", async () => {
+  const { blocks, client, close, plan, spec, view } = holdPlanReads();
+  try {
+    expect(view.getByRole("status").textContent).toBe(LOADING_PLAN);
+    plan.resolve([taskBlock("t1")]);
+    spec.resolve([]);
+    await view.findByRole("button", { name: PLAN_WORDS.steps });
+    const row = rowOf(view, "t1");
+    const refresh = Promise.withResolvers<ArtifactBlock[]>();
+    blocks.mockReturnValue(refresh.promise);
+    await act(async () => {
+      void client.invalidateQueries({ queryKey: artifactBlocksQuery(PLAN_ARTIFACT).queryKey });
+    });
+    expect(blocks.mock.calls.filter(([id]) => id === PLAN_ARTIFACT)).toHaveLength(2);
+    expect(rowOf(view, "t1")).toBe(row);
+    expect(view.queryByRole("status")).toBeNull();
+  } finally {
+    close();
+  }
+});
+
 // A Verification or decisions document made while the reader is on Plan rebuilds the issue's
 // tree and opens a read of its blocks that holds nothing yet, and the slot draws the same body
 // again over the same tasks, still mounted (`slots/view-plan.tsx`): the reader's press of
@@ -1542,12 +1643,12 @@ test("a plan with no tasks says so in the one line the page has for it, and draw
     view.unmount();
   }
   // While its reads are out (`slots/view-plan.tsx`) a view with no task is one whose tasks have
-  // not arrived, and it draws nothing - no line, no switch and no chart.
+  // not arrived. It draws the loading line, with no switch or chart.
   const held = renderBody(issue([]), { reads: { state: "waiting" } });
   try {
     expect(held.container.querySelectorAll("[data-plan-switch]")).toHaveLength(0);
     expect(held.container.querySelectorAll("[data-plan-chart]")).toHaveLength(0);
-    expect(held.container.querySelector("[data-plan-body]")?.textContent).toBe("");
+    expect(held.container.querySelector("[data-plan-body]")?.textContent).toBe(LOADING_PLAN);
   } finally {
     held.unmount();
   }

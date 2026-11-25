@@ -388,6 +388,110 @@ function drawBody(
   };
 }
 
+const LOADING_SPEC =
+  "Loading which checks serve each statement, the statements, the results, the verification document, the decisions and the questions…";
+
+function specLoading(view: RenderResult): string | null {
+  return view.container.querySelector('[data-spec-body] > [role="status"]')?.textContent ?? null;
+}
+
+test("while its reads are out the view draws the loading line that names what it waits for", () => {
+  const { read, view } = drawBody(issueTree([]), [], {
+    asks: "out",
+    blocks: "out",
+    coverage: "out",
+    decisions: "out",
+    results: "out",
+    verification: "out",
+  });
+  try {
+    expect(specLoading(view)).toBe(LOADING_SPEC);
+    expect(view.queryByText(EMPTY_STATE_LINES.spec)).toBeNull();
+  } finally {
+    view.unmount();
+    read.mockRestore();
+  }
+});
+
+test("the loading line gives way to the view when the reads answer", async () => {
+  const { client, read, view } = drawBody(issueTree([]), [], { coverage: "out" });
+  try {
+    expect(specLoading(view)).toBe("Loading which checks serve each statement…");
+    await act(async () => client.setQueryData(issueCoverageQuery(KEY).queryKey, coverageRead([])));
+    await view.findByText(EMPTY_STATE_LINES.spec);
+    expect(specLoading(view)).toBeNull();
+  } finally {
+    view.unmount();
+    read.mockRestore();
+  }
+});
+
+test("a failed read draws its line with Retry, not the loading line", async () => {
+  const { client, read, view } = drawBody(issueTree([]), [], { asks: "out", coverage: "out" });
+  try {
+    expect(specLoading(view)).toBe("Loading which checks serve each statement and the questions…");
+    const refusal = Promise.withResolvers<IssueCoverage>();
+    read.coverage.mockReturnValue(refusal.promise);
+    await act(async () => {
+      await client.cancelQueries({ queryKey: issueCoverageQuery(KEY).queryKey });
+      void client.refetchQueries({ queryKey: issueCoverageQuery(KEY).queryKey });
+    });
+    refusal.reject(new Error("refused"));
+    await view.findByText(STATE_LINES.statements_unreadable);
+    const retry = view.getByRole("button", { name: "Retry" });
+    const next = Promise.withResolvers<IssueCoverage>();
+    read.coverage.mockReturnValue(next.promise);
+    await userEvent.click(retry);
+    expect(retry.getAttribute("aria-busy")).toBe("true");
+    expect(document.activeElement).toBe(retry);
+    expect(specLoading(view)).toBeNull();
+  } finally {
+    view.unmount();
+    read.mockRestore();
+  }
+});
+
+test("the line names each read still out", async () => {
+  const { client, read, view } = drawBody(issueTree([statement("r1")]), [], {
+    asks: "out",
+    decisions: "out",
+    plan: "out",
+    verification: "out",
+  });
+  try {
+    await act(async () => client.setQueryData(["decisions", KEY], decisionsRead([])));
+    await waitFor(() =>
+      expect(specLoading(view)).toBe("Loading the verification document and the questions…")
+    );
+    await act(async () => client.setQueryData(artifactBlocksQuery("artifact-ver").queryKey, []));
+    await waitFor(() => expect(specLoading(view)).toBe("Loading the questions…"));
+  } finally {
+    view.unmount();
+    read.mockRestore();
+  }
+});
+
+test("a refetch of a drawn view draws no loading line", async () => {
+  const tree = issueTree([statement("r1")]);
+  const { client, read, view } = drawBody(tree, [], { coverage: "out" });
+  try {
+    expect(specLoading(view)).toBe("Loading which checks serve each statement…");
+    const key = issueCoverageQuery(KEY).queryKey;
+    await act(async () => client.setQueryData(key, coverageRead([])));
+    const refresh = Promise.withResolvers<IssueCoverage>();
+    read.coverage.mockReturnValue(refresh.promise);
+    await act(async () => {
+      void client.invalidateQueries({ queryKey: key });
+    });
+    expect(read.coverage).toHaveBeenCalledTimes(2);
+    expect(view.getAllByRole("treeitem").length).toBeGreaterThan(0);
+    expect(specLoading(view)).toBeNull();
+  } finally {
+    view.unmount();
+    read.mockRestore();
+  }
+});
+
 /** The text of every element matching `selector`, in the order they are drawn. */
 function textsOf(view: RenderResult, selector: string): string[] {
   return [...view.container.querySelectorAll(selector)].map((element) =>

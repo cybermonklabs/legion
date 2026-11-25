@@ -75,6 +75,7 @@ import {
   STATE_LINES,
   sentenceCase,
   VERIFICATION_WORDS,
+  VIEW_LOADING_LINES,
 } from "../page-words";
 import { usePressFocus } from "../press-focus";
 import { FOCUSABLE, RowText, useOutOfTabOrder } from "../RowText";
@@ -88,6 +89,7 @@ import { type LineRead, useLineRefusals } from "../useLineRefusals";
 import { nodeEditable, type OnEditing, useNodeEditing } from "../useNodeEditing";
 import { moveToRow, useTreeKeymap } from "../useTreeKeymap";
 import { CAP } from "../verification-filter/VerificationFilterBody";
+import { ViewLoadingLine } from "../view-loading-line";
 import {
   type SpecDecision,
   type SpecGroup,
@@ -307,6 +309,21 @@ export function SpecFilterBody({
       stands: counted[at].stands,
     }))
     .filter(({ stands }) => stands);
+  let waitingFor: string[] | undefined;
+  if (
+    !(statementsHeld && marked && decidedHeld) &&
+    unreadable.length === 0 &&
+    namesFailure === undefined
+  ) {
+    const words = VIEW_LOADING_LINES.spec;
+    waitingFor = [];
+    if (!coverageHeld) waitingFor.push(words.coverage);
+    if (!specBlocksHeld) waitingFor.push(words.statements);
+    if (!resultsHeld) waitingFor.push(words.results);
+    if (!verificationBlocksHeld) waitingFor.push(words.checks);
+    if (!decisionsHeld) waitingFor.push(words.decisions);
+    if (!asksHeld) waitingFor.push(words.asks);
+  }
   // How a reference a plain line cites is named - in the three sentences, a quote, a question,
   // a group's heading - read once over the whole tree (`referenceStandIns`), and how this issue
   // addresses a node, which is the one rule the tree was built with, so a `shaped` tie resolves
@@ -661,6 +678,7 @@ export function SpecFilterBody({
           speaks={namesFailure.speaks}
         />
       )}
+      {waitingFor === undefined ? null : <ViewLoadingLine names={waitingFor} />}
       <Legend />
       <div
         className={`sticky top-[var(--issue-identity-height,0px)] z-[6] grid grid-cols-[280px_minmax(0,1fr)] gap-x-5 border-b pt-2 pb-1.5 max-[901px]:hidden ${pageLineBorder} ${pagePaperBg}`}

@@ -160,12 +160,20 @@ export function useVerificationReads(issueKey: string): {
   if (standsFailed(coverage)) failed.coverage = failedRead(coverage);
   if (standsFailed(results)) failed.results = failedRead(results);
   if (documentId !== undefined && standsFailed(blocks)) failed.blocks = failedRead(blocks);
+  // The order the body draws: coverage, results, then the document if the results need it.
+  let out: VerificationRead[] | undefined;
+  if (!answered && Object.keys(failed).length === 0) {
+    out = [];
+    if (coverage.data === undefined) out.push("coverage");
+    if (results.data === undefined) out.push("results");
+    if (documentId !== undefined && blocks.data === undefined) out.push("blocks");
+  }
   const reads: VerificationReads =
     Object.keys(failed).length > 0
       ? { failed, state: "failed" }
       : answered
         ? { state: "answered" }
-        : { state: "waiting" };
+        : { out, state: "waiting" };
   return { checks, documentId, reads };
 }
 

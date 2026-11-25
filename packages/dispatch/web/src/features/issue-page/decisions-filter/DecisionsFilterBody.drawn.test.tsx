@@ -15,6 +15,7 @@ import type {
   Comment,
   Decision,
   DecisionKeep,
+  IssueAskRow,
   IssueDecisions,
 } from "../../../api/types";
 import {
@@ -928,6 +929,113 @@ test("a read refused after the tree took the focus gives that focus to its Retry
     } finally {
       spy.mockRestore();
     }
+  }
+});
+
+const LOADING_DECISIONS = "Loading the decisions and the questions…";
+
+function decisionsLoading(view: RenderResult): string | null {
+  return words(view.container.querySelector('[data-decisions-body] > [role="status"]'));
+}
+
+function holdDecisionReads() {
+  const decisions = Promise.withResolvers<IssueDecisions>();
+  const asks = Promise.withResolvers<IssueAskRow[]>();
+  const decisionsRead = spyOn(api, "getIssueDecisions").mockReturnValue(decisions.promise);
+  const asksRead = spyOn(api, "listIssueAsks").mockReturnValue(asks.promise);
+  const view = renderBody({ asks: null, children: [], made: null }, {}, { stage: true });
+  return {
+    asks,
+    decisions,
+    decisionsRead,
+    view,
+    close: () => {
+      view.unmount();
+      view.client.clear();
+      asksRead.mockRestore();
+      decisionsRead.mockRestore();
+    },
+  };
+}
+
+test("while its reads are out the view draws the loading line that names what it waits for", () => {
+  const { close, view } = holdDecisionReads();
+  try {
+    expect(decisionsLoading(view)).toBe(LOADING_DECISIONS);
+    expect(view.queryByText(EMPTY_LINE)).toBeNull();
+  } finally {
+    close();
+  }
+});
+
+test("the loading line gives way to the view when the reads answer", async () => {
+  const { asks, close, decisions, view } = holdDecisionReads();
+  try {
+    expect(decisionsLoading(view)).toBe(LOADING_DECISIONS);
+    decisions.resolve(decisionsRead([]));
+    asks.resolve([]);
+    await view.findByText(EMPTY_LINE);
+    expect(decisionsLoading(view)).toBeNull();
+  } finally {
+    close();
+  }
+});
+
+test("a failed read draws its line with Retry, not the loading line", async () => {
+  const { close, decisions, decisionsRead, view } = holdDecisionReads();
+  try {
+    expect(decisionsLoading(view)).toBe(LOADING_DECISIONS);
+    decisions.reject(new Error("refused"));
+    await view.findByText(STATE_LINES.issue_decisions_unreadable);
+    const retry = view.getByRole("button", { name: "Retry" });
+    const next = Promise.withResolvers<IssueDecisions>();
+    decisionsRead.mockReturnValue(next.promise);
+    await userEvent.click(retry);
+    expect(retry.getAttribute("aria-busy")).toBe("true");
+    expect(document.activeElement).toBe(retry);
+    expect(decisionsLoading(view)).toBeNull();
+  } finally {
+    close();
+  }
+});
+
+test("the line names each read still out", async () => {
+  const { asks, close, decisions, decisionsRead: requestDecisions, view } = holdDecisionReads();
+  try {
+    decisions.resolve(decisionsRead([]));
+    await waitFor(() => expect(decisionsLoading(view)).toBe("Loading the questions…"));
+    const refresh = Promise.withResolvers<IssueDecisions>();
+    requestDecisions.mockReturnValue(refresh.promise);
+    await act(async () => {
+      void view.client.invalidateQueries({ queryKey: ["decisions", KEY] });
+    });
+    expect(requestDecisions).toHaveBeenCalledTimes(2);
+    expect(decisionsLoading(view)).toBe("Loading the questions…");
+    asks.resolve([]);
+    await view.findByText(EMPTY_LINE);
+    expect(decisionsLoading(view)).toBeNull();
+  } finally {
+    close();
+  }
+});
+
+test("a refetch of a drawn view draws no loading line", async () => {
+  const { asks, close, decisions, decisionsRead: requestDecisions, view } = holdDecisionReads();
+  try {
+    expect(decisionsLoading(view)).toBe(LOADING_DECISIONS);
+    decisions.resolve(decisionsRead([]));
+    asks.resolve([]);
+    const empty = await view.findByText(EMPTY_LINE);
+    const refresh = Promise.withResolvers<IssueDecisions>();
+    requestDecisions.mockReturnValue(refresh.promise);
+    await act(async () => {
+      void view.client.invalidateQueries({ queryKey: ["decisions", KEY] });
+    });
+    expect(requestDecisions).toHaveBeenCalledTimes(2);
+    expect(view.getByText(EMPTY_LINE)).toBe(empty);
+    expect(decisionsLoading(view)).toBeNull();
+  } finally {
+    close();
   }
 });
 

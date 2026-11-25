@@ -171,6 +171,13 @@ export function ViewPlanSlot({
           reveal={reveal}
           root={view.root}
           rootRow={view.rootRow}
+          waitingFor={
+            reads.state === "waiting"
+              ? watched.flatMap(({ id, query, read }) =>
+                  id !== undefined && query.data === undefined ? [read] : []
+                )
+              : undefined
+          }
         />
       </div>
       {panels}

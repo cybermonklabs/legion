@@ -1,5 +1,5 @@
 import { beforeAll, expect, type Mock, spyOn, test } from "bun:test";
-import { onlineManager, QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { onlineManager, QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 import {
   act,
   type RenderHookResult,
@@ -16,7 +16,7 @@ import { MemoryRouter } from "react-router-dom";
 import { displayTree } from "../../../__tests__/display-trees";
 import { installIntersectionObserver } from "../../../__tests__/intersection-observer";
 import { api } from "../../../api/client";
-import { issueCoverageQuery, issueResultsQuery } from "../../../api/queries";
+import { artifactBlocksQuery, issueCoverageQuery, issueResultsQuery } from "../../../api/queries";
 import type { Actor, CheckBlock, IssueCheckResults, IssueCoverage } from "../../../api/types";
 import { actorLabelText } from "../../refs/AgentName";
 import { warmMarkdownRenderer } from "../../refs/markdown-engine";
@@ -243,6 +243,153 @@ const NO_RESULTS: IssueCheckResults = {
   issue: ISSUE_KEY,
   verification_artifact_id: "",
 };
+
+const VERIFICATION_DOCUMENT = "verification-doc";
+const LOADING_VERIFICATION = "Loading which checks serve each statement and the checks' results…";
+const LOADING_ALL_VERIFICATION =
+  "Loading which checks serve each statement, the checks' results and the verification document…";
+
+/** The body's real read observers, with the outline's blocks observer beside them. */
+function drawWaitingVerification(client: QueryClient): RenderResult {
+  const view = verificationView([statementNode("r1", "A statement to verify.", [])]);
+  function Body(): ReactNode {
+    useQuery(artifactBlocksQuery(VERIFICATION_DOCUMENT));
+    const { checks, reads } = useVerificationReads(ISSUE_KEY);
+    return (
+      <VerificationFilterBody
+        checks={checks}
+        context={new Set()}
+        reads={reads}
+        view={view}
+        whole={undefined}
+      />
+    );
+  }
+  return render(
+    <QueryClientProvider client={client}>
+      <MemoryRouter>
+        <NoTooltips>
+          <ViewStage>
+            <Body />
+          </ViewStage>
+        </NoTooltips>
+      </MemoryRouter>
+    </QueryClientProvider>
+  );
+}
+
+function holdVerificationReads() {
+  const coverage = Promise.withResolvers<IssueCoverage>();
+  const results = Promise.withResolvers<IssueCheckResults>();
+  const blocks = Promise.withResolvers<never[]>();
+  const coverageRead = spyOn(api, "getIssueCoverage").mockReturnValue(coverage.promise);
+  const resultsRead = spyOn(api, "getIssueResults").mockReturnValue(results.promise);
+  const blocksRead = spyOn(api, "getArtifactBlocks").mockReturnValue(blocks.promise);
+  const client = testClient();
+  const drawn = drawWaitingVerification(client);
+  return {
+    blocks,
+    client,
+    coverage,
+    coverageRead,
+    drawn,
+    results,
+    close: () => {
+      drawn.unmount();
+      client.clear();
+      coverageRead.mockRestore();
+      resultsRead.mockRestore();
+      blocksRead.mockRestore();
+    },
+  };
+}
+
+test("while its reads are out the view draws the loading line that names what it waits for", () => {
+  const { close, drawn } = holdVerificationReads();
+  try {
+    expect(drawn.getByRole("status").textContent).toBe(LOADING_VERIFICATION);
+    expect(drawn.queryAllByRole("treeitem")).toHaveLength(0);
+  } finally {
+    close();
+  }
+});
+
+test("the loading line gives way to the view when the reads answer", async () => {
+  const { close, coverage, drawn, results } = holdVerificationReads();
+  try {
+    expect(drawn.getByRole("status").textContent).toBe(LOADING_VERIFICATION);
+    coverage.resolve(NO_COVERAGE);
+    results.resolve(NO_RESULTS);
+    await drawn.findByText("A statement to verify.");
+    expect(drawn.queryByText(LOADING_VERIFICATION)).toBeNull();
+    expect(drawn.queryByText(/^Loading /u)).toBeNull();
+  } finally {
+    close();
+  }
+});
+
+test("a failed read draws its line with Retry, not the loading line", async () => {
+  const { close, coverage, coverageRead, drawn } = holdVerificationReads();
+  try {
+    expect(drawn.getByRole("status").textContent).toBe(LOADING_VERIFICATION);
+    coverage.reject(new Error("refused"));
+    await drawn.findByText(STATE_LINES.coverage_unreadable);
+    const retry = drawn.getByRole("button", { name: "Retry" });
+    const next = Promise.withResolvers<IssueCoverage>();
+    coverageRead.mockReturnValue(next.promise);
+    await userEvent.click(retry);
+    expect(retry.getAttribute("aria-busy")).toBe("true");
+    expect(document.activeElement).toBe(retry);
+    expect(drawn.queryByRole("status")).toBeNull();
+  } finally {
+    close();
+  }
+});
+
+test("the line names each read still out", async () => {
+  const { blocks, close, coverage, drawn, results } = holdVerificationReads();
+  try {
+    results.resolve({
+      ...NO_RESULTS,
+      checks: [passing("c-one")],
+      verification_artifact_id: VERIFICATION_DOCUMENT,
+    });
+    await waitFor(() =>
+      expect(drawn.getByRole("status").textContent).toBe(
+        "Loading which checks serve each statement and the verification document…"
+      )
+    );
+    coverage.resolve(NO_COVERAGE);
+    await waitFor(() =>
+      expect(drawn.getByRole("status").textContent).toBe("Loading the verification document…")
+    );
+    blocks.resolve([]);
+    await drawn.findByText("A statement to verify.");
+  } finally {
+    close();
+  }
+});
+
+test("a refetch of a drawn view draws no loading line", async () => {
+  const { client, close, coverage, coverageRead, drawn, results } = holdVerificationReads();
+  try {
+    expect(drawn.getByRole("status").textContent).toBe(LOADING_VERIFICATION);
+    coverage.resolve(NO_COVERAGE);
+    results.resolve(NO_RESULTS);
+    const statement = await drawn.findByText("A statement to verify.");
+    const refresh = Promise.withResolvers<IssueCoverage>();
+    coverageRead.mockReturnValue(refresh.promise);
+    const key = issueCoverageQuery(ISSUE_KEY).queryKey;
+    await act(async () => {
+      void client.invalidateQueries({ queryKey: key });
+    });
+    expect(coverageRead).toHaveBeenCalledTimes(2);
+    expect(drawn.getByText("A statement to verify.")).toBe(statement);
+    expect(drawn.queryByText(/^Loading /u)).toBeNull();
+  } finally {
+    close();
+  }
+});
 
 /** A check's words with a link and a reference in them. */
 const LINKED_WORDS = "Read [the runbook](https://example.com/runbook) and dispatch://CORE-2 first.";
@@ -618,8 +765,8 @@ test("a statement that a child's check covers draws one line of the checks drawn
   }
 
   // A count at or below the checks the view draws under the statement draws no line, nor does a
-  // statement the coverage read counts nothing for; and until the reads have answered no line is
-  // drawn at all.
+  // statement the coverage read counts nothing for. While the reads are out, the loading line
+  // stands in place of the cards and their counts.
   const two = passing("c-two");
   const even = {
     ...statementNode("r3", "Its one check is all the coverage read counts.", [checkNode(own)]),
@@ -645,6 +792,7 @@ test("a statement that a child's check covers draws one line of the checks drawn
   const waiting = drawBody([partly, childOnly], [own], { reads: { state: "waiting" } });
   try {
     expect(linesOf(waiting)).toEqual([]);
+    expect(waiting.getByRole("status").textContent).toBe(LOADING_ALL_VERIFICATION);
   } finally {
     waiting.unmount();
   }
@@ -1439,10 +1587,10 @@ test("a deleted comment an address named draws its deleted line, and an edited o
   }
 });
 
-// The view keeps one tree, which holds everything it draws. Its first row is the issue's own,
+// The view keeps one tree for its rows. Its first row is the issue's own,
 // holding the summary and the chips, and it is the tree's one tab stop, so `t k` leaves the
 // view's top on screen and the next Tab on the chip All. An issue with nothing to draw draws no
-// row, and while a read is out the tree holds nothing at all and the body nothing but the tree.
+// row. While a read is out the tree holds no rows, and the loading line stands above it.
 test("the view's tree holds the issue's row first, and only it is a tab stop", () => {
   const met = passing("c-one");
   const loose = passing("c-loose");
@@ -1526,9 +1674,12 @@ test("the view's tree holds the issue's row first, and only it is a tab stop", (
     const tree = waiting.container.querySelector('[data-verification-body] > [role="tree"]');
     expect(tree).not.toBeNull();
     expect(tree?.childElementCount).toBe(0);
-    expect(textsOf(waiting, "[data-verification-body]")).toEqual([""]);
+    expect(textsOf(waiting, "[data-verification-body]")).toEqual([LOADING_ALL_VERIFICATION]);
     expect(waiting.container.querySelectorAll("[data-node-row]")).toHaveLength(0);
-    expect(waiting.container.querySelector("[data-verification-body]")?.childElementCount).toBe(1);
+    expect(Array.from(tree?.parentElement?.children ?? [])).toEqual([
+      waiting.getByRole("status"),
+      waiting.getByRole("tree"),
+    ]);
     expect(waiting.container.querySelectorAll("[data-verification-unreadable]")).toHaveLength(0);
   } finally {
     waiting.unmount();

@@ -44,9 +44,11 @@ import {
   PLAN_WORDS,
   PRESET_NAMES,
   STATE_LINES,
+  VIEW_LOADING_LINES,
 } from "../page-words";
 import { FailedLineLeaves, FailedReadLine } from "../slots/failed-read-line";
 import { moveToRow, treeEnterKey } from "../useTreeKeymap";
+import { ViewLoadingLine } from "../view-loading-line";
 import {
   needsChip,
   type PlanBar,
@@ -140,6 +142,7 @@ export function PlanFilterBody({
   plan,
   reads,
   root,
+  waitingFor = ["plan", "statements"],
   ...tree
 }: ComponentProps<typeof IssueTree> & {
   /** The whole plan's tasks, as the Plan view gives them with no words filter on
@@ -148,6 +151,8 @@ export function PlanFilterBody({
   plan: readonly TreeNode[];
   /** How the plan's and the spec's blocks reads stand, which the body draws its tasks after. */
   reads: PlanReads;
+  /** The plan and spec reads that have no answer yet, in that order. */
+  waitingFor?: readonly PlanRead[];
 }): ReactNode {
   // Which of the two the reader is looking at: the chart, which the filter opens on, or the
   // ordered steps.
@@ -265,6 +270,9 @@ export function PlanFilterBody({
           />
         </div>
       ))}
+      {reads.state === "waiting" ? (
+        <ViewLoadingLine names={waitingFor.map((read) => VIEW_LOADING_LINES.plan[read])} />
+      ) : null}
       {/* The one control: the chart of time, or the ordered steps. A plan with no task has
           nothing to switch between. The box is 22 px under the view row, and 10 px at 760 px
           and below, as the prototype's `.plan` is: the issue's column already stands 10 px

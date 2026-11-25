@@ -59,6 +59,7 @@ import {
   type StatementState,
   sentenceCase,
   VERIFICATION_WORDS,
+  VIEW_LOADING_LINES,
 } from "../page-words";
 import { RowText } from "../RowText";
 import { FailedReadLine } from "../slots/failed-read-line";
@@ -66,6 +67,7 @@ import { useFollowing } from "../slots/following";
 import { nodeRowSelectorOf } from "../tree-focus";
 import { nodesInOrder } from "../tree-keys";
 import { moveToRow } from "../useTreeKeymap";
+import { ViewLoadingLine } from "../view-loading-line";
 import {
   type CheckReading,
   STATEMENT_STATES,
@@ -86,11 +88,17 @@ const VERIFICATION_READS = ["coverage", "results", "blocks"] as const;
  *  under the statements it serves. */
 export type VerificationRead = (typeof VERIFICATION_READS)[number];
 
-/** How the reads the body is drawn from stand: one still out, all of them answered, or one or
- *  more failed before they first answered, each by its name (`FailedRead`). The body says the
- *  failed ones in an order of its own (`VERIFICATION_READS`), whatever order they are given in. */
+/** How the reads the body is drawn from stand: one or more still out, all of them answered, or
+ *  one or more failed before they first answered, each by its name (`FailedRead`). The body
+ *  says the failed ones, and the ones still out, in an order of its own (`VERIFICATION_READS`),
+ *  whatever order they are given in. */
 export type VerificationReads =
-  | { readonly state: "waiting" }
+  | {
+      /** Each read that holds no answer yet, which the loading line names (`ViewLoadingLine`);
+       *  all three where none is given. */
+      readonly out?: readonly VerificationRead[];
+      readonly state: "waiting";
+    }
   | { readonly state: "answered" }
   | {
       readonly state: "failed";
@@ -463,6 +471,13 @@ export function VerificationFilterBody({
   };
   return (
     <div className={BODY} data-verification-body="">
+      {reads.state === "waiting" ? (
+        <ViewLoadingLine
+          names={(reads.out ?? VERIFICATION_READS).map(
+            (read) => VIEW_LOADING_LINES.verification[read]
+          )}
+        />
+      ) : null}
       {/* Each read that failed before it first answered, the page's one line for a failed read
           (`FailedReadLine`): its words and a Retry that asks that read alone again. The lines
           stand in the body's own order (`VERIFICATION_READS`) whatever order the reads are given

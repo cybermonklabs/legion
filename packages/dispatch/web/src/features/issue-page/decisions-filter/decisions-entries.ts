@@ -82,6 +82,8 @@ import {
  *  stands refused. */
 type DecisionsRead = "decisions" | "asks";
 
+const NO_READS_OUT: readonly DecisionsRead[] = [];
+
 /** The seam's answer: the view's parts, and beside them whether the reads that say which
  *  entries there are hold their answers, which of them stands refused, which runs now and how
  *  many times each has failed, and how to ask one again. */
@@ -91,6 +93,8 @@ interface DecisionsEntries {
    *  `failure`), so each new failure is said again, and a run that ends with none, cancelled or
    *  paused while the browser is offline, says nothing again. */
   readonly failures: Readonly<Record<DecisionsRead, number>>;
+  /** The decisions and asks reads that have not answered or stood refused, in that order. */
+  readonly out: readonly DecisionsRead[];
   /** Which entry stands in which part, each part in the order it is drawn. Another person's
    *  decisions stand in `yours`, so `others` is empty. */
   readonly parts: DecisionsParts;
@@ -158,6 +162,13 @@ export function useDecisionsEntries({
   // again, though it stays refused until it answers.
   const decisionsRefused = standsFailed(decisionsRead);
   const asksRefused = standsFailed(asksRead);
+  const waitingForAsks = asks === undefined && !asksRefused;
+  let out = NO_READS_OUT;
+  if (decisions === undefined && !decisionsRefused) {
+    out = waitingForAsks ? ["decisions", "asks"] : ["decisions"];
+  } else if (waitingForAsks) {
+    out = ["asks"];
+  }
   const unreadable = useMemo<readonly DecisionsRead[]>(
     () => [
       ...(decisionsRefused ? (["decisions"] as const) : []),
@@ -252,7 +263,7 @@ export function useDecisionsEntries({
     }
     return found;
   }, [asks, asksRefused, decisions, root]);
-  return { failures, parts, readsHeld, retry, retrying, unreadable, writeUps };
+  return { failures, out, parts, readsHeld, retry, retrying, unreadable, writeUps };
 }
 
 /**

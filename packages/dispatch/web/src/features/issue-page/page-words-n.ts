@@ -11,7 +11,46 @@
  *   `./page-words-parts`, and values from `./page-structure`. A value import from
  *   `page-words.ts` or `./page-words-parts` makes an import cycle.
  */
+import { freeze } from "./page-structure";
 import type { PartWords } from "./page-words-parts";
+
+/**
+ * What a view says while a read it needs is out, which a view opened by its address draws on
+ * load (part N's R19, `view-loading-line.tsx`): "Loading the statements and the results…". The
+ * line is `loading`, then the words of each read still out in the view's own order, as the view
+ * names them here, one key per view, joined by commas and the last by `and`. Each read is named
+ * as the line that says it failed names it (`STATE_LINES`), without "Could not load".
+ */
+export const VIEW_LOADING_LINES = freeze({
+  and: "and",
+  loading: "Loading",
+  /** The Decisions view's two reads, the decisions and the asks (`decisions-entries.ts`). */
+  decisions: {
+    asks: "the questions",
+    decisions: "the decisions",
+  },
+  /** The Plan view's two reads, the plan document's blocks and the spec's (`view-plan.tsx`). */
+  plan: {
+    plan: "the plan",
+    statements: "the spec",
+  },
+  /** The Spec view's reads: coverage and the spec's blocks, results and the Verification
+   *  document's blocks, then decisions and asks (`SpecFilterBody.tsx`). */
+  spec: {
+    asks: "the questions",
+    checks: "the verification document",
+    coverage: "which checks serve each statement",
+    decisions: "the decisions",
+    results: "the results",
+    statements: "the statements",
+  },
+  /** The Verification view's three reads (`view-verification.tsx`). */
+  verification: {
+    blocks: "the verification document",
+    coverage: "which checks serve each statement",
+    results: "the checks' results",
+  },
+} as const);
 
 export default {
   add: {
@@ -75,6 +114,6 @@ export default {
       versions_for: "Versions for",
     },
   },
-  unasked: [],
+  unasked: [VIEW_LOADING_LINES],
   answers: [],
 } as const satisfies PartWords;
