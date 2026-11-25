@@ -45,8 +45,11 @@ The reasons a version gets for where its task stands are in `skill://legion-arch
 
 ## When to give it
 
+- **A root:** before `register_gate`, because the gate's opening starts the root's first step.
+
 - **A child:** before `release_children` releases it.
   A child the daemon has not recorded is refused once its Dispatch status is none of `triage`, `backlog`, `icebox` and `todo` (`ISSUE_ALREADY_RELEASED`).
+  The child's first step can start in the same admission pass as its release, so a plan given after it comes too late.
 
 A `plan.md` that a planner of the default steps wrote holds that planner's task blocks.
 The version you give replaces them with your own one block: delete theirs, and put what the next steps still need from the planner's plan into your task's text.

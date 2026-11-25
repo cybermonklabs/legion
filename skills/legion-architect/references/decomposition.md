@@ -53,6 +53,8 @@ A release refused with a code below writes nothing: release the rest again witho
 
 ## Reviewing a child's spec
 
+No person reads a child's spec: review every version of it and of its Verification document, whoever wrote it, before the child's work goes on with that version.
+
 1. Read the child's spec and its Verification document, at the versions you review, against your own spec (a root's at its approved version, a child's at the version its parent approved).
    Ask whether the version serves each requirement of your spec that it names, whether it narrows or contradicts any of them, whether it adds scope your spec does not ask for, and whether each fact it states holds in the code, the docs or a read-only command.
 

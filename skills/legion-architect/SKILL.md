@@ -66,6 +66,7 @@ A parent's own first phase waits while Dispatch shows an open child under it (th
 ## 4. Integration verification
 
 - Prove every criterion of your issue in its own pull request, from the evidence its task's steps give (`skill://legion-architect/references/acceptance.md`, "Accepting"), never in a child; never downgrade one.
+  A parent signs off only after its last round (`skill://legion-architect/references/acceptance.md`, "The last round").
 
 - While the work is built, a role runs the application from the issue's branch and uses it as its user would:
   a passing check does not show that a person can do their job with it.
