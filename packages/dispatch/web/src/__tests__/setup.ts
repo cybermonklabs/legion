@@ -189,6 +189,16 @@ afterEach(() => {
 });
 afterEach(resetWriteStorage);
 afterEach(resetPinState);
+// The Inbox's remembered view is kept in the tab's storage under the signed-in login
+// (`features/inbox/remembered-view.ts`), and the next test's Inbox at `/` would open on it.
+afterEach(() => {
+  const kept: string[] = [];
+  for (let index = 0; index < window.localStorage.length; index += 1) {
+    const key = window.localStorage.key(index);
+    if (key?.startsWith("dispatch.inbox.view:")) kept.push(key);
+  }
+  for (const key of kept) window.localStorage.removeItem(key);
+});
 // Whether Dispatch could be reached is the page's to learn afresh: a request one test failed would
 // otherwise make the next test's first answer start every waiting write's backoff over.
 afterEach(resetReachability);

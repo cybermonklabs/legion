@@ -345,9 +345,14 @@ export const coverage: readonly CoverageEntry[] = [
     'ThreadBody | CommentThreadBody | address prop | owner={{ artifactId, kind: "artifact", project: document.project }}',
     cells(`${HOST} · the column moves to another row, then back`)
   ),
-  ...answers("InboxDrawer | Inbox | early return | if (!open) return …", { reason: REASONS[12] }),
-  ...answers("InboxDrawer | Inbox | address prop | filter={filter}", { reason: REASONS[12] }),
-  ...answers("InboxDrawer | Inbox | address prop | pane={false}", { reason: REASONS[12] }),
+  ...answers("InboxDrawer | DrawerInbox | early return | if (!open) return …", {
+    reason: REASONS[12],
+  }),
+  ...answers("InboxDrawer | DrawerInbox | address prop | filter={filter}", { reason: REASONS[12] }),
+  ...answers("DrawerInbox | Inbox | address prop | filter={withRemembered(filter, remembered)}", {
+    reason: REASONS[12],
+  }),
+  ...answers("DrawerInbox | Inbox | address prop | pane={false}", { reason: REASONS[12] }),
   ...answers('AppShell | InboxPage | route | <Route path="/">', { reason: REASONS[12] }),
   ...answers('AppShell | InboxPage | route | <Route path="/credentials/*">', {
     reason: REASONS[12],

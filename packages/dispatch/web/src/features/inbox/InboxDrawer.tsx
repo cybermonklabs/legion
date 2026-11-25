@@ -1,4 +1,4 @@
-import { type ReactNode, useRef, useState } from "react";
+import { type ReactNode, type RefObject, useRef, useState } from "react";
 
 import {
   backdrop50,
@@ -11,6 +11,7 @@ import type { InboxRoute } from "../refs/routes";
 import { DIALOG_SCOPE } from "../shell/keymap";
 import { useCloseOnNavigation, useDialog } from "../shell/useDialog";
 import { Inbox } from "./Inbox";
+import { useRememberedView, withRemembered } from "./remembered-view";
 
 /**
  * The Inbox as a peek over whatever page is open (LEGION-547): the same list, cards and actions
@@ -34,8 +35,9 @@ import { Inbox } from "./Inbox";
  */
 export function InboxDrawer({ onClose, open }: { onClose: () => void; open: boolean }): ReactNode {
   const closeButtonRef = useRef<HTMLButtonElement>(null);
-  // An empty route is the Inbox as it opens: the reader's own work, newest first, banded by
-  // priority, every thread they have not dismissed, and nothing typed in the search box.
+  // An empty route is the Inbox as it opens: the view the reader last set (`remembered-view.ts`),
+  // else their own work, newest first, banded by priority, every thread they have not dismissed,
+  // and nothing typed in the search box.
   const [filter, setFilter] = useState<InboxRoute>({});
   const dialog = useDialog<HTMLElement>({ initialFocusRef: closeButtonRef, onClose, open });
   useCloseOnNavigation(open, onClose);
@@ -65,14 +67,39 @@ export function InboxDrawer({ onClose, open }: { onClose: () => void; open: bool
             Close
           </button>
         </div>
-        <Inbox
-          filter={filter}
-          keymapScope={DIALOG_SCOPE}
-          onFilterChange={setFilter}
-          pane={false}
-          scroller={dialog.containerRef}
-        />
+        <DrawerInbox filter={filter} onFilterChange={setFilter} scroller={dialog.containerRef} />
       </aside>
     </>
+  );
+}
+
+/**
+ * The drawer's Inbox, filled with the view the reader last set while the drawer's own route names
+ * none (`remembered-view.ts`). It mounts with each opening, so it reads the view the page may
+ * have changed since the last one.
+ */
+function DrawerInbox({
+  filter,
+  onFilterChange,
+  scroller,
+}: {
+  filter: InboxRoute;
+  onFilterChange: (next: InboxRoute) => void;
+  scroller: RefObject<HTMLElement | null>;
+}): ReactNode {
+  // The list writes the reader's change into the browser through a reading of its own; this one
+  // takes the same change, so a view cleared here is not filled back in from the older copy.
+  const [remembered, remember] = useRememberedView();
+  return (
+    <Inbox
+      filter={withRemembered(filter, remembered)}
+      keymapScope={DIALOG_SCOPE}
+      onFilterChange={(next) => {
+        remember(next);
+        onFilterChange(next);
+      }}
+      pane={false}
+      scroller={scroller}
+    />
   );
 }

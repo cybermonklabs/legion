@@ -75,7 +75,9 @@ export const coverage: readonly CoverageEntry[] = [
     { reason: REASONS[7] }
   ),
   ...answers("Inbox | ReadingPane | conditional | (paneShown) ? …", { reason: REASONS[9] }),
-  ...answers("InboxDrawer | Inbox | early return | if (!open) return …", { reason: REASONS[9] }),
+  ...answers("InboxDrawer | DrawerInbox | early return | if (!open) return …", {
+    reason: REASONS[9],
+  }),
   ...answers('AppShell | InboxPage | route | <Route path="/">', { reason: REASONS[9] }),
   ...answers('AppShell | InboxPage | route | <Route path="/credentials/*">', {
     reason: REASONS[9],

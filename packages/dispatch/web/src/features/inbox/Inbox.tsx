@@ -84,6 +84,7 @@ import { useFoldedGroups } from "./preferences";
 import { questionLine } from "./question-line";
 import { ReadingPane } from "./ReadingPane";
 import { RowKindIcon, RowPriorityTag, RowUrgencyMark } from "./RowMarks";
+import { useRememberedView, withRemembered } from "./remembered-view";
 import { SnoozeControl } from "./SnoozeControl";
 import {
   type InboxSection,
@@ -642,9 +643,17 @@ export function Inbox({
   pane = true,
   scroller,
 }: InboxProps = {}): ReactNode {
-  const { search } = useLocation();
+  const { pathname, search } = useLocation();
   const navigate = useNavigate();
-  const filter = filterOverride ?? parseInboxSearch(search);
+  // The view the reader last set, filled into an address that names none
+  // (`remembered-view.ts`). A host that owns the route fills its own, as the drawer does.
+  const [rememberedView, rememberView] = useRememberedView();
+  const addressed = parseInboxSearch(search);
+  // Only at `/` itself: the fill writes `/`, which would pull a reader off any other address
+  // this list is drawn at (`/credentials/<id>` opens one request over it).
+  const filter =
+    filterOverride ?? (pathname === "/" ? withRemembered(addressed, rememberedView) : addressed);
+  const restored = filterOverride === undefined && filter !== addressed;
   // The reading column shows from 1280 px, and only where the host allows one: below that, and
   // in the drawer, the Inbox is the list of cards it has always been.
   const wideEnoughForPane = useMediaQuery(READING_PANE_QUERY);
@@ -675,8 +684,8 @@ export function Inbox({
   const credentials = useCredentialRequests();
   const viewer = whoAmI.data?.login;
   // Who the list is for: what `?assignee=` carries, and the reader alone when it carries
-  // nothing. The address is the whole memory - a filter the reader can link, and nothing kept
-  // behind their back.
+  // nothing. A plain address takes the reader's remembered choice first, and then the address
+  // carries it (`remembered-view.ts`), so it is still a filter the reader can link.
   const selection = filter.assignees ?? (viewer === undefined ? [] : [viewer]);
   const sort = filter.sort ?? "newest";
   const groupBy = filter.group ?? "priority";
@@ -692,6 +701,7 @@ export function Inbox({
   const [openPopover, setOpenPopover] = useState<InboxPopover | undefined>(undefined);
   const barOpen = openPopover !== undefined;
   const changeFilter = (next: InboxRoute) => {
+    rememberView(next);
     if (onFilterChange) {
       onFilterChange(next);
     } else {
@@ -701,6 +711,12 @@ export function Inbox({
       navigate(buildInboxPath(next), { replace: true });
     }
   };
+  // A plain address the remembered view filled: write the view into the address too, so the
+  // address says what the list shows and a link copied from it carries the view.
+  const restoredPath = restored ? buildInboxPath(filter) : undefined;
+  useEffect(() => {
+    if (restoredPath !== undefined) navigate(restoredPath, { replace: true });
+  }, [navigate, restoredPath]);
   /** The search box, so `f` can land the reader's focus in it from anywhere on the page. */
   const searchRef = useRef<HTMLInputElement>(null);
   // What the box narrows by: the address's text, cut as the box itself cuts what it writes, and
@@ -1555,7 +1571,15 @@ export function Inbox({
         filters={filters}
         markAll={markAll}
         onAssigneesChange={(next) => changeFilter({ ...filter, assignees: next })}
-        onClearAgent={() => changeFilter({ ...filter, agent: undefined, section: undefined })}
+        onClearAll={() =>
+          changeFilter({
+            ...filter,
+            agent: undefined,
+            assignees: undefined,
+            filters: undefined,
+            section: undefined,
+          })
+        }
         onFiltersChange={(next) =>
           changeFilter({ ...filter, filters: Object.keys(next).length === 0 ? undefined : next })
         }

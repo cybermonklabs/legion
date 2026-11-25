@@ -1506,7 +1506,12 @@ test("clearing the filter lists every question, and the Unassigned filter lists 
     }
     await expect(page.locator("[data-inbox-row]")).toHaveCount(3);
 
-    // The default list re-opened holds only hers.
+    // The plain address re-opened keeps the view the reader set...
+    await page.goto("/");
+    await expect(page).toHaveURL(/[?&]assignee=everyone/);
+    await expect(page.locator("[data-inbox-row]")).toHaveCount(3);
+    // ...until they clear it; then the default list re-opened holds only hers.
+    await page.locator("[data-inbox-clear-filters]").click();
     await page.goto("/");
     await expect(page.getByTestId(`ask-${hersAsk.id}`)).toBeVisible();
     await expect(page.locator("[data-inbox-row]")).toHaveCount(1);

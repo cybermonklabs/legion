@@ -5,15 +5,16 @@ import { whoAmIQuery } from "../../api/queries";
 
 /** A name a browser keeps something under for one signed-in person: a choice they made, and the
  *  bar's recent items (`features/search/recents.ts`), which are theirs the same way. The Inbox's
- *  three are the ones that are the person's rather than the list's: how a thread's replies are
- *  ordered, how wide the reading pane is, and which bands they folded shut
- *  (`inbox.folded-groups`, one set per grouping). Its filters, sort, grouping and the switch
- *  between the Inbox and what they have dismissed out of it are in the address instead, so a
- *  link carries them. */
+ *  four: how a thread's replies are ordered, how wide the reading pane is, which bands they
+ *  folded shut (`inbox.folded-groups`, one set per grouping), and the view they last set
+ *  (`inbox.view`: filters, assignee choice, sort and grouping), which fills a plain `/` and is
+ *  then written into the address, so a link still carries it (`inbox/remembered-view.ts`). The
+ *  switch between the Inbox and what they have dismissed out of it is in the address alone. */
 export type UserPreference =
   | "inbox.folded-groups"
   | "inbox.pane-width"
   | "inbox.thread-order"
+  | "inbox.view"
   /** Which of the new issue page's Details sections this reader has closed. */
   | "issue.margin-sections"
   | "issue.page"

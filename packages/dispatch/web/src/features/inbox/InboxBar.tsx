@@ -88,7 +88,7 @@ export function InboxBar({
   filters,
   markAll,
   onAssigneesChange,
-  onClearAgent,
+  onClearAll,
   onFiltersChange,
   onPopoverOpenChange,
   rows,
@@ -107,7 +107,9 @@ export function InboxBar({
    *  unread Reply or Agent row to mark, and says so when a press was refused or stopped. */
   markAll: MarkAllRead;
   onAssigneesChange: (next: readonly string[] | undefined) => void;
-  onClearAgent: () => void;
+  /** **Clear filters**: the agent's asks, the five fields and the assignee choice, cleared as one
+   *  change, so the remembered view forgets them in the same write (`remembered-view.ts`). */
+  onClearAll: () => void;
   onFiltersChange: (next: InboxFilters) => void;
   /** Which of the bar's popovers is open, or undefined for none. The Inbox's Escape binding
    *  stands down while one is - one press closes the popover rather than also clearing what
@@ -179,12 +181,6 @@ export function InboxBar({
       });
     }
   }
-
-  const clearAll = () => {
-    onClearAgent();
-    onFiltersChange({});
-    onAssigneesChange(undefined);
-  };
 
   return (
     <div className="space-y-2" data-inbox-bar="">
@@ -282,7 +278,7 @@ export function InboxBar({
           <button
             className={`min-h-11 rounded-lg px-2 text-xs font-medium outline-none focus-visible:ring-2 ${focusVisibleRing} ${textSecondaryOnCanvas}`}
             data-inbox-clear-filters=""
-            onClick={clearAll}
+            onClick={onClearAll}
             type="button"
           >
             Clear filters

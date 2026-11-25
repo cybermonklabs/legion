@@ -1,4 +1,4 @@
-import { expect, jest, spyOn, test } from "bun:test";
+import { describe, expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: this file keeps the row hold's bare pointerover/pointerout with a relatedTarget, a blur naming no target, and the Enter presses whose survival only fireEvent reports.
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
@@ -1960,6 +1960,106 @@ test("a filter change replaces the history entry instead of piling one up per pi
     getAsk.mockRestore();
     getInbox.mockRestore();
   }
+});
+
+describe("the remembered view", () => {
+  /** Mocks the reads `filterRows` needs, runs `body`, and puts them back. */
+  async function withFilterRows(body: (user: UserEvent) => Promise<void>): Promise<void> {
+    const user = userEvent.setup();
+    const rows = filterRows();
+    const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
+    const getAsk = mockAskReads(rows);
+    const listUsers = mockPeople();
+    try {
+      await body(user);
+    } finally {
+      listUsers.mockRestore();
+      getAsk.mockRestore();
+      getInbox.mockRestore();
+    }
+  }
+
+  async function groupBy(user: UserEvent, label: string): Promise<void> {
+    await user.click(screen.getByRole("button", { name: "View" }));
+    const section = screen.getByRole("group", { name: "Group by" });
+    await user.click(within(section).getByRole("radio", { name: label }));
+  }
+
+  test("a plain address opens on the view the reader last set, and the address carries it", async () => {
+    await withFilterRows(async (user) => {
+      const first = renderInbox("/");
+      await screen.findByText("Which approach?");
+      await toggleAssignee(user, /bob/);
+      await groupBy(user, "Project");
+      await waitFor(() =>
+        expect(screen.getByTestId("location").textContent).toBe(
+          "/?assignee=alice&assignee=bob&group=project"
+        )
+      );
+      first.unmount();
+
+      const second = renderInbox("/");
+      try {
+        await waitFor(() =>
+          expect(screen.getByTestId("location").textContent).toBe(
+            "/?assignee=alice&assignee=bob&group=project"
+          )
+        );
+        expect(await screen.findByText("Bob's question?")).toBeInTheDocument();
+      } finally {
+        second.unmount();
+      }
+    });
+  });
+
+  test("Clear filters forgets the remembered filters", async () => {
+    await withFilterRows(async (user) => {
+      const first = renderInbox("/");
+      await screen.findByText("Which approach?");
+      await toggleAssignee(user, /bob/);
+      await waitFor(() =>
+        expect(screen.getByTestId("location").textContent).toBe("/?assignee=alice&assignee=bob")
+      );
+      await user.click(screen.getByRole("button", { name: "Clear filters" }));
+      await waitFor(() => expect(screen.getByTestId("location").textContent).toBe("/"));
+      first.unmount();
+
+      const second = renderInbox("/");
+      try {
+        await screen.findByText("Which approach?");
+        expect(screen.getByTestId("location").textContent).toBe("/");
+        expect(screen.queryByText("Bob's question?")).not.toBeInTheDocument();
+      } finally {
+        second.unmount();
+      }
+    });
+  });
+
+  test("an address that names a view opens on it, and opening it changes nothing remembered", async () => {
+    await withFilterRows(async (user) => {
+      const first = renderInbox("/");
+      await screen.findByText("Which approach?");
+      await toggleAssignee(user, /bob/);
+      await waitFor(() =>
+        expect(screen.getByTestId("location").textContent).toBe("/?assignee=alice&assignee=bob")
+      );
+      first.unmount();
+
+      const linked = renderInbox("/?assignee=everyone");
+      await screen.findByText("Orphan question?");
+      expect(screen.getByTestId("location").textContent).toBe("/?assignee=everyone");
+      linked.unmount();
+
+      const plain = renderInbox("/");
+      try {
+        await waitFor(() =>
+          expect(screen.getByTestId("location").textContent).toBe("/?assignee=alice&assignee=bob")
+        );
+      } finally {
+        plain.unmount();
+      }
+    });
+  });
 });
 
 test("a caller supplying onFilterChange (the Inbox drawer) keeps the filter local: the address is untouched", async () => {
