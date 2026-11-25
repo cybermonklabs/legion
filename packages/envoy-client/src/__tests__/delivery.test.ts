@@ -1874,15 +1874,23 @@ describe("renderInbound dispatch events", () => {
           }
         ).envoy.dispatch.payload;
 
+      const rank = "zzzz".repeat(40);
       const cleared = payloadOf("issue.updated", {
         ...issue,
         changed: ["route", "labels"],
         route: null,
         labels: [],
         priority: null,
+        rank,
       });
       expect(cleared).toMatchObject({ changed: ["route", "labels"], route: null, labels: [] });
       expect(cleared["priority"]).toBeUndefined();
+      // The board's sort key is bookkeeping, until an update moves it.
+      expect(cleared["rank"]).toBeUndefined();
+      expect(payloadOf("issue.updated", { ...issue, changed: ["rank"], rank })["rank"]).toBe(rank);
+      // A create's `changed` names every field it set, so its empty fields still go.
+      const created = payloadOf("issue.created", { ...issue, changed: ["route"], route: null });
+      expect(created["route"]).toBeUndefined();
       // `past: []` says the near-copy check did not answer; no `forced` says the create was not
       // forced.
       expect(payloadOf("issue.created", { ...issue, forced: { past: [] } })["forced"]).toEqual({

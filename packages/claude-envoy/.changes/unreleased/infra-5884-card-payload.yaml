@@ -6,9 +6,9 @@ body: |-
   than a second from the time Envoy issued the card, whose `at` is that time cut to the second,
   and a comment's `answers` and `thread_root_id` equal to its `reply_to`), and Dispatch's own
   routing and client-cache bookkeeping (`deliveries`, `thread_logins`, `references_changed*`,
-  `mentions_decide_routes`, `suppress*`). A field whose value is the fact even when empty stays as
-  Dispatch wrote it: each field an update's `changed` names (a cleared `route: null`), a present
-  `suggestion` (an empty replacement proposes deleting the quoted text) and a present `forced`
-  (`past: []`: the near-copy check did not answer). A session actor's `origin` keeps only the
-  session's title, not its host, machine, directory or tmux pane. On 1,465 `comment.created`
-  cards from real sessions, a card is 687 bytes shorter on average.
+  `mentions_decide_routes`, `suppress*`, an issue's board `rank`). A field whose value is the
+  fact even when empty stays as Dispatch wrote it: each field an update's `changed` names (a
+  cleared `route: null`), a present `suggestion` (an empty replacement proposes deleting the
+  quoted text) and a present `forced` (`past: []`: the near-copy check did not answer). A session
+  actor's `origin` keeps only the session's title, not its host, machine, directory or tmux pane.
+  On 1,465 `comment.created` cards from real sessions, a card is 687 bytes shorter on average.

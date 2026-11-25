@@ -942,8 +942,9 @@ function dispatchPayload(event: DispatchEvent): unknown {
  * The fields of a Dispatch payload that are Dispatch's own bookkeeping, which its outbox and its
  * web clients read and an agent has no use for: the delivery attempts of a comment's mentions,
  * the routes a comment's mentions took a copy from (`model.CommentEventPayload`'s route
- * suppression), the Inboxes a write moved (`thread_logins`), and the backlink counts it moved
- * (`references_changed` and its truncation marks).
+ * suppression), the Inboxes a write moved (`thread_logins`), the backlink counts it moved
+ * (`references_changed` and its truncation marks), and an issue's place on the board (`rank`, a
+ * key of some hundred characters that only sorts).
  */
 const DISPATCH_BOOKKEEPING: ReadonlySet<string> = new Set([
   "deliveries",
@@ -956,6 +957,7 @@ const DISPATCH_BOOKKEEPING: ReadonlySet<string> = new Set([
   "references_changed",
   "references_changed_truncated",
   "references_changed_truncated_kinds",
+  "rank",
 ]);
 
 /**
@@ -969,10 +971,12 @@ const DISPATCH_BOOKKEEPING: ReadonlySet<string> = new Set([
  * of its items, since an item's place in the list is part of what it says.
  *
  * A field whose value is the fact even when it is empty stays as Dispatch wrote it: each field an
- * update's `changed` names (a cleared `route: null` or `labels: []` is what it was cleared to), a
- * present `suggestion` (an empty `replace_with` proposes deleting the quoted text), and a present
- * `forced` (a create's `past: []` says its near-copy check did not answer, where no `forced` says
- * it was not forced).
+ * update's `changed` names (a cleared `route: null` or `labels: []` is what it was cleared to; a
+ * create's `changed` names every field it set, so it names no news), a present `suggestion` (an
+ * empty `replace_with` proposes deleting the quoted text), and a present `forced` (a create's
+ * `past: []` says its near-copy check did not answer, where no `forced` says it was not forced).
+ * A field an update's `changed` names stays even when it is bookkeeping or repeats the card: the
+ * change is the news.
  *
  * A field repeats the card when the card already says it: `issue_key` is the card's `owner`,
  * `author` the card's `actor` when each of its fields is the actor's, and `created_at` the card's
@@ -988,7 +992,10 @@ function dispatchPayloadForReader(
   issuedAt: number | undefined
 ): unknown {
   const whole = dispatchPayload(event);
-  const changed = isObject(whole) && Array.isArray(whole["changed"]) ? whole["changed"] : [];
+  const changed =
+    event.type !== "issue.created" && isObject(whole) && Array.isArray(whole["changed"])
+      ? whole["changed"]
+      : [];
   const payload = withoutEmptyFields(
     whole,
     (key, item) =>
@@ -1021,7 +1028,7 @@ function dispatchPayloadForReader(
   };
   const shown: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(payload)) {
-    if (repeatsTheCard(key, value)) continue;
+    if (!changed.includes(key) && repeatsTheCard(key, value)) continue;
     shown[key] = key === "target" && value === `session:${sessionID}` ? `you (${value})` : value;
   }
   return shown;
