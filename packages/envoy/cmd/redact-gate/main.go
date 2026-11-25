@@ -35,8 +35,9 @@
 //  5. mutation: each row's mutation, applied alone, makes its test fail at its designated
 //     assertion with a marker in the output the test captured there.
 //
-// Each run of stages 4 and 5 has a bound derived in the same run: row_timeout, the row's own
-// budget, plus four times its start-up run (runBound). A run past its bound is UNKNOWN, neither a
+// Each Go row's run in stages 4 and 5 has a bound derived in the same run: row_timeout, the row's
+// own budget, plus four times its start-up run (runBound); a Bun row's run is bounded by
+// row_timeout alone (runBun). A run past its bound is UNKNOWN, neither a
 // pass nor a failure: its stage stops, the gate prints the timeout's panic and the goroutine
 // running the test, and it exits 3 when nothing failed. So is a run that skipped the row's test
 // or a subtest of it (go test's skip action, a Bun testcase's <skipped>), which the gate names:

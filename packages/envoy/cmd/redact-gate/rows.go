@@ -347,9 +347,9 @@ func (res *result) scan(text string) {
 // line longer than its buffer across several output events, and a REDACT-CAPTURE line of a long
 // page is one, so a capture read event by event would be cut short.
 //
-// The bound is runBound's for the one top-level test, after the start-up run of the row's package
-// in the copy (startUp). A start-up run that fails is not read: the run after it fails the same
-// way, and that run is read.
+// A Go row's bound is runBound's for the one top-level test, after the start-up run of the row's
+// package in the copy (startUp); a Bun row's is row_timeout alone (runBun). A start-up run that
+// fails is not read: the run after it fails the same way, and that run is read.
 func (g *gate) runTest(copyDir string, r *row) result {
 	res := result{captures: map[string][]string{}}
 	start := time.Now()
@@ -456,8 +456,8 @@ func startUp(dir, pkg string, stdout, stderr io.Writer) (time.Duration, error) {
 // drops what its tests made, each database they cloned among it), and twice that again holds the
 // load moving between the two runs. Each bound is derived in its own run, not set ahead, because
 // the box's load moves from one run to the next: on 2026-11-22 the one row of
-// daemon/internal/workflow took 46s at 14:06Z and 1.5s at 15:31Z. Stages 4 and 5 bound each row's
-// run by it, and -verify each package's (verify.go).
+// daemon/internal/workflow took 46s at 14:06Z and 1.5s at 15:31Z. Stages 4 and 5 bound each Go
+// row's run by it, and -verify each Go package's (verify.go).
 func runBound(rowTimeout time.Duration, tops int, startup time.Duration) time.Duration {
 	return time.Duration(tops)*rowTimeout + 4*startup
 }
