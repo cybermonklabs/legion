@@ -9,8 +9,8 @@ package legion
 // whole read leaves (cursor.afterRead) and the one a write of the setting resets it to
 // (cursor.reset, resetCursor), with the helpers of the row's arrays (with, marked, without,
 // owedSince); and the row's columns, its reads and its writes (cursorColumns, scanCursor,
-// writeCursor and the narrow writes beside it, endHold and writeSkipped; readPosition,
-// Intake.position, lockPosition, lockCursor).
+// writeCursor and the narrow writes beside it, endHold, writeSkipped and writeReadStart;
+// readPosition, Intake.position, lockPosition, lockCursor).
 
 import (
 	"context"
@@ -39,7 +39,7 @@ const holdAtLeast = time.Second
 // a starting read's included, and neither defers a call for it (cursor.readFor,
 // Intake.startingPoint), so neither adds a read to the hold. A write of the setting, a delete
 // included, either leaves the holder and its count as they are or ends the hold, by the rule that
-// resetCursor and cursor.reset hold whole (read-rule-cases rows 6.1b, 6.3b and 6.5), so no write
+// resetCursor and cursor.reset hold whole (read-rule-cases rows 6.1 to 6.5), so no write
 // starts the count again. A message whose hold a write ended is acknowledged unapplied at its next
 // delivery (outcomeReleased), and another message may then hold the read from a count of 1. A
 // holder that has gone back stateMaxHolds times holds the read no more: that delivery is
@@ -412,9 +412,10 @@ func (c cursor) follows(stateURL string) bool {
 }
 
 // forgets reports whether a message of the store stateID is one of a daemon the setting no longer
-// names: its store is the one a write that named another daemon recorded (previousStateID), or one
-// marked as no daemon of the project (foreignStateIDs), and the cursor holds no store or another
-// store. R3 applies no message of a daemon the setting named before once the setting names another.
+// names: its store is the one recorded by a write that named another daemon or by a delete of the
+// setting (previousStateID), or one marked as no daemon of the project (foreignStateIDs), and the
+// cursor holds no store or another store. R3 applies no message of a daemon the setting named
+// before once the setting names another.
 // Such a message calls for no read of its own, but for a boot (drops), and makes one only as the
 // holder of a read it took past stateMaxWaiting (judgeCrowded, applyBatch). It waits on the
 // project's runner behind a read in flight, as every message does, and is judged against the
@@ -672,6 +673,36 @@ func writeSkipped(ctx context.Context, tx pgx.Tx, project string, stateIDs []str
 		update legion_event_cursors set skipped_state_ids = $2, skipped_seqs = $3 where project = $1
 	`, project, stateIDs, seqs); err != nil {
 		return fmt.Errorf("record the state message of %s skipped past the cap: %w", project, err)
+	}
+	return nil
+}
+
+// writeReadStart writes started, the start of a whole read of project, on project's cursor through
+// db, the pool, before the read calls the daemon (readWhole): last_read_started_at takes the later
+// of the row's start and started, as every write of the start keeps it (writeCursor). It gives a
+// project that has a setting and no cursor yet a cursor that follows no daemon, as lockCursor does,
+// and a project with no setting no cursor. A project whose setting was deleted keeps its cursor
+// (read-rule-cases row 6.5), so its start is written as any project's. The start is written before
+// the call because a read that a stop of the intake cuts short records nothing else. The next
+// holder of the durable finds that start, at its take-over and at the redelivery of the message
+// that made the read, and makes no read until ReadRetryAfter after it (R3-g, read-rule-cases row
+// 7.6). The same statement empties the sequences the cursor skipped past stateMaxWaiting
+// (cursor.skippedStateIDs): the daemon commits each event before it publishes it, so the read holds
+// every event of a message published before it began, and only a message skipped while it is in
+// flight can be past its snapshot (recordWhole). So a read owes no gap read for a message skipped
+// before it, whatever sequence that message claims.
+func writeReadStart(ctx context.Context, db Execer, project string, started time.Time) error {
+	if _, err := db.Exec(ctx, `
+		insert into legion_event_cursors (project, state_url, last_read_started_at)
+		select $1, '', $2
+		where exists (select 1 from legion_settings where project = $1)
+			or exists (select 1 from legion_event_cursors where project = $1)
+		on conflict (project) do update set
+			last_read_started_at = greatest(legion_event_cursors.last_read_started_at,
+				excluded.last_read_started_at),
+			skipped_state_ids = '{}', skipped_seqs = '{}'
+	`, project, started); err != nil {
+		return fmt.Errorf("record the start of a whole read of %s and empty the state messages it skipped past the cap: %w", project, err)
 	}
 	return nil
 }

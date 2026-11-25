@@ -231,21 +231,11 @@ func ReadWhole(ctx context.Context, pool *store.Pool, setting Settings, reason s
 // row naming why, its observations where the state is the project's own, and leaves the read owed.
 // Each read is announced on StateChannel and logged at INFO with its reasons (finishWhole).
 //
-// Before it calls the daemon, it writes the read's start on the project's cursor
-// (last_read_started_at), the later of the cursor's start and this one, as every write of the
-// start keeps it (writeCursor). It gives a project that has a setting and no cursor yet a cursor
-// that follows no daemon, as lockCursor does, and a project with no setting no cursor. A project
-// whose setting was deleted keeps its cursor (read-rule-cases row 6.5), so its start is written as
-// any project's. The start is written before the call because a read that a stop of the intake
-// cuts short records nothing else. The next holder of the durable finds that start, at its
-// take-over and at the redelivery of the message that made the read, and makes no read until
-// ReadRetryAfter after it (R3-g, read-rule-cases row 7.6). From the read's start until readWhole
-// returns, the intake knows that start as the start of the read in flight on the project's runner
-// (reading). The statement that writes the start empties the sequences the cursor skipped past
-// stateMaxWaiting (cursor.skippedStateIDs) too: the daemon commits each event before it publishes
-// it, so the read holds every event of a message published before it began, and only a message
-// skipped while it is in flight can be past its snapshot (recordWhole). So a read owes no gap read
-// for a message skipped before it, whatever sequence that message claims.
+// Before it calls the daemon, it writes the read's start on the project's cursor and empties the
+// sequences the cursor skipped past stateMaxWaiting (writeReadStart, read-rule-cases row 7.6), so
+// a read that a stop of the intake cuts short keeps its start. From the read's start until
+// readWhole returns, the intake knows that start as the start of the read in flight on the
+// project's runner (reading).
 //
 // It keeps the read it fetched in pending until it is recorded, so an attempt made again after a
 // refused record records that read rather than reading the daemon again. It answers the read as it
@@ -256,17 +246,8 @@ func (in *Intake) readWhole(ctx context.Context, owed owedRead, pending **wholeR
 	read := *pending
 	if read == nil || read.stateURL != owed.setting.StateURL {
 		started := in.now().UTC()
-		if _, err := in.pool.Exec(ctx, `
-			insert into legion_event_cursors (project, state_url, last_read_started_at)
-			select $1, '', $2
-			where exists (select 1 from legion_settings where project = $1)
-				or exists (select 1 from legion_event_cursors where project = $1)
-			on conflict (project) do update set
-				last_read_started_at = greatest(legion_event_cursors.last_read_started_at,
-					excluded.last_read_started_at),
-				skipped_state_ids = '{}', skipped_seqs = '{}'
-		`, owed.setting.Project, started); err != nil {
-			return nil, fmt.Errorf("record the start of a whole read of %s and empty the state messages it skipped past the cap: %w", owed.setting.Project, err)
+		if err := writeReadStart(ctx, in.pool, owed.setting.Project, started); err != nil {
+			return nil, err
 		}
 		in.reads(owed.setting.Project, &started)
 		defer in.reads(owed.setting.Project, nil)

@@ -146,8 +146,9 @@ const (
 	// no daemon of the project (cursor.marks), which is finished as outcomeForgotten.
 	otherStoreLine = "legion intake: a state message of another store than the starting point's is dropped"
 	// forgottenLine is a message of the store the project followed before a write of its Legion
-	// setting named another daemon, while the cursor holds no store or another store
-	// (cursor.drops): R3 applies no message of the daemon the setting named before.
+	// setting named another daemon, or before a delete of the setting, while the cursor holds no
+	// store or another store (cursor.drops): R3 applies no message of the daemon the setting
+	// named before.
 	forgottenLine = "legion intake: a state message of the daemon the project's Legion setting named before is dropped"
 	// unfollowedLine is a message that does not follow the cursor (a gap, a boot that does not
 	// follow, a part that does not continue the held parts) while the read it calls for is owed:
@@ -504,13 +505,13 @@ const (
 	// outcomeOtherStore is a message whose stateId is not the cursor's (judge).
 	outcomeOtherStore
 	// outcomeForgotten is a message of a store the project's cursor drops (cursor.drops): the
-	// store the project followed before a write of its setting named another daemon, or a store a
-	// whole read found is no daemon of the project. A boot of such a store, while the cursor
-	// follows the setting's URL in a store a read verified, is none: it is judged as a message of
-	// another store (outcomeOtherStore). It is never applied. It waits on the project's
-	// runner behind a read in flight, as every message does, and is judged against the cursor that
-	// read leaves: it queues a call for the owed read behind itself where that read is due and no
-	// message holds it, whatever store the cursor holds (callRead;
+	// store the project followed before a write of its setting named another daemon, or before a
+	// delete of the setting, or a store a whole read found is no daemon of the project. A boot of
+	// such a store, while the cursor follows the setting's URL in a store a read verified, is none:
+	// it is judged as a message of another store (outcomeOtherStore). It is never applied. It waits
+	// on the project's runner behind a read in flight, as every message does, and is judged against
+	// the cursor that read leaves: it queues a call for the owed read behind itself where that read
+	// is due and no message holds it, whatever store the cursor holds (callRead;
 	// judge, applyBatch). On its project's crowded key it calls for none while no whole read of the
 	// project is in flight, and otherwise owes the read as every message past stateMaxWaiting does
 	// (judgeCrowded). A message the cursor names as the owed read's holder, which one past
@@ -519,8 +520,8 @@ const (
 	// (cursor.finishesUnapplied; applyBatch, answerRead, readRefused).
 	outcomeForgotten
 	// outcomeReleased is a message whose hold of its project's owed read a write of the setting
-	// that named another daemon ended (cursor.releases, endHold): it is finished unapplied at its
-	// next delivery and holds no read.
+	// that named another URL, or a delete of the setting, ended (cursor.releases, endHold): it is
+	// finished unapplied at its next delivery and holds no read.
 	outcomeReleased
 	// outcomeCrowded is a message on its project's crowded key that owes a read and joined it
 	// (judgeCrowded).

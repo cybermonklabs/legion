@@ -1948,7 +1948,7 @@ Every other write resets it, so the intake reads the setting's daemon whole at t
 Where the project's newest whole read began less than a minute before the wake or a take-over, the starting read is not due: where no message holds it, that wake or take-over queues the project's starting point once more for the end of the minute, one deferred call each, and a message that arrives meanwhile holds the starting read as any owed read.
 A delete of the setting resets the cursor as a write of another URL does and keeps its row;
 its wake reads nothing, since the project has no setting, and a write after it makes its starting read a minute after the project's newest whole read began at the soonest.
-`resetCursor` and `cursor.reset` (`internal/dispatch/legion/cursor.go`) hold the whole rule, and rows 6.1b, 6.3b and 6.5 of dispatch://INFRA-3931/artifact/read-rule-cases-md give its cases.
+`resetCursor` and `cursor.reset` (`internal/dispatch/legion/cursor.go`) hold the whole rule, and rows 6.1 to 6.5 of dispatch://INFRA-3931/artifact/read-rule-cases-md give its cases.
 The durable sets no `MaxDeliver`, so the server never drops the holder, and its two-minute ack wait is past the longest delay.
 While the holder waits, the durable's ack floor stays below it, so a take-over, which creates the durable again at that floor, replays every message after the holder.
 A read waits 60 s at the most and the minute counts from its start, so the bound of 10 hand-backs holds the floor for about 11 minutes at the most, whether or not the daemon answers its reads and however many take-overs come meanwhile, and a take-over replays at most that long of messages.

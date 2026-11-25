@@ -244,13 +244,14 @@ func (in *Intake) answerRead(ctx context.Context, db Execer, attempt *messageAtt
 // cursor the read left. judge answers every reason but ReadReasonStart through ownRead, so that
 // message calls for no read of its own other than a starting point:
 //
-//   - A message of a store the cursor drops (cursor.drops), the store a write that named another
-//     daemon recorded or a store marked as no daemon of the project, is never applied, whatever
-//     else holds (outcomeForgotten): R3 applies none of the messages of a daemon the setting named
-//     before once the setting names another. Such a message has waited on the project's runner
-//     behind any read in flight, as every message does, so it is judged against the cursor that
-//     read left. It calls for no read of its own, not even a starting point: the setting's daemon
-//     may not have published it, and R3 says a failed starting read is one that no message holds.
+//   - A message of a store the cursor drops (cursor.drops), the store recorded by a write that
+//     named another daemon or by a delete of the setting, or a store marked as no daemon of the
+//     project, is never applied, whatever else holds (outcomeForgotten): R3 applies none of the
+//     messages of a daemon the setting named before once the setting names another. Such a message
+//     has waited on the project's runner behind any read in flight, as every message does, so it is
+//     judged against the cursor that read left. It calls for no read of its own, not even a
+//     starting point: the setting's daemon may not have published it, and R3 says a failed starting
+//     read is one that no message holds.
 //     It holds the owed read only where it took that hold past stateMaxWaiting while a read was in
 //     flight (judgeCrowded), and applyBatch then has it make that read or go back as the holder.
 //     Otherwise it is finished unapplied: applyBatch queues the read the cursor owes on the
@@ -335,10 +336,11 @@ func ownRead(reason string, readMade bool) string {
 
 // applyBatch takes the attempt's message in one transaction that holds the project's position
 // (lockPosition, and the parts held for it, heldParts). A message whose hold of the owed read a
-// write of the setting that named another daemon ended (cursor.releases) is finished unapplied at
-// this delivery and holds no read, and its store is marked as no daemon of the project (endHold).
-// Any other message is judged (judge), and applyBatch hands the read it calls for to the read rule
-// (answerRead). A message of a store the cursor drops (outcomeForgotten) writes nothing and hands
+// write of the setting that named another URL, or a delete of the setting, ended (cursor.releases)
+// is finished unapplied at this delivery and holds no read, and its store is marked as no daemon of
+// the project (endHold). Any other message is judged (judge), and applyBatch hands the read it
+// calls for to the read rule (answerRead).
+// A message of a store the cursor drops (outcomeForgotten) writes nothing and hands
 // no read to the rule where the cursor finishes it unapplied (cursor.finishesUnapplied): it is
 // acknowledged unapplied and holds no read, and it queues the call for the owed read that callRead
 // decides, whatever store the cursor holds, on the project's runner behind it. That is every such

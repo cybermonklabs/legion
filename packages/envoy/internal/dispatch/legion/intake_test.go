@@ -46,9 +46,9 @@ type intakeRig struct {
 	run string
 	// published numbers the rig's messages, so each has an id and a dedupe key of its own.
 	published int
-	// firstRetry and lastRetry are the retry waits of each intake the rig starts
-	// (Intake.firstRetry, Intake.lastRetry): NewIntake's unless a test shrinks them before it
-	// starts one.
+	// firstRetry and lastRetry are the retry waits a test shrinks before it starts an intake
+	// (Intake.firstRetry, Intake.lastRetry): startOn gives them to each intake the rig starts
+	// where firstRetry is set, and leaves NewIntake's otherwise.
 	firstRetry, lastRetry time.Duration
 
 	// intake is the intake running now, stop stops it, and subject is the deliver subject its
@@ -140,7 +140,6 @@ func newIntakeRig(t *testing.T) *intakeRig {
 	return &intakeRig{
 		t: t, database: database, publisher: publisher, leases: leases, wake: make(chan struct{}, 1),
 		clock: &intakeClock{done: t.Context().Done()}, logs: logs, run: rigRun,
-		firstRetry: applyFirstRetry, lastRetry: applyLastRetry,
 	}
 }
 
@@ -153,7 +152,7 @@ func (r *intakeRig) start() {
 
 // startOn is start with now as the intake's clock rather than the rig's. The intake's deferred
 // calls (Intake.after) run on the rig's clock either way, and it retries a failed database step
-// after the rig's waits (firstRetry, lastRetry).
+// after the rig's waits where a test set them (firstRetry, lastRetry), and NewIntake's otherwise.
 func (r *intakeRig) startOn(now func() time.Time) {
 	r.t.Helper()
 	client, err := bus.ConnectOwningStream([]string{testnats.URL(r.t)})
@@ -163,7 +162,9 @@ func (r *intakeRig) startOn(now func() time.Time) {
 	r.t.Cleanup(client.Close)
 	intake := NewIntake(client, r.database.Pool, r.leases, r.wake)
 	intake.now, intake.after = now, r.clock.after
-	intake.firstRetry, intake.lastRetry = r.firstRetry, r.lastRetry
+	if r.firstRetry != 0 {
+		intake.firstRetry, intake.lastRetry = r.firstRetry, r.lastRetry
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {

@@ -2630,7 +2630,7 @@ A `PUT` of the URL the setting names already, while a message holds the owed rea
 Every other `PUT` resets the cursor, so the intake reads the setting's daemon whole after the `PUT`, a minute after the project's newest whole read began at the soonest.
 A `PUT` of another URL, and a `DELETE` of the setting, end the hold of a message that holds the owed read: the intake acknowledges that message unapplied at its next delivery.
 A `DELETE` resets the cursor as a `PUT` of another URL does and keeps the start of the project's newest whole read, so a `DELETE` and a `PUT` within a minute make their two whole reads at least a minute apart.
-`resetCursor` and `cursor.reset` in `packages/envoy/internal/dispatch/legion/cursor.go` hold the whole rule, and rows 6.1b, 6.3b and 6.5 of dispatch://INFRA-3931/artifact/read-rule-cases-md give its cases.
+`resetCursor` and `cursor.reset` in `packages/envoy/internal/dispatch/legion/cursor.go` hold the whole rule, and rows 6.1 to 6.5 of dispatch://INFRA-3931/artifact/read-rule-cases-md give its cases.
 While a message holds the read, the durable's ack floor stays below it, so a take-over of the durable replays every message after it: at most about 11 minutes of messages where the daemon answers each read within seconds.
 The read's log line names the first reason as `reason` and every reason it was owed for as `reasons`, for example `reasons=gap,boot`.
 So a burst of messages that each call for a read, forged or from a bug, makes one read a minute and holds no other project's messages for longer than that one read, and each project that owes a read holds one message of the durable's window.
