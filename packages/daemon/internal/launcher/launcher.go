@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -617,15 +618,25 @@ func namedInPart(what string, flags ...namedFlag) error {
 	return fmt.Errorf("launcher: %s is named in part: no %s", what, strings.Join(missing, ", no "))
 }
 
+// tcpAddress reads --connect, the daemon's launcher stream as tcp://<host>:<port>, and answers the
+// host:port net.Dial takes. It takes what shim.ParseAddress takes of a TCP address: a host, a port
+// in 1..65535, and no path beyond "/", query, fragment or user. It refuses anything else by the
+// flag alone, since the value may carry a credential in its user information or its query, and the
+// URL rule (redact.URLCredentials) finds a URL only by its "://": a value written without its
+// scheme has none, and nor has the value less its scheme, which net.SplitHostPort's error and a
+// dial's error repeat. So the address serve's dial line names is a host and port alone.
 func tcpAddress(addr string) (string, error) {
-	address, ok := strings.CutPrefix(addr, "tcp://")
-	if !ok || address == "" {
-		return "", fmt.Errorf("launcher: connect %q is not tcp://host:port", addr)
+	malformed := errors.New("launcher: --connect is not tcp://<host>:<port> (it is not printed)")
+	u, err := url.Parse(addr)
+	if err != nil || u.Scheme != "tcp" || !strings.HasPrefix(addr, "tcp://") || u.Opaque != "" || u.User != nil ||
+		u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || (u.Path != "" && u.Path != "/") {
+		return "", malformed
 	}
-	if _, _, err := net.SplitHostPort(address); err != nil {
-		return "", fmt.Errorf("launcher: connect %q is not tcp://host:port: %w", addr, err)
+	host, port := u.Hostname(), u.Port()
+	if n, err := strconv.Atoi(port); host == "" || err != nil || n < 1 || n > 65535 {
+		return "", malformed
 	}
-	return address, nil
+	return net.JoinHostPort(host, port), nil
 }
 
 func readFrame(reader *shimwire.Reader) (shimwire.Frame, error) {
