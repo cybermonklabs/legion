@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 
 import type { TreeNode } from "./issue-tree";
 import { heldBy } from "./issue-tree";
+import { stampStates } from "./node-states/node-states";
 import type { NodeType } from "./page-words";
 import {
   DRAWN_LEVELS,
@@ -10,6 +11,7 @@ import {
   NARROW_LEVELS,
   NOTHING_OPENED,
   type OpenedBranches,
+  pathTo,
   treeRows,
   zoomBreadcrumb,
 } from "./tree-fold";
@@ -544,5 +546,48 @@ test("an overtaken node arrives as open on load as its live self", () => {
     const liveRoot = live[index];
     if (liveRoot === undefined) throw new Error(`no live tree ${index}`);
     expect(shapeOf(treeRows(root)), `overtaken tree ${index}`).toEqual(shapeOf(treeRows(liveRoot)));
+  }
+});
+
+// A decision that waits for the reader's review, at or under an overtaken node, is waited on for no
+// reader once the stamp closes it (root R7), and the fold still reads it as its live self: the path
+// to it opens on load as the live tree's does, whether the node above it or the decision itself is
+// overtaken, and stays so on a later stamp. A decision that did not wait opens no path either way.
+test("a waiting decision at or under an overtaken node opens its path as its live self", () => {
+  const tree = (waiting: boolean): TreeNode =>
+    node("CORE-1", "issue", [
+      node("spec", "document", [
+        node(
+          "spec#b-r1",
+          "requirement",
+          [
+            node("spec#b-d1", "decision", [], {
+              readId: "d1",
+              state: waiting ? "waiting_review" : "kept",
+              waiting,
+            }),
+          ],
+          { readId: "r1" }
+        ),
+        node("spec#b-r2", "requirement"),
+      ]),
+    ]);
+  expect([...frontier(tree(true))].sort()).toEqual(["CORE-1", "spec", "spec#b-r1"]);
+  expect([...frontier(tree(false))]).toEqual([]);
+  for (const waiting of [true, false]) {
+    const live = tree(waiting);
+    for (const overtaken of ["r1", "d1"]) {
+      const states = new Map([[overtaken, { life: "overtaken" } as const]]);
+      const stamped = stampStates(live, states);
+      for (const [index, root] of [stamped, stampStates(stamped, states)].entries()) {
+        const label = `${overtaken} overtaken, waiting ${String(waiting)}, stamp ${index + 1}`;
+        // Closed, no reader is waited on for it, so no count and no first focus takes it.
+        const decision = pathTo(root, "spec#b-d1")?.at(-1);
+        expect(decision?.closed, label).toBe(true);
+        expect(decision?.waiting, label).toBe(false);
+        expect([...frontier(root)].sort(), label).toEqual([...frontier(live)].sort());
+        expect(shapeOf(treeRows(root)), label).toEqual(shapeOf(treeRows(live)));
+      }
+    }
   }
 });

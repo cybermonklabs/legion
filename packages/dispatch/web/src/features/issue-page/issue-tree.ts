@@ -220,6 +220,12 @@ export interface TreeNode {
    *  view's row takes it from the view's own tree, and from the outline's above a parent the view
    *  draws as its parent line. Absent on every node that is not closed. */
   readonly closedBy?: string;
+  /** Whether this node waited on the reader (`waiting`) before it was closed (`closed`), which
+   *  leaves `waiting` false: what the fold reads, so a closed node arrives as open as its live self
+   *  (`tree-fold.ts`'s `unanswered`). Only the fold reads it, so no count, first focus or waiting
+   *  tone takes the node. Set where `node-states.ts`'s `stampStates` closes a node that waited,
+   *  kept by a later stamp, and absent on every other node. */
+  readonly liveWaiting?: true;
   /** What a lens, a finding, a risk or a constraint carries beyond these fields, and the chips of
    *  a statement a constraint names; absent on every other node. */
   readonly lens?: LensFacts;

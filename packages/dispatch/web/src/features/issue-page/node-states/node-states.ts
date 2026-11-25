@@ -81,10 +81,12 @@ function carriesMarks(root: TreeNode): boolean {
  * the issue's work still lacks, and neither is part of that work. No reader is waited on for a
  * closed node either: a later node took its place, so the page opens on none of them and draws
  * none in the waiting tone, though an open question among them is still a `question`, which `q`
- * reaches. A gap or a wait an earlier stamp took from a node is not given back. Each chip, in
- * `chips` and in `alsoUnder`, carries the marks of the node of `root` whose reference it names,
- * whatever version it pins, and a chip naming no node of `root` keeps its own, so a node is marked
- * wherever it is drawn.
+ * reaches. The wait a closed node took is kept as its `liveWaiting`, which the fold alone reads,
+ * so a decision among them that waited for the reader's review opens the path to it on load as
+ * its live self does. A gap or a wait an earlier stamp took from a node is not given back, and
+ * the `liveWaiting` it kept stays. Each chip, in `chips` and in `alsoUnder`, carries the marks of
+ * the node of `root` whose reference it names, whatever version it pins, and a chip naming no node
+ * of `root` keeps its own, so a node is marked wherever it is drawn.
  *
  * With no states and no `closedAbove`, over a tree that carries no mark, it answers `root` itself.
  */
@@ -135,6 +137,7 @@ export function stampStates(
       children,
       chips: own.chips.map(chipWith),
       ...(top === undefined ? {} : { closed: true, closedBy: top, waiting: false }),
+      ...(top !== undefined && own.waiting ? { liveWaiting: true } : {}),
       gaps: top !== undefined || isProposed(own) ? [] : own.gaps,
       ...(line === undefined ? {} : { parentLine: line }),
     };

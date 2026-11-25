@@ -148,7 +148,11 @@ function unanswered(node: TreeNode): boolean {
     // these (`DecisionActions.tsx`), so it is the one kind of decision the issue is waiting
     // on an answer to. A decision a person made, one the reader kept and one a later
     // decision replaced are all settled.
+    // A closed decision is read as its live self: one that waited for the reader's review
+    // before it was closed (`liveWaiting`) is open here, though no reader is waited on for it,
+    // so the branch it stands at or under arrives as open as it does with nothing overtaken.
     case "decision":
+      if (node.liveWaiting === true) return true;
       return node.waiting;
     // A plan task, never: Dispatch records no completion for a `plan_task` block at all -
     // the block declares `serves` and `needs` and nothing else
@@ -209,6 +213,8 @@ function unanswered(node: TreeNode): boolean {
  * unfolds whatever its depth. The open nodes themselves are not in it - what one holds is a
  * set the reader opens, like any other branch - so an open node that holds a deeper open one
  * is in it, as that one's ancestor.
+ * A closed node is read as its live self (`unanswered`), so a branch at or under an overtaken
+ * node arrives as open as the same branch with nothing overtaken.
  */
 export function frontier(root: TreeNode): ReadonlySet<string> {
   const path = new Set<string>();
