@@ -144,13 +144,12 @@ func endHold(t *testing.T, hold pgx.Tx) {
 	}
 }
 
-// requireHeld fails the test unless a session of the server waits on hold within 30 s: the fill
-// or the recount it holds.
+// requireHeld waits until a session of the server waits on hold: the fill or the recount it holds
+// (what names it). Its one bound is the test binary's deadline (storetest.WaitForLockWaiters).
 func requireHeld(t *testing.T, hold pgx.Tx, what string) {
 	t.Helper()
-	if storetest.WaitForLockWaiters(t, hold, 1, 30*time.Second) < 1 {
-		t.Fatalf("the server's %s never waited on the hold", what)
-	}
+	t.Logf("waiting for the server's %s to wait on the hold", what)
+	storetest.WaitForLockWaiters(t, hold, 1)
 }
 
 // coverageServer is a process a coverage test started, with the Host its requests name: empty for

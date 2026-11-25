@@ -85,7 +85,7 @@ github.com/sjawhar/envoy/internal/dispatch/api TestRelatedRecallOnDuplicates nee
 github.com/sjawhar/envoy/internal/dispatch/api TestRelatedCheckLatencyOnRecallCorpus needs DISPATCH_RECALL_CORPUS and DISPATCH_RECALL_LATENCY_ISSUE
 github.com/sjawhar/envoy/internal/dispatch/api TestSearchLatencyOnCorpus needs DISPATCH_BENCH_DATABASE_URL, a restored corpus copy
 github.com/sjawhar/envoy/internal/dispatch/api TestStatementTimings is a measurement on the seeded database DISPATCH_BENCH_DATABASE_URL names (benchtime.Open), which CI leaves unset
-github.com/sjawhar/envoy/internal/dispatch/api TestRelatedTermsRefreshTiming is a measurement on that same seeded database (benchtime.Open)
+github.com/sjawhar/envoy/internal/dispatch/api TestRelatedTermsRefreshTiming is a measurement on that same seeded database (benchtime.Open), run only with DISPATCH_BENCH_TIMING=1 on a quiet machine
 github.com/sjawhar/envoy/internal/dispatch/api TestSearchReadSplitScript writes the psql scripts of the search read split, run only with DISPATCH_SEARCH_SPLIT_OUT (scripts/README.md, the search split section)
 github.com/sjawhar/envoy/internal/dispatch/api TestSearchReadSplitReport reads the plans the psql run of that split wrote, run only with DISPATCH_SEARCH_SPLIT_IN
 github.com/sjawhar/envoy/internal/dispatch/api TestGrowsLinearlyRejectsQuadraticFinalRungHelper is a subprocess helper, which its parent test starts with GROWS_LINEARLY_SLOW_FIRST set

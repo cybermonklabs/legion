@@ -2505,6 +2505,16 @@ func (m *Machine) View() ClaimView {
 	return v
 }
 
+// Published is the claim as the machine last published it, as View reads it, shared rather than
+// copied: publish stores a view built fresh and nothing writes a stored one again, so a reader
+// that only reads the claim may share its slices and maps, as WaitingWake does. A reader that keeps
+// the claim past its own read, or writes it, takes View. It never waits on the decision in flight.
+// The daemon's refresh pass reads it for each claim it would post (internal/daemon's
+// refreshStalePlugins), at a sweep of every claim, where a copy of each would be garbage.
+func (m *Machine) Published() Claim {
+	return m.view.Load().Claim
+}
+
 // WaitingWake is the wake the pacing holds over this claim, nil while none waits: what the
 // published view names (ClaimView.WakeWaiting) with the claim's token, issue and role beside it,
 // for the reader of every claim the state route is (the daemon's waitingWakes,
@@ -4681,17 +4691,27 @@ func (m *Machine) putClaimAndDelivery(ctx context.Context, c Claim, d Delivery) 
 // retirement. Each has a pending delivery by the time it calls, which is what this reads. While a
 // pause's stop is owed, the two rows go through that stop's transaction instead (putStops,
 // Deps.PauseStopped), the delivery carried on the claim it is handed.
+//
+// It publishes the claim before it writes it, as putClaim does, and publishes what the write
+// takes: stored normalizes the machine's live claim, so the publish follows that call and no
+// reader sees a claim holding what only a running process may hold (Published, stored,
+// NormalizeClaim). A turn's start writes the claim working here and then goes on to write its step
+// record, and a reader of the published claim must not read it ready meanwhile (internal/daemon's
+// refreshStalePlugins).
 func (m *Machine) putClaimAndPending(ctx context.Context) error {
 	if len(m.owedStops()) > 0 {
 		c, pending := m.stored(), *m.claim.Pending
 		c.Pending = &pending
+		m.publish()
 		if err := m.putStops(ctx, c); err != nil {
 			return err
 		}
 		m.unsaved = false
 		return nil
 	}
-	if err := m.putClaimAndDelivery(ctx, m.stored(), *m.claim.Pending); err != nil {
+	c, pending := m.stored(), *m.claim.Pending
+	m.publish()
+	if err := m.putClaimAndDelivery(ctx, c, pending); err != nil {
 		return err
 	}
 	m.unsaved = false

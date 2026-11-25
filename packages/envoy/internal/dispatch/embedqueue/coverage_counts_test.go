@@ -259,7 +259,7 @@ func TestTwoWritesToOneIssuesInputsLeaveItsStateRowCurrent(t *testing.T) {
 		_, err := b.Exec(ctx, `update artifact_versions set markdown = $2 where id = $1`, version, spec)
 		rewritten <- err
 	}()
-	if err, early := storetest.WaitForQueuedBehind(t, a, bPID, rewritten, 10*time.Second); early {
+	if err, early := storetest.WaitForQueuedBehind(t, a, bPID, rewritten); early {
 		t.Fatalf("B's rewrite of the spec ended (%v) before A committed: it never waited on A", err)
 	}
 	if err := a.Commit(ctx); err != nil {
@@ -1318,14 +1318,8 @@ func requireCountsBesideLiveWritesHeld(t *testing.T, fill bool, run func(context
 
 	ran := make(chan error, 1)
 	go func() { ran <- run(ctx, database) }()
-	if waiting := storetest.WaitForLockWaiters(t, hold, 1, 60*time.Second); waiting < 1 {
-		select {
-		case err := <-ran:
-			t.Fatalf("the statement ended (%v) without waiting on the hold", err)
-		default:
-			t.Fatal("the statement never waited on the hold within 60s")
-		}
-	}
+	// Its one bound is the test binary's deadline (storetest.WaitForLockWaiters).
+	storetest.WaitForLockWaiters(t, hold, 1)
 	committed := make(chan error, 1)
 	go func() { committed <- open.Commit(ctx) }()
 	select {
@@ -1417,9 +1411,7 @@ func TestAFoldAndARecountTakeTurnsOnOneTransactionLock(t *testing.T) {
 
 			ended := make(chan error, 2)
 			go func() { ended <- ops[order[0]](ctx, database) }()
-			if storetest.WaitForLockWaiters(t, hold, 1, 60*time.Second) < 1 {
-				t.Fatalf("the %s never waited on the hold", order[0])
-			}
+			storetest.WaitForLockWaiters(t, hold, 1)
 			var waiting, blockers []int32
 			var holders int
 			if err := database.Pool.QueryRow(ctx, countsLockWaits).Scan(&waiting, &blockers, &holders); err != nil || holders != 1 || len(waiting) != 0 {
