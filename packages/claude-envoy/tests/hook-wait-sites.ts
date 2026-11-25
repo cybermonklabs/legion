@@ -29,6 +29,8 @@
 import { readFileSync, realpathSync } from "node:fs"
 import { dirname, relative } from "node:path"
 import ts from "typescript"
+import { NAMED_BEFORE_GUARD_MS } from "./row-deadline"
+import { NO_TRANSPILER_CACHE } from "./transpiler-cache"
 
 export interface WaitSite {
   /** Its file, relative to the repository's root. */
@@ -110,8 +112,9 @@ function waitKind(qualified: string, inLibrary: boolean): string | undefined {
 }
 
 /** Every wait site of `modules`, read as one program with `tsconfig`'s options, with `root` the
- *  repository's root the files are named against. */
-export function waitSites(
+ *  repository's root the files are named against. Seconds of synchronous work: `waitSites` runs it
+ *  in a process of its own. */
+function scanWaitSites(
   modules: readonly string[],
   root: string,
   tsconfig: string,
@@ -684,4 +687,50 @@ export function waitSites(
     visit(source)
   }
   return sites
+}
+
+/**
+ * Every wait site of `modules` (`scanWaitSites`), found by this file run as a program, in a
+ * process of its own: the scan is seconds of synchronous TypeScript work, which no limit of the
+ * caller's could end on the caller's own thread. `rowLimitMs` is the calling row's limit. The
+ * process is killed `NAMED_BEFORE_GUARD_MS` before it, and the promise then fails, naming the
+ * scan, before Bun's own limit ends the row. The caller's process holds that deadline: a caller
+ * killed first leaves the scan to end by itself.
+ */
+export async function waitSites(
+  modules: readonly string[],
+  root: string,
+  tsconfig: string,
+  maxBoundMs: number,
+  rowLimitMs: number,
+): Promise<WaitSite[]> {
+  const killAtMs = rowLimitMs - NAMED_BEFORE_GUARD_MS
+  const started = performance.now()
+  const scan = Bun.spawn(["bun", import.meta.path], {
+    env: { PATH: process.env["PATH"] ?? "", ...NO_TRANSPILER_CACHE },
+    stdin: new TextEncoder().encode(JSON.stringify({ modules, root, tsconfig, maxBoundMs })),
+    stdout: "pipe",
+    stderr: "pipe",
+    timeout: killAtMs,
+    killSignal: "SIGKILL",
+  })
+  const [stdout, stderr, exitCode] = await Promise.all([
+    new Response(scan.stdout).text(),
+    new Response(scan.stderr).text(),
+    scan.exited,
+  ])
+  if (exitCode !== 0 || scan.signalCode !== null) {
+    throw new Error(
+      `the wait-site scan ended after ${Math.round(performance.now() - started)} ms, exit ` +
+        `${exitCode}, signal ${scan.signalCode} (a scan still running at ${killAtMs} ms, ` +
+        `${NAMED_BEFORE_GUARD_MS} ms before the row's limit, is killed with SIGKILL): ${stderr}`,
+    )
+  }
+  return JSON.parse(stdout)
+}
+
+// Run as a program by `waitSites`: the scan of what stdin names, written to stdout as JSON.
+if (import.meta.main) {
+  const { modules, root, tsconfig, maxBoundMs } = JSON.parse(await Bun.stdin.text())
+  await Bun.write(Bun.stdout, JSON.stringify(scanWaitSites(modules, root, tsconfig, maxBoundMs)))
 }

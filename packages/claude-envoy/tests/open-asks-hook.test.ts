@@ -2164,11 +2164,16 @@ const REVIEWED_WAIT_SITES: readonly {
   },
 ]
 
-/** The scan row's own limit, sized to what reading the hook's modules as one program costs, not to
- *  the package's 60 s: 4.4 to 4.9 s wall, 10 s of CPU and 551 MB on the dev box; 38.6 s wall alone
- *  and up to 54.7 s beside other rows in a shared two-CPU pod (Legion's review 6011857098). It
- *  starts no child and cannot hang, so its limit only keeps a slow machine from deciding it. */
-const SCAN_ROW_LIMIT_MS = 300_000
+/** The scan row's limit: the room the claude-envoy job left for one hang in CI run 45437325102 at
+ *  06d187e7, its `timeout-minutes: 10` less the 353 s the job took there (247 s), rounded down. It
+ *  is an estimate from that one run, not a reading of what the scan costs. The scan runs in a
+ *  process of its own (`waitSites`), killed 5 s before this limit, so a scan that load stretches
+ *  past it fails this row by name. On the test thread no limit could stop the scan: one run of
+ *  this file passed at 315 s, past the 300 s limit of then (builds Job infra-1580-r27ow-46ct9), and
+ *  in CI a scan that slow would have run into the job's timeout, which names no row. The scan took
+ *  3,431 ms in that CI run, and up to 284,632 ms in a builds Job on two CPUs beside 54 busy loops
+ *  (infra-1580-t27-j5-lqlps). */
+const SCAN_ROW_LIMIT_MS = 240_000
 
 /** claude-envoy's TypeScript settings, which the scan reads the hook's modules with. */
 const packageTsconfig = resolve(import.meta.dir, "..", "tsconfig.json")
@@ -2193,7 +2198,14 @@ test(
       .flatMap((group) => group.hooks)
       .find((hook) => hook.args?.at(-1) === "open-asks")?.timeout
     expect(budgetSeconds).toBeGreaterThan(0)
-    const sites = waitSites(modules, repositoryRoot, packageTsconfig, (budgetSeconds ?? 0) * 1000)
+    // The scan runs in a process of its own, which is ended at this row's limit as the row is.
+    const sites = await waitSites(
+      modules,
+      repositoryRoot,
+      packageTsconfig,
+      (budgetSeconds ?? 0) * 1000,
+      SCAN_ROW_LIMIT_MS,
+    )
     // The scan read the hook's code: the read's fetch and the pool identity's are in it, bounded.
     expect(
       sites
